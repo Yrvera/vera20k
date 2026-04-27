@@ -1167,3 +1167,38 @@ fn dock_exit_returns_to_search_ore() {
     assert_eq!(m.home_refinery, Some(2), "Home refinery should be set");
     assert!(m.cargo.is_empty(), "Cargo should be empty");
 }
+
+/// After ExitPad arrival, both `target_ore_cell` and `last_harvest_cell` must
+/// be cleared so SearchOre re-scans from the exit cell instead of biasing
+/// toward the previous patch (which may sit on the back side of the refinery).
+#[test]
+fn exit_pad_clears_ore_targets_on_arrival() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let config = MinerConfig::default();
+    let path_grid = PathGrid::new(64, 64);
+
+    // Refinery at (10, 10). Exit cell for a 4x3 foundation = (11, 11).
+    spawn_refinery(&mut sim, 100, 10, 10);
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 11, 11);
+
+    // Set up the miner mid-ExitPad with stale archive populated.
+    let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+    let miner = entity.miner.as_mut().expect("miner component");
+    miner.state = MinerState::Dock;
+    miner.dock_phase = RefineryDockPhase::ExitPad;
+    miner.reserved_refinery = Some(100);
+    miner.dock_queued = false;
+    miner.target_ore_cell = Some((20, 20));      // pre-dock target
+    miner.last_harvest_cell = Some((20, 20));    // pre-dock archive
+
+    // Tick the miner system — should detect arrival and run the cleanup.
+    crate::sim::miner::miner_system::tick_miners(&mut sim, &rules, &config, Some(&path_grid));
+
+    let entity = sim.entities.get(miner_id).expect("miner entity");
+    let miner = entity.miner.as_ref().expect("miner component");
+    assert_eq!(miner.state, MinerState::SearchOre, "must transition to SearchOre");
+    assert!(miner.target_ore_cell.is_none(), "target_ore_cell must be cleared");
+    assert!(miner.last_harvest_cell.is_none(), "last_harvest_cell must be cleared");
+    assert!(miner.reserved_refinery.is_none(), "reserved_refinery must be cleared");
+}
