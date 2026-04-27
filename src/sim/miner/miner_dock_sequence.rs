@@ -433,6 +433,10 @@ fn phase_exit_pad(
         .get(snap.entity_id)
         .is_some_and(|e| e.movement_target.is_some());
     let at_exit = (snap.rx, snap.ry) == exit;
+    let teleporting = sim
+        .entities
+        .get(snap.entity_id)
+        .is_some_and(|e| e.teleport_state.is_some());
 
     if !moving && !at_exit {
         // Issue the exit move and set facing to match original engine.
@@ -443,11 +447,17 @@ fn phase_exit_pad(
         return;
     }
 
-    if !moving && at_exit {
+    if !moving && at_exit && !teleporting {
         // Arrived at exit — finish docking.
         snap.miner.reserved_refinery = None;
         snap.miner.dock_queued = false;
         snap.miner.forced_return = false;
+        // Clear stale ore targets so SearchOre re-scans from the exit cell.
+        // Without this, the miner re-targets the patch it came from, which
+        // for refineries placed adjacent to ore puts the destination on the
+        // back side of the building footprint, producing a head-butt cycle.
+        snap.miner.target_ore_cell = None;
+        snap.miner.last_harvest_cell = None;
         snap.miner.dock_phase = RefineryDockPhase::Approach;
         snap.miner.state = MinerState::SearchOre;
         return;
