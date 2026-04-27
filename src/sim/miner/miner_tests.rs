@@ -1079,17 +1079,18 @@ fn refinery_pad_and_exit_cells() {
 
     // 4x3 foundation at (10, 10), no art.ini overrides:
     // queue = (14, 11), pad = (13, 11)
-    // exit = building_center + (-0x80, +0x80) leptons = (11, 11)
+    // exit = building_center + (-0x80, +0x80) leptons = (11, 12)
+    //   (south-edge interior cell — y formula: ry*256 + h*128 + 128, /256)
     assert_eq!(refinery_queue_cell(10, 10, 4, 3, None), (14, 11));
     assert_eq!(refinery_pad_cell(10, 10, 4, 3, None), (13, 11));
-    assert_eq!(refinery_exit_cell(10, 10, 4, 3, None), (11, 11));
+    assert_eq!(refinery_exit_cell(10, 10, 4, 3, None), (11, 12));
 
     // 3x3 foundation at (5, 5), no art.ini overrides:
     // queue = (8, 6), pad = (7, 6)
-    // exit = building_center + (-0x80, +0x80) leptons = (5, 6)
+    // exit = building_center + (-0x80, +0x80) leptons = (5, 7)
     assert_eq!(refinery_queue_cell(5, 5, 3, 3, None), (8, 6));
     assert_eq!(refinery_pad_cell(5, 5, 3, 3, None), (7, 6));
-    assert_eq!(refinery_exit_cell(5, 5, 3, 3, None), (5, 6));
+    assert_eq!(refinery_exit_cell(5, 5, 3, 3, None), (5, 7));
 
     // With QueueingCell override from art.ini:
     assert_eq!(refinery_queue_cell(10, 10, 4, 3, Some((4, 1))), (14, 11)); // same result for standard
@@ -1178,9 +1179,9 @@ fn exit_pad_clears_ore_targets_on_arrival() {
     let config = MinerConfig::default();
     let path_grid = PathGrid::new(64, 64);
 
-    // Refinery at (10, 10). Exit cell for a 4x3 foundation = (11, 11).
+    // Refinery at (10, 10). Exit cell for a 4x3 foundation = (11, 12).
     spawn_refinery(&mut sim, 100, 10, 10);
-    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 11, 11);
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 11, 12);
 
     // Set up the miner mid-ExitPad with stale archive populated.
     let entity = sim.entities.get_mut(miner_id).expect("miner entity");
@@ -1216,7 +1217,7 @@ fn exit_pad_blocks_transition_during_teleport() {
     let path_grid = PathGrid::new(64, 64);
 
     spawn_refinery(&mut sim, 100, 10, 10);
-    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 11, 11);
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 11, 12);
 
     // Set up miner at the exit cell, in ExitPad, with a teleport in progress.
     let entity = sim.entities.get_mut(miner_id).expect("miner entity");
@@ -1267,12 +1268,12 @@ fn chrono_miner_archive_cleared_after_undock_picks_new_target() {
     let config = MinerConfig::default();
     let path_grid = PathGrid::new(64, 64);
 
-    // Refinery at (10, 10), 4x3 foundation. Exit cell = (11, 11).
+    // Refinery at (10, 10), 4x3 foundation. Exit cell = (11, 12).
     spawn_refinery(&mut sim, 100, 10, 10);
 
-    // Place ONE ore patch at (15, 11): distance 4 from exit, within
-    // local_continuation_radius (default 6). This is what the fresh local
-    // scan from current position should pick.
+    // Place ONE ore patch at (15, 11): distance ~4 from exit (sqrt(16+1)),
+    // within local_continuation_radius (default 6). This is what the fresh
+    // local scan from current position should pick.
     sim.production.resource_nodes.insert(
         (15, 11),
         ResourceNode {
@@ -1281,14 +1282,14 @@ fn chrono_miner_archive_cleared_after_undock_picks_new_target() {
         },
     );
 
-    // Spawn miner at exit cell (11, 11), mid-ExitPad. Stale archive points
+    // Spawn miner at exit cell (11, 12), mid-ExitPad. Stale archive points
     // far away (50, 50) — outside any scan radius from current position,
     // and no ore at that cell. If the archive were NOT cleared, the search
     // would start from (50, 50), the local scan would find nothing, the
     // archive check would also find nothing, and only the long scan would
     // eventually fall back to current position. With the fix the local scan
     // from current position immediately picks (15, 11).
-    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 11, 11);
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 11, 12);
     let entity = sim.entities.get_mut(miner_id).expect("miner entity");
     let miner = entity.miner.as_mut().expect("miner component");
     miner.state = MinerState::Dock;
