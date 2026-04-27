@@ -158,11 +158,42 @@ fn test_find_path_no_path_exists() {
 }
 
 #[test]
-fn test_find_path_blocked_start() {
+fn test_find_path_blocked_start_finds_path_through_walkable_neighbors() {
+    // Matches the original engine's A*: the start cell may be blocked (e.g.
+    // a unit standing inside a building footprint after undock). A* expands
+    // neighbors normally; if any neighbor is walkable, a path can be found.
     let mut grid: PathGrid = PathGrid::new(10, 10);
-    grid.set_blocked(0, 0, true);
-    let path: Option<Vec<(u16, u16)>> = find_path(&grid, (0, 0), (5, 5));
-    assert!(path.is_none(), "Blocked start should return None");
+    grid.set_blocked(5, 5, true);
+    let path: Option<Vec<(u16, u16)>> = find_path(&grid, (5, 5), (8, 5));
+    assert!(
+        path.is_some(),
+        "Blocked start with walkable neighbors should find a path"
+    );
+    let path = path.unwrap();
+    assert_eq!(path.first().copied(), Some((5, 5)), "path starts at start cell");
+    assert_eq!(path.last().copied(), Some((8, 5)), "path ends at goal");
+    assert!(path.len() >= 2, "path has at least start + goal");
+}
+
+#[test]
+fn test_find_path_blocked_start_all_neighbors_blocked_returns_none() {
+    // Negative case: if the start cell is blocked AND all 8 neighbors are
+    // blocked, A* exhausts its open set and returns None.
+    let mut grid: PathGrid = PathGrid::new(10, 10);
+    grid.set_blocked(5, 5, true);
+    grid.set_blocked(4, 4, true);
+    grid.set_blocked(5, 4, true);
+    grid.set_blocked(6, 4, true);
+    grid.set_blocked(4, 5, true);
+    grid.set_blocked(6, 5, true);
+    grid.set_blocked(4, 6, true);
+    grid.set_blocked(5, 6, true);
+    grid.set_blocked(6, 6, true);
+    let path: Option<Vec<(u16, u16)>> = find_path(&grid, (5, 5), (8, 5));
+    assert!(
+        path.is_none(),
+        "Blocked start with all neighbors blocked should return None"
+    );
 }
 
 #[test]
