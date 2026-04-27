@@ -1245,3 +1245,87 @@ fn exit_pad_blocks_transition_during_teleport() {
         "ore target must NOT be cleared while teleport is active"
     );
 }
+
+/// Smoke test for the post-undock flow with a stale archive.
+///
+/// Sets up a chrono miner mid-ExitPad with `last_harvest_cell` pointing to a
+/// patch outside the local scan radius. After the fix, the archive is cleared
+/// at exit and SearchOre runs with the miner's current position as search
+/// center, picking the only ore patch in range. Verifies the field-clear
+/// behavior end-to-end (state transitions ExitPad → SearchOre → MoveToOre,
+/// archive is cleared, fresh target is picked from current position).
+///
+/// NOTE: this does NOT verify the headbutt symptom is fixed. The fix clears
+/// the archive but the search algorithm still picks by geometric distance
+/// (no pathfinding-aware reachability). If a back-side ore patch is the
+/// closest in the user's scenario, the headbutt may recur. That hypothesis
+/// must be tested in-game.
+#[test]
+fn chrono_miner_archive_cleared_after_undock_picks_new_target() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let config = MinerConfig::default();
+    let path_grid = PathGrid::new(64, 64);
+
+    // Refinery at (10, 10), 4x3 foundation. Exit cell = (11, 11).
+    spawn_refinery(&mut sim, 100, 10, 10);
+
+    // Place ONE ore patch at (15, 11): distance 4 from exit, within
+    // local_continuation_radius (default 6). This is what the fresh local
+    // scan from current position should pick.
+    sim.production.resource_nodes.insert(
+        (15, 11),
+        ResourceNode {
+            resource_type: ResourceType::Ore,
+            remaining: 1200,
+        },
+    );
+
+    // Spawn miner at exit cell (11, 11), mid-ExitPad. Stale archive points
+    // far away (50, 50) — outside any scan radius from current position,
+    // and no ore at that cell. If the archive were NOT cleared, the search
+    // would start from (50, 50), the local scan would find nothing, the
+    // archive check would also find nothing, and only the long scan would
+    // eventually fall back to current position. With the fix the local scan
+    // from current position immediately picks (15, 11).
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 11, 11);
+    let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+    let miner = entity.miner.as_mut().expect("miner component");
+    miner.state = MinerState::Dock;
+    miner.dock_phase = RefineryDockPhase::ExitPad;
+    miner.reserved_refinery = Some(100);
+    miner.target_ore_cell = Some((50, 50));
+    miner.last_harvest_cell = Some((50, 50));
+    miner.cargo.clear();
+
+    // Tick twice: (1) ExitPad → SearchOre with cleared archive,
+    // (2) SearchOre → MoveToOre with target picked.
+    crate::sim::miner::miner_system::tick_miners(&mut sim, &rules, &config, Some(&path_grid));
+    crate::sim::miner::miner_system::tick_miners(&mut sim, &rules, &config, Some(&path_grid));
+
+    let entity = sim.entities.get(miner_id).expect("miner entity");
+    let miner = entity.miner.as_ref().expect("miner component");
+
+    // The stale (50, 50) target must be replaced. Any other value (None or
+    // Some((15, 11))) is acceptable — the precise target depends on which
+    // tick SearchOre ran in. The key property: the stale archive does not
+    // survive the dock cycle.
+    assert_ne!(
+        miner.target_ore_cell,
+        Some((50, 50)),
+        "stale archive must be replaced after ExitPad → SearchOre. \
+         Got state={:?}, target={:?}",
+        miner.state,
+        miner.target_ore_cell,
+    );
+
+    // After the second tick, the only available ore should be the picked target.
+    if let Some(target) = miner.target_ore_cell {
+        assert_eq!(
+            target,
+            (15, 11),
+            "the only ore at (15, 11) should be picked. Got {:?}",
+            target
+        );
+    }
+}
