@@ -1422,3 +1422,54 @@ fn reachable_ore_picked_over_closer_unreachable() {
         m.target_ore_cell,
     );
 }
+
+/// When the harvester is standing on a cell marked impassable in the path
+/// grid (mirrors mid-harvest on Tiberium), the effective-zone probe must
+/// find a valid zone via a neighbor and the filter must still apply.
+/// Specifically: nearby reachable ore is picked, distant unreachable ore
+/// is filtered.
+#[test]
+fn harvester_on_tiberium_falls_back_to_neighbor_zone() {
+    use crate::sim::pathfinding::zone_map::ZoneGrid;
+    use std::collections::BTreeMap;
+
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    // 16x16 grid. Wall column at x=8 splits LEFT and RIGHT zones.
+    // Harvester's cell at (3, 8) is also blocked (simulates standing on
+    // Tiberium that the path grid marks impassable).
+    let mut grid = PathGrid::new(16, 16);
+    for y in 0..16u16 {
+        grid.set_blocked(8, y, true);
+    }
+    grid.set_blocked(3, 8, true);
+    let zone_grid = ZoneGrid::build(&grid, &BTreeMap::new(), 16, 16);
+    sim.zone_grid = Some(zone_grid);
+
+    // Harvester at (3, 8) on the blocked cell.
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 3, 8);
+    // Reachable ore at (5, 8) on the LEFT side.
+    place_ore(&mut sim, 5, 8, 1200);
+    // Unreachable ore at (10, 8) on the RIGHT side.
+    place_ore(&mut sim, 10, 8, 1200);
+
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.state = MinerState::SearchOre;
+    }
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    let m = get_miner(&sim, miner_id);
+    assert_eq!(m.state, MinerState::MoveToOre);
+    assert_eq!(
+        m.target_ore_cell,
+        Some((5, 8)),
+        "left-side reachable ore must be picked even with the harvester on a \
+         blocked cell — the effective-zone probe finds a passable neighbor. \
+         Got {:?}",
+        m.target_ore_cell,
+    );
+}
