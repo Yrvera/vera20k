@@ -443,7 +443,7 @@ pub(super) fn process_cell_crossings(
                         _ => true,
                     }
                 } else {
-                    path_grid.map_or(true, |grid| grid.is_walkable(nx, ny))
+                    target.bypass_grid || path_grid.map_or(true, |grid| grid.is_walkable(nx, ny))
                 };
                 let terrain_ok: bool = target.ignore_terrain_cost
                     || is_water_mover
