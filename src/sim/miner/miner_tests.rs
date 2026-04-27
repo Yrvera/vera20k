@@ -952,7 +952,7 @@ fn pick_best_resource_node_prefers_gems_over_ore() {
         },
     );
 
-    let chosen = pick_best_resource_node(&nodes, (5, 5));
+    let chosen = pick_best_resource_node(&nodes, (5, 5), None);
     assert_eq!(
         chosen,
         Some((5, 7)),
@@ -986,7 +986,7 @@ fn pick_best_resource_node_prefers_higher_density() {
         },
     );
 
-    let chosen = pick_best_resource_node(&nodes, (5, 5));
+    let chosen = pick_best_resource_node(&nodes, (5, 5), None);
     assert_eq!(
         chosen,
         Some((5, 7)),

@@ -219,6 +219,7 @@ fn handle_search_ore(
         &sim.production.resource_nodes,
         search_center,
         config.local_continuation_radius,
+        None,
     ) {
         snap.miner.target_ore_cell = Some(cell);
         snap.miner.state = MinerState::MoveToOre;
@@ -250,6 +251,7 @@ fn handle_search_ore(
         &sim.production.resource_nodes,
         (snap.rx, snap.ry),
         config.long_scan_radius,
+        None,
     ) {
         snap.miner.target_ore_cell = Some(cell);
         snap.miner.state = MinerState::MoveToOre;
@@ -257,7 +259,8 @@ fn handle_search_ore(
     }
 
     // Global search — find nearest ore anywhere on the map (unbounded fallback).
-    if let Some(cell) = pick_best_resource_node(&sim.production.resource_nodes, (snap.rx, snap.ry))
+    if let Some(cell) =
+        pick_best_resource_node(&sim.production.resource_nodes, (snap.rx, snap.ry), None)
     {
         snap.miner.target_ore_cell = Some(cell);
         snap.miner.state = MinerState::MoveToOre;
@@ -868,6 +871,7 @@ pub(crate) fn search_local_ore(
     nodes: &std::collections::BTreeMap<(u16, u16), ResourceNode>,
     center: (u16, u16),
     radius: u16,
+    filter: Option<&dyn Fn((u16, u16)) -> bool>,
 ) -> Option<(u16, u16)> {
     let mut best: Option<((u8, u32, u32, u16, u16), (u16, u16))> = None;
     let min_x = center.0.saturating_sub(radius);
@@ -884,6 +888,11 @@ pub(crate) fn search_local_ore(
         let dist_sq = (dx * dx + dy * dy) as u32;
         if dist_sq > (radius as u32) * (radius as u32) {
             continue; // circular, not square
+        }
+        if let Some(f) = filter {
+            if !f((rx, ry)) {
+                continue;
+            }
         }
         let type_rank: u8 = if node.resource_type == ResourceType::Ore {
             1
