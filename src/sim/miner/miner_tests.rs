@@ -1329,3 +1329,51 @@ fn chrono_miner_archive_cleared_after_undock_picks_new_target() {
         );
     }
 }
+
+/// Ore in a disconnected zone (cut off by impassable terrain) must be
+/// filtered out by the reachability check. With no reachable ore on the
+/// map, the harvester transitions to WaitNoOre rather than picking the
+/// unreachable cell.
+#[test]
+fn unreachable_ore_filtered_out() {
+    use crate::sim::pathfinding::zone_map::ZoneGrid;
+    use std::collections::BTreeMap;
+
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    // Build a 16x16 path grid with an impassable wall column at x=8 that
+    // splits the map into two zones (left and right halves).
+    let mut grid = PathGrid::new(16, 16);
+    for y in 0..16u16 {
+        grid.set_blocked(8, y, true);
+    }
+    let zone_grid = ZoneGrid::build(&grid, &BTreeMap::new(), 16, 16);
+    sim.zone_grid = Some(zone_grid);
+
+    // Harvester on the LEFT side at (3, 8). Ore on the RIGHT side at (12, 8).
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 3, 8);
+    place_ore(&mut sim, 12, 8, 1200);
+
+    // Drive the miner into SearchOre state.
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.state = MinerState::SearchOre;
+    }
+
+    // Tick once — search runs, finds nothing reachable, transitions to WaitNoOre.
+    tick_miners_n(&mut sim, &rules, 1);
+
+    let m = get_miner(&sim, miner_id);
+    assert_eq!(
+        m.state,
+        MinerState::WaitNoOre,
+        "must wait — only ore on the map is in a disconnected zone, so unreachable",
+    );
+    assert!(
+        m.target_ore_cell.is_none(),
+        "must not have targeted unreachable ore, got {:?}",
+        m.target_ore_cell,
+    );
+}
