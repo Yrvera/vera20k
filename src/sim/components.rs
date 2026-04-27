@@ -254,6 +254,13 @@ pub struct MovementTarget {
     /// for cell entry. Used by `issue_direct_move` to let harvesters walk
     /// onto ore cells that are terrain-blocked for their SpeedType.
     pub ignore_terrain_cost: bool,
+    /// When true, the movement tick skips PathGrid walkability checks for
+    /// cell entry. Used by dock-sequence direct moves where the harvester
+    /// must traverse the refinery foundation footprint (cells marked
+    /// blocked by `block_building_footprint`). Does NOT bypass entity
+    /// occupancy checks — other movers still collide.
+    #[serde(default)]
+    pub bypass_grid: bool,
 }
 
 /// Default acceleration/deceleration values — zero means no ramping,
@@ -279,6 +286,7 @@ impl Default for MovementTarget {
             final_goal: None,
             group_id: None,
             ignore_terrain_cost: false,
+            bypass_grid: false,
         }
     }
 }

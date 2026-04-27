@@ -219,6 +219,7 @@ fn handle_path_exhaustion(
                         final_goal: saved_goal,
                         group_id: saved_group,
                         ignore_terrain_cost: false,
+                        bypass_grid: false,
                     };
                     debug_assert_eq!(
                         target.path.len(),
