@@ -1202,3 +1202,46 @@ fn exit_pad_clears_ore_targets_on_arrival() {
     assert!(miner.last_harvest_cell.is_none(), "last_harvest_cell must be cleared");
     assert!(miner.reserved_refinery.is_none(), "reserved_refinery must be cleared");
 }
+
+/// ExitPad must NOT transition to SearchOre while a teleport is in progress
+/// (`entity.teleport_state.is_some()`). Without this gate a chrono miner
+/// mid-warp could leave the dock sub-state machine prematurely.
+#[test]
+fn exit_pad_blocks_transition_during_teleport() {
+    use crate::sim::movement::teleport_movement::{TeleportPhase, TeleportState};
+
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let config = MinerConfig::default();
+    let path_grid = PathGrid::new(64, 64);
+
+    spawn_refinery(&mut sim, 100, 10, 10);
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 11, 11);
+
+    // Set up miner at the exit cell, in ExitPad, with a teleport in progress.
+    let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+    let miner = entity.miner.as_mut().expect("miner component");
+    miner.state = MinerState::Dock;
+    miner.dock_phase = RefineryDockPhase::ExitPad;
+    miner.reserved_refinery = Some(100);
+    miner.target_ore_cell = Some((20, 20));
+    // Inject an active teleport state to trip the gate.
+    entity.teleport_state = Some(TeleportState {
+        phase: TeleportPhase::ChronoDelay,
+        target_rx: 20,
+        target_ry: 20,
+        being_warped_ticks: 16,
+    });
+
+    crate::sim::miner::miner_system::tick_miners(&mut sim, &rules, &config, Some(&path_grid));
+
+    let entity = sim.entities.get(miner_id).expect("miner entity");
+    let miner = entity.miner.as_ref().expect("miner component");
+    assert_eq!(miner.state, MinerState::Dock, "must stay in Dock state during teleport");
+    assert_eq!(miner.dock_phase, RefineryDockPhase::ExitPad, "must stay in ExitPad");
+    assert_eq!(
+        miner.target_ore_cell,
+        Some((20, 20)),
+        "ore target must NOT be cleared while teleport is active"
+    );
+}
