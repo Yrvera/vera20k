@@ -1377,3 +1377,48 @@ fn unreachable_ore_filtered_out() {
         m.target_ore_cell,
     );
 }
+
+/// When a closer ore cell is unreachable (different zone) but a farther
+/// one is reachable, the harvester must pick the farther reachable cell
+/// rather than fall through to WaitNoOre.
+#[test]
+fn reachable_ore_picked_over_closer_unreachable() {
+    use crate::sim::pathfinding::zone_map::ZoneGrid;
+    use std::collections::BTreeMap;
+
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    // 16x16 grid with an impassable wall column at x=8.
+    let mut grid = PathGrid::new(16, 16);
+    for y in 0..16u16 {
+        grid.set_blocked(8, y, true);
+    }
+    let zone_grid = ZoneGrid::build(&grid, &BTreeMap::new(), 16, 16);
+    sim.zone_grid = Some(zone_grid);
+
+    // Harvester at (3, 8) on the LEFT side.
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 3, 8);
+    // Closer ore at (10, 8) is on the RIGHT side (unreachable).
+    place_ore(&mut sim, 10, 8, 1200);
+    // Farther ore at (1, 1) is on the LEFT side (reachable).
+    place_ore(&mut sim, 1, 1, 1200);
+
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.state = MinerState::SearchOre;
+    }
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    let m = get_miner(&sim, miner_id);
+    assert_eq!(m.state, MinerState::MoveToOre);
+    assert_eq!(
+        m.target_ore_cell,
+        Some((1, 1)),
+        "reachable farther ore at (1,1) must be picked over unreachable closer ore at (10,8). \
+         Got {:?}",
+        m.target_ore_cell,
+    );
+}
