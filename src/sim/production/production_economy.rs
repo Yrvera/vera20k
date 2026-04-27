@@ -49,10 +49,10 @@ pub fn pick_best_resource_node(
         if node.remaining == 0 {
             continue;
         }
-        if let Some(f) = filter {
-            if !f((rx, ry)) {
-                continue;
-            }
+        if let Some(f) = filter
+            && !f((rx, ry))
+        {
+            continue;
         }
         let dx = rx as i64 - from.0 as i64;
         let dy = ry as i64 - from.1 as i64;

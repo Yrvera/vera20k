@@ -234,7 +234,8 @@ fn handle_search_ore(
         .as_ref()
         .and_then(|zg| effective_zone_cell(zg, mz, snap.rx, snap.ry));
 
-    let reachable_filter: Option<Box<dyn Fn((u16, u16)) -> bool + '_>> =
+    type OreFilter<'a> = dyn Fn((u16, u16)) -> bool + 'a;
+    let reachable_filter: Option<Box<OreFilter<'_>>> =
         match (sim.zone_grid.as_ref(), harvester_anchor) {
             (Some(zg), Some(anchor)) => Some(Box::new(move |ore_cell: (u16, u16)| {
                 ore_reachable(zg, mz, layer, anchor, ore_cell)
@@ -992,10 +993,10 @@ pub(crate) fn search_local_ore(
         if dist_sq > (radius as u32) * (radius as u32) {
             continue; // circular, not square
         }
-        if let Some(f) = filter {
-            if !f((rx, ry)) {
-                continue;
-            }
+        if let Some(f) = filter
+            && !f((rx, ry))
+        {
+            continue;
         }
         let type_rank: u8 = if node.resource_type == ResourceType::Ore {
             1
