@@ -588,6 +588,7 @@ pub(super) fn process_cell_crossings(
         // loop to release the mutable entity borrow for blocker lookups.
         if let Some(check) = detect_deferred_cell_check(
             snap.category,
+            target.bypass_grid,
             next_layer,
             (nx, ny),
             (position.rx, position.ry),

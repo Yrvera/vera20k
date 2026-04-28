@@ -1709,22 +1709,17 @@ fn harvester_drives_into_refinery_foundation_without_bumping_it() {
         "refinery must not have a movement_target — buildings cannot scatter",
     );
 
-    // (3) Sanity: the harvester actually progressed (rotated or moved). If it
-    // didn't, the test isn't exercising the foundation crossing.
+    // (3) Harvester drove past the queue cell. After 60 ticks it should be
+    // at the pad cell or further along the dock sequence — definitely not
+    // still at queue (14, 11) which would indicate sub-cell oscillation
+    // when crossing into a foundation cell.
     let harvester = sim.entities.get(miner_id).expect("harvester still alive");
-    let progressed = harvester.position.rx != 14
-        || harvester.position.ry != 11
-        || harvester
-            .miner
-            .as_ref()
-            .map(|m| m.dock_phase != RefineryDockPhase::RotateToPad)
-            .unwrap_or(false);
-    assert!(
-        progressed,
-        "test setup error: harvester did not progress past initial state — \
-         pos=({},{}) phase={:?}",
-        harvester.position.rx,
-        harvester.position.ry,
+    assert_ne!(
+        (harvester.position.rx, harvester.position.ry),
+        (14u16, 11u16),
+        "harvester must have driven past the queue cell into the foundation; \
+         oscillating in place at queue means a deferred-occupancy check is \
+         bouncing it back. phase={:?}",
         harvester.miner.as_ref().map(|m| m.dock_phase),
     );
 }
