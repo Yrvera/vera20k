@@ -12,12 +12,12 @@
 use std::collections::BTreeSet;
 
 use crate::map::entities::EntityCategory;
+use crate::rules::locomotor_type::MovementZone;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::miner::{
     CargoBale, Miner, MinerConfig, MinerKind, MinerState, RefineryDockPhase, ResourceNode,
     ResourceType,
 };
-use crate::rules::locomotor_type::MovementZone;
 use crate::sim::movement;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::movement::teleport_movement::issue_teleport_command;

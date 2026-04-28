@@ -381,7 +381,9 @@ pub(super) fn process_cell_crossings(
     resolved_terrain: Option<&ResolvedTerrainGrid>,
     entity_cost_grid: Option<&TerrainCostGrid>,
     mover_entity_blocks: Option<&BTreeSet<(u16, u16)>>,
-    mover_entity_block_map: Option<&std::collections::HashMap<(u16, u16), crate::sim::pathfinding::EntityBlockEntry>>,
+    mover_entity_block_map: Option<
+        &std::collections::HashMap<(u16, u16), crate::sim::pathfinding::EntityBlockEntry>,
+    >,
     occupancy: &mut OccupancyGrid,
     stats: &mut MovementTickStats,
     finished_entities: &mut Vec<u64>,
@@ -494,7 +496,11 @@ pub(super) fn process_cell_crossings(
             let mover_is_crusher = snap.omni_crusher
                 || matches!(
                     snap.locomotor.as_ref().map(|l| l.movement_zone),
-                    Some(crate::rules::locomotor_type::MovementZone::Crusher | crate::rules::locomotor_type::MovementZone::AmphibiousCrusher | crate::rules::locomotor_type::MovementZone::CrusherAll)
+                    Some(
+                        crate::rules::locomotor_type::MovementZone::Crusher
+                            | crate::rules::locomotor_type::MovementZone::AmphibiousCrusher
+                            | crate::rules::locomotor_type::MovementZone::CrusherAll
+                    )
                 );
             let evts = handle_blocked_tick(
                 target,
@@ -541,7 +547,11 @@ pub(super) fn process_cell_crossings(
                     let mover_is_crusher = snap.omni_crusher
                         || matches!(
                             snap.locomotor.as_ref().map(|l| l.movement_zone),
-                            Some(crate::rules::locomotor_type::MovementZone::Crusher | crate::rules::locomotor_type::MovementZone::AmphibiousCrusher | crate::rules::locomotor_type::MovementZone::CrusherAll)
+                            Some(
+                                crate::rules::locomotor_type::MovementZone::Crusher
+                                    | crate::rules::locomotor_type::MovementZone::AmphibiousCrusher
+                                    | crate::rules::locomotor_type::MovementZone::CrusherAll
+                            )
                         );
                     let evts = handle_blocked_tick(
                         target,
@@ -593,14 +603,19 @@ pub(super) fn process_cell_crossings(
         // Do NOT snap the perpendicular axis to center — that causes
         // a visible position jump when transitioning from diagonal
         // to cardinal movement (e.g., sub_x=51 → 128 = ~9px snap).
-        apply_cell_transition_remainder(target, position, dx_cell, dy_cell, nx, ny, category == EntityCategory::Infantry);
+        apply_cell_transition_remainder(
+            target,
+            position,
+            dx_cell,
+            dy_cell,
+            nx,
+            ny,
+            category == EntityCategory::Infantry,
+        );
         // Update occupancy grid: move entity from old cell to new cell.
         // Uses current sub_cell (from old cell). For infantry, reserve_destination
         // below may allocate a new sub-cell and correct it via update_sub_cell.
-        occupancy.move_entity(
-            old_rx, old_ry, nx, ny,
-            entity_id, active_layer, *sub_cell,
-        );
+        occupancy.move_entity(old_rx, old_ry, nx, ny, entity_id, active_layer, *sub_cell);
         // Bridge/layer resolution stays in one helper so cell transitions
         // don't duplicate deck/ground height rules across the tick loop.
         let (resolved_layer, bridge_update) = resolve_cell_transition_bridge_state(

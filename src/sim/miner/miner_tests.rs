@@ -1192,18 +1192,31 @@ fn exit_pad_clears_ore_targets_on_arrival() {
     miner.dock_phase = RefineryDockPhase::ExitPad;
     miner.reserved_refinery = Some(100);
     miner.dock_queued = false;
-    miner.target_ore_cell = Some((20, 20));      // pre-dock target
-    miner.last_harvest_cell = Some((20, 20));    // pre-dock archive
+    miner.target_ore_cell = Some((20, 20)); // pre-dock target
+    miner.last_harvest_cell = Some((20, 20)); // pre-dock archive
 
     // Tick the miner system — should detect arrival and run the cleanup.
     crate::sim::miner::miner_system::tick_miners(&mut sim, &rules, &config, Some(&path_grid));
 
     let entity = sim.entities.get(miner_id).expect("miner entity");
     let miner = entity.miner.as_ref().expect("miner component");
-    assert_eq!(miner.state, MinerState::SearchOre, "must transition to SearchOre");
-    assert!(miner.target_ore_cell.is_none(), "target_ore_cell must be cleared");
-    assert!(miner.last_harvest_cell.is_none(), "last_harvest_cell must be cleared");
-    assert!(miner.reserved_refinery.is_none(), "reserved_refinery must be cleared");
+    assert_eq!(
+        miner.state,
+        MinerState::SearchOre,
+        "must transition to SearchOre"
+    );
+    assert!(
+        miner.target_ore_cell.is_none(),
+        "target_ore_cell must be cleared"
+    );
+    assert!(
+        miner.last_harvest_cell.is_none(),
+        "last_harvest_cell must be cleared"
+    );
+    assert!(
+        miner.reserved_refinery.is_none(),
+        "reserved_refinery must be cleared"
+    );
 }
 
 /// ExitPad must NOT transition to SearchOre while a teleport is in progress
@@ -1240,8 +1253,16 @@ fn exit_pad_blocks_transition_during_teleport() {
 
     let entity = sim.entities.get(miner_id).expect("miner entity");
     let miner = entity.miner.as_ref().expect("miner component");
-    assert_eq!(miner.state, MinerState::Dock, "must stay in Dock state during teleport");
-    assert_eq!(miner.dock_phase, RefineryDockPhase::ExitPad, "must stay in ExitPad");
+    assert_eq!(
+        miner.state,
+        MinerState::Dock,
+        "must stay in Dock state during teleport"
+    );
+    assert_eq!(
+        miner.dock_phase,
+        RefineryDockPhase::ExitPad,
+        "must stay in ExitPad"
+    );
     assert_eq!(
         miner.target_ore_cell,
         Some((20, 20)),
@@ -1529,9 +1550,7 @@ fn harvester_undocks_through_foundation_to_outside_ore() {
     let mut rng = SimRng::new(0);
 
     for _tick in 0..120 {
-        crate::sim::miner::miner_system::tick_miners(
-            &mut sim, &rules, &config, Some(&path_grid),
-        );
+        crate::sim::miner::miner_system::tick_miners(&mut sim, &rules, &config, Some(&path_grid));
         crate::sim::movement::tick_movement_with_grid(
             &mut sim.entities,
             Some(&path_grid),
@@ -1555,7 +1574,9 @@ fn harvester_undocks_through_foundation_to_outside_ore() {
         miner.state,
         MinerState::Dock,
         "harvester should have transitioned out of Dock; pos=({},{}) state={:?}",
-        entity.position.rx, entity.position.ry, miner.state,
+        entity.position.rx,
+        entity.position.ry,
+        miner.state,
     );
 
     // (2) phase_exit_pad cleared the dock reservation on arrival.
@@ -1568,14 +1589,15 @@ fn harvester_undocks_through_foundation_to_outside_ore() {
     // (3) Harvester either escaped the foundation south edge OR is targeting
     //     the ore patch — both prove SearchOre + A* succeeded from the
     //     (formerly blocked) start cell.
-    let escaped = entity.position.ry > 12
-        || entity.position.rx < 10
-        || entity.position.rx > 13;
+    let escaped = entity.position.ry > 12 || entity.position.rx < 10 || entity.position.rx > 13;
     let targeting = miner.target_ore_cell == Some((11, 14));
     assert!(
         escaped || targeting,
         "harvester should have escaped foundation or be targeting ore; \
          pos=({},{}) target_ore={:?} state={:?}",
-        entity.position.rx, entity.position.ry, miner.target_ore_cell, miner.state,
+        entity.position.rx,
+        entity.position.ry,
+        miner.target_ore_cell,
+        miner.state,
     );
 }
