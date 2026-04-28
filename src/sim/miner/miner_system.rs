@@ -176,7 +176,6 @@ fn process_miner(
     path_grid: Option<&PathGrid>,
     snap: &mut MinerSnapshot,
 ) {
-    // Debug: log every state transition to find the stutter loop.
     let state_before = format!("{:?}", snap.miner.state);
     match snap.miner.state {
         MinerState::SearchOre => handle_search_ore(sim, config, path_grid, snap),
@@ -348,12 +347,6 @@ fn handle_move_to_ore(
         snap.miner.state = MinerState::Harvest;
         // Original requires 9 StepTimer steps before first bale (18 frames at default rate).
         snap.miner.harvest_timer = config.harvest_tick_interval;
-        log::debug!(
-            "Miner {} arrived at ore ({},{}), entering Harvest",
-            snap.entity_id,
-            target.0,
-            target.1,
-        );
         return;
     }
 
@@ -362,18 +355,6 @@ fn handle_move_to_ore(
         .entities
         .get(snap.entity_id)
         .is_some_and(|e| e.movement_target.is_some());
-
-    log::debug!(
-        "Miner {} MoveToOre: pos=({},{}) target=({},{}) has_movement={} kind={:?}",
-        snap.entity_id,
-        snap.rx,
-        snap.ry,
-        target.0,
-        target.1,
-        has_movement,
-        snap.miner.kind,
-    );
-
     // Adjacent to ore? The passability matrix blocks Tiberium terrain for
     // Track-type units, so A* can't path onto the ore cell itself. Use a
     // direct (non-pathfinding) move for the final step — harvesters must
@@ -382,12 +363,9 @@ fn handle_move_to_ore(
     // every tick before the entity physically arrives).
     let dx = (snap.rx as i32 - target.0 as i32).unsigned_abs();
     let dy = (snap.ry as i32 - target.1 as i32).unsigned_abs();
+
     if dx <= 1 && dy <= 1 {
         if !has_movement {
-            log::debug!(
-                "Miner {} adjacent to ore, issuing direct move",
-                snap.entity_id
-            );
             movement::issue_direct_move(&mut sim.entities, snap.entity_id, target, snap.speed);
         }
         return;
@@ -397,21 +375,13 @@ fn handle_move_to_ore(
     // After issuing the A* move, mark it as ignore_terrain_cost so the
     // movement tick doesn't block at Tiberium cells along the path.
     // Harvesters must be able to traverse ore fields freely.
-    if !has_movement {
-        if let Some(grid) = path_grid {
-            log::debug!(
-                "Miner {} issuing A* move to ore ({},{})",
-                snap.entity_id,
-                target.0,
-                target.1
-            );
-            issue_move_if_idle(&mut sim.entities, grid, snap.entity_id, target, snap.speed);
-            // Mark the newly created movement as terrain-cost-exempt.
-            if let Some(entity) = sim.entities.get_mut(snap.entity_id) {
-                if let Some(ref mut mt) = entity.movement_target {
-                    mt.ignore_terrain_cost = true;
-                }
-            }
+    if !has_movement && let Some(grid) = path_grid {
+        issue_move_if_idle(&mut sim.entities, grid, snap.entity_id, target, snap.speed);
+        // Mark the newly created movement as terrain-cost-exempt.
+        if let Some(entity) = sim.entities.get_mut(snap.entity_id)
+            && let Some(ref mut mt) = entity.movement_target
+        {
+            mt.ignore_terrain_cost = true;
         }
     }
 }
