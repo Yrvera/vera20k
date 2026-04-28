@@ -1476,3 +1476,106 @@ fn harvester_on_tiberium_falls_back_to_neighbor_zone() {
         m.target_ore_cell,
     );
 }
+
+/// End-to-end pin for the head-butt-after-unload fix. Exercises the full
+/// chain: phase_exit_pad's bypass_grid drive → arrival → SearchOre → A*
+/// from a blocked-start cell → MoveToOre. Uses a real PathGrid with the
+/// refinery foundation blocked, so the test would FAIL without the
+/// bypass_grid wiring AND the A* start-relaxation.
+#[test]
+fn harvester_undocks_through_foundation_to_outside_ore() {
+    use crate::map::houses::HouseAllianceMap;
+    use crate::sim::pathfinding::PathGrid;
+    use crate::sim::rng::SimRng;
+    use std::collections::BTreeMap;
+
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let config = MinerConfig::default();
+
+    // 4x3 GAREFN at (10, 10) — foundation occupies (10..=13, 10..=12).
+    spawn_refinery(&mut sim, 100, 10, 10);
+
+    // Ore patch at (11, 14) — south of the foundation, reachable once the
+    // harvester clears the south edge.
+    place_ore(&mut sim, 11, 14, 1200);
+
+    // PathGrid with the foundation footprint blocked. This is the critical
+    // setup that makes the test meaningful — without it, movement_step's
+    // walkability check would succeed regardless of bypass_grid.
+    let mut path_grid = PathGrid::new(32, 32);
+    path_grid.block_building_footprint(10, 10, "4x3");
+
+    // Harvester at the dock pad (13, 11), cargo emptied, dock_phase=ExitPad.
+    // Simulates "just finished unloading".
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("harvester entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.cargo.clear();
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::ExitPad;
+        miner.reserved_refinery = Some(100);
+    }
+    sim.production.dock_reservations.try_reserve(100, miner_id);
+
+    // Tick the full pipeline: miner state machine + movement with the
+    // blocked-footprint path_grid. Use enough ticks for: drive to exit
+    // (~17 ticks for diagonal-ish (-2, +1) at HARV speed) + arrival +
+    // SearchOre + A* + drive south toward ore.
+    let alliances = HouseAllianceMap::new();
+    let terrain_costs = BTreeMap::new();
+    let mut occupancy = OccupancyGrid::new();
+    let mut rng = SimRng::new(0);
+
+    for _tick in 0..120 {
+        crate::sim::miner::miner_system::tick_miners(
+            &mut sim, &rules, &config, Some(&path_grid),
+        );
+        crate::sim::movement::tick_movement_with_grid(
+            &mut sim.entities,
+            Some(&path_grid),
+            &terrain_costs,
+            &alliances,
+            &mut occupancy,
+            &mut rng,
+            67,
+            sim.tick,
+            &sim.interner,
+        );
+        sim.tick += 1;
+    }
+
+    let entity = sim.entities.get(miner_id).expect("harvester still alive");
+    let miner = entity.miner.as_ref().expect("miner component");
+
+    // (1) Harvester transitioned out of Dock state — phase_exit_pad reached
+    //     the arrival branch and ran cleanup.
+    assert_ne!(
+        miner.state,
+        MinerState::Dock,
+        "harvester should have transitioned out of Dock; pos=({},{}) state={:?}",
+        entity.position.rx, entity.position.ry, miner.state,
+    );
+
+    // (2) phase_exit_pad cleared the dock reservation on arrival.
+    assert!(
+        miner.reserved_refinery.is_none(),
+        "phase_exit_pad should have cleared reserved_refinery; got {:?}",
+        miner.reserved_refinery,
+    );
+
+    // (3) Harvester either escaped the foundation south edge OR is targeting
+    //     the ore patch — both prove SearchOre + A* succeeded from the
+    //     (formerly blocked) start cell.
+    let escaped = entity.position.ry > 12
+        || entity.position.rx < 10
+        || entity.position.rx > 13;
+    let targeting = miner.target_ore_cell == Some((11, 14));
+    assert!(
+        escaped || targeting,
+        "harvester should have escaped foundation or be targeting ore; \
+         pos=({},{}) target_ore={:?} state={:?}",
+        entity.position.rx, entity.position.ry, miner.target_ore_cell, miner.state,
+    );
+}
