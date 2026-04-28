@@ -98,12 +98,12 @@ pub(super) fn refinery_exit_cell(
     _queueing_cell: Option<(u16, u16)>,
 ) -> (u16, u16) {
     // Building center in leptons (foundation geometric center):
-    //   X = rx*256 + 128 + (w-1)*128
-    //   Y = ry*256 + 128 + (h-1)*128
+    //   X = rx*256 + 128 + (w-1)*128 = rx*256 + w*128
+    //   Y = ry*256 + 128 + (h-1)*128 = ry*256 + h*128
     // Offset (-128, +128) leptons from center, then floor-divide by 256 for
     // cell coordinates. Lands at the south-edge interior cell of the
-    // foundation (e.g. (rx+1, ry+2) for 4x3).
-    let exit_x = (rx as i32 * 256 + (width as i32 - 2) * 128) / 256;
+    // foundation (e.g. (rx+1, ry+2) for 4x3, (rx+1, ry+2) for 3×3 → cell rx+1, ry+2).
+    let exit_x = (rx as i32 * 256 + (width as i32 - 1) * 128) / 256;
     let exit_y = (ry as i32 * 256 + height as i32 * 128 + 128) / 256;
     (exit_x.max(0) as u16, exit_y.max(0) as u16)
 }
@@ -309,10 +309,10 @@ fn phase_rotate_to_pad(
         // check in movement_step would otherwise reject entry into the
         // PathGrid-blocked pad cell.)
         movement::issue_direct_move(&mut sim.entities, snap.entity_id, pad, snap.speed);
-        if let Some(entity) = sim.entities.get_mut(snap.entity_id) {
-            if let Some(ref mut mt) = entity.movement_target {
-                mt.bypass_grid = true;
-            }
+        if let Some(entity) = sim.entities.get_mut(snap.entity_id)
+            && let Some(ref mut mt) = entity.movement_target
+        {
+            mt.bypass_grid = true;
         }
         snap.miner.dock_phase = RefineryDockPhase::EnterPad;
     }
@@ -449,10 +449,10 @@ fn phase_exit_pad(
         // through foundation cells (marked unwalkable in path_grid). Facing
         // is left to the locomotor's natural source-to-dest derivation.
         movement::issue_direct_move(&mut sim.entities, snap.entity_id, exit, snap.speed);
-        if let Some(entity) = sim.entities.get_mut(snap.entity_id) {
-            if let Some(ref mut mt) = entity.movement_target {
-                mt.bypass_grid = true;
-            }
+        if let Some(entity) = sim.entities.get_mut(snap.entity_id)
+            && let Some(ref mut mt) = entity.movement_target
+        {
+            mt.bypass_grid = true;
         }
         return;
     }
@@ -470,13 +470,6 @@ fn phase_exit_pad(
         snap.miner.last_harvest_cell = None;
         snap.miner.dock_phase = RefineryDockPhase::Approach;
         snap.miner.state = MinerState::SearchOre;
-        // DIAG: post-undock state. Remove after diagnosis.
-        log::info!(
-            "DIAG[exit_pad_arrival] miner={} pos=({},{}) cargo={} reserved={:?} dock_queued={} forced_return={} target_ore={:?} last_harvest={:?} -> state=SearchOre",
-            snap.entity_id, snap.rx, snap.ry, snap.miner.cargo.len(),
-            snap.miner.reserved_refinery, snap.miner.dock_queued, snap.miner.forced_return,
-            snap.miner.target_ore_cell, snap.miner.last_harvest_cell,
-        );
         return;
     }
 

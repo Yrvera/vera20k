@@ -427,8 +427,9 @@ fn chrono_miner_teleports_to_refinery_on_return() {
     // Run enough ticks for the chrono delay to expire and dock sequence to complete.
     // Distance ~95 cells → delay ≈ 95*256/48 ≈ 509 ticks. After the delay, the
     // miner enters the dock sequence (WaitForDock → EnterPad → Unloading → ExitPad)
-    // and ends up at the exit cell (11, 11) for a 4x3 refinery at (10, 10).
-    tick_miners_n(&mut sim, &rules, 550);
+    // and ends up at the exit cell (11, 12) for a 4x3 refinery at (10, 10).
+    // Diagonal exit drive (pad → exit via Chebyshev unit-step path) is ~22 ticks.
+    tick_miners_n(&mut sim, &rules, 600);
 
     let entity = sim.entities.get(miner_id).expect("entity");
     assert!(
@@ -438,7 +439,7 @@ fn chrono_miner_teleports_to_refinery_on_return() {
     // After teleport + dock sequence, miner exits at the refinery exit cell.
     assert_eq!(
         (entity.position.rx, entity.position.ry),
-        (11, 11),
+        (11, 12),
         "Chrono Miner should be at exit cell after completing dock sequence"
     );
 }
@@ -751,7 +752,8 @@ fn forced_return_chrono_teleports() {
     );
 
     // Run enough ticks for the chrono delay to expire and dock sequence to complete.
-    tick_miners_n(&mut sim, &rules, 550);
+    // Diagonal exit drive (pad → exit via Chebyshev unit-step path) is ~22 ticks.
+    tick_miners_n(&mut sim, &rules, 600);
 
     let entity = sim.entities.get(miner_id).expect("entity");
     assert!(
@@ -761,7 +763,7 @@ fn forced_return_chrono_teleports() {
     // After teleport + dock sequence, miner exits at the refinery exit cell.
     assert_eq!(
         (entity.position.rx, entity.position.ry),
-        (11, 11),
+        (11, 12),
         "Forced return should have teleported and docked — now at exit cell"
     );
 }
@@ -1087,10 +1089,10 @@ fn refinery_pad_and_exit_cells() {
 
     // 3x3 foundation at (5, 5), no art.ini overrides:
     // queue = (8, 6), pad = (7, 6)
-    // exit = building_center + (-0x80, +0x80) leptons = (5, 7)
+    // exit = building_center + (-0x80, +0x80) leptons = (6, 7)
     assert_eq!(refinery_queue_cell(5, 5, 3, 3, None), (8, 6));
     assert_eq!(refinery_pad_cell(5, 5, 3, 3, None), (7, 6));
-    assert_eq!(refinery_exit_cell(5, 5, 3, 3, None), (5, 7));
+    assert_eq!(refinery_exit_cell(5, 5, 3, 3, None), (6, 7));
 
     // With QueueingCell override from art.ini:
     assert_eq!(refinery_queue_cell(10, 10, 4, 3, Some((4, 1))), (14, 11)); // same result for standard
