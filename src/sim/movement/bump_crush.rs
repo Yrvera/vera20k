@@ -560,6 +560,13 @@ mod tests {
         e
     }
 
+    fn structure(id: u64, rx: u16, ry: u16) -> GameEntity {
+        let mut e = GameEntity::test_default(id, "GAREFN", "Allies", rx, ry);
+        e.category = EntityCategory::Structure;
+        e.crushable = false;
+        e
+    }
+
     /// Helper: build an OccupancyGrid from a set of entity descriptions.
     fn make_occ(entries: &[(u16, u16, u64, MovementLayer, Option<u8>)]) -> OccupancyGrid {
         let mut grid = OccupancyGrid::new();
@@ -846,6 +853,47 @@ mod tests {
         assert!(
             !result,
             "scatter_blocker should not scatter already-moving unit"
+        );
+    }
+
+    #[test]
+    fn test_scatter_blocker_skips_structure() {
+        let grid = PathGrid::new(10, 10);
+        let occupancy = OccupancyGrid::new();
+        let mut rng = SimRng::new(42);
+
+        let mut store = EntityStore::new();
+        store.insert(structure(100, 5, 5));
+
+        let result = scatter_blocker(
+            &mut store,
+            100,
+            Some(&grid),
+            &occupancy,
+            MovementLayer::Ground,
+            &mut rng,
+        );
+
+        assert!(
+            !result,
+            "scatter_blocker must refuse Structure blockers — buildings are \
+             never scatter targets in the original engine"
+        );
+
+        // Structure must not have been issued any movement.
+        let e = store.get(100).expect("structure still alive");
+        assert!(
+            e.movement_target.is_none(),
+            "Structure must not receive a movement_target from scatter"
+        );
+
+        // RNG must NOT have been consumed (determinism: a fresh rng with the
+        // same seed gives the same first value as one that hasn't been touched).
+        let mut control_rng = SimRng::new(42);
+        assert_eq!(
+            rng.next_range_u32(8),
+            control_rng.next_range_u32(8),
+            "scatter_blocker must not consume RNG when bailing on a Structure blocker"
         );
     }
 
