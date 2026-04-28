@@ -129,6 +129,10 @@ pub(super) struct MoverSnapshot {
     pub on_bridge: bool,
     pub locomotor: Option<locomotor::LocomotorState>,
     pub rot: i32,
+    /// Mover's `MovementTarget.bypass_grid` flag — when true, structure
+    /// occupants are skipped during the foundation-cross occupancy check
+    /// (harvester dock drive: buildings are not scatter targets).
+    pub bypass_grid: bool,
 }
 
 /// Per-tick movement diagnostics — returned by `tick_movement_with_grids`.

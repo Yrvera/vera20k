@@ -153,6 +153,7 @@ pub fn classify_occupied_cell(
     mover_omni_crusher: bool,
     mover_owner: &str,
     mover_locomotor: LocomotorKind,
+    mover_bypass_grid: bool,
     occupancy: &OccupancyGrid,
     entities: &EntityStore,
     alliances: &HouseAllianceMap,
@@ -181,9 +182,22 @@ pub fn classify_occupied_cell(
     }
 
     // --- Find primary blocker ---
-    let blocker_id = find_primary_blocker(target, target_layer, mover_id, occupancy);
+    let blocker_id = find_primary_blocker(
+        target,
+        target_layer,
+        mover_id,
+        mover_bypass_grid,
+        occupancy,
+        entities,
+    );
     let Some(bid) = blocker_id else {
-        // No identifiable blocker (shouldn't happen if Phase 1 said NeedsBlockerCheck).
+        // No identifiable blocker. With bypass_grid, this means the cell
+        // contained only structures that we're permitted to drive through —
+        // treat as Clear. Without bypass_grid, this is unexpected (Phase 1
+        // would have returned Clear if the cell were truly empty).
+        if mover_bypass_grid {
+            return apply_overrides(CellEntryResult::Clear, mover_locomotor);
+        }
         return apply_overrides(CellEntryResult::Impassable, mover_locomotor);
     };
 
@@ -194,15 +208,31 @@ pub fn classify_occupied_cell(
 
 /// Find the primary blocker entity in a cell (first vehicle/structure, or first
 /// non-self infantry).
+///
+/// When `mover_bypass_grid` is true, occupants whose category is `Structure` are
+/// skipped — this lets the harvester dock drive treat foundation cells as clear,
+/// matching the original engine where buildings are not scatter targets.
 fn find_primary_blocker(
     target: (u16, u16),
     layer: MovementLayer,
     mover_id: u64,
+    mover_bypass_grid: bool,
     occupancy: &OccupancyGrid,
+    entities: &EntityStore,
 ) -> Option<u64> {
     let occ = occupancy.get(target.0, target.1)?;
-    // Prefer vehicle/structure blockers over infantry.
-    if let Some(bid) = occ.blockers(layer).next() {
+    // Prefer vehicle/structure blockers over infantry, but skip structures
+    // when the mover has bypass_grid set (e.g. a harvester driving into a
+    // refinery's foundation footprint).
+    if let Some(bid) = occ.blockers(layer).find(|&bid| {
+        if !mover_bypass_grid {
+            return true;
+        }
+        entities
+            .get(bid)
+            .map(|e| e.category != EntityCategory::Structure)
+            .unwrap_or(true)
+    }) {
         return Some(bid);
     }
     // Fall back to first non-self infantry.

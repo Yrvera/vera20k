@@ -161,6 +161,7 @@ pub(super) fn handle_deferred_occupancy(
         snap.omni_crusher,
         interner.resolve(snap.owner),
         mover_loco_kind,
+        snap.bypass_grid,
         occupancy,
         entities,
         alliances,

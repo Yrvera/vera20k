@@ -67,6 +67,11 @@ fn snapshot_mover(entities: &EntityStore, entity_id: u64) -> Option<MoverSnapsho
         on_bridge: e.on_bridge,
         locomotor: e.locomotor.clone(),
         rot: e.locomotor.as_ref().map(|l| l.rot).unwrap_or(0),
+        bypass_grid: e
+            .movement_target
+            .as_ref()
+            .map(|mt| mt.bypass_grid)
+            .unwrap_or(false),
     })
 }
 
