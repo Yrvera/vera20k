@@ -1601,3 +1601,130 @@ fn harvester_undocks_through_foundation_to_outside_ore() {
         miner.state,
     );
 }
+
+/// End-to-end pin for the foundation-bump bug. Places a refinery at (10, 10)
+/// with its foundation cells registered in OccupancyGrid (the real-game
+/// configuration), then drives a harvester into the pad. Asserts the refinery's
+/// position is unchanged and it never receives a movement_target — i.e. the
+/// bypass_grid filter prevents the building from being treated as a scatter
+/// candidate when the harvester crosses into a foundation cell.
+#[test]
+fn harvester_drives_into_refinery_foundation_without_bumping_it() {
+    use crate::map::houses::HouseAllianceMap;
+    use crate::sim::movement::locomotor::MovementLayer;
+    use crate::sim::occupancy::OccupancyGrid;
+    use crate::sim::pathfinding::PathGrid;
+    use crate::sim::rng::SimRng;
+    use std::collections::BTreeMap;
+
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let config = MinerConfig::default();
+
+    // 4x3 GAREFN at (10, 10) — foundation occupies (10..=13, 10..=12).
+    // spawn_refinery returns (); EntityStore is keyed by stable_id, so we use
+    // the sid we passed in (100) as the entity_id directly.
+    spawn_refinery(&mut sim, 100, 10, 10);
+    let refinery_id: u64 = 100;
+    // Capture initial position fields. Position is Clone but not Copy, so we
+    // can't `let p = entity.position` through a borrow — read individual
+    // fields into primitives instead.
+    let (rx_before, ry_before, sub_x_before, sub_y_before) = {
+        let r = sim.entities.get(refinery_id).expect("refinery just spawned");
+        (r.position.rx, r.position.ry, r.position.sub_x, r.position.sub_y)
+    };
+
+    // Register foundation cells in OccupancyGrid (the real-game configuration —
+    // this is what the existing undock test omits, which is why it didn't catch
+    // the bump bug).
+    let mut occupancy = OccupancyGrid::new();
+    for ry in 10u16..=12 {
+        for rx in 10u16..=13 {
+            occupancy.add(rx, ry, refinery_id, MovementLayer::Ground, None);
+        }
+    }
+
+    let mut path_grid = PathGrid::new(32, 32);
+    path_grid.block_building_footprint(10, 10, "4x3");
+
+    // Harvester at queue cell (14, 11), state=Dock, dock_phase=RotateToPad.
+    // Reservation already held.
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 14, 11);
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("harvester entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::RotateToPad;
+        miner.reserved_refinery = Some(100);
+    }
+    sim.production.dock_reservations.try_reserve(100, miner_id);
+
+    let alliances = HouseAllianceMap::new();
+    let terrain_costs = BTreeMap::new();
+    let mut rng = SimRng::new(0);
+
+    // Tick enough for: rotate (~16 ticks for 90deg at HARVESTER_BODY_ROT) +
+    // drive 1 cell west onto the pad. 60 ticks gives plenty of slack.
+    for _ in 0..60 {
+        crate::sim::miner::miner_system::tick_miners(&mut sim, &rules, &config, Some(&path_grid));
+        crate::sim::movement::tick_movement_with_grid(
+            &mut sim.entities,
+            Some(&path_grid),
+            &terrain_costs,
+            &alliances,
+            &mut occupancy,
+            &mut rng,
+            67,
+            sim.tick,
+            &sim.interner,
+        );
+        sim.tick += 1;
+    }
+
+    let refinery = sim.entities.get(refinery_id).expect("refinery still alive");
+
+    // (1) Refinery position is exactly unchanged.
+    assert_eq!(
+        refinery.position.rx, rx_before,
+        "refinery rx must not change when harvester docks; got rx={}",
+        refinery.position.rx,
+    );
+    assert_eq!(
+        refinery.position.ry, ry_before,
+        "refinery ry must not change when harvester docks; got ry={}",
+        refinery.position.ry,
+    );
+    assert_eq!(
+        refinery.position.sub_x, sub_x_before,
+        "refinery sub_x must not change",
+    );
+    assert_eq!(
+        refinery.position.sub_y, sub_y_before,
+        "refinery sub_y must not change",
+    );
+
+    // (2) Refinery never received a movement_target.
+    assert!(
+        refinery.movement_target.is_none(),
+        "refinery must not have a movement_target — buildings cannot scatter",
+    );
+
+    // (3) Sanity: the harvester actually progressed (rotated or moved). If it
+    // didn't, the test isn't exercising the foundation crossing.
+    let harvester = sim.entities.get(miner_id).expect("harvester still alive");
+    let progressed = harvester.position.rx != 14
+        || harvester.position.ry != 11
+        || harvester
+            .miner
+            .as_ref()
+            .map(|m| m.dock_phase != RefineryDockPhase::RotateToPad)
+            .unwrap_or(false);
+    assert!(
+        progressed,
+        "test setup error: harvester did not progress past initial state — \
+         pos=({},{}) phase={:?}",
+        harvester.position.rx,
+        harvester.position.ry,
+        harvester.miner.as_ref().map(|m| m.dock_phase),
+    );
+}
