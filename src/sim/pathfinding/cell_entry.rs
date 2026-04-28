@@ -385,4 +385,49 @@ mod tests {
         );
         assert_eq!(result, CellEntryResult::OccupiedEnemy { blocker_id: 1 });
     }
+
+    #[test]
+    fn find_primary_blocker_skips_structure_with_bypass_grid() {
+        use crate::sim::entity_store::EntityStore;
+        use crate::sim::game_entity::GameEntity;
+
+        // Cell occupancy: a Structure (refinery) at (5, 5).
+        let mut occ = OccupancyGrid::new();
+        occ.add(5, 5, 100, MovementLayer::Ground, None);
+
+        // EntityStore with the structure entity.
+        let mut entities = EntityStore::new();
+        let mut refinery = GameEntity::test_default(100, "GAREFN", "Allies", 5, 5);
+        refinery.category = EntityCategory::Structure;
+        entities.insert(refinery);
+
+        // With bypass_grid=true: structure is filtered, no other occupants → None.
+        let result = find_primary_blocker(
+            (5, 5),
+            MovementLayer::Ground,
+            42, // mover_id
+            true, // mover_bypass_grid
+            &occ,
+            &entities,
+        );
+        assert_eq!(
+            result, None,
+            "with bypass_grid=true, Structure occupants must be filtered out"
+        );
+
+        // With bypass_grid=false: structure is the primary blocker → Some(100).
+        let result = find_primary_blocker(
+            (5, 5),
+            MovementLayer::Ground,
+            42,
+            false, // mover_bypass_grid
+            &occ,
+            &entities,
+        );
+        assert_eq!(
+            result,
+            Some(100),
+            "with bypass_grid=false, Structure must still be picked as blocker (regression)"
+        );
+    }
 }
