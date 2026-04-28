@@ -481,6 +481,11 @@ pub fn scatter_blocker(
     let Some(blocker) = entities.get(blocker_id) else {
         return false;
     };
+    // Buildings are immutable obstacles — never scatter targets. Bail before
+    // the RNG read so determinism is preserved for all legitimate cases.
+    if blocker.category == EntityCategory::Structure {
+        return false;
+    }
     // Don't scatter a blocker that's already moving.
     if blocker.movement_target.is_some() {
         return false;
