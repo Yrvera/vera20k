@@ -1,7 +1,8 @@
 //! PsychicReveal superweapon launch handler.
 //!
 //! Reveals shroud in a radius around the target cell for the owning house.
-//! Matches YR's two-pass MapClass::RevealArea2 launch path.
+//! Matches YR's two MapClass::RevealArea2 launches: first dispatching
+//! CellClass::ReduceShroudCounter, then CellClass::IncreaseShroudCounter.
 //!
 //! ## Dependency rules
 //! - Part of sim/ — depends on rules/, sim/vision, sim/world.
@@ -28,7 +29,7 @@ pub fn launch(
         target_rx,
         target_ry,
         radius,
-        vision::RevealArea2Options::primary(false),
+        vision::RevealArea2Options::reduce_shroud_counter(false),
     );
     vision::reveal_radius_with_options(
         &mut sim.fog,
@@ -36,7 +37,7 @@ pub fn launch(
         target_rx,
         target_ry,
         radius,
-        vision::RevealArea2Options::secondary(false),
+        vision::RevealArea2Options::increase_shroud_counter(false),
     );
 
     sim.sound_events.push(SimSoundEvent::SuperWeaponLaunched {

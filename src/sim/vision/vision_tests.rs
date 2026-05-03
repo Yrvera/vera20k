@@ -939,7 +939,7 @@ fn test_revealarea2_none_grid_disables_height_gate() {
 }
 
 #[test]
-fn test_revealarea2_secondary_pass_noops_without_cell_flags() {
+fn test_revealarea2_increase_shroud_counter_noops_without_cell_flags() {
     let mut vis = OwnerVisibility::new(20, 20);
     let width: u16 = 20;
     let height: u16 = 20;
@@ -951,7 +951,7 @@ fn test_revealarea2_secondary_pass_noops_without_cell_flags() {
         oy,
         oz,
         5,
-        RevealArea2Options::secondary(false),
+        RevealArea2Options::increase_shroud_counter(false),
         None,
         width,
         height,
@@ -962,12 +962,12 @@ fn test_revealarea2_secondary_pass_noops_without_cell_flags() {
 }
 
 #[test]
-fn test_revealarea2_primary_sentinel_skips_coord_low_byte_edge_cell() {
+fn test_revealarea2_reduce_shroud_counter_sentinel_skips_coord_low_byte_edge_cell() {
     let mut vis = OwnerVisibility::new(30, 30);
     let width: u16 = 30;
     let height: u16 = 30;
     let (ox, oy, oz) = reveal_origin(7, 9, 0);
-    let mut options = RevealArea2Options::primary(false);
+    let mut options = RevealArea2Options::reduce_shroud_counter(false);
     options.coord_ptr_low_byte_nonzero = true;
     options.map_min_y = 4;
     options.map_height = 20;
@@ -978,12 +978,12 @@ fn test_revealarea2_primary_sentinel_skips_coord_low_byte_edge_cell() {
 }
 
 #[test]
-fn test_revealarea2_primary_non_sentinel_still_marks_visible() {
+fn test_revealarea2_reduce_shroud_counter_non_sentinel_still_marks_visible() {
     let mut vis = OwnerVisibility::new(30, 30);
     let width: u16 = 30;
     let height: u16 = 30;
     let (ox, oy, oz) = reveal_origin(8, 9, 0);
-    let mut options = RevealArea2Options::primary(false);
+    let mut options = RevealArea2Options::reduce_shroud_counter(false);
     options.coord_ptr_low_byte_nonzero = true;
     options.map_min_y = 4;
     options.map_height = 20;

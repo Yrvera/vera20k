@@ -37,14 +37,14 @@ const REVEAL_AREA2_Z_SHIFT_HIGH_Z_THRESHOLD: i32 = 728;
 const REVEAL_AREA2_Z_SHIFT_CELL_DIVISOR: i32 = 30;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RevealArea2Pass {
-    Primary,
-    Secondary,
+pub(crate) enum RevealArea2CounterMode {
+    ReduceShroudCounter,
+    IncreaseShroudCounter,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RevealArea2Options {
-    pass: RevealArea2Pass,
+    counter_mode: RevealArea2CounterMode,
     reveal_by_height: bool,
     coord_ptr_low_byte_nonzero: bool,
     map_min_y: i32,
@@ -52,9 +52,9 @@ pub(crate) struct RevealArea2Options {
 }
 
 impl RevealArea2Options {
-    pub(crate) fn primary(reveal_by_height: bool) -> Self {
+    pub(crate) fn reduce_shroud_counter(reveal_by_height: bool) -> Self {
         Self {
-            pass: RevealArea2Pass::Primary,
+            counter_mode: RevealArea2CounterMode::ReduceShroudCounter,
             reveal_by_height,
             coord_ptr_low_byte_nonzero: false,
             map_min_y: 0,
@@ -62,9 +62,9 @@ impl RevealArea2Options {
         }
     }
 
-    pub(crate) fn secondary(reveal_by_height: bool) -> Self {
+    pub(crate) fn increase_shroud_counter(reveal_by_height: bool) -> Self {
         Self {
-            pass: RevealArea2Pass::Secondary,
+            counter_mode: RevealArea2CounterMode::IncreaseShroudCounter,
             reveal_by_height,
             coord_ptr_low_byte_nonzero: false,
             map_min_y: 0,
@@ -641,7 +641,7 @@ fn reveal_radius_into(
         origin_y_leptons,
         origin_z_leptons,
         range,
-        RevealArea2Options::primary(reveal_by_height),
+        RevealArea2Options::reduce_shroud_counter(reveal_by_height),
         height_grid,
         width,
         height,
@@ -692,14 +692,15 @@ fn reveal_area2_into(
 }
 
 fn reveal_area2_dispatch_marks_visible(rx: i32, ry: i32, options: &RevealArea2Options) -> bool {
-    match options.pass {
-        RevealArea2Pass::Secondary => {
-            // RE secondary helper requires per-cell CellClass flags (+0x12c bit 0x08
-            // and not already-visible tuple in +0x140). This model does not carry
-            // those flags yet, so secondary pass is explicit but conservative.
+    match options.counter_mode {
+        RevealArea2CounterMode::IncreaseShroudCounter => {
+            // RE dispatches this mode to CellClass::IncreaseShroudCounter through
+            // helper chain 0x00653830 -> 0x004a9ca0. The current model does not
+            // carry per-cell shroud counters or CellClass flags yet, so it is
+            // explicit but conservative.
             false
         }
-        RevealArea2Pass::Primary => {
+        RevealArea2CounterMode::ReduceShroudCounter => {
             if !options.coord_ptr_low_byte_nonzero {
                 return true;
             }
@@ -842,7 +843,7 @@ pub fn reveal_radius(
         center_rx,
         center_ry,
         range,
-        RevealArea2Options::primary(false),
+        RevealArea2Options::reduce_shroud_counter(false),
     );
 }
 
