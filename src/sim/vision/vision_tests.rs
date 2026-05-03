@@ -937,3 +937,58 @@ fn test_revealarea2_none_grid_disables_height_gate() {
 
     assert!(vis.is_visible(8, 5));
 }
+
+#[test]
+fn test_revealarea2_secondary_pass_noops_without_cell_flags() {
+    let mut vis = OwnerVisibility::new(20, 20);
+    let width: u16 = 20;
+    let height: u16 = 20;
+    let (ox, oy, oz) = reveal_origin(5, 5, 0);
+
+    reveal_area2_into(
+        &mut vis,
+        ox,
+        oy,
+        oz,
+        5,
+        RevealArea2Options::secondary(false),
+        None,
+        width,
+        height,
+    );
+
+    assert!(!vis.is_visible(5, 5));
+    assert!(!vis.is_revealed(5, 5));
+}
+
+#[test]
+fn test_revealarea2_primary_sentinel_skips_coord_low_byte_edge_cell() {
+    let mut vis = OwnerVisibility::new(30, 30);
+    let width: u16 = 30;
+    let height: u16 = 30;
+    let (ox, oy, oz) = reveal_origin(7, 9, 0);
+    let mut options = RevealArea2Options::primary(false);
+    options.coord_ptr_low_byte_nonzero = true;
+    options.map_min_y = 4;
+    options.map_height = 20;
+
+    reveal_area2_into(&mut vis, ox, oy, oz, 0, options, None, width, height);
+
+    assert!(!vis.is_visible(7, 9));
+}
+
+#[test]
+fn test_revealarea2_primary_non_sentinel_still_marks_visible() {
+    let mut vis = OwnerVisibility::new(30, 30);
+    let width: u16 = 30;
+    let height: u16 = 30;
+    let (ox, oy, oz) = reveal_origin(8, 9, 0);
+    let mut options = RevealArea2Options::primary(false);
+    options.coord_ptr_low_byte_nonzero = true;
+    options.map_min_y = 4;
+    options.map_height = 20;
+
+    reveal_area2_into(&mut vis, ox, oy, oz, 0, options, None, width, height);
+
+    assert!(vis.is_visible(8, 9));
+}

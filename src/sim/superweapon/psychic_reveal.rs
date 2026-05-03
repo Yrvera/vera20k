@@ -1,7 +1,7 @@
 //! PsychicReveal superweapon launch handler.
 //!
 //! Reveals shroud in a radius around the target cell for the owning house.
-//! Matches binary's double-call to MapClass::RevealAroundCell (verified).
+//! Matches YR's two-pass MapClass::RevealArea2 launch path.
 //!
 //! ## Dependency rules
 //! - Part of sim/ — depends on rules/, sim/vision, sim/world.
@@ -22,9 +22,22 @@ pub fn launch(
 ) -> bool {
     let radius = rules.general.psychic_reveal_radius as u16;
 
-    // Double call matches binary (verified). Both calls pass identical args.
-    vision::reveal_radius(&mut sim.fog, owner, target_rx, target_ry, radius);
-    vision::reveal_radius(&mut sim.fog, owner, target_rx, target_ry, radius);
+    vision::reveal_radius_with_options(
+        &mut sim.fog,
+        owner,
+        target_rx,
+        target_ry,
+        radius,
+        vision::RevealArea2Options::primary(false),
+    );
+    vision::reveal_radius_with_options(
+        &mut sim.fog,
+        owner,
+        target_rx,
+        target_ry,
+        radius,
+        vision::RevealArea2Options::secondary(false),
+    );
 
     sim.sound_events.push(SimSoundEvent::SuperWeaponLaunched {
         owner,

@@ -36,6 +36,43 @@ const REVEAL_AREA2_Z_SHIFT_SLOPE: f64 = 0.14350360082660085;
 const REVEAL_AREA2_Z_SHIFT_HIGH_Z_THRESHOLD: i32 = 728;
 const REVEAL_AREA2_Z_SHIFT_CELL_DIVISOR: i32 = 30;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RevealArea2Pass {
+    Primary,
+    Secondary,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RevealArea2Options {
+    pass: RevealArea2Pass,
+    reveal_by_height: bool,
+    coord_ptr_low_byte_nonzero: bool,
+    map_min_y: i32,
+    map_height: i32,
+}
+
+impl RevealArea2Options {
+    pub(crate) fn primary(reveal_by_height: bool) -> Self {
+        Self {
+            pass: RevealArea2Pass::Primary,
+            reveal_by_height,
+            coord_ptr_low_byte_nonzero: false,
+            map_min_y: 0,
+            map_height: 0,
+        }
+    }
+
+    pub(crate) fn secondary(reveal_by_height: bool) -> Self {
+        Self {
+            pass: RevealArea2Pass::Secondary,
+            reveal_by_height,
+            coord_ptr_low_byte_nonzero: false,
+            map_min_y: 0,
+            map_height: 0,
+        }
+    }
+}
+
 /// Per-owner visibility stored as a flat grid of flag bytes.
 ///
 /// Indexed by `ry * width + rx`. Each byte holds FLAG_REVEALED and/or
@@ -598,6 +635,30 @@ fn reveal_radius_into(
     width: u16,
     height: u16,
 ) {
+    reveal_area2_into(
+        vis,
+        origin_x_leptons,
+        origin_y_leptons,
+        origin_z_leptons,
+        range,
+        RevealArea2Options::primary(reveal_by_height),
+        height_grid,
+        width,
+        height,
+    );
+}
+
+fn reveal_area2_into(
+    vis: &mut OwnerVisibility,
+    origin_x_leptons: i32,
+    origin_y_leptons: i32,
+    origin_z_leptons: i32,
+    range: u16,
+    options: RevealArea2Options,
+    height_grid: Option<&[u8]>,
+    width: u16,
+    height: u16,
+) {
     let (cx, cy) =
         reveal_area2_projected_origin_cell(origin_x_leptons, origin_y_leptons, origin_z_leptons);
     let w = i32::from(width);
@@ -619,12 +680,33 @@ fn reveal_radius_into(
             cy,
             clamped as i32,
             origin_z_leptons,
-            reveal_by_height,
+            options.reveal_by_height,
             height_grid,
             w,
             h,
-        ) {
+        ) && reveal_area2_dispatch_marks_visible(rx, ry, &options)
+        {
             vis.mark_visible(rx as u16, ry as u16);
+        }
+    }
+}
+
+fn reveal_area2_dispatch_marks_visible(rx: i32, ry: i32, options: &RevealArea2Options) -> bool {
+    match options.pass {
+        RevealArea2Pass::Secondary => {
+            // RE secondary helper requires per-cell CellClass flags (+0x12c bit 0x08
+            // and not already-visible tuple in +0x140). This model does not carry
+            // those flags yet, so secondary pass is explicit but conservative.
+            false
+        }
+        RevealArea2Pass::Primary => {
+            if !options.coord_ptr_low_byte_nonzero {
+                return true;
+            }
+            !((rx == 7 && ry == options.map_min_y + 5)
+                || (rx == 13 && ry == options.map_min_y + 11)
+                || (rx == options.map_height + 13
+                    && ry == options.map_height + options.map_min_y - 15))
         }
     }
 }
@@ -754,6 +836,24 @@ pub fn reveal_radius(
     center_ry: u16,
     range: u16,
 ) {
+    reveal_radius_with_options(
+        fog,
+        owner,
+        center_rx,
+        center_ry,
+        range,
+        RevealArea2Options::primary(false),
+    );
+}
+
+pub(crate) fn reveal_radius_with_options(
+    fog: &mut FogState,
+    owner: InternedId,
+    center_rx: u16,
+    center_ry: u16,
+    range: u16,
+    options: RevealArea2Options,
+) {
     let width = fog.width;
     let height = fog.height;
     if width == 0 || height == 0 {
@@ -763,14 +863,13 @@ pub fn reveal_radius(
         .by_owner
         .entry(owner)
         .or_insert_with(|| OwnerVisibility::new(width, height));
-    // Fire-reveal events don't use height-based LOS (matches gamemd).
-    reveal_radius_into(
+    reveal_area2_into(
         vis,
         i32::from(center_rx) * LEPTONS_PER_CELL_I32,
         i32::from(center_ry) * LEPTONS_PER_CELL_I32,
         0,
         range,
-        false,
+        options,
         None,
         width,
         height,
