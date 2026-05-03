@@ -344,6 +344,7 @@ pub(super) fn placement_radius_rules() -> RuleSet {
              Owner=Americans\n\
              Foundation=2x2\n\
              BaseNormal=no\n\
+             EligibileForAllyBuilding=yes\n\
              Adjacent=0\n",
     );
     RuleSet::from_ini(&ini).expect("placement radius rules should parse")

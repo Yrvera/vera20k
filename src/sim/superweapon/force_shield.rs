@@ -71,10 +71,10 @@ pub fn launch(
                 .unwrap_or(true)
         })
         .filter(|e| {
-            let ex: i64 = e.position.rx as i64 * LEPTONS_PER_CELL
-                + e.position.sub_x.to_num::<i64>();
-            let ey: i64 = e.position.ry as i64 * LEPTONS_PER_CELL
-                + e.position.sub_y.to_num::<i64>();
+            let ex: i64 =
+                e.position.rx as i64 * LEPTONS_PER_CELL + e.position.sub_x.to_num::<i64>();
+            let ey: i64 =
+                e.position.ry as i64 * LEPTONS_PER_CELL + e.position.sub_y.to_num::<i64>();
             let dx = ex - target_x_leptons;
             let dy = ey - target_y_leptons;
             dx * dx + dy * dy <= radius_sq

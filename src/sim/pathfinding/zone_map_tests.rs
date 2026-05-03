@@ -27,7 +27,13 @@ fn grid_from_str(s: &str) -> PathGrid {
 
 // Helper: build zones for Normal movement zone with no cost grid (PathGrid only).
 fn land_zones(grid: &PathGrid) -> (ZoneMap, ZoneAdjacency) {
-    build_zone_map(grid, None, MovementZone::Normal, grid.width(), grid.height())
+    build_zone_map(
+        grid,
+        None,
+        MovementZone::Normal,
+        grid.width(),
+        grid.height(),
+    )
 }
 
 fn water_row_terrain(width: u16) -> ResolvedTerrainGrid {
@@ -427,7 +433,13 @@ fn path_grid_from_heights(heights: &[u8], width: u16, height: u16) -> PathGrid {
 
 /// Build zones for Land category with height data (from PathGrid cells).
 fn land_zones_with_height(grid: &PathGrid) -> (ZoneMap, ZoneAdjacency) {
-    build_zone_map(grid, None, MovementZone::Normal, grid.width(), grid.height())
+    build_zone_map(
+        grid,
+        None,
+        MovementZone::Normal,
+        grid.width(),
+        grid.height(),
+    )
 }
 
 #[test]

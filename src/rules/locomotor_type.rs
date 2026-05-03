@@ -223,7 +223,9 @@ impl SpeedType {
 ///
 /// Example: `MovementZone=Subterranean` enables dig-in/dig-out cell search
 /// logic that plain Drive does not have.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 #[repr(u8)]
 pub enum MovementZone {
     /// Row 0: only movement class 0 is passable.
@@ -322,8 +324,7 @@ impl MovementZone {
             MovementZone::AmphibiousCrusher
             | MovementZone::AmphibiousDestroyer
             | MovementZone::Amphibious => SpeedType::Amphibious,
-            MovementZone::Infantry
-            | MovementZone::InfantryDestroyer => SpeedType::Foot,
+            MovementZone::Infantry | MovementZone::InfantryDestroyer => SpeedType::Foot,
             MovementZone::Water => SpeedType::Float,
             MovementZone::WaterBeach => SpeedType::FloatBeach,
             MovementZone::Fly => SpeedType::Winged,
@@ -332,7 +333,10 @@ impl MovementZone {
 
     /// Whether this MovementZone can traverse bridges (ground-capable).
     pub fn can_use_bridges(&self) -> bool {
-        !matches!(self, MovementZone::Water | MovementZone::WaterBeach | MovementZone::Fly)
+        !matches!(
+            self,
+            MovementZone::Water | MovementZone::WaterBeach | MovementZone::Fly
+        )
     }
 }
 

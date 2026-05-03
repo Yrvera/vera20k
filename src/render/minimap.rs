@@ -31,9 +31,9 @@ use crate::sim::vision::FogState;
 
 use super::minimap_helpers::{
     COLOR_BUILDING, COLOR_SHROUD, DOT_SIZE, MINIMAP_DEPTH, MINIMAP_SIZE, VIEWPORT_LINE_THICKNESS,
-    cell_visibility_color, compute_aspect_fit, dim_color, draw_line, owner_dot_color,
-    parse_foundation_size, radar_color_for_cell, set_pixel, terrain_brightness_for_theater,
-    world_to_minimap_pixel, world_to_minimap_pixel_from_cell,
+    cell_visibility_color, compute_aspect_fit, dim_color, draw_line, minimap_entity_visible,
+    owner_dot_color, parse_foundation_size, radar_color_for_cell, set_pixel,
+    terrain_brightness_for_theater, world_to_minimap_pixel, world_to_minimap_pixel_from_cell,
 };
 pub use super::minimap_helpers::{OverlayClassification, default_minimap_rect};
 use super::minimap_helpers::{OverlayPixel, TerrainPixel};
@@ -279,6 +279,11 @@ impl MinimapRenderer {
             let obj = rules.and_then(|r| r.object(type_str));
             let radar_invisible: bool = obj.is_some_and(|o| o.radar_invisible);
             let radar_visible: bool = obj.is_some_and(|o| o.radar_visible);
+            let foundation = if entity.category == EntityCategory::Structure {
+                obj.map(|o| o.foundation.as_str())
+            } else {
+                None
+            };
 
             if let Some((local_owner, fog)) = visibility {
                 let friendly =
@@ -287,10 +292,15 @@ impl MinimapRenderer {
                     // Always show — RadarVisible overrides fog.
                 } else if radar_invisible && !friendly {
                     continue;
-                } else if !friendly
-                    && (!fog.is_cell_revealed(local_owner, pos.rx, pos.ry)
-                        || fog.is_cell_gap_covered(local_owner, pos.rx, pos.ry))
-                {
+                } else if !minimap_entity_visible(
+                    local_owner,
+                    fog,
+                    pos,
+                    entity.owner,
+                    interner,
+                    entity.category,
+                    foundation,
+                ) {
                     continue;
                 }
             }

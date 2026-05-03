@@ -57,17 +57,13 @@ pub(crate) fn build_shp_instances(
         }
         let owner_str = sim.interner.resolve(entity.owner);
         let type_str = sim.interner.resolve(entity.type_ref);
+        let obj = state.rules.as_ref().and_then(|r| r.object(type_str));
         // Wall buildings render as overlays (auto-tiled connectivity frames).
         // Their Y-sorted rendering in the object pass is handled by including
         // wall overlay instances in the unified merge (draw_merged_object_pass),
         // not here. Skip them to avoid drawing frame 0 (isolated pillar).
         if entity.category == EntityCategory::Structure {
-            let is_wall = state
-                .rules
-                .as_ref()
-                .and_then(|r| r.object(type_str))
-                .map(|o| o.wall)
-                .unwrap_or(false);
+            let is_wall = obj.map(|o| o.wall).unwrap_or(false);
             if is_wall {
                 continue;
             }
@@ -80,6 +76,8 @@ pub(crate) fn build_shp_instances(
             owner_str,
             ignore_visibility,
             local_owner_id,
+            entity.category,
+            obj.map(|o| o.foundation.as_str()),
         ) {
             continue;
         }

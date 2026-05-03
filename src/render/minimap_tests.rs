@@ -4,10 +4,11 @@
 //! GPU-dependent tests (full MinimapRenderer construction) are not possible here.
 
 use super::*;
+use crate::map::entities::EntityCategory;
 use crate::map::houses::HouseAllianceMap;
 use crate::render::minimap_helpers::*;
 use crate::rules::house_colors::HouseColorIndex;
-use crate::sim::components::{Owner, Position};
+use crate::sim::components::Position;
 use crate::sim::intern::test_intern;
 use crate::sim::vision::FogState;
 use std::collections::{BTreeMap, BTreeSet};
@@ -19,6 +20,18 @@ fn make_pixel(rx: u16, ry: u16, color: [u8; 4]) -> TerrainPixel {
         px: 0,
         py: 0,
         color,
+    }
+}
+
+fn make_position(rx: u16, ry: u16) -> Position {
+    Position {
+        rx,
+        ry,
+        z: 0,
+        sub_x: crate::util::lepton::CELL_CENTER_LEPTON,
+        sub_y: crate::util::lepton::CELL_CENTER_LEPTON,
+        screen_x: 0.0,
+        screen_y: 0.0,
     }
 }
 
@@ -95,6 +108,9 @@ fn test_owner_dot_color_unknown_defaults_gold() {
 
 #[test]
 fn test_minimap_entity_visible_for_allied_owner() {
+    let mut interner = crate::sim::intern::StringInterner::new();
+    let americans = interner.intern("Americans");
+    let british = interner.intern("British");
     let mut alliances = HouseAllianceMap::default();
     let allied_names = BTreeSet::from(["AMERICANS".to_string(), "BRITISH".to_string()]);
     alliances.insert("AMERICANS".to_string(), allied_names.clone());
@@ -116,13 +132,60 @@ fn test_minimap_entity_visible_for_allied_owner() {
         screen_x: 0.0,
         screen_y: 0.0,
     };
-    let owner = Owner(test_intern("British"));
+    assert!(minimap_entity_visible(
+        americans,
+        &fog,
+        &pos,
+        british,
+        Some(&interner),
+        EntityCategory::Unit,
+        None,
+    ));
+}
+
+#[test]
+fn test_minimap_enemy_revealed_but_not_visible_is_hidden() {
+    let mut fog = FogState {
+        width: 16,
+        height: 16,
+        ..Default::default()
+    };
+    fog.mark_visible_for_owner(test_intern("Americans"), 5, 7);
+    fog.by_owner
+        .get_mut(&test_intern("Americans"))
+        .expect("owner present")
+        .clear_all_visible();
+    let pos = make_position(5, 7);
+
+    assert!(!minimap_entity_visible(
+        test_intern("Americans"),
+        &fog,
+        &pos,
+        test_intern("Soviet"),
+        Some(&crate::sim::intern::test_interner()),
+        EntityCategory::Unit,
+        None,
+    ));
+}
+
+#[test]
+fn test_minimap_structure_visible_when_any_foundation_cell_is_visible() {
+    let mut fog = FogState {
+        width: 16,
+        height: 16,
+        ..Default::default()
+    };
+    fog.mark_visible_for_owner(test_intern("Americans"), 6, 5);
+    let pos = make_position(5, 5);
 
     assert!(minimap_entity_visible(
         test_intern("Americans"),
         &fog,
         &pos,
-        &owner
+        test_intern("Soviet"),
+        Some(&crate::sim::intern::test_interner()),
+        EntityCategory::Structure,
+        Some("2x2"),
     ));
 }
 

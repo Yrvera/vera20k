@@ -85,7 +85,11 @@ impl Simulation {
             mover_is_crusher: e.omni_crusher
                 || matches!(
                     loco.map(|l| l.movement_zone),
-                    Some(MovementZone::Crusher | MovementZone::AmphibiousCrusher | MovementZone::CrusherAll)
+                    Some(
+                        MovementZone::Crusher
+                            | MovementZone::AmphibiousCrusher
+                            | MovementZone::CrusherAll
+                    )
                 ),
         })
     }

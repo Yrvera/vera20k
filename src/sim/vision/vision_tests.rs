@@ -2,6 +2,8 @@
 
 use super::*;
 use crate::map::entities::EntityCategory;
+use crate::rules::ini_parser::IniFile;
+use crate::rules::ruleset::RuleSet;
 use crate::sim::components::Health;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::game_entity::GameEntity;
@@ -35,6 +37,28 @@ fn ti() -> intern::StringInterner {
 /// Helper: default VisionConfig for tests.
 fn default_config() -> VisionConfig {
     VisionConfig::default()
+}
+
+fn sight_rules(veteran_sight: f32, veteran_abilities: &str, elite_abilities: &str) -> RuleSet {
+    let ini = IniFile::from_str(&format!(
+        "[General]
+VeteranSight={veteran_sight}
+[InfantryTypes]
+1=E1
+[E1]
+VeteranAbilities={veteran_abilities}
+EliteAbilities={elite_abilities}
+"
+    ));
+    RuleSet::from_ini(&ini).expect("test rules should parse")
+}
+
+fn reveal_origin(rx: u16, ry: u16, z_level: u8) -> (i32, i32, i32) {
+    (
+        i32::from(rx) * LEPTONS_PER_CELL_I32,
+        i32::from(ry) * LEPTONS_PER_CELL_I32,
+        i32::from(z_level) * REVEAL_AREA2_Z_TO_LEVEL_DIVISOR,
+    )
 }
 
 // -- Flat grid unit tests --
@@ -97,6 +121,7 @@ fn test_recompute_visibility_reveals_expected_cells() {
         Some(&PathGrid::new(16, 16)),
         &Default::default(),
         &default_config(),
+        None,
         &ti(),
     );
     assert!(fog.is_cell_visible(intern::test_intern("Americans"), 5, 5));
@@ -116,6 +141,7 @@ fn test_recompute_visibility_clamps_to_grid_bounds() {
         Some(&PathGrid::new(3, 3)),
         &Default::default(),
         &default_config(),
+        None,
         &ti(),
     );
     assert!(fog.is_cell_visible(intern::test_intern("Americans"), 0, 0));
@@ -136,6 +162,7 @@ fn test_recompute_visibility_tracks_multiple_owners() {
         Some(&PathGrid::new(16, 16)),
         &Default::default(),
         &default_config(),
+        None,
         &ti(),
     );
     assert!(fog.is_cell_visible(intern::test_intern("Americans"), 2, 2));
@@ -162,6 +189,7 @@ fn test_allied_visibility_is_shared() {
         Some(&PathGrid::new(16, 16)),
         &alliances,
         &default_config(),
+        None,
         &ti(),
     );
     // Build merged grid so Alliance sees Americans' vision via the alliance.
@@ -183,6 +211,7 @@ fn test_sight_capped_at_max_range() {
         Some(&PathGrid::new(50, 50)),
         &Default::default(),
         &default_config(),
+        None,
         &ti(),
     );
     // Cell at distance 10 should be visible (exactly at MAX_SIGHT_RANGE).
@@ -192,7 +221,7 @@ fn test_sight_capped_at_max_range() {
 }
 
 #[test]
-fn test_veteran_sight_bonus() {
+fn test_veteran_sight_multiplier_requires_sight_ability() {
     let mut store = EntityStore::new();
     // Spawn veteran unit (veterancy >= 100) with base sight 5.
     let entity = GameEntity::new(
@@ -214,8 +243,9 @@ fn test_veteran_sight_bonus() {
     );
     store.insert(entity);
 
+    let rules = sight_rules(2.0, "SIGHT", "");
     let config = VisionConfig {
-        veteran_sight_bonus: 2,
+        veteran_sight_scalar: 2.0,
         leptons_per_sight_increase: 0,
         reveal_by_height: false,
     };
@@ -224,23 +254,118 @@ fn test_veteran_sight_bonus() {
         Some(&PathGrid::new(30, 30)),
         &Default::default(),
         &config,
+        Some(&rules),
         &ti(),
     );
-    // Effective sight = 5 + 2 = 7. Cell at distance 7 should be visible.
-    assert!(fog.is_cell_visible(intern::test_intern("Americans"), 17, 10));
-    // Cell at distance 8 should not be visible.
-    assert!(!fog.is_cell_visible(intern::test_intern("Americans"), 18, 10));
+    // Effective sight = trunc(5 * 2.0) = 10 after the SIGHT ability gate.
+    assert!(fog.is_cell_visible(intern::test_intern("Americans"), 20, 10));
+    assert!(!fog.is_cell_visible(intern::test_intern("Americans"), 21, 10));
 }
 
 #[test]
-fn test_elevation_sight_bonus_z8_gives_one_extra_cell() {
+fn test_sight10_uses_recovered_aoe_offset_membership() {
+    let mut vis = OwnerVisibility::new(40, 40);
+    let width: u16 = 40;
+    let height: u16 = 40;
+    let (ox, oy, oz) = reveal_origin(20, 20, 0);
+
+    reveal_radius_into(&mut vis, ox, oy, oz, 10, false, None, width, height);
+
+    assert!(vis.is_visible(10, 20));
+    assert!(vis.is_visible(19, 10));
+    assert!(!vis.is_visible(14, 12));
+}
+
+#[test]
+fn test_veteran_sight_multiplier_skips_types_without_sight_ability() {
     let mut store = EntityStore::new();
-    // z=8, LeptonsPerSightIncrease=2000: bonus = 8*256/2000 = 1 (integer division).
     let entity = GameEntity::new(
         1,
         10,
         10,
-        8,
+        0,
+        0,
+        intern::test_intern("Americans"),
+        Health {
+            current: 100,
+            max: 100,
+        },
+        intern::test_intern("E1"),
+        EntityCategory::Infantry,
+        100,
+        5,
+        false,
+    );
+    store.insert(entity);
+
+    let rules = sight_rules(2.0, "", "");
+    let config = VisionConfig {
+        veteran_sight_scalar: 2.0,
+        leptons_per_sight_increase: 0,
+        reveal_by_height: false,
+    };
+    let fog = recompute_owner_visibility(
+        &store,
+        Some(&PathGrid::new(30, 30)),
+        &Default::default(),
+        &config,
+        Some(&rules),
+        &ti(),
+    );
+    assert!(fog.is_cell_visible(intern::test_intern("Americans"), 15, 10));
+    assert!(!fog.is_cell_visible(intern::test_intern("Americans"), 16, 10));
+}
+
+#[test]
+fn test_elite_sight_multiplier_uses_elite_ability_gate() {
+    let mut store = EntityStore::new();
+    let entity = GameEntity::new(
+        1,
+        10,
+        10,
+        0,
+        0,
+        intern::test_intern("Americans"),
+        Health {
+            current: 100,
+            max: 100,
+        },
+        intern::test_intern("E1"),
+        EntityCategory::Infantry,
+        200,
+        5,
+        false,
+    );
+    store.insert(entity);
+
+    let rules = sight_rules(1.5, "", "SIGHT");
+    let config = VisionConfig {
+        veteran_sight_scalar: 1.5,
+        leptons_per_sight_increase: 0,
+        reveal_by_height: false,
+    };
+    let fog = recompute_owner_visibility(
+        &store,
+        Some(&PathGrid::new(30, 30)),
+        &Default::default(),
+        &config,
+        Some(&rules),
+        &ti(),
+    );
+    assert!(fog.is_cell_visible(intern::test_intern("Americans"), 17, 10));
+    assert!(!fog.is_cell_visible(intern::test_intern("Americans"), 18, 10));
+}
+
+#[test]
+fn test_elevation_sight_scaling_z16_gives_one_extra_cell() {
+    let mut store = EntityStore::new();
+    // z=16, LeptonsPerSightIncrease=2000: trunc(4096 / 2000) = 2, so the
+    // sight multiplier becomes 1.2 and a 5-sight unit reaches 6 cells.
+    let entity = GameEntity::new(
+        1,
+        10,
+        10,
+        16,
         0,
         intern::test_intern("Americans"),
         Health {
@@ -255,7 +380,7 @@ fn test_elevation_sight_bonus_z8_gives_one_extra_cell() {
     );
     store.insert(entity);
     let config = VisionConfig {
-        veteran_sight_bonus: 0,
+        veteran_sight_scalar: 0.0,
         leptons_per_sight_increase: 2000,
         reveal_by_height: false,
     };
@@ -264,11 +389,13 @@ fn test_elevation_sight_bonus_z8_gives_one_extra_cell() {
         Some(&PathGrid::new(30, 30)),
         &Default::default(),
         &config,
+        None,
         &ti(),
     );
-    // Effective = 5 + 1 = 6. Cell at distance 6 visible, 7 not.
-    assert!(fog.is_cell_visible(intern::test_intern("Americans"), 16, 10));
-    assert!(!fog.is_cell_visible(intern::test_intern("Americans"), 17, 10));
+    // Effective = trunc(5 * 1.2) = 6. RevealArea2 projects z=16 to origin
+    // cell (2,2), so assert the radius around that closed-form origin.
+    assert!(fog.is_cell_visible(intern::test_intern("Americans"), 8, 2));
+    assert!(!fog.is_cell_visible(intern::test_intern("Americans"), 9, 2));
 }
 
 #[test]
@@ -293,7 +420,7 @@ fn test_elevation_sight_bonus_z0_gives_no_bonus() {
     );
     store.insert(entity);
     let config = VisionConfig {
-        veteran_sight_bonus: 0,
+        veteran_sight_scalar: 0.0,
         leptons_per_sight_increase: 2000,
         reveal_by_height: false,
     };
@@ -302,6 +429,7 @@ fn test_elevation_sight_bonus_z0_gives_no_bonus() {
         Some(&PathGrid::new(30, 30)),
         &Default::default(),
         &config,
+        None,
         &ti(),
     );
     // z=0 → bonus = 0. Effective = 5. Cell at distance 5 visible, 6 not.
@@ -333,7 +461,7 @@ fn test_elevation_sight_bonus_disabled_when_zero() {
     store.insert(entity);
     // leptons_per_sight_increase=0 → elevation bonus disabled.
     let config = VisionConfig {
-        veteran_sight_bonus: 0,
+        veteran_sight_scalar: 0.0,
         leptons_per_sight_increase: 0,
         reveal_by_height: false,
     };
@@ -342,11 +470,12 @@ fn test_elevation_sight_bonus_disabled_when_zero() {
         Some(&PathGrid::new(30, 30)),
         &Default::default(),
         &config,
+        None,
         &ti(),
     );
-    // Effective = 5 only. Cell at 5 visible, 6 not.
-    assert!(fog.is_cell_visible(intern::test_intern("Americans"), 15, 10));
-    assert!(!fog.is_cell_visible(intern::test_intern("Americans"), 16, 10));
+    // Effective = 5 only. RevealArea2 still projects z=16 to origin cell (2,2).
+    assert!(fog.is_cell_visible(intern::test_intern("Americans"), 7, 2));
+    assert!(!fog.is_cell_visible(intern::test_intern("Americans"), 8, 2));
 }
 
 #[test]
@@ -359,6 +488,7 @@ fn test_merged_visibility_fast_path() {
         Some(&PathGrid::new(16, 16)),
         &Default::default(),
         &default_config(),
+        None,
         &ti(),
     );
 
@@ -492,6 +622,7 @@ fn test_gap_generator_suppresses_enemy_visibility() {
         Some(&PathGrid::new(30, 30)),
         &Default::default(),
         &default_config(),
+        None,
         &ti(),
     );
     // Soviet can see (10, 10) and nearby.
@@ -546,6 +677,7 @@ fn test_in_place_preserves_revealed() {
         &alliances,
         &cfg,
         None,
+        None,
         &ti(),
     );
     assert!(fog.is_cell_revealed(intern::test_intern("Americans"), 5, 5));
@@ -562,6 +694,7 @@ fn test_in_place_preserves_revealed() {
         Some(&grid),
         &alliances,
         &cfg,
+        None,
         None,
         &ti(),
     );
@@ -586,6 +719,7 @@ fn test_dead_owner_keeps_revealed() {
         &alliances,
         &cfg,
         None,
+        None,
         &ti(),
     );
     assert!(fog.is_cell_revealed(intern::test_intern("Soviet"), 5, 5));
@@ -598,6 +732,7 @@ fn test_dead_owner_keeps_revealed() {
         Some(&grid),
         &alliances,
         &cfg,
+        None,
         None,
         &ti(),
     );
@@ -617,7 +752,7 @@ fn test_in_place_matches_fresh() {
     let alliances = HouseAllianceMap::default();
 
     // Fresh allocation path.
-    let fresh = recompute_owner_visibility(&store, Some(&grid), &alliances, &cfg, &ti());
+    let fresh = recompute_owner_visibility(&store, Some(&grid), &alliances, &cfg, None, &ti());
 
     // In-place path (from default).
     let mut in_place = FogState::default();
@@ -627,6 +762,7 @@ fn test_in_place_matches_fresh() {
         Some(&grid),
         &alliances,
         &cfg,
+        None,
         None,
         &ti(),
     );
@@ -659,6 +795,7 @@ fn test_gap_generator_sets_gap_covered_flag() {
         Some(&PathGrid::new(30, 30)),
         &Default::default(),
         &default_config(),
+        None,
         &ti(),
     );
 
@@ -716,70 +853,87 @@ fn test_gap_covered_cleared_each_tick() {
     assert!(vis.is_revealed(5, 5));
 }
 
-// -- Height-based LOS (RevealByHeight) tests --
+// -- RevealArea2 per-cell gate tests --
 
 #[test]
-fn test_height_los_blocks_sight_behind_cliff() {
-    // Unit at (5,5) height 0, sight 5.
-    // Cliff at (7,5) height 5 should block sight to (8,5).
+fn test_revealarea2_rejects_candidate_above_origin_threshold() {
     let mut vis = OwnerVisibility::new(20, 20);
     let width: u16 = 20;
     let height: u16 = 20;
     let mut hg = vec![0u8; width as usize * height as usize];
-    // Place a cliff at (7,5) — 5 levels high (> viewer_level 0 + 3).
-    hg[5 * width as usize + 7] = 5;
+    hg[5 * width as usize + 8] = 4;
+    let (ox, oy, oz) = reveal_origin(5, 5, 0);
 
-    reveal_radius_into(&mut vis, 5, 5, 5, 0, true, Some(&hg), width, height);
+    reveal_radius_into(&mut vis, ox, oy, oz, 5, true, Some(&hg), width, height);
 
-    // (6,5) is before the cliff — should be visible.
-    assert!(vis.is_visible(6, 5));
-    // (7,5) is the cliff cell itself — the mirror check for this cell looks at
-    // (7+mirror_dx, 5+mirror_dy). Whether it's blocked depends on the mirror table.
-    // (8,5) is behind the cliff — its mirror offset points back toward (7,5),
-    // which has level 5. Since 0 + 3 < 5, sight is blocked.
+    assert!(vis.is_visible(7, 5));
     assert!(!vis.is_visible(8, 5));
 }
 
 #[test]
-fn test_height_los_high_viewer_sees_past_cliff() {
-    // Unit at (5,5) height 4, sight 5.
-    // Cliff at (7,5) height 5 — viewer_level + 3 = 7, NOT < 5, so LOS passes.
+fn test_revealarea2_does_not_block_low_cell_behind_high_cliff() {
     let mut vis = OwnerVisibility::new(20, 20);
     let width: u16 = 20;
     let height: u16 = 20;
     let mut hg = vec![0u8; width as usize * height as usize];
     hg[5 * width as usize + 7] = 5;
+    let (ox, oy, oz) = reveal_origin(5, 5, 0);
 
-    reveal_radius_into(&mut vis, 5, 5, 5, 4, true, Some(&hg), width, height);
+    reveal_radius_into(&mut vis, ox, oy, oz, 5, true, Some(&hg), width, height);
 
-    // High viewer (level 4 + 3 = 7 >= 5) sees past the cliff.
+    assert!(!vis.is_visible(7, 5));
     assert!(vis.is_visible(8, 5));
 }
 
 #[test]
-fn test_height_los_disabled_when_false() {
-    // Same cliff scenario but reveal_by_height=false — should NOT block.
+fn test_revealarea2_higher_origin_accepts_higher_candidates() {
     let mut vis = OwnerVisibility::new(20, 20);
     let width: u16 = 20;
     let height: u16 = 20;
     let mut hg = vec![0u8; width as usize * height as usize];
     hg[5 * width as usize + 7] = 5;
+    let (ox, oy, oz) = reveal_origin(5, 5, 4);
 
-    reveal_radius_into(&mut vis, 5, 5, 5, 0, false, Some(&hg), width, height);
+    reveal_radius_into(&mut vis, ox, oy, oz, 5, true, Some(&hg), width, height);
 
-    // With reveal_by_height=false, the cliff doesn't block.
+    assert!(vis.is_visible(7, 5));
+}
+
+#[test]
+fn test_revealarea2_projected_origin_shifts_by_z() {
+    let mut vis = OwnerVisibility::new(20, 20);
+    let width: u16 = 20;
+    let height: u16 = 20;
+    let (ox, oy, oz) = reveal_origin(5, 5, 3);
+
+    reveal_radius_into(&mut vis, ox, oy, oz, 0, true, None, width, height);
+
+    assert!(vis.is_visible(4, 4));
+    assert!(!vis.is_visible(5, 5));
+}
+
+#[test]
+fn test_revealarea2_height_gate_disabled_when_false() {
+    let mut vis = OwnerVisibility::new(20, 20);
+    let width: u16 = 20;
+    let height: u16 = 20;
+    let mut hg = vec![0u8; width as usize * height as usize];
+    hg[5 * width as usize + 8] = 4;
+    let (ox, oy, oz) = reveal_origin(5, 5, 0);
+
+    reveal_radius_into(&mut vis, ox, oy, oz, 5, false, Some(&hg), width, height);
+
     assert!(vis.is_visible(8, 5));
 }
 
 #[test]
-fn test_height_los_none_grid_disables_check() {
-    // reveal_by_height=true but no height grid — should NOT block.
+fn test_revealarea2_none_grid_disables_height_gate() {
     let mut vis = OwnerVisibility::new(20, 20);
     let width: u16 = 20;
     let height: u16 = 20;
+    let (ox, oy, oz) = reveal_origin(5, 5, 0);
 
-    reveal_radius_into(&mut vis, 5, 5, 5, 0, true, None, width, height);
+    reveal_radius_into(&mut vis, ox, oy, oz, 5, true, None, width, height);
 
-    // Without a height grid, all cells in range are visible.
     assert!(vis.is_visible(8, 5));
 }

@@ -7,10 +7,12 @@
 //! - Part of the app layer — may depend on everything.
 
 use crate::app::AppState;
+use crate::map::entities::EntityCategory;
 use crate::map::terrain;
 use crate::sim::components::Position;
 use crate::sim::game_entity::GameEntity;
-use crate::sim::intern::InternedId;
+use crate::sim::intern::{InternedId, StringInterner};
+use crate::sim::production::foundation_dimensions;
 use crate::sim::vision::FogState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,11 +94,42 @@ pub(crate) fn interpolated_screen_position_entity(
     (entity.position.screen_x, entity.position.screen_y)
 }
 
-/// Check whether an entity is visible to the local player based on shroud.
+fn is_live_cell_visible(fog: &FogState, owner_id: InternedId, rx: u16, ry: u16) -> bool {
+    fog.is_cell_visible(owner_id, rx, ry) && !fog.is_cell_gap_covered(owner_id, rx, ry)
+}
+
+pub(crate) fn is_entity_footprint_visible_for_owner(
+    fog: &FogState,
+    owner_id: InternedId,
+    pos: &Position,
+    category: EntityCategory,
+    foundation: Option<&str>,
+) -> bool {
+    if category != EntityCategory::Structure {
+        return is_live_cell_visible(fog, owner_id, pos.rx, pos.ry);
+    }
+    let (width, height) = foundation.map(foundation_dimensions).unwrap_or((1, 1));
+    for dy in 0..height {
+        for dx in 0..width {
+            let Some(rx) = pos.rx.checked_add(dx) else {
+                continue;
+            };
+            let Some(ry) = pos.ry.checked_add(dy) else {
+                continue;
+            };
+            if is_live_cell_visible(fog, owner_id, rx, ry) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Check whether an entity is currently visible to the local player.
 ///
-/// In standard YR (FogOfWar=false), once a cell is explored it stays fully
-/// visible forever. Friendly entities are always visible. Enemy entities are
-/// visible if the cell they occupy has been explored (revealed).
+/// Friendly/allied entities are always visible. Enemy entities require live
+/// visibility, not just explored terrain. Structures become visible if any
+/// currently visible cell in their foundation footprint is exposed.
 pub(crate) fn is_entity_visible_for_local_owner(
     local_owner: Option<&str>,
     fog: &FogState,
@@ -104,6 +137,8 @@ pub(crate) fn is_entity_visible_for_local_owner(
     owner: &str,
     ignore_visibility: bool,
     local_owner_id: Option<InternedId>,
+    category: EntityCategory,
+    foundation: Option<&str>,
 ) -> bool {
     if ignore_visibility {
         return true;
@@ -115,8 +150,32 @@ pub(crate) fn is_entity_visible_for_local_owner(
         return true;
     }
     let owner_id = local_owner_id.unwrap_or_default();
-    fog.is_cell_revealed(owner_id, pos.rx, pos.ry)
-        && !fog.is_cell_gap_covered(owner_id, pos.rx, pos.ry)
+    is_entity_footprint_visible_for_owner(fog, owner_id, pos, category, foundation)
+}
+
+pub(crate) fn is_entity_visible_for_local_owner_id(
+    local_owner_id: Option<InternedId>,
+    fog: &FogState,
+    pos: &Position,
+    entity_owner: InternedId,
+    ignore_visibility: bool,
+    interner: Option<&StringInterner>,
+    category: EntityCategory,
+    foundation: Option<&str>,
+) -> bool {
+    if ignore_visibility {
+        return true;
+    }
+    let Some(owner_id) = local_owner_id else {
+        return true;
+    };
+    let friendly = interner.map_or(owner_id == entity_owner, |i| {
+        fog.is_friendly_id(owner_id, entity_owner, i)
+    });
+    if friendly {
+        return true;
+    }
+    is_entity_footprint_visible_for_owner(fog, owner_id, pos, category, foundation)
 }
 
 pub(crate) fn cell_visibility_for_local_owner(
@@ -135,7 +194,7 @@ pub(crate) fn cell_visibility_for_local_owner(
     let Some(fog) = fog else {
         return CellVisibilityState::Visible;
     };
-    // Standard YR (FogOfWar=false): explored = fully visible, no intermediate state.
+    // Terrain still uses shroud/explored state for the standard non-fog pass.
     if fog.is_cell_revealed(local_owner_id, rx, ry) {
         CellVisibilityState::Visible
     } else {

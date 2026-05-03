@@ -64,6 +64,8 @@ pub(crate) fn build_unit_instances(
             owner_str,
             ignore_visibility,
             local_owner_id,
+            entity.category,
+            None,
         ) {
             continue;
         }

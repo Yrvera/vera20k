@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 
 use crate::map::entities::EntityCategory;
+use crate::map::houses::are_houses_friendly;
 use crate::rules::locomotor_type::MovementZone;
 use crate::rules::object_type::ObjectCategory;
 use crate::rules::ruleset::RuleSet;
@@ -31,6 +32,8 @@ pub fn placement_preview_for_owner(
 ) -> Option<BuildingPlacementPreview> {
     let obj = rules.object(type_id)?;
     let (width, height) = foundation_dimensions(&obj.foundation);
+    let owner_id = sim.interner.get(owner);
+    let allow_unmapped = obj.to_tile.is_some();
     let reason =
         evaluate_building_placement(sim, rules, owner, type_id, rx, ry, path_grid, height_map)
             .err();
@@ -44,6 +47,7 @@ pub fn placement_preview_for_owner(
         for dx in 0..width {
             let cx: u16 = rx.saturating_add(dx);
             let cy: u16 = ry.saturating_add(dy);
+            let mapped = cell_is_mapped_for_owner(sim, owner_id, cx, cy, allow_unmapped);
             let ok = cell_placeable(
                 sim,
                 &sim.entities,
@@ -55,7 +59,7 @@ pub fn placement_preview_for_owner(
                 height_map,
                 obj.water_bound,
             );
-            cell_valid.push(in_build_area && ok);
+            cell_valid.push(in_build_area && mapped && ok);
         }
     }
     let type_interned = sim.interner.get(type_id).unwrap_or_default();
@@ -295,12 +299,16 @@ fn evaluate_building_placement(
     if !has_type {
         return Err(BuildingPlacementError::NotReady);
     }
+    let allow_unmapped = obj.to_tile.is_some();
     // All cells must be at the same height (buildings can't span elevation changes).
     let ref_height: u8 = height_map.get(&(rx, ry)).copied().unwrap_or(0);
     for dy in 0..height {
         for dx in 0..width {
             let cell_x = rx.saturating_add(dx);
             let cell_y = ry.saturating_add(dy);
+            if !cell_is_mapped_for_owner(sim, owner_id, cell_x, cell_y, allow_unmapped) {
+                return Err(BuildingPlacementError::UnmappedTerrain);
+            }
             if !cell_placeable(
                 sim,
                 &sim.entities,
@@ -351,6 +359,25 @@ fn evaluate_building_placement(
         );
         Err(BuildingPlacementError::OutOfBuildArea)
     }
+}
+
+fn cell_is_mapped_for_owner(
+    sim: &Simulation,
+    owner_id: Option<crate::sim::intern::InternedId>,
+    cx: u16,
+    cy: u16,
+    allow_unmapped: bool,
+) -> bool {
+    if allow_unmapped || !sim.game_options.shroud {
+        return true;
+    }
+    // Tests and some early-init call paths can reach placement before fog has
+    // been built. Treat that as "unknown but not blocked" rather than rejecting
+    // all placement until the next simulation tick.
+    if sim.fog.width == 0 || sim.fog.height == 0 || sim.fog.by_owner.is_empty() {
+        return true;
+    }
+    owner_id.map_or(true, |id| sim.fog.is_cell_revealed(id, cx, cy))
 }
 
 /// Per-cell placement check shared by preview and validation.
@@ -453,15 +480,25 @@ fn is_within_build_area(
         return false;
     }
     for e in sim.entities.values() {
-        if e.category != EntityCategory::Structure
-            || !sim.interner.resolve(e.owner).eq_ignore_ascii_case(owner)
-        {
+        if e.category != EntityCategory::Structure {
+            continue;
+        }
+        let provider_owner = sim.interner.resolve(e.owner);
+        let same_owner = provider_owner.eq_ignore_ascii_case(owner);
+        let allied_provider = sim.game_options.build_off_ally
+            && are_houses_friendly(&sim.house_alliances, owner, provider_owner);
+        if !same_owner && !allied_provider {
             continue;
         }
         let Some(existing) = rules.object(sim.interner.resolve(e.type_ref)) else {
             continue;
         };
-        if !existing.base_normal {
+        let qualifies = if same_owner {
+            existing.base_normal
+        } else {
+            existing.eligible_for_ally_building
+        };
+        if !qualifies {
             continue;
         }
         // RA2 uses the larger of provider's and placed building's Adjacent values.

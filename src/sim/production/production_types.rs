@@ -95,6 +95,7 @@ pub enum BuildDisabledReason {
 pub enum BuildingPlacementError {
     NotReady,
     NotBuilding,
+    UnmappedTerrain,
     BlockedTerrain,
     OverlapsStructure,
     OutOfBuildArea,
@@ -105,6 +106,7 @@ impl BuildingPlacementError {
         match self {
             Self::NotReady => "Not ready for placement",
             Self::NotBuilding => "Not a building",
+            Self::UnmappedTerrain => "Unexplored terrain",
             Self::BlockedTerrain => "Blocked terrain",
             Self::OverlapsStructure => "Overlaps structure",
             Self::OutOfBuildArea => "Outside build radius",

@@ -1,7 +1,7 @@
 //! Building placement tests — verifies foundation overlap detection, placement validity,
 //! and per-owner placement pool management for the production system.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use super::{
     BuildQueueItem, BuildQueueState, BuildingPlacementError, ProductionCategory,
@@ -103,6 +103,40 @@ fn naval_yard_placement_rules() -> RuleSet {
          Adjacent=12\n",
     );
     RuleSet::from_ini(&ini).expect("naval yard placement rules should parse")
+}
+
+fn totile_placement_rules() -> RuleSet {
+    let ini = IniFile::from_str(
+        "[InfantryTypes]\n\
+         [VehicleTypes]\n\
+         [AircraftTypes]\n\
+         [BuildingTypes]\n\
+         0=GACNST\n\
+         1=GATILE\n\
+         [GACNST]\n\
+         Strength=1000\n\
+         Armor=wood\n\
+         Foundation=2x2\n\
+         BaseNormal=yes\n\
+         Adjacent=12\n\
+         [GATILE]\n\
+         Strength=1000\n\
+         Armor=wood\n\
+         Foundation=2x2\n\
+         Adjacent=0\n\
+         ToTile=GREEN01\n",
+    );
+    RuleSet::from_ini(&ini).expect("totile placement rules should parse")
+}
+
+fn reveal_foundation(sim: &mut Simulation, owner: &str, rx: u16, ry: u16, width: u16, height: u16) {
+    let owner_id = sim.interner.intern(owner);
+    for dy in 0..height {
+        for dx in 0..width {
+            sim.fog
+                .mark_visible_for_owner(owner_id, rx.saturating_add(dx), ry.saturating_add(dy));
+        }
+    }
 }
 
 #[test]
@@ -459,6 +493,143 @@ fn base_normal_false_structures_do_not_extend_build_area() {
         .insert(americans, VecDeque::from([gapowr]));
 
     assert!(!place_ready_building(
+        &mut sim,
+        &rules,
+        "Americans",
+        "GAPOWR",
+        12,
+        10,
+        Some(&grid),
+        &height_map,
+    ));
+}
+
+#[test]
+fn placement_preview_reports_unmapped_terrain_without_to_tile() {
+    let mut sim = Simulation::new();
+    let rules = placement_radius_rules();
+    let grid = PathGrid::new(64, 64);
+
+    spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
+    let americans = sim.interner.intern("Americans");
+    let gapowr = sim.interner.intern("GAPOWR");
+    sim.production
+        .ready_by_owner
+        .insert(americans, VecDeque::from([gapowr]));
+    sim.fog.mark_visible_for_owner(americans, 0, 0);
+
+    let preview = placement_preview_for_owner(
+        &sim,
+        &rules,
+        "Americans",
+        "GAPOWR",
+        12,
+        10,
+        Some(&grid),
+        &BTreeMap::new(),
+    )
+    .expect("preview should exist");
+
+    assert!(!preview.valid);
+    assert_eq!(
+        preview.reason,
+        Some(BuildingPlacementError::UnmappedTerrain)
+    );
+    assert!(preview.cell_valid.iter().all(|&ok| !ok));
+}
+
+#[test]
+fn placement_accepts_revealed_foundation_cells() {
+    let mut sim = Simulation::new();
+    let rules = placement_radius_rules();
+    let grid = PathGrid::new(64, 64);
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+
+    spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
+    let americans = sim.interner.intern("Americans");
+    let gapowr = sim.interner.intern("GAPOWR");
+    sim.production
+        .ready_by_owner
+        .insert(americans, VecDeque::from([gapowr]));
+    reveal_foundation(&mut sim, "Americans", 12, 10, 2, 2);
+
+    assert!(place_ready_building(
+        &mut sim,
+        &rules,
+        "Americans",
+        "GAPOWR",
+        12,
+        10,
+        Some(&grid),
+        &height_map,
+    ));
+}
+
+#[test]
+fn to_tile_building_can_place_on_unmapped_cells() {
+    let mut sim = Simulation::new();
+    let rules = totile_placement_rules();
+    let grid = PathGrid::new(64, 64);
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+
+    spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
+    let americans = sim.interner.intern("Americans");
+    let gatile = sim.interner.intern("GATILE");
+    sim.production
+        .ready_by_owner
+        .insert(americans, VecDeque::from([gatile]));
+
+    let preview = placement_preview_for_owner(
+        &sim,
+        &rules,
+        "Americans",
+        "GATILE",
+        12,
+        10,
+        Some(&grid),
+        &height_map,
+    )
+    .expect("preview should exist");
+    assert!(preview.valid);
+
+    assert!(place_ready_building(
+        &mut sim,
+        &rules,
+        "Americans",
+        "GATILE",
+        12,
+        10,
+        Some(&grid),
+        &height_map,
+    ));
+}
+
+#[test]
+fn allied_eligible_structure_extends_build_area_when_enabled() {
+    let mut sim = Simulation::new();
+    let rules = placement_radius_rules();
+    let grid = PathGrid::new(64, 64);
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+
+    sim.game_options.build_off_ally = true;
+    sim.house_alliances.insert(
+        "AMERICANS".to_string(),
+        BTreeSet::from(["BRITISH".to_string()]),
+    );
+    sim.house_alliances.insert(
+        "BRITISH".to_string(),
+        BTreeSet::from(["AMERICANS".to_string()]),
+    );
+
+    spawn_structure(&mut sim, 1, "British", "GAGAP", 10, 10);
+    let americans = sim.interner.intern("Americans");
+    let gapowr = sim.interner.intern("GAPOWR");
+    sim.production
+        .ready_by_owner
+        .insert(americans, VecDeque::from([gapowr]));
+    reveal_foundation(&mut sim, "Americans", 12, 10, 2, 2);
+
+    assert!(place_ready_building(
         &mut sim,
         &rules,
         "Americans",

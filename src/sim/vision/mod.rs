@@ -12,7 +12,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::map::houses::{HouseAllianceMap, are_houses_friendly};
+use crate::map::houses::{are_houses_friendly, HouseAllianceMap};
+use crate::rules::ruleset::RuleSet;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::intern::{InternedId, StringInterner};
 use crate::sim::pathfinding::PathGrid;
@@ -28,6 +29,12 @@ const FLAG_GAP_COVERED: u8 = 0x04;
 /// RA2 hard-caps effective sight at 10 cells. Going past 10 was a crash
 /// in the original engine — we clamp to this limit for compatibility.
 pub const MAX_SIGHT_RANGE: u16 = 10;
+
+const LEPTONS_PER_CELL_I32: i32 = 256;
+const REVEAL_AREA2_Z_TO_LEVEL_DIVISOR: i32 = 104;
+const REVEAL_AREA2_Z_SHIFT_SLOPE: f64 = 0.14350360082660085;
+const REVEAL_AREA2_Z_SHIFT_HIGH_Z_THRESHOLD: i32 = 728;
+const REVEAL_AREA2_Z_SHIFT_CELL_DIVISOR: i32 = 30;
 
 /// Per-owner visibility stored as a flat grid of flag bytes.
 ///
@@ -404,9 +411,9 @@ impl FogState {
 
 /// Configuration for visibility computation, passed to `recompute_owner_visibility`.
 pub struct VisionConfig {
-    /// Additive sight bonus for veteran+ units (from [General] VeteranSight=).
-    /// Default 0 (vanilla RA2 gives no sight bonus from veterancy).
-    pub veteran_sight_bonus: i32,
+    /// Multiplicative sight scalar applied when a veterancy SIGHT ability gate passes.
+    /// Parsed from [General] `VeteranSight=`. Default 0.0 disables the multiplier.
+    pub veteran_sight_scalar: f32,
     /// Leptons of elevation per +1 sight cell (from [General] LeptonsPerSightIncrease=).
     /// 256 leptons = 1 z-level. 0 disables the elevation bonus.
     pub leptons_per_sight_increase: i32,
@@ -419,7 +426,7 @@ pub struct VisionConfig {
 impl Default for VisionConfig {
     fn default() -> Self {
         Self {
-            veteran_sight_bonus: 0,
+            veteran_sight_scalar: 0.0,
             leptons_per_sight_increase: 0,
             reveal_by_height: true,
         }
@@ -435,11 +442,12 @@ pub fn recompute_owner_visibility(
     path_grid: Option<&PathGrid>,
     alliances: &HouseAllianceMap,
     config: &VisionConfig,
+    rules: Option<&RuleSet>,
     interner: &crate::sim::intern::StringInterner,
 ) -> FogState {
     let mut fog = FogState::default();
     recompute_owner_visibility_in_place(
-        &mut fog, entities, path_grid, alliances, config, None, interner,
+        &mut fog, entities, path_grid, alliances, config, rules, None, interner,
     );
     fog
 }
@@ -458,8 +466,9 @@ pub fn recompute_owner_visibility_in_place(
     path_grid: Option<&PathGrid>,
     alliances: &HouseAllianceMap,
     config: &VisionConfig,
+    rules: Option<&RuleSet>,
     height_grid: Option<&[u8]>,
-    _interner: &crate::sim::intern::StringInterner,
+    interner: &crate::sim::intern::StringInterner,
 ) {
     let (width, height) = resolve_bounds(entities, path_grid);
     if width == 0 || height == 0 {
@@ -495,36 +504,61 @@ pub fn recompute_owner_visibility_in_place(
             .entry(entity.owner)
             .or_insert_with(|| OwnerVisibility::new(width, height));
 
-        // Apply veteran and elevation sight bonuses, clamped to MAX_SIGHT_RANGE.
-        let base_range: i32 = entity.vision_range as i32;
-        let vet_bonus: i32 = if entity.veterancy >= 100 {
-            config.veteran_sight_bonus
-        } else {
-            0
-        };
-        // Elevation bonus: each z-level = 256 leptons; integer division truncates.
-        // At LeptonsPerSightIncrease=2000 (vanilla): z=8 → +1 cell, z=16 → +2.
-        // Disabled when leptons_per_sight_increase <= 0.
-        let elev_bonus: i32 = if config.leptons_per_sight_increase > 0 {
-            (entity.position.z as i32 * 256) / config.leptons_per_sight_increase
-        } else {
-            0
-        };
-        let effective: u16 =
-            ((base_range + vet_bonus + elev_bonus).max(0) as u16).min(MAX_SIGHT_RANGE);
+        let effective = effective_sight_range(entity, config, rules, interner);
+        let origin_x_leptons = i32::from(entity.position.rx) * LEPTONS_PER_CELL_I32
+            + entity.position.sub_x.to_num::<i32>();
+        let origin_y_leptons = i32::from(entity.position.ry) * LEPTONS_PER_CELL_I32
+            + entity.position.sub_y.to_num::<i32>();
+        let origin_z_leptons = i32::from(entity.position.z) * REVEAL_AREA2_Z_TO_LEVEL_DIVISOR;
 
         reveal_radius_into(
             vis,
-            entity.position.rx,
-            entity.position.ry,
+            origin_x_leptons,
+            origin_y_leptons,
+            origin_z_leptons,
             effective,
-            entity.position.z,
             config.reveal_by_height,
             height_grid,
             width,
             height,
         );
     }
+}
+
+fn effective_sight_range(
+    entity: &crate::sim::game_entity::GameEntity,
+    config: &VisionConfig,
+    rules: Option<&RuleSet>,
+    interner: &crate::sim::intern::StringInterner,
+) -> u16 {
+    let base_range = entity.vision_range as i32;
+    let height_leptons = entity.position.z as i32 * 256;
+    let pre_veteran_range = if config.leptons_per_sight_increase > 0 {
+        let elevation_step = (height_leptons / config.leptons_per_sight_increase) as f32 * 10.0;
+        (base_range as f32 * (1.0 + elevation_step * 0.01)) as i32
+    } else {
+        base_range
+    };
+
+    let sight_scaled_range = rules
+        .and_then(|rules| rules.object(interner.resolve(entity.type_ref)))
+        .and_then(|obj| {
+            let has_sight_ability = if entity.veterancy >= 200 {
+                obj.veteran_sight_ability || obj.elite_sight_ability
+            } else if entity.veterancy >= 100 {
+                obj.veteran_sight_ability
+            } else {
+                false
+            };
+            if has_sight_ability && config.veteran_sight_scalar != 0.0 {
+                Some((pre_veteran_range as f32 * config.veteran_sight_scalar) as i32)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(pre_veteran_range);
+
+    sight_scaled_range.clamp(0, MAX_SIGHT_RANGE as i32) as u16
 }
 
 fn resolve_bounds(entities: &EntityStore, path_grid: Option<&PathGrid>) -> (u16, u16) {
@@ -547,96 +581,116 @@ fn resolve_bounds(entities: &EntityStore, path_grid: Option<&PathGrid>) -> (u16,
     }
 }
 
-/// Mark all cells within `range` of `(center_rx, center_ry)` as visible+revealed.
+/// Mark all cells within `range` of the projected RA2/YR origin as visible+revealed.
 ///
-/// Uses the reveal spiral table from the original engine.
-/// For sight 0-9, iterates the pre-built (dx, dy) offsets matching the original
-/// spiral iteration. For sight 10, falls back to the spiral entries for sight 9
-/// plus a sqrt-based check for the outer ring.
+/// Uses the recovered `RevealArea2` per-cell gate: project the origin by Z,
+/// truncate Euclidean distance, and reject candidate cells above origin level + 3
+/// when RevealByHeight is active. Candidate enumeration uses the recovered
+/// AoE offset table through the RA2 hard cap of sight 10.
 fn reveal_radius_into(
     vis: &mut OwnerVisibility,
-    center_rx: u16,
-    center_ry: u16,
+    origin_x_leptons: i32,
+    origin_y_leptons: i32,
+    origin_z_leptons: i32,
     range: u16,
-    viewer_z: u8,
     reveal_by_height: bool,
     height_grid: Option<&[u8]>,
     width: u16,
     height: u16,
 ) {
-    let cx = i32::from(center_rx);
-    let cy = i32::from(center_ry);
+    let (cx, cy) =
+        reveal_area2_projected_origin_cell(origin_x_leptons, origin_y_leptons, origin_z_leptons);
     let w = i32::from(width);
     let h = i32::from(height);
 
     // Clamp range to MAX_SIGHT_RANGE (the original also clamps to 10).
     let clamped = (range as usize).min(MAX_SIGHT_RANGE as usize);
 
-    // For sight 0–9, use the exact spiral table.
-    let spiral_end = if clamped <= 9 {
-        REVEAL_RING_SIZES[clamped]
-    } else {
-        // Sight 10: use all 253 spiral entries (sight 0–9), then extend below.
-        REVEAL_RING_SIZES[9]
-    };
-
-    let viewer_level = viewer_z as i32;
+    let spiral_end = REVEAL_RING_SIZES[clamped];
 
     for i in 0..spiral_end {
         let (dx, dy) = REVEAL_SPIRAL[i];
         let rx = cx + dx as i32;
         let ry = cy + dy as i32;
-        if rx >= 0 && rx < w && ry >= 0 && ry < h {
-            // Height-based LOS: check if terrain at the midpoint cell blocks sight.
-            // The mirror table gives a one-cell offset from the target back toward
-            // the viewer. If that cell's Level > viewer_level + 3, LOS is blocked.
-            if reveal_by_height {
-                if let Some(hg) = height_grid {
-                    let (mdx, mdy) = REVEAL_MIRROR[i];
-                    let obs_x = rx + mdx as i32;
-                    let obs_y = ry + mdy as i32;
-                    if obs_x >= 0 && obs_x < w && obs_y >= 0 && obs_y < h {
-                        let obs_level = hg[(obs_y * w + obs_x) as usize] as i32;
-                        if viewer_level + 3 < obs_level {
-                            continue; // terrain blocks LOS
-                        }
-                    }
-                }
-            }
+        if reveal_area2_candidate_passes(
+            rx,
+            ry,
+            cx,
+            cy,
+            clamped as i32,
+            origin_z_leptons,
+            reveal_by_height,
+            height_grid,
+            w,
+            h,
+        ) {
             vis.mark_visible(rx as u16, ry as u16);
         }
     }
+}
 
-    // Sight 10 outer ring: the original's entries 253–308 use FUN_0042d470
-    // for coordinate conversion. Fall back to sqrt check for the extra cells.
-    if clamped >= 10 {
-        let rr = clamped as i32;
-        // Squared-distance comparison avoids f32 sqrt entirely.
-        // dist <= rr + 0.5  ↔  dist² <= (rr + 0.5)²  ↔  4*dist² <= (2*rr + 1)²
-        let diameter = 2 * rr + 1;
-        let range_sq_x4: i32 = diameter * diameter;
-        let min_x = (cx - rr).max(0);
-        let max_x = (cx + rr).min(w - 1);
-        let min_y = (cy - rr).max(0);
-        let max_y = (cy + rr).min(h - 1);
-        for y in min_y..=max_y {
-            for x in min_x..=max_x {
-                let dx = x - cx;
-                let dy = y - cy;
-                let dist_sq_x4: i32 = 4 * (dx * dx + dy * dy);
-                if dist_sq_x4 <= range_sq_x4 {
-                    vis.mark_visible(x as u16, y as u16);
-                }
-            }
-        }
+fn reveal_area2_projected_origin_cell(
+    origin_x_leptons: i32,
+    origin_y_leptons: i32,
+    origin_z_leptons: i32,
+) -> (i32, i32) {
+    let shift = reveal_area2_origin_cell_shift_yr(origin_z_leptons);
+    (
+        origin_x_leptons / LEPTONS_PER_CELL_I32 + shift,
+        origin_y_leptons / LEPTONS_PER_CELL_I32 + shift,
+    )
+}
+
+fn reveal_area2_origin_cell_shift_yr(z_leptons: i32) -> i32 {
+    -(reveal_area2_adjust_for_z_yr(z_leptons) / REVEAL_AREA2_Z_SHIFT_CELL_DIVISOR)
+}
+
+fn reveal_area2_adjust_for_z_yr(z_leptons: i32) -> i32 {
+    let high_z_bias = if z_leptons >= REVEAL_AREA2_Z_SHIFT_HIGH_Z_THRESHOLD {
+        1.0
+    } else {
+        0.0
+    };
+    (z_leptons as f64 * REVEAL_AREA2_Z_SHIFT_SLOPE + high_z_bias + 0.5).trunc() as i32
+}
+
+fn reveal_area2_candidate_passes(
+    rx: i32,
+    ry: i32,
+    cx: i32,
+    cy: i32,
+    range: i32,
+    origin_z_leptons: i32,
+    reveal_by_height: bool,
+    height_grid: Option<&[u8]>,
+    width: i32,
+    height: i32,
+) -> bool {
+    if rx < 0 || rx >= width || ry < 0 || ry >= height {
+        return false;
     }
+
+    let dx = rx - cx;
+    let dy = ry - cy;
+    let distance = ((dx * dx + dy * dy) as f64).sqrt().trunc() as i32;
+    if distance > range {
+        return false;
+    }
+
+    let Some(hg) = height_grid.filter(|_| reveal_by_height) else {
+        return true;
+    };
+
+    let candidate_level = hg[(ry * width + rx) as usize] as i32;
+    let origin_level = origin_z_leptons / REVEAL_AREA2_Z_TO_LEVEL_DIVISOR;
+    candidate_level <= origin_level + 3
 }
 
 /// Reveal spiral table extracted from the original engine.
 /// Each (dx, dy) is a cell offset from the revealing unit's position.
 /// Entries are ordered in expanding rings by sight radius.
 #[rustfmt::skip]
-const REVEAL_SPIRAL: [(i8, i8); 253] = [
+const REVEAL_SPIRAL: [(i8, i8); 309] = [
     // Sight 0: 1 entry
     (0, 0),
     // Sight 1: entries 1..9 (8 new)
@@ -677,61 +731,20 @@ const REVEAL_SPIRAL: [(i8, i8); 253] = [
     (-8, -2), (8, -2), (-9, -1), (9, -1), (-9, 0), (9, 0), (-9, 1), (9, 1), (-8, 2), (8, 2),
     (-8, 3), (8, 3), (-7, 4), (7, 4), (-7, 5), (7, 5), (-6, 6), (6, 6), (-5, 7), (-4, 7),
     (4, 7), (5, 7), (-3, 8), (-2, 8), (2, 8), (3, 8), (-1, 9), (0, 9), (1, 9),
+    // Sight 10: entries 253..309 (56 new)
+    (-1, -10), (0, -10), (1, -10), (-3, -9), (-2, -9), (2, -9), (3, -9), (-5, -8), (-4, -8),
+    (4, -8), (5, -8), (-7, -7), (-6, -7), (6, -7), (7, -7), (-7, -6), (7, -6), (-8, -5),
+    (8, -5), (-8, -4), (8, -4), (-9, -3), (9, -3), (-9, -2), (9, -2), (-10, -1), (10, -1),
+    (-10, 0), (10, 0), (-10, 1), (10, 1), (-9, 2), (9, 2), (-9, 3), (9, 3), (-8, 4),
+    (8, 4), (-8, 5), (8, 5), (-7, 6), (7, 6), (-7, 7), (-6, 7), (6, 7), (7, 7),
+    (-5, 8), (-4, 8), (4, 8), (5, 8), (-3, 9), (-2, 9), (2, 9), (3, 9), (-1, 10),
+    (0, 10), (1, 10),
 ];
 
-/// Cumulative entry count for each sight radius 0–10.
-/// To reveal cells for sight N, iterate `REVEAL_SPIRAL[0..REVEAL_RING_SIZES[N]]`.
+/// Cumulative AoE offset count for each sight radius 0-10.
+/// Radius 10 entries 253-308 are from
+/// `evidence/derived/aoe_radius10_11_dxdy_parity_static_recovered_20260503.tsv`.
 const REVEAL_RING_SIZES: [usize; 11] = [1, 9, 21, 37, 61, 89, 121, 161, 205, 253, 309];
-
-/// Mirror/direction table for height-based LOS checks (RevealByHeight).
-///
-/// Each entry corresponds to the same index in `REVEAL_SPIRAL`. The (mdx, mdy)
-/// offset is added to the target cell position to find the obstruction cell — the
-/// cell one step closer to the viewer along the line of sight. If that cell's
-/// terrain Level exceeds `viewer_level + 3`, LOS is blocked.
-#[rustfmt::skip]
-const REVEAL_MIRROR: [(i8, i8); 253] = [
-    // Sight 0: 1 entry
-    (0, 0),
-    // Sight 1: entries 1..9 (8 new)
-    (-1, 1), (0, 1), (1, 1), (1, 0), (-1, 0), (1, -1), (0, -1), (-1, -1),
-    // Sight 2: entries 9..21 (12 new)
-    (1, 1), (0, 1), (-1, 1), (1, 1), (-1, 1), (1, 0), (-1, 0), (1, -1), (-1, -1), (1, -1),
-    (0, -1), (-1, -1),
-    // Sight 3: entries 21..37 (16 new)
-    (0, 1), (0, 1), (0, 1), (1, 1), (-1, 1), (1, 0), (-1, 0), (1, 0), (-1, 0), (1, 0),
-    (-1, 0), (1, -1), (-1, -1), (0, -1), (0, -1), (0, -1),
-    // Sight 4: entries 37..61 (24 new)
-    (0, 1), (0, 1), (0, 1), (1, 1), (1, 1), (-1, 1), (-1, 1), (1, 1), (-1, 1), (1, 0),
-    (-1, 0), (1, 0), (-1, 0), (1, 0), (-1, 0), (1, -1), (-1, -1), (1, -1), (1, -1), (-1, -1),
-    (-1, -1), (0, -1), (0, -1), (0, -1),
-    // Sight 5: entries 61..89 (28 new)
-    (0, 1), (0, 1), (0, 1), (1, 1), (1, 1), (-1, 1), (-1, 1), (1, 1), (-1, 1), (1, 1),
-    (-1, 1), (1, 0), (-1, 0), (1, 0), (-1, 0), (1, 0), (-1, 0), (1, -1), (-1, -1), (1, -1),
-    (-1, -1), (1, -1), (1, -1), (-1, -1), (-1, -1), (0, -1), (0, -1), (0, -1),
-    // Sight 6: entries 89..121 (32 new)
-    (0, 1), (0, 1), (0, 1), (1, 1), (0, 1), (0, 1), (-1, 1), (1, 1), (-1, 1), (1, 1),
-    (-1, 1), (1, 0), (1, 0), (1, 0), (-1, 0), (1, 0), (-1, 0), (1, 0), (-1, 0), (1, 0),
-    (-1, 0), (1, -1), (-1, -1), (1, -1), (-1, -1), (1, -1), (0, -1), (0, -1), (-1, -1), (0, -1),
-    (0, -1), (0, -1),
-    // Sight 7: entries 121..161 (40 new)
-    (0, 1), (0, 1), (0, 1), (1, 1), (0, 1), (0, 1), (-1, 1), (1, 1), (1, 1), (-1, 1),
-    (-1, 1), (1, 1), (-1, 1), (1, 1), (-1, 1), (1, 0), (-1, 0), (1, 0), (-1, 0), (1, 0),
-    (-1, 0), (1, 0), (-1, 0), (1, 0), (-1, 0), (1, -1), (-1, -1), (1, -1), (-1, -1), (1, -1),
-    (1, -1), (-1, -1), (-1, -1), (1, -1), (0, -1), (0, -1), (-1, -1), (0, -1), (0, -1), (0, -1),
-    // Sight 8: entries 161..205 (44 new)
-    (0, 1), (0, 1), (0, 1), (0, 1), (0, 1), (0, 1), (0, 1), (1, 1), (1, 1), (-1, 1),
-    (-1, 1), (1, 1), (-1, 1), (1, 1), (-1, 1), (1, 0), (-1, 0), (1, 0), (-1, 0), (1, 0),
-    (-1, 0), (1, 0), (-1, 0), (1, 0), (-1, 0), (1, 0), (-1, 0), (1, 0), (-1, 0), (1, -1),
-    (-1, -1), (1, -1), (-1, -1), (1, -1), (1, -1), (-1, -1), (-1, -1), (0, -1), (0, -1), (0, -1),
-    (0, -1), (0, -1), (0, -1), (0, -1),
-    // Sight 9: entries 205..253 (48 new)
-    (0, 1), (0, 1), (0, 1), (0, 1), (0, 1), (0, 1), (0, 1), (1, 1), (1, 1), (-1, 1),
-    (-1, 1), (1, 1), (-1, 1), (1, 1), (-1, 1), (1, 1), (-1, 1), (1, 0), (-1, 0), (1, 0),
-    (-1, 0), (1, 0), (-1, 0), (1, 0), (-1, 0), (1, 0), (-1, 0), (1, 0), (-1, 0), (1, 0),
-    (-1, 0), (1, -1), (-1, -1), (1, -1), (-1, -1), (1, -1), (-1, -1), (1, -1), (1, -1), (-1, -1),
-    (-1, -1), (0, -1), (0, -1), (0, -1), (0, -1), (0, -1), (0, -1), (0, -1),
-];
 
 /// Public version of reveal_radius for use by external systems (e.g., RevealOnFire).
 pub fn reveal_radius(
@@ -752,7 +765,15 @@ pub fn reveal_radius(
         .or_insert_with(|| OwnerVisibility::new(width, height));
     // Fire-reveal events don't use height-based LOS (matches gamemd).
     reveal_radius_into(
-        vis, center_rx, center_ry, range, 0, false, None, width, height,
+        vis,
+        i32::from(center_rx) * LEPTONS_PER_CELL_I32,
+        i32::from(center_ry) * LEPTONS_PER_CELL_I32,
+        0,
+        range,
+        false,
+        None,
+        width,
+        height,
     );
 }
 

@@ -98,6 +98,12 @@ pub(crate) fn hover_target_at_point(
         let is_structure = entity.category == EntityCategory::Structure;
         let type_str = sim.interner.resolve(entity.type_ref);
         let owner_str = sim.interner.resolve(entity.owner);
+        let obj = rules.and_then(|r| r.object(type_str));
+        let foundation = if is_structure {
+            obj.map(|o| o.foundation.as_str())
+        } else {
+            None
+        };
         let (sx, sy) = if is_structure {
             (entity.position.screen_x, entity.position.screen_y)
         } else {
@@ -105,16 +111,12 @@ pub(crate) fn hover_target_at_point(
         };
         // Hit test: structures use foundation cells, mobile units use elliptical distance.
         if is_structure {
-            let foundation = rules
-                .and_then(|r| r.object(type_str))
-                .map(|o| o.foundation.as_str())
-                .unwrap_or("1x1");
             if !click_hits_foundation(
                 world_x,
                 world_y,
                 entity.position.rx,
                 entity.position.ry,
-                foundation,
+                foundation.unwrap_or("1x1"),
                 height_map,
                 bridge_height_map,
             ) {
@@ -132,15 +134,16 @@ pub(crate) fn hover_target_at_point(
         let dy = sy - world_y;
         let dist_sq = dx * dx + dy * dy;
         let is_friendly = sim.fog.is_friendly(local_owner, owner_str);
-        let is_visible = ignore_visibility
-            || (sim
-                .fog
-                .is_cell_revealed(local_owner_id, entity.position.rx, entity.position.ry)
-                && !sim.fog.is_cell_gap_covered(
-                    local_owner_id,
-                    entity.position.rx,
-                    entity.position.ry,
-                ));
+        let is_visible = crate::app_instances::is_entity_visible_for_local_owner(
+            Some(local_owner),
+            &sim.fog,
+            &entity.position,
+            owner_str,
+            ignore_visibility,
+            Some(local_owner_id),
+            entity.category,
+            foundation,
+        );
         let kind = if is_friendly {
             if is_structure {
                 HoverTargetKind::FriendlyStructure
@@ -331,6 +334,8 @@ fn entities_in_rect(
                 owner_str,
                 &entity.position,
                 local_owner_id,
+                entity.category,
+                None,
             ) {
                 return None;
             }
@@ -398,12 +403,21 @@ fn pick_entity_at_point(
     for entity in entities.values() {
         let owner_str = interner.map_or("", |i| i.resolve(entity.owner));
         let type_str = interner.map_or("", |i| i.resolve(entity.type_ref));
+        let foundation = if entity.category == EntityCategory::Structure {
+            rules
+                .and_then(|r| r.object(type_str))
+                .map(|o| o.foundation.as_str())
+        } else {
+            None
+        };
         if !is_selectable_entity(
             fog,
             local_owner,
             owner_str,
             &entity.position,
             local_owner_id,
+            entity.category,
+            foundation,
         ) {
             continue;
         }
@@ -411,16 +425,12 @@ fn pick_entity_at_point(
         if is_structure {
             // Foundation-based hit test: click must land on one of the building's
             // foundation cells.
-            let foundation = rules
-                .and_then(|r| r.object(type_str))
-                .map(|o| o.foundation.as_str())
-                .unwrap_or("1x1");
             if !click_hits_foundation(
                 world_x,
                 world_y,
                 entity.position.rx,
                 entity.position.ry,
-                foundation,
+                foundation.unwrap_or("1x1"),
                 height_map,
                 bridge_height_map,
             ) {
@@ -459,6 +469,8 @@ fn is_selectable_entity(
     entity_owner: &str,
     pos: &crate::sim::components::Position,
     local_owner_id: Option<InternedId>,
+    category: EntityCategory,
+    foundation: Option<&str>,
 ) -> bool {
     let Some(local_owner) = local_owner else {
         return true;
@@ -466,10 +478,14 @@ fn is_selectable_entity(
     let Some(fog) = fog else {
         return entity_owner.eq_ignore_ascii_case(local_owner);
     };
-    if fog.is_friendly(local_owner, entity_owner) {
-        return true;
-    }
-    let owner_id = local_owner_id.unwrap_or_default();
-    fog.is_cell_revealed(owner_id, pos.rx, pos.ry)
-        && !fog.is_cell_gap_covered(owner_id, pos.rx, pos.ry)
+    crate::app_instances::is_entity_visible_for_local_owner(
+        Some(local_owner),
+        fog,
+        pos,
+        entity_owner,
+        false,
+        local_owner_id,
+        category,
+        foundation,
+    )
 }

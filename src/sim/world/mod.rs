@@ -568,7 +568,10 @@ impl Simulation {
                     path_grid,
                     &self.terrain_costs,
                     self.resolved_terrain.as_ref(),
-                    self.bridge_state.as_ref().map(|bs| bs.endpoint_records()).unwrap_or(&[]),
+                    self.bridge_state
+                        .as_ref()
+                        .map(|bs| bs.endpoint_records())
+                        .unwrap_or(&[]),
                 ) {
                     log::trace!("zone: incremental update ({} cells changed)", changed.len(),);
                     self.prev_path_grid = Some(path_grid.clone());
@@ -582,7 +585,10 @@ impl Simulation {
             path_grid,
             &self.terrain_costs,
             self.resolved_terrain.as_ref(),
-            self.bridge_state.as_ref().map(|bs| bs.endpoint_records()).unwrap_or(&[]),
+            self.bridge_state
+                .as_ref()
+                .map(|bs| bs.endpoint_records())
+                .unwrap_or(&[]),
             width,
             height,
         ));
@@ -799,6 +805,7 @@ impl Simulation {
             path_grid,
             &self.house_alliances,
             config,
+            rules,
             self.vision_height_grid.as_deref(),
             &self.interner,
         );
@@ -1110,7 +1117,7 @@ impl Simulation {
         // DEPENDS ON: movement (positions updated), spawn (new entities need LOS).
         // PRODUCES: fog state used by combat targeting (phase 5).
         let vision_config = vision::VisionConfig {
-            veteran_sight_bonus: rules.map_or(0, |r| r.general.veteran_sight),
+            veteran_sight_scalar: rules.map_or(0.0, |r| r.general.veteran_sight),
             leptons_per_sight_increase: rules.map_or(0, |r| r.general.leptons_per_sight_increase),
             // Temporarily disabled: vision_height_grid is now populated for shroud
             // rendering, but enabling RevealByHeight here would also flip on cliff LoS

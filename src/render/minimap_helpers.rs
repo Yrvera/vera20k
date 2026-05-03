@@ -6,10 +6,12 @@
 //! ## Dependency rules
 //! - Part of render/ — depends on map/terrain, map/houses, rules/house_colors, sim/vision.
 
+use crate::map::entities::EntityCategory;
 use crate::map::houses::HouseColorMap;
 use crate::map::terrain::TerrainGrid;
 use crate::rules::house_colors::{self, HouseColorIndex};
-use crate::sim::intern::InternedId;
+use crate::sim::intern::{InternedId, StringInterner};
+use crate::sim::production::foundation_dimensions;
 use crate::sim::vision::FogState;
 
 /// Side length of the square minimap in pixels.
@@ -335,17 +337,42 @@ pub(super) fn parse_foundation_size(foundation: &str) -> (u32, u32) {
     (w, h)
 }
 
-/// Check if an entity should be visible on the minimap (test helper).
-#[cfg(test)]
+/// Check if an entity should be visible on the minimap.
 pub(super) fn minimap_entity_visible(
     local_owner: InternedId,
     fog: &FogState,
     pos: &crate::sim::components::Position,
-    owner: &crate::sim::components::Owner,
+    owner: InternedId,
+    interner: Option<&StringInterner>,
+    category: EntityCategory,
+    foundation: Option<&str>,
 ) -> bool {
-    let interner = crate::sim::intern::test_interner();
-    fog.is_friendly_id(local_owner, owner.0, &interner)
-        || fog.is_cell_revealed(local_owner, pos.rx, pos.ry)
+    let friendly =
+        interner.is_some_and(|i| fog.is_friendly_id(local_owner, owner, i)) || local_owner == owner;
+    if friendly {
+        return true;
+    }
+    if category != EntityCategory::Structure {
+        return fog.is_cell_visible(local_owner, pos.rx, pos.ry)
+            && !fog.is_cell_gap_covered(local_owner, pos.rx, pos.ry);
+    }
+    let (width, height) = foundation.map(foundation_dimensions).unwrap_or((1, 1));
+    for dy in 0..height {
+        for dx in 0..width {
+            let Some(rx) = pos.rx.checked_add(dx) else {
+                continue;
+            };
+            let Some(ry) = pos.ry.checked_add(dy) else {
+                continue;
+            };
+            if fog.is_cell_visible(local_owner, rx, ry)
+                && !fog.is_cell_gap_covered(local_owner, rx, ry)
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Default minimap screen rectangle (bottom-left corner with margin).

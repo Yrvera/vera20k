@@ -792,8 +792,18 @@ fn test_entity_blocks_routes_around_blocked_cell() {
     let mut blocks: BTreeSet<(u16, u16)> = BTreeSet::new();
     blocks.insert((3, 0)); // Block cell (3,0) — directly on the straight path.
 
-    let path =
-        find_path_with_costs(&grid, (0, 0), (5, 0), None, Some(&blocks), None, None, None, 0, false);
+    let path = find_path_with_costs(
+        &grid,
+        (0, 0),
+        (5, 0),
+        None,
+        Some(&blocks),
+        None,
+        None,
+        None,
+        0,
+        false,
+    );
     assert!(path.is_some(), "Should find a path around the entity block");
     let path = path.unwrap();
     assert!(
@@ -810,8 +820,18 @@ fn test_entity_blocks_goal_cell_still_reachable() {
     let mut blocks: BTreeSet<(u16, u16)> = BTreeSet::new();
     blocks.insert((5, 0)); // Block the GOAL cell.
 
-    let path =
-        find_path_with_costs(&grid, (0, 0), (5, 0), None, Some(&blocks), None, None, None, 0, false);
+    let path = find_path_with_costs(
+        &grid,
+        (0, 0),
+        (5, 0),
+        None,
+        Some(&blocks),
+        None,
+        None,
+        None,
+        0,
+        false,
+    );
     assert!(
         path.is_some(),
         "Goal cell should always be reachable even if entity-blocked"
@@ -824,9 +844,30 @@ fn test_entity_blocks_empty_set_same_as_none() {
     let grid = PathGrid::new(10, 10);
     let empty: BTreeSet<(u16, u16)> = BTreeSet::new();
 
-    let path_none = find_path_with_costs(&grid, (0, 0), (5, 5), None, None, None, None, None, 0, false);
-    let path_empty =
-        find_path_with_costs(&grid, (0, 0), (5, 5), None, Some(&empty), None, None, None, 0, false);
+    let path_none = find_path_with_costs(
+        &grid,
+        (0, 0),
+        (5, 5),
+        None,
+        None,
+        None,
+        None,
+        None,
+        0,
+        false,
+    );
+    let path_empty = find_path_with_costs(
+        &grid,
+        (0, 0),
+        (5, 5),
+        None,
+        Some(&empty),
+        None,
+        None,
+        None,
+        0,
+        false,
+    );
     assert_eq!(path_none, path_empty);
 }
 
@@ -843,8 +884,18 @@ fn test_entity_blocks_fully_surrounded_no_path() {
             blocks.insert(((5i32 + dx) as u16, (5i32 + dy) as u16));
         }
     }
-    let path =
-        find_path_with_costs(&grid, (0, 0), (5, 5), None, Some(&blocks), None, None, None, 0, false);
+    let path = find_path_with_costs(
+        &grid,
+        (0, 0),
+        (5, 5),
+        None,
+        Some(&blocks),
+        None,
+        None,
+        None,
+        0,
+        false,
+    );
     // Goal itself is reachable, but all approaches blocked → no path.
     assert!(
         path.is_none(),
@@ -864,7 +915,13 @@ fn code2_urgency_2_routes_around_blocker() {
     let mut ebm: std::collections::HashMap<(u16, u16), EntityBlockEntry> =
         std::collections::HashMap::new();
     // Blocker sitting at (3,1) with next cell (4,1).
-    ebm.insert((3, 1), EntityBlockEntry { next_cell: Some((4, 1)), cost_code: 2 });
+    ebm.insert(
+        (3, 1),
+        EntityBlockEntry {
+            next_cell: Some((4, 1)),
+            cost_code: 2,
+        },
+    );
     let path = find_path_with_costs(
         &grid,
         (0, 1),
@@ -893,7 +950,13 @@ fn code2_urgency_1_picks_alt_when_available() {
     let grid = PathGrid::new(10, 3);
     let mut ebm: std::collections::HashMap<(u16, u16), EntityBlockEntry> =
         std::collections::HashMap::new();
-    ebm.insert((3, 1), EntityBlockEntry { next_cell: Some((4, 1)), cost_code: 2 });
+    ebm.insert(
+        (3, 1),
+        EntityBlockEntry {
+            next_cell: Some((4, 1)),
+            cost_code: 2,
+        },
+    );
     let path = find_path_with_costs(
         &grid,
         (0, 1),
@@ -923,9 +986,27 @@ fn code2_urgency_0_chain_clears_uses_baseline() {
     let mut ebm: std::collections::HashMap<(u16, u16), EntityBlockEntry> =
         std::collections::HashMap::new();
     // Chain: (3,1)→(4,1), (4,1)→(5,1), (5,1)→(6,1). (6,1) has no blocker.
-    ebm.insert((3, 1), EntityBlockEntry { next_cell: Some((4, 1)), cost_code: 2 });
-    ebm.insert((4, 1), EntityBlockEntry { next_cell: Some((5, 1)), cost_code: 2 });
-    ebm.insert((5, 1), EntityBlockEntry { next_cell: Some((6, 1)), cost_code: 2 });
+    ebm.insert(
+        (3, 1),
+        EntityBlockEntry {
+            next_cell: Some((4, 1)),
+            cost_code: 2,
+        },
+    );
+    ebm.insert(
+        (4, 1),
+        EntityBlockEntry {
+            next_cell: Some((5, 1)),
+            cost_code: 2,
+        },
+    );
+    ebm.insert(
+        (5, 1),
+        EntityBlockEntry {
+            next_cell: Some((6, 1)),
+            cost_code: 2,
+        },
+    );
     // Block the alt rows so the only route is through the chain.
     let mut hard: BTreeSet<(u16, u16)> = BTreeSet::new();
     for x in 0..10u16 {
@@ -960,7 +1041,13 @@ fn code2_urgency_0_ten_step_jam_uses_4x() {
     // 11-link chain (>10 hops): (0,1)→(1,1)→...→(10,1). Each link maps to the
     // next cell and the chain runs 11 deep — chain walk exhausts at 10.
     for x in 0..11u16 {
-        ebm.insert((x, 1), EntityBlockEntry { next_cell: Some((x + 1, 1)), cost_code: 2 });
+        ebm.insert(
+            (x, 1),
+            EntityBlockEntry {
+                next_cell: Some((x + 1, 1)),
+                cost_code: 2,
+            },
+        );
     }
     // Hard-block both alt rows to force the path through the jam.
     let mut hard: BTreeSet<(u16, u16)> = BTreeSet::new();
@@ -993,7 +1080,13 @@ fn code2_goal_cell_exempt_from_multiplier() {
     let grid = PathGrid::new(10, 3);
     let mut ebm: std::collections::HashMap<(u16, u16), EntityBlockEntry> =
         std::collections::HashMap::new();
-    ebm.insert((5, 1), EntityBlockEntry { next_cell: Some((6, 1)), cost_code: 2 });
+    ebm.insert(
+        (5, 1),
+        EntityBlockEntry {
+            next_cell: Some((6, 1)),
+            cost_code: 2,
+        },
+    );
     let path = find_path_with_costs(
         &grid,
         (0, 1),

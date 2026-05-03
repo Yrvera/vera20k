@@ -50,7 +50,6 @@ const MOVEMENT_CLASS_PASSABILITY: [[u8; 8]; 13] = [
     [1, 1, 1, 2, 2, 2, 2, 3], // CrusherAll
 ];
 
-
 /// Build a zone map and adjacency graph for one MovementZone.
 #[cfg(test)]
 #[allow(dead_code)]
@@ -127,27 +126,13 @@ pub(crate) fn build_zone_map_with_terrain(
     let zone_count = next_zone - 1;
 
     // -- Extract adjacency (ground only; bridge edges injected by caller) --
-    let adj = extract_adjacency(
-        &zone_ids,
-        width,
-        height,
-        zone_count,
-    );
+    let adj = extract_adjacency(&zone_ids, width, height, zone_count);
 
-    let zone_info = compute_zone_info(
-        &zone_ids,
-        width,
-        height,
-        zone_count,
-    );
+    let zone_info = compute_zone_info(&zone_ids, width, height, zone_count);
 
     let zone_map = ZoneMap::new(
-        zone_ids,
-        None, // bridge_redirect set by caller
-        width,
-        height,
-        zone_count,
-        zone_info,
+        zone_ids, None, // bridge_redirect set by caller
+        width, height, zone_count, zone_info,
     );
 
     (zone_map, adj)
@@ -180,25 +165,11 @@ fn build_zone_map_with_movement_classes(
     );
     let (zone_ids, zone_count) = compact_raw_zone_ids(&node_indices, &raw_zone_ids, total);
 
-    let adj = extract_adjacency(
-        &zone_ids,
-        width,
-        height,
-        zone_count,
-    );
-    let zone_info = compute_zone_info(
-        &zone_ids,
-        width,
-        height,
-        zone_count,
-    );
+    let adj = extract_adjacency(&zone_ids, width, height, zone_count);
+    let zone_info = compute_zone_info(&zone_ids, width, height, zone_count);
     let zone_map = ZoneMap::new(
-        zone_ids,
-        None, // bridge_redirect set by caller
-        width,
-        height,
-        zone_count,
-        zone_info,
+        zone_ids, None, // bridge_redirect set by caller
+        width, height, zone_count, zone_info,
     );
 
     (zone_map, adj)

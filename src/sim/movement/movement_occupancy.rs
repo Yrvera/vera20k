@@ -124,7 +124,9 @@ pub(super) fn handle_deferred_occupancy(
     mcfg: MovementConfig,
     entity_cost_grid: Option<&TerrainCostGrid>,
     mover_entity_blocks: Option<&BTreeSet<(u16, u16)>>,
-    mover_entity_block_map: Option<&std::collections::HashMap<(u16, u16), crate::sim::pathfinding::EntityBlockEntry>>,
+    mover_entity_block_map: Option<
+        &std::collections::HashMap<(u16, u16), crate::sim::pathfinding::EntityBlockEntry>,
+    >,
     occupancy: &mut OccupancyGrid,
     alliances: &HouseAllianceMap,
     path_grid: Option<&PathGrid>,
@@ -150,7 +152,11 @@ pub(super) fn handle_deferred_occupancy(
     let mover_is_crusher = snap.omni_crusher
         || matches!(
             snap.locomotor.as_ref().map(|l| l.movement_zone),
-            Some(crate::rules::locomotor_type::MovementZone::Crusher | crate::rules::locomotor_type::MovementZone::AmphibiousCrusher | crate::rules::locomotor_type::MovementZone::CrusherAll)
+            Some(
+                crate::rules::locomotor_type::MovementZone::Crusher
+                    | crate::rules::locomotor_type::MovementZone::AmphibiousCrusher
+                    | crate::rules::locomotor_type::MovementZone::CrusherAll
+            )
         );
     let is_infantry = snap.category == EntityCategory::Infantry;
     let entry_result = cell_entry::classify_occupied_cell(
@@ -227,12 +233,7 @@ pub(super) fn handle_deferred_occupancy(
             let mut scattered = false;
             if !already_scattered.contains(&blocker_id) {
                 scattered = bump_crush::scatter_blocker(
-                    entities,
-                    blocker_id,
-                    path_grid,
-                    occupancy,
-                    next_layer,
-                    rng,
+                    entities, blocker_id, path_grid, occupancy, next_layer, rng,
                 );
                 if scattered {
                     already_scattered.insert(blocker_id);
@@ -337,12 +338,7 @@ pub(super) fn handle_deferred_occupancy(
                         // Wait expired — try scattering the blocker, then repath.
                         if !already_scattered.contains(&blocker_id) {
                             let scattered = bump_crush::scatter_blocker(
-                                entities,
-                                blocker_id,
-                                path_grid,
-                                occupancy,
-                                next_layer,
-                                rng,
+                                entities, blocker_id, path_grid, occupancy, next_layer, rng,
                             );
                             if scattered {
                                 already_scattered.insert(blocker_id);

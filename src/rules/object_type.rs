@@ -188,6 +188,12 @@ pub struct ObjectType {
     pub primary: Option<String>,
     /// Secondary weapon ID (e.g., anti-air for dual-purpose units).
     pub secondary: Option<String>,
+    /// Whether veteran rank enables the SIGHT ability for this object type.
+    /// Parsed from `VeteranAbilities=` at ability slot 5 in stock RA2/YR data.
+    pub veteran_sight_ability: bool,
+    /// Whether elite rank enables the SIGHT ability for this object type.
+    /// Parsed from `EliteAbilities=` at ability slot 5 in stock RA2/YR data.
+    pub elite_sight_ability: bool,
     /// Art.ini image reference. Defaults to the object's ID if not specified.
     /// Used to look up sprite/voxel filenames in art.ini.
     pub image: String,
@@ -205,6 +211,16 @@ pub struct ObjectType {
     pub adjacent: i32,
     /// Whether this structure expands the owner's build area.
     pub base_normal: bool,
+    /// Whether this structure counts as an allied build-radius provider when
+    /// the match enables BuildOffAlly.
+    ///
+    /// The original INI key is misspelled as `EligibileForAllyBuilding`.
+    pub eligible_for_ally_building: bool,
+    /// Special placement/tile-conversion key.
+    ///
+    /// For the first placement slice we only use this as the recovered
+    /// "allow unmapped footprint cells" flag.
+    pub to_tile: Option<String>,
     /// Whether selling/destruction can eject infantry crew from this structure.
     pub crewed: bool,
     /// Sound ID played when this unit is selected (references sound.ini section).
@@ -571,6 +587,13 @@ impl ObjectType {
     /// The `id` is the section name, and `category` comes from which
     /// type registry listed this object.
     pub fn from_ini_section(id: &str, section: &IniSection, category: ObjectCategory) -> Self {
+        let has_ability = |key: &str, needle: &str| {
+            section.get_list(key).is_some_and(|abilities| {
+                abilities
+                    .iter()
+                    .any(|ability| ability.trim().eq_ignore_ascii_case(needle))
+            })
+        };
         let owner: Vec<String> = section
             .get_list("Owner")
             .unwrap_or_default()
@@ -651,6 +674,8 @@ impl ObjectType {
                 .unwrap_or(false),
             primary: section.get("Primary").map(|s| s.to_string()),
             secondary: section.get("Secondary").map(|s| s.to_string()),
+            veteran_sight_ability: has_ability("VeteranAbilities", "SIGHT"),
+            elite_sight_ability: has_ability("EliteAbilities", "SIGHT"),
             image: section.get("Image").unwrap_or(id).to_string(),
             power: section.get_i32("Power").unwrap_or(0),
             // In the original engine, Foundation= lives in art.ini, not rules.ini.
@@ -663,6 +688,14 @@ impl ObjectType {
             build_cat: section.get("BuildCat").and_then(BuildCategory::from_ini),
             adjacent: section.get_i32("Adjacent").unwrap_or(6),
             base_normal: section.get_bool("BaseNormal").unwrap_or(true),
+            eligible_for_ally_building: section
+                .get_bool("EligibileForAllyBuilding")
+                .or_else(|| section.get_bool("EligibleForAllyBuilding"))
+                .unwrap_or(false),
+            to_tile: section
+                .get("ToTile")
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| s.to_string()),
             crewed: section.get_bool("Crewed").unwrap_or(false),
             voice_select: section.get("VoiceSelect").map(|s| s.to_string()),
             voice_move: section.get("VoiceMove").map(|s| s.to_string()),
@@ -905,6 +938,8 @@ mod tests {
         assert_eq!(obj.build_cat, None);
         assert_eq!(obj.adjacent, 6);
         assert!(obj.base_normal);
+        assert!(!obj.eligible_for_ally_building);
+        assert_eq!(obj.to_tile, None);
         assert!(!obj.crewed);
     }
 
@@ -924,6 +959,8 @@ mod tests {
         assert_eq!(obj.build_cat, Some(BuildCategory::Power));
         assert_eq!(obj.adjacent, 6);
         assert!(obj.base_normal);
+        assert!(!obj.eligible_for_ally_building);
+        assert_eq!(obj.to_tile, None);
         assert!(obj.crewed);
     }
 
@@ -968,6 +1005,8 @@ mod tests {
         assert_eq!(obj.build_cat, None);
         assert_eq!(obj.adjacent, 6);
         assert!(obj.base_normal);
+        assert!(!obj.eligible_for_ally_building);
+        assert_eq!(obj.to_tile, None);
         assert!(!obj.crewed);
     }
 
@@ -983,14 +1022,30 @@ mod tests {
 
     #[test]
     fn test_parse_building_placement_flags() {
-        let ini: IniFile =
-            IniFile::from_str("[GAGAP]\nFoundation=2x2\nAdjacent=0\nBaseNormal=no\n");
+        let ini: IniFile = IniFile::from_str(
+            "[GAGAP]\nFoundation=2x2\nAdjacent=0\nBaseNormal=no\n\
+                 EligibileForAllyBuilding=yes\nToTile=GREEN01\n",
+        );
         let section: &IniSection = ini.section("GAGAP").unwrap();
         let obj: ObjectType =
             ObjectType::from_ini_section("GAGAP", section, ObjectCategory::Building);
 
         assert_eq!(obj.adjacent, 0);
         assert!(!obj.base_normal);
+        assert!(obj.eligible_for_ally_building);
+        assert_eq!(obj.to_tile.as_deref(), Some("GREEN01"));
+    }
+
+    #[test]
+    fn test_parse_sight_veterancy_abilities() {
+        let ini: IniFile = IniFile::from_str(
+            "[E1]\nVeteranAbilities=FASTER,STRONGER,SIGHT\nEliteAbilities=SELF_HEAL,SIGHT\n",
+        );
+        let section: &IniSection = ini.section("E1").unwrap();
+        let obj: ObjectType = ObjectType::from_ini_section("E1", section, ObjectCategory::Infantry);
+
+        assert!(obj.veteran_sight_ability);
+        assert!(obj.elite_sight_ability);
     }
 
     #[test]

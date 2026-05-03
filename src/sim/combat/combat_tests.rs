@@ -270,7 +270,7 @@ fn test_tick_combat_respects_cooldown() {
             &rules,
             &mut interner,
             &mut BTreeMap::new(),
-        0u64,
+            0u64,
             100,
         );
     }

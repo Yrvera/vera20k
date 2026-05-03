@@ -559,13 +559,11 @@ pub fn load_map(
         if let Some(rt) = &sim.resolved_terrain {
             let grid_width = rt.width();
             let grid_height = rt.height();
-            sim.overlay_grid = Some(
-                crate::sim::overlay_grid::OverlayGrid::from_overlay_entries(
-                    &map_data.overlays,
-                    grid_width,
-                    grid_height,
-                ),
-            );
+            sim.overlay_grid = Some(crate::sim::overlay_grid::OverlayGrid::from_overlay_entries(
+                &map_data.overlays,
+                grid_width,
+                grid_height,
+            ));
             log::info!(
                 "Overlay grid initialized: {}x{}, {} entries",
                 grid_width,

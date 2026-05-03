@@ -12,8 +12,6 @@
 //! ## Dependency rules
 //! - Part of render/ — reads FogState (no mutation), uses GpuContext.
 
-use std::sync::OnceLock;
-
 use crate::map::terrain::{HEIGHT_STEP, iso_to_screen, screen_to_iso};
 use crate::render::gpu::GpuContext;
 use crate::sim::vision::FogState;
@@ -30,11 +28,6 @@ const BLACK: u8 = 0x00;
 const TRANSPARENT: u8 = 0xFE;
 const SHROUD_CELL_PAD: i32 = 8;
 const SHROUD_HEIGHT_PAD_LEVELS: f32 = 16.0;
-
-/// Warn once if `height_grid` is `None` after world init — this indicates the
-/// app forgot to call `World::refresh_vision_heights` and the shroud will fall
-/// back to z=0 (sea-level) blits, breaking elevated-terrain rendering.
-static MISSING_HEIGHT_GRID_WARNED: OnceLock<()> = OnceLock::new();
 
 /// Shroud edge frame lookup table.
 ///
@@ -155,6 +148,19 @@ fn clamp_cell_range(min_v: i32, max_v: i32, limit: u16) -> Option<(u16, u16)> {
     }
     Some((start as u16, end as u16))
 }
+
+fn snap_camera_pixel(camera: f32) -> f32 {
+    camera.round()
+}
+
+fn shroud_cell_screen_origin(rx: u16, ry: u16) -> (f32, f32) {
+    // Keep the visual shroud mask cell-anchored in screen space until we
+    // have direct evidence that the ABuffer path applies terrain-height
+    // projection. RevealArea2 is height-aware, but that is gameplay/state
+    // generation, not proof for the render overlay itself.
+    iso_to_screen(rx, ry, 0)
+}
+
 impl ShroudBuffer {
     fn visible_cell_bounds(
         &self,
@@ -261,7 +267,7 @@ impl ShroudBuffer {
         screen_w: u32,
         screen_h: u32,
         zoom: f32,
-        height_grid: Option<&[u8]>,
+        _height_grid: Option<&[u8]>,
     ) {
         // Render shroud at virtual resolution (screen / zoom) so diamond blits
         // stay at fixed world-pixel sizes. The fullscreen GPU shader stretches the
@@ -289,9 +295,10 @@ impl ShroudBuffer {
             self.last_fog_gen = u64::MAX;
         }
 
-        // Skip if nothing changed (camera rounded to pixel + fog generation + zoom).
-        let cam_x_r = cam_x.floor();
-        let cam_y_r = cam_y.floor();
+        // Match the batch renderer's camera snap exactly; otherwise the
+        // full-screen shroud multiply can drift relative to the world render.
+        let cam_x_r = snap_camera_pixel(cam_x);
+        let cam_y_r = snap_camera_pixel(cam_y);
         if fog.generation == self.last_fog_gen
             && cam_x_r == self.last_cam_x
             && cam_y_r == self.last_cam_y
@@ -303,14 +310,6 @@ impl ShroudBuffer {
         self.last_cam_x = cam_x_r;
         self.last_cam_y = cam_y_r;
         self.last_zoom = zoom;
-
-        if height_grid.is_none() && MISSING_HEIGHT_GRID_WARNED.set(()).is_ok() {
-            log::warn!(
-                "shroud: vision_height_grid is None — shroud edges will render at \
-                 z=0 instead of cell elevation. Did the init path skip \
-                 World::refresh_vision_heights?"
-            );
-        }
 
         // Fill bright, then darken unrevealed cells and blit edge transitions.
         // Blitting in world-pixel coordinates at virtual resolution
@@ -330,17 +329,7 @@ impl ShroudBuffer {
 
         for ry in ry_start..=ry_end {
             for rx in rx_start..=rx_end {
-                // Position shroud diamond at the cell's actual terrain height so
-                // the brightness buffer aligns with where the terrain renders.
-                // Fully shrouded cells aren't rendered as terrain at all (filtered
-                // in build_visible_instances), so alignment only matters for edges.
-                let cell_z = height_grid
-                    .and_then(|hg| {
-                        let idx = ry as usize * self.map_width as usize + rx as usize;
-                        hg.get(idx).copied()
-                    })
-                    .unwrap_or(0);
-                let (sx, sy) = iso_to_screen(rx, ry, cell_z);
+                let (sx, sy) = shroud_cell_screen_origin(rx, ry);
                 let vx = sx as i32 - cam_xi;
                 let vy = sy as i32 - cam_yi;
 
@@ -490,6 +479,27 @@ impl ShroudBuffer {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.draw(0..6, 0..1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::map::terrain::iso_to_screen;
+
+    use super::{shroud_cell_screen_origin, snap_camera_pixel};
+
+    #[test]
+    fn test_snap_camera_pixel_matches_batch_renderer_rounding() {
+        assert_eq!(snap_camera_pixel(10.49), 10.0);
+        assert_eq!(snap_camera_pixel(10.5), 11.0);
+        assert_eq!(snap_camera_pixel(-10.49), -10.0);
+        assert_eq!(snap_camera_pixel(-10.5), -11.0);
+    }
+
+    #[test]
+    fn test_shroud_cell_screen_origin_is_flat_cell_anchored() {
+        assert_eq!(shroud_cell_screen_origin(5, 7), iso_to_screen(5, 7, 0));
+        assert_ne!(shroud_cell_screen_origin(5, 7), iso_to_screen(5, 7, 3));
     }
 }
 

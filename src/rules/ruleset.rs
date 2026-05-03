@@ -112,9 +112,10 @@ pub struct AnimRef {
 /// Global gameplay constants from `[General]` that affect vision, gap generators, etc.
 #[derive(Debug, Clone)]
 pub struct GeneralRules {
-    /// Additive sight bonus for veteran+ units (VeteranSight=).
-    /// Default 0 in vanilla RA2 (no sight bonus from veterancy).
-    pub veteran_sight: i32,
+    /// Multiplicative sight scalar applied when a veterancy SIGHT ability gate passes.
+    /// Parsed from `VeteranSight=` in [General]. Default 0.0 in stock RA2/YR,
+    /// which disables the multiplier even if the type has the SIGHT ability.
+    pub veteran_sight: f32,
     /// Leptons of elevation per +1 sight cell (LeptonsPerSightIncrease=).
     /// 256 leptons = 1 z-level in RA2. 0 disables the elevation bonus.
     pub leptons_per_sight_increase: i32,
@@ -365,7 +366,7 @@ const DEFAULT_ANIM_RATE_MS: u32 = 17;
 impl Default for GeneralRules {
     fn default() -> Self {
         Self {
-            veteran_sight: 0,
+            veteran_sight: 0.0,
             leptons_per_sight_increase: 0,
             gap_radius: 10,
             reveal_by_height: true,
@@ -594,7 +595,7 @@ impl GeneralRules {
             .and_then(|s| s.get_percent("ConditionRed"))
             .unwrap_or(0.25);
         Self {
-            veteran_sight: general.get_i32("VeteranSight").unwrap_or(0),
+            veteran_sight: general.get_f32("VeteranSight").unwrap_or(0.0),
             leptons_per_sight_increase: general.get_i32("LeptonsPerSightIncrease").unwrap_or(0),
             gap_radius: general.get_i32("GapRadius").unwrap_or(10),
             reveal_by_height: general.get_bool("RevealByHeight").unwrap_or(true),
@@ -671,7 +672,8 @@ impl GeneralRules {
             chrono_trigger: general.get_bool("ChronoTrigger").unwrap_or(true),
             chrono_minimum_delay: general.get_i32("ChronoMinimumDelay").unwrap_or(16),
             chrono_range_minimum: general.get_i32("ChronoRangeMinimum").unwrap_or(0),
-            purifier_bonus_pct: (general.get_percent("PurifierBonus").unwrap_or(0.25) * 100.0).round() as i32,
+            purifier_bonus_pct: (general.get_percent("PurifierBonus").unwrap_or(0.25) * 100.0)
+                .round() as i32,
             allied_survivor_divisor: general.get_i32("AlliedSurvivorDivisor").unwrap_or(500),
             soviet_survivor_divisor: general.get_i32("SovietSurvivorDivisor").unwrap_or(250),
             third_survivor_divisor: general.get_i32("ThirdSurvivorDivisor").unwrap_or(750),

@@ -781,16 +781,33 @@ fn test_friendly_passable_moving_unit_not_blocked() {
 
     // Stationary friendly at (3,0) is now soft-blocked (code 6, cost 8x) in
     // entity_block_map, not in the hard-block BTreeSet.
-    assert!(!blocks.contains(&(3, 0)), "Stationary friendly should be soft-blocked, not hard-blocked");
-    assert!(_penalty.contains_key(&(3, 0)), "Stationary friendly should be in entity_block_map");
-    assert_eq!(_penalty[&(3, 0)].cost_code, 6, "Stationary friendly should have cost_code 6");
+    assert!(
+        !blocks.contains(&(3, 0)),
+        "Stationary friendly should be soft-blocked, not hard-blocked"
+    );
+    assert!(
+        _penalty.contains_key(&(3, 0)),
+        "Stationary friendly should be in entity_block_map"
+    );
+    assert_eq!(
+        _penalty[&(3, 0)].cost_code,
+        6,
+        "Stationary friendly should have cost_code 6"
+    );
     // Moving friendly at (4,0) should be in entity_block_map with code 2.
     assert!(
         !blocks.contains(&(4, 0)),
         "Moving friendly should be passable"
     );
-    assert!(_penalty.contains_key(&(4, 0)), "Moving friendly should be in entity_block_map");
-    assert_eq!(_penalty[&(4, 0)].cost_code, 2, "Moving friendly should have cost_code 2");
+    assert!(
+        _penalty.contains_key(&(4, 0)),
+        "Moving friendly should be in entity_block_map"
+    );
+    assert_eq!(
+        _penalty[&(4, 0)].cost_code,
+        2,
+        "Moving friendly should have cost_code 2"
+    );
 }
 
 #[test]
@@ -820,9 +837,19 @@ fn test_enemy_unit_always_blocks_even_when_moving() {
 
     // Enemy at (3,0) is now soft-blocked (code 5, cost 20x) in entity_block_map,
     // not in the hard-block BTreeSet.
-    assert!(!blocks.contains(&(3, 0)), "Enemy should be soft-blocked, not hard-blocked");
-    assert!(_penalty.contains_key(&(3, 0)), "Enemy should be in entity_block_map");
-    assert_eq!(_penalty[&(3, 0)].cost_code, 5, "Enemy should have cost_code 5");
+    assert!(
+        !blocks.contains(&(3, 0)),
+        "Enemy should be soft-blocked, not hard-blocked"
+    );
+    assert!(
+        _penalty.contains_key(&(3, 0)),
+        "Enemy should be in entity_block_map"
+    );
+    assert_eq!(
+        _penalty[&(3, 0)].cost_code,
+        5,
+        "Enemy should have cost_code 5"
+    );
 }
 
 #[test]
@@ -838,8 +865,18 @@ fn test_friendly_passable_path_goes_through_moving_friendly() {
     // (3,1) is a stationary friendly — in blocks.
     blocks.insert((3, 1));
 
-    let path =
-        find_path_with_costs(&grid, (0, 0), (6, 0), None, Some(&blocks), None, None, None, 0, false);
+    let path = find_path_with_costs(
+        &grid,
+        (0, 0),
+        (6, 0),
+        None,
+        Some(&blocks),
+        None,
+        None,
+        None,
+        0,
+        false,
+    );
     assert!(
         path.is_some(),
         "Should find path through moving-friendly cell"

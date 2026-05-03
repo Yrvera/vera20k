@@ -10,7 +10,7 @@
 
 use crate::app::AppState;
 use crate::app_commands::preferred_local_owner_name;
-use crate::app_instances::in_view;
+use crate::app_instances::{in_view, is_entity_visible_for_local_owner_id};
 use crate::map::entities::EntityCategory;
 use crate::render::batch::SpriteInstance;
 use crate::sim::vision::FogState;
@@ -47,17 +47,19 @@ fn is_visible(
     pos: &crate::sim::components::Position,
     entity_owner: crate::sim::intern::InternedId,
     ignore_visibility: bool,
+    interner: &crate::sim::intern::StringInterner,
+    foundation: Option<&str>,
 ) -> bool {
-    if ignore_visibility {
-        return true;
-    }
-    let Some(owner) = local_owner else {
-        return true;
-    };
-    if owner == entity_owner {
-        return true;
-    }
-    fog.is_cell_revealed(owner, pos.rx, pos.ry) && !fog.is_cell_gap_covered(owner, pos.rx, pos.ry)
+    is_entity_visible_for_local_owner_id(
+        local_owner,
+        fog,
+        pos,
+        entity_owner,
+        ignore_visibility,
+        Some(interner),
+        EntityCategory::Structure,
+        foundation,
+    )
 }
 
 /// Compute the 8 corners of a building's isometric bounding box in screen space.
@@ -191,12 +193,15 @@ pub(crate) fn build_selection_bracket_instances(
             continue;
         }
         let type_str = sim.interner.resolve(e.type_ref);
+        let obj = state.rules.as_ref().and_then(|r| r.object(type_str));
         if !is_visible(
             local_owner_id,
             &sim.fog,
             &e.position,
             e.owner,
             ignore_visibility,
+            &sim.interner,
+            obj.map(|o| o.foundation.as_str()),
         ) {
             continue;
         }
@@ -204,7 +209,6 @@ pub(crate) fn build_selection_bracket_instances(
         let (sx, sy) = (e.position.screen_x, e.position.screen_y);
 
         // Look up foundation and Height from rules/art.
-        let obj = state.rules.as_ref().and_then(|r| r.object(type_str));
         let (fw_u, fh_u) = obj
             .map(|o| parse_foundation(&o.foundation))
             .unwrap_or((2, 2));

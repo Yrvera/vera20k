@@ -7,7 +7,7 @@ use crate::app_commands::preferred_local_owner_name;
 use crate::app_cursor::{
     current_cursor_feedback_kind, current_software_cursor_frame, cursor_id_for_feedback,
 };
-use crate::app_instances::in_view;
+use crate::app_instances::{in_view, is_entity_visible_for_local_owner_id};
 use crate::app_types::{CursorId, SoftwareCursorSequence};
 use crate::map::entities::EntityCategory;
 use crate::render::batch::{BatchTexture, SpriteInstance};
@@ -96,12 +96,16 @@ pub(crate) fn build_building_status_instances(
             continue;
         }
         let type_str = sim.interner.resolve(e.type_ref);
+        let obj = state.rules.as_ref().and_then(|r| r.object(type_str));
         if !status_entity_visible_plain(
             local_owner_id,
             &sim.fog,
             &e.position,
             e.owner,
             ignore_visibility,
+            &sim.interner,
+            e.category,
+            obj.map(|o| o.foundation.as_str()),
         ) {
             continue;
         }
@@ -287,6 +291,9 @@ pub(crate) fn build_occupant_pip_instances(
             &e.position,
             e.owner,
             ignore_visibility,
+            &sim.interner,
+            e.category,
+            None,
         ) {
             continue;
         }
@@ -389,6 +396,9 @@ pub(crate) fn build_unit_status_bg_instances(
             &e.position,
             e.owner,
             ignore_visibility,
+            &sim.interner,
+            e.category,
+            None,
         ) {
             continue;
         }
@@ -482,6 +492,9 @@ pub(crate) fn build_unit_status_fill_instances(
             &e.position,
             e.owner,
             ignore_visibility,
+            &sim.interner,
+            e.category,
+            None,
         ) {
             continue;
         }
@@ -654,6 +667,9 @@ pub(crate) fn build_cargo_pip_instances(state: &AppState, sw: f32, sh: f32) -> V
             &e.position,
             e.owner,
             ignore_visibility,
+            &sim.interner,
+            e.category,
+            None,
         ) {
             continue;
         }
@@ -822,18 +838,20 @@ fn status_entity_visible_plain(
     pos: &Position,
     entity_owner: crate::sim::intern::InternedId,
     ignore_visibility: bool,
+    interner: &crate::sim::intern::StringInterner,
+    category: EntityCategory,
+    foundation: Option<&str>,
 ) -> bool {
-    if ignore_visibility {
-        return true;
-    }
-    let Some(local_owner) = local_owner else {
-        return true;
-    };
-    if local_owner == entity_owner {
-        return true;
-    }
-    fog.is_cell_revealed(local_owner, pos.rx, pos.ry)
-        && !fog.is_cell_gap_covered(local_owner, pos.rx, pos.ry)
+    is_entity_visible_for_local_owner_id(
+        local_owner,
+        fog,
+        pos,
+        entity_owner,
+        ignore_visibility,
+        Some(interner),
+        category,
+        foundation,
+    )
 }
 
 pub(crate) fn health_fill_color(ratio: f32, condition_yellow: f32, condition_red: f32) -> [f32; 3] {

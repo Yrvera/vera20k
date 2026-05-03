@@ -141,15 +141,18 @@ impl OverlayGrid {
 
     /// Iterate all cells that have an overlay (for hashing).
     pub fn iter_occupied(&self) -> impl Iterator<Item = (u16, u16, &OverlayCell)> {
-        self.cells.iter().enumerate().filter_map(move |(idx, cell)| {
-            if cell.overlay_id.is_some() {
-                let rx = (idx % self.width as usize) as u16;
-                let ry = (idx / self.width as usize) as u16;
-                Some((rx, ry, cell))
-            } else {
-                None
-            }
-        })
+        self.cells
+            .iter()
+            .enumerate()
+            .filter_map(move |(idx, cell)| {
+                if cell.overlay_id.is_some() {
+                    let rx = (idx % self.width as usize) as u16;
+                    let ry = (idx / self.width as usize) as u16;
+                    Some((rx, ry, cell))
+                } else {
+                    None
+                }
+            })
     }
 
     pub fn width(&self) -> u16 {
@@ -299,9 +302,7 @@ fn damage_wall_recursive(
     let damage_level = new_data >> 4;
 
     // At penultimate damage level: chain-damage cardinal neighbors.
-    if flags.damage_levels > 2
-        && damage_level == (flags.damage_levels as u8).saturating_sub(1)
-    {
+    if flags.damage_levels > 2 && damage_level == (flags.damage_levels as u8).saturating_sub(1) {
         const CARDINAL: [(i32, i32); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
         for (dx, dy) in CARDINAL {
             let nx = rx as i32 + dx;

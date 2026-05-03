@@ -227,9 +227,9 @@ pub fn tick_ore_growth(
                         node.remaining = new_remaining.min(MAX_ORE_REMAINING);
                         // Sync overlay frame to match new density.
                         if let Some(grid) = overlay_grid.as_deref_mut() {
-                            let frame =
-                                (node.remaining / ORE_BASE_PER_LEVEL).saturating_sub(1).min(11)
-                                    as u8;
+                            let frame = (node.remaining / ORE_BASE_PER_LEVEL)
+                                .saturating_sub(1)
+                                .min(11) as u8;
                             grid.set_overlay_data(rx, ry, frame);
                         }
                     }
@@ -571,7 +571,14 @@ mod tests {
         nodes_fast.insert((50, 50), ore_node(120));
         let mut rng = SimRng::new(42);
 
-        tick_ore_growth(&fast, &mut state_fast, &mut nodes_fast, None, None, &mut rng);
+        tick_ore_growth(
+            &fast,
+            &mut state_fast,
+            &mut nodes_fast,
+            None,
+            None,
+            &mut rng,
+        );
         let fast_progress = state_fast.scan_cursor;
 
         // Slow rate: 100 minutes → scans very few cells per tick.
@@ -585,7 +592,14 @@ mod tests {
         nodes_slow.insert((50, 50), ore_node(120));
         let mut rng2 = SimRng::new(42);
 
-        tick_ore_growth(&slow, &mut state_slow, &mut nodes_slow, None, None, &mut rng2);
+        tick_ore_growth(
+            &slow,
+            &mut state_slow,
+            &mut nodes_slow,
+            None,
+            None,
+            &mut rng2,
+        );
         let slow_progress = state_slow.scan_cursor;
 
         assert!(

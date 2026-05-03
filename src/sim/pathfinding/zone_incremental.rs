@@ -202,12 +202,7 @@ fn update_category(
     };
     let ground_slice = zone_map.zone_ids_slice();
 
-    let mut new_adj = extract_adjacency(
-        ground_slice,
-        width,
-        height,
-        new_zone_count,
-    );
+    let mut new_adj = extract_adjacency(ground_slice, width, height, new_zone_count);
 
     // Inject bridge adjacency for ground-capable movement zones.
     if mz.can_use_bridges() {

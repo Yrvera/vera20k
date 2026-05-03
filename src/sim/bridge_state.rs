@@ -234,7 +234,8 @@ fn compute_bridge_endpoints(
                     continue;
                 }
                 if let Some(cell) = terrain.cell(nx, ny) {
-                    if !cell.ground_walk_blocked && !cell.is_water
+                    if !cell.ground_walk_blocked
+                        && !cell.is_water
                         && !ground_neighbors.contains(&(nx, ny))
                     {
                         ground_neighbors.push((nx, ny));
@@ -255,8 +256,8 @@ fn compute_bridge_endpoints(
             for j in (i + 1)..ground_neighbors.len() {
                 let (ax, ay) = ground_neighbors[i];
                 let (bx, by) = ground_neighbors[j];
-                let dist = (ax as i32 - bx as i32).unsigned_abs()
-                    + (ay as i32 - by as i32).unsigned_abs();
+                let dist =
+                    (ax as i32 - bx as i32).unsigned_abs() + (ay as i32 - by as i32).unsigned_abs();
                 if dist > best_dist {
                     best_dist = dist;
                     best_a = ground_neighbors[i];
@@ -377,13 +378,15 @@ mod tests {
     fn indestructible_bridge_ignores_damage() {
         let mut state =
             BridgeRuntimeState::from_resolved_terrain(&make_bridge_terrain(), false, 50);
-        assert!(state
-            .apply_damage(BridgeDamageEvent {
-                rx: 1,
-                ry: 0,
-                damage: 50,
-            })
-            .is_none());
+        assert!(
+            state
+                .apply_damage(BridgeDamageEvent {
+                    rx: 1,
+                    ry: 0,
+                    damage: 50,
+                })
+                .is_none()
+        );
         assert!(state.is_bridge_walkable(1, 0));
     }
 
@@ -391,13 +394,23 @@ mod tests {
     fn bridge_endpoints_detected() {
         let state = BridgeRuntimeState::from_resolved_terrain(&make_bridge_terrain(), true, 300);
         let records = state.endpoint_records();
-        assert_eq!(records.len(), 1, "should have exactly one bridge endpoint record");
+        assert_eq!(
+            records.len(),
+            1,
+            "should have exactly one bridge endpoint record"
+        );
         let rec = &records[0];
         assert!(rec.active);
         assert_eq!(rec.group_id, 1);
         let endpoints = [rec.endpoint_a, rec.endpoint_b];
-        assert!(endpoints.contains(&(0, 0)), "endpoint_a or _b should be (0,0)");
-        assert!(endpoints.contains(&(4, 0)), "endpoint_a or _b should be (4,0)");
+        assert!(
+            endpoints.contains(&(0, 0)),
+            "endpoint_a or _b should be (0,0)"
+        );
+        assert!(
+            endpoints.contains(&(4, 0)),
+            "endpoint_a or _b should be (4,0)"
+        );
     }
 
     #[test]

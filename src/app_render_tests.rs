@@ -8,6 +8,8 @@ use crate::app_sidebar_render::sync_armed_building_placement;
 use crate::map::entities::EntityCategory;
 use crate::map::houses::HouseAllianceMap;
 use crate::map::terrain;
+use crate::rules::ini_parser::IniFile;
+use crate::rules::ruleset::RuleSet;
 use crate::sim::components::Health;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::game_entity::GameEntity;
@@ -68,6 +70,19 @@ fn allied_fog_with_visible_cells(
         alliances,
         ..Default::default()
     }
+}
+
+fn test_rules_with_gapowr_foundation(foundation: &str) -> RuleSet {
+    let ini = IniFile::from_str(&format!(
+        "[InfantryTypes]\n0=E1\n\
+         [VehicleTypes]\n0=HTNK\n\
+         [AircraftTypes]\n\
+         [BuildingTypes]\n0=GAPOWR\n\
+         [GAPOWR]\nStrength=100\nArmor=wood\nFoundation={foundation}\n\
+         [E1]\nStrength=100\nArmor=none\n\
+         [HTNK]\nStrength=100\nArmor=heavy\n"
+    ));
+    RuleSet::from_ini(&ini).expect("test rules")
 }
 
 #[test]
@@ -380,6 +395,104 @@ fn test_hover_target_distinguishes_friendly_and_enemy_categories() {
     .expect("enemy hover");
     assert_eq!(enemy_hover.kind, HoverTargetKind::EnemyUnit);
     assert_eq!(enemy_hover.stable_id, 11);
+}
+
+#[test]
+fn test_hover_target_hides_enemy_after_los_loss_even_if_cell_was_revealed() {
+    let mut sim = Simulation::new();
+    let americans_id = sim.interner.intern("Americans");
+    let soviet_id = sim.interner.intern("Soviet");
+    let e1_id = sim.interner.intern("E1");
+
+    let (sx, sy) = terrain::iso_to_screen(20, 5, 0);
+    let mut enemy = GameEntity::new(
+        11,
+        20,
+        5,
+        0,
+        0,
+        soviet_id,
+        Health {
+            current: 100,
+            max: 100,
+        },
+        e1_id,
+        EntityCategory::Unit,
+        0,
+        5,
+        false,
+    );
+    enemy.position.screen_x = sx + terrain::TILE_WIDTH / 2.0;
+    enemy.position.screen_y = sy;
+    sim.entities.insert(enemy);
+    sim.fog.mark_visible_for_owner(americans_id, 20, 5);
+    sim.fog
+        .by_owner
+        .get_mut(&americans_id)
+        .expect("americans visibility")
+        .clear_all_visible();
+
+    let empty_heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    let hover = hover_target_at_point(
+        &sim,
+        sx + terrain::TILE_WIDTH / 2.0,
+        sy,
+        "Americans",
+        false,
+        None,
+        &empty_heights,
+        None,
+    )
+    .expect("hover result");
+    assert_eq!(hover.kind, HoverTargetKind::HiddenEnemy);
+}
+
+#[test]
+fn test_hover_target_structure_uses_visible_foundation_cell_not_anchor_only() {
+    let mut sim = Simulation::new();
+    let americans_id = sim.interner.intern("Americans");
+    let soviet_id = sim.interner.intern("Soviet");
+    let power_id = sim.interner.intern("GAPOWR");
+    let rules = test_rules_with_gapowr_foundation("2x2");
+
+    let (sx, sy) = terrain::iso_to_screen(10, 10, 0);
+    let mut enemy = GameEntity::new(
+        12,
+        10,
+        10,
+        0,
+        0,
+        soviet_id,
+        Health {
+            current: 100,
+            max: 100,
+        },
+        power_id,
+        EntityCategory::Structure,
+        0,
+        5,
+        false,
+    );
+    enemy.position.screen_x = sx;
+    enemy.position.screen_y = sy;
+    sim.entities.insert(enemy);
+    sim.fog.mark_visible_for_owner(americans_id, 11, 10);
+
+    let empty_heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    let (click_x, click_y) = terrain::iso_to_screen(11, 10, 0);
+    let hover = hover_target_at_point(
+        &sim,
+        click_x + terrain::TILE_WIDTH / 2.0,
+        click_y,
+        "Americans",
+        false,
+        Some(&rules),
+        &empty_heights,
+        None,
+    )
+    .expect("hover result");
+    assert_eq!(hover.kind, HoverTargetKind::EnemyStructure);
+    assert_eq!(hover.stable_id, 12);
 }
 
 #[test]
