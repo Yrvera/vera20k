@@ -334,6 +334,9 @@ pub struct CombatTickResult {
     pub fire_events: Vec<SimFireEvent>,
     /// Crewed buildings destroyed this tick — survivors should be ejected by the caller.
     pub destroyed_crewed_buildings: Vec<DestroyedCrewedBuilding>,
+    /// Garrisoned buildings destroyed this tick — occupants should be ejected
+    /// by the caller via `production::eject_destruction_garrison`.
+    pub destroyed_garrison_buildings: Vec<DestroyedGarrisonBuilding>,
     /// Explosion animations to spawn at death/impact locations.
     pub explosion_effects: Vec<ExplosionEffect>,
 }
@@ -365,6 +368,7 @@ struct DeathEffects {
     structure_destroyed: bool,
     spy_sat_reshroud_owners: Vec<InternedId>,
     destroyed_crewed_buildings: Vec<DestroyedCrewedBuilding>,
+    destroyed_garrison_buildings: Vec<DestroyedGarrisonBuilding>,
     explosion_effects: Vec<ExplosionEffect>,
     bridge_damage_events: Vec<BridgeDamageEvent>,
     death_sounds: Vec<(InternedId, u16, u16)>,
@@ -389,6 +393,7 @@ fn handle_entity_deaths(
     let mut despawned_ids: Vec<u64> = Vec::new();
     let mut spy_sat_reshroud_owners: Vec<InternedId> = Vec::new();
     let mut destroyed_crewed_buildings: Vec<DestroyedCrewedBuilding> = Vec::new();
+    let mut destroyed_garrison_buildings: Vec<DestroyedGarrisonBuilding> = Vec::new();
     let mut explosion_effects: Vec<ExplosionEffect> = Vec::new();
     let mut bridge_damage_events: Vec<BridgeDamageEvent> = Vec::new();
     let mut structure_destroyed: bool = false;
@@ -556,6 +561,7 @@ fn handle_entity_deaths(
         structure_destroyed,
         spy_sat_reshroud_owners,
         destroyed_crewed_buildings,
+        destroyed_garrison_buildings,
         explosion_effects,
         bridge_damage_events,
         death_sounds,
@@ -630,6 +636,7 @@ pub fn tick_combat_with_fog(
             bridge_damage_events: Vec::new(),
             fire_events: Vec::new(),
             destroyed_crewed_buildings: Vec::new(),
+            destroyed_garrison_buildings: Vec::new(),
             explosion_effects: Vec::new(),
         };
     }
@@ -1354,6 +1361,7 @@ pub fn tick_combat_with_fog(
         bridge_damage_events,
         fire_events,
         destroyed_crewed_buildings: death.destroyed_crewed_buildings,
+        destroyed_garrison_buildings: death.destroyed_garrison_buildings,
         explosion_effects: death.explosion_effects,
     }
 }
