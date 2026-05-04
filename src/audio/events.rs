@@ -67,6 +67,27 @@ pub enum GameSoundEvent {
         sound_id: String,
     },
 
+    /// EVA cue: a friendly building was garrisoned (first occupant entered).
+    StructureGarrisoned {
+        /// sound.ini ID for the EVA announcement.
+        sound_id: String,
+    },
+
+    /// EVA cue: a friendly garrison was abandoned (last occupant left).
+    StructureAbandoned {
+        /// sound.ini ID for the EVA announcement.
+        sound_id: String,
+    },
+
+    /// Positional SFX from [AudioVisual] BuildingGarrisonedSound — plays at
+    /// the building's screen position when the first occupant enters.
+    BuildingGarrisonedSfx {
+        /// sound.ini ID for the SFX (resolves "BuildingGarrisoned" → file).
+        sound_id: String,
+        /// Screen position for spatial audio.
+        screen_pos: Option<(f32, f32)>,
+    },
+
     /// Generic UI sound (button click, error beep, etc.).
     UiSound {
         /// sound.ini ID for the UI sound.
@@ -85,7 +106,10 @@ impl GameSoundEvent {
             | Self::EntityDestroyed { sound_id, .. }
             | Self::BuildingReady { sound_id }
             | Self::UnitReady { sound_id }
-            | Self::UiSound { sound_id } => sound_id,
+            | Self::UiSound { sound_id }
+            | Self::StructureGarrisoned { sound_id }
+            | Self::StructureAbandoned { sound_id }
+            | Self::BuildingGarrisonedSfx { sound_id, .. } => sound_id,
         }
     }
 
@@ -94,6 +118,7 @@ impl GameSoundEvent {
         match self {
             Self::WeaponFired { screen_pos, .. } => *screen_pos,
             Self::EntityDestroyed { screen_pos, .. } => *screen_pos,
+            Self::BuildingGarrisonedSfx { screen_pos, .. } => *screen_pos,
             _ => None,
         }
     }
@@ -139,6 +164,25 @@ mod tests {
             screen_pos: None,
         };
         assert_eq!(evt.sound_id(), "VGCannon1");
+    }
+
+    #[test]
+    fn test_structure_garrisoned_sound_id_accessor() {
+        let evt: GameSoundEvent = GameSoundEvent::StructureGarrisoned {
+            sound_id: "ceva107".to_string(),
+        };
+        assert_eq!(evt.sound_id(), "ceva107");
+        assert_eq!(evt.screen_pos(), None);
+    }
+
+    #[test]
+    fn test_building_garrisoned_sfx_screen_pos_accessor() {
+        let evt: GameSoundEvent = GameSoundEvent::BuildingGarrisonedSfx {
+            sound_id: "BuildingGarrisoned".to_string(),
+            screen_pos: Some((100.0, 200.0)),
+        };
+        assert_eq!(evt.sound_id(), "BuildingGarrisoned");
+        assert_eq!(evt.screen_pos(), Some((100.0, 200.0)));
     }
 
     #[test]

@@ -163,6 +163,43 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     HoverTargetKind::FriendlyUnit | HoverTargetKind::FriendlyStructure
                 )
             });
+            // Self-click on a deployable structure (garrisoned building → unload,
+            // ConYard → undeploy). Must run before the friendly-click fallthrough
+            // below — otherwise the click is treated as plain re-selection and the
+            // deploy cursor's action is lost.
+            if !force_fire && clicked_friendly {
+                if let Some(target) = hover.as_ref() {
+                    if selected_ids.contains(&target.stable_id) {
+                        if let Some(entity) = sim.entities.get(target.stable_id) {
+                            if entity.category == EntityCategory::Structure {
+                                let obj = state.rules.as_ref().and_then(|r| {
+                                    r.object(sim.interner.resolve(entity.type_ref))
+                                });
+                                let cmd = if obj.map_or(false, |o| o.can_be_occupied)
+                                    && entity.passenger_role.cargo().is_some_and(|c| !c.is_empty())
+                                {
+                                    Some(Command::UnloadPassengers {
+                                        transport_id: target.stable_id,
+                                    })
+                                } else if obj.map_or(false, |o| o.undeploys_into.is_some()) {
+                                    Some(Command::UndeployBuilding {
+                                        entity_id: target.stable_id,
+                                    })
+                                } else {
+                                    None
+                                };
+                                if let Some(cmd) = cmd {
+                                    queued.push(CommandEnvelope::new(owner_id, execute_tick, cmd));
+                                    for cmd in queued {
+                                        sim.pending_commands.push(cmd);
+                                    }
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             if select_friendly_clicks && clicked_friendly {
                 return false;
             }

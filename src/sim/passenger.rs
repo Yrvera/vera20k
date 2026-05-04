@@ -18,7 +18,7 @@ use crate::sim::components::OrderIntent;
 use crate::sim::game_entity::GameEntity;
 use crate::sim::intern::StringInterner;
 use crate::sim::movement;
-use crate::sim::world::Simulation;
+use crate::sim::world::{SimSoundEvent, Simulation};
 use crate::util::fixed_math::ra2_speed_to_leptons_per_second;
 use crate::util::lepton;
 
@@ -369,6 +369,33 @@ fn tick_boarding(sim: &mut Simulation, rules: &RuleSet) -> bool {
                     }
                 }
 
+                // Garrison sound/EVA: emit on first occupant entry only.
+                // gamemd AddGarrisonOccupant fires EVA + BuildingGarrisonedSound
+                // when count transitions 0→1; subsequent occupants are silent.
+                let first_occupant = sim
+                    .entities
+                    .get(transport_id)
+                    .and_then(|t| t.passenger_role.cargo())
+                    .map_or(false, |c| c.count() == 1);
+                if first_occupant
+                    && rules
+                        .object(&transport_type_str)
+                        .map_or(false, |o| o.can_be_occupied)
+                {
+                    if let Some(t) = sim.entities.get(transport_id) {
+                        let owner = t.owner;
+                        let rx = t.position.rx;
+                        let ry = t.position.ry;
+                        sim.sound_events
+                            .push(SimSoundEvent::StructureGarrisoned { owner });
+                        sim.sound_events.push(SimSoundEvent::BuildingGarrisonedSfx {
+                            owner,
+                            rx,
+                            ry,
+                        });
+                    }
+                }
+
                 // Hide the passenger entity.
                 if let Some(pax) = sim.entities.get_mut(pax_id) {
                     pax.passenger_role = PassengerRole::Inside { transport_id };
@@ -573,6 +600,14 @@ fn tick_unloading(sim: &mut Simulation, rules: &RuleSet) -> bool {
                 .unwrap_or(false);
             // Pre-intern "Neutral" as fallback for garrison ownership revert.
             let neutral_id = sim.interner.intern("Neutral");
+            // Capture pre-revert owner BEFORE the mut borrow — gamemd's
+            // CheckAutoSellOrCivilian fires EVA_StructureAbandoned for the
+            // player whose garrison just emptied, not the post-revert civilian.
+            let abandoning_owner = if is_garrison_building {
+                sim.entities.get(transport_id).map(|t| t.owner)
+            } else {
+                None
+            };
             if let Some(t) = sim.entities.get_mut(transport_id) {
                 t.order_intent = None;
                 if is_garrison_building {
@@ -580,6 +615,10 @@ fn tick_unloading(sim: &mut Simulation, rules: &RuleSet) -> bool {
                     t.owner = revert_owner;
                     ownership_changed = true;
                 }
+            }
+            if let Some(owner) = abandoning_owner {
+                sim.sound_events
+                    .push(SimSoundEvent::StructureAbandoned { owner });
             }
         }
     }
@@ -589,6 +628,91 @@ fn tick_unloading(sim: &mut Simulation, rules: &RuleSet) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rules::ini_parser::IniFile;
+    use crate::rules::ruleset::RuleSet;
+
+    fn garrison_test_rules() -> RuleSet {
+        let ini_str = "\
+[InfantryTypes]
+0=E1
+[VehicleTypes]
+[AircraftTypes]
+[BuildingTypes]
+0=CAGAS01
+
+[E1]
+Name=Conscript
+Cost=100
+Strength=125
+Armor=none
+Speed=4
+Occupier=yes
+
+[CAGAS01]
+Name=GasStation
+Cost=0
+Strength=400
+Armor=wood
+CanBeOccupied=yes
+CanOccupyFire=yes
+MaxNumberOccupants=5
+
+[General]
+[AudioVisual]
+BuildingGarrisonedSound=BuildingGarrisoned
+ConditionRed=25%
+ConditionYellow=50%
+";
+        let ini = IniFile::from_str(ini_str);
+        RuleSet::from_ini(&ini).expect("parse garrison test rules")
+    }
+
+    /// Spawn a CanBeOccupied building entity at (rx, ry) owned by `owner_str`.
+    fn spawn_garrison_building(
+        sim: &mut Simulation,
+        rules: &RuleSet,
+        type_ref: &str,
+        owner_str: &str,
+        rx: u16,
+        ry: u16,
+    ) -> u64 {
+        let stable_id = sim.allocate_stable_id();
+        let owner_id = sim.interner.intern(owner_str);
+        let type_id = sim.interner.intern(type_ref);
+        let mut ge = GameEntity::test_default(stable_id, type_ref, owner_str, rx, ry);
+        ge.owner = owner_id;
+        ge.type_ref = type_id;
+        let obj = rules.object(type_ref).expect("type exists");
+        ge.passenger_role = PassengerRole::Transport {
+            cargo: PassengerCargo::new(obj.max_number_occupants, 1),
+        };
+        sim.entities.insert(ge);
+        stable_id
+    }
+
+    /// Spawn an Occupier infantry entity at (rx, ry) in `Boarding::Entering` state
+    /// targeting `transport_id`.
+    fn spawn_boarding_occupier(
+        sim: &mut Simulation,
+        type_ref: &str,
+        owner_str: &str,
+        transport_id: u64,
+        rx: u16,
+        ry: u16,
+    ) -> u64 {
+        let stable_id = sim.allocate_stable_id();
+        let owner_id = sim.interner.intern(owner_str);
+        let type_id = sim.interner.intern(type_ref);
+        let mut ge = GameEntity::test_default(stable_id, type_ref, owner_str, rx, ry);
+        ge.owner = owner_id;
+        ge.type_ref = type_id;
+        ge.passenger_role = PassengerRole::Boarding {
+            target_transport_id: transport_id,
+            phase: BoardingPhase::Entering,
+        };
+        sim.entities.insert(ge);
+        stable_id
+    }
 
     #[test]
     fn test_cargo_new() {
@@ -674,5 +798,177 @@ mod tests {
         assert!(cargo.can_accept(1));
         cargo.board(100, 1);
         assert!(!cargo.can_accept(1));
+    }
+
+    #[test]
+    fn test_first_occupant_emits_garrisoned_event() {
+        let mut sim = Simulation::new();
+        let rules = garrison_test_rules();
+        let bldg = spawn_garrison_building(&mut sim, &rules, "CAGAS01", "Americans", 10, 10);
+        let _pax = spawn_boarding_occupier(&mut sim, "E1", "Americans", bldg, 10, 11);
+
+        tick_boarding(&mut sim, &rules);
+
+        let mut found_eva = false;
+        let mut found_sfx = false;
+        for evt in &sim.sound_events {
+            match evt {
+                SimSoundEvent::StructureGarrisoned { owner } => {
+                    assert_eq!(
+                        sim.interner.resolve(*owner),
+                        "Americans",
+                        "EVA owner should be the garrisoning player"
+                    );
+                    found_eva = true;
+                }
+                SimSoundEvent::BuildingGarrisonedSfx { owner, rx, ry } => {
+                    assert_eq!(sim.interner.resolve(*owner), "Americans");
+                    assert_eq!((*rx, *ry), (10, 10));
+                    found_sfx = true;
+                }
+                _ => {}
+            }
+        }
+        assert!(found_eva, "expected StructureGarrisoned event");
+        assert!(found_sfx, "expected BuildingGarrisonedSfx event");
+    }
+
+    #[test]
+    fn test_second_occupant_emits_no_garrison_event() {
+        let mut sim = Simulation::new();
+        let rules = garrison_test_rules();
+        let bldg = spawn_garrison_building(&mut sim, &rules, "CAGAS01", "Americans", 10, 10);
+
+        // Pre-populate with one occupant (simulating a previous successful board).
+        if let Some(t) = sim.entities.get_mut(bldg) {
+            if let Some(cargo) = t.passenger_role.cargo_mut() {
+                cargo.board(9999, 1);
+            }
+        }
+        let _pax = spawn_boarding_occupier(&mut sim, "E1", "Americans", bldg, 10, 11);
+
+        tick_boarding(&mut sim, &rules);
+
+        for evt in &sim.sound_events {
+            match evt {
+                SimSoundEvent::StructureGarrisoned { .. }
+                | SimSoundEvent::BuildingGarrisonedSfx { .. } => {
+                    panic!("garrison event should NOT emit on non-first occupant: {:?}", evt);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn test_last_occupant_emits_abandoned_event_with_pre_revert_owner() {
+        let mut sim = Simulation::new();
+        let rules = garrison_test_rules();
+        // Spawn a CanBeOccupied building owned by Americans (post-garrison state),
+        // with garrison_original_owner = Neutral (pre-garrison state).
+        let bldg = spawn_garrison_building(&mut sim, &rules, "CAGAS01", "Americans", 10, 10);
+        let neutral_id = sim.interner.intern("Neutral");
+        // Set up the "1 occupant inside, original owner = Neutral" state.
+        if let Some(t) = sim.entities.get_mut(bldg) {
+            t.garrison_original_owner = Some(neutral_id);
+            if let Some(cargo) = t.passenger_role.cargo_mut() {
+                // Pretend a passenger entity 12345 was inside.
+                cargo.board(12345, 1);
+            }
+            t.order_intent = Some(OrderIntent::Unloading);
+        }
+        // Spawn a placeholder passenger entity so unload_first finds it.
+        let pax_owner = sim.interner.intern("Americans");
+        let pax_type = sim.interner.intern("E1");
+        let mut pax = GameEntity::test_default(12345, "E1", "Americans", 9, 10);
+        pax.owner = pax_owner;
+        pax.type_ref = pax_type;
+        pax.passenger_role = PassengerRole::Inside { transport_id: bldg };
+        sim.entities.insert(pax);
+
+        // Tick unloading — should pop the one passenger and trigger empty branch.
+        tick_unloading(&mut sim, &rules);
+
+        // Assert StructureAbandoned was emitted with the PRE-revert owner (Americans).
+        let mut found = false;
+        for evt in &sim.sound_events {
+            if let SimSoundEvent::StructureAbandoned { owner } = evt {
+                assert_eq!(
+                    sim.interner.resolve(*owner),
+                    "Americans",
+                    "StructureAbandoned should carry pre-revert owner, not post-revert civilian"
+                );
+                found = true;
+            }
+        }
+        assert!(found, "expected StructureAbandoned event after last occupant left");
+
+        // Confirm the revert actually happened (post-revert owner = Neutral).
+        let bldg_owner_str = sim
+            .entities
+            .get(bldg)
+            .map(|t| sim.interner.resolve(t.owner).to_string())
+            .expect("building exists");
+        assert_eq!(bldg_owner_str, "Neutral", "owner should have reverted to Neutral");
+    }
+
+    #[test]
+    fn test_non_garrison_transport_emits_no_garrison_events() {
+        // Passengers=5 IFV-style transport (not CanBeOccupied) — no garrison events.
+        let ini_str = "\
+[InfantryTypes]
+0=E1
+[VehicleTypes]
+0=IFV
+[AircraftTypes]
+[BuildingTypes]
+
+[E1]
+Name=Conscript
+Cost=100
+Strength=125
+Armor=none
+Speed=4
+Occupier=yes
+
+[IFV]
+Name=IFV
+Cost=600
+Strength=200
+Armor=light
+Speed=8
+Passengers=5
+
+[General]
+[AudioVisual]
+ConditionRed=25%
+ConditionYellow=50%
+";
+        let ini = IniFile::from_str(ini_str);
+        let rules = RuleSet::from_ini(&ini).expect("parse");
+        let mut sim = Simulation::new();
+        let bldg_id = sim.allocate_stable_id();
+        let owner_id = sim.interner.intern("Americans");
+        let type_id = sim.interner.intern("IFV");
+        let mut bldg = GameEntity::test_default(bldg_id, "IFV", "Americans", 10, 10);
+        bldg.owner = owner_id;
+        bldg.type_ref = type_id;
+        bldg.passenger_role = PassengerRole::Transport {
+            cargo: PassengerCargo::new(5, 0),
+        };
+        sim.entities.insert(bldg);
+        let _pax = spawn_boarding_occupier(&mut sim, "E1", "Americans", bldg_id, 10, 11);
+
+        tick_boarding(&mut sim, &rules);
+
+        for evt in &sim.sound_events {
+            match evt {
+                SimSoundEvent::StructureGarrisoned { .. }
+                | SimSoundEvent::BuildingGarrisonedSfx { .. } => {
+                    panic!("non-garrison transport should not emit garrison events: {:?}", evt);
+                }
+                _ => {}
+            }
+        }
     }
 }
