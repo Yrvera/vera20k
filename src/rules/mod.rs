@@ -24,6 +24,8 @@ pub mod ini_parser;
 pub mod jumpjet_params;
 pub mod locomotor_type;
 pub mod object_type;
+pub mod particle_system_type;
+pub mod particle_type;
 pub mod projectile_type;
 pub mod radar_event_config;
 pub mod ruleset;
