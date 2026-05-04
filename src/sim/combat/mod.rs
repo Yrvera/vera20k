@@ -289,6 +289,28 @@ pub struct DestroyedCrewedBuilding {
     pub z: u8,
 }
 
+/// A `CanBeOccupied` building destroyed in combat with live occupants —
+/// garrison ejection is deferred to the caller (which has access to
+/// `Simulation` for repositioning, occupancy registration, and scatter).
+///
+/// Occupants are placed at random cells within the building's foundation
+/// footprint, in LIFO order, inheriting the building's current owner (the
+/// garrisoning player).
+pub struct DestroyedGarrisonBuilding {
+    pub building_id: u64,
+    pub type_id: InternedId,
+    /// Building's owner at time of death — ejected infantry inherit this.
+    pub owner: InternedId,
+    pub rx: u16,
+    pub ry: u16,
+    pub z: u8,
+    pub foundation_w: u16,
+    pub foundation_h: u16,
+    /// Snapshot of `cargo.passengers` at time of death. LIFO order preserved
+    /// (eject helper iterates in reverse).
+    pub passenger_ids: Vec<u64>,
+}
+
 /// Explosion animation to spawn at a world position (deferred to caller
 /// which has access to `Simulation` for WorldEffect spawning).
 pub struct ExplosionEffect {
@@ -312,6 +334,9 @@ pub struct CombatTickResult {
     pub fire_events: Vec<SimFireEvent>,
     /// Crewed buildings destroyed this tick — survivors should be ejected by the caller.
     pub destroyed_crewed_buildings: Vec<DestroyedCrewedBuilding>,
+    /// Garrisoned buildings destroyed this tick — occupants should be ejected
+    /// by the caller via `production::eject_destruction_garrison`.
+    pub destroyed_garrison_buildings: Vec<DestroyedGarrisonBuilding>,
     /// Explosion animations to spawn at death/impact locations.
     pub explosion_effects: Vec<ExplosionEffect>,
 }
@@ -343,6 +368,7 @@ struct DeathEffects {
     structure_destroyed: bool,
     spy_sat_reshroud_owners: Vec<InternedId>,
     destroyed_crewed_buildings: Vec<DestroyedCrewedBuilding>,
+    destroyed_garrison_buildings: Vec<DestroyedGarrisonBuilding>,
     explosion_effects: Vec<ExplosionEffect>,
     bridge_damage_events: Vec<BridgeDamageEvent>,
     death_sounds: Vec<(InternedId, u16, u16)>,
@@ -367,6 +393,7 @@ fn handle_entity_deaths(
     let mut despawned_ids: Vec<u64> = Vec::new();
     let mut spy_sat_reshroud_owners: Vec<InternedId> = Vec::new();
     let mut destroyed_crewed_buildings: Vec<DestroyedCrewedBuilding> = Vec::new();
+    let mut destroyed_garrison_buildings: Vec<DestroyedGarrisonBuilding> = Vec::new();
     let mut explosion_effects: Vec<ExplosionEffect> = Vec::new();
     let mut bridge_damage_events: Vec<BridgeDamageEvent> = Vec::new();
     let mut structure_destroyed: bool = false;
@@ -412,20 +439,60 @@ fn handle_entity_deaths(
                 }
             }
 
-            // Kill all passengers inside a destroyed transport/garrison.
+            // Snapshot cargo before the building entity is despawned. Used to
+            // either eject garrison occupants alive (CanBeOccupied buildings)
+            // or kill all riders (transports — current behavior).
             let passenger_ids: Vec<u64> = entities
                 .get(dead_id)
                 .and_then(|e| e.passenger_role.cargo())
                 .map(|c| c.passengers.clone())
                 .unwrap_or_default();
-            for &pid in &passenger_ids {
-                if let Some(pax) = entities.get_mut(pid) {
-                    pax.health.current = 0;
-                    pax.dying = true;
-                    pax.passenger_role = PassengerRole::None;
-                    pax.attack_target = None;
-                    pax.movement_target = None;
-                    pax.selected = false;
+
+            // Branch: garrisoned CanBeOccupied buildings eject occupants at
+            // random foundation cells (handled post-combat by the world layer
+            // via production::eject_destruction_garrison). Transports continue
+            // to kill all riders — that's a separate parity gap to fix later.
+            //
+            // Re-resolve the type string here because earlier mutable borrows
+            // of `interner` (death_weapon_aoe, intern calls) ended its prior
+            // immutable borrow.
+            let type_id_str_for_branch = interner.resolve(type_id);
+            let is_garrison_building = rules
+                .object(type_id_str_for_branch)
+                .map(|obj| obj.can_be_occupied)
+                .unwrap_or(false)
+                && category == EntityCategory::Structure
+                && !passenger_ids.is_empty();
+
+            if is_garrison_building {
+                let (foundation_w, foundation_h) = rules
+                    .object(type_id_str_for_branch)
+                    .map(|obj| {
+                        crate::sim::production::foundation_dimensions(&obj.foundation)
+                    })
+                    .unwrap_or((1, 1));
+                destroyed_garrison_buildings.push(DestroyedGarrisonBuilding {
+                    building_id: dead_id,
+                    type_id,
+                    owner,
+                    rx,
+                    ry,
+                    z,
+                    foundation_w,
+                    foundation_h,
+                    passenger_ids,
+                });
+            } else {
+                // Existing transport / non-garrison cargo behavior: kill riders.
+                for &pid in &passenger_ids {
+                    if let Some(pax) = entities.get_mut(pid) {
+                        pax.health.current = 0;
+                        pax.dying = true;
+                        pax.passenger_role = PassengerRole::None;
+                        pax.attack_target = None;
+                        pax.movement_target = None;
+                        pax.selected = false;
+                    }
                 }
             }
 
@@ -534,6 +601,7 @@ fn handle_entity_deaths(
         structure_destroyed,
         spy_sat_reshroud_owners,
         destroyed_crewed_buildings,
+        destroyed_garrison_buildings,
         explosion_effects,
         bridge_damage_events,
         death_sounds,
@@ -608,6 +676,7 @@ pub fn tick_combat_with_fog(
             bridge_damage_events: Vec::new(),
             fire_events: Vec::new(),
             destroyed_crewed_buildings: Vec::new(),
+            destroyed_garrison_buildings: Vec::new(),
             explosion_effects: Vec::new(),
         };
     }
@@ -1332,6 +1401,7 @@ pub fn tick_combat_with_fog(
         bridge_damage_events,
         fire_events,
         destroyed_crewed_buildings: death.destroyed_crewed_buildings,
+        destroyed_garrison_buildings: death.destroyed_garrison_buildings,
         explosion_effects: death.explosion_effects,
     }
 }

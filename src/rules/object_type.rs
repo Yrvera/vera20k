@@ -217,6 +217,16 @@ pub struct ObjectType {
     pub die_sound: Option<String>,
     /// Sound ID played while this entity moves (looping engine/footstep).
     pub move_sound: Option<String>,
+    /// Sound ID played when this unit reacts to taking fire (fear cry).
+    pub voice_feedback: Option<String>,
+    /// Sound ID played when this unit performs a special attack.
+    pub voice_special_attack: Option<String>,
+    /// Sound ID played when this entity is crushed by a vehicle (squish).
+    pub crush_sound: Option<String>,
+    /// Sound ID played when this unit deploys (e.g. GI sandbag-up).
+    pub deploy_sound: Option<String>,
+    /// Sound ID played when this unit undeploys.
+    pub undeploy_sound: Option<String>,
     /// Whether this unit has an independently rotating turret.
     /// Parsed from rules.ini `Turret=yes`. Only meaningful for vehicles/aircraft.
     pub has_turret: bool,
@@ -669,6 +679,11 @@ impl ObjectType {
             voice_attack: section.get("VoiceAttack").map(|s| s.to_string()),
             die_sound: section.get("DieSound").map(|s| s.to_string()),
             move_sound: section.get("MoveSound").map(|s| s.to_string()),
+            voice_feedback: section.get("VoiceFeedback").map(|s| s.to_string()),
+            voice_special_attack: section.get("VoiceSpecialAttack").map(|s| s.to_string()),
+            crush_sound: section.get("CrushSound").map(|s| s.to_string()),
+            deploy_sound: section.get("DeploySound").map(|s| s.to_string()),
+            undeploy_sound: section.get("UndeploySound").map(|s| s.to_string()),
             has_turret: section.get_bool("Turret").unwrap_or(false),
             turret_rot: section.get_i32("ROT").unwrap_or(0),
             turret_anim: section

@@ -402,6 +402,41 @@ pub fn collect_crush_victims(
     victims
 }
 
+/// Emit `EntityCrushed` (CrushSound) and `EntityDied` (DieSound) sound
+/// events for a single crush victim. Each event is skipped if the
+/// corresponding `ObjectType` field is `None`. Caller must invoke BEFORE
+/// removing the victim from the EntityStore so victim.position and
+/// victim.type_ref are still valid.
+pub fn emit_crush_kill_sounds(
+    victim: &crate::sim::game_entity::GameEntity,
+    rules: &crate::rules::ruleset::RuleSet,
+    interner: &mut crate::sim::intern::StringInterner,
+    sound_events: &mut Vec<crate::sim::world::SimSoundEvent>,
+) {
+    let rx = victim.position.rx;
+    let ry = victim.position.ry;
+    let type_str = interner.resolve(victim.type_ref).to_string();
+    let Some(obj) = rules.object(&type_str) else {
+        return;
+    };
+    if let Some(ref crush_sound) = obj.crush_sound {
+        let id = interner.intern(crush_sound);
+        sound_events.push(crate::sim::world::SimSoundEvent::EntityCrushed {
+            crush_sound_id: id,
+            rx,
+            ry,
+        });
+    }
+    if let Some(ref die_sound) = obj.die_sound {
+        let id = interner.intern(die_sound);
+        sound_events.push(crate::sim::world::SimSoundEvent::EntityDied {
+            die_sound_id: id,
+            rx,
+            ry,
+        });
+    }
+}
+
 /// Check whether a mover can enter a cell after crushing all occupants.
 ///
 /// Returns `true` if the mover can crush everything in the cell (i.e. the cell
@@ -1201,5 +1236,108 @@ mod tests {
             &mut rng,
         );
         assert_eq!(result, None);
+    }
+
+    // -- emit_crush_kill_sounds tests --
+
+    fn build_test_rules(crush_sound: Option<&str>, die_sound: Option<&str>) -> crate::rules::ruleset::RuleSet {
+        let mut e1 = String::from("Strength=125\nArmor=none\nSpeed=4\n");
+        if let Some(s) = crush_sound {
+            e1.push_str(&format!("CrushSound={}\n", s));
+        }
+        if let Some(s) = die_sound {
+            e1.push_str(&format!("DieSound={}\n", s));
+        }
+        let ini_text = format!(
+            "[InfantryTypes]\n0=E1\n\n[VehicleTypes]\n\n[AircraftTypes]\n\n[BuildingTypes]\n\n[E1]\n{}\n",
+            e1
+        );
+        let ini = crate::rules::ini_parser::IniFile::from_str(&ini_text);
+        crate::rules::ruleset::RuleSet::from_ini(&ini).expect("test rules build")
+    }
+
+    fn build_victim(interner: &mut crate::sim::intern::StringInterner, rx: u16, ry: u16) -> GameEntity {
+        let mut victim = infantry(1, rx, ry, 2);
+        victim.type_ref = interner.intern("E1");
+        victim
+    }
+
+    #[test]
+    fn emit_crush_kill_sounds_emits_both_when_both_keys_set() {
+        let rules = build_test_rules(Some("InfantrySquish"), Some("GIDie"));
+        let mut interner = crate::sim::intern::StringInterner::new();
+        let victim = build_victim(&mut interner, 5, 5);
+        let mut events = Vec::new();
+
+        emit_crush_kill_sounds(&victim, &rules, &mut interner, &mut events);
+
+        assert_eq!(events.len(), 2, "expected 2 events, got {:?}", events);
+        let crushed = events.iter().find_map(|e| match e {
+            crate::sim::world::SimSoundEvent::EntityCrushed {
+                crush_sound_id,
+                rx,
+                ry,
+            } => Some((*crush_sound_id, *rx, *ry)),
+            _ => None,
+        });
+        let (cid, crx, cry) = crushed.expect("missing EntityCrushed");
+        assert_eq!(interner.resolve(cid), "InfantrySquish");
+        assert_eq!((crx, cry), (5, 5));
+
+        let died = events.iter().find_map(|e| match e {
+            crate::sim::world::SimSoundEvent::EntityDied {
+                die_sound_id,
+                rx,
+                ry,
+            } => Some((*die_sound_id, *rx, *ry)),
+            _ => None,
+        });
+        let (did, drx, dry) = died.expect("missing EntityDied");
+        assert_eq!(interner.resolve(did), "GIDie");
+        assert_eq!((drx, dry), (5, 5));
+    }
+
+    #[test]
+    fn emit_crush_kill_sounds_skips_crush_when_field_is_none() {
+        let rules = build_test_rules(None, Some("GIDie"));
+        let mut interner = crate::sim::intern::StringInterner::new();
+        let victim = build_victim(&mut interner, 7, 9);
+        let mut events = Vec::new();
+
+        emit_crush_kill_sounds(&victim, &rules, &mut interner, &mut events);
+
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            events[0],
+            crate::sim::world::SimSoundEvent::EntityDied { .. }
+        ));
+    }
+
+    #[test]
+    fn emit_crush_kill_sounds_skips_die_when_field_is_none() {
+        let rules = build_test_rules(Some("InfantrySquish"), None);
+        let mut interner = crate::sim::intern::StringInterner::new();
+        let victim = build_victim(&mut interner, 3, 4);
+        let mut events = Vec::new();
+
+        emit_crush_kill_sounds(&victim, &rules, &mut interner, &mut events);
+
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            events[0],
+            crate::sim::world::SimSoundEvent::EntityCrushed { .. }
+        ));
+    }
+
+    #[test]
+    fn emit_crush_kill_sounds_no_events_when_both_none() {
+        let rules = build_test_rules(None, None);
+        let mut interner = crate::sim::intern::StringInterner::new();
+        let victim = build_victim(&mut interner, 1, 1);
+        let mut events = Vec::new();
+
+        emit_crush_kill_sounds(&victim, &rules, &mut interner, &mut events);
+
+        assert!(events.is_empty(), "expected no events, got {:?}", events);
     }
 }

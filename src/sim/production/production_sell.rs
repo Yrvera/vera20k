@@ -5,6 +5,7 @@
 use crate::map::entities::EntityCategory;
 use crate::rules::object_type::ObjectCategory;
 use crate::rules::ruleset::RuleSet;
+use crate::sim::combat::DestroyedGarrisonBuilding;
 use crate::sim::components::{Health, Position};
 use crate::sim::intern::InternedId;
 use crate::sim::movement;
@@ -367,6 +368,138 @@ fn eject_garrison_occupants(sim: &mut Simulation, rules: &RuleSet, building_id: 
         if let Some(orig) = original_owner {
             building.owner = orig;
         }
+    }
+
+    ejected
+}
+
+/// Eject garrison occupants from a building destroyed in combat.
+///
+/// Mirrors the original engine's destruction-eject path:
+/// - Iterates occupants in LIFO order.
+/// - Places each at a random cell within the building's foundation footprint
+///   (interior cells — perimeter is the sell path's strategy).
+/// - Owner = building's current owner at time of death (no revert semantics —
+///   the building is gone).
+/// - Successful placement issues a scatter move to a random adjacent cell.
+/// - Placement failure (no free foundation cell) marks the occupant dying;
+///   no parachute fallback (that's sell-only, and our parachute system isn't
+///   implemented).
+///
+/// **Determinism — RNG draw order:**
+/// 1. Fisher-Yates shuffle of foundation cell offsets (one `next_u32` per swap,
+///    `(w*h - 1)` swaps total).
+/// 2. Per occupant (in LIFO): one `next_u32` for scatter direction.
+///
+/// Returns the count of occupants successfully ejected (excludes those killed
+/// by full-foundation fallback).
+pub fn eject_destruction_garrison(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    event: &DestroyedGarrisonBuilding,
+) -> usize {
+    if event.passenger_ids.is_empty() || event.foundation_w == 0 || event.foundation_h == 0 {
+        return 0;
+    }
+
+    // Build interior-foundation cell list, then Fisher-Yates shuffle it.
+    let mut cells: Vec<(u16, u16)> =
+        Vec::with_capacity(event.foundation_w as usize * event.foundation_h as usize);
+    for dy in 0..event.foundation_h {
+        for dx in 0..event.foundation_w {
+            cells.push((event.rx + dx, event.ry + dy));
+        }
+    }
+    for i in (1..cells.len()).rev() {
+        let j = (sim.rng.next_u32() as usize) % (i + 1);
+        cells.swap(i, j);
+    }
+
+    // Collect currently occupied cells to avoid stacking on top of other entities.
+    let occupied_cells: Vec<(u16, u16)> = sim
+        .entities
+        .values()
+        .filter(|e| !e.passenger_role.is_inside_transport() && !e.dying && e.is_alive())
+        .map(|e| (e.position.rx, e.position.ry))
+        .collect();
+
+    let mut ejected: usize = 0;
+    let mut used_cells: Vec<(u16, u16)> = Vec::new();
+
+    // LIFO: iterate passengers in reverse — matches the original high→low
+    // index iteration on the occupant vector.
+    for &pax_id in event.passenger_ids.iter().rev() {
+        let placement = cells.iter().find(|&&(cx, cy)| {
+            !occupied_cells.iter().any(|&(ox, oy)| ox == cx && oy == cy)
+                && !used_cells.iter().any(|&(ux, uy)| ux == cx && uy == cy)
+        });
+
+        let Some(&(spawn_rx, spawn_ry)) = placement else {
+            // No free cell — kill the occupant. No scatter RNG draw on
+            // failure (matches the destruction eject's no-scatter-on-fail).
+            if let Some(pax) = sim.entities.get_mut(pax_id) {
+                pax.health.current = 0;
+                pax.dying = true;
+                pax.passenger_role = PassengerRole::None;
+                pax.attack_target = None;
+                pax.movement_target = None;
+                pax.selected = false;
+            }
+            continue;
+        };
+        used_cells.push((spawn_rx, spawn_ry));
+
+        // Place infantry on the map.
+        let pax_sub_cell = if let Some(pax) = sim.entities.get_mut(pax_id) {
+            pax.passenger_role = PassengerRole::None;
+            pax.owner = event.owner;
+            pax.position.rx = spawn_rx;
+            pax.position.ry = spawn_ry;
+            pax.position.z = event.z;
+            let (sub_x, sub_y) = lepton::subcell_lepton_offset(pax.sub_cell);
+            pax.position.sub_x = sub_x;
+            pax.position.sub_y = sub_y;
+            pax.position.refresh_screen_coords();
+            pax.sub_cell
+        } else {
+            continue;
+        };
+
+        sim.occupancy.add(
+            spawn_rx,
+            spawn_ry,
+            pax_id,
+            crate::sim::movement::locomotor::MovementLayer::Ground,
+            pax_sub_cell,
+        );
+
+        // Scatter: short move to a random adjacent cell.
+        let scatter_speed = sim
+            .entities
+            .get(pax_id)
+            .and_then(|e| rules.object(sim.interner.resolve(e.type_ref)))
+            .map(|obj| ra2_speed_to_leptons_per_second(obj.speed))
+            .unwrap_or(ra2_speed_to_leptons_per_second(4));
+        let start_dir = sim.rng.next_u32() as usize % 8;
+        for i in 0..8 {
+            let (dx, dy) = NEIGHBORS[(start_dir + i) % 8];
+            let sx = spawn_rx as i32 + dx as i32;
+            let sy = spawn_ry as i32 + dy as i32;
+            if sx >= 0 && sy >= 0 {
+                let dest = (sx as u16, sy as u16);
+                let blocked = occupied_cells
+                    .iter()
+                    .any(|&(ox, oy)| ox == dest.0 && oy == dest.1)
+                    || used_cells
+                        .iter()
+                        .any(|&(ux, uy)| ux == dest.0 && uy == dest.1);
+                if !blocked {
+                    movement::issue_direct_move(&mut sim.entities, pax_id, dest, scatter_speed);
+                    break;
+                }
+            }
+        }
+        ejected += 1;
     }
 
     ejected

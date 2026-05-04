@@ -55,6 +55,14 @@ pub enum GameSoundEvent {
         screen_pos: Option<(f32, f32)>,
     },
 
+    /// An entity was crushed by a vehicle — play CrushSound (the squish).
+    EntityCrushed {
+        /// sound.ini ID from the entity's CrushSound= field.
+        sound_id: String,
+        /// Screen position of the sound source (for spatial audio).
+        screen_pos: Option<(f32, f32)>,
+    },
+
     /// A building finished construction — play the EVA "Construction complete" or similar.
     BuildingReady {
         /// sound.ini ID for the completion announcement.
@@ -104,6 +112,7 @@ impl GameSoundEvent {
             | Self::UnitMoveOrder { sound_id }
             | Self::UnitAttackOrder { sound_id }
             | Self::EntityDestroyed { sound_id, .. }
+            | Self::EntityCrushed { sound_id, .. }
             | Self::BuildingReady { sound_id }
             | Self::UnitReady { sound_id }
             | Self::UiSound { sound_id }
@@ -118,6 +127,7 @@ impl GameSoundEvent {
         match self {
             Self::WeaponFired { screen_pos, .. } => *screen_pos,
             Self::EntityDestroyed { screen_pos, .. } => *screen_pos,
+            Self::EntityCrushed { screen_pos, .. } => *screen_pos,
             Self::BuildingGarrisonedSfx { screen_pos, .. } => *screen_pos,
             _ => None,
         }

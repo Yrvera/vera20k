@@ -187,7 +187,7 @@ pub fn facing_from_delta(dx: i32, dy: i32) -> u8 {
 pub fn tick_movement(
     entities: &mut EntityStore,
     tick_ms: u32,
-    interner: &crate::sim::intern::StringInterner,
+    interner: &mut crate::sim::intern::StringInterner,
 ) {
     let empty_costs: BTreeMap<SpeedType, TerrainCostGrid> = BTreeMap::new();
     let empty_alliances: HouseAllianceMap = HouseAllianceMap::new();
@@ -220,8 +220,9 @@ pub fn tick_movement_with_grid(
     rng: &mut SimRng,
     tick_ms: u32,
     sim_tick: u64,
-    interner: &crate::sim::intern::StringInterner,
+    interner: &mut crate::sim::intern::StringInterner,
 ) -> MovementTickStats {
+    let mut sound_events: Vec<crate::sim::world::SimSoundEvent> = Vec::new();
     tick_movement_with_grids(
         entities,
         path_grid,
@@ -238,6 +239,8 @@ pub fn tick_movement_with_grid(
         9,        // Default PathDelay
         60,       // Default BlockagePathDelay
         interner,
+        None, // No RuleSet in legacy wrapper — crush sounds suppressed
+        &mut sound_events,
     )
 }
 

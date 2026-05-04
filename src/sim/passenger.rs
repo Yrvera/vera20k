@@ -653,6 +653,7 @@ Name=GasStation
 Cost=0
 Strength=400
 Armor=wood
+Foundation=2x2
 CanBeOccupied=yes
 CanOccupyFire=yes
 MaxNumberOccupants=5
@@ -970,5 +971,158 @@ ConditionYellow=50%
                 _ => {}
             }
         }
+    }
+
+    /// Helper: insert an Occupier infantry directly into a garrison building's
+    /// cargo (skipping the boarding flow). Used by destruction-eject tests.
+    fn place_inside_garrison(
+        sim: &mut Simulation,
+        rules: &RuleSet,
+        building_id: u64,
+        type_ref: &str,
+        owner_str: &str,
+    ) -> u64 {
+        let stable_id = sim.allocate_stable_id();
+        let owner_id = sim.interner.intern(owner_str);
+        let type_id = sim.interner.intern(type_ref);
+        let mut ge = GameEntity::test_default(stable_id, type_ref, owner_str, 0, 0);
+        ge.owner = owner_id;
+        ge.type_ref = type_id;
+        ge.passenger_role = PassengerRole::Inside {
+            transport_id: building_id,
+        };
+        sim.entities.insert(ge);
+        // Add to building's cargo.
+        if let Some(bldg) = sim.entities.get_mut(building_id) {
+            if let Some(cargo) = bldg.passenger_role.cargo_mut() {
+                let obj = rules.object(type_ref).expect("type exists");
+                cargo.board(stable_id, obj.size.max(1));
+            }
+        }
+        // Building inherits garrisoning player's ownership (sim does this on
+        // first board). For destruction tests we set it explicitly here, and
+        // also set category=Structure since GameEntity::test_default leaves it
+        // as Unit — the death-loop branch keys on Structure.
+        if let Some(bldg) = sim.entities.get_mut(building_id) {
+            if bldg.garrison_original_owner.is_none() {
+                bldg.garrison_original_owner = Some(bldg.owner);
+            }
+            bldg.owner = owner_id;
+            bldg.category = crate::map::entities::EntityCategory::Structure;
+        }
+        stable_id
+    }
+
+    /// Construct a `DestroyedGarrisonBuilding` event from a still-alive
+    /// building's state, then despawn the building (mirroring the combat
+    /// death-loop side effects) and call the eject helper. This tests the
+    /// helper end-to-end without needing a full combat tick + damage events.
+    fn eject_via_event(
+        sim: &mut Simulation,
+        rules: &RuleSet,
+        building_id: u64,
+    ) -> Vec<u64> {
+        let event = {
+            let bldg = sim.entities.get(building_id).expect("building present");
+            let cargo = bldg.passenger_role.cargo().expect("cargo present");
+            let obj = rules
+                .object(sim.interner.resolve(bldg.type_ref))
+                .expect("type exists");
+            let (foundation_w, foundation_h) =
+                crate::sim::production::foundation_dimensions(&obj.foundation);
+            crate::sim::combat::DestroyedGarrisonBuilding {
+                building_id,
+                type_id: bldg.type_ref,
+                owner: bldg.owner,
+                rx: bldg.position.rx,
+                ry: bldg.position.ry,
+                z: bldg.position.z,
+                foundation_w,
+                foundation_h,
+                passenger_ids: cargo.passengers.clone(),
+            }
+        };
+        let survivor_ids = event.passenger_ids.clone();
+        sim.entities.remove(building_id);
+        crate::sim::production::eject_destruction_garrison(sim, rules, &event);
+        survivor_ids
+    }
+
+    #[test]
+    fn test_garrison_eject_on_destruction_happy_path() {
+        let rules = garrison_test_rules();
+        let mut sim = Simulation::new();
+        let building_id =
+            spawn_garrison_building(&mut sim, &rules, "CAGAS01", "Allied", 10, 10);
+        let pax1 = place_inside_garrison(&mut sim, &rules, building_id, "E1", "Allied");
+        let pax2 = place_inside_garrison(&mut sim, &rules, building_id, "E1", "Allied");
+        let pax3 = place_inside_garrison(&mut sim, &rules, building_id, "E1", "Allied");
+
+        let survivor_ids = eject_via_event(&mut sim, &rules, building_id);
+        assert_eq!(survivor_ids.len(), 3, "all 3 occupants captured");
+
+        // Building gone.
+        assert!(sim.entities.get(building_id).is_none(), "building despawned");
+
+        for pid in [pax1, pax2, pax3] {
+            let pax = sim.entities.get(pid).expect("survivor present");
+            assert!(pax.is_alive(), "occupant {pid} should be alive");
+            assert!(!pax.dying, "occupant {pid} should not be dying");
+            assert!(matches!(pax.passenger_role, PassengerRole::None));
+            assert_eq!(
+                sim.interner.resolve(pax.owner),
+                "Allied",
+                "occupant {pid} should retain garrisoning owner"
+            );
+            // Position within 2x2 foundation footprint at (10,10).
+            assert!(
+                pax.position.rx == 10 || pax.position.rx == 11,
+                "occupant {pid} rx {} outside foundation",
+                pax.position.rx
+            );
+            assert!(
+                pax.position.ry == 10 || pax.position.ry == 11,
+                "occupant {pid} ry {} outside foundation",
+                pax.position.ry
+            );
+        }
+
+        // Each occupant should be at a unique cell (LIFO + used_cells dedup).
+        let mut positions: Vec<(u16, u16)> = [pax1, pax2, pax3]
+            .iter()
+            .map(|&p| {
+                let pe = sim.entities.get(p).unwrap();
+                (pe.position.rx, pe.position.ry)
+            })
+            .collect();
+        positions.sort();
+        positions.dedup();
+        assert_eq!(positions.len(), 3, "all occupants on distinct cells");
+    }
+
+    #[test]
+    fn test_garrison_eject_blocked_foundation_kills_occupants() {
+        let rules = garrison_test_rules();
+        let mut sim = Simulation::new();
+        let building_id =
+            spawn_garrison_building(&mut sim, &rules, "CAGAS01", "Allied", 10, 10);
+        let pax = place_inside_garrison(&mut sim, &rules, building_id, "E1", "Allied");
+
+        // Block all 4 foundation cells of the 2x2 building with live entities.
+        let owner_id = sim.interner.intern("Allied");
+        for (bx, by) in [(10, 10), (11, 10), (10, 11), (11, 11)] {
+            let blocker_id = sim.allocate_stable_id();
+            let mut blocker = GameEntity::test_default(blocker_id, "E1", "Allied", bx, by);
+            blocker.owner = owner_id;
+            blocker.type_ref = sim.interner.intern("E1");
+            sim.entities.insert(blocker);
+        }
+
+        eject_via_event(&mut sim, &rules, building_id);
+
+        let pax_entity = sim.entities.get(pax).expect("entity present");
+        assert!(pax_entity.dying, "occupant should be marked dying");
+        assert_eq!(pax_entity.health.current, 0);
+        assert!(matches!(pax_entity.passenger_role, PassengerRole::None));
     }
 }

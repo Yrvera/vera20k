@@ -97,6 +97,14 @@ pub enum SimSoundEvent {
         rx: u16,
         ry: u16,
     },
+    /// An entity was crushed by a vehicle — play its CrushSound= (the squish).
+    /// Crush kills also emit `EntityDied` for the death cry — these are
+    /// independent audio events that play together (matches gamemd).
+    EntityCrushed {
+        crush_sound_id: InternedId,
+        rx: u16,
+        ry: u16,
+    },
     /// A miner docked at a refinery — play the building's deploy sound.
     /// The app layer should select the healthy or damaged sound variant
     /// based on the refinery's health ratio vs ConditionYellow.
@@ -1045,7 +1053,9 @@ impl Simulation {
             self.close_enough,
             self.path_delay_ticks,
             self.blockage_path_delay_ticks,
-            &self.interner,
+            &mut self.interner,
+            rules,
+            &mut self.sound_events,
         );
         // --- Phase 2: Air + special movement ---
         // DEPENDS ON: commands (may set movement targets for air/special units).
@@ -1202,6 +1212,10 @@ impl Simulation {
                     bldg.ry,
                     bldg.z,
                 );
+            }
+            // Eject garrison occupants from CanBeOccupied buildings destroyed in combat.
+            for ev in &combat_result.destroyed_garrison_buildings {
+                production::eject_destruction_garrison(self, rules, ev);
             }
             // Refresh superweapon grants for owners who lost structures in combat.
             if self.game_options.super_weapons && combat_result.structure_destroyed {

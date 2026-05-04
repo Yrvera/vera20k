@@ -228,7 +228,7 @@ fn tick_miners_n(sim: &mut Simulation, rules: &RuleSet, n: usize) {
         super::miner_system::tick_miners(sim, rules, &config, Some(&grid));
         // Also tick movement so issue_direct_move targets are consumed
         // (EnterPad/ExitPad wait for movement_target to be None).
-        crate::sim::movement::tick_movement(&mut sim.entities, 67, &sim.interner);
+        crate::sim::movement::tick_movement(&mut sim.entities, 67, &mut sim.interner);
         sim.tick += 1;
     }
 }
@@ -1560,7 +1560,7 @@ fn harvester_undocks_through_foundation_to_outside_ore() {
             &mut rng,
             67,
             sim.tick,
-            &sim.interner,
+            &mut sim.interner,
         );
         sim.tick += 1;
     }
@@ -1676,7 +1676,7 @@ fn harvester_drives_into_refinery_foundation_without_bumping_it() {
             &mut rng,
             67,
             sim.tick,
-            &sim.interner,
+            &mut sim.interner,
         );
         sim.tick += 1;
     }

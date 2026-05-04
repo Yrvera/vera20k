@@ -303,6 +303,17 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                             screen_pos: Some((sx, sy)),
                         }
                     }
+                    SimSoundEvent::EntityCrushed {
+                        crush_sound_id,
+                        rx,
+                        ry,
+                    } => {
+                        let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
+                        GameSoundEvent::EntityCrushed {
+                            sound_id: sim.interner.resolve(crush_sound_id).to_string(),
+                            screen_pos: Some((sx, sy)),
+                        }
+                    }
                     SimSoundEvent::DockDeploy { .. } => {
                         // TODO: resolve building's deploy sound from art.ini
                         // and select healthy/damaged variant based on health ratio.

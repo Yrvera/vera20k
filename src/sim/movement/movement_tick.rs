@@ -310,7 +310,9 @@ pub fn tick_movement_with_grids(
     close_enough: SimFixed,
     path_delay_ticks: u16,
     blockage_path_delay_ticks: u16,
-    interner: &crate::sim::intern::StringInterner,
+    interner: &mut crate::sim::intern::StringInterner,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
+    sound_events: &mut Vec<crate::sim::world::SimSoundEvent>,
 ) -> MovementTickStats {
     let mut stats = MovementTickStats::default();
     if tick_ms == 0 {
@@ -896,6 +898,13 @@ pub fn tick_movement_with_grids(
     // Apply deferred crush kills (instant death, then remove from EntityStore).
     // Occupancy entries were already removed in handle_deferred_occupancy.
     for &victim_id in &crush_kills {
+        // Emit sounds BEFORE entity mutation/removal so position + type_ref
+        // are still valid on the victim.
+        if let Some(rules) = rules {
+            if let Some(victim) = entities.get(victim_id) {
+                bump_crush::emit_crush_kill_sounds(victim, rules, interner, sound_events);
+            }
+        }
         if let Some(victim) = entities.get_mut(victim_id) {
             victim.health.current = 0;
         }
