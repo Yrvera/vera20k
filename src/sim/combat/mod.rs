@@ -289,6 +289,28 @@ pub struct DestroyedCrewedBuilding {
     pub z: u8,
 }
 
+/// A `CanBeOccupied` building destroyed in combat with live occupants —
+/// garrison ejection is deferred to the caller (which has access to
+/// `Simulation` for repositioning, occupancy registration, and scatter).
+///
+/// Occupants are placed at random cells within the building's foundation
+/// footprint, in LIFO order, inheriting the building's current owner (the
+/// garrisoning player).
+pub struct DestroyedGarrisonBuilding {
+    pub building_id: u64,
+    pub type_id: InternedId,
+    /// Building's owner at time of death — ejected infantry inherit this.
+    pub owner: InternedId,
+    pub rx: u16,
+    pub ry: u16,
+    pub z: u8,
+    pub foundation_w: u16,
+    pub foundation_h: u16,
+    /// Snapshot of `cargo.passengers` at time of death. LIFO order preserved
+    /// (eject helper iterates in reverse).
+    pub passenger_ids: Vec<u64>,
+}
+
 /// Explosion animation to spawn at a world position (deferred to caller
 /// which has access to `Simulation` for WorldEffect spawning).
 pub struct ExplosionEffect {
