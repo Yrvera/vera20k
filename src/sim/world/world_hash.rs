@@ -160,6 +160,9 @@ impl Simulation {
         for (owner, fog) in &self.fog.by_owner {
             owner.hash(hasher);
             fog.cells_raw().hash(hasher);
+            fog.shroud_counters_raw().hash(hasher);
+            fog.shroud_counter_caps_raw().hash(hasher);
+            fog.shroud_counter_dirty_raw().hash(hasher);
         }
         for (owner, allies) in &self.house_alliances {
             owner.hash(hasher);

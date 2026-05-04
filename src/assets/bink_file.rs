@@ -362,13 +362,13 @@ impl BinkFile {
 
     /// Return the bitstream bytes for video frame `i` (audio already skipped).
     pub fn video_packet(&self, i: usize) -> Result<&[u8], AssetError> {
-        let entry =
-            self.frame_index
-                .get(i)
-                .ok_or_else(|| AssetError::BinkFrameOutOfRange {
-                    index: i,
-                    count: self.frame_index.len(),
-                })?;
+        let entry = self
+            .frame_index
+            .get(i)
+            .ok_or_else(|| AssetError::BinkFrameOutOfRange {
+                index: i,
+                count: self.frame_index.len(),
+            })?;
 
         let start = entry.offset as usize;
         let end = start + entry.size as usize;
@@ -401,13 +401,13 @@ impl BinkFile {
 
     /// Return all audio packets for frame `i`, one per track.
     pub fn audio_packets(&self, i: usize) -> Result<Vec<AudioPacket<'_>>, AssetError> {
-        let entry =
-            self.frame_index
-                .get(i)
-                .ok_or_else(|| AssetError::BinkFrameOutOfRange {
-                    index: i,
-                    count: self.frame_index.len(),
-                })?;
+        let entry = self
+            .frame_index
+            .get(i)
+            .ok_or_else(|| AssetError::BinkFrameOutOfRange {
+                index: i,
+                count: self.frame_index.len(),
+            })?;
 
         let start = entry.offset as usize;
         let end = start + entry.size as usize;

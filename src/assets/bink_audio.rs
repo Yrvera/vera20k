@@ -89,9 +89,11 @@ impl BinkAudioDecoder {
             if channels_in > 1 {
                 frame_len_bits += (channels_in as u32).trailing_zeros();
             }
-            let folded_sr = sample_rate_in.checked_mul(channels_in as u32).ok_or_else(|| {
-                AssetError::BinkAudioError { reason: "sample-rate overflow".to_string() }
-            })?;
+            let folded_sr = sample_rate_in
+                .checked_mul(channels_in as u32)
+                .ok_or_else(|| AssetError::BinkAudioError {
+                    reason: "sample-rate overflow".to_string(),
+                })?;
             (folded_sr, 1u16)
         };
 
@@ -157,14 +159,24 @@ impl BinkAudioDecoder {
         })
     }
 
-    pub fn sample_rate(&self) -> u32 { self.sample_rate }
-    pub fn channels(&self) -> u16 { self.channels }
-    pub fn frame_len(&self) -> usize { self.frame_len }
-    pub fn use_dct(&self) -> bool { self.use_dct }
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+    pub fn channels(&self) -> u16 {
+        self.channels
+    }
+    pub fn frame_len(&self) -> usize {
+        self.frame_len
+    }
+    pub fn use_dct(&self) -> bool {
+        self.use_dct
+    }
     pub fn reset(&mut self) {
         self.first = true;
         for ch in &mut self.prev {
-            for s in ch.iter_mut() { *s = 0.0; }
+            for s in ch.iter_mut() {
+                *s = 0.0;
+            }
         }
     }
 
@@ -333,7 +345,9 @@ impl BinkAudioDecoder {
             // FFmpeg's AV_TX_FLOAT_DCT inverse uses scale = 1.0 / frame_len
             // (binkaudio.c:143). Our primitive is un-normalized, so apply here.
             let scale = 1.0 / self.frame_len as f32;
-            for s in self.out_per_ch[ch].iter_mut() { *s *= scale; }
+            for s in self.out_per_ch[ch].iter_mut() {
+                *s *= scale;
+            }
         } else {
             // RDFT input layout shuffle per binkaudio.c:255-261.
             // Negate imaginary halves of bins 1..N/2-1.
@@ -352,7 +366,9 @@ impl BinkAudioDecoder {
             inverse_rdft(&coeffs_in, &mut self.out_per_ch[ch], &self.fft);
             // FFmpeg's AV_TX_FLOAT_RDFT inverse uses scale = 0.5
             // (binkaudio.c:140). Our primitive is un-normalized, so apply here.
-            for s in self.out_per_ch[ch].iter_mut() { *s *= 0.5; }
+            for s in self.out_per_ch[ch].iter_mut() {
+                *s *= 0.5;
+            }
         }
     }
 
@@ -398,7 +414,10 @@ struct Fft {
 
 impl Fft {
     fn new(n: usize) -> Self {
-        assert!(n.is_power_of_two() && n >= 2, "FFT size must be power of two ≥ 2");
+        assert!(
+            n.is_power_of_two() && n >= 2,
+            "FFT size must be power of two ≥ 2"
+        );
         let mut twiddles = Vec::with_capacity(n / 2);
         for k in 0..n / 2 {
             let theta = -2.0 * std::f32::consts::PI * (k as f32) / (n as f32);
@@ -409,7 +428,11 @@ impl Fft {
         for i in 0..n as u32 {
             bit_reverse.push(i.reverse_bits() >> (32 - bits));
         }
-        Self { n, twiddles, bit_reverse }
+        Self {
+            n,
+            twiddles,
+            bit_reverse,
+        }
     }
 
     /// In-place forward FFT (sign convention: e^{-2πi k n / N}).
@@ -436,10 +459,7 @@ impl Fft {
                     let w = self.twiddles[k * twiddle_step];
                     let a = buf[start + k];
                     let b = buf[start + k + half];
-                    let t = Complex32::new(
-                        b.re * w.re - b.im * w.im,
-                        b.re * w.im + b.im * w.re,
-                    );
+                    let t = Complex32::new(b.re * w.re - b.im * w.im, b.re * w.im + b.im * w.re);
                     buf[start + k] = Complex32::new(a.re + t.re, a.im + t.im);
                     buf[start + k + half] = Complex32::new(a.re - t.re, a.im - t.im);
                 }
@@ -601,25 +621,44 @@ mod tests {
             assert!(
                 (got.re - want.re).abs() < 1e-5 && (got.im - want.im).abs() < 1e-5,
                 "round-trip mismatch at i={} for n={}: got {:?}, want {:?}",
-                i, n, got, want,
+                i,
+                n,
+                got,
+                want,
             );
         }
     }
 
     #[test]
-    fn fft_round_trip_256() { assert_round_trip(256); }
+    fn fft_round_trip_256() {
+        assert_round_trip(256);
+    }
     #[test]
-    fn fft_round_trip_512() { assert_round_trip(512); }
+    fn fft_round_trip_512() {
+        assert_round_trip(512);
+    }
     #[test]
-    fn fft_round_trip_1024() { assert_round_trip(1024); }
+    fn fft_round_trip_1024() {
+        assert_round_trip(1024);
+    }
     #[test]
-    fn fft_round_trip_2048() { assert_round_trip(2048); }
+    fn fft_round_trip_2048() {
+        assert_round_trip(2048);
+    }
 
     fn make_track(sample_rate: u16, stereo: bool, dct: bool) -> AudioTrack {
         let mut flags = 0u16;
-        if stereo { flags |= 0x2000; }
-        if dct { flags |= 0x1000; }
-        AudioTrack { sample_rate, flags, track_id: 0 }
+        if stereo {
+            flags |= 0x2000;
+        }
+        if dct {
+            flags |= 0x1000;
+        }
+        AudioTrack {
+            sample_rate,
+            flags,
+            track_id: 0,
+        }
     }
 
     /// Build the smallest possible packet that decodes to silence: 4-byte
@@ -629,13 +668,7 @@ mod tests {
         let mut bits: Vec<u8> = Vec::new();
         let mut acc: u32 = 0;
         let mut nbits: u32 = 0;
-        fn push(
-            val: u32,
-            n: u32,
-            acc: &mut u32,
-            nbits: &mut u32,
-            bits: &mut Vec<u8>,
-        ) {
+        fn push(val: u32, n: u32, acc: &mut u32, nbits: &mut u32, bits: &mut Vec<u8>) {
             *acc |= val << *nbits;
             *nbits += n;
             while *nbits >= 8 {
@@ -708,7 +741,9 @@ mod tests {
         dec.reset();
         assert!(dec.first);
         for ch in &dec.prev {
-            for &s in ch { assert_eq!(s, 0.0); }
+            for &s in ch {
+                assert_eq!(s, 0.0);
+            }
         }
     }
 
@@ -727,7 +762,10 @@ mod tests {
         for (i, &s) in output.iter().enumerate() {
             assert!(
                 (s - first).abs() < 1e-4,
-                "non-constant output at i={}: got {}, expected {}", i, s, first,
+                "non-constant output at i={}: got {}, expected {}",
+                i,
+                s,
+                first,
             );
         }
         // And nonzero — DC input shouldn't yield silence.
@@ -753,7 +791,15 @@ mod tests {
         // We just check the peak amplitude is in a sane range.
         let max = output.iter().cloned().fold(0.0f32, f32::max);
         let min = output.iter().cloned().fold(0.0f32, f32::min);
-        assert!(max > 0.5 && max < 1.5, "max amplitude out of range: {}", max);
-        assert!(min < -0.5 && min > -1.5, "min amplitude out of range: {}", min);
+        assert!(
+            max > 0.5 && max < 1.5,
+            "max amplitude out of range: {}",
+            max
+        );
+        assert!(
+            min < -0.5 && min > -1.5,
+            "min amplitude out of range: {}",
+            min
+        );
     }
 }

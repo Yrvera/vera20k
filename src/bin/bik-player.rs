@@ -76,9 +76,18 @@ impl BikPlayerApp {
             .map(discover_bik_entries)
             .unwrap_or_default();
         let status = match (&asset_manager, available_entries.len()) {
-            (None, _) => "No AssetManager (config.toml missing?). Use Open .bik… to load from disk.".to_string(),
-            (Some(_), 0) => "No .bik entries found in loaded archives. Use Open .bik… to load from disk.".to_string(),
-            (Some(_), n) => format!("{} .bik entries across loaded archives. Pick one or Open .bik… from disk.", n),
+            (None, _) => {
+                "No AssetManager (config.toml missing?). Use Open .bik… to load from disk."
+                    .to_string()
+            }
+            (Some(_), 0) => {
+                "No .bik entries found in loaded archives. Use Open .bik… to load from disk."
+                    .to_string()
+            }
+            (Some(_), n) => format!(
+                "{} .bik entries across loaded archives. Pick one or Open .bik… from disk.",
+                n
+            ),
         };
 
         Self {
@@ -283,7 +292,11 @@ impl eframe::App for BikPlayerApp {
                     ui.label("No file loaded.");
                 }
                 if ui
-                    .button(if self.playback.playing { "Pause" } else { "Play" })
+                    .button(if self.playback.playing {
+                        "Pause"
+                    } else {
+                        "Play"
+                    })
                     .clicked()
                 {
                     self.playback.playing = !self.playback.playing;

@@ -19,14 +19,20 @@ fn decodes_fixture_audio_within_tolerance() {
     let bik_bytes = match std::fs::read(BIK_PATH) {
         Ok(b) => b,
         Err(_) => {
-            eprintln!("SKIP: {} missing — see tests/fixtures/bink/README.md", BIK_PATH);
+            eprintln!(
+                "SKIP: {} missing — see tests/fixtures/bink/README.md",
+                BIK_PATH
+            );
             return;
         }
     };
     let oracle_bytes = match std::fs::read(PCM_PATH) {
         Ok(b) => b,
         Err(_) => {
-            eprintln!("SKIP: {} missing — see tests/fixtures/bink/README.md", PCM_PATH);
+            eprintln!(
+                "SKIP: {} missing — see tests/fixtures/bink/README.md",
+                PCM_PATH
+            );
             return;
         }
     };
@@ -44,14 +50,20 @@ fn decodes_fixture_audio_within_tolerance() {
     for frame_idx in 0..file.frame_index.len() {
         for ap in file.audio_packets(frame_idx).expect("audio packets") {
             if ap.track_index == 0 {
-                let samples = decoder.decode_packet(ap.bytes).expect("decode audio packet");
+                let samples = decoder
+                    .decode_packet(ap.bytes)
+                    .expect("decode audio packet");
                 ours.extend_from_slice(&samples);
             }
         }
     }
 
     // Parse oracle as little-endian f32.
-    assert_eq!(oracle_bytes.len() % 4, 0, "oracle file length not multiple of 4");
+    assert_eq!(
+        oracle_bytes.len() % 4,
+        0,
+        "oracle file length not multiple of 4"
+    );
     let oracle: Vec<f32> = oracle_bytes
         .chunks_exact(4)
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
@@ -62,7 +74,9 @@ fn decodes_fixture_audio_within_tolerance() {
     assert!(
         (ours.len() as isize - oracle.len() as isize).abs() <= slack as isize,
         "sample-count mismatch: ours={}, oracle={}, slack={}",
-        ours.len(), oracle.len(), slack,
+        ours.len(),
+        oracle.len(),
+        slack,
     );
 
     // Compare common prefix.
@@ -71,11 +85,23 @@ fn decodes_fixture_audio_within_tolerance() {
     let mut sse: f64 = 0.0;
     for i in 0..n {
         let d = (ours[i] - oracle[i]).abs();
-        if d > peak { peak = d; }
+        if d > peak {
+            peak = d;
+        }
         sse += (d as f64) * (d as f64);
     }
     let rms = (sse / n as f64).sqrt() as f32;
 
-    assert!(peak < PEAK_TOLERANCE, "peak error too large: {} (limit {})", peak, PEAK_TOLERANCE);
-    assert!(rms < RMS_TOLERANCE, "RMS error too large: {} (limit {})", rms, RMS_TOLERANCE);
+    assert!(
+        peak < PEAK_TOLERANCE,
+        "peak error too large: {} (limit {})",
+        peak,
+        PEAK_TOLERANCE
+    );
+    assert!(
+        rms < RMS_TOLERANCE,
+        "RMS error too large: {} (limit {})",
+        rms,
+        RMS_TOLERANCE
+    );
 }

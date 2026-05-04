@@ -939,7 +939,7 @@ fn test_revealarea2_none_grid_disables_height_gate() {
 }
 
 #[test]
-fn test_revealarea2_increase_shroud_counter_noops_without_cell_flags() {
+fn test_revealarea2_increase_shroud_counter_increments_counter_and_marks_dirty() {
     let mut vis = OwnerVisibility::new(20, 20);
     let width: u16 = 20;
     let height: u16 = 20;
@@ -959,6 +959,105 @@ fn test_revealarea2_increase_shroud_counter_noops_without_cell_flags() {
 
     assert!(!vis.is_visible(5, 5));
     assert!(!vis.is_revealed(5, 5));
+    assert_eq!(vis.shroud_counter_for_test(5, 5), Some(1));
+    assert!(vis.is_shroud_counter_dirty_for_test(5, 5));
+}
+
+#[test]
+fn test_revealarea2_reduce_shroud_counter_reveals_when_counter_reaches_zero() {
+    let mut vis = OwnerVisibility::new(20, 20);
+    vis.set_shroud_counter_for_test(5, 5, 1);
+    let width: u16 = 20;
+    let height: u16 = 20;
+    let (ox, oy, oz) = reveal_origin(5, 5, 0);
+
+    reveal_area2_into(
+        &mut vis,
+        ox,
+        oy,
+        oz,
+        0,
+        RevealArea2Options::reduce_shroud_counter(false),
+        None,
+        width,
+        height,
+    );
+
+    assert_eq!(vis.shroud_counter_for_test(5, 5), Some(-1));
+    assert!(vis.is_visible(5, 5));
+    assert!(vis.is_revealed(5, 5));
+}
+
+#[test]
+fn test_revealarea2_reduce_shroud_counter_clears_dirty_when_visible_again() {
+    let mut vis = OwnerVisibility::new(20, 20);
+    vis.set_shroud_counter_for_test(5, 5, 2);
+    vis.set_shroud_counter_dirty_for_test(5, 5);
+    let width: u16 = 20;
+    let height: u16 = 20;
+    let (ox, oy, oz) = reveal_origin(5, 5, 0);
+
+    reveal_area2_into(
+        &mut vis,
+        ox,
+        oy,
+        oz,
+        0,
+        RevealArea2Options::reduce_shroud_counter(false),
+        None,
+        width,
+        height,
+    );
+    reveal_area2_into(
+        &mut vis,
+        ox,
+        oy,
+        oz,
+        0,
+        RevealArea2Options::reduce_shroud_counter(false),
+        None,
+        width,
+        height,
+    );
+
+    assert_eq!(vis.shroud_counter_for_test(5, 5), Some(-1));
+    assert!(vis.is_visible(5, 5));
+    assert!(!vis.is_shroud_counter_dirty_for_test(5, 5));
+}
+
+#[test]
+fn test_revealarea2_increase_shroud_counter_clamps_to_cell_cap() {
+    let mut vis = OwnerVisibility::new(20, 20);
+    vis.set_shroud_counter_for_test(5, 5, 1);
+    vis.set_shroud_counter_cap_for_test(5, 5, 2);
+    let width: u16 = 20;
+    let height: u16 = 20;
+    let (ox, oy, oz) = reveal_origin(5, 5, 0);
+
+    reveal_area2_into(
+        &mut vis,
+        ox,
+        oy,
+        oz,
+        0,
+        RevealArea2Options::increase_shroud_counter(false),
+        None,
+        width,
+        height,
+    );
+    reveal_area2_into(
+        &mut vis,
+        ox,
+        oy,
+        oz,
+        0,
+        RevealArea2Options::increase_shroud_counter(false),
+        None,
+        width,
+        height,
+    );
+
+    assert_eq!(vis.shroud_counter_for_test(5, 5), Some(2));
 }
 
 #[test]

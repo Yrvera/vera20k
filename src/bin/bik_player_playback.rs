@@ -78,16 +78,16 @@ impl Playback {
                                         Err(e) => {
                                             log::warn!(
                                                 "audio decode error frame {}: {}",
-                                                *current_frame, e,
+                                                *current_frame,
+                                                e,
                                             );
                                         }
                                     }
                                 }
                             }
-                            Err(e) => log::warn!(
-                                "audio packet error frame {}: {}",
-                                *current_frame, e,
-                            ),
+                            Err(e) => {
+                                log::warn!("audio packet error frame {}: {}", *current_frame, e,)
+                            }
                         }
                     }
                     *current_frame += 1;

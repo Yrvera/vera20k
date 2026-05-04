@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::map::houses::{are_houses_friendly, HouseAllianceMap};
+use crate::map::houses::{HouseAllianceMap, are_houses_friendly};
 use crate::rules::ruleset::RuleSet;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::intern::{InternedId, StringInterner};
@@ -81,6 +81,12 @@ impl RevealArea2Options {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OwnerVisibility {
     cells: Vec<u8>,
+    #[serde(default)]
+    shroud_counters: Vec<i16>,
+    #[serde(default)]
+    shroud_counter_caps: Vec<i16>,
+    #[serde(default)]
+    shroud_counter_dirty: Vec<u8>,
     width: u16,
     height: u16,
 }
@@ -89,6 +95,9 @@ impl Default for OwnerVisibility {
     fn default() -> Self {
         Self {
             cells: Vec::new(),
+            shroud_counters: Vec::new(),
+            shroud_counter_caps: Vec::new(),
+            shroud_counter_dirty: Vec::new(),
             width: 0,
             height: 0,
         }
@@ -101,6 +110,9 @@ impl OwnerVisibility {
         let len: usize = (width as usize) * (height as usize);
         Self {
             cells: vec![0u8; len],
+            shroud_counters: vec![0i16; len],
+            shroud_counter_caps: vec![1i16; len],
+            shroud_counter_dirty: vec![0u8; len],
             width,
             height,
         }
@@ -112,6 +124,19 @@ impl OwnerVisibility {
             Some((ry as usize) * (self.width as usize) + (rx as usize))
         } else {
             None
+        }
+    }
+
+    fn ensure_shroud_counter_storage(&mut self) {
+        let len: usize = (self.width as usize) * (self.height as usize);
+        if self.shroud_counters.len() != len {
+            self.shroud_counters.resize(len, 0);
+        }
+        if self.shroud_counter_caps.len() != len {
+            self.shroud_counter_caps.resize(len, 1);
+        }
+        if self.shroud_counter_dirty.len() != len {
+            self.shroud_counter_dirty.resize(len, 0);
         }
     }
 
@@ -140,6 +165,45 @@ impl OwnerVisibility {
         }
     }
 
+    fn reduce_shroud_counter(&mut self, rx: u16, ry: u16) {
+        let Some(i) = self.index(rx, ry) else {
+            return;
+        };
+        self.ensure_shroud_counter_storage();
+        if self.shroud_counters[i] == 1 {
+            self.shroud_counters[i] = 0;
+        }
+        self.shroud_counters[i] -= 1;
+
+        let mapped_and_no_fog =
+            self.cells[i] & (FLAG_REVEALED | FLAG_VISIBLE) == (FLAG_REVEALED | FLAG_VISIBLE);
+        if !mapped_and_no_fog || self.shroud_counters[i] <= 0 {
+            self.cells[i] |= FLAG_VISIBLE | FLAG_REVEALED;
+        }
+        if self.shroud_counters[i] <= 0 {
+            self.shroud_counter_dirty[i] = 0;
+        }
+    }
+
+    fn increase_shroud_counter(&mut self, rx: u16, ry: u16) {
+        let Some(i) = self.index(rx, ry) else {
+            return;
+        };
+        self.ensure_shroud_counter_storage();
+        let previous = self.shroud_counters[i];
+        if previous == -1 {
+            self.shroud_counters[i] = 0;
+        }
+        self.shroud_counters[i] += 1;
+        let cap = self.shroud_counter_caps[i];
+        if self.shroud_counters[i] > cap {
+            self.shroud_counters[i] = cap;
+        }
+        if previous <= 0 && self.shroud_counters[i] > 0 {
+            self.shroud_counter_dirty[i] = 1;
+        }
+    }
+
     /// Clear all visible flags while preserving revealed flags.
     /// Called each tick by `recompute_owner_visibility_in_place` so existing
     /// grids can be reused without reallocation.
@@ -160,6 +224,18 @@ impl OwnerVisibility {
     /// Return the raw cells slice for deterministic hashing.
     pub fn cells_raw(&self) -> &[u8] {
         &self.cells
+    }
+
+    pub fn shroud_counters_raw(&self) -> &[i16] {
+        &self.shroud_counters
+    }
+
+    pub fn shroud_counter_dirty_raw(&self) -> &[u8] {
+        &self.shroud_counter_dirty
+    }
+
+    pub fn shroud_counter_caps_raw(&self) -> &[i16] {
+        &self.shroud_counter_caps
     }
 
     pub fn width(&self) -> u16 {
@@ -211,6 +287,46 @@ impl OwnerVisibility {
                 }
             }
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shroud_counter_for_test(&self, rx: u16, ry: u16) -> Option<i16> {
+        self.index(rx, ry)
+            .and_then(|i| self.shroud_counters.get(i).copied())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_shroud_counter_for_test(&mut self, rx: u16, ry: u16, counter: i16) {
+        let Some(i) = self.index(rx, ry) else {
+            return;
+        };
+        self.ensure_shroud_counter_storage();
+        self.shroud_counters[i] = counter;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_shroud_counter_cap_for_test(&mut self, rx: u16, ry: u16, cap: i16) {
+        let Some(i) = self.index(rx, ry) else {
+            return;
+        };
+        self.ensure_shroud_counter_storage();
+        self.shroud_counter_caps[i] = cap;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_shroud_counter_dirty_for_test(&mut self, rx: u16, ry: u16) {
+        let Some(i) = self.index(rx, ry) else {
+            return;
+        };
+        self.ensure_shroud_counter_storage();
+        self.shroud_counter_dirty[i] = 1;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_shroud_counter_dirty_for_test(&self, rx: u16, ry: u16) -> bool {
+        self.index(rx, ry)
+            .and_then(|i| self.shroud_counter_dirty.get(i))
+            .is_some_and(|dirty| *dirty != 0)
     }
 }
 
@@ -332,6 +448,12 @@ impl FogState {
         if let Some(vis) = self.by_owner.get_mut(&owner) {
             for cell in &mut vis.cells {
                 *cell = 0;
+            }
+            for counter in &mut vis.shroud_counters {
+                *counter = 0;
+            }
+            for dirty in &mut vis.shroud_counter_dirty {
+                *dirty = 0;
             }
         }
     }
@@ -684,30 +806,38 @@ fn reveal_area2_into(
             height_grid,
             w,
             h,
-        ) && reveal_area2_dispatch_marks_visible(rx, ry, &options)
-        {
-            vis.mark_visible(rx as u16, ry as u16);
+        ) {
+            reveal_area2_dispatch_cell(vis, rx as u16, ry as u16, rx, ry, &options);
         }
     }
 }
 
-fn reveal_area2_dispatch_marks_visible(rx: i32, ry: i32, options: &RevealArea2Options) -> bool {
+fn reveal_area2_dispatch_cell(
+    vis: &mut OwnerVisibility,
+    cell_rx: u16,
+    cell_ry: u16,
+    rx: i32,
+    ry: i32,
+    options: &RevealArea2Options,
+) {
     match options.counter_mode {
         RevealArea2CounterMode::IncreaseShroudCounter => {
             // RE dispatches this mode to CellClass::IncreaseShroudCounter through
-            // helper chain 0x00653830 -> 0x004a9ca0. The current model does not
-            // carry per-cell shroud counters or CellClass flags yet, so it is
-            // explicit but conservative.
-            false
+            // helper chain 0x00653830 -> 0x004a9ca0.
+            vis.increase_shroud_counter(cell_rx, cell_ry);
         }
         RevealArea2CounterMode::ReduceShroudCounter => {
             if !options.coord_ptr_low_byte_nonzero {
-                return true;
+                vis.reduce_shroud_counter(cell_rx, cell_ry);
+                return;
             }
-            !((rx == 7 && ry == options.map_min_y + 5)
+            if !((rx == 7 && ry == options.map_min_y + 5)
                 || (rx == 13 && ry == options.map_min_y + 11)
                 || (rx == options.map_height + 13
                     && ry == options.map_height + options.map_min_y - 15))
+            {
+                vis.reduce_shroud_counter(cell_rx, cell_ry);
+            }
         }
     }
 }

@@ -55,7 +55,9 @@ impl SpscRing {
             let idx = (head + i) & self.mask;
             // SAFETY: only producer writes to this slot; no concurrent reader yet
             // (consumer cannot advance past `head` until we publish the new head).
-            unsafe { *self.buffer[idx].get() = samples[i]; }
+            unsafe {
+                *self.buffer[idx].get() = samples[i];
+            }
         }
         self.head.store(head.wrapping_add(n), Ordering::Release);
         n
@@ -82,7 +84,9 @@ impl SpscRing {
         self.tail.store(head, Ordering::Release);
     }
 
-    pub fn capacity(&self) -> usize { self.capacity }
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
 }
 
 use std::num::NonZero;
@@ -118,10 +122,18 @@ impl Iterator for BinkAudioSource {
 }
 
 impl Source for BinkAudioSource {
-    fn current_span_len(&self) -> Option<usize> { None }
-    fn channels(&self) -> NonZero<u16> { self.channels }
-    fn sample_rate(&self) -> NonZero<u32> { self.sample_rate }
-    fn total_duration(&self) -> Option<Duration> { None } // streaming — unbounded
+    fn current_span_len(&self) -> Option<usize> {
+        None
+    }
+    fn channels(&self) -> NonZero<u16> {
+        self.channels
+    }
+    fn sample_rate(&self) -> NonZero<u32> {
+        self.sample_rate
+    }
+    fn total_duration(&self) -> Option<Duration> {
+        None
+    } // streaming — unbounded
 }
 
 use rodio::{DeviceSinkBuilder, MixerDeviceSink, Player};
@@ -180,15 +192,27 @@ impl BinkAudioSink {
         self.ring.drain();
     }
 
-    pub fn pause(&self) { self.player.pause(); }
-    pub fn resume(&self) { self.player.play(); }
+    pub fn pause(&self) {
+        self.player.pause();
+    }
+    pub fn resume(&self) {
+        self.player.play();
+    }
 
-    pub fn position(&self) -> Duration { self.player.get_pos() }
+    pub fn position(&self) -> Duration {
+        self.player.get_pos()
+    }
 
-    pub fn set_volume(&self, v: f32) { self.player.set_volume(v.clamp(0.0, 1.0)); }
+    pub fn set_volume(&self, v: f32) {
+        self.player.set_volume(v.clamp(0.0, 1.0));
+    }
 
-    pub fn sample_rate(&self) -> u32 { self.sample_rate }
-    pub fn channels(&self) -> u16 { self.channels }
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+    pub fn channels(&self) -> u16 {
+        self.channels
+    }
 }
 
 #[cfg(test)]

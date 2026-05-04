@@ -7,16 +7,11 @@
 //! - Pure utility — no sim dependencies.
 
 /// 9 cell offsets for a 3×3 grid centered on (0,0), in binary order.
+#[rustfmt::skip]
 pub const GRID_3X3_OFFSETS: [(i16, i16); 9] = [
-    (-1, -1),
-    (0, -1),
-    (1, -1),
-    (-1, 0),
-    (0, 0),
-    (1, 0),
-    (-1, 1),
-    (0, 1),
-    (1, 1),
+    (-1, -1), (0, -1), (1, -1),
+    (-1,  0), (0,  0), (1,  0),
+    (-1,  1), (0,  1), (1,  1),
 ];
 
 /// Iterate the 9 cells in a 3×3 grid around (center_rx, center_ry).

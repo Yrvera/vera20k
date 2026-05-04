@@ -66,6 +66,12 @@ Read the [architecture overview](https://hrusten.github.io/vera20k/) before divi
 3. Make your changes and commit
 4. Push to your fork and open a Pull Request
 
+To enable the versioned pre-commit hook that rejects unformatted Rust code:
+
+```
+git config core.hooksPath .githooks
+```
+
 ## License
 
 - [GNU General Public License v3.0](LICENSE-GPL)
