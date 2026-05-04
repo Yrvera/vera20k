@@ -184,6 +184,12 @@ pub struct GeneralRules {
     /// Fire/smoke anim types spawned on buildings below ConditionYellow health.
     /// Parsed from DamageFireTypes= in [General]. Default: FIRE01,FIRE02,FIRE03.
     pub damage_fire_types: Vec<AnimRef>,
+    /// Particle system spawned by exploding barrels.
+    /// Parsed from `BarrelParticle=` in `[General]` (NOT `[AudioVisual]`,
+    /// despite the proximity to other AudioVisual keys).
+    /// Holds the unresolved section name; ID resolution against the
+    /// particle-system registry is deferred (matches A2/A3/A4/A5a pattern).
+    pub barrel_particle: Option<String>,
 
     // -- Harvester scan radii and economy --
     /// Short-range ore scan radius in cells (TiberiumShortScan= in [General]).
@@ -411,6 +417,7 @@ impl Default for GeneralRules {
             damage_delay_minutes: 1.0,
             spy_power_blackout_frames: 1000,
             damage_fire_types: vec![],
+            barrel_particle: None,
             tiberium_short_scan: 6,
             tiberium_long_scan: 48,
             slave_miner_short_scan: 8,
@@ -661,6 +668,10 @@ impl GeneralRules {
                         .collect()
                 })
                 .unwrap_or_default(),
+            barrel_particle: general
+                .get("BarrelParticle")
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
             tiberium_short_scan: general.get_i32("TiberiumShortScan").unwrap_or(6),
             tiberium_long_scan: general.get_i32("TiberiumLongScan").unwrap_or(48),
             slave_miner_short_scan: general.get_i32("SlaveMinerShortScan").unwrap_or(8),
@@ -1904,6 +1915,39 @@ BuildingGarrisonedSound=BuildingGarrisoned
             general.building_garrisoned_sound.as_deref(),
             Some("BuildingGarrisoned")
         );
+    }
+
+    #[test]
+    fn barrel_particle_parsed_from_general() {
+        let ini_str = "\
+[General]
+BarrelParticle=SmallGreySSys
+";
+        let ini = IniFile::from_str(ini_str);
+        let general = GeneralRules::from_ini(&ini);
+        assert_eq!(general.barrel_particle.as_deref(), Some("SmallGreySSys"));
+    }
+
+    #[test]
+    fn barrel_particle_default_none() {
+        let ini_str = "[General]\n";
+        let ini = IniFile::from_str(ini_str);
+        let general = GeneralRules::from_ini(&ini);
+        assert!(general.barrel_particle.is_none());
+    }
+
+    #[test]
+    fn barrel_particle_ignored_under_audiovisual() {
+        // Per report sec 11.8.H the key lives in [General], not [AudioVisual].
+        // Verify the parser doesn't accidentally accept it elsewhere.
+        let ini_str = "\
+[General]
+[AudioVisual]
+BarrelParticle=SmallGreySSys
+";
+        let ini = IniFile::from_str(ini_str);
+        let general = GeneralRules::from_ini(&ini);
+        assert!(general.barrel_particle.is_none());
     }
 
     #[test]
