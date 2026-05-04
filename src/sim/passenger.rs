@@ -600,6 +600,14 @@ fn tick_unloading(sim: &mut Simulation, rules: &RuleSet) -> bool {
                 .unwrap_or(false);
             // Pre-intern "Neutral" as fallback for garrison ownership revert.
             let neutral_id = sim.interner.intern("Neutral");
+            // Capture pre-revert owner BEFORE the mut borrow — gamemd's
+            // CheckAutoSellOrCivilian fires EVA_StructureAbandoned for the
+            // player whose garrison just emptied, not the post-revert civilian.
+            let abandoning_owner = if is_garrison_building {
+                sim.entities.get(transport_id).map(|t| t.owner)
+            } else {
+                None
+            };
             if let Some(t) = sim.entities.get_mut(transport_id) {
                 t.order_intent = None;
                 if is_garrison_building {
@@ -607,6 +615,10 @@ fn tick_unloading(sim: &mut Simulation, rules: &RuleSet) -> bool {
                     t.owner = revert_owner;
                     ownership_changed = true;
                 }
+            }
+            if let Some(owner) = abandoning_owner {
+                sim.sound_events
+                    .push(SimSoundEvent::StructureAbandoned { owner });
             }
         }
     }
@@ -846,6 +858,58 @@ ConditionYellow=50%
                 _ => {}
             }
         }
+    }
+
+    #[test]
+    fn test_last_occupant_emits_abandoned_event_with_pre_revert_owner() {
+        let mut sim = Simulation::new();
+        let rules = garrison_test_rules();
+        // Spawn a CanBeOccupied building owned by Americans (post-garrison state),
+        // with garrison_original_owner = Neutral (pre-garrison state).
+        let bldg = spawn_garrison_building(&mut sim, &rules, "CAGAS01", "Americans", 10, 10);
+        let neutral_id = sim.interner.intern("Neutral");
+        // Set up the "1 occupant inside, original owner = Neutral" state.
+        if let Some(t) = sim.entities.get_mut(bldg) {
+            t.garrison_original_owner = Some(neutral_id);
+            if let Some(cargo) = t.passenger_role.cargo_mut() {
+                // Pretend a passenger entity 12345 was inside.
+                cargo.board(12345, 1);
+            }
+            t.order_intent = Some(OrderIntent::Unloading);
+        }
+        // Spawn a placeholder passenger entity so unload_first finds it.
+        let pax_owner = sim.interner.intern("Americans");
+        let pax_type = sim.interner.intern("E1");
+        let mut pax = GameEntity::test_default(12345, "E1", "Americans", 9, 10);
+        pax.owner = pax_owner;
+        pax.type_ref = pax_type;
+        pax.passenger_role = PassengerRole::Inside { transport_id: bldg };
+        sim.entities.insert(pax);
+
+        // Tick unloading — should pop the one passenger and trigger empty branch.
+        tick_unloading(&mut sim, &rules);
+
+        // Assert StructureAbandoned was emitted with the PRE-revert owner (Americans).
+        let mut found = false;
+        for evt in &sim.sound_events {
+            if let SimSoundEvent::StructureAbandoned { owner } = evt {
+                assert_eq!(
+                    sim.interner.resolve(*owner),
+                    "Americans",
+                    "StructureAbandoned should carry pre-revert owner, not post-revert civilian"
+                );
+                found = true;
+            }
+        }
+        assert!(found, "expected StructureAbandoned event after last occupant left");
+
+        // Confirm the revert actually happened (post-revert owner = Neutral).
+        let bldg_owner_str = sim
+            .entities
+            .get(bldg)
+            .map(|t| sim.interner.resolve(t.owner).to_string())
+            .expect("building exists");
+        assert_eq!(bldg_owner_str, "Neutral", "owner should have reverted to Neutral");
     }
 
     #[test]
