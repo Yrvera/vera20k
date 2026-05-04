@@ -359,8 +359,69 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                             .to_string();
                         GameSoundEvent::UnitReady { sound_id }
                     }
-                    // Temporary catch-all for new garrison events; replaced in Task 6.
-                    _ => continue,
+                    SimSoundEvent::StructureGarrisoned { owner } => {
+                        // EVA cue: only play for the local human player.
+                        let owner_str = sim.interner.resolve(owner);
+                        if !local_owner_name
+                            .as_deref()
+                            .map_or(false, |l| l.eq_ignore_ascii_case(owner_str))
+                        {
+                            continue;
+                        }
+                        let faction = crate::app_building_anim::eva_faction_key(
+                            owner_str,
+                            &state.house_roster,
+                        );
+                        let sound_id = state
+                            .eva_registry
+                            .get("EVA_StructureGarrisoned", faction)
+                            .unwrap_or("ceva107")
+                            .to_string();
+                        GameSoundEvent::StructureGarrisoned { sound_id }
+                    }
+                    SimSoundEvent::StructureAbandoned { owner } => {
+                        let owner_str = sim.interner.resolve(owner);
+                        if !local_owner_name
+                            .as_deref()
+                            .map_or(false, |l| l.eq_ignore_ascii_case(owner_str))
+                        {
+                            continue;
+                        }
+                        let faction = crate::app_building_anim::eva_faction_key(
+                            owner_str,
+                            &state.house_roster,
+                        );
+                        let sound_id = state
+                            .eva_registry
+                            .get("EVA_StructureAbandoned", faction)
+                            .unwrap_or("ceva108")
+                            .to_string();
+                        GameSoundEvent::StructureAbandoned { sound_id }
+                    }
+                    SimSoundEvent::BuildingGarrisonedSfx { owner, rx, ry } => {
+                        // Positional SFX: only audible to the local human player
+                        // (matches gamemd VocClass::PlayAt with IsHumanPlayer gate).
+                        let owner_str = sim.interner.resolve(owner);
+                        if !local_owner_name
+                            .as_deref()
+                            .map_or(false, |l| l.eq_ignore_ascii_case(owner_str))
+                        {
+                            continue;
+                        }
+                        let sound_id = match state
+                            .rules
+                            .as_ref()
+                            .and_then(|r| r.general.building_garrisoned_sound.as_deref())
+                        {
+                            Some(s) if !s.is_empty() => s.to_string(),
+                            _ => continue,
+                        };
+                        let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
+                        GameSoundEvent::BuildingGarrisonedSfx {
+                            sound_id,
+                            screen_pos: Some((sx, sy)),
+                        }
+                    }
                 };
                 state.sound_events.push(app_event);
             }
