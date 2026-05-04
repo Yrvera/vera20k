@@ -19,6 +19,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::rules::combat_damage::CombatDamageDefaults;
 use crate::rules::error::RulesError;
 use crate::rules::ini_parser::IniFile;
 use crate::rules::object_type::{FactoryType, ObjectCategory, ObjectType};
@@ -925,6 +926,8 @@ pub struct RuleSet {
     pub radar_event_config: RadarEventConfig,
     /// All superweapon types indexed by ID (e.g., "LightningStormSpecial" → SuperWeaponType).
     pub super_weapons: HashMap<String, SuperWeaponType>,
+    /// Default particle systems from `[CombatDamage]` (smoke, sparks, debris, fire-stream).
+    pub combat_damage: CombatDamageDefaults,
     /// Particle types in registry order. Index = `ParticleTypeId.0`.
     particle_types: Vec<ParticleType>,
     /// Uppercase name → `ParticleTypeId` for case-insensitive lookup.
@@ -1060,6 +1063,12 @@ impl RuleSet {
         }
         log::info!("SuperWeaponTypes: {} loaded", super_weapons.len());
 
+        // Parse [CombatDamage] defaults (particle-system fallbacks).
+        let combat_damage: CombatDamageDefaults = ini
+            .section("CombatDamage")
+            .map(CombatDamageDefaults::from_ini_section)
+            .unwrap_or_default();
+
         // Step 9: Two-pass parse for [Particles] and [ParticleSystems].
         // Cross-references (NextParticle, HoldsWhat) are resolved in pass 2 so
         // that INI ordering does not matter.
@@ -1101,6 +1110,7 @@ impl RuleSet {
             garrison_rules,
             radar_event_config,
             super_weapons,
+            combat_damage,
             particle_types,
             particle_types_by_name,
             particle_system_types,
@@ -2071,6 +2081,44 @@ BehavesLike=Gas
         let c = rs.p_type_id_by_name("gascloud1").unwrap();
         assert_eq!(a, b);
         assert_eq!(b, c);
+    }
+
+    #[test]
+    fn combat_damage_defaults_load_from_ini() {
+        let extra = "\
+[Particles]
+1=Fp
+
+[ParticleSystems]
+1=FireStreamSys
+
+[FireStreamSys]
+BehavesLike=Fire
+
+[Fp]
+BehavesLike=Fire
+
+[CombatDamage]
+DefaultFireStreamSystem=FireStreamSys
+DefaultSparkSystem=SparkSys
+";
+        let ini = IniFile::from_str(&make_particle_test_rules(extra));
+        let rs = RuleSet::from_ini(&ini).unwrap();
+        assert_eq!(
+            rs.combat_damage.default_fire_stream_system.as_deref(),
+            Some("FireStreamSys")
+        );
+        assert_eq!(rs.combat_damage.default_spark_system.as_deref(), Some("SparkSys"));
+        // Other slots stay None when the key isn't present.
+        assert!(rs.combat_damage.default_repair_particle_system.is_none());
+    }
+
+    #[test]
+    fn combat_damage_defaults_when_section_absent() {
+        let ini = IniFile::from_str(&make_particle_test_rules(""));
+        let rs = RuleSet::from_ini(&ini).unwrap();
+        assert!(rs.combat_damage.default_fire_stream_system.is_none());
+        assert!(rs.combat_damage.default_spark_system.is_none());
     }
 
     #[test]
