@@ -9,6 +9,13 @@ use crate::sim::world::Simulation;
 
 use super::production_tech::foundation_dimensions;
 
+/// Facing for the free harvester when the south-of-foundation spawn cell
+/// is walkable. 0xC0 = 192 = south in the 0..255 facing system.
+const FREE_UNIT_FACING_PRIMARY: u8 = 0xC0;
+/// Fallback facing when the primary cell is blocked and a perimeter cell is
+/// chosen instead. 0xA0 = 160 = south-southwest.
+const FREE_UNIT_FACING_FALLBACK: u8 = 0xA0;
+
 /// Spawn a free harvester when a refinery is placed (RA2 standard behavior).
 pub(super) fn maybe_spawn_refinery_harvester(
     sim: &mut Simulation,
@@ -32,24 +39,19 @@ pub(super) fn maybe_spawn_refinery_harvester(
     let (width, height) = obj
         .map(|o| foundation_dimensions(&o.foundation))
         .unwrap_or((1, 1));
-    let qc = obj.and_then(|o| o.queueing_cell);
 
-    // Spawn the free harvester at the refinery dock cell — the platform pad
-    // just below the building entrance. In original RA2, the free harvester
-    // appears on this pad, not at a random adjacent cell.
-    let dock: (u16, u16) = super::super::miner::miner_system::refinery_dock_cell(
-        building_rx,
-        building_ry,
-        width,
-        height,
-        qc,
+    // Primary spawn cell: one row south of the foundation, on the building's
+    // middle column. For a 4x3 refinery at (rx, ry) this lands at (rx+2, ry+3)
+    // — directly below the south face of the structure.
+    let primary: (u16, u16) = (
+        building_rx.saturating_add(width / 2),
+        building_ry.saturating_add(height),
     );
-    // Use the dock cell if walkable, otherwise fall back to adjacent search.
-    let (rx, ry) = if path_grid.is_none_or(|g| g.is_walkable(dock.0, dock.1)) {
-        dock
+    let (rx, ry, facing) = if path_grid.is_none_or(|g| g.is_walkable(primary.0, primary.1)) {
+        (primary.0, primary.1, FREE_UNIT_FACING_PRIMARY)
     } else {
         match find_adjacent_spawn_cell(building_rx, building_ry, width, height, path_grid) {
-            Some(cell) => cell,
+            Some((fx, fy)) => (fx, fy, FREE_UNIT_FACING_FALLBACK),
             None => {
                 log::warn!(
                     "No walkable cell near refinery ({},{}) to spawn {}",
@@ -62,7 +64,7 @@ pub(super) fn maybe_spawn_refinery_harvester(
         }
     };
     if sim
-        .spawn_object(harvester_type, owner, rx, ry, 64, rules, height_map)
+        .spawn_object(harvester_type, owner, rx, ry, facing, rules, height_map)
         .is_some()
     {
         log::info!(
