@@ -1213,6 +1213,10 @@ impl Simulation {
                     bldg.z,
                 );
             }
+            // Eject garrison occupants from CanBeOccupied buildings destroyed in combat.
+            for ev in &combat_result.destroyed_garrison_buildings {
+                production::eject_destruction_garrison(self, rules, ev);
+            }
             // Refresh superweapon grants for owners who lost structures in combat.
             if self.game_options.super_weapons && combat_result.structure_destroyed {
                 let mut sw_refresh_owners: Vec<InternedId> = Vec::new();
