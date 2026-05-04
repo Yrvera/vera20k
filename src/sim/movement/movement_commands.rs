@@ -66,7 +66,9 @@ pub fn issue_move_command(
     queue: bool,
     terrain_costs: Option<&TerrainCostGrid>,
     entity_blocks: Option<&BTreeSet<(u16, u16)>>,
-    entity_block_map: Option<&std::collections::HashMap<(u16, u16), crate::sim::pathfinding::EntityBlockEntry>>,
+    entity_block_map: Option<
+        &std::collections::HashMap<(u16, u16), crate::sim::pathfinding::EntityBlockEntry>,
+    >,
     mover_is_crusher: bool,
 ) -> bool {
     issue_move_command_with_layered(
@@ -88,9 +90,10 @@ pub fn issue_move_command(
 ///
 /// Used for scripted movement into/out of building footprints where the target
 /// cell is not pathfindable (e.g. refinery pad inside the foundation). Creates
-/// a 1-step `MovementTarget` that the tick system advances smoothly via lepton
-/// sub-cell interpolation — the same path the original engine's
-/// `ILocomotion::MoveTo` takes.
+/// a 2-cell `MovementTarget` `[start, target]` with a Euclidean direction
+/// vector that handles multi-cell deltas correctly. Each step bypasses A*;
+/// callers that also need to bypass `path_grid` walkability (e.g. foundation
+/// traversal) should set `bypass_grid = true` on the resulting `MovementTarget`.
 ///
 /// Returns `true` if the entity was found and the move was issued.
 pub fn issue_direct_move(
@@ -114,7 +117,14 @@ pub fn issue_direct_move(
     let dx = target.0 as i32 - start.0 as i32;
     let dy = target.1 as i32 - start.1 as i32;
     let new_facing = facing_from_delta(dx, dy);
-    let (dir_x, dir_y, dir_len) = crate::util::lepton::cell_delta_to_lepton_dir(dx, dy);
+    // Compute direction vector with EUCLIDEAN length so multi-cell deltas
+    // (e.g. pad→exit_cell may be (-2, +1)) advance at the correct speed.
+    // `cell_delta_to_lepton_dir` only handles unit deltas — for multi-cell
+    // deltas its length is wrong, causing the dual-axis crossing check in
+    // movement_step to never satisfy.
+    let dir_x: SimFixed = SimFixed::from_num(dx * 256);
+    let dir_y: SimFixed = SimFixed::from_num(dy * 256);
+    let dir_len: SimFixed = crate::util::fixed_math::fixed_distance(dir_x, dir_y);
 
     let movement = MovementTarget {
         path: vec![start, target],
@@ -151,7 +161,9 @@ pub fn issue_move_command_with_layered(
     terrain_costs: Option<&TerrainCostGrid>,
     entity_blocks: Option<&BTreeSet<(u16, u16)>>,
     resolved_terrain: Option<&ResolvedTerrainGrid>,
-    entity_block_map: Option<&std::collections::HashMap<(u16, u16), crate::sim::pathfinding::EntityBlockEntry>>,
+    entity_block_map: Option<
+        &std::collections::HashMap<(u16, u16), crate::sim::pathfinding::EntityBlockEntry>,
+    >,
     mover_is_crusher: bool,
 ) -> bool {
     // Read the entity's current position and locomotor state.

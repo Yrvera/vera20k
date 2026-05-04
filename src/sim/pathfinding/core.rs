@@ -259,6 +259,11 @@ fn reconstruct_path_dual(
 /// Always returns `Vec<LayeredPathStep>` with per-cell layer info derived from
 /// height comparison. Thin public wrappers extract `(u16, u16)` for callers that
 /// don't need layer info.
+///
+/// Accepts blocked start cells: a unit standing in an impassable cell (e.g.
+/// inside a building footprint) can still pathfind out via any walkable
+/// neighbor. Returns `None` only when the goal is unreachable from any
+/// neighbor of the start.
 pub fn astar_search(
     grid: &PathGrid,
     start: (u16, u16),
@@ -268,42 +273,13 @@ pub fn astar_search(
 ) -> Option<Vec<LayeredPathStep>> {
     let is_water_mover = options.movement_zone.is_some_and(|mz| mz.is_water_mover());
 
-    // --- Start/goal passability ---
-    let start_passable = if is_at_bridge_level(
-        grid.cell(start.0, start.1).map_or(0, |c| {
-            if start_layer == MovementLayer::Bridge {
-                c.bridge_deck_level
-            } else {
-                c.ground_level
-            }
-        }),
-        grid.cell(start.0, start.1).unwrap_or(&DEFAULT_BLOCKED_CELL),
-    ) {
-        grid.is_walkable_on_layer(start.0, start.1, MovementLayer::Bridge)
-    } else {
-        is_cell_passable_for_mover(
-            grid,
-            start.0,
-            start.1,
-            options.movement_zone,
-            options.resolved_terrain,
-        )
-    };
-    if !start_passable {
-        // Fallback: try the other layer (matches old find_layered_path fallback)
-        let alt_layer = if start_layer == MovementLayer::Bridge {
-            MovementLayer::Ground
-        } else {
-            MovementLayer::Bridge
-        };
-        let alt_passable = grid.is_walkable_on_layer(start.0, start.1, alt_layer);
-        if !alt_passable {
-            return None;
-        }
-        // Recurse with flipped layer
-        return astar_search(grid, start, alt_layer, goal, options);
-    }
+    // Start cell may be blocked (e.g. unit standing inside a building footprint
+    // after undock). The start node is seeded into the open set without a
+    // passability check; only neighbor expansion calls Can_Enter_Cell. If all
+    // 8 neighbors are also blocked, the open set exhausts and we return None
+    // naturally — no need for an explicit start-cell rejection.
 
+    // --- Goal passability ---
     // Goal must be walkable on at least one layer.
     let goal_ground_ok = is_cell_passable_for_mover(
         grid,

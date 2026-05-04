@@ -67,6 +67,11 @@ fn snapshot_mover(entities: &EntityStore, entity_id: u64) -> Option<MoverSnapsho
         on_bridge: e.on_bridge,
         locomotor: e.locomotor.clone(),
         rot: e.locomotor.as_ref().map(|l| l.rot).unwrap_or(0),
+        bypass_grid: e
+            .movement_target
+            .as_ref()
+            .map(|mt| mt.bypass_grid)
+            .unwrap_or(false),
     })
 }
 
@@ -161,7 +166,11 @@ fn handle_path_exhaustion(
                 snap.omni_crusher
                     || matches!(
                         snap.locomotor.as_ref().map(|l| l.movement_zone),
-                        Some(MovementZone::Crusher | MovementZone::AmphibiousCrusher | MovementZone::CrusherAll)
+                        Some(
+                            MovementZone::Crusher
+                                | MovementZone::AmphibiousCrusher
+                                | MovementZone::CrusherAll
+                        )
                     ),
             ) {
                 if new_path.len() >= 2 {
@@ -219,6 +228,7 @@ fn handle_path_exhaustion(
                         final_goal: saved_goal,
                         group_id: saved_group,
                         ignore_terrain_cost: false,
+                        bypass_grid: false,
                     };
                     debug_assert_eq!(
                         target.path.len(),
@@ -346,13 +356,15 @@ pub fn tick_movement_with_grids(
     // only stationary/enemy units hard-block. InternedId is Copy, so keys are cheap.
     let entity_block_sets: BTreeMap<
         crate::sim::intern::InternedId,
-        (BTreeSet<(u16, u16)>, HashMap<(u16, u16), crate::sim::pathfinding::EntityBlockEntry>),
+        (
+            BTreeSet<(u16, u16)>,
+            HashMap<(u16, u16), crate::sim::pathfinding::EntityBlockEntry>,
+        ),
     > = mover_owners
         .iter()
         .map(|&owner_id| {
             let owner_str = interner.resolve(owner_id);
-            let pair =
-                bump_crush::build_entity_block_set(entities, owner_str, alliances, interner);
+            let pair = bump_crush::build_entity_block_set(entities, owner_str, alliances, interner);
             (owner_id, pair)
         })
         .collect();
@@ -590,8 +602,13 @@ pub fn tick_movement_with_grids(
                         }
                         // Update occupancy grid: move entity from old cell to new cell.
                         occupancy.move_entity(
-                            old_rx, old_ry, nx, ny,
-                            entity_id, active_layer, entity.sub_cell,
+                            old_rx,
+                            old_ry,
+                            nx,
+                            ny,
+                            entity_id,
+                            active_layer,
+                            entity.sub_cell,
                         );
                         // Reserve destination cell.
                         super::movement_reservation::reserve_destination_after_transition(
@@ -661,11 +678,8 @@ pub fn tick_movement_with_grids(
                                 // Can_Enter_Cell — terrain + not reserved).
                                 let next_walkable =
                                     path_grid.map_or(true, |g| g.is_walkable(after.0, after.1));
-                                let not_reserved = occupancy.is_empty_on_layer(
-                                    after.0,
-                                    after.1,
-                                    active_layer,
-                                );
+                                let not_reserved =
+                                    occupancy.is_empty_on_layer(after.0, after.1, active_layer);
                                 if next_walkable && not_reserved {
                                     if let Some(sel) = super::drive_track::select_drive_track(
                                         cur_face, next_face, false,

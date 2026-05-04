@@ -37,6 +37,7 @@ pub(super) enum DeferredCellCheck {
 
 pub(super) fn detect_deferred_cell_check(
     mover_category: EntityCategory,
+    mover_bypass_grid: bool,
     next_layer: MovementLayer,
     next_cell: (u16, u16),
     current_cell: (u16, u16),
@@ -46,6 +47,18 @@ pub(super) fn detect_deferred_cell_check(
     let is_self_cell =
         (next_cell.0, next_cell.1, next_layer) == (current_cell.0, current_cell.1, active_layer);
     if is_self_cell {
+        return None;
+    }
+
+    // bypass_grid is only set during scripted choreographed drives (the
+    // harvester dock-into-foundation path). Skip the deferred occupancy
+    // check entirely for these — the cell transition completes inline,
+    // and dock_reservations already prevents multi-mover contention on
+    // the pad cell. Without this short-circuit, structure occupants in
+    // foundation cells trigger a deferred check that breaks the cell
+    // transition loop, then the Clear arm snaps the mover back to cell
+    // center → sub-cell oscillation, mover never advances.
+    if mover_bypass_grid {
         return None;
     }
 
@@ -161,6 +174,7 @@ pub(super) fn handle_deferred_occupancy(
         snap.omni_crusher,
         interner.resolve(snap.owner),
         mover_loco_kind,
+        snap.bypass_grid,
         occupancy,
         entities,
         alliances,

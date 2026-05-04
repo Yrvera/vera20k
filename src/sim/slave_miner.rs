@@ -187,7 +187,9 @@ fn handle_slave_search(
         .map(|e| (e.position.rx, e.position.ry))
         .unwrap_or((snap.rx, snap.ry));
 
-    if let Some(cell) = search_local_ore(&sim.production.resource_nodes, master_pos, scan_radius) {
+    if let Some(cell) =
+        search_local_ore(&sim.production.resource_nodes, master_pos, scan_radius, None)
+    {
         snap.harvester.target_cell = Some(cell);
         snap.harvester.state = SlaveHarvestState::MoveToOre;
     } else {
@@ -330,7 +332,9 @@ fn handle_slave_idle(
         .map(|e| (e.position.rx, e.position.ry))
         .unwrap_or((snap.rx, snap.ry));
 
-    if let Some(cell) = search_local_ore(&sim.production.resource_nodes, master_pos, scan_radius) {
+    if let Some(cell) =
+        search_local_ore(&sim.production.resource_nodes, master_pos, scan_radius, None)
+    {
         snap.harvester.target_cell = Some(cell);
         snap.harvester.state = SlaveHarvestState::MoveToOre;
     }
@@ -612,13 +616,15 @@ pub fn check_scan_correction(
     let correction: u16 = rules.general.slave_miner_scan_correction.max(0) as u16;
 
     // Find nearest ore from current position.
-    let current_nearest = search_local_ore(&sim.production.resource_nodes, (mrx, mry), short_scan)?;
+    let current_nearest =
+        search_local_ore(&sim.production.resource_nodes, (mrx, mry), short_scan, None)?;
 
     let current_dist: u16 = manhattan_distance(mrx, mry, current_nearest.0, current_nearest.1);
 
     // Search the broader area (SlaveMinerLongScan) for a better patch.
     let long_scan: u16 = rules.general.slave_miner_long_scan.max(1) as u16;
-    let better_ore = search_local_ore(&sim.production.resource_nodes, (mrx, mry), long_scan)?;
+    let better_ore =
+        search_local_ore(&sim.production.resource_nodes, (mrx, mry), long_scan, None)?;
 
     let better_dist: u16 = manhattan_distance(mrx, mry, better_ore.0, better_ore.1);
 

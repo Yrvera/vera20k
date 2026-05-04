@@ -12,14 +12,17 @@
 use std::collections::BTreeSet;
 
 use crate::map::entities::EntityCategory;
+use crate::rules::locomotor_type::MovementZone;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::miner::{
     CargoBale, Miner, MinerConfig, MinerKind, MinerState, RefineryDockPhase, ResourceNode,
     ResourceType,
 };
 use crate::sim::movement;
+use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::movement::teleport_movement::issue_teleport_command;
 use crate::sim::pathfinding::PathGrid;
+use crate::sim::pathfinding::zone_map::{ZONE_INVALID, ZoneGrid};
 use crate::sim::production::pick_best_resource_node;
 use crate::sim::world::{SimSoundEvent, Simulation};
 use crate::util::fixed_math::{SimFixed, ra2_speed_to_leptons_per_second};
@@ -173,7 +176,6 @@ fn process_miner(
     path_grid: Option<&PathGrid>,
     snap: &mut MinerSnapshot,
 ) {
-    // Debug: log every state transition to find the stutter loop.
     let state_before = format!("{:?}", snap.miner.state);
     match snap.miner.state {
         MinerState::SearchOre => handle_search_ore(sim, config, path_grid, snap),
@@ -214,11 +216,39 @@ fn handle_search_ore(
 ) {
     let search_center = snap.miner.last_harvest_cell.unwrap_or((snap.rx, snap.ry));
 
+    // Build a reachability filter from the zone grid + harvester locomotor.
+    // If any of (zone_grid, locomotor, effective zone cell) is missing, fall
+    // back to unfiltered search for this tick — the next tick will likely
+    // succeed once the harvester moves to a passable cell.
+    let entity = sim.entities.get(snap.entity_id);
+    let mz = entity
+        .and_then(|e| e.locomotor.as_ref())
+        .map(|loc| loc.movement_zone)
+        .unwrap_or(MovementZone::Normal);
+    let layer = entity
+        .map(|e| e.movement_layer_or_ground())
+        .unwrap_or(MovementLayer::Ground);
+    let harvester_anchor = sim
+        .zone_grid
+        .as_ref()
+        .and_then(|zg| effective_zone_cell(zg, mz, snap.rx, snap.ry));
+
+    type OreFilter<'a> = dyn Fn((u16, u16)) -> bool + 'a;
+    let reachable_filter: Option<Box<OreFilter<'_>>> =
+        match (sim.zone_grid.as_ref(), harvester_anchor) {
+            (Some(zg), Some(anchor)) => Some(Box::new(move |ore_cell: (u16, u16)| {
+                ore_reachable(zg, mz, layer, anchor, ore_cell)
+            })),
+            _ => None,
+        };
+    let filter_ref: Option<&dyn Fn((u16, u16)) -> bool> = reachable_filter.as_deref();
+
     // Try local continuation scan first (short radius around last harvest spot).
     if let Some(cell) = search_local_ore(
         &sim.production.resource_nodes,
         search_center,
         config.local_continuation_radius,
+        filter_ref,
     ) {
         snap.miner.target_ore_cell = Some(cell);
         snap.miner.state = MinerState::MoveToOre;
@@ -231,11 +261,13 @@ fn handle_search_ore(
     // before the scan, which we handle elsewhere.
 
     // ArchiveTarget pattern (from RA1): if we remember a productive patch and it
-    // still has ore, go back there before doing a full global search. This prevents
-    // harvesters from wandering to distant patches when their local area just needs
-    // a longer walk to reach.
+    // still has ore AND it's reachable, go back there before doing a full global
+    // search. Skipping the reachability check here would re-target a patch the
+    // harvester can't reach (e.g., walled off mid-cycle).
     if let Some(archive) = snap.miner.last_harvest_cell {
-        if sim.production.resource_nodes.contains_key(&archive) {
+        let archive_has_ore = sim.production.resource_nodes.contains_key(&archive);
+        let archive_reachable = filter_ref.is_none_or(|f| f(archive));
+        if archive_has_ore && archive_reachable {
             snap.miner.target_ore_cell = Some(archive);
             snap.miner.state = MinerState::MoveToOre;
             // Clear archive so we don't loop back forever if it depletes on arrival.
@@ -250,21 +282,25 @@ fn handle_search_ore(
         &sim.production.resource_nodes,
         (snap.rx, snap.ry),
         config.long_scan_radius,
+        filter_ref,
     ) {
         snap.miner.target_ore_cell = Some(cell);
         snap.miner.state = MinerState::MoveToOre;
         return;
     }
 
-    // Global search — find nearest ore anywhere on the map (unbounded fallback).
-    if let Some(cell) = pick_best_resource_node(&sim.production.resource_nodes, (snap.rx, snap.ry))
-    {
+    // Global search — find nearest reachable ore anywhere on the map.
+    if let Some(cell) = pick_best_resource_node(
+        &sim.production.resource_nodes,
+        (snap.rx, snap.ry),
+        filter_ref,
+    ) {
         snap.miner.target_ore_cell = Some(cell);
         snap.miner.state = MinerState::MoveToOre;
         return;
     }
 
-    // No ore anywhere.
+    // No reachable ore anywhere.
     snap.miner.state = MinerState::WaitNoOre;
     snap.miner.rescan_cooldown = config.rescan_cooldown_ticks;
 }
@@ -311,12 +347,6 @@ fn handle_move_to_ore(
         snap.miner.state = MinerState::Harvest;
         // Original requires 9 StepTimer steps before first bale (18 frames at default rate).
         snap.miner.harvest_timer = config.harvest_tick_interval;
-        log::debug!(
-            "Miner {} arrived at ore ({},{}), entering Harvest",
-            snap.entity_id,
-            target.0,
-            target.1,
-        );
         return;
     }
 
@@ -325,18 +355,6 @@ fn handle_move_to_ore(
         .entities
         .get(snap.entity_id)
         .is_some_and(|e| e.movement_target.is_some());
-
-    log::debug!(
-        "Miner {} MoveToOre: pos=({},{}) target=({},{}) has_movement={} kind={:?}",
-        snap.entity_id,
-        snap.rx,
-        snap.ry,
-        target.0,
-        target.1,
-        has_movement,
-        snap.miner.kind,
-    );
-
     // Adjacent to ore? The passability matrix blocks Tiberium terrain for
     // Track-type units, so A* can't path onto the ore cell itself. Use a
     // direct (non-pathfinding) move for the final step — harvesters must
@@ -345,12 +363,9 @@ fn handle_move_to_ore(
     // every tick before the entity physically arrives).
     let dx = (snap.rx as i32 - target.0 as i32).unsigned_abs();
     let dy = (snap.ry as i32 - target.1 as i32).unsigned_abs();
+
     if dx <= 1 && dy <= 1 {
         if !has_movement {
-            log::debug!(
-                "Miner {} adjacent to ore, issuing direct move",
-                snap.entity_id
-            );
             movement::issue_direct_move(&mut sim.entities, snap.entity_id, target, snap.speed);
         }
         return;
@@ -360,21 +375,13 @@ fn handle_move_to_ore(
     // After issuing the A* move, mark it as ignore_terrain_cost so the
     // movement tick doesn't block at Tiberium cells along the path.
     // Harvesters must be able to traverse ore fields freely.
-    if !has_movement {
-        if let Some(grid) = path_grid {
-            log::debug!(
-                "Miner {} issuing A* move to ore ({},{})",
-                snap.entity_id,
-                target.0,
-                target.1
-            );
-            issue_move_if_idle(&mut sim.entities, grid, snap.entity_id, target, snap.speed);
-            // Mark the newly created movement as terrain-cost-exempt.
-            if let Some(entity) = sim.entities.get_mut(snap.entity_id) {
-                if let Some(ref mut mt) = entity.movement_target {
-                    mt.ignore_terrain_cost = true;
-                }
-            }
+    if !has_movement && let Some(grid) = path_grid {
+        issue_move_if_idle(&mut sim.entities, grid, snap.entity_id, target, snap.speed);
+        // Mark the newly created movement as terrain-cost-exempt.
+        if let Some(entity) = sim.entities.get_mut(snap.entity_id)
+            && let Some(ref mut mt) = entity.movement_target
+        {
+            mt.ignore_terrain_cost = true;
         }
     }
 }
@@ -860,6 +867,76 @@ pub(crate) fn refinery_dock_cell(
     super::miner_dock_sequence::refinery_queue_cell(rx, ry, width, height, queueing_cell)
 }
 
+/// 8-neighbor offsets in clockwise order starting from north. Used by the
+/// effective-zone-cell probe and the ore-reachability check.
+const ADJACENT_8: [(i32, i32); 8] = [
+    (0, -1),
+    (1, -1),
+    (1, 0),
+    (1, 1),
+    (0, 1),
+    (-1, 1),
+    (-1, 0),
+    (-1, -1),
+];
+
+/// Return a cell whose zone serves as the harvester's reachability anchor.
+///
+/// The harvester's own cell may be on Tiberium (impassable in the path grid,
+/// hence `ZONE_INVALID`); when so, probe its 8 neighbors and return the
+/// first cell with a valid zone. Returns `None` if neither the harvester's
+/// cell nor any neighbor has a valid zone — caller falls back to no-filter
+/// behavior for that tick.
+fn effective_zone_cell(
+    zone_grid: &ZoneGrid,
+    mz: MovementZone,
+    rx: u16,
+    ry: u16,
+) -> Option<(u16, u16)> {
+    let zone_map = zone_grid.map_for(mz)?;
+    if zone_map.zone_at(rx, ry, MovementLayer::Ground) != ZONE_INVALID {
+        return Some((rx, ry));
+    }
+    for &(dx, dy) in &ADJACENT_8 {
+        let nx = (rx as i32) + dx;
+        let ny = (ry as i32) + dy;
+        if nx < 0 || ny < 0 || nx > u16::MAX as i32 || ny > u16::MAX as i32 {
+            continue;
+        }
+        let (nx, ny) = (nx as u16, ny as u16);
+        if zone_map.zone_at(nx, ny, MovementLayer::Ground) != ZONE_INVALID {
+            return Some((nx, ny));
+        }
+    }
+    None
+}
+
+/// True if any 8-neighbor of `ore_cell` is in the harvester's connected zone
+/// component. Ore cells themselves are `ZONE_INVALID` because Tiberium is
+/// blocked in the path grid (so A* doesn't path through ore fields), so we
+/// probe the ore's neighbors instead — mirroring how a harvester actually
+/// approaches an ore patch.
+fn ore_reachable(
+    zone_grid: &ZoneGrid,
+    mz: MovementZone,
+    layer: MovementLayer,
+    harvester_zone_cell: (u16, u16),
+    ore_cell: (u16, u16),
+) -> bool {
+    for &(dx, dy) in &ADJACENT_8 {
+        let nx = (ore_cell.0 as i32) + dx;
+        let ny = (ore_cell.1 as i32) + dy;
+        if nx < 0 || ny < 0 || nx > u16::MAX as i32 || ny > u16::MAX as i32 {
+            continue;
+        }
+        let (nx, ny) = (nx as u16, ny as u16);
+        if zone_grid.can_reach(mz, harvester_zone_cell, layer, (nx, ny), layer) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Search for ore within `radius` cells of `center`. Returns best cell.
 ///
 /// Ranking mirrors `pick_best_resource_node`: gems over ore → highest density
@@ -868,6 +945,7 @@ pub(crate) fn search_local_ore(
     nodes: &std::collections::BTreeMap<(u16, u16), ResourceNode>,
     center: (u16, u16),
     radius: u16,
+    filter: Option<&dyn Fn((u16, u16)) -> bool>,
 ) -> Option<(u16, u16)> {
     let mut best: Option<((u8, u32, u32, u16, u16), (u16, u16))> = None;
     let min_x = center.0.saturating_sub(radius);
@@ -884,6 +962,11 @@ pub(crate) fn search_local_ore(
         let dist_sq = (dx * dx + dy * dy) as u32;
         if dist_sq > (radius as u32) * (radius as u32) {
             continue; // circular, not square
+        }
+        if let Some(f) = filter
+            && !f((rx, ry))
+        {
+            continue;
         }
         let type_rank: u8 = if node.resource_type == ResourceType::Ore {
             1

@@ -31,9 +31,13 @@ pub fn is_harvester_type(rules: &RuleSet, type_id: &str) -> bool {
 }
 
 /// Find the nearest non-empty resource node to `from`.
+///
+/// `filter`, if provided, is called per candidate; only cells for which
+/// it returns `true` are considered. Pass `None` for unfiltered behavior.
 pub fn pick_best_resource_node(
     nodes: &BTreeMap<(u16, u16), ResourceNode>,
     from: (u16, u16),
+    filter: Option<&dyn Fn((u16, u16)) -> bool>,
 ) -> Option<(u16, u16)> {
     // RA2 cell selection priority (ref doc §3):
     //   1. Gems over ore (type_rank: 0=gem, 1=ore)
@@ -43,6 +47,11 @@ pub fn pick_best_resource_node(
     let mut best: Option<((u8, u32, u32, u16, u16), (u16, u16))> = None;
     for (&(rx, ry), node) in nodes {
         if node.remaining == 0 {
+            continue;
+        }
+        if let Some(f) = filter
+            && !f((rx, ry))
+        {
             continue;
         }
         let dx = rx as i64 - from.0 as i64;

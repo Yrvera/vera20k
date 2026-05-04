@@ -1,10 +1,7 @@
-# Build
 /target
 
-# Config
 config.toml
 
-# IDE / OS
 .vscode/
 .idea/
 *.swp
@@ -12,20 +9,20 @@ config.toml
 Thumbs.db
 .DS_Store
 
-# Generated / temporary
 *.png
 *.log
 *.txt
 *.tmp
 *.map
 
-# Retail INI files (loaded from .mix archives at runtime)
 /ini/
 
-# RE docs (kept locally outside the repo)
 /infodocs/
 
-# Local dev config (personal paths, Claude setup)
+/docs/
+!/docs/_config.yml
+!/docs/index.md
+
 CLAUDE.md
 .mcp.json
 /.claude/

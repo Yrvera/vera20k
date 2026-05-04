@@ -36,11 +36,6 @@ const TICK_MS: u32 = 67;
 /// units during docking, regardless of whatever the INI says (e.g. CMIN has ROT=5).
 const HARVESTER_BODY_ROT: i32 = 10;
 
-/// Exit facing from the original engine (0x47 = 71 ~ east-southeast).
-///
-/// The unit is ejected at offset (-0x80, +0x80) with facing 0x47.
-const EXIT_FACING: u8 = 0x47;
-
 // ---------------------------------------------------------------------------
 // Cell computation helpers
 // ---------------------------------------------------------------------------
@@ -102,11 +97,14 @@ pub(super) fn refinery_exit_cell(
     height: u16,
     _queueing_cell: Option<(u16, u16)>,
 ) -> (u16, u16) {
-    // Building center in leptons: (rx*256 + (w-1)*128, ry*256 + (h-1)*128).
-    // UndockUnit offset: (-128, +128) leptons from center.
-    // Combined and divided by 256 for cell coordinates.
-    let exit_x = (rx as i32 * 256 + (width as i32 - 2) * 128) / 256;
-    let exit_y = (ry as i32 * 256 + height as i32 * 128) / 256;
+    // Building center in leptons (foundation geometric center):
+    //   X = rx*256 + 128 + (w-1)*128 = rx*256 + w*128
+    //   Y = ry*256 + 128 + (h-1)*128 = ry*256 + h*128
+    // Offset (-128, +128) leptons from center, then floor-divide by 256 for
+    // cell coordinates. Lands at the south-edge interior cell of the
+    // foundation (e.g. (rx+1, ry+2) for 4x3, (rx+1, ry+2) for 3×3 → cell rx+1, ry+2).
+    let exit_x = (rx as i32 * 256 + (width as i32 - 1) * 128) / 256;
+    let exit_y = (ry as i32 * 256 + height as i32 * 128 + 128) / 256;
     (exit_x.max(0) as u16, exit_y.max(0) as u16)
 }
 
@@ -305,11 +303,17 @@ fn phase_rotate_to_pad(
     let target_facing: u8 = facing_from_to(queue, pad);
     let rot: i32 = body_rot(rules, sim.interner.resolve(snap.type_id));
     if apply_rotation(sim, snap.entity_id, target_facing, rot) {
-        // Rotation complete — issue a direct move onto the pad cell.
-        // The pad is inside the building footprint so A* can't reach it;
-        // issue_direct_move bypasses pathfinding (matches original engine's
-        // ILocomotion::MoveTo with speed 1.0).
+        // Rotation complete — issue a direct move onto the pad cell with
+        // bypass_grid so the harvester can step into the foundation footprint.
+        // (issue_direct_move alone only bypasses A*; the per-tick walkability
+        // check in movement_step would otherwise reject entry into the
+        // PathGrid-blocked pad cell.)
         movement::issue_direct_move(&mut sim.entities, snap.entity_id, pad, snap.speed);
+        if let Some(entity) = sim.entities.get_mut(snap.entity_id)
+            && let Some(ref mut mt) = entity.movement_target
+        {
+            mt.bypass_grid = true;
+        }
         snap.miner.dock_phase = RefineryDockPhase::EnterPad;
     }
 }
@@ -426,28 +430,44 @@ fn phase_exit_pad(
     exit: (u16, u16),
     _ref_sid: u64,
 ) {
-    // First call: issue direct move to exit cell with the original engine's
-    // exit facing (0x47 ≈ east-southeast).
+    // First call: issue direct move to the exit cell. The exit cell sits on
+    // the south edge of the foundation footprint (still inside, blocked in
+    // path_grid). bypass_grid lets the harvester drive through; on arrival
+    // the dock sequence ends and SearchOre takes over from the blocked cell.
     let moving = sim
         .entities
         .get(snap.entity_id)
         .is_some_and(|e| e.movement_target.is_some());
     let at_exit = (snap.rx, snap.ry) == exit;
+    let teleporting = sim
+        .entities
+        .get(snap.entity_id)
+        .is_some_and(|e| e.teleport_state.is_some());
 
     if !moving && !at_exit {
-        // Issue the exit move and set facing to match original engine.
+        // Issue the exit move with bypass_grid so the harvester can step
+        // through foundation cells (marked unwalkable in path_grid). Facing
+        // is left to the locomotor's natural source-to-dest derivation.
         movement::issue_direct_move(&mut sim.entities, snap.entity_id, exit, snap.speed);
-        if let Some(entity) = sim.entities.get_mut(snap.entity_id) {
-            entity.facing_target = Some(EXIT_FACING);
+        if let Some(entity) = sim.entities.get_mut(snap.entity_id)
+            && let Some(ref mut mt) = entity.movement_target
+        {
+            mt.bypass_grid = true;
         }
         return;
     }
 
-    if !moving && at_exit {
+    if !moving && at_exit && !teleporting {
         // Arrived at exit — finish docking.
         snap.miner.reserved_refinery = None;
         snap.miner.dock_queued = false;
         snap.miner.forced_return = false;
+        // Clear stale ore targets so SearchOre re-scans from the exit cell.
+        // Without this, the miner re-targets the patch it came from, which
+        // for refineries placed adjacent to ore puts the destination on the
+        // back side of the building footprint, producing a head-butt cycle.
+        snap.miner.target_ore_cell = None;
+        snap.miner.last_harvest_cell = None;
         snap.miner.dock_phase = RefineryDockPhase::Approach;
         snap.miner.state = MinerState::SearchOre;
         return;
