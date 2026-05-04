@@ -25,6 +25,8 @@
 //! ## Dependency rules
 //! - Part of rules/ — no dependencies on sim/, render/, ui/, etc.
 
+use glam::IVec3;
+
 use crate::rules::ini_parser::IniSection;
 use crate::rules::jumpjet_params::JumpjetParams;
 use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
@@ -572,6 +574,42 @@ pub struct ObjectType {
     pub light_green_tint: f32,
     /// Blue channel tint for emitted light (LightBlueTint= in rules.ini). Default 1.0.
     pub light_blue_tint: f32,
+
+    // -- TechnoType particle effects --
+    // String fields below hold unresolved particle-system section names; ID
+    // resolution against the particle-system registry is deferred (matches
+    // the same deferred-typing decision used for ParticleType.warhead and
+    // ParticleSystemType.holds_what's parse-side captures).
+    /// `NaturalParticleSystem=` — gap-generator / cloak-related particle
+    /// system. Live code path in YR (BuildingClass::UpdateGapGenerator_Tick),
+    /// but no retail INI sets the key, so the slot is normally null.
+    pub natural_particle_system: Option<String>,
+    /// `NaturalParticleLocation=` X,Y,Z offset paired with the system above.
+    pub natural_particle_location: IVec3,
+    /// `RefinerySmokeParticleSystem=` — chimney smoke for refineries.
+    pub refinery_smoke_particle_system: Option<String>,
+    /// `DamageParticleSystems=` CSV list — spawned periodically while the
+    /// object is damaged.
+    pub damage_particle_systems: Vec<String>,
+    /// `DestroyParticleSystems=` CSV list. Parsed for completeness;
+    /// no live consumer in retail YR.
+    pub destroy_particle_systems: Vec<String>,
+    /// `DamageSmokeOffset=` X,Y,Z — anchor offset for damage smoke.
+    pub damage_smoke_offset: IVec3,
+    /// `DamSmkOffScrnRel=` — interpret `DamageSmokeOffset` as screen-relative
+    /// rather than world-relative.
+    pub dam_smk_off_scrn_rel: bool,
+    /// `DestroySmokeOffset=` X,Y,Z — anchor offset for destruction smoke.
+    pub destroy_smoke_offset: IVec3,
+    /// Four `RefinerySmokeOffsetOne/Two/Three/Four=` X,Y,Z triplets.
+    /// Used to position the four chimney-smoke emitters on a refinery.
+    pub refinery_smoke_offsets: [IVec3; 4],
+    /// `GapRadiusInCells=` — per-object gap-generator radius (overrides the
+    /// global default for this object).
+    pub gap_radius_in_cells: u8,
+    /// `SuperGapRadiusInCells=` — oversized gap radius applied during
+    /// specific game states.
+    pub super_gap_radius_in_cells: u8,
 }
 
 impl ObjectType {
@@ -864,8 +902,82 @@ impl ObjectType {
             light_red_tint: section.get_f32("LightRedTint").unwrap_or(1.0),
             light_green_tint: section.get_f32("LightGreenTint").unwrap_or(1.0),
             light_blue_tint: section.get_f32("LightBlueTint").unwrap_or(1.0),
+
+            // TechnoType particle effects
+            natural_particle_system: section
+                .get("NaturalParticleSystem")
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
+            natural_particle_location: section
+                .get("NaturalParticleLocation")
+                .map(parse_ivec3_offset)
+                .unwrap_or(IVec3::ZERO),
+            refinery_smoke_particle_system: section
+                .get("RefinerySmokeParticleSystem")
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
+            damage_particle_systems: parse_csv_string_list(section.get("DamageParticleSystems")),
+            destroy_particle_systems: parse_csv_string_list(section.get("DestroyParticleSystems")),
+            damage_smoke_offset: section
+                .get("DamageSmokeOffset")
+                .map(parse_ivec3_offset)
+                .unwrap_or(IVec3::ZERO),
+            dam_smk_off_scrn_rel: section.get_bool("DamSmkOffScrnRel").unwrap_or(false),
+            destroy_smoke_offset: section
+                .get("DestroySmokeOffset")
+                .map(parse_ivec3_offset)
+                .unwrap_or(IVec3::ZERO),
+            refinery_smoke_offsets: [
+                section
+                    .get("RefinerySmokeOffsetOne")
+                    .map(parse_ivec3_offset)
+                    .unwrap_or(IVec3::ZERO),
+                section
+                    .get("RefinerySmokeOffsetTwo")
+                    .map(parse_ivec3_offset)
+                    .unwrap_or(IVec3::ZERO),
+                section
+                    .get("RefinerySmokeOffsetThree")
+                    .map(parse_ivec3_offset)
+                    .unwrap_or(IVec3::ZERO),
+                section
+                    .get("RefinerySmokeOffsetFour")
+                    .map(parse_ivec3_offset)
+                    .unwrap_or(IVec3::ZERO),
+            ],
+            gap_radius_in_cells: section
+                .get_i32("GapRadiusInCells")
+                .map(|n| n.clamp(0, u8::MAX as i32) as u8)
+                .unwrap_or(0),
+            super_gap_radius_in_cells: section
+                .get_i32("SuperGapRadiusInCells")
+                .map(|n| n.clamp(0, u8::MAX as i32) as u8)
+                .unwrap_or(0),
         }
     }
+}
+
+/// Parse an `X,Y,Z` coordinate string into an `IVec3`. Missing or unparseable
+/// components default to 0.
+fn parse_ivec3_offset(raw: &str) -> IVec3 {
+    let mut parts = raw.split(',').map(|s| s.trim());
+    let x = parts.next().and_then(|s| s.parse::<i32>().ok()).unwrap_or(0);
+    let y = parts.next().and_then(|s| s.parse::<i32>().ok()).unwrap_or(0);
+    let z = parts.next().and_then(|s| s.parse::<i32>().ok()).unwrap_or(0);
+    IVec3::new(x, y, z)
+}
+
+/// Parse a CSV string list, trimming each entry and dropping empties. Returns
+/// an empty Vec for `None` or whitespace-only input.
+fn parse_csv_string_list(raw: Option<&str>) -> Vec<String> {
+    let Some(raw) = raw else {
+        return Vec::new();
+    };
+    raw.split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect()
 }
 
 /// Parse ExitCoord=X,Y,Z from rules.ini. Values are in leptons (256 = 1 cell).
@@ -1187,5 +1299,106 @@ mod tests {
         let section2: &IniSection = ini2.section("VEH").unwrap();
         let obj2 = ObjectType::from_ini_section("VEH", section2, ObjectCategory::Vehicle);
         assert_eq!(obj2.size, 3);
+    }
+
+    #[test]
+    fn techno_type_particle_fields_default_to_empty() {
+        let ini: IniFile = IniFile::from_str("[E1]\n");
+        let section = ini.section("E1").unwrap();
+        let obj = ObjectType::from_ini_section("E1", section, ObjectCategory::Infantry);
+
+        assert_eq!(obj.natural_particle_system, None);
+        assert_eq!(obj.natural_particle_location, IVec3::ZERO);
+        assert_eq!(obj.refinery_smoke_particle_system, None);
+        assert!(obj.damage_particle_systems.is_empty());
+        assert!(obj.destroy_particle_systems.is_empty());
+        assert_eq!(obj.damage_smoke_offset, IVec3::ZERO);
+        assert!(!obj.dam_smk_off_scrn_rel);
+        assert_eq!(obj.destroy_smoke_offset, IVec3::ZERO);
+        assert_eq!(obj.refinery_smoke_offsets, [IVec3::ZERO; 4]);
+        assert_eq!(obj.gap_radius_in_cells, 0);
+        assert_eq!(obj.super_gap_radius_in_cells, 0);
+    }
+
+    #[test]
+    fn techno_type_parses_damage_particle_systems_csv() {
+        let ini: IniFile = IniFile::from_str(
+            "[GAPOWR]\n\
+             DamageParticleSystems=BigGreySSys, SmallGreySSys ,SparkSys\n\
+             DestroyParticleSystems=DebrisSmokeSys\n",
+        );
+        let section = ini.section("GAPOWR").unwrap();
+        let obj = ObjectType::from_ini_section("GAPOWR", section, ObjectCategory::Building);
+
+        assert_eq!(
+            obj.damage_particle_systems,
+            vec![
+                "BigGreySSys".to_string(),
+                "SmallGreySSys".to_string(),
+                "SparkSys".to_string(),
+            ]
+        );
+        assert_eq!(
+            obj.destroy_particle_systems,
+            vec!["DebrisSmokeSys".to_string()]
+        );
+    }
+
+    #[test]
+    fn techno_type_parses_refinery_smoke_offsets() {
+        let ini: IniFile = IniFile::from_str(
+            "[GAREFN]\n\
+             RefinerySmokeParticleSystem=BigGreySSys\n\
+             RefinerySmokeOffsetOne=10,20,30\n\
+             RefinerySmokeOffsetTwo=-5,0,15\n\
+             RefinerySmokeOffsetThree=0,0,0\n\
+             RefinerySmokeOffsetFour=100,-50,200\n",
+        );
+        let section = ini.section("GAREFN").unwrap();
+        let obj = ObjectType::from_ini_section("GAREFN", section, ObjectCategory::Building);
+
+        assert_eq!(
+            obj.refinery_smoke_particle_system.as_deref(),
+            Some("BigGreySSys")
+        );
+        assert_eq!(obj.refinery_smoke_offsets[0], IVec3::new(10, 20, 30));
+        assert_eq!(obj.refinery_smoke_offsets[1], IVec3::new(-5, 0, 15));
+        assert_eq!(obj.refinery_smoke_offsets[2], IVec3::ZERO);
+        assert_eq!(obj.refinery_smoke_offsets[3], IVec3::new(100, -50, 200));
+    }
+
+    #[test]
+    fn techno_type_parses_natural_and_smoke_keys() {
+        let ini: IniFile = IniFile::from_str(
+            "[GAGAP]\n\
+             NaturalParticleSystem=GapPSys\n\
+             NaturalParticleLocation=0,0,256\n\
+             DamageSmokeOffset=12,-12,48\n\
+             DamSmkOffScrnRel=yes\n\
+             DestroySmokeOffset=0,0,128\n\
+             GapRadiusInCells=8\n\
+             SuperGapRadiusInCells=12\n",
+        );
+        let section = ini.section("GAGAP").unwrap();
+        let obj = ObjectType::from_ini_section("GAGAP", section, ObjectCategory::Building);
+
+        assert_eq!(obj.natural_particle_system.as_deref(), Some("GapPSys"));
+        assert_eq!(obj.natural_particle_location, IVec3::new(0, 0, 256));
+        assert_eq!(obj.damage_smoke_offset, IVec3::new(12, -12, 48));
+        assert!(obj.dam_smk_off_scrn_rel);
+        assert_eq!(obj.destroy_smoke_offset, IVec3::new(0, 0, 128));
+        assert_eq!(obj.gap_radius_in_cells, 8);
+        assert_eq!(obj.super_gap_radius_in_cells, 12);
+    }
+
+    #[test]
+    fn parse_csv_string_list_drops_empties_and_trims() {
+        assert!(parse_csv_string_list(None).is_empty());
+        assert!(parse_csv_string_list(Some("")).is_empty());
+        assert!(parse_csv_string_list(Some("  ,  ,  ")).is_empty());
+        assert_eq!(
+            parse_csv_string_list(Some(" A , B , ,C ")),
+            vec!["A".to_string(), "B".to_string(), "C".to_string()]
+        );
     }
 }
