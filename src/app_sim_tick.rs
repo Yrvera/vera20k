@@ -359,6 +359,8 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                             .to_string();
                         GameSoundEvent::UnitReady { sound_id }
                     }
+                    // Temporary catch-all for new garrison events; replaced in Task 6.
+                    _ => continue,
                 };
                 state.sound_events.push(app_event);
             }

@@ -111,6 +111,19 @@ pub enum SimSoundEvent {
     SuperWeaponLaunched { owner: InternedId, rx: u16, ry: u16 },
     /// A lightning bolt struck — play thunder sound.
     SuperWeaponStrike { rx: u16, ry: u16 },
+    /// First occupant entered a CanBeOccupied building (cargo 0→1).
+    /// Owner is the post-transfer building owner. App layer plays
+    /// EVA_StructureGarrisoned if owner is local human.
+    StructureGarrisoned { owner: InternedId },
+    /// Last occupant left a garrisoned building (cargo 1→0).
+    /// Owner is the **pre-revert** owner — the player whose garrison
+    /// just emptied. Matches gamemd's CheckAutoSellOrCivilian which
+    /// fires EVA before ChangeOwner. App layer plays EVA_StructureAbandoned
+    /// if owner is local human.
+    StructureAbandoned { owner: InternedId },
+    /// First-occupant SFX from rulesmd [AudioVisual] BuildingGarrisonedSound.
+    /// Positional cue gated on owner == local human.
+    BuildingGarrisonedSfx { owner: InternedId, rx: u16, ry: u16 },
 }
 
 /// A fire event produced during combat — carries data for render-side
