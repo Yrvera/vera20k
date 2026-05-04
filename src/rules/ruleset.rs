@@ -167,6 +167,10 @@ pub struct GeneralRules {
     /// `condition_red` pre-scaled to integer ×1000 for deterministic sim comparisons.
     /// Computed once at parse time: `(condition_red * 1000.0) as i64`.
     pub condition_red_x1000: i64,
+    /// SFX played when the first occupant enters a CanBeOccupied building.
+    /// Parsed from [AudioVisual] BuildingGarrisonedSound (typically "BuildingGarrisoned").
+    /// None = no sound configured. Resolved at app layer to a sound.ini entry.
+    pub building_garrisoned_sound: Option<String>,
     /// Interval in minutes between low-power degradation damage ticks on Powered=yes buildings.
     /// Parsed from DamageDelay= in [General]. Default 1.0 minute.
     pub damage_delay_minutes: f32,
@@ -399,6 +403,7 @@ impl Default for GeneralRules {
             condition_yellow: 0.5,
             condition_red: 0.25,
             condition_red_x1000: 250,
+            building_garrisoned_sound: None,
             damage_delay_minutes: 1.0,
             spy_power_blackout_frames: 1000,
             damage_fire_types: vec![],
@@ -613,6 +618,10 @@ impl GeneralRules {
                 .unwrap_or(0.5),
             condition_red: condition_red_f32,
             condition_red_x1000: (condition_red_f32 as f64 * 1000.0) as i64,
+            building_garrisoned_sound: audio_visual
+                .and_then(|s| s.get("BuildingGarrisonedSound"))
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string()),
             warp_in: AnimRef {
                 name: parse_anim_name("WarpIn", "WARPIN"),
                 rate_ms: defaults.warp_in.rate_ms,
@@ -1706,5 +1715,43 @@ MutateWarhead=MyMutate\n\
         let rules = RuleSet::from_ini(&ini).expect("Should parse");
         assert_eq!(rules.bridge_rules.strength, 900);
         assert!(!rules.bridge_rules.destroyable_by_default);
+    }
+
+    #[test]
+    fn test_building_garrisoned_sound_parsed() {
+        let ini_str = "\
+[General]
+[AudioVisual]
+BuildingGarrisonedSound=BuildingGarrisoned
+";
+        let ini = IniFile::from_str(ini_str);
+        let general = GeneralRules::from_ini(&ini);
+        assert_eq!(
+            general.building_garrisoned_sound.as_deref(),
+            Some("BuildingGarrisoned")
+        );
+    }
+
+    #[test]
+    fn test_building_garrisoned_sound_default_none() {
+        let ini_str = "\
+[General]
+[AudioVisual]
+";
+        let ini = IniFile::from_str(ini_str);
+        let general = GeneralRules::from_ini(&ini);
+        assert!(general.building_garrisoned_sound.is_none());
+    }
+
+    #[test]
+    fn test_building_garrisoned_sound_empty_treated_as_none() {
+        let ini_str = "\
+[General]
+[AudioVisual]
+BuildingGarrisonedSound=
+";
+        let ini = IniFile::from_str(ini_str);
+        let general = GeneralRules::from_ini(&ini);
+        assert!(general.building_garrisoned_sound.is_none());
     }
 }
