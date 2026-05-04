@@ -133,13 +133,31 @@ pub struct ParticleType {
     pub z_velocity_range: i32,
 }
 
+/// Parse-state wrapper around a `ParticleType` whose `next_particle` reference
+/// has not yet been resolved.
+///
+/// `RuleSet::from_ini` collects these in pass 1, then resolves
+/// `next_particle_name` against the name → ID map in pass 2. The resulting
+/// `ParticleType` is stored in the registry.
+pub struct PendingParticleType {
+    /// The parsed type with `next_particle = None`.
+    pub partial: ParticleType,
+    /// Captured `NextParticle=` value to resolve in pass 2.
+    pub next_particle_name: Option<String>,
+}
+
 impl ParticleType {
     /// Parse a ParticleType from an INI section.
     ///
-    /// `next_particle` is always `None` here — the referenced ParticleType may
-    /// not be parsed yet. Task A4 introduces a `Pending` parse-state struct
-    /// that captures the name string for resolution in a second pass.
+    /// `next_particle` is always `None` — the resolver in `RuleSet::from_ini`
+    /// fills it in after all particle types have been collected.
+    /// Use `from_ini_section_pending` if you need the unresolved reference name.
     pub fn from_ini_section(name: &str, section: &IniSection) -> Self {
+        Self::from_ini_section_pending(name, section).partial
+    }
+
+    /// Parse a ParticleType plus its unresolved `NextParticle=` name string.
+    pub fn from_ini_section_pending(name: &str, section: &IniSection) -> PendingParticleType {
         let behaves_like = section
             .get("BehavesLike")
             .and_then(ParticleBehavesLike::parse)
@@ -153,7 +171,12 @@ impl ParticleType {
             .map(|n| n as u8)
             .unwrap_or(end_state_ai);
 
-        Self {
+        let next_particle_name = section
+            .get("NextParticle")
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("none"));
+
+        let partial = Self {
             name: name.to_string(),
             behaves_like,
             image: section.get("Image").map(|s| s.to_string()),
@@ -222,6 +245,11 @@ impl ParticleType {
             y_velocity: section.get_i32("YVelocity").unwrap_or(0),
             min_z_velocity: section.get_i32("MinZVelocity").unwrap_or(0),
             z_velocity_range: section.get_i32("ZVelocityRange").unwrap_or(0),
+        };
+
+        PendingParticleType {
+            partial,
+            next_particle_name,
         }
     }
 }

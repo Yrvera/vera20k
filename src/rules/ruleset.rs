@@ -22,6 +22,10 @@ use std::collections::{HashMap, HashSet};
 use crate::rules::error::RulesError;
 use crate::rules::ini_parser::IniFile;
 use crate::rules::object_type::{FactoryType, ObjectCategory, ObjectType};
+use crate::rules::particle_system_type::{
+    ParticleSystemType, ParticleSystemTypeId, PendingParticleSystemType,
+};
+use crate::rules::particle_type::{ParticleType, ParticleTypeId, PendingParticleType};
 use crate::rules::projectile_type::ProjectileType;
 use crate::rules::radar_event_config::RadarEventConfig;
 use crate::rules::superweapon_type::SuperWeaponType;
@@ -910,6 +914,14 @@ pub struct RuleSet {
     pub radar_event_config: RadarEventConfig,
     /// All superweapon types indexed by ID (e.g., "LightningStormSpecial" → SuperWeaponType).
     pub super_weapons: HashMap<String, SuperWeaponType>,
+    /// Particle types in registry order. Index = `ParticleTypeId.0`.
+    particle_types: Vec<ParticleType>,
+    /// Uppercase name → `ParticleTypeId` for case-insensitive lookup.
+    particle_types_by_name: HashMap<String, ParticleTypeId>,
+    /// Particle system types in registry order. Index = `ParticleSystemTypeId.0`.
+    particle_system_types: Vec<ParticleSystemType>,
+    /// Uppercase name → `ParticleSystemTypeId` for case-insensitive lookup.
+    particle_system_types_by_name: HashMap<String, ParticleSystemTypeId>,
 }
 
 impl RuleSet {
@@ -1037,9 +1049,17 @@ impl RuleSet {
         }
         log::info!("SuperWeaponTypes: {} loaded", super_weapons.len());
 
+        // Step 9: Two-pass parse for [Particles] and [ParticleSystems].
+        // Cross-references (NextParticle, HoldsWhat) are resolved in pass 2 so
+        // that INI ordering does not matter.
+        let (particle_types, particle_types_by_name) = parse_particle_types(ini);
+        let (particle_system_types, particle_system_types_by_name) =
+            parse_particle_system_types(ini, &particle_types_by_name);
+
         log::info!(
             "RuleSet loaded: {} objects ({} inf, {} veh, {} air, {} bld), \
-             {} weapons, {} warheads, {} projectiles",
+             {} weapons, {} warheads, {} projectiles, \
+             {} particle types, {} particle system types",
             objects.len(),
             infantry_ids.len(),
             vehicle_ids.len(),
@@ -1047,7 +1067,9 @@ impl RuleSet {
             building_ids.len(),
             weapons.len(),
             warheads.len(),
-            projectiles.len()
+            projectiles.len(),
+            particle_types.len(),
+            particle_system_types.len()
         );
 
         Ok(RuleSet {
@@ -1068,6 +1090,10 @@ impl RuleSet {
             garrison_rules,
             radar_event_config,
             super_weapons,
+            particle_types,
+            particle_types_by_name,
+            particle_system_types,
+            particle_system_types_by_name,
         })
     }
 
@@ -1121,6 +1147,40 @@ impl RuleSet {
     /// Look up a superweapon type by ID.
     pub fn super_weapon(&self, id: &str) -> Option<&SuperWeaponType> {
         self.super_weapons.get(id)
+    }
+
+    /// Look up a particle type by ID. Panics if `id` is out of range.
+    pub fn particle_type(&self, id: ParticleTypeId) -> &ParticleType {
+        &self.particle_types[id.0 as usize]
+    }
+
+    /// Look up a particle system type by ID. Panics if `id` is out of range.
+    pub fn particle_system_type(&self, id: ParticleSystemTypeId) -> &ParticleSystemType {
+        &self.particle_system_types[id.0 as usize]
+    }
+
+    /// Resolve a particle type name to its ID (case-insensitive).
+    pub fn p_type_id_by_name(&self, name: &str) -> Option<ParticleTypeId> {
+        self.particle_types_by_name
+            .get(&name.to_ascii_uppercase())
+            .copied()
+    }
+
+    /// Resolve a particle system type name to its ID (case-insensitive).
+    pub fn ps_type_id_by_name(&self, name: &str) -> Option<ParticleSystemTypeId> {
+        self.particle_system_types_by_name
+            .get(&name.to_ascii_uppercase())
+            .copied()
+    }
+
+    /// Number of particle types loaded from `[Particles]`.
+    pub fn particle_type_count(&self) -> usize {
+        self.particle_types.len()
+    }
+
+    /// Number of particle system types loaded from `[ParticleSystems]`.
+    pub fn particle_system_type_count(&self) -> usize {
+        self.particle_system_types.len()
     }
 
     /// Look up the factory type for a structure by ID (case-insensitive).
@@ -1393,6 +1453,120 @@ fn parse_prerequisite_groups(ini: &IniFile) -> HashMap<String, Vec<String>> {
     }
 
     groups
+}
+
+/// Two-pass parse of `[Particles]`: collect `Pending` entries from each
+/// referenced section, then resolve each `NextParticle=` name to a
+/// `ParticleTypeId`. Missing references log a warning and stay `None`.
+fn parse_particle_types(
+    ini: &IniFile,
+) -> (Vec<ParticleType>, HashMap<String, ParticleTypeId>) {
+    let ids: Vec<String> = parse_registry(ini, "Particles");
+    if ids.is_empty() {
+        return (Vec::new(), HashMap::new());
+    }
+
+    // Pass 1: parse each section into PendingParticleType. Skip IDs whose
+    // section is missing — matches the behavior used elsewhere in this file.
+    let mut pending: Vec<PendingParticleType> = Vec::with_capacity(ids.len());
+    for id in &ids {
+        if let Some(section) = ini.section(id) {
+            pending.push(ParticleType::from_ini_section_pending(id, section));
+        } else {
+            log::trace!(
+                "ParticleType '{}' listed in [Particles] but has no section",
+                id
+            );
+        }
+    }
+
+    // Build the name → ID map (uppercase keys for case-insensitive lookup).
+    let mut by_name: HashMap<String, ParticleTypeId> = HashMap::with_capacity(pending.len());
+    for (idx, p) in pending.iter().enumerate() {
+        by_name.insert(p.partial.name.to_ascii_uppercase(), ParticleTypeId(idx as u32));
+    }
+
+    // Pass 2: resolve NextParticle references.
+    let particle_types: Vec<ParticleType> = pending
+        .into_iter()
+        .map(|p| {
+            let mut partial = p.partial;
+            if let Some(ref next_name) = p.next_particle_name {
+                let key = next_name.to_ascii_uppercase();
+                match by_name.get(&key) {
+                    Some(&id) => partial.next_particle = Some(id),
+                    None => {
+                        log::warn!(
+                            "ParticleType '{}': NextParticle='{}' references unknown particle, leaving unresolved",
+                            partial.name,
+                            next_name
+                        );
+                    }
+                }
+            }
+            partial
+        })
+        .collect();
+
+    log::info!("Particles: {} loaded", particle_types.len());
+    (particle_types, by_name)
+}
+
+/// Two-pass parse of `[ParticleSystems]`: collect `Pending` entries and
+/// resolve each `HoldsWhat=` name against the already-built particle-type
+/// name map. Missing references log a warning and stay `None`.
+fn parse_particle_system_types(
+    ini: &IniFile,
+    p_by_name: &HashMap<String, ParticleTypeId>,
+) -> (Vec<ParticleSystemType>, HashMap<String, ParticleSystemTypeId>) {
+    let ids: Vec<String> = parse_registry(ini, "ParticleSystems");
+    if ids.is_empty() {
+        return (Vec::new(), HashMap::new());
+    }
+
+    let mut pending: Vec<PendingParticleSystemType> = Vec::with_capacity(ids.len());
+    for id in &ids {
+        if let Some(section) = ini.section(id) {
+            pending.push(ParticleSystemType::from_ini_section_pending(id, section));
+        } else {
+            log::trace!(
+                "ParticleSystemType '{}' listed in [ParticleSystems] but has no section",
+                id
+            );
+        }
+    }
+
+    let mut by_name: HashMap<String, ParticleSystemTypeId> = HashMap::with_capacity(pending.len());
+    for (idx, pst) in pending.iter().enumerate() {
+        by_name.insert(
+            pst.partial.name.to_ascii_uppercase(),
+            ParticleSystemTypeId(idx as u32),
+        );
+    }
+
+    let particle_system_types: Vec<ParticleSystemType> = pending
+        .into_iter()
+        .map(|pst| {
+            let mut partial = pst.partial;
+            if let Some(ref holds_name) = pst.holds_what_name {
+                let key = holds_name.to_ascii_uppercase();
+                match p_by_name.get(&key) {
+                    Some(&id) => partial.holds_what = Some(id),
+                    None => {
+                        log::warn!(
+                            "ParticleSystemType '{}': HoldsWhat='{}' references unknown particle, leaving unresolved",
+                            partial.name,
+                            holds_name
+                        );
+                    }
+                }
+            }
+            partial
+        })
+        .collect();
+
+    log::info!("ParticleSystems: {} loaded", particle_system_types.len());
+    (particle_system_types, by_name)
 }
 
 #[cfg(test)]
@@ -1753,5 +1927,116 @@ BuildingGarrisonedSound=
         let ini = IniFile::from_str(ini_str);
         let general = GeneralRules::from_ini(&ini);
         assert!(general.building_garrisoned_sound.is_none());
+    }
+
+    fn make_particle_test_rules(extra: &str) -> String {
+        // Minimal rules that load into a RuleSet — empty registries for the
+        // unit categories so RuleSet::from_ini doesn't reject the input.
+        format!(
+            "\
+[General]
+BuildSpeed=0.75
+MultipleFactory=0.7
+LowPowerPenaltyModifier=1.25
+MinLowPowerProductionSpeed=0.4
+MaxLowPowerProductionSpeed=0.85
+
+[InfantryTypes]
+[VehicleTypes]
+[AircraftTypes]
+[BuildingTypes]
+
+{extra}",
+        )
+    }
+
+    #[test]
+    fn two_pass_resolves_next_particle_regardless_of_order() {
+        let extra = "\
+[Particles]
+1=ChainEnd
+2=ChainStart
+
+[ChainStart]
+NextParticle=ChainEnd
+BehavesLike=Gas
+
+[ChainEnd]
+BehavesLike=Gas
+";
+        let ini = IniFile::from_str(&make_particle_test_rules(extra));
+        let rs = RuleSet::from_ini(&ini).unwrap();
+        let start_id = rs.p_type_id_by_name("ChainStart").unwrap();
+        let end_id = rs.p_type_id_by_name("ChainEnd").unwrap();
+        assert_eq!(rs.particle_type(start_id).next_particle, Some(end_id));
+        assert_eq!(rs.particle_type(end_id).next_particle, None);
+    }
+
+    #[test]
+    fn two_pass_resolves_holds_what() {
+        let extra = "\
+[Particles]
+1=Smoke1
+
+[ParticleSystems]
+1=BigSmoke
+
+[BigSmoke]
+HoldsWhat=Smoke1
+BehavesLike=Smoke
+
+[Smoke1]
+BehavesLike=Smoke
+";
+        let ini = IniFile::from_str(&make_particle_test_rules(extra));
+        let rs = RuleSet::from_ini(&ini).unwrap();
+        let s = rs.ps_type_id_by_name("BigSmoke").unwrap();
+        let p = rs.p_type_id_by_name("Smoke1").unwrap();
+        assert_eq!(rs.particle_system_type(s).holds_what, Some(p));
+    }
+
+    #[test]
+    fn missing_reference_logs_and_leaves_none() {
+        let extra = "\
+[Particles]
+1=GhostRef
+
+[GhostRef]
+NextParticle=DoesNotExist
+BehavesLike=Gas
+";
+        let ini = IniFile::from_str(&make_particle_test_rules(extra));
+        let rs = RuleSet::from_ini(&ini).unwrap();
+        let id = rs.p_type_id_by_name("GhostRef").unwrap();
+        assert_eq!(rs.particle_type(id).next_particle, None);
+    }
+
+    #[test]
+    fn p_type_id_by_name_is_case_insensitive() {
+        let extra = "\
+[Particles]
+1=GasCloud1
+
+[GasCloud1]
+BehavesLike=Gas
+";
+        let ini = IniFile::from_str(&make_particle_test_rules(extra));
+        let rs = RuleSet::from_ini(&ini).unwrap();
+        let a = rs.p_type_id_by_name("GasCloud1").unwrap();
+        let b = rs.p_type_id_by_name("GASCLOUD1").unwrap();
+        let c = rs.p_type_id_by_name("gascloud1").unwrap();
+        assert_eq!(a, b);
+        assert_eq!(b, c);
+    }
+
+    #[test]
+    fn empty_particles_section_leaves_registries_empty() {
+        // Pre-existing rules without [Particles]/[ParticleSystems] still parse.
+        let ini = IniFile::from_str(&make_particle_test_rules(""));
+        let rs = RuleSet::from_ini(&ini).unwrap();
+        assert_eq!(rs.particle_type_count(), 0);
+        assert_eq!(rs.particle_system_type_count(), 0);
+        assert_eq!(rs.p_type_id_by_name("Anything"), None);
+        assert_eq!(rs.ps_type_id_by_name("Anything"), None);
     }
 }

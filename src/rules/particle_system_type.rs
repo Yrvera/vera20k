@@ -123,13 +123,33 @@ pub struct ParticleSystemType {
     pub laser_color: [u8; 3],
 }
 
+/// Parse-state wrapper around a `ParticleSystemType` whose `holds_what`
+/// reference has not yet been resolved.
+///
+/// `RuleSet::from_ini` collects these in pass 1, then resolves
+/// `holds_what_name` against the name → ID map in pass 2.
+pub struct PendingParticleSystemType {
+    /// The parsed type with `holds_what = None`.
+    pub partial: ParticleSystemType,
+    /// Captured `HoldsWhat=` value to resolve in pass 2.
+    pub holds_what_name: Option<String>,
+}
+
 impl ParticleSystemType {
     /// Parse a ParticleSystemType from an INI section.
     ///
-    /// `holds_what` is always `None` here — the referenced ParticleType may
-    /// not be parsed yet. Task A4 introduces a `Pending` parse-state struct
-    /// that captures the name string for resolution in a second pass.
+    /// `holds_what` is always `None` — the resolver in `RuleSet::from_ini`
+    /// fills it in after all particle types have been collected.
+    /// Use `from_ini_section_pending` if you need the unresolved reference name.
     pub fn from_ini_section(name: &str, section: &IniSection) -> Self {
+        Self::from_ini_section_pending(name, section).partial
+    }
+
+    /// Parse a ParticleSystemType plus its unresolved `HoldsWhat=` name string.
+    pub fn from_ini_section_pending(
+        name: &str,
+        section: &IniSection,
+    ) -> PendingParticleSystemType {
         let behaves_like = section
             .get("BehavesLike")
             .and_then(ParticleSystemBehavesLike::parse)
@@ -137,7 +157,12 @@ impl ParticleSystemType {
             // the INI string doesn't match any entry.
             .unwrap_or(ParticleSystemBehavesLike::Smoke);
 
-        Self {
+        let holds_what_name = section
+            .get("HoldsWhat")
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("none"));
+
+        let partial = Self {
             name: name.to_string(),
             behaves_like,
             holds_what: None,
@@ -209,6 +234,11 @@ impl ParticleSystemType {
                 .get("LaserColor")
                 .map(parse_rgb_color)
                 .unwrap_or([0, 0, 0]),
+        };
+
+        PendingParticleSystemType {
+            partial,
+            holds_what_name,
         }
     }
 }
