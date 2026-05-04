@@ -31,7 +31,8 @@ pub use self::production_queue::{
     theoretical_power_for_owner, tick_production,
 };
 pub use self::production_sell::{
-    eject_destruction_survivors, sell_building, tick_repairs, toggle_repair,
+    eject_destruction_garrison, eject_destruction_survivors, sell_building, tick_repairs,
+    toggle_repair,
 };
 pub use self::production_spawn::find_spawn_cell_for_owner;
 pub use self::production_tech::{
