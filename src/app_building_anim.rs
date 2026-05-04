@@ -444,7 +444,10 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
                 );
             }
             // EVA events — temporarily disabled.
-            GameSoundEvent::BuildingReady { .. } | GameSoundEvent::UnitReady { .. } => {}
+            GameSoundEvent::BuildingReady { .. }
+            | GameSoundEvent::UnitReady { .. }
+            | GameSoundEvent::StructureGarrisoned { .. }
+            | GameSoundEvent::StructureAbandoned { .. } => {}
             // UI events — always full volume (non-positional).
             GameSoundEvent::UiSound { .. } => {
                 sfx.play_sound(
