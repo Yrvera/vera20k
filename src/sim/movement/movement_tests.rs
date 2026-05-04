@@ -89,7 +89,7 @@ fn test_tick_movement_advances_position() {
     entities.insert(e);
 
     // Tick 500ms at 512 lep/s → 256 leptons = 1 cell → snap to (3,2).
-    tick_movement(&mut entities, 500, &test_interner());
+    tick_movement(&mut entities, 500, &mut test_interner());
 
     let entity = entities.get(1).expect("entity exists");
     assert_eq!(entity.position.rx, 3);
@@ -118,7 +118,7 @@ fn test_tick_movement_removes_target_at_goal() {
     entities.insert(e);
 
     // Large tick to ensure we finish the path.
-    tick_movement(&mut entities, 1000, &test_interner());
+    tick_movement(&mut entities, 1000, &mut test_interner());
 
     let entity = entities.get(1).expect("entity exists");
     assert_eq!(entity.position.rx, 1);
@@ -151,7 +151,7 @@ fn test_tick_movement_partial_progress() {
     // 250ms at 512 lep/s → 128 leptons traveled. sub_x starts at 128 (center),
     // moves to 256 which is the cell boundary — entity should cross to next cell.
     // Use 125ms instead: 512 * 0.125 = 64 leptons → sub_x = 128 + 64 = 192 (mid-cell).
-    tick_movement(&mut entities, 125, &test_interner());
+    tick_movement(&mut entities, 125, &mut test_interner());
 
     let entity = entities.get(1).expect("entity exists");
     assert_eq!(
@@ -187,7 +187,7 @@ fn test_tick_movement_updates_screen_position() {
     e.facing = 64;
     entities.insert(e);
 
-    tick_movement(&mut entities, 1000, &test_interner());
+    tick_movement(&mut entities, 1000, &mut test_interner());
 
     let entity = entities.get(1).expect("entity exists");
     // lepton_to_screen = CoordsToClient(cell_center) = iso_to_screen + (30, 15).
@@ -217,7 +217,7 @@ fn test_tick_movement_updates_facing() {
     entities.insert(e);
 
     // Move to (1,0). Next cell is (1,1), delta (0,1) = south → facing 128.
-    tick_movement(&mut entities, 300, &test_interner());
+    tick_movement(&mut entities, 300, &mut test_interner());
 
     let entity = entities.get(1).expect("entity exists");
     assert_eq!(entity.facing, 128, "Should face south after first step");
@@ -375,7 +375,7 @@ fn test_tick_movement_repaths_when_next_cell_becomes_blocked() {
             &mut SimRng::new(0),
             250,
             0,
-            &test_interner(),
+            &mut test_interner(),
         );
     }
 
@@ -428,7 +428,7 @@ fn test_tick_movement_no_stacking_same_target_cell() {
         &mut SimRng::new(0),
         1000,
         0,
-        &test_interner(),
+        &mut test_interner(),
     );
 
     let ent1 = entities.get(1).expect("e1 exists");
@@ -493,7 +493,7 @@ fn test_repath_cooldown_prevents_thrashing_on_unrecoverable_block() {
             &mut SimRng::new(0),
             250,
             0,
-            &test_interner(),
+            &mut test_interner(),
         );
     }
     let entity = entities.get(1).expect("entity exists");
@@ -556,7 +556,7 @@ fn test_dynamic_occupancy_repath_routes_around_stationary_blocker() {
             &mut SimRng::new(0),
             250,
             0,
-            &test_interner(),
+            &mut test_interner(),
         );
         if stats.repath_successes > 0 {
             saw_repath_success = true;
@@ -624,7 +624,7 @@ fn test_stuck_recovery_clears_unreachable_movement_target() {
             &mut SimRng::new(0),
             250,
             0,
-            &test_interner(),
+            &mut test_interner(),
         );
         if stats.stuck_recoveries > 0 {
             recovered = true;
@@ -683,7 +683,7 @@ fn test_movement_tick_stats_report_blocked_attempts() {
         &mut SimRng::new(0),
         250,
         0,
-        &test_interner(),
+        &mut test_interner(),
     );
     assert_eq!(stats.movers_total, 1);
     assert_eq!(stats.moved_steps, 0);
@@ -727,7 +727,7 @@ fn test_friendly_scatter_issues_move_command() {
         &mut SimRng::new(0),
         250,
         0,
-        &test_interner(),
+        &mut test_interner(),
     );
     assert_eq!(stats.movers_total, 1);
     // Scatter succeeded: blocker was given a movement command.
@@ -777,7 +777,7 @@ fn test_friendly_passable_moving_unit_not_blocked() {
 
     let alliances = HouseAllianceMap::new();
     let (blocks, _penalty) =
-        bump_crush::build_entity_block_set(&entities, "Americans", &alliances, &test_interner());
+        bump_crush::build_entity_block_set(&entities, "Americans", &alliances, &mut test_interner());
 
     // Stationary friendly at (3,0) is now soft-blocked (code 6, cost 8x) in
     // entity_block_map, not in the hard-block BTreeSet.
@@ -816,7 +816,7 @@ fn test_enemy_unit_always_blocks_even_when_moving() {
 
     let alliances = HouseAllianceMap::new();
     let (blocks, _penalty) =
-        bump_crush::build_entity_block_set(&entities, "Americans", &alliances, &test_interner());
+        bump_crush::build_entity_block_set(&entities, "Americans", &alliances, &mut test_interner());
 
     // Enemy at (3,0) is now soft-blocked (code 5, cost 20x) in entity_block_map,
     // not in the hard-block BTreeSet.
@@ -951,7 +951,7 @@ fn test_segment_exhaustion_triggers_auto_repath() {
             &mut SimRng::new(0),
             250,
             0,
-            &test_interner(),
+            &mut test_interner(),
         );
     }
 
@@ -1004,7 +1004,7 @@ fn test_exact_24_step_path_no_repath_needed() {
             &mut SimRng::new(0),
             250,
             0,
-            &test_interner(),
+            &mut test_interner(),
         );
     }
 
@@ -1055,7 +1055,7 @@ fn test_auto_repath_fails_entity_stops() {
             &mut SimRng::new(0),
             250,
             0,
-            &test_interner(),
+            &mut test_interner(),
         );
     }
 
