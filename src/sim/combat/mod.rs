@@ -439,20 +439,60 @@ fn handle_entity_deaths(
                 }
             }
 
-            // Kill all passengers inside a destroyed transport/garrison.
+            // Snapshot cargo before the building entity is despawned. Used to
+            // either eject garrison occupants alive (CanBeOccupied buildings)
+            // or kill all riders (transports — current behavior).
             let passenger_ids: Vec<u64> = entities
                 .get(dead_id)
                 .and_then(|e| e.passenger_role.cargo())
                 .map(|c| c.passengers.clone())
                 .unwrap_or_default();
-            for &pid in &passenger_ids {
-                if let Some(pax) = entities.get_mut(pid) {
-                    pax.health.current = 0;
-                    pax.dying = true;
-                    pax.passenger_role = PassengerRole::None;
-                    pax.attack_target = None;
-                    pax.movement_target = None;
-                    pax.selected = false;
+
+            // Branch: garrisoned CanBeOccupied buildings eject occupants at
+            // random foundation cells (handled post-combat by the world layer
+            // via production::eject_destruction_garrison). Transports continue
+            // to kill all riders — that's a separate parity gap to fix later.
+            //
+            // Re-resolve the type string here because earlier mutable borrows
+            // of `interner` (death_weapon_aoe, intern calls) ended its prior
+            // immutable borrow.
+            let type_id_str_for_branch = interner.resolve(type_id);
+            let is_garrison_building = rules
+                .object(type_id_str_for_branch)
+                .map(|obj| obj.can_be_occupied)
+                .unwrap_or(false)
+                && category == EntityCategory::Structure
+                && !passenger_ids.is_empty();
+
+            if is_garrison_building {
+                let (foundation_w, foundation_h) = rules
+                    .object(type_id_str_for_branch)
+                    .map(|obj| {
+                        crate::sim::production::foundation_dimensions(&obj.foundation)
+                    })
+                    .unwrap_or((1, 1));
+                destroyed_garrison_buildings.push(DestroyedGarrisonBuilding {
+                    building_id: dead_id,
+                    type_id,
+                    owner,
+                    rx,
+                    ry,
+                    z,
+                    foundation_w,
+                    foundation_h,
+                    passenger_ids,
+                });
+            } else {
+                // Existing transport / non-garrison cargo behavior: kill riders.
+                for &pid in &passenger_ids {
+                    if let Some(pax) = entities.get_mut(pid) {
+                        pax.health.current = 0;
+                        pax.dying = true;
+                        pax.passenger_role = PassengerRole::None;
+                        pax.attack_target = None;
+                        pax.movement_target = None;
+                        pax.selected = false;
+                    }
                 }
             }
 
