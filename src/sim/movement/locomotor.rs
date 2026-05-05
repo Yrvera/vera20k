@@ -334,6 +334,7 @@ impl LocomotorState {
         let (new_kind, new_layer) = match override_kind {
             OverrideKind::Teleport => (LocomotorKind::Teleport, MovementLayer::Ground),
             OverrideKind::DropPod => (LocomotorKind::DropPod, MovementLayer::Air),
+            OverrideKind::Parachute => (LocomotorKind::Parachute, MovementLayer::Air),
         };
         self.override_state = Some(OverrideLocomotor {
             saved,
@@ -389,6 +390,10 @@ pub enum OverrideKind {
     Teleport,
     /// Drop pod entry — restores base locomotor after landing.
     DropPod,
+    /// Parachute descent — restores base locomotor on landing. Used by
+    /// paradropped infantry; sets layer to Air so no ground occupancy is
+    /// marked while descending.
+    Parachute,
 }
 
 /// Saved base locomotor state for temporary override restoration.
