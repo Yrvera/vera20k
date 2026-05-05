@@ -30,6 +30,7 @@ use crate::rules::particle_type::{ParticleType, ParticleTypeId, PendingParticleT
 use crate::rules::projectile_type::ProjectileType;
 use crate::rules::radar_event_config::RadarEventConfig;
 use crate::rules::superweapon_type::SuperWeaponType;
+use crate::rules::terrain_object_type::TerrainObjectType;
 use crate::rules::terrain_rules::TerrainRules;
 use crate::rules::warhead_type::WarheadType;
 use crate::rules::weapon_type::WeaponType;
@@ -929,6 +930,10 @@ pub struct RuleSet {
     pub prerequisite_groups: HashMap<String, Vec<String>>,
     /// Rules-driven terrain land-type semantics keyed by TMP land byte.
     pub terrain_rules: TerrainRules,
+    /// Terrain object type definitions (TIBTRE*, TREE*, ROCK*, etc.) keyed by
+    /// uppercase section name. Distinct from `terrain_rules` (land semantics);
+    /// these are per-decoration-object types parsed from `[TerrainTypes]`.
+    pub terrain_object_types: HashMap<String, TerrainObjectType>,
     /// Rules-driven bridge destruction defaults.
     pub bridge_rules: BridgeRules,
     /// Garrison/bunker/open-topped combat multipliers from [CombatDamage].
@@ -1080,6 +1085,26 @@ impl RuleSet {
             .map(CombatDamageDefaults::from_ini_section)
             .unwrap_or_default();
 
+        // Parse [TerrainTypes] registry → per-type sections (TIBTRE01, TREE01, etc.).
+        let mut terrain_object_types: HashMap<String, TerrainObjectType> = HashMap::new();
+        let terrain_names: Vec<String> = parse_registry(ini, "TerrainTypes");
+        for name in &terrain_names {
+            if let Some(section) = ini.section(name) {
+                terrain_object_types.insert(
+                    name.to_ascii_uppercase(),
+                    TerrainObjectType::from_ini_section(name, section),
+                );
+            }
+        }
+        log::info!(
+            "TerrainTypes: {} loaded ({} with SpawnsTiberium=yes)",
+            terrain_object_types.len(),
+            terrain_object_types
+                .values()
+                .filter(|t| t.spawns_tiberium)
+                .count(),
+        );
+
         // Step 9: Two-pass parse for [Particles] and [ParticleSystems].
         // Cross-references (NextParticle, HoldsWhat) are resolved in pass 2 so
         // that INI ordering does not matter.
@@ -1117,6 +1142,7 @@ impl RuleSet {
             factory_map,
             prerequisite_groups,
             terrain_rules,
+            terrain_object_types,
             bridge_rules,
             garrison_rules,
             radar_event_config,
@@ -1159,6 +1185,11 @@ impl RuleSet {
                 .iter()
                 .find_map(|(key, obj)| key.eq_ignore_ascii_case(id).then_some(obj))
         })
+    }
+
+    /// Look up a TerrainObjectType by section name, case-insensitive.
+    pub fn terrain_object_type_case_insensitive(&self, name: &str) -> Option<&TerrainObjectType> {
+        self.terrain_object_types.get(&name.to_ascii_uppercase())
     }
 
     /// Look up a weapon by ID.
@@ -1904,6 +1935,31 @@ MutateWarhead=MyMutate\n\
         assert_eq!(rules.general.harvester_too_far_distance, 5);
         assert_eq!(rules.general.chrono_harv_too_far_distance, 50);
         assert_eq!(rules.general.purifier_bonus_pct, 25);
+    }
+
+    #[test]
+    fn from_ini_loads_tibtre_terrain_object_types() {
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n\
+             [VehicleTypes]\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             [TerrainTypes]\n1=TIBTRE01\n2=TREE01\n\
+             [TIBTRE01]\nSpawnsTiberium=yes\nIsAnimated=yes\n\
+             AnimationRate=3\nAnimationProbability=.003\n\
+             [TREE01]\nIsAnimated=no\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("rules parse");
+        let t = rules
+            .terrain_object_type_case_insensitive("tibtre01")
+            .expect("TIBTRE01 should be parsed");
+        assert!(t.spawns_tiberium);
+        assert_eq!(t.animation_probability_micros, 3000);
+        // TREE01 also parsed but with default flags.
+        let tree = rules
+            .terrain_object_type_case_insensitive("TREE01")
+            .expect("TREE01 should be parsed");
+        assert!(!tree.spawns_tiberium);
     }
 
     #[test]
