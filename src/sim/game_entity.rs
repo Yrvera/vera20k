@@ -24,6 +24,7 @@ use crate::sim::components::{
     HarvestOverlay, Health, MovementTarget, OrderIntent, Position, VoxelAnimation,
 };
 use crate::sim::debug_event_log::{DebugEventKind, DebugEventLog};
+use crate::sim::deploy::DeployPhase;
 use crate::sim::docking::aircraft_dock::AircraftAmmo;
 use crate::sim::docking::building_dock::DockState;
 use crate::sim::intern::InternedId;
@@ -196,6 +197,13 @@ pub struct GameEntity {
     /// Target building for engineer capture. Set by CaptureBuilding command,
     /// cleared on arrival (after capture) or if target is lost/destroyed.
     pub capture_target: Option<u64>,
+    /// Active deploy-fire phase. `None` = upright (default). `Some(Deploying)` /
+    /// `Some(Deployed)` / `Some(Undeploying)` for the three machine states.
+    /// Hashed for lockstep determinism. Set by `Command::ToggleInfantryDeploy`,
+    /// advanced by `tick_deploy_state`. Animation reflects this; combat does not
+    /// read it (weapon pick is target-driven).
+    #[serde(default)]
+    pub deploy_state: Option<DeployPhase>,
     /// Debug event log — records movement/state transitions for the inspector panel.
     /// Only allocated when debug inspector is active (X hotkey). Not included in state hashing.
     #[serde(skip)]
@@ -298,6 +306,7 @@ impl GameEntity {
             display_type_override: None,
             dock_active_anim: false,
             capture_target: None,
+            deploy_state: None,
             debug_log: None,
         }
     }
@@ -356,6 +365,18 @@ impl GameEntity {
     /// Whether this entity is alive (health > 0).
     pub fn is_alive(&self) -> bool {
         self.health.current > 0
+    }
+
+    /// Whether this entity is in any deploy phase (Deploying, Deployed, or Undeploying).
+    /// Used by the 7 movement-command handlers to silently ignore movement orders.
+    pub fn is_deployed(&self) -> bool {
+        self.deploy_state.is_some()
+    }
+
+    /// Whether this entity has finished deploying and is in the stationary
+    /// Deployed phase (not transitioning).
+    pub fn is_fully_deployed(&self) -> bool {
+        matches!(self.deploy_state, Some(DeployPhase::Deployed))
     }
 }
 
