@@ -31,8 +31,37 @@ impl Simulation {
         self.hash_overlay_grid(&mut hasher);
         self.hash_super_weapons(&mut hasher);
         self.hash_entities(&mut hasher);
+        self.hash_particle_systems(&mut hasher);
 
         hasher.finish()
+    }
+
+    /// Hash all particle systems in stable-id order (BTreeMap iteration).
+    /// Each system contributes its type, position, lifetime, and ordered particle list.
+    fn hash_particle_systems(&self, hasher: &mut impl Hasher) {
+        self.particle_systems.len().hash(hasher);
+        for (id, sys) in self.particle_systems.iter() {
+            id.hash(hasher);
+            sys.type_id.0.hash(hasher);
+            sys.coords.x.hash(hasher);
+            sys.coords.y.hash(hasher);
+            sys.coords.z.hash(hasher);
+            sys.lifetime.hash(hasher);
+            sys.facing.hash(hasher);
+            sys.marked_for_deletion.hash(hasher);
+            sys.done_spawning.hash(hasher);
+            sys.particles.len().hash(hasher);
+            for p in &sys.particles {
+                p.type_id.0.hash(hasher);
+                p.coords.x.hash(hasher);
+                p.coords.y.hash(hasher);
+                p.coords.z.hash(hasher);
+                p.lifetime_remaining.hash(hasher);
+                p.animation_state.hash(hasher);
+                p.translucency.hash(hasher);
+                p.marked_for_deletion.hash(hasher);
+            }
+        }
     }
 
     /// Hash per-match game options for lockstep verification.
@@ -358,5 +387,52 @@ impl Simulation {
             }
             entity.ifv_weapon_index.hash(hasher);
         }
+    }
+}
+
+#[cfg(test)]
+mod particle_hash_tests {
+    use super::Simulation;
+    use crate::rules::particle_system_type::ParticleSystemTypeId;
+    use crate::sim::particles::ParticleSystem;
+    use crate::util::fixed_math::SimFixed;
+    use glam::IVec3;
+
+    fn fake_system(coords: IVec3) -> ParticleSystem {
+        ParticleSystem {
+            stable_id: 0,
+            type_id: ParticleSystemTypeId(0),
+            coords,
+            offset: IVec3::ZERO,
+            particles: Vec::new(),
+            spawn_timer: SimFixed::from_num(0),
+            lifetime: -1,
+            spark_spawn_frames: 0,
+            facing: 0x1D,
+            marked_for_deletion: false,
+            directionless: false,
+            attached_entity: None,
+            owner_entity: None,
+            target_coords: IVec3::ZERO,
+            owner_house: None,
+            done_spawning: false,
+        }
+    }
+
+    #[test]
+    fn empty_particle_store_hashes_consistently() {
+        let a = Simulation::new();
+        let b = Simulation::new();
+        assert_eq!(a.state_hash(), b.state_hash());
+    }
+
+    #[test]
+    fn particle_state_changes_hash() {
+        let mut sim = Simulation::new();
+        let h1 = sim.state_hash();
+        sim.particle_systems
+            .insert(fake_system(IVec3::new(100, 0, 0)));
+        let h2 = sim.state_hash();
+        assert_ne!(h1, h2);
     }
 }

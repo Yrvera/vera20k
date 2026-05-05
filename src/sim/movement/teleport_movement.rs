@@ -389,6 +389,17 @@ mod tests {
             water_bound: false,
             naval: false,
             number_impassable_rows: -1,
+            natural_particle_system: None,
+            natural_particle_location: glam::IVec3::ZERO,
+            refinery_smoke_particle_system: None,
+            damage_particle_systems: Vec::new(),
+            destroy_particle_systems: Vec::new(),
+            damage_smoke_offset: glam::IVec3::ZERO,
+            dam_smk_off_scrn_rel: false,
+            destroy_smoke_offset: glam::IVec3::ZERO,
+            refinery_smoke_offsets: [glam::IVec3::ZERO; 4],
+            gap_radius_in_cells: 0,
+            super_gap_radius_in_cells: 0,
         }
     }
 

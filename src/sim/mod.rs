@@ -84,3 +84,6 @@ pub mod selection;
 
 // --- Snapshot serialization (mid-match save/load) ---
 pub mod snapshot;
+
+// --- Particle systems (visual + damage particle effects: smoke, gas, fire) ---
+pub mod particles;
