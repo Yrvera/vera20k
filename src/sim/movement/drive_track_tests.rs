@@ -678,3 +678,66 @@ fn interp_sub_step_residual_4_triggers_trust_window() {
         "residual=4 trust window: use interp despite third-cell"
     );
 }
+
+#[test]
+fn end_to_end_sub_step_smoothness_no_stalls() {
+    // Pick a speed that produces less than one step's worth of budget per tick
+    // (budget ≈ 4, step cost = 7). Without interp the vehicle would visibly
+    // stall on every "no-step" tick (point_index unchanged, residual carries
+    // forward) and snap forward on "step" ticks. With interp, every tick's
+    // visual position advances because the residual contributes a fractional
+    // offset toward the next track point.
+    let mut state = begin_drive_track(1, 0, 0, -1).expect("track 1 exists");
+    let dt = SimFixed::lit("0.066");
+    let speed = SimFixed::from_num(60); // 60 * 0.066 ≈ 4 leptons/tick budget
+
+    let mut prev_y: Option<SimFixed> = None;
+    let mut zero_delta_ticks: i32 = 0;
+    let mut tick_count: i32 = 0;
+
+    // 10 ticks ~ 40 budget ~ 5 steps — well below this track's first cell jump.
+    for _ in 0..10 {
+        let advance = advance_drive_track(&mut state, speed, dt);
+        if advance.finished || advance.cell_jump {
+            break;
+        }
+
+        let mut sub_y = advance.sub_y;
+        if let Some(interp) = interp_sub_step(
+            advance.sub_x,
+            advance.sub_y,
+            advance.next_step_delta_x,
+            advance.next_step_delta_y,
+            state.residual,
+            advance.had_next_step,
+        ) {
+            sub_y = interp.sub_y;
+        }
+
+        if let Some(py) = prev_y
+            && sub_y == py
+        {
+            zero_delta_ticks += 1;
+        }
+        prev_y = Some(sub_y);
+        tick_count += 1;
+    }
+
+    assert!(
+        tick_count >= 8,
+        "test setup error: only {} ticks ran before cell_jump/finished",
+        tick_count
+    );
+    // With sub-step interp wired in, every tick should advance because residual
+    // varies from one tick to the next (4 leptons added per tick into a step
+    // cost of 7 produces a non-trivial residual cycle: 3, 6, 2, 5, 1, 4, 0, ...).
+    // Zero-delta ticks happen only when residual lands at 0 after a step (no
+    // interp on that frame); allowing up to 2 covers the residual-cycle floor.
+    assert!(
+        zero_delta_ticks <= 2,
+        "{} zero-delta ticks (out of {}) indicates interp didn't fire — \
+         vehicle is stalling between steps instead of drifting smoothly",
+        zero_delta_ticks,
+        tick_count
+    );
+}
