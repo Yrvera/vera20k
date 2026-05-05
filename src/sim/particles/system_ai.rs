@@ -2,8 +2,8 @@
 //!
 //! Drives every `ParticleSystem` in the store forward by one tick: pulls each
 //! system out of the store, runs its per-`BehavesLike` AI, decrements lifetime,
-//! then either drops or reinserts. Smoke (C2) and Gas (C3) have full bodies;
-//! Fire (C4) and the Tier-3 variants (Spark, Railgun) are still no-ops.
+//! then either drops or reinserts. Smoke (C2), Gas (C3), and Fire (C4) have
+//! full bodies; the Tier-3 variants (Spark, Railgun) are still no-ops.
 //!
 //! Pulling each system out before ticking lets the inner AI take `&mut Simulation`
 //! freely — needed for spawning child systems and applying damage to entities —
@@ -57,8 +57,8 @@ fn tick_gas(sys: &mut ParticleSystem, sim: &mut Simulation, rules: &RuleSet) {
     super::gas::tick_system(sys, sim, rules);
 }
 
-fn tick_fire(_sys: &mut ParticleSystem, _sim: &mut Simulation, _rules: &RuleSet) {
-    // Implemented in Task C4.
+fn tick_fire(sys: &mut ParticleSystem, sim: &mut Simulation, rules: &RuleSet) {
+    super::fire::tick_system(sys, sim, rules);
 }
 
 #[cfg(test)]

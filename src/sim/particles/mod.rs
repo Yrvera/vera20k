@@ -23,6 +23,7 @@ use crate::util::fixed_math::SimFixed;
 use glam::IVec3;
 use std::collections::BTreeMap;
 
+pub mod fire;
 pub mod gas;
 pub mod smoke;
 pub mod spawn;
@@ -72,6 +73,10 @@ pub struct Particle {
     pub current_color: [u8; 3],
     pub color_index: u8,
     pub color_accumulator: SimFixed,
+
+    /// Fire-only scratch: per-tick velocity delta computed by fire AI and
+    /// consumed by `move_fire` (jitter * direction). Zero for smoke/gas.
+    pub prev_delta: [SimFixed; 3],
 }
 
 impl ParticleSystem {

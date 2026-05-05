@@ -194,6 +194,7 @@ fn make_particle(
         current_color: [0; 3],
         color_index: 0,
         color_accumulator: SimFixed::from_num(0),
+        prev_delta: [SIM_ZERO; 3],
     }
 }
 
