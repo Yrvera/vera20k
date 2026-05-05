@@ -459,6 +459,13 @@ fn phase_exit_pad(
 
     if !moving && at_exit && !teleporting {
         // Arrived at exit — finish docking.
+        // Snap facing to 0x47 (east-southeast) on arrival. gamemd's UndockUnit
+        // forces this heading via ILocomotion::Head_To so the miner exits
+        // pointing toward open ore-search territory rather than continuing
+        // south-southwest from the pad→exit movement vector.
+        if let Some(entity) = sim.entities.get_mut(snap.entity_id) {
+            entity.facing = 0x47;
+        }
         snap.miner.reserved_refinery = None;
         snap.miner.dock_queued = false;
         snap.miner.forced_return = false;
