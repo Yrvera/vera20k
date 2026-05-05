@@ -48,6 +48,7 @@ struct FixedStepSchedule {
 /// layout if no sequence is found. Buildings always use the default single-frame set.
 pub(crate) fn build_animation_sequences(
     simulation: Option<&crate::sim::world::Simulation>,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
     art_registry: Option<&crate::rules::art_data::ArtRegistry>,
     infantry_sequences: &crate::rules::infantry_sequence::InfantrySequenceRegistry,
 ) -> BTreeMap<String, SequenceSet> {
@@ -63,11 +64,19 @@ pub(crate) fn build_animation_sequences(
         if sequences.contains_key(type_str) {
             continue;
         }
+        // Resolve the art-registry key. Type IDs (e.g. "E1") differ from image
+        // IDs (e.g. "GI") — rules.ini's `Image=` is the bridge. Fall back to
+        // the type ID when rules can't resolve the image (e.g. preview
+        // contexts), since for many types the image defaults to the ID.
+        let image_id: String = rules
+            .and_then(|r| r.object(type_str))
+            .map(|obj| obj.image.clone())
+            .unwrap_or_else(|| type_str.to_string());
         let seq: SequenceSet = match entity.category {
             EntityCategory::Infantry => {
-                // Look up Sequence= from art.ini for this type.
+                // Look up Sequence= from art.ini for this type's image.
                 let seq_name: Option<&str> = art_registry
-                    .and_then(|a| a.get(type_str))
+                    .and_then(|a| a.get(&image_id))
                     .and_then(|e| e.sequence.as_deref());
 
                 if let Some(name) = seq_name {
@@ -79,24 +88,36 @@ pub(crate) fn build_animation_sequences(
                             data_driven_count += 1;
                             built
                         } else {
+                            log::warn!(
+                                "Sequence '{}' for type '{}' (image '{}') parsed to 0 entries — using defaults",
+                                name,
+                                type_str,
+                                image_id
+                            );
                             animation::default_infantry_sequences()
                         }
                     } else {
                         log::warn!(
-                            "Sequence '{}' not found in art.ini for type '{}'",
+                            "Sequence '{}' not found in art.ini for type '{}' (image '{}')",
                             name,
-                            type_str
+                            type_str,
+                            image_id
                         );
                         animation::default_infantry_sequences()
                     }
                 } else {
+                    log::warn!(
+                        "No Sequence= in art.ini for infantry type '{}' (image '{}') — falling back to defaults",
+                        type_str,
+                        image_id
+                    );
                     animation::default_infantry_sequences()
                 }
             }
             EntityCategory::Structure => animation::default_building_sequences(),
             // SHP vehicles (Voxel=no): build sequences from WalkFrames/FiringFrames tags.
             EntityCategory::Unit | EntityCategory::Aircraft if !entity.is_voxel => {
-                let art_entry = art_registry.and_then(|a| a.get(type_str));
+                let art_entry = art_registry.and_then(|a| a.get(&image_id));
                 if let Some(art) = art_entry {
                     if art.walk_frames.is_some() || art.firing_frames.is_some() {
                         data_driven_count += 1;
@@ -756,6 +777,7 @@ pub(crate) fn update_building_placement_preview(state: &mut AppState) {
 pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
     state.animation_sequences = build_animation_sequences(
         state.simulation.as_ref(),
+        state.rules.as_ref(),
         state.art_registry.as_ref(),
         &state.infantry_sequences,
     );
