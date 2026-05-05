@@ -290,4 +290,390 @@ mod tests {
             drop_altitude_1200()
         ));
     }
+
+    // -------------------------------------------------------------------
+    // Parity tests — verify the descent state machine matches gamemd
+    // exactly. See JUMPJET_LOCOMOTION_CLASS_GHIDRA_REPORT.md Round 4 §R4.7.
+    // -------------------------------------------------------------------
+
+    /// Default INI value per `[General] ParachuteMaxFallRate=-3`.
+    const RULES_PARACHUTE_MAX_FALL_RATE: i32 = -3;
+    /// Standard sim tick at 15 fps (~64ms). Specific value isn't sensitive —
+    /// `tick_parachute_descent` only checks `tick_ms != 0` (pause guard).
+    const TICK_MS_64: u32 = 64;
+
+    /// Set up an entity at id=1, attach a parachute descent at the given altitude.
+    /// Returns the id.
+    fn setup_parachuting_entity(entities: &mut EntityStore, drop_altitude: SimFixed) -> u64 {
+        let id = insert_test_infantry(entities, 1);
+        begin_parachute_descent(entities, id, drop_altitude);
+        id
+    }
+
+    #[test]
+    fn test_3tick_rate_ramp() {
+        // Rate sequence over 6 ticks must be exactly [0, -1, -2, -3, -3, -3].
+        // Sample BEFORE each tick (= rate-in for that tick).
+        let mut entities = EntityStore::new();
+        let id = setup_parachuting_entity(&mut entities, drop_altitude_1200());
+
+        let mut observed: Vec<i32> = Vec::new();
+        for _ in 0..6 {
+            let entity = entities.get(id).expect("alive");
+            let state = entity.parachute_state.as_ref().expect("descending");
+            observed.push(state.rate);
+            tick_parachute_descent(
+                &mut entities,
+                TICK_MS_64,
+                RULES_PARACHUTE_MAX_FALL_RATE,
+                0,
+            );
+        }
+
+        assert_eq!(
+            observed,
+            vec![0, -1, -2, -3, -3, -3],
+            "3-tick ramp must be 0,-1,-2,-3,-3,-3 (NOT instant -3)"
+        );
+    }
+
+    #[test]
+    fn test_descent_distance_first_4_ticks() {
+        // Total descent over the first N ticks (deltas vs initial):
+        //   tick 1: 0  (rate was 0 at integration)
+        //   tick 2: 1  (rate was -1 at integration)
+        //   tick 3: 3  (rate was -2 at integration)
+        //   tick 4: 6  (rate was -3 at integration)
+        let mut entities = EntityStore::new();
+        let id = setup_parachuting_entity(&mut entities, drop_altitude_1200());
+
+        let initial_altitude = entities
+            .get(id)
+            .unwrap()
+            .parachute_state
+            .as_ref()
+            .unwrap()
+            .altitude;
+
+        let expected_deltas: [i32; 4] = [0, 1, 3, 6];
+        for (i, expected_delta) in expected_deltas.iter().enumerate() {
+            tick_parachute_descent(
+                &mut entities,
+                TICK_MS_64,
+                RULES_PARACHUTE_MAX_FALL_RATE,
+                0,
+            );
+            let altitude = entities
+                .get(id)
+                .unwrap()
+                .parachute_state
+                .as_ref()
+                .unwrap()
+                .altitude;
+            let descent = initial_altitude - altitude;
+            let expected = SimFixed::from_num(*expected_delta);
+            assert_eq!(
+                descent,
+                expected,
+                "after tick {} descent should be {} leptons (got {})",
+                i + 1,
+                expected_delta,
+                descent
+            );
+        }
+    }
+
+    #[test]
+    fn test_steady_state_rate() {
+        // After enough ticks past the ramp, rate stays clamped at -3.
+        let mut entities = EntityStore::new();
+        let id = setup_parachuting_entity(&mut entities, drop_altitude_1200());
+
+        for _ in 0..10 {
+            tick_parachute_descent(
+                &mut entities,
+                TICK_MS_64,
+                RULES_PARACHUTE_MAX_FALL_RATE,
+                0,
+            );
+        }
+        let rate = entities
+            .get(id)
+            .unwrap()
+            .parachute_state
+            .as_ref()
+            .unwrap()
+            .rate;
+        assert_eq!(
+            rate, RULES_PARACHUTE_MAX_FALL_RATE,
+            "steady-state rate must equal ParachuteMaxFallRate"
+        );
+    }
+
+    #[test]
+    fn test_landing_inclusive_zero() {
+        // Drop altitude = 6 leptons → tick 4 integrates altitude = 0 → landing
+        // triggers (inclusive bound). `parachute_state` must be cleared.
+        let mut entities = EntityStore::new();
+        let id = setup_parachuting_entity(&mut entities, SimFixed::from_num(6));
+
+        for _ in 0..4 {
+            tick_parachute_descent(
+                &mut entities,
+                TICK_MS_64,
+                RULES_PARACHUTE_MAX_FALL_RATE,
+                0,
+            );
+        }
+
+        let entity = entities.get(id).expect("alive");
+        assert!(
+            entity.parachute_state.is_none(),
+            "landing at altitude == 0 must trigger cleanup"
+        );
+    }
+
+    #[test]
+    fn test_landing_clamps_to_zero_no_overshoot() {
+        // Drop altitude = 5 leptons → tick 4 integrates altitude = -1 (would
+        // overshoot below ground), must clamp to exactly SIM_ZERO before cleanup.
+        // We can't observe altitude after cleanup; verify via screen_y offset.
+        let mut entities = EntityStore::new();
+        let id = setup_parachuting_entity(&mut entities, SimFixed::from_num(5));
+
+        for _ in 0..4 {
+            tick_parachute_descent(
+                &mut entities,
+                TICK_MS_64,
+                RULES_PARACHUTE_MAX_FALL_RATE,
+                0,
+            );
+        }
+
+        let entity = entities.get(id).expect("alive");
+        assert!(entity.parachute_state.is_none(), "must have landed");
+        // Compute the no-altitude baseline screen_y the way the tick does.
+        let (_sx, sy_baseline) = crate::util::lepton::lepton_to_screen(
+            entity.position.rx,
+            entity.position.ry,
+            entity.position.sub_x,
+            entity.position.sub_y,
+            entity.position.z,
+        );
+        // The last tick's screen_y was computed with altitude = SIM_ZERO →
+        // screen_y == sy - 0 == sy.
+        assert!(
+            (entity.position.screen_y - sy_baseline).abs() < 0.01,
+            "screen_y must equal baseline (no altitude offset) after landing"
+        );
+    }
+
+    #[test]
+    fn test_clamp_at_max_fall_rate_default() {
+        // Rate must never exceed (be more-negative than) ParachuteMaxFallRate.
+        let mut entities = EntityStore::new();
+        let id = setup_parachuting_entity(&mut entities, drop_altitude_1200());
+
+        for _ in 0..50 {
+            tick_parachute_descent(
+                &mut entities,
+                TICK_MS_64,
+                RULES_PARACHUTE_MAX_FALL_RATE,
+                0,
+            );
+            if let Some(state) = entities.get(id).and_then(|e| e.parachute_state.as_ref()) {
+                assert!(
+                    state.rate >= RULES_PARACHUTE_MAX_FALL_RATE,
+                    "rate {} must not exceed (more-negative than) max {}",
+                    state.rate,
+                    RULES_PARACHUTE_MAX_FALL_RATE
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_clamp_with_custom_max_fall_rate() {
+        // Mod-friendliness: a non-default `parachute_max_fall_rate` must be
+        // respected. With max = -1, rate ramp is 0 → -1 → -1 → -1.
+        let mut entities = EntityStore::new();
+        let id = setup_parachuting_entity(&mut entities, drop_altitude_1200());
+
+        let custom_max: i32 = -1;
+        let mut observed: Vec<i32> = Vec::new();
+        for _ in 0..4 {
+            let rate = entities
+                .get(id)
+                .unwrap()
+                .parachute_state
+                .as_ref()
+                .unwrap()
+                .rate;
+            observed.push(rate);
+            tick_parachute_descent(&mut entities, TICK_MS_64, custom_max, 0);
+        }
+        assert_eq!(
+            observed,
+            vec![0, -1, -1, -1],
+            "with max=-1, rate must clamp at -1 after the first decrement"
+        );
+    }
+
+    #[test]
+    fn test_body_sequence_reset_on_landing() {
+        // animation.sequence must reset to Stand when descent ends.
+        let mut entities = EntityStore::new();
+        let id = setup_parachuting_entity(&mut entities, SimFixed::from_num(6));
+
+        // Confirm Paradrop set on attach.
+        assert_eq!(
+            entities.get(id).unwrap().animation.as_ref().unwrap().sequence,
+            SequenceKind::Paradrop
+        );
+
+        for _ in 0..4 {
+            tick_parachute_descent(
+                &mut entities,
+                TICK_MS_64,
+                RULES_PARACHUTE_MAX_FALL_RATE,
+                0,
+            );
+        }
+
+        let anim = entities.get(id).unwrap().animation.as_ref().unwrap();
+        assert_eq!(
+            anim.sequence,
+            SequenceKind::Stand,
+            "landing must reset animation to Stand"
+        );
+    }
+
+    #[test]
+    fn test_body_sequence_preserved_if_externally_changed() {
+        // If some other system changed the sequence away from Paradrop during
+        // descent (e.g., a death anim took over), don't overwrite on landing.
+        let mut entities = EntityStore::new();
+        let id = setup_parachuting_entity(&mut entities, SimFixed::from_num(6));
+
+        // Mid-descent, externally change to Die1 (simulating shot down in air).
+        for _ in 0..2 {
+            tick_parachute_descent(
+                &mut entities,
+                TICK_MS_64,
+                RULES_PARACHUTE_MAX_FALL_RATE,
+                0,
+            );
+        }
+        entities
+            .get_mut(id)
+            .unwrap()
+            .animation
+            .as_mut()
+            .unwrap()
+            .switch_to(SequenceKind::Die1);
+
+        // Continue ticking through landing.
+        for _ in 0..4 {
+            tick_parachute_descent(
+                &mut entities,
+                TICK_MS_64,
+                RULES_PARACHUTE_MAX_FALL_RATE,
+                0,
+            );
+        }
+
+        let anim = entities.get(id).unwrap().animation.as_ref().unwrap();
+        assert_eq!(
+            anim.sequence,
+            SequenceKind::Die1,
+            "must NOT overwrite Die1 with Stand on landing"
+        );
+    }
+
+    #[test]
+    fn test_locomotor_override_restored_on_landing() {
+        // Mirrors test_droppod_full_sequence — base locomotor must be restored.
+        let mut entities = EntityStore::new();
+        let id = setup_parachuting_entity(&mut entities, SimFixed::from_num(6));
+
+        // Confirm overridden during descent.
+        {
+            let loco = entities.get(id).unwrap().locomotor.as_ref().unwrap();
+            assert!(loco.is_overridden());
+            assert_eq!(loco.kind, LocomotorKind::Parachute);
+        }
+
+        for _ in 0..4 {
+            tick_parachute_descent(
+                &mut entities,
+                TICK_MS_64,
+                RULES_PARACHUTE_MAX_FALL_RATE,
+                0,
+            );
+        }
+
+        let loco = entities.get(id).unwrap().locomotor.as_ref().unwrap();
+        assert!(!loco.is_overridden(), "override must end on landing");
+        assert_eq!(
+            loco.kind,
+            LocomotorKind::Walk,
+            "must restore base Walk locomotor"
+        );
+    }
+
+    #[test]
+    fn test_works_without_animation() {
+        // begin and tick must not panic when entity.animation is None.
+        let mut entities = EntityStore::new();
+        let mut e = GameEntity::test_default(1, "E1", "Americans", 5, 5);
+        e.locomotor = Some(make_walk_loco());
+        e.animation = None;
+        entities.insert(e);
+
+        assert!(begin_parachute_descent(
+            &mut entities,
+            1,
+            SimFixed::from_num(6)
+        ));
+        for _ in 0..10 {
+            tick_parachute_descent(
+                &mut entities,
+                TICK_MS_64,
+                RULES_PARACHUTE_MAX_FALL_RATE,
+                0,
+            );
+        }
+        let entity = entities.get(1).unwrap();
+        assert!(
+            entity.parachute_state.is_none(),
+            "should land cleanly without an animation field"
+        );
+    }
+
+    #[test]
+    fn test_paused_tick_does_not_advance() {
+        // tick_ms == 0 (paused) must not advance state.
+        let mut entities = EntityStore::new();
+        let id = setup_parachuting_entity(&mut entities, drop_altitude_1200());
+        let initial_alt = entities
+            .get(id)
+            .unwrap()
+            .parachute_state
+            .as_ref()
+            .unwrap()
+            .altitude;
+        let initial_rate = entities
+            .get(id)
+            .unwrap()
+            .parachute_state
+            .as_ref()
+            .unwrap()
+            .rate;
+
+        tick_parachute_descent(&mut entities, 0, RULES_PARACHUTE_MAX_FALL_RATE, 0);
+
+        let after = entities.get(id).unwrap().parachute_state.as_ref().unwrap();
+        assert_eq!(after.altitude, initial_alt, "paused tick must not move altitude");
+        assert_eq!(after.rate, initial_rate, "paused tick must not update rate");
+    }
 }
