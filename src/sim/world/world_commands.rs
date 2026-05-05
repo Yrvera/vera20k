@@ -116,6 +116,13 @@ impl Simulation {
                 if !self.entity_owned_by_id(command_owner, *entity_id) {
                     return false;
                 }
+                if self
+                    .entities
+                    .get(*entity_id)
+                    .is_some_and(|e| e.is_deployed())
+                {
+                    return false;
+                }
                 // Cancel any dock state when given a new move order.
                 self.cancel_depot_dock(*entity_id);
                 self.cancel_aircraft_dock(*entity_id);
@@ -337,6 +344,13 @@ impl Simulation {
                 queue,
             } => {
                 if !self.entity_owned_by_id(command_owner, *entity_id) {
+                    return false;
+                }
+                if self
+                    .entities
+                    .get(*entity_id)
+                    .is_some_and(|e| e.is_deployed())
+                {
                     return false;
                 }
                 self.release_docked_idle(*entity_id);
@@ -565,6 +579,13 @@ impl Simulation {
                 if !self.entity_owned_by_id(command_owner, *entity_id) {
                     return false;
                 }
+                if self
+                    .entities
+                    .get(*entity_id)
+                    .is_some_and(|e| e.is_deployed())
+                {
+                    return false;
+                }
                 // Update miner state in EntityStore.
                 let Some(e) = self.entities.get_mut(*entity_id) else {
                     return false;
@@ -584,6 +605,13 @@ impl Simulation {
             } => {
                 let Some(rules) = rules else { return false };
                 if !self.entity_owned_by_id(command_owner, *entity_id) {
+                    return false;
+                }
+                if self
+                    .entities
+                    .get(*entity_id)
+                    .is_some_and(|e| e.is_deployed())
+                {
                     return false;
                 }
                 // Validate depot exists, is friendly, and has UnitRepair=yes.
@@ -668,6 +696,13 @@ impl Simulation {
             } => {
                 let Some(rules) = rules else { return false };
                 if !self.entity_owned_by_id(command_owner, *passenger_id) {
+                    return false;
+                }
+                if self
+                    .entities
+                    .get(*passenger_id)
+                    .is_some_and(|e| e.is_deployed())
+                {
                     return false;
                 }
                 // Validate transport exists and has cargo capacity.
@@ -769,6 +804,13 @@ impl Simulation {
                 if !self.entity_owned_by_id(command_owner, *entity_id) {
                     return false;
                 }
+                if self
+                    .entities
+                    .get(*entity_id)
+                    .is_some_and(|e| e.is_deployed())
+                {
+                    return false;
+                }
                 let Some(e) = self.entities.get_mut(*entity_id) else {
                     return false;
                 };
@@ -787,6 +829,13 @@ impl Simulation {
             } => {
                 let Some(rules) = rules else { return false };
                 if !self.entity_owned_by_id(command_owner, *engineer_id) {
+                    return false;
+                }
+                if self
+                    .entities
+                    .get(*engineer_id)
+                    .is_some_and(|e| e.is_deployed())
+                {
                     return false;
                 }
                 // Validate engineer has Engineer=yes flag.
