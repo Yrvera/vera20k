@@ -33,6 +33,7 @@ pub mod ruleset;
 pub mod shp_vehicle_sequence;
 pub mod sound_ini;
 pub mod superweapon_type;
+pub mod terrain_object_type;
 pub mod terrain_rules;
 pub mod warhead_type;
 pub mod weapon_type;

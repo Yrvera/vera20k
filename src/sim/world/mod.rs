@@ -1427,6 +1427,16 @@ impl Simulation {
                 self.overlay_grid.as_mut(),
                 &mut self.rng,
             );
+            // TIBTRE ore spawning: runs AFTER ore_growth so a spawn this tick
+            // can't be grown/spread until next tick.
+            crate::sim::terrain_spawn::tick_terrain_spawners(
+                &self.production.terrain_spawners,
+                &mut self.production.resource_nodes,
+                self.overlay_grid.as_mut(),
+                self.production.default_ore_overlay_id,
+                path_grid,
+                &mut self.rng,
+            );
             if spawned_entities {
                 self.refresh_fog(path_grid, &vision_config, Some(rules));
             }

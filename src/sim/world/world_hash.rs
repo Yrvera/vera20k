@@ -157,6 +157,14 @@ impl Simulation {
             (node.resource_type as u8).hash(hasher);
             node.remaining.hash(hasher);
         }
+        // Hash terrain spawners (TIBTRE-style ore generators).
+        for (&(rx, ry), spawner) in &self.production.terrain_spawners {
+            rx.hash(hasher);
+            ry.hash(hasher);
+            spawner.type_ref.hash(hasher);
+            spawner.animation_probability_micros.hash(hasher);
+        }
+        self.production.default_ore_overlay_id.hash(hasher);
         // Hash dock reservations.
         for (&ref_sid, &miner_sid) in &self.production.dock_reservations.occupied {
             ref_sid.hash(hasher);
@@ -449,5 +457,27 @@ mod particle_hash_tests {
             .insert(fake_system(IVec3::new(100, 0, 0)));
         let h2 = sim.state_hash();
         assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn terrain_spawners_included_in_state_hash() {
+        use crate::sim::terrain_spawn::TerrainSpawnerState;
+
+        let mut sim_a = Simulation::new();
+        let sim_b = Simulation::new();
+        let type_ref = sim_a.interner.intern("TIBTRE01");
+        sim_a.production.terrain_spawners.insert(
+            (10, 10),
+            TerrainSpawnerState {
+                type_ref,
+                animation_probability_micros: 3000,
+            },
+        );
+
+        assert_ne!(
+            sim_a.state_hash(),
+            sim_b.state_hash(),
+            "terrain_spawners must affect state hash",
+        );
     }
 }
