@@ -209,6 +209,14 @@ pub struct ProductionState {
     /// Slave Miner bindings: master entity stable_id → vec of slave entity stable_ids.
     /// Used to track which SLAV infantry belong to which deployed SMIN/YAREFN.
     pub slave_bindings: BTreeMap<u64, Vec<u64>>,
+    /// TIBTRE-style ore-spawning terrain objects, keyed by map cell.
+    /// Populated at map load from `app.terrain_objects` filtered by
+    /// `SpawnsTiberium=yes` on the matching TerrainObjectType.
+    pub terrain_spawners: BTreeMap<(u16, u16), crate::sim::terrain_spawn::TerrainSpawnerState>,
+    /// Default overlay_id used for new ore cells spawned by terrain_spawners.
+    /// Resolved at map load by scanning the overlay_names registry for the
+    /// first "TIB"-prefixed entry. None if no ore overlay is registered.
+    pub default_ore_overlay_id: Option<u8>,
     /// Repair depot dock reservation state — one dock per depot, FIFO queue.
     pub depot_dock_reservations: DockReservations,
     /// Airfield dock reservations — multi-slot (NumberOfDocks per airfield).
@@ -227,6 +235,8 @@ impl Default for ProductionState {
             ore_growth_config: OreGrowthConfig::disabled(),
             ore_growth_state: OreGrowthState::new(0, 0),
             slave_bindings: BTreeMap::new(),
+            terrain_spawners: BTreeMap::new(),
+            default_ore_overlay_id: None,
             depot_dock_reservations: DockReservations::default(),
             airfield_docks: crate::sim::docking::aircraft_dock::AirfieldDocks::default(),
         }
