@@ -130,8 +130,13 @@ pub struct MinerConfig {
     // -- Timing (in sim ticks at 15Hz = RA2 game frames) --
     /// Ticks between each harvest action (extract one bale).
     pub harvest_tick_interval: u8,
-    /// Ticks between each unload action (deposit one bale).
-    pub unload_tick_interval: u8,
+    /// Tenths-of-a-tick between each unload action (deposit one bale).
+    /// Default 144 = 14.4 ticks/bale, matching gamemd's
+    /// `HarvesterDumpRate(0.016) × 900 = 14.4`. The fractional precision
+    /// is preserved by counting an `unload_timer` in tenths and
+    /// decrementing by 10 per tick — bales deposit on average every 14.4
+    /// ticks instead of an integer-truncated 14.
+    pub unload_tick_interval: u16,
 
     // -- Search radii --
     /// Short scan radius: cells to scan around last harvest cell (TiberiumShortScan).
@@ -161,9 +166,11 @@ impl Default for MinerConfig {
             // HarvesterLoadRate=2 (frames per StepTimer step). One bale requires
             // 9 steps, so interval = 2 * 9 = 18 frames/bale at 15fps (~1.2s).
             harvest_tick_interval: 18,
-            // HarvesterDumpRate=0.016 min/bale x 900 (60s x 15fps) = 14.4 frames/bale.
-            // Truncated to 14 ticks. War Miner (40 bales): ~37s. Chrono Miner (20): ~19s.
-            unload_tick_interval: 14,
+            // HarvesterDumpRate=0.016 min/bale × 900 (60s × 15fps) = 14.4 frames/bale.
+            // Stored in tenths so fractional ticks accumulate exactly (no
+            // 0.4-tick-per-bale drift from u8 truncation). War Miner full ore:
+            // 40 × 14.4 = 576 ticks ≈ 38.4s. Chrono Miner: 20 × 14.4 ≈ 19.2s.
+            unload_tick_interval: 144,
             local_continuation_radius: 6,
             long_scan_radius: 48,
             too_far_threshold_standard: 5,
@@ -184,7 +191,10 @@ impl MinerConfig {
         // HarvesterLoadRate: frames per step. 9 steps per bale.
         let load_rate = general.harvester_load_rate.max(1);
         let harvest_interval = (load_rate * 9).min(255) as u8;
-        let unload_interval = general.harvester_dump_frames.max(1);
+        // HarvesterDumpRate is a double in gamemd (default 0.016 min/bale).
+        // We store frames × 10 so the 0.4-frame fraction at default rate is
+        // preserved exactly: 0.016 × 9000 = 144 tenths = 14.4 ticks.
+        let unload_interval = general.harvester_dump_tenths.max(1);
 
         Self {
             local_continuation_radius: general.tiberium_short_scan.max(1) as u16,
@@ -218,8 +228,11 @@ pub struct Miner {
     pub capacity_bales: u16,
     /// Countdown timer for the next harvest action.
     pub harvest_timer: u8,
-    /// Countdown timer for the next unload action.
-    pub unload_timer: u8,
+    /// Countdown timer for the next unload action, in tenths-of-a-tick.
+    /// Decremented by 10 each sim tick; when ≤ 0 a bale deposits and the
+    /// timer is incremented by `unload_tick_interval` (preserving any
+    /// negative leftover so average cadence matches the configured rate).
+    pub unload_timer: i16,
     /// Whether the player issued a manual return order.
     pub forced_return: bool,
     /// Whether this miner is queued (but not yet occupying) a dock.
@@ -239,10 +252,27 @@ pub struct Miner {
 
 impl Miner {
     /// Create a new miner in SearchOre state with the given kind and config.
-    pub fn new(kind: MinerKind, config: &MinerConfig) -> Self {
+    ///
+    /// `obj_storage` is the per-unit `Storage=` value from rules.ini (in bales).
+    /// When > 0 it overrides the kind-based default in `config`, matching gamemd
+    /// reading TechnoTypeClass+0x800 directly as the harvester's max capacity.
+    /// Pass 0 to use the kind default.
+    pub fn new(kind: MinerKind, config: &MinerConfig, obj_storage: u16) -> Self {
         let capacity_bales = match kind {
-            MinerKind::War => config.war_miner_capacity,
-            MinerKind::Chrono => config.chrono_miner_capacity,
+            MinerKind::War => {
+                if obj_storage > 0 {
+                    obj_storage
+                } else {
+                    config.war_miner_capacity
+                }
+            }
+            MinerKind::Chrono => {
+                if obj_storage > 0 {
+                    obj_storage
+                } else {
+                    config.chrono_miner_capacity
+                }
+            }
             // Slave Miners don't carry cargo — their slave infantry harvest instead.
             MinerKind::Slave => 0,
         };
@@ -397,7 +427,7 @@ mod tests {
     #[test]
     fn cargo_pips_shows_five_steps() {
         let cfg = MinerConfig::default();
-        let mut miner = Miner::new(MinerKind::War, &cfg);
+        let mut miner = Miner::new(MinerKind::War, &cfg, 0);
         assert_eq!(miner.cargo_pips(), 0);
         // Fill 20% (8 of 40 bales)
         for _ in 0..8 {

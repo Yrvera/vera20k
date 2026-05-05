@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::sim::world::Simulation;
 
 /// Bump this when the snapshot binary format changes in a breaking way.
-const SNAPSHOT_VERSION: u32 = 3;
+const SNAPSHOT_VERSION: u32 = 4;
 
 /// Binary snapshot envelope — wraps the full `Simulation` state plus
 /// compatibility hashes for the map and rules that were active at save time.

@@ -514,9 +514,12 @@ fn handle_unload(
     config: &MinerConfig,
     snap: &mut MinerSnapshot,
 ) {
-    // Timer countdown.
+    // Timer counts down in tenths-of-tick. When > 0, decrement by 10 (one
+    // tick) and wait. When ≤ 0 it's time to deposit a bale; the leftover
+    // (which can be slightly negative) is preserved across reloads so the
+    // average cadence matches `unload_tick_interval` exactly.
     if snap.miner.unload_timer > 0 {
-        snap.miner.unload_timer -= 1;
+        snap.miner.unload_timer -= 10;
         return;
     }
 
@@ -527,7 +530,10 @@ fn handle_unload(
         let owner_str = sim.interner.resolve(snap.owner).to_string();
         let credits = credits_entry_for_owner(sim, &owner_str);
         *credits = credits.saturating_add(value);
-        snap.miner.unload_timer = config.unload_tick_interval;
+        snap.miner.unload_timer = snap
+            .miner
+            .unload_timer
+            .saturating_add(config.unload_tick_interval as i16);
         return;
     }
 
