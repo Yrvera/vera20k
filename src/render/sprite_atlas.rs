@@ -288,6 +288,24 @@ pub fn build_sprite_atlas(
                     frame: 0,
                     house_color: color_idx,
                 });
+                // CanBeOccupied buildings need frames 0..3 for the occupancy +
+                // damage-tier frame swap (see building_frame_index in
+                // app_instances/shp.rs). SHPs with fewer frames silently skip
+                // missing entries; the renderer falls back to frame 0.
+                let can_be_occupied = rules
+                    .and_then(|r| r.object(type_str))
+                    .map(|obj| obj.can_be_occupied)
+                    .unwrap_or(false);
+                if can_be_occupied {
+                    for frame in 1u16..=3 {
+                        needed.insert(ShpSpriteKey {
+                            type_id: type_str.to_string(),
+                            facing: 0,
+                            frame,
+                            house_color: color_idx,
+                        });
+                    }
+                }
             }
             _ => {
                 // Resolve type ID → image ID via rules. Type IDs (e.g. "E1")
