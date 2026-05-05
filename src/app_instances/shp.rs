@@ -136,7 +136,33 @@ pub(crate) fn build_shp_instances(
             }
         } else {
             match entity.category {
-                EntityCategory::Structure => (0, None),
+                EntityCategory::Structure => {
+                    let obj = state.rules.as_ref().and_then(|r| r.object(type_str));
+                    let frame = if obj.map(|o| o.can_be_occupied).unwrap_or(false) {
+                        let occupant_count = entity
+                            .passenger_role
+                            .cargo()
+                            .map(|c| c.count())
+                            .unwrap_or(0);
+                        let tech_level = obj.map(|o| o.tech_level).unwrap_or(-1);
+                        let (cy, cr) = state
+                            .rules
+                            .as_ref()
+                            .map(|r| (r.general.condition_yellow, r.general.condition_red))
+                            .unwrap_or((0.5, 0.25));
+                        building_frame_index(
+                            occupant_count,
+                            entity.health.current,
+                            entity.health.max,
+                            tech_level,
+                            cy,
+                            cr,
+                        )
+                    } else {
+                        0
+                    };
+                    (frame, None)
+                }
                 _ => (
                     resolve_infantry_shp_frame(
                         state,
@@ -154,8 +180,33 @@ pub(crate) fn build_shp_instances(
             frame: shp_frame,
             house_color: hc,
         };
-        let Some(entry) = atlas.get(&key) else {
-            continue;
+        // Fallback: a CanBeOccupied building requesting frame 1/2/3 may miss the
+        // atlas if its SHP has fewer than 4 frames. Retry with frame 0 so the
+        // building still draws (Approach A in the design doc). Non-garrisonable
+        // misses keep their existing skip path.
+        let entry = match atlas.get(&key) {
+            Some(e) => e,
+            None if shp_frame != 0
+                && entity.category == EntityCategory::Structure
+                && state
+                    .rules
+                    .as_ref()
+                    .and_then(|r| r.object(type_str))
+                    .map(|o| o.can_be_occupied)
+                    .unwrap_or(false) =>
+            {
+                let fallback_key = ShpSpriteKey {
+                    type_id: make_type_id.as_deref().unwrap_or(type_str).to_string(),
+                    facing: 0,
+                    frame: 0,
+                    house_color: hc,
+                };
+                match atlas.get(&fallback_key) {
+                    Some(e) => e,
+                    None => continue,
+                }
+            }
+            None => continue,
         };
 
         let final_x: f32 = sx + entry.offset_x;
@@ -589,8 +640,42 @@ fn resolve_infantry_shp_frame(
     (8 - (facing.wrapping_add(32) / 32) as u16) % 8
 }
 
+/// Body SHP frame index for a `CanBeOccupied=yes` building.
+///
+/// For civilian buildings (`tech_level == -1`) the yellow-tier damage step is
+/// skipped, and the (occupied, red-HP) collapse maps frame 3 → frame 1 so
+/// 3-frame civilian SHPs render correctly.
+fn building_frame_index(
+    occupant_count: u32,
+    health_current: u16,
+    health_max: u16,
+    tech_level: i32,
+    condition_yellow: f32,
+    condition_red: f32,
+) -> u16 {
+    let mut base: u16 = 0;
+    if occupant_count > 0 {
+        base = 2;
+    }
+    let ratio = if health_max == 0 {
+        1.0
+    } else {
+        health_current as f32 / health_max as f32
+    };
+    let red_tier = ratio <= condition_red;
+    let yellow_tier = tech_level > 0 && ratio <= condition_yellow;
+    if red_tier || yellow_tier {
+        base += 1;
+    }
+    if tech_level == -1 && base == 3 {
+        return 1;
+    }
+    base
+}
+
 #[cfg(test)]
 mod tests {
+    use super::building_frame_index;
     use super::resting_building_anim_frame;
     use crate::rules::art_data::{BuildingAnimConfig, BuildingAnimKind};
 
@@ -636,5 +721,81 @@ mod tests {
         };
 
         assert_eq!(resting_building_anim_frame(&anim), 3);
+    }
+
+    // Civilian (TechLevel == -1) — matches CABHUT, CALA01, CAGAS01, CABUNK01, etc.
+    // Yellow-tier damage step is gated on TechLevel > 0, so it never fires here.
+    // Frame 3 collapses to 1 (occupied + red).
+
+    #[test]
+    fn civilian_empty_healthy_returns_0() {
+        assert_eq!(building_frame_index(0, 100, 100, -1, 0.5, 0.25), 0);
+    }
+
+    #[test]
+    fn civilian_empty_yellow_tier_returns_0() {
+        // ratio = 0.4: below ConditionYellow but above ConditionRed.
+        // Yellow gate is `tech_level > 0` — fails for civilian, so no +1.
+        assert_eq!(building_frame_index(0, 40, 100, -1, 0.5, 0.25), 0);
+    }
+
+    #[test]
+    fn civilian_empty_red_tier_returns_1() {
+        assert_eq!(building_frame_index(0, 20, 100, -1, 0.5, 0.25), 1);
+    }
+
+    #[test]
+    fn civilian_occupied_healthy_returns_2() {
+        assert_eq!(building_frame_index(1, 100, 100, -1, 0.5, 0.25), 2);
+    }
+
+    #[test]
+    fn civilian_occupied_yellow_tier_returns_2() {
+        // Same yellow-gate behavior as empty case.
+        assert_eq!(building_frame_index(1, 40, 100, -1, 0.5, 0.25), 2);
+    }
+
+    #[test]
+    fn civilian_occupied_red_tier_collapses_to_1() {
+        // base=2 (occupied) + 1 (red) = 3 → collapse rule → 1.
+        assert_eq!(building_frame_index(1, 20, 100, -1, 0.5, 0.25), 1);
+    }
+
+    // Buildable (TechLevel >= 1) — TS-era "buildable garrisonable" structures
+    // (none in standard YR but the formula path is real). Yellow tier fires.
+
+    #[test]
+    fn buildable_empty_healthy_returns_0() {
+        assert_eq!(building_frame_index(0, 100, 100, 5, 0.5, 0.25), 0);
+    }
+
+    #[test]
+    fn buildable_empty_yellow_tier_returns_1() {
+        assert_eq!(building_frame_index(0, 40, 100, 5, 0.5, 0.25), 1);
+    }
+
+    #[test]
+    fn buildable_occupied_healthy_returns_2() {
+        assert_eq!(building_frame_index(1, 100, 100, 5, 0.5, 0.25), 2);
+    }
+
+    #[test]
+    fn buildable_occupied_red_tier_returns_3() {
+        // No civilian collapse (tech_level != -1).
+        assert_eq!(building_frame_index(1, 20, 100, 5, 0.5, 0.25), 3);
+    }
+
+    // Edge cases.
+
+    #[test]
+    fn zero_max_hp_treats_as_healthy() {
+        // Avoids division-by-zero; entity not yet fully initialized.
+        assert_eq!(building_frame_index(0, 0, 0, -1, 0.5, 0.25), 0);
+    }
+
+    #[test]
+    fn boundary_at_condition_red_inclusive() {
+        // ratio == ConditionRed exactly → red_tier fires (<=).
+        assert_eq!(building_frame_index(0, 25, 100, -1, 0.5, 0.25), 1);
     }
 }

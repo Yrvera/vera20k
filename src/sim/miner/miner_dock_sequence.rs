@@ -375,9 +375,10 @@ fn phase_unloading(
     snap: &mut MinerSnapshot,
     ref_sid: u64,
 ) {
-    // Timer countdown.
+    // Timer counts down in tenths-of-tick (decrement by 10 = one full tick)
+    // so the fractional `HarvesterDumpRate` part is preserved across bales.
     if snap.miner.unload_timer > 0 {
-        snap.miner.unload_timer -= 1;
+        snap.miner.unload_timer -= 10;
         return;
     }
 
@@ -388,7 +389,10 @@ fn phase_unloading(
         let owner_str = sim.interner.resolve(snap.owner).to_string();
         let credits = credits_entry_for_owner(sim, &owner_str);
         *credits = credits.saturating_add(value);
-        snap.miner.unload_timer = config.unload_tick_interval;
+        snap.miner.unload_timer = snap
+            .miner
+            .unload_timer
+            .saturating_add(config.unload_tick_interval as i16);
         return;
     }
 

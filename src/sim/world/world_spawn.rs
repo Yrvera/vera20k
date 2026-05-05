@@ -193,14 +193,14 @@ impl Simulation {
                 ge.on_bridge = true;
             }
             // Miner + harvest overlay.
-            let miner_kind = rules
-                .and_then(|r| r.object(&map_ent.type_id))
-                .and_then(miner_kind_for_object);
+            let miner_obj = rules.and_then(|r| r.object(&map_ent.type_id));
+            let miner_kind = miner_obj.and_then(miner_kind_for_object);
             if let Some(kind) = miner_kind {
                 let mcfg: MinerConfig = rules
                     .map(|r| MinerConfig::from_general_rules(&r.general))
                     .unwrap_or_default();
-                ge.miner = Some(Miner::new(kind, &mcfg));
+                let storage = miner_obj.map(|o| o.storage.max(0) as u16).unwrap_or(0);
+                ge.miner = Some(Miner::new(kind, &mcfg, storage));
                 ge.harvest_overlay = Some(HarvestOverlay {
                     frame: 0,
                     visible: false,
@@ -385,7 +385,8 @@ impl Simulation {
 
         if let Some(kind) = miner_kind_for_object(obj) {
             let mcfg: MinerConfig = MinerConfig::from_general_rules(&rules.general);
-            ge.miner = Some(Miner::new(kind, &mcfg));
+            let storage = obj.storage.max(0) as u16;
+            ge.miner = Some(Miner::new(kind, &mcfg, storage));
             ge.harvest_overlay = Some(HarvestOverlay {
                 frame: 0,
                 visible: false,

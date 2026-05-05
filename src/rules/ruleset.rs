@@ -230,10 +230,12 @@ pub struct GeneralRules {
     /// Frames per StepTimer increment during ore gathering (HarvesterLoadRate=).
     /// One bale requires 9 steps, so harvest_interval = rate * 9. Default 2.
     pub harvester_load_rate: i32,
-    /// Frames per bale during refinery unloading (HarvesterDumpRate=).
-    /// Pre-computed from INI float: `clamp(rate * 900.0, 0, 255) as u8`.
-    /// Default 14 (from 0.016 * 900 = 14.4, truncated).
-    pub harvester_dump_frames: u8,
+    /// Tenths-of-a-frame per bale during refinery unloading (HarvesterDumpRate=).
+    /// Pre-computed from INI double: `(rate * 9000.0).round() as u16`.
+    /// Default 144 (from 0.016 × 9000 = 14.4 frames per bale, exact).
+    /// The miner timer counts in tenths so the 0.4-frame fractional component
+    /// at default rate is preserved instead of being truncated to 14.
+    pub harvester_dump_tenths: u16,
 
     // -- Chrono warp delay constants --
     /// Post-warp lock duration in game frames (ChronoDelay= in [General]).
@@ -429,7 +431,7 @@ impl Default for GeneralRules {
             harvester_too_far_distance: 5,
             chrono_harv_too_far_distance: 50,
             harvester_load_rate: 2,
-            harvester_dump_frames: 14,
+            harvester_dump_tenths: 144,
             chrono_delay: 60,
             chrono_reinf_delay: 180,
             chrono_distance_factor: 48,
@@ -686,9 +688,11 @@ impl GeneralRules {
             harvester_too_far_distance: general.get_i32("HarvesterTooFarDistance").unwrap_or(5),
             chrono_harv_too_far_distance: general.get_i32("ChronoHarvTooFarDistance").unwrap_or(50),
             harvester_load_rate: general.get_i32("HarvesterLoadRate").unwrap_or(2),
-            harvester_dump_frames: {
+            harvester_dump_tenths: {
                 let rate = general.get_f32("HarvesterDumpRate").unwrap_or(0.016);
-                (rate * 900.0).clamp(0.0, 255.0) as u8
+                // Tenths of a frame: 0.016 × 9000 = 144 (= 14.4 frames/bale).
+                // Clamp to u16::MAX (~6553 ticks/bale) to keep the timer wraparound-safe.
+                (rate * 9000.0).clamp(0.0, u16::MAX as f32).round() as u16
             },
             chrono_delay: general.get_i32("ChronoDelay").unwrap_or(60),
             chrono_reinf_delay: general.get_i32("ChronoReinfDelay").unwrap_or(180),

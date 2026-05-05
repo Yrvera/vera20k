@@ -125,7 +125,7 @@ fn spawn_miner(sim: &mut Simulation, sid: u64, kind: MinerKind, rx: u16, ry: u16
         5,
         true,
     );
-    ge.miner = Some(Miner::new(kind, &MinerConfig::default()));
+    ge.miner = Some(Miner::new(kind, &MinerConfig::default(), 0));
     sim.entities.insert(ge);
     // Update next_stable_entity_id if needed so allocate_stable_entity_id doesn't collide.
     if sim.next_stable_entity_id <= sid {
@@ -627,7 +627,7 @@ fn local_continuation_after_cell_depletes() {
 #[test]
 fn cargo_pips_five_steps() {
     let config = MinerConfig::default();
-    let mut miner = Miner::new(MinerKind::War, &config);
+    let mut miner = Miner::new(MinerKind::War, &config, 0);
     // War Miner capacity = 40 bales
     assert_eq!(miner.cargo_pips(), 0);
 
