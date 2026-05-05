@@ -55,6 +55,9 @@ pub mod animation;
 pub mod bridge_specs;
 pub mod bridge_state;
 
+// --- Infantry deploy-fire state machine ---
+pub mod deploy;
+
 // --- Persistent cell occupancy ---
 pub mod occupancy;
 
