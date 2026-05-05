@@ -80,6 +80,93 @@ pub fn begin_parachute_descent(
     true
 }
 
+/// Per-tick advance for all entities with `parachute_state`.
+///
+/// Wired into `World::advance_tick` Phase 2 immediately after
+/// `tick_droppod_movement`.
+///
+/// Per-tick algorithm (mirrors gamemd's descent block):
+/// 1. Integrate Z FIRST: `altitude += rate` (rate is negative; first tick rate=0 → no move)
+/// 2. Landing check: `altitude <= 0` → mark for cleanup (altitude clamped to exactly 0)
+/// 3. Rate update: `rate -= 1`, clamp to `parachute_max_fall_rate`
+/// 4. Update `screen_y` for renderer (altitude offset, render-only f32)
+///
+/// Cleanup (per landed entity):
+/// - clear `parachute_state`
+/// - `loco.end_override()` (restores base locomotor)
+/// - reset `animation.sequence` to `Stand` ONLY if currently `Paradrop`
+///   (don't overwrite if some other system has already changed it)
+pub fn tick_parachute_descent(
+    entities: &mut EntityStore,
+    tick_ms: u32,
+    parachute_max_fall_rate: i32,
+    sim_tick: u64,
+) {
+    if tick_ms == 0 {
+        return;
+    }
+
+    let mut finished: Vec<u64> = Vec::new();
+
+    let keys = entities.keys_sorted();
+    for &id in &keys {
+        let Some(entity) = entities.get_mut(id) else {
+            continue;
+        };
+        let Some(ref mut state) = entity.parachute_state else {
+            continue;
+        };
+
+        // Integrate Z FIRST. On the very first tick `rate == 0`, so altitude
+        // doesn't change yet — that produces the 3-tick ramp 0,-1,-2,-3.
+        state.altitude += SimFixed::from_num(state.rate);
+
+        // Landing on `altitude <= 0` (inclusive). Clamp to exactly SIM_ZERO
+        // so render position never shows the unit below ground for a frame.
+        if state.altitude <= SIM_ZERO {
+            state.altitude = SIM_ZERO;
+            finished.push(id);
+        } else {
+            // Integer DEC, then clamp toward the more-negative bound.
+            state.rate = (state.rate - 1).max(parachute_max_fall_rate);
+        }
+
+        // Render-side: update screen_y with altitude offset. Render-only f32
+        // — does NOT feed back into sim state.
+        let (sx, sy) = crate::util::lepton::lepton_to_screen(
+            entity.position.rx,
+            entity.position.ry,
+            entity.position.sub_x,
+            entity.position.sub_y,
+            entity.position.z,
+        );
+        entity.position.screen_x = sx;
+        entity.position.screen_y = sy - sim_to_f32(state.altitude) * ALTITUDE_VISUAL_SCALE;
+    }
+
+    // Cleanup landed entities: clear state BEFORE end_override (order matters
+    // — anything that watches the override transition must see a coherent
+    // (no descent state, restored locomotor) snapshot).
+    for id in finished {
+        if let Some(entity) = entities.get_mut(id) {
+            entity.parachute_state = None;
+            if let Some(ref mut loco) = entity.locomotor {
+                if loco.is_overridden() {
+                    loco.end_override();
+                }
+            }
+            // Body sequence reset gated on `== Paradrop` — don't clobber
+            // a death/other sequence that may have taken over mid-descent.
+            if let Some(ref mut anim) = entity.animation {
+                if anim.sequence == SequenceKind::Paradrop {
+                    anim.switch_to(SequenceKind::Stand);
+                }
+            }
+            entity.push_debug_event(sim_tick as u32, DebugEventKind::SpecialMovementEnd);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
