@@ -713,14 +713,16 @@ fn begin_return(
     }
 }
 
-/// Spawn WarpOut visual effects at departure and arrival.
+/// Spawn WarpAway visual effects at departure and arrival.
 ///
-/// The teleport locomotor spawns a WarpOut animation at both source and destination
-/// (not WarpAway — WarpOut is the correct key from `[General]`).
+/// Self-teleport (chrono miner, chrono legionnaire) spawns the WarpAway anim
+/// (`[General] WarpAway=`, Rules+0x340) at both endpoints — same anim object
+/// twice, once at the source cell and once at the destination cell.
 ///
-/// WarpAway (Rules+0x340) is unused by self-teleport. ChronoSparkle1 (Rules+0x344)
-/// is also NOT spawned during self-teleport — `InitiateWarp` never reads +0x344.
-/// WarpOut/WarpIn are for the Chronosphere superweapon path (not yet implemented).
+/// WarpIn/WarpOut (Rules+0x338/+0x33C) are parsed but the teleport state machine
+/// never spawns them — they belong to the Chronosphere superweapon path (not
+/// yet implemented). ChronoSparkle1 (Rules+0x344) is likewise unused by
+/// self-teleport.
 ///
 /// Also emits chrono teleport sound events at both locations.
 fn spawn_warp_effects(
@@ -734,9 +736,8 @@ fn spawn_warp_effects(
     /// Fallback frame count when the SHP wasn't found in the atlas.
     const FALLBACK_FRAME_COUNT: u16 = 20;
 
-    // Self-teleport uses WarpOut (Rules+0x33C) at both departure and arrival.
-    let anim_name: &str = &rules.general.warp_out.name;
-    let anim_rate: u32 = rules.general.warp_out.rate_ms;
+    let anim_name: &str = &rules.general.warp_away.name;
+    let anim_rate: u32 = rules.general.warp_away.rate_ms;
     let anim_interned = sim.interner.intern(anim_name);
 
     let anim_frames: u16 = sim
@@ -745,7 +746,7 @@ fn spawn_warp_effects(
         .copied()
         .unwrap_or(FALLBACK_FRAME_COUNT);
 
-    // Departure WarpOut.
+    // Departure WarpAway.
     sim.world_effects.push(WorldEffect {
         shp_name: anim_interned,
         rx: depart.0,
@@ -759,7 +760,7 @@ fn spawn_warp_effects(
         delay_ms: 0,
     });
 
-    // Arrival WarpOut.
+    // Arrival WarpAway.
     sim.world_effects.push(WorldEffect {
         shp_name: anim_interned,
         rx: arrive.0,
@@ -772,9 +773,6 @@ fn spawn_warp_effects(
         translucent: true,
         delay_ms: 0,
     });
-
-    // Note: ChronoSparkle1 (Rules+0x344) is NOT spawned during self-teleport.
-    // It may be used by the Chronosphere superweapon path (not yet implemented).
 
     // Chrono teleport sounds at both departure and arrival.
     sim.sound_events.push(SimSoundEvent::ChronoTeleport {
