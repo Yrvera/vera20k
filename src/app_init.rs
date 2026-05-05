@@ -555,6 +555,24 @@ pub fn load_map(
         if seeded > 0 {
             log::info!("Seeded {} resource node cells for economy loop", seeded);
         }
+        // Seed TIBTRE-style ore-spawning terrain objects. Skip gracefully if
+        // rules failed to load (matches the ore_growth_config pattern below).
+        if let Some(rules_for_terrain) = rules.as_ref() {
+            let seeded_terrain = crate::sim::terrain_spawn::seed_terrain_spawners(
+                sim,
+                &map_data.terrain_objects,
+                rules_for_terrain,
+                &overlay_names,
+            );
+            if seeded_terrain > 0 {
+                log::info!(
+                    "Seeded {} ore-spawning terrain objects (TIBTRE)",
+                    seeded_terrain,
+                );
+            }
+        } else {
+            log::warn!("No rules loaded — skipping terrain spawner seeding");
+        }
         // Seed mutable overlay grid from map overlay data.
         if let Some(rt) = &sim.resolved_terrain {
             let grid_width = rt.width();
