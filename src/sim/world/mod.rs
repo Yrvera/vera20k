@@ -1271,7 +1271,7 @@ impl Simulation {
             // --- Phase 5.5: ParticleSystems ---
             // DEPENDS ON: combat (gas/fire damage spawned this tick).
             // PRODUCES: damage applied via gas/fire particles, must be visible to phase 6 retaliation.
-            crate::sim::particles::system_ai::tick_particle_systems(self);
+            crate::sim::particles::system_ai::tick_particle_systems(self, rules);
             // --- Phase 6: Retaliation + Passengers ---
             // DEPENDS ON: combat (sets last_attacker_id read by retaliation).
             combat::tick_retaliation(&mut self.entities, rules, &self.interner);

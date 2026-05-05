@@ -25,6 +25,7 @@ use std::collections::BTreeMap;
 
 pub mod spawn;
 pub mod system_ai;
+pub mod wind;
 
 #[derive(Debug, Clone)]
 pub struct ParticleSystem {
