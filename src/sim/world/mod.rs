@@ -42,6 +42,7 @@ use crate::sim::movement;
 use crate::sim::movement::air_movement;
 use crate::sim::movement::droppod_movement;
 use crate::sim::movement::locomotor::{GroundMovePhase, MovementLayer};
+use crate::sim::movement::parachute_descent;
 use crate::sim::movement::rocket_movement;
 use crate::sim::movement::teleport_movement;
 use crate::sim::movement::tunnel_movement;
@@ -1095,6 +1096,14 @@ impl Simulation {
         let _rocket_detonations =
             rocket_movement::tick_rocket_movement(&mut self.entities, tick_ms, self.tick);
         droppod_movement::tick_droppod_movement(&mut self.entities, tick_ms, self.tick);
+        if let Some(rules) = rules {
+            parachute_descent::tick_parachute_descent(
+                &mut self.entities,
+                tick_ms,
+                rules.general.parachute_max_fall_rate,
+                self.tick,
+            );
+        }
 
         // Aircraft mission state machines — between movement and combat.
         // Reads updated positions, controls firing and RTB decisions.
