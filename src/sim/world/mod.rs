@@ -28,6 +28,9 @@ use crate::rules::locomotor_type::SpeedType;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::ai::{self, AiPlayerState};
 use crate::sim::bridge_state::{BridgeDamageEvent, BridgeRuntimeState, BridgeStateChange};
+use crate::sim::overlay_grid::{
+    cleanup_wall_neighbors, damage_wall_overlay, WallDamageEvent,
+};
 use crate::sim::combat;
 use crate::sim::combat::combat_weapon::WeaponSlot;
 use crate::sim::command::{Command, CommandEnvelope};
@@ -663,6 +666,86 @@ impl Simulation {
         changes
     }
 
+    /// Apply combat-emitted wall damage events: drives the per-cell damage
+    /// progression in `damage_wall_overlay`, runs the cardinal-neighbor cleanup
+    /// for any cells the damage destroys, and despawns the wall GameEntity at
+    /// each destroyed cell.
+    ///
+    /// `rules` and `overlay_registry` are required because the wall damage
+    /// pipeline reads per-overlay-type Strength/DamageLevels and identifies
+    /// wall entities via the `Wall=yes` flag on their ObjectType.
+    pub(crate) fn apply_wall_damage_events(
+        &mut self,
+        events: &[WallDamageEvent],
+        rules: &RuleSet,
+        overlay_registry: &crate::map::overlay_types::OverlayTypeRegistry,
+    ) {
+        if events.is_empty() {
+            return;
+        }
+        let Some(grid) = self.overlay_grid.as_mut() else {
+            return;
+        };
+
+        let mut destroyed_cells: Vec<(u16, u16)> = Vec::new();
+
+        for event in events {
+            let result = damage_wall_overlay(
+                grid,
+                overlay_registry,
+                event.rx,
+                event.ry,
+                event.damage,
+                &mut self.rng,
+            );
+
+            for &cell in &result.destroyed_cells {
+                destroyed_cells.push(cell);
+                let chained = cleanup_wall_neighbors(grid, overlay_registry, cell.0, cell.1);
+                destroyed_cells.extend(chained);
+            }
+        }
+
+        if destroyed_cells.is_empty() {
+            return;
+        }
+
+        destroyed_cells.sort_unstable();
+        destroyed_cells.dedup();
+
+        for (rx, ry) in destroyed_cells {
+            self.remove_wall_entity_at(rx, ry, rules);
+        }
+    }
+
+    /// Despawn the GameEntity backing a wall overlay cell, if one exists.
+    /// Walls have a paired `GameEntity` for HP/ownership and an OverlayCell for
+    /// rendering/passability. When the overlay is destroyed via wall-damage
+    /// events, the entity must be removed too. Mod-loaded maps may have stale
+    /// state with no matching entity; in that case a warn is logged and the
+    /// caller continues without panicking.
+    fn remove_wall_entity_at(&mut self, rx: u16, ry: u16, rules: &RuleSet) {
+        let interner = &self.interner;
+        let to_remove: Option<u64> = self.entities.iter_sorted().find_map(|(id, e)| {
+            if e.position.rx == rx
+                && e.position.ry == ry
+                && rules
+                    .object(interner.resolve(e.type_ref))
+                    .is_some_and(|o| o.wall)
+            {
+                Some(id)
+            } else {
+                None
+            }
+        });
+
+        if let Some(id) = to_remove {
+            self.entities.remove(id);
+        } else {
+            log::warn!("apply_wall_damage_events: no wall entity at ({rx}, {ry})");
+        }
+    }
+
     pub(crate) fn resolve_bridge_state_changes(
         &mut self,
         changes: &[BridgeStateChange],
@@ -1011,6 +1094,7 @@ impl Simulation {
         rules: Option<&RuleSet>,
         height_map: &BTreeMap<(u16, u16), u8>,
         path_grid: Option<&PathGrid>,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
         tick_ms: u32,
     ) -> TickResult {
         let execute_tick = self.tick.saturating_add(1);
@@ -1211,6 +1295,8 @@ impl Simulation {
                 &self.power_states,
                 Some(&mut self.sound_events),
                 &mut self.production.resource_nodes,
+                self.overlay_grid.as_ref(),
+                overlay_registry,
                 self.tick,
                 tick_ms,
             );
@@ -1227,6 +1313,13 @@ impl Simulation {
                 self.apply_bridge_damage_events(&combat_result.bridge_damage_events);
             // resolve_bridge_state_changes calls despawn_entity() internally.
             let _bridge_fallout_ids = self.resolve_bridge_state_changes(&bridge_changes);
+            // Wall damage: feed combat-emitted wall hits through the per-cell damage
+            // pipeline and despawn destroyed wall entities. Requires overlay_registry
+            // (wall flag on OverlayType plus per-type Strength/DamageLevels); rules
+            // is already unwrapped in this block.
+            if let Some(reg) = overlay_registry {
+                self.apply_wall_damage_events(&combat_result.wall_damage_events, rules, reg);
+            }
             // Apply RevealOnFire events from combat.
             for ev in &combat_result.reveal_events {
                 vision::reveal_radius(&mut self.fog, ev.owner, ev.rx, ev.ry, ev.radius);

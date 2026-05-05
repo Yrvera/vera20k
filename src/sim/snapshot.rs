@@ -133,7 +133,7 @@ mod tests {
     /// Helper: advance a sim by one tick with empty inputs.
     fn tick(sim: &mut Simulation) {
         let height_map = BTreeMap::new();
-        sim.advance_tick(&[], None, &height_map, None, 67);
+        sim.advance_tick(&[], None, &height_map, None, None, 67);
     }
 
     /// Prove snapshot round-trip preserves all authoritative state.

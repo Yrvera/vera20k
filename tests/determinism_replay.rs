@@ -77,7 +77,7 @@ fn run_with_frame_profile(total_ms: u32, frame_ms: u32) -> (u64, Vec<u64>, Repla
                 }
             });
 
-            let result = sim.advance_tick(&due, None, &height_map, Some(&grid), TICK_MS);
+            let result = sim.advance_tick(&due, None, &height_map, Some(&grid), None, TICK_MS);
             hashes.push(result.state_hash);
             replay.record_tick(result.tick, due, result.state_hash);
         }

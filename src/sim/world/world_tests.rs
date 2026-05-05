@@ -657,7 +657,7 @@ fn test_water_mover_lookahead_does_not_attach_bridge_occupancy_under_bridge() {
     });
 
     let path_grid = PathGrid::new(2, 1);
-    let _ = sim.advance_tick(&[], Some(&rules), &BTreeMap::new(), Some(&path_grid), 33);
+    let _ = sim.advance_tick(&[], Some(&rules), &BTreeMap::new(), Some(&path_grid), None, 33);
 
     let boat = sim.entities.get(boat_id).expect("boat still exists");
     assert!(
@@ -704,7 +704,7 @@ fn test_too_big_ship_can_move_under_bridge_route() {
     // Use tick_ms=1000 so the ship crosses the cell boundary in 1 tick
     // (speed=256 * dt=1.0 = 256 leptons = 1 cell).
     let path_grid = PathGrid::new(2, 1);
-    let _ = sim.advance_tick(&[], Some(&rules), &BTreeMap::new(), Some(&path_grid), 1000);
+    let _ = sim.advance_tick(&[], Some(&rules), &BTreeMap::new(), Some(&path_grid), None, 1000);
 
     let ship = sim.entities.get(ship_id).expect("ship still exists");
     assert!(
@@ -743,7 +743,7 @@ fn test_ship_turn_path_completes_without_drive_track_stall() {
 
     let path_grid = PathGrid::new(3, 3);
     for _ in 0..10 {
-        let _ = sim.advance_tick(&[], Some(&rules), &BTreeMap::new(), Some(&path_grid), 100);
+        let _ = sim.advance_tick(&[], Some(&rules), &BTreeMap::new(), Some(&path_grid), None, 100);
     }
 
     let boat = sim.entities.get(boat_id).expect("boat still exists");
@@ -795,10 +795,11 @@ fn test_real_ship_locomotor_move_command_crosses_water_cells() {
         Some(&rules),
         &BTreeMap::new(),
         Some(&path_grid),
+        None,
         100,
     );
     for _ in 0..80 {
-        let _ = sim.advance_tick(&[], Some(&rules), &BTreeMap::new(), Some(&path_grid), 100);
+        let _ = sim.advance_tick(&[], Some(&rules), &BTreeMap::new(), Some(&path_grid), None, 100);
     }
 
     let ship = sim.entities.get(ship_id).expect("ship still exists");
@@ -852,10 +853,11 @@ fn test_real_ship_locomotor_crosses_water_surface_cells_with_non_water_land_type
         Some(&rules),
         &BTreeMap::new(),
         Some(&path_grid),
+        None,
         100,
     );
     for _ in 0..80 {
-        let _ = sim.advance_tick(&[], Some(&rules), &BTreeMap::new(), Some(&path_grid), 100);
+        let _ = sim.advance_tick(&[], Some(&rules), &BTreeMap::new(), Some(&path_grid), None, 100);
     }
 
     let ship = sim.entities.get(ship_id).expect("ship still exists");
@@ -911,6 +913,7 @@ fn test_real_ship_move_command_can_path_under_bridge_when_too_big() {
         Some(&rules),
         &BTreeMap::new(),
         Some(&path_grid),
+        None,
         100,
     );
     let initial_path = sim
@@ -920,7 +923,7 @@ fn test_real_ship_move_command_can_path_under_bridge_when_too_big() {
         .map(|mt| mt.path.clone())
         .expect("ship should have an initial path");
     for _ in 0..120 {
-        let _ = sim.advance_tick(&[], Some(&rules), &BTreeMap::new(), Some(&path_grid), 100);
+        let _ = sim.advance_tick(&[], Some(&rules), &BTreeMap::new(), Some(&path_grid), None, 100);
     }
 
     let ship = sim.entities.get(ship_id).expect("ship still exists");
@@ -994,7 +997,7 @@ fn test_select_command_applies_snapshot_selection() {
             additive: false,
         },
     );
-    let _ = sim.advance_tick(&[select], None, &empty_heights(), None, 33);
+    let _ = sim.advance_tick(&[select], None, &empty_heights(), None, None, 33);
 
     assert!(!sim.entities.get(1).is_some_and(|e| e.selected));
     assert!(sim.entities.get(2).is_some_and(|e| e.selected));
@@ -1021,7 +1024,7 @@ fn test_select_command_replaces_previous_selection() {
             additive: false,
         },
     );
-    let _ = sim.advance_tick(&[cmd1], None, &empty_heights(), None, 33);
+    let _ = sim.advance_tick(&[cmd1], None, &empty_heights(), None, None, 33);
 
     let cmd2 = cmd_envelope(
         &sim,
@@ -1032,7 +1035,7 @@ fn test_select_command_replaces_previous_selection() {
             additive: true,
         },
     );
-    let _ = sim.advance_tick(&[cmd2], None, &empty_heights(), None, 33);
+    let _ = sim.advance_tick(&[cmd2], None, &empty_heights(), None, None, 33);
 
     assert!(!sim.entities.get(1).is_some_and(|e| e.selected));
     assert!(sim.entities.get(2).is_some_and(|e| e.selected));
@@ -1059,7 +1062,7 @@ fn test_select_command_deduplicates_and_sorts_ids() {
             additive: false,
         },
     );
-    let _ = sim.advance_tick(&[select], None, &empty_heights(), None, 33);
+    let _ = sim.advance_tick(&[select], None, &empty_heights(), None, None, 33);
 
     assert!(sim.entities.get(1).is_some_and(|e| e.selected));
     assert!(sim.entities.get(2).is_some_and(|e| e.selected));
@@ -1078,7 +1081,7 @@ fn test_deploy_mcv_replaces_vehicle_with_conyard() {
     }
 
     let cmd = cmd_envelope(&sim, "Americans", 1, Command::DeployMcv { entity_id: mcv });
-    let _ = sim.advance_tick(&[cmd], Some(&rules), &heights, None, 33);
+    let _ = sim.advance_tick(&[cmd], Some(&rules), &heights, None, None, 33);
 
     assert!(sim.entities.get(mcv).is_none(), "MCV should be removed");
     let gacnst_id = sim
@@ -1127,7 +1130,7 @@ fn test_execute_tick_delay_blocks_early_execution() {
         },
     );
 
-    let _ = sim.advance_tick(&[delayed.clone()], None, &empty_heights(), Some(&grid), 33);
+    let _ = sim.advance_tick(&[delayed.clone()], None, &empty_heights(), Some(&grid), None, 33);
     assert!(
         sim.entities
             .get(1)
@@ -1135,7 +1138,7 @@ fn test_execute_tick_delay_blocks_early_execution() {
             .is_none()
     );
 
-    let _ = sim.advance_tick(&[delayed.clone()], None, &empty_heights(), Some(&grid), 33);
+    let _ = sim.advance_tick(&[delayed.clone()], None, &empty_heights(), Some(&grid), None, 33);
     assert!(
         sim.entities
             .get(1)
@@ -1143,7 +1146,7 @@ fn test_execute_tick_delay_blocks_early_execution() {
             .is_none()
     );
 
-    let _ = sim.advance_tick(&[delayed], None, &empty_heights(), Some(&grid), 33);
+    let _ = sim.advance_tick(&[delayed], None, &empty_heights(), Some(&grid), None, 33);
     assert!(
         sim.entities
             .get(1)
@@ -1198,7 +1201,7 @@ fn test_move_queue_command_appends_waypoint() {
             },
         ),
     ];
-    let _ = sim.advance_tick(&commands, None, &empty_heights(), Some(&grid), 33);
+    let _ = sim.advance_tick(&commands, None, &empty_heights(), Some(&grid), None, 33);
 
     let ge = sim
         .entities
@@ -1246,7 +1249,7 @@ fn test_stop_command_clears_move_and_attack_intent() {
     }
 
     let cmd = cmd_envelope(&sim, "Americans", 1, Command::Stop { entity_id: 1 });
-    let _ = sim.advance_tick(&[cmd], None, &empty_heights(), None, 33);
+    let _ = sim.advance_tick(&[cmd], None, &empty_heights(), None, None, 33);
     assert!(
         sim.entities.get(1).unwrap().movement_target.is_none(),
         "movement target should be cleared by Stop"
@@ -1292,7 +1295,7 @@ fn test_move_command_rejects_non_owned_entity() {
         },
     );
 
-    let _ = sim.advance_tick(&[cmd], None, &empty_heights(), Some(&grid), 33);
+    let _ = sim.advance_tick(&[cmd], None, &empty_heights(), Some(&grid), None, 33);
     assert!(
         sim.entities
             .get(1)
@@ -1322,7 +1325,7 @@ fn test_move_command_chrono_miner_uses_ground_path() {
         },
     );
 
-    let _ = sim.advance_tick(&[cmd], Some(&rules), &heights, Some(&grid), 33);
+    let _ = sim.advance_tick(&[cmd], Some(&rules), &heights, Some(&grid), None, 33);
     assert!(
         sim.entities
             .get(entity)
@@ -1361,7 +1364,7 @@ fn test_move_command_non_harvester_teleporter_uses_teleport() {
         },
     );
 
-    let _ = sim.advance_tick(&[cmd], Some(&rules), &heights, Some(&grid), 33);
+    let _ = sim.advance_tick(&[cmd], Some(&rules), &heights, Some(&grid), None, 33);
     assert!(
         sim.entities
             .get(entity)
@@ -1398,7 +1401,7 @@ fn test_attack_move_command_chrono_miner_uses_ground_path() {
         },
     );
 
-    let _ = sim.advance_tick(&[cmd], Some(&rules), &heights, Some(&grid), 33);
+    let _ = sim.advance_tick(&[cmd], Some(&rules), &heights, Some(&grid), None, 33);
     assert!(
         sim.entities
             .get(entity)
@@ -1468,7 +1471,7 @@ fn test_attack_command_rejects_friendly_target() {
         },
     );
 
-    let _ = sim.advance_tick(&[cmd], None, &empty_heights(), None, 33);
+    let _ = sim.advance_tick(&[cmd], None, &empty_heights(), None, None, 33);
     assert!(
         sim.entities.get(1).unwrap().attack_target.is_none(),
         "Attack on same-owner target should not issue"
@@ -1522,7 +1525,7 @@ fn test_attack_move_auto_acquires_enemy() {
         },
     );
 
-    let _ = sim.advance_tick(&[cmd], Some(&rules), &empty_heights(), Some(&grid), 100);
+    let _ = sim.advance_tick(&[cmd], Some(&rules), &empty_heights(), Some(&grid), None, 100);
     let attack = sim
         .entities
         .get(1)
@@ -1585,7 +1588,7 @@ fn test_attack_move_resumes_after_kill() {
         },
     );
 
-    let _ = sim.advance_tick(&[cmd], Some(&rules), &empty_heights(), Some(&grid), 100);
+    let _ = sim.advance_tick(&[cmd], Some(&rules), &empty_heights(), Some(&grid), None, 100);
     assert!(
         sim.entities.get(1).unwrap().attack_target.is_none(),
         "target should die and attack should clear"
@@ -1633,6 +1636,7 @@ fn test_guard_returns_to_anchor_when_displaced() {
         Some(&rules),
         &empty_heights(),
         Some(&grid),
+        None,
         100,
     );
 
@@ -1646,7 +1650,7 @@ fn test_guard_returns_to_anchor_when_displaced() {
         e.attack_target = None;
     }
 
-    let _ = sim.advance_tick(&[], Some(&rules), &empty_heights(), Some(&grid), 100);
+    let _ = sim.advance_tick(&[], Some(&rules), &empty_heights(), Some(&grid), None, 100);
     let ge = sim.entities.get(1).expect("entity 1 should exist");
     let movement = ge
         .movement_target
@@ -1683,7 +1687,7 @@ fn test_fog_revealed_persists_after_unit_moves_away() {
 
     let grid = PathGrid::new(8, 8);
     let americans = sim.interner.get("Americans").expect("Americans interned");
-    let _ = sim.advance_tick(&[], None, &empty_heights(), Some(&grid), 33);
+    let _ = sim.advance_tick(&[], None, &empty_heights(), Some(&grid), None, 33);
     assert!(sim.fog.is_cell_visible(americans, 1, 1));
     assert!(sim.fog.is_cell_revealed(americans, 1, 1));
 
@@ -1695,7 +1699,7 @@ fn test_fog_revealed_persists_after_unit_moves_away() {
         e.position.screen_x = nx;
         e.position.screen_y = ny;
     }
-    let _ = sim.advance_tick(&[], None, &empty_heights(), Some(&grid), 33);
+    let _ = sim.advance_tick(&[], None, &empty_heights(), Some(&grid), None, 33);
     assert!(!sim.fog.is_cell_visible(americans, 1, 1));
     assert!(sim.fog.is_cell_revealed(americans, 1, 1));
     assert!(sim.fog.is_cell_visible(americans, 2, 1));
@@ -1715,7 +1719,7 @@ fn test_undeploy_conyard_spawns_mcv() {
         e.selected = true;
     }
     let deploy_cmd = cmd_envelope(&sim, "Americans", 1, Command::DeployMcv { entity_id: mcv });
-    let _ = sim.advance_tick(&[deploy_cmd], Some(&rules), &heights, None, 33);
+    let _ = sim.advance_tick(&[deploy_cmd], Some(&rules), &heights, None, None, 33);
 
     // Find the ConYard that was spawned.
     let yard_id: u64 = sim
@@ -1738,7 +1742,7 @@ fn test_undeploy_conyard_spawns_mcv() {
         2,
         Command::UndeployBuilding { entity_id: yard_id },
     );
-    let _ = sim.advance_tick(&[undeploy_cmd], Some(&rules), &heights, None, 33);
+    let _ = sim.advance_tick(&[undeploy_cmd], Some(&rules), &heights, None, None, 33);
 
     // ConYard should still exist but have building_down set.
     assert!(
@@ -1752,7 +1756,7 @@ fn test_undeploy_conyard_spawns_mcv() {
 
     // Advance through the 30-tick undeploy animation.
     for _tick in 3..33 {
-        let _ = sim.advance_tick(&[], Some(&rules), &heights, None, 33);
+        let _ = sim.advance_tick(&[], Some(&rules), &heights, None, None, 33);
     }
 
     // ConYard should be gone after animation completes.

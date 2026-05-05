@@ -37,7 +37,9 @@ use crate::rules::object_type::ObjectType;
 use crate::rules::ruleset::RuleSet;
 use crate::rules::warhead_type::WarheadType;
 use crate::sim::animation::animation_is_prone;
+use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::sim::bridge_state::BridgeDamageEvent;
+use crate::sim::overlay_grid::{OverlayGrid, WallDamageEvent};
 use crate::sim::entity_store::EntityStore;
 use crate::sim::intern::{InternedId, StringInterner};
 use crate::sim::passenger::PassengerRole;
@@ -87,6 +89,24 @@ const ARMOR_NAMES: &[&str] = &[
 pub fn armor_index(armor: &str) -> usize {
     let lower: String = armor.to_ascii_lowercase();
     ARMOR_NAMES.iter().position(|&a| a == lower).unwrap_or(0)
+}
+
+/// True iff the cell at `(rx, ry)` has an overlay whose type is flagged `Wall=yes`.
+/// Used to discriminate wall-damage events from bridge-damage events at warhead
+/// emission sites. Returns false when grid or registry is missing.
+fn cell_has_wall_overlay(
+    overlay_grid: Option<&OverlayGrid>,
+    overlay_registry: Option<&OverlayTypeRegistry>,
+    rx: u16,
+    ry: u16,
+) -> bool {
+    let (Some(grid), Some(registry)) = (overlay_grid, overlay_registry) else {
+        return false;
+    };
+    grid.cell(rx, ry)
+        .overlay_id
+        .and_then(|id| registry.flags(id))
+        .is_some_and(|f| f.wall)
 }
 
 pub(crate) fn apply_prone_damage_modifier(
@@ -274,6 +294,8 @@ pub fn tick_combat(
         &BTreeMap::new(),
         None,
         resource_nodes,
+        None,
+        None,
         current_tick,
         tick_ms,
     )
@@ -330,6 +352,8 @@ pub struct CombatTickResult {
     pub spy_sat_reshroud_owners: Vec<InternedId>,
     /// Bridge impact cells that should apply terrain damage after combat resolution.
     pub bridge_damage_events: Vec<BridgeDamageEvent>,
+    /// Wall overlay impact cells that should apply wall damage after combat resolution.
+    pub wall_damage_events: Vec<WallDamageEvent>,
     /// Fire events for render-side muzzle flash / projectile origin computation.
     pub fire_events: Vec<SimFireEvent>,
     /// Crewed buildings destroyed this tick — survivors should be ejected by the caller.
@@ -371,6 +395,7 @@ struct DeathEffects {
     destroyed_garrison_buildings: Vec<DestroyedGarrisonBuilding>,
     explosion_effects: Vec<ExplosionEffect>,
     bridge_damage_events: Vec<BridgeDamageEvent>,
+    wall_damage_events: Vec<WallDamageEvent>,
     death_sounds: Vec<(InternedId, u16, u16)>,
 }
 
@@ -386,6 +411,8 @@ fn handle_entity_deaths(
     dead_entities: &[u64],
     damage_events: &[(u64, u16, u64, InternedId)],
     resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
+    overlay_grid: Option<&OverlayGrid>,
+    overlay_registry: Option<&OverlayTypeRegistry>,
     current_tick: u64,
 ) -> DeathEffects {
     let mut death_sounds: Vec<(InternedId, u16, u16)> = Vec::new();
@@ -396,6 +423,7 @@ fn handle_entity_deaths(
     let mut destroyed_garrison_buildings: Vec<DestroyedGarrisonBuilding> = Vec::new();
     let mut explosion_effects: Vec<ExplosionEffect> = Vec::new();
     let mut bridge_damage_events: Vec<BridgeDamageEvent> = Vec::new();
+    let mut wall_damage_events: Vec<WallDamageEvent> = Vec::new();
     let mut structure_destroyed: bool = false;
     // Step size for selecting explosion anim from AnimList (damage / 25).
     const ANIM_LIST_DAMAGE_STEP: u16 = 25;
@@ -559,16 +587,27 @@ fn handle_entity_deaths(
     for (rx, ry, dmg, wh_id, owner_id) in &death_aoe {
         if let Some(warhead) = rules.warhead(interner.resolve(*wh_id)) {
             if warhead.wall && *dmg > 0 {
-                // TODO(RE): Low-bridge overlay damage is not a raw "damage bridge cell" event.
-                // The recovered engine uses a BridgeStrength RNG gate, AtomDamage bypass,
-                // and 3-cell overlay pattern transitions before the pathfinding side-effects.
-                // Keep these events scoped to the current elevated-bridge runtime until
-                // mutable overlay bridge state is wired through the sim.
-                bridge_damage_events.push(BridgeDamageEvent {
-                    rx: *rx,
-                    ry: *ry,
-                    damage: (*dmg).max(0) as u16,
-                });
+                // Wall cells produce WallDamageEvent; remaining cells (bridges
+                // or unaffiliated) keep the legacy bridge_damage_events path.
+                let damage_u16 = (*dmg).max(0) as u16;
+                if cell_has_wall_overlay(overlay_grid, overlay_registry, *rx, *ry) {
+                    wall_damage_events.push(WallDamageEvent {
+                        rx: *rx,
+                        ry: *ry,
+                        damage: damage_u16,
+                    });
+                } else {
+                    // TODO(RE): Low-bridge overlay damage is not a raw "damage bridge cell" event.
+                    // The recovered engine uses a BridgeStrength RNG gate, AtomDamage bypass,
+                    // and 3-cell overlay pattern transitions before the pathfinding side-effects.
+                    // Keep these events scoped to the current elevated-bridge runtime until
+                    // mutable overlay bridge state is wired through the sim.
+                    bridge_damage_events.push(BridgeDamageEvent {
+                        rx: *rx,
+                        ry: *ry,
+                        damage: damage_u16,
+                    });
+                }
             }
             let aoe_hits = self::combat_aoe::apply_aoe_damage(
                 entities,
@@ -604,6 +643,7 @@ fn handle_entity_deaths(
         destroyed_garrison_buildings,
         explosion_effects,
         bridge_damage_events,
+        wall_damage_events,
         death_sounds,
     }
 }
@@ -655,6 +695,11 @@ fn destroy_ore_at_impact(
 
 /// Advance combat with optional owner visibility gating and sound event sink.
 /// Returns reveal events and stable IDs of entities despawned this tick.
+///
+/// `overlay_grid` and `overlay_registry` are used to discriminate wall-overlay
+/// cells from bridge cells when a wall-warhead detonates (so the right event
+/// stream — WallDamageEvent vs BridgeDamageEvent — gets populated). Pass
+/// `None` to skip wall-cell discrimination (legacy bridge-only routing).
 pub fn tick_combat_with_fog(
     entities: &mut EntityStore,
     occupancy: &mut OccupancyGrid,
@@ -664,6 +709,8 @@ pub fn tick_combat_with_fog(
     power_states: &BTreeMap<InternedId, PowerState>,
     sound_sink: Option<&mut Vec<SimSoundEvent>>,
     resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
+    overlay_grid: Option<&OverlayGrid>,
+    overlay_registry: Option<&OverlayTypeRegistry>,
     current_tick: u64,
     tick_ms: u32,
 ) -> CombatTickResult {
@@ -674,6 +721,7 @@ pub fn tick_combat_with_fog(
             structure_destroyed: false,
             spy_sat_reshroud_owners: Vec::new(),
             bridge_damage_events: Vec::new(),
+            wall_damage_events: Vec::new(),
             fire_events: Vec::new(),
             destroyed_crewed_buildings: Vec::new(),
             destroyed_garrison_buildings: Vec::new(),
@@ -952,6 +1000,7 @@ pub fn tick_combat_with_fog(
     let mut fire_events: Vec<SimFireEvent> = Vec::new();
     let mut reveal_events: Vec<RevealEvent> = Vec::new();
     let mut bridge_damage_events: Vec<BridgeDamageEvent> = Vec::new();
+    let mut wall_damage_events: Vec<WallDamageEvent> = Vec::new();
     let mut burst_updates: Vec<(u64, u8, u8, u16)> = Vec::new(); // (id, burst_rem, burst_delay, rof_cd)
     let mut ammo_deduct: Vec<u64> = Vec::new(); // aircraft that fired this tick
     let mut garrison_advance: Vec<u64> = Vec::new(); // building IDs to advance fire index
@@ -1184,14 +1233,23 @@ pub fn tick_combat_with_fog(
                 damage_events.push((target_id, dmg, snap.stable_id, wh_iid));
             }
             if warhead.wall && weapon.damage > 0 {
-                // TODO(RE): Low-bridge overlay damage still needs the recovered overlay-step
-                // logic and connected-section selection. These events currently feed only the
-                // elevated-bridge runtime state.
-                bridge_damage_events.push(BridgeDamageEvent {
-                    rx: target_rx,
-                    ry: target_ry,
-                    damage: weapon.damage.max(0) as u16,
-                });
+                let damage_u16 = weapon.damage.max(0) as u16;
+                if cell_has_wall_overlay(overlay_grid, overlay_registry, target_rx, target_ry) {
+                    wall_damage_events.push(WallDamageEvent {
+                        rx: target_rx,
+                        ry: target_ry,
+                        damage: damage_u16,
+                    });
+                } else {
+                    // TODO(RE): Low-bridge overlay damage still needs the recovered overlay-step
+                    // logic and connected-section selection. These events currently feed only the
+                    // elevated-bridge runtime state.
+                    bridge_damage_events.push(BridgeDamageEvent {
+                        rx: target_rx,
+                        ry: target_ry,
+                        damage: damage_u16,
+                    });
+                }
             }
         } else {
             // Integer damage: base_damage * verses_pct / 100.
@@ -1204,14 +1262,23 @@ pub fn tick_combat_with_fog(
                 damage_events.push((snap.target, actual_damage, snap.stable_id, wh_iid));
             }
             if warhead.wall && weapon.damage > 0 {
-                // TODO(RE): Low-bridge overlay damage still needs the recovered overlay-step
-                // logic and connected-section selection. These events currently feed only the
-                // elevated-bridge runtime state.
-                bridge_damage_events.push(BridgeDamageEvent {
-                    rx: target_rx,
-                    ry: target_ry,
-                    damage: weapon.damage.max(0) as u16,
-                });
+                let damage_u16 = weapon.damage.max(0) as u16;
+                if cell_has_wall_overlay(overlay_grid, overlay_registry, target_rx, target_ry) {
+                    wall_damage_events.push(WallDamageEvent {
+                        rx: target_rx,
+                        ry: target_ry,
+                        damage: damage_u16,
+                    });
+                } else {
+                    // TODO(RE): Low-bridge overlay damage still needs the recovered overlay-step
+                    // logic and connected-section selection. These events currently feed only the
+                    // elevated-bridge runtime state.
+                    bridge_damage_events.push(BridgeDamageEvent {
+                        rx: target_rx,
+                        ry: target_ry,
+                        damage: damage_u16,
+                    });
+                }
             }
         }
 
@@ -1363,9 +1430,12 @@ pub fn tick_combat_with_fog(
         &dead_entities,
         &damage_events,
         resource_nodes,
+        overlay_grid,
+        overlay_registry,
         current_tick,
     );
     bridge_damage_events.extend(death.bridge_damage_events);
+    wall_damage_events.extend(death.wall_damage_events);
 
     // Phase 7: push sound events to the sink.
     if let Some(sink) = sound_sink {
@@ -1399,6 +1469,7 @@ pub fn tick_combat_with_fog(
         structure_destroyed: death.structure_destroyed,
         spy_sat_reshroud_owners: death.spy_sat_reshroud_owners,
         bridge_damage_events,
+        wall_damage_events,
         fire_events,
         destroyed_crewed_buildings: death.destroyed_crewed_buildings,
         destroyed_garrison_buildings: death.destroyed_garrison_buildings,
