@@ -3541,6 +3541,16 @@ pub struct DriveTrackAdvance {
     pub chain_ready: bool,
     /// True if the track has been fully traversed.
     pub finished: bool,
+    /// Lepton-space delta from the just-consumed point to the next-to-consume
+    /// point, transformed by the active flags. Zero when no next step exists
+    /// (track end / sentinel hit). Used by sub-step interp to scale fractional
+    /// progress from the residual budget.
+    pub next_step_delta_x: i32,
+    /// See `next_step_delta_x`.
+    pub next_step_delta_y: i32,
+    /// True iff a valid next step exists (not at last_index, not a sentinel).
+    /// Sub-step interp is only applied when this is true.
+    pub had_next_step: bool,
 }
 
 /// Begin following a drive track. Creates a new DriveTrackState starting at
