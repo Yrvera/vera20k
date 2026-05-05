@@ -90,3 +90,7 @@ pub mod snapshot;
 
 // --- Particle systems (visual + damage particle effects: smoke, gas, fire) ---
 pub mod particles;
+
+#[cfg(test)]
+#[path = "deploy_tests.rs"]
+mod deploy_tests;
