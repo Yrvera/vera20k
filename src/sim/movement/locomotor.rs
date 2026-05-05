@@ -220,6 +220,7 @@ impl LocomotorState {
             LocomotorKind::Teleport => (MovementLayer::Ground, sim_one),
             LocomotorKind::Tunnel => (MovementLayer::Ground, sim_one),
             LocomotorKind::DropPod => (MovementLayer::Air, sim_one),
+            LocomotorKind::Parachute => (MovementLayer::Air, sim_one),
         };
 
         // Extract jumpjet params for altitude and wobble.

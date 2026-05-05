@@ -47,6 +47,10 @@ pub enum LocomotorKind {
     Jumpjet,
     /// Spawned missile (V3, Dreadnought). Scripted missile controller.
     Rocket,
+    /// Falling under a parachute (paradropped infantry). Runtime-only override —
+    /// no CLSID maps to it. Set by `OverrideKind::Parachute`, restores base
+    /// locomotor on landing.
+    Parachute,
 }
 
 /// Well-known RA2/YR COM CLSIDs for each locomotor class.
