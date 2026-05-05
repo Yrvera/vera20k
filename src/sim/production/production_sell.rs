@@ -246,7 +246,7 @@ const NEIGHBORS: [(i16, i16); 8] = [
 /// Returns the number of occupants successfully ejected.
 fn eject_garrison_occupants(sim: &mut Simulation, rules: &RuleSet, building_id: u64) -> usize {
     // Snapshot building data before mutation.
-    let (rx, ry, z, width, height, passenger_ids, original_owner) = {
+    let (rx, ry, z, width, height, passenger_ids) = {
         let entity = match sim.entities.get(building_id) {
             Some(e) => e,
             None => return 0,
@@ -267,7 +267,6 @@ fn eject_garrison_occupants(sim: &mut Simulation, rules: &RuleSet, building_id: 
             fw,
             fh,
             cargo.passengers.clone(),
-            entity.garrison_original_owner.clone(),
         )
     };
 
@@ -359,13 +358,16 @@ fn eject_garrison_occupants(sim: &mut Simulation, rules: &RuleSet, building_id: 
     }
 
     // Clear the building's cargo and revert garrison ownership.
+    // `.take()` matches the auto-revert path in `passenger.rs::tick_unloading`
+    // — both consume `garrison_original_owner` so a future garrison capture
+    // resets the field cleanly.
     if let Some(building) = sim.entities.get_mut(building_id) {
         if let Some(cargo) = building.passenger_role.cargo_mut() {
             cargo.passengers.clear();
             cargo.total_size = 0;
             cargo.garrison_fire_index = 0;
         }
-        if let Some(orig) = original_owner {
+        if let Some(orig) = building.garrison_original_owner.take() {
             building.owner = orig;
         }
     }

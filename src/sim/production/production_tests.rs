@@ -359,6 +359,7 @@ pub(super) fn sell_rules() -> RuleSet {
              [BuildingTypes]\n\
              0=GAPOWR\n\
              1=NAHAND\n\
+             2=CAGAS01\n\
              [E1]\n\
              Name=GI\n\
              Cost=200\n\
@@ -368,6 +369,8 @@ pub(super) fn sell_rules() -> RuleSet {
              Sight=5\n\
              TechLevel=1\n\
              Owner=Americans,Alliance\n\
+             Occupier=yes\n\
+             Size=1\n\
              [E2]\n\
              Name=Conscript\n\
              Cost=100\n\
@@ -394,7 +397,16 @@ pub(super) fn sell_rules() -> RuleSet {
              TechLevel=1\n\
              Owner=Russians,Soviet\n\
              Foundation=2x2\n\
-             Crewed=yes\n",
+             Crewed=yes\n\
+             [CAGAS01]\n\
+             Name=GasStation\n\
+             Cost=0\n\
+             Strength=400\n\
+             Armor=wood\n\
+             Foundation=1x1\n\
+             CanBeOccupied=yes\n\
+             CanOccupyFire=yes\n\
+             MaxNumberOccupants=5\n",
     );
     RuleSet::from_ini(&ini).expect("sell rules should parse")
 }
