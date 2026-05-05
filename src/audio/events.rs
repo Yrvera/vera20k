@@ -63,6 +63,22 @@ pub enum GameSoundEvent {
         screen_pos: Option<(f32, f32)>,
     },
 
+    /// An infantry entity entered the Deploying phase — play DeploySound.
+    EntityDeployed {
+        /// sound.ini ID from the entity's DeploySound= field.
+        sound_id: String,
+        /// Screen position of the sound source (for spatial audio).
+        screen_pos: Option<(f32, f32)>,
+    },
+
+    /// An infantry entity entered the Undeploying phase — play UndeploySound.
+    EntityUndeployed {
+        /// sound.ini ID from the entity's UndeploySound= field.
+        sound_id: String,
+        /// Screen position of the sound source (for spatial audio).
+        screen_pos: Option<(f32, f32)>,
+    },
+
     /// A building finished construction — play the EVA "Construction complete" or similar.
     BuildingReady {
         /// sound.ini ID for the completion announcement.
@@ -113,6 +129,8 @@ impl GameSoundEvent {
             | Self::UnitAttackOrder { sound_id }
             | Self::EntityDestroyed { sound_id, .. }
             | Self::EntityCrushed { sound_id, .. }
+            | Self::EntityDeployed { sound_id, .. }
+            | Self::EntityUndeployed { sound_id, .. }
             | Self::BuildingReady { sound_id }
             | Self::UnitReady { sound_id }
             | Self::UiSound { sound_id }
@@ -128,6 +146,8 @@ impl GameSoundEvent {
             Self::WeaponFired { screen_pos, .. } => *screen_pos,
             Self::EntityDestroyed { screen_pos, .. } => *screen_pos,
             Self::EntityCrushed { screen_pos, .. } => *screen_pos,
+            Self::EntityDeployed { screen_pos, .. } => *screen_pos,
+            Self::EntityUndeployed { screen_pos, .. } => *screen_pos,
             Self::BuildingGarrisonedSfx { screen_pos, .. } => *screen_pos,
             _ => None,
         }
