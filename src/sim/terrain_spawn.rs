@@ -229,6 +229,48 @@ fn place_tiberium_additive(
     }
 }
 
+/// Populate `production.terrain_spawners` from the map's terrain objects.
+///
+/// For each `TerrainObject` whose name matches a TerrainObjectType with
+/// `spawns_tiberium = true && is_animated = true`, insert a spawner state
+/// keyed by cell with `animation_probability_micros` cached from rules.
+/// Returns the count seeded.
+///
+/// Also resolves `production.default_ore_overlay_id` from `overlay_names`
+/// (first entry whose uppercase name starts with "TIB"). Used as the fallback
+/// overlay_id when TIBTRE spawns ore on a previously empty cell.
+pub fn seed_terrain_spawners(
+    sim: &mut crate::sim::world::Simulation,
+    terrain_objects: &[crate::map::overlay::TerrainObject],
+    rules: &crate::rules::ruleset::RuleSet,
+    overlay_names: &BTreeMap<u8, String>,
+) -> usize {
+    sim.production.default_ore_overlay_id = overlay_names
+        .iter()
+        .find(|(_id, name)| name.to_ascii_uppercase().starts_with("TIB"))
+        .map(|(id, _)| *id);
+
+    let mut seeded = 0usize;
+    for obj in terrain_objects {
+        let Some(t) = rules.terrain_object_type_case_insensitive(&obj.name) else {
+            continue;
+        };
+        if !t.spawns_tiberium || !t.is_animated {
+            continue;
+        }
+        let type_ref = sim.interner.intern(&obj.name);
+        sim.production.terrain_spawners.insert(
+            (obj.rx, obj.ry),
+            TerrainSpawnerState {
+                type_ref,
+                animation_probability_micros: t.animation_probability_micros,
+            },
+        );
+        seeded += 1;
+    }
+    seeded
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -400,6 +442,56 @@ mod tests {
             .filter(|n| n.remaining == MAX_ORE_REMAINING)
             .count();
         assert_eq!(capped, 1);
+    }
+
+    #[test]
+    fn seed_filters_to_spawning_animated_types_and_caches_probability() {
+        use crate::map::overlay::TerrainObject;
+        use crate::rules::ini_parser::IniFile;
+        use crate::rules::ruleset::RuleSet;
+        use crate::sim::world::Simulation;
+
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n\
+             [VehicleTypes]\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             [TerrainTypes]\n1=TIBTRE01\n2=TREE01\n\
+             [TIBTRE01]\nSpawnsTiberium=yes\nIsAnimated=yes\nAnimationProbability=.003\n\
+             [TREE01]\nSpawnsTiberium=no\nIsAnimated=yes\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("rules");
+        let mut sim = Simulation::new();
+        let mut overlay_names = BTreeMap::new();
+        overlay_names.insert(2u8, "TIB1".to_string());
+        overlay_names.insert(7u8, "RUBBLE".to_string());
+
+        let objs = vec![
+            TerrainObject {
+                rx: 5,
+                ry: 6,
+                name: "TIBTRE01".to_string(),
+            },
+            TerrainObject {
+                rx: 8,
+                ry: 9,
+                name: "TREE01".to_string(),
+            },
+            TerrainObject {
+                rx: 1,
+                ry: 2,
+                name: "UNKNOWN".to_string(),
+            },
+        ];
+        let seeded = seed_terrain_spawners(&mut sim, &objs, &rules, &overlay_names);
+        assert_eq!(seeded, 1);
+        let placed = sim
+            .production
+            .terrain_spawners
+            .get(&(5, 6))
+            .expect("TIBTRE01 seeded at (5,6)");
+        assert_eq!(placed.animation_probability_micros, 3000);
+        assert_eq!(sim.production.default_ore_overlay_id, Some(2));
     }
 
     #[test]
