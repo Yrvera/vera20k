@@ -150,17 +150,17 @@ pub fn tick_parachute_descent(
     for id in finished {
         if let Some(entity) = entities.get_mut(id) {
             entity.parachute_state = None;
-            if let Some(ref mut loco) = entity.locomotor {
-                if loco.is_overridden() {
-                    loco.end_override();
-                }
+            if let Some(ref mut loco) = entity.locomotor
+                && loco.is_overridden()
+            {
+                loco.end_override();
             }
             // Body sequence reset gated on `== Paradrop` — don't clobber
             // a death/other sequence that may have taken over mid-descent.
-            if let Some(ref mut anim) = entity.animation {
-                if anim.sequence == SequenceKind::Paradrop {
-                    anim.switch_to(SequenceKind::Stand);
-                }
+            if let Some(ref mut anim) = entity.animation
+                && anim.sequence == SequenceKind::Paradrop
+            {
+                anim.switch_to(SequenceKind::Stand);
             }
             entity.push_debug_event(sim_tick as u32, DebugEventKind::SpecialMovementEnd);
         }
