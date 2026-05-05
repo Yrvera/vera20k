@@ -3667,6 +3667,27 @@ pub fn advance_drive_track(
     if idx < points.len() {
         let pt = &points[idx];
         let (tx, ty, tf) = transform_track_point(pt.x, pt.y, pt.facing, state.transform_flags);
+
+        // Peek the next-to-consume point for sub-step interp.
+        // Skip if at last_index (no next step) or if the next point is the
+        // (0, 0) sentinel at a non-zero index (matches L6 in design ledger).
+        let next_idx = idx + 1;
+        let (next_dx, next_dy, has_next) = if next_idx < points.len()
+            && (next_idx as u16) <= last_index
+        {
+            let npt = &points[next_idx];
+            let (ntx, nty, _) =
+                transform_track_point(npt.x, npt.y, npt.facing, state.transform_flags);
+            let is_sentinel = npt.x == 0 && npt.y == 0 && next_idx != 0;
+            if is_sentinel {
+                (0, 0, false)
+            } else {
+                ((ntx as i32) - (tx as i32), (nty as i32) - (ty as i32), true)
+            }
+        } else {
+            (0, 0, false)
+        };
+
         DriveTrackAdvance {
             sub_x: SimFixed::from_num(state.head_offset_x + tx as i32 + state.cell_offset_x),
             sub_y: SimFixed::from_num(state.head_offset_y + ty as i32 + state.cell_offset_y),
@@ -3674,6 +3695,9 @@ pub fn advance_drive_track(
             cell_jump,
             chain_ready,
             finished,
+            next_step_delta_x: next_dx,
+            next_step_delta_y: next_dy,
+            had_next_step: has_next,
         }
     } else {
         DriveTrackAdvance {
@@ -3683,6 +3707,9 @@ pub fn advance_drive_track(
             cell_jump: false,
             chain_ready: false,
             finished: true,
+            next_step_delta_x: 0,
+            next_step_delta_y: 0,
+            had_next_step: false,
         }
     }
 }
