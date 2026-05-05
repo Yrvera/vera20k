@@ -684,6 +684,12 @@ fn queue_deploy_undeploy_for_selected(state: &mut AppState) {
                         commands.push(Command::UndeployBuilding { entity_id });
                     }
                 }
+                crate::map::entities::EntityCategory::Infantry => {
+                    // Deploy-fire infantry (GI, GuardianGI, etc.) → toggle deploy.
+                    if obj.map_or(false, |o| o.deploy_fire) {
+                        commands.push(Command::ToggleInfantryDeploy { entity_id });
+                    }
+                }
                 _ => {
                     if obj.map_or(false, |o| o.deploys_into.is_some()) {
                         commands.push(Command::DeployMcv { entity_id });

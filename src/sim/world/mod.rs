@@ -106,6 +106,18 @@ pub enum SimSoundEvent {
         rx: u16,
         ry: u16,
     },
+    /// An infantry entity entered the Deploying phase — play its DeploySound=.
+    EntityDeployed {
+        deploy_sound_id: InternedId,
+        rx: u16,
+        ry: u16,
+    },
+    /// An infantry entity entered the Undeploying phase — play its UndeploySound=.
+    EntityUndeployed {
+        undeploy_sound_id: InternedId,
+        rx: u16,
+        ry: u16,
+    },
     /// A miner docked at a refinery — play the building's deploy sound.
     /// The app layer should select the healthy or damaged sound variant
     /// based on the refinery's health ratio vs ConditionYellow.
@@ -1166,6 +1178,13 @@ impl Simulation {
             if self.game_options.super_weapons {
                 crate::sim::superweapon::tick_superweapons(self, rules);
             }
+
+            // --- Phase 4.6: Deploy/Undeploy state machine ---
+            // DEPENDS ON: command dispatch (ToggleInfantryDeploy may have set
+            //   Deploying/Undeploying this tick).
+            // PRODUCES: phase advances (Deploying→Deployed, Undeploying→None)
+            //   that combat (Phase 5) and animation (post-tick) read this tick.
+            crate::sim::deploy::tick_deploy_state(&mut self.entities);
 
             // --- Phase 5: Turrets + Combat ---
             // DEPENDS ON: vision/fog (targeting uses fog state), power (cloaking),

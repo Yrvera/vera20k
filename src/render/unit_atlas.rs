@@ -385,6 +385,70 @@ pub fn build_unit_atlas(
         }
     }
 
+    // Step 1c: UnloadingClass referents (e.g. HORV for HARV, CMON for CMIN).
+    // These types are never spawned but are rendered as the visible model while
+    // the parent miner is docked unloading. Mirrors the original engine's
+    // TypeClass+0x6B8 swap at draw time. Without this seeding the override would
+    // resolve to a missing atlas entry and the unit would disappear.
+    for entity in entities.values() {
+        if !entity.is_voxel {
+            continue;
+        }
+        let owner_str = interner.map_or("", |i| i.resolve(entity.owner));
+        let type_str = interner.map_or("", |i| i.resolve(entity.type_ref));
+        let uc_name = match rules
+            .and_then(|r| r.object(type_str))
+            .and_then(|o| o.unloading_class.as_deref())
+        {
+            Some(name) => name.to_string(),
+            None => continue,
+        };
+        let uc_obj = match rules.and_then(|r| r.object(&uc_name)) {
+            Some(o) => o,
+            None => {
+                log::warn!(
+                    "UnloadingClass={} on {} not found in rules — atlas seeding skipped",
+                    uc_name,
+                    type_str,
+                );
+                continue;
+            }
+        };
+        let color_idx: HouseColorIndex = house_colors.get(owner_str).copied().unwrap_or_default();
+        let is_ground_vehicle: bool = entity.category != EntityCategory::Aircraft;
+        let layers: &[VxlLayer] = if uc_obj.has_turret {
+            &[VxlLayer::Body, VxlLayer::Turret, VxlLayer::Barrel]
+        } else {
+            &[VxlLayer::Composite]
+        };
+        for &layer in layers {
+            let fc_key: (String, VxlLayer) = (uc_name.clone(), layer);
+            if !frame_counts.contains_key(&fc_key) {
+                let fc: u32 = detect_hva_frame_count(asset_manager, &uc_name, layer, rules, art);
+                frame_counts.insert(fc_key.clone(), fc);
+            }
+            let num_frames: u32 = frame_counts[&fc_key];
+            let (step, buckets) = facing_config_for_layer(layer);
+            let slope_range: std::ops::RangeInclusive<u8> =
+                if is_ground_vehicle { 0..=8 } else { 0..=0 };
+            for bucket in 0..buckets {
+                let facing: u8 = bucket.saturating_mul(step);
+                for frame in 0..num_frames {
+                    for slope in slope_range.clone() {
+                        needed.insert(UnitSpriteKey {
+                            type_id: uc_name.clone(),
+                            facing,
+                            house_color: color_idx,
+                            layer,
+                            frame,
+                            slope_type: slope,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
     if needed.is_empty() {
         log::info!("No voxel entities found — skipping unit atlas");
         return None;

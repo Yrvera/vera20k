@@ -338,6 +338,21 @@ impl Simulation {
 
             entity.capture_target.hash(hasher);
 
+            match entity.deploy_state {
+                None => 0u8.hash(hasher),
+                Some(crate::sim::deploy::DeployPhase::Deploying { ticks_remaining }) => {
+                    1u8.hash(hasher);
+                    ticks_remaining.hash(hasher);
+                }
+                Some(crate::sim::deploy::DeployPhase::Deployed) => {
+                    2u8.hash(hasher);
+                }
+                Some(crate::sim::deploy::DeployPhase::Undeploying { ticks_remaining }) => {
+                    3u8.hash(hasher);
+                    ticks_remaining.hash(hasher);
+                }
+            }
+
             if let Some(ref miner) = entity.miner {
                 1u8.hash(hasher);
                 (miner.state as u8).hash(hasher);

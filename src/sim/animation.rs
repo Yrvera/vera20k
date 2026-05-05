@@ -417,34 +417,56 @@ pub fn tick_animations(
         // Look up this type's sequence definitions for transition checks.
         let seq_set: Option<&SequenceSet> = sequences.get(interner.resolve(entity.type_ref));
 
-        // Auto-transition: stand ↔ walk based on MovementTarget presence.
-        if has_movement && anim.sequence == SequenceKind::Stand {
-            anim.switch_to(SequenceKind::Walk);
-        } else if !has_movement && anim.sequence == SequenceKind::Walk {
-            anim.switch_to(SequenceKind::Stand);
-        }
-
-        // Attack animation: when entity is stationary with an attack target,
-        // switch to the appropriate fire sequence based on current stance.
-        if has_attack && !has_movement {
-            if let Some(set) = seq_set {
-                match anim.sequence {
-                    SequenceKind::Stand if set.get(&SequenceKind::Attack).is_some() => {
-                        anim.switch_to(SequenceKind::Attack);
+        // Deploy state takes priority over the standard Stand/Walk/Attack cascade.
+        // The visual reflects the sim phase; DeployedFire is the auto-transition
+        // when a Deployed unit gains an attack target (visual-only, matches stock YR).
+        match entity.deploy_state {
+            Some(crate::sim::deploy::DeployPhase::Deploying { .. }) => {
+                anim.switch_to(SequenceKind::Deploy);
+            }
+            Some(crate::sim::deploy::DeployPhase::Undeploying { .. }) => {
+                anim.switch_to(SequenceKind::Undeploy);
+            }
+            Some(crate::sim::deploy::DeployPhase::Deployed) => {
+                if has_attack {
+                    if let Some(set) = seq_set {
+                        if set.get(&SequenceKind::DeployedFire).is_some() {
+                            anim.switch_to(SequenceKind::DeployedFire);
+                        } else {
+                            anim.switch_to(SequenceKind::Deployed);
+                        }
+                    } else {
+                        anim.switch_to(SequenceKind::Deployed);
                     }
-                    SequenceKind::Prone if set.get(&SequenceKind::FireProne).is_some() => {
-                        anim.switch_to(SequenceKind::FireProne);
+                } else {
+                    anim.switch_to(SequenceKind::Deployed);
+                }
+            }
+            None => {
+                // Standard cascade for upright entities — preserved verbatim from prior logic.
+                if has_movement && anim.sequence == SequenceKind::Stand {
+                    anim.switch_to(SequenceKind::Walk);
+                } else if !has_movement && anim.sequence == SequenceKind::Walk {
+                    anim.switch_to(SequenceKind::Stand);
+                }
+                if has_attack && !has_movement {
+                    if let Some(set) = seq_set {
+                        match anim.sequence {
+                            SequenceKind::Stand if set.get(&SequenceKind::Attack).is_some() => {
+                                anim.switch_to(SequenceKind::Attack);
+                            }
+                            SequenceKind::Prone if set.get(&SequenceKind::FireProne).is_some() => {
+                                anim.switch_to(SequenceKind::FireProne);
+                            }
+                            SequenceKind::Swim if set.get(&SequenceKind::WetAttack).is_some() => {
+                                anim.switch_to(SequenceKind::WetAttack);
+                            }
+                            SequenceKind::Fly if set.get(&SequenceKind::FireFly).is_some() => {
+                                anim.switch_to(SequenceKind::FireFly);
+                            }
+                            _ => {}
+                        }
                     }
-                    SequenceKind::Deployed if set.get(&SequenceKind::DeployedFire).is_some() => {
-                        anim.switch_to(SequenceKind::DeployedFire);
-                    }
-                    SequenceKind::Swim if set.get(&SequenceKind::WetAttack).is_some() => {
-                        anim.switch_to(SequenceKind::WetAttack);
-                    }
-                    SequenceKind::Fly if set.get(&SequenceKind::FireFly).is_some() => {
-                        anim.switch_to(SequenceKind::FireFly);
-                    }
-                    _ => {}
                 }
             }
         }

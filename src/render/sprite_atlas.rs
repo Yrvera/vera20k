@@ -290,10 +290,18 @@ pub fn build_sprite_atlas(
                 });
             }
             _ => {
+                // Resolve type ID → image ID via rules. Type IDs (e.g. "E1")
+                // differ from image IDs (e.g. "GI"); art.ini is keyed by the
+                // latter. Falls back to type_str when rules can't resolve,
+                // since for many types the image defaults to the ID.
+                let image_id: String = rules
+                    .and_then(|r| r.object(type_str))
+                    .map(|obj| obj.image.clone())
+                    .unwrap_or_else(|| type_str.to_string());
                 // Look up per-type sequence definition from art.ini.
                 // Use it to collect exactly the SHP frames needed for each animation.
                 let seq_set: Option<crate::sim::animation::SequenceSet> = art
-                    .and_then(|a| a.get(type_str))
+                    .and_then(|a| a.get(&image_id))
                     .and_then(|e| e.sequence.as_deref())
                     .and_then(|name| infantry_sequences.get(&name.to_uppercase()))
                     .map(|def| crate::rules::infantry_sequence::build_sequence_set(def));

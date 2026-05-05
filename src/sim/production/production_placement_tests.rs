@@ -1022,3 +1022,170 @@ fn sell_building_uses_owner_appropriate_survivor_type_and_caps_count() {
         "500-cost Soviet building at full health: refund 250 / divisor 250 = 1 survivor"
     );
 }
+
+#[test]
+fn sell_captured_civilian_ejects_reverts_and_keeps_building() {
+    use crate::sim::passenger::{PassengerCargo, PassengerRole};
+    let mut sim = Simulation::new();
+    let rules = sell_rules();
+    *super::credits_entry_for_owner(&mut sim, "Americans") = 1000;
+
+    // Spawn a CanBeOccupied building owned by Americans, with
+    // garrison_original_owner = Some(Neutral).
+    spawn_structure(&mut sim, 10, "Americans", "CAGAS01", 20, 20);
+    let neutral_id = sim.interner.intern("Neutral");
+    if let Some(t) = sim.entities.get_mut(10) {
+        t.garrison_original_owner = Some(neutral_id);
+        t.passenger_role = PassengerRole::Transport {
+            cargo: PassengerCargo::new(5, 1),
+        };
+    }
+    // Two occupants inside the cargo.
+    let amer_id = sim.interner.intern("Americans");
+    let e1_id = sim.interner.intern("E1");
+    for &pid in &[11u64, 12u64] {
+        let mut pax = crate::sim::game_entity::GameEntity::test_default(
+            pid,
+            "E1",
+            "Americans",
+            19,
+            20,
+        );
+        pax.owner = amer_id;
+        pax.type_ref = e1_id;
+        pax.passenger_role = PassengerRole::Inside { transport_id: 10 };
+        sim.entities.insert(pax);
+    }
+    if let Some(t) = sim.entities.get_mut(10) {
+        if let Some(c) = t.passenger_role.cargo_mut() {
+            c.board(11, 1);
+            c.board(12, 1);
+        }
+    }
+
+    assert!(sell_building(&mut sim, &rules, 10));
+
+    // Building still in store, owner reverted, cargo cleared.
+    let bldg = sim.entities.get(10).expect("building should still exist");
+    assert_eq!(sim.interner.resolve(bldg.owner), "Neutral");
+    assert!(
+        bldg.garrison_original_owner.is_none(),
+        "original_owner should have been consumed"
+    );
+    let cargo = bldg.passenger_role.cargo().expect("cargo");
+    assert!(cargo.is_empty(), "cargo should be cleared");
+
+    // Both occupants alive on the map, role=None, not dying.
+    for &pid in &[11u64, 12u64] {
+        let pax = sim.entities.get(pid).expect("occupant exists");
+        assert!(!pax.dying, "occupant {pid} should not be dying");
+        assert!(pax.health.current > 0, "occupant {pid} should be alive");
+        assert!(
+            matches!(pax.passenger_role, PassengerRole::None),
+            "occupant {pid} role should be None"
+        );
+    }
+
+    // No refund credited.
+    assert_eq!(
+        credits_for_owner(&sim, "Americans"),
+        1000,
+        "captured-civilian sell pays no refund"
+    );
+}
+
+#[test]
+fn sell_captured_civilian_emits_structure_abandoned_with_pre_revert_owner() {
+    use crate::sim::passenger::{PassengerCargo, PassengerRole};
+    use crate::sim::world::SimSoundEvent;
+    let mut sim = Simulation::new();
+    let rules = sell_rules();
+    spawn_structure(&mut sim, 20, "Americans", "CAGAS01", 30, 30);
+    let neutral_id = sim.interner.intern("Neutral");
+    let amer_id = sim.interner.intern("Americans");
+    let e1_id = sim.interner.intern("E1");
+    if let Some(t) = sim.entities.get_mut(20) {
+        t.garrison_original_owner = Some(neutral_id);
+        t.passenger_role = PassengerRole::Transport {
+            cargo: PassengerCargo::new(5, 1),
+        };
+    }
+    let mut pax =
+        crate::sim::game_entity::GameEntity::test_default(21, "E1", "Americans", 29, 30);
+    pax.owner = amer_id;
+    pax.type_ref = e1_id;
+    pax.passenger_role = PassengerRole::Inside { transport_id: 20 };
+    sim.entities.insert(pax);
+    if let Some(t) = sim.entities.get_mut(20) {
+        if let Some(c) = t.passenger_role.cargo_mut() {
+            c.board(21, 1);
+        }
+    }
+
+    assert!(sell_building(&mut sim, &rules, 20));
+
+    let mut found = false;
+    for evt in &sim.sound_events {
+        if let SimSoundEvent::StructureAbandoned { owner } = evt {
+            assert_eq!(
+                sim.interner.resolve(*owner),
+                "Americans",
+                "StructureAbandoned should carry pre-revert owner (Americans), not post-revert civilian"
+            );
+            found = true;
+        }
+    }
+    assert!(
+        found,
+        "expected StructureAbandoned event after captured-civilian sell"
+    );
+}
+
+#[test]
+fn sell_player_built_garrisoned_building_demolishes_and_ejects_alive() {
+    use crate::sim::passenger::{PassengerCargo, PassengerRole};
+    let mut sim = Simulation::new();
+    let rules = sell_rules();
+    *super::credits_entry_for_owner(&mut sim, "Americans") = 0;
+
+    // Spawn a CanBeOccupied building OWNED by Americans with NO original_owner
+    // (player-built, not captured). CAGAS01 in sell_rules has Cost=0 so the
+    // refund is 0 — this test pins the demolition path (entities.remove fired)
+    // and the alive-eject of the occupant, not the refund magnitude.
+    spawn_structure(&mut sim, 30, "Americans", "CAGAS01", 40, 40);
+    let amer_id = sim.interner.intern("Americans");
+    let e1_id = sim.interner.intern("E1");
+    if let Some(t) = sim.entities.get_mut(30) {
+        // garrison_original_owner stays None — player-built path.
+        t.passenger_role = PassengerRole::Transport {
+            cargo: PassengerCargo::new(5, 1),
+        };
+    }
+    let mut pax =
+        crate::sim::game_entity::GameEntity::test_default(31, "E1", "Americans", 39, 40);
+    pax.owner = amer_id;
+    pax.type_ref = e1_id;
+    pax.passenger_role = PassengerRole::Inside { transport_id: 30 };
+    sim.entities.insert(pax);
+    if let Some(t) = sim.entities.get_mut(30) {
+        if let Some(c) = t.passenger_role.cargo_mut() {
+            c.board(31, 1);
+        }
+    }
+
+    assert!(sell_building(&mut sim, &rules, 30));
+
+    // Building removed.
+    assert!(
+        !sim.entities.contains(30),
+        "player-built garrison should be demolished on sell"
+    );
+    // Occupant placed on the map alive.
+    let pax = sim.entities.get(31).expect("occupant exists");
+    assert!(!pax.dying, "occupant should not be dying");
+    assert!(pax.health.current > 0, "occupant should be alive");
+    assert!(
+        matches!(pax.passenger_role, PassengerRole::None),
+        "occupant role should be None"
+    );
+}

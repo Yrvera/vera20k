@@ -393,6 +393,13 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                                 } else {
                                     None
                                 }
+                            } else if entity.category == EntityCategory::Infantry
+                                && obj.map_or(false, |o| o.deploy_fire)
+                            {
+                                // Deploy-fire infantry (GI, GGI, etc.) → toggle deploy.
+                                Some(Command::ToggleInfantryDeploy {
+                                    entity_id: target.stable_id,
+                                })
                             } else {
                                 // MCV → ConYard
                                 if obj.map_or(false, |o| o.deploys_into.is_some() || o.deployer) {

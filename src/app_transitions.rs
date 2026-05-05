@@ -240,6 +240,7 @@ pub(crate) fn transition_to_in_game(state: &mut AppState) {
     // Build animation sequences for known entity types (data-driven from art.ini).
     state.animation_sequences = app_sim_tick::build_animation_sequences(
         state.simulation.as_ref(),
+        state.rules.as_ref(),
         state.art_registry.as_ref(),
         &state.infantry_sequences,
     );

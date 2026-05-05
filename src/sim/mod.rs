@@ -55,6 +55,9 @@ pub mod animation;
 pub mod bridge_specs;
 pub mod bridge_state;
 
+// --- Infantry deploy-fire state machine ---
+pub mod deploy;
+
 // --- Persistent cell occupancy ---
 pub mod occupancy;
 
@@ -87,3 +90,7 @@ pub mod snapshot;
 
 // --- Particle systems (visual + damage particle effects: smoke, gas, fire) ---
 pub mod particles;
+
+#[cfg(test)]
+#[path = "deploy_tests.rs"]
+mod deploy_tests;
