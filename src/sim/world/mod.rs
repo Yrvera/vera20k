@@ -1179,6 +1179,13 @@ impl Simulation {
                 crate::sim::superweapon::tick_superweapons(self, rules);
             }
 
+            // --- Phase 4.6: Deploy/Undeploy state machine ---
+            // DEPENDS ON: command dispatch (ToggleInfantryDeploy may have set
+            //   Deploying/Undeploying this tick).
+            // PRODUCES: phase advances (Deploying→Deployed, Undeploying→None)
+            //   that combat (Phase 5) and animation (post-tick) read this tick.
+            crate::sim::deploy::tick_deploy_state(&mut self.entities);
+
             // --- Phase 5: Turrets + Combat ---
             // DEPENDS ON: vision/fog (targeting uses fog state), power (cloaking),
             //   turret rotation MUST run before combat so turrets are aligned when firing.
