@@ -506,8 +506,13 @@ pub fn eject_destruction_garrison(
 }
 
 /// Sell a building entity: refund part of its current value, eject crew, and despawn it.
+///
+/// Captured civilian buildings (those whose ownership transferred via garrisoning,
+/// detected by `garrison_original_owner.is_some()`) take the eject-and-revert
+/// branch instead of demolition: occupants exit alive, the structure reverts to
+/// its pre-garrison owner, no refund is paid, and the building stays on the map.
 pub fn sell_building(sim: &mut Simulation, rules: &RuleSet, stable_id: u64) -> bool {
-    let (owner_name, type_id, position, health) = {
+    let (owner_name, type_id, position, health, is_captured, abandoning_owner) = {
         let Some(entity) = sim.entities.get(stable_id) else {
             return false;
         };
@@ -519,11 +524,32 @@ pub fn sell_building(sim: &mut Simulation, rules: &RuleSet, stable_id: u64) -> b
             sim.interner.resolve(entity.type_ref).to_string(),
             entity.position.clone(),
             Some(entity.health),
+            entity.garrison_original_owner.is_some(),
+            entity.owner,
         )
     };
     let Some(obj) = rules.object(&type_id) else {
         return false;
     };
+
+    // Captured-civilian branch: eject + revert + KEEP building, no refund.
+    // `eject_garrison_occupants` reverts owner internally because
+    // `garrison_original_owner` is Some on this path.
+    if is_captured {
+        let garrison_ejected = eject_garrison_occupants(sim, rules, stable_id);
+        sim.sound_events
+            .push(crate::sim::world::SimSoundEvent::StructureAbandoned {
+                owner: abandoning_owner,
+            });
+        log::info!(
+            "Building {} evacuated by {}: {} occupants ejected, structure reverted to civilian",
+            type_id,
+            owner_name,
+            garrison_ejected
+        );
+        return true;
+    }
+
     let refund = sell_refund_for_building(obj, health);
     let ejected = eject_sell_survivors(sim, rules, &owner_name, obj, position, health);
     // Eject garrison occupants alive before removing the building (gamemd SellBuilding).
