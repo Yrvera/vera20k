@@ -23,6 +23,7 @@ use crate::util::fixed_math::SimFixed;
 use glam::IVec3;
 use std::collections::BTreeMap;
 
+pub mod gas;
 pub mod smoke;
 pub mod spawn;
 pub mod system_ai;
