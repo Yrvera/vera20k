@@ -56,7 +56,13 @@ pub(crate) fn build_unit_instances(
         }
         let pos = &entity.position;
         let owner_str = sim.interner.resolve(entity.owner);
-        let type_str = sim.interner.resolve(entity.type_ref);
+        // Honor display_type_override (set by the dock sub-FSM during Unloading)
+        // so the miner renders as its UnloadingClass model (HORV/CMON) while
+        // depositing ore. Mirrors gamemd's TypeClass+0x6B8 swap at draw time.
+        let type_str: &str = entity
+            .display_type_override
+            .map(|id| sim.interner.resolve(id))
+            .unwrap_or_else(|| sim.interner.resolve(entity.type_ref));
         if !is_entity_visible_for_local_owner(
             local_owner.as_deref(),
             &sim.fog,
