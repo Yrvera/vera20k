@@ -130,6 +130,12 @@ pub struct GameEntity {
     pub rocket_state: Option<RocketState>,
     /// Drop pod descent state machine (falling/landing).
     pub droppod_state: Option<DropPodState>,
+    /// Parachute descent state. `Some` while a paradropped unit is descending
+    /// under a parachute, `None` otherwise. Set by
+    /// `parachute_descent::begin_parachute_descent`, cleared on landing.
+    #[serde(default)]
+    pub parachute_state:
+        Option<crate::sim::movement::parachute_descent::ParachuteDescentState>,
     /// Active IronCurtain or ForceShield invulnerability timer.
     /// `None` = entity is vulnerable to damage. `Some` = all damage is nullified
     /// (except healing) until the timer expires. Applied by superweapon launch handlers.
@@ -281,6 +287,7 @@ impl GameEntity {
             tunnel_state: None,
             rocket_state: None,
             droppod_state: None,
+            parachute_state: None,
             invulnerability: None,
             drive_track: None,
             dock_state: None,
