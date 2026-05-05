@@ -495,6 +495,55 @@ mod tests {
     }
 
     #[test]
+    fn full_pipeline_seeds_then_ticks_until_spawn() {
+        use crate::map::overlay::TerrainObject;
+        use crate::rules::ini_parser::IniFile;
+        use crate::rules::ruleset::RuleSet;
+        use crate::sim::world::Simulation;
+
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n\
+             [VehicleTypes]\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             [TerrainTypes]\n1=TIBTRE01\n\
+             [TIBTRE01]\nSpawnsTiberium=yes\nIsAnimated=yes\n\
+             AnimationRate=3\nAnimationProbability=.5\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("rules");
+        let mut sim = Simulation::new();
+        let objs = vec![TerrainObject {
+            rx: 20,
+            ry: 20,
+            name: "TIBTRE01".into(),
+        }];
+        let mut overlay_names = BTreeMap::new();
+        overlay_names.insert(102u8, "TIB1".to_string());
+        seed_terrain_spawners(&mut sim, &objs, &rules, &overlay_names);
+        assert_eq!(sim.production.terrain_spawners.len(), 1);
+        let placed = sim.production.terrain_spawners.get(&(20, 20)).unwrap();
+        assert_eq!(placed.animation_probability_micros, 500_000);
+
+        let mut rng = SimRng::new(99);
+        let mut spawned = false;
+        for _ in 0..50 {
+            tick_terrain_spawners(
+                &sim.production.terrain_spawners,
+                &mut sim.production.resource_nodes,
+                None,
+                sim.production.default_ore_overlay_id,
+                None,
+                &mut rng,
+            );
+            if !sim.production.resource_nodes.is_empty() {
+                spawned = true;
+                break;
+            }
+        }
+        assert!(spawned, "TIBTRE should spawn within 50 ticks at p=0.5");
+    }
+
+    #[test]
     fn deterministic_same_seed_same_pattern() {
         let mut interner = StringInterner::default();
         let mut spawners = BTreeMap::new();
