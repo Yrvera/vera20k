@@ -458,6 +458,17 @@ pub struct ObjectType {
     /// a Gunner=yes transport. Parsed from `IFVMode=N` in rules.ini. Default 0.
     pub ifv_mode: u32,
 
+    /// Whether this infantry can toggle into a deploy-fire stance (DeployFire=yes
+    /// in rules.ini). Only deploy-fire types respond to `Command::ToggleInfantryDeploy`.
+    /// Stock YR sets this on GI (E1), GuardianGI (GGI), and a handful of others.
+    pub deploy_fire: bool,
+
+    /// Index of the weapon (0=primary, 1=secondary) that the AI auto-deploy planner
+    /// considers when deciding "should I deploy here?". Parsed from `DeployFireWeapon=N`
+    /// in rules.ini. Default `None`. Not consulted in B1 (no AI auto-deploy);
+    /// fire-time weapon pick is target-driven via `select_weapon_with_ifv`.
+    pub deploy_fire_weapon: Option<i32>,
+
     /// Maximum number of garrison occupants for CanBeOccupied buildings.
     /// Parsed from `MaxNumberOccupants=N` in rules.ini. Default 0.
     pub max_number_occupants: u32,
@@ -723,7 +734,15 @@ impl ObjectType {
             deploy_sound: section.get("DeploySound").map(|s| s.to_string()),
             undeploy_sound: section.get("UndeploySound").map(|s| s.to_string()),
             has_turret: section.get_bool("Turret").unwrap_or(false),
-            turret_rot: section.get_i32("ROT").unwrap_or(0),
+            // gamemd forces ROT=10 on any UnitType with Harvester=yes (or Weeder=yes,
+            // not yet parsed) at INI parse time, overriding whatever rules.ini specifies.
+            // Verified at UnitTypeClass::ReadINI (0x747620): writes 10 to TypeClass+0x398
+            // after the standard ReadInt. Affects all body rotation, not just docking.
+            turret_rot: if section.get_bool("Harvester").unwrap_or(false) {
+                10
+            } else {
+                section.get_i32("ROT").unwrap_or(0)
+            },
             turret_anim: section
                 .get("TurretAnim")
                 .filter(|s| !s.is_empty())
@@ -836,6 +855,8 @@ impl ObjectType {
             open_topped: section.get_bool("OpenTopped").unwrap_or(false),
             gunner: section.get_bool("Gunner").unwrap_or(false),
             ifv_mode: section.get_i32("IFVMode").unwrap_or(0).max(0) as u32,
+            deploy_fire: section.get_bool("DeployFire").unwrap_or(false),
+            deploy_fire_weapon: section.get_i32("DeployFireWeapon"),
             max_number_occupants: section.get_i32("MaxNumberOccupants").unwrap_or(0).max(0) as u32,
             occupier: section.get_bool("Occupier").unwrap_or(false),
             assaulter: section.get_bool("Assaulter").unwrap_or(false),

@@ -30,12 +30,6 @@ fn record_dock_phase(snap: &mut MinerSnapshot, old: RefineryDockPhase, new: Refi
 /// Sim tick period in ms (15 Hz).
 const TICK_MS: u32 = 67;
 
-/// Body ROT for all harvesters during docking.
-///
-/// The original engine unconditionally overrides ROT=10 for Harvester/Weeder
-/// units during docking, regardless of whatever the INI says (e.g. CMIN has ROT=5).
-const HARVESTER_BODY_ROT: i32 = 10;
-
 // ---------------------------------------------------------------------------
 // Cell computation helpers
 // ---------------------------------------------------------------------------
@@ -177,11 +171,15 @@ fn resolve_refinery_cells(
 
 /// Body rotation rate for harvesters during the dock sequence.
 ///
-/// The original engine overrides ROT to 10 for all Harvester/Weeder units
-/// during docking. This function is only called from dock phase handlers
-/// which only execute for miner entities, so the override is unconditional.
-fn body_rot(_rules: &RuleSet, _type_id: &str) -> i32 {
-    HARVESTER_BODY_ROT
+/// Reads the unit type's ROT from rules. The Harvester=yes override (forced to 10
+/// at INI parse time, matching gamemd's UnitTypeClass::ReadINI) is already
+/// applied to obj.turret_rot, so this just looks it up. Falls back to a sane
+/// default if the type isn't found.
+fn body_rot(rules: &RuleSet, type_id: &str) -> i32 {
+    rules
+        .object_case_insensitive(type_id)
+        .map(|obj| obj.turret_rot)
+        .unwrap_or(10)
 }
 
 /// Look up the UnloadingClass for a miner type from rules.ini.
