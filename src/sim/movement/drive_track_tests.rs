@@ -555,3 +555,126 @@ fn interp_sub_step_all_residual_values_monotonic() {
         last = result.sub_x;
     }
 }
+
+#[test]
+fn interp_sub_step_lands_in_saved_cell() {
+    // saved=(100, 100), delta=(14, 0), residual=2 → interp_dx=4 → 104.
+    // floor_div(100+4, 256) = 0, floor_div(100, 256) = 0. interp_cell == saved.
+    let result = interp_sub_step(
+        SimFixed::from_num(100),
+        SimFixed::from_num(100),
+        14,
+        0,
+        2,
+        true,
+    )
+    .expect("interp should apply");
+    assert_eq!(result.sub_x, SimFixed::from_num(104));
+}
+
+#[test]
+fn interp_sub_step_lands_in_full_step_cell() {
+    // saved=(250, 100), full delta=(14, 0). residual=6 → interp_dx = 12.
+    // saved_lx + interp_dx = 262 → cell offset (1, 0).
+    // saved_lx + full_dx = 264 → cell offset (1, 0).
+    // interp_cell == full_cell, so use interp.
+    let result = interp_sub_step(
+        SimFixed::from_num(250),
+        SimFixed::from_num(100),
+        14,
+        0,
+        6,
+        true,
+    )
+    .expect("interp should apply");
+    // 250 + 14*6/7 = 250 + 12 = 262.
+    assert_eq!(result.sub_x, SimFixed::from_num(262));
+}
+
+#[test]
+fn interp_sub_step_third_cell_with_high_residual_uses_interp() {
+    // Third-cell construction: saved=(0, 0), delta=(770, 0), residual=4.
+    // interp_dx = 770*4/7 = 440. saved+interp = 440 → cell offset 1.
+    // full_dx = 770. saved+full = 770 → cell offset 3 (770 = 3*256+2).
+    // saved cell offset 0, interp 1, full 3. Third-cell case.
+    // residual=4 > 3 → use interp despite third-cell classification.
+    let result = interp_sub_step(
+        SimFixed::from_num(0),
+        SimFixed::from_num(0),
+        770,
+        0,
+        4,
+        true,
+    )
+    .expect("interp should apply");
+    // residual > 3 → use interp: 0 + 440 = 440.
+    assert_eq!(result.sub_x, SimFixed::from_num(440));
+}
+
+#[test]
+fn interp_sub_step_third_cell_with_low_residual_falls_back() {
+    // saved=(0, 0), delta=(2000, 0), residual=2.
+    // interp_dx = 2000*2/7 = 571. saved+interp = 571 → cell offset 2.
+    // full_dx = 2000. saved+full = 2000 → cell offset 7.
+    // saved 0, interp 2, full 7. Third-cell case.
+    // residual=2 ≤ 3 → fall back to full-step coords.
+    let result = interp_sub_step(
+        SimFixed::from_num(0),
+        SimFixed::from_num(0),
+        2000,
+        0,
+        2,
+        true,
+    )
+    .expect("interp should apply (fallback path)");
+    // L4 fallback: use full-step coords.
+    assert_eq!(
+        result.sub_x,
+        SimFixed::from_num(2000),
+        "low residual + third-cell interp must fall back to full-step coords"
+    );
+}
+
+#[test]
+fn interp_sub_step_residual_threshold_is_strict_greater() {
+    // residual = 3 must NOT trigger the trust window (gate is > 3, not >= 3).
+    // saved=(0, 0), delta=(2000, 0), residual=3.
+    // interp_dx = 2000*3/7 = 857. saved+interp = 857 → cell offset 3.
+    // full = 2000 → cell offset 7. Third-cell case.
+    // residual=3 NOT > 3 → fall back to full.
+    let result = interp_sub_step(
+        SimFixed::from_num(0),
+        SimFixed::from_num(0),
+        2000,
+        0,
+        3,
+        true,
+    )
+    .expect("interp should apply (fallback path)");
+    assert_eq!(
+        result.sub_x,
+        SimFixed::from_num(2000),
+        "residual=3 with third-cell interp must fall back (gate is > 3, not >= 3)"
+    );
+}
+
+#[test]
+fn interp_sub_step_residual_4_triggers_trust_window() {
+    // Same construction with residual=4 — should now USE interp.
+    // interp_dx = 2000*4/7 = 1142. saved+interp = 1142 → cell offset 4.
+    // full = 2000 → cell offset 7. Third-cell, residual=4 > 3 → trust window.
+    let result = interp_sub_step(
+        SimFixed::from_num(0),
+        SimFixed::from_num(0),
+        2000,
+        0,
+        4,
+        true,
+    )
+    .expect("interp should apply");
+    assert_eq!(
+        result.sub_x,
+        SimFixed::from_num(1142),
+        "residual=4 trust window: use interp despite third-cell"
+    );
+}
