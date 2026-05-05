@@ -361,6 +361,8 @@ mod tests {
             open_topped: false,
             gunner: false,
             ifv_mode: 0,
+            deploy_fire: false,
+            deploy_fire_weapon: None,
             max_number_occupants: 0,
             occupier: false,
             assaulter: false,
