@@ -136,7 +136,33 @@ pub(crate) fn build_shp_instances(
             }
         } else {
             match entity.category {
-                EntityCategory::Structure => (0, None),
+                EntityCategory::Structure => {
+                    let obj = state.rules.as_ref().and_then(|r| r.object(type_str));
+                    let frame = if obj.map(|o| o.can_be_occupied).unwrap_or(false) {
+                        let occupant_count = entity
+                            .passenger_role
+                            .cargo()
+                            .map(|c| c.count())
+                            .unwrap_or(0);
+                        let tech_level = obj.map(|o| o.tech_level).unwrap_or(-1);
+                        let (cy, cr) = state
+                            .rules
+                            .as_ref()
+                            .map(|r| (r.general.condition_yellow, r.general.condition_red))
+                            .unwrap_or((0.5, 0.25));
+                        building_frame_index(
+                            occupant_count,
+                            entity.health.current,
+                            entity.health.max,
+                            tech_level,
+                            cy,
+                            cr,
+                        )
+                    } else {
+                        0
+                    };
+                    (frame, None)
+                }
                 _ => (
                     resolve_infantry_shp_frame(
                         state,
@@ -154,8 +180,33 @@ pub(crate) fn build_shp_instances(
             frame: shp_frame,
             house_color: hc,
         };
-        let Some(entry) = atlas.get(&key) else {
-            continue;
+        // Fallback: a CanBeOccupied building requesting frame 1/2/3 may miss the
+        // atlas if its SHP has fewer than 4 frames. Retry with frame 0 so the
+        // building still draws (Approach A in the design doc). Non-garrisonable
+        // misses keep their existing skip path.
+        let entry = match atlas.get(&key) {
+            Some(e) => e,
+            None if shp_frame != 0
+                && entity.category == EntityCategory::Structure
+                && state
+                    .rules
+                    .as_ref()
+                    .and_then(|r| r.object(type_str))
+                    .map(|o| o.can_be_occupied)
+                    .unwrap_or(false) =>
+            {
+                let fallback_key = ShpSpriteKey {
+                    type_id: make_type_id.as_deref().unwrap_or(type_str).to_string(),
+                    facing: 0,
+                    frame: 0,
+                    house_color: hc,
+                };
+                match atlas.get(&fallback_key) {
+                    Some(e) => e,
+                    None => continue,
+                }
+            }
+            None => continue,
         };
 
         let final_x: f32 = sx + entry.offset_x;
