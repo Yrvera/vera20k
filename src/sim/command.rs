@@ -132,6 +132,15 @@ pub enum Command {
         target_rx: u16,
         target_ry: u16,
     },
+    /// Toggle an infantry unit's deploy-fire state.
+    ///
+    /// Three transitions:
+    /// - `None → Deploying` (start deploy animation)
+    /// - `Deployed → Undeploying` (start undeploy animation)
+    /// - mid-transition (Deploying / Undeploying) → no-op (matches gamemd)
+    ///
+    /// Silently no-op if the entity's type is not `DeployFire=yes`.
+    ToggleInfantryDeploy { entity_id: u64 },
 }
 
 /// Command with deterministic execution metadata.
