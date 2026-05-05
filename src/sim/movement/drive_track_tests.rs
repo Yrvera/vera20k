@@ -426,3 +426,132 @@ fn advance_drive_track_1_cell_jump_fires_once() {
         "straight north track should cross exactly one cell boundary"
     );
 }
+
+// ---------------------------------------------------------------------------
+// interp_sub_step tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn interp_sub_step_residual_zero_returns_none() {
+    let result = interp_sub_step(
+        SimFixed::from_num(128),
+        SimFixed::from_num(128),
+        14,
+        0,
+        0,
+        true,
+    );
+    assert_eq!(result, None, "residual=0 must yield no interp");
+}
+
+#[test]
+fn interp_sub_step_no_next_step_returns_none() {
+    let result = interp_sub_step(
+        SimFixed::from_num(128),
+        SimFixed::from_num(128),
+        14,
+        0,
+        3,
+        false,
+    );
+    assert_eq!(result, None, "had_next_step=false must yield no interp");
+}
+
+#[test]
+fn interp_sub_step_fraction_at_residual_1() {
+    // delta=14, residual=1 → 14 * 1 / 7 = 2.
+    let result = interp_sub_step(
+        SimFixed::from_num(100),
+        SimFixed::from_num(100),
+        14,
+        0,
+        1,
+        true,
+    )
+    .expect("interp should apply");
+    assert_eq!(
+        result.sub_x,
+        SimFixed::from_num(102),
+        "saved 100 + 14*1/7=2 → 102"
+    );
+    assert_eq!(result.sub_y, SimFixed::from_num(100));
+}
+
+#[test]
+fn interp_sub_step_fraction_at_residual_6() {
+    // delta=14, residual=6 → 14 * 6 / 7 = 12.
+    let result = interp_sub_step(
+        SimFixed::from_num(100),
+        SimFixed::from_num(100),
+        14,
+        0,
+        6,
+        true,
+    )
+    .expect("interp should apply");
+    assert_eq!(
+        result.sub_x,
+        SimFixed::from_num(112),
+        "saved 100 + 14*6/7=12 → 112"
+    );
+}
+
+#[test]
+fn interp_sub_step_negative_delta_truncates_toward_zero() {
+    // delta=-15, residual=3 → -15 * 3 / 7 = -45 / 7 = -6 (truncated from -6.43).
+    let result = interp_sub_step(
+        SimFixed::from_num(200),
+        SimFixed::from_num(100),
+        -15,
+        0,
+        3,
+        true,
+    )
+    .expect("interp should apply");
+    assert_eq!(
+        result.sub_x,
+        SimFixed::from_num(194),
+        "saved 200 + (-15)*3/7=-6 → 194 (truncate toward zero on negative)"
+    );
+}
+
+#[test]
+fn interp_sub_step_diagonal_delta() {
+    // dx=14, dy=-7, residual=4 → dx*4/7=8, dy*4/7=-4.
+    let result = interp_sub_step(
+        SimFixed::from_num(100),
+        SimFixed::from_num(100),
+        14,
+        -7,
+        4,
+        true,
+    )
+    .expect("interp should apply");
+    assert_eq!(result.sub_x, SimFixed::from_num(108));
+    assert_eq!(result.sub_y, SimFixed::from_num(96));
+}
+
+#[test]
+fn interp_sub_step_all_residual_values_monotonic() {
+    // For positive delta, sub_x must increase monotonically with residual.
+    let mut last = SimFixed::from_num(100);
+    for r in 1..=6 {
+        let result = interp_sub_step(
+            SimFixed::from_num(100),
+            SimFixed::from_num(100),
+            14,
+            0,
+            r,
+            true,
+        )
+        .expect("interp should apply");
+        assert!(
+            result.sub_x > last,
+            "residual {} produced sub_x {:?} not greater than previous {:?}",
+            r,
+            result.sub_x,
+            last
+        );
+        last = result.sub_x;
+    }
+}
