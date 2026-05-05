@@ -431,6 +431,78 @@ impl Simulation {
                 }
                 self.undeploy_building(*entity_id, rules)
             }
+            Command::ToggleInfantryDeploy { entity_id } => {
+                if !self.entity_owned_by_id(command_owner, *entity_id) {
+                    return false;
+                }
+                let Some(rules) = rules else { return false };
+                // INI gate: only DeployFire=yes types respond.
+                let type_str = match self.entities.get(*entity_id) {
+                    Some(e) => self.interner.resolve(e.type_ref).to_string(),
+                    None => return false,
+                };
+                let Some(obj) = rules.object(&type_str) else {
+                    return false;
+                };
+                if !obj.deploy_fire {
+                    return false;
+                }
+                let deploy_sound = obj.deploy_sound.clone();
+                let undeploy_sound = obj.undeploy_sound.clone();
+
+                let Some(entity) = self.entities.get_mut(*entity_id) else {
+                    return false;
+                };
+                let (rx, ry) = (entity.position.rx, entity.position.ry);
+                let new_phase: Option<crate::sim::deploy::DeployPhase>;
+                let mut emit_deploy_sound = false;
+                let mut emit_undeploy_sound = false;
+                match entity.deploy_state {
+                    None => {
+                        new_phase = Some(crate::sim::deploy::DeployPhase::Deploying {
+                            ticks_remaining: crate::sim::deploy::compute_anim_ticks(),
+                        });
+                        emit_deploy_sound = true;
+                    }
+                    Some(crate::sim::deploy::DeployPhase::Deployed) => {
+                        new_phase = Some(crate::sim::deploy::DeployPhase::Undeploying {
+                            ticks_remaining: crate::sim::deploy::compute_anim_ticks(),
+                        });
+                        emit_undeploy_sound = true;
+                        // Belt-and-braces: clear any stale movement target.
+                        entity.movement_target = None;
+                    }
+                    Some(crate::sim::deploy::DeployPhase::Deploying { .. })
+                    | Some(crate::sim::deploy::DeployPhase::Undeploying { .. }) => {
+                        return false;
+                    }
+                }
+                entity.deploy_state = new_phase;
+
+                if emit_deploy_sound {
+                    if let Some(sound_name) = deploy_sound {
+                        let sound_id = self.interner.intern(&sound_name);
+                        self.sound_events
+                            .push(crate::sim::world::SimSoundEvent::EntityDeployed {
+                                deploy_sound_id: sound_id,
+                                rx,
+                                ry,
+                            });
+                    }
+                }
+                if emit_undeploy_sound {
+                    if let Some(sound_name) = undeploy_sound {
+                        let sound_id = self.interner.intern(&sound_name);
+                        self.sound_events
+                            .push(crate::sim::world::SimSoundEvent::EntityUndeployed {
+                                undeploy_sound_id: sound_id,
+                                rx,
+                                ry,
+                            });
+                    }
+                }
+                true
+            }
             Command::SetRally { owner, rx, ry } => {
                 production::set_rally_point_for_owner(self, owner, *rx, *ry);
                 true

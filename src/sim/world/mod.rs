@@ -106,6 +106,18 @@ pub enum SimSoundEvent {
         rx: u16,
         ry: u16,
     },
+    /// An infantry entity entered the Deploying phase — play its DeploySound=.
+    EntityDeployed {
+        deploy_sound_id: InternedId,
+        rx: u16,
+        ry: u16,
+    },
+    /// An infantry entity entered the Undeploying phase — play its UndeploySound=.
+    EntityUndeployed {
+        undeploy_sound_id: InternedId,
+        rx: u16,
+        ry: u16,
+    },
     /// A miner docked at a refinery — play the building's deploy sound.
     /// The app layer should select the healthy or damaged sound variant
     /// based on the refinery's health ratio vs ConditionYellow.
