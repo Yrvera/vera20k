@@ -21,6 +21,7 @@ use crate::rules::particle_type::ParticleTypeId;
 use crate::sim::intern::InternedId;
 use crate::util::fixed_math::SimFixed;
 use glam::IVec3;
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone)]
 pub struct ParticleSystem {
@@ -70,5 +71,129 @@ pub struct Particle {
 impl ParticleSystem {
     pub fn particle_count(&self) -> usize {
         self.particles.len()
+    }
+}
+
+/// Deterministic store for `ParticleSystem` instances.
+///
+/// Mirrors `EntityStore`: BTreeMap-backed so iteration is always sorted by
+/// `stable_id`. Stable IDs are monotonically increasing and never reused —
+/// `reinsert` re-uses an existing id when a tick borrow-juggle round-trips
+/// a system through ownership.
+#[derive(Debug, Clone, Default)]
+pub struct ParticleSystemStore {
+    systems: BTreeMap<u64, ParticleSystem>,
+    next_id: u64,
+}
+
+impl ParticleSystemStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&u64, &ParticleSystem)> + '_ {
+        self.systems.iter()
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&u64, &mut ParticleSystem)> + '_ {
+        self.systems.iter_mut()
+    }
+
+    pub fn get(&self, id: u64) -> Option<&ParticleSystem> {
+        self.systems.get(&id)
+    }
+
+    pub fn get_mut(&mut self, id: u64) -> Option<&mut ParticleSystem> {
+        self.systems.get_mut(&id)
+    }
+
+    /// Inserts a new system; assigns and returns the next stable id.
+    pub fn insert(&mut self, mut sys: ParticleSystem) -> u64 {
+        self.next_id += 1;
+        sys.stable_id = self.next_id;
+        let id = self.next_id;
+        self.systems.insert(id, sys);
+        id
+    }
+
+    /// Re-inserts a system at its existing stable id (used by tick borrow-juggle).
+    pub fn reinsert(&mut self, sys: ParticleSystem) {
+        let id = sys.stable_id;
+        debug_assert!(id > 0, "reinsert requires a previously-assigned stable_id");
+        self.systems.insert(id, sys);
+    }
+
+    pub fn remove(&mut self, id: u64) -> Option<ParticleSystem> {
+        self.systems.remove(&id)
+    }
+
+    pub fn len(&self) -> usize {
+        self.systems.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.systems.is_empty()
+    }
+
+    /// Snapshot of stable IDs for tick traversal — collects to a `Vec` so
+    /// the caller can mutate the store while iterating.
+    pub fn ids(&self) -> Vec<u64> {
+        self.systems.keys().copied().collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fake_system() -> ParticleSystem {
+        ParticleSystem {
+            stable_id: 0,
+            type_id: ParticleSystemTypeId(0),
+            coords: IVec3::ZERO,
+            offset: IVec3::ZERO,
+            particles: Vec::new(),
+            spawn_timer: SimFixed::from_num(0),
+            lifetime: -1,
+            spark_spawn_frames: 0,
+            facing: 0x1D,
+            marked_for_deletion: false,
+            directionless: false,
+            attached_entity: None,
+            owner_entity: None,
+            target_coords: IVec3::ZERO,
+            owner_house: None,
+            done_spawning: false,
+        }
+    }
+
+    #[test]
+    fn insert_assigns_increasing_ids() {
+        let mut store = ParticleSystemStore::new();
+        let a = store.insert(fake_system());
+        let b = store.insert(fake_system());
+        assert!(b > a);
+    }
+
+    #[test]
+    fn iteration_is_sorted_by_id() {
+        let mut store = ParticleSystemStore::new();
+        let _ = store.insert(fake_system());
+        let _ = store.insert(fake_system());
+        let _ = store.insert(fake_system());
+        let ids: Vec<u64> = store.iter().map(|(id, _)| *id).collect();
+        let mut sorted = ids.clone();
+        sorted.sort();
+        assert_eq!(ids, sorted);
+    }
+
+    #[test]
+    fn reinsert_preserves_id() {
+        let mut store = ParticleSystemStore::new();
+        let id = store.insert(fake_system());
+        let sys = store.remove(id).unwrap();
+        store.reinsert(sys);
+        assert!(store.get(id).is_some());
+        assert_eq!(store.len(), 1);
     }
 }
