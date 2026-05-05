@@ -314,6 +314,32 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                             screen_pos: Some((sx, sy)),
                         }
                     }
+                    SimSoundEvent::EntityDeployed {
+                        deploy_sound_id,
+                        rx,
+                        ry,
+                    } => {
+                        log::trace!(
+                            "B1 stub: EntityDeployed sound={} at ({}, {}) — B2 will translate",
+                            sim.interner.resolve(deploy_sound_id),
+                            rx,
+                            ry,
+                        );
+                        continue;
+                    }
+                    SimSoundEvent::EntityUndeployed {
+                        undeploy_sound_id,
+                        rx,
+                        ry,
+                    } => {
+                        log::trace!(
+                            "B1 stub: EntityUndeployed sound={} at ({}, {}) — B2 will translate",
+                            sim.interner.resolve(undeploy_sound_id),
+                            rx,
+                            ry,
+                        );
+                        continue;
+                    }
                     SimSoundEvent::DockDeploy { .. } => {
                         // TODO: resolve building's deploy sound from art.ini
                         // and select healthy/damaged variant based on health ratio.
