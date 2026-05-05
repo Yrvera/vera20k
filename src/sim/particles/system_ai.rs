@@ -49,8 +49,8 @@ fn tick_one_system(sys: &mut ParticleSystem, sim: &mut Simulation, rules: &RuleS
     }
 }
 
-fn tick_smoke(_sys: &mut ParticleSystem, _sim: &mut Simulation, _rules: &RuleSet) {
-    // Implemented in Task C2.
+fn tick_smoke(sys: &mut ParticleSystem, sim: &mut Simulation, rules: &RuleSet) {
+    super::smoke::tick_system(sys, sim, rules);
 }
 
 fn tick_gas(_sys: &mut ParticleSystem, _sim: &mut Simulation, _rules: &RuleSet) {
