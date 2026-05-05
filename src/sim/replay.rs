@@ -83,7 +83,8 @@ impl ReplayRunner {
     ) -> Vec<u64> {
         let mut hashes: Vec<u64> = Vec::with_capacity(replay.ticks.len());
         for entry in &replay.ticks {
-            let result = sim.advance_tick(&entry.commands, rules, height_map, path_grid, tick_ms);
+            let result =
+                sim.advance_tick(&entry.commands, rules, height_map, path_grid, None, tick_ms);
             hashes.push(result.state_hash);
         }
         hashes

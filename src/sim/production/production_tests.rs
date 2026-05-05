@@ -802,7 +802,7 @@ fn harvester_moves_to_ore_and_back_with_path_grid() {
     // harvest bales → return to refinery → dock → unload. HarvestRate=37
     // ticks/bale, 40 bales = ~1500 ticks harvest + movement + dock time.
     for _ in 0..3000 {
-        let _ = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), 33);
+        let _ = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 33);
         let pos = sim
             .entities
             .get(harvester_sid)

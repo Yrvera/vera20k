@@ -184,12 +184,18 @@ fn test_tick_combat_only_emits_bridge_damage_for_wall_warheads() {
         &BTreeMap::<InternedId, PowerState>::new(),
         None,
         &mut BTreeMap::new(),
+        None,
+        None,
         0u64,
         100,
     );
     assert!(
         result.bridge_damage_events.is_empty(),
         "non-wall warheads must not emit bridge damage"
+    );
+    assert!(
+        result.wall_damage_events.is_empty(),
+        "non-wall warheads must not emit wall damage"
     );
 
     let bridge_rules = RuleSet::from_ini(&IniFile::from_str(
@@ -215,6 +221,8 @@ fn test_tick_combat_only_emits_bridge_damage_for_wall_warheads() {
         &BTreeMap::<InternedId, PowerState>::new(),
         None,
         &mut BTreeMap::new(),
+        None,
+        None,
         0u64,
         100,
     );
@@ -226,6 +234,10 @@ fn test_tick_combat_only_emits_bridge_damage_for_wall_warheads() {
             damage: 65
         }]
     );
+    // Without an overlay grid+registry, the discriminator can't identify a wall
+    // cell — events fall through to bridge_damage_events. wall_damage_events
+    // requires both a grid lookup and Wall=yes in the registry.
+    assert!(wall_result.wall_damage_events.is_empty());
 }
 
 #[test]
@@ -477,6 +489,8 @@ fn test_tick_combat_visibility_blocks_fire() {
         &BTreeMap::<InternedId, PowerState>::new(),
         None,
         &mut BTreeMap::new(),
+        None,
+        None,
         0u64,
         100,
     );
@@ -511,6 +525,8 @@ fn test_tick_combat_retargets_by_distance_then_stable_id() {
         &BTreeMap::<InternedId, PowerState>::new(),
         None,
         &mut BTreeMap::new(),
+        None,
+        None,
         0u64,
         100,
     );
@@ -552,6 +568,8 @@ fn test_tick_combat_retargets_prefers_threat_class_when_distance_equal() {
         &BTreeMap::<InternedId, PowerState>::new(),
         None,
         &mut BTreeMap::new(),
+        None,
+        None,
         0u64,
         100,
     );
@@ -622,6 +640,8 @@ fn test_weapon_fire_destroys_ore_in_spread() {
         &BTreeMap::<InternedId, PowerState>::new(),
         None,
         &mut resource_nodes,
+        None,
+        None,
         0u64,
         100,
     );
@@ -674,6 +694,8 @@ fn test_direct_hit_weapon_destroys_center_ore() {
         &BTreeMap::<InternedId, PowerState>::new(),
         None,
         &mut resource_nodes,
+        None,
+        None,
         0u64,
         100,
     );
@@ -721,6 +743,8 @@ fn test_weak_weapon_partial_ore_reduction() {
         &BTreeMap::<InternedId, PowerState>::new(),
         None,
         &mut resource_nodes,
+        None,
+        None,
         0u64,
         100,
     );
@@ -732,4 +756,193 @@ fn test_weak_weapon_partial_ore_reduction() {
         960,
         "should reduce by 2 density levels (25/10=2)"
     );
+}
+
+// ---- Wall damage integration tests ----------------------------------------
+
+use crate::map::overlay_types::OverlayTypeRegistry;
+use crate::sim::overlay_grid::{OverlayGrid, WallDamageEvent};
+use crate::sim::world::Simulation;
+
+/// INI containing GAWALL as both a [BuildingTypes] entry (so it has an
+/// ObjectType with Wall=yes) and an [OverlayTypes] entry (so the overlay
+/// registry knows it as a wall overlay). Strength=400, DamageLevels=4 are
+/// representative of the real GAWALL.
+fn wall_test_ini() -> &'static str {
+    "[InfantryTypes]\n\
+     [VehicleTypes]\n\
+     [AircraftTypes]\n\
+     [BuildingTypes]\n0=GAWALL\n\
+     [OverlayTypes]\n0=GASAND\n1=CYCL\n2=GAWALL\n\
+     [GAWALL]\nStrength=400\nArmor=concrete\nWall=yes\n\
+     [GASAND]\nWall=yes\nStrength=400\n\
+     [CYCL]\nWall=yes\nStrength=400\n"
+}
+
+/// Build a Simulation with a 10x10 OverlayGrid and a GAWALL placed at (rx, ry)
+/// with both an OverlayCell entry and a matching wall GameEntity. Returns the
+/// sim, ruleset, and registry tied to the same INI.
+fn build_minimal_sim_with_gawall(rx: u16, ry: u16) -> (Simulation, RuleSet, OverlayTypeRegistry) {
+    let ini = IniFile::from_str(wall_test_ini());
+    let rules = RuleSet::from_ini(&ini).expect("wall rules parse");
+    let registry = OverlayTypeRegistry::from_ini(&ini, None);
+
+    let mut sim = Simulation::new();
+    let mut grid = OverlayGrid::new(10, 10);
+    // Place GAWALL (overlay_id=2). Initial frame = 0 (isolated, stage 0).
+    grid.place_overlay(rx, ry, 2, 0);
+    sim.overlay_grid = Some(grid);
+
+    // Spawn a wall GameEntity at the same cell. Intern the type_ref and owner
+    // through sim.interner so later lookups via sim.interner.resolve() succeed.
+    let owner_id = sim.interner.intern("Test");
+    let type_id = sim.interner.intern("GAWALL");
+    let mut entity = GameEntity::test_default(1, "GAWALL", "Test", rx, ry);
+    entity.owner = owner_id;
+    entity.type_ref = type_id;
+    entity.health = Health { current: 400, max: 400 };
+    sim.entities.insert(entity);
+    sim.entities.rebuild_owner_index();
+
+    (sim, rules, registry)
+}
+
+#[test]
+fn wall_warhead_damages_and_destroys_wall_overlay() {
+    let (mut sim, rules, registry) = build_minimal_sim_with_gawall(5, 5);
+
+    let initial_wall_entities = sim
+        .entities
+        .iter_sorted()
+        .filter(|(_, e)| {
+            rules
+                .object(sim.interner.resolve(e.type_ref))
+                .is_some_and(|o| o.wall)
+        })
+        .count();
+    assert_eq!(initial_wall_entities, 1, "fixture must place exactly one wall entity");
+
+    // Forced destruction (u16::MAX bypasses the probabilistic gate).
+    let events = [WallDamageEvent { rx: 5, ry: 5, damage: u16::MAX }];
+    sim.apply_wall_damage_events(&events, &rules, &registry);
+
+    // Overlay cleared.
+    let grid = sim.overlay_grid.as_ref().expect("grid should still be present");
+    assert!(grid.cell(5, 5).overlay_id.is_none(), "overlay should be cleared");
+
+    // Wall entity removed.
+    let remaining = sim
+        .entities
+        .iter_sorted()
+        .filter(|(_, e)| {
+            rules
+                .object(sim.interner.resolve(e.type_ref))
+                .is_some_and(|o| o.wall)
+        })
+        .count();
+    assert_eq!(remaining, 0, "wall entity should be despawned after overlay destruction");
+}
+
+/// Build a Simulation with a row of GAWALL at `(rx_range, ry)`. Each cell gets
+/// both an OverlayCell entry and a matching wall GameEntity.
+fn build_minimal_sim_with_gawall_row(
+    ry: u16,
+    rx_range: std::ops::Range<u16>,
+) -> (Simulation, RuleSet, OverlayTypeRegistry) {
+    let ini = IniFile::from_str(wall_test_ini());
+    let rules = RuleSet::from_ini(&ini).expect("wall rules parse");
+    let registry = OverlayTypeRegistry::from_ini(&ini, None);
+
+    let mut sim = Simulation::new();
+    let mut grid = OverlayGrid::new(10, 10);
+    let owner_id = sim.interner.intern("Test");
+    let type_id = sim.interner.intern("GAWALL");
+    let mut next_id: u64 = 1;
+    for rx in rx_range {
+        grid.place_overlay(rx, ry, 2, 0);
+        let mut entity = GameEntity::test_default(next_id, "GAWALL", "Test", rx, ry);
+        entity.owner = owner_id;
+        entity.type_ref = type_id;
+        entity.health = Health { current: 400, max: 400 };
+        sim.entities.insert(entity);
+        next_id += 1;
+    }
+    sim.overlay_grid = Some(grid);
+    sim.entities.rebuild_owner_index();
+
+    (sim, rules, registry)
+}
+
+#[test]
+fn concrete_wall_chain_reaction_runs_without_panic() {
+    // Row of 4 GAWALL at (4..8, 5).
+    let (mut sim, rules, registry) = build_minimal_sim_with_gawall_row(5, 4..8);
+    // Pre-set (5,5) to stage 2 with E+W connectivity so a single damage event
+    // pushes it through the penultimate-stage chain trigger (stage 3 of
+    // DamageLevels=4). Connectivity nibble 0b1010 = E+W = 0xA, byte = 0x2A.
+    sim.overlay_grid
+        .as_mut()
+        .unwrap()
+        .set_overlay_data(5, 5, 0x2A);
+
+    // damage = Strength (400) — gate `damage < strength` is false, so the
+    // probabilistic check is skipped and the damage applies. Stage advances
+    // to 3 → chain triggers 200-damage events on pristine same-type cardinal
+    // neighbors. Outcome of those events depends on RNG roll vs strength=400.
+    let events = [WallDamageEvent { rx: 5, ry: 5, damage: 400 }];
+    sim.apply_wall_damage_events(&events, &rules, &registry);
+
+    // The chain code path ran (no panic). Assert (5,5) is at stage ≥ 3 or
+    // gone — either outcome is consistent with the binary's behavior at the
+    // penultimate damage level.
+    let grid = sim.overlay_grid.as_ref().unwrap();
+    let cell = grid.cell(5, 5);
+    if let Some(id) = cell.overlay_id {
+        assert_eq!(id, 2, "if not destroyed, must still be GAWALL");
+        assert!(
+            cell.overlay_data >> 4 >= 3,
+            "stage should have advanced to ≥3 after applied damage"
+        );
+    }
+    // No assertion about pristine neighbors — their fate depends on RNG.
+}
+
+/// Seeded variant of `build_minimal_sim_with_gawall` — used for determinism
+/// replay tests where two sims must produce byte-identical state given the
+/// same input event sequence.
+fn build_minimal_sim_with_gawall_seeded(
+    rx: u16,
+    ry: u16,
+    seed: u64,
+) -> (Simulation, RuleSet, OverlayTypeRegistry) {
+    let (mut sim, rules, registry) = build_minimal_sim_with_gawall(rx, ry);
+    sim.rng = crate::sim::rng::SimRng::new(seed);
+    (sim, rules, registry)
+}
+
+#[test]
+fn wall_damage_deterministic_across_replays() {
+    let seed: u64 = 0x1234_5678;
+    let events = [
+        WallDamageEvent { rx: 5, ry: 5, damage: 100 },
+        WallDamageEvent { rx: 5, ry: 5, damage: 100 },
+        WallDamageEvent { rx: 5, ry: 5, damage: 100 },
+        WallDamageEvent { rx: 5, ry: 5, damage: 100 },
+        WallDamageEvent { rx: 5, ry: 5, damage: 100 },
+    ];
+
+    let snapshot_a: (Option<u8>, u8) = {
+        let (mut sim, rules, registry) = build_minimal_sim_with_gawall_seeded(5, 5, seed);
+        sim.apply_wall_damage_events(&events, &rules, &registry);
+        let cell = sim.overlay_grid.as_ref().unwrap().cell(5, 5);
+        (cell.overlay_id, cell.overlay_data)
+    };
+    let snapshot_b: (Option<u8>, u8) = {
+        let (mut sim, rules, registry) = build_minimal_sim_with_gawall_seeded(5, 5, seed);
+        sim.apply_wall_damage_events(&events, &rules, &registry);
+        let cell = sim.overlay_grid.as_ref().unwrap().cell(5, 5);
+        (cell.overlay_id, cell.overlay_data)
+    };
+
+    assert_eq!(snapshot_a, snapshot_b, "wall damage must be RNG-deterministic");
 }

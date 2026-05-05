@@ -236,6 +236,17 @@ pub fn recalc_overlay_passability(
     old_blocks != new_blocks || old_zone != final_zone_type
 }
 
+/// A combat-emitted request to damage a wall overlay at a specific cell.
+///
+/// Sentinel value `damage == u16::MAX` represents forced destruction (bypasses
+/// the probabilistic gate inside `damage_wall_overlay`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct WallDamageEvent {
+    pub rx: u16,
+    pub ry: u16,
+    pub damage: u16,
+}
+
 /// Result of a wall damage attempt.
 #[derive(Debug, Clone, Default)]
 pub struct WallDamageResult {
@@ -328,6 +339,135 @@ fn damage_wall_recursive(
     // Full destruction.
     grid.clear_overlay(rx, ry);
     result.destroyed_cells.push((rx, ry));
+}
+
+/// Outcome of `recompute_wall_connectivity_at`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecomputeResult {
+    /// Cell was not a wall, or no nibble change.
+    NoChange,
+    /// Connectivity nibble changed; cell remains.
+    Updated,
+    /// Auto-destruct threshold tripped; cell cleared.
+    Destroyed,
+}
+
+/// Per-overlay-type byte-value thresholds at which neighbor cleanup destroys an
+/// already-damaged isolated wall.
+fn auto_destruct_threshold(overlay_id: u8, full_byte: u8) -> bool {
+    match overlay_id {
+        0x00 => matches!(full_byte, 0x10 | 0x20), // GASAND
+        0x01 => full_byte == 0x20,                // CYCL
+        0x02 => matches!(full_byte, 0x20 | 0x30), // GAWALL
+        0x03 => full_byte == 0x10,                // BARB
+        0x16 => matches!(full_byte, 0x10 | 0x20),
+        0x1A => matches!(full_byte, 0x20 | 0x30), // NAWALL
+        _ => false,
+    }
+}
+
+/// Refresh one cell's connectivity nibble against its 4 cardinal neighbors,
+/// then apply the per-type auto-destruct safety net.
+///
+/// Same-type-only matching.
+pub fn recompute_wall_connectivity_at(
+    grid: &mut OverlayGrid,
+    registry: &OverlayTypeRegistry,
+    rx: u16,
+    ry: u16,
+) -> RecomputeResult {
+    let cell = *grid.cell(rx, ry);
+    let Some(overlay_id) = cell.overlay_id else {
+        return RecomputeResult::NoChange;
+    };
+    let Some(flags) = registry.flags(overlay_id) else {
+        return RecomputeResult::NoChange;
+    };
+    if !flags.wall {
+        return RecomputeResult::NoChange;
+    }
+
+    // Cardinal neighbor connectivity scan. Bit assignment matches existing
+    // compute_wall_connectivity: N=0, E=1, S=2, W=3.
+    const CARDINAL: [(i32, i32); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
+    let mut connectivity: u8 = 0;
+    for (bit, (dx, dy)) in CARDINAL.iter().enumerate() {
+        let nx = rx as i32 + dx;
+        let ny = ry as i32 + dy;
+        if nx < 0 || ny < 0 {
+            continue;
+        }
+        let neighbor = grid.cell(nx as u16, ny as u16);
+        if neighbor.overlay_id == Some(overlay_id) {
+            connectivity |= 1 << bit;
+        }
+    }
+
+    let damage_nibble = cell.overlay_data & 0xF0;
+    let new_byte = damage_nibble | connectivity;
+
+    // Auto-destruct threshold fires whenever cleanup runs over an already-
+    // damaged isolated wall, even if the connectivity nibble itself is
+    // unchanged. Mirrors PostDestructionWallCleanup §5.2.
+    if auto_destruct_threshold(overlay_id, new_byte) {
+        grid.clear_overlay(rx, ry);
+        return RecomputeResult::Destroyed;
+    }
+
+    if new_byte == cell.overlay_data {
+        return RecomputeResult::NoChange;
+    }
+
+    grid.set_overlay_data(rx, ry, new_byte);
+    RecomputeResult::Updated
+}
+
+/// Refresh connectivity on the 4 cardinal neighbors of `(rx, ry)`, recursively
+/// extending into any neighbor that gets auto-destructed by the safety net.
+///
+/// Returns the list of cells destroyed by the cleanup pass (caller is responsible
+/// for removing the corresponding wall entities).
+///
+/// Bounded by a visited set so each cell is recomputed at most once per call.
+pub fn cleanup_wall_neighbors(
+    grid: &mut OverlayGrid,
+    registry: &OverlayTypeRegistry,
+    rx: u16,
+    ry: u16,
+) -> Vec<(u16, u16)> {
+    use std::collections::{HashSet, VecDeque};
+    const CARDINAL: [(i32, i32); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
+
+    let mut destroyed: Vec<(u16, u16)> = Vec::new();
+    let mut visited: HashSet<(u16, u16)> = HashSet::new();
+    let mut worklist: VecDeque<(u16, u16)> = VecDeque::new();
+    worklist.push_back((rx, ry));
+
+    while let Some((cx, cy)) = worklist.pop_front() {
+        for (dx, dy) in CARDINAL {
+            let nx = cx as i32 + dx;
+            let ny = cy as i32 + dy;
+            if nx < 0 || ny < 0 {
+                continue;
+            }
+            let nx = nx as u16;
+            let ny = ny as u16;
+            if nx >= grid.width() || ny >= grid.height() {
+                continue;
+            }
+            if !visited.insert((nx, ny)) {
+                continue;
+            }
+            if let RecomputeResult::Destroyed =
+                recompute_wall_connectivity_at(grid, registry, nx, ny)
+            {
+                destroyed.push((nx, ny));
+                worklist.push_back((nx, ny));
+            }
+        }
+    }
+
+    destroyed
 }
 
 /// 8-direction offsets: N, NE, E, SE, S, SW, W, NW.
@@ -493,5 +633,137 @@ mod tests {
         grid.place_overlay(0, 0, 2, 0);
         grid.place_overlay(9, 3, 3, 0);
         assert_eq!(grid.take_dirty_cells(), vec![(5, 5), (0, 0), (9, 3)]);
+    }
+}
+
+#[cfg(test)]
+mod recompute_tests {
+    use super::*;
+    use crate::rules::ini_parser::IniFile;
+
+    /// Build a registry whose overlay_id=2 maps to GAWALL (for auto-destruct
+    /// threshold matching). Filler entries at id 0 and 1 get Wall=yes too so
+    /// tests can exercise other ids if needed.
+    fn make_wall_registry() -> OverlayTypeRegistry {
+        let text = "\
+[OverlayTypes]
+0=GASAND
+1=CYCL
+2=GAWALL
+[GASAND]
+Wall=yes
+Strength=400
+[CYCL]
+Wall=yes
+Strength=400
+[GAWALL]
+Wall=yes
+Strength=400
+";
+        let ini = IniFile::from_str(text);
+        OverlayTypeRegistry::from_ini(&ini, None)
+    }
+
+    #[test]
+    fn recompute_no_op_for_non_wall_cell() {
+        let mut grid = OverlayGrid::new(10, 10);
+        let reg = OverlayTypeRegistry::empty();
+        let r = recompute_wall_connectivity_at(&mut grid, &reg, 5, 5);
+        assert_eq!(r, RecomputeResult::NoChange);
+    }
+
+    #[test]
+    fn recompute_updates_nibble_when_neighbor_changes() {
+        let mut grid = OverlayGrid::new(10, 10);
+        let reg = make_wall_registry();
+        // Place two adjacent GAWALL at (5,5) and (6,5). Initialize (5,5) with
+        // stale connectivity (0b0001 = N) so the recompute changes it to
+        // 0b0010 (E neighbor only).
+        grid.place_overlay(5, 5, 2, 0b0001);
+        grid.place_overlay(6, 5, 2, 0);
+        let r = recompute_wall_connectivity_at(&mut grid, &reg, 5, 5);
+        assert_eq!(r, RecomputeResult::Updated);
+        assert_eq!(grid.cell(5, 5).overlay_data, 0b0010);
+    }
+
+    #[test]
+    fn recompute_destroys_isolated_max_damage_gawall() {
+        let mut grid = OverlayGrid::new(10, 10);
+        let reg = make_wall_registry();
+        // Isolated GAWALL with damage stage 3 (= 0x30) and connectivity 0 → 0x30
+        // matches the auto-destruct threshold.
+        grid.place_overlay(5, 5, 2, 0x30);
+        let r = recompute_wall_connectivity_at(&mut grid, &reg, 5, 5);
+        assert_eq!(r, RecomputeResult::Destroyed);
+        assert_eq!(grid.cell(5, 5).overlay_id, None);
+    }
+
+    #[test]
+    fn recompute_keeps_max_damage_wall_when_connected() {
+        let mut grid = OverlayGrid::new(10, 10);
+        let reg = make_wall_registry();
+        // GAWALL at (5,5) with damage stage 3 PLUS connection to E neighbor.
+        // Connected → byte = 0x30 | 0b0010 = 0x32 → not in auto-destruct set → kept.
+        grid.place_overlay(5, 5, 2, 0x30);
+        grid.place_overlay(6, 5, 2, 0);
+        let r = recompute_wall_connectivity_at(&mut grid, &reg, 5, 5);
+        assert_eq!(r, RecomputeResult::Updated);
+        assert_eq!(grid.cell(5, 5).overlay_data, 0x32);
+        assert!(grid.cell(5, 5).overlay_id.is_some());
+    }
+
+    #[test]
+    fn cleanup_chain_does_not_destroy_intact_segment() {
+        let mut grid = OverlayGrid::new(10, 10);
+        let reg = make_wall_registry();
+        // Row of 3 GAWALL at (4,5), (5,5), (6,5), all at max damage stage 3.
+        // Connectivity nibbles: (4,5)=0b0010 (E only), (5,5)=0b1010 (E+W),
+        // (6,5)=0b1000 (W only). Full bytes: 0x32, 0x3A, 0x38.
+        grid.place_overlay(4, 5, 2, 0x32);
+        grid.place_overlay(5, 5, 2, 0x3A);
+        grid.place_overlay(6, 5, 2, 0x38);
+        // Destroy the leftmost cell directly (simulating damage_wall_overlay's destroy).
+        grid.clear_overlay(4, 5);
+        // Run cleanup starting from (4, 5).
+        let destroyed = cleanup_wall_neighbors(&mut grid, &reg, 4, 5);
+        // (5,5) loses W connection → byte = 0x32 → not in {0x20, 0x30} → keeps.
+        // (6,5) keeps W connection (5,5 still present) → byte = 0x38 → keeps.
+        assert!(destroyed.is_empty());
+        assert!(grid.cell(5, 5).overlay_id.is_some());
+        assert!(grid.cell(6, 5).overlay_id.is_some());
+    }
+
+    #[test]
+    fn cleanup_chain_terminates_via_visited_set() {
+        let mut grid = OverlayGrid::new(10, 10);
+        let reg = make_wall_registry();
+        // 5-cell row of GAWALL at max damage; recompute initial connectivity
+        // via the helper to set up coherent state, then destroy the leftmost
+        // cell and run cleanup. Test passes if it returns in finite time.
+        let cells: [(u16, u16); 5] = [(2, 5), (3, 5), (4, 5), (5, 5), (6, 5)];
+        for &(rx, ry) in &cells {
+            grid.place_overlay(rx, ry, 2, 0x30);
+        }
+        for &(rx, ry) in &cells {
+            let _ = recompute_wall_connectivity_at(&mut grid, &reg, rx, ry);
+        }
+        // After initial recompute, cells with neighbors survive; isolated ones
+        // would already be gone. The endpoints had only one neighbor → byte
+        // 0x32 or 0x38, both kept. Middle three: 0x3A, kept.
+        // Now destroy (2,5) and trigger cleanup.
+        grid.clear_overlay(2, 5);
+        let _ = cleanup_wall_neighbors(&mut grid, &reg, 2, 5);
+        // No assertion: termination is the test.
+    }
+
+    #[test]
+    fn cleanup_handles_oob_neighbors() {
+        let mut grid = OverlayGrid::new(10, 10);
+        let reg = make_wall_registry();
+        grid.place_overlay(0, 0, 2, 0x30);
+        grid.clear_overlay(0, 0);
+        // Cleanup at (0,0) — neighbors include (-1, 0) and (0, -1) which are OOB.
+        let _ = cleanup_wall_neighbors(&mut grid, &reg, 0, 0);
+        // No panic = pass.
     }
 }

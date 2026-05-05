@@ -976,7 +976,7 @@ mod tests {
             "MODPROC"
         ));
         for _ in 0..240 {
-            let _ = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), 33);
+            let _ = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 33);
             if !production::ready_buildings_for_owner(&sim, &rules, "Americans").is_empty() {
                 break;
             }
@@ -1052,7 +1052,7 @@ mod tests {
         // Needs enough ticks for: harvest + return + unload.
         // Unload alone: up to 20 bales × 57 ticks/bale = 1140 ticks at 60Hz.
         for _ in 0..2000 {
-            let _ = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), 33);
+            let _ = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 33);
 
             let miner = sim
                 .entities

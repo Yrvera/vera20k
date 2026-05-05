@@ -265,6 +265,7 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                 state.rules.as_ref(),
                 &state.height_map,
                 state.path_grid.as_ref(),
+                state.overlay_registry.as_ref(),
                 SIM_TICK_MS,
             );
             let death_finished = animation::tick_animations(

@@ -146,7 +146,7 @@ fn dispatch(sim: &mut Simulation, _owner: &str, cmd: Command, rules: &RuleSet) {
     let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
     let owner_id = sim.interner.intern(_owner);
     let cmds = vec![CommandEnvelope::new(owner_id, sim.tick + 1, cmd)];
-    sim.advance_tick(&cmds, Some(rules), &height_map, None, 22);
+    sim.advance_tick(&cmds, Some(rules), &height_map, None, None, 22);
 }
 
 /// Apply a command directly via `apply_command` (no tick advance, no combat
@@ -163,7 +163,7 @@ fn apply(sim: &mut Simulation, owner: &str, cmd: &Command, rules: &RuleSet) -> b
 fn tick_n(sim: &mut Simulation, rules: &RuleSet, n: u32) {
     let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
     for _ in 0..n {
-        sim.advance_tick(&[], Some(rules), &height_map, None, 22);
+        sim.advance_tick(&[], Some(rules), &height_map, None, None, 22);
     }
 }
 
