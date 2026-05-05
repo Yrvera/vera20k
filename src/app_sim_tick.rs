@@ -319,26 +319,22 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                         rx,
                         ry,
                     } => {
-                        log::trace!(
-                            "B1 stub: EntityDeployed sound={} at ({}, {}) — B2 will translate",
-                            sim.interner.resolve(deploy_sound_id),
-                            rx,
-                            ry,
-                        );
-                        continue;
+                        let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
+                        GameSoundEvent::EntityDeployed {
+                            sound_id: sim.interner.resolve(deploy_sound_id).to_string(),
+                            screen_pos: Some((sx, sy)),
+                        }
                     }
                     SimSoundEvent::EntityUndeployed {
                         undeploy_sound_id,
                         rx,
                         ry,
                     } => {
-                        log::trace!(
-                            "B1 stub: EntityUndeployed sound={} at ({}, {}) — B2 will translate",
-                            sim.interner.resolve(undeploy_sound_id),
-                            rx,
-                            ry,
-                        );
-                        continue;
+                        let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
+                        GameSoundEvent::EntityUndeployed {
+                            sound_id: sim.interner.resolve(undeploy_sound_id).to_string(),
+                            screen_pos: Some((sx, sy)),
+                        }
                     }
                     SimSoundEvent::DockDeploy { .. } => {
                         // TODO: resolve building's deploy sound from art.ini
