@@ -23,6 +23,8 @@ use crate::util::fixed_math::SimFixed;
 use glam::IVec3;
 use std::collections::BTreeMap;
 
+pub mod system_ai;
+
 #[derive(Debug, Clone)]
 pub struct ParticleSystem {
     pub stable_id: u64,

@@ -48,6 +48,7 @@ use crate::sim::movement::tunnel_movement;
 use crate::sim::movement::turret;
 use crate::sim::occupancy::OccupancyGrid;
 use crate::sim::ore_growth;
+use crate::sim::particles::ParticleSystemStore;
 use crate::sim::passenger;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
@@ -274,6 +275,11 @@ pub struct Simulation {
     /// Map trigger runtime state — tracks global/local variables, disabled triggers,
     /// fired one-shot triggers, and elapsed scenario ticks. Initialized from map data.
     pub trigger_runtime: TriggerRuntime,
+    /// Authoritative particle-system store. Populated by `spawn_particle_system`,
+    /// ticked in Phase 5.5 by `particles::system_ai::tick_particle_systems`.
+    /// Skipped by serde — restored as empty on deserialize (snapshot work is separate).
+    #[serde(skip)]
+    pub particle_systems: ParticleSystemStore,
 }
 
 impl Default for Simulation {
@@ -330,6 +336,7 @@ impl Simulation {
             input_delay_ticks: 2,
             pending_commands: Vec::new(),
             trigger_runtime: TriggerRuntime::default(),
+            particle_systems: ParticleSystemStore::new(),
         }
     }
 
@@ -1261,6 +1268,10 @@ impl Simulation {
                 self.radar_events
                     .push(RadarEventType::Combat, ev.rx, ev.ry, event_dur);
             }
+            // --- Phase 5.5: ParticleSystems ---
+            // DEPENDS ON: combat (gas/fire damage spawned this tick).
+            // PRODUCES: damage applied via gas/fire particles, must be visible to phase 6 retaliation.
+            crate::sim::particles::system_ai::tick_particle_systems(self);
             // --- Phase 6: Retaliation + Passengers ---
             // DEPENDS ON: combat (sets last_attacker_id read by retaliation).
             combat::tick_retaliation(&mut self.entities, rules, &self.interner);
