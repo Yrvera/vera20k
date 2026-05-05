@@ -138,6 +138,11 @@ pub struct GeneralRules {
     /// Default cruise altitude for Fly-locomotor aircraft (FlightLevel= in [General]).
     /// Default 1500 leptons. Per-type override possible but not yet implemented.
     pub flight_level: i32,
+    /// Descent rate cap for parachuted units, in leptons/tick (signed).
+    /// Per gamemd, the rate field accumulates by `-1` per tick and clamps
+    /// to this value. Default `-3` matches `[General] ParachuteMaxFallRate=-3`.
+    /// Negative = falling.
+    pub parachute_max_fall_rate: i32,
     /// Whether ore cells grow denser over time (TiberiumGrows= in [General]).
     /// Default true. Can be overridden per-map in [SpecialFlags].
     pub tiberium_grows: bool,
@@ -388,6 +393,7 @@ impl Default for GeneralRules {
             reveal_by_height: true,
             tunnel_speed: sim_from_f32(6.0),
             flight_level: 1500,
+            parachute_max_fall_rate: -3,
             tiberium_grows: true,
             tiberium_spreads: true,
             growth_rate_minutes: 5.0,
@@ -622,6 +628,7 @@ impl GeneralRules {
                 .map(sim_from_f32)
                 .unwrap_or(sim_from_f32(6.0)),
             flight_level: general.get_i32("FlightLevel").unwrap_or(1500),
+            parachute_max_fall_rate: general.get_i32("ParachuteMaxFallRate").unwrap_or(-3),
             tiberium_grows: general.get_bool("TiberiumGrows").unwrap_or(true),
             tiberium_spreads: general.get_bool("TiberiumSpreads").unwrap_or(true),
             growth_rate_minutes: general.get_f32("GrowthRate").unwrap_or(5.0),
@@ -1973,6 +1980,40 @@ BarrelParticle=SmallGreySSys
         let ini = IniFile::from_str(ini_str);
         let general = GeneralRules::from_ini(&ini);
         assert!(general.building_garrisoned_sound.is_none());
+    }
+
+    #[test]
+    fn test_parachute_max_fall_rate_parsed() {
+        let ini_str = "\
+[General]
+ParachuteMaxFallRate=-3
+";
+        let ini = IniFile::from_str(ini_str);
+        let general = GeneralRules::from_ini(&ini);
+        assert_eq!(general.parachute_max_fall_rate, -3);
+    }
+
+    #[test]
+    fn test_parachute_max_fall_rate_default_when_missing() {
+        let ini_str = "[General]\n";
+        let ini = IniFile::from_str(ini_str);
+        let general = GeneralRules::from_ini(&ini);
+        assert_eq!(
+            general.parachute_max_fall_rate, -3,
+            "default must be -3 per gamemd Rules+0x7B8"
+        );
+    }
+
+    #[test]
+    fn test_parachute_max_fall_rate_custom() {
+        // Mod-friendliness: a non-default value must be respected, not clamped.
+        let ini_str = "\
+[General]
+ParachuteMaxFallRate=-1
+";
+        let ini = IniFile::from_str(ini_str);
+        let general = GeneralRules::from_ini(&ini);
+        assert_eq!(general.parachute_max_fall_rate, -1);
     }
 
     #[test]

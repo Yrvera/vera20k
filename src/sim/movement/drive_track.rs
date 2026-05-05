@@ -3541,6 +3541,16 @@ pub struct DriveTrackAdvance {
     pub chain_ready: bool,
     /// True if the track has been fully traversed.
     pub finished: bool,
+    /// Lepton-space delta from the just-consumed point to the next-to-consume
+    /// point, transformed by the active flags. Zero when no next step exists
+    /// (track end / sentinel hit). Used by sub-step interp to scale fractional
+    /// progress from the residual budget.
+    pub next_step_delta_x: i32,
+    /// See `next_step_delta_x`.
+    pub next_step_delta_y: i32,
+    /// True iff a valid next step exists (not at last_index, not a sentinel).
+    /// Sub-step interp is only applied when this is true.
+    pub had_next_step: bool,
 }
 
 /// Begin following a drive track. Creates a new DriveTrackState starting at
@@ -3657,6 +3667,27 @@ pub fn advance_drive_track(
     if idx < points.len() {
         let pt = &points[idx];
         let (tx, ty, tf) = transform_track_point(pt.x, pt.y, pt.facing, state.transform_flags);
+
+        // Peek the next-to-consume point for sub-step interp.
+        // Skip if at last_index (no next step) or if the next point is the
+        // (0, 0) sentinel at a non-zero index (matches L6 in design ledger).
+        let next_idx = idx + 1;
+        let (next_dx, next_dy, has_next) = if next_idx < points.len()
+            && (next_idx as u16) <= last_index
+        {
+            let npt = &points[next_idx];
+            let (ntx, nty, _) =
+                transform_track_point(npt.x, npt.y, npt.facing, state.transform_flags);
+            let is_sentinel = npt.x == 0 && npt.y == 0 && next_idx != 0;
+            if is_sentinel {
+                (0, 0, false)
+            } else {
+                ((ntx as i32) - (tx as i32), (nty as i32) - (ty as i32), true)
+            }
+        } else {
+            (0, 0, false)
+        };
+
         DriveTrackAdvance {
             sub_x: SimFixed::from_num(state.head_offset_x + tx as i32 + state.cell_offset_x),
             sub_y: SimFixed::from_num(state.head_offset_y + ty as i32 + state.cell_offset_y),
@@ -3664,6 +3695,9 @@ pub fn advance_drive_track(
             cell_jump,
             chain_ready,
             finished,
+            next_step_delta_x: next_dx,
+            next_step_delta_y: next_dy,
+            had_next_step: has_next,
         }
     } else {
         DriveTrackAdvance {
@@ -3673,7 +3707,105 @@ pub fn advance_drive_track(
             cell_jump: false,
             chain_ready: false,
             finished: true,
+            next_step_delta_x: 0,
+            next_step_delta_y: 0,
+            had_next_step: false,
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sub-step interpolation
+// ---------------------------------------------------------------------------
+
+/// Step cost denominator. The original engine consumes 7 budget units per
+/// track point; residual budget after the step loop is in `0..=6` and feeds
+/// fractional progress into the next-to-consume step.
+const TRACK_STEP_DENOM: i32 = 7;
+
+/// Above-this residual triggers the L4 trust window — past the step midpoint,
+/// the interp result is used even when its cell classification looks
+/// unexpected (handles rounding edge cases at large fractions).
+const INTERP_TRUST_BUDGET: i32 = 3;
+
+/// Output of `interp_sub_step`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct InterpSubStepResult {
+    /// Sub-cell X to write to `Position.sub_x`. Always within the saved cell's
+    /// or the full-step cell's [0, 256) lepton range.
+    pub sub_x: SimFixed,
+    /// Sub-cell Y to write to `Position.sub_y`.
+    pub sub_y: SimFixed,
+}
+
+/// Compute a sub-step interpolated position from the residual budget and the
+/// next-step peek. Returns `None` when no interp should be applied this tick
+/// (residual < 1, no next step, or any L5/L6 early-exit condition).
+///
+/// `saved_sub_x/saved_sub_y` are the lepton sub-cell coords AFTER the discrete
+/// step loop ran (the result of `advance_drive_track`). The cell anchor
+/// (`Position.rx/ry`) is implicit — the L4 safety gate uses cell-relative
+/// offsets, so the absolute cell coords are not needed here. The mid-track
+/// normal path guarantees rx/ry are unchanged from tick entry.
+/// `next_delta_x/next_delta_y` are from `DriveTrackAdvance.next_step_delta_*`.
+/// `residual` is `state.residual` (range `0..=6` after a normal step-loop exit).
+pub(crate) fn interp_sub_step(
+    saved_sub_x: SimFixed,
+    saved_sub_y: SimFixed,
+    next_delta_x: i32,
+    next_delta_y: i32,
+    residual: i32,
+    had_next_step: bool,
+) -> Option<InterpSubStepResult> {
+    // L5: no interp when residual is zero (vehicle made no fractional progress
+    // this tick — either it consumed exactly 7-multiples of budget, or it had
+    // none to begin with).
+    if residual < 1 {
+        return None;
+    }
+    // L5/L6: no interp without a valid next step (track end or sentinel).
+    if !had_next_step {
+        return None;
+    }
+
+    // L2: interp offset = next_delta * residual / 7 (truncate toward zero).
+    let interp_dx: i32 = next_delta_x * residual / TRACK_STEP_DENOM;
+    let interp_dy: i32 = next_delta_y * residual / TRACK_STEP_DENOM;
+
+    // Full-step offset (what the next step would produce at residual = 7).
+    let full_dx: i32 = next_delta_x;
+    let full_dy: i32 = next_delta_y;
+
+    // Convert saved sub-coords to absolute lepton-space (saved_cell-origin).
+    let saved_lx: i32 = saved_sub_x.to_num::<i32>();
+    let saved_ly: i32 = saved_sub_y.to_num::<i32>();
+
+    // L4 cell membership: classify which cell the interp/full positions land in,
+    // expressed as cell-relative offsets from the saved cell.
+    let interp_cell_dx: i32 = floor_div(saved_lx + interp_dx, 256);
+    let interp_cell_dy: i32 = floor_div(saved_ly + interp_dy, 256);
+    let full_cell_dx: i32 = floor_div(saved_lx + full_dx, 256);
+    let full_cell_dy: i32 = floor_div(saved_ly + full_dy, 256);
+
+    let in_saved = interp_cell_dx == 0 && interp_cell_dy == 0;
+    let in_full = interp_cell_dx == full_cell_dx && interp_cell_dy == full_cell_dy;
+
+    // L4 gate: use interp if it lands in saved or full cell, OR residual > 3
+    // (the trust window — past the step midpoint, trust the interp even if
+    // cell classification looks off).
+    let use_interp = in_saved || in_full || residual > INTERP_TRUST_BUDGET;
+
+    if use_interp {
+        Some(InterpSubStepResult {
+            sub_x: SimFixed::from_num(saved_lx + interp_dx),
+            sub_y: SimFixed::from_num(saved_ly + interp_dy),
+        })
+    } else {
+        // L4 fallback: use full-step coords.
+        Some(InterpSubStepResult {
+            sub_x: SimFixed::from_num(saved_lx + full_dx),
+            sub_y: SimFixed::from_num(saved_ly + full_dy),
+        })
     }
 }
 

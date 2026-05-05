@@ -59,6 +59,7 @@ pub mod droppod_movement;
 pub mod group_destination;
 pub mod jumpjet_movement;
 pub mod locomotor;
+pub mod parachute_descent;
 pub mod rocket_movement;
 pub mod scatter;
 pub mod teleport_movement;

@@ -20,7 +20,7 @@ use crate::map::entities::EntityCategory;
 use crate::map::houses::HouseAllianceMap;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::locomotor_type::{MovementZone, SpeedType};
-use crate::sim::components::MovementTarget;
+use crate::sim::components::{MovementTarget, Position};
 use crate::sim::debug_event_log::DebugEventKind;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::pathfinding::PathGrid;
@@ -29,7 +29,7 @@ use crate::sim::pathfinding::terrain_speed::{self, TerrainSpeedConfig};
 use crate::sim::pathfinding::zone_map::ZoneGrid;
 use crate::sim::rng::SimRng;
 use crate::util::fixed_math::{
-    SIM_HALF, SIM_ONE, SIM_ZERO, SimFixed, dt_from_tick_ms, fixed_distance,
+    SIM_HALF, SIM_ONE, SIM_ZERO, SimFixed, dt_from_tick_ms, fixed_distance, isqrt_i64,
 };
 
 use super::bump_crush;
@@ -47,6 +47,21 @@ use super::{
 use crate::sim::occupancy::OccupancyGrid;
 
 // Naval diagnostic functions moved to movement_occupancy.rs
+
+/// 2D Euclidean distance in leptons from `pos` to the center of cell `goal`.
+///
+/// Used by the drive-track speed ramp to decide when to start braking. Cell
+/// center is `cell * 256 + 128` leptons. i64 widening keeps `dx² + dy²` safe
+/// on large maps (max sum-of-squares ~10^11 for a 64k-cell diagonal).
+fn distance_to_goal_leptons(pos: &Position, goal: (u16, u16)) -> SimFixed {
+    let unit_x: i64 = pos.rx as i64 * 256 + pos.sub_x.to_num::<i64>();
+    let unit_y: i64 = pos.ry as i64 * 256 + pos.sub_y.to_num::<i64>();
+    let goal_x: i64 = goal.0 as i64 * 256 + 128;
+    let goal_y: i64 = goal.1 as i64 * 256 + 128;
+    let dx = unit_x - goal_x;
+    let dy = unit_y - goal_y;
+    SimFixed::from_num(isqrt_i64(dx * dx + dy * dy) as i32)
+}
 
 /// Build a read-only snapshot of the mover's properties before entering the
 /// inner movement loop. This avoids repeated `entities.get()` calls and keeps
@@ -496,10 +511,10 @@ pub fn tick_movement_with_grids(
                         .copied()
                         .unwrap_or((entity.position.rx, entity.position.ry))
                 });
-                let dx = (goal.0 as i32 - entity.position.rx as i32).abs();
-                let dy = (goal.1 as i32 - entity.position.ry as i32).abs();
-                // Chebyshev distance in leptons; bridge Z offset added below for water movers.
-                let mut dist = SimFixed::from_num(dx.max(dy) * 256);
+                // 2D Euclidean lepton distance — diagonal arrivals brake ~41%
+                // earlier than the prior Chebyshev metric. Bridge Z offset added
+                // below for water movers.
+                let mut dist = distance_to_goal_leptons(&entity.position, goal);
 
                 // Ships under bridges: inflate distance by bridge Z clearance to prevent
                 // premature braking.
@@ -1040,5 +1055,53 @@ fn update_locomotor_phases(entities: &mut EntityStore, sim_tick: u64) {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod distance_tests {
+    use super::*;
+    use crate::util::lepton::CELL_CENTER_LEPTON;
+
+    fn pos_at(rx: u16, ry: u16) -> Position {
+        Position {
+            rx,
+            ry,
+            z: 0,
+            sub_x: CELL_CENTER_LEPTON,
+            sub_y: CELL_CENTER_LEPTON,
+            screen_x: 0.0,
+            screen_y: 0.0,
+        }
+    }
+
+    #[test]
+    fn distance_same_cell_center_is_zero() {
+        let d = distance_to_goal_leptons(&pos_at(10, 10), (10, 10));
+        assert_eq!(d, SIM_ZERO);
+    }
+
+    #[test]
+    fn distance_one_cell_cardinal_is_256_leptons() {
+        let d = distance_to_goal_leptons(&pos_at(10, 10), (11, 10));
+        assert_eq!(d, SimFixed::from_num(256));
+    }
+
+    #[test]
+    fn distance_one_cell_diagonal_is_sqrt2_times_256() {
+        // Euclidean 1-cell diagonal: sqrt(256² + 256²) = 256·sqrt(2) ≈ 362.
+        // isqrt_i64(131072) = 362 (truncated). Prior Chebyshev metric returned 256.
+        let d = distance_to_goal_leptons(&pos_at(10, 10), (11, 11));
+        assert_eq!(d, SimFixed::from_num(362));
+    }
+
+    #[test]
+    fn distance_two_cell_diagonal_brakes_at_500_threshold() {
+        // 2-cell diagonal ≈ 724 leptons; default SlowdownDistance=500 → not braking yet.
+        let d = distance_to_goal_leptons(&pos_at(10, 10), (12, 12));
+        assert!(d > SimFixed::from_num(500));
+        // 1-cell diagonal ≈ 362 → would now trigger braking, where Chebyshev (256) also did.
+        let d = distance_to_goal_leptons(&pos_at(10, 10), (11, 11));
+        assert!(d < SimFixed::from_num(500));
     }
 }

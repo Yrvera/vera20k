@@ -283,9 +283,23 @@ pub(super) fn advance_lepton_position(
             position.sub_y = crate::util::lepton::CELL_CENTER_LEPTON;
             // Fall through to ReadyForCrossings — normal movement takes over.
         } else {
-            // Mid-track, no events — update visual position and continue.
+            // Mid-track, no events — apply discrete-step pos, then layer
+            // sub-step interp on top using the residual budget. The interp
+            // helper enforces the L4 cell-validity safety gate; cell occupancy
+            // never changes mid-step (rx/ry unchanged on this path).
             position.sub_x = advance.sub_x;
             position.sub_y = advance.sub_y;
+            if let Some(interp) = drive_track::interp_sub_step(
+                advance.sub_x,
+                advance.sub_y,
+                advance.next_step_delta_x,
+                advance.next_step_delta_y,
+                track_state.residual,
+                advance.had_next_step,
+            ) {
+                position.sub_x = interp.sub_x;
+                position.sub_y = interp.sub_y;
+            }
             position.refresh_screen_coords();
             return AdvanceResult::DriveTrackActive;
         }

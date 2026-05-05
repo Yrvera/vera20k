@@ -426,3 +426,318 @@ fn advance_drive_track_1_cell_jump_fires_once() {
         "straight north track should cross exactly one cell boundary"
     );
 }
+
+// ---------------------------------------------------------------------------
+// interp_sub_step tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn interp_sub_step_residual_zero_returns_none() {
+    let result = interp_sub_step(
+        SimFixed::from_num(128),
+        SimFixed::from_num(128),
+        14,
+        0,
+        0,
+        true,
+    );
+    assert_eq!(result, None, "residual=0 must yield no interp");
+}
+
+#[test]
+fn interp_sub_step_no_next_step_returns_none() {
+    let result = interp_sub_step(
+        SimFixed::from_num(128),
+        SimFixed::from_num(128),
+        14,
+        0,
+        3,
+        false,
+    );
+    assert_eq!(result, None, "had_next_step=false must yield no interp");
+}
+
+#[test]
+fn interp_sub_step_fraction_at_residual_1() {
+    // delta=14, residual=1 → 14 * 1 / 7 = 2.
+    let result = interp_sub_step(
+        SimFixed::from_num(100),
+        SimFixed::from_num(100),
+        14,
+        0,
+        1,
+        true,
+    )
+    .expect("interp should apply");
+    assert_eq!(
+        result.sub_x,
+        SimFixed::from_num(102),
+        "saved 100 + 14*1/7=2 → 102"
+    );
+    assert_eq!(result.sub_y, SimFixed::from_num(100));
+}
+
+#[test]
+fn interp_sub_step_fraction_at_residual_6() {
+    // delta=14, residual=6 → 14 * 6 / 7 = 12.
+    let result = interp_sub_step(
+        SimFixed::from_num(100),
+        SimFixed::from_num(100),
+        14,
+        0,
+        6,
+        true,
+    )
+    .expect("interp should apply");
+    assert_eq!(
+        result.sub_x,
+        SimFixed::from_num(112),
+        "saved 100 + 14*6/7=12 → 112"
+    );
+}
+
+#[test]
+fn interp_sub_step_negative_delta_truncates_toward_zero() {
+    // delta=-15, residual=3 → -15 * 3 / 7 = -45 / 7 = -6 (truncated from -6.43).
+    let result = interp_sub_step(
+        SimFixed::from_num(200),
+        SimFixed::from_num(100),
+        -15,
+        0,
+        3,
+        true,
+    )
+    .expect("interp should apply");
+    assert_eq!(
+        result.sub_x,
+        SimFixed::from_num(194),
+        "saved 200 + (-15)*3/7=-6 → 194 (truncate toward zero on negative)"
+    );
+}
+
+#[test]
+fn interp_sub_step_diagonal_delta() {
+    // dx=14, dy=-7, residual=4 → dx*4/7=8, dy*4/7=-4.
+    let result = interp_sub_step(
+        SimFixed::from_num(100),
+        SimFixed::from_num(100),
+        14,
+        -7,
+        4,
+        true,
+    )
+    .expect("interp should apply");
+    assert_eq!(result.sub_x, SimFixed::from_num(108));
+    assert_eq!(result.sub_y, SimFixed::from_num(96));
+}
+
+#[test]
+fn interp_sub_step_all_residual_values_monotonic() {
+    // For positive delta, sub_x must increase monotonically with residual.
+    let mut last = SimFixed::from_num(100);
+    for r in 1..=6 {
+        let result = interp_sub_step(
+            SimFixed::from_num(100),
+            SimFixed::from_num(100),
+            14,
+            0,
+            r,
+            true,
+        )
+        .expect("interp should apply");
+        assert!(
+            result.sub_x > last,
+            "residual {} produced sub_x {:?} not greater than previous {:?}",
+            r,
+            result.sub_x,
+            last
+        );
+        last = result.sub_x;
+    }
+}
+
+#[test]
+fn interp_sub_step_lands_in_saved_cell() {
+    // saved=(100, 100), delta=(14, 0), residual=2 → interp_dx=4 → 104.
+    // floor_div(100+4, 256) = 0, floor_div(100, 256) = 0. interp_cell == saved.
+    let result = interp_sub_step(
+        SimFixed::from_num(100),
+        SimFixed::from_num(100),
+        14,
+        0,
+        2,
+        true,
+    )
+    .expect("interp should apply");
+    assert_eq!(result.sub_x, SimFixed::from_num(104));
+}
+
+#[test]
+fn interp_sub_step_lands_in_full_step_cell() {
+    // saved=(250, 100), full delta=(14, 0). residual=6 → interp_dx = 12.
+    // saved_lx + interp_dx = 262 → cell offset (1, 0).
+    // saved_lx + full_dx = 264 → cell offset (1, 0).
+    // interp_cell == full_cell, so use interp.
+    let result = interp_sub_step(
+        SimFixed::from_num(250),
+        SimFixed::from_num(100),
+        14,
+        0,
+        6,
+        true,
+    )
+    .expect("interp should apply");
+    // 250 + 14*6/7 = 250 + 12 = 262.
+    assert_eq!(result.sub_x, SimFixed::from_num(262));
+}
+
+#[test]
+fn interp_sub_step_third_cell_with_high_residual_uses_interp() {
+    // Third-cell construction: saved=(0, 0), delta=(770, 0), residual=4.
+    // interp_dx = 770*4/7 = 440. saved+interp = 440 → cell offset 1.
+    // full_dx = 770. saved+full = 770 → cell offset 3 (770 = 3*256+2).
+    // saved cell offset 0, interp 1, full 3. Third-cell case.
+    // residual=4 > 3 → use interp despite third-cell classification.
+    let result = interp_sub_step(
+        SimFixed::from_num(0),
+        SimFixed::from_num(0),
+        770,
+        0,
+        4,
+        true,
+    )
+    .expect("interp should apply");
+    // residual > 3 → use interp: 0 + 440 = 440.
+    assert_eq!(result.sub_x, SimFixed::from_num(440));
+}
+
+#[test]
+fn interp_sub_step_third_cell_with_low_residual_falls_back() {
+    // saved=(0, 0), delta=(2000, 0), residual=2.
+    // interp_dx = 2000*2/7 = 571. saved+interp = 571 → cell offset 2.
+    // full_dx = 2000. saved+full = 2000 → cell offset 7.
+    // saved 0, interp 2, full 7. Third-cell case.
+    // residual=2 ≤ 3 → fall back to full-step coords.
+    let result = interp_sub_step(
+        SimFixed::from_num(0),
+        SimFixed::from_num(0),
+        2000,
+        0,
+        2,
+        true,
+    )
+    .expect("interp should apply (fallback path)");
+    // L4 fallback: use full-step coords.
+    assert_eq!(
+        result.sub_x,
+        SimFixed::from_num(2000),
+        "low residual + third-cell interp must fall back to full-step coords"
+    );
+}
+
+#[test]
+fn interp_sub_step_residual_threshold_is_strict_greater() {
+    // residual = 3 must NOT trigger the trust window (gate is > 3, not >= 3).
+    // saved=(0, 0), delta=(2000, 0), residual=3.
+    // interp_dx = 2000*3/7 = 857. saved+interp = 857 → cell offset 3.
+    // full = 2000 → cell offset 7. Third-cell case.
+    // residual=3 NOT > 3 → fall back to full.
+    let result = interp_sub_step(
+        SimFixed::from_num(0),
+        SimFixed::from_num(0),
+        2000,
+        0,
+        3,
+        true,
+    )
+    .expect("interp should apply (fallback path)");
+    assert_eq!(
+        result.sub_x,
+        SimFixed::from_num(2000),
+        "residual=3 with third-cell interp must fall back (gate is > 3, not >= 3)"
+    );
+}
+
+#[test]
+fn interp_sub_step_residual_4_triggers_trust_window() {
+    // Same construction with residual=4 — should now USE interp.
+    // interp_dx = 2000*4/7 = 1142. saved+interp = 1142 → cell offset 4.
+    // full = 2000 → cell offset 7. Third-cell, residual=4 > 3 → trust window.
+    let result = interp_sub_step(
+        SimFixed::from_num(0),
+        SimFixed::from_num(0),
+        2000,
+        0,
+        4,
+        true,
+    )
+    .expect("interp should apply");
+    assert_eq!(
+        result.sub_x,
+        SimFixed::from_num(1142),
+        "residual=4 trust window: use interp despite third-cell"
+    );
+}
+
+#[test]
+fn end_to_end_sub_step_smoothness_no_stalls() {
+    // Pick a speed that produces less than one step's worth of budget per tick
+    // (budget ≈ 4, step cost = 7). Without interp the vehicle would visibly
+    // stall on every "no-step" tick (point_index unchanged, residual carries
+    // forward) and snap forward on "step" ticks. With interp, every tick's
+    // visual position advances because the residual contributes a fractional
+    // offset toward the next track point.
+    let mut state = begin_drive_track(1, 0, 0, -1).expect("track 1 exists");
+    let dt = SimFixed::lit("0.066");
+    let speed = SimFixed::from_num(60); // 60 * 0.066 ≈ 4 leptons/tick budget
+
+    let mut prev_y: Option<SimFixed> = None;
+    let mut zero_delta_ticks: i32 = 0;
+    let mut tick_count: i32 = 0;
+
+    // 10 ticks ~ 40 budget ~ 5 steps — well below this track's first cell jump.
+    for _ in 0..10 {
+        let advance = advance_drive_track(&mut state, speed, dt);
+        if advance.finished || advance.cell_jump {
+            break;
+        }
+
+        let mut sub_y = advance.sub_y;
+        if let Some(interp) = interp_sub_step(
+            advance.sub_x,
+            advance.sub_y,
+            advance.next_step_delta_x,
+            advance.next_step_delta_y,
+            state.residual,
+            advance.had_next_step,
+        ) {
+            sub_y = interp.sub_y;
+        }
+
+        if let Some(py) = prev_y
+            && sub_y == py
+        {
+            zero_delta_ticks += 1;
+        }
+        prev_y = Some(sub_y);
+        tick_count += 1;
+    }
+
+    assert!(
+        tick_count >= 8,
+        "test setup error: only {} ticks ran before cell_jump/finished",
+        tick_count
+    );
+    // With sub-step interp wired in, every tick should advance because residual
+    // varies from one tick to the next (4 leptons added per tick into a step
+    // cost of 7 produces a non-trivial residual cycle: 3, 6, 2, 5, 1, 4, 0, ...).
+    // Zero-delta ticks happen only when residual lands at 0 after a step (no
+    // interp on that frame); allowing up to 2 covers the residual-cycle floor.
+    assert!(
+        zero_delta_ticks <= 2,
+        "{} zero-delta ticks (out of {}) indicates interp didn't fire — \
+         vehicle is stalling between steps instead of drifting smoothly",
+        zero_delta_ticks,
+        tick_count
+    );
+}
