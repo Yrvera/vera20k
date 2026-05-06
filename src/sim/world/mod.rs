@@ -1142,6 +1142,7 @@ impl Simulation {
                     Command::PlaceReadyBuilding { .. }
                         | Command::DeployMcv { .. }
                         | Command::UndeployBuilding { .. }
+                        | Command::LaunchSuperWeapon { .. }
                 ) {
                     spawned_entities = true;
                 }
@@ -1483,6 +1484,7 @@ impl Simulation {
                         Command::PlaceReadyBuilding { .. }
                             | Command::DeployMcv { .. }
                             | Command::UndeployBuilding { .. }
+                            | Command::LaunchSuperWeapon { .. }
                     )
                 {
                     spawned_entities = true;

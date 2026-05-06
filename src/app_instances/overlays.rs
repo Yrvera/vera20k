@@ -651,11 +651,16 @@ pub(crate) fn build_parachute_instances(
         // path (ColorScheme[0]'s ConvertPalette).
         let tint: [f32; 3] = [1.0, 1.0, 1.0];
 
-        // Depth: GI body depth minus a small epsilon so the chute draws on
-        // top. ZAdjust=-10 in gamemd is a depth-sort fudge with no precise
-        // pixel mapping; in our depth-buffer rendering, lower depth = closer
-        // to camera = on top.
-        let gi_depth = compute_sprite_depth_params(origin_y, world_height, gy, pos.z);
+        // Depth: derive from the entity's GROUND screen_y (the actual world
+        // cell), not the airborne render y. compute_sprite_depth_params treats
+        // smaller screen_y as "further from camera" — using the airborne y
+        // would put the sprite at a depth corresponding to a more-northern
+        // cell, where terrain there occludes it. The chute then draws above
+        // the GI body via a small epsilon (lower depth = closer = on top).
+        let (_, ground_sy) = crate::util::lepton::lepton_to_screen(
+            pos.rx, pos.ry, pos.sub_x, pos.sub_y, pos.z,
+        );
+        let gi_depth = compute_sprite_depth_params(origin_y, world_height, ground_sy, pos.z);
         let depth = (gi_depth - CHUTE_DEPTH_EPSILON).clamp(0.001, 0.999);
 
         paged[entry.page as usize].push(SpriteInstance {
