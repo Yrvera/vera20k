@@ -1038,14 +1038,24 @@ impl PathGrid {
 
     /// Mark cells occupied by a building footprint as blocked (ground layer).
     /// Buildings only block the ground layer — bridge decks above are unaffected.
-    pub fn block_building_footprint(&mut self, cell_rx: u16, cell_ry: u16, foundation: &str) {
-        let (fw, fh): (u16, u16) = parse_foundation(foundation);
-        for dy in 0..fh {
-            for dx in 0..fw {
-                let bx = cell_rx.wrapping_add(dx);
-                let by = cell_ry.wrapping_add(dy);
-                self.set_blocked(bx, by, true);
-            }
+    /// AddOccupy/RemoveOccupy art.ini overrides are honored.
+    pub fn block_building_footprint(
+        &mut self,
+        cell_rx: u16,
+        cell_ry: u16,
+        foundation: &str,
+        add_occupy: &[(i16, i16)],
+        remove_occupy: &[(i16, i16)],
+    ) {
+        let cells = crate::sim::production::building_footprint_cells(
+            cell_rx,
+            cell_ry,
+            foundation,
+            add_occupy,
+            remove_occupy,
+        );
+        for (rx, ry) in cells {
+            self.set_blocked(rx, ry, true);
         }
     }
 

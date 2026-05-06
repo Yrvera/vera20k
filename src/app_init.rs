@@ -614,12 +614,19 @@ pub fn load_map(
         // Block building footprints using foundation sizes from rules.ini.
         for ent in &map_data.entities {
             if ent.category == crate::map::entities::EntityCategory::Structure {
-                let foundation: &str = rules
-                    .as_ref()
-                    .and_then(|r| r.object(&ent.type_id))
-                    .map(|obj| obj.foundation.as_str())
-                    .unwrap_or("1x1");
-                grid.block_building_footprint(ent.cell_x, ent.cell_y, foundation);
+                let obj = rules.as_ref().and_then(|r| r.object(&ent.type_id));
+                let foundation: &str = obj.map(|o| o.foundation.as_str()).unwrap_or("1x1");
+                let add_occupy: &[(i16, i16)] =
+                    obj.map(|o| o.add_occupy.as_slice()).unwrap_or(&[]);
+                let remove_occupy: &[(i16, i16)] =
+                    obj.map(|o| o.remove_occupy.as_slice()).unwrap_or(&[]);
+                grid.block_building_footprint(
+                    ent.cell_x,
+                    ent.cell_y,
+                    foundation,
+                    add_occupy,
+                    remove_occupy,
+                );
             }
         }
 

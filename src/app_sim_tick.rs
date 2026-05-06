@@ -175,6 +175,9 @@ pub(crate) fn advance_in_game_runtime(state: &mut AppState, elapsed_ms: u64) {
 
         advance_fixed_simulation(state, sim_elapsed);
         crate::app_building_anim::drain_sound_events(state);
+        // Drain bale events into building anim overlays + particle bursts before
+        // the per-frame anim tick so the SpecialAnim is visible this same frame.
+        crate::app_building_anim::consume_bale_events(state);
         // Use real wall-clock delta (capped to prevent jumps after pauses/debugger).
         // Previously this passed SIM_TICK_MS (66ms) per render frame, causing building
         // idle animations to play ~3-4× too fast (60fps × 66ms = 3960ms/sec).
@@ -187,6 +190,10 @@ pub(crate) fn advance_in_game_runtime(state: &mut AppState, elapsed_ms: u64) {
             sim_elapsed.min(MAX_UPDATE_DELTA_MS) as u32,
         );
         crate::app_building_anim::tick_garrison_muzzle_flashes(
+            state,
+            sim_elapsed.min(MAX_UPDATE_DELTA_MS) as u32,
+        );
+        crate::app_chute_anim::tick_parachute_anims(
             state,
             sim_elapsed.min(MAX_UPDATE_DELTA_MS) as u32,
         );
@@ -363,9 +370,16 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                         // and select healthy/damaged variant based on health ratio.
                         continue;
                     }
-                    SimSoundEvent::ChronoTeleport { .. } => {
-                        // TODO: resolve ChronoInSound/ChronoOutSound from unit type or rules.
-                        continue;
+                    SimSoundEvent::ChronoTeleport {
+                        sound_id,
+                        rx,
+                        ry,
+                    } => {
+                        let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
+                        GameSoundEvent::ChronoTeleport {
+                            sound_id: sim.interner.resolve(sound_id).to_string(),
+                            screen_pos: Some((sx, sy)),
+                        }
                     }
                     SimSoundEvent::BuildingComplete { owner } => {
                         // Only play EVA for the local player's production.
@@ -715,11 +729,11 @@ pub(crate) fn rebuild_dynamic_path_grid(state: &mut AppState) {
     });
 
     for (rx, ry, type_id) in &structures {
-        let foundation = rules
-            .object(type_id)
-            .map(|obj| obj.foundation.as_str())
-            .unwrap_or("1x1");
-        grid.block_building_footprint(*rx, *ry, foundation);
+        let obj = rules.object(type_id);
+        let foundation = obj.map(|o| o.foundation.as_str()).unwrap_or("1x1");
+        let add_occupy: &[(i16, i16)] = obj.map(|o| o.add_occupy.as_slice()).unwrap_or(&[]);
+        let remove_occupy: &[(i16, i16)] = obj.map(|o| o.remove_occupy.as_slice()).unwrap_or(&[]);
+        grid.block_building_footprint(*rx, *ry, foundation, add_occupy, remove_occupy);
     }
 
     // Block wall overlay cells (auto-filled walls have no entity but still block movement).
@@ -730,7 +744,7 @@ pub(crate) fn rebuild_dynamic_path_grid(state: &mut AppState) {
                 .map(|f| f.wall)
                 .unwrap_or(false);
             if is_wall {
-                grid.block_building_footprint(entry.rx, entry.ry, "1x1");
+                grid.block_building_footprint(entry.rx, entry.ry, "1x1", &[], &[]);
             }
         }
     }

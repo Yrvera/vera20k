@@ -229,6 +229,12 @@ pub struct ObjectType {
     pub deploy_sound: Option<String>,
     /// Sound ID played when this unit undeploys.
     pub undeploy_sound: Option<String>,
+    /// Sound played at the destination cell when this unit warps in
+    /// (chrono teleport arrival).
+    pub chrono_in_sound: Option<String>,
+    /// Sound played at the source cell when this unit warps out
+    /// (chrono teleport departure).
+    pub chrono_out_sound: Option<String>,
     /// Whether this unit has an independently rotating turret.
     /// Parsed from rules.ini `Turret=yes`. Only meaningful for vehicles/aircraft.
     pub has_turret: bool,
@@ -296,6 +302,12 @@ pub struct ObjectType {
     /// First docking offset from art.ini (DockingOffset0=X,Y,Z in leptons).
     /// Where units sit during dock operations. Merged from art.ini during init.
     pub docking_offset: Option<(i32, i32, i32)>,
+    /// Cells added to the rectangular foundation (from art.ini AddOccupy1..N).
+    /// Merged from art.ini during init.
+    pub add_occupy: Vec<(i16, i16)>,
+    /// Cells removed from the rectangular foundation (from art.ini RemoveOccupy1..N).
+    /// Merged from art.ini during init.
+    pub remove_occupy: Vec<(i16, i16)>,
     /// Alternative VXL model displayed while unloading at a refinery (UnloadingClass= in rules.ini).
     /// e.g. HARV uses HORV (harvester without ore bin), CMIN uses CMON.
     pub unloading_class: Option<String>,
@@ -615,6 +627,8 @@ pub struct ObjectType {
     /// Four `RefinerySmokeOffsetOne/Two/Three/Four=` X,Y,Z triplets.
     /// Used to position the four chimney-smoke emitters on a refinery.
     pub refinery_smoke_offsets: [IVec3; 4],
+    /// `RefinerySmokeFrames=` — frame count for the smoke particle system.
+    pub refinery_smoke_frames: u16,
     /// `GapRadiusInCells=` — per-object gap-generator radius (overrides the
     /// global default for this object).
     pub gap_radius_in_cells: u8,
@@ -733,6 +747,8 @@ impl ObjectType {
             crush_sound: section.get("CrushSound").map(|s| s.to_string()),
             deploy_sound: section.get("DeploySound").map(|s| s.to_string()),
             undeploy_sound: section.get("UndeploySound").map(|s| s.to_string()),
+            chrono_in_sound: section.get("ChronoInSound").map(|s| s.to_string()),
+            chrono_out_sound: section.get("ChronoOutSound").map(|s| s.to_string()),
             has_turret: section.get_bool("Turret").unwrap_or(false),
             // gamemd forces ROT=10 on any UnitType with Harvester=yes (or Weeder=yes,
             // not yet parsed) at INI parse time, overriding whatever rules.ini specifies.
@@ -774,6 +790,8 @@ impl ObjectType {
                 .collect(),
             queueing_cell: None,  // merged from art.ini later
             docking_offset: None, // merged from art.ini later
+            add_occupy: Vec::new(),    // merged from art.ini later
+            remove_occupy: Vec::new(), // merged from art.ini later
             unloading_class: section.get("UnloadingClass").map(|s| s.to_string()),
             ammo: section.get_i32("Ammo").unwrap_or(-1),
 
@@ -966,6 +984,10 @@ impl ObjectType {
                     .map(parse_ivec3_offset)
                     .unwrap_or(IVec3::ZERO),
             ],
+            refinery_smoke_frames: section
+                .get_i32("RefinerySmokeFrames")
+                .unwrap_or(0)
+                .max(0) as u16,
             gap_radius_in_cells: section
                 .get_i32("GapRadiusInCells")
                 .map(|n| n.clamp(0, u8::MAX as i32) as u8)
@@ -1386,6 +1408,22 @@ mod tests {
         assert_eq!(obj.refinery_smoke_offsets[1], IVec3::new(-5, 0, 15));
         assert_eq!(obj.refinery_smoke_offsets[2], IVec3::ZERO);
         assert_eq!(obj.refinery_smoke_offsets[3], IVec3::new(100, -50, 200));
+    }
+
+    #[test]
+    fn techno_type_parses_refinery_smoke_frames() {
+        let ini: IniFile = IniFile::from_str("[FOO]\nRefinerySmokeFrames=50\n");
+        let section = ini.section("FOO").expect("section");
+        let obj = ObjectType::from_ini_section("FOO", section, ObjectCategory::Building);
+        assert_eq!(obj.refinery_smoke_frames, 50);
+    }
+
+    #[test]
+    fn techno_type_refinery_smoke_frames_defaults_to_zero() {
+        let ini: IniFile = IniFile::from_str("[FOO]\n");
+        let section = ini.section("FOO").expect("section");
+        let obj = ObjectType::from_ini_section("FOO", section, ObjectCategory::Building);
+        assert_eq!(obj.refinery_smoke_frames, 0);
     }
 
     #[test]

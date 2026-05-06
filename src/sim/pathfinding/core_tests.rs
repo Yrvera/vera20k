@@ -298,7 +298,7 @@ fn test_block_building_footprint() {
     assert!(grid.is_walkable(3, 3));
     assert!(grid.is_walkable(4, 4));
     // Block a 2x2 building at (3, 3).
-    grid.block_building_footprint(3, 3, "2x2");
+    grid.block_building_footprint(3, 3, "2x2", &[], &[]);
     assert!(!grid.is_walkable(3, 3));
     assert!(!grid.is_walkable(4, 3));
     assert!(!grid.is_walkable(3, 4));
@@ -306,6 +306,41 @@ fn test_block_building_footprint() {
     // Adjacent cells remain walkable.
     assert!(grid.is_walkable(2, 3));
     assert!(grid.is_walkable(5, 3));
+}
+
+#[test]
+fn garefn_footprint_leaves_dock_pad_walkable() {
+    let cells: Vec<MapCell> = (0..32u16)
+        .flat_map(|rx| {
+            (0..32u16).map(move |ry| MapCell {
+                rx,
+                ry,
+                tile_index: 0,
+                sub_tile: 0,
+                z: 0,
+            })
+        })
+        .collect();
+    let mut grid: PathGrid = PathGrid::from_map_data(&cells, None, 32, 32);
+    grid.block_building_footprint(10, 10, "4x3", &[(-1, 0), (-1, -1)], &[(3, 1)]);
+    // RemoveOccupy1=3,1 → cell (13, 11) should be walkable (the dock pad)
+    assert!(
+        grid.is_walkable(13, 11),
+        "RemoveOccupy1=3,1 should leave (rx+3,ry+1) walkable"
+    );
+    // AddOccupy1=-1,0 → cell (9, 10) should be blocked
+    assert!(
+        !grid.is_walkable(9, 10),
+        "AddOccupy1=-1,0 should block (rx-1, ry+0)"
+    );
+    // AddOccupy2=-1,-1 → cell (9, 9) should be blocked
+    assert!(
+        !grid.is_walkable(9, 9),
+        "AddOccupy2=-1,-1 should block (rx-1, ry-1)"
+    );
+    // Standard rectangle cells still blocked.
+    assert!(!grid.is_walkable(10, 10));
+    assert!(!grid.is_walkable(13, 12));
 }
 
 #[test]

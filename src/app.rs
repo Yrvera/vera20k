@@ -259,6 +259,10 @@ pub(crate) struct AppState {
     /// Active garrison muzzle flash animations. Short-lived one-shot entries
     /// spawned when a garrisoned building fires. Ticked each frame, removed on completion.
     pub(crate) garrison_muzzle_flashes: Vec<crate::sim::components::GarrisonMuzzleFlash>,
+    /// Active parachute animations, one per descending paradropped infantry.
+    /// Polling-based lifecycle: spawned when an entity gains parachute_state
+    /// in the sim, removed on landing or death. Render-only; not snapshotted.
+    pub(crate) parachute_anims: Vec<crate::sim::components::ParachuteAnim>,
     /// True when the game is paused (ESC menu visible, sim frozen).
     pub(crate) paused: bool,
     /// When true, advance exactly one sim tick while paused, then clear.
@@ -651,6 +655,7 @@ impl App {
             sound_events: SoundEventQueue::new(),
             pending_fire_effects: Vec::new(),
             garrison_muzzle_flashes: Vec::new(),
+            parachute_anims: Vec::new(),
             paused: false,
             debug_frame_step_requested: false,
             sim_speed_tps: app_render::SIM_TICK_HZ,

@@ -1,22 +1,22 @@
-//! Refinery docking visual sequence — approach, enter pad, unload, exit.
+//! Refinery docking visual sequence — approach, link, unload, depart.
 //!
 //! Drives the sub-state machine (`RefineryDockPhase`) when the miner is in
-//! `MinerState::Dock`. Reproduces the original game's `BuildingClass::
-//! DockingSequence_Update` choreography: clear path → rotate → drive onto
-//! pad → 180° turn → unload → drive off.
+//! `MinerState::Dock`. Mirrors the four-state FSM used by gamemd's harvester
+//! deploy mission (cases 0/1/3/4): approach the queue, link onto the pad,
+//! deposit bales, then drive off the exit cell.
 //!
 //! ## Dependency rules
 //! - Part of sim/ — depends on sim/miner, sim/miner_dock, sim/components,
-//!   sim/movement, sim/turret, rules/.
+//!   sim/movement, rules/.
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
 use crate::rules::ruleset::RuleSet;
+use crate::sim::components::BaleDepositEvent;
 use crate::sim::miner::{MinerConfig, MinerState, RefineryDockPhase};
 use crate::sim::movement;
-use crate::sim::movement::turret;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::world::{SimSoundEvent, Simulation};
-use crate::util::fixed_math::{SimFixed, facing_from_delta_int};
+use crate::util::fixed_math::SimFixed;
 
 use super::miner_system::{MinerSnapshot, player_has_purifier};
 use crate::sim::production::{credits_entry_for_owner, foundation_dimensions};
@@ -27,9 +27,6 @@ fn record_dock_phase(snap: &mut MinerSnapshot, old: RefineryDockPhase, new: Refi
         .push((format!("{:?}", old), format!("{:?}", new)));
 }
 
-/// Sim tick period in ms (15 Hz).
-const TICK_MS: u32 = 67;
-
 // ---------------------------------------------------------------------------
 // Cell computation helpers
 // ---------------------------------------------------------------------------
@@ -38,8 +35,6 @@ const TICK_MS: u32 = 67;
 ///
 /// Uses art.ini `QueueingCell=` when available (merged into ObjectType),
 /// otherwise falls back to geometric approximation from foundation dimensions.
-/// TibSun legacy: `QueueingCell=4,1` for a 4×3 foundation places the queue
-/// one cell east of the building's east edge, vertically centred.
 pub(super) fn refinery_queue_cell(
     rx: u16,
     ry: u16,
@@ -48,7 +43,6 @@ pub(super) fn refinery_queue_cell(
     queueing_cell: Option<(u16, u16)>,
 ) -> (u16, u16) {
     if let Some((qx, qy)) = queueing_cell {
-        // QueueingCell is a cell offset from building origin.
         (rx + qx, ry + qy)
     } else {
         (rx + width, ry + height / 2)
@@ -68,7 +62,6 @@ pub(super) fn refinery_pad_cell(
     docking_offset: Option<(i32, i32, i32)>,
 ) -> (u16, u16) {
     if let Some((dx, dy, _)) = docking_offset {
-        // DockingOffset is in leptons (256 per cell). Round to nearest cell.
         let cx = (dx + 128) / 256;
         let cy = (dy + 128) / 256;
         (
@@ -82,62 +75,19 @@ pub(super) fn refinery_pad_cell(
 
 /// Exit cell — where the miner drives after undocking.
 ///
-/// `exit = building_center + (-0x80, +0x80)` leptons, i.e. half a cell
-/// west and half a cell south of the foundation center.
-pub(super) fn refinery_exit_cell(
-    rx: u16,
-    ry: u16,
-    width: u16,
-    height: u16,
-    _queueing_cell: Option<(u16, u16)>,
-) -> (u16, u16) {
-    // Building center in leptons (foundation geometric center):
-    //   X = rx*256 + 128 + (w-1)*128 = rx*256 + w*128
-    //   Y = ry*256 + 128 + (h-1)*128 = ry*256 + h*128
-    // Offset (-128, +128) leptons from center, then floor-divide by 256 for
-    // cell coordinates. Lands at the south-edge interior cell of the
-    // foundation (e.g. (rx+1, ry+2) for 4x3, (rx+1, ry+2) for 3×3 → cell rx+1, ry+2).
-    let exit_x = (rx as i32 * 256 + (width as i32 - 1) * 128) / 256;
-    let exit_y = (ry as i32 * 256 + height as i32 * 128 + 128) / 256;
+/// Anchor is the foundation centroid (`BuildingClass::GetCoords()` overrides
+/// `ObjectClass::GetCoords()` and adds `W*128 - 128` / `H*128 - 128` to the
+/// top-left cell *center*). The undock helper then offsets that anchor by
+/// `(-0x80, +0x80)` leptons before integer-dividing into cell space:
+///   exit_lepton.x = rx*256 + W*128 - 128
+///   exit_lepton.y = ry*256 + H*128 + 128
+/// For a 4×3 refinery at (10, 10) this resolves to (11, 12) — one cell
+/// south-east of the foundation centroid, on the bib row. Larger refineries
+/// push the exit point further SE proportionally.
+pub(super) fn refinery_exit_cell(rx: u16, ry: u16, width: u16, height: u16) -> (u16, u16) {
+    let exit_x = (rx as i32 * 256 + width as i32 * 128 - 0x80) / 256;
+    let exit_y = (ry as i32 * 256 + height as i32 * 128 + 0x80) / 256;
     (exit_x.max(0) as u16, exit_y.max(0) as u16)
-}
-
-/// Compute the RA2 facing (0–255) from cell `a` toward cell `b`.
-///
-/// Convention: 0 = N, 64 = NE, 128 = S, 192 = W.
-/// Delegates to deterministic `facing_from_delta_int` (no f64 atan2).
-fn facing_from_to(a: (u16, u16), b: (u16, u16)) -> u8 {
-    let dx: i32 = b.0 as i32 - a.0 as i32;
-    let dy: i32 = b.1 as i32 - a.1 as i32;
-    facing_from_delta_int(dx, dy)
-}
-
-// ---------------------------------------------------------------------------
-// Rotation helper
-// ---------------------------------------------------------------------------
-
-/// Apply one tick of body rotation toward `target_facing`.
-/// Returns `true` when rotation is complete.
-fn apply_rotation(sim: &mut Simulation, entity_id: u64, target_facing: u8, rot: i32) -> bool {
-    let Some(entity) = sim.entities.get_mut(entity_id) else {
-        return true;
-    };
-    let max_delta: u8 = turret::rot_to_facing_delta(rot, TICK_MS);
-    if max_delta == 0 {
-        entity.facing = target_facing;
-        return true;
-    }
-    let diff: i16 = turret::shortest_rotation(entity.facing, target_facing);
-    if diff.unsigned_abs() <= max_delta as u16 {
-        entity.facing = target_facing;
-        true
-    } else if diff > 0 {
-        entity.facing = entity.facing.wrapping_add(max_delta);
-        false
-    } else {
-        entity.facing = entity.facing.wrapping_sub(max_delta);
-        false
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -145,8 +95,6 @@ fn apply_rotation(sim: &mut Simulation, entity_id: u64, target_facing: u8, rot: 
 // ---------------------------------------------------------------------------
 
 /// Resolve a refinery entity's foundation and compute queue/pad/exit cells.
-/// Uses QueueingCell and DockingOffset from art.ini when available (merged into
-/// ObjectType by `merge_art_data`), falling back to geometric approximation.
 /// Returns `(queue, pad, exit)` or `None` if the refinery is gone.
 fn resolve_refinery_cells(
     sim: &Simulation,
@@ -165,21 +113,8 @@ fn resolve_refinery_cells(
     Some((
         refinery_queue_cell(rx, ry, w, h, qc),
         refinery_pad_cell(rx, ry, w, h, dock_off),
-        refinery_exit_cell(rx, ry, w, h, qc),
+        refinery_exit_cell(rx, ry, w, h),
     ))
-}
-
-/// Body rotation rate for harvesters during the dock sequence.
-///
-/// Reads the unit type's ROT from rules. The Harvester=yes override (forced to 10
-/// at INI parse time, matching gamemd's UnitTypeClass::ReadINI) is already
-/// applied to obj.turret_rot, so this just looks it up. Falls back to a sane
-/// default if the type isn't found.
-fn body_rot(rules: &RuleSet, type_id: &str) -> i32 {
-    rules
-        .object_case_insensitive(type_id)
-        .map(|obj| obj.turret_rot)
-        .unwrap_or(10)
 }
 
 /// Look up the UnloadingClass for a miner type from rules.ini.
@@ -194,10 +129,6 @@ fn unloading_class(rules: &RuleSet, type_id: &str) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 /// Process one tick of the refinery docking sequence for a single miner.
-///
-/// Called from `miner_system::process_miner` when `snap.miner.state == Dock`.
-/// Mutates `snap.miner` (written back in phase 3) and directly mutates the
-/// entity for facing/position/movement_target via `sim.entities.get_mut()`.
 pub(super) fn handle_dock_sequence(
     sim: &mut Simulation,
     rules: &RuleSet,
@@ -208,7 +139,6 @@ pub(super) fn handle_dock_sequence(
     let phase_before = snap.miner.dock_phase;
 
     let Some(ref_sid) = snap.miner.reserved_refinery else {
-        // Lost reservation — abort to SearchOre.
         snap.miner.state = MinerState::SearchOre;
         snap.miner.dock_phase = RefineryDockPhase::Approach;
         if phase_before != snap.miner.dock_phase {
@@ -217,7 +147,6 @@ pub(super) fn handle_dock_sequence(
         return;
     };
 
-    // Resolve refinery cells. If refinery is destroyed, abort.
     let Some((queue, pad, exit)) = resolve_refinery_cells(sim, rules, ref_sid) else {
         snap.miner.reserved_refinery = None;
         snap.miner.state = MinerState::SearchOre;
@@ -230,29 +159,19 @@ pub(super) fn handle_dock_sequence(
 
     match snap.miner.dock_phase {
         RefineryDockPhase::Approach => {
-            phase_approach(sim, path_grid, snap, queue);
+            phase_approach(sim, path_grid, snap, queue, pad, ref_sid);
         }
-        RefineryDockPhase::WaitForDock => {
-            phase_wait_for_dock(sim, snap, ref_sid);
-        }
-        RefineryDockPhase::RotateToPad => {
-            phase_rotate_to_pad(sim, rules, snap, queue, pad);
-        }
-        RefineryDockPhase::EnterPad => {
-            phase_enter_pad(sim, snap, pad, ref_sid);
-        }
-        RefineryDockPhase::TurnOnPad => {
-            phase_turn_on_pad(sim, rules, snap, pad, exit, ref_sid);
+        RefineryDockPhase::Linked => {
+            phase_linked(sim, rules, snap, pad, ref_sid);
         }
         RefineryDockPhase::Unloading => {
             phase_unloading(sim, rules, config, snap, ref_sid);
         }
-        RefineryDockPhase::ExitPad => {
-            phase_exit_pad(sim, snap, pad, exit, ref_sid);
+        RefineryDockPhase::Departing => {
+            phase_departing(sim, snap, exit);
         }
     }
 
-    // Record dock phase change if any phase handler transitioned.
     if phase_before != snap.miner.dock_phase {
         record_dock_phase(snap, phase_before, snap.miner.dock_phase);
     }
@@ -267,105 +186,65 @@ fn phase_approach(
     path_grid: Option<&PathGrid>,
     snap: &mut MinerSnapshot,
     queue: (u16, u16),
+    pad: (u16, u16),
+    ref_sid: u64,
 ) {
-    if is_adjacent_or_at((snap.rx, snap.ry), queue) {
-        snap.miner.dock_phase = RefineryDockPhase::WaitForDock;
-        return;
-    }
-    // Issue pathfinding move to queue cell if not already moving there.
-    if let Some(grid) = path_grid {
-        issue_move_if_idle(&mut sim.entities, grid, snap.entity_id, queue, snap.speed);
-    }
-}
-
-fn phase_wait_for_dock(sim: &mut Simulation, snap: &mut MinerSnapshot, ref_sid: u64) {
+    // Try to acquire the dock reservation. If granted, immediately re-target
+    // the pad cell and transition to Linked. RemoveOccupy in art.ini removes
+    // the pad cell from the path/occupancy grid, so the move can proceed
+    // without bypass_grid.
     if sim
         .production
         .dock_reservations
         .try_reserve(ref_sid, snap.entity_id)
     {
         snap.miner.dock_queued = false;
-        snap.miner.dock_phase = RefineryDockPhase::RotateToPad;
-    } else {
-        snap.miner.dock_queued = true;
+        movement::issue_direct_move(&mut sim.entities, snap.entity_id, pad, snap.speed);
+        snap.miner.dock_phase = RefineryDockPhase::Linked;
+        return;
+    }
+    snap.miner.dock_queued = true;
+
+    // Reservation not granted — keep heading toward QueueingCell.
+    if !is_adjacent_or_at((snap.rx, snap.ry), queue) {
+        if let Some(grid) = path_grid {
+            issue_move_if_idle(&mut sim.entities, grid, snap.entity_id, queue, snap.speed);
+        }
     }
 }
 
-fn phase_rotate_to_pad(
+fn phase_linked(
     sim: &mut Simulation,
     rules: &RuleSet,
     snap: &mut MinerSnapshot,
-    queue: (u16, u16),
     pad: (u16, u16),
+    ref_sid: u64,
 ) {
-    let target_facing: u8 = facing_from_to(queue, pad);
-    let rot: i32 = body_rot(rules, sim.interner.resolve(snap.type_id));
-    if apply_rotation(sim, snap.entity_id, target_facing, rot) {
-        // Rotation complete — issue a direct move onto the pad cell with
-        // bypass_grid so the harvester can step into the foundation footprint.
-        // (issue_direct_move alone only bypasses A*; the per-tick walkability
-        // check in movement_step would otherwise reject entry into the
-        // PathGrid-blocked pad cell.)
-        movement::issue_direct_move(&mut sim.entities, snap.entity_id, pad, snap.speed);
-        if let Some(entity) = sim.entities.get_mut(snap.entity_id)
-            && let Some(ref mut mt) = entity.movement_target
-        {
-            mt.bypass_grid = true;
-        }
-        snap.miner.dock_phase = RefineryDockPhase::EnterPad;
-    }
-}
-
-fn phase_enter_pad(sim: &mut Simulation, snap: &mut MinerSnapshot, pad: (u16, u16), ref_sid: u64) {
-    // TibSun legacy: activate dock door animation when unit begins entering
-    // the pad area, not when it has finished turning. Original opens anim
-    // slot 7 at the drive-into-building state transition.
-    if let Some(refinery) = sim.entities.get_mut(ref_sid) {
-        if !refinery.dock_active_anim {
-            refinery.dock_active_anim = true;
-        }
-    }
-
-    // Wait for the smooth movement to complete.
     let arrived = sim
         .entities
         .get(snap.entity_id)
         .is_some_and(|e| e.movement_target.is_none());
-    if arrived {
-        snap.rx = pad.0;
-        snap.ry = pad.1;
-        snap.miner.dock_phase = RefineryDockPhase::TurnOnPad;
+    if !arrived {
+        return;
     }
-}
 
-fn phase_turn_on_pad(
-    sim: &mut Simulation,
-    rules: &RuleSet,
-    snap: &mut MinerSnapshot,
-    _pad: (u16, u16),
-    exit: (u16, u16),
-    ref_sid: u64,
-) {
-    // 180° turn: face the exit cell direction (east for standard refineries).
-    let current_pos = (snap.rx, snap.ry);
-    let target_facing: u8 = facing_from_to(current_pos, exit);
-    let rot: i32 = body_rot(rules, sim.interner.resolve(snap.type_id));
-    if apply_rotation(sim, snap.entity_id, target_facing, rot) {
-        // Set UnloadingClass override for visual model swap.
-        if let Some(uc) = unloading_class(rules, sim.interner.resolve(snap.type_id)) {
-            if let Some(entity) = sim.entities.get_mut(snap.entity_id) {
-                entity.display_type_override = Some(sim.interner.intern(&uc));
-            }
-        }
-        // Note: dock_active_anim is already set in phase_enter_pad (earlier timing).
-        // Emit deploy sound event — the app layer resolves the actual sound
-        // and picks healthy/damaged variant based on refinery health.
-        sim.sound_events.push(SimSoundEvent::DockDeploy {
-            building_id: ref_sid,
-        });
-        snap.miner.dock_phase = RefineryDockPhase::Unloading;
-        snap.miner.unload_timer = 0;
+    snap.rx = pad.0;
+    snap.ry = pad.1;
+
+    if let Some(uc) = unloading_class(rules, sim.interner.resolve(snap.type_id))
+        && let Some(entity) = sim.entities.get_mut(snap.entity_id)
+    {
+        entity.display_type_override = Some(sim.interner.intern(&uc));
     }
+
+    sim.sound_events.push(SimSoundEvent::DockDeploy {
+        building_id: ref_sid,
+    });
+
+    // Initialize unload_timer to 0 — first bale fires after one full
+    // unload_tick_interval, matching gamemd's per-bale gate.
+    snap.miner.unload_timer = 0;
+    snap.miner.dock_phase = RefineryDockPhase::Unloading;
 }
 
 fn phase_unloading(
@@ -375,20 +254,35 @@ fn phase_unloading(
     snap: &mut MinerSnapshot,
     ref_sid: u64,
 ) {
-    // Timer counts down in tenths-of-tick (decrement by 10 = one full tick)
-    // so the fractional `HarvesterDumpRate` part is preserved across bales.
     if snap.miner.unload_timer > 0 {
         snap.miner.unload_timer -= 10;
         return;
     }
 
-    // Pop one bale and award base credits. Accumulate total for purifier bonus.
     if let Some(bale) = snap.miner.cargo.pop() {
         let value: i32 = i32::from(bale.value);
-        snap.miner.unload_base_total += value as u32;
         let owner_str = sim.interner.resolve(snap.owner).to_string();
-        let credits = credits_entry_for_owner(sim, &owner_str);
-        *credits = credits.saturating_add(value);
+
+        {
+            let credits = credits_entry_for_owner(sim, &owner_str);
+            *credits = credits.saturating_add(value);
+        }
+
+        // Per-bale purifier bonus (matches gamemd's per-bale credit application).
+        if player_has_purifier(sim, rules, &owner_str) {
+            let bonus_pct: i32 = rules.general.purifier_bonus_pct;
+            let bonus: i32 = value * bonus_pct / 100;
+            if bonus > 0 {
+                let credits = credits_entry_for_owner(sim, &owner_str);
+                *credits = credits.saturating_add(bonus);
+            }
+        }
+
+        sim.bale_events.push(BaleDepositEvent {
+            building_id: ref_sid,
+            tick: sim.tick,
+        });
+
         snap.miner.unload_timer = snap
             .miner
             .unload_timer
@@ -396,46 +290,18 @@ fn phase_unloading(
         return;
     }
 
-    // Cargo empty — apply purifier bonus on the accumulated total, then finish.
-    if snap.miner.unload_base_total > 0
-        && player_has_purifier(sim, rules, sim.interner.resolve(snap.owner))
-    {
-        let bonus_pct: i32 = rules.general.purifier_bonus_pct;
-        let bonus: i32 = snap.miner.unload_base_total as i32 * bonus_pct / 100;
-        let owner_str = sim.interner.resolve(snap.owner).to_string();
-        let credits = credits_entry_for_owner(sim, &owner_str);
-        *credits = credits.saturating_add(bonus);
-    }
-    snap.miner.unload_base_total = 0;
-
-    // Release dock and transition to exit.
+    // Cargo empty — release dock and depart.
     sim.production.dock_reservations.release(ref_sid);
     snap.miner.home_refinery = Some(ref_sid);
 
-    // Clear UnloadingClass override.
     if let Some(entity) = sim.entities.get_mut(snap.entity_id) {
         entity.display_type_override = None;
     }
 
-    // Deactivate the refinery's ActiveAnim now that unloading is done.
-    if let Some(refinery) = sim.entities.get_mut(ref_sid) {
-        refinery.dock_active_anim = false;
-    }
-
-    snap.miner.dock_phase = RefineryDockPhase::ExitPad;
+    snap.miner.dock_phase = RefineryDockPhase::Departing;
 }
 
-fn phase_exit_pad(
-    sim: &mut Simulation,
-    snap: &mut MinerSnapshot,
-    _pad: (u16, u16),
-    exit: (u16, u16),
-    _ref_sid: u64,
-) {
-    // First call: issue direct move to the exit cell. The exit cell sits on
-    // the south edge of the foundation footprint (still inside, blocked in
-    // path_grid). bypass_grid lets the harvester drive through; on arrival
-    // the dock sequence ends and SearchOre takes over from the blocked cell.
+fn phase_departing(sim: &mut Simulation, snap: &mut MinerSnapshot, exit: (u16, u16)) {
     let moving = sim
         .entities
         .get(snap.entity_id)
@@ -447,10 +313,12 @@ fn phase_exit_pad(
         .is_some_and(|e| e.teleport_state.is_some());
 
     if !moving && !at_exit {
-        // Issue the exit move with bypass_grid so the harvester can step
-        // through foundation cells (marked unwalkable in path_grid). Facing
-        // is left to the locomotor's natural source-to-dest derivation.
         movement::issue_direct_move(&mut sim.entities, snap.entity_id, exit, snap.speed);
+        // Exit cell sits on the foundation south edge (centroid + (-0x80,
+        // +0x80) leptons). The pad→exit straight line crosses interior
+        // foundation cells which are blocked in path_grid; mirror gamemd's
+        // locomotor head_to (which ignores cell occupancy during dock
+        // departure) by setting bypass_grid for this one move.
         if let Some(entity) = sim.entities.get_mut(snap.entity_id)
             && let Some(ref mut mt) = entity.movement_target
         {
@@ -460,11 +328,6 @@ fn phase_exit_pad(
     }
 
     if !moving && at_exit && !teleporting {
-        // Arrived at exit — finish docking.
-        // Snap facing to 0x47 (east-southeast) on arrival. gamemd's UndockUnit
-        // forces this heading via ILocomotion::Head_To so the miner exits
-        // pointing toward open ore-search territory rather than continuing
-        // south-southwest from the pad→exit movement vector.
         if let Some(entity) = sim.entities.get_mut(snap.entity_id) {
             entity.facing = 0x47;
         }
@@ -472,9 +335,6 @@ fn phase_exit_pad(
         snap.miner.dock_queued = false;
         snap.miner.forced_return = false;
         // Clear stale ore targets so SearchOre re-scans from the exit cell.
-        // Without this, the miner re-targets the patch it came from, which
-        // for refineries placed adjacent to ore puts the destination on the
-        // back side of the building footprint, producing a head-butt cycle.
         snap.miner.target_ore_cell = None;
         snap.miner.last_harvest_cell = None;
         snap.miner.dock_phase = RefineryDockPhase::Approach;
@@ -482,7 +342,6 @@ fn phase_exit_pad(
         return;
     }
 
-    // Still moving — wait.
     if let Some(entity) = sim.entities.get(snap.entity_id) {
         snap.rx = entity.position.rx;
         snap.ry = entity.position.ry;

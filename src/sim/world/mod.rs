@@ -131,8 +131,15 @@ pub enum SimSoundEvent {
     BuildingComplete { owner: InternedId },
     /// A unit finished training — play EVA "Unit ready".
     UnitComplete { owner: InternedId },
-    /// A chrono miner teleported — play ChronoInSound/ChronoOutSound.
-    ChronoTeleport { rx: u16, ry: u16 },
+    /// A chrono teleport happened — play the resolved warp sound at this position.
+    /// Sim emits two of these per warp: one at the source cell with the unit's
+    /// `ChronoOutSound=`, one at the destination cell with the unit's
+    /// `ChronoInSound=`.
+    ChronoTeleport {
+        sound_id: InternedId,
+        rx: u16,
+        ry: u16,
+    },
     /// A superweapon was launched — play EVA warning.
     SuperWeaponLaunched { owner: InternedId, rx: u16, ry: u16 },
     /// A lightning bolt struck — play thunder sound.
@@ -202,6 +209,10 @@ pub struct Simulation {
     /// muzzle flash rendering and future projectile origin computation.
     #[serde(skip)]
     pub fire_events: Vec<SimFireEvent>,
+    /// Bale deposit events emitted during refinery dock unloading — drained
+    /// by the app layer for SpecialAnim trigger and particle bursts.
+    #[serde(skip)]
+    pub bale_events: Vec<crate::sim::components::BaleDepositEvent>,
     /// Per-AI-owner state for computer-controlled players.
     pub ai_players: Vec<AiPlayerState>,
     /// Per-player state keyed by uppercase owner name. Deterministic iteration
@@ -327,6 +338,7 @@ impl Simulation {
             next_stable_entity_id: 1,
             sound_events: Vec::new(),
             fire_events: Vec::new(),
+            bale_events: Vec::new(),
             ai_players: Vec::new(),
             houses: BTreeMap::new(),
             terrain_costs: BTreeMap::new(),

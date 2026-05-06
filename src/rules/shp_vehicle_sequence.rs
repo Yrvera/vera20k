@@ -125,6 +125,8 @@ mod tests {
             damage_fire_offsets: Vec::new(),
             height: 0,
             muzzle_flash_positions: Vec::new(),
+            add_occupy: Vec::new(),
+            remove_occupy: Vec::new(),
         }
     }
 

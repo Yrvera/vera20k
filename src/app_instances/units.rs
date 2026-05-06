@@ -142,10 +142,8 @@ pub(crate) fn build_unit_instances(
 
         let anim_frame: u32 = entity.voxel_animation.map(|a| a.frame).unwrap_or(0);
 
-        // Self-teleport (chrono miner / chrono legionnaire) does not modify the
-        // unit's draw flags. The visual effect is entirely the WarpOut anim
-        // overlay; the unit itself stays fully opaque. Verified: TechnoClass::Draw
-        // (0x706640) reads neither +0x270 (WarpingOut) nor +0x271 (BeingWarped).
+        // Chrono teleport doesn't tint the unit — the visual effect is the
+        // WarpOut animation overlay; the unit itself stays fully opaque.
         let alpha: f32 = 1.0;
         let target_instances = if is_under_bridge_render_state(state, entity) {
             &mut *bridge_instances

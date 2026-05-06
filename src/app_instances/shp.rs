@@ -300,7 +300,6 @@ pub(crate) fn build_shp_instances(
                     entity.building_anim_overlays.as_ref(),
                     state.idle_anim_elapsed_ms,
                     Some(&sim.interner),
-                    entity.dock_active_anim,
                     is_garrisoned,
                     is_player_owned,
                 );
@@ -489,7 +488,6 @@ fn emit_building_anims(
     overlays: Option<&crate::sim::components::BuildingAnimOverlays>,
     idle_anim_elapsed_ms: u32,
     interner: Option<&crate::sim::intern::StringInterner>,
-    dock_active_anim: bool,
     is_garrisoned: bool,
     is_player_owned: bool,
 ) {
@@ -526,13 +524,7 @@ fn emit_building_anims(
             crate::rules::art_data::BuildingAnimKind::Active
                 | crate::rules::art_data::BuildingAnimKind::Production
         ) {
-            if dock_active_anim
-                && matches!(anim.kind, crate::rules::art_data::BuildingAnimKind::Active)
-            {
-                // A miner is docked and unloading — force-play the ActiveAnim
-                // (unloading arm / conveyor) using the global elapsed timer.
-                looping_frame(anim, idle_anim_elapsed_ms)
-            } else if anim.loop_count < 0 {
+            if anim.loop_count < 0 {
                 // Infinite loop ActiveAnim on a capturable tech building
                 // (Oil Derrick, Airport, etc.): the primary slot (ActiveAnim)
                 // only plays after capture. Decorative civilian buildings

@@ -1068,10 +1068,6 @@ mod tests {
                         saw_unload = true;
                     }
                 }
-                MinerState::Unload => {
-                    saw_dock_or_unload = true;
-                    saw_unload = true;
-                }
                 _ => {}
             }
             if miner.home_refinery == Some(refinery_sid) {

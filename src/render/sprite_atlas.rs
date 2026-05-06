@@ -722,6 +722,51 @@ pub fn build_sprite_atlas(
         }
     }
 
+    // Step 1e: Pre-load the parachute SHP (`[General] Parachute=`).
+    // Unlike the world-effect SHPs above, PARACH's `AltPalette=yes` means
+    // gamemd renders it with the unit palette (ColorScheme[0]'s ConvertPalette
+    // = our `palette`, NOT `effect_palette`). Register frames into `needed` so
+    // the atlas has entries, but DO NOT add to `effect_type_ids` — that would
+    // route us to anim.pal (wrong palette).
+    if let Some(r) = rules {
+        if let Some(pc) = r.general.parachute_render.as_ref() {
+            let lower: String = pc.shp_name.to_ascii_lowercase();
+            let candidates: Vec<String> =
+                vec![format!("{}.shp", lower), format!("{}.SHP", pc.shp_name)];
+            if let Some(data) = candidates.iter().find_map(|c| asset_manager.get_ref(c)) {
+                if let Ok(shp) = ShpFile::from_bytes(data) {
+                    let frame_count: u16 = shp.frames.len() as u16;
+                    for f in 0..frame_count {
+                        needed.insert(ShpSpriteKey {
+                            type_id: pc.shp_name.clone(),
+                            facing: 0,
+                            frame: f,
+                            house_color: HouseColorIndex(0),
+                        });
+                    }
+                    active_anim_frame_counts.insert(pc.shp_name.clone(), frame_count);
+                    // Intentionally NOT inserted into effect_type_ids:
+                    // AltPalette=yes wants unit.pal, which is the default
+                    // for keys not in effect_type_ids.
+                    log::info!(
+                        "Parachute SHP {}: {} frames loaded (unit palette per AltPalette=yes)",
+                        pc.shp_name, frame_count
+                    );
+                } else {
+                    log::warn!(
+                        "Parachute SHP {} found in MIX but failed to parse",
+                        pc.shp_name
+                    );
+                }
+            } else {
+                log::warn!(
+                    "Parachute SHP {} not found in MIX archives — chute will not render",
+                    pc.shp_name
+                );
+            }
+        }
+    }
+
     if needed.is_empty() {
         log::info!("No SHP sprite entities found — skipping sprite atlas");
         return None;

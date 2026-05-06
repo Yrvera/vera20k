@@ -30,7 +30,7 @@ use crate::util::fixed_math::{SimFixed, ra2_speed_to_leptons_per_second};
 use crate::sim::debug_event_log::DebugEventKind;
 use crate::sim::intern::InternedId;
 
-use crate::sim::production::{credits_entry_for_owner, foundation_dimensions};
+use crate::sim::production::foundation_dimensions;
 
 /// Snapshot of one miner entity for two-phase processing.
 pub(super) struct MinerSnapshot {
@@ -185,7 +185,12 @@ fn process_miner(
         MinerState::Dock => {
             super::miner_dock_sequence::handle_dock_sequence(sim, rules, config, path_grid, snap)
         }
-        MinerState::Unload => handle_unload(sim, rules, config, snap),
+        MinerState::Unload => {
+            // Legacy state — production code never enters this path. If we
+            // encounter it (e.g., a save from before the FSM rewrite), fall
+            // through to SearchOre.
+            snap.miner.state = MinerState::SearchOre;
+        }
         MinerState::WaitNoOre => handle_wait_no_ore(config, snap),
         MinerState::ForcedReturn => handle_forced_return(sim, rules, config, path_grid, snap),
     }
@@ -469,6 +474,7 @@ fn handle_return(
                     spawn_warp_effects(
                         sim,
                         rules,
+                        snap.type_id,
                         (snap.rx, snap.ry, snap.z),
                         (dock.0, dock.1, snap.z),
                     );
@@ -496,68 +502,16 @@ fn handle_return(
     };
 
     // Arrive when at dock cell or adjacent — transition to Dock FSM.
+    // The Approach phase polls the dock reservation each tick.
     if is_adjacent_or_at((snap.rx, snap.ry), dock) {
         snap.miner.state = MinerState::Dock;
-        snap.miner.dock_phase = RefineryDockPhase::WaitForDock;
+        snap.miner.dock_phase = RefineryDockPhase::Approach;
         return;
     }
 
     if let Some(grid) = path_grid {
         issue_move_if_idle(&mut sim.entities, grid, snap.entity_id, dock, snap.speed);
     }
-}
-
-fn handle_unload(
-    sim: &mut Simulation,
-    rules: &RuleSet,
-    config: &MinerConfig,
-    snap: &mut MinerSnapshot,
-) {
-    // Timer counts down in tenths-of-tick. When > 0, decrement by 10 (one
-    // tick) and wait. When ≤ 0 it's time to deposit a bale; the leftover
-    // (which can be slightly negative) is preserved across reloads so the
-    // average cadence matches `unload_tick_interval` exactly.
-    if snap.miner.unload_timer > 0 {
-        snap.miner.unload_timer -= 10;
-        return;
-    }
-
-    // Pop one bale and award base credits. Accumulate total for purifier bonus.
-    if let Some(bale) = snap.miner.cargo.pop() {
-        let value: i32 = i32::from(bale.value);
-        snap.miner.unload_base_total += value as u32;
-        let owner_str = sim.interner.resolve(snap.owner).to_string();
-        let credits = credits_entry_for_owner(sim, &owner_str);
-        *credits = credits.saturating_add(value);
-        snap.miner.unload_timer = snap
-            .miner
-            .unload_timer
-            .saturating_add(config.unload_tick_interval as i16);
-        return;
-    }
-
-    // Cargo empty — apply purifier bonus on the accumulated total.
-    // gamemd computes the bonus on the full cargo in one pass
-    // (DepositOreFromStorage at 0x00522D50), so we do the same to avoid
-    // per-bale integer truncation drift (~10 credits per full load).
-    if snap.miner.unload_base_total > 0
-        && player_has_purifier(sim, rules, sim.interner.resolve(snap.owner))
-    {
-        let bonus_pct: i32 = rules.general.purifier_bonus_pct;
-        let bonus: i32 = snap.miner.unload_base_total as i32 * bonus_pct / 100;
-        let owner_str = sim.interner.resolve(snap.owner).to_string();
-        let credits = credits_entry_for_owner(sim, &owner_str);
-        *credits = credits.saturating_add(bonus);
-    }
-    snap.miner.unload_base_total = 0;
-    if let Some(ref_sid) = snap.miner.reserved_refinery {
-        sim.production.dock_reservations.release(ref_sid);
-        snap.miner.home_refinery = Some(ref_sid);
-    }
-    snap.miner.reserved_refinery = None;
-    snap.miner.dock_queued = false;
-    snap.miner.forced_return = false;
-    snap.miner.state = MinerState::SearchOre;
 }
 
 fn handle_wait_no_ore(_config: &MinerConfig, snap: &mut MinerSnapshot) {
@@ -603,6 +557,7 @@ fn handle_forced_return(
                     spawn_warp_effects(
                         sim,
                         rules,
+                        snap.type_id,
                         (snap.rx, snap.ry, snap.z),
                         (dock.0, dock.1, snap.z),
                     );
@@ -671,10 +626,9 @@ pub(crate) fn extract_bale(
 /// Begin the return-to-refinery sequence.
 ///
 /// Chrono miners warp to the queue cell (outside the building footprint) via
-/// `issue_teleport_command(is_harvester=true)` — matching the binary's
-/// InitiateWarp Harvester=yes special case, the chrono lock is skipped and the
-/// teleport finishes in a single tick. `handle_return` then detects adjacency
-/// and enters the normal dock sequence.
+/// `issue_teleport_command(is_harvester=true)`, which skips the chrono lock
+/// and finishes the teleport in a single tick. `handle_return` then detects
+/// adjacency and enters the normal dock sequence.
 fn begin_return(
     sim: &mut Simulation,
     rules: &RuleSet,
@@ -705,6 +659,7 @@ fn begin_return(
                 spawn_warp_effects(
                     sim,
                     rules,
+                    snap.type_id,
                     (snap.rx, snap.ry, snap.z),
                     (dock.0, dock.1, snap.z),
                 );
@@ -722,20 +677,20 @@ fn begin_return(
 
 /// Spawn WarpOut visual effects at departure and arrival.
 ///
-/// Self-teleport (chrono miner, chrono legionnaire) spawns the WarpOut anim
-/// (`[General] WarpOut=`, Rules+0x33C) at both endpoints — same anim object
-/// twice, once at the source cell and once at the destination cell. Verified
-/// against `TeleportLocomotionClass::InitiateWarp` (0x00719400): both
-/// `AnimClass::Constructor` calls reference `g_RulesClass + 0x33C`.
+/// Self-teleport (chrono miner, chrono legionnaire) spawns the
+/// `[General] WarpOut=` anim at both endpoints — same anim object twice,
+/// once at the source cell and once at the destination cell. WarpIn and
+/// WarpAway are reserved for the Chronosphere superweapon path; ChronoSparkle1
+/// is parsed but unused by self-teleport.
 ///
-/// WarpIn (+0x338) and WarpAway (+0x340) are parsed but never spawned by the
-/// self-teleport path. ChronoSparkle1 (Rules+0x344) is likewise unused by
-/// self-teleport.
-///
-/// Also emits chrono teleport sound events at both locations.
+/// Also emits chrono teleport sound events at both locations:
+/// `ChronoOutSound=` at the source, `ChronoInSound=` at the destination.
+/// If a sound is not configured on the unit type the corresponding event
+/// is skipped.
 fn spawn_warp_effects(
     sim: &mut Simulation,
     rules: &RuleSet,
+    type_id: InternedId,
     depart: (u16, u16, u8),
     arrive: (u16, u16, u8),
 ) {
@@ -782,15 +737,27 @@ fn spawn_warp_effects(
         delay_ms: 0,
     });
 
-    // Chrono teleport sounds at both departure and arrival.
-    sim.sound_events.push(SimSoundEvent::ChronoTeleport {
-        rx: depart.0,
-        ry: depart.1,
-    });
-    sim.sound_events.push(SimSoundEvent::ChronoTeleport {
-        rx: arrive.0,
-        ry: arrive.1,
-    });
+    // Resolve per-unit ChronoOut/InSound and emit positional sound events.
+    // Source cell gets ChronoOutSound; destination gets ChronoInSound.
+    let obj = rules.object_case_insensitive(sim.interner.resolve(type_id));
+    let chrono_out = obj.and_then(|o| o.chrono_out_sound.clone());
+    let chrono_in = obj.and_then(|o| o.chrono_in_sound.clone());
+    if let Some(name) = chrono_out {
+        let sound_id = sim.interner.intern(&name);
+        sim.sound_events.push(SimSoundEvent::ChronoTeleport {
+            sound_id,
+            rx: depart.0,
+            ry: depart.1,
+        });
+    }
+    if let Some(name) = chrono_in {
+        let sound_id = sim.interner.intern(&name);
+        sim.sound_events.push(SimSoundEvent::ChronoTeleport {
+            sound_id,
+            rx: arrive.0,
+            ry: arrive.1,
+        });
+    }
 }
 
 /// Find the nearest friendly refinery. Returns (stable_id, dock_cell).

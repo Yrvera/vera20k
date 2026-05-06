@@ -335,6 +335,135 @@ pub(crate) fn trigger_crane_anim(state: &mut AppState, owner: &str) {
     }
 }
 
+/// Drain `Simulation::bale_events` and apply two visible side-effects:
+/// - Trigger the refinery's SpecialAnim (slot 10) one-shot per bale.
+/// - Spawn one particle system per non-zero RefinerySmokeOffsetN (up to 4).
+pub(crate) fn consume_bale_events(state: &mut AppState) {
+    // Collect events + lookups under shared borrows first, then mutate.
+    struct PerEvent {
+        building_id: u64,
+        special_anim: Option<(crate::sim::intern::InternedId, u16, u16, u16, u16)>,
+        particle_spawns: Vec<(crate::rules::particle_system_type::ParticleSystemTypeId, glam::IVec3)>,
+    }
+
+    let prepared: Vec<PerEvent> = {
+        let (Some(sim), Some(rules), Some(art_reg)) =
+            (state.simulation.as_ref(), state.rules.as_ref(), state.art_registry.as_ref())
+        else {
+            return;
+        };
+        if sim.bale_events.is_empty() {
+            return;
+        }
+        let mut out: Vec<PerEvent> = Vec::with_capacity(sim.bale_events.len());
+        for ev in &sim.bale_events {
+            let Some(building) = sim.entities.get(ev.building_id) else {
+                continue;
+            };
+            let type_str = sim.interner.resolve(building.type_ref);
+            let Some(obj) = rules.object(type_str) else {
+                continue;
+            };
+            let rules_image: &str = &obj.image;
+            let art_entry = match art_reg.resolve_metadata_entry(type_str, rules_image) {
+                Some(e) => e,
+                None => continue,
+            };
+
+            // Find the SpecialAnim entry — slot 10 in gamemd's anim slot table.
+            let special_anim = art_entry.building_anims.iter().find_map(|a| {
+                if !matches!(a.kind, crate::rules::art_data::BuildingAnimKind::Special) {
+                    return None;
+                }
+                if a.loop_end <= a.loop_start {
+                    return None;
+                }
+                let upper = a.anim_type.to_uppercase();
+                let id = sim.interner.get(&upper)?;
+                Some((id, a.loop_start, a.loop_end, a.start_frame.max(a.loop_start), a.rate))
+            });
+
+            // Resolve the particle system type id once. Skip if not configured.
+            let mut particle_spawns: Vec<(
+                crate::rules::particle_system_type::ParticleSystemTypeId,
+                glam::IVec3,
+            )> = Vec::new();
+            if let Some(name) = obj.refinery_smoke_particle_system.as_deref() {
+                if let Some(ps_id) = rules.ps_type_id_by_name(name) {
+                    let origin_x = building.position.rx as i32 * 256;
+                    let origin_y = building.position.ry as i32 * 256;
+                    for offset in obj.refinery_smoke_offsets.iter() {
+                        if *offset == glam::IVec3::ZERO {
+                            continue;
+                        }
+                        particle_spawns.push((
+                            ps_id,
+                            glam::IVec3::new(
+                                origin_x + offset.x,
+                                origin_y + offset.y,
+                                offset.z,
+                            ),
+                        ));
+                    }
+                }
+            }
+
+            out.push(PerEvent {
+                building_id: ev.building_id,
+                special_anim,
+                particle_spawns,
+            });
+        }
+        out
+    };
+
+    // Apply side-effects.
+    let Some(sim) = state.simulation.as_mut() else {
+        return;
+    };
+    let Some(rules) = state.rules.as_ref() else {
+        sim.bale_events.clear();
+        return;
+    };
+
+    for ev in prepared {
+        // 1) Push (or reset) the SpecialAnim in BuildingAnimOverlays.
+        if let Some((anim_type, loop_start, loop_end, start_frame, rate)) = ev.special_anim {
+            if let Some(building) = sim.entities.get_mut(ev.building_id) {
+                let new_state = AnimOverlayState {
+                    anim_type,
+                    frame: start_frame,
+                    loop_start,
+                    loop_end,
+                    rate_ms: rate as u32,
+                    elapsed_ms: 0,
+                    finished: false,
+                };
+                if let Some(overlays) = building.building_anim_overlays.as_mut() {
+                    if let Some(existing) =
+                        overlays.anims.iter_mut().find(|a| a.anim_type == anim_type)
+                    {
+                        *existing = new_state;
+                    } else {
+                        overlays.anims.push(new_state);
+                    }
+                } else {
+                    building.building_anim_overlays = Some(BuildingAnimOverlays {
+                        anims: vec![new_state],
+                    });
+                }
+            }
+        }
+
+        // 2) Spawn particle systems at each non-zero offset.
+        for (ps_id, coords) in ev.particle_spawns {
+            sim.spawn_particle_system(ps_id, coords, None, Some(ev.building_id), coords, None, rules);
+        }
+    }
+
+    sim.bale_events.clear();
+}
+
 /// Tick the sidebar power bar animation (segment-by-segment transition).
 pub(crate) fn update_power_bar_anim(state: &mut AppState) {
     let owner_name = preferred_local_owner_name(state);

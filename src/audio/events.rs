@@ -79,6 +79,15 @@ pub enum GameSoundEvent {
         screen_pos: Option<(f32, f32)>,
     },
 
+    /// A chrono teleport happened — play the resolved warp sound at this position.
+    /// Emitted twice per warp (source = ChronoOutSound, destination = ChronoInSound).
+    ChronoTeleport {
+        /// sound.ini ID — already resolved to the per-unit ChronoIn/OutSound by sim.
+        sound_id: String,
+        /// Screen position of the sound source (for spatial audio).
+        screen_pos: Option<(f32, f32)>,
+    },
+
     /// A building finished construction — play the EVA "Construction complete" or similar.
     BuildingReady {
         /// sound.ini ID for the completion announcement.
@@ -131,6 +140,7 @@ impl GameSoundEvent {
             | Self::EntityCrushed { sound_id, .. }
             | Self::EntityDeployed { sound_id, .. }
             | Self::EntityUndeployed { sound_id, .. }
+            | Self::ChronoTeleport { sound_id, .. }
             | Self::BuildingReady { sound_id }
             | Self::UnitReady { sound_id }
             | Self::UiSound { sound_id }
@@ -148,6 +158,7 @@ impl GameSoundEvent {
             Self::EntityCrushed { screen_pos, .. } => *screen_pos,
             Self::EntityDeployed { screen_pos, .. } => *screen_pos,
             Self::EntityUndeployed { screen_pos, .. } => *screen_pos,
+            Self::ChronoTeleport { screen_pos, .. } => *screen_pos,
             Self::BuildingGarrisonedSfx { screen_pos, .. } => *screen_pos,
             _ => None,
         }

@@ -28,13 +28,18 @@ use crate::util::fixed_math::{SIM_ZERO, SimFixed, sim_to_i32};
 pub const V_PATTERN_RADIUS_LEPTONS: i32 = 128;
 
 /// Reset value for the LandingState mutex (gamemd `aircraft+0x6D3`).
-/// Decremented per tick; gates back-to-back drops within 5 ticks of each other.
-/// With ROF=130 ticks this is mostly a safety net but is preserved for parity.
+/// Decremented per tick; gates back-to-back drops.
 pub const LANDING_STATE_RESET: u8 = 5;
 
-/// Default drop interval in ticks if `[ParaDropWeapon] ROF=` lookup fails.
-/// Matches the vanilla rulesmd value.
-pub const PARADROP_DROP_INTERVAL_TICKS: u16 = 130;
+/// Drop interval in sim ticks between consecutive drops.
+///
+/// Hardcoded in gamemd's `Mission_Rescue` (0x00415960): every code path returns
+/// 5, meaning the rescue mission re-fires every 5 game frames while in range
+/// and drops one passenger per call. This is NOT driven by `[ParaDropWeapon]
+/// ROF=` (that weapon is a dummy — its rules.ini comment says so).
+///
+/// Our sim runs at 45 Hz vs gamemd's 15 fps, so 5 game frames = 15 sim ticks.
+pub const PARADROP_DROP_INTERVAL_TICKS: u16 = 15;
 
 /// Compute the V-pattern lateral offset for the next drop, in leptons.
 ///
@@ -141,16 +146,19 @@ pub fn try_drop(
         return DropResult::ImpassableRetry;
     }
 
-    // 5. Position passenger at drop cell + altitude; un-limbo.
+    // 5. Position passenger at drop cell; un-limbo. Do NOT touch
+    // `loco.altitude` here — `begin_parachute_descent` uses `OverrideKind`
+    // to gate the descent and tracks altitude in `ParachuteDescentState`,
+    // and the renderer reads loco.altitude as a visual offset. If we set
+    // loco.altitude=plane_altitude here, it gets snapshotted by
+    // `begin_override` and `end_override` restores it on landing — the
+    // unit then renders ~3 tiles up indefinitely.
     if let Some(passenger) = sim.entities.get_mut(passenger_id) {
         passenger.position.rx = drop_rx;
         passenger.position.ry = drop_ry;
         passenger.position.sub_x = SIM_ZERO;
         passenger.position.sub_y = SIM_ZERO;
         passenger.passenger_role = PassengerRole::None;
-        if let Some(loco) = passenger.locomotor.as_mut() {
-            loco.altitude = altitude;
-        }
     }
 
     // 6. Attach parachute descent.

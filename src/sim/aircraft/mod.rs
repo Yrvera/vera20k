@@ -93,13 +93,14 @@ pub enum AircraftMission {
         has_revealed_fog: bool,
     },
 
-    /// Paradrop carrier over the drop zone, dispensing payload at ROF cadence.
+    /// Paradrop carrier over the drop zone, dispensing payload at the
+    /// Mission_Rescue cadence (5 game frames = 15 sim ticks per drop).
     /// Transitions to silent despawn at the opposite edge once cargo is empty.
     ParaDropOverfly {
         /// Opposite-edge cell to fly to once cargo is empty.
         exit_rx: u16,
         exit_ry: u16,
-        /// Ticks until next drop allowed (ROF=130 cadence, paradrop P22).
+        /// Ticks until next drop allowed (Mission_Rescue 5-frame cadence).
         drop_cooldown: u16,
         /// 5-tick mutex between drops (LandingState mirror, paradrop P23).
         landing_state: u8,
@@ -656,18 +657,15 @@ pub fn tick_aircraft_missions(
             .push(crate::sim::world::SimSoundEvent::ChuteSound { rx, ry });
     }
 
-    // try_drop attempts. Resolve drop interval from [ParaDropWeapon] ROF=
-    // (or fall back to PARADROP_DROP_INTERVAL_TICKS if the weapon isn't parsed).
+    // try_drop attempts. Drop interval is the hardcoded 5-frame Mission_Rescue
+    // cadence from gamemd; ParaDropWeapon ROF= in rules.ini is unused (dummy weapon).
     let drop_attempts: Vec<(u64, u8)> = mutations
         .iter()
         .filter(|m| m.paradrop_try_drop)
         .map(|m| (m.id, m.paradrop_payload_count_pre))
         .collect();
     for (aircraft_id, payload_pre) in drop_attempts {
-        let drop_interval = rules
-            .weapon("ParaDropWeapon")
-            .map(|w| (w.rof.max(1)) as u16)
-            .unwrap_or(drop_payload::PARADROP_DROP_INTERVAL_TICKS);
+        let drop_interval = drop_payload::PARADROP_DROP_INTERVAL_TICKS;
 
         let result = drop_payload::try_drop(sim, rules, aircraft_id, payload_pre, path_grid);
 
