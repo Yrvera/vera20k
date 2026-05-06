@@ -92,6 +92,11 @@ pub struct ArtEntry {
     /// Parsed from `MuzzleFlash0=X,Y` through `MuzzleFlash9=X,Y` in art.ini.
     /// Each entry is a screen-space offset from the building's center.
     pub muzzle_flash_positions: Vec<(i32, i32)>,
+    /// Cells added to the rectangular foundation (AddOccupy1..N from art.ini).
+    /// Signed offsets from the building's origin (rx, ry) — negative = west/north.
+    pub add_occupy: Vec<(i16, i16)>,
+    /// Cells removed from the rectangular foundation (RemoveOccupy1..N from art.ini).
+    pub remove_occupy: Vec<(i16, i16)>,
 }
 
 /// Which category of building animation this is.
@@ -296,6 +301,42 @@ impl ArtRegistry {
                 }
                 positions
             };
+            let add_occupy: Vec<(i16, i16)> = {
+                let mut offsets = Vec::new();
+                for i in 1..=8 {
+                    let key = format!("AddOccupy{}", i);
+                    if let Some(val) = section.get(&key) {
+                        let mut parts = val.split(',');
+                        if let (Some(x), Some(y)) = (
+                            parts.next().and_then(|s| s.trim().parse::<i16>().ok()),
+                            parts.next().and_then(|s| s.trim().parse::<i16>().ok()),
+                        ) {
+                            offsets.push((x, y));
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                offsets
+            };
+            let remove_occupy: Vec<(i16, i16)> = {
+                let mut offsets = Vec::new();
+                for i in 1..=8 {
+                    let key = format!("RemoveOccupy{}", i);
+                    if let Some(val) = section.get(&key) {
+                        let mut parts = val.split(',');
+                        if let (Some(x), Some(y)) = (
+                            parts.next().and_then(|s| s.trim().parse::<i16>().ok()),
+                            parts.next().and_then(|s| s.trim().parse::<i16>().ok()),
+                        ) {
+                            offsets.push((x, y));
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                offsets
+            };
 
             entries.insert(
                 section_name.to_uppercase(),
@@ -329,6 +370,8 @@ impl ArtRegistry {
                     damage_fire_offsets,
                     height,
                     muzzle_flash_positions,
+                    add_occupy,
+                    remove_occupy,
                 },
             );
         }
