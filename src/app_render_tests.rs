@@ -384,7 +384,7 @@ fn test_hover_target_distinguishes_friendly_and_enemy_categories() {
 
 #[test]
 fn test_ready_buildings_do_not_auto_arm_placement() {
-    let mut armed = None;
+    let mut armed: Option<crate::app_types::TargetingMode> = None;
     let mut preview = None;
     let ready = vec![ReadyBuildingView {
         type_id: crate::sim::intern::test_intern("GAPOWR"),
@@ -403,7 +403,9 @@ fn test_ready_buildings_do_not_auto_arm_placement() {
 
 #[test]
 fn test_invalid_armed_building_clears_when_not_ready() {
-    let mut armed = Some("GAPOWR".to_string());
+    let mut armed = Some(crate::app_types::TargetingMode::BuildingPlacement(
+        "GAPOWR".to_string(),
+    ));
     let mut preview = Some(crate::sim::production::BuildingPlacementPreview {
         type_id: crate::sim::intern::test_intern("GAPOWR"),
         rx: 5,

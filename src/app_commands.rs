@@ -256,7 +256,7 @@ pub(crate) fn place_ready_building_at_cursor(state: &mut AppState, type_id: &str
     // the cursor. Without this, the preview keeps moving during the input_delay_ticks
     // gap before the sim processes the command, making the placed building appear
     // offset from where the user last saw the preview.
-    state.armed_building_placement = None;
+    state.targeting_mode = None;
     state.building_placement_preview = None;
     log::info!(
         "Ready building placement queued: owner={} type={} cell=({}, {}) execute_tick>=current+{}",
@@ -535,7 +535,7 @@ pub(crate) fn cycle_local_owner(state: &mut AppState) {
     // Move out of Vec instead of cloning, then clone once for the override.
     let next = owners.swap_remove(next_idx);
     state.local_owner_override = Some(next.clone());
-    state.armed_building_placement = None;
+    state.targeting_mode = None;
     log::info!("Local owner switched to {}", next);
 }
 

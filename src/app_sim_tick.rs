@@ -748,7 +748,7 @@ pub(crate) fn rebuild_dynamic_path_grid(state: &mut AppState) {
 }
 
 pub(crate) fn update_building_placement_preview(state: &mut AppState) {
-    let Some(type_id) = state.armed_building_placement.as_deref() else {
+    let Some(type_id) = state.armed_building_type() else {
         state.building_placement_preview = None;
         return;
     };

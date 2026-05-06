@@ -47,7 +47,7 @@ pub(crate) fn handle_mouse_input(
                 if crate::app_sidebar_render::try_begin_minimap_drag(state) {
                     return;
                 }
-                if state.armed_building_placement.is_some() {
+                if state.armed_building_type().is_some() {
                     return;
                 }
                 state
@@ -58,7 +58,7 @@ pub(crate) fn handle_mouse_input(
                     state.minimap_dragging = false;
                     return;
                 }
-                if let Some(type_id) = state.armed_building_placement.clone() {
+                if let Some(type_id) = state.armed_building_type().map(str::to_owned) {
                     place_ready_building_at_cursor(state, &type_id);
                     return;
                 }
@@ -145,8 +145,8 @@ pub(crate) fn handle_mouse_input(
         }
         MouseButton::Right if btn_state.is_pressed() => {
             // Right-click = cancel / deselect only.
-            if state.armed_building_placement.is_some() {
-                state.armed_building_placement = None;
+            if state.targeting_mode.is_some() {
+                state.targeting_mode = None;
                 state.building_placement_preview = None;
                 return;
             }
@@ -244,10 +244,11 @@ fn apply_sidebar_action(state: &mut AppState, action: SidebarAction) {
             queue_build_by_type(state, &type_id);
         }
         SidebarAction::ArmPlacement(type_id) => {
-            state.armed_building_placement = Some(type_id);
+            state.targeting_mode =
+                Some(crate::app_types::TargetingMode::BuildingPlacement(type_id));
         }
         SidebarAction::ClearPlacementMode => {
-            state.armed_building_placement = None;
+            state.targeting_mode = None;
             state.building_placement_preview = None;
         }
         SidebarAction::ArmSuperWeapon(_) => {} // wired in Task 10
@@ -297,8 +298,8 @@ pub(crate) fn handle_hotkey_pressed(state: &mut AppState, code: winit::keyboard:
                     state.window.set_cursor_visible(false);
                 }
                 log::info!("Game resumed");
-            } else if state.armed_building_placement.is_some() {
-                state.armed_building_placement = None;
+            } else if state.targeting_mode.is_some() {
+                state.targeting_mode = None;
                 state.building_placement_preview = None;
             } else {
                 state.paused = true;

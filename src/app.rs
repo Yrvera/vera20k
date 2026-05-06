@@ -215,8 +215,10 @@ pub(crate) struct AppState {
     pub(crate) disable_ai: bool,
     /// True when in SpawnPick phase — MCV seeding is deferred until the player picks a waypoint.
     pub(crate) spawn_pick_pending: bool,
-    /// Ready building currently armed for left-click placement.
-    pub(crate) armed_building_placement: Option<String>,
+    /// Mutually-exclusive cursor-on-tactical-map targeting mode (building
+    /// placement OR superweapon). Right-click and Esc clear; arming one
+    /// kind clears the other.
+    pub(crate) targeting_mode: Option<crate::app_types::TargetingMode>,
     /// Current placement preview for the armed building, if any.
     pub(crate) building_placement_preview: Option<BuildingPlacementPreview>,
     /// Active tab for the custom in-game sidebar.
@@ -310,6 +312,22 @@ impl AppState {
     /// Returns false when an egui interactive panel is open so the OS cursor shows.
     pub(crate) fn use_software_cursor(&self) -> bool {
         self.software_cursor.is_some() && !self.paused && !self.show_save_load_panel
+    }
+
+    /// Return the building-placement section name if the targeting mode
+    /// is set to `BuildingPlacement`, else `None`.
+    pub(crate) fn armed_building_type(&self) -> Option<&str> {
+        self.targeting_mode
+            .as_ref()
+            .and_then(crate::app_types::TargetingMode::as_building_placement)
+    }
+
+    /// Return the SW section name if the targeting mode is set to
+    /// `SuperWeapon`, else `None`.
+    pub(crate) fn armed_super_weapon_type(&self) -> Option<&str> {
+        self.targeting_mode
+            .as_ref()
+            .and_then(crate::app_types::TargetingMode::as_super_weapon)
     }
 }
 
@@ -615,7 +633,7 @@ impl App {
             sandbox_full_visibility: false,
             disable_ai: true,
             spawn_pick_pending: false,
-            armed_building_placement: None,
+            targeting_mode: None,
             building_placement_preview: None,
             active_sidebar_tab: SidebarTab::default_active_tab(),
             sidebar_layout_spec,

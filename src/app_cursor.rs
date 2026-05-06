@@ -37,7 +37,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
             CursorFeedbackKind::PlaceInvalid
         });
     }
-    if state.armed_building_placement.is_some() {
+    if state.armed_building_type().is_some() {
         return Some(CursorFeedbackKind::Invalid);
     }
     let Some(sim) = &state.simulation else {

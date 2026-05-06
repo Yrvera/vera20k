@@ -46,7 +46,7 @@ pub(crate) fn current_sidebar_view(state: &mut AppState) -> Option<SidebarView> 
         }
     }
     sync_armed_building_placement(
-        &mut state.armed_building_placement,
+        &mut state.targeting_mode,
         &mut state.building_placement_preview,
         &ready_buildings,
         state.simulation.as_ref().map(|s| &s.interner),
@@ -110,7 +110,7 @@ pub(crate) fn current_sidebar_view(state: &mut AppState) -> Option<SidebarView> 
         &queue_items,
         &build_options,
         &ready_buildings,
-        state.armed_building_placement.as_deref(),
+        state.armed_building_type(),
         &producer_focus,
         state.sidebar_scroll_rows,
         interner,
@@ -130,7 +130,7 @@ pub(crate) fn current_sidebar_view(state: &mut AppState) -> Option<SidebarView> 
             &queue_items,
             &build_options,
             &ready_buildings,
-            state.armed_building_placement.as_deref(),
+            state.armed_building_type(),
             &producer_focus,
             state.sidebar_scroll_rows,
             interner,
@@ -146,19 +146,23 @@ pub(crate) fn current_sidebar_view(state: &mut AppState) -> Option<SidebarView> 
 }
 
 pub(crate) fn sync_armed_building_placement(
-    armed_building_placement: &mut Option<String>,
+    targeting_mode: &mut Option<crate::app_types::TargetingMode>,
     building_placement_preview: &mut Option<crate::sim::production::BuildingPlacementPreview>,
     ready_buildings: &[production::ReadyBuildingView],
     interner: Option<&crate::sim::intern::StringInterner>,
 ) {
-    if armed_building_placement.as_ref().is_some_and(|armed| {
-        !ready_buildings.iter().any(|ready| {
-            interner.map_or(false, |i| {
-                i.resolve(ready.type_id).eq_ignore_ascii_case(armed)
+    let still_valid = targeting_mode
+        .as_ref()
+        .and_then(crate::app_types::TargetingMode::as_building_placement)
+        .map_or(true, |armed| {
+            ready_buildings.iter().any(|ready| {
+                interner.map_or(false, |i| {
+                    i.resolve(ready.type_id).eq_ignore_ascii_case(armed)
+                })
             })
-        })
-    }) {
-        *armed_building_placement = None;
+        });
+    if !still_valid {
+        *targeting_mode = None;
         *building_placement_preview = None;
     }
 }
