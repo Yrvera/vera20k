@@ -160,6 +160,12 @@ pub struct SidebarItem {
     pub is_building_this_type: bool,
     pub is_ready: bool,
     pub is_armed: bool,
+    /// True if this cameo represents a superweapon (not a buildable).
+    pub is_superweapon: bool,
+    /// Unique SW INI section name (e.g., "LightningStormSpecial"). Set
+    /// only when `is_superweapon=true`. Multiple SWs may share `type_id`
+    /// (SidebarImage), but section names are unique.
+    pub super_weapon_section: Option<String>,
 }
 
 impl SidebarItem {

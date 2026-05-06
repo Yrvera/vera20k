@@ -170,6 +170,8 @@ pub fn build_sidebar_view_with_spec(
                 is_building_this_type: entry.is_building_this_type,
                 is_ready: entry.is_ready,
                 is_armed: entry.is_armed,
+                is_superweapon: entry.is_superweapon,
+                super_weapon_section: entry.super_weapon_section,
             }
         })
         .collect();
@@ -285,6 +287,8 @@ struct BuildEntry {
     is_building_this_type: bool,
     is_ready: bool,
     is_armed: bool,
+    is_superweapon: bool,
+    super_weapon_section: Option<String>,
 }
 
 fn collect_build_entries(
@@ -320,7 +324,9 @@ fn collect_build_entries(
                 queued_count: 0,
                 is_building_this_type: !sw.is_ready && sw.is_online && sw.progress > 0.0,
                 is_ready: sw.is_ready,
-                is_armed: false,
+                is_armed: false, // Updated by Task 7 once `armed` parameter changes.
+                is_superweapon: true,
+                super_weapon_section: Some(sw.display_name.clone()),
             });
         }
     }
@@ -352,6 +358,8 @@ fn collect_build_entries(
                     is_building_this_type: false,
                     is_ready: true,
                     is_armed,
+                    is_superweapon: false,
+                    super_weapon_section: None,
                 }
             } else {
                 let queued_count = queue_items
@@ -382,6 +390,8 @@ fn collect_build_entries(
                     is_building_this_type,
                     is_ready: false,
                     is_armed: false,
+                    is_superweapon: false,
+                    super_weapon_section: None,
                 }
             }
         })
@@ -409,6 +419,8 @@ fn collect_build_entries(
                 is_building_this_type: false,
                 is_ready: true,
                 is_armed,
+                is_superweapon: false,
+                super_weapon_section: None,
             });
         }
     }
