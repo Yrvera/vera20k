@@ -30,6 +30,19 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
     if current_sidebar_view_hit(state) {
         return None;
     }
+    // Superweapon targeting cursor takes precedence over building placement.
+    // Sidebar/minimap hits are already short-circuited above, so the SW reticle
+    // only renders on the tactical map.
+    if let Some(section) = state.armed_super_weapon_type() {
+        let cursor_id = state
+            .rules
+            .as_ref()
+            .and_then(|r| r.super_weapon(section))
+            .and_then(|sw| sw.action.as_deref())
+            .and_then(super_weapon_cursor_id)
+            .unwrap_or(CursorId::Default);
+        return Some(CursorFeedbackKind::SuperWeaponTarget(cursor_id));
+    }
     if let Some(preview) = state.building_placement_preview.as_ref() {
         return Some(if preview.valid {
             CursorFeedbackKind::PlaceValid
