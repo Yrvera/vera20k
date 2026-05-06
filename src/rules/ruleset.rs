@@ -660,6 +660,12 @@ pub struct BridgeRules {
     /// Parsed from `[General] BridgeVoxelMax=` in rules.ini (default 3).
     /// Consumed by the damage state machine in a later tier.
     pub voxel_max: u8,
+    /// Sound ID played when a bridge segment is repaired by an
+    /// Engineer entering a `BridgeRepairHut=yes` building.
+    /// Parsed from `[AudioVisual] RepairBridgeSound=` in rules.ini
+    /// (stock default `BridgeRepaired`). Stored uppercased.
+    /// `None` means the consumer applies its own default.
+    pub repair_sound: Option<String>,
 }
 
 impl Default for BridgeRules {
@@ -669,6 +675,7 @@ impl Default for BridgeRules {
             destroyable_by_default: true,
             explosions: Vec::new(),
             voxel_max: 3,
+            repair_sound: None,
         }
     }
 }
@@ -694,11 +701,17 @@ impl BridgeRules {
             .and_then(|section| section.get_i32("BridgeVoxelMax"))
             .unwrap_or(3)
             .clamp(0, 255) as u8;
+        let repair_sound = ini
+            .section("AudioVisual")
+            .and_then(|section| section.get("RepairBridgeSound"))
+            .map(|s| s.trim().to_uppercase())
+            .filter(|s| !s.is_empty());
         Self {
             strength,
             destroyable_by_default,
             explosions,
             voxel_max,
+            repair_sound,
         }
     }
 }
@@ -2154,6 +2167,8 @@ MutateWarhead=MyMutate\n\
              [BuildingTypes]\n\
              [General]\n\
              BridgeVoxelMax=5\n\
+             [AudioVisual]\n\
+             RepairBridgeSound=foo\n\
              [CombatDamage]\n\
              BridgeStrength=900\n\
              DestroyableBridges=no\n",
@@ -2162,6 +2177,7 @@ MutateWarhead=MyMutate\n\
         assert_eq!(rules.bridge_rules.strength, 900);
         assert!(!rules.bridge_rules.destroyable_by_default);
         assert_eq!(rules.bridge_rules.voxel_max, 5);
+        assert_eq!(rules.bridge_rules.repair_sound.as_deref(), Some("FOO"));
     }
 
     #[test]
