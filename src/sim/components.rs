@@ -571,6 +571,35 @@ impl WorldEffect {
     }
 }
 
+/// A parachute SHP rendering above a paradropped infantry during descent.
+///
+/// Spawned by `tick_parachute_anims` when an entity gains
+/// `parachute_state.is_some()`. Removed when the entity lands
+/// (`parachute_state.is_none()`) or dies. The chute follows the entity's
+/// world position via `target_id` lookup; no separate altitude state.
+///
+/// Frame advancement: frames `0..end_frame` play once on the first cycle
+/// (deploy phase implicit in `0..loop_start`); on `frame >= end_frame`,
+/// wrap to `loop_start` (loop phase). For PARACH: deploy = frames 0-19,
+/// loop = frames 20-39.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ParachuteAnim {
+    /// Stable ID of the descending entity. Render looks up screen position
+    /// each frame via `sim.entities.get(target_id)`.
+    pub target_id: u64,
+    /// Current animation frame (0..end_frame).
+    pub frame: u16,
+    /// Frame to wrap to on `frame >= end_frame`. Copied from
+    /// ParachuteRenderConfig at spawn time.
+    pub loop_start: u16,
+    /// Wraparound bound (exclusive). Copied from ParachuteRenderConfig.
+    pub end_frame: u16,
+    /// ms per frame. Copied from ParachuteRenderConfig.
+    pub rate_ms: u32,
+    /// Accumulated ms since last frame advance.
+    pub elapsed_ms: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
