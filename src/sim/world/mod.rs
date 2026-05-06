@@ -14,6 +14,7 @@ mod world_commands;
 mod world_hash;
 mod world_orders;
 mod world_spawn;
+pub mod edge_cell;
 
 use std::collections::BTreeMap;
 
