@@ -350,7 +350,7 @@ pub(crate) fn spawn_entities(
         });
     let bridge_strength = rules
         .map(|rules| rules.bridge_rules.strength)
-        .unwrap_or(250);
+        .unwrap_or(1500);
     sim.bridge_state = Some(
         crate::sim::bridge_state::BridgeRuntimeState::from_resolved_terrain(
             resolved_terrain,

@@ -661,7 +661,7 @@ pub struct BridgeRules {
 impl Default for BridgeRules {
     fn default() -> Self {
         Self {
-            strength: 250,
+            strength: 1500,
             destroyable_by_default: true,
             explosions: Vec::new(),
         }
@@ -673,7 +673,7 @@ impl BridgeRules {
         let strength = ini
             .section("CombatDamage")
             .and_then(|section| section.get_i32("BridgeStrength"))
-            .unwrap_or(250)
+            .unwrap_or(1500)
             .max(1) as u16;
         let destroyable_by_default = ini
             .section("SpecialFlags")
@@ -1921,7 +1921,7 @@ CellSpread=0
         assert!((rules.production.low_power_penalty_modifier - 1.25).abs() < 0.0001);
         assert!((rules.production.min_low_power_production_speed - 0.4).abs() < 0.0001);
         assert!((rules.production.max_low_power_production_speed - 0.85).abs() < 0.0001);
-        assert_eq!(rules.bridge_rules.strength, 250);
+        assert_eq!(rules.bridge_rules.strength, 1500);
         assert!(rules.bridge_rules.destroyable_by_default);
     }
 
