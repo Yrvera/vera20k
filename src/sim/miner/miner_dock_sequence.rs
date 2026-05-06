@@ -184,8 +184,9 @@ fn phase_approach(
     ref_sid: u64,
 ) {
     // Try to acquire the dock reservation. If granted, immediately re-target
-    // the pad cell (with bypass_grid as a Task 20 follow-up safety) and
-    // transition to Linked.
+    // the pad cell and transition to Linked. RemoveOccupy in art.ini removes
+    // the pad cell from the path/occupancy grid, so the move can proceed
+    // without bypass_grid.
     if sim
         .production
         .dock_reservations
@@ -193,11 +194,6 @@ fn phase_approach(
     {
         snap.miner.dock_queued = false;
         movement::issue_direct_move(&mut sim.entities, snap.entity_id, pad, snap.speed);
-        if let Some(entity) = sim.entities.get_mut(snap.entity_id)
-            && let Some(ref mut mt) = entity.movement_target
-        {
-            mt.bypass_grid = true;
-        }
         snap.miner.dock_phase = RefineryDockPhase::Linked;
         return;
     }
@@ -312,11 +308,6 @@ fn phase_departing(sim: &mut Simulation, snap: &mut MinerSnapshot, exit: (u16, u
 
     if !moving && !at_exit {
         movement::issue_direct_move(&mut sim.entities, snap.entity_id, exit, snap.speed);
-        if let Some(entity) = sim.entities.get_mut(snap.entity_id)
-            && let Some(ref mut mt) = entity.movement_target
-        {
-            mt.bypass_grid = true;
-        }
         return;
     }
 

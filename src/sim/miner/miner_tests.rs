@@ -1098,7 +1098,7 @@ fn dock_sequence_progresses_through_phases() {
     }
 
     // Tick 1: Approach → Linked (dock is free, reservation granted; miner
-    // re-targets the pad cell with bypass_grid).
+    // re-targets the pad cell, which is walkable courtesy of RemoveOccupy).
     tick_miners_n(&mut sim, &rules, 1);
     let m = get_miner(&sim, miner_id);
     assert_eq!(m.dock_phase, RefineryDockPhase::Linked);
@@ -1808,8 +1808,9 @@ fn harvester_drives_into_refinery_foundation_without_bumping_it() {
 // ===========================================================================
 
 /// Approach phase polls the dock reservation each tick and transitions to
-/// Linked the moment the reservation is granted, with bypass_grid set so the
-/// re-targeted pad cell can be entered through the building footprint.
+/// Linked the moment the reservation is granted, issuing a direct move to the
+/// pad cell. RemoveOccupy keeps the pad cell walkable so no bypass_grid hack
+/// is required.
 #[test]
 fn approach_to_linked_on_reservation_grant() {
     let mut sim = Simulation::new();
@@ -1836,13 +1837,9 @@ fn approach_to_linked_on_reservation_grant() {
     assert_eq!(m.dock_phase, RefineryDockPhase::Linked);
 
     let entity = sim.entities.get(miner_id).expect("entity");
-    let mt = entity
-        .movement_target
-        .as_ref()
-        .expect("issue_direct_move should have set movement_target");
     assert!(
-        mt.bypass_grid,
-        "Approach→Linked must set bypass_grid=true on the move toward the pad"
+        entity.movement_target.is_some(),
+        "issue_direct_move should have set movement_target on reservation grant"
     );
 }
 
