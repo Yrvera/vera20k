@@ -498,3 +498,85 @@ fn current_sidebar_view_hit(state: &AppState) -> bool {
     };
     panel_rect.contains(state.cursor_x, state.cursor_y)
 }
+
+/// Map a SuperWeaponType `Action=` INI string to its targeting cursor.
+///
+/// Action strings come from `[SWType] Action=` in rulesmd.ini. Cursor
+/// frame ranges are pre-loaded in `render/cursor_atlas.rs`.
+///
+/// Returns `None` for `IonCannon` (TS-legacy, no YR SW uses it) and any
+/// unrecognized string. Caller should fall back to `CursorId::Default`.
+pub(crate) fn super_weapon_cursor_id(action: &str) -> Option<CursorId> {
+    match action {
+        "Nuke" => Some(CursorId::Nuke),
+        "ChronoSphere" => Some(CursorId::Chronosphere),
+        "ChronoWarp" => Some(CursorId::Chronosphere),
+        "IronCurtain" => Some(CursorId::IronCurtain),
+        "LightningStorm" => Some(CursorId::LightningStorm),
+        "ParaDrop" => Some(CursorId::Paradrop),
+        "AmerParaDrop" => Some(CursorId::Paradrop),
+        "PsychicDominator" => Some(CursorId::PsychicDominator),
+        "SpyPlane" => Some(CursorId::SpyPlane),
+        "GeneticConverter" => Some(CursorId::GeneticMutator),
+        "ForceShield" => Some(CursorId::ForceShield),
+        "PsychicReveal" => Some(CursorId::PsychicReveal),
+        // IonCannon is TS-legacy — no YR superweapon uses this Action.
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super_weapon_cursor_id;
+    use crate::app_types::CursorId;
+
+    #[test]
+    fn maps_every_yr_active_action() {
+        assert_eq!(super_weapon_cursor_id("Nuke"), Some(CursorId::Nuke));
+        assert_eq!(
+            super_weapon_cursor_id("ChronoSphere"),
+            Some(CursorId::Chronosphere)
+        );
+        assert_eq!(
+            super_weapon_cursor_id("ChronoWarp"),
+            Some(CursorId::Chronosphere)
+        );
+        assert_eq!(
+            super_weapon_cursor_id("IronCurtain"),
+            Some(CursorId::IronCurtain)
+        );
+        assert_eq!(
+            super_weapon_cursor_id("LightningStorm"),
+            Some(CursorId::LightningStorm)
+        );
+        assert_eq!(super_weapon_cursor_id("ParaDrop"), Some(CursorId::Paradrop));
+        assert_eq!(
+            super_weapon_cursor_id("AmerParaDrop"),
+            Some(CursorId::Paradrop)
+        );
+        assert_eq!(
+            super_weapon_cursor_id("PsychicDominator"),
+            Some(CursorId::PsychicDominator)
+        );
+        assert_eq!(super_weapon_cursor_id("SpyPlane"), Some(CursorId::SpyPlane));
+        assert_eq!(
+            super_weapon_cursor_id("GeneticConverter"),
+            Some(CursorId::GeneticMutator)
+        );
+        assert_eq!(
+            super_weapon_cursor_id("ForceShield"),
+            Some(CursorId::ForceShield)
+        );
+        assert_eq!(
+            super_weapon_cursor_id("PsychicReveal"),
+            Some(CursorId::PsychicReveal)
+        );
+    }
+
+    #[test]
+    fn returns_none_for_ts_legacy_and_unknown() {
+        assert_eq!(super_weapon_cursor_id("IonCannon"), None);
+        assert_eq!(super_weapon_cursor_id(""), None);
+        assert_eq!(super_weapon_cursor_id("BogusAction"), None);
+    }
+}
