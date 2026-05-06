@@ -93,12 +93,10 @@ pub fn compute_chrono_delay(rules: &GeneralRules, distance_leptons: i32) -> u32 
 /// The chrono delay is computed from the Euclidean distance in leptons
 /// (see `compute_chrono_delay`). One cell = 256 leptons.
 ///
-/// `is_harvester` mirrors the binary's special case in
-/// `TeleportLocomotionClass::InitiateWarp` (0x00719400): when the unit is a
-/// `UnitClass` with `Harvester=yes`, the chrono lock is skipped entirely
-/// (timer.duration = 0, BeingWarped cleared in same call). In our state machine
-/// this maps to `being_warped_ticks = 0`, and the Relocate phase finishes the
-/// teleport in a single tick.
+/// `is_harvester` skips the chrono lock entirely for harvester units (e.g.,
+/// the Chrono Miner): `being_warped_ticks` is forced to 0 and the Relocate
+/// phase finishes the teleport in a single tick. Non-harvester teleporters
+/// (Chrono Legionnaire and friends) run the full distance-based delay.
 ///
 /// Returns `true` if the teleport was initiated, `false` if the entity
 /// is missing required fields.
@@ -206,8 +204,7 @@ pub fn tick_teleport_movement(
                     entity.sub_cell,
                 );
                 // Harvester instant-warp: when chrono delay is 0, finish in one
-                // tick (cleanup runs at end of this tick) — matches the binary's
-                // 1-tick effective behavior in InitiateWarp's Harvester=yes path.
+                // tick (cleanup runs at end of this tick) — no post-warp lock.
                 if teleport.being_warped_ticks == 0 {
                     finished.push(id);
                 } else {
@@ -530,8 +527,8 @@ mod tests {
         assert_eq!(compute_chrono_delay(&rules, 5120), 16);
     }
 
-    /// Mirror of binary's `InitiateWarp` (0x00719400) harvester branch:
-    /// when is_harvester=true the chrono lock is forced to 0 regardless of distance.
+    /// Harvester units skip the chrono lock entirely — when is_harvester=true
+    /// the lock duration is 0 regardless of distance.
     #[test]
     fn test_harvester_skips_chrono_delay() {
         let mut entities = EntityStore::new();
@@ -558,8 +555,7 @@ mod tests {
     }
 
     /// With is_harvester=true, the Relocate phase finishes the teleport in a single
-    /// tick (skipping ChronoDelay) — matches binary's effective 1-tick InitiateWarp
-    /// behavior for harvesters.
+    /// tick (skipping ChronoDelay).
     #[test]
     fn test_harvester_relocate_cleans_up_in_one_tick() {
         let mut entities = EntityStore::new();

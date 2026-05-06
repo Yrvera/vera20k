@@ -673,10 +673,9 @@ pub(crate) fn extract_bale(
 /// Begin the return-to-refinery sequence.
 ///
 /// Chrono miners warp to the queue cell (outside the building footprint) via
-/// `issue_teleport_command(is_harvester=true)` — matching the binary's
-/// InitiateWarp Harvester=yes special case, the chrono lock is skipped and the
-/// teleport finishes in a single tick. `handle_return` then detects adjacency
-/// and enters the normal dock sequence.
+/// `issue_teleport_command(is_harvester=true)`, which skips the chrono lock
+/// and finishes the teleport in a single tick. `handle_return` then detects
+/// adjacency and enters the normal dock sequence.
 fn begin_return(
     sim: &mut Simulation,
     rules: &RuleSet,
@@ -725,21 +724,16 @@ fn begin_return(
 
 /// Spawn WarpOut visual effects at departure and arrival.
 ///
-/// Self-teleport (chrono miner, chrono legionnaire) spawns the WarpOut anim
-/// (`[General] WarpOut=`, Rules+0x33C) at both endpoints — same anim object
-/// twice, once at the source cell and once at the destination cell. Verified
-/// against `TeleportLocomotionClass::InitiateWarp` (0x00719400): both
-/// `AnimClass::Constructor` calls reference `g_RulesClass + 0x33C`.
-///
-/// WarpIn (+0x338) and WarpAway (+0x340) are parsed but never spawned by the
-/// self-teleport path. ChronoSparkle1 (Rules+0x344) is likewise unused by
-/// self-teleport.
+/// Self-teleport (chrono miner, chrono legionnaire) spawns the
+/// `[General] WarpOut=` anim at both endpoints — same anim object twice,
+/// once at the source cell and once at the destination cell. WarpIn and
+/// WarpAway are reserved for the Chronosphere superweapon path; ChronoSparkle1
+/// is parsed but unused by self-teleport.
 ///
 /// Also emits chrono teleport sound events at both locations:
-/// `ChronoOutSound=` at the source, `ChronoInSound=` at the destination,
-/// matching the two `VocClass__PlayAt` calls in InitiateWarp. If a sound is
-/// not configured on the unit type, the corresponding event is skipped (the
-/// global `[General]` fallback is not configured in retail YR INI).
+/// `ChronoOutSound=` at the source, `ChronoInSound=` at the destination.
+/// If a sound is not configured on the unit type the corresponding event
+/// is skipped.
 fn spawn_warp_effects(
     sim: &mut Simulation,
     rules: &RuleSet,

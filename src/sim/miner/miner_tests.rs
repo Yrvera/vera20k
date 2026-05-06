@@ -778,8 +778,6 @@ fn forced_return_chrono_teleports() {
 /// events:
 ///   - one at the source cell with the unit's `ChronoOutSound=`
 ///   - one at the destination cell with the unit's `ChronoInSound=`
-/// Mirrors the two `VocClass__PlayAt` calls in
-/// `TeleportLocomotionClass::InitiateWarp` (0x00719400).
 #[test]
 fn chrono_teleport_emits_in_and_out_sounds_at_correct_cells() {
     use crate::sim::world::SimSoundEvent;

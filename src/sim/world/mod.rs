@@ -134,8 +134,7 @@ pub enum SimSoundEvent {
     /// A chrono teleport happened — play the resolved warp sound at this position.
     /// Sim emits two of these per warp: one at the source cell with the unit's
     /// `ChronoOutSound=`, one at the destination cell with the unit's
-    /// `ChronoInSound=`. Mirrors the two `VocClass__PlayAt` calls in
-    /// `TeleportLocomotionClass::InitiateWarp` (0x00719400).
+    /// `ChronoInSound=`.
     ChronoTeleport {
         sound_id: InternedId,
         rx: u16,

@@ -230,14 +230,10 @@ pub struct ObjectType {
     /// Sound ID played when this unit undeploys.
     pub undeploy_sound: Option<String>,
     /// Sound played at the destination cell when this unit warps in
-    /// (chrono teleport arrival). Mirrors TechnoTypeClass+0x574; binary
-    /// fires it via VocClass__PlayAt at the end of InitiateWarp after the
-    /// unit has been placed at the destination.
+    /// (chrono teleport arrival).
     pub chrono_in_sound: Option<String>,
     /// Sound played at the source cell when this unit warps out
-    /// (chrono teleport departure). Mirrors TechnoTypeClass+0x578; binary
-    /// fires it via VocClass__PlayAt at the start of InitiateWarp before
-    /// the unit is moved.
+    /// (chrono teleport departure).
     pub chrono_out_sound: Option<String>,
     /// Whether this unit has an independently rotating turret.
     /// Parsed from rules.ini `Turret=yes`. Only meaningful for vehicles/aircraft.
