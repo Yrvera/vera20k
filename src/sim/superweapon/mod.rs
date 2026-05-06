@@ -14,6 +14,7 @@ pub mod genetic_converter;
 pub mod invulnerability;
 pub mod iron_curtain;
 pub mod lightning_storm;
+pub mod paradrop;
 pub mod psychic_reveal;
 
 use crate::rules::ruleset::RuleSet;
