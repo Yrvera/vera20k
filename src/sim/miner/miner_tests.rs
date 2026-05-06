@@ -1597,7 +1597,7 @@ fn harvester_undocks_through_foundation_to_outside_ore() {
     // setup that makes the test meaningful — without it, movement_step's
     // walkability check would succeed regardless of bypass_grid.
     let mut path_grid = PathGrid::new(32, 32);
-    path_grid.block_building_footprint(10, 10, "4x3");
+    path_grid.block_building_footprint(10, 10, "4x3", &[], &[]);
 
     // Harvester at the dock pad (13, 11), cargo emptied, dock_phase=ExitPad.
     // Simulates "just finished unloading".
@@ -1717,7 +1717,7 @@ fn harvester_drives_into_refinery_foundation_without_bumping_it() {
     }
 
     let mut path_grid = PathGrid::new(32, 32);
-    path_grid.block_building_footprint(10, 10, "4x3");
+    path_grid.block_building_footprint(10, 10, "4x3", &[], &[]);
 
     // Harvester at queue cell (14, 11), state=Dock, dock_phase=RotateToPad.
     // Reservation already held.

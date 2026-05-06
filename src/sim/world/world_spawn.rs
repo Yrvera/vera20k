@@ -237,27 +237,25 @@ impl Simulation {
                 .map_or(MovementLayer::Ground, |l| l.layer);
             let spawn_sub_cell = ge.sub_cell;
             let spawn_sid = ge.stable_id;
-            let spawn_foundation = if category == EntityCategory::Structure {
-                rules
-                    .and_then(|r| r.object(&map_ent.type_id))
-                    .map(|obj| foundation_dimensions(&obj.foundation))
+            let spawn_cells: Option<Vec<(u16, u16)>> = if category == EntityCategory::Structure {
+                rules.and_then(|r| r.object(&map_ent.type_id)).map(|obj| {
+                    crate::sim::production::building_footprint_cells(
+                        spawn_rx,
+                        spawn_ry,
+                        &obj.foundation,
+                        &obj.add_occupy,
+                        &obj.remove_occupy,
+                    )
+                })
             } else {
                 None
             };
             self.entities.insert(ge);
             self.increment_owned_count(&owner_str, category);
             // Register in occupancy grid.
-            if let Some((fw, fh)) = spawn_foundation {
-                for dy in 0..fh {
-                    for dx in 0..fw {
-                        self.occupancy.add(
-                            spawn_rx + dx,
-                            spawn_ry + dy,
-                            spawn_sid,
-                            spawn_layer,
-                            None,
-                        );
-                    }
+            if let Some(cells) = spawn_cells {
+                for (rx, ry) in cells {
+                    self.occupancy.add(rx, ry, spawn_sid, spawn_layer, None);
                 }
             } else {
                 self.occupancy
