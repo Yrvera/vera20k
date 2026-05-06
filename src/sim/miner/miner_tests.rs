@@ -428,10 +428,10 @@ fn chrono_miner_teleports_to_refinery_on_return() {
     );
 
     // Run enough ticks for the chrono delay to expire and dock sequence to complete.
-    // Distance ~95 cells → delay ≈ 95*256/48 ≈ 509 ticks. After the delay, the
-    // miner enters the dock sequence (WaitForDock → EnterPad → Unloading → ExitPad)
-    // and ends up at the exit cell (11, 12) for a 4x3 refinery at (10, 10).
-    // Diagonal exit drive (pad → exit via Chebyshev unit-step path) is ~22 ticks.
+    // Distance ~95 cells → delay ≈ 95*256/48 ≈ 509 ticks. After the delay the
+    // miner enters the 4-state dock FSM (Approach → Linked → Unloading →
+    // Departing) and ends up at the exit cell. For a refinery at (10, 10) the
+    // gamemd-formula exit cell is (9, 10).
     tick_miners_n(&mut sim, &rules, 600);
 
     let entity = sim.entities.get(miner_id).expect("entity");
@@ -442,7 +442,7 @@ fn chrono_miner_teleports_to_refinery_on_return() {
     // After teleport + dock sequence, miner exits at the refinery exit cell.
     assert_eq!(
         (entity.position.rx, entity.position.ry),
-        (11, 12),
+        (9, 10),
         "Chrono Miner should be at exit cell after completing dock sequence"
     );
 }
@@ -497,7 +497,7 @@ fn dock_queuing_one_at_a_time() {
             value: 25,
         });
         miner.state = MinerState::Dock;
-        miner.dock_phase = RefineryDockPhase::WaitForDock;
+        miner.dock_phase = RefineryDockPhase::Approach;
         miner.reserved_refinery = Some(2);
     }
 
@@ -507,7 +507,9 @@ fn dock_queuing_one_at_a_time() {
     let m1_miner = get_miner(&sim, m1);
     let m2_miner = get_miner(&sim, m2);
 
-    // Miner with lower stable_id (1) processes first and gets dock.
+    // Miner with lower stable_id (1) processes first, wins the reservation,
+    // and transitions to Linked. m2 fails the reservation poll and stays
+    // in Approach.
     assert_eq!(
         m1_miner.state,
         MinerState::Dock,
@@ -515,8 +517,8 @@ fn dock_queuing_one_at_a_time() {
     );
     assert_eq!(
         m1_miner.dock_phase,
-        RefineryDockPhase::RotateToPad,
-        "First miner should advance past WaitForDock"
+        RefineryDockPhase::Linked,
+        "First miner should advance to Linked once reservation is granted"
     );
     assert_eq!(
         m2_miner.state,
@@ -525,8 +527,8 @@ fn dock_queuing_one_at_a_time() {
     );
     assert_eq!(
         m2_miner.dock_phase,
-        RefineryDockPhase::WaitForDock,
-        "Second miner should still be waiting for dock"
+        RefineryDockPhase::Approach,
+        "Second miner should still be in Approach polling for the dock"
     );
 }
 
@@ -764,9 +766,10 @@ fn forced_return_chrono_teleports() {
         "Teleport should be complete"
     );
     // After teleport + dock sequence, miner exits at the refinery exit cell.
+    // For refinery at (10, 10) the gamemd-formula exit cell is (9, 10).
     assert_eq!(
         (entity.position.rx, entity.position.ry),
-        (11, 12),
+        (9, 10),
         "Forced return should have teleported and docked — now at exit cell"
     );
 }
@@ -1090,18 +1093,18 @@ fn dock_sequence_progresses_through_phases() {
             value: 25,
         });
         miner.state = MinerState::Dock;
-        miner.dock_phase = RefineryDockPhase::WaitForDock;
+        miner.dock_phase = RefineryDockPhase::Approach;
         miner.reserved_refinery = Some(2);
     }
 
-    // Tick 1: WaitForDock → RotateToPad (dock is free, reservation granted).
+    // Tick 1: Approach → Linked (dock is free, reservation granted; miner
+    // re-targets the pad cell with bypass_grid).
     tick_miners_n(&mut sim, &rules, 1);
     let m = get_miner(&sim, miner_id);
-    assert_eq!(m.dock_phase, RefineryDockPhase::RotateToPad);
+    assert_eq!(m.dock_phase, RefineryDockPhase::Linked);
 
-    // Tick enough for rotation + enter pad + turn + unload + exit.
-    // ROT=5 at 15Hz: ~36 facing units/tick. Worst-case 128 units = ~4 ticks per turn.
-    // Enter/exit pad movement: ~2 ticks each. Unload: 1 bale * 14 = ~15 ticks.
+    // Tick enough for movement onto pad + per-bale unload + exit drive.
+    // 1 bale * 14.4 ticks/bale ≈ 15 ticks unload, plus pad enter/exit.
     tick_miners_n(&mut sim, &rules, 200);
     let m = get_miner(&sim, miner_id);
     // With only 1 bale (unload_tick_interval=14), unloading takes ~15 ticks.
@@ -1116,7 +1119,8 @@ fn dock_sequence_progresses_through_phases() {
     );
 }
 
-/// Verify WaitForDock grants the dock reservation when free.
+/// Verify the Approach phase grants the dock reservation when free and
+/// transitions to Linked immediately.
 #[test]
 fn dock_wait_grants_reservation_when_free() {
     let mut sim = Simulation::new();
@@ -1133,16 +1137,16 @@ fn dock_wait_grants_reservation_when_free() {
             value: 25,
         });
         miner.state = MinerState::Dock;
-        miner.dock_phase = RefineryDockPhase::WaitForDock;
+        miner.dock_phase = RefineryDockPhase::Approach;
         miner.reserved_refinery = Some(2);
     }
 
     tick_miners_n(&mut sim, &rules, 1);
 
-    // Dock should be occupied by this miner.
+    // Dock should be occupied by this miner; phase advances to Linked.
     assert!(sim.production.dock_reservations.is_occupied(2));
     let m = get_miner(&sim, miner_id);
-    assert_eq!(m.dock_phase, RefineryDockPhase::RotateToPad);
+    assert_eq!(m.dock_phase, RefineryDockPhase::Linked);
     assert!(!m.dock_queued);
 }
 
@@ -1153,18 +1157,19 @@ fn refinery_pad_and_exit_cells() {
 
     // 4x3 foundation at (10, 10), no art.ini overrides:
     // queue = (14, 11), pad = (13, 11)
-    // exit = building_center + (-0x80, +0x80) leptons = (11, 12)
-    //   (south-edge interior cell — y formula: ry*256 + h*128 + 128, /256)
+    // exit = building_origin_lepton + (-0x80, +0x80) leptons:
+    //   x = (10*256 - 128) / 256 = 2432 / 256 = 9
+    //   y = (10*256 + 128) / 256 = 2688 / 256 = 10
     assert_eq!(refinery_queue_cell(10, 10, 4, 3, None), (14, 11));
     assert_eq!(refinery_pad_cell(10, 10, 4, 3, None), (13, 11));
-    assert_eq!(refinery_exit_cell(10, 10, 4, 3, None), (11, 12));
+    assert_eq!(refinery_exit_cell(10, 10), (9, 10));
 
     // 3x3 foundation at (5, 5), no art.ini overrides:
     // queue = (8, 6), pad = (7, 6)
-    // exit = building_center + (-0x80, +0x80) leptons = (6, 7)
+    // exit = (5*256 - 128)/256 = 1152/256 = 4, (5*256 + 128)/256 = 1408/256 = 5
     assert_eq!(refinery_queue_cell(5, 5, 3, 3, None), (8, 6));
     assert_eq!(refinery_pad_cell(5, 5, 3, 3, None), (7, 6));
-    assert_eq!(refinery_exit_cell(5, 5, 3, 3, None), (6, 7));
+    assert_eq!(refinery_exit_cell(5, 5), (4, 5));
 
     // With QueueingCell override from art.ini:
     assert_eq!(refinery_queue_cell(10, 10, 4, 3, Some((4, 1))), (14, 11)); // same result for standard
@@ -1243,7 +1248,7 @@ fn dock_exit_returns_to_search_ore() {
     assert!(m.cargo.is_empty(), "Cargo should be empty");
 }
 
-/// After ExitPad arrival, both `target_ore_cell` and `last_harvest_cell` must
+/// After Departing arrival, both `target_ore_cell` and `last_harvest_cell` must
 /// be cleared so SearchOre re-scans from the exit cell instead of biasing
 /// toward the previous patch (which may sit on the back side of the refinery).
 #[test]
@@ -1253,15 +1258,17 @@ fn exit_pad_clears_ore_targets_on_arrival() {
     let config = MinerConfig::default();
     let path_grid = PathGrid::new(64, 64);
 
-    // Refinery at (10, 10). Exit cell for a 4x3 foundation = (11, 12).
+    // Refinery at (10, 10). Exit cell = building_origin + (-0x80, +0x80) leptons:
+    //   x = (10*256 - 128) / 256 = 9
+    //   y = (10*256 + 128) / 256 = 10
     spawn_refinery(&mut sim, 100, 10, 10);
-    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 11, 12);
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 9, 10);
 
     // Set up the miner mid-ExitPad with stale archive populated.
     let entity = sim.entities.get_mut(miner_id).expect("miner entity");
     let miner = entity.miner.as_mut().expect("miner component");
     miner.state = MinerState::Dock;
-    miner.dock_phase = RefineryDockPhase::ExitPad;
+    miner.dock_phase = RefineryDockPhase::Departing;
     miner.reserved_refinery = Some(100);
     miner.dock_queued = false;
     miner.target_ore_cell = Some((20, 20)); // pre-dock target
@@ -1304,13 +1311,14 @@ fn exit_pad_blocks_transition_during_teleport() {
     let path_grid = PathGrid::new(64, 64);
 
     spawn_refinery(&mut sim, 100, 10, 10);
-    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 11, 12);
+    // Exit cell for refinery at (10,10) is (9, 10) under the gamemd formula.
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 9, 10);
 
-    // Set up miner at the exit cell, in ExitPad, with a teleport in progress.
+    // Set up miner at the exit cell, in Departing, with a teleport in progress.
     let entity = sim.entities.get_mut(miner_id).expect("miner entity");
     let miner = entity.miner.as_mut().expect("miner component");
     miner.state = MinerState::Dock;
-    miner.dock_phase = RefineryDockPhase::ExitPad;
+    miner.dock_phase = RefineryDockPhase::Departing;
     miner.reserved_refinery = Some(100);
     miner.target_ore_cell = Some((20, 20));
     // Inject an active teleport state to trip the gate.
@@ -1332,7 +1340,7 @@ fn exit_pad_blocks_transition_during_teleport() {
     );
     assert_eq!(
         miner.dock_phase,
-        RefineryDockPhase::ExitPad,
+        RefineryDockPhase::Departing,
         "must stay in ExitPad"
     );
     assert_eq!(
@@ -1363,38 +1371,38 @@ fn chrono_miner_archive_cleared_after_undock_picks_new_target() {
     let config = MinerConfig::default();
     let path_grid = PathGrid::new(64, 64);
 
-    // Refinery at (10, 10), 4x3 foundation. Exit cell = (11, 12).
+    // Refinery at (10, 10), 4x3 foundation. Gamemd-formula exit cell = (9, 10).
     spawn_refinery(&mut sim, 100, 10, 10);
 
-    // Place ONE ore patch at (15, 11): distance ~4 from exit (sqrt(16+1)),
-    // within local_continuation_radius (default 6). This is what the fresh
-    // local scan from current position should pick.
+    // Place ONE ore patch at (13, 11): within local_continuation_radius
+    // (default 6) of exit cell (9, 10). This is what the fresh local scan
+    // from current position should pick.
     sim.production.resource_nodes.insert(
-        (15, 11),
+        (13, 11),
         ResourceNode {
             resource_type: ResourceType::Ore,
             remaining: 1200,
         },
     );
 
-    // Spawn miner at exit cell (11, 12), mid-ExitPad. Stale archive points
+    // Spawn miner at exit cell (9, 10), mid-Departing. Stale archive points
     // far away (50, 50) — outside any scan radius from current position,
     // and no ore at that cell. If the archive were NOT cleared, the search
     // would start from (50, 50), the local scan would find nothing, the
     // archive check would also find nothing, and only the long scan would
     // eventually fall back to current position. With the fix the local scan
-    // from current position immediately picks (15, 11).
-    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 11, 12);
+    // from current position immediately picks (13, 11).
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 9, 10);
     let entity = sim.entities.get_mut(miner_id).expect("miner entity");
     let miner = entity.miner.as_mut().expect("miner component");
     miner.state = MinerState::Dock;
-    miner.dock_phase = RefineryDockPhase::ExitPad;
+    miner.dock_phase = RefineryDockPhase::Departing;
     miner.reserved_refinery = Some(100);
     miner.target_ore_cell = Some((50, 50));
     miner.last_harvest_cell = Some((50, 50));
     miner.cargo.clear();
 
-    // Tick twice: (1) ExitPad → SearchOre with cleared archive,
+    // Tick twice: (1) Departing → SearchOre with cleared archive,
     // (2) SearchOre → MoveToOre with target picked.
     crate::sim::miner::miner_system::tick_miners(&mut sim, &rules, &config, Some(&path_grid));
     crate::sim::miner::miner_system::tick_miners(&mut sim, &rules, &config, Some(&path_grid));
@@ -1403,13 +1411,13 @@ fn chrono_miner_archive_cleared_after_undock_picks_new_target() {
     let miner = entity.miner.as_ref().expect("miner component");
 
     // The stale (50, 50) target must be replaced. Any other value (None or
-    // Some((15, 11))) is acceptable — the precise target depends on which
+    // Some((13, 11))) is acceptable — the precise target depends on which
     // tick SearchOre ran in. The key property: the stale archive does not
     // survive the dock cycle.
     assert_ne!(
         miner.target_ore_cell,
         Some((50, 50)),
-        "stale archive must be replaced after ExitPad → SearchOre. \
+        "stale archive must be replaced after Departing → SearchOre. \
          Got state={:?}, target={:?}",
         miner.state,
         miner.target_ore_cell,
@@ -1419,8 +1427,8 @@ fn chrono_miner_archive_cleared_after_undock_picks_new_target() {
     if let Some(target) = miner.target_ore_cell {
         assert_eq!(
             target,
-            (15, 11),
-            "the only ore at (15, 11) should be picked. Got {:?}",
+            (13, 11),
+            "the only ore at (13, 11) should be picked. Got {:?}",
             target
         );
     }
@@ -1607,7 +1615,7 @@ fn harvester_undocks_through_foundation_to_outside_ore() {
         let miner = entity.miner.as_mut().expect("miner component");
         miner.cargo.clear();
         miner.state = MinerState::Dock;
-        miner.dock_phase = RefineryDockPhase::ExitPad;
+        miner.dock_phase = RefineryDockPhase::Departing;
         miner.reserved_refinery = Some(100);
     }
     sim.production.dock_reservations.try_reserve(100, miner_id);
@@ -1726,7 +1734,7 @@ fn harvester_drives_into_refinery_foundation_without_bumping_it() {
         let entity = sim.entities.get_mut(miner_id).expect("harvester entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.state = MinerState::Dock;
-        miner.dock_phase = RefineryDockPhase::RotateToPad;
+        miner.dock_phase = RefineryDockPhase::Approach;
         miner.reserved_refinery = Some(100);
     }
     sim.production.dock_reservations.try_reserve(100, miner_id);

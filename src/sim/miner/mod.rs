@@ -76,28 +76,26 @@ pub enum MinerState {
 
 /// Sub-state machine for the refinery docking visual sequence.
 ///
-/// Active when `MinerState::Dock` is the current top-level state. Drives the
-/// approach → rotate → enter pad → turn → unload → exit choreography that
-/// the original game's `BuildingClass::DockingSequence_Update` performs.
+/// Active when `MinerState::Dock` is the current top-level state. Mirrors
+/// the four-state FSM used by gamemd's harvester deploy mission.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
 )]
 pub enum RefineryDockPhase {
-    /// Moving toward the queue cell (QueueingCell from art.ini).
+    /// Pathing toward QueueingCell while polling DockReservations each tick.
+    /// On reservation grant: re-target pad cell and transition to Linked.
     #[default]
     Approach,
-    /// At/near queue cell, waiting for dock reservation to be granted.
-    WaitForDock,
-    /// Dock reserved, rotating to face the pad cell (toward building).
-    RotateToPad,
-    /// Driving onto the refinery pad (inside building footprint).
-    EnterPad,
-    /// On pad, turning 180° to face outward (exit direction).
-    TurnOnPad,
-    /// Linked to refinery, incrementally unloading cargo bales into credits.
+    /// Reservation granted; driving onto the pad cell. On arrival: emit
+    /// DockDeploy sound, set display_type_override, init unload_timer,
+    /// transition to Unloading.
+    Linked,
+    /// Per-bale deposit pulse. Each bale emits BaleDepositEvent.
+    /// On cargo empty: release reservation, transition to Departing.
     Unloading,
-    /// Driving off the pad to the exit cell.
-    ExitPad,
+    /// Drive to exit cell at building_origin + (-0x80, +0x80) leptons.
+    /// On arrival: snap facing 0x47, return to SearchOre.
+    Departing,
 }
 
 /// One discrete cargo bale carried by a miner.
@@ -244,10 +242,6 @@ pub struct Miner {
     /// Current phase of the refinery docking sequence.
     /// Only meaningful when `state == MinerState::Dock`.
     pub dock_phase: RefineryDockPhase,
-    /// Accumulated base credit value of bales deposited during current unload.
-    /// Used to compute purifier bonus on the total at end of unload, matching
-    /// gamemd's single-pass DepositOreFromStorage (avoids per-bale truncation).
-    pub unload_base_total: u32,
 }
 
 impl Miner {
@@ -291,7 +285,6 @@ impl Miner {
             rescan_cooldown: 0,
             last_harvest_cell: None,
             dock_phase: RefineryDockPhase::default(),
-            unload_base_total: 0,
         }
     }
 

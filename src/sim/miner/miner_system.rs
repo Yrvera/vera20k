@@ -30,7 +30,7 @@ use crate::util::fixed_math::{SimFixed, ra2_speed_to_leptons_per_second};
 use crate::sim::debug_event_log::DebugEventKind;
 use crate::sim::intern::InternedId;
 
-use crate::sim::production::{credits_entry_for_owner, foundation_dimensions};
+use crate::sim::production::foundation_dimensions;
 
 /// Snapshot of one miner entity for two-phase processing.
 pub(super) struct MinerSnapshot {
@@ -185,7 +185,12 @@ fn process_miner(
         MinerState::Dock => {
             super::miner_dock_sequence::handle_dock_sequence(sim, rules, config, path_grid, snap)
         }
-        MinerState::Unload => handle_unload(sim, rules, config, snap),
+        MinerState::Unload => {
+            // Legacy state — production code never enters this path. If we
+            // encounter it (e.g., a save from before the FSM rewrite), fall
+            // through to SearchOre.
+            snap.miner.state = MinerState::SearchOre;
+        }
         MinerState::WaitNoOre => handle_wait_no_ore(config, snap),
         MinerState::ForcedReturn => handle_forced_return(sim, rules, config, path_grid, snap),
     }
@@ -497,68 +502,16 @@ fn handle_return(
     };
 
     // Arrive when at dock cell or adjacent — transition to Dock FSM.
+    // The Approach phase polls the dock reservation each tick.
     if is_adjacent_or_at((snap.rx, snap.ry), dock) {
         snap.miner.state = MinerState::Dock;
-        snap.miner.dock_phase = RefineryDockPhase::WaitForDock;
+        snap.miner.dock_phase = RefineryDockPhase::Approach;
         return;
     }
 
     if let Some(grid) = path_grid {
         issue_move_if_idle(&mut sim.entities, grid, snap.entity_id, dock, snap.speed);
     }
-}
-
-fn handle_unload(
-    sim: &mut Simulation,
-    rules: &RuleSet,
-    config: &MinerConfig,
-    snap: &mut MinerSnapshot,
-) {
-    // Timer counts down in tenths-of-tick. When > 0, decrement by 10 (one
-    // tick) and wait. When ≤ 0 it's time to deposit a bale; the leftover
-    // (which can be slightly negative) is preserved across reloads so the
-    // average cadence matches `unload_tick_interval` exactly.
-    if snap.miner.unload_timer > 0 {
-        snap.miner.unload_timer -= 10;
-        return;
-    }
-
-    // Pop one bale and award base credits. Accumulate total for purifier bonus.
-    if let Some(bale) = snap.miner.cargo.pop() {
-        let value: i32 = i32::from(bale.value);
-        snap.miner.unload_base_total += value as u32;
-        let owner_str = sim.interner.resolve(snap.owner).to_string();
-        let credits = credits_entry_for_owner(sim, &owner_str);
-        *credits = credits.saturating_add(value);
-        snap.miner.unload_timer = snap
-            .miner
-            .unload_timer
-            .saturating_add(config.unload_tick_interval as i16);
-        return;
-    }
-
-    // Cargo empty — apply purifier bonus on the accumulated total.
-    // gamemd computes the bonus on the full cargo in one pass
-    // (DepositOreFromStorage at 0x00522D50), so we do the same to avoid
-    // per-bale integer truncation drift (~10 credits per full load).
-    if snap.miner.unload_base_total > 0
-        && player_has_purifier(sim, rules, sim.interner.resolve(snap.owner))
-    {
-        let bonus_pct: i32 = rules.general.purifier_bonus_pct;
-        let bonus: i32 = snap.miner.unload_base_total as i32 * bonus_pct / 100;
-        let owner_str = sim.interner.resolve(snap.owner).to_string();
-        let credits = credits_entry_for_owner(sim, &owner_str);
-        *credits = credits.saturating_add(bonus);
-    }
-    snap.miner.unload_base_total = 0;
-    if let Some(ref_sid) = snap.miner.reserved_refinery {
-        sim.production.dock_reservations.release(ref_sid);
-        snap.miner.home_refinery = Some(ref_sid);
-    }
-    snap.miner.reserved_refinery = None;
-    snap.miner.dock_queued = false;
-    snap.miner.forced_return = false;
-    snap.miner.state = MinerState::SearchOre;
 }
 
 fn handle_wait_no_ore(_config: &MinerConfig, snap: &mut MinerSnapshot) {
