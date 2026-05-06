@@ -469,6 +469,7 @@ fn handle_return(
                     spawn_warp_effects(
                         sim,
                         rules,
+                        snap.type_id,
                         (snap.rx, snap.ry, snap.z),
                         (dock.0, dock.1, snap.z),
                     );
@@ -603,6 +604,7 @@ fn handle_forced_return(
                     spawn_warp_effects(
                         sim,
                         rules,
+                        snap.type_id,
                         (snap.rx, snap.ry, snap.z),
                         (dock.0, dock.1, snap.z),
                     );
@@ -705,6 +707,7 @@ fn begin_return(
                 spawn_warp_effects(
                     sim,
                     rules,
+                    snap.type_id,
                     (snap.rx, snap.ry, snap.z),
                     (dock.0, dock.1, snap.z),
                 );
@@ -732,10 +735,15 @@ fn begin_return(
 /// self-teleport path. ChronoSparkle1 (Rules+0x344) is likewise unused by
 /// self-teleport.
 ///
-/// Also emits chrono teleport sound events at both locations.
+/// Also emits chrono teleport sound events at both locations:
+/// `ChronoOutSound=` at the source, `ChronoInSound=` at the destination,
+/// matching the two `VocClass__PlayAt` calls in InitiateWarp. If a sound is
+/// not configured on the unit type, the corresponding event is skipped (the
+/// global `[General]` fallback is not configured in retail YR INI).
 fn spawn_warp_effects(
     sim: &mut Simulation,
     rules: &RuleSet,
+    type_id: InternedId,
     depart: (u16, u16, u8),
     arrive: (u16, u16, u8),
 ) {
@@ -782,15 +790,27 @@ fn spawn_warp_effects(
         delay_ms: 0,
     });
 
-    // Chrono teleport sounds at both departure and arrival.
-    sim.sound_events.push(SimSoundEvent::ChronoTeleport {
-        rx: depart.0,
-        ry: depart.1,
-    });
-    sim.sound_events.push(SimSoundEvent::ChronoTeleport {
-        rx: arrive.0,
-        ry: arrive.1,
-    });
+    // Resolve per-unit ChronoOut/InSound and emit positional sound events.
+    // Source cell gets ChronoOutSound; destination gets ChronoInSound.
+    let obj = rules.object_case_insensitive(sim.interner.resolve(type_id));
+    let chrono_out = obj.and_then(|o| o.chrono_out_sound.clone());
+    let chrono_in = obj.and_then(|o| o.chrono_in_sound.clone());
+    if let Some(name) = chrono_out {
+        let sound_id = sim.interner.intern(&name);
+        sim.sound_events.push(SimSoundEvent::ChronoTeleport {
+            sound_id,
+            rx: depart.0,
+            ry: depart.1,
+        });
+    }
+    if let Some(name) = chrono_in {
+        let sound_id = sim.interner.intern(&name);
+        sim.sound_events.push(SimSoundEvent::ChronoTeleport {
+            sound_id,
+            rx: arrive.0,
+            ry: arrive.1,
+        });
+    }
 }
 
 /// Find the nearest friendly refinery. Returns (stable_id, dock_cell).

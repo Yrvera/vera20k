@@ -53,6 +53,9 @@ fn miner_rules() -> RuleSet {
          TechLevel=1\n\
          Owner=Americans\n\
          Harvester=yes\n\
+         Teleporter=yes\n\
+         ChronoInSound=ChronoMinerTeleport\n\
+         ChronoOutSound=ChronoMinerTeleport\n\
          Dock=GAREFN\n\
          [GAREFN]\n\
          Name=Ore Refinery\n\
@@ -765,6 +768,77 @@ fn forced_return_chrono_teleports() {
         (entity.position.rx, entity.position.ry),
         (11, 12),
         "Forced return should have teleported and docked — now at exit cell"
+    );
+}
+
+// ==========================================================================
+// Test: Chrono teleport emits ChronoInSound + ChronoOutSound at correct cells
+// ==========================================================================
+/// On a chrono miner return-warp, the sim must emit two `ChronoTeleport` sound
+/// events:
+///   - one at the source cell with the unit's `ChronoOutSound=`
+///   - one at the destination cell with the unit's `ChronoInSound=`
+/// Mirrors the two `VocClass__PlayAt` calls in
+/// `TeleportLocomotionClass::InitiateWarp` (0x00719400).
+#[test]
+fn chrono_teleport_emits_in_and_out_sounds_at_correct_cells() {
+    use crate::sim::world::SimSoundEvent;
+
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    // Far miner so the warp branch fires (>ChronoHarvTooFarDistance from dock).
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 80, 80);
+    spawn_refinery(&mut sim, 2, 10, 10);
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.cargo.push(CargoBale {
+            resource_type: ResourceType::Ore,
+            value: 25,
+        });
+        miner.state = MinerState::ReturnToRefinery;
+    }
+
+    // Drain pre-existing sound events so we only see this tick's emissions.
+    sim.sound_events.clear();
+
+    // Tick once — miner finds refinery, far_enough=true → spawn_warp_effects fires.
+    tick_miners_n(&mut sim, &rules, 1);
+
+    // Collect ChronoTeleport events; each carries a resolved InternedId sound name.
+    let chrono_events: Vec<_> = sim
+        .sound_events
+        .iter()
+        .filter_map(|e| match e {
+            SimSoundEvent::ChronoTeleport {
+                sound_id,
+                rx,
+                ry,
+            } => Some((sim.interner.resolve(*sound_id).to_string(), *rx, *ry)),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(
+        chrono_events.len(),
+        2,
+        "self-teleport must emit exactly two chrono sound events (out at source, in at dest)"
+    );
+    // Source cell = miner's start position (80, 80); dest cell = refinery dock (14, 11).
+    assert!(
+        chrono_events
+            .iter()
+            .any(|(s, rx, ry)| s == "ChronoMinerTeleport" && *rx == 80 && *ry == 80),
+        "ChronoOutSound must fire at the source cell. got: {:?}",
+        chrono_events
+    );
+    assert!(
+        chrono_events
+            .iter()
+            .any(|(s, rx, ry)| s == "ChronoMinerTeleport" && *rx == 14 && *ry == 11),
+        "ChronoInSound must fire at the dest cell. got: {:?}",
+        chrono_events
     );
 }
 

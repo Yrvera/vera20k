@@ -307,6 +307,8 @@ mod tests {
             crush_sound: None,
             deploy_sound: None,
             undeploy_sound: None,
+            chrono_in_sound: None,
+            chrono_out_sound: None,
             has_turret: false,
             turret_rot: 0,
             turret_anim: None,

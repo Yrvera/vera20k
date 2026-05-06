@@ -131,8 +131,16 @@ pub enum SimSoundEvent {
     BuildingComplete { owner: InternedId },
     /// A unit finished training — play EVA "Unit ready".
     UnitComplete { owner: InternedId },
-    /// A chrono miner teleported — play ChronoInSound/ChronoOutSound.
-    ChronoTeleport { rx: u16, ry: u16 },
+    /// A chrono teleport happened — play the resolved warp sound at this position.
+    /// Sim emits two of these per warp: one at the source cell with the unit's
+    /// `ChronoOutSound=`, one at the destination cell with the unit's
+    /// `ChronoInSound=`. Mirrors the two `VocClass__PlayAt` calls in
+    /// `TeleportLocomotionClass::InitiateWarp` (0x00719400).
+    ChronoTeleport {
+        sound_id: InternedId,
+        rx: u16,
+        ry: u16,
+    },
     /// A superweapon was launched — play EVA warning.
     SuperWeaponLaunched { owner: InternedId, rx: u16, ry: u16 },
     /// A lightning bolt struck — play thunder sound.

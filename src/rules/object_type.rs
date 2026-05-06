@@ -229,6 +229,16 @@ pub struct ObjectType {
     pub deploy_sound: Option<String>,
     /// Sound ID played when this unit undeploys.
     pub undeploy_sound: Option<String>,
+    /// Sound played at the destination cell when this unit warps in
+    /// (chrono teleport arrival). Mirrors TechnoTypeClass+0x574; binary
+    /// fires it via VocClass__PlayAt at the end of InitiateWarp after the
+    /// unit has been placed at the destination.
+    pub chrono_in_sound: Option<String>,
+    /// Sound played at the source cell when this unit warps out
+    /// (chrono teleport departure). Mirrors TechnoTypeClass+0x578; binary
+    /// fires it via VocClass__PlayAt at the start of InitiateWarp before
+    /// the unit is moved.
+    pub chrono_out_sound: Option<String>,
     /// Whether this unit has an independently rotating turret.
     /// Parsed from rules.ini `Turret=yes`. Only meaningful for vehicles/aircraft.
     pub has_turret: bool,
@@ -733,6 +743,8 @@ impl ObjectType {
             crush_sound: section.get("CrushSound").map(|s| s.to_string()),
             deploy_sound: section.get("DeploySound").map(|s| s.to_string()),
             undeploy_sound: section.get("UndeploySound").map(|s| s.to_string()),
+            chrono_in_sound: section.get("ChronoInSound").map(|s| s.to_string()),
+            chrono_out_sound: section.get("ChronoOutSound").map(|s| s.to_string()),
             has_turret: section.get_bool("Turret").unwrap_or(false),
             // gamemd forces ROT=10 on any UnitType with Harvester=yes (or Weeder=yes,
             // not yet parsed) at INI parse time, overriding whatever rules.ini specifies.

@@ -363,9 +363,16 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                         // and select healthy/damaged variant based on health ratio.
                         continue;
                     }
-                    SimSoundEvent::ChronoTeleport { .. } => {
-                        // TODO: resolve ChronoInSound/ChronoOutSound from unit type or rules.
-                        continue;
+                    SimSoundEvent::ChronoTeleport {
+                        sound_id,
+                        rx,
+                        ry,
+                    } => {
+                        let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
+                        GameSoundEvent::ChronoTeleport {
+                            sound_id: sim.interner.resolve(sound_id).to_string(),
+                            screen_pos: Some((sx, sy)),
+                        }
                     }
                     SimSoundEvent::BuildingComplete { owner } => {
                         // Only play EVA for the local player's production.
