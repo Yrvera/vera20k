@@ -444,6 +444,12 @@ pub struct ObjectType {
     /// Parsed from `ShowOccupantPips=yes` in rules.ini.
     pub show_occupant_pips: bool,
 
+    /// Whether Engineer entry into this building triggers bridge-segment
+    /// repair on the nearest damaged bridge. Parsed from
+    /// `BridgeRepairHut=yes` in rules.ini. Stock CABHUT is the only
+    /// consumer in retail. Default `false`.
+    pub bridge_repair_hut: bool,
+
     /// Maximum number of infantry passengers this vehicle can carry.
     /// Parsed from `Passengers=N` in rules.ini. >0 enables `Enter` cursor
     /// for friendly infantry hovering this transport.
@@ -860,6 +866,7 @@ impl ObjectType {
             can_be_occupied: section.get_bool("CanBeOccupied").unwrap_or(false),
             can_occupy_fire: section.get_bool("CanOccupyFire").unwrap_or(false),
             show_occupant_pips: section.get_bool("ShowOccupantPips").unwrap_or(true),
+            bridge_repair_hut: section.get_bool("BridgeRepairHut").unwrap_or(false),
             passengers: section.get_i32("Passengers").unwrap_or(0).max(0) as u32,
             size_limit: section.get_i32("SizeLimit").unwrap_or(0).max(0) as u32,
             size: section
@@ -1095,6 +1102,23 @@ mod tests {
         assert_eq!(obj.adjacent, 6);
         assert!(obj.base_normal);
         assert!(obj.crewed);
+    }
+
+    #[test]
+    fn parse_bridge_repair_hut_flag() {
+        let ini: IniFile = IniFile::from_str("[CABHUT]\nBridgeRepairHut=yes\n[NACABH]\n");
+        let obj_on: ObjectType = ObjectType::from_ini_section(
+            "CABHUT",
+            ini.section("CABHUT").unwrap(),
+            ObjectCategory::Building,
+        );
+        let obj_off: ObjectType = ObjectType::from_ini_section(
+            "NACABH",
+            ini.section("NACABH").unwrap(),
+            ObjectCategory::Building,
+        );
+        assert!(obj_on.bridge_repair_hut);
+        assert!(!obj_off.bridge_repair_hut);
     }
 
     #[test]

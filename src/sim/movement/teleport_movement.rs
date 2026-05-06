@@ -375,6 +375,7 @@ mod tests {
             can_be_occupied: false,
             can_occupy_fire: false,
             show_occupant_pips: false,
+            bridge_repair_hut: false,
             passengers: 0,
             size_limit: 0,
             size: 3,
