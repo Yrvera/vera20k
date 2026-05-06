@@ -284,6 +284,96 @@ fn select_drive_track_all_cardinal_straights_give_track_1() {
 }
 
 // ---------------------------------------------------------------------------
+// build_sharp_turn_fallback tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn build_sharp_turn_fallback_cardinals_use_raw_track_1() {
+    for facing in [0u8, 64, 128, 192] {
+        let fb = build_sharp_turn_fallback(facing).unwrap_or_else(|| {
+            panic!("fallback should exist for cardinal facing {}", facing)
+        });
+        assert_eq!(
+            fb.raw_track_index, 1,
+            "cardinal facing {} should use RawTrack 1 (straight)",
+            facing
+        );
+    }
+}
+
+#[test]
+fn build_sharp_turn_fallback_diagonals_use_raw_track_2() {
+    for facing in [32u8, 96, 160, 224] {
+        let fb = build_sharp_turn_fallback(facing).unwrap_or_else(|| {
+            panic!("fallback should exist for diagonal facing {}", facing)
+        });
+        assert_eq!(
+            fb.raw_track_index, 2,
+            "diagonal facing {} should use RawTrack 2 (straight diagonal)",
+            facing
+        );
+    }
+}
+
+#[test]
+fn build_sharp_turn_fallback_transform_flags_match_binary() {
+    // Verified-from-binary: cur_dir → low3 of TURN_TRACKS[cur_dir*9].flags
+    //   N=0, NE=0, E=3, SE=4, S=4, SW=1, W=1, NW=2
+    let cases: &[(u8, u8)] = &[
+        (0, 0),   // N
+        (32, 0),  // NE
+        (64, 3),  // E
+        (96, 4),  // SE
+        (128, 4), // S
+        (160, 1), // SW
+        (192, 1), // W
+        (224, 2), // NW
+    ];
+    for &(facing, expected_low3) in cases {
+        let fb = build_sharp_turn_fallback(facing).unwrap();
+        assert_eq!(
+            fb.flags & 0x07,
+            expected_low3,
+            "facing {} should have transform flags low3 = {}",
+            facing,
+            expected_low3
+        );
+    }
+}
+
+#[test]
+fn build_sharp_turn_fallback_target_facing_matches_quantized_cur_dir() {
+    let cases: &[(u8, u8)] = &[
+        (0, 0x00),
+        (32, 0x20),
+        (64, 0x40),
+        (96, 0x60),
+        (128, 0x80),
+        (160, 0xA0),
+        (192, 0xC0),
+        (224, 0xE0),
+    ];
+    for &(facing, expected_target) in cases {
+        let fb = build_sharp_turn_fallback(facing).unwrap();
+        assert_eq!(
+            fb.target_facing, expected_target,
+            "facing {} substitute should have target_facing 0x{:02X}",
+            facing, expected_target
+        );
+    }
+}
+
+#[test]
+fn build_sharp_turn_fallback_rounds_to_nearest_dir() {
+    // Non-quantized facings round to the nearest 8-direction bucket.
+    let fb_17 = build_sharp_turn_fallback(17).unwrap();
+    let fb_32 = build_sharp_turn_fallback(32).unwrap();
+    assert_eq!(fb_17.raw_track_index, fb_32.raw_track_index);
+    assert_eq!(fb_17.flags, fb_32.flags);
+    assert_eq!(fb_17.target_facing, fb_32.target_facing);
+}
+
+// ---------------------------------------------------------------------------
 // begin_drive_track tests
 // ---------------------------------------------------------------------------
 
