@@ -687,7 +687,19 @@ pub fn tick_movement_with_grids(
                             let ndx = after.0 as i32 - cur_cell.0 as i32;
                             let ndy = after.1 as i32 - cur_cell.1 as i32;
                             let next_face = super::facing_from_delta(ndx, ndy);
-                            let cur_face = entity.facing;
+                            // Use the active track's post-turn facing as the
+                            // chain "from-dir." By the time the chain attempt
+                            // fires (at chain_index of the current track),
+                            // entity.facing is mid-rotation along the curve;
+                            // the binary uses the TurnTrack entry's
+                            // target_facing here. The unwrap_or is defensive:
+                            // DriveTrackChainReady is only produced inside an
+                            // active track.
+                            let cur_face = entity
+                                .drive_track
+                                .as_ref()
+                                .map(|t| t.target_facing)
+                                .unwrap_or(entity.facing);
                             // Only chain if the direction changes (otherwise
                             // the current track finishes into straight movement).
                             if next_face != cur_face {
