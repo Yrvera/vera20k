@@ -656,6 +656,10 @@ pub struct BridgeRules {
     /// SHP animation names to spawn when a bridge group is destroyed
     /// (e.g., TWLT026, TWLT036, TWLT050, TWLT070). Picked randomly per cell.
     pub explosions: Vec<String>,
+    /// Maximum metallic-debris voxels spawned per destroyed bridge cell.
+    /// Parsed from `[General] BridgeVoxelMax=` in rules.ini (default 3).
+    /// Consumed by the damage state machine in a later tier.
+    pub voxel_max: u8,
 }
 
 impl Default for BridgeRules {
@@ -664,6 +668,7 @@ impl Default for BridgeRules {
             strength: 1500,
             destroyable_by_default: true,
             explosions: Vec::new(),
+            voxel_max: 3,
         }
     }
 }
@@ -684,10 +689,16 @@ impl BridgeRules {
             .and_then(|section| section.get_list("BridgeExplosions"))
             .map(|list| list.into_iter().map(|s| s.to_uppercase()).collect())
             .unwrap_or_default();
+        let voxel_max = ini
+            .section("General")
+            .and_then(|section| section.get_i32("BridgeVoxelMax"))
+            .unwrap_or(3)
+            .clamp(0, 255) as u8;
         Self {
             strength,
             destroyable_by_default,
             explosions,
+            voxel_max,
         }
     }
 }
@@ -2141,6 +2152,8 @@ MutateWarhead=MyMutate\n\
              [VehicleTypes]\n\
              [AircraftTypes]\n\
              [BuildingTypes]\n\
+             [General]\n\
+             BridgeVoxelMax=5\n\
              [CombatDamage]\n\
              BridgeStrength=900\n\
              DestroyableBridges=no\n",
@@ -2148,6 +2161,23 @@ MutateWarhead=MyMutate\n\
         let rules = RuleSet::from_ini(&ini).expect("Should parse");
         assert_eq!(rules.bridge_rules.strength, 900);
         assert!(!rules.bridge_rules.destroyable_by_default);
+        assert_eq!(rules.bridge_rules.voxel_max, 5);
+    }
+
+    #[test]
+    fn bridge_rules_voxel_max_clamps_oversize() {
+        // Regression: u8 storage clamps oversize INI values to 255 instead
+        // of wrapping/truncating.
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n\
+             [VehicleTypes]\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             [General]\n\
+             BridgeVoxelMax=999\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("Should parse");
+        assert_eq!(rules.bridge_rules.voxel_max, 255);
     }
 
     #[test]
