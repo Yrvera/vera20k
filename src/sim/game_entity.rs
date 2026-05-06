@@ -196,10 +196,6 @@ pub struct GameEntity {
     /// When Some, the renderer should use this type's VXL model instead of `type_ref`.
     /// Set during refinery unloading (UnloadingClass= from rules.ini).
     pub display_type_override: Option<InternedId>,
-    /// True while a miner is docked and unloading — tells the renderer to play
-    /// the refinery's ActiveAnim overlays (e.g. GAREFNL1 unloading arm).
-    /// Set on the *refinery* entity, not the miner.
-    pub dock_active_anim: bool,
     /// Target building for engineer capture. Set by CaptureBuilding command,
     /// cleared on arrival (after capture) or if target is lost/destroyed.
     pub capture_target: Option<u64>,
@@ -311,7 +307,6 @@ impl GameEntity {
             passenger_role: PassengerRole::None,
             ifv_weapon_index: None,
             display_type_override: None,
-            dock_active_anim: false,
             capture_target: None,
             deploy_state: None,
             debug_log: None,
