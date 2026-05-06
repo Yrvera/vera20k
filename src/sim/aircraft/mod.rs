@@ -81,6 +81,29 @@ pub enum AircraftMission {
         /// Airfield entity stable_id this aircraft is docked at.
         airfield_id: u64,
     },
+
+    /// Paradrop carrier flying in toward the drop target.
+    /// Transitions to ParaDropOverfly when distance ≤ ParadropRadius.
+    ParaDropApproach {
+        target_rx: u16,
+        target_ry: u16,
+        /// Latched true after fog-reveal + ChuteSound fire (paradrop P14).
+        has_revealed_fog: bool,
+    },
+
+    /// Paradrop carrier over the drop zone, dispensing payload at ROF cadence.
+    /// Transitions to silent despawn at the opposite edge once cargo is empty.
+    ParaDropOverfly {
+        /// Opposite-edge cell to fly to once cargo is empty.
+        exit_rx: u16,
+        exit_ry: u16,
+        /// Ticks until next drop allowed (ROF=130 cadence, paradrop P22).
+        drop_cooldown: u16,
+        /// 5-tick mutex between drops (LandingState mirror, paradrop P23).
+        landing_state: u8,
+        /// Decrements per drop; parity drives V-pattern side (paradrop P25).
+        payload_count: u8,
+    },
 }
 
 impl AircraftMission {
@@ -108,7 +131,15 @@ impl AircraftMission {
 /// Called once per tick from `advance_tick()`, after air_movement and before combat.
 /// This is the mission orchestration layer — it decides when aircraft fire,
 /// where they fly, and what they do after completing an attack pass.
-pub fn tick_aircraft_missions(sim: &mut Simulation, rules: &RuleSet) {
+///
+/// `path_grid`: threaded from advance_tick. Paradrop's Drop_Payload uses it for
+/// drop-cell passability checks. Other missions ignore it for now.
+pub fn tick_aircraft_missions(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    path_grid: Option<&crate::sim::pathfinding::PathGrid>,
+) {
+    let _ = path_grid;
     // Phase 1: Snapshot all aircraft with missions.
     struct MissionSnap {
         id: u64,
@@ -465,6 +496,26 @@ pub fn tick_aircraft_missions(sim: &mut Simulation, rules: &RuleSet) {
                     m.new_mission = AircraftMission::Idle;
                 }
                 // Otherwise: stay parked, do nothing.
+            }
+
+            AircraftMission::ParaDropApproach {
+                target_rx,
+                target_ry,
+                has_revealed_fog,
+            } => {
+                // Real handler in paradrop_mission::tick_approach (Task 11).
+                let _ = (target_rx, target_ry, has_revealed_fog);
+            }
+
+            AircraftMission::ParaDropOverfly {
+                exit_rx,
+                exit_ry,
+                drop_cooldown,
+                landing_state,
+                payload_count,
+            } => {
+                // Real handler in paradrop_mission::tick_overfly (Task 12).
+                let _ = (exit_rx, exit_ry, drop_cooldown, landing_state, payload_count);
             }
         }
 
