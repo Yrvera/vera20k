@@ -430,8 +430,8 @@ fn chrono_miner_teleports_to_refinery_on_return() {
     // Run enough ticks for the chrono delay to expire and dock sequence to complete.
     // Distance ~95 cells → delay ≈ 95*256/48 ≈ 509 ticks. After the delay the
     // miner enters the 4-state dock FSM (Approach → Linked → Unloading →
-    // Departing) and ends up at the exit cell. For a refinery at (10, 10) the
-    // gamemd-formula exit cell is (9, 10).
+    // Departing) and ends up at the exit cell. For the 4×3 refinery at (10, 10)
+    // the gamemd-formula exit cell is (11, 12).
     tick_miners_n(&mut sim, &rules, 600);
 
     let entity = sim.entities.get(miner_id).expect("entity");
@@ -442,7 +442,7 @@ fn chrono_miner_teleports_to_refinery_on_return() {
     // After teleport + dock sequence, miner exits at the refinery exit cell.
     assert_eq!(
         (entity.position.rx, entity.position.ry),
-        (9, 10),
+        (11, 12),
         "Chrono Miner should be at exit cell after completing dock sequence"
     );
 }
@@ -766,10 +766,10 @@ fn forced_return_chrono_teleports() {
         "Teleport should be complete"
     );
     // After teleport + dock sequence, miner exits at the refinery exit cell.
-    // For refinery at (10, 10) the gamemd-formula exit cell is (9, 10).
+    // For the 4×3 refinery at (10, 10) the gamemd-formula exit cell is (11, 12).
     assert_eq!(
         (entity.position.rx, entity.position.ry),
-        (9, 10),
+        (11, 12),
         "Forced return should have teleported and docked — now at exit cell"
     );
 }
@@ -1157,19 +1157,20 @@ fn refinery_pad_and_exit_cells() {
 
     // 4x3 foundation at (10, 10), no art.ini overrides:
     // queue = (14, 11), pad = (13, 11)
-    // exit = building_origin_lepton + (-0x80, +0x80) leptons:
-    //   x = (10*256 - 128) / 256 = 2432 / 256 = 9
-    //   y = (10*256 + 128) / 256 = 2688 / 256 = 10
+    // exit = foundation_centroid_lepton + (-0x80, +0x80):
+    //   x = (10*256 + 4*128 - 128) / 256 = 2944 / 256 = 11
+    //   y = (10*256 + 3*128 + 128) / 256 = 3072 / 256 = 12
     assert_eq!(refinery_queue_cell(10, 10, 4, 3, None), (14, 11));
     assert_eq!(refinery_pad_cell(10, 10, 4, 3, None), (13, 11));
-    assert_eq!(refinery_exit_cell(10, 10), (9, 10));
+    assert_eq!(refinery_exit_cell(10, 10, 4, 3), (11, 12));
 
     // 3x3 foundation at (5, 5), no art.ini overrides:
     // queue = (8, 6), pad = (7, 6)
-    // exit = (5*256 - 128)/256 = 1152/256 = 4, (5*256 + 128)/256 = 1408/256 = 5
+    // exit = (5*256 + 3*128 - 128)/256 = 1536/256 = 6,
+    //        (5*256 + 3*128 + 128)/256 = 1792/256 = 7
     assert_eq!(refinery_queue_cell(5, 5, 3, 3, None), (8, 6));
     assert_eq!(refinery_pad_cell(5, 5, 3, 3, None), (7, 6));
-    assert_eq!(refinery_exit_cell(5, 5), (4, 5));
+    assert_eq!(refinery_exit_cell(5, 5, 3, 3), (6, 7));
 
     // With QueueingCell override from art.ini:
     assert_eq!(refinery_queue_cell(10, 10, 4, 3, Some((4, 1))), (14, 11)); // same result for standard
@@ -1258,11 +1259,11 @@ fn exit_pad_clears_ore_targets_on_arrival() {
     let config = MinerConfig::default();
     let path_grid = PathGrid::new(64, 64);
 
-    // Refinery at (10, 10). Exit cell = building_origin + (-0x80, +0x80) leptons:
-    //   x = (10*256 - 128) / 256 = 9
-    //   y = (10*256 + 128) / 256 = 10
+    // 4×3 refinery at (10, 10). Exit cell = foundation_centroid + (-0x80, +0x80) leptons:
+    //   x = (10*256 + 4*128 - 128) / 256 = 11
+    //   y = (10*256 + 3*128 + 128) / 256 = 12
     spawn_refinery(&mut sim, 100, 10, 10);
-    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 9, 10);
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 11, 12);
 
     // Set up the miner mid-Departing with stale archive populated.
     let entity = sim.entities.get_mut(miner_id).expect("miner entity");
@@ -1311,8 +1312,8 @@ fn exit_pad_blocks_transition_during_teleport() {
     let path_grid = PathGrid::new(64, 64);
 
     spawn_refinery(&mut sim, 100, 10, 10);
-    // Exit cell for refinery at (10,10) is (9, 10) under the gamemd formula.
-    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 9, 10);
+    // Exit cell for the 4×3 refinery at (10, 10) is (11, 12) under the gamemd formula.
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 11, 12);
 
     // Set up miner at the exit cell, in Departing, with a teleport in progress.
     let entity = sim.entities.get_mut(miner_id).expect("miner entity");
@@ -1371,28 +1372,28 @@ fn chrono_miner_archive_cleared_after_undock_picks_new_target() {
     let config = MinerConfig::default();
     let path_grid = PathGrid::new(64, 64);
 
-    // Refinery at (10, 10), 4x3 foundation. Gamemd-formula exit cell = (9, 10).
+    // Refinery at (10, 10), 4x3 foundation. Gamemd-formula exit cell = (11, 12).
     spawn_refinery(&mut sim, 100, 10, 10);
 
-    // Place ONE ore patch at (13, 11): within local_continuation_radius
-    // (default 6) of exit cell (9, 10). This is what the fresh local scan
+    // Place ONE ore patch at (15, 13): within local_continuation_radius
+    // (default 6) of exit cell (11, 12). This is what the fresh local scan
     // from current position should pick.
     sim.production.resource_nodes.insert(
-        (13, 11),
+        (15, 13),
         ResourceNode {
             resource_type: ResourceType::Ore,
             remaining: 1200,
         },
     );
 
-    // Spawn miner at exit cell (9, 10), mid-Departing. Stale archive points
+    // Spawn miner at exit cell (11, 12), mid-Departing. Stale archive points
     // far away (50, 50) — outside any scan radius from current position,
     // and no ore at that cell. If the archive were NOT cleared, the search
     // would start from (50, 50), the local scan would find nothing, the
     // archive check would also find nothing, and only the long scan would
     // eventually fall back to current position. With the fix the local scan
-    // from current position immediately picks (13, 11).
-    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 9, 10);
+    // from current position immediately picks (15, 13).
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 11, 12);
     let entity = sim.entities.get_mut(miner_id).expect("miner entity");
     let miner = entity.miner.as_mut().expect("miner component");
     miner.state = MinerState::Dock;
@@ -1411,7 +1412,7 @@ fn chrono_miner_archive_cleared_after_undock_picks_new_target() {
     let miner = entity.miner.as_ref().expect("miner component");
 
     // The stale (50, 50) target must be replaced. Any other value (None or
-    // Some((13, 11))) is acceptable — the precise target depends on which
+    // Some((15, 13))) is acceptable — the precise target depends on which
     // tick SearchOre ran in. The key property: the stale archive does not
     // survive the dock cycle.
     assert_ne!(
@@ -1427,8 +1428,8 @@ fn chrono_miner_archive_cleared_after_undock_picks_new_target() {
     if let Some(target) = miner.target_ore_cell {
         assert_eq!(
             target,
-            (13, 11),
-            "the only ore at (13, 11) should be picked. Got {:?}",
+            (15, 13),
+            "the only ore at (15, 13) should be picked. Got {:?}",
             target
         );
     }
@@ -1948,19 +1949,20 @@ fn unloading_applies_per_bale_purifier_bonus() {
     );
 }
 
-/// Exit cell formula matches gamemd: building_origin_lepton + (-0x80, +0x80).
+/// Exit cell formula matches gamemd: foundation_centroid_lepton + (-0x80, +0x80).
 #[test]
 fn departing_uses_gamemd_exit_cell_formula() {
     use super::miner_dock_sequence::refinery_exit_cell;
-    // refinery at (10, 20):
-    //   x = (10*256 - 128) / 256 = (2560 - 128) / 256 = 9
-    //   y = (20*256 + 128) / 256 = (5120 + 128) / 256 = 20
-    assert_eq!(refinery_exit_cell(10, 20), (9, 20));
-    // refinery at (5, 5):
-    //   x = (1280 - 128)/256 = 4, y = (1280 + 128)/256 = 5
-    assert_eq!(refinery_exit_cell(5, 5), (4, 5));
-    // origin clamps at zero.
-    assert_eq!(refinery_exit_cell(0, 0), (0, 0));
+    // 4x3 refinery at (10, 20):
+    //   x = (10*256 + 4*128 - 128) / 256 = 2944 / 256 = 11
+    //   y = (20*256 + 3*128 + 128) / 256 = 5632 / 256 = 22
+    assert_eq!(refinery_exit_cell(10, 20, 4, 3), (11, 22));
+    // 3x3 refinery at (5, 5):
+    //   x = (1280 + 384 - 128)/256 = 1536/256 = 6
+    //   y = (1280 + 384 + 128)/256 = 1792/256 = 7
+    assert_eq!(refinery_exit_cell(5, 5, 3, 3), (6, 7));
+    // 1x1 refinery at origin: centroid = (128, 128); exit_lepton = (0, 256) → cell (0, 1).
+    assert_eq!(refinery_exit_cell(0, 0, 1, 1), (0, 1));
 }
 
 /// Departing snaps facing to 0x47 (east-southeast) and returns to SearchOre
@@ -1973,8 +1975,8 @@ fn departing_snaps_facing_to_0x47() {
     let path_grid = PathGrid::new(64, 64);
 
     spawn_refinery(&mut sim, 100, 10, 10);
-    // Place miner at the gamemd-formula exit cell (9, 10) for refinery (10, 10).
-    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 9, 10);
+    // Place miner at the gamemd-formula exit cell (11, 12) for the 4×3 refinery at (10, 10).
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 11, 12);
     {
         let entity = sim.entities.get_mut(miner_id).expect("miner entity");
         entity.facing = 0; // pre-set facing != 0x47
@@ -2113,11 +2115,11 @@ fn full_dock_cycle_war_miner() {
         credits_after - credits_before,
     );
 
-    // Final position at the exit cell (refinery (10, 10) → exit (9, 10)).
+    // Final position at the exit cell (4×3 refinery at (10, 10) → exit (11, 12)).
     let entity = sim.entities.get(miner_id).expect("entity");
     assert_eq!(
         (entity.position.rx, entity.position.ry),
-        (9, 10),
+        (11, 12),
         "miner should land at gamemd-formula exit cell"
     );
     assert_eq!(entity.facing, 0x47, "facing must snap to 0x47 on arrival");

@@ -75,12 +75,18 @@ pub(super) fn refinery_pad_cell(
 
 /// Exit cell — where the miner drives after undocking.
 ///
-/// gamemd-correct formula: building_origin_lepton + (-0x80, +0x80) leptons.
-/// Origin in leptons = (rx*256, ry*256). Add the offset, then floor-divide
-/// by 256 for cell coords. Foundation dimensions are NOT used.
-pub(super) fn refinery_exit_cell(rx: u16, ry: u16) -> (u16, u16) {
-    let exit_x = (rx as i32 * 256 - 0x80) / 256;
-    let exit_y = (ry as i32 * 256 + 0x80) / 256;
+/// Anchor is the foundation centroid (`BuildingClass::GetCoords()` overrides
+/// `ObjectClass::GetCoords()` and adds `W*128 - 128` / `H*128 - 128` to the
+/// top-left cell *center*). The undock helper then offsets that anchor by
+/// `(-0x80, +0x80)` leptons before integer-dividing into cell space:
+///   exit_lepton.x = rx*256 + W*128 - 128
+///   exit_lepton.y = ry*256 + H*128 + 128
+/// For a 4×3 refinery at (10, 10) this resolves to (11, 12) — one cell
+/// south-east of the foundation centroid, on the bib row. Larger refineries
+/// push the exit point further SE proportionally.
+pub(super) fn refinery_exit_cell(rx: u16, ry: u16, width: u16, height: u16) -> (u16, u16) {
+    let exit_x = (rx as i32 * 256 + width as i32 * 128 - 0x80) / 256;
+    let exit_y = (ry as i32 * 256 + height as i32 * 128 + 0x80) / 256;
     (exit_x.max(0) as u16, exit_y.max(0) as u16)
 }
 
@@ -107,7 +113,7 @@ fn resolve_refinery_cells(
     Some((
         refinery_queue_cell(rx, ry, w, h, qc),
         refinery_pad_cell(rx, ry, w, h, dock_off),
-        refinery_exit_cell(rx, ry),
+        refinery_exit_cell(rx, ry, w, h),
     ))
 }
 
@@ -308,6 +314,16 @@ fn phase_departing(sim: &mut Simulation, snap: &mut MinerSnapshot, exit: (u16, u
 
     if !moving && !at_exit {
         movement::issue_direct_move(&mut sim.entities, snap.entity_id, exit, snap.speed);
+        // Exit cell sits on the foundation south edge (centroid + (-0x80,
+        // +0x80) leptons). The pad→exit straight line crosses interior
+        // foundation cells which are blocked in path_grid; mirror gamemd's
+        // locomotor head_to (which ignores cell occupancy during dock
+        // departure) by setting bypass_grid for this one move.
+        if let Some(entity) = sim.entities.get_mut(snap.entity_id)
+            && let Some(ref mut mt) = entity.movement_target
+        {
+            mt.bypass_grid = true;
+        }
         return;
     }
 
