@@ -190,6 +190,10 @@ pub(crate) fn advance_in_game_runtime(state: &mut AppState, elapsed_ms: u64) {
             state,
             sim_elapsed.min(MAX_UPDATE_DELTA_MS) as u32,
         );
+        crate::app_chute_anim::tick_parachute_anims(
+            state,
+            sim_elapsed.min(MAX_UPDATE_DELTA_MS) as u32,
+        );
     }
 
     crate::app_building_anim::update_radar_state(state, SIM_TICK_MS as f32);
