@@ -92,6 +92,9 @@ pub mod app_camera;
 // Extracted from app_sim_tick.rs.
 pub mod app_building_anim;
 
+// Parachute SHP animation lifecycle for descending paradropped infantry.
+pub mod app_chute_anim;
+
 // App state transitions: map loading, screen clearing.
 pub mod app_transitions;
 
