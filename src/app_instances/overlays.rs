@@ -565,6 +565,103 @@ pub(crate) fn build_garrison_muzzle_flash_instances(
     }
 }
 
+/// Emit one sprite instance per active parachute anim, anchored at the
+/// descending GI's screen position with the SHP atlas's pre-baked
+/// offset_x/offset_y handling sprite-center anchoring.
+///
+/// Depth: chute depth = GI body depth − epsilon, so it sorts above the body
+/// in the same Layer 2 (Ground) band — matching gamemd's
+/// AnimClass::GetLayer override that forces owner-attached anims to Layer 2
+/// regardless of art.ini Layer=.
+///
+/// Palette: AltPalette=yes selects the unit/Convert palette in gamemd. This
+/// matches the default palette branch in `sprite_atlas` so long as the
+/// PARACH frames are NOT registered in `effect_type_ids` (see Task 8).
+pub(crate) fn build_parachute_instances(
+    state: &AppState,
+    paged: &mut [Vec<SpriteInstance>],
+) {
+    /// Depth epsilon — chute sorts slightly above the GI body. Half of the
+    /// per-Z bias used in `compute_sprite_depth_params`. Increase if
+    /// z-fighting is observed in-game.
+    const CHUTE_DEPTH_EPSILON: f32 = 0.0005;
+
+    let (sim, atlas) = match (&state.simulation, &state.sprite_atlas) {
+        (Some(s), Some(a)) => (s, a),
+        _ => return,
+    };
+    let z = state.zoom_level;
+    let (cam_x, cam_y, sw, sh) = (
+        state.camera_x,
+        state.camera_y,
+        state.render_width() as f32 / z,
+        state.render_height() as f32 / z,
+    );
+    let (origin_y, world_height) = state
+        .terrain_grid
+        .as_ref()
+        .map(|g| (g.origin_y, g.world_height))
+        .unwrap_or((0.0, 1.0));
+
+    let config = match state
+        .rules
+        .as_ref()
+        .and_then(|r| r.general.parachute_render.as_ref())
+    {
+        Some(c) => c,
+        None => return,
+    };
+
+    for anim in &state.parachute_anims {
+        let entity = match sim.entities.get(anim.target_id) {
+            Some(e) => e,
+            None => continue,
+        };
+        let pos = &entity.position;
+        let (gx, gy) = (pos.screen_x, pos.screen_y);
+        if !in_view(gx, gy, 200.0, 200.0, cam_x, cam_y, sw, sh, 200.0) {
+            continue;
+        }
+
+        // Single-facing anim (no Facings= in art.ini for PARACH).
+        let key = ShpSpriteKey {
+            type_id: config.shp_name.clone(),
+            facing: 0,
+            frame: anim.frame,
+            house_color: HouseColorIndex(0),
+        };
+        let Some(entry) = atlas.get(&key) else {
+            // PARACH not yet loaded into the atlas. Logged once at startup
+            // by the atlas-load path; per-frame silence here is intentional.
+            continue;
+        };
+        let cx: f32 = gx + entry.offset_x;
+        let cy: f32 = gy + entry.offset_y;
+
+        // No owner tint and no lighting tint: chutes look identical
+        // regardless of dropping house, matching gamemd's AltPalette=yes
+        // path (ColorScheme[0]'s ConvertPalette).
+        let tint: [f32; 3] = [1.0, 1.0, 1.0];
+
+        // Depth: GI body depth minus a small epsilon so the chute draws on
+        // top. ZAdjust=-10 in gamemd is a depth-sort fudge with no precise
+        // pixel mapping; in our depth-buffer rendering, lower depth = closer
+        // to camera = on top.
+        let gi_depth = compute_sprite_depth_params(origin_y, world_height, gy, pos.z);
+        let depth = (gi_depth - CHUTE_DEPTH_EPSILON).clamp(0.001, 0.999);
+
+        paged[entry.page as usize].push(SpriteInstance {
+            position: [cx, cy],
+            size: entry.pixel_size,
+            uv_origin: entry.uv_origin,
+            uv_size: entry.uv_size,
+            depth,
+            tint,
+            alpha: 1.0,
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{OverlayRenderBucket, bridge_y_offset_for_name, classify_overlay_render_bucket};
