@@ -572,6 +572,56 @@ pub fn foundation_dimensions(foundation: &str) -> (u16, u16) {
     (width.max(1), height.max(1))
 }
 
+/// Returns the actual occupied cells for a building, applying AddOccupy and
+/// RemoveOccupy to the rectangular foundation. Cells outside [0, u16::MAX]
+/// after offset application are dropped.
+///
+/// Order of operations:
+/// 1. Generate rectangle cells (rx..rx+w) × (ry..ry+h)
+/// 2. Add cells from add_occupy (deltas relative to origin)
+/// 3. Remove cells listed in remove_occupy (deltas relative to origin)
+///
+/// Returns sorted, deduplicated cells.
+pub fn building_footprint_cells(
+    origin_rx: u16,
+    origin_ry: u16,
+    foundation: &str,
+    add_occupy: &[(i16, i16)],
+    remove_occupy: &[(i16, i16)],
+) -> Vec<(u16, u16)> {
+    use std::collections::BTreeSet;
+    let (w, h) = foundation_dimensions(foundation);
+    let mut cells: BTreeSet<(u16, u16)> = BTreeSet::new();
+
+    for dx in 0..w {
+        for dy in 0..h {
+            let rx = origin_rx as i32 + dx as i32;
+            let ry = origin_ry as i32 + dy as i32;
+            if rx >= 0 && rx <= u16::MAX as i32 && ry >= 0 && ry <= u16::MAX as i32 {
+                cells.insert((rx as u16, ry as u16));
+            }
+        }
+    }
+
+    for &(dx, dy) in add_occupy {
+        let rx = origin_rx as i32 + dx as i32;
+        let ry = origin_ry as i32 + dy as i32;
+        if rx >= 0 && rx <= u16::MAX as i32 && ry >= 0 && ry <= u16::MAX as i32 {
+            cells.insert((rx as u16, ry as u16));
+        }
+    }
+
+    for &(dx, dy) in remove_occupy {
+        let rx = origin_rx as i32 + dx as i32;
+        let ry = origin_ry as i32 + dy as i32;
+        if rx >= 0 && rx <= u16::MAX as i32 && ry >= 0 && ry <= u16::MAX as i32 {
+            cells.remove(&(rx as u16, ry as u16));
+        }
+    }
+
+    cells.into_iter().collect()
+}
+
 #[cfg(test)]
 mod build_time_integer_tests {
     use super::*;
@@ -623,5 +673,51 @@ mod build_time_integer_tests {
         let rules = rules_with_units("1.0");
         let obj = rules.object("STANDARD").unwrap();
         assert_eq!(build_time_base_frames(&rules, obj), 900);
+    }
+}
+
+#[cfg(test)]
+mod footprint_tests {
+    use super::*;
+
+    #[test]
+    fn rectangle_only_4x3() {
+        let cells = building_footprint_cells(10, 20, "4x3", &[], &[]);
+        assert_eq!(cells.len(), 12);
+        assert!(cells.contains(&(10, 20)));
+        assert!(cells.contains(&(13, 22)));
+    }
+
+    #[test]
+    fn garefn_real_footprint() {
+        // GAREFN: Foundation=4x3, AddOccupy1=-1,0, AddOccupy2=-1,-1, RemoveOccupy1=3,1
+        let cells = building_footprint_cells(
+            10, 20, "4x3",
+            &[(-1, 0), (-1, -1)],
+            &[(3, 1)],
+        );
+        assert_eq!(cells.len(), 13); // 12 base + 2 added - 1 removed
+        assert!(cells.contains(&(9, 19)));   // (-1,-1) added
+        assert!(cells.contains(&(9, 20)));   // (-1, 0) added
+        assert!(!cells.contains(&(13, 21))); // (3, 1) removed (the dock pad)
+    }
+
+    #[test]
+    fn add_then_remove_overlap() {
+        let cells = building_footprint_cells(10, 20, "1x1", &[(2, 0)], &[(2, 0)]);
+        assert_eq!(cells.len(), 1);
+        assert!(cells.contains(&(10, 20)));
+    }
+
+    #[test]
+    fn negative_offset_clamping() {
+        let cells = building_footprint_cells(0, 0, "1x1", &[(-1, 0), (-1, -1)], &[]);
+        assert_eq!(cells.len(), 1);
+    }
+
+    #[test]
+    fn deduplication() {
+        let cells = building_footprint_cells(10, 20, "2x2", &[(0, 0)], &[]);
+        assert_eq!(cells.len(), 4);
     }
 }
