@@ -93,14 +93,19 @@ pub fn try_drop(
     path_grid: Option<&PathGrid>,
 ) -> DropResult {
     // 1. Snapshot aircraft state (release borrow before mutating).
-    let (facing, altitude, aircraft_rx, aircraft_ry) = match sim.entities.get(aircraft_id) {
+    // Capture the aircraft's full lepton position (cell + sub-cell) so the
+    // V-pattern offset can apply at lepton precision. With cell-only math the
+    // ±128 lateral offset truncates to 0 and every drop lands on the same cell.
+    let (facing, altitude, aircraft_x_lep, aircraft_y_lep) = match sim.entities.get(aircraft_id) {
         Some(a) => {
             let alt = a
                 .locomotor
                 .as_ref()
                 .map(|l| l.altitude)
                 .unwrap_or(SIM_ZERO);
-            (a.facing, alt, a.position.rx, a.position.ry)
+            let x_lep = a.position.rx as i32 * 256 + sim_to_i32(a.position.sub_x);
+            let y_lep = a.position.ry as i32 * 256 + sim_to_i32(a.position.sub_y);
+            (a.facing, alt, x_lep, y_lep)
         }
         None => return DropResult::NoCargo,
     };
@@ -127,11 +132,18 @@ pub fn try_drop(
         })
         .unwrap_or(1);
 
-    // 3. Compute V-offset and drop cell.
+    // 3. Compute V-offset in leptons, then split into (cell, sub-cell).
+    // Using `div_euclid`/`rem_euclid` so negative offsets cross cell
+    // boundaries correctly (left-side drops walk one cell west when the
+    // aircraft is in the western half of its cell).
     let payload_count_post = payload_count_pre_dec.saturating_sub(1);
     let (dx, dy) = v_offset(facing, payload_count_post);
-    let drop_rx = (aircraft_rx as i32 + dx / 256).clamp(0, u16::MAX as i32) as u16;
-    let drop_ry = (aircraft_ry as i32 + dy / 256).clamp(0, u16::MAX as i32) as u16;
+    let drop_x_lep = aircraft_x_lep + dx;
+    let drop_y_lep = aircraft_y_lep + dy;
+    let drop_rx = drop_x_lep.div_euclid(256).clamp(0, u16::MAX as i32) as u16;
+    let drop_ry = drop_y_lep.div_euclid(256).clamp(0, u16::MAX as i32) as u16;
+    let drop_sub_x = SimFixed::from_num(drop_x_lep.rem_euclid(256));
+    let drop_sub_y = SimFixed::from_num(drop_y_lep.rem_euclid(256));
 
     // 4. Passability check via threaded path_grid.
     let passable = path_grid.map_or(true, |g| g.is_walkable(drop_rx, drop_ry));
@@ -156,8 +168,11 @@ pub fn try_drop(
     if let Some(passenger) = sim.entities.get_mut(passenger_id) {
         passenger.position.rx = drop_rx;
         passenger.position.ry = drop_ry;
-        passenger.position.sub_x = SIM_ZERO;
-        passenger.position.sub_y = SIM_ZERO;
+        passenger.position.sub_x = drop_sub_x;
+        passenger.position.sub_y = drop_sub_y;
+        // Update cached screen coords now so the first frame of descent
+        // doesn't briefly render the GI at the carrier's old position.
+        passenger.position.refresh_screen_coords();
         passenger.passenger_role = PassengerRole::None;
     }
 

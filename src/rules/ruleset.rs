@@ -656,14 +656,26 @@ pub struct BridgeRules {
     /// SHP animation names to spawn when a bridge group is destroyed
     /// (e.g., TWLT026, TWLT036, TWLT050, TWLT070). Picked randomly per cell.
     pub explosions: Vec<String>,
+    /// Maximum metallic-debris voxels spawned per destroyed bridge cell.
+    /// Parsed from `[General] BridgeVoxelMax=` in rules.ini (default 3).
+    /// Consumed by the damage state machine in a later tier.
+    pub voxel_max: u8,
+    /// Sound ID played when a bridge segment is repaired by an
+    /// Engineer entering a `BridgeRepairHut=yes` building.
+    /// Parsed from `[AudioVisual] RepairBridgeSound=` in rules.ini
+    /// (stock default `BridgeRepaired`). Stored uppercased.
+    /// `None` means the consumer applies its own default.
+    pub repair_sound: Option<String>,
 }
 
 impl Default for BridgeRules {
     fn default() -> Self {
         Self {
-            strength: 250,
+            strength: 1500,
             destroyable_by_default: true,
             explosions: Vec::new(),
+            voxel_max: 3,
+            repair_sound: None,
         }
     }
 }
@@ -673,10 +685,10 @@ impl BridgeRules {
         let strength = ini
             .section("CombatDamage")
             .and_then(|section| section.get_i32("BridgeStrength"))
-            .unwrap_or(250)
+            .unwrap_or(1500)
             .max(1) as u16;
         let destroyable_by_default = ini
-            .section("SpecialFlags")
+            .section("CombatDamage")
             .and_then(|section| section.get_bool("DestroyableBridges"))
             .unwrap_or(true);
         let explosions = ini
@@ -684,10 +696,22 @@ impl BridgeRules {
             .and_then(|section| section.get_list("BridgeExplosions"))
             .map(|list| list.into_iter().map(|s| s.to_uppercase()).collect())
             .unwrap_or_default();
+        let voxel_max = ini
+            .section("General")
+            .and_then(|section| section.get_i32("BridgeVoxelMax"))
+            .unwrap_or(3)
+            .clamp(0, 255) as u8;
+        let repair_sound = ini
+            .section("AudioVisual")
+            .and_then(|section| section.get("RepairBridgeSound"))
+            .map(|s| s.trim().to_uppercase())
+            .filter(|s| !s.is_empty());
         Self {
             strength,
             destroyable_by_default,
             explosions,
+            voxel_max,
+            repair_sound,
         }
     }
 }
@@ -1921,7 +1945,7 @@ CellSpread=0
         assert!((rules.production.low_power_penalty_modifier - 1.25).abs() < 0.0001);
         assert!((rules.production.min_low_power_production_speed - 0.4).abs() < 0.0001);
         assert!((rules.production.max_low_power_production_speed - 0.85).abs() < 0.0001);
-        assert_eq!(rules.bridge_rules.strength, 250);
+        assert_eq!(rules.bridge_rules.strength, 1500);
         assert!(rules.bridge_rules.destroyable_by_default);
     }
 
@@ -2141,14 +2165,53 @@ MutateWarhead=MyMutate\n\
              [VehicleTypes]\n\
              [AircraftTypes]\n\
              [BuildingTypes]\n\
+             [General]\n\
+             BridgeVoxelMax=5\n\
+             [AudioVisual]\n\
+             RepairBridgeSound=foo\n\
              [CombatDamage]\n\
              BridgeStrength=900\n\
-             [SpecialFlags]\n\
              DestroyableBridges=no\n",
         );
         let rules = RuleSet::from_ini(&ini).expect("Should parse");
         assert_eq!(rules.bridge_rules.strength, 900);
         assert!(!rules.bridge_rules.destroyable_by_default);
+        assert_eq!(rules.bridge_rules.voxel_max, 5);
+        assert_eq!(rules.bridge_rules.repair_sound.as_deref(), Some("FOO"));
+    }
+
+    #[test]
+    fn bridge_rules_voxel_max_clamps_oversize() {
+        // Regression: u8 storage clamps oversize INI values to 255 instead
+        // of wrapping/truncating.
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n\
+             [VehicleTypes]\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             [General]\n\
+             BridgeVoxelMax=999\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("Should parse");
+        assert_eq!(rules.bridge_rules.voxel_max, 255);
+    }
+
+    #[test]
+    fn bridge_rules_destroyable_in_specialflags_is_ignored() {
+        // Regression: gamemd reads DestroyableBridges from [CombatDamage].
+        // The string in [SpecialFlags] is for MP-dialog overrides, not
+        // the rules.ini parser. Putting it under [SpecialFlags] should
+        // be silently ignored and the default (yes) kept.
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n\
+             [VehicleTypes]\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             [SpecialFlags]\n\
+             DestroyableBridges=no\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("Should parse");
+        assert!(rules.bridge_rules.destroyable_by_default);
     }
 
     #[test]
