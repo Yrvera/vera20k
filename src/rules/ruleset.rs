@@ -676,7 +676,7 @@ impl BridgeRules {
             .unwrap_or(1500)
             .max(1) as u16;
         let destroyable_by_default = ini
-            .section("SpecialFlags")
+            .section("CombatDamage")
             .and_then(|section| section.get_bool("DestroyableBridges"))
             .unwrap_or(true);
         let explosions = ini
@@ -2143,12 +2143,29 @@ MutateWarhead=MyMutate\n\
              [BuildingTypes]\n\
              [CombatDamage]\n\
              BridgeStrength=900\n\
-             [SpecialFlags]\n\
              DestroyableBridges=no\n",
         );
         let rules = RuleSet::from_ini(&ini).expect("Should parse");
         assert_eq!(rules.bridge_rules.strength, 900);
         assert!(!rules.bridge_rules.destroyable_by_default);
+    }
+
+    #[test]
+    fn bridge_rules_destroyable_in_specialflags_is_ignored() {
+        // Regression: gamemd reads DestroyableBridges from [CombatDamage].
+        // The string in [SpecialFlags] is for MP-dialog overrides, not
+        // the rules.ini parser. Putting it under [SpecialFlags] should
+        // be silently ignored and the default (yes) kept.
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n\
+             [VehicleTypes]\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             [SpecialFlags]\n\
+             DestroyableBridges=no\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("Should parse");
+        assert!(rules.bridge_rules.destroyable_by_default);
     }
 
     #[test]
