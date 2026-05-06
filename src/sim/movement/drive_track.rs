@@ -3495,6 +3495,39 @@ pub fn select_drive_track(
     })
 }
 
+/// Synthesize the substitute selection used when pathfinding produces a turn
+/// too sharp for any precomputed curve (`select_drive_track` returned `None`).
+/// Returns the `cur_dir * 9` TurnTrack entry — RawTrack 1 (cardinals) or 2
+/// (diagonals) transformed for the unit's current facing. The unit drives
+/// forward in `current_facing` for one cell; the caller is responsible for
+/// consuming the impossible path step.
+///
+/// Returns `None` defensively if RawTrack 1 or 2 point data isn't loaded
+/// (never expected in normal operation — these are foundational tracks).
+pub fn build_sharp_turn_fallback(current_facing: u8) -> Option<DriveTrackSelection> {
+    let cur_dir = facing_to_dir(current_facing);
+    let turn_index = cur_dir * FACING_DIRECTIONS + cur_dir; // cur_dir * 9
+    let turn_track = TURN_TRACKS.get(turn_index)?;
+    if turn_track.normal_track == 0 {
+        return None; // structurally impossible for cur_dir*9 entries; defensive
+    }
+    let raw_meta = RAW_TRACKS.get(turn_track.normal_track as usize)?;
+    let points = raw_track_points(turn_track.normal_track);
+    if points.is_empty() {
+        return None;
+    }
+    Some(DriveTrackSelection {
+        turn_track_index: turn_index,
+        raw_track_index: turn_track.normal_track,
+        entry_index: raw_meta.entry_index,
+        chain_index: raw_meta.chain_index,
+        cell_cross_index: raw_meta.cell_cross_index,
+        points_count: raw_meta.points_count,
+        target_facing: turn_track.target_facing,
+        flags: turn_track.flags,
+    })
+}
+
 /// Quantize a 0-255 facing to a direction index 0-7 (N, NE, E, SE, S, SW, W, NW).
 fn facing_to_dir(facing: u8) -> usize {
     // Add half a direction (16) for rounding, then divide by 32.
