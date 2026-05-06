@@ -123,13 +123,6 @@ pub(crate) fn build_unit_instances(
         }
         let center_x: f32 = sx;
         let center_y: f32 = sy;
-        // Ground-level screen_y for depth: airborne entities (aircraft,
-        // parachuting units) need to sort against terrain at their actual
-        // world cell, not at the more-northern screen position they're
-        // rendered at after the altitude lift.
-        let (_, ground_sy) = crate::util::lepton::lepton_to_screen(
-            pos.rx, pos.ry, pos.sub_x, pos.sub_y, pos.z,
-        );
 
         // Docked miners render in front of the refinery building they're on.
         // The pad cell is inside the building footprint (north of the south edge),
@@ -190,7 +183,7 @@ pub(crate) fn build_unit_instances(
                 slope_type,
             };
             if let Some(entry) = atlas_get_with_frame_fallback(atlas, &key) {
-                let depth_y: f32 = ground_sy + entry.offset_y + entry.pixel_size[1] + dock_depth_y_offset;
+                let depth_y: f32 = sy + entry.offset_y + entry.pixel_size[1] + dock_depth_y_offset;
                 let depth: f32 = apply_bridge_depth_bias(
                     state,
                     entity,

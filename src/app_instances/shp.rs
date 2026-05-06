@@ -211,22 +211,16 @@ pub(crate) fn build_shp_instances(
 
         let final_x: f32 = sx + entry.offset_x;
         let final_y: f32 = sy + entry.offset_y;
-        // Depth must use the GROUND screen_y so airborne entities (e.g.,
-        // parachuting GIs) sort against terrain at their actual world cell,
-        // not at the more-northern screen position they're rendered at.
-        let (_, ground_sy) = crate::util::lepton::lepton_to_screen(
-            pos.rx, pos.ry, pos.sub_x, pos.sub_y, pos.z,
-        );
         let base_depth: f32 = match entity.category {
             EntityCategory::Structure => {
                 // Building render coords use (Location.X - 128, Location.Y - 128) — the
                 // NW cell origin, not center. YSort = X + Y from those coords. In screen
                 // space the -128 lepton shift equals -TILE_HEIGHT/2 on iso_row.
                 // Our iso_to_screen bakes in +TILE_HEIGHT/2, so subtract it.
-                compute_sprite_depth(state, ground_sy - TILE_HEIGHT / 2.0, interp_z)
+                compute_sprite_depth(state, sy - TILE_HEIGHT / 2.0, interp_z)
             }
             _ => {
-                let depth_y: f32 = ground_sy + entry.offset_y + entry.pixel_size[1];
+                let depth_y: f32 = sy + entry.offset_y + entry.pixel_size[1];
                 compute_sprite_depth(state, depth_y, interp_z)
             }
         };
