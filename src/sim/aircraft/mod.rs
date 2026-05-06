@@ -13,6 +13,7 @@
 pub mod attack_mission;
 pub mod drop_payload;
 pub mod idle_mode;
+pub mod paradrop_mission;
 
 use serde::{Deserialize, Serialize};
 
@@ -140,7 +141,6 @@ pub fn tick_aircraft_missions(
     rules: &RuleSet,
     path_grid: Option<&crate::sim::pathfinding::PathGrid>,
 ) {
-    let _ = path_grid;
     // Phase 1: Snapshot all aircraft with missions.
     struct MissionSnap {
         id: u64,
@@ -177,6 +177,13 @@ pub fn tick_aircraft_missions(
         self_destruct: bool,
         set_speed_fraction: Option<SimFixed>,
         set_target_altitude: Option<SimFixed>,
+        // Paradrop-specific apply-phase signals.
+        paradrop_fire_fog_reveal: bool,
+        paradrop_play_chute_sound: bool,
+        paradrop_chute_sound_at: Option<(u16, u16)>,
+        paradrop_try_drop: bool,
+        paradrop_payload_count_pre: u8,
+        paradrop_silent_despawn: bool,
     }
 
     let mut mutations: Vec<MissionMutation> = Vec::new();
@@ -191,6 +198,12 @@ pub fn tick_aircraft_missions(
             self_destruct: false,
             set_speed_fraction: None,
             set_target_altitude: None,
+            paradrop_fire_fog_reveal: false,
+            paradrop_play_chute_sound: false,
+            paradrop_chute_sound_at: None,
+            paradrop_try_drop: false,
+            paradrop_payload_count_pre: 0,
+            paradrop_silent_despawn: false,
         };
 
         match &snap.mission {
@@ -504,8 +517,22 @@ pub fn tick_aircraft_missions(
                 target_ry,
                 has_revealed_fog,
             } => {
-                // Real handler in paradrop_mission::tick_approach (Task 11).
-                let _ = (target_rx, target_ry, has_revealed_fog);
+                let outcome = paradrop_mission::tick_approach(
+                    sim,
+                    rules,
+                    snap.id,
+                    *target_rx,
+                    *target_ry,
+                    *has_revealed_fog,
+                    path_grid,
+                );
+                m.new_mission = outcome.new_mission;
+                m.move_to = outcome.move_to;
+                m.paradrop_fire_fog_reveal = outcome.fire_fog_reveal;
+                m.paradrop_play_chute_sound = outcome.play_chute_sound;
+                if outcome.play_chute_sound {
+                    m.paradrop_chute_sound_at = Some((*target_rx, *target_ry));
+                }
             }
 
             AircraftMission::ParaDropOverfly {
@@ -515,8 +542,20 @@ pub fn tick_aircraft_missions(
                 landing_state,
                 payload_count,
             } => {
-                // Real handler in paradrop_mission::tick_overfly (Task 12).
-                let _ = (exit_rx, exit_ry, drop_cooldown, landing_state, payload_count);
+                let outcome = paradrop_mission::tick_overfly(
+                    sim,
+                    snap.id,
+                    *exit_rx,
+                    *exit_ry,
+                    *drop_cooldown,
+                    *landing_state,
+                    *payload_count,
+                );
+                m.new_mission = outcome.new_mission;
+                m.move_to = outcome.move_to;
+                m.paradrop_try_drop = outcome.try_drop;
+                m.paradrop_payload_count_pre = outcome.payload_count_pre_dec;
+                m.paradrop_silent_despawn = outcome.silent_despawn;
             }
         }
 
@@ -603,6 +642,78 @@ pub fn tick_aircraft_missions(
     for (attacker_id, target_id) in fire_commands {
         if let Some(entity) = sim.entities.get_mut(attacker_id) {
             entity.attack_target = Some(AttackTarget::new(target_id));
+        }
+    }
+
+    // Phase 5: Paradrop apply phase.
+    // ChuteSound emission for the approach handler's fog-reveal trigger.
+    let chute_sounds: Vec<(u16, u16)> = mutations
+        .iter()
+        .filter_map(|m| m.paradrop_chute_sound_at)
+        .collect();
+    for (rx, ry) in chute_sounds {
+        sim.sound_events
+            .push(crate::sim::world::SimSoundEvent::ChuteSound { rx, ry });
+    }
+
+    // try_drop attempts. Resolve drop interval from [ParaDropWeapon] ROF=
+    // (or fall back to PARADROP_DROP_INTERVAL_TICKS if the weapon isn't parsed).
+    let drop_attempts: Vec<(u64, u8)> = mutations
+        .iter()
+        .filter(|m| m.paradrop_try_drop)
+        .map(|m| (m.id, m.paradrop_payload_count_pre))
+        .collect();
+    for (aircraft_id, payload_pre) in drop_attempts {
+        let drop_interval = rules
+            .weapon("ParaDropWeapon")
+            .map(|w| (w.rof.max(1)) as u16)
+            .unwrap_or(drop_payload::PARADROP_DROP_INTERVAL_TICKS);
+
+        let result = drop_payload::try_drop(sim, rules, aircraft_id, payload_pre, path_grid);
+
+        if let Some(entity) = sim.entities.get_mut(aircraft_id) {
+            if let Some(AircraftMission::ParaDropOverfly {
+                exit_rx,
+                exit_ry,
+                payload_count,
+                ..
+            }) = entity.aircraft_mission.clone()
+            {
+                let new_mission = match result {
+                    drop_payload::DropResult::Success => AircraftMission::ParaDropOverfly {
+                        exit_rx,
+                        exit_ry,
+                        drop_cooldown: drop_interval,
+                        landing_state: drop_payload::LANDING_STATE_RESET,
+                        payload_count: payload_count.saturating_sub(1),
+                    },
+                    drop_payload::DropResult::ImpassableRetry
+                    | drop_payload::DropResult::AttachFailedRetry => {
+                        // Leave cooldowns at 0 — retry next tick. payload_count
+                        // already restored via cargo head re-insert.
+                        AircraftMission::ParaDropOverfly {
+                            exit_rx,
+                            exit_ry,
+                            drop_cooldown: 0,
+                            landing_state: 0,
+                            payload_count,
+                        }
+                    }
+                    drop_payload::DropResult::NoCargo => AircraftMission::Idle,
+                };
+                entity.aircraft_mission = Some(new_mission);
+            }
+        }
+    }
+
+    // Silent despawns for carriers that exited the playfield with empty cargo.
+    for m in &mutations {
+        if m.paradrop_silent_despawn {
+            if let Some(entity) = sim.entities.get_mut(m.id) {
+                entity.health.current = 0;
+                entity.dying = true;
+                entity.aircraft_mission = None;
+            }
         }
     }
 }
