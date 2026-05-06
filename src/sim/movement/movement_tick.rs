@@ -709,6 +709,7 @@ pub fn tick_movement_with_grids(
                                                 sel.flags,
                                                 chain_dx,
                                                 chain_dy,
+                                                sel.target_facing,
                                             )
                                         {
                                             entity.drive_track = Some(new_track);

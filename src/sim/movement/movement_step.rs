@@ -89,8 +89,13 @@ pub(super) fn configure_motion_after_transition(
             .is_some_and(|l| matches!(l.kind, LocomotorKind::Drive));
         let track_initiated = if uses_drive_tracks && new_face != *facing {
             if let Some(sel) = drive_track::select_drive_track(*facing, new_face, false) {
-                *drive_track =
-                    drive_track::begin_drive_track(sel.raw_track_index, sel.flags, ndx, ndy);
+                *drive_track = drive_track::begin_drive_track(
+                    sel.raw_track_index,
+                    sel.flags,
+                    ndx,
+                    ndy,
+                    sel.target_facing,
+                );
                 drive_track.is_some()
             } else {
                 false

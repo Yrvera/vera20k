@@ -162,6 +162,11 @@ pub struct DriveTrackState {
     pub cell_offset_x: i32,
     /// Lepton Y offset applied after a mid-track cell transition.
     pub cell_offset_y: i32,
+    /// Post-turn facing (TURN_TRACKS[turn_track_index].target_facing).
+    /// Read by the chain caller as the "from-dir" for chain-target track
+    /// selection — using the live entity facing would pick the wrong curve
+    /// mid-turn since entity.facing is interpolated along the track.
+    pub target_facing: u8,
 }
 
 // ---------------------------------------------------------------------------
@@ -3563,11 +3568,16 @@ pub struct DriveTrackAdvance {
 /// destination cell (head_to). Track point coordinates are offsets from the
 /// destination cell center, so these deltas map them to sub-cell space
 /// relative to the current cell.
+///
+/// `target_facing`: post-turn facing of the TurnTrack entry that produced
+/// this track. Stored on the state so the chain caller can read the
+/// post-turn "from-dir" for chain-target track selection.
 pub fn begin_drive_track(
     raw_track_index: u8,
     transform_flags: u8,
     head_dx: i32,
     head_dy: i32,
+    target_facing: u8,
 ) -> Option<DriveTrackState> {
     let meta = RAW_TRACKS.get(raw_track_index as usize)?;
     let points = raw_track_points(raw_track_index);
@@ -3583,6 +3593,7 @@ pub fn begin_drive_track(
         head_offset_y: head_dy * 256 + 128,
         cell_offset_x: 0,
         cell_offset_y: 0,
+        target_facing,
     })
 }
 

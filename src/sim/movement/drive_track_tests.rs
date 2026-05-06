@@ -123,7 +123,7 @@ fn raw_track_3_is_north_to_ne_curve() {
 
 #[test]
 fn track_3_begin_starts_at_entry_12() {
-    let state = begin_drive_track(3, 0, 1, -1).unwrap();
+    let state = begin_drive_track(3, 0, 1, -1, 0x20).unwrap();
     assert_eq!(state.point_index, 12, "Track 3 entry_index is 12");
 }
 
@@ -289,7 +289,7 @@ fn select_drive_track_all_cardinal_straights_give_track_1() {
 
 #[test]
 fn begin_drive_track_1_starts_at_entry() {
-    let state = begin_drive_track(1, 0, 0, 0);
+    let state = begin_drive_track(1, 0, 0, 0, 0);
     assert!(state.is_some(), "Track 1 should be startable");
     let state = state.unwrap();
     assert_eq!(state.raw_track_index, 1);
@@ -299,17 +299,17 @@ fn begin_drive_track_1_starts_at_entry() {
 #[test]
 fn begin_drive_track_0_returns_none() {
     // Track 0 is the null track (no points).
-    let state = begin_drive_track(0, 0, 0, 0);
+    let state = begin_drive_track(0, 0, 0, 0, 0);
     assert!(state.is_none(), "Track 0 (null) should not be startable");
 }
 
 #[test]
 fn begin_drive_track_missing_data_returns_none() {
     // Out-of-range track index (only 0-15 exist) should return None.
-    let state = begin_drive_track(16, 0, 0, 0);
+    let state = begin_drive_track(16, 0, 0, 0, 0);
     assert!(state.is_none(), "Track with no metadata should return None");
     // Track 5 now has point data and should be startable.
-    let state5 = begin_drive_track(5, 0, 1, -1);
+    let state5 = begin_drive_track(5, 0, 1, -1, 0);
     assert!(
         state5.is_some(),
         "Track 5 should be startable (has 61 points)"
@@ -352,7 +352,7 @@ fn raw_track_4_is_north_to_east_90_degree() {
 fn advance_drive_track_1_progresses() {
     // Track 1 (straight north) with head_to = one cell north (dx=0, dy=-1).
     // head_offset = (128, -128). Point 0: sub = (128, -128+245=117).
-    let mut state = begin_drive_track(1, 0, 0, -1).unwrap();
+    let mut state = begin_drive_track(1, 0, 0, -1, 0).unwrap();
     let dt = SimFixed::lit("0.066"); // ~66ms tick (15fps)
     let speed = SimFixed::from_num(256); // 256 leptons/sec = 1 cell/sec
 
@@ -378,7 +378,7 @@ fn advance_drive_track_1_progresses() {
 #[test]
 fn advance_drive_track_1_completes() {
     // Track 1 (straight north) with head_to one cell north.
-    let mut state = begin_drive_track(1, 0, 0, -1).unwrap();
+    let mut state = begin_drive_track(1, 0, 0, -1, 0).unwrap();
     let dt = SimFixed::lit("0.066");
     let speed = SimFixed::from_num(256);
 
@@ -407,7 +407,7 @@ fn advance_drive_track_1_cell_jump_fires_once() {
     // Track 1 (straight north) with head_to one cell north.
     // Coordinate-based detection should fire cell_jump exactly once
     // when sub_y crosses below 0 (around step 11 where y drops below 128).
-    let mut state = begin_drive_track(1, 0, 0, -1).unwrap();
+    let mut state = begin_drive_track(1, 0, 0, -1, 0).unwrap();
     let dt = SimFixed::lit("0.066");
     let speed = SimFixed::from_num(256);
 
@@ -687,7 +687,7 @@ fn end_to_end_sub_step_smoothness_no_stalls() {
     // forward) and snap forward on "step" ticks. With interp, every tick's
     // visual position advances because the residual contributes a fractional
     // offset toward the next track point.
-    let mut state = begin_drive_track(1, 0, 0, -1).expect("track 1 exists");
+    let mut state = begin_drive_track(1, 0, 0, -1, 0).expect("track 1 exists");
     let dt = SimFixed::lit("0.066");
     let speed = SimFixed::from_num(60); // 60 * 0.066 ≈ 4 leptons/tick budget
 
