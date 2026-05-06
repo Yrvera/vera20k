@@ -393,6 +393,7 @@ pub(crate) fn cursor_id_for_feedback(kind: CursorFeedbackKind) -> Option<CursorI
         CursorFeedbackKind::Enter => Some(CursorId::Enter),
         CursorFeedbackKind::EngineerRepair => Some(CursorId::EngineerRepair),
         CursorFeedbackKind::Deploy => Some(CursorId::Deploy),
+        CursorFeedbackKind::SuperWeaponTarget(id) => Some(id),
     }
 }
 

@@ -178,6 +178,10 @@ pub(crate) enum CursorFeedbackKind {
     EngineerRepair,
     /// Pan cursor — shown while middle-mouse dragging to scroll the map.
     Pan,
+    /// Superweapon targeting reticle — shown while a charged SW is armed
+    /// and the cursor is over the tactical map. Payload is the per-SW
+    /// CursorId resolved from the `Action=` INI string.
+    SuperWeaponTarget(CursorId),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
