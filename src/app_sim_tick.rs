@@ -175,6 +175,9 @@ pub(crate) fn advance_in_game_runtime(state: &mut AppState, elapsed_ms: u64) {
 
         advance_fixed_simulation(state, sim_elapsed);
         crate::app_building_anim::drain_sound_events(state);
+        // Drain bale events into building anim overlays + particle bursts before
+        // the per-frame anim tick so the SpecialAnim is visible this same frame.
+        crate::app_building_anim::consume_bale_events(state);
         // Use real wall-clock delta (capped to prevent jumps after pauses/debugger).
         // Previously this passed SIM_TICK_MS (66ms) per render frame, causing building
         // idle animations to play ~3-4× too fast (60fps × 66ms = 3960ms/sec).
