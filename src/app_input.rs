@@ -47,8 +47,8 @@ pub(crate) fn handle_mouse_input(
                 if crate::app_sidebar_render::try_begin_minimap_drag(state) {
                     return;
                 }
-                if state.armed_building_type().is_some() {
-                    return;
+                if state.targeting_mode.is_some() {
+                    return; // suppress selection drag while either targeting mode is active
                 }
                 state
                     .selection_state
@@ -56,6 +56,10 @@ pub(crate) fn handle_mouse_input(
             } else {
                 if state.minimap_dragging {
                     state.minimap_dragging = false;
+                    return;
+                }
+                if let Some(section) = state.armed_super_weapon_type().map(str::to_owned) {
+                    crate::app_commands::launch_super_weapon_at_cursor(state, &section);
                     return;
                 }
                 if let Some(type_id) = state.armed_building_type().map(str::to_owned) {
