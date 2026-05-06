@@ -11,6 +11,7 @@
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
 pub mod attack_mission;
+pub mod drop_payload;
 pub mod idle_mode;
 
 use serde::{Deserialize, Serialize};
