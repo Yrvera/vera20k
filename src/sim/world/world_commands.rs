@@ -979,6 +979,30 @@ impl Simulation {
                             self, rules, owner_iid, *target_rx, *target_ry,
                         )
                     }
+                    crate::rules::superweapon_type::SuperWeaponKind::ParaDrop => {
+                        let rules = rules.unwrap();
+                        crate::sim::superweapon::paradrop::launch(
+                            self,
+                            rules,
+                            owner_iid,
+                            *target_rx,
+                            *target_ry,
+                            crate::sim::superweapon::paradrop::ParaDropKind::Generic,
+                            path_grid,
+                        )
+                    }
+                    crate::rules::superweapon_type::SuperWeaponKind::AmerParaDrop => {
+                        let rules = rules.unwrap();
+                        crate::sim::superweapon::paradrop::launch(
+                            self,
+                            rules,
+                            owner_iid,
+                            *target_rx,
+                            *target_ry,
+                            crate::sim::superweapon::paradrop::ParaDropKind::American,
+                            path_grid,
+                        )
+                    }
                     other => {
                         log::warn!("SuperWeapon kind {:?} not yet implemented", other);
                         false
