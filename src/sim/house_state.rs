@@ -42,6 +42,10 @@ pub struct HouseState {
     pub base_center: Option<(u16, u16)>,
     /// Max tech level for this player. From game options at match start.
     pub tech_level: i32,
+    /// Edge of the playfield where this house spawns paradrop carriers.
+    /// Encoding: 0=N, 1=E, 2=S, 3=W. Computed at game start from base_center
+    /// via the closest-edge-of-bounds algorithm.
+    pub waypoint_edge: u8,
 }
 
 impl HouseState {
@@ -67,6 +71,7 @@ impl HouseState {
             owned_unit_count: 0,
             base_center: None,
             tech_level,
+            waypoint_edge: 0,
         }
     }
 }
@@ -117,5 +122,58 @@ pub fn side_index_from_name(side: Option<&str>) -> u8 {
         Some("soviet" | "nod" | "russia") => 1,
         Some("thirdside" | "yuricountry" | "yuri") => 2,
         _ => 0, // default to Allied
+    }
+}
+
+/// Compute the closest map edge to a given anchor cell.
+///
+/// Picks the minimum-distance edge from 4 reference points: top-edge midpoint,
+/// bottom-right corner, south extension midpoint, and left-edge midpoint.
+/// Encoding: 0=N, 1=E, 2=S, 3=W.
+pub fn closest_edge_for(anchor: (u16, u16), map_width: u32, map_height: u32) -> u8 {
+    let (ax, ay) = (anchor.0 as i64, anchor.1 as i64);
+    let w = map_width as i64;
+    let h = map_height as i64;
+
+    let refs: [(i64, i64); 4] = [
+        (w / 2, 1),     // 0: north — top edge midpoint
+        (w, h),         // 1: east  — bottom-right corner-ish
+        (w / 2, h * 2), // 2: south — south extension midpoint
+        (0, h),         // 3: west  — left edge midpoint
+    ];
+    let mut best_edge = 0u8;
+    let mut best_dsq = i64::MAX;
+    for (i, &(rx, ry)) in refs.iter().enumerate() {
+        let dx = ax - rx;
+        let dy = ay - ry;
+        let dsq = dx * dx + dy * dy;
+        if dsq < best_dsq {
+            best_dsq = dsq;
+            best_edge = i as u8;
+        }
+    }
+    best_edge
+}
+
+#[cfg(test)]
+mod waypoint_edge_tests {
+    use super::*;
+
+    #[test]
+    fn test_closest_edge_top_center_picks_north() {
+        let edge = closest_edge_for((50, 5), 100, 100);
+        assert_eq!(edge, 0);
+    }
+
+    #[test]
+    fn test_closest_edge_left_middle_picks_west() {
+        let edge = closest_edge_for((2, 50), 100, 100);
+        assert_eq!(edge, 3);
+    }
+
+    #[test]
+    fn test_closest_edge_bottom_right_picks_east() {
+        let edge = closest_edge_for((95, 95), 100, 100);
+        assert_eq!(edge, 1);
     }
 }
