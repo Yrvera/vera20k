@@ -209,6 +209,10 @@ pub struct Simulation {
     /// muzzle flash rendering and future projectile origin computation.
     #[serde(skip)]
     pub fire_events: Vec<SimFireEvent>,
+    /// Bale deposit events emitted during refinery dock unloading — drained
+    /// by the app layer for SpecialAnim trigger and particle bursts.
+    #[serde(skip)]
+    pub bale_events: Vec<crate::sim::components::BaleDepositEvent>,
     /// Per-AI-owner state for computer-controlled players.
     pub ai_players: Vec<AiPlayerState>,
     /// Per-player state keyed by uppercase owner name. Deterministic iteration
@@ -334,6 +338,7 @@ impl Simulation {
             next_stable_entity_id: 1,
             sound_events: Vec::new(),
             fire_events: Vec::new(),
+            bale_events: Vec::new(),
             ai_players: Vec::new(),
             houses: BTreeMap::new(),
             terrain_costs: BTreeMap::new(),

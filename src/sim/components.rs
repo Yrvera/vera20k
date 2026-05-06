@@ -600,6 +600,17 @@ pub struct ParachuteAnim {
     pub elapsed_ms: u32,
 }
 
+/// Emitted by the refinery dock state machine each time a harvester deposits
+/// one bale. Renderer consumes it to fire SpecialAnim (slot 10) and spawn
+/// particle bursts at the building's RefinerySmokeOffset positions.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BaleDepositEvent {
+    /// Refinery stable_id where the bale was deposited.
+    pub building_id: u64,
+    /// Sim tick when this event was emitted (for ordering / debugging).
+    pub tick: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
