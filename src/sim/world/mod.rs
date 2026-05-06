@@ -149,6 +149,9 @@ pub enum SimSoundEvent {
     /// First-occupant SFX from rulesmd [AudioVisual] BuildingGarrisonedSound.
     /// Positional cue gated on owner == local human.
     BuildingGarrisonedSfx { owner: InternedId, rx: u16, ry: u16 },
+    /// A paratrooper was dropped from a carrier aircraft.
+    /// Played at the drop position; app layer resolves to [General] ChuteSound.
+    ChuteSound { rx: u16, ry: u16 },
 }
 
 /// A fire event produced during combat — carries data for render-side

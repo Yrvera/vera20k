@@ -477,6 +477,12 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                             screen_pos: Some((sx, sy)),
                         }
                     }
+                    SimSoundEvent::ChuteSound { rx, ry } => {
+                        // Audio dispatch hookup deferred — paradrop launch design D5.
+                        // Sim still emits the event; this arm just drops it silently for now.
+                        let _ = (rx, ry);
+                        continue;
+                    }
                 };
                 state.sound_events.push(app_event);
             }
