@@ -146,16 +146,19 @@ pub fn try_drop(
         return DropResult::ImpassableRetry;
     }
 
-    // 5. Position passenger at drop cell + altitude; un-limbo.
+    // 5. Position passenger at drop cell; un-limbo. Do NOT touch
+    // `loco.altitude` here — `begin_parachute_descent` uses `OverrideKind`
+    // to gate the descent and tracks altitude in `ParachuteDescentState`,
+    // and the renderer reads loco.altitude as a visual offset. If we set
+    // loco.altitude=plane_altitude here, it gets snapshotted by
+    // `begin_override` and `end_override` restores it on landing — the
+    // unit then renders ~3 tiles up indefinitely.
     if let Some(passenger) = sim.entities.get_mut(passenger_id) {
         passenger.position.rx = drop_rx;
         passenger.position.ry = drop_ry;
         passenger.position.sub_x = SIM_ZERO;
         passenger.position.sub_y = SIM_ZERO;
         passenger.passenger_role = PassengerRole::None;
-        if let Some(loco) = passenger.locomotor.as_mut() {
-            loco.altitude = altitude;
-        }
     }
 
     // 6. Attach parachute descent.
