@@ -477,6 +477,12 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                             screen_pos: Some((sx, sy)),
                         }
                     }
+                    SimSoundEvent::ChuteSound { rx, ry } => {
+                        // Audio dispatch hookup deferred — paradrop launch design D5.
+                        // Sim still emits the event; this arm just drops it silently for now.
+                        let _ = (rx, ry);
+                        continue;
+                    }
                 };
                 state.sound_events.push(app_event);
             }
@@ -742,7 +748,7 @@ pub(crate) fn rebuild_dynamic_path_grid(state: &mut AppState) {
 }
 
 pub(crate) fn update_building_placement_preview(state: &mut AppState) {
-    let Some(type_id) = state.armed_building_placement.as_deref() else {
+    let Some(type_id) = state.armed_building_type() else {
         state.building_placement_preview = None;
         return;
     };

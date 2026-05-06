@@ -25,7 +25,7 @@ pub fn build_sidebar_view(
     queue_items: &[QueueItemView],
     build_options: &[BuildOption],
     ready_buildings: &[ReadyBuildingView],
-    armed_building: Option<&str>,
+    armed: Option<&crate::app_types::TargetingMode>,
     producer_focus: &[ProducerFocusView],
     scroll_rows: usize,
     interner: Option<&crate::sim::intern::StringInterner>,
@@ -42,7 +42,7 @@ pub fn build_sidebar_view(
         queue_items,
         build_options,
         ready_buildings,
-        armed_building,
+        armed,
         producer_focus,
         scroll_rows,
         interner,
@@ -62,7 +62,7 @@ pub fn build_sidebar_view_with_spec(
     queue_items: &[QueueItemView],
     build_options: &[BuildOption],
     ready_buildings: &[ReadyBuildingView],
-    armed_building: Option<&str>,
+    armed: Option<&crate::app_types::TargetingMode>,
     producer_focus: &[ProducerFocusView],
     scroll_rows: usize,
     interner: Option<&crate::sim::intern::StringInterner>,
@@ -75,7 +75,7 @@ pub fn build_sidebar_view_with_spec(
         queue_items,
         build_options,
         ready_buildings,
-        armed_building,
+        armed,
         interner,
         sw_views,
     );
@@ -170,6 +170,8 @@ pub fn build_sidebar_view_with_spec(
                 is_building_this_type: entry.is_building_this_type,
                 is_ready: entry.is_ready,
                 is_armed: entry.is_armed,
+                is_superweapon: entry.is_superweapon,
+                super_weapon_section: entry.super_weapon_section,
             }
         })
         .collect();
@@ -285,6 +287,8 @@ struct BuildEntry {
     is_building_this_type: bool,
     is_ready: bool,
     is_armed: bool,
+    is_superweapon: bool,
+    super_weapon_section: Option<String>,
 }
 
 fn collect_build_entries(
@@ -292,11 +296,17 @@ fn collect_build_entries(
     queue_items: &[QueueItemView],
     build_options: &[BuildOption],
     ready_buildings: &[ReadyBuildingView],
-    armed_building: Option<&str>,
+    armed: Option<&crate::app_types::TargetingMode>,
     interner: Option<&crate::sim::intern::StringInterner>,
     sw_views: &[SuperWeaponView],
 ) -> Vec<BuildEntry> {
-    let armed_id: Option<InternedId> = armed_building.and_then(|s| interner.and_then(|i| i.get(s)));
+    // Building-placement is_armed: matched by interned type_id.
+    let armed_building_id: Option<InternedId> = armed
+        .and_then(crate::app_types::TargetingMode::as_building_placement)
+        .and_then(|s| interner.and_then(|i| i.get(s)));
+    // SW is_armed: matched by section name (string compare).
+    let armed_sw_section: Option<&str> = armed
+        .and_then(crate::app_types::TargetingMode::as_super_weapon);
     let resolve = |id: InternedId| -> String {
         interner.map_or(format!("#{}", id.index()), |i| i.resolve(id).to_string())
     };
@@ -320,7 +330,10 @@ fn collect_build_entries(
                 queued_count: 0,
                 is_building_this_type: !sw.is_ready && sw.is_online && sw.progress > 0.0,
                 is_ready: sw.is_ready,
-                is_armed: false,
+                is_armed: armed_sw_section
+                    .map_or(false, |s| s.eq_ignore_ascii_case(&sw.display_name)),
+                is_superweapon: true,
+                super_weapon_section: Some(sw.display_name.clone()),
             });
         }
     }
@@ -338,7 +351,7 @@ fn collect_build_entries(
         .map(|opt| {
             // Check if this type has a completed building waiting for placement.
             let is_ready = ready_buildings.iter().any(|r| r.type_id == opt.type_id);
-            let is_armed = is_ready && armed_id == Some(opt.type_id);
+            let is_armed = is_ready && armed_building_id == Some(opt.type_id);
 
             if is_ready {
                 // Building is done — show as ready for placement.
@@ -352,6 +365,8 @@ fn collect_build_entries(
                     is_building_this_type: false,
                     is_ready: true,
                     is_armed,
+                    is_superweapon: false,
+                    super_weapon_section: None,
                 }
             } else {
                 let queued_count = queue_items
@@ -382,6 +397,8 @@ fn collect_build_entries(
                     is_building_this_type,
                     is_ready: false,
                     is_armed: false,
+                    is_superweapon: false,
+                    super_weapon_section: None,
                 }
             }
         })
@@ -398,7 +415,7 @@ fn collect_build_entries(
             .iter()
             .any(|e| e.type_id.eq_ignore_ascii_case(&r_type_str));
         if !already_listed {
-            let is_armed = armed_id == Some(r.type_id);
+            let is_armed = armed_building_id == Some(r.type_id);
             entries.push(BuildEntry {
                 type_id: r_type_str,
                 display_name: r.display_name.clone(),
@@ -409,6 +426,8 @@ fn collect_build_entries(
                 is_building_this_type: false,
                 is_ready: true,
                 is_armed,
+                is_superweapon: false,
+                super_weapon_section: None,
             });
         }
     }

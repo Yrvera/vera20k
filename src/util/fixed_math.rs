@@ -310,6 +310,38 @@ pub fn facing_from_delta_int_u16(dx: i32, dy: i32) -> u16 {
     (facing_f32 as i32).rem_euclid(65536) as u16
 }
 
+/// Inverse of `facing_from_delta_int` for quantized 8-direction facings.
+///
+/// Quantizes the input facing to the nearest of 8 compass points (32
+/// facing units apart) and returns the unit cell delta for that
+/// direction. Used by movement code that needs to step one cell in
+/// the unit's current facing without a path waypoint.
+///
+/// Iso-grid convention (matches the canonical `DIR_DELTAS` in
+/// `sim/pathfinding/path_smooth.rs`):
+///   N (0)   → ( 0, -1)
+///   NE (32) → ( 1, -1)
+///   E (64)  → ( 1,  0)
+///   SE (96) → ( 1,  1)
+///   S (128) → ( 0,  1)
+///   SW (160)→ (-1,  1)
+///   W (192) → (-1,  0)
+///   NW (224)→ (-1, -1)
+pub fn dir_to_cell_delta(facing: u8) -> (i32, i32) {
+    let dir = (facing.wrapping_add(16) / 32) & 0x07;
+    match dir {
+        0 => (0, -1),
+        1 => (1, -1),
+        2 => (1, 0),
+        3 => (1, 1),
+        4 => (0, 1),
+        5 => (-1, 1),
+        6 => (-1, 0),
+        7 => (-1, -1),
+        _ => unreachable!(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // RA2 speed conversion
 // ---------------------------------------------------------------------------
@@ -780,5 +812,51 @@ mod tests {
             (speed - 3825.0).abs() < 1.0,
             "Speed=100: got {speed}, expected ~3825"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // dir_to_cell_delta tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn dir_to_cell_delta_quantized_directions() {
+        assert_eq!(dir_to_cell_delta(0), (0, -1)); // N
+        assert_eq!(dir_to_cell_delta(32), (1, -1)); // NE
+        assert_eq!(dir_to_cell_delta(64), (1, 0)); // E
+        assert_eq!(dir_to_cell_delta(96), (1, 1)); // SE
+        assert_eq!(dir_to_cell_delta(128), (0, 1)); // S
+        assert_eq!(dir_to_cell_delta(160), (-1, 1)); // SW
+        assert_eq!(dir_to_cell_delta(192), (-1, 0)); // W
+        assert_eq!(dir_to_cell_delta(224), (-1, -1)); // NW
+    }
+
+    #[test]
+    fn dir_to_cell_delta_rounds_to_nearest() {
+        // 16 is the boundary, rounds up to NE.
+        assert_eq!(dir_to_cell_delta(16), (1, -1));
+        assert_eq!(dir_to_cell_delta(17), (1, -1));
+        // 240 wraps: (240 + 16) % 256 = 0 → N
+        assert_eq!(dir_to_cell_delta(240), (0, -1));
+        // 248 wraps: (248 + 16) % 256 = 8 → 8/32 = 0 → N
+        assert_eq!(dir_to_cell_delta(248), (0, -1));
+    }
+
+    #[test]
+    fn dir_to_cell_delta_round_trips_through_facing_from_delta() {
+        for &f in &[0u8, 32, 64, 96, 128, 160, 192, 224] {
+            let (dx, dy) = dir_to_cell_delta(f);
+            let recovered = facing_from_delta_int(dx, dy);
+            let diff = (recovered as i16 - f as i16).rem_euclid(256);
+            let dist = diff.min(256 - diff);
+            assert!(
+                dist <= 4,
+                "facing {} → ({},{}) → {} (dist {})",
+                f,
+                dx,
+                dy,
+                recovered,
+                dist
+            );
+        }
     }
 }

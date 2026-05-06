@@ -123,7 +123,7 @@ fn raw_track_3_is_north_to_ne_curve() {
 
 #[test]
 fn track_3_begin_starts_at_entry_12() {
-    let state = begin_drive_track(3, 0, 1, -1).unwrap();
+    let state = begin_drive_track(3, 0, 1, -1, 0x20).unwrap();
     assert_eq!(state.point_index, 12, "Track 3 entry_index is 12");
 }
 
@@ -284,12 +284,147 @@ fn select_drive_track_all_cardinal_straights_give_track_1() {
 }
 
 // ---------------------------------------------------------------------------
+// build_sharp_turn_fallback tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn build_sharp_turn_fallback_cardinals_use_raw_track_1() {
+    for facing in [0u8, 64, 128, 192] {
+        let fb = build_sharp_turn_fallback(facing).unwrap_or_else(|| {
+            panic!("fallback should exist for cardinal facing {}", facing)
+        });
+        assert_eq!(
+            fb.raw_track_index, 1,
+            "cardinal facing {} should use RawTrack 1 (straight)",
+            facing
+        );
+    }
+}
+
+#[test]
+fn build_sharp_turn_fallback_diagonals_use_raw_track_2() {
+    for facing in [32u8, 96, 160, 224] {
+        let fb = build_sharp_turn_fallback(facing).unwrap_or_else(|| {
+            panic!("fallback should exist for diagonal facing {}", facing)
+        });
+        assert_eq!(
+            fb.raw_track_index, 2,
+            "diagonal facing {} should use RawTrack 2 (straight diagonal)",
+            facing
+        );
+    }
+}
+
+#[test]
+fn build_sharp_turn_fallback_transform_flags_match_binary() {
+    // Verified-from-binary: cur_dir → low3 of TURN_TRACKS[cur_dir*9].flags
+    //   N=0, NE=0, E=3, SE=4, S=4, SW=1, W=1, NW=2
+    let cases: &[(u8, u8)] = &[
+        (0, 0),   // N
+        (32, 0),  // NE
+        (64, 3),  // E
+        (96, 4),  // SE
+        (128, 4), // S
+        (160, 1), // SW
+        (192, 1), // W
+        (224, 2), // NW
+    ];
+    for &(facing, expected_low3) in cases {
+        let fb = build_sharp_turn_fallback(facing).unwrap();
+        assert_eq!(
+            fb.flags & 0x07,
+            expected_low3,
+            "facing {} should have transform flags low3 = {}",
+            facing,
+            expected_low3
+        );
+    }
+}
+
+#[test]
+fn build_sharp_turn_fallback_target_facing_matches_quantized_cur_dir() {
+    let cases: &[(u8, u8)] = &[
+        (0, 0x00),
+        (32, 0x20),
+        (64, 0x40),
+        (96, 0x60),
+        (128, 0x80),
+        (160, 0xA0),
+        (192, 0xC0),
+        (224, 0xE0),
+    ];
+    for &(facing, expected_target) in cases {
+        let fb = build_sharp_turn_fallback(facing).unwrap();
+        assert_eq!(
+            fb.target_facing, expected_target,
+            "facing {} substitute should have target_facing 0x{:02X}",
+            facing, expected_target
+        );
+    }
+}
+
+#[test]
+fn build_sharp_turn_fallback_rounds_to_nearest_dir() {
+    // Non-quantized facings round to the nearest 8-direction bucket.
+    let fb_17 = build_sharp_turn_fallback(17).unwrap();
+    let fb_32 = build_sharp_turn_fallback(32).unwrap();
+    assert_eq!(fb_17.raw_track_index, fb_32.raw_track_index);
+    assert_eq!(fb_17.flags, fb_32.flags);
+    assert_eq!(fb_17.target_facing, fb_32.target_facing);
+}
+
+#[test]
+fn sharp_turn_fallback_produces_valid_track_for_all_8_dirs() {
+    // Wiring test: build_sharp_turn_fallback + dir_to_cell_delta +
+    // begin_drive_track must combine into a valid DriveTrackState for
+    // every quantized current_facing. This is what the
+    // configure_motion_after_transition fallback branch does.
+    use crate::util::fixed_math::dir_to_cell_delta;
+    for facing in [0u8, 32, 64, 96, 128, 160, 192, 224] {
+        let fb = build_sharp_turn_fallback(facing)
+            .unwrap_or_else(|| panic!("fallback should exist for facing {}", facing));
+        let (cdx, cdy) = dir_to_cell_delta(facing);
+        let state = begin_drive_track(
+            fb.raw_track_index,
+            fb.flags,
+            cdx,
+            cdy,
+            fb.target_facing,
+        );
+        assert!(
+            state.is_some(),
+            "fallback track should initialize for facing {}",
+            facing
+        );
+        let state = state.unwrap();
+        assert_eq!(
+            state.target_facing, fb.target_facing,
+            "DriveTrackState.target_facing should match selection's target_facing for facing {}",
+            facing
+        );
+        // head_offset = head_d * 256 + 128 — verify deltas were applied.
+        assert_eq!(
+            state.head_offset_x,
+            cdx * 256 + 128,
+            "head_offset_x for facing {}",
+            facing
+        );
+        assert_eq!(
+            state.head_offset_y,
+            cdy * 256 + 128,
+            "head_offset_y for facing {}",
+            facing
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // begin_drive_track tests
 // ---------------------------------------------------------------------------
 
 #[test]
 fn begin_drive_track_1_starts_at_entry() {
-    let state = begin_drive_track(1, 0, 0, 0);
+    let state = begin_drive_track(1, 0, 0, 0, 0);
     assert!(state.is_some(), "Track 1 should be startable");
     let state = state.unwrap();
     assert_eq!(state.raw_track_index, 1);
@@ -299,17 +434,17 @@ fn begin_drive_track_1_starts_at_entry() {
 #[test]
 fn begin_drive_track_0_returns_none() {
     // Track 0 is the null track (no points).
-    let state = begin_drive_track(0, 0, 0, 0);
+    let state = begin_drive_track(0, 0, 0, 0, 0);
     assert!(state.is_none(), "Track 0 (null) should not be startable");
 }
 
 #[test]
 fn begin_drive_track_missing_data_returns_none() {
     // Out-of-range track index (only 0-15 exist) should return None.
-    let state = begin_drive_track(16, 0, 0, 0);
+    let state = begin_drive_track(16, 0, 0, 0, 0);
     assert!(state.is_none(), "Track with no metadata should return None");
     // Track 5 now has point data and should be startable.
-    let state5 = begin_drive_track(5, 0, 1, -1);
+    let state5 = begin_drive_track(5, 0, 1, -1, 0);
     assert!(
         state5.is_some(),
         "Track 5 should be startable (has 61 points)"
@@ -352,7 +487,7 @@ fn raw_track_4_is_north_to_east_90_degree() {
 fn advance_drive_track_1_progresses() {
     // Track 1 (straight north) with head_to = one cell north (dx=0, dy=-1).
     // head_offset = (128, -128). Point 0: sub = (128, -128+245=117).
-    let mut state = begin_drive_track(1, 0, 0, -1).unwrap();
+    let mut state = begin_drive_track(1, 0, 0, -1, 0).unwrap();
     let dt = SimFixed::lit("0.066"); // ~66ms tick (15fps)
     let speed = SimFixed::from_num(256); // 256 leptons/sec = 1 cell/sec
 
@@ -378,7 +513,7 @@ fn advance_drive_track_1_progresses() {
 #[test]
 fn advance_drive_track_1_completes() {
     // Track 1 (straight north) with head_to one cell north.
-    let mut state = begin_drive_track(1, 0, 0, -1).unwrap();
+    let mut state = begin_drive_track(1, 0, 0, -1, 0).unwrap();
     let dt = SimFixed::lit("0.066");
     let speed = SimFixed::from_num(256);
 
@@ -407,7 +542,7 @@ fn advance_drive_track_1_cell_jump_fires_once() {
     // Track 1 (straight north) with head_to one cell north.
     // Coordinate-based detection should fire cell_jump exactly once
     // when sub_y crosses below 0 (around step 11 where y drops below 128).
-    let mut state = begin_drive_track(1, 0, 0, -1).unwrap();
+    let mut state = begin_drive_track(1, 0, 0, -1, 0).unwrap();
     let dt = SimFixed::lit("0.066");
     let speed = SimFixed::from_num(256);
 
@@ -687,7 +822,7 @@ fn end_to_end_sub_step_smoothness_no_stalls() {
     // forward) and snap forward on "step" ticks. With interp, every tick's
     // visual position advances because the residual contributes a fractional
     // offset toward the next track point.
-    let mut state = begin_drive_track(1, 0, 0, -1).expect("track 1 exists");
+    let mut state = begin_drive_track(1, 0, 0, -1, 0).expect("track 1 exists");
     let dt = SimFixed::lit("0.066");
     let speed = SimFixed::from_num(60); // 60 * 0.066 ≈ 4 leptons/tick budget
 

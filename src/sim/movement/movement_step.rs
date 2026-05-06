@@ -87,11 +87,38 @@ pub(super) fn configure_motion_after_transition(
         let uses_drive_tracks = locomotor
             .as_ref()
             .is_some_and(|l| matches!(l.kind, LocomotorKind::Drive));
+        let mut substituted_delta: Option<(i32, i32)> = None;
         let track_initiated = if uses_drive_tracks && new_face != *facing {
             if let Some(sel) = drive_track::select_drive_track(*facing, new_face, false) {
-                *drive_track =
-                    drive_track::begin_drive_track(sel.raw_track_index, sel.flags, ndx, ndy);
+                *drive_track = drive_track::begin_drive_track(
+                    sel.raw_track_index,
+                    sel.flags,
+                    ndx,
+                    ndy,
+                    sel.target_facing,
+                );
                 drive_track.is_some()
+            } else if let Some(fb) = drive_track::build_sharp_turn_fallback(*facing) {
+                // Sharp-turn fallback: no precomputed curve exists for this
+                // turn angle. Drive forward in current facing for one cell
+                // and consume the impossible path step. The path queue's
+                // "what to do next" is permanently dropped by one entry;
+                // recovery is handled by higher-level repath, not here.
+                let (cdx, cdy) = crate::util::fixed_math::dir_to_cell_delta(*facing);
+                *drive_track = drive_track::begin_drive_track(
+                    fb.raw_track_index,
+                    fb.flags,
+                    cdx,
+                    cdy,
+                    fb.target_facing,
+                );
+                if drive_track.is_some() {
+                    target.next_index += 1; // drop the impossible path step
+                    substituted_delta = Some((cdx, cdy));
+                    true
+                } else {
+                    false
+                }
             } else {
                 false
             }
@@ -124,7 +151,8 @@ pub(super) fn configure_motion_after_transition(
             target.move_dir_y = dy;
             target.move_dir_len = fixed_distance(dx, dy);
         } else {
-            let (d_x, d_y, d_len) = crate::util::lepton::cell_delta_to_lepton_dir(ndx, ndy);
+            let (eff_dx, eff_dy) = substituted_delta.unwrap_or((ndx, ndy));
+            let (d_x, d_y, d_len) = crate::util::lepton::cell_delta_to_lepton_dir(eff_dx, eff_dy);
             target.move_dir_x = d_x;
             target.move_dir_y = d_y;
             target.move_dir_len = d_len;

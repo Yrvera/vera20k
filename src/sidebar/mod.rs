@@ -130,6 +130,11 @@ pub enum SidebarAction {
     BuildType(String),
     ArmPlacement(String),
     ClearPlacementMode,
+    /// Arm the targeting cursor for a charged superweapon.
+    /// Payload: SW INI section name (e.g., "LightningStormSpecial").
+    ArmSuperWeapon(String),
+    /// Clear the SW targeting cursor (toggle off / second click on cameo).
+    ClearSuperWeaponMode,
     TogglePauseQueue(ProductionCategory),
     CycleProducer(ProductionCategory),
     CancelBuild(String),
@@ -155,6 +160,12 @@ pub struct SidebarItem {
     pub is_building_this_type: bool,
     pub is_ready: bool,
     pub is_armed: bool,
+    /// True if this cameo represents a superweapon (not a buildable).
+    pub is_superweapon: bool,
+    /// Unique SW INI section name (e.g., "LightningStormSpecial"). Set
+    /// only when `is_superweapon=true`. Multiple SWs may share `type_id`
+    /// (SidebarImage), but section names are unique.
+    pub super_weapon_section: Option<String>,
 }
 
 impl SidebarItem {
@@ -290,6 +301,50 @@ pub(crate) fn compute_layout_with_spec(
     }
 }
 
+fn hit_test_item(item: &SidebarItem, right_click: bool) -> SidebarAction {
+    if right_click {
+        // SW cameos have no queue → right-click does nothing.
+        if item.is_superweapon {
+            return SidebarAction::None;
+        }
+        // Build cameo right-click: cancel one queued (or ready) item.
+        return if item.queued_count > 0 || item.is_ready {
+            SidebarAction::CancelBuild(item.type_id.clone())
+        } else {
+            SidebarAction::None
+        };
+    }
+    // Left-click branch.
+    if item.is_superweapon {
+        if !item.is_ready {
+            return SidebarAction::None;
+        }
+        return if item.is_armed {
+            SidebarAction::ClearSuperWeaponMode
+        } else {
+            // Section name is unique; fall back to display_name (which
+            // matches today for SW views) if for some reason it's not set.
+            let section = item
+                .super_weapon_section
+                .clone()
+                .unwrap_or_else(|| item.display_name.clone());
+            SidebarAction::ArmSuperWeapon(section)
+        };
+    }
+    // Build cameo branch (unchanged behavior).
+    if item.is_ready {
+        if item.is_armed {
+            SidebarAction::ClearPlacementMode
+        } else {
+            SidebarAction::ArmPlacement(item.type_id.clone())
+        }
+    } else if item.enabled {
+        SidebarAction::BuildType(item.type_id.clone())
+    } else {
+        SidebarAction::None
+    }
+}
+
 pub fn hit_test(view: &SidebarView, x: f32, y: f32, right_click: bool) -> SidebarAction {
     if !view.panel_rect.contains(x, y) {
         return SidebarAction::None;
@@ -303,24 +358,7 @@ pub fn hit_test(view: &SidebarView, x: f32, y: f32, right_click: bool) -> Sideba
 
     for item in &view.items {
         if item.rect.contains(x, y) {
-            return if right_click {
-                // Right-click: cancel one queued item of this type (RA2 standard).
-                if item.queued_count > 0 || item.is_ready {
-                    SidebarAction::CancelBuild(item.type_id.clone())
-                } else {
-                    SidebarAction::None
-                }
-            } else if item.is_ready {
-                if item.is_armed {
-                    SidebarAction::ClearPlacementMode
-                } else {
-                    SidebarAction::ArmPlacement(item.type_id.clone())
-                }
-            } else if item.enabled {
-                SidebarAction::BuildType(item.type_id.clone())
-            } else {
-                SidebarAction::None
-            };
+            return hit_test_item(item, right_click);
         }
     }
 
@@ -362,5 +400,73 @@ mod tests {
         assert_eq!(layout.cameo_grid_top, 245.0);
         assert_eq!(layout.side2_tile_count, 4);
         assert_eq!(layout.side3_y, 445.0);
+    }
+
+    use super::{Rect, SidebarAction, SidebarItem};
+    use crate::sim::production::ProductionCategory;
+
+    fn make_sw_item(is_ready: bool, is_armed: bool) -> SidebarItem {
+        SidebarItem {
+            rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 60.0,
+                h: 48.0,
+            },
+            type_id: "INTICON".to_string(),
+            display_name: "LightningStormSpecial".to_string(),
+            cost: None,
+            has_cameo_art: true,
+            queue_category: ProductionCategory::Defense,
+            enabled: true,
+            progress: if is_ready { 1.0 } else { 0.5 },
+            queued_count: 0,
+            is_building_this_type: !is_ready,
+            is_ready,
+            is_armed,
+            is_superweapon: true,
+            super_weapon_section: Some("LightningStormSpecial".to_string()),
+        }
+    }
+
+    #[test]
+    fn sw_ready_left_click_arms() {
+        let item = make_sw_item(true, false);
+        let action = super::hit_test_item(&item, false);
+        assert_eq!(
+            action,
+            SidebarAction::ArmSuperWeapon("LightningStormSpecial".to_string())
+        );
+    }
+
+    #[test]
+    fn sw_ready_armed_left_click_clears() {
+        let item = make_sw_item(true, true);
+        let action = super::hit_test_item(&item, false);
+        assert_eq!(action, SidebarAction::ClearSuperWeaponMode);
+    }
+
+    #[test]
+    fn sw_charging_left_click_does_nothing() {
+        let item = make_sw_item(false, false);
+        let action = super::hit_test_item(&item, false);
+        assert_eq!(action, SidebarAction::None);
+    }
+
+    #[test]
+    fn sw_right_click_does_nothing() {
+        for ready in [false, true] {
+            for armed in [false, true] {
+                let item = make_sw_item(ready, armed);
+                let action = super::hit_test_item(&item, true);
+                assert_eq!(
+                    action,
+                    SidebarAction::None,
+                    "ready={} armed={}",
+                    ready,
+                    armed
+                );
+            }
+        }
     }
 }

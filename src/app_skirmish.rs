@@ -83,6 +83,18 @@ pub(crate) fn seed_skirmish_opening_if_needed(
             if local_owner.is_none() {
                 local_owner = Some(house.name.clone());
             }
+            if let Some(h) = crate::sim::house_state::house_state_for_owner_mut(
+                &mut sim.houses,
+                &house.name,
+                &sim.interner,
+            ) {
+                h.base_center = Some((start.rx, start.ry));
+                h.waypoint_edge = crate::sim::house_state::closest_edge_for(
+                    (start.rx, start.ry),
+                    sim.fog.width as u32,
+                    sim.fog.height as u32,
+                );
+            }
         } else {
             log::warn!(
                 "Failed to seed opening MCV '{}' for {} at waypoint {} ({},{})",

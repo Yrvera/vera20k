@@ -465,18 +465,17 @@ fn handle_return(
                 let threshold = config.too_far_threshold_chrono as u32;
                 let far_enough = cell_dist_sq((snap.rx, snap.ry), dock) > threshold * threshold;
                 if far_enough {
-                    // Warp to queue cell via the teleport locomotor system
-                    // (proper chrono delay + translucency at destination).
+                    // Warp to queue cell via the teleport locomotor system.
                     spawn_warp_effects(
                         sim,
                         rules,
                         (snap.rx, snap.ry, snap.z),
                         (dock.0, dock.1, snap.z),
                     );
-                    issue_teleport_command(&mut sim.entities, snap.entity_id, dock, &rules.general);
+                    issue_teleport_command(&mut sim.entities, snap.entity_id, dock, &rules.general, true);
                     // Stay in ReturnToRefinery — the teleport guard above
-                    // will wait for chrono delay, then adjacency check below
-                    // transitions to Dock/WaitForDock.
+                    // will wait one tick for Relocate to land, then adjacency
+                    // check below transitions to Dock/WaitForDock.
                     return;
                 }
                 // Close enough — fall through to drive path.
@@ -607,9 +606,9 @@ fn handle_forced_return(
                         (snap.rx, snap.ry, snap.z),
                         (dock.0, dock.1, snap.z),
                     );
-                    issue_teleport_command(&mut sim.entities, snap.entity_id, dock, &rules.general);
-                    // Stay in ForcedReturn — teleport guard above waits for
-                    // chrono delay, then delegate to handle_return below.
+                    issue_teleport_command(&mut sim.entities, snap.entity_id, dock, &rules.general, true);
+                    // Stay in ForcedReturn — teleport guard waits one tick for
+                    // Relocate to land, then handle_return below takes over.
                     return;
                 }
                 // Close enough — fall through to drive path.
@@ -672,9 +671,10 @@ pub(crate) fn extract_bale(
 /// Begin the return-to-refinery sequence.
 ///
 /// Chrono miners warp to the queue cell (outside the building footprint) via
-/// `issue_teleport_command`, which applies the proper chrono delay with 50%
-/// translucency at the destination. After the delay expires, `handle_return`
-/// detects adjacency and enters the normal dock sequence.
+/// `issue_teleport_command(is_harvester=true)` — matching the binary's
+/// InitiateWarp Harvester=yes special case, the chrono lock is skipped and the
+/// teleport finishes in a single tick. `handle_return` then detects adjacency
+/// and enters the normal dock sequence.
 fn begin_return(
     sim: &mut Simulation,
     rules: &RuleSet,
@@ -699,15 +699,16 @@ fn begin_return(
 
             if far_enough {
                 // Warp to queue cell (outside building footprint) via the
-                // teleport locomotor system — proper chrono delay + translucency.
-                // After delay, handle_return detects adjacency → Dock/WaitForDock.
+                // teleport locomotor system. With is_harvester=true the warp
+                // resolves in one tick; handle_return then detects adjacency
+                // and enters Dock/WaitForDock.
                 spawn_warp_effects(
                     sim,
                     rules,
                     (snap.rx, snap.ry, snap.z),
                     (dock.0, dock.1, snap.z),
                 );
-                issue_teleport_command(&mut sim.entities, snap.entity_id, dock, &rules.general);
+                issue_teleport_command(&mut sim.entities, snap.entity_id, dock, &rules.general, true);
             }
             // Both far (teleporting) and close (driving) → ReturnToRefinery.
             snap.miner.state = MinerState::ReturnToRefinery;
@@ -719,15 +720,16 @@ fn begin_return(
     }
 }
 
-/// Spawn WarpAway visual effects at departure and arrival.
+/// Spawn WarpOut visual effects at departure and arrival.
 ///
-/// Self-teleport (chrono miner, chrono legionnaire) spawns the WarpAway anim
-/// (`[General] WarpAway=`, Rules+0x340) at both endpoints — same anim object
-/// twice, once at the source cell and once at the destination cell.
+/// Self-teleport (chrono miner, chrono legionnaire) spawns the WarpOut anim
+/// (`[General] WarpOut=`, Rules+0x33C) at both endpoints — same anim object
+/// twice, once at the source cell and once at the destination cell. Verified
+/// against `TeleportLocomotionClass::InitiateWarp` (0x00719400): both
+/// `AnimClass::Constructor` calls reference `g_RulesClass + 0x33C`.
 ///
-/// WarpIn/WarpOut (Rules+0x338/+0x33C) are parsed but the teleport state machine
-/// never spawns them — they belong to the Chronosphere superweapon path (not
-/// yet implemented). ChronoSparkle1 (Rules+0x344) is likewise unused by
+/// WarpIn (+0x338) and WarpAway (+0x340) are parsed but never spawned by the
+/// self-teleport path. ChronoSparkle1 (Rules+0x344) is likewise unused by
 /// self-teleport.
 ///
 /// Also emits chrono teleport sound events at both locations.
@@ -742,8 +744,8 @@ fn spawn_warp_effects(
     /// Fallback frame count when the SHP wasn't found in the atlas.
     const FALLBACK_FRAME_COUNT: u16 = 20;
 
-    let anim_name: &str = &rules.general.warp_away.name;
-    let anim_rate: u32 = rules.general.warp_away.rate_ms;
+    let anim_name: &str = &rules.general.warp_out.name;
+    let anim_rate: u32 = rules.general.warp_out.rate_ms;
     let anim_interned = sim.interner.intern(anim_name);
 
     let anim_frames: u16 = sim
@@ -752,7 +754,7 @@ fn spawn_warp_effects(
         .copied()
         .unwrap_or(FALLBACK_FRAME_COUNT);
 
-    // Departure WarpAway.
+    // Departure WarpOut.
     sim.world_effects.push(WorldEffect {
         shp_name: anim_interned,
         rx: depart.0,
@@ -766,7 +768,7 @@ fn spawn_warp_effects(
         delay_ms: 0,
     });
 
-    // Arrival WarpAway.
+    // Arrival WarpOut.
     sim.world_effects.push(WorldEffect {
         shp_name: anim_interned,
         rx: arrive.0,

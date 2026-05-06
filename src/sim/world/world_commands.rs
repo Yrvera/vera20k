@@ -154,12 +154,14 @@ impl Simulation {
                 let general_rules = rules.map(|r| &r.general);
                 let result = if use_teleport_move {
                     // Teleport locomotor or non-harvester Teleporter=yes: instant relocation.
+                    // `use_teleport_move` already excludes harvesters, so is_harvester=false.
                     let default_general = crate::rules::ruleset::GeneralRules::default();
                     teleport_movement::issue_teleport_command(
                         &mut self.entities,
                         *entity_id,
                         (*target_rx, *target_ry),
                         general_rules.unwrap_or(&default_general),
+                        false,
                     )
                 } else if info.loco_kind == Some(LocomotorKind::Tunnel) {
                     // Tunnel locomotor: short routes use surface, long routes burrow.
@@ -375,11 +377,13 @@ impl Simulation {
                 let default_general = crate::rules::ruleset::GeneralRules::default();
                 let general_rules_ref = rules.map(|r| &r.general).unwrap_or(&default_general);
                 let issued = if use_teleport_move {
+                    // `use_teleport_move` excludes harvesters, so is_harvester=false.
                     teleport_movement::issue_teleport_command(
                         &mut self.entities,
                         *entity_id,
                         (*target_rx, *target_ry),
                         general_rules_ref,
+                        false,
                     )
                 } else if info.loco_layer == MovementLayer::Air {
                     // Air units fly in straight lines.
@@ -977,6 +981,30 @@ impl Simulation {
                         let rules = rules.unwrap();
                         crate::sim::superweapon::psychic_reveal::launch(
                             self, rules, owner_iid, *target_rx, *target_ry,
+                        )
+                    }
+                    crate::rules::superweapon_type::SuperWeaponKind::ParaDrop => {
+                        let rules = rules.unwrap();
+                        crate::sim::superweapon::paradrop::launch(
+                            self,
+                            rules,
+                            owner_iid,
+                            *target_rx,
+                            *target_ry,
+                            crate::sim::superweapon::paradrop::ParaDropKind::Generic,
+                            path_grid,
+                        )
+                    }
+                    crate::rules::superweapon_type::SuperWeaponKind::AmerParaDrop => {
+                        let rules = rules.unwrap();
+                        crate::sim::superweapon::paradrop::launch(
+                            self,
+                            rules,
+                            owner_iid,
+                            *target_rx,
+                            *target_ry,
+                            crate::sim::superweapon::paradrop::ParaDropKind::American,
+                            path_grid,
                         )
                     }
                     other => {

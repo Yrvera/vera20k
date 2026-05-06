@@ -45,12 +45,6 @@ pub(crate) fn current_sidebar_view(state: &mut AppState) -> Option<SidebarView> 
             ready.display_name = resolve_csf_name(csf, &ready.display_name);
         }
     }
-    sync_armed_building_placement(
-        &mut state.armed_building_placement,
-        &mut state.building_placement_preview,
-        &ready_buildings,
-        state.simulation.as_ref().map(|s| &s.interner),
-    );
     let producer_focus = [
         production::ProductionCategory::Building,
         production::ProductionCategory::Defense,
@@ -98,6 +92,13 @@ pub(crate) fn current_sidebar_view(state: &mut AppState) -> Option<SidebarView> 
     } else {
         Vec::new()
     };
+    sync_targeting_mode(
+        &mut state.targeting_mode,
+        &mut state.building_placement_preview,
+        &ready_buildings,
+        &sw_views,
+        state.simulation.as_ref().map(|s| &s.interner),
+    );
     let mut view = sidebar::build_sidebar_view_with_spec(
         state.sidebar_layout_spec,
         state.render_width() as f32,
@@ -110,7 +111,7 @@ pub(crate) fn current_sidebar_view(state: &mut AppState) -> Option<SidebarView> 
         &queue_items,
         &build_options,
         &ready_buildings,
-        state.armed_building_placement.as_deref(),
+        state.targeting_mode.as_ref(),
         &producer_focus,
         state.sidebar_scroll_rows,
         interner,
@@ -130,7 +131,7 @@ pub(crate) fn current_sidebar_view(state: &mut AppState) -> Option<SidebarView> 
             &queue_items,
             &build_options,
             &ready_buildings,
-            state.armed_building_placement.as_deref(),
+            state.targeting_mode.as_ref(),
             &producer_focus,
             state.sidebar_scroll_rows,
             interner,
@@ -145,20 +146,28 @@ pub(crate) fn current_sidebar_view(state: &mut AppState) -> Option<SidebarView> 
     Some(view)
 }
 
-pub(crate) fn sync_armed_building_placement(
-    armed_building_placement: &mut Option<String>,
+pub(crate) fn sync_targeting_mode(
+    targeting_mode: &mut Option<crate::app_types::TargetingMode>,
     building_placement_preview: &mut Option<crate::sim::production::BuildingPlacementPreview>,
     ready_buildings: &[production::ReadyBuildingView],
+    super_weapons: &[crate::sim::superweapon::SuperWeaponView],
     interner: Option<&crate::sim::intern::StringInterner>,
 ) {
-    if armed_building_placement.as_ref().is_some_and(|armed| {
-        !ready_buildings.iter().any(|ready| {
-            interner.map_or(false, |i| {
-                i.resolve(ready.type_id).eq_ignore_ascii_case(armed)
+    let still_valid = match targeting_mode.as_ref() {
+        None => true,
+        Some(crate::app_types::TargetingMode::BuildingPlacement(armed)) => {
+            ready_buildings.iter().any(|ready| {
+                interner.map_or(false, |i| {
+                    i.resolve(ready.type_id).eq_ignore_ascii_case(armed)
+                })
             })
-        })
-    }) {
-        *armed_building_placement = None;
+        }
+        Some(crate::app_types::TargetingMode::SuperWeapon(section)) => super_weapons
+            .iter()
+            .any(|sw| sw.is_ready && sw.display_name.eq_ignore_ascii_case(section)),
+    };
+    if !still_valid {
+        *targeting_mode = None;
         *building_placement_preview = None;
     }
 }

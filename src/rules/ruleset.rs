@@ -144,6 +144,23 @@ pub struct GeneralRules {
     /// to this value. Default `-3` matches `[General] ParachuteMaxFallRate=-3`.
     /// Negative = falling.
     pub parachute_max_fall_rate: i32,
+    /// Paradrop trigger radius in leptons. From `[General] ParadropRadius=`.
+    /// Default 1024 (~4 cells). Distance to target at which the carrier aircraft
+    /// reveals fog + transitions to the overfly mission.
+    pub paradrop_radius: i32,
+    /// Carrier aircraft type for paradrop missions. Default `PDPLANE`.
+    pub paradrop_aircraft_type: String,
+    /// American paradrop list: parallel `(infantry_type, count)` pairs.
+    /// From `[General] AmerParaDropInf=` zipped with `AmerParaDropNum=`.
+    /// Default `[("E1", 8)]`.
+    pub amer_paradrop_list: Vec<(String, u32)>,
+    /// Allied paradrop list. Default `[("E1", 6)]`.
+    pub ally_paradrop_list: Vec<(String, u32)>,
+    /// Soviet paradrop list. Default `[("E2", 9)]`. Per gamemd the dispatch
+    /// case skips the count-equality assert on this branch only — preserved.
+    pub sov_paradrop_list: Vec<(String, u32)>,
+    /// Yuri paradrop list. Default `[("INIT", 6)]`.
+    pub yuri_paradrop_list: Vec<(String, u32)>,
     /// Whether ore cells grow denser over time (TiberiumGrows= in [General]).
     /// Default true. Can be overridden per-map in [SpecialFlags].
     pub tiberium_grows: bool,
@@ -385,6 +402,43 @@ pub struct GeneralRules {
 /// Matches gamemd constructor default: 1 game frame at 60fps ≈ 17ms.
 const DEFAULT_ANIM_RATE_MS: u32 = 17;
 
+/// Zip a parallel pair of paradrop INI keys (`Inf` + `Num`) into `(type, count)` pairs.
+/// `skip_count_assert` mirrors gamemd's Soviet branch which lacks the equality check.
+fn parse_paradrop_list(
+    general: &crate::rules::ini_parser::IniSection,
+    inf_key: &str,
+    num_key: &str,
+    skip_count_assert: bool,
+    default: Vec<(String, u32)>,
+) -> Vec<(String, u32)> {
+    let inf: Vec<String> = match general.get_list(inf_key) {
+        Some(list) => list
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_uppercase())
+            .collect(),
+        None => return default,
+    };
+    let nums: Vec<u32> = match general.get_list(num_key) {
+        Some(list) => list
+            .into_iter()
+            .filter_map(|s| s.parse::<u32>().ok())
+            .collect(),
+        None => return default,
+    };
+    if !skip_count_assert && inf.len() != nums.len() {
+        log::warn!(
+            "Paradrop list mismatch: {}={} entries but {}={} entries — using defaults",
+            inf_key,
+            inf.len(),
+            num_key,
+            nums.len(),
+        );
+        return default;
+    }
+    inf.into_iter().zip(nums.into_iter()).collect()
+}
+
 impl Default for GeneralRules {
     fn default() -> Self {
         Self {
@@ -395,6 +449,12 @@ impl Default for GeneralRules {
             tunnel_speed: sim_from_f32(6.0),
             flight_level: 1500,
             parachute_max_fall_rate: -3,
+            paradrop_radius: 1024,
+            paradrop_aircraft_type: "PDPLANE".to_string(),
+            amer_paradrop_list: vec![("E1".to_string(), 8)],
+            ally_paradrop_list: vec![("E1".to_string(), 6)],
+            sov_paradrop_list:  vec![("E2".to_string(), 9)],
+            yuri_paradrop_list: vec![("INIT".to_string(), 6)],
             tiberium_grows: true,
             tiberium_spreads: true,
             growth_rate_minutes: 5.0,
@@ -630,6 +690,40 @@ impl GeneralRules {
                 .unwrap_or(sim_from_f32(6.0)),
             flight_level: general.get_i32("FlightLevel").unwrap_or(1500),
             parachute_max_fall_rate: general.get_i32("ParachuteMaxFallRate").unwrap_or(-3),
+            paradrop_radius: general.get_i32("ParadropRadius").unwrap_or(1024),
+            paradrop_aircraft_type: general
+                .get("ParaDropPlane")
+                .map(|s| s.trim().to_uppercase())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "PDPLANE".to_string()),
+            amer_paradrop_list: parse_paradrop_list(
+                general,
+                "AmerParaDropInf",
+                "AmerParaDropNum",
+                false,
+                vec![("E1".to_string(), 8)],
+            ),
+            ally_paradrop_list: parse_paradrop_list(
+                general,
+                "AllyParaDropInf",
+                "AllyParaDropNum",
+                false,
+                vec![("E1".to_string(), 6)],
+            ),
+            sov_paradrop_list: parse_paradrop_list(
+                general,
+                "SovParaDropInf",
+                "SovParaDropNum",
+                true,
+                vec![("E2".to_string(), 9)],
+            ),
+            yuri_paradrop_list: parse_paradrop_list(
+                general,
+                "YuriParaDropInf",
+                "YuriParaDropNum",
+                false,
+                vec![("INIT".to_string(), 6)],
+            ),
             tiberium_grows: general.get_bool("TiberiumGrows").unwrap_or(true),
             tiberium_spreads: general.get_bool("TiberiumSpreads").unwrap_or(true),
             growth_rate_minutes: general.get_f32("GrowthRate").unwrap_or(5.0),
@@ -2231,5 +2325,94 @@ DefaultSparkSystem=SparkSys
         assert_eq!(rs.particle_system_type_count(), 0);
         assert_eq!(rs.p_type_id_by_name("Anything"), None);
         assert_eq!(rs.ps_type_id_by_name("Anything"), None);
+    }
+
+    fn ini_with_general(body: &str) -> IniFile {
+        let text = format!("[General]\n{}\n", body);
+        IniFile::from_str(&text)
+    }
+
+    #[test]
+    fn paradrop_defaults_when_no_general_section() {
+        let ini = IniFile::from_str("[Foo]\nBar=1\n");
+        let g = GeneralRules::from_ini(&ini);
+        assert_eq!(g.paradrop_radius, 1024);
+        assert_eq!(g.paradrop_aircraft_type, "PDPLANE");
+        assert_eq!(g.amer_paradrop_list, vec![("E1".to_string(), 8)]);
+        assert_eq!(g.ally_paradrop_list, vec![("E1".to_string(), 6)]);
+        assert_eq!(g.sov_paradrop_list,  vec![("E2".to_string(), 9)]);
+        assert_eq!(g.yuri_paradrop_list, vec![("INIT".to_string(), 6)]);
+    }
+
+    #[test]
+    fn paradrop_explicit_values_parse() {
+        let ini = ini_with_general(
+            "ParadropRadius=2048\n\
+             AmerParaDropInf=E1,GHOST,ENGINEER\n\
+             AmerParaDropNum=6,6,6",
+        );
+        let g = GeneralRules::from_ini(&ini);
+        assert_eq!(g.paradrop_radius, 2048);
+        assert_eq!(
+            g.amer_paradrop_list,
+            vec![
+                ("E1".to_string(), 6),
+                ("GHOST".to_string(), 6),
+                ("ENGINEER".to_string(), 6),
+            ]
+        );
+    }
+
+    #[test]
+    fn paradrop_list_mismatch_falls_back_to_default() {
+        let ini = ini_with_general(
+            "AllyParaDropInf=E1,E2\n\
+             AllyParaDropNum=5",
+        );
+        let g = GeneralRules::from_ini(&ini);
+        assert_eq!(g.ally_paradrop_list, vec![("E1".to_string(), 6)]);
+    }
+
+    #[test]
+    fn paradrop_soviet_branch_skips_count_assert() {
+        // gamemd's Soviet dispatch path has no count-equality assert; mirror it.
+        let ini = ini_with_general(
+            "SovParaDropInf=E2,E3\n\
+             SovParaDropNum=9",
+        );
+        let g = GeneralRules::from_ini(&ini);
+        // zip up to the shorter length — only ("E2", 9) survives.
+        assert_eq!(g.sov_paradrop_list, vec![("E2".to_string(), 9)]);
+    }
+
+    #[test]
+    fn paradrop_weapon_rof_reaches_resolved_weapon() {
+        // Verifies the Task 5 grounding question: does [ParaDropWeapon] ROF=130
+        // flow through the weapon parser into rules.weapon("ParaDropWeapon").rof?
+        // The parser only reads weapon sections referenced from an ObjectType's
+        // Primary= / Secondary=, so we need a minimal aircraft entry that points
+        // to ParaDropWeapon.
+        let text = "\
+[AircraftTypes]
+1=PDPLANE
+
+[PDPLANE]
+Primary=ParaDropWeapon
+Strength=400
+Speed=15
+Image=PDPLANE
+
+[ParaDropWeapon]
+Damage=60
+ROF=130
+Range=1
+Projectile=Invisible
+";
+        let ini = IniFile::from_str(text);
+        let rs = RuleSet::from_ini(&ini).expect("rules parse");
+        let weapon = rs
+            .weapon("ParaDropWeapon")
+            .expect("ParaDropWeapon must reach the weapon registry");
+        assert_eq!(weapon.rof, 130);
     }
 }

@@ -1336,3 +1336,26 @@ pub fn find_layered_path(
 #[cfg(test)]
 #[path = "core_tests.rs"]
 mod core_tests;
+
+#[cfg(test)]
+impl PathGrid {
+    /// Test helper: build a grid with every cell ground-walkable.
+    pub fn test_all_passable(width: u16, height: u16) -> Self {
+        let size = width as usize * height as usize;
+        PathGrid {
+            cells: vec![DEFAULT_WALKABLE_CELL; size],
+            width,
+            height,
+        }
+    }
+
+    /// Test helper: build a grid with every cell blocked.
+    pub fn test_all_blocked(width: u16, height: u16) -> Self {
+        let size = width as usize * height as usize;
+        PathGrid {
+            cells: vec![DEFAULT_BLOCKED_CELL; size],
+            width,
+            height,
+        }
+    }
+}

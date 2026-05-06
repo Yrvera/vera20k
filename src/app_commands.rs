@@ -256,7 +256,7 @@ pub(crate) fn place_ready_building_at_cursor(state: &mut AppState, type_id: &str
     // the cursor. Without this, the preview keeps moving during the input_delay_ticks
     // gap before the sim processes the command, making the placed building appear
     // offset from where the user last saw the preview.
-    state.armed_building_placement = None;
+    state.targeting_mode = None;
     state.building_placement_preview = None;
     log::info!(
         "Ready building placement queued: owner={} type={} cell=({}, {}) execute_tick>=current+{}",
@@ -278,6 +278,53 @@ pub(crate) fn place_ready_building_at_cursor(state: &mut AppState, type_id: &str
     if is_wall {
         fill_wall_between_endpoints(state, type_id, rx, ry);
     }
+}
+
+/// Schedule `Command::LaunchSuperWeapon` at the current cursor cell.
+///
+/// `section` is the SW INI section name (e.g., "LightningStormSpecial").
+///
+/// Returns early WITHOUT clearing `targeting_mode` when the cursor is over
+/// the sidebar or minimap — this matters for the release of the arming
+/// click itself, which lands on the cameo. Leaving the mode armed lets
+/// the next real tactical-map click fire the SW. On a real tactical-map
+/// click, schedules the command and clears the mode. The sim-side
+/// dispatch validates `is_active && is_ready`; UI does not duplicate.
+pub(crate) fn launch_super_weapon_at_cursor(state: &mut AppState, section: &str) {
+    // Guard: arming click's RELEASE lands on the cameo. Don't fire the SW
+    // at a bogus off-map cell behind the sidebar panel; leave the mode
+    // armed so the next real map click fires.
+    if crate::app_sidebar_render::is_cursor_over_minimap(state)
+        || crate::app_cursor::current_sidebar_view_hit(state)
+    {
+        return;
+    }
+
+    let owner: String = resolve_owner(state);
+    let sw_type_id = intern_type(state, section);
+    let (rx, ry) = crate::app_sim_tick::screen_point_to_world_cell(
+        state,
+        state.cursor_x,
+        state.cursor_y,
+    );
+    schedule_command(
+        state,
+        &owner,
+        Command::LaunchSuperWeapon {
+            sw_type_id,
+            target_rx: rx,
+            target_ry: ry,
+        },
+    );
+    state.targeting_mode = None;
+    log::info!(
+        "SuperWeapon launch queued: owner={} section={} cell=({}, {}) execute_tick>=current+{}",
+        owner,
+        section,
+        rx,
+        ry,
+        state.configured_input_delay_ticks,
+    );
 }
 
 /// Fill wall overlay segments between the newly placed cell and the nearest existing
@@ -535,7 +582,7 @@ pub(crate) fn cycle_local_owner(state: &mut AppState) {
     // Move out of Vec instead of cloning, then clone once for the override.
     let next = owners.swap_remove(next_idx);
     state.local_owner_override = Some(next.clone());
-    state.armed_building_placement = None;
+    state.targeting_mode = None;
     log::info!("Local owner switched to {}", next);
 }
 

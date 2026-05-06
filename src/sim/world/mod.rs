@@ -14,6 +14,7 @@ mod world_commands;
 mod world_hash;
 mod world_orders;
 mod world_spawn;
+pub mod edge_cell;
 
 use std::collections::BTreeMap;
 
@@ -149,6 +150,9 @@ pub enum SimSoundEvent {
     /// First-occupant SFX from rulesmd [AudioVisual] BuildingGarrisonedSound.
     /// Positional cue gated on owner == local human.
     BuildingGarrisonedSfx { owner: InternedId, rx: u16, ry: u16 },
+    /// A paratrooper was dropped from a carrier aircraft.
+    /// Played at the drop position; app layer resolves to [General] ChuteSound.
+    ChuteSound { rx: u16, ry: u16 },
 }
 
 /// A fire event produced during combat — carries data for render-side
@@ -1192,7 +1196,7 @@ impl Simulation {
         // Aircraft mission state machines — between movement and combat.
         // Reads updated positions, controls firing and RTB decisions.
         if let Some(rules) = rules {
-            crate::sim::aircraft::tick_aircraft_missions(self, rules);
+            crate::sim::aircraft::tick_aircraft_missions(self, rules, path_grid);
         }
 
         // Spawn wake effects behind moving ships on water (every 8 ticks).

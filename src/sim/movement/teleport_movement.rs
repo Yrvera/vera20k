@@ -93,6 +93,13 @@ pub fn compute_chrono_delay(rules: &GeneralRules, distance_leptons: i32) -> u32 
 /// The chrono delay is computed from the Euclidean distance in leptons
 /// (see `compute_chrono_delay`). One cell = 256 leptons.
 ///
+/// `is_harvester` mirrors the binary's special case in
+/// `TeleportLocomotionClass::InitiateWarp` (0x00719400): when the unit is a
+/// `UnitClass` with `Harvester=yes`, the chrono lock is skipped entirely
+/// (timer.duration = 0, BeingWarped cleared in same call). In our state machine
+/// this maps to `being_warped_ticks = 0`, and the Relocate phase finishes the
+/// teleport in a single tick.
+///
 /// Returns `true` if the teleport was initiated, `false` if the entity
 /// is missing required fields.
 pub fn issue_teleport_command(
@@ -100,6 +107,7 @@ pub fn issue_teleport_command(
     entity_id: u64,
     target: (u16, u16),
     rules: &GeneralRules,
+    is_harvester: bool,
 ) -> bool {
     let Some(entity) = entities.get_mut(entity_id) else {
         log::warn!("issue_teleport_command: entity {} not found", entity_id);
@@ -111,7 +119,11 @@ pub fn issue_teleport_command(
     let dy = (entity.position.ry as i32 - target.1 as i32) * 256;
     let dist_sq = (dx as i64) * (dx as i64) + (dy as i64) * (dy as i64);
     let distance_leptons = isqrt_i64(dist_sq) as i32;
-    let chrono_ticks = compute_chrono_delay(rules, distance_leptons);
+    let chrono_ticks = if is_harvester {
+        0
+    } else {
+        compute_chrono_delay(rules, distance_leptons)
+    };
 
     // Apply piggyback override if the unit's base locomotor is not Teleport.
     if let Some(ref mut loco) = entity.locomotor {
@@ -193,7 +205,14 @@ pub fn tick_teleport_movement(
                     layer,
                     entity.sub_cell,
                 );
-                teleport.phase = TeleportPhase::ChronoDelay;
+                // Harvester instant-warp: when chrono delay is 0, finish in one
+                // tick (cleanup runs at end of this tick) — matches the binary's
+                // 1-tick effective behavior in InitiateWarp's Harvester=yes path.
+                if teleport.being_warped_ticks == 0 {
+                    finished.push(id);
+                } else {
+                    teleport.phase = TeleportPhase::ChronoDelay;
+                }
             }
             TeleportPhase::ChronoDelay => {
                 // Count down chrono delay ticks. Unit remains 50% translucent until 0.
@@ -417,7 +436,7 @@ mod tests {
         entities.insert(e);
         let rules = default_rules();
 
-        assert!(issue_teleport_command(&mut entities, 1, (20, 20), &rules));
+        assert!(issue_teleport_command(&mut entities, 1, (20, 20), &rules, false));
         let entity = entities.get(1).expect("should exist");
         let ts = entity
             .teleport_state
@@ -466,7 +485,10 @@ mod tests {
         entities.insert(e);
         let rules = default_rules();
 
-        assert!(issue_teleport_command(&mut entities, 1, (20, 20), &rules));
+        // Pass is_harvester=false so the test still exercises the full chrono-delay path.
+        // (CMIN type fixture used here has harvester=false; the harvester instant-warp
+        // path is covered by the dedicated tests below.)
+        assert!(issue_teleport_command(&mut entities, 1, (20, 20), &rules, false));
         // Should have overridden to Teleport.
         let entity = entities.get(1).expect("should exist");
         let loco = entity.locomotor.as_ref().expect("has loco");
@@ -504,5 +526,107 @@ mod tests {
         // ChronoTrigger=false → always minimum
         rules.chrono_trigger = false;
         assert_eq!(compute_chrono_delay(&rules, 5120), 16);
+    }
+
+    /// Mirror of binary's `InitiateWarp` (0x00719400) harvester branch:
+    /// when is_harvester=true the chrono lock is forced to 0 regardless of distance.
+    #[test]
+    fn test_harvester_skips_chrono_delay() {
+        let mut entities = EntityStore::new();
+        let e = GameEntity::test_default(1, "CMIN", "Americans", 5, 5);
+        entities.insert(e);
+        let rules = default_rules();
+
+        // Long distance (~80 cells diagonal) — non-harvester would compute ~604 ticks delay.
+        assert!(issue_teleport_command(
+            &mut entities,
+            1,
+            (90, 90),
+            &rules,
+            true
+        ));
+        let ts = entities
+            .get(1)
+            .and_then(|e| e.teleport_state.as_ref())
+            .expect("should have TeleportState");
+        assert_eq!(
+            ts.being_warped_ticks, 0,
+            "harvester instant-warp must zero the chrono lock"
+        );
+    }
+
+    /// With is_harvester=true, the Relocate phase finishes the teleport in a single
+    /// tick (skipping ChronoDelay) — matches binary's effective 1-tick InitiateWarp
+    /// behavior for harvesters.
+    #[test]
+    fn test_harvester_relocate_cleans_up_in_one_tick() {
+        let mut entities = EntityStore::new();
+        let obj = make_drive_obj();
+        let loco = LocomotorState::from_object_type(&obj, 1500);
+        let mut e = GameEntity::test_default(1, "CMIN", "Americans", 5, 5);
+        e.locomotor = Some(loco);
+        entities.insert(e);
+        let rules = default_rules();
+
+        assert!(issue_teleport_command(
+            &mut entities,
+            1,
+            (20, 20),
+            &rules,
+            true
+        ));
+        // Override applied at issue time.
+        let entity = entities.get(1).expect("should exist");
+        assert!(entity.locomotor.as_ref().expect("loco").is_overridden());
+
+        // Single tick: position snaps, then cleanup runs because being_warped_ticks==0.
+        tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), 33, 0);
+
+        let entity = entities.get(1).expect("should exist");
+        assert_eq!(entity.position.rx, 20);
+        assert_eq!(entity.position.ry, 20);
+        assert!(
+            entity.teleport_state.is_none(),
+            "harvester teleport should clean up in one tick"
+        );
+        let loco = entity.locomotor.as_ref().expect("has loco");
+        assert_eq!(loco.kind, LocomotorKind::Drive, "base locomotor restored");
+        assert!(!loco.is_overridden(), "override ended");
+    }
+
+    /// Regression: non-harvester (Chrono Legionnaire path) still goes through the
+    /// full Relocate → ChronoDelay countdown.
+    #[test]
+    fn test_non_harvester_uses_full_chrono_delay() {
+        let mut entities = EntityStore::new();
+        let e = GameEntity::test_default(1, "CLEG", "Americans", 5, 5);
+        entities.insert(e);
+        let rules = default_rules();
+
+        assert!(issue_teleport_command(
+            &mut entities,
+            1,
+            (20, 20),
+            &rules,
+            false
+        ));
+        let initial_ticks = entities
+            .get(1)
+            .and_then(|e| e.teleport_state.as_ref())
+            .map(|t| t.being_warped_ticks)
+            .expect("teleport_state");
+        assert!(
+            initial_ticks > 0,
+            "non-harvester must keep the distance-based chrono lock"
+        );
+
+        // Tick 1: Relocate snaps position and transitions to ChronoDelay (NOT cleanup).
+        tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), 33, 0);
+        let ts = entities
+            .get(1)
+            .and_then(|e| e.teleport_state.as_ref())
+            .expect("still warping after Relocate");
+        assert_eq!(ts.phase, TeleportPhase::ChronoDelay);
+        assert_eq!(ts.being_warped_ticks, initial_ticks);
     }
 }

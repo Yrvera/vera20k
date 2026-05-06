@@ -30,6 +30,19 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
     if current_sidebar_view_hit(state) {
         return None;
     }
+    // Superweapon targeting cursor takes precedence over building placement.
+    // Sidebar/minimap hits are already short-circuited above, so the SW reticle
+    // only renders on the tactical map.
+    if let Some(section) = state.armed_super_weapon_type() {
+        let cursor_id = state
+            .rules
+            .as_ref()
+            .and_then(|r| r.super_weapon(section))
+            .and_then(|sw| sw.action.as_deref())
+            .and_then(super_weapon_cursor_id)
+            .unwrap_or(CursorId::Default);
+        return Some(CursorFeedbackKind::SuperWeaponTarget(cursor_id));
+    }
     if let Some(preview) = state.building_placement_preview.as_ref() {
         return Some(if preview.valid {
             CursorFeedbackKind::PlaceValid
@@ -37,7 +50,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
             CursorFeedbackKind::PlaceInvalid
         });
     }
-    if state.armed_building_placement.is_some() {
+    if state.armed_building_type().is_some() {
         return Some(CursorFeedbackKind::Invalid);
     }
     let Some(sim) = &state.simulation else {
@@ -393,6 +406,7 @@ pub(crate) fn cursor_id_for_feedback(kind: CursorFeedbackKind) -> Option<CursorI
         CursorFeedbackKind::Enter => Some(CursorId::Enter),
         CursorFeedbackKind::EngineerRepair => Some(CursorId::EngineerRepair),
         CursorFeedbackKind::Deploy => Some(CursorId::Deploy),
+        CursorFeedbackKind::SuperWeaponTarget(id) => Some(id),
     }
 }
 
@@ -488,7 +502,7 @@ fn edge_scroll_direction(state: &AppState) -> Option<ScrollDir> {
     }
 }
 
-fn current_sidebar_view_hit(state: &AppState) -> bool {
+pub(crate) fn current_sidebar_view_hit(state: &AppState) -> bool {
     let sw = state.sidebar_layout_spec.sidebar_width;
     let panel_rect = crate::sidebar::Rect {
         x: state.render_width() as f32 - sw - 10.0,
@@ -497,4 +511,86 @@ fn current_sidebar_view_hit(state: &AppState) -> bool {
         h: state.render_height() as f32 - 20.0,
     };
     panel_rect.contains(state.cursor_x, state.cursor_y)
+}
+
+/// Map a SuperWeaponType `Action=` INI string to its targeting cursor.
+///
+/// Action strings come from `[SWType] Action=` in rulesmd.ini. Cursor
+/// frame ranges are pre-loaded in `render/cursor_atlas.rs`.
+///
+/// Returns `None` for `IonCannon` (TS-legacy, no YR SW uses it) and any
+/// unrecognized string. Caller should fall back to `CursorId::Default`.
+pub(crate) fn super_weapon_cursor_id(action: &str) -> Option<CursorId> {
+    match action {
+        "Nuke" => Some(CursorId::Nuke),
+        "ChronoSphere" => Some(CursorId::Chronosphere),
+        "ChronoWarp" => Some(CursorId::Chronosphere),
+        "IronCurtain" => Some(CursorId::IronCurtain),
+        "LightningStorm" => Some(CursorId::LightningStorm),
+        "ParaDrop" => Some(CursorId::Paradrop),
+        "AmerParaDrop" => Some(CursorId::Paradrop),
+        "PsychicDominator" => Some(CursorId::PsychicDominator),
+        "SpyPlane" => Some(CursorId::SpyPlane),
+        "GeneticConverter" => Some(CursorId::GeneticMutator),
+        "ForceShield" => Some(CursorId::ForceShield),
+        "PsychicReveal" => Some(CursorId::PsychicReveal),
+        // IonCannon is TS-legacy — no YR superweapon uses this Action.
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super_weapon_cursor_id;
+    use crate::app_types::CursorId;
+
+    #[test]
+    fn maps_every_yr_active_action() {
+        assert_eq!(super_weapon_cursor_id("Nuke"), Some(CursorId::Nuke));
+        assert_eq!(
+            super_weapon_cursor_id("ChronoSphere"),
+            Some(CursorId::Chronosphere)
+        );
+        assert_eq!(
+            super_weapon_cursor_id("ChronoWarp"),
+            Some(CursorId::Chronosphere)
+        );
+        assert_eq!(
+            super_weapon_cursor_id("IronCurtain"),
+            Some(CursorId::IronCurtain)
+        );
+        assert_eq!(
+            super_weapon_cursor_id("LightningStorm"),
+            Some(CursorId::LightningStorm)
+        );
+        assert_eq!(super_weapon_cursor_id("ParaDrop"), Some(CursorId::Paradrop));
+        assert_eq!(
+            super_weapon_cursor_id("AmerParaDrop"),
+            Some(CursorId::Paradrop)
+        );
+        assert_eq!(
+            super_weapon_cursor_id("PsychicDominator"),
+            Some(CursorId::PsychicDominator)
+        );
+        assert_eq!(super_weapon_cursor_id("SpyPlane"), Some(CursorId::SpyPlane));
+        assert_eq!(
+            super_weapon_cursor_id("GeneticConverter"),
+            Some(CursorId::GeneticMutator)
+        );
+        assert_eq!(
+            super_weapon_cursor_id("ForceShield"),
+            Some(CursorId::ForceShield)
+        );
+        assert_eq!(
+            super_weapon_cursor_id("PsychicReveal"),
+            Some(CursorId::PsychicReveal)
+        );
+    }
+
+    #[test]
+    fn returns_none_for_ts_legacy_and_unknown() {
+        assert_eq!(super_weapon_cursor_id("IonCannon"), None);
+        assert_eq!(super_weapon_cursor_id(""), None);
+        assert_eq!(super_weapon_cursor_id("BogusAction"), None);
+    }
 }
