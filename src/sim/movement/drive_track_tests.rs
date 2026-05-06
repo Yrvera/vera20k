@@ -373,6 +373,51 @@ fn build_sharp_turn_fallback_rounds_to_nearest_dir() {
     assert_eq!(fb_17.target_facing, fb_32.target_facing);
 }
 
+#[test]
+fn sharp_turn_fallback_produces_valid_track_for_all_8_dirs() {
+    // Wiring test: build_sharp_turn_fallback + dir_to_cell_delta +
+    // begin_drive_track must combine into a valid DriveTrackState for
+    // every quantized current_facing. This is what the
+    // configure_motion_after_transition fallback branch does.
+    use crate::util::fixed_math::dir_to_cell_delta;
+    for facing in [0u8, 32, 64, 96, 128, 160, 192, 224] {
+        let fb = build_sharp_turn_fallback(facing)
+            .unwrap_or_else(|| panic!("fallback should exist for facing {}", facing));
+        let (cdx, cdy) = dir_to_cell_delta(facing);
+        let state = begin_drive_track(
+            fb.raw_track_index,
+            fb.flags,
+            cdx,
+            cdy,
+            fb.target_facing,
+        );
+        assert!(
+            state.is_some(),
+            "fallback track should initialize for facing {}",
+            facing
+        );
+        let state = state.unwrap();
+        assert_eq!(
+            state.target_facing, fb.target_facing,
+            "DriveTrackState.target_facing should match selection's target_facing for facing {}",
+            facing
+        );
+        // head_offset = head_d * 256 + 128 — verify deltas were applied.
+        assert_eq!(
+            state.head_offset_x,
+            cdx * 256 + 128,
+            "head_offset_x for facing {}",
+            facing
+        );
+        assert_eq!(
+            state.head_offset_y,
+            cdy * 256 + 128,
+            "head_offset_y for facing {}",
+            facing
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // begin_drive_track tests
 // ---------------------------------------------------------------------------
