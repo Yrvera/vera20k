@@ -2384,4 +2384,35 @@ DefaultSparkSystem=SparkSys
         // zip up to the shorter length — only ("E2", 9) survives.
         assert_eq!(g.sov_paradrop_list, vec![("E2".to_string(), 9)]);
     }
+
+    #[test]
+    fn paradrop_weapon_rof_reaches_resolved_weapon() {
+        // Verifies the Task 5 grounding question: does [ParaDropWeapon] ROF=130
+        // flow through the weapon parser into rules.weapon("ParaDropWeapon").rof?
+        // The parser only reads weapon sections referenced from an ObjectType's
+        // Primary= / Secondary=, so we need a minimal aircraft entry that points
+        // to ParaDropWeapon.
+        let text = "\
+[AircraftTypes]
+1=PDPLANE
+
+[PDPLANE]
+Primary=ParaDropWeapon
+Strength=400
+Speed=15
+Image=PDPLANE
+
+[ParaDropWeapon]
+Damage=60
+ROF=130
+Range=1
+Projectile=Invisible
+";
+        let ini = IniFile::from_str(text);
+        let rs = RuleSet::from_ini(&ini).expect("rules parse");
+        let weapon = rs
+            .weapon("ParaDropWeapon")
+            .expect("ParaDropWeapon must reach the weapon registry");
+        assert_eq!(weapon.rof, 130);
+    }
 }
