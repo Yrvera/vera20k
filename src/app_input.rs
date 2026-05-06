@@ -250,6 +250,8 @@ fn apply_sidebar_action(state: &mut AppState, action: SidebarAction) {
             state.armed_building_placement = None;
             state.building_placement_preview = None;
         }
+        SidebarAction::ArmSuperWeapon(_) => {} // wired in Task 10
+        SidebarAction::ClearSuperWeaponMode => {} // wired in Task 10
         SidebarAction::TogglePauseQueue(category) => {
             toggle_pause_build_queue(state, category);
         }

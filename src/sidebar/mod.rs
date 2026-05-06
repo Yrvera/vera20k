@@ -130,6 +130,11 @@ pub enum SidebarAction {
     BuildType(String),
     ArmPlacement(String),
     ClearPlacementMode,
+    /// Arm the targeting cursor for a charged superweapon.
+    /// Payload: SW INI section name (e.g., "LightningStormSpecial").
+    ArmSuperWeapon(String),
+    /// Clear the SW targeting cursor (toggle off / second click on cameo).
+    ClearSuperWeaponMode,
     TogglePauseQueue(ProductionCategory),
     CycleProducer(ProductionCategory),
     CancelBuild(String),
