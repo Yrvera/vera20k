@@ -150,13 +150,21 @@ fn spawn_pdplane(
         }
     };
 
-    // Jump straight to cruise altitude.
+    // Jump straight to cruise altitude AND install a cargo hold sized for the
+    // paradrop payload. Vanilla PDPLANE has no Passengers= key, so spawn_object
+    // doesn't initialize a Transport cargo — gamemd's spawner builds the
+    // CargoClass linked list directly. Mirror that here.
     let flight_level = SimFixed::from_num(rules.general.flight_level);
     if let Some(entity) = sim.entities.get_mut(pdplane_id) {
         if let Some(loco) = entity.locomotor.as_mut() {
             loco.altitude = flight_level;
             loco.target_altitude = flight_level;
             loco.air_phase = AirMovePhase::Cruising;
+        }
+        if !entity.passenger_role.is_transport() {
+            entity.passenger_role = PassengerRole::Transport {
+                cargo: crate::sim::passenger::PassengerCargo::new(num, /*size_limit*/ 0),
+            };
         }
     }
 
@@ -186,14 +194,15 @@ fn spawn_pdplane(
         // so the cell isn't blocked.
         sim.occupancy.remove(edge_cell.0, edge_cell.1, pax_id);
 
-        if let Some(cargo) = sim
+        let boarded = sim
             .entities
             .get_mut(pdplane_id)
             .and_then(|a| a.passenger_role.cargo_mut())
-        {
-            if !cargo.board(pax_id, inf_size) {
-                break;
-            }
+            .map(|c| c.board(pax_id, inf_size))
+            .unwrap_or(false);
+        if !boarded {
+            // Cargo full or no hold — give up; the partial cargo flies.
+            break;
         }
         loaded += 1;
     }
