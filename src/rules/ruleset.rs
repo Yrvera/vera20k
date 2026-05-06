@@ -115,6 +115,30 @@ pub struct AnimRef {
     pub rate_ms: u32,
 }
 
+/// Static art.ini metadata for the `[General] Parachute=` SHP.
+///
+/// Loaded once at startup from the art.ini section named by `[General] Parachute=`.
+/// Pure render-side data: consumed by the parachute anim lifecycle and renderer.
+#[derive(Debug, Clone)]
+pub struct ParachuteRenderConfig {
+    /// SHP section name from `[General] Parachute=` (e.g., "PARACH"). Uppercased.
+    pub shp_name: String,
+    /// ms per anim frame. Computed via `art_rate_to_delay_ms(Rate=)`.
+    /// For Rate=400 this is 133.
+    pub rate_ms: u32,
+    /// Frame to wrap to after `frame >= end_frame`. From art.ini `LoopStart=`.
+    pub loop_start: u16,
+    /// Wraparound bound (exclusive). Set to `LoopEnd + 1` from art.ini.
+    /// Frames `0..end_frame` play once on first cycle, then wrap to `loop_start`.
+    pub end_frame: u16,
+    /// Depth-sort offset (signed, leptons; -10 for PARACH). Used by the renderer
+    /// to put the chute slightly above the GI body in the same depth band.
+    pub z_adjust: i16,
+    /// Whether to use the unit/Convert palette instead of the standard anim
+    /// palette. From art.ini `AltPalette=`. NOT owner-tinted.
+    pub alt_palette: bool,
+}
+
 /// Global gameplay constants from `[General]` that affect vision, gap generators, etc.
 #[derive(Debug, Clone)]
 pub struct GeneralRules {
@@ -150,6 +174,14 @@ pub struct GeneralRules {
     pub paradrop_radius: i32,
     /// Carrier aircraft type for paradrop missions. Default `PDPLANE`.
     pub paradrop_aircraft_type: String,
+    /// Parsed `[General] Parachute=` value (uppercased SHP name, e.g. "PARACH").
+    /// `None` if unset or empty. Used by `resolve_art_rates` to resolve
+    /// `parachute_render`.
+    pub parachute_shp: Option<String>,
+    /// Parsed render config for the parachute SHP (from `[General] Parachute=`).
+    /// `None` if the key is unset OR if the referenced art.ini section is
+    /// missing. Render path is a no-op when this is `None`.
+    pub parachute_render: Option<ParachuteRenderConfig>,
     /// American paradrop list: parallel `(infantry_type, count)` pairs.
     /// From `[General] AmerParaDropInf=` zipped with `AmerParaDropNum=`.
     /// Default `[("E1", 8)]`.
@@ -451,6 +483,8 @@ impl Default for GeneralRules {
             parachute_max_fall_rate: -3,
             paradrop_radius: 1024,
             paradrop_aircraft_type: "PDPLANE".to_string(),
+            parachute_shp: None,
+            parachute_render: None,
             amer_paradrop_list: vec![("E1".to_string(), 8)],
             ally_paradrop_list: vec![("E1".to_string(), 6)],
             sov_paradrop_list:  vec![("E2".to_string(), 9)],
@@ -696,6 +730,12 @@ impl GeneralRules {
                 .map(|s| s.trim().to_uppercase())
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "PDPLANE".to_string()),
+            parachute_shp: general
+                .get("Parachute")
+                .map(|s| s.trim().to_uppercase())
+                .filter(|s| !s.is_empty()),
+            // Resolved later in `resolve_art_rates` once art.ini is available.
+            parachute_render: None,
             amer_paradrop_list: parse_paradrop_list(
                 general,
                 "AmerParaDropInf",
@@ -946,6 +986,37 @@ impl GeneralRules {
                     .map(|f| format!("{}={}ms", f.name, f.rate_ms))
                     .collect::<Vec<_>>()
                     .join(", "),
+            );
+        }
+
+        // Parachute render config: [General] Parachute= names the section in
+        // artmd.ini that holds the chute SHP's animation metadata.
+        self.parachute_render = self.parachute_shp.as_deref().and_then(|shp_name| {
+            let section = art_ini.section(shp_name)?;
+            let rate = section.get_i32("Rate").unwrap_or(1);
+            let rate_ms = crate::rules::art_data::art_rate_to_delay_ms(rate);
+            let loop_start = section.get_i32("LoopStart").unwrap_or(0).max(0) as u16;
+            let loop_end = section.get_i32("LoopEnd").unwrap_or(0).max(0) as u16;
+            let end_frame = loop_end.saturating_add(1);
+            let z_adjust = section.get_i32("ZAdjust").unwrap_or(0) as i16;
+            let alt_palette = section.get_bool("AltPalette").unwrap_or(false);
+            Some(ParachuteRenderConfig {
+                shp_name: shp_name.to_string(),
+                rate_ms,
+                loop_start,
+                end_frame,
+                z_adjust,
+                alt_palette,
+            })
+        });
+        if let Some(ref pc) = self.parachute_render {
+            log::info!(
+                "Parachute render config loaded: shp={} rate_ms={} loop_start={} end_frame={} z_adjust={} alt_palette={}",
+                pc.shp_name, pc.rate_ms, pc.loop_start, pc.end_frame, pc.z_adjust, pc.alt_palette,
+            );
+        } else {
+            log::warn!(
+                "Parachute render config NOT loaded (missing [General] Parachute= or referenced art.ini section)"
             );
         }
     }
@@ -2414,5 +2485,50 @@ Projectile=Invisible
             .weapon("ParaDropWeapon")
             .expect("ParaDropWeapon must reach the weapon registry");
         assert_eq!(weapon.rof, 130);
+    }
+
+    #[test]
+    fn parses_parachute_render_config_from_artmd() {
+        let rules_text = "\
+[General]
+Parachute=PARACH
+";
+        let art_text = "\
+[PARACH]
+Rate=400
+LoopStart=20
+LoopEnd=39
+LoopCount=30
+AltPalette=yes
+ZAdjust=-10
+";
+        let rules_ini = IniFile::from_str(rules_text);
+        let art_ini = IniFile::from_str(art_text);
+        let mut general = GeneralRules::from_ini(&rules_ini);
+        assert_eq!(general.parachute_shp.as_deref(), Some("PARACH"));
+        general.resolve_art_rates(&art_ini);
+        let pc = general
+            .parachute_render
+            .as_ref()
+            .expect("parachute_render must be loaded");
+        assert_eq!(pc.shp_name, "PARACH");
+        // Rate=400 → (900/400) * 1000/15 = 2 * 1000/15 = 133.
+        assert_eq!(pc.rate_ms, 133);
+        assert_eq!(pc.loop_start, 20);
+        assert_eq!(pc.end_frame, 40); // LoopEnd + 1
+        assert_eq!(pc.z_adjust, -10);
+        assert!(pc.alt_palette);
+    }
+
+    #[test]
+    fn parachute_render_none_when_general_parachute_unset() {
+        let rules_text = "[General]\nFlightLevel=1500\n";
+        let art_text = "[PARACH]\nRate=400\n";
+        let rules_ini = IniFile::from_str(rules_text);
+        let art_ini = IniFile::from_str(art_text);
+        let mut general = GeneralRules::from_ini(&rules_ini);
+        assert!(general.parachute_shp.is_none());
+        general.resolve_art_rates(&art_ini);
+        assert!(general.parachute_render.is_none());
     }
 }
