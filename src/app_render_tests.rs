@@ -4,7 +4,7 @@ use crate::app_entity_pick::{
     pick_enemy_target_stable_id,
 };
 use crate::app_input::CLICK_SELECT_RADIUS;
-use crate::app_sidebar_render::sync_armed_building_placement;
+use crate::app_sidebar_render::sync_targeting_mode;
 use crate::map::entities::EntityCategory;
 use crate::map::houses::HouseAllianceMap;
 use crate::map::terrain;
@@ -392,7 +392,7 @@ fn test_ready_buildings_do_not_auto_arm_placement() {
         queue_category: crate::sim::production::ProductionCategory::Building,
     }];
 
-    sync_armed_building_placement(&mut armed, &mut preview, &ready, None);
+    sync_targeting_mode(&mut armed, &mut preview, &ready, &[], None);
 
     assert!(
         armed.is_none(),
@@ -417,8 +417,65 @@ fn test_invalid_armed_building_clears_when_not_ready() {
         cell_valid: vec![false; 4],
     });
 
-    sync_armed_building_placement(&mut armed, &mut preview, &[], None);
+    sync_targeting_mode(&mut armed, &mut preview, &[], &[], None);
 
     assert!(armed.is_none());
     assert!(preview.is_none());
+}
+
+#[test]
+fn test_sw_armed_preserved_when_ready() {
+    use crate::sim::superweapon::SuperWeaponView;
+    let mut armed = Some(crate::app_types::TargetingMode::SuperWeapon(
+        "LightningStormSpecial".to_string(),
+    ));
+    let mut preview = None;
+    let sw = SuperWeaponView {
+        type_id: crate::sim::intern::test_intern("LightningStormSpecial"),
+        display_name: "LightningStormSpecial".to_string(),
+        progress: 1.0,
+        is_ready: true,
+        is_online: true,
+        sidebar_image: Some("INTICON".to_string()),
+        kind: crate::rules::superweapon_type::SuperWeaponKind::LightningStorm,
+    };
+
+    sync_targeting_mode(&mut armed, &mut preview, &[], &[sw], None);
+
+    assert!(armed.is_some(), "armed SW should be preserved while ready");
+}
+
+#[test]
+fn test_sw_armed_cleared_when_not_ready() {
+    use crate::sim::superweapon::SuperWeaponView;
+    let mut armed = Some(crate::app_types::TargetingMode::SuperWeapon(
+        "LightningStormSpecial".to_string(),
+    ));
+    let mut preview = None;
+    let sw = SuperWeaponView {
+        type_id: crate::sim::intern::test_intern("LightningStormSpecial"),
+        display_name: "LightningStormSpecial".to_string(),
+        progress: 0.5,
+        is_ready: false, // Charging, not yet ready.
+        is_online: true,
+        sidebar_image: Some("INTICON".to_string()),
+        kind: crate::rules::superweapon_type::SuperWeaponKind::LightningStorm,
+    };
+
+    sync_targeting_mode(&mut armed, &mut preview, &[], &[sw], None);
+
+    assert!(armed.is_none(), "armed SW should clear when not ready");
+}
+
+#[test]
+fn test_sw_armed_cleared_when_view_gone() {
+    let mut armed = Some(crate::app_types::TargetingMode::SuperWeapon(
+        "LightningStormSpecial".to_string(),
+    ));
+    let mut preview = None;
+
+    // No SW views — granting building destroyed.
+    sync_targeting_mode(&mut armed, &mut preview, &[], &[], None);
+
+    assert!(armed.is_none(), "armed SW should clear when view disappears");
 }
