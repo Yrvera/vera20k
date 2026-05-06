@@ -1506,6 +1506,13 @@ impl RuleSet {
                 if entry.docking_offset.is_some() {
                     obj.docking_offset = entry.docking_offset;
                 }
+                // Merge AddOccupy/RemoveOccupy from art.ini.
+                if !entry.add_occupy.is_empty() {
+                    obj.add_occupy = entry.add_occupy.clone();
+                }
+                if !entry.remove_occupy.is_empty() {
+                    obj.remove_occupy = entry.remove_occupy.clone();
+                }
             }
         }
         log::info!(
@@ -2530,5 +2537,22 @@ ZAdjust=-10
         assert!(general.parachute_shp.is_none());
         general.resolve_art_rates(&art_ini);
         assert!(general.parachute_render.is_none());
+    }
+
+    #[test]
+    fn merge_art_propagates_add_remove_occupy() {
+        let rules_text = format!(
+            "{}\n[BuildingTypes]\n0=GAREFN\n[GAREFN]\nName=Refinery\nCost=2000\nFoundation=4x3\n",
+            make_test_rules()
+        );
+        let art_text = "[GAREFN]\nFoundation=4x3\nAddOccupy1=-1,0\nAddOccupy2=-1,-1\nRemoveOccupy1=3,1\n";
+        let rules_ini: IniFile = IniFile::from_str(&rules_text);
+        let mut rules: RuleSet = RuleSet::from_ini(&rules_ini).expect("rules parse");
+        let art_ini: IniFile = IniFile::from_str(art_text);
+        let art = crate::rules::art_data::ArtRegistry::from_ini(&art_ini);
+        rules.merge_art_data(&art);
+        let obj = rules.object("GAREFN").expect("GAREFN");
+        assert_eq!(obj.add_occupy, vec![(-1, 0), (-1, -1)]);
+        assert_eq!(obj.remove_occupy, vec![(3, 1)]);
     }
 }

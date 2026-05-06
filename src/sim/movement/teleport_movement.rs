@@ -330,6 +330,8 @@ mod tests {
             dock: vec![],
             queueing_cell: None,
             docking_offset: None,
+            add_occupy: Vec::new(),
+            remove_occupy: Vec::new(),
             unloading_class: None,
             ammo: -1,
             enslaves: None,
@@ -418,6 +420,7 @@ mod tests {
             dam_smk_off_scrn_rel: false,
             destroy_smoke_offset: glam::IVec3::ZERO,
             refinery_smoke_offsets: [glam::IVec3::ZERO; 4],
+            refinery_smoke_frames: 0,
             gap_radius_in_cells: 0,
             super_gap_radius_in_cells: 0,
         }
