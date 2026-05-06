@@ -251,8 +251,20 @@ fn apply_sidebar_action(state: &mut AppState, action: SidebarAction) {
             state.targeting_mode = None;
             state.building_placement_preview = None;
         }
-        SidebarAction::ArmSuperWeapon(_) => {} // wired in Task 10
-        SidebarAction::ClearSuperWeaponMode => {} // wired in Task 10
+        SidebarAction::ArmSuperWeapon(section) => {
+            state.targeting_mode =
+                Some(crate::app_types::TargetingMode::SuperWeapon(section));
+            // Mutual exclusion: clear any pending building-placement preview.
+            state.building_placement_preview = None;
+            log::info!(
+                "SuperWeapon armed: type={}",
+                state.armed_super_weapon_type().unwrap_or("")
+            );
+        }
+        SidebarAction::ClearSuperWeaponMode => {
+            state.targeting_mode = None;
+            log::info!("SuperWeapon targeting cleared");
+        }
         SidebarAction::TogglePauseQueue(category) => {
             toggle_pause_build_queue(state, category);
         }
