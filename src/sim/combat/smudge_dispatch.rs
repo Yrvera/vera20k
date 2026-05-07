@@ -42,6 +42,100 @@ pub(crate) fn random_offset_at_radius(rng: &mut SimRng, magnitude_leptons: i32) 
     (dx as i32, dy as i32)
 }
 
+use std::collections::BTreeMap;
+
+use crate::map::resolved_terrain::ResolvedTerrainGrid;
+use crate::rules::art_data::ArtRegistry;
+use crate::rules::smudge_type::SmudgeTypeRegistry;
+use crate::sim::miner::{ResourceNode, reduce_tiberium};
+use crate::sim::occupancy::OccupancyGrid;
+use crate::sim::overlay_grid::OverlayGrid;
+use crate::sim::smudge_grid::{SmudgeGrid, SmudgeKind};
+
+/// Default dmg/dmg2 values when AnimType frame dimensions aren't yet
+/// pre-computed. Matches gamemd's pre-cache fallback (AnimType+0x29C/+0x2A0
+/// init value of 0x1E = 30). Follow-up: replace with eager SHP frame-rect
+/// init for full parity on big-explosion smudge sizes.
+const DEFAULT_ANIM_FRAME_DIM: i32 = 30;
+
+/// Strict altitude gate from ledger #3: smudges only spawn when the anim
+/// is within 30 leptons of the ground.
+const SMUDGE_ALTITUDE_GATE_LEPTONS: i32 = 30;
+
+/// Hardcoded ore-reduction amount when a crater spawns (ledger #6).
+const CRATER_ORE_REDUCTION: u16 = 6;
+
+/// Try to dispatch a smudge for an animation that just spawned at `coord`.
+///
+/// Reads scorch/crater/force_big_craters bools from the AnimType's ArtEntry.
+/// Performs the altitude gate, the 50/50 random pick when both flags are set,
+/// the `reduce_tiberium(6)` side effect for crater path, and finally calls
+/// `SmudgeGrid::try_place`.
+#[allow(clippy::too_many_arguments)]
+pub fn try_dispatch_anim_smudge(
+    art: &ArtRegistry,
+    smudge_types: &SmudgeTypeRegistry,
+    anim_name: &str,
+    coord: SimCoord,
+    ground_z: i32,
+    smudge_grid: &mut SmudgeGrid,
+    overlay_grid: &OverlayGrid,
+    occupancy: &OccupancyGrid,
+    terrain: &ResolvedTerrainGrid,
+    resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
+    rng: &mut SimRng,
+) {
+    let Some(entry) = art.get(anim_name) else { return; };
+
+    if (coord.z - ground_z) >= SMUDGE_ALTITUDE_GATE_LEPTONS {
+        return;
+    }
+
+    let dmg = DEFAULT_ANIM_FRAME_DIM;
+    let dmg2 = DEFAULT_ANIM_FRAME_DIM;
+
+    if entry.scorch {
+        if !entry.crater {
+            smudge_grid.try_place(
+                SmudgeKind::Burn, coord, dmg, dmg2, false,
+                smudge_types, terrain, overlay_grid, occupancy, rng,
+            );
+            return;
+        }
+        if rng_below_half_normalized(rng) {
+            smudge_grid.try_place(
+                SmudgeKind::Burn, coord, dmg, dmg2, false,
+                smudge_types, terrain, overlay_grid, occupancy, rng,
+            );
+            return;
+        }
+    }
+    if entry.crater {
+        let rx = (coord.x >> 8).clamp(0, smudge_grid.width() as i32 - 1) as u16;
+        let ry = (coord.y >> 8).clamp(0, smudge_grid.height() as i32 - 1) as u16;
+        reduce_tiberium(resource_nodes, (rx, ry), CRATER_ORE_REDUCTION);
+
+        if entry.force_big_craters {
+            smudge_grid.try_place(
+                SmudgeKind::Crater, coord, 300, 300, true,
+                smudge_types, terrain, overlay_grid, occupancy, rng,
+            );
+        } else {
+            smudge_grid.try_place(
+                SmudgeKind::Crater, coord, dmg, dmg2, false,
+                smudge_types, terrain, overlay_grid, occupancy, rng,
+            );
+        }
+    }
+}
+
+/// Mirrors gamemd's `RandomRanged(0, 0x7FFFFFFE) * (1/2^31) < 0.5` test
+/// (ledger #4). Functionally equivalent: a uniform-random u32 has its high
+/// bit clear with exactly 50% probability. One RNG advance, no modulo bias.
+fn rng_below_half_normalized(rng: &mut SimRng) -> bool {
+    rng.next_u32() < 0x8000_0000
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -91,5 +185,168 @@ mod tests {
             assert!(dx.abs() <= 0x80 + 1, "dx={} out of bound", dx);
             assert!(dy.abs() <= 0x80 + 1, "dy={} out of bound", dy);
         }
+    }
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+    use crate::map::resolved_terrain::ResolvedTerrainCell;
+
+    fn make_art(scorch: bool, crater: bool, force_big: bool) -> ArtRegistry {
+        let scorch_str = if scorch { "yes" } else { "no" };
+        let crater_str = if crater { "yes" } else { "no" };
+        let big_str = if force_big { "yes" } else { "no" };
+        let ini_text = format!(
+            "[ANIM]\nScorch={}\nCrater={}\nForceBigCraters={}\n",
+            scorch_str, crater_str, big_str,
+        );
+        let ini = crate::rules::ini_parser::IniFile::from_bytes(ini_text.as_bytes()).unwrap();
+        ArtRegistry::from_ini(&ini)
+    }
+
+    fn make_smudge_registry() -> SmudgeTypeRegistry {
+        let ini = crate::rules::ini_parser::IniFile::from_bytes(
+            b"[SmudgeTypes]\n1=CR1\n2=BURN1\n\
+              [CR1]\nCrater=yes\nWidth=1\nHeight=1\n\
+              [BURN1]\nBurn=yes\nWidth=1\nHeight=1\n"
+        ).unwrap();
+        SmudgeTypeRegistry::from_rules_ini(&ini)
+    }
+
+    fn flat_terrain(w: u16, h: u16) -> ResolvedTerrainGrid {
+        let mut cells: Vec<ResolvedTerrainCell> = Vec::with_capacity((w * h) as usize);
+        for ry in 0..h {
+            for rx in 0..w {
+                cells.push(test_default_cell(rx, ry));
+            }
+        }
+        ResolvedTerrainGrid::from_cells(w, h, cells)
+    }
+
+    fn test_default_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
+        // Reuse Task 7's defaults via copy-paste; intentionally not extracted to
+        // a shared helper to keep tasks self-contained.
+        ResolvedTerrainCell {
+            rx, ry,
+            source_tile_index: 0, source_sub_tile: 0,
+            final_tile_index: 0, final_sub_tile: 0,
+            level: 0, filled_clear: true, tileset_index: Some(0),
+            land_type: 0, slope_type: 0, template_height: 0,
+            render_offset_x: 0, render_offset_y: 0,
+            terrain_class: Default::default(),
+            speed_costs: Default::default(),
+            is_water: false, is_cliff_like: false,
+            is_rough: false, is_road: false,
+            is_cliff_redraw: false, variant: 0,
+            has_ramp: false, canonical_ramp: None,
+            ground_walk_blocked: false, terrain_object_blocks: false,
+            overlay_blocks: false, zone_type: 0,
+            base_ground_walk_blocked: false, base_build_blocked: false,
+            build_blocked: false,
+            has_bridge_deck: false, bridge_walkable: false,
+            bridge_transition: false, bridge_deck_level: 0,
+            bridge_layer: None,
+            radar_left: [0; 3], radar_right: [0; 3],
+            accepts_smudge: true,
+        }
+    }
+
+    #[test]
+    fn altitude_gate_blocks_above_30_leptons() {
+        let art = make_art(false, true, false);
+        let smudge_reg = make_smudge_registry();
+        let mut grid = SmudgeGrid::new(8, 8);
+        let terrain = flat_terrain(8, 8);
+        let overlay = OverlayGrid::new(8, 8);
+        let occupancy = OccupancyGrid::new();
+        let mut rng = SimRng::new(1);
+        let mut nodes = BTreeMap::new();
+        let coord = SimCoord { x: 4 * 256 + 128, y: 4 * 256 + 128, z: 100 };
+        try_dispatch_anim_smudge(
+            &art, &smudge_reg, "ANIM", coord, 0,
+            &mut grid, &overlay, &occupancy, &terrain, &mut nodes, &mut rng,
+        );
+        assert!(grid.iter_occupied().count() == 0);
+    }
+
+    #[test]
+    fn altitude_gate_strict_less_than_30() {
+        let art = make_art(false, true, false);
+        let smudge_reg = make_smudge_registry();
+        let mut grid = SmudgeGrid::new(8, 8);
+        let terrain = flat_terrain(8, 8);
+        let overlay = OverlayGrid::new(8, 8);
+        let occupancy = OccupancyGrid::new();
+        let mut rng = SimRng::new(1);
+        let mut nodes = BTreeMap::new();
+        // z - ground_z = 30 exactly -> must FAIL (strict <)
+        let coord = SimCoord { x: 4 * 256 + 128, y: 4 * 256 + 128, z: 30 };
+        try_dispatch_anim_smudge(
+            &art, &smudge_reg, "ANIM", coord, 0,
+            &mut grid, &overlay, &occupancy, &terrain, &mut nodes, &mut rng,
+        );
+        assert!(grid.iter_occupied().count() == 0);
+        // z - ground_z = 29 -> must PASS
+        let coord = SimCoord { x: 4 * 256 + 128, y: 4 * 256 + 128, z: 29 };
+        try_dispatch_anim_smudge(
+            &art, &smudge_reg, "ANIM", coord, 0,
+            &mut grid, &overlay, &occupancy, &terrain, &mut nodes, &mut rng,
+        );
+        assert_eq!(grid.iter_occupied().count(), 1);
+    }
+
+    #[test]
+    fn crater_path_reduces_tiberium_even_when_can_place_fails() {
+        // Seed with 10 density levels (more than the 6-unit reduction) so
+        // the cell stays present after Reduce_Tiberium(6) — testing
+        // PARTIAL reduction. (If we seeded with <= 6 density levels,
+        // miner::reduce_tiberium would fully remove the node and the
+        // assertion shape would change to `is_none()`.)
+        let art = make_art(false, true, false);
+        let smudge_reg = make_smudge_registry();
+        let mut grid = SmudgeGrid::new(8, 8);
+        let terrain = flat_terrain(8, 8);
+        let mut overlay = OverlayGrid::new(8, 8);
+        // Block placement by putting an overlay on the impact cell.
+        overlay.place_overlay(4, 4, 0, 0);
+        let occupancy = OccupancyGrid::new();
+        let mut rng = SimRng::new(1);
+        let mut nodes = BTreeMap::new();
+        nodes.insert((4, 4), ResourceNode {
+            resource_type: crate::sim::miner::ResourceType::Ore,
+            remaining: 120 * 10, // 10 density levels of ore
+        });
+        let coord = SimCoord { x: 4 * 256 + 128, y: 4 * 256 + 128, z: 0 };
+        try_dispatch_anim_smudge(
+            &art, &smudge_reg, "ANIM", coord, 0,
+            &mut grid, &overlay, &occupancy, &terrain, &mut nodes, &mut rng,
+        );
+        // Smudge NOT placed (overlay blocks) but ore reduced by 6 density levels.
+        assert_eq!(grid.iter_occupied().count(), 0);
+        assert_eq!(
+            nodes.get(&(4, 4)).unwrap().remaining,
+            120 * (10 - CRATER_ORE_REDUCTION as u16),
+        );
+    }
+
+    #[test]
+    fn scorch_only_anim_spawns_burn() {
+        let art = make_art(true, false, false);
+        let smudge_reg = make_smudge_registry();
+        let mut grid = SmudgeGrid::new(8, 8);
+        let terrain = flat_terrain(8, 8);
+        let overlay = OverlayGrid::new(8, 8);
+        let occupancy = OccupancyGrid::new();
+        let mut rng = SimRng::new(1);
+        let mut nodes = BTreeMap::new();
+        let coord = SimCoord { x: 4 * 256 + 128, y: 4 * 256 + 128, z: 0 };
+        try_dispatch_anim_smudge(
+            &art, &smudge_reg, "ANIM", coord, 0,
+            &mut grid, &overlay, &occupancy, &terrain, &mut nodes, &mut rng,
+        );
+        let placed = grid.cell(4, 4).type_id.unwrap();
+        // BURN1 is index 1 in the registry above.
+        assert_eq!(placed, 1);
     }
 }
