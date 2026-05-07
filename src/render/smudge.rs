@@ -15,7 +15,7 @@
 //! - Part of render/ — depends on map/, rules/, sim/.
 //! - Reads sim smudge state through immutable references; never mutates sim state.
 
-use crate::map::terrain::{TilePlacement, iso_to_screen};
+use crate::map::terrain::{TILE_HEIGHT, TILE_WIDTH, TilePlacement, iso_to_screen};
 use crate::render::batch::SpriteInstance;
 use crate::rules::smudge_type::SmudgeTypeRegistry;
 use crate::sim::smudge_grid::SmudgeGrid;
@@ -92,10 +92,14 @@ pub fn build_visible_instances(
             Some(p) => p,
             None => continue,
         };
+        // iso_to_screen returns the NW corner of the cell's bounding box;
+        // shift by half a tile to land on the cell center, then apply the
+        // atlas entry's centered anchor (-pixel_w/2, -pixel_h/2). Mirrors
+        // the overlay-render position math.
         instances.push(SmudgeInstance {
             position: [
-                sx + placement.draw_offset[0],
-                sy + placement.draw_offset[1],
+                sx + TILE_WIDTH / 2.0 + placement.draw_offset[0],
+                sy + TILE_HEIGHT / 2.0 + placement.draw_offset[1],
             ],
             size: placement.pixel_size,
             uv_origin: placement.uv_origin,
