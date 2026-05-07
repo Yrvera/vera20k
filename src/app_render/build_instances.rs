@@ -264,9 +264,27 @@ fn build_smudge_instances(state: &AppState, sw: f32, sh: f32) -> Vec<SpriteInsta
     let Some(grid) = sim.smudge_grid.as_ref() else {
         return Vec::new();
     };
-    // Atlas lookup placeholder. Once the smudge SHP atlas is registered, this
-    // closure will be replaced with a real lookup against that atlas.
-    let lookup = |_type_id: u16, _frame: u8| -> Option<TilePlacement> { None };
+    let Some(atlas) = state.overlay_atlas.as_ref() else {
+        return Vec::new();
+    };
+    // Resolve (smudge_type_id, frame_offset) → atlas placement.
+    // Smudge SHPs are registered into the OverlayAtlas under
+    // `crate::render::overlay_atlas::SMUDGE_KEY_PREFIX` at map-load time
+    // (see render/overlay_atlas.rs render_smudge_sprite). Frame is always 0
+    // because gamemd draws every footprint cell with frame 0 and shifts
+    // screen position back to footprint origin — render-side handles the
+    // shift cancellation by skipping non-origin cells inside
+    // build_visible_instances.
+    let lookup = |type_id: u16, _frame: u8| -> Option<TilePlacement> {
+        let def = rules.smudge_types.get(type_id)?;
+        let entry = atlas.get(&crate::render::overlay_atlas::smudge_key(&def.name))?;
+        Some(TilePlacement {
+            uv_origin: entry.uv_origin,
+            uv_size: entry.uv_size,
+            pixel_size: entry.pixel_size,
+            draw_offset: [entry.offset_x, entry.offset_y],
+        })
+    };
     crate::render::smudge::build_visible_instances(
         grid,
         &rules.smudge_types,

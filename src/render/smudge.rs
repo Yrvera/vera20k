@@ -64,6 +64,14 @@ pub fn build_visible_instances(
         let Some(type_id) = cell.type_id else {
             continue;
         };
+        // Multi-cell smudge footprints are stored as W×H occupied cells, but
+        // gamemd draws the SHP once at the footprint origin (per-cell
+        // SmudgeTypeClass::Draw_It calls cancel back to the same screen
+        // position with frame=0). Skipping non-origin cells produces
+        // visually identical pixels and avoids redundant SpriteInstances.
+        if cell.frame_offset != 0 {
+            continue;
+        }
         // Confirm the type still exists in the registry — defensive against
         // map/rules mismatches; an unknown id is silently skipped.
         if registry.get(type_id).is_none() {
@@ -215,5 +223,46 @@ mod tests {
         let v = build_visible_instances(&grid, &registry, &lookup, 0.0, 0.0, 800.0, 600.0);
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].depth, SMUDGE_DEPTH);
+    }
+
+    #[test]
+    fn skips_non_origin_footprint_cells() {
+        // 2x2 smudge: 4 cells occupied, frame_offsets 0..3. Only the
+        // frame_offset==0 cell (footprint origin) should emit an instance.
+        let ini = crate::rules::ini_parser::IniFile::from_bytes(
+            b"[SmudgeTypes]\n1=CR2\n[CR2]\nCrater=yes\nWidth=2\nHeight=2\n",
+        )
+        .unwrap();
+        let registry = SmudgeTypeRegistry::from_rules_ini(&ini);
+        let mut grid = SmudgeGrid::new(8, 8);
+        let type_id = registry.find_by_name("CR2").unwrap();
+        // Manually seed all 4 cells of a 2x2 footprint at origin (3,3).
+        for (dx, dy) in &[(0u16, 0u16), (1, 0), (0, 1), (1, 1)] {
+            let frame_offset = (*dx as u8) + (*dy as u8) * 2;
+            grid.test_force_set(
+                3 + dx,
+                3 + dy,
+                SmudgeCell {
+                    type_id: Some(type_id),
+                    footprint_origin: Some((3, 3)),
+                    frame_offset,
+                },
+            );
+        }
+        let lookup = |_id: u16, _frame: u8| -> Option<TilePlacement> {
+            Some(TilePlacement {
+                uv_origin: [0.0, 0.0],
+                uv_size: [0.1, 0.1],
+                pixel_size: [120.0, 60.0],
+                draw_offset: [-60.0, -30.0],
+            })
+        };
+        let v = build_visible_instances(&grid, &registry, &lookup, 0.0, 0.0, 800.0, 600.0);
+        assert_eq!(
+            v.len(),
+            1,
+            "expected 1 SpriteInstance (origin cell only); got {}",
+            v.len(),
+        );
     }
 }
