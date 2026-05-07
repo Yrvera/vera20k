@@ -228,6 +228,12 @@ impl Simulation {
             cell.anchor_span_id.hash(hasher);
             cell.bridgehead_step.hash(hasher);
         }
+        // Hash AnchorSpan registry (Task 7 added this field). BTreeMap iterates
+        // in sorted-key order, so iteration is deterministic.
+        for (id, span) in bridge_state.anchor_spans() {
+            id.hash(hasher);
+            span.hash(hasher);
+        }
     }
 
     fn hash_overlay_grid(&self, hasher: &mut impl Hasher) {
