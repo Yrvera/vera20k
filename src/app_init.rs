@@ -552,6 +552,7 @@ pub fn load_map(
             overlay_iso_palette.as_ref(),
             unit_palette.as_ref(),
             overlay_tiberium_palette.as_ref(),
+            rules.as_ref().map(|r| &r.smudge_types),
         );
 
     if let Some(sim) = &mut simulation {

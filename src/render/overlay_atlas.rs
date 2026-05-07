@@ -132,6 +132,7 @@ pub fn build_overlay_atlas(
     overlay_registry: &OverlayTypeRegistry,
     rules_ini: &IniFile,
     art_registry: &ArtRegistry,
+    smudge_types: Option<&crate::rules::smudge_type::SmudgeTypeRegistry>,
 ) -> Option<OverlayAtlas> {
     // Collect unique (name, frame) pairs from overlays.
     let mut needed: HashSet<OverlaySpriteKey> = HashSet::new();
@@ -301,6 +302,47 @@ pub fn build_overlay_atlas(
         load_fail_count,
         needed.len()
     );
+
+    // --- Smudge SHPs ---
+    // Smudges share this atlas (single texture / single bind group) but are
+    // keyed under SMUDGE_KEY_PREFIX to keep the namespace collision-free with
+    // overlays. Rendered with the iso theater palette to match the world pass
+    // shading (smudges draw between terrain and overlays in the same pass).
+    let mut smudge_rendered_count: u32 = 0;
+    let mut smudge_failed_count: u32 = 0;
+    if let Some(smudge_reg) = smudge_types {
+        for (_id, def) in smudge_reg.iter_with_id() {
+            let file_basename: &str = def.image_name.as_deref().unwrap_or(&def.name);
+            match render_smudge_sprite(
+                asset_manager,
+                theater_palette,
+                &def.name,
+                file_basename,
+                theater_ext,
+            ) {
+                Some(sprite) => {
+                    rendered.push(sprite);
+                    smudge_rendered_count += 1;
+                }
+                None => {
+                    smudge_failed_count += 1;
+                    let candidates: Vec<String> =
+                        smudge_shp_candidates(file_basename, theater_ext);
+                    log::debug!(
+                        "Smudge sprite not found: name={} (tried: {:?})",
+                        def.name,
+                        candidates,
+                    );
+                }
+            }
+        }
+        log::info!(
+            "Smudge sprites: {} rendered, {} failed (of {} types)",
+            smudge_rendered_count,
+            smudge_failed_count,
+            smudge_reg.len(),
+        );
+    }
 
     if rendered.is_empty() {
         return None;

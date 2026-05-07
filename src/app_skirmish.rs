@@ -277,6 +277,7 @@ pub(crate) fn build_overlay_atlas_from_map(
     theater_iso_palette: Option<&Palette>,
     theater_unit_palette: Option<&Palette>,
     theater_tiberium_palette: Option<&Palette>,
+    smudge_types: Option<&crate::rules::smudge_type::SmudgeTypeRegistry>,
 ) -> (
     Option<OverlayAtlas>,
     Option<BridgeAtlas>,
@@ -464,6 +465,7 @@ pub(crate) fn build_overlay_atlas_from_map(
             &overlay_registry,
             rules_ini,
             art_registry,
+            smudge_types,
         )
     });
 
