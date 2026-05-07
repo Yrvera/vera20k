@@ -15,6 +15,7 @@ mod world_hash;
 mod world_orders;
 mod world_spawn;
 pub mod edge_cell;
+pub(crate) mod bridge_orchestrator;
 
 use std::collections::BTreeMap;
 
