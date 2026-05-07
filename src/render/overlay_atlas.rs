@@ -30,6 +30,27 @@ use crate::rules::ini_parser::IniFile;
 /// Padding between sprites in the atlas to prevent texture bleeding.
 const SPRITE_PADDING: u32 = 1;
 
+/// Namespace prefix for smudge atlas keys.
+///
+/// Smudges share the OverlayAtlas (single texture, single bind group) but are
+/// keyed under this prefix so a SmudgeType named `CRATER01` cannot collide
+/// with an overlay named `CRATER01` (modded content is the realistic
+/// concern). All smudge insertions and lookups MUST go through `smudge_key()`
+/// so the prefix can never drift between sides.
+pub const SMUDGE_KEY_PREFIX: &str = "__smudge::";
+
+/// Build the canonical OverlayAtlas key for a smudge SHP.
+///
+/// Frame is always 0 — the per-cell draw of every multi-cell smudge footprint
+/// uses frame 0; the cell offset within W×H is a screen-position shift, not a
+/// frame index.
+pub fn smudge_key(name: &str) -> OverlaySpriteKey {
+    OverlaySpriteKey {
+        name: format!("{}{}", SMUDGE_KEY_PREFIX, name.to_uppercase()),
+        frame: 0,
+    }
+}
+
 /// Cache key: unique combination of overlay name and frame index.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct OverlaySpriteKey {
@@ -488,6 +509,22 @@ fn decrement_numeric_suffix(name: &str) -> Option<String> {
         return None;
     }
     Some(format!("{}{:0width$}", prefix, n - 1, width = width))
+}
+
+/// Build the candidate SHP filename list for a SmudgeType.
+///
+/// Theater-extension first, then `.shp` fallback. Lowercase variants too —
+/// asset_manager treats names case-sensitively in some code paths, and SHP
+/// files in retail mix archives are lowercase.
+fn smudge_shp_candidates(name: &str, theater_ext: &str) -> Vec<String> {
+    let upper = name.to_string();
+    let lower = name.to_ascii_lowercase();
+    vec![
+        format!("{}.{}", lower, theater_ext),
+        format!("{}.shp", lower),
+        format!("{}.{}", upper, theater_ext),
+        format!("{}.shp", upper),
+    ]
 }
 
 fn forced_tiberium_image_name() -> Option<&'static str> {
