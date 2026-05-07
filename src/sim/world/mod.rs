@@ -254,6 +254,12 @@ pub struct Simulation {
     /// SHP interned IDs for bridge destruction explosions (from rules.ini BridgeExplosions=).
     #[serde(skip)]
     pub bridge_explosions: Vec<InternedId>,
+    /// SHP interned IDs for bridge metallic-debris animations
+    /// (from `[General] MetallicDebris=`). Pre-interned at sim init so the
+    /// per-cell debris cascade in `bridge_orchestrator::spawn_bridge_debris`
+    /// runs allocation-free.
+    #[serde(skip)]
+    pub metallic_debris: Vec<InternedId>,
     /// Radar event queue for minimap pings and Spacebar cycling.
     #[serde(skip)]
     pub radar_events: RadarEventQueue,
@@ -358,6 +364,7 @@ impl Simulation {
             smudge_grid: None,
             occupancy: OccupancyGrid::new(),
             bridge_explosions: Vec::new(),
+            metallic_debris: Vec::new(),
             radar_events: RadarEventQueue::default(),
             power_states: BTreeMap::new(),
             super_weapons: BTreeMap::new(),
@@ -575,6 +582,7 @@ impl Simulation {
         resolved_terrain: ResolvedTerrainGrid,
         terrain_speed_config: terrain_speed::TerrainSpeedConfig,
         bridge_explosions: Vec<InternedId>,
+        metallic_debris: Vec<InternedId>,
         effect_frame_counts: BTreeMap<InternedId, u16>,
         terrain_costs: BTreeMap<SpeedType, TerrainCostGrid>,
     ) {
@@ -582,6 +590,7 @@ impl Simulation {
         self.resolved_terrain = Some(resolved_terrain);
         self.terrain_speed_config = terrain_speed_config;
         self.bridge_explosions = bridge_explosions;
+        self.metallic_debris = metallic_debris;
         self.effect_frame_counts = effect_frame_counts;
         self.terrain_costs = terrain_costs;
 
