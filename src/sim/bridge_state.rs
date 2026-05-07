@@ -50,6 +50,55 @@ pub enum DamageState {
     Destroyed,
 }
 
+impl DamageState {
+    /// Encode to binary state byte (`CellClass+0x11E`).
+    ///
+    /// Per HIGH §3.1 / `apply_ramp_transition` docstring:
+    /// - NS axis: Healthy{variant: 0..=5} → 0..=5; Damaged → 6;
+    ///   PartialCollapseA → 7; PartialCollapseB → 8; Destroyed → 0.
+    /// - EW axis: Healthy{variant: 0..=5} → 9..=14; Damaged → 0xF;
+    ///   PartialCollapseA → 0x11; PartialCollapseB → 0x10; Destroyed → 0.
+    ///
+    /// **Note:** `Destroyed` always maps to byte 0, which is also the encoding
+    /// for `Healthy{variant: 0}` initial state. Callers must use context
+    /// (phase + prior state) to disambiguate after a `from_state_byte(0)` decode.
+    /// `to_state_byte` is unambiguous (every variant has exactly one encoding).
+    pub fn to_state_byte(self, axis: Axis) -> u8 {
+        let ns_base: u8 = 0;
+        let ew_base: u8 = 9;
+        let base = match axis { Axis::NS => ns_base, Axis::EW => ew_base };
+        match self {
+            DamageState::Healthy { variant } => base + variant.min(5),
+            DamageState::Damaged => match axis { Axis::NS => 6, Axis::EW => 0xF },
+            DamageState::PartialCollapseA => match axis { Axis::NS => 7, Axis::EW => 0x11 },
+            DamageState::PartialCollapseB => match axis { Axis::NS => 8, Axis::EW => 0x10 },
+            DamageState::Destroyed => 0,
+        }
+    }
+
+    /// Decode from binary state byte. Returns `None` for bytes outside the
+    /// defined ranges (NS: 0..=8; EW: 9..=0x11).
+    ///
+    /// **State 0 ambiguity:** byte 0 always decodes to `Healthy{variant: 0}`.
+    /// Post-collapse `Destroyed` cells also have byte 0 in the binary, but the
+    /// caller (body driver) writes `Destroyed` directly without round-tripping
+    /// through `from_state_byte`. Test fixtures and snapshot consistency checks
+    /// should not rely on this method to recover `Destroyed`.
+    pub fn from_state_byte(byte: u8) -> Option<Self> {
+        match byte {
+            0..=5 => Some(DamageState::Healthy { variant: byte }),
+            6 => Some(DamageState::Damaged),
+            7 => Some(DamageState::PartialCollapseA),
+            8 => Some(DamageState::PartialCollapseB),
+            9..=14 => Some(DamageState::Healthy { variant: byte - 9 }),
+            0xF => Some(DamageState::Damaged),
+            0x10 => Some(DamageState::PartialCollapseB),
+            0x11 => Some(DamageState::PartialCollapseA),
+            _ => None,
+        }
+    }
+}
+
 /// Cell role within an `AnchorSpan`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum BridgeCellRole {
@@ -1003,5 +1052,78 @@ mod tests {
         state.test_seed_cell(2, 2, cell);
         state.cell_mut(2, 2).unwrap().overlay_byte = 0xD2;
         assert_eq!(state.cell(2, 2).unwrap().overlay_byte, 0xD2);
+    }
+
+    #[test]
+    fn damage_state_to_byte_ns_axis() {
+        assert_eq!(DamageState::Healthy { variant: 0 }.to_state_byte(Axis::NS), 0);
+        assert_eq!(DamageState::Healthy { variant: 3 }.to_state_byte(Axis::NS), 3);
+        assert_eq!(DamageState::Healthy { variant: 5 }.to_state_byte(Axis::NS), 5);
+        assert_eq!(DamageState::Damaged.to_state_byte(Axis::NS), 6);
+        assert_eq!(DamageState::PartialCollapseA.to_state_byte(Axis::NS), 7);
+        assert_eq!(DamageState::PartialCollapseB.to_state_byte(Axis::NS), 8);
+        assert_eq!(DamageState::Destroyed.to_state_byte(Axis::NS), 0);
+    }
+
+    #[test]
+    fn damage_state_to_byte_ew_axis() {
+        assert_eq!(DamageState::Healthy { variant: 0 }.to_state_byte(Axis::EW), 9);
+        assert_eq!(DamageState::Healthy { variant: 5 }.to_state_byte(Axis::EW), 14);
+        assert_eq!(DamageState::Damaged.to_state_byte(Axis::EW), 0xF);
+        assert_eq!(DamageState::PartialCollapseA.to_state_byte(Axis::EW), 0x11);
+        assert_eq!(DamageState::PartialCollapseB.to_state_byte(Axis::EW), 0x10);
+        assert_eq!(DamageState::Destroyed.to_state_byte(Axis::EW), 0);
+    }
+
+    #[test]
+    fn damage_state_to_byte_clamps_healthy_variant() {
+        // Variant > 5 is invalid input; should clamp to 5 (max defined healthy).
+        assert_eq!(DamageState::Healthy { variant: 7 }.to_state_byte(Axis::NS), 5);
+        assert_eq!(DamageState::Healthy { variant: 10 }.to_state_byte(Axis::EW), 14);
+    }
+
+    #[test]
+    fn damage_state_from_byte_ns_range() {
+        assert_eq!(DamageState::from_state_byte(0), Some(DamageState::Healthy { variant: 0 }));
+        assert_eq!(DamageState::from_state_byte(3), Some(DamageState::Healthy { variant: 3 }));
+        assert_eq!(DamageState::from_state_byte(5), Some(DamageState::Healthy { variant: 5 }));
+        assert_eq!(DamageState::from_state_byte(6), Some(DamageState::Damaged));
+        assert_eq!(DamageState::from_state_byte(7), Some(DamageState::PartialCollapseA));
+        assert_eq!(DamageState::from_state_byte(8), Some(DamageState::PartialCollapseB));
+    }
+
+    #[test]
+    fn damage_state_from_byte_ew_range() {
+        assert_eq!(DamageState::from_state_byte(9), Some(DamageState::Healthy { variant: 0 }));
+        assert_eq!(DamageState::from_state_byte(14), Some(DamageState::Healthy { variant: 5 }));
+        assert_eq!(DamageState::from_state_byte(0xF), Some(DamageState::Damaged));
+        assert_eq!(DamageState::from_state_byte(0x10), Some(DamageState::PartialCollapseB));
+        assert_eq!(DamageState::from_state_byte(0x11), Some(DamageState::PartialCollapseA));
+    }
+
+    #[test]
+    fn damage_state_from_byte_out_of_range_returns_none() {
+        assert_eq!(DamageState::from_state_byte(0x12), None);
+        assert_eq!(DamageState::from_state_byte(0xFF), None);
+    }
+
+    #[test]
+    fn damage_state_round_trip_for_each_variant_per_axis() {
+        // For every (axis × variant) pair where Destroyed is excluded (it's the
+        // ambiguous post-collapse state).
+        for axis in [Axis::NS, Axis::EW] {
+            for state in [
+                DamageState::Healthy { variant: 0 },
+                DamageState::Healthy { variant: 5 },
+                DamageState::Damaged,
+                DamageState::PartialCollapseA,
+                DamageState::PartialCollapseB,
+            ] {
+                let byte = state.to_state_byte(axis);
+                let decoded = DamageState::from_state_byte(byte)
+                    .expect("decode succeeds for byte produced by encode");
+                assert_eq!(decoded, state, "round-trip {state:?} via {axis:?}");
+            }
+        }
     }
 }
