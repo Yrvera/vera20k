@@ -22,6 +22,7 @@ pub(crate) mod combat_aoe;
 mod combat_fire_gate;
 pub(crate) mod combat_targeting;
 pub(crate) mod combat_weapon;
+pub mod smudge_dispatch;
 
 #[cfg(test)]
 #[path = "combat_tests.rs"]
@@ -342,6 +343,35 @@ pub struct ExplosionEffect {
     pub z: u8,
 }
 
+/// A deferred smudge spawn request emitted from combat death-handling.
+/// Drained in `Simulation::advance_tick` after combat resolves but before
+/// the ore-growth tick stage so that crater-path `Reduce_Tiberium(6)`
+/// land before ore-growth reads tiberium density.
+#[derive(Debug, Clone)]
+pub enum SmudgeSpawnRequest {
+    /// Emitted alongside ExplosionEffect when a warhead's AnimList anim spawns.
+    /// Carries the anim's interned SHP name for AnimType flag lookup.
+    Anim {
+        anim_name: InternedId,
+        rx: u16,
+        ry: u16,
+        z: i32,
+    },
+    /// Emitted once per >=2x2 building destruction (DestructionEffects path).
+    BuildingCenter {
+        rx: u16,
+        ry: u16,
+        building_z: i32,
+        foundation_w: u8,
+        foundation_h: u8,
+    },
+    /// Emitted per surviving foundation cell (SpawnSurvivors path).
+    BuildingSurvivor {
+        cell_rx: u16,
+        cell_ry: u16,
+    },
+}
+
 /// Result of a combat tick: reveal events + stable IDs of despawned entities.
 pub struct CombatTickResult {
     pub reveal_events: Vec<RevealEvent>,
@@ -363,6 +393,9 @@ pub struct CombatTickResult {
     pub destroyed_garrison_buildings: Vec<DestroyedGarrisonBuilding>,
     /// Explosion animations to spawn at death/impact locations.
     pub explosion_effects: Vec<ExplosionEffect>,
+    /// Smudge spawn requests collected during death-handling. Drained by
+    /// `Simulation::advance_tick` between combat and ore-growth.
+    pub smudge_spawn_requests: Vec<SmudgeSpawnRequest>,
 }
 
 /// Look up death weapon AoE data from an ObjectType.
@@ -397,6 +430,7 @@ struct DeathEffects {
     bridge_damage_events: Vec<BridgeDamageEvent>,
     wall_damage_events: Vec<WallDamageEvent>,
     death_sounds: Vec<(InternedId, u16, u16)>,
+    smudge_spawn_requests: Vec<SmudgeSpawnRequest>,
 }
 
 /// Process all entity deaths for this tick: death weapons, passengers, explosions, despawn.
@@ -424,6 +458,7 @@ fn handle_entity_deaths(
     let mut explosion_effects: Vec<ExplosionEffect> = Vec::new();
     let mut bridge_damage_events: Vec<BridgeDamageEvent> = Vec::new();
     let mut wall_damage_events: Vec<WallDamageEvent> = Vec::new();
+    let mut smudge_spawn_requests: Vec<SmudgeSpawnRequest> = Vec::new();
     let mut structure_destroyed: bool = false;
     // Step size for selecting explosion anim from AnimList (damage / 25).
     const ANIM_LIST_DAMAGE_STEP: u16 = 25;
@@ -537,12 +572,46 @@ fn handle_entity_deaths(
                 if !wh.anim_list.is_empty() {
                     let idx = (*dmg / ANIM_LIST_DAMAGE_STEP) as usize;
                     let idx = idx.min(wh.anim_list.len() - 1);
+                    let interned_name = interner.intern(&wh.anim_list[idx]);
                     explosion_effects.push(ExplosionEffect {
-                        shp_name: interner.intern(&wh.anim_list[idx]),
+                        shp_name: interned_name,
                         rx,
                         ry,
                         z,
                     });
+                    smudge_spawn_requests.push(SmudgeSpawnRequest::Anim {
+                        anim_name: interned_name,
+                        rx,
+                        ry,
+                        z: z as i32,
+                    });
+                }
+            }
+
+            // Building-destruction smudges: emit one BuildingCenter event plus
+            // one BuildingSurvivor event per foundation cell. Drained by
+            // `Simulation::advance_tick` (Task 13.5) to write into SmudgeGrid.
+            if category == EntityCategory::Structure {
+                let foundation = rules
+                    .object(interner.resolve(type_id))
+                    .map(|obj| foundation_dimensions(&obj.foundation))
+                    .unwrap_or((1, 1));
+                let foundation_w = foundation.0 as u8;
+                let foundation_h = foundation.1 as u8;
+                smudge_spawn_requests.push(SmudgeSpawnRequest::BuildingCenter {
+                    rx,
+                    ry,
+                    building_z: z as i32,
+                    foundation_w,
+                    foundation_h,
+                });
+                for dy in 0..foundation_h as u16 {
+                    for dx in 0..foundation_w as u16 {
+                        smudge_spawn_requests.push(SmudgeSpawnRequest::BuildingSurvivor {
+                            cell_rx: rx + dx,
+                            cell_ry: ry + dy,
+                        });
+                    }
                 }
             }
 
@@ -645,6 +714,7 @@ fn handle_entity_deaths(
         bridge_damage_events,
         wall_damage_events,
         death_sounds,
+        smudge_spawn_requests,
     }
 }
 
@@ -726,6 +796,7 @@ pub fn tick_combat_with_fog(
             destroyed_crewed_buildings: Vec::new(),
             destroyed_garrison_buildings: Vec::new(),
             explosion_effects: Vec::new(),
+            smudge_spawn_requests: Vec::new(),
         };
     }
     // Pre-scan: collect entities blocked from firing by locomotor or power state.
@@ -1474,6 +1545,7 @@ pub fn tick_combat_with_fog(
         destroyed_crewed_buildings: death.destroyed_crewed_buildings,
         destroyed_garrison_buildings: death.destroyed_garrison_buildings,
         explosion_effects: death.explosion_effects,
+        smudge_spawn_requests: death.smudge_spawn_requests,
     }
 }
 

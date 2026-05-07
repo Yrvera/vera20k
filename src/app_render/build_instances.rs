@@ -32,6 +32,8 @@ use crate::sidebar::SidebarView;
 pub(super) struct WorldInstances {
     pub terrain: terrain::TerrainInstances,
     pub overlay: Vec<SpriteInstance>,
+    /// Static smudge decals (craters, scorches) — drawn between terrain and entities.
+    pub smudge: Vec<SpriteInstance>,
     pub bridge_detail: Vec<SpriteInstance>,
     pub bridge_body: Vec<SpriteInstance>,
     pub wall: Vec<SpriteInstance>,
@@ -167,6 +169,12 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     sort_by_depth_desc(&mut bridge_body);
     sort_by_depth_desc(&mut wall);
 
+    // Smudges: static crater/scorch decals on top of terrain, under entities.
+    // Atlas registration for SmudgeType SHPs is a deferred follow-up; until it
+    // lands the lookup closure returns None and `smudge` stays empty. The
+    // pipeline plumbing (build → upload → draw) is wired regardless.
+    let smudge: Vec<SpriteInstance> = build_smudge_instances(state, sw, sh);
+
     // SHP sprites: buildings, infantry, effects — paged across sprite atlas pages.
     let shp_page_count: usize = state
         .sprite_atlas
@@ -226,6 +234,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     WorldInstances {
         terrain,
         overlay,
+        smudge,
         bridge_detail,
         bridge_body,
         wall,
@@ -235,6 +244,56 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         bridge_shp_paged,
         building_turret,
     }
+}
+
+/// Build static smudge decal instances for the current frame.
+///
+/// Pulls the SmudgeGrid + SmudgeTypeRegistry from the active simulation and
+/// hands them to `render::smudge::build_visible_instances` along with a
+/// closure that resolves SmudgeType id + frame index to atlas UVs.
+///
+/// Until the SmudgeType atlas registration lands as a follow-up, the closure
+/// always returns `None`, so this function returns an empty Vec. The pipeline
+/// (build → upload → draw) is wired end-to-end so adding the atlas in a later
+/// task is the only change required to make smudges visible.
+fn build_smudge_instances(state: &AppState, sw: f32, sh: f32) -> Vec<SpriteInstance> {
+    let (sim, rules) = match (&state.simulation, &state.rules) {
+        (Some(s), Some(r)) => (s, r),
+        _ => return Vec::new(),
+    };
+    let Some(grid) = sim.smudge_grid.as_ref() else {
+        return Vec::new();
+    };
+    let Some(atlas) = state.overlay_atlas.as_ref() else {
+        return Vec::new();
+    };
+    // Resolve (smudge_type_id, frame_offset) → atlas placement.
+    // Smudge SHPs are registered into the OverlayAtlas under
+    // `crate::render::overlay_atlas::SMUDGE_KEY_PREFIX` at map-load time
+    // (see render/overlay_atlas.rs render_smudge_sprite). Frame is always 0
+    // because gamemd draws every footprint cell with frame 0 and shifts
+    // screen position back to footprint origin — render-side handles the
+    // shift cancellation by skipping non-origin cells inside
+    // build_visible_instances.
+    let lookup = |type_id: u16, _frame: u8| -> Option<TilePlacement> {
+        let def = rules.smudge_types.get(type_id)?;
+        let entry = atlas.get(&crate::render::overlay_atlas::smudge_key(&def.name))?;
+        Some(TilePlacement {
+            uv_origin: entry.uv_origin,
+            uv_size: entry.uv_size,
+            pixel_size: entry.pixel_size,
+            draw_offset: [entry.offset_x, entry.offset_y],
+        })
+    };
+    crate::render::smudge::build_visible_instances(
+        grid,
+        &rules.smudge_types,
+        &lookup,
+        state.camera_x,
+        state.camera_y,
+        sw,
+        sh,
+    )
 }
 
 // ---------------------------------------------------------------------------

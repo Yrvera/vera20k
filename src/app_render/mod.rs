@@ -138,6 +138,9 @@ fn upload_to_gpu(
     pool.upload(&state.gpu, "overlay_bridge_detail", &world.bridge_detail);
     pool.upload(&state.gpu, "overlay_bridge_body", &world.bridge_body);
     pool.upload(&state.gpu, "overlay_wall", &world.wall);
+    // Smudges: drawn after overlays, before bridge entities. Empty until the
+    // SmudgeType SHP atlas registration follow-up lands.
+    pool.upload(&state.gpu, "smudge", &world.smudge);
 
     // Entities (VXL + SHP)
     pool.upload(&state.gpu, "unit", &world.unit);

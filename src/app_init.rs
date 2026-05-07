@@ -259,8 +259,13 @@ pub fn load_map(
         Some((reg, ini)) => (Some(reg), Some(ini)),
         None => (None, None),
     };
-    if let (Some(r), Some(a)) = (&mut rules, &art) {
+    if let (Some(r), Some(a)) = (rules.as_mut(), art.as_ref()) {
         r.merge_art_data(a);
+        // Retain the art registry on RuleSet so dispatchers (e.g. smudge
+        // spawning) can read per-anim spawn flags via &RuleSet alone.
+        // Cloned because downstream consumers in this function still read
+        // through the `art` Option (lighting, sidebar, sim spawn, etc.).
+        r.art_registry = a.clone();
     }
     // Resolve warp animation rates from art.ini sections (e.g., [WARPOUT] Rate=120).
     if let (Some(r), Some(art_ini_file)) = (&mut rules, &art_ini) {
@@ -547,6 +552,7 @@ pub fn load_map(
             overlay_iso_palette.as_ref(),
             unit_palette.as_ref(),
             overlay_tiberium_palette.as_ref(),
+            rules.as_ref().map(|r| &r.smudge_types),
         );
 
     if let Some(sim) = &mut simulation {
@@ -589,6 +595,33 @@ pub fn load_map(
                 grid_width,
                 grid_height,
                 map_data.overlays.len(),
+            );
+        }
+        // Seed smudge grid from map [Smudge] entries. Requires terrain +
+        // overlay grids built above so placement gates (slope, overlay,
+        // accepts_smudge) can reject invalid map entries at load.
+        if let (Some(rt), Some(overlay), Some(rules_for_smudge)) = (
+            sim.resolved_terrain.as_ref(),
+            sim.overlay_grid.as_ref(),
+            rules.as_ref(),
+        ) {
+            let grid_width = rt.width();
+            let grid_height = rt.height();
+            sim.smudge_grid = Some(
+                crate::sim::smudge_grid::SmudgeGrid::from_map_entries(
+                    &map_data.smudges,
+                    &rules_for_smudge.smudge_types,
+                    rt,
+                    overlay,
+                    grid_width,
+                    grid_height,
+                ),
+            );
+            log::info!(
+                "Smudge grid initialized: {}x{}, {} entries",
+                grid_width,
+                grid_height,
+                map_data.smudges.len(),
             );
         }
         // Initialize ore growth/spread config from merged INI sources.

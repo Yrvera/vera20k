@@ -92,6 +92,20 @@ pub(super) fn dispatch_draw_passes(
         "overlay",
     );
 
+    // --- Step 3.5: Smudges (static decals: craters + scorches) ---
+    // Drawn between overlays and entities so smudges sit on top of the
+    // ground but underneath any unit or building. Uses the same passthrough
+    // overlay pipeline as ordinary overlays. Buffer is empty until the
+    // SmudgeType SHP atlas registration follow-up lands; the helper returns
+    // early when the pooled buffer has count == 0.
+    draw_pooled_passthrough_overlay(
+        &mut pass,
+        &state.batch_renderer,
+        pool,
+        state.overlay_atlas.as_ref(),
+        "smudge",
+    );
+
     // --- Step 4: Bridge entities (multi-way Y-merge) ---
     merge_passes::draw_merged_bridge_occluded_pass(
         &mut pass,

@@ -325,6 +325,7 @@ mod tests {
                 variant: 0,
                 is_rough: false,
                 is_road: false,
+                accepts_smudge: false,
                 has_ramp: false,
                 canonical_ramp: None,
                 ground_walk_blocked: on_bridge,

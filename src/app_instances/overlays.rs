@@ -586,6 +586,12 @@ pub(crate) fn build_parachute_instances(
     /// z-fighting is observed in-game.
     const CHUTE_DEPTH_EPSILON: f32 = 0.0005;
 
+    /// Vertical lift, in pixels, applied to the chute sprite so the canopy
+    /// sits above the GI's head rather than centered on the body. Tunable;
+    /// gamemd's PARACH SHP layout produces this offset implicitly through
+    /// frame-internal positioning, which our atlas doesn't replicate exactly.
+    const CHUTE_Y_LIFT: f32 = 8.0;
+
     let (sim, atlas) = match (&state.simulation, &state.sprite_atlas) {
         (Some(s), Some(a)) => (s, a),
         _ => return,
@@ -644,7 +650,7 @@ pub(crate) fn build_parachute_instances(
             continue;
         };
         let cx: f32 = gx + entry.offset_x;
-        let cy: f32 = gy + entry.offset_y;
+        let cy: f32 = gy + entry.offset_y - CHUTE_Y_LIFT;
 
         // No owner tint and no lighting tint: chutes look identical
         // regardless of dropping house, matching gamemd's AltPalette=yes

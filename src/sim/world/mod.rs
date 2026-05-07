@@ -239,6 +239,9 @@ pub struct Simulation {
     /// Per-cell mutable overlay state (ore density, wall damage, bridge frames).
     /// Seeded from map [OverlayPack] at init, mutated during gameplay.
     pub overlay_grid: Option<crate::sim::overlay_grid::OverlayGrid>,
+    /// Per-cell smudge state (craters, scorches). Seeded from map [Smudge]
+    /// entries at init, mutated by combat death-handling at runtime.
+    pub smudge_grid: Option<crate::sim::smudge_grid::SmudgeGrid>,
     /// Persistent cell occupancy — tracks what entities occupy each cell.
     /// Maintained incrementally via add/remove at spawn, move, and death sites.
     /// Rebuilt from entities on deserialization.
@@ -348,6 +351,7 @@ impl Simulation {
             resolved_terrain: None,
             bridge_state: None,
             overlay_grid: None,
+            smudge_grid: None,
             occupancy: OccupancyGrid::new(),
             bridge_explosions: Vec::new(),
             radar_events: RadarEventQueue::default(),
@@ -1406,6 +1410,31 @@ impl Simulation {
                 self.radar_events
                     .push(RadarEventType::Combat, ev.rx, ev.ry, event_dur);
             }
+            // Drain combat-emitted smudge spawn requests before any tick stage
+            // that reads tiberium density (ore-growth, repairs that touch
+            // resource nodes). Ledger #6: crater-path Reduce_Tiberium(6) must
+            // land before ore-growth reads density. Skipped when the optional
+            // grids/path_grid aren't bound (headless tests, no map loaded).
+            if let (Some(smudge_grid), Some(overlay), Some(terrain), Some(pg)) = (
+                self.smudge_grid.as_mut(),
+                self.overlay_grid.as_ref(),
+                self.resolved_terrain.as_ref(),
+                path_grid,
+            ) {
+                crate::sim::combat::smudge_dispatch::drain_smudge_spawn_requests(
+                    &combat_result.smudge_spawn_requests,
+                    &rules.art_registry,
+                    &rules.smudge_types,
+                    &self.interner,
+                    smudge_grid,
+                    overlay,
+                    &self.occupancy,
+                    terrain,
+                    pg,
+                    &mut self.production.resource_nodes,
+                    &mut self.rng,
+                );
+            }
             // --- Phase 5.5: ParticleSystems ---
             // DEPENDS ON: combat (gas/fire damage spawned this tick).
             // PRODUCES: damage applied via gas/fire particles, must be visible to phase 6 retaliation.
@@ -1539,3 +1568,7 @@ impl Simulation {
 #[cfg(test)]
 #[path = "world_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "smudge_integration_tests.rs"]
+mod smudge_integration_tests;

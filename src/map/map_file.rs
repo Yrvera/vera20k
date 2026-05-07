@@ -117,6 +117,18 @@ pub struct MapHeader {
     pub local_height: u32,
 }
 
+/// A pre-placed smudge entry from the map's `[Smudge]` section.
+///
+/// Parsed format: `Key=TYPENAME,X,Y,IsBaked`.
+/// Entries with `IsBaked != 0` are SKIPPED at parse time (they represent
+/// smudges already baked into the underlying tile graphic).
+#[derive(Debug, Clone)]
+pub struct MapSmudgeEntry {
+    pub type_name: String,
+    pub rx: u16,
+    pub ry: u16,
+}
+
 /// A single isometric terrain cell from IsoMapPack5.
 ///
 /// Layout per ModEnc + FinalAlert2 source: 11 bytes total.
@@ -152,6 +164,9 @@ pub struct MapFile {
     pub entities: Vec<MapEntity>,
     /// Overlay objects from [OverlayPack] + [OverlayDataPack] (ore, walls, fences, etc.).
     pub overlays: Vec<OverlayEntry>,
+    /// Pre-placed smudges from the map's `[Smudge]` section.
+    /// `IsBaked != 0` entries are filtered at parse time.
+    pub smudges: Vec<MapSmudgeEntry>,
     /// Terrain objects from [Terrain] section (trees, cacti, rocks).
     pub terrain_objects: Vec<TerrainObject>,
     /// Waypoint index -> cell coordinate mapping from [Waypoints].
@@ -189,6 +204,7 @@ impl MapFile {
         let entities: Vec<MapEntity> = entities::parse_map_entities(&ini);
         let overlays: Vec<OverlayEntry> = overlay::parse_overlays(&ini);
         let terrain_objects: Vec<TerrainObject> = overlay::parse_terrain_objects(&ini);
+        let smudges: Vec<MapSmudgeEntry> = parse_map_smudges(&ini);
         let waypoints: HashMap<u32, Waypoint> = waypoints::parse_waypoints(&ini);
         let cell_tags: CellTagMap = cell_tags::parse_cell_tags(&ini);
         let tags: TagMap = tags::parse_tags(&ini);
@@ -206,6 +222,7 @@ impl MapFile {
             cells,
             entities,
             overlays,
+            smudges,
             terrain_objects,
             waypoints,
             cell_tags,
@@ -364,6 +381,90 @@ fn parse_iso_map_pack(ini: &IniFile) -> Result<Vec<MapCell>, MapError> {
     }
 
     Ok(cells)
+}
+
+/// Parse pre-placed smudges from the map's `[Smudge]` section.
+///
+/// Section uses numbered keys: `0=TYPENAME,X,Y,IsBaked`. Entries with
+/// `IsBaked != 0` are skipped (they're baked into the terrain graphic and
+/// shouldn't be re-instantiated as runtime smudges).
+fn parse_map_smudges(ini: &IniFile) -> Vec<MapSmudgeEntry> {
+    let Some(section) = ini.section("Smudge") else {
+        return Vec::new();
+    };
+    let mut out: Vec<MapSmudgeEntry> = Vec::new();
+    for value in section.get_values() {
+        let parts: Vec<&str> = value.split(',').map(|s| s.trim()).collect();
+        if parts.len() < 4 {
+            continue;
+        }
+        let is_baked: i32 = parts[3].parse::<i32>().unwrap_or(0);
+        if is_baked != 0 {
+            continue;
+        }
+        let rx: u16 = match parts[1].parse::<u16>() {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let ry: u16 = match parts[2].parse::<u16>() {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        out.push(MapSmudgeEntry {
+            type_name: parts[0].to_uppercase(),
+            rx,
+            ry,
+        });
+    }
+    out
+}
+
+#[cfg(test)]
+mod smudge_parse_tests {
+    use super::*;
+
+    #[test]
+    fn parses_smudge_section_skips_isbaked_nonzero() {
+        let ini = IniFile::from_bytes(
+            b"[Smudge]\n\
+              0=CR1,5,6,0\n\
+              1=BURN01,7,8,1\n\
+              2=CR2,9,10,0\n",
+        )
+        .unwrap();
+        let smudges = parse_map_smudges(&ini);
+        assert_eq!(smudges.len(), 2);
+        assert_eq!(smudges[0].type_name, "CR1");
+        assert_eq!(smudges[0].rx, 5);
+        assert_eq!(smudges[0].ry, 6);
+        assert_eq!(smudges[1].type_name, "CR2");
+    }
+
+    #[test]
+    fn handles_missing_section() {
+        let ini = IniFile::from_bytes(b"[Other]\nFoo=Bar\n").unwrap();
+        let smudges = parse_map_smudges(&ini);
+        assert!(smudges.is_empty());
+    }
+
+    #[test]
+    fn rejects_malformed_entries() {
+        let ini = IniFile::from_bytes(
+            b"[Smudge]\n\
+              0=CR1,5,6\n\
+              1=,5,6,0\n\
+              2=CR1,X,6,0\n\
+              3=CR1,5,6,0\n",
+        )
+        .unwrap();
+        let smudges = parse_map_smudges(&ini);
+        // Only entry 3 fully valid; entry 1 has empty type_name (kept as "" — uppercase of empty).
+        // Entry 0 fails (only 3 parts), entry 2 fails (X not a number).
+        // Entry 1: empty type_name accepted by parser but won't resolve to a registered SmudgeType later.
+        assert_eq!(smudges.len(), 2);
+        assert_eq!(smudges[0].type_name, "");
+        assert_eq!(smudges[1].type_name, "CR1");
+    }
 }
 
 #[cfg(test)]

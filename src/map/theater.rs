@@ -132,6 +132,9 @@ pub struct TilesetLookup {
     /// Tileset index → SetName from theater INI (e.g., "Water", "Cliffs", "Grass").
     /// Used to classify tiles for walkability (water/cliff detection).
     set_names: Vec<String>,
+    /// Per-tileset Morphable= flag — parsed from `[TileSetNNNN] Morphable=`.
+    /// Default `false`. Smudges only place on cells whose tileset is morphable.
+    morphable_flags: Vec<bool>,
 }
 
 impl TilesetLookup {
@@ -223,6 +226,19 @@ impl TilesetLookup {
             false
         }
     }
+
+    /// Returns true if a tile_id belongs to a tileset with `Morphable=yes`.
+    /// Smudges (craters, scorches) only place on morphable tiles.
+    pub fn is_morphable(&self, tile_id: u16) -> bool {
+        let idx: u16 = match self.tileset_index(tile_id) {
+            Some(i) => i,
+            None => return false,
+        };
+        self.morphable_flags
+            .get(idx as usize)
+            .copied()
+            .unwrap_or(false)
+    }
 }
 
 /// Parse a theater INI file into a TilesetLookup.
@@ -238,6 +254,7 @@ pub fn parse_tileset_ini(ini_data: &[u8], extension: &str) -> Result<TilesetLook
     let mut variant_filenames: Vec<Vec<String>> = Vec::new();
     let mut tileset_bounds: Vec<TilesetBounds> = Vec::new();
     let mut set_names: Vec<String> = Vec::new();
+    let mut morphable_flags: Vec<bool> = Vec::new();
 
     // Iterate tileset sections in numerical order: TileSet0000, TileSet0001, ...
     for idx in 0..10000u32 {
@@ -260,6 +277,8 @@ pub fn parse_tileset_ini(ini_data: &[u8], extension: &str) -> Result<TilesetLook
             count: tiles_in_set as u16,
         });
         set_names.push(set_name.to_string());
+        let morphable: bool = section.get_bool("Morphable").unwrap_or(false);
+        morphable_flags.push(morphable);
 
         // Diagnostic: log ALL tileset raw TilesInSet values for debugging.
         log::debug!(
@@ -327,6 +346,7 @@ pub fn parse_tileset_ini(ini_data: &[u8], extension: &str) -> Result<TilesetLook
         variant_filenames,
         tileset_bounds,
         set_names,
+        morphable_flags,
     })
 }
 

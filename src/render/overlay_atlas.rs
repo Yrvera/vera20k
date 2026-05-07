@@ -30,6 +30,27 @@ use crate::rules::ini_parser::IniFile;
 /// Padding between sprites in the atlas to prevent texture bleeding.
 const SPRITE_PADDING: u32 = 1;
 
+/// Namespace prefix for smudge atlas keys.
+///
+/// Smudges share the OverlayAtlas (single texture, single bind group) but are
+/// keyed under this prefix so a SmudgeType named `CRATER01` cannot collide
+/// with an overlay named `CRATER01` (modded content is the realistic
+/// concern). All smudge insertions and lookups MUST go through `smudge_key()`
+/// so the prefix can never drift between sides.
+pub const SMUDGE_KEY_PREFIX: &str = "__smudge::";
+
+/// Build the canonical OverlayAtlas key for a smudge SHP.
+///
+/// Frame is always 0 — the per-cell draw of every multi-cell smudge footprint
+/// uses frame 0; the cell offset within W×H is a screen-position shift, not a
+/// frame index.
+pub fn smudge_key(name: &str) -> OverlaySpriteKey {
+    OverlaySpriteKey {
+        name: format!("{}{}", SMUDGE_KEY_PREFIX, name.to_uppercase()),
+        frame: 0,
+    }
+}
+
 /// Cache key: unique combination of overlay name and frame index.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct OverlaySpriteKey {
@@ -111,6 +132,7 @@ pub fn build_overlay_atlas(
     overlay_registry: &OverlayTypeRegistry,
     rules_ini: &IniFile,
     art_registry: &ArtRegistry,
+    smudge_types: Option<&crate::rules::smudge_type::SmudgeTypeRegistry>,
 ) -> Option<OverlayAtlas> {
     // Collect unique (name, frame) pairs from overlays.
     let mut needed: HashSet<OverlaySpriteKey> = HashSet::new();
@@ -280,6 +302,47 @@ pub fn build_overlay_atlas(
         load_fail_count,
         needed.len()
     );
+
+    // --- Smudge SHPs ---
+    // Smudges share this atlas (single texture / single bind group) but are
+    // keyed under SMUDGE_KEY_PREFIX to keep the namespace collision-free with
+    // overlays. Rendered with the iso theater palette to match the world pass
+    // shading (smudges draw between terrain and overlays in the same pass).
+    let mut smudge_rendered_count: u32 = 0;
+    let mut smudge_failed_count: u32 = 0;
+    if let Some(smudge_reg) = smudge_types {
+        for (_id, def) in smudge_reg.iter_with_id() {
+            let file_basename: &str = def.image_name.as_deref().unwrap_or(&def.name);
+            match render_smudge_sprite(
+                asset_manager,
+                theater_palette,
+                &def.name,
+                file_basename,
+                theater_ext,
+            ) {
+                Some(sprite) => {
+                    rendered.push(sprite);
+                    smudge_rendered_count += 1;
+                }
+                None => {
+                    smudge_failed_count += 1;
+                    let candidates: Vec<String> =
+                        smudge_shp_candidates(file_basename, theater_ext);
+                    log::debug!(
+                        "Smudge sprite not found: name={} (tried: {:?})",
+                        def.name,
+                        candidates,
+                    );
+                }
+            }
+        }
+        log::info!(
+            "Smudge sprites: {} rendered, {} failed (of {} types)",
+            smudge_rendered_count,
+            smudge_failed_count,
+            smudge_reg.len(),
+        );
+    }
 
     if rendered.is_empty() {
         return None;
@@ -490,6 +553,22 @@ fn decrement_numeric_suffix(name: &str) -> Option<String> {
     Some(format!("{}{:0width$}", prefix, n - 1, width = width))
 }
 
+/// Build the candidate SHP filename list for a SmudgeType.
+///
+/// Theater-extension first, then `.shp` fallback. Lowercase variants too —
+/// asset_manager treats names case-sensitively in some code paths, and SHP
+/// files in retail mix archives are lowercase.
+fn smudge_shp_candidates(name: &str, theater_ext: &str) -> Vec<String> {
+    let upper = name.to_string();
+    let lower = name.to_ascii_lowercase();
+    vec![
+        format!("{}.{}", lower, theater_ext),
+        format!("{}.shp", lower),
+        format!("{}.{}", upper, theater_ext),
+        format!("{}.shp", upper),
+    ]
+}
+
 fn forced_tiberium_image_name() -> Option<&'static str> {
     static FORCED: OnceLock<Option<String>> = OnceLock::new();
     FORCED
@@ -648,6 +727,95 @@ fn probe_terrain_shp_frame_count(
         return normal;
     }
     1
+}
+
+/// Load and render a single SmudgeType SHP frame 0 to RGBA pixels.
+///
+/// Smudges always render with the iso theater palette and use a
+/// `(-full_w/2, -full_h/2)` anchor centered on the footprint-origin cell.
+/// Multi-cell SmudgeTypes have a single composite SHP frame whose internal
+/// `frame_x`/`frame_y` already places the visual correctly relative to the
+/// canvas center.
+fn render_smudge_sprite(
+    asset_manager: &AssetManager,
+    palette: &Palette,
+    key_name: &str,
+    file_basename: &str,
+    theater_ext: &str,
+) -> Option<RenderedOverlay> {
+    let candidates: Vec<String> = smudge_shp_candidates(file_basename, theater_ext);
+
+    let mut found_name: String = String::new();
+    let mut shp_opt: Option<ShpFile> = None;
+    for candidate in &candidates {
+        let Some(data) = asset_manager.get_ref(candidate) else {
+            continue;
+        };
+        let Ok(shp) = ShpFile::from_bytes(data) else {
+            continue;
+        };
+        let has_drawable = shp
+            .frames
+            .iter()
+            .any(|fr| fr.frame_width > 0 && fr.frame_height > 0);
+        if !has_drawable {
+            continue;
+        }
+        found_name = candidate.clone();
+        shp_opt = Some(shp);
+        break;
+    }
+    let shp: ShpFile = shp_opt?;
+    log::trace!("Smudge sprite {} uses {}", key_name, found_name);
+
+    if shp.frames.is_empty() {
+        return None;
+    }
+    let frame = &shp.frames[0];
+    if frame.frame_width == 0 || frame.frame_height == 0 {
+        return None;
+    }
+
+    let frame_rgba: Vec<u8> = match shp.frame_to_rgba(0, palette) {
+        Ok(rgba) => rgba,
+        Err(_) => return None,
+    };
+
+    let full_w: u32 = shp.width as u32;
+    let full_h: u32 = shp.height as u32;
+    let mut full_rgba: Vec<u8> = vec![0u8; (full_w * full_h * 4) as usize];
+
+    let fw: u32 = frame.frame_width as u32;
+    let fh: u32 = frame.frame_height as u32;
+    let fx: u32 = frame.frame_x as u32;
+    let fy: u32 = frame.frame_y as u32;
+
+    for y in 0..fh {
+        let dst_y: u32 = fy + y;
+        if dst_y >= full_h {
+            break;
+        }
+        let src_off: usize = (y * fw * 4) as usize;
+        let copy_w: u32 = fw.min(full_w.saturating_sub(fx));
+        let dst_off: usize = ((dst_y * full_w + fx) * 4) as usize;
+        let bytes: usize = (copy_w * 4) as usize;
+        if src_off + bytes <= frame_rgba.len() && dst_off + bytes <= full_rgba.len() {
+            full_rgba[dst_off..dst_off + bytes]
+                .copy_from_slice(&frame_rgba[src_off..src_off + bytes]);
+        }
+    }
+
+    let offset_x: f32 = -(full_w as f32) / 2.0;
+    let offset_y: f32 = -(full_h as f32) / 2.0;
+
+    Some(RenderedOverlay {
+        key: smudge_key(key_name),
+        rgba: full_rgba,
+        width: full_w,
+        height: full_h,
+        offset_x,
+        offset_y,
+    })
 }
 
 #[cfg(test)]

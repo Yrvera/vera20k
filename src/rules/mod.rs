@@ -31,6 +31,7 @@ pub mod projectile_type;
 pub mod radar_event_config;
 pub mod ruleset;
 pub mod shp_vehicle_sequence;
+pub mod smudge_type;
 pub mod sound_ini;
 pub mod superweapon_type;
 pub mod terrain_object_type;
