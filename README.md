@@ -1,6 +1,6 @@
 # VERA20k
 
-[![Discord](https://img.shields.io/badge/Discord-Join%20Server-5865F2?logo=discord&logoColor=white)](https://discord.gg/4jTp4VcdY)![PRs Welcome](https://img.shields.io/badge/PRs-welcome-blue.svg)[![Docs](https://img.shields.io/badge/Docs-GitHub%20Pages-blue)](https://hrusten.github.io/vera20k/)
+[![Discord](https://img.shields.io/badge/Discord-Join%20Server-5865F2?logo=discord&logoColor=white)](https://discord.gg/4jTp4VcdY)![PRs Welcome](https://img.shields.io/badge/PRs-welcome-blue.svg)[![Docs](https://img.shields.io/badge/Docs-GitHub%20Pages-blue)](https://yrvera.github.io/vera20k/)
 
 **Early development**
 
@@ -42,7 +42,7 @@ Offer known old and new rts feautures never seen before to enhance the cnc ra2 e
 
 1. Clone the repo:
    ```
-   git clone https://github.com/hrusten/vera20k.git
+   git clone https://github.com/yrvera/vera20k.git
    cd vera20k
    ```
 
@@ -59,7 +59,7 @@ Offer known old and new rts feautures never seen before to enhance the cnc ra2 e
 
 ## Contributing
 
-Read the [architecture overview](https://hrusten.github.io/vera20k/) before diving in.
+Read the [architecture overview](https://yrvera.github.io/vera20k/) before diving in.
 
 1. Fork the repo
 2. Create a feature branch (`git checkout -b feature/my-feature`)
