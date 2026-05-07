@@ -28,6 +28,10 @@ pub mod smudge_dispatch;
 #[path = "combat_tests.rs"]
 mod combat_tests;
 
+#[cfg(test)]
+#[path = "combat_force_fire_cell_tests.rs"]
+mod combat_force_fire_cell_tests;
+
 use std::collections::BTreeMap;
 
 use crate::sim::miner::ResourceNode;
@@ -128,16 +132,29 @@ pub(crate) fn apply_prone_damage_modifier(
     scaled.clamp(0, u16::MAX as i32) as u16
 }
 
-/// Component: this entity is attacking a specific target entity.
+/// What an `AttackTarget` is pointing at — an entity or a ground cell.
 ///
-/// Attached by `issue_attack_command()`. The combat system fires the
-/// attacker's weapon at the target each tick. Supports burst firing:
+/// Force-fire on empty terrain (Ctrl + click cell) sets the `Cell` variant.
+/// Auto-acquired and explicit attack-on-unit orders set `Entity`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum TargetKind {
+    /// Entity-targeted attack (normal Attack / ForceAttack on a unit/building).
+    Entity(u64),
+    /// Ground-targeted attack (force-fire on a cell). Cell coord in map space.
+    Cell(u16, u16),
+}
+
+/// Component: this entity is attacking a specific target.
+///
+/// Attached by `issue_attack_command()` (entity targets) or
+/// `issue_attack_cell_command()` (cell targets). The combat system fires the
+/// attacker's weapon at the resolved target each tick. Supports burst firing:
 /// multiple rapid shots per attack cycle, with ROF cooldown only after
 /// the full burst completes.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AttackTarget {
-    /// Stable entity ID of the target being attacked.
-    pub target: u64,
+    /// What this attacker is firing at: an entity or a ground cell (force-fire).
+    pub target: TargetKind,
     /// Simulation ticks remaining before the next shot (ROF cooldown).
     pub cooldown_ticks: u16,
     /// Shots remaining in the current burst. When this reaches 0, ROF cooldown starts.
@@ -151,10 +168,20 @@ pub struct AttackTarget {
 const BURST_INTER_SHOT_DELAY: u8 = 1;
 
 impl AttackTarget {
-    /// Create a new AttackTarget with zero cooldown and no burst state.
+    /// Entity-targeted attack: fire at a specific entity by stable ID.
     pub fn new(target_stable_id: u64) -> Self {
         Self {
-            target: target_stable_id,
+            target: TargetKind::Entity(target_stable_id),
+            cooldown_ticks: 0,
+            burst_remaining: 0,
+            burst_delay_ticks: 0,
+        }
+    }
+
+    /// Ground-targeted attack: fire at a specific cell coord (force-fire on terrain).
+    pub fn for_cell(rx: u16, ry: u16) -> Self {
+        Self {
+            target: TargetKind::Cell(rx, ry),
             cooldown_ticks: 0,
             burst_remaining: 0,
             burst_delay_ticks: 0,
@@ -201,6 +228,34 @@ fn target_coords(
     }
 
     (rx, ry, sub_x, sub_y)
+}
+
+/// Compute lepton-precise coordinates for a cell target (force-fire on terrain).
+///
+/// Cell-center convention: leptons = `cell_index * 256 + 128`. Returns the
+/// shape `target_coords` returns for entities (rx, ry, sub_x, sub_y) so
+/// callers can branch on `TargetKind` and feed the result into the same
+/// projectile-spawn pipeline.
+fn cell_center_coords(rx: u16, ry: u16) -> (u16, u16, SimFixed, SimFixed) {
+    (rx, ry, SimFixed::from_num(128), SimFixed::from_num(128))
+}
+
+/// Resolve target coords from a `TargetKind`, looking up entity position when
+/// needed and using cell-center for `Cell` targets.
+///
+/// Returns `None` if the target is `Entity(id)` and the entity no longer
+/// exists (despawned). `Cell` targets always resolve.
+#[allow(dead_code)] // Used by aircraft refactor (Task 5); also useful for future combat tick rewrites.
+fn resolve_target_coords(
+    target: &TargetKind,
+    entities: &EntityStore,
+    rules: Option<&RuleSet>,
+    interner: &StringInterner,
+) -> Option<(u16, u16, SimFixed, SimFixed)> {
+    match *target {
+        TargetKind::Entity(id) => entities.get(id).map(|t| target_coords(t, rules, interner)),
+        TargetKind::Cell(rx, ry) => Some(cell_center_coords(rx, ry)),
+    }
 }
 
 /// Issue an attack command: make `attacker` fire at `target`.
@@ -263,6 +318,75 @@ pub fn issue_attack_command(
     // Attach the attack target using stable ID (fire immediately).
     attacker.attack_target = Some(AttackTarget::new(target_id));
 
+    true
+}
+
+/// Issue a force-fire-on-cell command: make `attacker` fire at a ground cell.
+///
+/// Used by `Command::ForceAttackCell` (Ctrl + left-click on empty terrain).
+/// Aborts (returns `false`) if the attacker has no weapon — caller filters
+/// unarmed units client-side, but this defensive check keeps a stray command
+/// from corrupting state.
+pub fn issue_attack_cell_command(
+    entities: &mut EntityStore,
+    attacker_id: u64,
+    target_rx: u16,
+    target_ry: u16,
+    rules: Option<&RuleSet>,
+    interner: &StringInterner,
+) -> bool {
+    // Read attacker position + weapon presence before mutable borrow.
+    let attacker_info = entities.get(attacker_id).map(|a| {
+        let type_str = interner.resolve(a.type_ref);
+        let has_weapon = rules
+            .and_then(|r| r.object(type_str))
+            .is_some_and(|obj| obj.primary.is_some() || obj.secondary.is_some());
+        (
+            a.position.rx,
+            a.position.ry,
+            a.position.sub_x,
+            a.position.sub_y,
+            a.turret_facing.is_some(),
+            has_weapon,
+        )
+    });
+    let (arx, ary, asx, asy, has_turret, has_weapon) = match attacker_info {
+        Some(info) => info,
+        None => return false,
+    };
+
+    if !has_weapon {
+        // Defensive: client-side filter should have routed this to Move.
+        // Warn-log so the desync is visible rather than silent.
+        log::warn!(
+            "ForceAttackCell rejected for unarmed attacker {} (target cell {},{})",
+            attacker_id,
+            target_rx,
+            target_ry
+        );
+        return false;
+    }
+
+    let (trx, try_, tsx, tsy) = cell_center_coords(target_rx, target_ry);
+
+    let attacker = match entities.get_mut(attacker_id) {
+        Some(a) => a,
+        None => return false,
+    };
+
+    if has_turret {
+        let desired_u16 = crate::sim::movement::turret::facing_toward_lepton(
+            arx, ary, asx, asy, trx, try_, tsx, tsy,
+        );
+        attacker.turret_facing = Some(desired_u16);
+    } else {
+        let dx: i32 = trx as i32 - arx as i32;
+        let dy: i32 = try_ as i32 - ary as i32;
+        attacker.facing = crate::sim::movement::facing_from_delta(dx, dy);
+    }
+
+    attacker.movement_target = None;
+    attacker.attack_target = Some(AttackTarget::for_cell(target_rx, target_ry));
     true
 }
 
@@ -723,10 +847,11 @@ fn clear_targets_on_dead_entity(entities: &mut EntityStore, dead_id: u64) {
     let keys: Vec<u64> = entities.keys_sorted();
     for &eid in &keys {
         if let Some(entity) = entities.get_mut(eid) {
+            // Cell targets don't despawn, so this only matters for Entity targets.
             if entity
                 .attack_target
                 .as_ref()
-                .is_some_and(|a| a.target == dead_id)
+                .is_some_and(|a| matches!(a.target, TargetKind::Entity(id) if id == dead_id))
             {
                 entity.attack_target = None;
             }
@@ -1093,25 +1218,53 @@ pub fn tick_combat_with_fog(
         // Check if target is alive and get its data.
         // For structures, target_coords returns the foundation center instead
         // of the NW corner.
-        let target_data = entities.get(snap.target).map(|t| {
-            let (trx, try_, tsx, tsy) = target_coords(t, Some(rules), interner);
-            (
-                trx,
-                try_,
-                tsx,
-                tsy,
-                t.health.current,
-                t.category,
-                t.type_ref,
-                t.owner,
-                // TODO(RE): This currently keys off prone animation sequences because
-                // the runtime has no separate prone-state bit yet. Reverse engineer
-                // and implement the real infantry prone-entry conditions so
-                // ProneDamage applies during normal gameplay instead of only when
-                // prone sequences are explicitly driven.
-                t.category == EntityCategory::Infantry && animation_is_prone(t.animation.as_ref()),
-            )
-        });
+        // For Cell targets (force-fire on terrain), synthesize a target_data
+        // tuple: cell-center coords, "always alive" (cells don't despawn), no
+        // category/type/owner — the unit fires its primary weapon and splash
+        // delivers the damage.
+        let target_data: Option<(u16, u16, SimFixed, SimFixed, u16, EntityCategory, InternedId, InternedId, bool)> = match snap.target {
+            TargetKind::Entity(target_id) => entities.get(target_id).map(|t| {
+                let (trx, try_, tsx, tsy) = target_coords(t, Some(rules), interner);
+                (
+                    trx,
+                    try_,
+                    tsx,
+                    tsy,
+                    t.health.current,
+                    t.category,
+                    t.type_ref,
+                    t.owner,
+                    // TODO(RE): This currently keys off prone animation sequences because
+                    // the runtime has no separate prone-state bit yet. Reverse engineer
+                    // and implement the real infantry prone-entry conditions so
+                    // ProneDamage applies during normal gameplay instead of only when
+                    // prone sequences are explicitly driven.
+                    t.category == EntityCategory::Infantry && animation_is_prone(t.animation.as_ref()),
+                )
+            }),
+            TargetKind::Cell(rx, ry) => {
+                // Synthetic target_data for force-fire-on-cell.
+                // - hp = 1 so the "target dead" retarget branch never fires for cells.
+                // - category = Structure so weapon-vs-armor selection picks an
+                //   anti-structure weapon when one exists; otherwise falls
+                //   through to primary (matches "fire your default weapon at
+                //   the ground" intent).
+                // - type_ref/owner = attacker's own — friendly-fire check
+                //   sees self-vs-self and is short-circuited downstream.
+                let (trx, try_, tsx, tsy) = cell_center_coords(rx, ry);
+                Some((
+                    trx,
+                    try_,
+                    tsx,
+                    tsy,
+                    1u16,
+                    EntityCategory::Structure,
+                    snap.type_id,
+                    snap.owner,
+                    false,
+                ))
+            }
+        };
 
         let (
             target_rx,
@@ -1182,10 +1335,15 @@ pub fn tick_combat_with_fog(
         };
         let weapon = selected.weapon;
 
+        // Friendly-fire and visibility-driven retarget logic only applies to
+        // Entity targets. Cell targets are an explicit player force-fire — the
+        // player intentionally chose this cell (allies, ground, anything), so
+        // never auto-retarget away from a Cell.
+        let is_cell_target = matches!(snap.target, TargetKind::Cell(_, _));
         if let Some(fog_state) = fog {
             let snap_owner_str = interner.resolve(snap.owner);
             let target_owner_str = interner.resolve(target_owner);
-            if fog_state.is_friendly(snap_owner_str, target_owner_str) {
+            if !is_cell_target && fog_state.is_friendly(snap_owner_str, target_owner_str) {
                 if let Some(new_target) = acquire_best_target(
                     entities,
                     rules,
@@ -1201,7 +1359,7 @@ pub fn tick_combat_with_fog(
                 }
                 continue;
             }
-            if !fog_state.is_cell_visible(snap.owner, target_rx, target_ry) {
+            if !is_cell_target && !fog_state.is_cell_visible(snap.owner, target_rx, target_ry) {
                 if let Some(new_target) = acquire_best_target(
                     entities,
                     rules,
@@ -1328,9 +1486,15 @@ pub fn tick_combat_with_fog(
             let raw_damage: i32 = base_damage * selected.verses_pct as i32 / 100;
             let actual_damage: u16 =
                 apply_prone_damage_modifier(target_prone_infantry, warhead, raw_damage);
+            // Direct-hit damage only applies to Entity targets. For Cell
+            // targets (force-fire on terrain), splash logic via warhead
+            // CellSpread handles AoE damage at the impact cell — there's no
+            // primary target entity to damage.
             if actual_damage > 0 {
-                let wh_iid = interner.intern(&warhead.id);
-                damage_events.push((snap.target, actual_damage, snap.stable_id, wh_iid));
+                if let TargetKind::Entity(target_id) = snap.target {
+                    let wh_iid = interner.intern(&warhead.id);
+                    damage_events.push((target_id, actual_damage, snap.stable_id, wh_iid));
+                }
             }
             if warhead.wall && weapon.damage > 0 {
                 let damage_u16 = weapon.damage.max(0) as u16;
@@ -1369,7 +1533,7 @@ pub fn tick_combat_with_fog(
         fire_events.push(SimFireEvent {
             attacker_id: snap.stable_id,
             weapon_slot: selected.slot,
-            target_id: snap.target,
+            target: snap.target,
             garrison_muzzle_index: snap.garrison.as_ref().map(|gs| gs.fire_index),
             occupant_anim: if is_garrison {
                 weapon.occupant_anim.as_ref().map(|s| interner.intern(s))
@@ -1423,10 +1587,12 @@ pub fn tick_combat_with_fog(
     }
 
     // Phase 3: apply retargets and burst/cooldown updates.
+    // Auto-retargets only ever produce Entity targets (acquire_best_target
+    // scans hostile entities), so this wraps the u64 in TargetKind::Entity.
     for &(attacker_id, new_target_sid) in &retarget_events {
         if let Some(entity) = entities.get_mut(attacker_id) {
             if let Some(ref mut attack) = entity.attack_target {
-                attack.target = new_target_sid;
+                attack.target = TargetKind::Entity(new_target_sid);
             }
         }
     }

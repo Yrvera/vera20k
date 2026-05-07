@@ -339,6 +339,29 @@ impl Simulation {
                     &self.interner,
                 )
             }
+            Command::ForceAttackCell {
+                attacker_id,
+                target_rx,
+                target_ry,
+            } => {
+                if !self.entity_owned_by_id(command_owner, *attacker_id) {
+                    return false;
+                }
+                // No target-entity existence check — cells always "exist".
+                self.release_docked_idle(*attacker_id);
+                if let Some(e) = self.entities.get_mut(*attacker_id) {
+                    e.order_intent = None;
+                    Self::clear_aircraft_dock_phase(e);
+                }
+                combat::issue_attack_cell_command(
+                    &mut self.entities,
+                    *attacker_id,
+                    *target_rx,
+                    *target_ry,
+                    rules,
+                    &self.interner,
+                )
+            }
             Command::AttackMove {
                 entity_id,
                 target_rx,

@@ -634,6 +634,14 @@ pub(crate) fn is_ctrl_held(state: &AppState) -> bool {
         || state.keys_held.contains(&KeyCode::ControlRight)
 }
 
+/// Return `true` if either Alt key is currently held.
+///
+/// Used in order resolution to detect Alt+Ctrl = attack-move (NOT force-fire),
+/// matching gamemd's `What_Action_OnCell` Alt-overrides-Ctrl rule.
+pub(crate) fn is_alt_held(state: &AppState) -> bool {
+    state.keys_held.contains(&KeyCode::AltLeft) || state.keys_held.contains(&KeyCode::AltRight)
+}
+
 pub(crate) fn selected_stable_ids_sorted(
     entities: &crate::sim::entity_store::EntityStore,
 ) -> Vec<u64> {

@@ -168,15 +168,24 @@ pub fn tick_turret_rotation(
             .is_some_and(|m| m.state == MinerState::Harvest);
 
         let desired_facing: u16 = if let Some(ref attack) = entity.attack_target {
-            // Look up target position by stable ID (lepton-precise).
-            let target_pos = entities.get(attack.target).map(|t| {
-                (
-                    t.position.rx,
-                    t.position.ry,
-                    t.position.sub_x,
-                    t.position.sub_y,
-                )
-            });
+            // Look up target position: Entity targets via stable ID, Cell
+            // targets via cell-center leptons (force-fire on ground).
+            let target_pos = match attack.target {
+                crate::sim::combat::TargetKind::Entity(id) => entities.get(id).map(|t| {
+                    (
+                        t.position.rx,
+                        t.position.ry,
+                        t.position.sub_x,
+                        t.position.sub_y,
+                    )
+                }),
+                crate::sim::combat::TargetKind::Cell(rx, ry) => Some((
+                    rx,
+                    ry,
+                    crate::util::fixed_math::SimFixed::from_num(128),
+                    crate::util::fixed_math::SimFixed::from_num(128),
+                )),
+            };
             if let Some((trx, try_, tsx, tsy)) = target_pos {
                 facing_toward_lepton(
                     entity.position.rx,

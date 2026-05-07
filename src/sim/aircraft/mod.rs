@@ -173,7 +173,7 @@ pub fn tick_aircraft_missions(
         id: u64,
         new_mission: AircraftMission,
         ammo_delta: i32,
-        fire_at: Option<u64>,
+        fire_at: Option<crate::sim::combat::TargetKind>,
         move_to: Option<(u16, u16)>,
         self_destruct: bool,
         set_speed_fraction: Option<SimFixed>,
@@ -297,27 +297,27 @@ pub fn tick_aircraft_missions(
                 }
 
                 // Speed tiers based on distance to target.
+                // Cell targets resolve to cell-center coords via the helper.
                 if matches!(*sub_state, 3 | 4) {
                     if let Some(entity) = sim.entities.get(snap.id) {
-                        if let Some(tid) = entity.attack_target.as_ref().map(|at| at.target) {
-                            if let Some(target) = sim.entities.get(tid) {
-                                let dx =
-                                    (entity.position.rx as i32 - target.position.rx as i32).abs();
-                                let dy =
-                                    (entity.position.ry as i32 - target.position.ry as i32).abs();
-                                let dist_cells = dx.max(dy);
+                        if let Some(status) = crate::sim::aircraft::attack_mission::aircraft_target_status(
+                            entity.attack_target.as_ref(),
+                            &sim.entities,
+                        ) {
+                            let dx = (entity.position.rx as i32 - status.rx as i32).abs();
+                            let dy = (entity.position.ry as i32 - status.ry as i32).abs();
+                            let dist_cells = dx.max(dy);
 
-                                let speed_frac = if dist_cells < 1 {
-                                    SIM_ZERO
-                                } else if dist_cells < 2 {
-                                    SimFixed::lit("0.5")
-                                } else if dist_cells < 3 {
-                                    SimFixed::lit("0.75")
-                                } else {
-                                    SIM_ONE
-                                };
-                                m.set_speed_fraction = Some(speed_frac);
-                            }
+                            let speed_frac = if dist_cells < 1 {
+                                SIM_ZERO
+                            } else if dist_cells < 2 {
+                                SimFixed::lit("0.5")
+                            } else if dist_cells < 3 {
+                                SimFixed::lit("0.75")
+                            } else {
+                                SIM_ONE
+                            };
+                            m.set_speed_fraction = Some(speed_frac);
                         }
                     }
                 }
@@ -636,13 +636,17 @@ pub fn tick_aircraft_missions(
     }
 
     // Fire commands: set attack_target so combat system fires this tick.
-    let fire_commands: Vec<(u64, u64)> = mutations
+    // Carries TargetKind so Cell-target force-fire fires at coords, not entity.
+    let fire_commands: Vec<(u64, crate::sim::combat::TargetKind)> = mutations
         .iter()
-        .filter_map(|m| m.fire_at.map(|tid| (m.id, tid)))
+        .filter_map(|m| m.fire_at.map(|tk| (m.id, tk)))
         .collect();
-    for (attacker_id, target_id) in fire_commands {
+    for (attacker_id, target_kind) in fire_commands {
         if let Some(entity) = sim.entities.get_mut(attacker_id) {
-            entity.attack_target = Some(AttackTarget::new(target_id));
+            entity.attack_target = Some(match target_kind {
+                crate::sim::combat::TargetKind::Entity(id) => AttackTarget::new(id),
+                crate::sim::combat::TargetKind::Cell(rx, ry) => AttackTarget::for_cell(rx, ry),
+            });
         }
     }
 

@@ -89,7 +89,10 @@ fn test_issue_attack_command() {
     assert!(result, "Should succeed for valid entities");
 
     let attack = store.get(1).unwrap().attack_target.as_ref().unwrap();
-    assert_eq!(attack.target, 2);
+    assert!(matches!(
+        attack.target,
+        crate::sim::combat::TargetKind::Entity(2)
+    ));
     assert_eq!(attack.cooldown_ticks, 0, "Initial cooldown should be 0");
 }
 
@@ -537,11 +540,14 @@ fn test_tick_combat_retargets_by_distance_then_stable_id() {
         .attack_target
         .as_ref()
         .expect("attacker should retarget");
-    assert_eq!(
-        attack.target, 3,
+    assert!(
+        matches!(attack.target, crate::sim::combat::TargetKind::Entity(3)),
         "Tie should resolve to lower stable entity id"
     );
-    assert_ne!(attack.target, 20u64, "Should not target enemy_a (sid=20)");
+    assert!(
+        !matches!(attack.target, crate::sim::combat::TargetKind::Entity(20)),
+        "Should not target enemy_a (sid=20)"
+    );
 }
 
 #[test]
@@ -580,11 +586,14 @@ fn test_tick_combat_retargets_prefers_threat_class_when_distance_equal() {
         .attack_target
         .as_ref()
         .expect("attacker should retarget");
-    assert_eq!(
-        attack.target, 200,
+    assert!(
+        matches!(attack.target, crate::sim::combat::TargetKind::Entity(200)),
         "Combat unit should rank above building at equal distance"
     );
-    assert_ne!(attack.target, 1u64, "Should not target building (sid=1)");
+    assert!(
+        !matches!(attack.target, crate::sim::combat::TargetKind::Entity(1)),
+        "Should not target building (sid=1)"
+    );
 }
 
 // --- Ore destruction integration tests ---

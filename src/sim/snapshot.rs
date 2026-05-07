@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::sim::world::Simulation;
 
 /// Bump this when the snapshot binary format changes in a breaking way.
-const SNAPSHOT_VERSION: u32 = 4;
+const SNAPSHOT_VERSION: u32 = 5;
 
 /// Binary snapshot envelope — wraps the full `Simulation` state plus
 /// compatibility hashes for the map and rules that were active at save time.
@@ -203,5 +203,51 @@ mod tests {
 
         let result = GameSnapshot::load(&bytes);
         assert!(result.is_err(), "mismatched version should fail");
+    }
+
+    /// `AttackTarget::for_cell` survives serialize → deserialize as the same
+    /// `TargetKind::Cell` variant (regression for SNAPSHOT_VERSION 4 → 5).
+    #[test]
+    fn cell_attack_target_round_trips_through_snapshot() {
+        use crate::sim::combat::{AttackTarget, TargetKind};
+        use crate::sim::game_entity::GameEntity;
+
+        let mut sim = Simulation::new();
+        let mut entity = GameEntity::test_default(1, "MTNK", "Americans", 5, 5);
+        entity.attack_target = Some(AttackTarget::for_cell(50, 50));
+        sim.entities.insert(entity);
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "test_map");
+        let loaded = GameSnapshot::load(&bytes).expect("load should succeed");
+        let restored = loaded
+            .sim
+            .entities
+            .get(1)
+            .expect("entity should be restored")
+            .attack_target
+            .as_ref()
+            .expect("attack_target should be restored");
+        assert!(matches!(restored.target, TargetKind::Cell(50, 50)));
+    }
+
+    /// `Command::ForceAttackCell` is serializable (replay/snapshot back-compat).
+    #[test]
+    fn force_attack_cell_command_serializes() {
+        use crate::sim::command::Command;
+        let cmd = Command::ForceAttackCell {
+            attacker_id: 7,
+            target_rx: 100,
+            target_ry: 200,
+        };
+        let bytes = bincode::serialize(&cmd).expect("serialize should succeed");
+        let restored: Command = bincode::deserialize(&bytes).expect("deserialize should succeed");
+        assert!(matches!(
+            restored,
+            Command::ForceAttackCell {
+                attacker_id: 7,
+                target_rx: 100,
+                target_ry: 200
+            }
+        ));
     }
 }

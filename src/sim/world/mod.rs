@@ -174,8 +174,10 @@ pub struct SimFireEvent {
     pub attacker_id: u64,
     /// Which weapon slot was used (Primary or Secondary).
     pub weapon_slot: WeaponSlot,
-    /// Stable ID of the target entity (for future projectile trajectory).
-    pub target_id: u64,
+    /// What was fired at — entity stable ID or ground cell coord.
+    /// For projectile trajectory: Entity → look up entity position; Cell →
+    /// use cell center as the destination.
+    pub target: crate::sim::combat::TargetKind,
     /// For garrison fire: which muzzle port index fired (for fire port positioning).
     /// None = normal weapon FLH, Some(idx) = garrison fire port index.
     pub garrison_muzzle_index: Option<u8>,
