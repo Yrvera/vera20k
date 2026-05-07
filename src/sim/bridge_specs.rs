@@ -464,7 +464,7 @@ pub enum CellAction {
 
 /// Result from `set_bridge_direction` walker. Each entry is one cell + its
 /// action.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SetBridgeDirectionResult {
     pub actions: Vec<((u16, u16), usize, CellAction)>,
 }

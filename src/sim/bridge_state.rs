@@ -234,12 +234,7 @@ pub struct BridgeStateChange {
 /// codes of binary `ProcessBridgeDamageStateMachine_High @ 0x576BA0` body
 /// branch (0 = absorbed, 1 = collapse), with structured fallout for the
 /// orchestrator to dispatch.
-///
-/// Does NOT derive `PartialEq`/`Eq` because `SetBridgeDirectionResult`
-/// (defined in `sim::bridge_specs`) does not derive them either, and the
-/// task scope forbids cross-module edits. Tests inspect the outcome via
-/// `matches!` + field destructuring.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StateOutcome {
     /// Damage absorbed — anchor advanced from `Healthy` to `Damaged`. Bridge
     /// still passable. Renderer should redraw.
