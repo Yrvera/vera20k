@@ -242,6 +242,53 @@ pub struct BridgeDamageEvent {
     pub impact_z: i32,
 }
 
+/// Per-event context passed from world orchestrator to `BridgeRuntimeState`
+/// for the 4-path dispatcher. Carries the pre-resolved IonCannon flag, the
+/// impact z (for state-machine Z-height gate), and the interner-resolved
+/// warhead reference. The orchestrator owns the `&mut SimRng` and does the
+/// actual RNG draws — drivers themselves are pure of RNG.
+#[derive(Debug, Clone, Copy)]
+pub struct BridgeDamageContext {
+    pub damage: u16,
+    pub warhead_ref: crate::sim::intern::InternedId,
+    pub is_ion_cannon: bool,
+    pub bridge_strength: u16,
+    /// Tile-step level units (signed for safety). State-machine Z-gate fires
+    /// when `impact_z ∈ [cell.level - 1, cell.level + 1]` (3-level window).
+    pub impact_z: i32,
+}
+
+/// Path discriminator for the bridge-damage 4-path dispatcher.
+/// Order matches the binary's outer-dispatch evaluation order
+/// (HighSM → LowSM → LowDirect → HighDirect).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DispatchPath {
+    /// HIGH state-machine: anchor / body / tail / bridgehead cell whose
+    /// overlay byte has already transitioned out of the raw body range.
+    /// Includes Z-height range gate.
+    HighStateMachine,
+    /// LOW state-machine: same shape as `HighStateMachine` for low bridges.
+    /// Includes Z-height range gate.
+    LowStateMachine,
+    /// LOW direct-overlay: `cell.overlay_byte ∈ [0x4A..=0x63]`. Single-shot;
+    /// no Z-gate.
+    LowDirect,
+    /// HIGH direct-overlay: `cell.overlay_byte ∈ [0xCD..=0xE6]`. Single-shot;
+    /// no Z-gate.
+    HighDirect,
+}
+
+impl DispatchPath {
+    /// State-machine paths support the IonCannon 3-retry loop. Direct-overlay
+    /// paths are single-shot regardless of warhead.
+    pub fn is_state_machine(self) -> bool {
+        matches!(
+            self,
+            DispatchPath::HighStateMachine | DispatchPath::LowStateMachine
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BridgeStateChange {
     pub destroyed_cells: Vec<(u16, u16)>,
@@ -526,6 +573,103 @@ impl BridgeRuntimeState {
         index_of(self.width, self.height, rx, ry)
             .and_then(move |idx| self.cells.get_mut(idx))
             .and_then(|cell| cell.as_mut())
+    }
+
+    /// Map width in cells. Needed by walker code in the `walker` submodule
+    /// (Rust privacy: child modules can't read parent's private fields
+    /// without a getter or `pub(super)`).
+    pub fn width(&self) -> u16 {
+        self.width
+    }
+
+    /// Map height in cells. See `width()` rationale.
+    pub fn height(&self) -> u16 {
+        self.height
+    }
+
+    /// `[CombatDamage] BridgeStrength=` value used by the per-path RNG gate
+    /// in the bridge-damage dispatcher. Read-only; set at construction.
+    pub fn bridge_strength(&self) -> u16 {
+        self.bridge_strength
+    }
+
+    /// Whether the global `SpecialFlags::DestroyableBridges` is set. Outer
+    /// gate of the bridge-damage dispatcher; if false, bridges are immune.
+    pub fn is_destroyable(&self) -> bool {
+        self.bridge_destroyable_flag
+    }
+
+    /// Per-path entry-condition classifier for the world orchestrator. Pure
+    /// function; no mutation. Returns true iff the cell at `(rx, ry)`
+    /// matches the entry conditions for `path` under `ctx`.
+    ///
+    /// Mirrors the binary's per-path entry checks:
+    /// - HighStateMachine / LowStateMachine: cell is bridge-structural and
+    ///   has transitioned out of the raw body overlay range. Z-gate
+    ///   restricts `impact_z` to `[cell.level - 1, cell.level + 1]`.
+    ///   Raw-overlay cells are routed through the walker, NOT the state
+    ///   machine, so this path explicitly REJECTS cells whose `overlay_byte`
+    ///   is still in the body range.
+    /// - HighDirect: `overlay_byte ∈ [0xCD..=0xE6]`. Single-shot, no Z-gate.
+    /// - LowDirect:  `overlay_byte ∈ [0x4A..=0x63]`. Single-shot, no Z-gate.
+    pub(crate) fn path_matches_cell(
+        &self,
+        path: DispatchPath,
+        rx: u16,
+        ry: u16,
+        ctx: &BridgeDamageContext,
+        terrain: &crate::map::resolved_terrain::ResolvedTerrainGrid,
+    ) -> bool {
+        let Some(cell) = self.cell(rx, ry) else {
+            return false;
+        };
+        match path {
+            DispatchPath::HighDirect => (0xCD..=0xE6).contains(&cell.overlay_byte),
+            DispatchPath::LowDirect => (0x4A..=0x63).contains(&cell.overlay_byte),
+            DispatchPath::HighStateMachine | DispatchPath::LowStateMachine => {
+                // Raw-overlay cells route to the walker, NOT the state
+                // machine. State-machine fires only after the overlay has
+                // been transitioned out of the body range.
+                if matches!(path, DispatchPath::HighStateMachine)
+                    && (0xCD..=0xE6).contains(&cell.overlay_byte)
+                {
+                    return false;
+                }
+                if matches!(path, DispatchPath::LowStateMachine)
+                    && (0x4A..=0x63).contains(&cell.overlay_byte)
+                {
+                    return false;
+                }
+                if !matches!(
+                    cell.role,
+                    BridgeCellRole::Anchor
+                        | BridgeCellRole::Body
+                        | BridgeCellRole::Tail
+                        | BridgeCellRole::Bridgehead
+                ) {
+                    return false;
+                }
+                // High vs low discriminator: deck_level >= 4 is "high"
+                // (matches binary's tile-step gate). Bridgehead cells share
+                // the same axis classification.
+                let is_high = cell.deck_level >= 4;
+                let want_high = matches!(path, DispatchPath::HighStateMachine);
+                if is_high != want_high {
+                    return false;
+                }
+                // Z-height range gate: pass when `impact_z` is within one
+                // level above or below the bridge deck level. Direct-overlay
+                // paths skip this gate.
+                let level_i32 = terrain
+                    .cell(rx, ry)
+                    .map(|c| c.level as i32)
+                    .unwrap_or(cell.deck_level as i32);
+                if ctx.impact_z < level_i32 - 1 || ctx.impact_z > level_i32 + 1 {
+                    return false;
+                }
+                true
+            }
+        }
     }
 
     /// Test-only: insert a `BridgeRuntimeCell` at `(rx, ry)`, growing the
@@ -1969,5 +2113,234 @@ mod tests {
         let terrain = make_bridgehead_terrain_ns();
         let outcome = state.bridgehead_advance_state(99, 99, true, &terrain);
         assert_eq!(outcome, StateOutcome::NoChange);
+    }
+
+    /// Build a 1x1 ResolvedTerrainGrid with a single cell at (rx, ry) and
+    /// the given `level`. Used by `path_matches_cell` Z-gate tests.
+    fn make_terrain_at_level(rx: u16, ry: u16, level: u8) -> ResolvedTerrainGrid {
+        let w = rx + 1;
+        let h = ry + 1;
+        let mut cells = Vec::with_capacity(w as usize * h as usize);
+        for cy in 0..h {
+            for cx in 0..w {
+                cells.push(ResolvedTerrainCell {
+                    rx: cx,
+                    ry: cy,
+                    source_tile_index: 0,
+                    source_sub_tile: 0,
+                    final_tile_index: 0,
+                    final_sub_tile: 0,
+                    level: if cx == rx && cy == ry { level } else { 0 },
+                    filled_clear: false,
+                    tileset_index: Some(0),
+                    land_type: 0,
+                    slope_type: 0,
+                    template_height: 0,
+                    render_offset_x: 0,
+                    render_offset_y: 0,
+                    terrain_class: TerrainClass::Clear,
+                    speed_costs: SpeedCostProfile::default(),
+                    is_water: false,
+                    is_cliff_like: false,
+                    is_cliff_redraw: false,
+                    variant: 0,
+                    is_rough: false,
+                    is_road: false,
+                    accepts_smudge: false,
+                    has_ramp: false,
+                    canonical_ramp: None,
+                    ground_walk_blocked: false,
+                    terrain_object_blocks: false,
+                    overlay_blocks: false,
+                    zone_type: 0,
+                    base_ground_walk_blocked: false,
+                    base_build_blocked: false,
+                    build_blocked: false,
+                    has_bridge_deck: false,
+                    bridge_walkable: false,
+                    bridge_transition: false,
+                    bridge_deck_level: 0,
+                    bridge_layer: None,
+                    radar_left: [0, 0, 0],
+                    radar_right: [0, 0, 0],
+                });
+            }
+        }
+        ResolvedTerrainGrid::from_cells(w, h, cells)
+    }
+
+    fn dispatch_test_ctx(damage: u16, impact_z: i32) -> BridgeDamageContext {
+        BridgeDamageContext {
+            damage,
+            warhead_ref: crate::sim::intern::InternedId::default(),
+            is_ion_cannon: false,
+            bridge_strength: 1500,
+            impact_z,
+        }
+    }
+
+    #[test]
+    fn path_matches_high_direct_for_raw_body_overlay() {
+        let mut state = BridgeRuntimeState::default();
+        state.test_seed_cell(
+            2,
+            0,
+            BridgeRuntimeCell {
+                deck_present: true,
+                destroyable: true,
+                deck_level: 5,
+                bridge_group_id: Some(1),
+                damage_state: DamageState::Healthy { variant: 0 },
+                axis: Some(Axis::EW),
+                role: BridgeCellRole::Body,
+                anchor_span_id: Some(1),
+                overlay_byte: 0xD0,
+            },
+        );
+        let terrain = make_terrain_at_level(2, 0, 5);
+        let ctx = dispatch_test_ctx(100, 5);
+        assert!(state.path_matches_cell(DispatchPath::HighDirect, 2, 0, &ctx, &terrain));
+        assert!(
+            !state.path_matches_cell(DispatchPath::HighStateMachine, 2, 0, &ctx, &terrain),
+            "raw-overlay cell must NOT match HighStateMachine"
+        );
+    }
+
+    #[test]
+    fn path_matches_low_direct_for_raw_low_overlay() {
+        let mut state = BridgeRuntimeState::default();
+        state.test_seed_cell(
+            2,
+            0,
+            BridgeRuntimeCell {
+                deck_present: true,
+                destroyable: true,
+                deck_level: 2,
+                bridge_group_id: Some(1),
+                damage_state: DamageState::Healthy { variant: 0 },
+                axis: Some(Axis::NS),
+                role: BridgeCellRole::Body,
+                anchor_span_id: Some(1),
+                overlay_byte: 0x4F,
+            },
+        );
+        let terrain = make_terrain_at_level(2, 0, 2);
+        let ctx = dispatch_test_ctx(100, 2);
+        assert!(state.path_matches_cell(DispatchPath::LowDirect, 2, 0, &ctx, &terrain));
+        assert!(
+            !state.path_matches_cell(DispatchPath::LowStateMachine, 2, 0, &ctx, &terrain),
+            "raw-overlay cell must NOT match LowStateMachine"
+        );
+        assert!(
+            !state.path_matches_cell(DispatchPath::HighDirect, 2, 0, &ctx, &terrain),
+            "low overlay must not match HighDirect range"
+        );
+    }
+
+    #[test]
+    fn path_matches_high_sm_z_gate_includes_window_excludes_outside() {
+        let mut state = BridgeRuntimeState::default();
+        // Anchor cell with overlay transitioned out of body range so the
+        // state-machine path is reachable.
+        state.test_seed_cell(
+            2,
+            0,
+            BridgeRuntimeCell {
+                deck_present: true,
+                destroyable: true,
+                deck_level: 5,
+                bridge_group_id: Some(1),
+                damage_state: DamageState::Damaged,
+                axis: Some(Axis::EW),
+                role: BridgeCellRole::Anchor,
+                anchor_span_id: Some(1),
+                overlay_byte: 0x6,
+            },
+        );
+        let terrain = make_terrain_at_level(2, 0, 5);
+        // impact_z=8 is +3 above level → outside window
+        let ctx_far = dispatch_test_ctx(100, 8);
+        assert!(!state.path_matches_cell(DispatchPath::HighStateMachine, 2, 0, &ctx_far, &terrain));
+        // impact_z=5 is at level → passes
+        let ctx_at = dispatch_test_ctx(100, 5);
+        assert!(state.path_matches_cell(DispatchPath::HighStateMachine, 2, 0, &ctx_at, &terrain));
+        // impact_z=6 is +1 → boundary inclusive
+        let ctx_plus = dispatch_test_ctx(100, 6);
+        assert!(state.path_matches_cell(DispatchPath::HighStateMachine, 2, 0, &ctx_plus, &terrain));
+        // impact_z=4 is -1 → boundary inclusive
+        let ctx_minus = dispatch_test_ctx(100, 4);
+        assert!(
+            state.path_matches_cell(DispatchPath::HighStateMachine, 2, 0, &ctx_minus, &terrain)
+        );
+        // impact_z=3 is -2 → outside window
+        let ctx_below = dispatch_test_ctx(100, 3);
+        assert!(
+            !state.path_matches_cell(DispatchPath::HighStateMachine, 2, 0, &ctx_below, &terrain)
+        );
+    }
+
+    #[test]
+    fn path_matches_low_sm_excludes_high_deck() {
+        let mut state = BridgeRuntimeState::default();
+        // Cell is "high" (deck_level >= 4) — LowStateMachine must reject it
+        // even though overlay/role/Z all otherwise match.
+        state.test_seed_cell(
+            2,
+            0,
+            BridgeRuntimeCell {
+                deck_present: true,
+                destroyable: true,
+                deck_level: 5,
+                bridge_group_id: Some(1),
+                damage_state: DamageState::Damaged,
+                axis: Some(Axis::NS),
+                role: BridgeCellRole::Anchor,
+                anchor_span_id: Some(1),
+                overlay_byte: 0x6,
+            },
+        );
+        let terrain = make_terrain_at_level(2, 0, 5);
+        let ctx = dispatch_test_ctx(100, 5);
+        assert!(!state.path_matches_cell(DispatchPath::LowStateMachine, 2, 0, &ctx, &terrain));
+        assert!(state.path_matches_cell(DispatchPath::HighStateMachine, 2, 0, &ctx, &terrain));
+    }
+
+    #[test]
+    fn path_matches_returns_false_for_missing_cell() {
+        let state = BridgeRuntimeState::default();
+        let terrain = make_terrain_at_level(0, 0, 0);
+        let ctx = dispatch_test_ctx(100, 0);
+        for path in [
+            DispatchPath::HighStateMachine,
+            DispatchPath::LowStateMachine,
+            DispatchPath::HighDirect,
+            DispatchPath::LowDirect,
+        ] {
+            assert!(!state.path_matches_cell(path, 5, 5, &ctx, &terrain));
+        }
+    }
+
+    #[test]
+    fn dispatch_path_is_state_machine() {
+        assert!(DispatchPath::HighStateMachine.is_state_machine());
+        assert!(DispatchPath::LowStateMachine.is_state_machine());
+        assert!(!DispatchPath::HighDirect.is_state_machine());
+        assert!(!DispatchPath::LowDirect.is_state_machine());
+    }
+
+    #[test]
+    fn bridge_state_getters_return_construction_values() {
+        let state = BridgeRuntimeState::from_resolved_terrain(&make_bridge_terrain(), true, 1500);
+        assert!(state.is_destroyable());
+        assert_eq!(state.bridge_strength(), 1500);
+        assert!(state.width() >= 5);
+        assert!(state.height() >= 1);
+    }
+
+    #[test]
+    fn bridge_state_destroyable_flag_disabled() {
+        let state = BridgeRuntimeState::from_resolved_terrain(&make_bridge_terrain(), false, 800);
+        assert!(!state.is_destroyable());
+        assert_eq!(state.bridge_strength(), 800);
     }
 }
