@@ -219,10 +219,14 @@ impl Simulation {
             rx.hash(hasher);
             ry.hash(hasher);
             cell.deck_present.hash(hasher);
-            cell.destroyed.hash(hasher);
+            cell.damage_state.hash(hasher);
             cell.destroyable.hash(hasher);
             cell.deck_level.hash(hasher);
             cell.bridge_group_id.hash(hasher);
+            cell.axis.hash(hasher);
+            cell.role.hash(hasher);
+            cell.anchor_span_id.hash(hasher);
+            cell.bridgehead_step.hash(hasher);
         }
     }
 

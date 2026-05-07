@@ -184,10 +184,29 @@ pub struct BridgeStateChange {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct BridgeRuntimeCell {
     pub deck_present: bool,
-    pub destroyed: bool,
     pub destroyable: bool,
     pub deck_level: u8,
     pub bridge_group_id: Option<u16>,
+
+    /// Per-cell damage state. Drives state-machine progression and renderer
+    /// display-tile selection. Replaces the old `destroyed: bool`.
+    pub damage_state: DamageState,
+
+    /// Bridge body axis (NS or EW). `None` for cells where axis is not
+    /// meaningful (orphan body cells, edge cases). Filled by Task 7 anchor walker.
+    pub axis: Option<Axis>,
+
+    /// Cell role within its anchor span. Drives state-machine branch dispatch.
+    /// Filled by Task 7 anchor walker.
+    pub role: BridgeCellRole,
+
+    /// Stable ID of containing `AnchorSpan` (for body cells); `None` for
+    /// bridgehead cells (which use `bridgehead_step` instead).
+    pub anchor_span_id: Option<u16>,
+
+    /// Bridgehead 4-step progression counter (0..=3). Only meaningful when
+    /// `role == BridgeCellRole::Bridgehead`.
+    pub bridgehead_step: u8,
 }
 
 /// A bridge's ground-level endpoint pair for zone connectivity.
@@ -260,10 +279,14 @@ impl BridgeRuntimeState {
                 members.push((rx, ry));
                 cells[idx] = Some(BridgeRuntimeCell {
                     deck_present: true,
-                    destroyed: false,
                     destroyable,
                     deck_level: resolved.bridge_deck_level,
                     bridge_group_id: Some(group_id),
+                    damage_state: DamageState::Healthy { variant: 0 },
+                    axis: None, // filled by Task 7 anchor walker
+                    role: BridgeCellRole::Body, // filled by Task 7
+                    anchor_span_id: None,
+                    bridgehead_step: 0,
                 });
 
                 for (nx, ny) in cardinal_neighbors(rx, ry, width, height) {
@@ -306,8 +329,9 @@ impl BridgeRuntimeState {
     }
 
     pub fn is_bridge_walkable(&self, rx: u16, ry: u16) -> bool {
-        self.cell(rx, ry)
-            .is_some_and(|cell| cell.deck_present && !cell.destroyed)
+        self.cell(rx, ry).is_some_and(|cell| {
+            cell.deck_present && !matches!(cell.damage_state, DamageState::Destroyed)
+        })
     }
 
     pub fn apply_damage(&mut self, event: BridgeDamageEvent) -> Option<BridgeStateChange> {
@@ -315,7 +339,10 @@ impl BridgeRuntimeState {
             return None;
         }
         let cell = self.cell(event.rx, event.ry).copied()?;
-        if !cell.deck_present || cell.destroyed || !cell.destroyable {
+        if !cell.deck_present
+            || matches!(cell.damage_state, DamageState::Destroyed)
+            || !cell.destroyable
+        {
             return None;
         }
         let Some(group_id) = cell.bridge_group_id else {
@@ -335,7 +362,7 @@ impl BridgeRuntimeState {
         for &(rx, ry) in &destroyed_cells {
             if let Some(idx) = index_of(self.width, self.height, rx, ry) {
                 if let Some(cell) = self.cells[idx].as_mut() {
-                    cell.destroyed = true;
+                    cell.damage_state = DamageState::Destroyed;
                 }
             }
         }
@@ -509,7 +536,7 @@ mod tests {
         let state = BridgeRuntimeState::from_resolved_terrain(&make_bridge_terrain(), true, 300);
         let cell = state.cell(1, 0).expect("bridge cell");
         assert!(cell.deck_present);
-        assert!(!cell.destroyed);
+        assert!(matches!(cell.damage_state, DamageState::Healthy { .. }));
         assert_eq!(cell.deck_level, 4);
         assert_eq!(cell.bridge_group_id, Some(1));
         assert!(state.cell(0, 0).is_none());
@@ -529,6 +556,11 @@ mod tests {
         assert!(!state.is_bridge_walkable(1, 0));
         assert!(!state.is_bridge_walkable(2, 0));
         assert!(!state.is_bridge_walkable(3, 0));
+        // Verify damage_state per cell.
+        assert_eq!(
+            state.cell(1, 0).map(|c| c.damage_state),
+            Some(DamageState::Destroyed)
+        );
     }
 
     #[test]

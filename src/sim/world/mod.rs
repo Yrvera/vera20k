@@ -28,7 +28,9 @@ use crate::map::triggers::TriggerMap;
 use crate::rules::locomotor_type::SpeedType;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::ai::{self, AiPlayerState};
-use crate::sim::bridge_state::{BridgeDamageEvent, BridgeRuntimeState, BridgeStateChange};
+use crate::sim::bridge_state::{
+    BridgeDamageEvent, BridgeRuntimeState, BridgeStateChange, DamageState,
+};
 use crate::sim::overlay_grid::{
     cleanup_wall_neighbors, damage_wall_overlay, WallDamageEvent,
 };
@@ -663,7 +665,7 @@ impl Simulation {
             .as_ref()
             .and_then(|state| state.cell(rx, ry))
         {
-            return Some(if bridge.destroyed {
+            return Some(if matches!(bridge.damage_state, DamageState::Destroyed) {
                 cell.base_build_blocked
             } else {
                 true
