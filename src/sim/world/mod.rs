@@ -239,6 +239,9 @@ pub struct Simulation {
     /// Per-cell mutable overlay state (ore density, wall damage, bridge frames).
     /// Seeded from map [OverlayPack] at init, mutated during gameplay.
     pub overlay_grid: Option<crate::sim::overlay_grid::OverlayGrid>,
+    /// Per-cell smudge state (craters, scorches). Seeded from map [Smudge]
+    /// entries at init, mutated by combat death-handling at runtime.
+    pub smudge_grid: Option<crate::sim::smudge_grid::SmudgeGrid>,
     /// Persistent cell occupancy — tracks what entities occupy each cell.
     /// Maintained incrementally via add/remove at spawn, move, and death sites.
     /// Rebuilt from entities on deserialization.
@@ -348,6 +351,7 @@ impl Simulation {
             resolved_terrain: None,
             bridge_state: None,
             overlay_grid: None,
+            smudge_grid: None,
             occupancy: OccupancyGrid::new(),
             bridge_explosions: Vec::new(),
             radar_events: RadarEventQueue::default(),

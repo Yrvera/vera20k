@@ -596,6 +596,33 @@ pub fn load_map(
                 map_data.overlays.len(),
             );
         }
+        // Seed smudge grid from map [Smudge] entries. Requires terrain +
+        // overlay grids built above so placement gates (slope, overlay,
+        // accepts_smudge) can reject invalid map entries at load.
+        if let (Some(rt), Some(overlay), Some(rules_for_smudge)) = (
+            sim.resolved_terrain.as_ref(),
+            sim.overlay_grid.as_ref(),
+            rules.as_ref(),
+        ) {
+            let grid_width = rt.width();
+            let grid_height = rt.height();
+            sim.smudge_grid = Some(
+                crate::sim::smudge_grid::SmudgeGrid::from_map_entries(
+                    &map_data.smudges,
+                    &rules_for_smudge.smudge_types,
+                    rt,
+                    overlay,
+                    grid_width,
+                    grid_height,
+                ),
+            );
+            log::info!(
+                "Smudge grid initialized: {}x{}, {} entries",
+                grid_width,
+                grid_height,
+                map_data.smudges.len(),
+            );
+        }
         // Initialize ore growth/spread config from merged INI sources.
         let general_default = GeneralRules::default();
         let general_rules = rules.as_ref().map_or(&general_default, |r| &r.general);
