@@ -96,14 +96,22 @@ pub(crate) fn apply_bridge_damage_events(
     // Cascade Step 1: ground-occupant kill. Per HIGH §11.4 step 1,
     // BlowUpBridge force-kills ground-layer entities at each destroyed
     // cell with C4Warhead semantics. Bridge-deck entities are handled by
-    // Step 2 (DropIn — Task 11) and never go through this kill path.
+    // Step 2 (DropIn) and never go through this kill path.
     let c4_id = rules.c4_warhead_id();
     for &(rx, ry) in &blow_up_cells {
         kill_ground_occupants_at(sim, rx, ry, c4_id);
     }
 
-    // TODO(Tasks 11-13): drop in deck entities, spawn debris, rim
-    // refresh, trigger 31, zone rebuild.
+    // Cascade Step 2: bridge-deck DropIn. Per HIGH §12.7 / §12.9, deck
+    // entities snap to ground level, clear OnBridge, and SURVIVE — even
+    // when the destination cell is unwalkable (water below). Vanilla
+    // never despawns or kills deck entities on collapse.
+    for &(rx, ry) in &destroyed_set {
+        drop_in_bridge_deck_entities(sim, rx, ry);
+    }
+
+    // TODO(Tasks 12-13): spawn debris, rim refresh, trigger 31, zone
+    // rebuild.
 
     despawned_ids
 }
@@ -146,6 +154,49 @@ fn kill_ground_occupants_at(
             entity.attack_target = None;
             entity.movement_target = None;
             entity.selected = false;
+        }
+    }
+}
+
+/// Snap bridge-deck entities at `(rx, ry)` to ground level. Mirror of
+/// the binary's `BlowUpBridge` step 2 (HIGH §11.4 + §12.7): walks the
+/// deck entity list and calls `DropIn` on each.
+///
+/// Per HIGH §12.7 / §12.9: NO damage, NO despawn — units survive
+/// stranded even when the destination is unwalkable (water below).
+/// Vanilla has no drown mechanism. This is the parity correction
+/// against the legacy `resolve_bridge_state_changes`, which despawned
+/// deck entities over unwalkable ground.
+fn drop_in_bridge_deck_entities(sim: &mut Simulation, rx: u16, ry: u16) {
+    use crate::sim::movement::locomotor::{GroundMovePhase, MovementLayer};
+
+    let ground_level = sim
+        .resolved_terrain
+        .as_ref()
+        .and_then(|t| t.cell(rx, ry))
+        .map(|c| c.level)
+        .unwrap_or(0);
+
+    let to_snap: Vec<u64> = sim
+        .entities
+        .iter_sorted()
+        .filter(|(_, e)| {
+            e.position.rx == rx && e.position.ry == ry && e.is_on_bridge_layer()
+        })
+        .map(|(id, _)| id)
+        .collect();
+
+    for id in to_snap {
+        if let Some(entity) = sim.entities.get_mut(id) {
+            entity.bridge_occupancy = None;
+            entity.on_bridge = false;
+            entity.position.z = ground_level;
+            entity.position.refresh_screen_coords();
+            entity.movement_target = None;
+            if let Some(ref mut loco) = entity.locomotor {
+                loco.layer = MovementLayer::Ground;
+                loco.phase = GroundMovePhase::Idle;
+            }
         }
     }
 }
@@ -263,8 +314,203 @@ fn run_dispatch_loop(
 
 #[cfg(test)]
 mod tests {
-    // Cascade-consumer tests (ground kill, DropIn, debris, rim, zones)
-    // land alongside Tasks 10-13. The dispatcher loop itself is
-    // exercised end-to-end via the world_tests fixtures migrated in
-    // Task 15 once the orchestrator is wired in (Task 14).
+    use super::*;
+    use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
+    use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
+    use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
+    use crate::sim::components::{BridgeOccupancy, Health, Position};
+    use crate::sim::game_entity::GameEntity;
+    use crate::sim::intern::test_intern;
+    use crate::sim::movement::locomotor::{
+        AirMovePhase, GroundMovePhase, LocomotorState, MovementLayer,
+    };
+    use crate::util::fixed_math::{SIM_ZERO, SimFixed};
+
+    /// Build a single-cell terrain grid where (5,5) is a bridge deck at
+    /// `deck_level`, ground level=0, water below (`is_water=true`,
+    /// `ground_walk_blocked=true`). Used to verify DropIn lets deck units
+    /// survive even with no walkable ground.
+    fn water_below_bridge_terrain(deck_level: u8) -> ResolvedTerrainGrid {
+        let mut cells = Vec::new();
+        for y in 0..=5u16 {
+            for x in 0..=5u16 {
+                let is_bridge = x == 5 && y == 5;
+                cells.push(ResolvedTerrainCell {
+                    rx: x,
+                    ry: y,
+                    source_tile_index: 0,
+                    source_sub_tile: 0,
+                    final_tile_index: 0,
+                    final_sub_tile: 0,
+                    level: 0,
+                    filled_clear: false,
+                    tileset_index: Some(0),
+                    land_type: 0,
+                    slope_type: 0,
+                    template_height: 0,
+                    render_offset_x: 0,
+                    render_offset_y: 0,
+                    terrain_class: TerrainClass::Clear,
+                    speed_costs: SpeedCostProfile::default(),
+                    is_water: is_bridge,
+                    is_cliff_like: false,
+                    is_cliff_redraw: false,
+                    variant: 0,
+                    is_rough: false,
+                    is_road: false,
+                    accepts_smudge: false,
+                    has_ramp: false,
+                    canonical_ramp: None,
+                    ground_walk_blocked: is_bridge,
+                    terrain_object_blocks: false,
+                    overlay_blocks: false,
+                    zone_type: 0,
+                    base_ground_walk_blocked: false,
+                    base_build_blocked: false,
+                    build_blocked: is_bridge,
+                    has_bridge_deck: is_bridge,
+                    bridge_walkable: is_bridge,
+                    bridge_transition: is_bridge,
+                    bridge_deck_level: if is_bridge { deck_level } else { 0 },
+                    bridge_layer: None,
+                    radar_left: [0, 0, 0],
+                    radar_right: [0, 0, 0],
+                });
+            }
+        }
+        ResolvedTerrainGrid::from_cells(6, 6, cells)
+    }
+
+    /// Build a Drive locomotor on the Bridge layer (mimics `high=true` spawn).
+    fn drive_loco_on_bridge() -> LocomotorState {
+        LocomotorState {
+            kind: LocomotorKind::Drive,
+            layer: MovementLayer::Bridge,
+            phase: GroundMovePhase::Cruising,
+            air_phase: AirMovePhase::Landed,
+            speed_multiplier: SimFixed::from_num(1),
+            speed_fraction: SimFixed::from_num(1),
+            fly_current_speed: SIM_ZERO,
+            altitude: SIM_ZERO,
+            target_altitude: SIM_ZERO,
+            climb_rate: SIM_ZERO,
+            jumpjet_speed: SIM_ZERO,
+            jumpjet_wobbles: 0.0,
+            jumpjet_accel: SIM_ZERO,
+            jumpjet_current_speed: SIM_ZERO,
+            jumpjet_deviation: 0,
+            jumpjet_crash_speed: SIM_ZERO,
+            jumpjet_turn_rate: 4,
+            balloon_hover: false,
+            hover_attack: false,
+            speed_type: SpeedType::Track,
+            movement_zone: MovementZone::Normal,
+            rot: 0,
+            override_state: None,
+            air_progress: SIM_ZERO,
+            infantry_wobble_phase: 0.0,
+            subcell_dest: None,
+        }
+    }
+
+    /// Insert a vehicle on the bridge deck at (5,5) with deck_level=3.
+    fn spawn_deck_unit(sim: &mut Simulation) -> u64 {
+        let mut entity = GameEntity::new(
+            1,
+            5,
+            5,
+            3,
+            64,
+            test_intern("Americans"),
+            Health {
+                current: 256,
+                max: 256,
+            },
+            test_intern("MTNK"),
+            crate::map::entities::EntityCategory::Unit,
+            0,
+            5,
+            true,
+        );
+        entity.on_bridge = true;
+        entity.bridge_occupancy = Some(BridgeOccupancy { deck_level: 3 });
+        entity.locomotor = Some(drive_loco_on_bridge());
+        // Give it a short fake movement target so we can verify it gets
+        // halted on collapse.
+        entity.movement_target = Some(crate::sim::components::MovementTarget::default());
+        sim.entities.insert(entity);
+        1
+    }
+
+    /// Task 11 — DropIn correction: bridge-deck entities snap to ground
+    /// level + survive even when the destination is unwalkable (water
+    /// below). The legacy `resolve_bridge_state_changes` despawned in
+    /// this case; vanilla never does (HIGH §12.7 / §12.9).
+    #[test]
+    fn drop_in_snaps_deck_entity_to_ground_over_water_no_despawn() {
+        let mut sim = Simulation::new();
+        sim.resolved_terrain = Some(water_below_bridge_terrain(3));
+        let id = spawn_deck_unit(&mut sim);
+
+        drop_in_bridge_deck_entities(&mut sim, 5, 5);
+
+        let e = sim
+            .entities
+            .get(id)
+            .expect("deck entity must SURVIVE collapse over water");
+        assert_eq!(e.position.z, 0, "snapped to ground level");
+        assert!(!e.on_bridge, "OnBridge cleared by DropIn");
+        assert!(e.bridge_occupancy.is_none(), "bridge_occupancy cleared");
+        assert!(e.movement_target.is_none(), "movement halted on collapse");
+        assert_eq!(e.health.current, 256, "DropIn never harms — no damage");
+        let loco = e.locomotor.as_ref().expect("locomotor");
+        assert_eq!(
+            loco.layer,
+            MovementLayer::Ground,
+            "layer flipped Bridge → Ground"
+        );
+        assert_eq!(loco.phase, GroundMovePhase::Idle, "phase reset to Idle");
+    }
+
+    /// Task 11 — DropIn must NOT touch entities that aren't on the bridge
+    /// layer at the destroyed cell. Ground-layer entities are handled by
+    /// `kill_ground_occupants_at` (Step 1), not DropIn.
+    #[test]
+    fn drop_in_ignores_ground_layer_entities_at_destroyed_cell() {
+        let mut sim = Simulation::new();
+        sim.resolved_terrain = Some(water_below_bridge_terrain(3));
+        let mut entity = GameEntity::new(
+            1,
+            5,
+            5,
+            0,
+            64,
+            test_intern("Americans"),
+            Health {
+                current: 256,
+                max: 256,
+            },
+            test_intern("MTNK"),
+            crate::map::entities::EntityCategory::Unit,
+            0,
+            5,
+            true,
+        );
+        entity.on_bridge = false; // ground-layer occupant
+        let mut loco = drive_loco_on_bridge();
+        loco.layer = MovementLayer::Ground;
+        entity.locomotor = Some(loco);
+        sim.entities.insert(entity);
+
+        drop_in_bridge_deck_entities(&mut sim, 5, 5);
+
+        // Ground entity untouched — still alive, still ground layer.
+        let e = sim.entities.get(1).expect("ground entity untouched");
+        assert_eq!(e.health.current, 256);
+        assert!(!e.on_bridge);
+        assert_eq!(
+            e.locomotor.as_ref().unwrap().layer,
+            MovementLayer::Ground
+        );
+    }
 }
