@@ -9,6 +9,8 @@
 //! `sim::bridge_specs`, but wiring it here still needs mutable overlay state,
 //! connected-section selection, and `AtomDamage`/BridgeStrength gate inputs.
 
+pub mod walker;
+
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use std::collections::{BTreeMap, VecDeque};
 
