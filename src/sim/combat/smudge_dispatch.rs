@@ -47,6 +47,8 @@ use std::collections::BTreeMap;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::art_data::ArtRegistry;
 use crate::rules::smudge_type::SmudgeTypeRegistry;
+use crate::sim::combat::SmudgeSpawnRequest;
+use crate::sim::intern::StringInterner;
 use crate::sim::miner::{ResourceNode, reduce_tiberium};
 use crate::sim::occupancy::OccupancyGrid;
 use crate::sim::overlay_grid::OverlayGrid;
@@ -235,6 +237,73 @@ pub fn try_dispatch_building_survivor_smudges(
                 SmudgeKind::Crater, coord, BUILDING_SMUDGE_DMG, BUILDING_SMUDGE_DMG, false,
                 smudge_types, terrain, overlay_grid, occupancy, rng,
             );
+        }
+    }
+}
+
+/// Drain a batch of `SmudgeSpawnRequest` events emitted by combat. Runs the
+/// per-request dispatcher (anim / building-center / building-survivor) for
+/// each, mutating `SmudgeGrid` + `resource_nodes` accordingly.
+///
+/// Called by `Simulation::advance_tick` after combat completes and before
+/// the ore-growth tick stage so any crater-path `Reduce_Tiberium(6)` lands
+/// before ore-growth reads tiberium density.
+#[allow(clippy::too_many_arguments)]
+pub fn drain_smudge_spawn_requests(
+    requests: &[SmudgeSpawnRequest],
+    art: &ArtRegistry,
+    smudge_types: &SmudgeTypeRegistry,
+    interner: &StringInterner,
+    smudge_grid: &mut SmudgeGrid,
+    overlay_grid: &OverlayGrid,
+    occupancy: &OccupancyGrid,
+    terrain: &ResolvedTerrainGrid,
+    path_grid: &PathGrid,
+    resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
+    rng: &mut SimRng,
+) {
+    for req in requests {
+        match req {
+            SmudgeSpawnRequest::Anim { anim_name, rx, ry, z } => {
+                let coord = SimCoord {
+                    x: (*rx as i32) * 256 + 128,
+                    y: (*ry as i32) * 256 + 128,
+                    z: *z,
+                };
+                // Ground level is sourced from the resolved terrain cell; cells
+                // are stored at `level * 15` leptons (ledger #3 altitude gate
+                // measures the anim's z relative to this ground reference).
+                let ground_z: i32 = terrain
+                    .cell(*rx, *ry)
+                    .map(|c| c.level as i32 * 15)
+                    .unwrap_or(0);
+                let name = interner.resolve(*anim_name);
+                try_dispatch_anim_smudge(
+                    art, smudge_types, name,
+                    coord, ground_z,
+                    smudge_grid, overlay_grid, occupancy, terrain,
+                    resource_nodes, rng,
+                );
+            }
+            SmudgeSpawnRequest::BuildingCenter {
+                rx, ry, building_z, foundation_w, foundation_h,
+            } => {
+                try_dispatch_building_destruction_smudges(
+                    *rx, *ry, *building_z, *foundation_w, *foundation_h,
+                    art, smudge_types,
+                    smudge_grid, overlay_grid, occupancy, terrain,
+                    resource_nodes, rng,
+                );
+            }
+            SmudgeSpawnRequest::BuildingSurvivor { cell_rx, cell_ry } => {
+                try_dispatch_building_survivor_smudges(
+                    &[(*cell_rx, *cell_ry)],
+                    art, smudge_types,
+                    smudge_grid, overlay_grid, occupancy, terrain,
+                    path_grid,
+                    resource_nodes, rng,
+                );
+            }
         }
     }
 }

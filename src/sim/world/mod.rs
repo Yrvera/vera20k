@@ -1410,6 +1410,31 @@ impl Simulation {
                 self.radar_events
                     .push(RadarEventType::Combat, ev.rx, ev.ry, event_dur);
             }
+            // Drain combat-emitted smudge spawn requests before any tick stage
+            // that reads tiberium density (ore-growth, repairs that touch
+            // resource nodes). Ledger #6: crater-path Reduce_Tiberium(6) must
+            // land before ore-growth reads density. Skipped when the optional
+            // grids/path_grid aren't bound (headless tests, no map loaded).
+            if let (Some(smudge_grid), Some(overlay), Some(terrain), Some(pg)) = (
+                self.smudge_grid.as_mut(),
+                self.overlay_grid.as_ref(),
+                self.resolved_terrain.as_ref(),
+                path_grid,
+            ) {
+                crate::sim::combat::smudge_dispatch::drain_smudge_spawn_requests(
+                    &combat_result.smudge_spawn_requests,
+                    &rules.art_registry,
+                    &rules.smudge_types,
+                    &self.interner,
+                    smudge_grid,
+                    overlay,
+                    &self.occupancy,
+                    terrain,
+                    pg,
+                    &mut self.production.resource_nodes,
+                    &mut self.rng,
+                );
+            }
             // --- Phase 5.5: ParticleSystems ---
             // DEPENDS ON: combat (gas/fire damage spawned this tick).
             // PRODUCES: damage applied via gas/fire particles, must be visible to phase 6 retaliation.
