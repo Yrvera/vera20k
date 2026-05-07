@@ -592,6 +592,60 @@ pub fn update_ramp_perpendicular(
     }
 }
 
+/// Walk from a bridgehead cell to its anchor body cell. Returns the anchor
+/// cell coord, or `None` if the walk hits an invalid intermediate (per-axis
+/// guard) or runs off the map.
+///
+/// Per HIGH §3.2 + verified live `0x576BA0`:
+/// - **NS branch:** reject `(height & 1) != 0` (all odd heights); walk
+///   `+DirectionOffset` until `height == 4`.
+/// - **EW branch:** reject `4 < height` (heights > 4 only); walk
+///   `+DirectionOffset` until `height == 2`.
+///
+/// Field is `cell.height` at `CellClass+0x11A`. Companion `+0x11B` is
+/// `cell.Level` — read separately by callers needing the `level - 4`
+/// adjustment for `SetOverlayAndPropagate`.
+pub fn bridgehead_walk_to_anchor(
+    start: (u16, u16),
+    axis: Axis,
+    direction: Direction,
+    cell_height: impl Fn((u16, u16)) -> Option<u8>,
+    map_width: u16,
+    map_height: u16,
+) -> Option<(u16, u16)> {
+    let target_height: u8 = match axis {
+        Axis::NS => 4,
+        Axis::EW => 2,
+    };
+    let (dx, dy) = direction.offset();
+    let mut current = start;
+    for _ in 0..16 {
+        let h = cell_height(current)?;
+        match axis {
+            Axis::NS => {
+                if h & 1 != 0 {
+                    return None;
+                }
+            }
+            Axis::EW => {
+                if h > 4 {
+                    return None;
+                }
+            }
+        }
+        if h == target_height {
+            return Some(current);
+        }
+        let nx = current.0 as i32 + dx;
+        let ny = current.1 as i32 + dy;
+        if nx < 0 || ny < 0 || nx as u16 >= map_width || ny as u16 >= map_height {
+            return None;
+        }
+        current = (nx as u16, ny as u16);
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1204,5 +1258,64 @@ mod tests {
         assert!(outcome.state_changed);
         let target = state.cell(5, 6).expect("S target");
         assert_eq!(target.damage_state, DamageState::PartialCollapseA);
+    }
+
+    #[test]
+    fn bridgehead_walk_ns_finds_anchor_at_height_4() {
+        let heights = |(x, y): (u16, u16)| {
+            if y != 0 {
+                return None;
+            }
+            match x {
+                0 => Some(8),
+                1 => Some(6),
+                2 => Some(4),
+                3 => Some(2),
+                4 => Some(0),
+                _ => None,
+            }
+        };
+        let r = bridgehead_walk_to_anchor((0, 0), Axis::NS, Direction::E, heights, 5, 1);
+        assert_eq!(r, Some((2, 0)));
+    }
+
+    #[test]
+    fn bridgehead_walk_ns_rejects_odd_intermediate() {
+        let heights = |(x, _y): (u16, u16)| match x {
+            0 => Some(8),
+            1 => Some(7),
+            _ => Some(0),
+        };
+        let r = bridgehead_walk_to_anchor((0, 0), Axis::NS, Direction::E, heights, 5, 1);
+        assert!(r.is_none());
+    }
+
+    #[test]
+    fn bridgehead_walk_ew_accepts_odd_intermediate_below_5() {
+        let heights = |(x, _y): (u16, u16)| match x {
+            0 => Some(4),
+            1 => Some(3),
+            2 => Some(2),
+            _ => None,
+        };
+        let r = bridgehead_walk_to_anchor((0, 0), Axis::EW, Direction::E, heights, 3, 1);
+        assert_eq!(r, Some((2, 0)));
+    }
+
+    #[test]
+    fn bridgehead_walk_ew_rejects_height_above_4() {
+        let heights = |(x, _y): (u16, u16)| match x {
+            0 => Some(5),
+            _ => Some(0),
+        };
+        let r = bridgehead_walk_to_anchor((0, 0), Axis::EW, Direction::E, heights, 3, 1);
+        assert!(r.is_none());
+    }
+
+    #[test]
+    fn bridgehead_walk_returns_none_on_map_edge() {
+        let heights = |_: (u16, u16)| Some(8);
+        let r = bridgehead_walk_to_anchor((0, 0), Axis::NS, Direction::E, heights, 1, 1);
+        assert!(r.is_none());
     }
 }
