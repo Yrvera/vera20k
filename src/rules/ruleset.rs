@@ -1134,6 +1134,10 @@ pub struct RuleSet {
     pub super_weapons: HashMap<String, SuperWeaponType>,
     /// Default particle systems from `[CombatDamage]` (smoke, sparks, debris, fire-stream).
     pub combat_damage: CombatDamageDefaults,
+    /// Pre-resolved bridge-related warhead names (`[CombatDamage]
+    /// IonCannonWarhead=`, `C4Warhead=`). Resolution to interned IDs happens
+    /// at world init.
+    pub bridge_warheads: crate::rules::bridge_warheads::BridgeWarheads,
     /// Particle types in registry order. Index = `ParticleTypeId.0`.
     particle_types: Vec<ParticleType>,
     /// Uppercase name → `ParticleTypeId` for case-insensitive lookup.
@@ -1281,6 +1285,12 @@ impl RuleSet {
             .map(CombatDamageDefaults::from_ini_section)
             .unwrap_or_default();
 
+        // Parse [CombatDamage] bridge-warhead names (IonCannonWarhead, C4Warhead).
+        let bridge_warheads = ini
+            .section("CombatDamage")
+            .map(crate::rules::bridge_warheads::BridgeWarheads::from_ini_section)
+            .unwrap_or_default();
+
         // Parse [TerrainTypes] registry → per-type sections (TIBTRE01, TREE01, etc.).
         let mut terrain_object_types: HashMap<String, TerrainObjectType> = HashMap::new();
         let terrain_names: Vec<String> = parse_registry(ini, "TerrainTypes");
@@ -1344,6 +1354,7 @@ impl RuleSet {
             radar_event_config,
             super_weapons,
             combat_damage,
+            bridge_warheads,
             particle_types,
             particle_types_by_name,
             particle_system_types,
