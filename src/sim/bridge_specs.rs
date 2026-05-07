@@ -646,6 +646,54 @@ pub fn bridgehead_walk_to_anchor(
     None
 }
 
+/// Three cells receiving `BlowUpBridge` on bridgehead final-step collapse.
+/// Geometry verified live `[GHIDRA 0x576BA0]` step-3 branch.
+///
+/// Body-axis-aligned 3-cell row (NOT perpendicular). Offset to which row /
+/// column is chosen depends on `anchor_height`'s bit predicate:
+///
+/// | Axis | predicate                 | row geometry                                                       |
+/// |------|---------------------------|---------------------------------------------------------------------|
+/// | NS   | `h & 1 == 0` (even)       | column at `anchor.X`,    Y in `{anchor.Y-1, anchor.Y, anchor.Y+1}` |
+/// | NS   | `h & 1 != 0` (odd)        | column at `anchor.X-1`,  Y in `{anchor.Y-1, anchor.Y, anchor.Y+1}` |
+/// | EW   | `h < 5`                   | row    at `anchor.Y`,    X in `{anchor.X-1, anchor.X, anchor.X+1}` |
+/// | EW   | `h >= 5`                  | row    at `anchor.Y-1`,  X in `{anchor.X-1, anchor.X, anchor.X+1}` |
+///
+/// Off-map cells return `None` and are skipped by the caller.
+///
+/// `anchor_height` is whatever the consumer of `bridgehead_walk_to_anchor`
+/// uses for its closure (currently `ResolvedTerrainCell.template_height`).
+pub fn bridgehead_blow_up_row(
+    anchor_pos: (u16, u16),
+    axis: Axis,
+    anchor_height: u8,
+    map_width: u16,
+    map_height: u16,
+) -> [Option<(u16, u16)>; 3] {
+    let (anchor_x, anchor_y) = (anchor_pos.0 as i32, anchor_pos.1 as i32);
+    let (col_x, row_y) = match axis {
+        Axis::NS => {
+            let x_offset = if anchor_height & 1 == 0 { 0 } else { -1 };
+            (anchor_x + x_offset, anchor_y)
+        }
+        Axis::EW => {
+            let y_offset = if anchor_height < 5 { 0 } else { -1 };
+            (anchor_x, anchor_y + y_offset)
+        }
+    };
+    let mut out: [Option<(u16, u16)>; 3] = [None; 3];
+    for (i, delta) in [-1i32, 0, 1].iter().enumerate() {
+        let (cx, cy) = match axis {
+            Axis::NS => (col_x, row_y + delta),
+            Axis::EW => (col_x + delta, row_y),
+        };
+        if cx >= 0 && cy >= 0 && (cx as u16) < map_width && (cy as u16) < map_height {
+            out[i] = Some((cx as u16, cy as u16));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1315,5 +1363,61 @@ mod tests {
         let heights = |_: (u16, u16)| Some(8);
         let r = bridgehead_walk_to_anchor((0, 0), Axis::NS, Direction::E, heights, 1, 1);
         assert!(r.is_none());
+    }
+
+    #[test]
+    fn bridgehead_blow_up_row_ns_even_height() {
+        let row = bridgehead_blow_up_row((5, 5), Axis::NS, 4, 10, 10);
+        assert_eq!(row[0], Some((5, 4)));
+        assert_eq!(row[1], Some((5, 5)));
+        assert_eq!(row[2], Some((5, 6)));
+    }
+
+    #[test]
+    fn bridgehead_blow_up_row_ns_odd_height() {
+        let row = bridgehead_blow_up_row((5, 5), Axis::NS, 5, 10, 10);
+        assert_eq!(row[0], Some((4, 4)));
+        assert_eq!(row[1], Some((4, 5)));
+        assert_eq!(row[2], Some((4, 6)));
+    }
+
+    #[test]
+    fn bridgehead_blow_up_row_ew_low_height() {
+        let row = bridgehead_blow_up_row((5, 5), Axis::EW, 2, 10, 10);
+        assert_eq!(row[0], Some((4, 5)));
+        assert_eq!(row[1], Some((5, 5)));
+        assert_eq!(row[2], Some((6, 5)));
+    }
+
+    #[test]
+    fn bridgehead_blow_up_row_ew_high_height() {
+        let row = bridgehead_blow_up_row((5, 5), Axis::EW, 5, 10, 10);
+        assert_eq!(row[0], Some((4, 4)));
+        assert_eq!(row[1], Some((5, 4)));
+        assert_eq!(row[2], Some((6, 4)));
+    }
+
+    #[test]
+    fn bridgehead_blow_up_row_clamps_off_map_cells() {
+        let row = bridgehead_blow_up_row((0, 0), Axis::NS, 4, 10, 10);
+        assert_eq!(row[0], None);
+        assert_eq!(row[1], Some((0, 0)));
+        assert_eq!(row[2], Some((0, 1)));
+    }
+
+    #[test]
+    fn bridgehead_blow_up_row_clamps_negative_x_for_ns_odd() {
+        let row = bridgehead_blow_up_row((0, 5), Axis::NS, 5, 10, 10);
+        assert_eq!(row[0], None);
+        assert_eq!(row[1], None);
+        assert_eq!(row[2], None);
+    }
+
+    #[test]
+    fn bridgehead_blow_up_row_clamps_at_map_max() {
+        let row = bridgehead_blow_up_row((9, 9), Axis::NS, 4, 10, 10);
+        assert_eq!(row[0], Some((9, 8)));
+        assert_eq!(row[1], Some((9, 9)));
+        assert_eq!(row[2], None);
     }
 }
