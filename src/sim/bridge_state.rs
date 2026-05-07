@@ -232,7 +232,16 @@ pub struct BridgeRuntimeState {
     group_cells: BTreeMap<u16, Vec<(u16, u16)>>,
     group_hitpoints: BTreeMap<u16, u16>,
     strength_per_group: u16,
+    /// Strength constant from `[CombatDamage] BridgeStrength=` (default 1500).
+    /// Used by `apply_area_damage` BridgeStrength RNG gate (Phase F).
+    bridge_strength: u16,
     endpoint_records: Vec<BridgeEndpointRecord>,
+    /// First-class anchor spans (one per anchor cell). Replaces emergent
+    /// flag-bit detection.
+    anchor_spans: BTreeMap<u16, AnchorSpan>,
+    /// Default per-map override + rules `destroyable_by_default`. Read by
+    /// `apply_area_damage` outer gate (Phase F).
+    bridge_destroyable_flag: bool,
 }
 
 impl BridgeRuntimeState {
@@ -245,9 +254,13 @@ impl BridgeRuntimeState {
         let height = terrain.height();
         let mut cells = vec![None; width as usize * height as usize];
         let mut group_cells: BTreeMap<u16, Vec<(u16, u16)>> = BTreeMap::new();
+        let mut anchor_spans: BTreeMap<u16, AnchorSpan> = BTreeMap::new();
         let mut visited = vec![false; cells.len()];
         let mut next_group_id: u16 = 1;
+        let mut next_span_id: u16 = 1;
 
+        // Pass 1: BFS-group bridge cells by deck presence (existing
+        // group_cells used for endpoint_records + zone connectivity).
         for cell in terrain.iter() {
             let Some(index) = index_of(width, height, cell.rx, cell.ry) else {
                 continue;
@@ -255,12 +268,10 @@ impl BridgeRuntimeState {
             if visited[index] || !cell.has_bridge_deck {
                 continue;
             }
-
             let group_id = next_group_id;
             next_group_id = next_group_id.saturating_add(1);
             let mut queue = VecDeque::from([(cell.rx, cell.ry)]);
             let mut members = Vec::new();
-
             while let Some((rx, ry)) = queue.pop_front() {
                 let Some(idx) = index_of(width, height, rx, ry) else {
                     continue;
@@ -274,7 +285,6 @@ impl BridgeRuntimeState {
                 if !resolved.has_bridge_deck {
                     continue;
                 }
-
                 visited[idx] = true;
                 members.push((rx, ry));
                 cells[idx] = Some(BridgeRuntimeCell {
@@ -283,12 +293,11 @@ impl BridgeRuntimeState {
                     deck_level: resolved.bridge_deck_level,
                     bridge_group_id: Some(group_id),
                     damage_state: DamageState::Healthy { variant: 0 },
-                    axis: None, // filled by Task 7 anchor walker
-                    role: BridgeCellRole::Body, // filled by Task 7
+                    axis: bridge_layer_to_axis(resolved.bridge_layer.as_ref()),
+                    role: BridgeCellRole::Body, // overwritten in pass 2
                     anchor_span_id: None,
                     bridgehead_step: 0,
                 });
-
                 for (nx, ny) in cardinal_neighbors(rx, ry, width, height) {
                     if let Some(neighbor) = terrain.cell(nx, ny) {
                         if neighbor.has_bridge_deck {
@@ -297,9 +306,75 @@ impl BridgeRuntimeState {
                     }
                 }
             }
-
             if !members.is_empty() {
                 group_cells.insert(group_id, members);
+            }
+        }
+
+        // Pass 2: walk anchor patterns. For each cell whose
+        // bridge_layer.overlay_id matches an anchor-overlay class, emit one
+        // AnchorSpan and tag member cells with role + anchor_span_id.
+        for (&group_id, members) in &group_cells {
+            for &(rx, ry) in members {
+                let Some(resolved) = terrain.cell(rx, ry) else {
+                    continue;
+                };
+                let Some(bl) = resolved.bridge_layer.as_ref() else {
+                    continue;
+                };
+                if !is_anchor_overlay(bl.overlay_id) {
+                    continue;
+                }
+                let axis = bridge_direction_to_axis(bl.direction);
+                let direction = anchor_walk_direction(axis);
+                let span_id = next_span_id;
+                next_span_id = next_span_id.saturating_add(1);
+                let span = walk_anchor_pattern(
+                    span_id, (rx, ry), axis, direction, group_id, width, height,
+                );
+                // Tag each cell in span.
+                for (slot, cell_pos) in span.iter_cells() {
+                    if let Some(idx) = index_of(width, height, cell_pos.0, cell_pos.1) {
+                        if let Some(c) = cells[idx].as_mut() {
+                            c.role = if slot == 0 {
+                                BridgeCellRole::Anchor
+                            } else if slot == 4 {
+                                BridgeCellRole::Tail
+                            } else {
+                                BridgeCellRole::Body
+                            };
+                            c.anchor_span_id = Some(span_id);
+                            c.axis = Some(axis);
+                        }
+                    }
+                }
+                anchor_spans.insert(span_id, span);
+            }
+        }
+
+        // Pass 3: classify bridgehead cells (have bridge_layer but not
+        // anchor-overlay; not part of an AnchorSpan).
+        for cell in terrain.iter() {
+            let Some(idx) = index_of(width, height, cell.rx, cell.ry) else {
+                continue;
+            };
+            let Some(resolved) = terrain.cell(cell.rx, cell.ry) else {
+                continue;
+            };
+            let Some(bl) = resolved.bridge_layer.as_ref() else {
+                continue;
+            };
+            if is_anchor_overlay(bl.overlay_id) {
+                continue;
+            }
+            // Bridgehead cells: ramp/connection cells. May not have deck_present
+            // if treated purely as ground transition. Mark role only when
+            // a BridgeRuntimeCell already exists.
+            if let Some(c) = cells[idx].as_mut() {
+                c.role = BridgeCellRole::Bridgehead;
+                c.anchor_span_id = None;
+                c.bridgehead_step = 0;
+                c.axis = Some(bridge_direction_to_axis(bl.direction));
             }
         }
 
@@ -308,7 +383,6 @@ impl BridgeRuntimeState {
         for group_id in group_cells.keys().copied() {
             group_hitpoints.insert(group_id, strength);
         }
-
         let endpoint_records = compute_bridge_endpoints(&group_cells, terrain, width, height);
 
         Self {
@@ -318,8 +392,21 @@ impl BridgeRuntimeState {
             group_cells,
             group_hitpoints,
             strength_per_group: strength,
+            bridge_strength: strength, // currently same; Phase F can split if needed
             endpoint_records,
+            anchor_spans,
+            bridge_destroyable_flag: destroyable,
         }
+    }
+
+    /// Look up an anchor span by ID.
+    pub fn anchor_span(&self, id: u16) -> Option<&AnchorSpan> {
+        self.anchor_spans.get(&id)
+    }
+
+    /// All anchor spans, sorted by ID (BTreeMap iteration order).
+    pub fn anchor_spans(&self) -> &BTreeMap<u16, AnchorSpan> {
+        &self.anchor_spans
     }
 
     pub fn cell(&self, rx: u16, ry: u16) -> Option<&BridgeRuntimeCell> {
@@ -473,6 +560,95 @@ fn cardinal_neighbors(
         (nx >= 0 && ny >= 0 && (nx as u16) < width && (ny as u16) < height)
             .then_some((nx as u16, ny as u16))
     })
+}
+
+fn bridge_layer_to_axis(
+    layer: Option<&crate::map::resolved_terrain::BridgeLayer>,
+) -> Option<Axis> {
+    layer.map(|bl| bridge_direction_to_axis(bl.direction))
+}
+
+fn bridge_direction_to_axis(d: crate::map::resolved_terrain::BridgeDirection) -> Axis {
+    use crate::map::resolved_terrain::BridgeDirection;
+    match d {
+        BridgeDirection::EastWest => Axis::EW,
+        BridgeDirection::NorthSouth => Axis::NS,
+        // Low bridges (wood) read bridge_layer separately; treat as NS for now.
+        // Phase C may revisit if low needs distinct axis handling.
+        BridgeDirection::Low => Axis::NS,
+    }
+}
+
+/// HIGH bridge anchor overlays = 0x18, 0x19; LOW bridge anchor overlays = 0xED, 0xEE.
+///
+/// NOTE (Phase B): These overlay IDs are also used to mark every HIGH-bridge
+/// deck cell's direction, so under this predicate every HIGH-bridge cell with
+/// a bridge_layer becomes an anchor. Phase C anchor-walker correctness tests
+/// (Task 27) will tighten this to only true anchor cells.
+fn is_anchor_overlay(overlay_id: u8) -> bool {
+    matches!(overlay_id, 0x18 | 0x19 | 0xED | 0xEE)
+}
+
+/// State-machine convention: NS-axis collapse walks E (dir=2) for ramp A;
+/// EW-axis collapse walks S (dir=4) for ramp A. We pick A-direction as the
+/// canonical anchor walk direction (cell 5 then walks the opposite from anchor).
+fn anchor_walk_direction(axis: Axis) -> Direction {
+    match axis {
+        Axis::NS => Direction::E,
+        Axis::EW => Direction::S,
+    }
+}
+
+/// Walk the 6-cell anchor pattern. Cells beyond the map edge become `None`.
+fn walk_anchor_pattern(
+    span_id: u16,
+    anchor: (u16, u16),
+    axis: Axis,
+    direction: Direction,
+    bridge_group_id: u16,
+    width: u16,
+    height: u16,
+) -> AnchorSpan {
+    let mut cells: [Option<(u16, u16)>; 6] = [None; 6];
+    cells[0] = Some(anchor);
+
+    let (dx, dy) = direction.offset();
+    // Slot 1, 2, 3: walk +direction × 1, 2, 3.
+    for step in 1..=3 {
+        let nx = anchor.0 as i32 + dx * step;
+        let ny = anchor.1 as i32 + dy * step;
+        if nx >= 0 && ny >= 0 && (nx as u16) < width && (ny as u16) < height {
+            cells[step as usize] = Some((nx as u16, ny as u16));
+        }
+    }
+
+    // Slot 4: walk -direction × 1.
+    let opp = direction.opposite();
+    let (odx, ody) = opp.offset();
+    let ox = anchor.0 as i32 + odx;
+    let oy = anchor.1 as i32 + ody;
+    if ox >= 0 && oy >= 0 && (ox as u16) < width && (oy as u16) < height {
+        cells[4] = Some((ox as u16, oy as u16));
+    }
+
+    // Slot 5: optional fixed-offset only when direction == W.
+    if direction == Direction::W {
+        let ex = anchor.0 as i32 + 1;
+        let ey = anchor.1 as i32;
+        if ex >= 0 && ey >= 0 && (ex as u16) < width && (ey as u16) < height {
+            cells[5] = Some((ex as u16, ey as u16));
+        }
+    }
+
+    AnchorSpan {
+        id: span_id,
+        anchor,
+        cells,
+        axis,
+        direction,
+        damage_state: DamageState::Healthy { variant: 0 },
+        bridge_group_id,
+    }
 }
 
 #[cfg(test)]
@@ -665,5 +841,16 @@ mod tests {
         let span = make_test_span();
         let count = span.iter_cells().count();
         assert_eq!(count, 5); // 6 slots, 1 None
+    }
+
+    #[test]
+    fn anchor_spans_empty_when_bridge_layer_none() {
+        // The default test fixture sets bridge_layer: None, so pass 2 emits no
+        // anchor spans. Verifies the constructor still wires everything else.
+        let state = BridgeRuntimeState::from_resolved_terrain(&make_bridge_terrain(), true, 300);
+        assert!(state.anchor_spans().is_empty());
+        let cell = state.cell(1, 0).expect("bridge cell");
+        assert!(cell.deck_present);
+        assert!(matches!(cell.damage_state, DamageState::Healthy { .. }));
     }
 }
