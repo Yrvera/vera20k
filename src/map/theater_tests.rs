@@ -88,3 +88,25 @@ fn test_is_water_and_cliff() {
     assert!(!lookup.is_water(99));
     assert!(!lookup.is_cliff(99));
 }
+
+#[test]
+fn parses_morphable_flag_per_tileset() {
+    let ini = b"[TileSet0000]\n\
+                FileName=foo\n\
+                TilesInSet=1\n\
+                SetName=Foo\n\
+                Morphable=yes\n\
+                \n\
+                [TileSet0001]\n\
+                FileName=bar\n\
+                TilesInSet=1\n\
+                SetName=Bar\n\
+                \n\
+                [TileSet0002]\n\
+                TilesInSet=-1\n";
+    let lookup = parse_tileset_ini(ini, "tem").unwrap();
+    // tile_id 0 = first tile of TileSet0000 (Morphable=yes)
+    assert!(lookup.is_morphable(0));
+    // tile_id 1 = first tile of TileSet0001 (Morphable= unset → default false)
+    assert!(!lookup.is_morphable(1));
+}
