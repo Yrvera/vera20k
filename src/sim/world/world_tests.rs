@@ -1536,7 +1536,10 @@ fn test_attack_move_auto_acquires_enemy() {
         .attack_target
         .as_ref()
         .expect("attack-move should acquire target");
-    assert_eq!(attack.target, 2);
+    assert!(matches!(
+        attack.target,
+        crate::sim::combat::TargetKind::Entity(2)
+    ));
     assert!(sim.entities.get(1).unwrap().order_intent.is_some());
 }
 

@@ -15,6 +15,7 @@
 
 use crate::rules::ruleset::RuleSet;
 use crate::sim::aircraft::AircraftMission;
+use crate::sim::combat::{AttackTarget, TargetKind};
 use crate::sim::entity_store::EntityStore;
 use crate::sim::intern::StringInterner;
 use crate::util::fixed_math::SimFixed;
@@ -27,6 +28,49 @@ const FIRING_ARC_TOLERANCE: u16 = 0x800;
 /// Distance threshold for "in weapon range" checks, in cells (SimFixed).
 /// Used as fallback when weapon range lookup fails.
 const DEFAULT_WEAPON_RANGE_CELLS: SimFixed = SimFixed::lit("5");
+
+/// Resolved status of an aircraft's current attack target — abstracts over
+/// Entity vs Cell so the state machine doesn't care which kind it is.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AircraftTargetStatus {
+    /// Target cell coord (entity position for Entity, cell coord for Cell).
+    pub rx: u16,
+    pub ry: u16,
+    /// True if the target is engageable (entity alive, or always-true for cells).
+    pub alive: bool,
+    /// Original `TargetKind` — passed through to the fire signal so the
+    /// projectile pipeline knows whether the destination is an entity or coords.
+    pub kind: TargetKind,
+}
+
+/// Look up the aircraft's current target status.
+///
+/// Returns `None` if `attack_target` is `None`. For Entity targets, returns
+/// `None` if the entity has despawned. For Cell targets, always returns `Some`
+/// (cells "always exist"; the player explicitly chose this cell).
+pub(crate) fn aircraft_target_status(
+    at: Option<&AttackTarget>,
+    entities: &EntityStore,
+) -> Option<AircraftTargetStatus> {
+    let at = at?;
+    match at.target {
+        TargetKind::Entity(id) => {
+            let target = entities.get(id)?;
+            Some(AircraftTargetStatus {
+                rx: target.position.rx,
+                ry: target.position.ry,
+                alive: !target.dying && target.health.current > 0,
+                kind: TargetKind::Entity(id),
+            })
+        }
+        TargetKind::Cell(rx, ry) => Some(AircraftTargetStatus {
+            rx,
+            ry,
+            alive: true,
+            kind: TargetKind::Cell(rx, ry),
+        }),
+    }
+}
 
 /// Advance the attack mission state machine for one aircraft entity.
 ///
@@ -45,8 +89,10 @@ pub fn tick_attack_state(
         return AttackTickResult::transition(AircraftMission::Idle);
     };
 
-    // Read target stable_id from attack_target.
-    let target_id = entity.attack_target.as_ref().map(|at| at.target);
+    // Resolve target as Entity-position-or-Cell-coord, with alive flag.
+    // Cell targets always resolve (cells don't despawn); Entity targets resolve
+    // to None if the target has been removed.
+    let target_status = aircraft_target_status(entity.attack_target.as_ref(), entities);
     let ammo_current = entity.aircraft_ammo.as_ref().map_or(-1, |a| a.current);
     let entity_rx = entity.position.rx;
     let entity_ry = entity.position.ry;
@@ -74,7 +120,7 @@ pub fn tick_attack_state(
         // → State 3 (has target) or State 10 (no target, RTB)
         // ---------------------------------------------------------------
         0 => {
-            if target_id.is_none() || target_id.and_then(|tid| entities.get(tid)).is_none() {
+            if target_status.map_or(true, |s| !s.alive) {
                 return AttackTickResult::transition(AircraftMission::Attack {
                     sub_state: 10,
                     has_fired: false,
@@ -94,21 +140,14 @@ pub fn tick_attack_state(
         // If in range: → State 4 (fire).
         // ---------------------------------------------------------------
         3 => {
-            let Some(tid) = target_id else {
+            let Some(status) = target_status else {
                 return AttackTickResult::transition(AircraftMission::Attack {
                     sub_state: 10,
                     has_fired,
                     is_strafe: false,
                 });
             };
-            let Some(target) = entities.get(tid) else {
-                return AttackTickResult::transition(AircraftMission::Attack {
-                    sub_state: 10,
-                    has_fired,
-                    is_strafe: false,
-                });
-            };
-            if target.dying || target.health.current == 0 {
+            if !status.alive {
                 return AttackTickResult::transition(AircraftMission::Attack {
                     sub_state: 10,
                     has_fired,
@@ -117,8 +156,8 @@ pub fn tick_attack_state(
             }
 
             // Distance check (cell-based Chebyshev).
-            let dx = (entity_rx as i32 - target.position.rx as i32).abs();
-            let dy = (entity_ry as i32 - target.position.ry as i32).abs();
+            let dx = (entity_rx as i32 - status.rx as i32).abs();
+            let dy = (entity_ry as i32 - status.ry as i32).abs();
             let dist = SimFixed::from_num(dx.max(dy));
 
             if dist <= weapon_range_cells {
@@ -136,7 +175,7 @@ pub fn tick_attack_state(
                         has_fired,
                         is_strafe: false,
                     },
-                    (target.position.rx, target.position.ry),
+                    (status.rx, status.ry),
                 )
             }
         }
@@ -147,24 +186,24 @@ pub fn tick_attack_state(
         // → State 10 (RTB) or State 5 (strafe) based on FlyBy.
         // ---------------------------------------------------------------
         4 => {
-            let Some(tid) = target_id else {
+            let Some(status) = target_status else {
                 return AttackTickResult::transition(AircraftMission::Attack {
                     sub_state: 10,
                     has_fired,
                     is_strafe: false,
                 });
             };
-            let Some(target) = entities.get(tid) else {
+            if !status.alive {
                 return AttackTickResult::transition(AircraftMission::Attack {
                     sub_state: 10,
                     has_fired,
                     is_strafe: false,
                 });
-            };
+            }
 
             // Firing arc check: ±11.25° (0x800 in 16-bit facing).
-            let target_dx = target.position.rx as i32 - entity_rx as i32;
-            let target_dy = target.position.ry as i32 - entity_ry as i32;
+            let target_dx = status.rx as i32 - entity_rx as i32;
+            let target_dy = status.ry as i32 - entity_ry as i32;
             let target_facing_u8 = crate::sim::movement::facing_from_delta(target_dx, target_dy);
             // Convert both to 16-bit for arc comparison.
             let entity_facing_16: u16 = (entity_facing as u16) << 8;
@@ -181,7 +220,7 @@ pub fn tick_attack_state(
                         has_fired,
                         is_strafe: false,
                     },
-                    (target.position.rx, target.position.ry),
+                    (status.rx, status.ry),
                 );
             }
 
@@ -198,7 +237,7 @@ pub fn tick_attack_state(
                     has_fired: true,
                     is_strafe: fly_by,
                 },
-                tid,
+                status.kind,
             )
         }
 
@@ -206,7 +245,7 @@ pub fn tick_attack_state(
         // State 5: STRAFE_FIRE — secondary fire pass, continues strafing.
         // ---------------------------------------------------------------
         5 => {
-            let Some(tid) = target_id else {
+            let Some(status) = target_status else {
                 return AttackTickResult::transition(AircraftMission::Attack {
                     sub_state: 10,
                     has_fired,
@@ -219,7 +258,7 @@ pub fn tick_attack_state(
                     has_fired: true,
                     is_strafe: true,
                 },
-                tid,
+                status.kind,
             )
         }
 
@@ -236,21 +275,14 @@ pub fn tick_attack_state(
                     is_strafe: false,
                 });
             }
-            let Some(tid) = target_id else {
+            let Some(status) = target_status else {
                 return AttackTickResult::transition(AircraftMission::Attack {
                     sub_state: 10,
                     has_fired,
                     is_strafe: false,
                 });
             };
-            let Some(target) = entities.get(tid) else {
-                return AttackTickResult::transition(AircraftMission::Attack {
-                    sub_state: 10,
-                    has_fired,
-                    is_strafe: false,
-                });
-            };
-            if target.dying || target.health.current == 0 {
+            if !status.alive {
                 return AttackTickResult::transition(AircraftMission::Attack {
                     sub_state: 10,
                     has_fired,
@@ -264,7 +296,7 @@ pub fn tick_attack_state(
                     has_fired: true,
                     is_strafe: true,
                 },
-                tid,
+                status.kind,
             )
         }
 
@@ -272,7 +304,7 @@ pub fn tick_attack_state(
         // State 9: STRAFE_FINAL — last strafe pass, re-evaluate target.
         // ---------------------------------------------------------------
         9 => {
-            let Some(tid) = target_id else {
+            let Some(status) = target_status else {
                 return AttackTickResult::transition(AircraftMission::Attack {
                     sub_state: 10,
                     has_fired,
@@ -285,7 +317,7 @@ pub fn tick_attack_state(
                     has_fired: true,
                     is_strafe: false,
                 },
-                tid,
+                status.kind,
             )
         }
 
@@ -303,9 +335,7 @@ pub fn tick_attack_state(
 
             // Re-engage check: still have ammo and target alive?
             let can_reengage = ammo_current + result_ammo_delta > 0
-                && target_id
-                    .and_then(|tid| entities.get(tid))
-                    .is_some_and(|t| !t.dying && t.health.current > 0);
+                && target_status.is_some_and(|s| s.alive);
 
             if can_reengage {
                 AttackTickResult {
@@ -342,7 +372,9 @@ pub struct AttackTickResult {
     /// Ammo change to apply (-1 for decrement on HasFired, 0 otherwise).
     pub ammo_delta: i32,
     /// If Some, the combat system should fire at this target this tick.
-    pub fire_at: Option<u64>,
+    /// Carries `TargetKind` so the projectile pipeline knows whether the
+    /// destination is an entity or a ground cell (force-fire on terrain).
+    pub fire_at: Option<TargetKind>,
     /// If Some, issue an air move command toward this cell.
     pub move_to: Option<(u16, u16)>,
 }
@@ -375,11 +407,11 @@ impl AttackTickResult {
         }
     }
 
-    fn fire(mission: AircraftMission, target_id: u64) -> Self {
+    fn fire(mission: AircraftMission, target: TargetKind) -> Self {
         Self {
             new_mission: mission,
             ammo_delta: 0,
-            fire_at: Some(target_id),
+            fire_at: Some(target),
             move_to: None,
         }
     }

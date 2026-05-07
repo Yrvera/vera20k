@@ -45,8 +45,10 @@ pub(crate) struct GarrisonSnapshot {
 pub(crate) struct AttackerSnapshot {
     pub stable_id: u64,
     pub owner: InternedId,
-    /// Target's stable entity ID.
-    pub target: u64,
+    /// What the attacker is firing at — entity ID or cell coord.
+    /// Cell targets skip auto-retarget and friendly-fire checks (the player
+    /// explicitly chose this cell).
+    pub target: super::TargetKind,
     pub pos_rx: u16,
     pub pos_ry: u16,
     pub sub_x: SimFixed,
@@ -87,7 +89,7 @@ pub fn acquire_best_target_for_entity(
     let snapshot = AttackerSnapshot {
         stable_id: entity.stable_id,
         owner: entity.owner,
-        target: 0, // Dummy — no current target when acquiring fresh
+        target: super::TargetKind::Entity(0), // Dummy — no current target when acquiring fresh
         pos_rx: entity.position.rx,
         pos_ry: entity.position.ry,
         sub_x: entity.position.sub_x,

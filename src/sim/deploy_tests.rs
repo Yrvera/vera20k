@@ -516,7 +516,7 @@ fn combat_fires_during_deployed_attack() {
     let gi = spawn_infantry(&mut sim, "E1", "Americans", 10, 10);
     sim.entities.get_mut(gi).unwrap().deploy_state = Some(DeployPhase::Deployed);
     sim.entities.get_mut(gi).unwrap().attack_target = Some(AttackTarget {
-        target: 9999,
+        target: crate::sim::combat::TargetKind::Entity(9999),
         cooldown_ticks: 10,
         burst_remaining: 0,
         burst_delay_ticks: 0,
