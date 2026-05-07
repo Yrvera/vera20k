@@ -165,6 +165,7 @@ fn build_temp_map_data_for_seeding(state: &AppState) -> crate::map::map_file::Ma
         cells: Vec::new(),
         entities: Vec::new(),
         overlays: Vec::new(),
+        smudges: Vec::new(),
         terrain_objects: Vec::new(),
         waypoints: state.waypoints.clone(),
         cell_tags: std::collections::HashMap::new(),

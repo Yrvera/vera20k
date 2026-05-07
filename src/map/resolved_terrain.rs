@@ -1293,6 +1293,7 @@ mod tests {
             cells,
             entities: Vec::new(),
             overlays,
+            smudges: Vec::new(),
             terrain_objects,
             waypoints: HashMap::new(),
             cell_tags: HashMap::new(),
