@@ -9,7 +9,26 @@ Red Alert 2: Yuri's Revenge — rebuilt from scratch in Rust.
 
 The entire engine is built from two things: structs and functions. There are zero abstraction layers. Code is logically organized in files and folders. The codebase is therefore very machine and human friendly.
 
-### All game state lives in one struct: `Simulation`
+The top-level layout under `src/`, roughly bottom-up:
+
+- `assets/` — format parsers for `.mix`, `.shp`, `.vxl`, `.pal`, `.tmp`, `.hva`, `.csf`, `.aud`. Written from scratch with `nom`, no third-party RA2 libs.
+- `util/` — low-level helpers: fixed-point math, bit utilities. Reusable everywhere.
+- `rules/` — parses `rulesmd.ini` / `artmd.ini` and exposes the resolved game rules.
+- `map/` — `.mmx` / `.map` parsing, theater handling (temperate / snow / urban), resolved terrain.
+- `sim/` — game state and deterministic behavior. Owns `Simulation`. Never depends on render / audio / ui / net. Major subsystems sit in their own subdirs: `combat/`, `movement/`, `pathfinding/`, `aircraft/`, `production/`, `miner/`, `superweapon/`, `vision/`, `docking/`, `world/`.
+- `render/` — wgpu sprite renderer, atlases, draw passes. Reads from sim, never writes back.
+- `sidebar/` — custom-drawn build / cameo sidebar.
+- `ui/` — egui overlays (debug panels, save/load, lobby).
+- `audio/` — sound playback through `rodio`; drains events produced by sim.
+- `net/` — multiplayer transport and lockstep.
+- `bin/` — auxiliary tools: mix browser, BIK video player, INI extractor.
+- `app_*.rs` files at the root of `src/` — the app layer that wires sim, render, ui, audio, and net together.
+
+When adding a new file, ask which of those concerns it belongs to. If it's gameplay logic, it goes in `sim/`. If it touches the GPU, it goes in `render/`. If it talks to both, it's app layer.
+
+To learn what a specific file does, read its `//!` header — every module starts with a short comment stating its purpose and what it depends on. For deeper dives into how systems mirror the original `gamemd.exe`, the research archive in `ra2-rust-game-docs/` holds 140+ Ghidra reports covering struct layouts, INI keys, and game-mechanic specifics.
+
+All game state lives in one struct: `Simulation`.
 
 It contains:
 
@@ -29,11 +48,11 @@ It contains:
 
 Each of those is a plain struct or a map of structs. No behavior attached to them.
 
-### Each `GameEntity` is one struct with optional fields
+Each `GameEntity` is one struct with optional fields.
 
 Every object in the game — tank, soldier, building, aircraft — is the same struct. Always-present fields: `stable_id`, `position`, `health`, `owner`, `facing`, `type_ref`, `category`. Optional fields are `Option<T>`: a tank has `locomotor` + `turret_facing` + `drive_track`, a building has `production`, a harvester has `miner`. No component has methods — they're all data.
 
-### Behavior is plain functions
+Behavior is plain functions.
 
 (Example functions below)
 - `tick_movement()` — reads entity positions and locomotor data, writes new positions
@@ -45,11 +64,11 @@ Every object in the game — tank, soldier, building, aircraft — is the same s
 
 These functions all read and write to the same `Simulation` struct. 45 times a second at 45 FPS(standard multiplayer FPS) There is no message buses, no event systems.
 
-### The game loop is one function calling the others in order
+The game loop is one function calling the others in order.
 
 `Simulation::advance_tick()` calls: commands → movement → combat → vision → power → superweapons → production → AI → defeat check → state hash. Every tick, same order.
 
-### Rendering
+Rendering.
 
 A 2D sprite renderer using wgpu. At map load, all sprites (buildings, infantry, terrain tiles, overlays) are packed into atlas textures — big images containing many sprites side by side. Voxel models (vehicles, aircraft) are pre-rendered into 2D sprites and packed into atlases the same way.
 
@@ -57,7 +76,7 @@ Each frame, the renderer walks through all entities in `Simulation`, reads their
 
 The render code only reads from `Simulation`. It never writes back. You can change rendering without touching game logic, and vice versa.
 
-### App layer
+App layer.
 
 The app layer wires everything together. It contains no game logic and no rendering logic — just the connections between them.
 
@@ -68,6 +87,8 @@ The simulation runs at a fixed 45 ticks per second, independent of frame rate. T
 After each tick, the app layer hands the updated simulation state to the renderer, which draws the frame. It also drains sound events that the simulation produced (weapon fired, unit died, construction complete) and plays them through the audio system.
 
 Like everything else, it's split into files by concern — `app_input.rs`, `app_camera.rs`, `app_commands.rs`, `app_sidebar_build.rs` — but they're all just functions operating on one shared `AppState` struct. 
+
+Everything in `Simulation` is deterministic. All sim math uses `fixed`-point types — never `f32` / `f64`, since floats drift across CPUs. There is exactly one RNG (`SimRng`); any code that needs randomness pulls from it. `EntityStore` is a `BTreeMap<u64, GameEntity>` so iteration order is stable. At the end of every tick the simulation produces a state hash — two clients on the same inputs must agree on it. That's what makes lockstep multiplayer and replays work, and it's why nothing in `sim/` is allowed to call into `render/`, `audio/`, `ui/`, or `net/`.
 
 ---
 
