@@ -429,6 +429,10 @@ pub struct GeneralRules {
     pub mutate_explosion_warhead: String,
     /// Whether MutateExplosion is enabled (MutateExplosion= in [General]). Default true.
     pub mutate_explosion: bool,
+    /// `[General] MetallicDebris=` — list of animation names to spawn (50%-RNG
+    /// gated, count-checked) on bridge-cell collapse. Default 20 entries.
+    /// Mirrors gamemd `Rules+0x140` (data ptr) / `+0x14C` (count).
+    pub metallic_debris: Vec<String>,
 }
 
 /// Default animation rate when art.ini section is missing.
@@ -584,6 +588,15 @@ impl Default for GeneralRules {
             mutate_warhead: "Mutate".to_string(),
             mutate_explosion_warhead: "MutateExplosion".to_string(),
             mutate_explosion: true,
+            metallic_debris: vec![
+                "DBRIS1LG", "DBRIS2LG", "DBRIS3LG", "DBRIS4LG", "DBRIS5LG",
+                "DBRIS6LG", "DBRIS7LG", "DBRIS8LG", "DBRIS9LG", "DBRS10LG",
+                "DBRIS1SM", "DBRIS2SM", "DBRIS3SM", "DBRIS4SM", "DBRIS5SM",
+                "DBRIS6SM", "DBRIS7SM", "DBRIS8SM", "DBRIS9SM", "DBRS10SM",
+            ]
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect(),
         }
     }
 }
@@ -966,6 +979,16 @@ impl GeneralRules {
                 .unwrap_or("MutateExplosion")
                 .to_string(),
             mutate_explosion: general.get_bool("MutateExplosion").unwrap_or(true),
+            metallic_debris: general
+                .get("MetallicDebris")
+                .map(|v| {
+                    v.split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect::<Vec<_>>()
+                })
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| Self::default().metallic_debris),
         }
     }
 
@@ -2176,6 +2199,22 @@ MutateWarhead=MyMutate\n\
             .terrain_object_type_case_insensitive("TREE01")
             .expect("TREE01 should be parsed");
         assert!(!tree.spawns_tiberium);
+    }
+
+    #[test]
+    fn metallic_debris_default_matches_retail() {
+        let g = GeneralRules::default();
+        assert_eq!(g.metallic_debris.len(), 20);
+        assert_eq!(g.metallic_debris[0], "DBRIS1LG");
+        assert_eq!(g.metallic_debris[19], "DBRS10SM");
+    }
+
+    #[test]
+    fn metallic_debris_parses_from_ini() {
+        let ini =
+            IniFile::from_str("[General]\nMetallicDebris=ANIM1,ANIM2,ANIM3\n");
+        let g = GeneralRules::from_ini(&ini);
+        assert_eq!(g.metallic_debris, vec!["ANIM1", "ANIM2", "ANIM3"]);
     }
 
     #[test]
