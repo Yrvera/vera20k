@@ -29,6 +29,7 @@ impl Simulation {
         self.hash_fog_and_alliances(&mut hasher);
         self.hash_bridge_state(&mut hasher);
         self.hash_overlay_grid(&mut hasher);
+        self.hash_smudge_grid(&mut hasher);
         self.hash_super_weapons(&mut hasher);
         self.hash_entities(&mut hasher);
         self.hash_particle_systems(&mut hasher);
@@ -236,6 +237,26 @@ impl Simulation {
             ry.hash(hasher);
             cell.overlay_id.hash(hasher);
             cell.overlay_data.hash(hasher);
+        }
+    }
+
+    /// Hash all occupied smudge cells in stable cell-coord order.
+    /// Must be deterministic across replays — visual divergence between clients
+    /// is jarring even though smudges are cosmetic.
+    fn hash_smudge_grid(&self, hasher: &mut impl Hasher) {
+        let Some(grid) = &self.smudge_grid else {
+            0u8.hash(hasher);
+            return;
+        };
+        1u8.hash(hasher);
+        let mut entries: Vec<(u16, u16, Option<u16>, Option<(u16, u16)>, u8)> =
+            grid.iter_occupied()
+                .map(|(rx, ry, c)| (rx, ry, c.type_id, c.footprint_origin, c.frame_offset))
+                .collect();
+        entries.sort();
+        entries.len().hash(hasher);
+        for e in &entries {
+            e.hash(hasher);
         }
     }
 
@@ -479,5 +500,31 @@ mod particle_hash_tests {
             sim_b.state_hash(),
             "terrain_spawners must affect state hash",
         );
+    }
+}
+
+#[cfg(test)]
+mod smudge_hash_tests {
+    use super::*;
+    use crate::sim::smudge_grid::{SmudgeCell, SmudgeGrid};
+
+    #[test]
+    fn hash_changes_when_smudge_placed() {
+        let mut sim = Simulation::new();
+        sim.smudge_grid = Some(SmudgeGrid::new(8, 8));
+        let h0 = sim.state_hash();
+        if let Some(grid) = sim.smudge_grid.as_mut() {
+            grid.test_force_set(
+                2,
+                3,
+                SmudgeCell {
+                    type_id: Some(0),
+                    footprint_origin: Some((2, 3)),
+                    frame_offset: 0,
+                },
+            );
+        }
+        let h1 = sim.state_hash();
+        assert_ne!(h0, h1);
     }
 }
