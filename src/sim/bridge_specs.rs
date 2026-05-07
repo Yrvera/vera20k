@@ -387,6 +387,69 @@ pub fn apply_ramp_transition(
     }
 }
 
+/// Pick the next overlay byte for a destroying bridge cell. Mirrors
+/// `ApplyBridgeDestruction_NS_High @ 0x57E7A0` and `_EW_High @ 0x57ED00`
+/// (HIGH §11.2). Indexed by the result of `CheckBridgeNeighbors_*` —
+/// i.e., a small integer encoding which adjacent cells still hold bridge
+/// overlay. Distinct from `apply_ramp_transition` which handles state
+/// (CellClass+0x11E); this one writes the visible overlay byte (+0x44).
+///
+/// `0xFF` in the table represents the binary's `-1` sentinel ("no
+/// transition for this neighbor pattern" — leave overlay alone).
+pub fn pick_destruction_overlay(
+    neighbor_check: u8,
+    axis: Axis,
+    is_high_bridge: bool,
+) -> Option<u8> {
+    if neighbor_check >= 16 {
+        return None;
+    }
+    let table: &[u8; 16] = match (axis, is_high_bridge) {
+        (Axis::NS, true) => &DESTRUCTION_OVERLAY_HIGH_NS,
+        (Axis::EW, true) => &DESTRUCTION_OVERLAY_HIGH_EW,
+        (Axis::NS, false) => &DESTRUCTION_OVERLAY_LOW_NS,
+        (Axis::EW, false) => &DESTRUCTION_OVERLAY_LOW_EW,
+    };
+    let val = table[neighbor_check as usize];
+    if val == 0xFF { None } else { Some(val) }
+}
+
+/// HIGH NS destruction overlay table per HIGH §11.2 (`ApplyBridgeDestruction_NS_High`
+/// @ `0x57E7A0`). Indexed by `CheckBridgeNeighbors_EW_High` result.
+/// All 16 entries verified live byte-for-byte (indices 11..=15 explicitly
+/// initialized to `0xffffffff` in the function prologue — no fall-through).
+static DESTRUCTION_OVERLAY_HIGH_NS: [u8; 16] = [
+    0xFF, 0xD2, 0xD5, 0xFF, 0xD1, 0xD3, 0xD5, 0xFF,
+    0xD4, 0xD4, 0xE7, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+];
+
+/// HIGH EW destruction overlay table per HIGH §11.2 (`ApplyBridgeDestruction_EW_High`
+/// @ `0x57ED00`). Indexed by `CheckBridgeNeighbors_NS_High` result.
+static DESTRUCTION_OVERLAY_HIGH_EW: [u8; 16] = [
+    0xFF, 0xDB, 0xDE, 0xFF, 0xDA, 0xDC, 0xDE, 0xFF,
+    0xDD, 0xDD, 0xE8, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+];
+
+/// LOW NS destruction overlay table per `ApplyBridgeDestruction_NS_Low`
+/// @ `0x0057DD50` (verified live, see HIGH_BRIDGE_DAMAGE_STATE_MACHINE_GHIDRA_REPORT.md
+/// §11.2-LOW). Indexed by `CheckBridgeNeighbors_EW_Low` result. Final
+/// destroyed byte = `0x64`. Outer overlay gate: `0x4A..=0x65`.
+/// Progressive intermediates (handled by caller, not table):
+/// `0x5C → 0x5D`, `0x5E → 0x5F`.
+static DESTRUCTION_OVERLAY_LOW_NS: [u8; 16] = [
+    0xFF, 0x4F, 0x52, 0xFF, 0x4E, 0x50, 0x52, 0xFF,
+    0x51, 0x51, 0x64, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+];
+
+/// LOW EW destruction overlay table per `ApplyBridgeDestruction_EW_Low`
+/// @ `0x0057E2A0` (verified live). Indexed by `CheckBridgeNeighbors_NS_Low`
+/// result. Final destroyed byte = `0x65`. Outer overlay gate: `0x4A..=0x65`.
+/// Progressive intermediates: `0x60 → 0x61`, `0x62 → 0x63`.
+static DESTRUCTION_OVERLAY_LOW_EW: [u8; 16] = [
+    0xFF, 0x58, 0x5B, 0xFF, 0x57, 0x59, 0x5B, 0xFF,
+    0x5A, 0x5A, 0x65, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -763,5 +826,61 @@ mod tests {
         assert_eq!(apply_ramp_transition(15, Axis::NS, Phase::DamageA), None);
         // State outside both ranges.
         assert_eq!(apply_ramp_transition(0xFF, Axis::NS, Phase::DamageA), None);
+    }
+
+    #[test]
+    fn destruction_overlay_high_ns_known_entries() {
+        // Spot-check verified entries from HIGH §11.2.
+        assert_eq!(pick_destruction_overlay(1, Axis::NS, true), Some(0xD2));
+        assert_eq!(pick_destruction_overlay(2, Axis::NS, true), Some(0xD5));
+        assert_eq!(pick_destruction_overlay(4, Axis::NS, true), Some(0xD1));
+        assert_eq!(pick_destruction_overlay(10, Axis::NS, true), Some(0xE7)); // final destroyed
+    }
+
+    #[test]
+    fn destruction_overlay_high_ew_known_entries() {
+        assert_eq!(pick_destruction_overlay(1, Axis::EW, true), Some(0xDB));
+        assert_eq!(pick_destruction_overlay(2, Axis::EW, true), Some(0xDE));
+        assert_eq!(pick_destruction_overlay(10, Axis::EW, true), Some(0xE8)); // final destroyed
+    }
+
+    #[test]
+    fn destruction_overlay_unused_indices_return_none() {
+        assert_eq!(pick_destruction_overlay(0, Axis::NS, true), None);
+        assert_eq!(pick_destruction_overlay(3, Axis::NS, true), None);
+        assert_eq!(pick_destruction_overlay(11, Axis::NS, true), None);
+    }
+
+    #[test]
+    fn destruction_overlay_out_of_range_returns_none() {
+        assert_eq!(pick_destruction_overlay(16, Axis::NS, true), None);
+        assert_eq!(pick_destruction_overlay(0xFF, Axis::EW, true), None);
+    }
+
+    #[test]
+    fn destruction_overlay_low_ns_known_entries() {
+        // Verified from ApplyBridgeDestruction_NS_Low @ 0x0057DD50.
+        assert_eq!(pick_destruction_overlay(1, Axis::NS, false), Some(0x4F));
+        assert_eq!(pick_destruction_overlay(2, Axis::NS, false), Some(0x52));
+        assert_eq!(pick_destruction_overlay(4, Axis::NS, false), Some(0x4E));
+        assert_eq!(pick_destruction_overlay(10, Axis::NS, false), Some(0x64)); // final destroyed
+    }
+
+    #[test]
+    fn destruction_overlay_low_ew_known_entries() {
+        // Verified from ApplyBridgeDestruction_EW_Low @ 0x0057E2A0.
+        assert_eq!(pick_destruction_overlay(1, Axis::EW, false), Some(0x58));
+        assert_eq!(pick_destruction_overlay(2, Axis::EW, false), Some(0x5B));
+        assert_eq!(pick_destruction_overlay(4, Axis::EW, false), Some(0x57));
+        assert_eq!(pick_destruction_overlay(10, Axis::EW, false), Some(0x65)); // final destroyed
+    }
+
+    #[test]
+    fn destruction_overlay_low_unused_indices_return_none() {
+        // Slots 0/3/7/11..=15 unused in both NS and EW LOW tables.
+        for i in [0, 3, 7, 11, 12, 13, 14, 15] {
+            assert_eq!(pick_destruction_overlay(i, Axis::NS, false), None, "NS slot {i}");
+            assert_eq!(pick_destruction_overlay(i, Axis::EW, false), None, "EW slot {i}");
+        }
     }
 }
