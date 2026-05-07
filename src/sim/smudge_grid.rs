@@ -24,8 +24,12 @@ pub enum SmudgeKind {
 ///
 /// `type_id` indexes into SmudgeTypeRegistry. None = no smudge on this cell.
 /// `footprint_origin` is the top-left cell of the W×H footprint that owns this cell.
-/// `frame_offset` is the SHP frame index within the footprint
-/// (computed as `(rx - origin.rx) + (ry - origin.ry) * footprint_width`).
+/// `frame_offset` distinguishes the footprint origin (== 0) from non-origin
+/// cells of multi-cell smudges. Computed as
+/// `(rx - origin.rx) + (ry - origin.ry) * footprint_width`. The origin cell
+/// of any placed footprint always has `frame_offset == 0`. Non-origin cells
+/// are skipped at render time — multi-cell SmudgeType SHPs have a single
+/// composite frame, drawn once per footprint at the origin cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default,
          serde::Serialize, serde::Deserialize)]
 pub struct SmudgeCell {

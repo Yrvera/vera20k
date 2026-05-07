@@ -5,9 +5,11 @@
 //! entity pass so smudges sit on top of the ground but underneath units and
 //! buildings.
 //!
-//! Smudges are static — no animation, no remap, no facing. The frame_offset
-//! on each SmudgeCell selects the correct sub-frame within the W×H footprint
-//! of the parent SmudgeType's SHP.
+//! Smudges are static — no animation, no remap, no facing. Multi-cell
+//! SmudgeType SHPs have a single composite frame; render emits one
+//! SpriteInstance per footprint origin cell. The `frame_offset` on each
+//! SmudgeCell distinguishes the footprint origin (== 0) from non-origin
+//! cells, so the loop here skips cells where `frame_offset != 0`.
 //!
 //! ## Dependency rules
 //! - Part of render/ — depends on map/, rules/, sim/.
