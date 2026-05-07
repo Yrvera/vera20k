@@ -687,6 +687,95 @@ fn probe_terrain_shp_frame_count(
     1
 }
 
+/// Load and render a single SmudgeType SHP frame 0 to RGBA pixels.
+///
+/// Smudges always render with the iso theater palette and use a
+/// `(-full_w/2, -full_h/2)` anchor centered on the footprint-origin cell.
+/// Multi-cell SmudgeTypes have a single composite SHP frame whose internal
+/// `frame_x`/`frame_y` already places the visual correctly relative to the
+/// canvas center.
+fn render_smudge_sprite(
+    asset_manager: &AssetManager,
+    palette: &Palette,
+    key_name: &str,
+    file_basename: &str,
+    theater_ext: &str,
+) -> Option<RenderedOverlay> {
+    let candidates: Vec<String> = smudge_shp_candidates(file_basename, theater_ext);
+
+    let mut found_name: String = String::new();
+    let mut shp_opt: Option<ShpFile> = None;
+    for candidate in &candidates {
+        let Some(data) = asset_manager.get_ref(candidate) else {
+            continue;
+        };
+        let Ok(shp) = ShpFile::from_bytes(data) else {
+            continue;
+        };
+        let has_drawable = shp
+            .frames
+            .iter()
+            .any(|fr| fr.frame_width > 0 && fr.frame_height > 0);
+        if !has_drawable {
+            continue;
+        }
+        found_name = candidate.clone();
+        shp_opt = Some(shp);
+        break;
+    }
+    let shp: ShpFile = shp_opt?;
+    log::trace!("Smudge sprite {} uses {}", key_name, found_name);
+
+    if shp.frames.is_empty() {
+        return None;
+    }
+    let frame = &shp.frames[0];
+    if frame.frame_width == 0 || frame.frame_height == 0 {
+        return None;
+    }
+
+    let frame_rgba: Vec<u8> = match shp.frame_to_rgba(0, palette) {
+        Ok(rgba) => rgba,
+        Err(_) => return None,
+    };
+
+    let full_w: u32 = shp.width as u32;
+    let full_h: u32 = shp.height as u32;
+    let mut full_rgba: Vec<u8> = vec![0u8; (full_w * full_h * 4) as usize];
+
+    let fw: u32 = frame.frame_width as u32;
+    let fh: u32 = frame.frame_height as u32;
+    let fx: u32 = frame.frame_x as u32;
+    let fy: u32 = frame.frame_y as u32;
+
+    for y in 0..fh {
+        let dst_y: u32 = fy + y;
+        if dst_y >= full_h {
+            break;
+        }
+        let src_off: usize = (y * fw * 4) as usize;
+        let copy_w: u32 = fw.min(full_w.saturating_sub(fx));
+        let dst_off: usize = ((dst_y * full_w + fx) * 4) as usize;
+        let bytes: usize = (copy_w * 4) as usize;
+        if src_off + bytes <= frame_rgba.len() && dst_off + bytes <= full_rgba.len() {
+            full_rgba[dst_off..dst_off + bytes]
+                .copy_from_slice(&frame_rgba[src_off..src_off + bytes]);
+        }
+    }
+
+    let offset_x: f32 = -(full_w as f32) / 2.0;
+    let offset_y: f32 = -(full_h as f32) / 2.0;
+
+    Some(RenderedOverlay {
+        key: smudge_key(key_name),
+        rgba: full_rgba,
+        width: full_w,
+        height: full_h,
+        offset_x,
+        offset_y,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::decrement_numeric_suffix;
