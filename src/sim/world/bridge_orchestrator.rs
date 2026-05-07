@@ -18,6 +18,8 @@
 //! `Simulation::apply_bridge_damage_events` + `resolve_bridge_state_changes`
 //! still drive bridge damage. The atomic switchover lands in Task 14.
 
+use std::collections::BTreeSet;
+
 use crate::rules::ruleset::RuleSet;
 use crate::sim::bridge_state::{
     BridgeDamageContext, BridgeDamageEvent, DispatchPath, StateOutcome,
@@ -63,15 +65,89 @@ pub(crate) fn apply_bridge_damage_events(
     };
 
     // Run dispatch loop with split borrows: bridge_state &mut, terrain &,
-    // rng &mut. Outcomes are collected for the cascade phase (Tasks 10-13).
-    let _outcomes: Vec<StateOutcome> = run_dispatch_loop(sim, events, bridge_strength);
+    // rng &mut. Outcomes are collected for the cascade phase below.
+    let outcomes: Vec<StateOutcome> = run_dispatch_loop(sim, events, bridge_strength);
 
-    // TODO(Task 10-13): drain `_outcomes` and apply cascade
-    // (kill ground occupants, DropIn deck entities, spawn debris,
-    // rim refresh, trigger 31, zone rebuild).
-    let _ = rules; // RuleSet is used by Task 10's C4Warhead force-kill.
+    // Aggregate destroyed cells + the subset receiving BlowUpBridge from
+    // the dispatcher's outcomes. BTreeSet keeps deterministic order for
+    // the cascade walk.
+    let mut destroyed_set: BTreeSet<(u16, u16)> = BTreeSet::new();
+    let mut blow_up_cells: BTreeSet<(u16, u16)> = BTreeSet::new();
+    for outcome in &outcomes {
+        if let StateOutcome::Collapsed {
+            destroyed_cells,
+            set_bridge_direction,
+            ..
+        } = outcome
+        {
+            destroyed_set.extend(destroyed_cells.iter().copied());
+            for (cell, _slot, action) in &set_bridge_direction.actions {
+                if matches!(
+                    action,
+                    crate::sim::bridge_specs::CellAction::BlowUpBridge
+                ) {
+                    blow_up_cells.insert(*cell);
+                    destroyed_set.insert(*cell);
+                }
+            }
+        }
+    }
+
+    // Cascade Step 1: ground-occupant kill. Per HIGH §11.4 step 1,
+    // BlowUpBridge force-kills ground-layer entities at each destroyed
+    // cell with C4Warhead semantics. Bridge-deck entities are handled by
+    // Step 2 (DropIn — Task 11) and never go through this kill path.
+    let c4_id = rules.c4_warhead_id();
+    for &(rx, ry) in &blow_up_cells {
+        kill_ground_occupants_at(sim, rx, ry, c4_id);
+    }
+
+    // TODO(Tasks 11-13): drop in deck entities, spawn debris, rim
+    // refresh, trigger 31, zone rebuild.
 
     despawned_ids
+}
+
+/// Kill ground-layer entities at `(rx, ry)`. Mirrors the binary's
+/// `BlowUpBridge` ground-occupant pass: walk every entity at the cell
+/// that is NOT on the bridge layer and force-kill via C4Warhead semantics
+/// (`damage = 0, force_kill = 1` in the binary; we set health = 0 and
+/// flag `dying` for the next combat tick to handle death effects).
+///
+/// Bridge-deck entities go through `drop_in_bridge_deck_entities`
+/// (Task 11) and survive — vanilla never drowns or kills them on
+/// collapse (HIGH §12.7, §12.9).
+///
+/// `c4_warhead_id` is reserved for the future InfDeath-selection path
+/// once the death pipeline accepts a killing-warhead identity. Today the
+/// kill is unconditional.
+fn kill_ground_occupants_at(
+    sim: &mut Simulation,
+    rx: u16,
+    ry: u16,
+    c4_warhead_id: crate::sim::intern::InternedId,
+) {
+    let _ = c4_warhead_id;
+    let victims: Vec<u64> = sim
+        .entities
+        .iter_sorted()
+        .filter(|(_, e)| {
+            e.position.rx == rx
+                && e.position.ry == ry
+                && !e.is_on_bridge_layer()
+                && e.health.current > 0
+        })
+        .map(|(id, _)| id)
+        .collect();
+    for id in victims {
+        if let Some(entity) = sim.entities.get_mut(id) {
+            entity.health.current = 0;
+            entity.dying = true;
+            entity.attack_target = None;
+            entity.movement_target = None;
+            entity.selected = false;
+        }
+    }
 }
 
 /// Inner dispatch loop. Owns the split borrow of `Simulation` so the
