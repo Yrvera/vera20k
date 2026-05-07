@@ -191,26 +191,398 @@ impl BridgeRuntimeState {
             || overlay == 0x65
     }
 
-    // ----- Walker bodies — stubbed in Task 6; real implementations land
-    // in Task 7 (HIGH) and Task 8 (LOW). -----
+    // ----- Perpendicular neighbor classifiers used by sibling cascade. -----
+    //
+    // Indexed table is `pick_destruction_overlay(idx, axis, is_high)`, which
+    // already ships in `bridge_specs.rs`. NS body cells consult the EW
+    // classifier (perpendicular = west/east); EW body cells consult the NS
+    // classifier (perpendicular = north/south).
 
+    /// Classify the EW-axis perpendicular pattern at `(rx, ry)`. Reads the
+    /// west and east neighbors' overlay bytes and returns a 0..=15 index.
+    /// Bit assignment (matches the binary's switch order at the EW
+    /// classifier — east-first, then west):
+    /// - bit 0 (val 1): east in `{0xD1, 0xD3, 0xD5, 0xE0}`
+    /// - bit 1 (val 2): east in `{0xD4, 0xE7}`
+    /// - bit 2 (val 4): west in `{0xD2, 0xD3, 0xD4, 0xE2}`
+    /// - bit 3 (val 8): west in `{0xD5, 0xE7}`
+    pub(super) fn check_bridge_neighbors_ew_high(&self, rx: u16, ry: u16) -> u8 {
+        let east = self
+            .cell(rx.saturating_add(1), ry)
+            .map(|c| c.overlay_byte)
+            .unwrap_or(0);
+        let west = if rx > 0 {
+            self.cell(rx - 1, ry).map(|c| c.overlay_byte).unwrap_or(0)
+        } else {
+            0
+        };
+        let mut idx = 0u8;
+        match east {
+            0xD1 | 0xD3 | 0xD5 | 0xE0 => idx |= 1,
+            0xD4 | 0xE7 => idx |= 2,
+            _ => {}
+        }
+        match west {
+            0xD2 | 0xD3 | 0xD4 | 0xE2 => idx |= 4,
+            0xD5 | 0xE7 => idx |= 8,
+            _ => {}
+        }
+        idx
+    }
+
+    /// Classify the NS-axis perpendicular pattern at `(rx, ry)`. Reads the
+    /// north and south neighbors' overlay bytes and returns a 0..=15 index.
+    /// Bit assignment (matches the binary — north-first, then south):
+    /// - bit 0 (val 1): north in `{0xDA, 0xDC, 0xDE, 0xE4}`
+    /// - bit 1 (val 2): north in `{0xDD, 0xE8}`
+    /// - bit 2 (val 4): south in `{0xDB, 0xDC, 0xDD, 0xE6}`
+    /// - bit 3 (val 8): south in `{0xDE, 0xE8}`
+    pub(super) fn check_bridge_neighbors_ns_high(&self, rx: u16, ry: u16) -> u8 {
+        let north = if ry > 0 {
+            self.cell(rx, ry - 1).map(|c| c.overlay_byte).unwrap_or(0)
+        } else {
+            0
+        };
+        let south = self
+            .cell(rx, ry.saturating_add(1))
+            .map(|c| c.overlay_byte)
+            .unwrap_or(0);
+        let mut idx = 0u8;
+        match north {
+            0xDA | 0xDC | 0xDE | 0xE4 => idx |= 1,
+            0xDD | 0xE8 => idx |= 2,
+            _ => {}
+        }
+        match south {
+            0xDB | 0xDC | 0xDD | 0xE6 => idx |= 4,
+            0xDE | 0xE8 => idx |= 8,
+            _ => {}
+        }
+        idx
+    }
+
+    // ----- Cell-triple iteration helpers. -----
+
+    fn ns_triple(rx: u16, ry: u16) -> [Option<(u16, u16)>; 3] {
+        let north = if ry > 0 { Some((rx, ry - 1)) } else { None };
+        let south = Some((rx, ry.saturating_add(1)));
+        [Some((rx, ry)), north, south]
+    }
+
+    fn ew_triple(rx: u16, ry: u16) -> [Option<(u16, u16)>; 3] {
+        let west = if rx > 0 { Some((rx - 1, ry)) } else { None };
+        let east = Some((rx.saturating_add(1), ry));
+        [Some((rx, ry)), west, east]
+    }
+
+    // ----- Sibling-cascade leaves (`apply_bridge_destruction_*_high`). -----
+
+    /// Sibling-cascade leaf for the NS body axis. Validates `(rx, ry)` is
+    /// in the HIGH overlay range, computes the perpendicular neighbor
+    /// pattern via `check_bridge_neighbors_ew_high`, looks up next-overlay
+    /// via the shipped `pick_destruction_overlay` table (HIGH NS), and
+    /// writes the (this, north, south) length-axis triple. Returns the
+    /// list of cells that hit final-collapse (overlay 0xE7) so the caller
+    /// can emit BlowUpBridge actions.
+    fn apply_bridge_destruction_ns_high(
+        &mut self,
+        rx: u16,
+        ry: u16,
+    ) -> Vec<(u16, u16)> {
+        use crate::sim::bridge_specs::pick_destruction_overlay;
+        use crate::sim::bridge_state::{Axis, DamageState};
+
+        let mut final_cells = Vec::new();
+        let Some(cell) = self.cell(rx, ry).copied() else {
+            return final_cells;
+        };
+        let cur = cell.overlay_byte;
+        // Outer overlay gate: HIGH range.
+        if !(0xCD..=0xE8).contains(&cur) {
+            return final_cells;
+        }
+
+        let idx = self.check_bridge_neighbors_ew_high(rx, ry);
+        // idx == 0 means no perpendicular pattern; cascade leaf is a no-op.
+        if idx == 0 {
+            return final_cells;
+        }
+
+        // Two-stage progression: table lookup for cur < 0xDF, then
+        // intermediate fixed transitions for 0xDF/0xE1.
+        let next = if cur < 0xDF {
+            match pick_destruction_overlay(idx, Axis::NS, true) {
+                Some(n) if n != cur => n,
+                _ => return final_cells,
+            }
+        } else if cur == 0xDF {
+            0xE0
+        } else if cur == 0xE1 {
+            0xE2
+        } else {
+            // 0xE0, 0xE2, 0xE3..0xE8: no further transition at this cell.
+            return final_cells;
+        };
+
+        for slot in Self::ns_triple(rx, ry) {
+            if let Some(pos) = slot {
+                if let Some(c) = self.cell_mut(pos.0, pos.1) {
+                    c.overlay_byte = next;
+                    if next == 0xE7 {
+                        c.damage_state = DamageState::Destroyed;
+                        final_cells.push(pos);
+                    } else {
+                        c.damage_state = DamageState::Damaged;
+                    }
+                }
+            }
+        }
+        final_cells
+    }
+
+    /// Sibling-cascade leaf for the EW body axis. Mirror of
+    /// `apply_bridge_destruction_ns_high` with EW axis classifier, EW
+    /// table, EW intermediates (0xE3 → 0xE4, 0xE5 → 0xE6), and final 0xE8.
+    fn apply_bridge_destruction_ew_high(
+        &mut self,
+        rx: u16,
+        ry: u16,
+    ) -> Vec<(u16, u16)> {
+        use crate::sim::bridge_specs::pick_destruction_overlay;
+        use crate::sim::bridge_state::{Axis, DamageState};
+
+        let mut final_cells = Vec::new();
+        let Some(cell) = self.cell(rx, ry).copied() else {
+            return final_cells;
+        };
+        let cur = cell.overlay_byte;
+        if !(0xCD..=0xE8).contains(&cur) {
+            return final_cells;
+        }
+
+        let idx = self.check_bridge_neighbors_ns_high(rx, ry);
+        if idx == 0 {
+            return final_cells;
+        }
+
+        let next = if cur < 0xE3 {
+            match pick_destruction_overlay(idx, Axis::EW, true) {
+                Some(n) if n != cur => n,
+                _ => return final_cells,
+            }
+        } else if cur == 0xE3 {
+            0xE4
+        } else if cur == 0xE5 {
+            0xE6
+        } else {
+            return final_cells;
+        };
+
+        for slot in Self::ew_triple(rx, ry) {
+            if let Some(pos) = slot {
+                if let Some(c) = self.cell_mut(pos.0, pos.1) {
+                    c.overlay_byte = next;
+                    if next == 0xE8 {
+                        c.damage_state = DamageState::Destroyed;
+                        final_cells.push(pos);
+                    } else {
+                        c.damage_state = DamageState::Damaged;
+                    }
+                }
+            }
+        }
+        final_cells
+    }
+
+    // ----- Walker bodies (HIGH). LOW remains stubbed for Task 8. -----
+
+    /// HIGH NS-axis walker. Reads the input cell's overlay, picks one of
+    /// 5 cases:
+    /// - `0xDF` → write 0xE0 to (this, north, south); cascade west sibling
+    /// - `0xE1` → write 0xE2 to (this, north, south); cascade east sibling
+    /// - `< 0xD3` → write 0xD3 to triple; cascade BOTH (rx±1, ry)
+    /// - `[0xD3..=0xD5]` → write 0xE7 to triple (FINAL collapse); cascade
+    ///   BOTH; mark zones_dirty
+    /// - else → no-op
+    ///
+    /// Returns `Collapsed` when any cell hit final-collapse (0xE7), or
+    /// `Absorbed` for an intermediate transition that touched no final
+    /// cell. `NoChange` only when the initial overlay byte is outside the
+    /// 5-case set.
     pub(super) fn destroy_bridge_walker_ns_high(
         &mut self,
-        _rx: u16,
-        _ry: u16,
+        rx: u16,
+        ry: u16,
         _terrain: &ResolvedTerrainGrid,
     ) -> StateOutcome {
-        StateOutcome::NoChange
+        use crate::sim::bridge_specs::{CellAction, SetBridgeDirectionResult};
+        use crate::sim::bridge_state::{
+            compute_adjacent_bridges_dirty, Axis, DamageState,
+        };
+
+        let Some(cell) = self.cell(rx, ry).copied() else {
+            return StateOutcome::NoChange;
+        };
+        let cur = cell.overlay_byte;
+
+        // Pick case + sibling-cascade plan.
+        let (next, siblings, is_final): (u8, Vec<(u16, u16)>, bool) = if cur == 0xDF {
+            (0xE0, vec![(rx.wrapping_sub(1), ry)], false)
+        } else if cur == 0xE1 {
+            (0xE2, vec![(rx.saturating_add(1), ry)], false)
+        } else if cur < 0xD3 {
+            (
+                0xD3,
+                vec![(rx.wrapping_sub(1), ry), (rx.saturating_add(1), ry)],
+                false,
+            )
+        } else if (0xD3..=0xD5).contains(&cur) {
+            (
+                0xE7,
+                vec![(rx.wrapping_sub(1), ry), (rx.saturating_add(1), ry)],
+                true,
+            )
+        } else {
+            return StateOutcome::NoChange;
+        };
+
+        let mut destroyed: Vec<(u16, u16)> = Vec::new();
+        let mut actions: Vec<((u16, u16), usize, CellAction)> = Vec::new();
+
+        // Write the (this, north, south) length-axis triple.
+        for (slot, opt_pos) in Self::ns_triple(rx, ry).into_iter().enumerate() {
+            if let Some(pos) = opt_pos {
+                if let Some(c) = self.cell_mut(pos.0, pos.1) {
+                    c.overlay_byte = next;
+                    if is_final {
+                        c.damage_state = DamageState::Destroyed;
+                        destroyed.push(pos);
+                        actions.push((pos, slot, CellAction::BlowUpBridge));
+                    } else {
+                        c.damage_state = DamageState::Damaged;
+                    }
+                }
+            }
+        }
+
+        // Cascade to perpendicular siblings via the EW classifier-driven leaf.
+        for (sx, sy) in siblings {
+            if sx == u16::MAX {
+                // wrapping_sub overflow at rx == 0 → west neighbor off-map.
+                continue;
+            }
+            let sibling_finals = self.apply_bridge_destruction_ns_high(sx, sy);
+            for pos in sibling_finals {
+                if !destroyed.contains(&pos) {
+                    destroyed.push(pos);
+                    actions.push((pos, 0, CellAction::BlowUpBridge));
+                }
+            }
+        }
+
+        if !is_final && destroyed.is_empty() {
+            // Intermediate transition only — overlay/damage_state changed
+            // but no cell hit final. Caller treats this as "absorbed".
+            return StateOutcome::Absorbed;
+        }
+
+        let adj = compute_adjacent_bridges_dirty(rx, ry, Axis::NS);
+        StateOutcome::Collapsed {
+            destroyed_cells: destroyed,
+            set_bridge_direction: SetBridgeDirectionResult { actions },
+            adjacent_bridges_dirty: adj,
+            zones_dirty: is_final,
+        }
     }
 
+    /// HIGH EW-axis walker. Mirror of `destroy_bridge_walker_ns_high` with:
+    /// - `0xE3` → write 0xE4 to (this, west, east); cascade south sibling
+    /// - `0xE5` → write 0xE6 to triple; cascade north sibling
+    /// - `< 0xDC` → write 0xDC to triple; cascade BOTH (rx, ry±1)
+    /// - `[0xDC..=0xDE]` → write 0xE8 to triple (FINAL); cascade BOTH;
+    ///   mark zones_dirty
+    /// - else → no-op
     pub(super) fn destroy_bridge_walker_ew_high(
         &mut self,
-        _rx: u16,
-        _ry: u16,
+        rx: u16,
+        ry: u16,
         _terrain: &ResolvedTerrainGrid,
     ) -> StateOutcome {
-        StateOutcome::NoChange
+        use crate::sim::bridge_specs::{CellAction, SetBridgeDirectionResult};
+        use crate::sim::bridge_state::{
+            compute_adjacent_bridges_dirty, Axis, DamageState,
+        };
+
+        let Some(cell) = self.cell(rx, ry).copied() else {
+            return StateOutcome::NoChange;
+        };
+        let cur = cell.overlay_byte;
+
+        let (next, siblings, is_final): (u8, Vec<(u16, u16)>, bool) = if cur == 0xE3 {
+            (0xE4, vec![(rx, ry.saturating_add(1))], false)
+        } else if cur == 0xE5 {
+            (0xE6, vec![(rx, ry.wrapping_sub(1))], false)
+        } else if cur < 0xDC {
+            (
+                0xDC,
+                vec![(rx, ry.wrapping_sub(1)), (rx, ry.saturating_add(1))],
+                false,
+            )
+        } else if (0xDC..=0xDE).contains(&cur) {
+            (
+                0xE8,
+                vec![(rx, ry.wrapping_sub(1)), (rx, ry.saturating_add(1))],
+                true,
+            )
+        } else {
+            return StateOutcome::NoChange;
+        };
+
+        let mut destroyed: Vec<(u16, u16)> = Vec::new();
+        let mut actions: Vec<((u16, u16), usize, CellAction)> = Vec::new();
+
+        for (slot, opt_pos) in Self::ew_triple(rx, ry).into_iter().enumerate() {
+            if let Some(pos) = opt_pos {
+                if let Some(c) = self.cell_mut(pos.0, pos.1) {
+                    c.overlay_byte = next;
+                    if is_final {
+                        c.damage_state = DamageState::Destroyed;
+                        destroyed.push(pos);
+                        actions.push((pos, slot, CellAction::BlowUpBridge));
+                    } else {
+                        c.damage_state = DamageState::Damaged;
+                    }
+                }
+            }
+        }
+
+        for (sx, sy) in siblings {
+            if sy == u16::MAX {
+                continue;
+            }
+            let sibling_finals = self.apply_bridge_destruction_ew_high(sx, sy);
+            for pos in sibling_finals {
+                if !destroyed.contains(&pos) {
+                    destroyed.push(pos);
+                    actions.push((pos, 0, CellAction::BlowUpBridge));
+                }
+            }
+        }
+
+        if !is_final && destroyed.is_empty() {
+            return StateOutcome::Absorbed;
+        }
+
+        let adj = compute_adjacent_bridges_dirty(rx, ry, Axis::EW);
+        StateOutcome::Collapsed {
+            destroyed_cells: destroyed,
+            set_bridge_direction: SetBridgeDirectionResult { actions },
+            adjacent_bridges_dirty: adj,
+            zones_dirty: is_final,
+        }
     }
+
+    // LOW walkers stay stubbed until Task 8.
 
     pub(super) fn destroy_bridge_walker_ns_low(
         &mut self,
@@ -355,16 +727,231 @@ mod tests {
     }
 
     #[test]
-    fn destroy_bridge_high_classifies_ns_axis_into_walker() {
-        // Overlay 0xD0 ∈ NS sub-range. Walker is stubbed → NoChange. Test
-        // verifies the entry function classified axis without panic.
+    fn ns_walker_intermediate_writes_0xd3_to_triple() {
+        // 3 NS body cells at (2, 0..3) all overlay 0xD0 (< 0xD3). Hit (2, 1).
+        // Expect (2, 0..3) all → 0xD3, damage_state Damaged (not Destroyed).
         let mut state = BridgeRuntimeState::default();
-        seed_high_body_cell(&mut state, 2, 0, 0xD0);
+        for y in 0..3u16 {
+            seed_high_body_cell(&mut state, 2, y, 0xD0);
+        }
         let terrain = empty_terrain();
-        let outcome = state.destroy_bridge_high(2, 0, &terrain);
+        let outcome = state.destroy_bridge_walker_ns_high(2, 1, &terrain);
         assert!(
-            matches!(outcome, StateOutcome::NoChange),
-            "Task 6 ships with NS/EW walker bodies stubbed",
+            matches!(outcome, StateOutcome::Absorbed),
+            "no perpendicular pattern → no sibling collapse → Absorbed; got {:?}",
+            outcome
         );
+        for y in 0..3 {
+            let c = state.cell(2, y).unwrap();
+            assert_eq!(c.overlay_byte, 0xD3, "y={} should transition to 0xD3", y);
+            assert_eq!(c.damage_state, DamageState::Damaged);
+        }
+    }
+
+    #[test]
+    fn ns_walker_final_writes_0xe7_marks_destroyed_zones_dirty() {
+        // 3 NS body cells at (2, 0..3) all overlay 0xD4 (final-eligible
+        // [0xD3..=0xD5]). Hit (2, 1). Expect 0xE7 + Destroyed + zones_dirty.
+        let mut state = BridgeRuntimeState::default();
+        for y in 0..3u16 {
+            seed_high_body_cell(&mut state, 2, y, 0xD4);
+        }
+        let terrain = empty_terrain();
+        let outcome = state.destroy_bridge_walker_ns_high(2, 1, &terrain);
+        match outcome {
+            StateOutcome::Collapsed {
+                destroyed_cells,
+                zones_dirty,
+                ..
+            } => {
+                assert!(zones_dirty, "final-stage collapse must mark zones_dirty");
+                for y in 0..3 {
+                    let c = state.cell(2, y).unwrap();
+                    assert_eq!(c.overlay_byte, 0xE7);
+                    assert_eq!(c.damage_state, DamageState::Destroyed);
+                    assert!(
+                        destroyed_cells.contains(&(2, y)),
+                        "(2, {}) missing from destroyed_cells",
+                        y
+                    );
+                }
+            }
+            other => panic!("expected Collapsed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn ns_walker_0xdf_writes_0xe0_intermediate() {
+        let mut state = BridgeRuntimeState::default();
+        for y in 0..3u16 {
+            seed_high_body_cell(&mut state, 2, y, 0xDF);
+        }
+        let terrain = empty_terrain();
+        let _ = state.destroy_bridge_walker_ns_high(2, 1, &terrain);
+        for y in 0..3 {
+            assert_eq!(state.cell(2, y).unwrap().overlay_byte, 0xE0);
+        }
+    }
+
+    #[test]
+    fn ns_walker_0xe1_writes_0xe2_intermediate() {
+        let mut state = BridgeRuntimeState::default();
+        for y in 0..3u16 {
+            seed_high_body_cell(&mut state, 2, y, 0xE1);
+        }
+        let terrain = empty_terrain();
+        let _ = state.destroy_bridge_walker_ns_high(2, 1, &terrain);
+        for y in 0..3 {
+            assert_eq!(state.cell(2, y).unwrap().overlay_byte, 0xE2);
+        }
+    }
+
+    #[test]
+    fn ns_walker_returns_nochange_for_out_of_case_overlay() {
+        // 0xD7 is in EW sub-range (would be routed to EW walker). NS walker
+        // hit on it is a no-op.
+        let mut state = BridgeRuntimeState::default();
+        seed_high_body_cell(&mut state, 2, 1, 0xD7);
+        let terrain = empty_terrain();
+        let outcome = state.destroy_bridge_walker_ns_high(2, 1, &terrain);
+        assert_eq!(outcome, StateOutcome::NoChange);
+        assert_eq!(state.cell(2, 1).unwrap().overlay_byte, 0xD7);
+    }
+
+    #[test]
+    fn ew_walker_final_writes_0xe8_marks_destroyed_zones_dirty() {
+        let mut state = BridgeRuntimeState::default();
+        for x in 0..3u16 {
+            state.test_seed_cell(
+                x,
+                2,
+                BridgeRuntimeCell {
+                    deck_present: true,
+                    destroyable: true,
+                    deck_level: 5,
+                    bridge_group_id: Some(1),
+                    damage_state: DamageState::Damaged,
+                    axis: Some(Axis::EW),
+                    role: BridgeCellRole::Body,
+                    anchor_span_id: Some(1),
+                    overlay_byte: 0xDD,
+                },
+            );
+        }
+        let terrain = empty_terrain();
+        let outcome = state.destroy_bridge_walker_ew_high(1, 2, &terrain);
+        match outcome {
+            StateOutcome::Collapsed {
+                destroyed_cells,
+                zones_dirty,
+                ..
+            } => {
+                assert!(zones_dirty);
+                for x in 0..3 {
+                    let c = state.cell(x, 2).unwrap();
+                    assert_eq!(c.overlay_byte, 0xE8);
+                    assert_eq!(c.damage_state, DamageState::Destroyed);
+                    assert!(destroyed_cells.contains(&(x, 2)));
+                }
+            }
+            other => panic!("expected Collapsed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn ew_walker_0xe3_writes_0xe4_intermediate() {
+        let mut state = BridgeRuntimeState::default();
+        for x in 0..3u16 {
+            state.test_seed_cell(
+                x,
+                2,
+                BridgeRuntimeCell {
+                    deck_present: true,
+                    destroyable: true,
+                    deck_level: 5,
+                    bridge_group_id: Some(1),
+                    damage_state: DamageState::Damaged,
+                    axis: Some(Axis::EW),
+                    role: BridgeCellRole::Body,
+                    anchor_span_id: Some(1),
+                    overlay_byte: 0xE3,
+                },
+            );
+        }
+        let terrain = empty_terrain();
+        let _ = state.destroy_bridge_walker_ew_high(1, 2, &terrain);
+        for x in 0..3 {
+            assert_eq!(state.cell(x, 2).unwrap().overlay_byte, 0xE4);
+        }
+    }
+
+    #[test]
+    fn check_bridge_neighbors_ew_high_bit_layout() {
+        // Verify all 4 bit-positions resolve correctly. Place a center cell
+        // at (1, 0) so we can independently set west=(0,0) and east=(2,0).
+        // bit 0 (east in {0xD1,0xD3,0xD5,0xE0}):
+        let mut state = BridgeRuntimeState::default();
+        seed_high_body_cell(&mut state, 1, 0, 0xD0);
+        seed_high_body_cell(&mut state, 2, 0, 0xD1);
+        assert_eq!(state.check_bridge_neighbors_ew_high(1, 0), 1);
+        // bit 1 (east in {0xD4, 0xE7}):
+        let mut state = BridgeRuntimeState::default();
+        seed_high_body_cell(&mut state, 1, 0, 0xD0);
+        seed_high_body_cell(&mut state, 2, 0, 0xD4);
+        assert_eq!(state.check_bridge_neighbors_ew_high(1, 0), 2);
+        // bit 2 (west in {0xD2, 0xD3, 0xD4, 0xE2}):
+        let mut state = BridgeRuntimeState::default();
+        seed_high_body_cell(&mut state, 0, 0, 0xD2);
+        seed_high_body_cell(&mut state, 1, 0, 0xD0);
+        assert_eq!(state.check_bridge_neighbors_ew_high(1, 0), 4);
+        // bit 3 (west in {0xD5, 0xE7}):
+        let mut state = BridgeRuntimeState::default();
+        seed_high_body_cell(&mut state, 0, 0, 0xE7);
+        seed_high_body_cell(&mut state, 1, 0, 0xD0);
+        assert_eq!(state.check_bridge_neighbors_ew_high(1, 0), 8);
+    }
+
+    #[test]
+    fn check_bridge_neighbors_ns_high_bit_layout() {
+        // bit 0 (north in {0xDA, 0xDC, 0xDE, 0xE4}):
+        let mut state = BridgeRuntimeState::default();
+        seed_high_body_cell(&mut state, 0, 0, 0xDA);
+        seed_high_body_cell(&mut state, 0, 1, 0xD0);
+        assert_eq!(state.check_bridge_neighbors_ns_high(0, 1), 1);
+        // bit 1 (north in {0xDD, 0xE8}):
+        let mut state = BridgeRuntimeState::default();
+        seed_high_body_cell(&mut state, 0, 0, 0xE8);
+        seed_high_body_cell(&mut state, 0, 1, 0xD0);
+        assert_eq!(state.check_bridge_neighbors_ns_high(0, 1), 2);
+        // bit 2 (south in {0xDB, 0xDC, 0xDD, 0xE6}):
+        let mut state = BridgeRuntimeState::default();
+        seed_high_body_cell(&mut state, 0, 0, 0xD0);
+        seed_high_body_cell(&mut state, 0, 1, 0xE6);
+        assert_eq!(state.check_bridge_neighbors_ns_high(0, 0), 4);
+        // bit 3 (south in {0xDE, 0xE8}):
+        let mut state = BridgeRuntimeState::default();
+        seed_high_body_cell(&mut state, 0, 0, 0xD0);
+        seed_high_body_cell(&mut state, 0, 1, 0xDE);
+        assert_eq!(state.check_bridge_neighbors_ns_high(0, 0), 8);
+    }
+
+    #[test]
+    fn destroy_bridge_high_classifies_ns_axis_into_walker() {
+        // 0xD0 routes to NS walker. 0xD0 < 0xD3 → intermediate write 0xD3
+        // to triple. Without perpendicular pattern → Absorbed.
+        let mut state = BridgeRuntimeState::default();
+        for y in 0..3u16 {
+            seed_high_body_cell(&mut state, 2, y, 0xD0);
+        }
+        let terrain = empty_terrain();
+        let outcome = state.destroy_bridge_high(2, 1, &terrain);
+        assert!(
+            matches!(outcome, StateOutcome::Absorbed),
+            "Task 7 wires real NS walker; expected Absorbed got {:?}",
+            outcome,
+        );
+        for y in 0..3 {
+            assert_eq!(state.cell(2, y).unwrap().overlay_byte, 0xD3);
+        }
     }
 }
