@@ -9,6 +9,8 @@
 //! They are kept as pure functions so the runtime can adopt them incrementally
 //! once mutable overlay state and ZoneConnection records are available.
 
+use crate::sim::bridge_state::{Axis, Phase};
+
 const BRIDGE_GATE_BIT: u32 = 0x0100;
 const NO_ZONE_CONNECTION: i16 = -1;
 
@@ -322,9 +324,73 @@ fn read_u32_le(bytes: &[u8], off: usize) -> u32 {
     u32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]])
 }
 
+/// Apply a single ramp state transition. Mirrors one of the binary's 16
+/// `UpdateRamp_*_High/_Low` helpers (HIGH §11.1).
+///
+/// State byte semantics (CellClass+0x11E):
+/// - NS-axis range: 0..=8 (0..=3 healthy, 4 = DamageA-set, 5 = DamageB-set,
+///   6 = both halves damaged, 7 = PartialCollapseA, 8 = PartialCollapseB)
+/// - EW-axis range: 9..=17 (9..=12 healthy, 0x0D = DamageB-set, 0x0E =
+///   DamageA-set, 0x0F = both halves damaged, 0x10 = PartialCollapseB,
+///   0x11 = PartialCollapseA)
+///
+/// Returns `Some(next_state)` on a defined transition, `None` if the
+/// `(axis, phase, current_state)` combination has no transition (cell
+/// unchanged).
+///
+/// **Collapse-final special case:** when input matches the "opposite-already-
+/// collapsed" partial state (NS Collapse{A,B}: state 8/7; EW Collapse{A,B}:
+/// state 0x10/0x11), the function returns `Some(0)` — but the caller MUST
+/// also clear the bridge-direction flag, set `IsoTileTypeIndex = -1`, fire
+/// `UpdateAdjacentBridges`, and zone-refresh. Body-cell driver detects this
+/// via `(prev_state.is_partial_collapse() && phase.is_collapse() && next == 0)`.
+///
+/// `_Low` variants are intentionally not a parameter: state transitions are
+/// identical, so the same function serves both. Overlay propagation (§11.2 +
+/// `pick_destruction_overlay`) is what distinguishes HIGH from LOW.
+pub fn apply_ramp_transition(
+    current_state: u8,
+    axis: Axis,
+    phase: Phase,
+) -> Option<u8> {
+    match (axis, phase, current_state) {
+        // --- NS axis (state 0..=8) ---
+        // NS_DamageA: 0..=3 → 4, 5 → 6
+        (Axis::NS, Phase::DamageA, 0..=3) => Some(4),
+        (Axis::NS, Phase::DamageA, 5) => Some(6),
+        // NS_DamageB: 0..=3 → 5, 4 → 6
+        (Axis::NS, Phase::DamageB, 0..=3) => Some(5),
+        (Axis::NS, Phase::DamageB, 4) => Some(6),
+        // NS_CollapseA: 0..=6 → 7, 8 → 0 (collapse-final)
+        (Axis::NS, Phase::CollapseA, 0..=6) => Some(7),
+        (Axis::NS, Phase::CollapseA, 8) => Some(0),
+        // NS_CollapseB: 0..=6 → 8, 7 → 0 (collapse-final)
+        (Axis::NS, Phase::CollapseB, 0..=6) => Some(8),
+        (Axis::NS, Phase::CollapseB, 7) => Some(0),
+
+        // --- EW axis (state 9..=17 / 0x09..=0x11) ---
+        // EW_DamageA: 9..=12 → 0x0E, 0x0D → 0x0F
+        (Axis::EW, Phase::DamageA, 9..=12) => Some(0x0E),
+        (Axis::EW, Phase::DamageA, 0x0D) => Some(0x0F),
+        // EW_DamageB: 9..=12 → 0x0D, 0x0E → 0x0F
+        (Axis::EW, Phase::DamageB, 9..=12) => Some(0x0D),
+        (Axis::EW, Phase::DamageB, 0x0E) => Some(0x0F),
+        // EW_CollapseA: 9..=15 → 0x11, 0x10 → 0 (collapse-final)
+        (Axis::EW, Phase::CollapseA, 9..=15) => Some(0x11),
+        (Axis::EW, Phase::CollapseA, 0x10) => Some(0),
+        // EW_CollapseB: 9..=15 → 0x10, 0x11 → 0 (collapse-final)
+        (Axis::EW, Phase::CollapseB, 9..=15) => Some(0x10),
+        (Axis::EW, Phase::CollapseB, 0x11) => Some(0),
+
+        // No defined transition.
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sim::bridge_state::{Axis, Phase};
 
     #[test]
     fn low_bridge_damage_step_ignores_non_bridge_overlay() {
@@ -587,5 +653,115 @@ mod tests {
                 return_no_zone: false,
             }
         );
+    }
+
+    #[test]
+    fn ramp_ns_damage_a_healthy_to_4() {
+        for s in 0..=3 {
+            assert_eq!(
+                apply_ramp_transition(s, Axis::NS, Phase::DamageA),
+                Some(4),
+                "state {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn ramp_ns_damage_a_5_to_6() {
+        assert_eq!(apply_ramp_transition(5, Axis::NS, Phase::DamageA), Some(6));
+    }
+
+    #[test]
+    fn ramp_ns_damage_b_healthy_to_5() {
+        for s in 0..=3 {
+            assert_eq!(apply_ramp_transition(s, Axis::NS, Phase::DamageB), Some(5));
+        }
+    }
+
+    #[test]
+    fn ramp_ns_damage_b_4_to_6() {
+        assert_eq!(apply_ramp_transition(4, Axis::NS, Phase::DamageB), Some(6));
+    }
+
+    #[test]
+    fn ramp_ns_collapse_a_to_7() {
+        for s in 0..=6 {
+            assert_eq!(apply_ramp_transition(s, Axis::NS, Phase::CollapseA), Some(7));
+        }
+    }
+
+    #[test]
+    fn ramp_ns_collapse_a_final_state_8_to_0() {
+        // Collapse-final: caller must also clear bridge dir + IsoTileTypeIndex.
+        assert_eq!(apply_ramp_transition(8, Axis::NS, Phase::CollapseA), Some(0));
+    }
+
+    #[test]
+    fn ramp_ns_collapse_b_to_8() {
+        for s in 0..=6 {
+            assert_eq!(apply_ramp_transition(s, Axis::NS, Phase::CollapseB), Some(8));
+        }
+    }
+
+    #[test]
+    fn ramp_ns_collapse_b_final_state_7_to_0() {
+        assert_eq!(apply_ramp_transition(7, Axis::NS, Phase::CollapseB), Some(0));
+    }
+
+    #[test]
+    fn ramp_ew_damage_a_healthy_to_e() {
+        for s in 9..=12 {
+            assert_eq!(apply_ramp_transition(s, Axis::EW, Phase::DamageA), Some(0x0E));
+        }
+    }
+
+    #[test]
+    fn ramp_ew_damage_a_d_to_f() {
+        assert_eq!(apply_ramp_transition(0x0D, Axis::EW, Phase::DamageA), Some(0x0F));
+    }
+
+    #[test]
+    fn ramp_ew_damage_b_healthy_to_d() {
+        for s in 9..=12 {
+            assert_eq!(apply_ramp_transition(s, Axis::EW, Phase::DamageB), Some(0x0D));
+        }
+    }
+
+    #[test]
+    fn ramp_ew_damage_b_e_to_f() {
+        assert_eq!(apply_ramp_transition(0x0E, Axis::EW, Phase::DamageB), Some(0x0F));
+    }
+
+    #[test]
+    fn ramp_ew_collapse_a_to_11() {
+        for s in 9..=15 {
+            assert_eq!(apply_ramp_transition(s, Axis::EW, Phase::CollapseA), Some(0x11));
+        }
+    }
+
+    #[test]
+    fn ramp_ew_collapse_a_final_state_10_to_0() {
+        assert_eq!(apply_ramp_transition(0x10, Axis::EW, Phase::CollapseA), Some(0));
+    }
+
+    #[test]
+    fn ramp_ew_collapse_b_to_10() {
+        for s in 9..=15 {
+            assert_eq!(apply_ramp_transition(s, Axis::EW, Phase::CollapseB), Some(0x10));
+        }
+    }
+
+    #[test]
+    fn ramp_ew_collapse_b_final_state_11_to_0() {
+        assert_eq!(apply_ramp_transition(0x11, Axis::EW, Phase::CollapseB), Some(0));
+    }
+
+    #[test]
+    fn ramp_undefined_combination_returns_none() {
+        // EW phase on NS-range state, etc.
+        assert_eq!(apply_ramp_transition(0, Axis::EW, Phase::DamageA), None);
+        assert_eq!(apply_ramp_transition(15, Axis::NS, Phase::DamageA), None);
+        // State outside both ranges.
+        assert_eq!(apply_ramp_transition(0xFF, Axis::NS, Phase::DamageA), None);
     }
 }
