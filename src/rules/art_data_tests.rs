@@ -292,3 +292,29 @@ fn add_occupy_skips_malformed_entries() {
     // continues to next index. Loop only breaks on key absence.
     assert_eq!(entry.add_occupy, vec![(1, 2)]);
 }
+
+#[test]
+fn parses_anim_smudge_flags() {
+    let ini = IniFile::from_bytes(
+        b"[ANIMA]\n\
+          Scorch=yes\n\
+          \n\
+          [ANIMB]\n\
+          Crater=yes\n\
+          ForceBigCraters=yes\n\
+          \n\
+          [ANIMC]\n",
+    ).unwrap();
+    let reg = ArtRegistry::from_ini(&ini);
+    let a = reg.get("ANIMA").unwrap();
+    assert!(a.scorch);
+    assert!(!a.crater);
+    let b = reg.get("ANIMB").unwrap();
+    assert!(!b.scorch);
+    assert!(b.crater);
+    assert!(b.force_big_craters);
+    let c = reg.get("ANIMC").unwrap();
+    assert!(!c.scorch);
+    assert!(!c.crater);
+    assert!(!c.force_big_craters);
+}

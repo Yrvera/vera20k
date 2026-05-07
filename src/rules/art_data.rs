@@ -29,6 +29,9 @@ pub struct ArtEntry {
     /// Use theater file extension (e.g., `.tem`) instead of `.shp`.
     /// Set by `Theater=yes` in art.ini. Distinct from `NewTheater=`.
     pub theater: bool,
+    pub scorch: bool,
+    pub crater: bool,
+    pub force_big_craters: bool,
     /// Render as VXL+HVA model (true) or SHP sprite (false).
     pub voxel: bool,
     /// Optional voxel turret/barrel forward/backward alignment tweak.
@@ -202,6 +205,9 @@ impl ArtRegistry {
             let alt_cameo: Option<String> = section.get("AltCameo").map(|s| s.to_string());
             let new_theater: bool = section.get_bool("NewTheater").unwrap_or(false);
             let theater: bool = section.get_bool("Theater").unwrap_or(false);
+            let scorch: bool = section.get_bool("Scorch").unwrap_or(false);
+            let crater: bool = section.get_bool("Crater").unwrap_or(false);
+            let force_big_craters: bool = section.get_bool("ForceBigCraters").unwrap_or(false);
             let voxel: bool = section.get_bool("Voxel").unwrap_or(false);
             let turret_offset: i32 = section.get_i32("TurretOffset").unwrap_or(0);
             let y_draw_offset: i32 = section.get_i32("YDrawOffset").unwrap_or(0);
@@ -346,6 +352,9 @@ impl ArtRegistry {
                     alt_cameo,
                     new_theater,
                     theater,
+                    scorch,
+                    crater,
+                    force_big_craters,
                     voxel,
                     turret_offset,
                     y_draw_offset,
