@@ -227,6 +227,7 @@ impl Simulation {
             cell.role.hash(hasher);
             cell.anchor_span_id.hash(hasher);
             cell.bridgehead_step.hash(hasher);
+            cell.overlay_byte.hash(hasher);
         }
         // Hash AnchorSpan registry (Task 7 added this field). BTreeMap iterates
         // in sorted-key order, so iteration is deterministic.
@@ -536,5 +537,59 @@ mod smudge_hash_tests {
         }
         let h1 = sim.state_hash();
         assert_ne!(h0, h1);
+    }
+}
+
+#[cfg(test)]
+mod bridge_overlay_hash_tests {
+    use super::Simulation;
+    use crate::sim::bridge_state::{
+        Axis, BridgeCellRole, BridgeRuntimeCell, BridgeRuntimeState, DamageState,
+    };
+
+    fn make_bridge_state_with_overlay(byte: u8) -> BridgeRuntimeState {
+        let mut state = BridgeRuntimeState::default();
+        state.test_seed_cell(
+            2, 2,
+            BridgeRuntimeCell {
+                deck_present: true,
+                destroyable: true,
+                deck_level: 0,
+                bridge_group_id: Some(1),
+                damage_state: DamageState::Healthy { variant: 0 },
+                axis: Some(Axis::NS),
+                role: BridgeCellRole::Anchor,
+                anchor_span_id: None,
+                bridgehead_step: 0,
+                overlay_byte: byte,
+            },
+        );
+        state
+    }
+
+    #[test]
+    fn overlay_byte_difference_changes_state_hash() {
+        let mut sim_a = Simulation::new();
+        let mut sim_b = Simulation::new();
+        sim_a.bridge_state = Some(make_bridge_state_with_overlay(0x18));
+        sim_b.bridge_state = Some(make_bridge_state_with_overlay(0xD2));
+        assert_ne!(
+            sim_a.state_hash(),
+            sim_b.state_hash(),
+            "overlay_byte must contribute to state hash",
+        );
+    }
+
+    #[test]
+    fn identical_overlay_bytes_hash_equal() {
+        let mut sim_a = Simulation::new();
+        let mut sim_b = Simulation::new();
+        sim_a.bridge_state = Some(make_bridge_state_with_overlay(0x18));
+        sim_b.bridge_state = Some(make_bridge_state_with_overlay(0x18));
+        assert_eq!(
+            sim_a.state_hash(),
+            sim_b.state_hash(),
+            "identical bridge states must hash equal",
+        );
     }
 }

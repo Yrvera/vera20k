@@ -207,6 +207,12 @@ pub struct BridgeRuntimeCell {
     /// Bridgehead 4-step progression counter (0..=3). Only meaningful when
     /// `role == BridgeCellRole::Bridgehead`.
     pub bridgehead_step: u8,
+
+    /// Per-cell visible overlay byte (mirrors binary `CellClass+0x44`).
+    /// Populated at map-load from `ResolvedTerrainCell.bridge_layer.overlay_id`;
+    /// mutated at runtime by the body-cell state machine and (future) perpendicular
+    /// overlay-write branch. Renderer queries this to pick the visible tile.
+    pub overlay_byte: u8,
 }
 
 /// A bridge's ground-level endpoint pair for zone connectivity.
@@ -297,6 +303,11 @@ impl BridgeRuntimeState {
                     role: BridgeCellRole::Body, // overwritten in pass 2
                     anchor_span_id: None,
                     bridgehead_step: 0,
+                    overlay_byte: resolved
+                        .bridge_layer
+                        .as_ref()
+                        .map(|bl| bl.overlay_id)
+                        .unwrap_or(0),
                 });
                 for (nx, ny) in cardinal_neighbors(rx, ry, width, height) {
                     if let Some(neighbor) = terrain.cell(nx, ny) {
@@ -413,6 +424,46 @@ impl BridgeRuntimeState {
         index_of(self.width, self.height, rx, ry)
             .and_then(|idx| self.cells.get(idx))
             .and_then(|cell| cell.as_ref())
+    }
+
+    /// Mutable cell access. Returns `None` if `(rx, ry)` is out of bounds or
+    /// the cell is not a bridge runtime cell.
+    pub fn cell_mut(&mut self, rx: u16, ry: u16) -> Option<&mut BridgeRuntimeCell> {
+        index_of(self.width, self.height, rx, ry)
+            .and_then(move |idx| self.cells.get_mut(idx))
+            .and_then(|cell| cell.as_mut())
+    }
+
+    /// Test-only: insert a `BridgeRuntimeCell` at `(rx, ry)`, growing the
+    /// internal `cells` Vec and `width`/`height` to fit if needed. Used by
+    /// unit tests that need precise control over cell placement and state
+    /// without going through `from_resolved_terrain`.
+    #[cfg(test)]
+    pub(crate) fn test_seed_cell(&mut self, rx: u16, ry: u16, cell: BridgeRuntimeCell) {
+        let needed_w = (rx + 1).max(self.width);
+        let needed_h = (ry + 1).max(self.height);
+        if needed_w != self.width || needed_h != self.height {
+            // Resize while preserving existing (rx, ry) → cell mappings.
+            let mut new_cells = vec![None; needed_w as usize * needed_h as usize];
+            for old_ry in 0..self.height {
+                for old_rx in 0..self.width {
+                    let old_idx = old_ry as usize * self.width as usize + old_rx as usize;
+                    let new_idx = old_ry as usize * needed_w as usize + old_rx as usize;
+                    new_cells[new_idx] = self.cells[old_idx];
+                }
+            }
+            self.cells = new_cells;
+            self.width = needed_w;
+            self.height = needed_h;
+        }
+        let idx = ry as usize * self.width as usize + rx as usize;
+        self.cells[idx] = Some(cell);
+    }
+
+    /// Test-only: insert an `AnchorSpan` directly into the registry.
+    #[cfg(test)]
+    pub(crate) fn test_seed_anchor_span(&mut self, span: AnchorSpan) {
+        self.anchor_spans.insert(span.id, span);
     }
 
     pub fn is_bridge_walkable(&self, rx: u16, ry: u16) -> bool {
@@ -882,5 +933,75 @@ mod tests {
                 "walkability ({rx},{ry})"
             );
         }
+    }
+
+    #[test]
+    fn overlay_byte_populated_at_map_load() {
+        // make_bridge_terrain in this file creates a 5x1 strip; the constructor
+        // populates overlay_byte from bridge_layer.overlay_id (or 0 if none).
+        let state = BridgeRuntimeState::from_resolved_terrain(
+            &make_bridge_terrain(),
+            true,
+            1500,
+        );
+        // Field is reachable on every populated bridge cell; type is u8.
+        for (_, cell) in state.iter_cells() {
+            let _byte: u8 = cell.overlay_byte;
+        }
+    }
+
+    #[test]
+    fn overlay_byte_round_trips_via_snapshot() {
+        let state = BridgeRuntimeState::from_resolved_terrain(
+            &make_bridge_terrain(), true, 1500,
+        );
+        let json = serde_json::to_string(&state).expect("serialize");
+        let restored: BridgeRuntimeState =
+            serde_json::from_str(&json).expect("deserialize");
+        for ((rx, ry), cell) in state.iter_cells() {
+            let r = restored.cell(rx, ry).expect("restored cell present");
+            assert_eq!(cell.overlay_byte, r.overlay_byte, "overlay_byte at ({rx},{ry})");
+        }
+    }
+
+    #[test]
+    fn test_seed_cell_grows_grid_to_fit() {
+        let mut state = BridgeRuntimeState::default();
+        let cell = BridgeRuntimeCell {
+            deck_present: true,
+            destroyable: true,
+            deck_level: 0,
+            bridge_group_id: Some(1),
+            damage_state: DamageState::Healthy { variant: 0 },
+            axis: Some(Axis::NS),
+            role: BridgeCellRole::Anchor,
+            anchor_span_id: Some(1),
+            bridgehead_step: 0,
+            overlay_byte: 0x18,
+        };
+        state.test_seed_cell(5, 5, cell);
+        let read = state.cell(5, 5).expect("seeded cell present");
+        assert_eq!(read.overlay_byte, 0x18);
+        assert_eq!(read.role, BridgeCellRole::Anchor);
+    }
+
+    #[test]
+    fn cell_mut_writes_visible_through_cell_read() {
+        let mut state = BridgeRuntimeState::default();
+        let cell = BridgeRuntimeCell {
+            deck_present: true,
+            destroyable: true,
+            deck_level: 0,
+            bridge_group_id: Some(1),
+            damage_state: DamageState::Healthy { variant: 0 },
+            axis: Some(Axis::NS),
+            role: BridgeCellRole::Anchor,
+            anchor_span_id: Some(1),
+            bridgehead_step: 0,
+            overlay_byte: 0x18,
+        };
+        state.test_seed_cell(2, 2, cell);
+        state.cell_mut(2, 2).unwrap().overlay_byte = 0xD2;
+        assert_eq!(state.cell(2, 2).unwrap().overlay_byte, 0xD2);
     }
 }
