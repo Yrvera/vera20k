@@ -12,6 +12,163 @@
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use std::collections::{BTreeMap, VecDeque};
 
+/// Bridge body axis. Body cells are stacked along this axis; ramps face
+/// perpendicular.
+///
+/// Mapping: `Axis::EW` ↔ `BridgeDirection::EastWest` ↔ state byte 9–17;
+/// `Axis::NS` ↔ `BridgeDirection::NorthSouth` ↔ state byte 0–8.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum Axis {
+    /// Body cells stacked north–south (along Y); ramps face east/west.
+    /// State byte range 0–8.
+    NS,
+    /// Body cells stacked east–west (along X); ramps face north/south.
+    /// State byte range 9–17.
+    EW,
+}
+
+/// Per-cell damage state encoding all 18 state-byte values.
+///
+/// Body cells transition Healthy → Damaged → Destroyed under repeated
+/// damage (per axis). Partial-collapse states are reached only via
+/// bridgehead final-step cascade.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum DamageState {
+    /// Healthy body — `variant` carries the 6-frame jitter (0..=5 per axis,
+    /// map-load-deterministic, never advances during gameplay).
+    /// Maps to state byte 0–5 (NS) or 9–14 (EW).
+    Healthy { variant: u8 },
+    /// Damaged body — next hit collapses. State byte 6 (NS) / 15 (EW).
+    Damaged,
+    /// Partial collapse: ramp B already collapsed; this cell will fire
+    /// CollapseA. State byte 7 (NS) / 17 (EW).
+    PartialCollapseA,
+    /// Partial collapse: ramp A already collapsed; this cell will fire
+    /// CollapseB. State byte 8 (NS) / 16 (EW).
+    PartialCollapseB,
+    /// Fully destroyed.
+    Destroyed,
+}
+
+/// Cell role within an `AnchorSpan`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum BridgeCellRole {
+    /// Anchor cell: primary cell of an anchor span; carries the canonical state byte.
+    Anchor,
+    /// Body cell: non-anchor structural cell; follows `anchor_span_id` for state-machine processing.
+    Body,
+    /// Bridgehead cell: ramp connection-piece off the body.
+    Bridgehead,
+    /// Tail cell (cell 5 of anchor pattern, walked in `–direction` from anchor).
+    Tail,
+}
+
+/// Compass-direction enum.
+///
+/// Discriminant values must match the binary's table indices because
+/// `set_bridge_direction` uses them to index into the offsets table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[repr(u8)]
+pub enum Direction {
+    N = 0,
+    NE = 1,
+    E = 2,
+    SE = 3,
+    S = 4,
+    SW = 5,
+    W = 6,
+    NW = 7,
+}
+
+impl Direction {
+    /// Cell-coord offset `(dx, dy)`. Signed because directions can decrement.
+    pub const fn offset(self) -> (i32, i32) {
+        match self {
+            Direction::N => (0, -1),
+            Direction::NE => (1, -1),
+            Direction::E => (1, 0),
+            Direction::SE => (1, 1),
+            Direction::S => (0, 1),
+            Direction::SW => (-1, 1),
+            Direction::W => (-1, 0),
+            Direction::NW => (-1, -1),
+        }
+    }
+
+    /// `(self - 4) & 7` — opposite direction. Used by `set_bridge_direction`
+    /// to compute cell 5 (walked in –direction from anchor).
+    pub const fn opposite(self) -> Direction {
+        match self {
+            Direction::N => Direction::S,
+            Direction::NE => Direction::SW,
+            Direction::E => Direction::W,
+            Direction::SE => Direction::NW,
+            Direction::S => Direction::N,
+            Direction::SW => Direction::NE,
+            Direction::W => Direction::E,
+            Direction::NW => Direction::SE,
+        }
+    }
+}
+
+/// `apply_ramp_transition` phase. Maps to one of the 16 ramp transition helpers
+/// (NS/EW × DamageA/DamageB/CollapseA/CollapseB).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Phase {
+    DamageA,
+    DamageB,
+    CollapseA,
+    CollapseB,
+}
+
+/// First-class anchor-span representation. One span per anchor cell.
+///
+/// Walker pattern: up to 6 cells (anchor + 3 walked +dir + 1 walked –dir +
+/// optional fixed-offset cell when direction == W). Per-cell action
+/// (BlowUpBridge vs flag-only) is determined by slot index.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct AnchorSpan {
+    /// Stable ID, matches `BridgeRuntimeCell.anchor_span_id`.
+    pub id: u16,
+    /// The anchor cell. Slot 0.
+    pub anchor: (u16, u16),
+    /// All cells in walker order:
+    /// `[0]=anchor, [1..=3]=+direction × 1/2/3, [4]=-direction × 1, [5]=fixed-offset (only when direction == W)`.
+    /// `None` for unused slots when the optional fixed-offset cell isn't present.
+    pub cells: [Option<(u16, u16)>; 6],
+    /// Body axis (NS or EW). Determined from `bridge_layer.direction`.
+    pub axis: Axis,
+    /// Walk direction (compass index 0–7). Used to compute walked cells.
+    pub direction: Direction,
+    /// Mirror of anchor cell's damage state. Convenience for queries.
+    pub damage_state: DamageState,
+    /// Group ID (existing `BridgeRuntimeState::group_cells`) — preserved for
+    /// connectivity queries.
+    pub bridge_group_id: u16,
+}
+
+impl AnchorSpan {
+    /// Cells receiving `BlowUpBridge` on destruction path: slots 0, 1, 2, 4.
+    /// Slot 3 (cell 4) and slot 5 (cell 6) are flag-only.
+    pub const BLOW_UP_SLOTS: [usize; 4] = [0, 1, 2, 4];
+
+    /// Iterate `(slot, cell)` for present cells (skips `None`).
+    pub fn iter_cells(&self) -> impl Iterator<Item = (usize, (u16, u16))> + '_ {
+        self.cells
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| c.map(|cell| (i, cell)))
+    }
+
+    /// Cells that get `BlowUpBridge` on destruction. Skips slots 3 and 5
+    /// which are flag-only.
+    pub fn blow_up_cells(&self) -> impl Iterator<Item = (u16, u16)> + '_ {
+        Self::BLOW_UP_SLOTS
+            .iter()
+            .filter_map(|&slot| self.cells[slot])
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct BridgeDamageEvent {
     pub rx: u16,
@@ -415,5 +572,66 @@ mod tests {
             !records[0].active,
             "endpoint should be deactivated after destruction"
         );
+    }
+
+    #[test]
+    fn direction_offsets_match_compass() {
+        assert_eq!(Direction::N.offset(), (0, -1));
+        assert_eq!(Direction::E.offset(), (1, 0));
+        assert_eq!(Direction::S.offset(), (0, 1));
+        assert_eq!(Direction::W.offset(), (-1, 0));
+    }
+
+    #[test]
+    fn direction_opposite_is_idempotent() {
+        for dir in [
+            Direction::N, Direction::NE, Direction::E, Direction::SE,
+            Direction::S, Direction::SW, Direction::W, Direction::NW,
+        ] {
+            assert_eq!(dir.opposite().opposite(), dir);
+        }
+    }
+
+    #[test]
+    fn direction_opposite_pairs() {
+        assert_eq!(Direction::N.opposite(), Direction::S);
+        assert_eq!(Direction::E.opposite(), Direction::W);
+        assert_eq!(Direction::NE.opposite(), Direction::SW);
+        assert_eq!(Direction::SE.opposite(), Direction::NW);
+    }
+
+    fn make_test_span() -> AnchorSpan {
+        AnchorSpan {
+            id: 1,
+            anchor: (5, 5),
+            cells: [
+                Some((5, 5)), // slot 0 = anchor
+                Some((6, 5)), // slot 1 = +E × 1
+                Some((7, 5)), // slot 2 = +E × 2
+                Some((8, 5)), // slot 3 = +E × 3 (FLAG ONLY)
+                Some((4, 5)), // slot 4 = -E × 1 = +W × 1
+                None,         // slot 5 = optional W-direction fixed offset
+            ],
+            axis: Axis::NS,
+            direction: Direction::E,
+            damage_state: DamageState::Healthy { variant: 0 },
+            bridge_group_id: 1,
+        }
+    }
+
+    #[test]
+    fn anchor_span_blow_up_cells_excludes_slot_3() {
+        let span = make_test_span();
+        let cells: Vec<_> = span.blow_up_cells().collect();
+        // Cells 1, 2, 3, 5 in 1-indexed numbering = our slots 0, 1, 2, 4.
+        // NOT slot 3 (cell 4, flag-only).
+        assert_eq!(cells, vec![(5, 5), (6, 5), (7, 5), (4, 5)]);
+    }
+
+    #[test]
+    fn anchor_span_iter_cells_skips_none() {
+        let span = make_test_span();
+        let count = span.iter_cells().count();
+        assert_eq!(count, 5); // 6 slots, 1 None
     }
 }
