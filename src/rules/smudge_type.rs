@@ -18,7 +18,6 @@ pub struct SmudgeTypeDef {
     pub width: u8,
     pub height: u8,
     pub image_name: Option<String>,
-    pub is_theater: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -64,7 +63,6 @@ impl SmudgeTypeRegistry {
                 .get("Image")
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_string());
-            let is_theater: bool = section.get_bool("Theater").unwrap_or(false);
 
             let id: u16 = types.len() as u16;
             by_name.insert(name_upper.clone(), id);
@@ -75,7 +73,6 @@ impl SmudgeTypeRegistry {
                 width,
                 height,
                 image_name,
-                is_theater,
             });
         }
 
