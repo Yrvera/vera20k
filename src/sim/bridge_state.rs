@@ -230,6 +230,45 @@ pub struct BridgeStateChange {
     pub destroyed_cells: Vec<(u16, u16)>,
 }
 
+/// Outcome of one `body_cell_advance_state` invocation. Mirrors the return
+/// codes of binary `ProcessBridgeDamageStateMachine_High @ 0x576BA0` body
+/// branch (0 = absorbed, 1 = collapse), with structured fallout for the
+/// orchestrator to dispatch.
+///
+/// Does NOT derive `PartialEq`/`Eq` because `SetBridgeDirectionResult`
+/// (defined in `sim::bridge_specs`) does not derive them either, and the
+/// task scope forbids cross-module edits. Tests inspect the outcome via
+/// `matches!` + field destructuring.
+#[derive(Debug, Clone)]
+pub enum StateOutcome {
+    /// Damage absorbed — anchor advanced from `Healthy` to `Damaged`. Bridge
+    /// still passable. Renderer should redraw.
+    Absorbed,
+    /// Anchor collapsed — `damage_state` became `Destroyed`. Cascade actions
+    /// for orchestrator follow.
+    Collapsed {
+        /// Cells whose `damage_state` was set to `Destroyed` in this call
+        /// (typically just the anchor; perpendicular targets that hit
+        /// collapse-final via `update_ramp_perpendicular` also appear here).
+        destroyed_cells: Vec<(u16, u16)>,
+        /// `BlowUpBridge` cascade actions emitted by `set_bridge_direction`.
+        /// Orchestrator dispatches these (kill ground occupants, Limbo
+        /// bridge-deck, spawn debris).
+        set_bridge_direction:
+            crate::sim::bridge_specs::SetBridgeDirectionResult,
+        /// Cells where `UpdateAdjacentBridges_High` should run for rim
+        /// re-evaluation. Orchestrator (Phase F Task 27) runs the actual
+        /// rim helper.
+        adjacent_bridges_dirty: Vec<(u16, u16)>,
+        /// Whether the zone graph needs rebuild (`InvalidateBridgeZones` →
+        /// `UpdateBridgeZonesHelper`). Orchestrator dispatches.
+        zones_dirty: bool,
+    },
+    /// Cell is not a body-bridge cell, anchor span lookup failed, or anchor
+    /// is already `Destroyed`. No-op.
+    NoChange,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct BridgeRuntimeCell {
     pub deck_present: bool,
@@ -561,6 +600,164 @@ impl BridgeRuntimeState {
         Some(BridgeStateChange { destroyed_cells })
     }
 
+    /// Body-cell state-machine driver. Mirrors the body branch of binary
+    /// `ProcessBridgeDamageStateMachine_High @ 0x576BA0` (HIGH §3.1).
+    ///
+    /// Receives damage on a body-bridge cell at `(rx, ry)`. Resolves anchor
+    /// (follows `anchor_span_id` if input cell is `Body` or `Tail`), reads
+    /// anchor's current `damage_state`, transitions per binary switch arms,
+    /// fires perpendicular `UpdateRamp_*` writes via `update_ramp_perpendicular`,
+    /// and on collapse emits `set_bridge_direction(span, false)` for the
+    /// `BlowUpBridge` cascade.
+    ///
+    /// Returns `StateOutcome::Absorbed` for `Healthy → Damaged`,
+    /// `StateOutcome::Collapsed { ... }` for `Damaged → Destroyed` and
+    /// partial-collapse → `Destroyed`, and `StateOutcome::NoChange` for
+    /// already-destroyed / non-body / unresolvable-anchor inputs.
+    ///
+    /// `is_high_bridge` is currently unused (state transitions identical for
+    /// HIGH and LOW per HIGH §11.1) but kept for API symmetry with the
+    /// future overlay-write branch.
+    pub fn body_cell_advance_state(
+        &mut self,
+        rx: u16,
+        ry: u16,
+        is_high_bridge: bool,
+    ) -> StateOutcome {
+        // 1. Resolve input cell.
+        let Some(input_cell) = self.cell(rx, ry).copied() else {
+            return StateOutcome::NoChange;
+        };
+
+        // 2. Filter: must be body-bridge (Anchor / Body / Tail). Bridgehead
+        //    cells route to Task 14's bridgehead driver (not part of this plan).
+        if !matches!(
+            input_cell.role,
+            BridgeCellRole::Anchor | BridgeCellRole::Body | BridgeCellRole::Tail
+        ) {
+            return StateOutcome::NoChange;
+        }
+
+        // 3. Resolve anchor.
+        let anchor_pos = if matches!(input_cell.role, BridgeCellRole::Anchor) {
+            (rx, ry)
+        } else {
+            // Non-anchor body cell: follow anchor_span_id to span.anchor.
+            let Some(span_id) = input_cell.anchor_span_id else {
+                return StateOutcome::NoChange;
+            };
+            let Some(span) = self.anchor_span(span_id) else {
+                return StateOutcome::NoChange;
+            };
+            span.anchor
+        };
+
+        let Some(anchor_cell) = self.cell(anchor_pos.0, anchor_pos.1).copied() else {
+            return StateOutcome::NoChange;
+        };
+        let Some(axis) = anchor_cell.axis else {
+            return StateOutcome::NoChange;
+        };
+        let span_id = match anchor_cell.anchor_span_id {
+            Some(id) => id,
+            None => return StateOutcome::NoChange,
+        };
+        let span_clone = match self.anchor_span(span_id) {
+            Some(s) => s.clone(),
+            None => return StateOutcome::NoChange,
+        };
+
+        // 4. Switch on anchor's damage_state.
+        match anchor_cell.damage_state {
+            DamageState::Healthy { .. } => {
+                // Anchor advances to Damaged.
+                if let Some(c) = self.cell_mut(anchor_pos.0, anchor_pos.1) {
+                    c.damage_state = DamageState::Damaged;
+                }
+                // Fire UpdateRamp_*A and _*B on perpendicular targets.
+                let _ = crate::sim::bridge_specs::update_ramp_perpendicular(
+                    self, anchor_pos, axis, Phase::DamageA, is_high_bridge,
+                );
+                let _ = crate::sim::bridge_specs::update_ramp_perpendicular(
+                    self, anchor_pos, axis, Phase::DamageB, is_high_bridge,
+                );
+                StateOutcome::Absorbed
+            }
+            DamageState::Damaged => {
+                // Full collapse — fire CollapseA + CollapseB perpendicular,
+                // anchor → Destroyed, set_bridge_direction cascade.
+                let _ = crate::sim::bridge_specs::update_ramp_perpendicular(
+                    self, anchor_pos, axis, Phase::CollapseA, is_high_bridge,
+                );
+                let _ = crate::sim::bridge_specs::update_ramp_perpendicular(
+                    self, anchor_pos, axis, Phase::CollapseB, is_high_bridge,
+                );
+                let mut destroyed = vec![anchor_pos];
+                if let Some(c) = self.cell_mut(anchor_pos.0, anchor_pos.1) {
+                    c.damage_state = DamageState::Destroyed;
+                }
+                // Collect any perpendicular cells that hit collapse-final
+                // (became Destroyed via update_ramp_perpendicular).
+                for &perp_dir in &[Direction::E, Direction::W, Direction::N, Direction::S] {
+                    let (dx, dy) = perp_dir.offset();
+                    let nx = anchor_pos.0 as i32 + dx;
+                    let ny = anchor_pos.1 as i32 + dy;
+                    if nx < 0 || ny < 0 { continue; }
+                    let pos = (nx as u16, ny as u16);
+                    if let Some(c) = self.cell(pos.0, pos.1) {
+                        if matches!(c.damage_state, DamageState::Destroyed)
+                            && !destroyed.contains(&pos)
+                        {
+                            destroyed.push(pos);
+                        }
+                    }
+                }
+                let sbd = crate::sim::bridge_specs::set_bridge_direction(&span_clone, false);
+                let adj = compute_adjacent_bridges_dirty(rx, ry, axis);
+                StateOutcome::Collapsed {
+                    destroyed_cells: destroyed,
+                    set_bridge_direction: sbd,
+                    adjacent_bridges_dirty: adj,
+                    zones_dirty: true,
+                }
+            }
+            DamageState::PartialCollapseA => {
+                // Single CollapseA call, then collapse-finalize.
+                let _ = crate::sim::bridge_specs::update_ramp_perpendicular(
+                    self, anchor_pos, axis, Phase::CollapseA, is_high_bridge,
+                );
+                if let Some(c) = self.cell_mut(anchor_pos.0, anchor_pos.1) {
+                    c.damage_state = DamageState::Destroyed;
+                }
+                let sbd = crate::sim::bridge_specs::set_bridge_direction(&span_clone, false);
+                let adj = compute_adjacent_bridges_dirty(rx, ry, axis);
+                StateOutcome::Collapsed {
+                    destroyed_cells: vec![anchor_pos],
+                    set_bridge_direction: sbd,
+                    adjacent_bridges_dirty: adj,
+                    zones_dirty: true,
+                }
+            }
+            DamageState::PartialCollapseB => {
+                let _ = crate::sim::bridge_specs::update_ramp_perpendicular(
+                    self, anchor_pos, axis, Phase::CollapseB, is_high_bridge,
+                );
+                if let Some(c) = self.cell_mut(anchor_pos.0, anchor_pos.1) {
+                    c.damage_state = DamageState::Destroyed;
+                }
+                let sbd = crate::sim::bridge_specs::set_bridge_direction(&span_clone, false);
+                let adj = compute_adjacent_bridges_dirty(rx, ry, axis);
+                StateOutcome::Collapsed {
+                    destroyed_cells: vec![anchor_pos],
+                    set_bridge_direction: sbd,
+                    adjacent_bridges_dirty: adj,
+                    zones_dirty: true,
+                }
+            }
+            DamageState::Destroyed => StateOutcome::NoChange,
+        }
+    }
+
     /// Bridge endpoint records for zone connectivity.
     /// Each active record connects ground zones on opposite sides of a bridge.
     pub fn endpoint_records(&self) -> &[BridgeEndpointRecord] {
@@ -749,6 +946,27 @@ fn walk_anchor_pattern(
         damage_state: DamageState::Healthy { variant: 0 },
         bridge_group_id,
     }
+}
+
+/// Compute the two perpendicular cells where `UpdateAdjacentBridges_High`
+/// should fire after a body-cell collapse. Per binary `0x576BA0`, the call
+/// passes the ORIGINAL damaged cell coord (not the anchor); the offsets are
+/// directional.
+fn compute_adjacent_bridges_dirty(rx: u16, ry: u16, axis: Axis) -> Vec<(u16, u16)> {
+    let mut out = Vec::with_capacity(2);
+    let perpendiculars: [Direction; 2] = match axis {
+        Axis::NS => [Direction::E, Direction::W],
+        Axis::EW => [Direction::S, Direction::N],
+    };
+    for d in perpendiculars {
+        let (dx, dy) = d.offset();
+        let nx = rx as i32 + dx;
+        let ny = ry as i32 + dy;
+        if nx >= 0 && ny >= 0 {
+            out.push((nx as u16, ny as u16));
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -1125,5 +1343,162 @@ mod tests {
                 assert_eq!(decoded, state, "round-trip {state:?} via {axis:?}");
             }
         }
+    }
+
+    fn make_body_driver_test_state() -> BridgeRuntimeState {
+        // Uses test_seed_cell + test_seed_anchor_span from Task 1 Step 5.
+        // Layout for the body-driver tests:
+        //   (5,5)  → anchor cell, axis NS, anchor_span_id=1
+        //   (4,5), (6,5) → perpendicular anchor partners (axis NS, separate
+        //                  span_id) — UpdateRamp_*A walks E, _*B walks W from
+        //                  (5,5), so these are the wrappers' targets.
+        //   (5,4)  → non-anchor body cell, anchor_span_id=1 — exercises the
+        //                  "follow to anchor" path in the driver.
+        // Other slots (7,5), (8,5) are referenced by the AnchorSpan but not
+        // seeded — body driver doesn't read them, only the partner indirection
+        // and the perpendicular cells.
+        let mut state = BridgeRuntimeState::default();
+
+        let healthy_template = BridgeRuntimeCell {
+            deck_present: true,
+            destroyable: true,
+            deck_level: 0,
+            bridge_group_id: Some(1),
+            damage_state: DamageState::Healthy { variant: 0 },
+            axis: Some(Axis::NS),
+            role: BridgeCellRole::Anchor,
+            anchor_span_id: Some(1),
+            bridgehead_step: 0,
+            overlay_byte: 0x18,
+        };
+
+        // Anchor at (5,5).
+        state.test_seed_cell(5, 5, healthy_template);
+
+        // Perpendicular anchor partners. They are anchors of their own spans
+        // (binary's `+0x80` flag is set), so use anchor_span_id=2.
+        let perp = BridgeRuntimeCell {
+            anchor_span_id: Some(2),
+            ..healthy_template
+        };
+        state.test_seed_cell(4, 5, perp);
+        state.test_seed_cell(6, 5, perp);
+
+        // Non-anchor body cell with anchor_span_id=1 — used by
+        // body_driver_non_anchor_body_cell_follows_to_anchor.
+        state.test_seed_cell(
+            5, 4,
+            BridgeRuntimeCell {
+                role: BridgeCellRole::Body,
+                ..healthy_template
+            },
+        );
+
+        // AnchorSpan registry entry. The driver looks up by anchor_span_id
+        // and reads `span.anchor` to resolve. Slot positions beyond (5,5),
+        // (4,5), (6,5) aren't seeded as cells because the driver doesn't
+        // touch them in the body-cell branch.
+        state.test_seed_anchor_span(AnchorSpan {
+            id: 1,
+            anchor: (5, 5),
+            cells: [
+                Some((5, 5)), Some((6, 5)), Some((7, 5)),
+                Some((8, 5)), Some((4, 5)), None,
+            ],
+            axis: Axis::NS,
+            direction: Direction::E,
+            damage_state: DamageState::Healthy { variant: 0 },
+            bridge_group_id: 1,
+        });
+
+        state
+    }
+
+    #[test]
+    fn body_driver_anchor_healthy_advances_to_damaged_returns_absorbed() {
+        let mut state = make_body_driver_test_state();
+        let outcome = state.body_cell_advance_state(5, 5, true);
+        assert!(matches!(outcome, StateOutcome::Absorbed));
+        assert_eq!(state.cell(5, 5).unwrap().damage_state, DamageState::Damaged);
+    }
+
+    #[test]
+    fn body_driver_non_anchor_body_cell_follows_to_anchor() {
+        let mut state = make_body_driver_test_state();
+        // Damage on a body cell, not the anchor.
+        let outcome = state.body_cell_advance_state(5, 4, true);
+        assert!(matches!(outcome, StateOutcome::Absorbed));
+        // Anchor's damage_state advanced, not the input body cell's.
+        assert_eq!(state.cell(5, 5).unwrap().damage_state, DamageState::Damaged);
+        assert_eq!(state.cell(5, 4).unwrap().damage_state, DamageState::Healthy { variant: 0 });
+    }
+
+    #[test]
+    fn body_driver_damaged_anchor_collapses_and_emits_set_bridge_direction() {
+        let mut state = make_body_driver_test_state();
+        state.cell_mut(5, 5).unwrap().damage_state = DamageState::Damaged;
+        let outcome = state.body_cell_advance_state(5, 5, true);
+        match outcome {
+            StateOutcome::Collapsed {
+                destroyed_cells,
+                set_bridge_direction,
+                adjacent_bridges_dirty,
+                zones_dirty,
+            } => {
+                assert!(destroyed_cells.contains(&(5, 5)));
+                // 4 BlowUpBridge actions per Task 12 invariant.
+                let blow_ups = set_bridge_direction.actions.iter()
+                    .filter(|(_, _, a)| matches!(a,
+                        crate::sim::bridge_specs::CellAction::BlowUpBridge))
+                    .count();
+                assert_eq!(blow_ups, 4);
+                // 2 perpendicular cells flagged dirty (E and W of (5,5)).
+                assert_eq!(adjacent_bridges_dirty.len(), 2);
+                assert!(zones_dirty);
+            }
+            other => panic!("expected Collapsed, got {other:?}"),
+        }
+        assert_eq!(state.cell(5, 5).unwrap().damage_state, DamageState::Destroyed);
+    }
+
+    #[test]
+    fn body_driver_partial_collapse_a_collapses_with_single_ramp_call() {
+        let mut state = make_body_driver_test_state();
+        state.cell_mut(5, 5).unwrap().damage_state = DamageState::PartialCollapseA;
+        let outcome = state.body_cell_advance_state(5, 5, true);
+        assert!(matches!(outcome, StateOutcome::Collapsed { .. }));
+        assert_eq!(state.cell(5, 5).unwrap().damage_state, DamageState::Destroyed);
+    }
+
+    #[test]
+    fn body_driver_partial_collapse_b_collapses_with_single_ramp_call() {
+        let mut state = make_body_driver_test_state();
+        state.cell_mut(5, 5).unwrap().damage_state = DamageState::PartialCollapseB;
+        let outcome = state.body_cell_advance_state(5, 5, true);
+        assert!(matches!(outcome, StateOutcome::Collapsed { .. }));
+        assert_eq!(state.cell(5, 5).unwrap().damage_state, DamageState::Destroyed);
+    }
+
+    #[test]
+    fn body_driver_destroyed_anchor_returns_no_change() {
+        let mut state = make_body_driver_test_state();
+        state.cell_mut(5, 5).unwrap().damage_state = DamageState::Destroyed;
+        let outcome = state.body_cell_advance_state(5, 5, true);
+        assert!(matches!(outcome, StateOutcome::NoChange));
+    }
+
+    #[test]
+    fn body_driver_bridgehead_cell_returns_no_change() {
+        let mut state = make_body_driver_test_state();
+        state.cell_mut(5, 5).unwrap().role = BridgeCellRole::Bridgehead;
+        let outcome = state.body_cell_advance_state(5, 5, true);
+        assert!(matches!(outcome, StateOutcome::NoChange));
+    }
+
+    #[test]
+    fn body_driver_out_of_bounds_returns_no_change() {
+        let mut state = make_body_driver_test_state();
+        let outcome = state.body_cell_advance_state(99, 99, true);
+        assert!(matches!(outcome, StateOutcome::NoChange));
     }
 }
