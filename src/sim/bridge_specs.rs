@@ -9,7 +9,7 @@
 //! They are kept as pure functions so the runtime can adopt them incrementally
 //! once mutable overlay state and ZoneConnection records are available.
 
-use crate::sim::bridge_state::{Axis, Phase};
+use crate::sim::bridge_state::{AnchorSpan, Axis, Direction, Phase};
 
 const BRIDGE_GATE_BIT: u32 = 0x0100;
 const NO_ZONE_CONNECTION: i16 = -1;
@@ -450,10 +450,56 @@ static DESTRUCTION_OVERLAY_LOW_EW: [u8; 16] = [
     0x5A, 0x5A, 0x65, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
 ];
 
+/// Per-cell action emitted by `set_bridge_direction` walker. The orchestrator
+/// in `world::resolve_bridge_state_changes` consumes these and dispatches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellAction {
+    /// Cell receives `BlowUpBridge` (kill ground, Limbo bridge-deck, debris).
+    /// Destruction path slots 0, 1, 2, 4 (binary cells 1, 2, 3, 5).
+    BlowUpBridge,
+    /// Cell receives flag-only update — no BlowUpBridge. Slot 3 (binary
+    /// cell 4) and slot 5 (binary cell 6) on destruction path.
+    FlagOnly,
+}
+
+/// Result from `set_bridge_direction` walker. Each entry is one cell + its
+/// action.
+#[derive(Debug, Clone)]
+pub struct SetBridgeDirectionResult {
+    pub actions: Vec<((u16, u16), usize, CellAction)>,
+}
+
+/// Emit the per-cell action list for an anchor span. Mirrors binary's
+/// `SetBridgeDirection_NESW @ 0x47E040`.
+///
+/// `set == false` is the destruction path (4 BlowUpBridge calls + 1–2
+/// flag-only). `set == true` is the build/intact path (no BlowUpBridge —
+/// flag writes only). Tier 2 only consumes destruction path; build path
+/// is exercised by map-load anchor walker construction (Task 7).
+pub fn set_bridge_direction(span: &AnchorSpan, set: bool) -> SetBridgeDirectionResult {
+    let mut actions = Vec::with_capacity(6);
+    for (slot, cell) in span.iter_cells() {
+        let action = if !set {
+            // Destruction path: slots 0, 1, 2, 4 = BlowUpBridge; 3, 5 = FlagOnly.
+            if AnchorSpan::BLOW_UP_SLOTS.contains(&slot) {
+                CellAction::BlowUpBridge
+            } else {
+                CellAction::FlagOnly
+            }
+        } else {
+            // Build path: every cell is FlagOnly (no BlowUpBridge). Used by
+            // map-load construction.
+            CellAction::FlagOnly
+        };
+        actions.push((cell, slot, action));
+    }
+    SetBridgeDirectionResult { actions }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sim::bridge_state::{Axis, Phase};
+    use crate::sim::bridge_state::{AnchorSpan, Axis, DamageState, Direction, Phase};
 
     #[test]
     fn low_bridge_damage_step_ignores_non_bridge_overlay() {
@@ -882,5 +928,67 @@ mod tests {
             assert_eq!(pick_destruction_overlay(i, Axis::NS, false), None, "NS slot {i}");
             assert_eq!(pick_destruction_overlay(i, Axis::EW, false), None, "EW slot {i}");
         }
+    }
+
+    #[test]
+    fn set_bridge_direction_destruction_emits_4_blow_up_actions() {
+        let span = AnchorSpan {
+            id: 1,
+            anchor: (5, 5),
+            cells: [
+                Some((5, 5)), Some((6, 5)), Some((7, 5)),
+                Some((8, 5)), Some((4, 5)), None,
+            ],
+            axis: Axis::NS,
+            direction: Direction::E,
+            damage_state: DamageState::Damaged,
+            bridge_group_id: 1,
+        };
+        let result = set_bridge_direction(&span, false);
+        let blow_ups = result.actions.iter()
+            .filter(|(_, _, a)| matches!(a, CellAction::BlowUpBridge))
+            .count();
+        assert_eq!(blow_ups, 4);
+        let flag_only = result.actions.iter()
+            .filter(|(_, _, a)| matches!(a, CellAction::FlagOnly))
+            .count();
+        assert_eq!(flag_only, 1); // slot 3 (cell 4)
+    }
+
+    #[test]
+    fn set_bridge_direction_build_emits_no_blow_up_actions() {
+        let span = AnchorSpan {
+            id: 1,
+            anchor: (0, 0),
+            cells: [Some((0, 0)), None, None, None, None, None],
+            axis: Axis::NS,
+            direction: Direction::E,
+            damage_state: DamageState::Healthy { variant: 0 },
+            bridge_group_id: 1,
+        };
+        let result = set_bridge_direction(&span, true);
+        assert!(result.actions.iter().all(|(_, _, a)| matches!(a, CellAction::FlagOnly)));
+    }
+
+    #[test]
+    fn set_bridge_direction_includes_slot_5_only_when_present() {
+        let span = AnchorSpan {
+            id: 1,
+            anchor: (5, 5),
+            cells: [
+                Some((5, 5)), Some((6, 5)), Some((7, 5)),
+                Some((8, 5)), Some((4, 5)),
+                Some((6, 5)), // hypothetical slot 5
+            ],
+            axis: Axis::NS,
+            direction: Direction::W,
+            damage_state: DamageState::Damaged,
+            bridge_group_id: 1,
+        };
+        let result = set_bridge_direction(&span, false);
+        let slot_5_action = result.actions.iter()
+            .find(|(_, slot, _)| *slot == 5)
+            .map(|(_, _, a)| *a);
+        assert_eq!(slot_5_action, Some(CellAction::FlagOnly));
     }
 }
