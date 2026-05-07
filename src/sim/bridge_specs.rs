@@ -9,7 +9,7 @@
 //! They are kept as pure functions so the runtime can adopt them incrementally
 //! once mutable overlay state and ZoneConnection records are available.
 
-use crate::sim::bridge_state::{AnchorSpan, Axis, Direction, Phase};
+use crate::sim::bridge_state::{AnchorSpan, Axis, BridgeRuntimeState, DamageState, Direction, Phase};
 
 const BRIDGE_GATE_BIT: u32 = 0x0100;
 const NO_ZONE_CONNECTION: i16 = -1;
@@ -496,10 +496,109 @@ pub fn set_bridge_direction(span: &AnchorSpan, set: bool) -> SetBridgeDirectionR
     SetBridgeDirectionResult { actions }
 }
 
+/// Outcome of one perpendicular `UpdateRamp_*_High`-style call. Mirrors the
+/// inner side effects of binary `UpdateRamp_NS_DamageA_High @ 0x00572230` and
+/// peers (HIGH §11.1).
+///
+/// Currently models only the **anchor-flag-gated state-byte transition**.
+/// The pavement/bridgehead-overlay-write branch fires off-screen
+/// (`SetOverlayAndPropagate` / `ToggleBridgePavement`) and is deferred until
+/// the runtime-initialized tile-class constants are observed live —
+/// see plan §"Deferred to Implementation".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RampOutcome {
+    /// True if the target cell's `damage_state` was mutated (target was an
+    /// anchor and the `apply_ramp_transition` returned `Some`).
+    pub state_changed: bool,
+}
+
+/// Compute the perpendicular-walk direction for a body-driver UpdateRamp call.
+/// A-side and B-side perpendiculars per `[GHIDRA 0x576BA0]` body branch:
+/// NS axis: A → E (dir 2), B → W (dir 6).
+/// EW axis: A → S (dir 4), B → N (dir 0).
+fn perpendicular_direction(axis: Axis, phase: Phase) -> Direction {
+    let is_a_side = matches!(phase, Phase::DamageA | Phase::CollapseA);
+    match (axis, is_a_side) {
+        (Axis::NS, true) => Direction::E,
+        (Axis::NS, false) => Direction::W,
+        (Axis::EW, true) => Direction::S,
+        (Axis::EW, false) => Direction::N,
+    }
+}
+
+/// Walk one perpendicular cell from `anchor_pos` and apply the `UpdateRamp_*`
+/// state-byte transition if the target is an anchor cell.
+///
+/// **State-byte branch only** — overlay-write branch deferred (see plan).
+/// Mirrors the anchor-flag-gated `+0x11E` write of binary `UpdateRamp_*_High`.
+///
+/// `is_high_bridge` is currently unused (state transitions are identical for
+/// HIGH and LOW per HIGH §11.1) but kept for API symmetry with the deferred
+/// overlay-write branch and future Task 14 (bridgehead driver).
+pub fn update_ramp_perpendicular(
+    state: &mut BridgeRuntimeState,
+    anchor_pos: (u16, u16),
+    axis: Axis,
+    phase: Phase,
+    _is_high_bridge: bool,
+) -> RampOutcome {
+    let dir = perpendicular_direction(axis, phase);
+    let (dx, dy) = dir.offset();
+    let target_x = anchor_pos.0 as i32 + dx;
+    let target_y = anchor_pos.1 as i32 + dy;
+    if target_x < 0 || target_y < 0 {
+        return RampOutcome { state_changed: false };
+    }
+    let target_pos = (target_x as u16, target_y as u16);
+
+    // Snapshot target read (avoids borrow conflict with subsequent mut access).
+    let Some(target_cell) = state.cell(target_pos.0, target_pos.1).copied() else {
+        return RampOutcome { state_changed: false };
+    };
+    // Anchor-flag gate. In binary: `target.flags & 0x80`. In our model:
+    // role == Anchor.
+    if !matches!(target_cell.role, crate::sim::bridge_state::BridgeCellRole::Anchor) {
+        return RampOutcome { state_changed: false };
+    }
+    let Some(target_axis) = target_cell.axis else {
+        return RampOutcome { state_changed: false };
+    };
+
+    let current_byte = target_cell.damage_state.to_state_byte(target_axis);
+    let Some(next_byte) = apply_ramp_transition(current_byte, axis, phase) else {
+        return RampOutcome { state_changed: false };
+    };
+
+    // Decode next byte. Per `apply_ramp_transition` docstring, next_byte == 0
+    // only fires for the collapse-final case (state 7/8/0x10/0x11 + matching
+    // CollapseA/B phase). When the perpendicular target hits its recurse-to-0
+    // branch the binary sets `state = 0; IsoTileTypeIndex = -1`, which in our
+    // model is Destroyed. So decode 0 → Destroyed for this path.
+    let next_state = if next_byte == 0 {
+        DamageState::Destroyed
+    } else {
+        match DamageState::from_state_byte(next_byte) {
+            Some(s) => s,
+            None => return RampOutcome { state_changed: false },
+        }
+    };
+
+    // Mut access to write the new state.
+    if let Some(cell_mut) = state.cell_mut(target_pos.0, target_pos.1) {
+        cell_mut.damage_state = next_state;
+        RampOutcome { state_changed: true }
+    } else {
+        RampOutcome { state_changed: false }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sim::bridge_state::{AnchorSpan, Axis, DamageState, Direction, Phase};
+    use crate::sim::bridge_state::{
+        AnchorSpan, Axis, BridgeCellRole, BridgeRuntimeCell, BridgeRuntimeState,
+        DamageState, Direction, Phase,
+    };
 
     #[test]
     fn low_bridge_damage_step_ignores_non_bridge_overlay() {
@@ -990,5 +1089,120 @@ mod tests {
             .find(|(_, slot, _)| *slot == 5)
             .map(|(_, _, a)| *a);
         assert_eq!(slot_5_action, Some(CellAction::FlagOnly));
+    }
+
+    /// Build a minimal BridgeRuntimeState for update_ramp tests:
+    /// anchors at (4,5), (5,5), (6,5), all NS axis, Healthy{variant: 0}.
+    /// Uses `test_seed_cell` (Task 1 Step 5).
+    fn make_perpendicular_test_state() -> BridgeRuntimeState {
+        let mut state = BridgeRuntimeState::default();
+        let template = BridgeRuntimeCell {
+            deck_present: true,
+            destroyable: true,
+            deck_level: 0,
+            bridge_group_id: Some(1),
+            damage_state: DamageState::Healthy { variant: 0 },
+            axis: Some(Axis::NS),
+            role: BridgeCellRole::Anchor,
+            anchor_span_id: Some(1),
+            bridgehead_step: 0,
+            overlay_byte: 0x18, // HIGH bridge anchor overlay
+        };
+        for (rx, ry) in [(4u16, 5u16), (5, 5), (6, 5)] {
+            state.test_seed_cell(rx, ry, template);
+        }
+        state
+    }
+
+    #[test]
+    fn update_ramp_perpendicular_ns_damage_a_anchor_target_transitions_to_4() {
+        let mut state = make_perpendicular_test_state();
+        let outcome = update_ramp_perpendicular(
+            &mut state, (5, 5), Axis::NS, Phase::DamageA, true,
+        );
+        assert!(outcome.state_changed);
+        let target = state.cell(6, 5).expect("E target");
+        assert_eq!(target.damage_state, DamageState::Healthy { variant: 4 });
+    }
+
+    #[test]
+    fn update_ramp_perpendicular_ns_damage_b_anchor_target_walks_west() {
+        let mut state = make_perpendicular_test_state();
+        let outcome = update_ramp_perpendicular(
+            &mut state, (5, 5), Axis::NS, Phase::DamageB, true,
+        );
+        assert!(outcome.state_changed);
+        let target = state.cell(4, 5).expect("W target");
+        assert_eq!(target.damage_state, DamageState::Healthy { variant: 5 });
+    }
+
+    #[test]
+    fn update_ramp_perpendicular_non_anchor_target_no_change() {
+        let mut state = make_perpendicular_test_state();
+        // Patch (6,5) to Body role (not Anchor).
+        state.cell_mut(6, 5).unwrap().role = BridgeCellRole::Body;
+        let outcome = update_ramp_perpendicular(
+            &mut state, (5, 5), Axis::NS, Phase::DamageA, true,
+        );
+        assert!(!outcome.state_changed);
+        assert_eq!(
+            state.cell(6, 5).unwrap().damage_state,
+            DamageState::Healthy { variant: 0 }
+        );
+    }
+
+    #[test]
+    fn update_ramp_perpendicular_target_off_map_no_change() {
+        let mut state = make_perpendicular_test_state();
+        // Anchor at (0, 0) calling NS DamageB → walks W → target x = -1 → out of bounds.
+        let outcome = update_ramp_perpendicular(
+            &mut state, (0, 0), Axis::NS, Phase::DamageB, true,
+        );
+        assert!(!outcome.state_changed);
+    }
+
+    #[test]
+    fn update_ramp_perpendicular_collapse_final_target_to_destroyed() {
+        let mut state = make_perpendicular_test_state();
+        state.cell_mut(6, 5).unwrap().damage_state = DamageState::PartialCollapseB;
+        let outcome = update_ramp_perpendicular(
+            &mut state, (5, 5), Axis::NS, Phase::CollapseA, true,
+        );
+        assert!(outcome.state_changed);
+        let target = state.cell(6, 5).expect("E target");
+        assert_eq!(target.damage_state, DamageState::Destroyed);
+    }
+
+    #[test]
+    fn update_ramp_perpendicular_ew_collapse_walks_south() {
+        // Build a separate fixture with EW-axis anchors at (5,4), (5,5), (5,6).
+        // (The default fixture is NS-axis at (4,5)/(5,5)/(6,5); using it for an
+        // EW test would require re-seeding cells AND axes, so we just build
+        // fresh.)
+        let mut state = BridgeRuntimeState::default();
+        let template = BridgeRuntimeCell {
+            deck_present: true,
+            destroyable: true,
+            deck_level: 0,
+            bridge_group_id: Some(1),
+            damage_state: DamageState::Healthy { variant: 0 },
+            axis: Some(Axis::EW),
+            role: BridgeCellRole::Anchor,
+            anchor_span_id: Some(1),
+            bridgehead_step: 0,
+            overlay_byte: 0x18,
+        };
+        for (rx, ry) in [(5u16, 4u16), (5, 5), (5, 6)] {
+            state.test_seed_cell(rx, ry, template);
+        }
+        // EW CollapseA → walks S → target (5, 6).
+        // Target state byte 9 (Healthy{0} EW) → apply_ramp_transition EW
+        // CollapseA: 9..=15 → 0x11 = PartialCollapseA.
+        let outcome = update_ramp_perpendicular(
+            &mut state, (5, 5), Axis::EW, Phase::CollapseA, true,
+        );
+        assert!(outcome.state_changed);
+        let target = state.cell(5, 6).expect("S target");
+        assert_eq!(target.damage_state, DamageState::PartialCollapseA);
     }
 }
