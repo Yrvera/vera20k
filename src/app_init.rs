@@ -259,8 +259,13 @@ pub fn load_map(
         Some((reg, ini)) => (Some(reg), Some(ini)),
         None => (None, None),
     };
-    if let (Some(r), Some(a)) = (&mut rules, &art) {
+    if let (Some(r), Some(a)) = (rules.as_mut(), art.as_ref()) {
         r.merge_art_data(a);
+        // Retain the art registry on RuleSet so dispatchers (e.g. smudge
+        // spawning) can read per-anim spawn flags via &RuleSet alone.
+        // Cloned because downstream consumers in this function still read
+        // through the `art` Option (lighting, sidebar, sim spawn, etc.).
+        r.art_registry = a.clone();
     }
     // Resolve warp animation rates from art.ini sections (e.g., [WARPOUT] Rate=120).
     if let (Some(r), Some(art_ini_file)) = (&mut rules, &art_ini) {

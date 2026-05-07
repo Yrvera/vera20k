@@ -29,6 +29,7 @@ use crate::rules::particle_system_type::{
 use crate::rules::particle_type::{ParticleType, ParticleTypeId, PendingParticleType};
 use crate::rules::projectile_type::ProjectileType;
 use crate::rules::radar_event_config::RadarEventConfig;
+use crate::rules::smudge_type::SmudgeTypeRegistry;
 use crate::rules::superweapon_type::SuperWeaponType;
 use crate::rules::terrain_object_type::TerrainObjectType;
 use crate::rules::terrain_rules::TerrainRules;
@@ -1141,6 +1142,12 @@ pub struct RuleSet {
     particle_system_types: Vec<ParticleSystemType>,
     /// Uppercase name → `ParticleSystemTypeId` for case-insensitive lookup.
     particle_system_types_by_name: HashMap<String, ParticleSystemTypeId>,
+    /// Smudge type registry parsed from `[SmudgeTypes]` and per-name sections.
+    /// Populated by `RuleSet::from_ini` from rulesmd.ini.
+    pub smudge_types: SmudgeTypeRegistry,
+    /// Retained art.ini registry. Populated by app_init after `merge_art_data`
+    /// so dispatchers (e.g. smudge spawning) can read per-anim spawn flags.
+    pub art_registry: crate::rules::art_data::ArtRegistry,
 }
 
 impl RuleSet {
@@ -1341,6 +1348,8 @@ impl RuleSet {
             particle_types_by_name,
             particle_system_types,
             particle_system_types_by_name,
+            smudge_types: SmudgeTypeRegistry::from_rules_ini(ini),
+            art_registry: crate::rules::art_data::ArtRegistry::empty(),
         })
     }
 

@@ -167,6 +167,7 @@ pub struct ResolvedObjectArt<'a> {
 }
 
 /// Lookup table for art.ini rendering data.
+#[derive(Debug, Clone)]
 pub struct ArtRegistry {
     /// image_id (uppercase) -> ArtEntry.
     entries: HashMap<String, ArtEntry>,
