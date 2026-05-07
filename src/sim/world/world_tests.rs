@@ -180,6 +180,108 @@ fn bridge_cell_with_ground_block(
     terrain
 }
 
+/// Build a 3-cell EW bridge strip centered at `(center_rx, ry)`, with the
+/// `bridge_state` pre-classified so the orchestrator's HighDirect path
+/// fires the walker (overlay 0xDC → final-stage collapse on all 3 cells).
+///
+/// All 3 bridge cells share the same `level`, `deck_level`, and
+/// `ground_walk_blocked` flag. Caller mutates extras like `overlay_blocks`
+/// / `terrain_object_blocks` / `is_cliff_like` on the returned terrain
+/// before constructing the simulation if a specific fallout shape is
+/// being asserted (mutate the center cell at `center_rx, ry`).
+///
+/// Constraints: `center_rx >= 1` (strip needs the west neighbor in-grid).
+fn ew_high_bridge_strip_for_dispatch(
+    center_rx: u16,
+    ry: u16,
+    deck_level: u8,
+    ground_walk_blocked: bool,
+    level: u8,
+) -> (ResolvedTerrainGrid, BridgeRuntimeState) {
+    use crate::map::resolved_terrain::ResolvedTerrainCell;
+    use crate::sim::bridge_state::{Axis, BridgeCellRole, BridgeRuntimeCell, DamageState};
+    assert!(center_rx >= 1, "EW strip needs west neighbor in-grid");
+
+    let width = center_rx + 2; // 0..=(center_rx + 1)
+    let height = ry + 1;
+    let west = center_rx - 1;
+    let east = center_rx + 1;
+
+    let mut cells = Vec::with_capacity(width as usize * height as usize);
+    for y in 0..height {
+        for x in 0..width {
+            let on_bridge = y == ry && x >= west && x <= east;
+            cells.push(ResolvedTerrainCell {
+                rx: x,
+                ry: y,
+                source_tile_index: 0,
+                source_sub_tile: 0,
+                final_tile_index: 0,
+                final_sub_tile: 0,
+                level: if on_bridge { level } else { 0 },
+                filled_clear: false,
+                tileset_index: Some(0),
+                land_type: 0,
+                slope_type: 0,
+                template_height: 0,
+                render_offset_x: 0,
+                render_offset_y: 0,
+                terrain_class: crate::rules::terrain_rules::TerrainClass::Clear,
+                speed_costs: crate::rules::terrain_rules::SpeedCostProfile::default(),
+                is_water: on_bridge && ground_walk_blocked,
+                is_cliff_like: false,
+                is_cliff_redraw: false,
+                variant: 0,
+                is_rough: false,
+                is_road: false,
+                accepts_smudge: false,
+                has_ramp: false,
+                canonical_ramp: None,
+                ground_walk_blocked: on_bridge && ground_walk_blocked,
+                terrain_object_blocks: false,
+                overlay_blocks: false,
+                zone_type: 0,
+                base_ground_walk_blocked: false,
+                base_build_blocked: on_bridge && ground_walk_blocked,
+                build_blocked: on_bridge,
+                has_bridge_deck: on_bridge,
+                bridge_walkable: on_bridge,
+                bridge_transition: on_bridge,
+                bridge_deck_level: if on_bridge { deck_level } else { 0 },
+                bridge_layer: None,
+                radar_left: [0, 0, 0],
+                radar_right: [0, 0, 0],
+            });
+        }
+    }
+    let resolved = ResolvedTerrainGrid::from_cells(width, height, cells);
+
+    // Build bridge state, then override the 3 deck cells with overlay 0xDC
+    // (HIGH EW final-eligible). The HighDirect dispatcher path matches on
+    // overlay alone (no Z-gate, no role check), so a single hit at any of
+    // the 3 cells drives the walker to write 0xE8 / Destroyed across the
+    // (this, west, east) triple.
+    let mut state = BridgeRuntimeState::from_resolved_terrain(&resolved, true, 15);
+    for x in west..=east {
+        state.test_seed_cell(
+            x,
+            ry,
+            BridgeRuntimeCell {
+                deck_present: true,
+                destroyable: true,
+                deck_level,
+                bridge_group_id: Some(1),
+                damage_state: DamageState::Healthy { variant: 0 },
+                axis: Some(Axis::EW),
+                role: BridgeCellRole::Body,
+                anchor_span_id: Some(1),
+                overlay_byte: 0xDC,
+            },
+        );
+    }
+    (resolved, state)
+}
+
 fn alliance_map(pairs: &[(&str, &[&str])]) -> HouseAllianceMap {
     let mut map = HouseAllianceMap::default();
     for &(owner, allies) in pairs {
@@ -398,18 +500,23 @@ fn test_spawn_from_map_high_without_bridge_falls_back_to_ground() {
 }
 
 #[test]
-#[ignore = "Phase F3 Task 15: rewrite for new orchestrator semantics — single_bridge_cell fixture lacks role/overlay classification needed by the dispatcher"]
 fn test_bridge_damage_rebuilds_path_grid() {
+    // 3-cell EW strip at (1..=3, 0), all overlay 0xDC. HighDirect dispatcher
+    // path fires the EW walker → all 3 cells transition to 0xE8 + Destroyed
+    // → `is_bridge_walkable` returns false → rebuilt path grid says no bridge
+    // layer at any of the 3 cells.
     let mut sim = Simulation::new();
-    let resolved = single_bridge_cell(2, 0, 2);
+    let (resolved, bridge_state) =
+        ew_high_bridge_strip_for_dispatch(2, 0, 2, false, 0);
     sim.resolved_terrain = Some(resolved.clone());
-    sim.bridge_state = Some(BridgeRuntimeState::from_resolved_terrain(
-        &resolved, true, 20,
-    ));
-    // Build PathGrid before damage — bridge should be walkable.
+    sim.bridge_state = Some(bridge_state);
+
+    // Build PathGrid before damage — all 3 cells walkable on bridge layer.
     let grid_before =
         PathGrid::from_resolved_terrain_with_bridges(&resolved, sim.bridge_state.as_ref());
-    assert!(grid_before.is_walkable_on_layer(2, 0, MovementLayer::Bridge));
+    for x in 1..=3 {
+        assert!(grid_before.is_walkable_on_layer(x, 0, MovementLayer::Bridge));
+    }
 
     let mut rules = combat_test_rules();
     rules.resolve_bridge_warheads(&mut sim.interner);
@@ -425,23 +532,27 @@ fn test_bridge_damage_rebuilds_path_grid() {
             impact_z: 4,
         }],
     );
-    // Rebuild PathGrid after damage — bridge should no longer be walkable.
+
+    // Rebuild PathGrid after damage — none of the 3 cells walkable on bridge.
     let grid_after = PathGrid::from_resolved_terrain_with_bridges(
         sim.resolved_terrain.as_ref().unwrap(),
         sim.bridge_state.as_ref(),
     );
-    assert!(!grid_after.is_walkable_on_layer(2, 0, MovementLayer::Bridge));
+    for x in 1..=3 {
+        assert!(
+            !grid_after.is_walkable_on_layer(x, 0, MovementLayer::Bridge),
+            "cell ({x}, 0) should not be walkable on bridge layer after collapse"
+        );
+    }
 }
 
 #[test]
-#[ignore = "Phase F3 Task 15: rewrite for new orchestrator semantics + DropIn correction"]
 fn test_destroyed_bridge_snaps_unit_to_ground_when_ground_exists() {
     let mut sim = Simulation::new();
-    let resolved = bridge_cell_with_ground_block(5, 5, 3, false, 1);
+    let (resolved, bridge_state) =
+        ew_high_bridge_strip_for_dispatch(5, 5, 3, false, 1);
     sim.resolved_terrain = Some(resolved.clone());
-    sim.bridge_state = Some(BridgeRuntimeState::from_resolved_terrain(
-        &resolved, true, 15,
-    ));
+    sim.bridge_state = Some(bridge_state);
 
     sim.spawn_from_map_with_resolved(
         &[MapEntity {
@@ -485,15 +596,17 @@ fn test_destroyed_bridge_snaps_unit_to_ground_when_ground_exists() {
     assert!(e.movement_target.is_none());
 }
 
+/// Per HIGH §12.7 / §12.9: deck units snap to ground level on collapse —
+/// no damage, no despawn, even when the ground below is unwalkable (water,
+/// `is_water=true` + `ground_walk_blocked=true`). Vanilla has no drown
+/// mechanism.
 #[test]
-#[ignore = "Phase F3 Task 15: rewrite — DropIn correction means deck units survive over blocked ground (vanilla never despawns per HIGH §12.7)"]
-fn test_destroyed_bridge_despawns_unit_over_blocked_ground() {
+fn test_destroyed_bridge_snaps_unit_to_ground_over_water_below() {
     let mut sim = Simulation::new();
-    let resolved = bridge_cell_with_ground_block(5, 5, 3, true, 0);
+    let (resolved, bridge_state) =
+        ew_high_bridge_strip_for_dispatch(5, 5, 3, true, 0);
     sim.resolved_terrain = Some(resolved.clone());
-    sim.bridge_state = Some(BridgeRuntimeState::from_resolved_terrain(
-        &resolved, true, 15,
-    ));
+    sim.bridge_state = Some(bridge_state);
 
     sim.spawn_from_map_with_resolved(
         &[MapEntity {
@@ -527,20 +640,32 @@ fn test_destroyed_bridge_despawns_unit_over_blocked_ground() {
             impact_z: 4,
         }],
     );
-    // Stale assertion — pending Task 15 rewrite.
+
+    // DropIn correction: unit ALIVE, snapped to ground level=0, OnBridge
+    // cleared, locomotor flipped to Ground/Idle.
+    let e = sim.entities.get(1).expect("deck unit must SURVIVE collapse over water");
+    assert_eq!(
+        e.health.current, e.health.max,
+        "DropIn never harms — health stays at max"
+    );
+    assert_eq!(e.position.z, 0, "snapped to ground level");
+    assert!(!e.on_bridge);
+    assert!(e.bridge_occupancy.is_none());
+    let loco = e.locomotor.as_ref().expect("locomotor");
+    assert_eq!(loco.layer, MovementLayer::Ground);
+    assert!(e.movement_target.is_none());
 }
 
+/// Same DropIn correction over an overlay-blocked ground cell.
 #[test]
-#[ignore = "Phase F3 Task 15: rewrite — DropIn correction means deck units survive over blocked ground (vanilla never despawns per HIGH §12.7)"]
-fn test_destroyed_bridge_despawns_unit_over_overlay_blocked_ground() {
+fn test_destroyed_bridge_snaps_unit_to_ground_over_overlay_blocked() {
     let mut sim = Simulation::new();
-    let mut resolved = bridge_cell_with_ground_block(5, 5, 3, false, 0);
+    let (mut resolved, bridge_state) =
+        ew_high_bridge_strip_for_dispatch(5, 5, 3, false, 0);
     let idx = resolved.index(5, 5).expect("bridge index");
     resolved.cells[idx].overlay_blocks = true;
     sim.resolved_terrain = Some(resolved.clone());
-    sim.bridge_state = Some(BridgeRuntimeState::from_resolved_terrain(
-        &resolved, true, 15,
-    ));
+    sim.bridge_state = Some(bridge_state);
 
     sim.spawn_from_map_with_resolved(
         &[MapEntity {
@@ -574,20 +699,27 @@ fn test_destroyed_bridge_despawns_unit_over_overlay_blocked_ground() {
             impact_z: 4,
         }],
     );
-    // Stale assertion — pending Task 15 rewrite.
+
+    let e = sim
+        .entities
+        .get(1)
+        .expect("deck unit must SURVIVE over overlay-blocked ground");
+    assert_eq!(e.health.current, e.health.max, "DropIn never harms");
+    assert_eq!(e.position.z, 0);
+    assert!(!e.on_bridge);
+    assert!(e.bridge_occupancy.is_none());
 }
 
+/// Same DropIn correction over a terrain-object-blocked ground cell.
 #[test]
-#[ignore = "Phase F3 Task 15: rewrite — DropIn correction means deck units survive over blocked ground (vanilla never despawns per HIGH §12.7)"]
-fn test_destroyed_bridge_despawns_unit_over_terrain_object_blocked_ground() {
+fn test_destroyed_bridge_snaps_unit_to_ground_over_terrain_object_blocked() {
     let mut sim = Simulation::new();
-    let mut resolved = bridge_cell_with_ground_block(5, 5, 3, false, 0);
+    let (mut resolved, bridge_state) =
+        ew_high_bridge_strip_for_dispatch(5, 5, 3, false, 0);
     let idx = resolved.index(5, 5).expect("bridge index");
     resolved.cells[idx].terrain_object_blocks = true;
     sim.resolved_terrain = Some(resolved.clone());
-    sim.bridge_state = Some(BridgeRuntimeState::from_resolved_terrain(
-        &resolved, true, 15,
-    ));
+    sim.bridge_state = Some(bridge_state);
 
     sim.spawn_from_map_with_resolved(
         &[MapEntity {
@@ -621,20 +753,30 @@ fn test_destroyed_bridge_despawns_unit_over_terrain_object_blocked_ground() {
             impact_z: 4,
         }],
     );
-    // Stale assertion — pending Task 15 rewrite.
+
+    let e = sim
+        .entities
+        .get(1)
+        .expect("deck unit must SURVIVE over terrain-object-blocked ground");
+    assert_eq!(e.health.current, e.health.max, "DropIn never harms");
+    assert_eq!(e.position.z, 0);
+    assert!(!e.on_bridge);
+    assert!(e.bridge_occupancy.is_none());
 }
 
+/// After collapse, the rebuilt path grid reverts the bridge cell to its
+/// underlying ground walkability — a cliff-like cell stays unwalkable
+/// (per `from_resolved_terrain_with_bridges`'s `is_cliff_like` branch).
+/// Plus the DropIn correction: the deck unit still survives.
 #[test]
-#[ignore = "Phase F3 Task 15: rewrite — fallout return shape changed; DropIn correction also applies"]
 fn test_destroyed_bridge_fallout_matches_rebuilt_ground_walkability() {
     let mut sim = Simulation::new();
-    let mut resolved = bridge_cell_with_ground_block(5, 5, 3, false, 0);
+    let (mut resolved, bridge_state) =
+        ew_high_bridge_strip_for_dispatch(5, 5, 3, false, 0);
     let idx = resolved.index(5, 5).expect("bridge index");
     resolved.cells[idx].is_cliff_like = true;
     sim.resolved_terrain = Some(resolved.clone());
-    sim.bridge_state = Some(BridgeRuntimeState::from_resolved_terrain(
-        &resolved, true, 15,
-    ));
+    sim.bridge_state = Some(bridge_state);
 
     sim.spawn_from_map_with_resolved(
         &[MapEntity {
@@ -674,10 +816,18 @@ fn test_destroyed_bridge_fallout_matches_rebuilt_ground_walkability() {
         sim.bridge_state.as_ref(),
     );
     assert!(
-        !rebuilt_grid.is_walkable_on_layer(5, 5, MovementLayer::Ground),
-        "destroyed bridge cell should stay ground-blocked when the rebuilt PathGrid says so"
+        !rebuilt_grid.is_walkable_on_layer(5, 5, MovementLayer::Bridge),
+        "destroyed bridge layer should be unwalkable"
     );
-    // Stale assertion — pending Task 15 rewrite.
+    assert!(
+        !rebuilt_grid.is_walkable_on_layer(5, 5, MovementLayer::Ground),
+        "destroyed cliff-like cell falls back to unwalkable underlying terrain"
+    );
+    // DropIn correction: the unit survived stranded at ground level even
+    // though the underlying ground is cliff-like (vanilla never despawns).
+    let e = sim.entities.get(1).expect("deck unit survives");
+    assert_eq!(e.health.current, e.health.max, "DropIn never harms");
+    assert!(!e.on_bridge);
 }
 
 #[test]

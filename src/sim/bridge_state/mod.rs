@@ -12,7 +12,7 @@
 pub mod walker;
 
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// Bridge body axis. Body cells are stacked along this axis; ramps face
 /// perpendicular.
@@ -1035,6 +1035,35 @@ impl BridgeRuntimeState {
         &self.endpoint_records
     }
 
+    /// Recompute `endpoint_records[*].active` flags from current cell damage
+    /// state. Once any cell of a bridge group enters `DamageState::Destroyed`,
+    /// the bridge can no longer carry traffic across the span — the record
+    /// is deactivated so the zone graph (`zone_build`) stops treating its
+    /// endpoint pair as connected.
+    ///
+    /// Deactivation is one-way (no re-activation). The legacy single-shot
+    /// `apply_damage` flipped `active = false` when the entire group was
+    /// destroyed in one hit; the orchestrator's state-machine collapses
+    /// cells individually, so the first destroyed cell already severs the
+    /// bridge and its zone connection.
+    pub fn refresh_endpoint_active_flags(&mut self) {
+        let mut destroyed_groups: BTreeSet<u16> = BTreeSet::new();
+        for cell_opt in &self.cells {
+            if let Some(cell) = cell_opt {
+                if matches!(cell.damage_state, DamageState::Destroyed) {
+                    if let Some(gid) = cell.bridge_group_id {
+                        destroyed_groups.insert(gid);
+                    }
+                }
+            }
+        }
+        for record in &mut self.endpoint_records {
+            if destroyed_groups.contains(&record.group_id) {
+                record.active = false;
+            }
+        }
+    }
+
     pub fn iter_cells(&self) -> impl Iterator<Item = ((u16, u16), &BridgeRuntimeCell)> {
         self.cells
             .iter()
@@ -1354,15 +1383,67 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Phase F3 Task 15: endpoint deactivation moved from apply_damage to the orchestrator's zone-rebuild cascade — needs proper bridge fixture to drive the dispatcher"]
     fn bridge_destruction_deactivates_endpoints() {
-        let state = BridgeRuntimeState::from_resolved_terrain(&make_bridge_terrain(), true, 50);
         // Endpoint deactivation is now driven by the orchestrator's
-        // `refresh_bridge_zones_if_dirty` rather than a side-effect of
-        // a legacy `apply_damage`. Re-asserting that here requires
-        // running the full dispatcher against a properly-classified
-        // bridge fixture, which lands in Task 15.
-        let _ = state;
+        // `refresh_bridge_zones_if_dirty`, which calls
+        // `refresh_endpoint_active_flags` whenever a walker / state-machine
+        // collapse marks `zones_dirty`. This in-module test exercises the
+        // deactivation logic in isolation: mutate cells to Destroyed (the
+        // dispatcher's terminal effect) and call the refresh helper
+        // directly. The full pipeline is covered by world-level integration
+        // tests in `world_tests.rs`.
+        let mut state =
+            BridgeRuntimeState::from_resolved_terrain(&make_bridge_terrain(), true, 50);
+        // Pre-condition: endpoint exists and is active.
+        let records = state.endpoint_records();
+        assert_eq!(records.len(), 1);
+        assert!(records[0].active);
+        let group_id = records[0].group_id;
+
+        // Mark every cell of the group destroyed (simulates a final-stage
+        // walker cascade landing on the entire group).
+        for (rx, ry) in [(1u16, 0u16), (2, 0), (3, 0)] {
+            if let Some(c) = state.cell_mut(rx, ry) {
+                c.damage_state = DamageState::Destroyed;
+            }
+        }
+        state.refresh_endpoint_active_flags();
+
+        let records = state.endpoint_records();
+        assert!(
+            !records[0].active,
+            "endpoint of destroyed group {group_id} must deactivate"
+        );
+    }
+
+    #[test]
+    fn refresh_endpoint_active_flags_deactivates_on_first_destroyed_cell() {
+        // Per the new state-machine semantic: a single destroyed cell in a
+        // group severs the bridge — the endpoint flips inactive immediately,
+        // not just when the entire group is destroyed.
+        let mut state =
+            BridgeRuntimeState::from_resolved_terrain(&make_bridge_terrain(), true, 50);
+        assert!(state.endpoint_records()[0].active);
+
+        // Destroy only ONE cell of the 3-cell group.
+        if let Some(c) = state.cell_mut(2, 0) {
+            c.damage_state = DamageState::Destroyed;
+        }
+        state.refresh_endpoint_active_flags();
+
+        assert!(
+            !state.endpoint_records()[0].active,
+            "first destroyed cell must already deactivate the endpoint"
+        );
+    }
+
+    #[test]
+    fn refresh_endpoint_active_flags_leaves_intact_groups_active() {
+        // No destroyed cells anywhere — refresh must not flip anything.
+        let mut state =
+            BridgeRuntimeState::from_resolved_terrain(&make_bridge_terrain(), true, 50);
+        state.refresh_endpoint_active_flags();
+        assert!(state.endpoint_records()[0].active);
     }
 
     #[test]

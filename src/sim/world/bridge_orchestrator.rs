@@ -225,13 +225,20 @@ fn notify_bridge_span_collapse(sim: &mut Simulation, cells: &BTreeSet<(u16, u16)
 /// Zone graph refresh. Per HIGH §12.8: walker emits `zones_dirty=true`
 /// only when a final-stage cell flips a `BridgeEndpointRecord.active`
 /// flag, mirroring the binary's `InvalidateBridgeZones` →
-/// `UpdateBridgeZonesHelper` chain. When set, rebuild the path grid
-/// from the post-collapse bridge state and rerun
-/// `Simulation::rebuild_zone_grid` so cross-bridge passability reflects
-/// the new connectivity.
+/// `UpdateBridgeZonesHelper` chain. When set:
+///   1. Recompute every endpoint record's `active` flag from current
+///      cell damage state — first destroyed cell in a group flips its
+///      endpoint pair to `active = false`. Replaces the side-effect of
+///      the legacy single-shot `apply_damage`.
+///   2. Rebuild the path grid from the post-collapse bridge state.
+///   3. Rerun `Simulation::rebuild_zone_grid` so cross-bridge
+///      passability reflects the new connectivity.
 fn refresh_bridge_zones_if_dirty(sim: &mut Simulation, any_zones_dirty: bool) {
     if !any_zones_dirty {
         return;
+    }
+    if let Some(bs) = sim.bridge_state.as_mut() {
+        bs.refresh_endpoint_active_flags();
     }
     let Some(terrain) = sim.resolved_terrain.as_ref() else {
         return;
