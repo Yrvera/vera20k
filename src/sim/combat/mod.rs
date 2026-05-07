@@ -522,6 +522,20 @@ pub struct CombatTickResult {
     pub smudge_spawn_requests: Vec<SmudgeSpawnRequest>,
 }
 
+/// Resolve an attack's impact z (tile-step level units, signed) for the
+/// bridge state-machine Z-height gate. Entity targets carry their position
+/// z. Cell targets have no entity z; we return 0 and let the orchestrator
+/// clamp against the terrain cell's level (state-machine Z-gate is a
+/// 3-level window centered on the cell).
+fn attack_impact_z(target: TargetKind, entities: &EntityStore) -> i32 {
+    if let TargetKind::Entity(eid) = target {
+        if let Some(e) = entities.get(eid) {
+            return e.position.z as i32;
+        }
+    }
+    0
+}
+
 /// Look up death weapon AoE data from an ObjectType.
 /// Returns (damage, warhead_id) if the entity should deal AoE damage on death.
 /// Checks DeathWeapon first, then falls back to primary weapon if Explodes=yes.
@@ -574,7 +588,8 @@ fn handle_entity_deaths(
     current_tick: u64,
 ) -> DeathEffects {
     let mut death_sounds: Vec<(InternedId, u16, u16)> = Vec::new();
-    let mut death_aoe: Vec<(u16, u16, i32, InternedId, InternedId)> = Vec::new();
+    // (rx, ry, z, dmg, wh_id, owner) — z carries through to BridgeDamageEvent.impact_z.
+    let mut death_aoe: Vec<(u16, u16, u8, i32, InternedId, InternedId)> = Vec::new();
     let mut despawned_ids: Vec<u64> = Vec::new();
     let mut spy_sat_reshroud_owners: Vec<InternedId> = Vec::new();
     let mut destroyed_crewed_buildings: Vec<DestroyedCrewedBuilding> = Vec::new();
@@ -609,7 +624,7 @@ fn handle_entity_deaths(
                     death_sounds.push((interner.intern(die_sound), rx, ry));
                 }
                 if let Some((dmg, wh_id)) = death_weapon_aoe(rules, obj, interner) {
-                    death_aoe.push((rx, ry, dmg, wh_id, owner));
+                    death_aoe.push((rx, ry, z, dmg, wh_id, owner));
                 }
                 if obj.spy_sat {
                     spy_sat_reshroud_owners.push(owner);
@@ -777,11 +792,11 @@ fn handle_entity_deaths(
     }
 
     // Apply death explosion AoE damage.
-    for (rx, ry, dmg, wh_id, owner_id) in &death_aoe {
+    for (rx, ry, z, dmg, wh_id, owner_id) in &death_aoe {
         if let Some(warhead) = rules.warhead(interner.resolve(*wh_id)) {
             if warhead.wall && *dmg > 0 {
                 // Wall cells produce WallDamageEvent; remaining cells (bridges
-                // or unaffiliated) keep the legacy bridge_damage_events path.
+                // or unaffiliated) keep the bridge_damage_events path.
                 let damage_u16 = (*dmg).max(0) as u16;
                 if cell_has_wall_overlay(overlay_grid, overlay_registry, *rx, *ry) {
                     wall_damage_events.push(WallDamageEvent {
@@ -790,15 +805,14 @@ fn handle_entity_deaths(
                         damage: damage_u16,
                     });
                 } else {
-                    // TODO(RE): Low-bridge overlay damage is not a raw "damage bridge cell" event.
-                    // The recovered engine uses a BridgeStrength RNG gate, AtomDamage bypass,
-                    // and 3-cell overlay pattern transitions before the pathfinding side-effects.
-                    // Keep these events scoped to the current elevated-bridge runtime until
-                    // mutable overlay bridge state is wired through the sim.
+                    let wh_iid = *wh_id;
                     bridge_damage_events.push(BridgeDamageEvent {
                         rx: *rx,
                         ry: *ry,
                         damage: damage_u16,
+                        warhead_ref: wh_iid,
+                        is_ion_cannon: wh_iid == rules.ion_cannon_warhead_id(),
+                        impact_z: *z as i32,
                     });
                 }
             }
@@ -1470,13 +1484,14 @@ pub fn tick_combat_with_fog(
                         damage: damage_u16,
                     });
                 } else {
-                    // TODO(RE): Low-bridge overlay damage still needs the recovered overlay-step
-                    // logic and connected-section selection. These events currently feed only the
-                    // elevated-bridge runtime state.
+                    let wh_iid = interner.intern(&warhead.id);
                     bridge_damage_events.push(BridgeDamageEvent {
                         rx: target_rx,
                         ry: target_ry,
                         damage: damage_u16,
+                        warhead_ref: wh_iid,
+                        is_ion_cannon: wh_iid == rules.ion_cannon_warhead_id(),
+                        impact_z: attack_impact_z(snap.target, entities),
                     });
                 }
             }
@@ -1505,13 +1520,14 @@ pub fn tick_combat_with_fog(
                         damage: damage_u16,
                     });
                 } else {
-                    // TODO(RE): Low-bridge overlay damage still needs the recovered overlay-step
-                    // logic and connected-section selection. These events currently feed only the
-                    // elevated-bridge runtime state.
+                    let wh_iid = interner.intern(&warhead.id);
                     bridge_damage_events.push(BridgeDamageEvent {
                         rx: target_rx,
                         ry: target_ry,
                         damage: damage_u16,
+                        warhead_ref: wh_iid,
+                        is_ion_cannon: wh_iid == rules.ion_cannon_warhead_id(),
+                        impact_z: attack_impact_z(snap.target, entities),
                     });
                 }
             }

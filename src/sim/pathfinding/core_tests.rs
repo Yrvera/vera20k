@@ -589,6 +589,9 @@ fn test_layered_path_rebuild_blocks_destroyed_bridge_deck() {
             rx: 1,
             ry: 0,
             damage: 10,
+            warhead_ref: crate::sim::intern::InternedId::default(),
+            is_ion_cannon: true,
+            impact_z: 4,
         })
         .expect("bridge group should be destroyed");
     assert!(

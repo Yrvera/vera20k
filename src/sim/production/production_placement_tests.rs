@@ -665,6 +665,9 @@ fn place_ready_building_rejects_destroyed_bridge_over_blocked_ground() {
             rx: 12,
             ry: 10,
             damage: 5,
+            warhead_ref: crate::sim::intern::InternedId::default(),
+            is_ion_cannon: true,
+            impact_z: 4,
         });
     }
 

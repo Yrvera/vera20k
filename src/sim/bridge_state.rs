@@ -218,11 +218,28 @@ impl AnchorSpan {
     }
 }
 
+/// Per-cell bridge damage event emitted by combat. World drains via the
+/// `bridge_orchestrator` 4-path dispatcher. The Apply_area_damage gate +
+/// retry happen in the world orchestrator (not in combat) so the RNG draw
+/// order matches the binary's dispatcher.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct BridgeDamageEvent {
     pub rx: u16,
     pub ry: u16,
     pub damage: u16,
+    /// Interned warhead ID — used for IonCannon identity check (combat
+    /// boundary pre-resolves `is_ion_cannon`) and for InfDeath selection in
+    /// the C4Warhead ground-kill cascade.
+    pub warhead_ref: crate::sim::intern::InternedId,
+    /// Pre-resolved at combat: `warhead_ref == rules.ion_cannon_warhead_id()`.
+    /// Bypasses the BridgeStrength RNG gate; enables the 3-retry loop on
+    /// state-machine paths only (direct-overlay paths are single-shot).
+    pub is_ion_cannon: bool,
+    /// Explosion z in tile-step level units (signed). Used by the
+    /// state-machine Z-height gate: state-machine paths fire only when
+    /// `impact_z ∈ [cell.level - 1, cell.level + 1]`. Direct-overlay paths
+    /// skip this gate.
+    pub impact_z: i32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -1206,6 +1223,9 @@ mod tests {
                 rx: 1,
                 ry: 0,
                 damage: 50,
+                warhead_ref: crate::sim::intern::InternedId::default(),
+                is_ion_cannon: true,
+                impact_z: 4,
             })
             .expect("bridge should be destroyed");
         assert_eq!(change.destroyed_cells, vec![(1, 0), (2, 0), (3, 0)]);
@@ -1228,6 +1248,9 @@ mod tests {
                 rx: 1,
                 ry: 0,
                 damage: 50,
+                warhead_ref: crate::sim::intern::InternedId::default(),
+                is_ion_cannon: true,
+                impact_z: 4,
             })
             .is_none());
         assert!(state.is_bridge_walkable(1, 0));
@@ -1253,6 +1276,9 @@ mod tests {
             rx: 1,
             ry: 0,
             damage: 50,
+            warhead_ref: crate::sim::intern::InternedId::default(),
+            is_ion_cannon: true,
+            impact_z: 4,
         });
         let records = state.endpoint_records();
         assert!(!records.is_empty());

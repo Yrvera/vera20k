@@ -414,6 +414,9 @@ fn test_bridge_damage_rebuilds_path_grid() {
         rx: 2,
         ry: 0,
         damage: 20,
+        warhead_ref: crate::sim::intern::InternedId::default(),
+        is_ion_cannon: true,
+        impact_z: 4,
     }]);
     assert_eq!(changes.len(), 1);
     let _ = sim.resolve_bridge_state_changes(&changes);
@@ -456,6 +459,9 @@ fn test_destroyed_bridge_snaps_unit_to_ground_when_ground_exists() {
         rx: 5,
         ry: 5,
         damage: 15,
+        warhead_ref: crate::sim::intern::InternedId::default(),
+        is_ion_cannon: true,
+        impact_z: 4,
     }]);
     assert_eq!(changes.len(), 1);
     let fallout = sim.resolve_bridge_state_changes(&changes);
@@ -501,6 +507,9 @@ fn test_destroyed_bridge_despawns_unit_over_blocked_ground() {
         rx: 5,
         ry: 5,
         damage: 15,
+        warhead_ref: crate::sim::intern::InternedId::default(),
+        is_ion_cannon: true,
+        impact_z: 4,
     }]);
     let fallout = sim.resolve_bridge_state_changes(&changes);
     assert_eq!(fallout, vec![1]);
@@ -540,6 +549,9 @@ fn test_destroyed_bridge_despawns_unit_over_overlay_blocked_ground() {
         rx: 5,
         ry: 5,
         damage: 15,
+        warhead_ref: crate::sim::intern::InternedId::default(),
+        is_ion_cannon: true,
+        impact_z: 4,
     }]);
     let fallout = sim.resolve_bridge_state_changes(&changes);
     assert_eq!(fallout, vec![1]);
@@ -579,6 +591,9 @@ fn test_destroyed_bridge_despawns_unit_over_terrain_object_blocked_ground() {
         rx: 5,
         ry: 5,
         damage: 15,
+        warhead_ref: crate::sim::intern::InternedId::default(),
+        is_ion_cannon: true,
+        impact_z: 4,
     }]);
     let fallout = sim.resolve_bridge_state_changes(&changes);
     assert_eq!(fallout, vec![1]);
@@ -618,6 +633,9 @@ fn test_destroyed_bridge_fallout_matches_rebuilt_ground_walkability() {
         rx: 5,
         ry: 5,
         damage: 15,
+        warhead_ref: crate::sim::intern::InternedId::default(),
+        is_ion_cannon: true,
+        impact_z: 4,
     }]);
 
     let rebuilt_grid = PathGrid::from_resolved_terrain_with_bridges(

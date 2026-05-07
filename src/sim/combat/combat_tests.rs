@@ -201,7 +201,7 @@ fn test_tick_combat_only_emits_bridge_damage_for_wall_warheads() {
         "non-wall warheads must not emit wall damage"
     );
 
-    let bridge_rules = RuleSet::from_ini(&IniFile::from_str(
+    let mut bridge_rules = RuleSet::from_ini(&IniFile::from_str(
         "[InfantryTypes]\n\
          [VehicleTypes]\n0=MTNK\n\n\
          [AircraftTypes]\n\n\
@@ -211,6 +211,9 @@ fn test_tick_combat_only_emits_bridge_damage_for_wall_warheads() {
          [AP]\nWall=yes\nVerses=100%,100%,90%,75%,75%,75%,60%,30%,20%,0%,0%\n",
     ))
     .expect("bridge combat rules should parse");
+    // Combat reads IonCannonWarhead at the bridge-damage emit boundary; tests
+    // that drive tick_combat must resolve before invoking it.
+    bridge_rules.resolve_bridge_warheads(&mut interner);
     let mut wall_store = EntityStore::new();
     wall_store.insert(make_entity(3, "MTNK", 5, 5, 300));
     wall_store.insert(make_entity(4, "MTNK", 8, 5, 300));
@@ -234,7 +237,10 @@ fn test_tick_combat_only_emits_bridge_damage_for_wall_warheads() {
         vec![BridgeDamageEvent {
             rx: 8,
             ry: 5,
-            damage: 65
+            damage: 65,
+            warhead_ref: interner.get("AP").expect("AP warhead interned by tick_combat"),
+            is_ion_cannon: false,
+            impact_z: 0,
         }]
     );
     // Without an overlay grid+registry, the discriminator can't identify a wall
