@@ -115,7 +115,33 @@ pub(crate) fn apply_bridge_damage_events(
     // 1-5 frames). RNG draw order is parity-critical for lockstep.
     spawn_bridge_debris(sim, rules, &destroyed_set);
 
-    // TODO(Task 13): rim refresh, trigger 31, zone rebuild.
+    // Aggregate rim cells + zones-dirty flag from the dispatcher's
+    // outcomes so the trailing cascade hooks see them in one pass.
+    let mut rim_cells: BTreeSet<(u16, u16)> = BTreeSet::new();
+    let mut any_zones_dirty = false;
+    for outcome in &outcomes {
+        if let StateOutcome::Collapsed {
+            adjacent_bridges_dirty,
+            zones_dirty,
+            ..
+        } = outcome
+        {
+            rim_cells.extend(adjacent_bridges_dirty.iter().copied());
+            any_zones_dirty |= *zones_dirty;
+        }
+    }
+
+    // Cascade Step 4: rim refresh (HIGH §11.9). Stub today — see helper.
+    update_adjacent_bridges(sim, &rim_cells);
+
+    // Cascade Step 5: TriggerEvent 31 broadcast (HIGH §11.3). No-op on
+    // skirmish; hook stub for future campaign / map-trigger support.
+    notify_bridge_span_collapse(sim, &destroyed_set);
+
+    // Cascade Step 6: zone graph rebuild (HIGH §12.8). Triggered when
+    // any final-stage walker cell flagged the bridge endpoint records
+    // dirty.
+    refresh_bridge_zones_if_dirty(sim, any_zones_dirty);
 
     despawned_ids
 }
@@ -160,6 +186,61 @@ fn kill_ground_occupants_at(
             entity.selected = false;
         }
     }
+}
+
+/// Rim refresh hook. Mirror of binary
+/// `MapClass::UpdateAdjacentBridges_High @ 0x00576770`. Walks 8
+/// neighbors of each changed cell and re-evaluates bridge-edge tile
+/// classification (height 5/7/8/12) per HIGH §11.9.
+///
+/// **Tier 2 status: stub.** The current renderer reads the visible
+/// overlay tile per-cell from the post-mutation `overlay_byte` and does
+/// NOT query neighbors — verified at impl time with `grep -r
+/// "BridgeRuntime\|overlay_byte" src/render/` (no matches). Cell-level
+/// mutations performed by the walker therefore propagate to render
+/// next frame without an explicit rim pass.
+///
+/// If a future renderer (or zone-rebuild step) becomes neighbor-aware
+/// for bridge-edge tile selection, this helper must walk `rim_cells`
+/// and re-evaluate / mutate per-cell `overlay_byte` for each rim
+/// neighbor. The signature is in place so the orchestrator's cascade
+/// order is fixed today.
+fn update_adjacent_bridges(sim: &mut Simulation, rim_cells: &BTreeSet<(u16, u16)>) {
+    let _ = (sim, rim_cells);
+}
+
+/// TriggerEvent 31 broadcast. Mirror of binary
+/// `MapClass::RepairBridgeSegment @ 0x00575EE0` (binary name is
+/// misleading — the function actually fires `TriggerEvent 31` on bridge
+/// span collapse; HIGH §11.3 + §12.6).
+///
+/// No-op on skirmish maps — RA2 skirmish has no triggers bound to
+/// event 31. Wired as a hook so future campaign and map-trigger
+/// support can drop in without changing the orchestrator's cascade
+/// order.
+fn notify_bridge_span_collapse(sim: &mut Simulation, cells: &BTreeSet<(u16, u16)>) {
+    let _ = (sim, cells);
+}
+
+/// Zone graph refresh. Per HIGH §12.8: walker emits `zones_dirty=true`
+/// only when a final-stage cell flips a `BridgeEndpointRecord.active`
+/// flag, mirroring the binary's `InvalidateBridgeZones` →
+/// `UpdateBridgeZonesHelper` chain. When set, rebuild the path grid
+/// from the post-collapse bridge state and rerun
+/// `Simulation::rebuild_zone_grid` so cross-bridge passability reflects
+/// the new connectivity.
+fn refresh_bridge_zones_if_dirty(sim: &mut Simulation, any_zones_dirty: bool) {
+    if !any_zones_dirty {
+        return;
+    }
+    let Some(terrain) = sim.resolved_terrain.as_ref() else {
+        return;
+    };
+    let path_grid = crate::sim::pathfinding::PathGrid::from_resolved_terrain_with_bridges(
+        terrain,
+        sim.bridge_state.as_ref(),
+    );
+    sim.rebuild_zone_grid(&path_grid);
 }
 
 /// Per-cell debris spawn. Mirror of binary `BlowUpBridge` step 4
