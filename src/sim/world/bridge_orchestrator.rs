@@ -110,8 +110,12 @@ pub(crate) fn apply_bridge_damage_events(
         drop_in_bridge_deck_entities(sim, rx, ry);
     }
 
-    // TODO(Tasks 12-13): spawn debris, rim refresh, trigger 31, zone
-    // rebuild.
+    // Cascade Step 3: debris spawn (HIGH §11.4 step 4). Per-cell mix of
+    // 50% MetallicDebris (no delay) + 1 always BridgeExplosion (delay
+    // 1-5 frames). RNG draw order is parity-critical for lockstep.
+    spawn_bridge_debris(sim, rules, &destroyed_set);
+
+    // TODO(Task 13): rim refresh, trigger 31, zone rebuild.
 
     despawned_ids
 }
@@ -154,6 +158,112 @@ fn kill_ground_occupants_at(
             entity.attack_target = None;
             entity.movement_target = None;
             entity.selected = false;
+        }
+    }
+}
+
+/// Per-cell debris spawn. Mirror of binary `BlowUpBridge` step 4
+/// (HIGH §11.4). RNG draw order is parity-critical for lockstep — the
+/// binary draws in this exact sequence per cell that passes the outer
+/// gate:
+/// 1. Outer 95% gate — `next_range_u32(20)` (skip cell on `== 0`).
+/// 2. Two jitter draws — `next_range_u32(0xFFFF)` × 2. The values are
+///    discarded; the binary uses them for in-cell pixel offsets that we
+///    don't yet model, but the draws MUST be consumed for RNG-order
+///    parity.
+/// 3. MetallicDebris 50% gate — `next_range_u32(2)`.
+/// 4. Optional MetallicDebris slot — `next_range_u32(metallic_count)`.
+///    Only drawn when (50% gate passed) AND (`voxel_max > 0`) AND
+///    (`metallic_count > 0`). When any of those are false, no slot
+///    draw happens — the binary short-circuits.
+/// 5. BridgeExplosion delay — `next_range_u32_inclusive(1, 5)`.
+/// 6. BridgeExplosion slot — `next_range_u32(explosion_count)`.
+///
+/// Replaces the wrong-shape legacy `Simulation::spawn_bridge_explosions`,
+/// which drew 1 immediate BridgeExplosion + a 50% delayed BridgeExplosion
+/// — visible every collapse.
+fn spawn_bridge_debris(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    cells: &BTreeSet<(u16, u16)>,
+) {
+    use crate::sim::components::WorldEffect;
+
+    let explosion_count = sim.bridge_explosions.len() as u32;
+    let metallic_count = sim.metallic_debris.len() as u32;
+    let voxel_max = rules.bridge_rules.voxel_max as u32;
+
+    if explosion_count == 0 && metallic_count == 0 {
+        return;
+    }
+
+    for &(rx, ry) in cells {
+        // Step 1: outer 95% gate.
+        if sim.rng.next_range_u32(20) == 0 {
+            continue;
+        }
+
+        // Step 2: two jitter draws — values discarded but consumed for
+        // RNG-order parity with the binary.
+        let _jitter_x = sim.rng.next_range_u32(0xFFFF);
+        let _jitter_y = sim.rng.next_range_u32(0xFFFF);
+
+        let deck_level = sim
+            .resolved_terrain
+            .as_ref()
+            .and_then(|t| t.cell(rx, ry))
+            .map(|c| c.bridge_deck_level_if_any().unwrap_or(c.level))
+            .unwrap_or(0);
+
+        // Step 3: MetallicDebris 50% gate.
+        let metallic_pass = sim.rng.next_range_u32(2) == 0;
+        // Step 4: MetallicDebris slot pick + spawn (no delay). Slot draw
+        // only happens when all three gates pass — short-circuit matches
+        // the binary's call order.
+        if metallic_pass && voxel_max > 0 && metallic_count > 0 {
+            let idx = sim.rng.next_range_u32(metallic_count) as usize;
+            let anim_id = sim.metallic_debris[idx];
+            let frames = sim
+                .effect_frame_counts
+                .get(&anim_id)
+                .copied()
+                .unwrap_or(20);
+            sim.world_effects.push(WorldEffect {
+                shp_name: anim_id,
+                rx,
+                ry,
+                z: deck_level,
+                frame: 0,
+                total_frames: frames,
+                rate_ms: 67,
+                elapsed_ms: 0,
+                translucent: true,
+                delay_ms: 0,
+            });
+        }
+
+        // Step 5 + 6: always BridgeExplosion, delayed 1-5 frames.
+        if explosion_count > 0 {
+            let delay_frames = sim.rng.next_range_u32_inclusive(1, 5);
+            let idx = sim.rng.next_range_u32(explosion_count) as usize;
+            let anim_id = sim.bridge_explosions[idx];
+            let frames = sim
+                .effect_frame_counts
+                .get(&anim_id)
+                .copied()
+                .unwrap_or(20);
+            sim.world_effects.push(WorldEffect {
+                shp_name: anim_id,
+                rx,
+                ry,
+                z: deck_level,
+                frame: 0,
+                total_frames: frames,
+                rate_ms: 67,
+                elapsed_ms: 0,
+                translucent: true,
+                delay_ms: delay_frames * 67,
+            });
         }
     }
 }
@@ -470,6 +580,119 @@ mod tests {
             "layer flipped Bridge → Ground"
         );
         assert_eq!(loco.phase, GroundMovePhase::Idle, "phase reset to Idle");
+    }
+
+    /// Build a minimal RuleSet whose `bridge_rules.voxel_max` matches the
+    /// argument. Used by Task 12 debris tests to toggle the voxel-max gate.
+    fn rules_with_voxel_max(voxel_max: u32) -> crate::rules::ruleset::RuleSet {
+        let body = format!(
+            "[InfantryTypes]\n\
+             [VehicleTypes]\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             [General]\n\
+             BridgeVoxelMax={}\n",
+            voxel_max
+        );
+        let ini = crate::rules::ini_parser::IniFile::from_str(&body);
+        crate::rules::ruleset::RuleSet::from_ini(&ini).expect("rules parse")
+    }
+
+    /// Task 12 — RNG draw-order parity: per cell, `spawn_bridge_debris`
+    /// MUST consume RNG draws in the exact binary order:
+    /// outer-95% → jitter×2 → metallic-50% → optional metallic-slot →
+    /// explosion-delay → explosion-slot. Wrong order desyncs lockstep.
+    #[test]
+    fn debris_consumes_correct_rng_count_per_cell() {
+        let mut sim = Simulation::new();
+        let seed = 0xDEAD_BEEF_u64;
+        sim.rng = crate::sim::rng::SimRng::new(seed);
+        sim.resolved_terrain = Some(water_below_bridge_terrain(3));
+        sim.bridge_explosions
+            .extend([test_intern("BRIDGEEXP1"), test_intern("BRIDGEEXP2")]);
+        sim.metallic_debris.push(test_intern("METALDEB1"));
+        let rules = rules_with_voxel_max(3);
+
+        let mut cells = BTreeSet::new();
+        cells.insert((5, 5));
+
+        // Predict the exact draw sequence on a parallel RNG. The helper
+        // MUST match this sequence step-for-step to maintain lockstep.
+        let mut predicted = crate::sim::rng::SimRng::new(seed);
+        let outer = predicted.next_range_u32(20);
+        if outer != 0 {
+            let _jx = predicted.next_range_u32(0xFFFF);
+            let _jy = predicted.next_range_u32(0xFFFF);
+            let metallic_pass = predicted.next_range_u32(2) == 0;
+            // Metallic slot draw is gated on (pass) AND (voxel_max > 0)
+            // AND (metallic_count > 0). With our setup all three hold
+            // when `metallic_pass` is true.
+            if metallic_pass {
+                let _slot = predicted.next_range_u32(1);
+            }
+            let _delay = predicted.next_range_u32_inclusive(1, 5);
+            let _exp_slot = predicted.next_range_u32(2);
+        }
+
+        spawn_bridge_debris(&mut sim, &rules, &cells);
+
+        assert_eq!(
+            sim.rng.state(),
+            predicted.state(),
+            "RNG draw order/count diverged from binary parity sequence"
+        );
+    }
+
+    /// Task 12 — voxel_max=0 short-circuits the MetallicDebris slot draw,
+    /// even if the 50% gate passes. Per HIGH §11.4, the binary skips the
+    /// slot pick when `BridgeVoxelMax==0`. The 50% gate ITSELF still
+    /// fires (so the draw count differs from a no-pass case).
+    #[test]
+    fn debris_skipped_when_voxel_max_zero() {
+        let mut sim = Simulation::new();
+        let seed = 0xDEAD_BEEF_u64;
+        sim.rng = crate::sim::rng::SimRng::new(seed);
+        sim.resolved_terrain = Some(water_below_bridge_terrain(3));
+        sim.bridge_explosions.push(test_intern("BRIDGEEXP1"));
+        sim.metallic_debris.push(test_intern("METALDEB1"));
+        let rules = rules_with_voxel_max(0);
+
+        let mut cells = BTreeSet::new();
+        cells.insert((5, 5));
+        spawn_bridge_debris(&mut sim, &rules, &cells);
+
+        // No MetallicDebris effect must have spawned, regardless of which
+        // way the 50% gate fell — voxel_max=0 short-circuits the slot.
+        let metallic_id = test_intern("METALDEB1");
+        assert!(
+            !sim.world_effects
+                .iter()
+                .any(|fx| fx.shp_name == metallic_id),
+            "voxel_max=0 must suppress all MetallicDebris spawns"
+        );
+    }
+
+    /// Task 12 — debris helper short-circuits when both lists are empty.
+    /// No RNG should be consumed (no outer gate, no jitter, no slot).
+    #[test]
+    fn debris_no_op_when_no_lists() {
+        let mut sim = Simulation::new();
+        sim.rng = crate::sim::rng::SimRng::new(7);
+        let baseline_state = sim.rng.state();
+        sim.resolved_terrain = Some(water_below_bridge_terrain(3));
+        let rules = rules_with_voxel_max(3);
+
+        let mut cells = BTreeSet::new();
+        cells.insert((5, 5));
+        cells.insert((4, 5));
+        spawn_bridge_debris(&mut sim, &rules, &cells);
+
+        assert_eq!(
+            sim.rng.state(),
+            baseline_state,
+            "no RNG draws when both debris lists are empty"
+        );
+        assert!(sim.world_effects.is_empty());
     }
 
     /// Task 11 — DropIn must NOT touch entities that aren't on the bridge
