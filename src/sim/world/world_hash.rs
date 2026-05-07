@@ -226,7 +226,6 @@ impl Simulation {
             cell.axis.hash(hasher);
             cell.role.hash(hasher);
             cell.anchor_span_id.hash(hasher);
-            cell.bridgehead_step.hash(hasher);
             cell.overlay_byte.hash(hasher);
         }
         // Hash AnchorSpan registry (Task 7 added this field). BTreeMap iterates
@@ -560,7 +559,6 @@ mod bridge_overlay_hash_tests {
                 axis: Some(Axis::NS),
                 role: BridgeCellRole::Anchor,
                 anchor_span_id: None,
-                bridgehead_step: 0,
                 overlay_byte: byte,
             },
         );

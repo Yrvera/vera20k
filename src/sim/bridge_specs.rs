@@ -1159,7 +1159,6 @@ mod tests {
             axis: Some(Axis::NS),
             role: BridgeCellRole::Anchor,
             anchor_span_id: Some(1),
-            bridgehead_step: 0,
             overlay_byte: 0x18, // HIGH bridge anchor overlay
         };
         for (rx, ry) in [(4u16, 5u16), (5, 5), (6, 5)] {
@@ -1243,7 +1242,6 @@ mod tests {
             axis: Some(Axis::EW),
             role: BridgeCellRole::Anchor,
             anchor_span_id: Some(1),
-            bridgehead_step: 0,
             overlay_byte: 0x18,
         };
         for (rx, ry) in [(5u16, 4u16), (5, 5), (5, 6)] {

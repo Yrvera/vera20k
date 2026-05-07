@@ -284,12 +284,8 @@ pub struct BridgeRuntimeCell {
     pub role: BridgeCellRole,
 
     /// Stable ID of containing `AnchorSpan` (for body cells); `None` for
-    /// bridgehead cells (which use `bridgehead_step` instead).
+    /// bridgehead cells.
     pub anchor_span_id: Option<u16>,
-
-    /// Bridgehead 4-step progression counter (0..=3). Only meaningful when
-    /// `role == BridgeCellRole::Bridgehead`.
-    pub bridgehead_step: u8,
 
     /// Per-cell visible overlay byte (mirrors binary `CellClass+0x44`).
     /// Populated at map-load from `ResolvedTerrainCell.bridge_layer.overlay_id`;
@@ -385,7 +381,6 @@ impl BridgeRuntimeState {
                     axis: bridge_layer_to_axis(resolved.bridge_layer.as_ref()),
                     role: BridgeCellRole::Body, // overwritten in pass 2
                     anchor_span_id: None,
-                    bridgehead_step: 0,
                     overlay_byte: resolved
                         .bridge_layer
                         .as_ref()
@@ -467,7 +462,6 @@ impl BridgeRuntimeState {
             if let Some(c) = cells[idx].as_mut() {
                 c.role = BridgeCellRole::Bridgehead;
                 c.anchor_span_id = None;
-                c.bridgehead_step = 0;
                 c.axis = Some(bridge_direction_to_axis(bl.direction));
             }
         }
@@ -1238,7 +1232,6 @@ mod tests {
             axis: Some(Axis::NS),
             role: BridgeCellRole::Anchor,
             anchor_span_id: Some(1),
-            bridgehead_step: 0,
             overlay_byte: 0x18,
         };
         state.test_seed_cell(5, 5, cell);
@@ -1259,7 +1252,6 @@ mod tests {
             axis: Some(Axis::NS),
             role: BridgeCellRole::Anchor,
             anchor_span_id: Some(1),
-            bridgehead_step: 0,
             overlay_byte: 0x18,
         };
         state.test_seed_cell(2, 2, cell);
@@ -1363,7 +1355,6 @@ mod tests {
             axis: Some(Axis::NS),
             role: BridgeCellRole::Anchor,
             anchor_span_id: Some(1),
-            bridgehead_step: 0,
             overlay_byte: 0x18,
         };
 
