@@ -1120,6 +1120,158 @@ fn test_bridge_orchestrator_state_machine_path_collapses_anchor_and_deactivates_
     }
 }
 
+/// Determinism: two independent simulations with identical seeds, identical
+/// resolved terrain, identical bridge runtime state, and identical damage
+/// events MUST produce the same state hash after running
+/// `apply_bridge_damage_events`. Lockstep invariant — any divergence in
+/// RNG draw order, iteration order, or non-deterministic sets desyncs
+/// multiplayer.
+#[test]
+fn test_bridge_collapse_is_deterministic_under_replay() {
+    fn run_one_collapse(seed: u64) -> u64 {
+        let mut sim = Simulation::new();
+        sim.rng = crate::sim::rng::SimRng::new(seed);
+        let (resolved, bridge_state) =
+            ew_high_bridge_strip_for_dispatch(5, 5, 4, false, 0);
+        sim.resolved_terrain = Some(resolved);
+        sim.bridge_state = Some(bridge_state);
+
+        let mut rules = combat_test_rules();
+        rules.resolve_bridge_warheads(&mut sim.interner);
+        let _ = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
+            &mut sim,
+            &rules,
+            &[BridgeDamageEvent {
+                rx: 5,
+                ry: 5,
+                damage: 100,
+                warhead_ref: crate::sim::intern::InternedId::default(),
+                is_ion_cannon: false, // exercises per-path RNG gate
+                impact_z: 4,
+            }],
+        );
+        sim.state_hash()
+    }
+
+    let h1 = run_one_collapse(0xCAFE_F00D);
+    let h2 = run_one_collapse(0xCAFE_F00D);
+    assert_eq!(
+        h1, h2,
+        "identical seed + inputs must produce identical post-collapse state hash"
+    );
+}
+
+/// Snapshot regression: serialize the `BridgeRuntimeState` after a collapse
+/// (overlay-byte progression + DamageState::Destroyed cells +
+/// endpoint_records active flips), deserialize it, and assert the
+/// post-restore state matches the pre-serialize state. Locks down the
+/// snapshot contract across the orchestrator switchover.
+#[test]
+fn test_bridge_snapshot_roundtrip_preserves_state_after_collapse() {
+    use crate::sim::bridge_state::DamageState;
+    let mut sim = Simulation::new();
+    let (resolved, bridge_state) =
+        ew_high_bridge_strip_for_dispatch(5, 5, 4, false, 0);
+    sim.resolved_terrain = Some(resolved);
+    sim.bridge_state = Some(bridge_state);
+
+    let mut rules = combat_test_rules();
+    rules.resolve_bridge_warheads(&mut sim.interner);
+    let _ = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
+        &mut sim,
+        &rules,
+        &[BridgeDamageEvent {
+            rx: 5,
+            ry: 5,
+            damage: 15,
+            warhead_ref: crate::sim::intern::InternedId::default(),
+            is_ion_cannon: true,
+            impact_z: 4,
+        }],
+    );
+
+    let pre = sim.bridge_state.as_ref().unwrap().clone();
+    let json = serde_json::to_string(&pre).expect("serialize bridge_state");
+    let restored: crate::sim::bridge_state::BridgeRuntimeState =
+        serde_json::from_str(&json).expect("deserialize");
+
+    // Compare every cell in the strip + bridge_strength + endpoint_records.
+    for x in 4..=6 {
+        let pre_cell = pre.cell(x, 5).expect("pre cell");
+        let post_cell = restored.cell(x, 5).expect("restored cell");
+        assert_eq!(pre_cell, post_cell, "cell ({x}, 5) round-trip");
+        assert_eq!(post_cell.damage_state, DamageState::Destroyed);
+        assert_eq!(post_cell.overlay_byte, 0xE8);
+    }
+    assert_eq!(pre.bridge_strength(), restored.bridge_strength());
+    assert_eq!(pre.endpoint_records().len(), restored.endpoint_records().len());
+    for (a, b) in pre
+        .endpoint_records()
+        .iter()
+        .zip(restored.endpoint_records())
+    {
+        assert_eq!(a.active, b.active, "endpoint record active flag round-trip");
+    }
+}
+
+/// RNG draw-count parity: per-event the dispatcher consumes RNG draws in
+/// a fixed sequence. With non-IonCannon damage:
+///   1. Per-path BridgeStrength gate fires once before the first matching
+///      driver — `next_range_u32_inclusive(1, bridge_strength)`.
+///   2. Driver dispatch (walker / state machine) does not draw RNG itself.
+///   3. Cascade `spawn_bridge_debris` per destroyed cell consumes its
+///      well-known sequence (covered by orchestrator unit tests).
+///
+/// This integration test pins step 1: with `is_ion_cannon=false`, the
+/// orchestrator pulls exactly one BridgeStrength roll before falling
+/// through to HighDirect (HighSM raw-overlay rejects, LowSM rejects,
+/// LowDirect rejects). A parallel RNG primed with the same seed must
+/// yield the same post-event state.
+#[test]
+fn test_bridge_dispatcher_consumes_one_path_gate_draw_per_non_ion_event() {
+    let seed = 0xABCD_1234_u64;
+    let mut sim = Simulation::new();
+    sim.rng = crate::sim::rng::SimRng::new(seed);
+    let (resolved, bridge_state) =
+        ew_high_bridge_strip_for_dispatch(5, 5, 4, false, 0);
+    let bridge_strength = bridge_state.bridge_strength();
+    sim.resolved_terrain = Some(resolved);
+    sim.bridge_state = Some(bridge_state);
+
+    // Predict: HighSM rejected on raw-overlay; LowSM rejected
+    // (deck_level=4 vs want_high=false); LowDirect rejected (overlay not
+    // in LOW range). HighDirect matches → one BridgeStrength gate roll
+    // → walker (consumes no RNG) → cascade spawn_bridge_debris (consumes
+    // the well-known per-cell sequence — but with both bridge_explosions
+    // and metallic_debris empty in this fixture, the helper short-circuits
+    // on the empty-lists check and draws no RNG).
+    let mut predicted = crate::sim::rng::SimRng::new(seed);
+    let _gate = predicted.next_range_u32_inclusive(1, bridge_strength as u32);
+
+    let mut rules = combat_test_rules();
+    rules.resolve_bridge_warheads(&mut sim.interner);
+    // High damage so the gate roll passes deterministically (any roll < 9999
+    // succeeds when damage > roll).
+    let _ = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
+        &mut sim,
+        &rules,
+        &[BridgeDamageEvent {
+            rx: 5,
+            ry: 5,
+            damage: 9999,
+            warhead_ref: crate::sim::intern::InternedId::default(),
+            is_ion_cannon: false,
+            impact_z: 4,
+        }],
+    );
+
+    assert_eq!(
+        sim.rng.state(),
+        predicted.state(),
+        "non-IonCannon hit must consume exactly one BridgeStrength gate roll"
+    );
+}
+
 #[test]
 fn test_water_mover_lookahead_does_not_attach_bridge_occupancy_under_bridge() {
     let rules = naval_bridge_test_rules();
