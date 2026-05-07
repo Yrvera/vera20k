@@ -451,7 +451,8 @@ static DESTRUCTION_OVERLAY_LOW_EW: [u8; 16] = [
 ];
 
 /// Per-cell action emitted by `set_bridge_direction` walker. The orchestrator
-/// in `world::resolve_bridge_state_changes` consumes these and dispatches.
+/// in `world::bridge_orchestrator::apply_bridge_damage_events` consumes these
+/// and dispatches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CellAction {
     /// Cell receives `BlowUpBridge` (kill ground, Limbo bridge-deck, debris).

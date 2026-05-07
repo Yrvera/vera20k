@@ -29,9 +29,7 @@ use crate::map::triggers::TriggerMap;
 use crate::rules::locomotor_type::SpeedType;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::ai::{self, AiPlayerState};
-use crate::sim::bridge_state::{
-    BridgeDamageEvent, BridgeRuntimeState, BridgeStateChange, DamageState,
-};
+use crate::sim::bridge_state::{BridgeDamageEvent, BridgeRuntimeState, DamageState};
 use crate::sim::overlay_grid::{
     cleanup_wall_neighbors, damage_wall_overlay, WallDamageEvent,
 };
@@ -684,22 +682,6 @@ impl Simulation {
         Some(cell.build_blocked)
     }
 
-    pub(crate) fn apply_bridge_damage_events(
-        &mut self,
-        bridge_damage_events: &[BridgeDamageEvent],
-    ) -> Vec<BridgeStateChange> {
-        let mut changes = Vec::new();
-        let Some(bridge_state) = self.bridge_state.as_mut() else {
-            return changes;
-        };
-        for event in bridge_damage_events {
-            if let Some(change) = bridge_state.apply_damage(*event) {
-                changes.push(change);
-            }
-        }
-        changes
-    }
-
     /// Apply combat-emitted wall damage events: drives the per-cell damage
     /// progression in `damage_wall_overlay`, runs the cardinal-neighbor cleanup
     /// for any cells the damage destroys, and despawns the wall GameEntity at
@@ -777,159 +759,6 @@ impl Simulation {
             self.entities.remove(id);
         } else {
             log::warn!("apply_wall_damage_events: no wall entity at ({rx}, {ry})");
-        }
-    }
-
-    pub(crate) fn resolve_bridge_state_changes(
-        &mut self,
-        changes: &[BridgeStateChange],
-    ) -> Vec<u64> {
-        use std::collections::BTreeSet;
-
-        if changes.is_empty() {
-            return Vec::new();
-        }
-
-        let destroyed_cells: BTreeSet<(u16, u16)> = changes
-            .iter()
-            .flat_map(|change| change.destroyed_cells.iter().copied())
-            .collect();
-        let fallout_ground_grid = self.resolved_terrain.as_ref().map(|terrain| {
-            PathGrid::from_resolved_terrain_with_bridges(terrain, self.bridge_state.as_ref())
-        });
-
-        // Spawn bridge destruction explosions (matches original BlowUpBridge logic):
-        // ~95% chance per destroyed cell, random anim from BridgeExplosions list,
-        // plus a second delayed explosion at 50% chance.
-        self.spawn_bridge_explosions(&destroyed_cells);
-
-        // Collect entity IDs that need bridge state changes — then mutate below.
-        let mut to_snap: Vec<(u64, u8)> = Vec::new();
-        let mut to_stop: Vec<u64> = Vec::new();
-        let mut to_despawn: Vec<u64> = Vec::new();
-
-        for entity in self.entities.values() {
-            let pos = &entity.position;
-            let on_bridge = entity.is_on_bridge_layer();
-            if !on_bridge || !destroyed_cells.contains(&(pos.rx, pos.ry)) {
-                continue;
-            }
-            let ground_walkable = fallout_ground_grid.as_ref().is_some_and(|grid| {
-                grid.is_walkable_on_layer(pos.rx, pos.ry, MovementLayer::Ground)
-            });
-            if ground_walkable {
-                let ground_level = self
-                    .resolved_terrain
-                    .as_ref()
-                    .and_then(|terrain| terrain.cell(pos.rx, pos.ry))
-                    .map(|cell| cell.level)
-                    .unwrap_or(0);
-                to_snap.push((entity.stable_id, ground_level));
-                to_stop.push(entity.stable_id);
-            } else {
-                to_despawn.push(entity.stable_id);
-            }
-        }
-
-        for (sid, ground_level) in to_snap {
-            if let Some(entity) = self.entities.get_mut(sid) {
-                entity.bridge_occupancy = None;
-                entity.on_bridge = false;
-                entity.position.z = ground_level;
-                entity.position.refresh_screen_coords();
-                if let Some(ref mut loco) = entity.locomotor {
-                    loco.layer = MovementLayer::Ground;
-                    loco.phase = GroundMovePhase::Idle;
-                }
-            }
-        }
-        for sid in to_stop {
-            if let Some(entity) = self.entities.get_mut(sid) {
-                entity.movement_target = None;
-            }
-        }
-
-        let mut despawned_ids = Vec::new();
-        for sid in to_despawn {
-            despawned_ids.push(sid);
-            self.despawn_entity(sid);
-        }
-        despawned_ids
-    }
-
-    /// Spawn explosion effects on destroyed bridge cells.
-    ///
-    /// Per the original engine's `BlowUpBridge()`:
-    /// - ~95% of cells get at least one explosion from `BridgeExplosions=`
-    /// - 50% chance for a second explosion with a random delay (1-5 frames)
-    fn spawn_bridge_explosions(
-        &mut self,
-        destroyed_cells: &std::collections::BTreeSet<(u16, u16)>,
-    ) {
-        if self.bridge_explosions.is_empty() {
-            return;
-        }
-        let explosion_count = self.bridge_explosions.len() as u32;
-
-        for &(rx, ry) in destroyed_cells {
-            // ~95% chance to spawn any explosion on this cell.
-            if self.rng.next_range_u32(20) == 0 {
-                continue;
-            }
-
-            let deck_level = self
-                .resolved_terrain
-                .as_ref()
-                .and_then(|t| t.cell(rx, ry))
-                .map(|c| c.bridge_deck_level_if_any().unwrap_or(c.level))
-                .unwrap_or(0);
-
-            // First explosion — always spawned (when we pass the 95% check).
-            let idx = self.rng.next_range_u32(explosion_count) as usize;
-            let anim_name = &self.bridge_explosions[idx];
-            let frames = self
-                .effect_frame_counts
-                .get(anim_name)
-                .copied()
-                .unwrap_or(20);
-
-            self.world_effects.push(WorldEffect {
-                shp_name: anim_name.clone(),
-                rx,
-                ry,
-                z: deck_level,
-                frame: 0,
-                total_frames: frames,
-                rate_ms: 67, // ~15 fps (Normalized=yes anims)
-                elapsed_ms: 0,
-                translucent: true,
-                delay_ms: 0,
-            });
-
-            // 50% chance for a second explosion with a random start delay (1-5 frames).
-            if self.rng.next_range_u32(2) == 0 {
-                let idx2 = self.rng.next_range_u32(explosion_count) as usize;
-                let anim_name2 = &self.bridge_explosions[idx2];
-                let frames2 = self
-                    .effect_frame_counts
-                    .get(anim_name2)
-                    .copied()
-                    .unwrap_or(20);
-                let delay_frames = self.rng.next_range_u32(5) + 1;
-
-                self.world_effects.push(WorldEffect {
-                    shp_name: anim_name2.clone(),
-                    rx,
-                    ry,
-                    z: deck_level,
-                    frame: 0,
-                    total_frames: frames2,
-                    rate_ms: 67,
-                    elapsed_ms: 0,
-                    translucent: true,
-                    delay_ms: delay_frames * 67,
-                });
-            }
         }
     }
 
@@ -1344,10 +1173,16 @@ impl Simulation {
                     self.decrement_owned_count(&owner_str, category);
                 }
             }
-            let bridge_changes =
-                self.apply_bridge_damage_events(&combat_result.bridge_damage_events);
-            // resolve_bridge_state_changes calls despawn_entity() internally.
-            let _bridge_fallout_ids = self.resolve_bridge_state_changes(&bridge_changes);
+            // Bridge damage: 4-path dispatcher + cascade
+            // (kill ground occupants → DropIn deck → debris → rim refresh
+            // → TriggerEvent 31 → zone rebuild). Replaces the legacy
+            // 2-call pipeline.
+            let _bridge_fallout_ids =
+                crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
+                    self,
+                    rules,
+                    &combat_result.bridge_damage_events,
+                );
             // Wall damage: feed combat-emitted wall hits through the per-cell damage
             // pipeline and despawn destroyed wall entities. Requires overlay_registry
             // (wall flag on OverlayType plus per-type Strength/DamageLevels); rules
