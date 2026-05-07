@@ -141,6 +141,18 @@ pub enum Command {
     ///
     /// Silently no-op if the entity's type is not `DeployFire=yes`.
     ToggleInfantryDeploy { entity_id: u64 },
+    /// Force-attack on a ground cell (Ctrl + left-click on empty terrain).
+    ///
+    /// Bypasses friendship check and entity-targeting — fires the attacker's
+    /// weapon at the cell's center. Unarmed units must NOT receive this
+    /// command; the order-resolution layer routes them to `Move` instead.
+    /// Defensive sim-side check in `issue_attack_cell_command` warn-logs and
+    /// no-ops if a stray `ForceAttackCell` reaches an unarmed unit.
+    ForceAttackCell {
+        attacker_id: u64,
+        target_rx: u16,
+        target_ry: u16,
+    },
 }
 
 /// Command with deterministic execution metadata.

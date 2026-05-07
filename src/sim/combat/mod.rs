@@ -28,6 +28,10 @@ pub mod smudge_dispatch;
 #[path = "combat_tests.rs"]
 mod combat_tests;
 
+#[cfg(test)]
+#[path = "combat_force_fire_cell_tests.rs"]
+mod combat_force_fire_cell_tests;
+
 use std::collections::BTreeMap;
 
 use crate::sim::miner::ResourceNode;

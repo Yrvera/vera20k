@@ -16,7 +16,9 @@ use crate::app_commands::preferred_local_owner;
 use crate::app_entity_pick::{
     hover_target_at_point, pick_any_target_stable_id, pick_enemy_target_stable_id,
 };
-use crate::app_input::{emit_order_voice, is_ctrl_held, is_shift_held, selected_stable_ids_sorted};
+use crate::app_input::{
+    emit_order_voice, is_alt_held, is_ctrl_held, is_shift_held, selected_stable_ids_sorted,
+};
 use crate::app_types::{HoverTargetKind, OrderMode};
 use crate::map::entities::EntityCategory;
 use crate::sim::command::{Command, CommandEnvelope};
@@ -40,7 +42,9 @@ pub(crate) fn try_queue_context_order_at_screen_point(
     let (target_rx, target_ry) =
         crate::app_sim_tick::screen_point_to_world_cell(state, screen_x, screen_y);
     let queue_mode: bool = is_shift_held(state);
-    let force_fire: bool = is_ctrl_held(state);
+    // Force-fire is Ctrl-only — Alt+Ctrl is attack-move, not force-fire
+    // (gamemd What_Action_OnCell at 0x700706: Alt clears Ctrl flag).
+    let force_fire: bool = is_ctrl_held(state) && !is_alt_held(state);
     let order_mode = state.queued_order_mode;
     let owner: String = preferred_local_owner(state).unwrap_or_else(|| "Americans".to_string());
     let owner_id: InternedId = state
@@ -498,6 +502,22 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                 None
             };
 
+            // Force-fire on a shrouded cell is rejected — gamemd can't target
+            // what it can't see (FUN_005023b0 shroud check at 0x00700600).
+            // Computed once outside the per-unit loop.
+            let cell_is_shrouded: bool = if force_fire && !state.sandbox_full_visibility {
+                let owner_id_for_fog = sim.interner.get(&owner).unwrap_or_default();
+                !sim.fog
+                    .is_cell_revealed(owner_id_for_fog, target_rx, target_ry)
+                    || sim.fog.is_cell_gap_covered(
+                        owner_id_for_fog,
+                        target_rx,
+                        target_ry,
+                    )
+            } else {
+                false
+            };
+
             for stable_id in selected_units {
                 let payload = if let Some(target_id) = attack_target {
                     if force_fire {
@@ -514,6 +534,65 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                         Command::Guard {
                             entity_id: stable_id,
                             target_id: Some(target_id),
+                        }
+                    }
+                } else if force_fire && !cell_is_shrouded {
+                    // Force-fire on empty terrain: per-unit dispatch matching
+                    // gamemd What_Action_OnCell — armed mobile units fire at
+                    // the cell, unarmed (Engineer/Harvester/MCV) fall through
+                    // to plain Move. Skips group_destinations spread because
+                    // gamemd's DispatchMultiUnitOrder uses identical cell
+                    // coords for every selected unit.
+                    let unit_armed = sim
+                        .entities
+                        .get(stable_id)
+                        .and_then(|e| {
+                            let type_str = sim.interner.resolve(e.type_ref);
+                            state
+                                .rules
+                                .as_ref()
+                                .and_then(|r| r.object(type_str))
+                                .map(|obj| obj.primary.is_some() || obj.secondary.is_some())
+                        })
+                        .unwrap_or(false);
+                    let is_harvester = sim
+                        .entities
+                        .get(stable_id)
+                        .is_some_and(|e| e.miner.is_some());
+
+                    if unit_armed && !is_harvester {
+                        Command::ForceAttackCell {
+                            attacker_id: stable_id,
+                            target_rx,
+                            target_ry,
+                        }
+                    } else {
+                        // Unarmed fall-through to plain Move. Reuse the same
+                        // walkability fallback the regular Move path uses
+                        // (lines below) — if the cell is unwalkable, route to
+                        // nearest walkable cell so an Engineer ctrl-clicking
+                        // water doesn't silently stall.
+                        let goal: (u16, u16) = {
+                            let mut g = (target_rx, target_ry);
+                            if let Some(grid) = state.path_grid.as_ref() {
+                                if !crate::app_sim_tick::is_any_layer_walkable(grid, g.0, g.1) {
+                                    if let Some(nearest) =
+                                        crate::app_sim_tick::nearest_walkable_cell_layered(
+                                            grid, g, 12,
+                                        )
+                                    {
+                                        g = nearest;
+                                    }
+                                }
+                            }
+                            g
+                        };
+                        Command::Move {
+                            entity_id: stable_id,
+                            target_rx: goal.0,
+                            target_ry: goal.1,
+                            queue: queue_mode,
+                            group_id: None,
                         }
                     }
                 } else {
@@ -565,7 +644,9 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                 queued.push(CommandEnvelope::new(owner_id, execute_tick, payload));
             }
             if !queued.is_empty() {
-                attack_voice = attack_target.is_some();
+                // Treat force-fire-cell as an attack-voice trigger too — the
+                // player gave an attack order even though no entity was hit.
+                attack_voice = attack_target.is_some() || (force_fire && !cell_is_shrouded);
                 consumed_order_mode = true;
             }
         }

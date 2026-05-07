@@ -83,6 +83,30 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
             crate::app_render::OrderMode::Guard => CursorFeedbackKind::Guard,
         });
     }
+    // Force-fire override: when Ctrl is held (and Alt isn't), show the attack
+    // cursor over allies, own units, and empty cells. Only fires if the
+    // selection has at least one armed unit (gamemd
+    // SelectBestObjectForAction priority: armed mobile = 5 wins the cursor
+    // source). Placed AFTER the shroud check above so over-shroud Ctrl-hold
+    // falls through to the queued_order_mode cursor already chosen at lines
+    // 79-84 — that branch already returned by here.
+    if crate::app_input::is_ctrl_held(state) && !crate::app_input::is_alt_held(state) {
+        let selection_has_armed_unit = sim.entities.values().filter(|e| e.selected).any(|e| {
+            let type_str = sim.interner.resolve(e.type_ref);
+            state
+                .rules
+                .as_ref()
+                .and_then(|r| r.object(type_str))
+                .is_some_and(|obj| obj.primary.is_some() || obj.secondary.is_some())
+        });
+        if selection_has_armed_unit {
+            // EnemyUnit is the standard attack-reticle cursor; reuse it for
+            // force-fire over allies/own/empty. (Exact mouse SHP frame for
+            // gamemd's distinct action 0x33 is unverified — cosmetic-only
+            // follow-up; tracked in the design doc.)
+            return Some(CursorFeedbackKind::EnemyUnit);
+        }
+    }
     if let Some(hover) = crate::app_entity_pick::hover_target_at_point(
         sim,
         world_x,
@@ -295,7 +319,12 @@ fn any_selected_unit_in_range(
         None => return true,
     };
     let target_pos = match sim.entities.get(target_id) {
-        Some(t) => (t.position.rx, t.position.ry),
+        Some(t) => (
+            t.position.rx,
+            t.position.ry,
+            t.position.sub_x,
+            t.position.sub_y,
+        ),
         None => return false,
     };
     for &sid in selected_ids {
@@ -314,13 +343,17 @@ fn any_selected_unit_in_range(
         if weapon_range <= crate::util::fixed_math::SIM_ZERO {
             continue;
         }
-        let dist_sq = combat::cell_distance_sq(
+        let dist_sq = combat::lepton_distance_sq_raw(
             entity.position.rx,
             entity.position.ry,
+            entity.position.sub_x,
+            entity.position.sub_y,
             target_pos.0,
             target_pos.1,
+            target_pos.2,
+            target_pos.3,
         );
-        if combat::is_within_weapon_range_sq(dist_sq, weapon_range) {
+        if combat::is_within_range_leptons(dist_sq, weapon_range) {
             return true;
         }
     }
