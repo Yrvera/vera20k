@@ -853,4 +853,34 @@ mod tests {
         assert!(cell.deck_present);
         assert!(matches!(cell.damage_state, DamageState::Healthy { .. }));
     }
+
+    #[test]
+    fn bridge_runtime_state_snapshot_round_trip() {
+        let state = BridgeRuntimeState::from_resolved_terrain(
+            &make_bridge_terrain(), true, 1500,
+        );
+        let json = serde_json::to_string(&state).expect("serialize");
+        let restored: BridgeRuntimeState =
+            serde_json::from_str(&json).expect("deserialize");
+        // Compare cell-by-cell across the full grid.
+        for (rx, ry) in [(0, 0), (1, 0), (2, 0), (3, 0), (4, 0)] {
+            assert_eq!(state.cell(rx, ry), restored.cell(rx, ry), "cell ({rx},{ry})");
+        }
+        // Compare anchor spans.
+        assert_eq!(
+            state.anchor_spans().len(),
+            restored.anchor_spans().len()
+        );
+        for (id, span) in state.anchor_spans() {
+            assert_eq!(restored.anchor_span(*id), Some(span));
+        }
+        // is_bridge_walkable behavior parity.
+        for (rx, ry) in [(0, 0), (1, 0), (2, 0), (3, 0), (4, 0)] {
+            assert_eq!(
+                state.is_bridge_walkable(rx, ry),
+                restored.is_bridge_walkable(rx, ry),
+                "walkability ({rx},{ry})"
+            );
+        }
+    }
 }
