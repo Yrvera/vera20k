@@ -286,6 +286,7 @@ pub(super) fn water_terrain(width: u16, height: u16) -> ResolvedTerrainGrid {
                 variant: 0,
                 is_rough: false,
                 is_road: false,
+                accepts_smudge: false,
                 has_ramp: false,
                 canonical_ramp: None,
                 ground_walk_blocked: false,

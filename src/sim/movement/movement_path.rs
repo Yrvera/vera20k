@@ -434,6 +434,7 @@ mod tests {
             is_cliff_like: false,
             is_rough: false,
             is_road: false,
+            accepts_smudge: false,
             is_cliff_redraw: false,
             variant: 0,
             has_ramp: false,

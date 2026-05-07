@@ -86,6 +86,9 @@ pub struct ResolvedTerrainCell {
     pub is_cliff_like: bool,
     pub is_rough: bool,
     pub is_road: bool,
+    /// True when this cell's tileset has `Morphable=yes`. Smudge placement
+    /// requires this gate (matches gamemd IsoTileTypeClass+0x2E0).
+    pub accepts_smudge: bool,
     /// FinalAlert2-style cliff redraw flag. When true, this cell's terrain tile
     /// is drawn a second time AFTER entities so cliff faces occlude units behind
     /// them. Computed from height differences with back-left neighbor cells
@@ -347,6 +350,17 @@ impl ResolvedTerrainGrid {
                 let bridge_walkable = overlay_effects.has_bridge_deck
                     && !terrain_object_blocks
                     && !overlay_effects.overlay_blocks;
+                // Smudges (craters, scorches) only place on tiles whose tileset has
+                // Morphable=yes. Cells with no resolved tile (filled_clear) default
+                // to false. Computed once at resolve time so the smudge dispatcher
+                // reads a single bool.
+                let accepts_smudge = if raw.is_none() {
+                    false
+                } else {
+                    theater_data
+                        .map(|td| td.lookup.is_morphable(tile_key.tile_id))
+                        .unwrap_or(false)
+                };
                 // Allow layer transitions on any bridge deck cell. High bridges over
                 // water have ground_walk_blocked=true, but units still need to transition
                 // from Ground→Bridge at the ramp/entry cells.
@@ -377,6 +391,7 @@ impl ResolvedTerrainGrid {
                     is_cliff_like,
                     is_rough: metadata.is_rough,
                     is_road: metadata.is_road,
+                    accepts_smudge,
                     is_cliff_redraw: false,
                     variant: 0,
                     has_ramp: metadata.has_ramp,
@@ -1529,6 +1544,7 @@ mod tests {
                 is_cliff_like: true,
                 is_rough: false,
                 is_road: false,
+                accepts_smudge: false,
                 is_cliff_redraw: false,
                 variant: 0,
                 has_ramp: true,
