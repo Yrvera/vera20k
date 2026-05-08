@@ -350,9 +350,11 @@ fn test_tick_combat_out_of_range() {
         target_health, 300,
         "Out-of-range target should not take damage"
     );
+    // Range failure preserves attack_target; pursuit (run from advance_tick,
+    // not from tick_combat in isolation) walks the unit into range.
     assert!(
-        store.get(1).unwrap().attack_target.is_none(),
-        "AttackTarget removed when out of range"
+        store.get(1).unwrap().attack_target.is_some(),
+        "AttackTarget preserved when out of range — pursuit closes the gap"
     );
 }
 
