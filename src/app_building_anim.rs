@@ -390,8 +390,11 @@ pub(crate) fn consume_bale_events(state: &mut AppState) {
             )> = Vec::new();
             if let Some(name) = obj.refinery_smoke_particle_system.as_deref() {
                 if let Some(ps_id) = rules.ps_type_id_by_name(name) {
-                    let origin_x = building.position.rx as i32 * 256;
-                    let origin_y = building.position.ry as i32 * 256;
+                    // BuildingClass::GetCoords returns cell CENTER per the
+                    // original UndockUnit's (-0x80, +0x80) baseline. The +128
+                    // is the lepton offset from cell NW corner to center.
+                    let origin_x = building.position.rx as i32 * 256 + 128;
+                    let origin_y = building.position.ry as i32 * 256 + 128;
                     for offset in obj.refinery_smoke_offsets.iter() {
                         if *offset == glam::IVec3::ZERO {
                             continue;
