@@ -27,10 +27,13 @@ use super::helpers::{compute_sprite_depth_params, in_view};
 const BRIDGE_BODY_LATIN_SQUARE: [u8; 16] =
     [0, 1, 2, 3, 3, 2, 1, 0, 2, 3, 0, 1, 1, 0, 3, 2];
 
-/// Body Y offset for state bytes 0..8 (HasBridge cells). RE doc §3.3.3, ledger #5.
-const BRIDGE_BODY_Y_OFFSET_LOW: f32 = -16.0;
-/// Body Y offset for state bytes 9..17. RE doc §3.3.3, ledger #5.
-const BRIDGE_BODY_Y_OFFSET_HIGH: f32 = -31.0;
+/// Body Y offset for state bytes 0..8 (NS axis — BRIDGE2 / BRIDGEB2).
+/// `-(CellHeight * 2 + 1) = -31px`. Matches the legacy
+/// `bridge_y_offset_for_name` mapping that this module replaced.
+const BRIDGE_BODY_Y_OFFSET_NS: f32 = -31.0;
+/// Body Y offset for state bytes 9..17 (EW axis — BRIDGE1 / BRIDGEB1).
+/// `-(CellHeight + 1) = -16px`.
+const BRIDGE_BODY_Y_OFFSET_EW: f32 = -16.0;
 
 /// Bonus added to `cell.deck_level` before the depth calc for HasBridge cells.
 /// RE doc §3.3.1, ledger #6.
@@ -88,9 +91,9 @@ pub fn build_bridge_body_instances(
             cell.damage_state.to_state_byte(axis)
         };
         let y_offset = if frame <= 8 {
-            BRIDGE_BODY_Y_OFFSET_LOW
+            BRIDGE_BODY_Y_OFFSET_NS
         } else {
-            BRIDGE_BODY_Y_OFFSET_HIGH
+            BRIDGE_BODY_Y_OFFSET_EW
         };
 
         let z: u8 = state
@@ -186,9 +189,9 @@ pub fn build_bridge_shadow_instances(
             .unwrap_or(cell.deck_level);
         let (mut sx, mut sy) = terrain::iso_to_screen(rx, ry, z);
         let y_offset = if frame <= 8 {
-            BRIDGE_BODY_Y_OFFSET_LOW
+            BRIDGE_BODY_Y_OFFSET_NS
         } else {
-            BRIDGE_BODY_Y_OFFSET_HIGH
+            BRIDGE_BODY_Y_OFFSET_EW
         };
         sy += y_offset;
 
