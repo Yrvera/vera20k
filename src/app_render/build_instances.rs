@@ -43,6 +43,9 @@ pub(super) struct WorldInstances {
     pub shp_paged: Vec<Vec<SpriteInstance>>,
     pub bridge_shp_paged: Vec<Vec<SpriteInstance>>,
     pub building_turret: Vec<SpriteInstance>,
+    /// Per-particle SpriteInstances (Layer 3). Drawn at Step 7.5 — above
+    /// all ground objects + cliffs, below debug/shroud/UI.
+    pub particle_paged: Vec<Vec<SpriteInstance>>,
 }
 
 /// Debug visualization overlays (toggled by hotkeys at runtime).
@@ -184,6 +187,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         .map_or(1, |a| a.page_count().max(1));
     let mut shp_paged: Vec<Vec<SpriteInstance>> = vec![Vec::new(); shp_page_count];
     let mut bridge_shp_paged: Vec<Vec<SpriteInstance>> = vec![Vec::new(); shp_page_count];
+    let mut particle_paged: Vec<Vec<SpriteInstance>> = vec![Vec::new(); shp_page_count];
 
     // VXL units (ground + bridge) — sorted by depth descending.
     // shp_paged is passed in so harvest overlays (OREGATH SHP) route to the
@@ -218,6 +222,14 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         sort_by_depth_desc(page);
     }
 
+    // Layer 3 particle systems — separate paged list, drawn AFTER cliff
+    // redraw at Step 7.5, above all ground geometry per the original's
+    // ParticleClass::GetLayer = 3.
+    app_instances::build_particle_instances(state, &mut particle_paged);
+    for page in &mut particle_paged {
+        sort_by_depth_desc(page);
+    }
+
     // One-time first-frame statistics.
     static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
@@ -246,6 +258,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         shp_paged,
         bridge_shp_paged,
         building_turret,
+        particle_paged,
     }
 }
 
