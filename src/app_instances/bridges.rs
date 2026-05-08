@@ -132,6 +132,101 @@ pub fn build_bridge_body_instances(
     }
 }
 
+/// Build sprite instances for the bridge body shadow pass (RE doc §3.3.2,
+/// Step 5 pass 2). Shadow frame = `(frame_count / 2) + state`. EW states
+/// 9..17 get a `(BRIDGE_SHADOW_EW_DX, +BRIDGE_SHADOW_EW_DY)` shift per
+/// ledger #9–10. Drawn passthrough (Z-test ON, Z-write OFF, neutral tint).
+pub fn build_bridge_shadow_instances(
+    state: &AppState,
+    sw: f32,
+    sh: f32,
+    out: &mut Vec<SpriteInstance>,
+) {
+    let Some(sim) = state.simulation.as_ref() else {
+        return;
+    };
+    let Some(bridge_state) = sim.bridge_state.as_ref() else {
+        return;
+    };
+    let Some(atlas) = state.bridge_atlas.as_ref() else {
+        return;
+    };
+    let (origin_y, world_height) = state
+        .terrain_grid
+        .as_ref()
+        .map(|g| (g.origin_y, g.world_height))
+        .unwrap_or((0.0, 1.0));
+    let (cam_x, cam_y) = (state.camera_x, state.camera_y);
+
+    for ((rx, ry), cell) in bridge_state.iter_cells() {
+        if !cell.deck_present || matches!(cell.damage_state, DamageState::Destroyed) {
+            continue;
+        }
+        let Some(axis) = cell.axis else { continue };
+        let Some(name) = state.overlay_names.get(&cell.overlay_byte) else {
+            continue;
+        };
+        if !is_high_bridge_body_name(name) {
+            continue;
+        }
+
+        let base = cell.damage_state.render_state_byte(axis);
+        let frame: u8 = if base == 0 || base == 9 {
+            let idx = ((ry & 3) as usize) << 2 | (rx & 3) as usize;
+            base + BRIDGE_BODY_LATIN_SQUARE[idx]
+        } else {
+            cell.damage_state.to_state_byte(axis)
+        };
+
+        let z: u8 = state
+            .height_map
+            .get(&(rx, ry))
+            .copied()
+            .unwrap_or(cell.deck_level);
+        let (mut sx, mut sy) = terrain::iso_to_screen(rx, ry, z);
+        let y_offset = if frame <= 8 {
+            BRIDGE_BODY_Y_OFFSET_LOW
+        } else {
+            BRIDGE_BODY_Y_OFFSET_HIGH
+        };
+        sy += y_offset;
+
+        // EW-state shadow shift (states 9..17 — ledger #9, #10).
+        if (9..=17).contains(&frame) {
+            sx += BRIDGE_SHADOW_EW_DX as f32;
+            sy += BRIDGE_SHADOW_EW_DY as f32;
+        }
+
+        if !in_view(sx, sy, 120.0, 120.0, cam_x, cam_y, sw, sh, 120.0) {
+            continue;
+        }
+
+        let Some(spr) = atlas.shadow_entry(name, frame) else {
+            log::warn!(
+                "bridge shadow atlas miss: name={name} frame={frame} cell=({rx},{ry})"
+            );
+            continue;
+        };
+
+        let depth_z = z.saturating_add(BRIDGE_HEIGHT_BONUS);
+        let depth = compute_sprite_depth_params(origin_y, world_height, sy, depth_z);
+        // Shadow uses neutral tint, no per-cell lighting (ledger #12).
+        let tint: [f32; 3] = lighting::DEFAULT_TINT;
+        out.push(SpriteInstance {
+            position: [
+                sx + TILE_WIDTH / 2.0 + spr.offset_x,
+                sy + TILE_HEIGHT / 2.0 + spr.offset_y,
+            ],
+            size: spr.pixel_size,
+            uv_origin: spr.uv_origin,
+            uv_size: spr.uv_size,
+            depth,
+            tint,
+            alpha: 1.0,
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,6 +236,14 @@ mod tests {
         // (cell.x, cell.y) = (1, 2) → idx = ((2&3)<<2) | (1&3) = 8|1 = 9.
         // BRIDGE_BODY_LATIN_SQUARE[9] = 3.
         assert_eq!(BRIDGE_BODY_LATIN_SQUARE[((2 & 3) << 2) | (1 & 3)], 3);
+    }
+
+    #[test]
+    fn shadow_ew_shift_constants_present() {
+        // RE doc §10 open Q2: BRIDGE_SHADOW_EW_DX may be -15 or -45.
+        // BRIDGE_SHADOW_EW_DY verified at +7. Either way, the shift must be
+        // non-zero — visual diff (Task 17) resolves the X value.
+        assert!(BRIDGE_SHADOW_EW_DX != 0 || BRIDGE_SHADOW_EW_DY != 0);
     }
 
     #[test]
