@@ -40,7 +40,8 @@ pub(super) fn tick_system(sys: &mut ParticleSystem, sim: &mut Simulation, rules:
     // Phase 1 — tick existing particles.
     for p in &mut sys.particles {
         let pt = rules.particle_type(p.type_id);
-        tick_particle(p, pt);
+        let frame_count = super::system_ai::resolve_image_frame_count(sim, pt);
+        tick_particle(p, pt, frame_count);
     }
 
     // Phase 2 — collect NextParticle children for any dying particle, then prune.
@@ -109,10 +110,12 @@ pub(super) fn tick_system(sys: &mut ParticleSystem, sim: &mut Simulation, rules:
     }
 }
 
-/// Per-tick AI for one gas particle. Tier-2 form: lifetime countdown, velocity
-/// decel, and damage-counter bookkeeping (reset on zero). Actual damage
-/// application to cell occupants is deferred to Task C6 — see module-level notes.
-pub(super) fn tick_particle(p: &mut Particle, pt: &ParticleType) {
+/// Per-tick AI for one gas particle. Tier-2 form: state-AI advance →
+/// lifetime countdown → velocity decel → damage-counter bookkeeping
+/// (reset on zero). Actual damage application to cell occupants is
+/// deferred to Task C6 — see module-level notes.
+pub(super) fn tick_particle(p: &mut Particle, pt: &ParticleType, image_frame_count: u16) {
+    super::system_ai::advance_state(p, pt, image_frame_count);
     p.lifetime_remaining = p.lifetime_remaining.saturating_sub(1);
     if p.lifetime_remaining <= 0 {
         p.marked_for_deletion = true;
@@ -332,7 +335,7 @@ mod tests {
         // make_particle initializes damage_counter = pt.max_dc.
         assert_eq!(p.damage_counter, 5);
         for _ in 0..5 {
-            tick_particle(&mut p, pt);
+            tick_particle(&mut p, pt, 0);
         }
         assert_eq!(
             p.damage_counter, 5,

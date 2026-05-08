@@ -15,6 +15,20 @@ use crate::rules::ruleset::RuleSet;
 use crate::sim::particles::ParticleSystem;
 use crate::sim::world::Simulation;
 
+/// Resolve the SHP frame count for a particle's `Image=` field via the
+/// existing `Simulation::effect_frame_counts` map. Returns 0 when the
+/// type has no image set or the SHP is not registered (matches the
+/// fallback `advance_state` handles via the odd-parity denominator).
+pub(super) fn resolve_image_frame_count(
+    sim: &Simulation,
+    pt: &crate::rules::particle_type::ParticleType,
+) -> u16 {
+    let Some(image) = pt.image.as_deref() else { return 0 };
+    let key = image.to_ascii_uppercase();
+    let Some(id) = sim.interner.get(&key) else { return 0 };
+    sim.effect_frame_counts.get(&id).copied().unwrap_or(0)
+}
+
 /// Advance one Tier-2 particle's animation-state machine by one tick.
 ///
 /// A sub-tick counter increments every call; when it hits a per-type
