@@ -227,6 +227,7 @@ impl Simulation {
             cell.role.hash(hasher);
             cell.anchor_span_id.hash(hasher);
             cell.overlay_byte.hash(hasher);
+            cell.damaged_variant.hash(hasher);
         }
         // Hash AnchorSpan registry (Task 7 added this field). BTreeMap iterates
         // in sorted-key order, so iteration is deterministic.
