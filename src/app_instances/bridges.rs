@@ -17,7 +17,7 @@ use crate::map::terrain::{self, TILE_HEIGHT, TILE_WIDTH};
 use crate::render::batch::SpriteInstance;
 use crate::render::bridge_atlas::is_high_bridge_body_name;
 use crate::render::bridge_railing_atlas::BridgeKind;
-use crate::sim::bridge_state::{BridgeRuntimeCell, DamageState};
+use crate::sim::bridge_state::{Axis, BridgeRuntimeCell, DamageState};
 
 use super::helpers::{compute_sprite_depth_params, in_view};
 
@@ -46,9 +46,40 @@ pub const BRIDGE_SHADOW_EW_DX: i32 = -15;
 /// (RE doc §3.3.2, ledger #10).
 pub const BRIDGE_SHADOW_EW_DY: i32 = 7;
 
+/// Translate a cell's `(damage_state, axis)` into the SHP frame index for
+/// `bridge.tem` / `bridgb.tem`. Per `BRIDGE_RENDERING_GHIDRA_REPORT.md` §12,
+/// the SHP body half is laid out:
+///   - frames `0..8`: EW body (healthy 0..5, damaged 6, partial 7-8)
+///   - frames `9..17`: NS body
+///
+/// This is the *opposite* of the sim's state-byte encoding (`Axis::NS = 0..8`,
+/// `Axis::EW = 9..17`), so the renderer flips the axis-to-frame-range mapping.
+/// For `Healthy` cells, the within-axis variant is picked from the binary
+/// Latin square keyed by cell `(rx, ry)` (RE doc §3.3.1, ledger #4).
+fn compute_bridge_body_shp_frame(state: DamageState, axis: Axis, rx: u16, ry: u16) -> u8 {
+    let axis_base: u8 = match axis {
+        Axis::EW => 0,
+        Axis::NS => 9,
+    };
+    let local: u8 = match state {
+        DamageState::Healthy { .. } => {
+            let idx = ((ry & 3) as usize) << 2 | (rx & 3) as usize;
+            BRIDGE_BODY_LATIN_SQUARE[idx]
+        }
+        DamageState::Damaged => 6,
+        // Per RE doc §3.1: NS PartialA=7/PartialB=8, EW PartialA=8/PartialB=7
+        // (the within-axis ordering is reversed for EW). The state-byte encoding
+        // bakes this in, so we read the relevant bits via to_state_byte.
+        other => {
+            let sb = other.to_state_byte(axis);
+            sb.saturating_sub(axis_base)
+        }
+    };
+    axis_base + local
+}
+
 /// Build sprite instances for the bridge body pass (RE doc §3.3, Step 5
-/// pass 1). Reads `BridgeRuntimeCell.overlay_byte` post-tick; uses
-/// Latin-square jitter on base state bytes 0 and 9 only.
+/// pass 1). Reads `BridgeRuntimeCell.overlay_byte` post-tick.
 pub fn build_bridge_body_instances(
     state: &AppState,
     sw: f32,
@@ -83,17 +114,10 @@ pub fn build_bridge_body_instances(
             continue;
         }
 
-        let base = cell.damage_state.render_state_byte(axis);
-        let frame: u8 = if base == 0 || base == 9 {
-            let idx = ((ry & 3) as usize) << 2 | (rx & 3) as usize;
-            base + BRIDGE_BODY_LATIN_SQUARE[idx]
-        } else {
-            cell.damage_state.to_state_byte(axis)
-        };
-        let y_offset = if frame <= 8 {
-            BRIDGE_BODY_Y_OFFSET_NS
-        } else {
-            BRIDGE_BODY_Y_OFFSET_EW
+        let frame = compute_bridge_body_shp_frame(cell.damage_state, axis, rx, ry);
+        let y_offset = match axis {
+            Axis::NS => BRIDGE_BODY_Y_OFFSET_NS,
+            Axis::EW => BRIDGE_BODY_Y_OFFSET_EW,
         };
 
         let z: u8 = state
@@ -174,12 +198,10 @@ pub fn build_bridge_shadow_instances(
             continue;
         }
 
-        let base = cell.damage_state.render_state_byte(axis);
-        let frame: u8 = if base == 0 || base == 9 {
-            let idx = ((ry & 3) as usize) << 2 | (rx & 3) as usize;
-            base + BRIDGE_BODY_LATIN_SQUARE[idx]
-        } else {
-            cell.damage_state.to_state_byte(axis)
+        let frame = compute_bridge_body_shp_frame(cell.damage_state, axis, rx, ry);
+        let y_offset = match axis {
+            Axis::NS => BRIDGE_BODY_Y_OFFSET_NS,
+            Axis::EW => BRIDGE_BODY_Y_OFFSET_EW,
         };
 
         let z: u8 = state
@@ -188,15 +210,10 @@ pub fn build_bridge_shadow_instances(
             .copied()
             .unwrap_or(cell.deck_level);
         let (mut sx, mut sy) = terrain::iso_to_screen(rx, ry, z);
-        let y_offset = if frame <= 8 {
-            BRIDGE_BODY_Y_OFFSET_NS
-        } else {
-            BRIDGE_BODY_Y_OFFSET_EW
-        };
         sy += y_offset;
 
-        // EW-state shadow shift (states 9..17 — ledger #9, #10).
-        if (9..=17).contains(&frame) {
+        // EW-axis shadow shift (RE doc §3.3.2, ledger #9-10).
+        if axis == Axis::EW {
             sx += BRIDGE_SHADOW_EW_DX as f32;
             sy += BRIDGE_SHADOW_EW_DY as f32;
         }
@@ -342,44 +359,45 @@ mod tests {
         assert_eq!(BRIDGE_BODY_LATIN_SQUARE[((2 & 3) << 2) | (1 & 3)], 3);
     }
 
-    /// Lock the "render reads `BridgeRuntimeCell` post-tick" parity contract:
-    /// for a `Damaged` bridge cell, the body frame derives from
-    /// `DamageState::to_state_byte(axis)` (skipping the Latin-square jitter,
-    /// which only fires on base bytes 0/9). A future refactor that switches
-    /// the source to `OverlayGrid` (which lags by 1 tick on bridge state
-    /// changes) would visibly desync — this test pins the formula.
+    /// SHP frame selection routes EW cells to body frames 0..8 and NS cells
+    /// to 9..17 — the inverse of the sim's state-byte encoding. Per
+    /// `BRIDGE_RENDERING_GHIDRA_REPORT.md` §12, bridge.tem packs EW body
+    /// frames at 0-8 and NS body frames at 9-17.
     #[test]
-    fn body_frame_for_damaged_cell_matches_state_byte_no_jitter() {
-        use crate::sim::bridge_state::{Axis, DamageState};
-        // NS Damaged = 6, EW Damaged = 0xF; render_state_byte returns the same
-        // for non-Healthy states, and 6/0xF aren't 0 or 9 → no jitter.
-        let ns = DamageState::Damaged;
-        assert_eq!(ns.render_state_byte(Axis::NS), 6);
-        assert_eq!(ns.to_state_byte(Axis::NS), 6);
-        let ew = DamageState::Damaged;
-        assert_eq!(ew.render_state_byte(Axis::EW), 0xF);
-        assert_eq!(ew.to_state_byte(Axis::EW), 0xF);
+    fn damaged_cell_routes_to_axis_correct_shp_frame() {
+        // NS Damaged → SHP frame 9 + 6 = 15.
+        assert_eq!(
+            compute_bridge_body_shp_frame(DamageState::Damaged, Axis::NS, 0, 0),
+            15
+        );
+        // EW Damaged → SHP frame 0 + 6 = 6.
+        assert_eq!(
+            compute_bridge_body_shp_frame(DamageState::Damaged, Axis::EW, 0, 0),
+            6
+        );
     }
 
-    /// Lock the "render reads `BridgeRuntimeCell` post-tick" parity contract:
-    /// for a `Healthy` cell, the renderer rebuilds Latin-square jitter from
-    /// cell `(rx, ry)` — it does NOT honor the sim's `Healthy.variant` field.
-    /// This guards against future refactors that try to take a shortcut by
-    /// using `Healthy.variant` directly.
+    /// For `Healthy` cells, the within-axis variant comes from a Latin-square
+    /// jitter keyed on `(rx, ry)` — the sim's `Healthy.variant` field is
+    /// ignored, so a refactor swapping in `Healthy.variant` would visibly
+    /// desync the renderer from gamemd.
     #[test]
     fn healthy_cell_uses_xy_latin_square_not_sim_variant() {
-        use crate::sim::bridge_state::{Axis, DamageState};
-        // Healthy{variant:0} and Healthy{variant:5} both render as base byte 0
-        // for NS / 9 for EW; the renderer then adds Latin-square jitter from
-        // (rx, ry). The sim variant is ignored by the render path.
+        // (1, 2) → LATIN[9] = 3 → EW body SHP frame = 0 + 3 = 3.
         assert_eq!(
-            DamageState::Healthy { variant: 0 }.render_state_byte(Axis::NS),
-            DamageState::Healthy { variant: 5 }.render_state_byte(Axis::NS)
+            compute_bridge_body_shp_frame(DamageState::Healthy { variant: 0 }, Axis::EW, 1, 2),
+            3
         );
-        // Final frame for cell (1, 2) on a healthy NS bridge:
-        //   base = 0; idx = ((2&3)<<2)|(1&3) = 9; jitter = LATIN[9] = 3.
-        let frame = 0u8 + BRIDGE_BODY_LATIN_SQUARE[((2 & 3) << 2) | (1 & 3)];
-        assert_eq!(frame, 3);
+        // Variant field on the sim must not affect the result.
+        assert_eq!(
+            compute_bridge_body_shp_frame(DamageState::Healthy { variant: 0 }, Axis::EW, 1, 2),
+            compute_bridge_body_shp_frame(DamageState::Healthy { variant: 5 }, Axis::EW, 1, 2)
+        );
+        // Same xy on NS axis → SHP frame = 9 + 3 = 12.
+        assert_eq!(
+            compute_bridge_body_shp_frame(DamageState::Healthy { variant: 0 }, Axis::NS, 1, 2),
+            12
+        );
     }
 
     #[test]
