@@ -30,26 +30,30 @@ use crate::util::fixed_math::{SIM_ZERO, SimFixed, ra2_speed_to_leptons_per_secon
 
 /// Read-only snapshot of entity + rules data needed for issuing movement commands.
 /// Captured once to avoid repeated entity lookups and type_ref clones.
-struct MoveInfo {
-    speed: SimFixed,
-    loco_kind: Option<LocomotorKind>,
-    loco_layer: MovementLayer,
-    speed_type: SpeedType,
-    hover_attack: bool,
-    is_teleporter: bool,
-    is_harvester: bool,
-    is_infantry: bool,
-    accel_factor: SimFixed,
-    decel_factor: SimFixed,
-    slowdown_distance: SimFixed,
-    movement_zone: MovementZone,
-    position: (u16, u16),
-    mover_is_crusher: bool,
+///
+/// `pub(crate)` so the pursuit pre-combat stage in `world_orders.rs` can reuse
+/// it — pursuit-issued movement must match Move-command-issued movement
+/// exactly to keep behavior consistent.
+pub(crate) struct MoveInfo {
+    pub(crate) speed: SimFixed,
+    pub(crate) loco_kind: Option<LocomotorKind>,
+    pub(crate) loco_layer: MovementLayer,
+    pub(crate) speed_type: SpeedType,
+    pub(crate) hover_attack: bool,
+    pub(crate) is_teleporter: bool,
+    pub(crate) is_harvester: bool,
+    pub(crate) is_infantry: bool,
+    pub(crate) accel_factor: SimFixed,
+    pub(crate) decel_factor: SimFixed,
+    pub(crate) slowdown_distance: SimFixed,
+    pub(crate) movement_zone: MovementZone,
+    pub(crate) position: (u16, u16),
+    pub(crate) mover_is_crusher: bool,
 }
 
 impl Simulation {
     /// Snapshot entity + rules data needed for movement dispatch in one lookup.
-    fn resolve_move_info(&self, entity_id: u64, rules: Option<&RuleSet>) -> Option<MoveInfo> {
+    pub(crate) fn resolve_move_info(&self, entity_id: u64, rules: Option<&RuleSet>) -> Option<MoveInfo> {
         let e = self.entities.get(entity_id)?;
         let loco = e.locomotor.as_ref();
         let loco_kind = loco.map(|l| l.kind);
