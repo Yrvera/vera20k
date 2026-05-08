@@ -77,6 +77,12 @@ pub struct Particle {
     /// Fire-only scratch: per-tick velocity delta computed by fire AI and
     /// consumed by `move_fire` (jitter * direction). Zero for smoke/gas.
     pub prev_delta: [SimFixed; 3],
+
+    /// Per-particle sub-tick accumulator for the state-AI advance.
+    /// Increments every tick; when it hits the per-type denominator
+    /// `(image_frame_count % 2 + 1) + StateAIAdvance`, animation_state
+    /// bumps by 1. Wraps at 256 (denom is always small in practice).
+    pub state_advance_counter: u8,
 }
 
 impl ParticleSystem {

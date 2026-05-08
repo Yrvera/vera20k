@@ -102,6 +102,7 @@ pub(crate) fn render_game(
             unit_instances: &world.unit,
             shp_paged: &world.shp_paged,
             wall_instances: &world.wall,
+            particle_paged: &world.particle_paged,
             ghost_page: ui.ghost_page,
         },
     );
@@ -168,6 +169,17 @@ fn upload_to_gpu(
         }
     }
     pool.upload(&state.gpu, "building_turret", &world.building_turret);
+    const PARTICLE_KEYS: [&str; 4] = [
+        "particle_p0",
+        "particle_p1",
+        "particle_p2",
+        "particle_p3",
+    ];
+    for (i, page_inst) in world.particle_paged.iter().enumerate() {
+        if i < PARTICLE_KEYS.len() {
+            pool.upload(&state.gpu, PARTICLE_KEYS[i], page_inst);
+        }
+    }
 
     // UI overlays
     pool.upload(&state.gpu, "drag", &ui.drag);

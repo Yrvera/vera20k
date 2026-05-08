@@ -24,11 +24,11 @@ use crate::sim::movement::locomotor::MovementLayer;
 use std::cmp::Reverse;
 use std::collections::{BTreeSet, BinaryHeap, HashMap};
 
-/// Movement cost for a cardinal step (N, E, S, W). Scaled by 10 for integer math.
-const CARDINAL_COST: i32 = 10;
-
-/// Movement cost for a diagonal step (NE, SE, SW, NW). Approximates sqrt(2) * 10.
-const DIAGONAL_COST: i32 = 14;
+/// Uniform A* edge cost for all 8 compass directions. The original engine has
+/// no diagonal upcharge — `AStar_compute_edge_cost` takes no direction
+/// parameter. The 1000× scale is chosen so DIR_TIEBREAK [1..=8] sits at
+/// exactly 0.001..0.008 of base, matching the binary's tiebreaker ratio.
+const STEP_COST: i32 = 1000;
 
 /// Maximum nodes to evaluate before giving up. Prevents freezing on
 /// pathologically large or impossible searches.
@@ -42,7 +42,7 @@ const MAX_SEARCH_NODES: u32 = 65_527;
 pub const MAX_PATH_SEGMENT_STEPS: usize = 24;
 
 /// Cost multiplier for cells with height transitions (ramps, slopes).
-/// With CARDINAL_COST=10, a height step costs 40 instead of 10.
+/// With STEP_COST=1000, a height step costs 4000 instead of 1000.
 const CLIFF_COST_MULTIPLIER: i32 = 4;
 
 /// Code-2 (friendly moving) cost multipliers. Matches gamemd.exe
@@ -343,7 +343,7 @@ pub fn astar_search(
 
     let mut open: BinaryHeap<Reverse<AStarNode>> = BinaryHeap::new();
     open.push(Reverse(AStarNode {
-        f_cost: octile_heuristic(start.0, start.1, goal.0, goal.1),
+        f_cost: euclidean_heuristic(start.0, start.1, goal.0, goal.1),
         g_cost: 0,
         x: start.0,
         y: start.1,
@@ -539,12 +539,10 @@ pub fn astar_search(
                 }
             }
 
-            // Step cost
-            let base_cost = if is_diagonal {
-                DIAGONAL_COST
-            } else {
-                CARDINAL_COST
-            };
+            // Step cost — uniform across all 8 compass directions.
+            // The is_diagonal flag is still consumed by the corner-cutting
+            // check above; only the cost is unified.
+            let base_cost = STEP_COST;
             let mut step_cost = if terrain_cost == 100 {
                 base_cost
             } else {
@@ -583,7 +581,7 @@ pub fn astar_search(
             if tentative_g < g_array[n_idx] {
                 g_array[n_idx] = tentative_g;
                 from_array[n_idx] = encode_from(c_idx, on_bridge);
-                let h = octile_heuristic(nx, ny, goal.0, goal.1);
+                let h = euclidean_heuristic(nx, ny, goal.0, goal.1);
                 open.push(Reverse(AStarNode {
                     f_cost: tentative_g + h,
                     g_cost: tentative_g,
@@ -1112,17 +1110,26 @@ impl PartialOrd for AStarNode {
     }
 }
 
-/// Octile distance heuristic for 8-directional grid movement.
+/// Euclidean distance heuristic for 8-directional grid movement.
 ///
-/// Consistent (never overestimates) with diagonal cost = 14, cardinal cost = 10.
-/// Formula: max(dx, dy) * CARDINAL_COST + (min(dx, dy)) * (DIAGONAL_COST - CARDINAL_COST)
-fn octile_heuristic(ax: u16, ay: u16, bx: u16, by: u16) -> i32 {
-    let dx: i32 = (ax as i32 - bx as i32).abs();
-    let dy: i32 = (ay as i32 - by as i32).abs();
-    let min_d: i32 = dx.min(dy);
-    let max_d: i32 = dx.max(dy);
-    // max_d cardinal steps + min_d upgrades from cardinal to diagonal.
-    max_d * CARDINAL_COST + min_d * (DIAGONAL_COST - CARDINAL_COST)
+/// Matches the original engine's per-node heuristic computation —
+/// sqrt(dx² + dy²) — applied at A* node creation time.
+///
+/// Intentionally **inadmissible** under uniform edge cost: when both dx and
+/// dy are nonzero, Euclidean overestimates the true minimum path cost
+/// (which is `max(dx, dy) * STEP_COST` since one diagonal step covers
+/// both axes for the same price). The original engine accepts this
+/// inadmissibility — A* trades optimality for shorter expansion, and
+/// the resulting path geometry is part of the engine's character.
+///
+/// Implementation: scaled integer sqrt at full precision. `u64`
+/// intermediate avoids overflow on 512×512 maps.
+fn euclidean_heuristic(ax: u16, ay: u16, bx: u16, by: u16) -> i32 {
+    let dx = (ax as i64 - bx as i64).unsigned_abs();
+    let dy = (ay as i64 - by as i64).unsigned_abs();
+    let sum_sq: u64 = dx * dx + dy * dy;
+    // sqrt(sum_sq) * STEP_COST, computed as sqrt(sum_sq * STEP_COST²) for full precision.
+    (sum_sq * 1_000_000).isqrt() as i32
 }
 
 /// Compute the code-2 cost multiplier for a friendly-moving blocker.

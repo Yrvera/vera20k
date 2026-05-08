@@ -34,7 +34,8 @@ pub(super) fn tick_system(sys: &mut ParticleSystem, sim: &mut Simulation, rules:
     // Phase 1 — tick existing particles.
     for p in &mut sys.particles {
         let pt = rules.particle_type(p.type_id);
-        tick_particle(p, pt);
+        let frame_count = super::system_ai::resolve_image_frame_count(sim, pt);
+        tick_particle(p, pt, frame_count);
     }
 
     // Phase 2 — collect NextParticle children for any dying particle, then prune.
@@ -111,9 +112,11 @@ pub(super) fn tick_system(sys: &mut ParticleSystem, sim: &mut Simulation, rules:
     }
 }
 
-/// Per-tick AI for one smoke particle. Minimal Tier-2 form: lifetime
-/// countdown + velocity decel. State-machine animation + drift land later.
-pub(super) fn tick_particle(p: &mut Particle, pt: &ParticleType) {
+/// Per-tick AI for one smoke particle. Minimal Tier-2 form: state-AI advance
+/// (animation_state + translucency-state byte writes) → lifetime countdown
+/// → velocity decel. Drift lands later.
+pub(super) fn tick_particle(p: &mut Particle, pt: &ParticleType, image_frame_count: u16) {
+    super::system_ai::advance_state(p, pt, image_frame_count);
     p.lifetime_remaining = p.lifetime_remaining.saturating_sub(1);
     if p.lifetime_remaining <= 0 {
         p.marked_for_deletion = true;
@@ -195,6 +198,7 @@ fn make_particle(
         color_index: 0,
         color_accumulator: SimFixed::from_num(0),
         prev_delta: [SIM_ZERO; 3],
+        state_advance_counter: 0,
     }
 }
 

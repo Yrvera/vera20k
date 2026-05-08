@@ -54,11 +54,6 @@ use glam::IVec3;
 /// within the last 4 slots create the non-monotonic flame trail.
 const FIRE_INSERT_RANGE: usize = 4;
 
-/// Animation-state translucency byte at the 50% threshold.
-const TRANSLUCENT_50_BYTE: u8 = 0x19;
-/// Animation-state translucency byte at the 25% threshold.
-const TRANSLUCENT_25_BYTE: u8 = 0x32;
-
 fn make_particle(
     type_id: ParticleTypeId,
     coords: IVec3,
@@ -90,23 +85,26 @@ fn make_particle(
         color_index: 0,
         color_accumulator: SimFixed::from_num(0),
         prev_delta: [SIM_ZERO; 3],
+        state_advance_counter: 0,
     }
 }
 
 /// Per-tick AI for one fire particle.
 ///
-/// Order matches the binary: velocity gate → jitter prev_delta →
-/// translucency-threshold byte mapping → decel → damage counter
+/// Order: state-AI advance (animation_state + translucency-state byte writes)
+/// → velocity gate → direction jitter → lifetime → decel → damage counter
 /// (gated by FinalDamageState).
-///
-/// Animation-state auto-advance is deferred: the binary's formula reads
-/// SHP frame count from the asset layer, which `sim/` can't reach.
-/// `animation_state` stays at `start_state_ai` unless something external
-/// sets it; the threshold mapping below still fires correctly once it does.
 ///
 /// Damage application to cell occupants is deferred to Task C6; this
 /// function only does the counter bookkeeping.
-pub(super) fn tick_particle(p: &mut Particle, pt: &ParticleType, rng: &mut SimRng) {
+pub(super) fn tick_particle(
+    p: &mut Particle,
+    pt: &ParticleType,
+    image_frame_count: u16,
+    rng: &mut SimRng,
+) {
+    super::system_ai::advance_state(p, pt, image_frame_count);
+
     // Velocity-zero death: fire dies the instant its momentum runs out.
     if p.velocity <= SIM_ZERO {
         p.marked_for_deletion = true;
@@ -129,8 +127,6 @@ pub(super) fn tick_particle(p: &mut Particle, pt: &ParticleType, rng: &mut SimRn
         p.marked_for_deletion = true;
     }
 
-    apply_translucency_thresholds(p, pt);
-
     // Decel — fire decel is per-frame regardless of velocity sign because
     // the velocity-zero gate above already handled the zero case.
     p.velocity = (p.velocity - pt.deacc).max(SIM_ZERO);
@@ -142,22 +138,6 @@ pub(super) fn tick_particle(p: &mut Particle, pt: &ParticleType, rng: &mut SimRn
     if p.damage_counter <= 0 && p.animation_state <= pt.final_damage_state {
         // C6 hooks the damage-to-cell-occupants iteration here.
         p.damage_counter = pt.max_dc as i16;
-    }
-}
-
-/// Map the current `animation_state` to the correct translucency byte.
-///
-/// 25State triggers first (lower state value); 50State overwrites once
-/// its higher state value is reached. For [FireStream]: state ≥ 10
-/// → 0x32, then state ≥ 15 → 0x19. Both checks fire every tick — they're
-/// idempotent (no state crossing required), so an externally-driven state
-/// jump still produces the correct fade. `0xFF` is the "never" sentinel.
-fn apply_translucency_thresholds(p: &mut Particle, pt: &ParticleType) {
-    if pt.translucent_25_state != 0xFF && p.animation_state >= pt.translucent_25_state {
-        p.translucency = TRANSLUCENT_25_BYTE;
-    }
-    if pt.translucent_50_state != 0xFF && p.animation_state >= pt.translucent_50_state {
-        p.translucency = TRANSLUCENT_50_BYTE;
     }
 }
 
@@ -207,7 +187,8 @@ pub(super) fn tick_system(sys: &mut ParticleSystem, sim: &mut Simulation, rules:
     // Phase 1 — tick existing particles.
     for p in &mut sys.particles {
         let pt = rules.particle_type(p.type_id);
-        tick_particle(p, pt, &mut sim.rng);
+        let frame_count = super::system_ai::resolve_image_frame_count(sim, pt);
+        tick_particle(p, pt, frame_count, &mut sim.rng);
     }
 
     // Phase 2 — prune dead particles. Fire has no NextParticle chaining
@@ -285,50 +266,8 @@ mod tests {
             &mut sim.rng,
         );
         p.velocity = SIM_ZERO;
-        tick_particle(&mut p, pt, &mut sim.rng);
+        tick_particle(&mut p, pt, 0, &mut sim.rng);
         assert!(p.marked_for_deletion, "zero-velocity fire dies immediately");
-    }
-
-    #[test]
-    fn translucency_thresholds_apply_at_states() {
-        // Translucent25State=10 → 0x32 (lighter fade); Translucent50State=15
-        // → 0x19 (deeper fade). Auto-advance is deferred, so the test pins
-        // animation_state directly between ticks. Both checks fire every
-        // tick, so externally-driven state changes still produce the
-        // correct fade.
-        let rules = parse(
-            "[Particles]\n\
-             1=Fire\n\
-             [Fire]\n\
-             BehavesLike=Fire\n\
-             MaxEC=500\n\
-             Velocity=28.0\n\
-             StartStateAI=5\n\
-             EndStateAI=19\n\
-             Translucent50State=15\n\
-             Translucent25State=10\n",
-        );
-        let pt = rules.particle_type(ParticleTypeId(0));
-        let mut sim = Simulation::new();
-        let mut p = make_particle(
-            ParticleTypeId(0),
-            IVec3::ZERO,
-            IVec3::ZERO,
-            pt,
-            &mut sim.rng,
-        );
-        // State starts at 5 — below both thresholds. Translucency stays at
-        // the spawn-time value (the type's Translucency, default 0).
-        tick_particle(&mut p, pt, &mut sim.rng);
-        assert_eq!(p.translucency, 0);
-        // Pin state at Translucent25State; tick → 0x32 (lighter fade).
-        p.animation_state = 10;
-        tick_particle(&mut p, pt, &mut sim.rng);
-        assert_eq!(p.translucency, TRANSLUCENT_25_BYTE);
-        // Pin state at Translucent50State; tick → 0x19 (deeper fade overwrites).
-        p.animation_state = 15;
-        tick_particle(&mut p, pt, &mut sim.rng);
-        assert_eq!(p.translucency, TRANSLUCENT_50_BYTE);
     }
 
     #[test]
@@ -360,7 +299,7 @@ mod tests {
         p.animation_state = 20;
         // Drive damage_counter to zero — must NOT reset to MaxDC.
         for _ in 0..5 {
-            tick_particle(&mut p, pt, &mut sim.rng);
+            tick_particle(&mut p, pt, 0, &mut sim.rng);
         }
         assert!(
             p.damage_counter <= 0,

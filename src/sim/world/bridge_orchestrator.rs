@@ -97,9 +97,18 @@ pub(crate) fn apply_bridge_damage_events(
     // BlowUpBridge force-kills ground-layer entities at each destroyed
     // cell with C4Warhead semantics. Bridge-deck entities are handled by
     // Step 2 (DropIn) and never go through this kill path.
-    let c4_id = rules.c4_warhead_id();
+    //
+    // Resolve C4Warhead's `InfDeath=` value once so the kill loop can
+    // switch infantry to the matching death sequence (e.g., explosive
+    // Die3 instead of default Die1). The inner block scopes the
+    // immutable `sim.interner` borrow so the kill loop can hold `&mut sim`.
+    let c4_inf_death: u8 = {
+        let c4_id = rules.c4_warhead_id();
+        let name = sim.interner.resolve(c4_id);
+        rules.warhead(name).map(|wh| wh.inf_death).unwrap_or(1)
+    };
     for &(rx, ry) in &blow_up_cells {
-        kill_ground_occupants_at(sim, rx, ry, c4_id);
+        kill_ground_occupants_at(sim, rx, ry, c4_inf_death);
     }
 
     // Cascade Step 2: bridge-deck DropIn. Per HIGH §12.7 / §12.9, deck
@@ -156,16 +165,19 @@ pub(crate) fn apply_bridge_damage_events(
 /// (Task 11) and survive — vanilla never drowns or kills them on
 /// collapse (HIGH §12.7, §12.9).
 ///
-/// `c4_warhead_id` is reserved for the future InfDeath-selection path
-/// once the death pipeline accepts a killing-warhead identity. Today the
-/// kill is unconditional.
+/// `c4_inf_death` is the C4Warhead's `InfDeath=` byte; for entities with
+/// an animation, the kill loop switches the death sequence to match (so
+/// infantry play the C4-selected explosive death anim rather than the
+/// default Die1). Mirrors the combat-side path in
+/// `compute_dying_entities_combat_effects`.
 fn kill_ground_occupants_at(
     sim: &mut Simulation,
     rx: u16,
     ry: u16,
-    c4_warhead_id: crate::sim::intern::InternedId,
+    c4_inf_death: u8,
 ) {
-    let _ = c4_warhead_id;
+    use crate::sim::animation::death_sequence_for_inf_death;
+    let death_seq = death_sequence_for_inf_death(c4_inf_death);
     let victims: Vec<u64> = sim
         .entities
         .iter_sorted()
@@ -184,6 +196,9 @@ fn kill_ground_occupants_at(
             entity.attack_target = None;
             entity.movement_target = None;
             entity.selected = false;
+            if let Some(ref mut anim) = entity.animation {
+                anim.switch_to(death_seq);
+            }
         }
     }
 }

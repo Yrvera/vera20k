@@ -26,7 +26,7 @@ The top-level layout under `src/`, roughly bottom-up:
 
 When adding a new file, ask which of those concerns it belongs to. If it's gameplay logic, it goes in `sim/`. If it touches the GPU, it goes in `render/`. If it talks to both, it's app layer.
 
-To learn what a specific file does, read its `//!` header — every module starts with a short comment stating its purpose and what it depends on. For deeper dives into how systems mirror the original `gamemd.exe`, the research archive in `ra2-rust-game-docs/` holds 140+ Ghidra reports covering struct layouts, INI keys, and game-mechanic specifics.
+To learn what a specific file does, read its `//!` header — every module starts with a short comment stating its purpose and what it depends on.
 
 All game state lives in one struct: `Simulation`.
 

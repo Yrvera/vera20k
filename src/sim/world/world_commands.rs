@@ -150,6 +150,7 @@ impl Simulation {
                     command_owner,
                     &self.house_alliances,
                     &self.interner,
+                    rules,
                 );
                 let general_rules = rules.map(|r| &r.general);
                 let result = if use_teleport_move {
@@ -396,6 +397,7 @@ impl Simulation {
                     command_owner,
                     &self.house_alliances,
                     &self.interner,
+                    rules,
                 );
                 let default_general = crate::rules::ruleset::GeneralRules::default();
                 let general_rules_ref = rules.map(|r| &r.general).unwrap_or(&default_general);
@@ -698,6 +700,7 @@ impl Simulation {
                     command_owner,
                     &self.house_alliances,
                     &self.interner,
+                    Some(rules),
                 );
                 if let Some(grid) = path_grid {
                     let cost_grid = self.terrain_costs.get(&speed_type);
@@ -787,6 +790,7 @@ impl Simulation {
                     command_owner,
                     &self.house_alliances,
                     &self.interner,
+                    Some(rules),
                 );
                 if let Some(grid) = path_grid {
                     let cost_grid = self.terrain_costs.get(&speed_type);
@@ -922,6 +926,7 @@ impl Simulation {
                         command_owner,
                         &self.house_alliances,
                         &self.interner,
+                        Some(rules),
                     );
                 if let Some(grid) = path_grid {
                     let cost_grid = self.terrain_costs.get(&speed_type);

@@ -777,7 +777,7 @@ fn test_friendly_passable_moving_unit_not_blocked() {
 
     let alliances = HouseAllianceMap::new();
     let (blocks, _penalty) =
-        bump_crush::build_entity_block_set(&entities, "Americans", &alliances, &mut test_interner());
+        bump_crush::build_entity_block_set(&entities, "Americans", &alliances, &mut test_interner(), None);
 
     // Stationary friendly at (3,0) is now soft-blocked (code 6, cost 8x) in
     // entity_block_map, not in the hard-block BTreeSet.
@@ -816,7 +816,7 @@ fn test_enemy_unit_always_blocks_even_when_moving() {
 
     let alliances = HouseAllianceMap::new();
     let (blocks, _penalty) =
-        bump_crush::build_entity_block_set(&entities, "Americans", &alliances, &mut test_interner());
+        bump_crush::build_entity_block_set(&entities, "Americans", &alliances, &mut test_interner(), None);
 
     // Enemy at (3,0) is now soft-blocked (code 5, cost 20x) in entity_block_map,
     // not in the hard-block BTreeSet.

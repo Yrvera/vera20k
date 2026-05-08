@@ -381,7 +381,8 @@ pub fn tick_movement_with_grids(
         .iter()
         .map(|&owner_id| {
             let owner_str = interner.resolve(owner_id);
-            let pair = bump_crush::build_entity_block_set(entities, owner_str, alliances, interner);
+            let pair =
+                bump_crush::build_entity_block_set(entities, owner_str, alliances, interner, rules);
             (owner_id, pair)
         })
         .collect();

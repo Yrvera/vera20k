@@ -692,6 +692,18 @@ pub fn build_sprite_atlas(
                     }
                 }
             }
+            // Particle SHPs: ParticleType.Image= goes through the ObjectTypeClass
+            // Image= path → anim.pal palette. Register every distinct name.
+            for pt in r.particle_types_iter() {
+                if let Some(image) = pt.image.as_deref() {
+                    if !effect_names
+                        .iter()
+                        .any(|n| n.eq_ignore_ascii_case(image))
+                    {
+                        effect_names.push(image.to_string());
+                    }
+                }
+            }
         }
         for name in &effect_names {
             let lower: String = name.to_ascii_lowercase();

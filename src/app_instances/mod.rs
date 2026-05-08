@@ -25,4 +25,7 @@ pub(crate) use shp::*;
 mod overlays;
 pub(crate) use overlays::*;
 
+mod particles;
+pub(crate) use particles::*;
+
 pub mod bridges;

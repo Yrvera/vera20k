@@ -60,6 +60,7 @@ impl Simulation {
                 p.lifetime_remaining.hash(hasher);
                 p.animation_state.hash(hasher);
                 p.translucency.hash(hasher);
+                p.state_advance_counter.hash(hasher);
                 p.marked_for_deletion.hash(hasher);
             }
         }
@@ -489,6 +490,49 @@ mod particle_hash_tests {
             .insert(fake_system(IVec3::new(100, 0, 0)));
         let h2 = sim.state_hash();
         assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn state_advance_counter_changes_hash() {
+        use crate::rules::particle_type::ParticleTypeId;
+        use crate::sim::particles::Particle;
+
+        let mut sim_a = Simulation::new();
+        let mut sim_b = Simulation::new();
+        let mut sys_a = fake_system(IVec3::ZERO);
+        let mut sys_b = fake_system(IVec3::ZERO);
+        let make_p = |counter: u8| Particle {
+            type_id: ParticleTypeId(0),
+            coords: IVec3::ZERO,
+            previous_coords: IVec3::ZERO,
+            origin: IVec3::ZERO,
+            direction: [SimFixed::from_num(0); 3],
+            velocity: SimFixed::from_num(0),
+            lifetime_remaining: 100,
+            damage_counter: 0,
+            state_ai_advance: 4,
+            animation_state: 0,
+            translucency: 0,
+            hit_ground: false,
+            marked_for_deletion: false,
+            drift_x: 0,
+            drift_y: 0,
+            drift_z: 0,
+            current_color: [0; 3],
+            color_index: 0,
+            color_accumulator: SimFixed::from_num(0),
+            prev_delta: [SimFixed::from_num(0); 3],
+            state_advance_counter: counter,
+        };
+        sys_a.particles.push(make_p(0));
+        sys_b.particles.push(make_p(3));
+        sim_a.particle_systems.insert(sys_a);
+        sim_b.particle_systems.insert(sys_b);
+        assert_ne!(
+            sim_a.state_hash(),
+            sim_b.state_hash(),
+            "state_advance_counter must affect state hash"
+        );
     }
 
     #[test]

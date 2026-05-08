@@ -38,24 +38,34 @@ fn test_path_grid_set_blocked() {
 }
 
 #[test]
-fn test_octile_heuristic_cardinal() {
-    // Straight horizontal: 5 steps × 10 = 50.
-    let h: i32 = octile_heuristic(0, 0, 5, 0);
-    assert_eq!(h, 50);
+fn test_euclidean_heuristic_cardinal() {
+    // Pure cardinal: sqrt(25) * 1000 = 5000.
+    let h: i32 = euclidean_heuristic(0, 0, 5, 0);
+    assert_eq!(h, 5000);
 }
 
 #[test]
-fn test_octile_heuristic_diagonal() {
-    // Pure diagonal: 3 steps × 14 = 42.
-    let h: i32 = octile_heuristic(0, 0, 3, 3);
-    assert_eq!(h, 42);
+fn test_euclidean_heuristic_diagonal() {
+    // Pure diagonal (3,3): sqrt(18) * 1000 ≈ 4242.64;
+    // isqrt(18_000_000) = 4242 (4242² = 17_994_564, 4243² = 18_003_049).
+    let h: i32 = euclidean_heuristic(0, 0, 3, 3);
+    assert_eq!(h, 4242);
 }
 
 #[test]
-fn test_octile_heuristic_mixed() {
-    // dx=5, dy=3: 3 diagonal + 2 cardinal = 3*14 + 2*10 = 62.
-    let h: i32 = octile_heuristic(0, 0, 5, 3);
-    assert_eq!(h, 62);
+fn test_euclidean_heuristic_mixed() {
+    // dx=5, dy=3: sqrt(34) * 1000 ≈ 5830.95;
+    // isqrt(34_000_000) = 5830 (5830² = 33_988_900, 5831² = 34_000_561).
+    let h: i32 = euclidean_heuristic(0, 0, 5, 3);
+    assert_eq!(h, 5830);
+}
+
+#[test]
+fn test_euclidean_heuristic_zero() {
+    // Heuristic at goal cell must be 0 — guarantees A* can recognize the
+    // goal as the lowest-f node when popped.
+    let h: i32 = euclidean_heuristic(7, 7, 7, 7);
+    assert_eq!(h, 0);
 }
 
 #[test]
@@ -86,6 +96,71 @@ fn test_find_path_diagonal() {
     assert_eq!(*path.last().expect("non-empty"), (3, 3));
     // Pure diagonal: exactly 4 cells.
     assert_eq!(path.len(), 4);
+}
+
+#[test]
+fn test_path_step_count_chebyshev_open_grid() {
+    // With uniform edge cost and a Euclidean heuristic, the optimal step
+    // count from (sx,sy) to (gx,gy) on an open grid is max(|dx|, |dy|).
+    // Path length includes the start cell, so it equals chebyshev + 1.
+    let grid: PathGrid = PathGrid::new(20, 20);
+    let cases: &[((u16, u16), (u16, u16), usize)] = &[
+        ((0, 0), (5, 0), 6),   // pure cardinal: 5 E steps -> 6 cells
+        ((0, 0), (0, 7), 8),   // pure cardinal: 7 S steps -> 8 cells
+        ((0, 0), (4, 4), 5),   // pure diagonal: 4 SE steps -> 5 cells
+        ((0, 0), (5, 3), 6),   // mixed: max(5,3) = 5 -> 6 cells
+        ((0, 0), (7, 2), 8),   // mixed: max(7,2) = 7 -> 8 cells
+        ((10, 10), (3, 15), 8), // both axes nonzero, dx=7 dy=5 -> 8 cells
+    ];
+    for &(start, goal, expected_len) in cases {
+        let path = find_path(&grid, start, goal)
+            .unwrap_or_else(|| panic!("no path for {:?}->{:?}", start, goal));
+        assert_eq!(
+            path.len(),
+            expected_len,
+            "path {:?}->{:?} expected {} cells, got {}: {:?}",
+            start,
+            goal,
+            expected_len,
+            path.len(),
+            path
+        );
+        assert_eq!(path.first().copied(), Some(start));
+        assert_eq!(path.last().copied(), Some(goal));
+    }
+}
+
+#[test]
+fn test_cliff_cost_detours_under_uniform_base() {
+    // 3x3 grid. Direct row 0 has a height-step at (1,0): ground=4 between
+    // ground=0 cells. Direct path is 2 steps but pays cliff×4 twice
+    // (entering and leaving) ≈ 10000 g_cost. Alt path goes via row 1
+    // (all flat): 4 steps ≈ 4000 g_cost. Alt should win.
+    let cells = vec![
+        // Row 0 (y=0): 0, [cliff height=4], 0
+        PathCell { ground_walkable: true, bridge_walkable: false, transition: false, ground_level: 0, bridge_deck_level: 0 },
+        PathCell { ground_walkable: true, bridge_walkable: false, transition: false, ground_level: 4, bridge_deck_level: 0 },
+        PathCell { ground_walkable: true, bridge_walkable: false, transition: false, ground_level: 0, bridge_deck_level: 0 },
+        // Row 1 (y=1): all flat 0
+        PathCell { ground_walkable: true, bridge_walkable: false, transition: false, ground_level: 0, bridge_deck_level: 0 },
+        PathCell { ground_walkable: true, bridge_walkable: false, transition: false, ground_level: 0, bridge_deck_level: 0 },
+        PathCell { ground_walkable: true, bridge_walkable: false, transition: false, ground_level: 0, bridge_deck_level: 0 },
+        // Row 2 (y=2): all flat 0 (filler so 3x3)
+        PathCell { ground_walkable: true, bridge_walkable: false, transition: false, ground_level: 0, bridge_deck_level: 0 },
+        PathCell { ground_walkable: true, bridge_walkable: false, transition: false, ground_level: 0, bridge_deck_level: 0 },
+        PathCell { ground_walkable: true, bridge_walkable: false, transition: false, ground_level: 0, bridge_deck_level: 0 },
+    ];
+    let grid = PathGrid::from_cells(cells, 3, 3);
+    let path = find_path(&grid, (0, 0), (2, 0))
+        .expect("path should exist over flat alt route");
+    // Direct path through cliff would visit (1,0). Alt route avoids it.
+    assert!(
+        !path.contains(&(1, 0)),
+        "path should detour around cliff cell (1,0): {:?}",
+        path
+    );
+    assert_eq!(path.first().copied(), Some((0, 0)));
+    assert_eq!(path.last().copied(), Some((2, 0)));
 }
 
 #[test]
