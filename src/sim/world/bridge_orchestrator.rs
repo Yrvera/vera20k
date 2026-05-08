@@ -22,7 +22,7 @@ use std::collections::BTreeSet;
 
 use crate::rules::ruleset::RuleSet;
 use crate::sim::bridge_state::{
-    BridgeDamageContext, BridgeDamageEvent, DispatchPath, StateOutcome,
+    BridgeCellRole, BridgeDamageContext, BridgeDamageEvent, DamageState, DispatchPath, StateOutcome,
 };
 use crate::sim::world::Simulation;
 
@@ -188,25 +188,91 @@ fn kill_ground_occupants_at(
     }
 }
 
-/// Rim refresh hook. Mirror of binary
-/// `MapClass::UpdateAdjacentBridges_High @ 0x00576770`. Walks 8
-/// neighbors of each changed cell and re-evaluates bridge-edge tile
-/// classification (height 5/7/8/12) per HIGH §11.9.
+/// Rim refresh. For each just-collapsed rim cell, walk along the bridge
+/// in the direction of an adjacent bridge head (Bridgehead role or already
+/// Destroyed) and reset orphaned stub cells whose anchor span has gone
+/// away. A reset cell becomes:
+///   - `overlay_byte = 0xFF` (sentinel: no overlay / -1)
+///   - `damage_state = Healthy { variant: 0 }`
+///   - `bridge_group_id = None`
+///   - `deck_present = false`
 ///
-/// **Tier 2 status: stub.** The current renderer reads the visible
-/// overlay tile per-cell from the post-mutation `overlay_byte` and does
-/// NOT query neighbors — verified at impl time with `grep -r
-/// "BridgeRuntime\|overlay_byte" src/render/` (no matches). Cell-level
-/// mutations performed by the walker therefore propagate to render
-/// next frame without an explicit rim pass.
-///
-/// If a future renderer (or zone-rebuild step) becomes neighbor-aware
-/// for bridge-edge tile selection, this helper must walk `rim_cells`
-/// and re-evaluate / mutate per-cell `overlay_byte` for each rim
-/// neighbor. The signature is in place so the orchestrator's cascade
-/// order is fixed today.
+/// Walk-length cap = 30 cells per RE doc §7.2 to bound the worst-case
+/// linear-bridge length.
 fn update_adjacent_bridges(sim: &mut Simulation, rim_cells: &BTreeSet<(u16, u16)>) {
-    let _ = (sim, rim_cells);
+    let Some(bridge_state) = sim.bridge_state.as_mut() else {
+        return;
+    };
+
+    const WALK_LIMIT: usize = 30;
+    const DIRECTIONS: [(i32, i32); 8] = [
+        (0, -1),
+        (1, -1),
+        (1, 0),
+        (1, 1),
+        (0, 1),
+        (-1, 1),
+        (-1, 0),
+        (-1, -1),
+    ];
+
+    for &(rx, ry) in rim_cells {
+        // Phase A: find adjacent bridge-head candidate among 8 neighbors.
+        let mut head_dir: Option<(i32, i32)> = None;
+        for &(dx, dy) in &DIRECTIONS {
+            let nx = rx as i32 + dx;
+            let ny = ry as i32 + dy;
+            if nx < 0 || ny < 0 {
+                continue;
+            }
+            let Some(neigh) = bridge_state.cell(nx as u16, ny as u16) else {
+                continue;
+            };
+            let is_head_candidate = matches!(neigh.role, BridgeCellRole::Bridgehead)
+                || matches!(neigh.damage_state, DamageState::Destroyed);
+            if is_head_candidate {
+                head_dir = Some((dx, dy));
+                break;
+            }
+        }
+        let Some((dx, dy)) = head_dir else { continue };
+
+        // Phase B: walk along the bridge from (rx, ry) toward the head and
+        // reset dangling stubs whose anchor span no longer exists.
+        let mut walk_x = rx as i32;
+        let mut walk_y = ry as i32;
+        for _ in 0..WALK_LIMIT {
+            walk_x += dx;
+            walk_y += dy;
+            if walk_x < 0 || walk_y < 0 {
+                break;
+            }
+            let Some(cell) = bridge_state.cell(walk_x as u16, walk_y as u16) else {
+                break;
+            };
+            if !cell.deck_present {
+                break;
+            }
+            // Just-walker-destroyed cells render their own destroyed-bridge
+            // overlay tile (0xE8 etc) — skip them so we don't blank that sprite.
+            if matches!(cell.damage_state, DamageState::Destroyed) {
+                continue;
+            }
+            let stub_now = cell
+                .anchor_span_id
+                .map(|sid| !bridge_state.anchor_spans().contains_key(&sid))
+                .unwrap_or(false);
+            if !stub_now {
+                continue;
+            }
+            if let Some(c) = bridge_state.cell_mut(walk_x as u16, walk_y as u16) {
+                c.overlay_byte = 0xFF;
+                c.damage_state = DamageState::Healthy { variant: 0 };
+                c.bridge_group_id = None;
+                c.deck_present = false;
+            }
+        }
+    }
 }
 
 /// TriggerEvent 31 broadcast. Mirror of binary
@@ -784,6 +850,68 @@ mod tests {
     }
 
     /// Task 11 — DropIn must NOT touch entities that aren't on the bridge
+    /// Rim refresh resets dangling stub cells whose anchor span has gone
+    /// away. Layout: anchor span 1 owns (4,2)+(5,2)+(6,2). After collapse,
+    /// drop the span entry from the registry, mark (5,2) Destroyed (the
+    /// "head" candidate), and call `update_adjacent_bridges` with rim cell
+    /// (4,2). Expected: (4,2)→(5,2) walks east, (5,2) is the head so the
+    /// loop continues past it; once it sees an orphan-anchor cell, the
+    /// reset fires.
+    #[test]
+    fn rim_refresh_clears_dangling_stub_cells() {
+        use crate::sim::bridge_state::{BridgeRuntimeCell, BridgeRuntimeState};
+        let mut sim = Simulation::new();
+        let mut bs = BridgeRuntimeState::default();
+        // (5,2): destroyed head (acts as direction beacon).
+        bs.test_seed_cell(
+            5,
+            2,
+            BridgeRuntimeCell {
+                deck_present: true,
+                destroyable: true,
+                deck_level: 4,
+                bridge_group_id: Some(1),
+                damage_state: DamageState::Destroyed,
+                axis: Some(crate::sim::bridge_state::Axis::EW),
+                role: BridgeCellRole::Body,
+                anchor_span_id: Some(99),
+                overlay_byte: 0xE8,
+                damaged_variant: false,
+            },
+        );
+        // (6,2): dangling stub — anchor_span_id=99 but no AnchorSpan entry.
+        bs.test_seed_cell(
+            6,
+            2,
+            BridgeRuntimeCell {
+                deck_present: true,
+                destroyable: true,
+                deck_level: 4,
+                bridge_group_id: Some(1),
+                damage_state: DamageState::Healthy { variant: 0 },
+                axis: Some(crate::sim::bridge_state::Axis::EW),
+                role: BridgeCellRole::Body,
+                anchor_span_id: Some(99),
+                overlay_byte: 0xDC,
+                damaged_variant: false,
+            },
+        );
+        sim.bridge_state = Some(bs);
+
+        let mut rim: BTreeSet<(u16, u16)> = BTreeSet::new();
+        rim.insert((4, 2));
+        update_adjacent_bridges(&mut sim, &rim);
+
+        let stub = sim.bridge_state.as_ref().unwrap().cell(6, 2).unwrap();
+        assert_eq!(stub.overlay_byte, 0xFF, "stub overlay reset to NONE");
+        assert!(matches!(
+            stub.damage_state,
+            DamageState::Healthy { variant: 0 }
+        ));
+        assert!(stub.bridge_group_id.is_none());
+        assert!(!stub.deck_present);
+    }
+
     /// layer at the destroyed cell. Ground-layer entities are handled by
     /// `kill_ground_occupants_at` (Step 1), not DropIn.
     #[test]
