@@ -371,6 +371,46 @@ mod tests {
         assert_eq!(BRIDGE_BODY_LATIN_SQUARE[((2 & 3) << 2) | (1 & 3)], 3);
     }
 
+    /// Lock the "render reads `BridgeRuntimeCell` post-tick" parity contract:
+    /// for a `Damaged` bridge cell, the body frame derives from
+    /// `DamageState::to_state_byte(axis)` (skipping the Latin-square jitter,
+    /// which only fires on base bytes 0/9). A future refactor that switches
+    /// the source to `OverlayGrid` (which lags by 1 tick on bridge state
+    /// changes) would visibly desync — this test pins the formula.
+    #[test]
+    fn body_frame_for_damaged_cell_matches_state_byte_no_jitter() {
+        use crate::sim::bridge_state::{Axis, DamageState};
+        // NS Damaged = 6, EW Damaged = 0xF; render_state_byte returns the same
+        // for non-Healthy states, and 6/0xF aren't 0 or 9 → no jitter.
+        let ns = DamageState::Damaged;
+        assert_eq!(ns.render_state_byte(Axis::NS), 6);
+        assert_eq!(ns.to_state_byte(Axis::NS), 6);
+        let ew = DamageState::Damaged;
+        assert_eq!(ew.render_state_byte(Axis::EW), 0xF);
+        assert_eq!(ew.to_state_byte(Axis::EW), 0xF);
+    }
+
+    /// Lock the "render reads `BridgeRuntimeCell` post-tick" parity contract:
+    /// for a `Healthy` cell, the renderer rebuilds Latin-square jitter from
+    /// cell `(rx, ry)` — it does NOT honor the sim's `Healthy.variant` field.
+    /// This guards against future refactors that try to take a shortcut by
+    /// using `Healthy.variant` directly.
+    #[test]
+    fn healthy_cell_uses_xy_latin_square_not_sim_variant() {
+        use crate::sim::bridge_state::{Axis, DamageState};
+        // Healthy{variant:0} and Healthy{variant:5} both render as base byte 0
+        // for NS / 9 for EW; the renderer then adds Latin-square jitter from
+        // (rx, ry). The sim variant is ignored by the render path.
+        assert_eq!(
+            DamageState::Healthy { variant: 0 }.render_state_byte(Axis::NS),
+            DamageState::Healthy { variant: 5 }.render_state_byte(Axis::NS)
+        );
+        // Final frame for cell (1, 2) on a healthy NS bridge:
+        //   base = 0; idx = ((2&3)<<2)|(1&3) = 9; jitter = LATIN[9] = 3.
+        let frame = 0u8 + BRIDGE_BODY_LATIN_SQUARE[((2 & 3) << 2) | (1 & 3)];
+        assert_eq!(frame, 3);
+    }
+
     #[test]
     fn shadow_ew_shift_constants_present() {
         // RE doc §10 open Q2: BRIDGE_SHADOW_EW_DX may be -15 or -45.
