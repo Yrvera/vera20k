@@ -276,6 +276,7 @@ fn ew_high_bridge_strip_for_dispatch(
                 role: BridgeCellRole::Body,
                 anchor_span_id: Some(1),
                 overlay_byte: 0xDC,
+                damaged_variant: false,
             },
         );
     }
@@ -968,6 +969,7 @@ fn test_bridge_dispatcher_state_machine_overlay_routes_to_high_sm_not_direct() {
             role: BridgeCellRole::Anchor,
             anchor_span_id: Some(1),
             overlay_byte: 0x6,
+            damaged_variant: false,
         },
     );
     bridge_state.test_seed_anchor_span(AnchorSpan {
@@ -1018,6 +1020,7 @@ fn test_bridge_dispatcher_state_machine_overlay_routes_to_high_sm_not_direct() {
             role: BridgeCellRole::Body,
             anchor_span_id: Some(1),
             overlay_byte: 0xDC,
+            damaged_variant: false,
         },
     );
     let bs = sim.bridge_state.as_ref().unwrap();
@@ -1060,6 +1063,7 @@ fn test_bridge_orchestrator_state_machine_path_collapses_anchor_and_deactivates_
             role: BridgeCellRole::Anchor,
             anchor_span_id: Some(1),
             overlay_byte: 0x6,
+            damaged_variant: false,
         },
     );
     bridge_state.test_seed_anchor_span(AnchorSpan {

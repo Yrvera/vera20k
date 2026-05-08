@@ -560,6 +560,7 @@ mod bridge_overlay_hash_tests {
                 role: BridgeCellRole::Anchor,
                 anchor_span_id: None,
                 overlay_byte: byte,
+                damaged_variant: false,
             },
         );
         state

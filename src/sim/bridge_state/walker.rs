@@ -959,6 +959,7 @@ mod tests {
                 role: BridgeCellRole::Body,
                 anchor_span_id: Some(1),
                 overlay_byte: overlay,
+                damaged_variant: false,
             },
         );
     }
@@ -1166,6 +1167,7 @@ mod tests {
                     role: BridgeCellRole::Body,
                     anchor_span_id: Some(1),
                     overlay_byte: 0xDD,
+                    damaged_variant: false,
                 },
             );
         }
@@ -1206,6 +1208,7 @@ mod tests {
                     role: BridgeCellRole::Body,
                     anchor_span_id: Some(1),
                     overlay_byte: 0xE3,
+                    damaged_variant: false,
                 },
             );
         }
@@ -1280,6 +1283,7 @@ mod tests {
                 role: BridgeCellRole::Body,
                 anchor_span_id: Some(2),
                 overlay_byte: overlay,
+                damaged_variant: false,
             },
         );
     }

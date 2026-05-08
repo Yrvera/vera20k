@@ -1209,6 +1209,7 @@ mod tests {
             role: BridgeCellRole::Anchor,
             anchor_span_id: Some(1),
             overlay_byte: 0x18, // HIGH bridge anchor overlay
+            damaged_variant: false,
         };
         for (rx, ry) in [(4u16, 5u16), (5, 5), (6, 5)] {
             state.test_seed_cell(rx, ry, template);
@@ -1292,6 +1293,7 @@ mod tests {
             role: BridgeCellRole::Anchor,
             anchor_span_id: Some(1),
             overlay_byte: 0x18,
+            damaged_variant: false,
         };
         for (rx, ry) in [(5u16, 4u16), (5, 5), (5, 6)] {
             state.test_seed_cell(rx, ry, template);

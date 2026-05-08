@@ -353,6 +353,11 @@ pub struct BridgeRuntimeCell {
     /// mutated at runtime by the body-cell state machine and (future) perpendicular
     /// overlay-write branch. Renderer queries this to pick the visible tile.
     pub overlay_byte: u8,
+
+    /// Selects damaged-vs-undamaged sub-tile art for the deck TMP at draw time.
+    /// Written only by the `ToggleBridgePavement`-equivalent path (deferred
+    /// follow-up); defaults to `false` at map load.
+    pub damaged_variant: bool,
 }
 
 /// A bridge's ground-level endpoint pair for zone connectivity.
@@ -445,6 +450,7 @@ impl BridgeRuntimeState {
                         .as_ref()
                         .map(|bl| bl.overlay_id)
                         .unwrap_or(0),
+                    damaged_variant: false,
                 });
                 for (nx, ny) in cardinal_neighbors(rx, ry, width, height) {
                     if let Some(neighbor) = terrain.cell(nx, ny) {
@@ -1590,6 +1596,7 @@ mod tests {
             role: BridgeCellRole::Anchor,
             anchor_span_id: Some(1),
             overlay_byte: 0x18,
+            damaged_variant: false,
         };
         state.test_seed_cell(5, 5, cell);
         let read = state.cell(5, 5).expect("seeded cell present");
@@ -1610,6 +1617,7 @@ mod tests {
             role: BridgeCellRole::Anchor,
             anchor_span_id: Some(1),
             overlay_byte: 0x18,
+            damaged_variant: false,
         };
         state.test_seed_cell(2, 2, cell);
         state.cell_mut(2, 2).unwrap().overlay_byte = 0xD2;
@@ -1713,6 +1721,7 @@ mod tests {
             role: BridgeCellRole::Anchor,
             anchor_span_id: Some(1),
             overlay_byte: 0x18,
+            damaged_variant: false,
         };
 
         // Anchor at (5,5).
@@ -1926,6 +1935,7 @@ mod tests {
                 role: BridgeCellRole::Bridgehead,
                 anchor_span_id: None,
                 overlay_byte: 0x18,
+                damaged_variant: false,
             },
         );
         state.test_seed_cell(
@@ -1941,6 +1951,7 @@ mod tests {
                 role: BridgeCellRole::Anchor,
                 anchor_span_id: Some(1),
                 overlay_byte: 0x20,
+                damaged_variant: false,
             },
         );
         state.test_seed_cell(
@@ -1956,6 +1967,7 @@ mod tests {
                 role: BridgeCellRole::Anchor,
                 anchor_span_id: Some(1),
                 overlay_byte: 0x21,
+                damaged_variant: false,
             },
         );
         state.test_seed_cell(
@@ -1971,6 +1983,7 @@ mod tests {
                 role: BridgeCellRole::Anchor,
                 anchor_span_id: Some(1),
                 overlay_byte: 0x22,
+                damaged_variant: false,
             },
         );
         // Sentinel to grow state to 5x5 (matches terrain dimensions). The
@@ -1989,6 +2002,7 @@ mod tests {
                 role: BridgeCellRole::Body,
                 anchor_span_id: None,
                 overlay_byte: 0,
+                damaged_variant: false,
             },
         );
         state
@@ -2209,6 +2223,7 @@ mod tests {
                 role: BridgeCellRole::Body,
                 anchor_span_id: Some(1),
                 overlay_byte: 0xD0,
+                damaged_variant: false,
             },
         );
         let terrain = make_terrain_at_level(2, 0, 5);
@@ -2236,6 +2251,7 @@ mod tests {
                 role: BridgeCellRole::Body,
                 anchor_span_id: Some(1),
                 overlay_byte: 0x4F,
+                damaged_variant: false,
             },
         );
         let terrain = make_terrain_at_level(2, 0, 2);
@@ -2269,6 +2285,7 @@ mod tests {
                 role: BridgeCellRole::Anchor,
                 anchor_span_id: Some(1),
                 overlay_byte: 0x6,
+                damaged_variant: false,
             },
         );
         let terrain = make_terrain_at_level(2, 0, 5);
@@ -2311,6 +2328,7 @@ mod tests {
                 role: BridgeCellRole::Anchor,
                 anchor_span_id: Some(1),
                 overlay_byte: 0x6,
+                damaged_variant: false,
             },
         );
         let terrain = make_terrain_at_level(2, 0, 5);
