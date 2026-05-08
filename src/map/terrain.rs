@@ -191,6 +191,34 @@ pub fn iso_to_screen(rx: u16, ry: u16, z: u8) -> (f32, f32) {
     (sx, sy)
 }
 
+/// Convert lepton-world coords to screen pixels with sub-cell precision.
+///
+/// 256 leptons = 1 cell. Returns the cell-center screen position so callers
+/// can apply per-sprite anchor offsets without re-doing iso math.
+///
+///   X = (cell_x - cell_y) * TILE_WIDTH/2 + sub_offset_x
+///   Y = (cell_x + cell_y) * TILE_HEIGHT/2 + TILE_HEIGHT/2 + sub_offset_y - z_lift
+///
+/// Negative coords use `div_euclid` / `rem_euclid` so a particle drifting
+/// just outside the map's NW corner stays on the correct cell.
+pub fn lepton_to_screen(coords: glam::IVec3) -> (f32, f32) {
+    const LEPTONS_PER_CELL: i32 = 256;
+    let cell_x = coords.x.div_euclid(LEPTONS_PER_CELL);
+    let cell_y = coords.y.div_euclid(LEPTONS_PER_CELL);
+    let sub_x = coords.x.rem_euclid(LEPTONS_PER_CELL) as f32;
+    let sub_y = coords.y.rem_euclid(LEPTONS_PER_CELL) as f32;
+
+    let cell_sx = (cell_x as f32 - cell_y as f32) * TILE_WIDTH / 2.0;
+    let cell_sy = (cell_x as f32 + cell_y as f32) * TILE_HEIGHT / 2.0 + TILE_HEIGHT / 2.0;
+
+    let sub_sx = (sub_x - sub_y) * (TILE_WIDTH / 2.0) / LEPTONS_PER_CELL as f32;
+    let sub_sy = (sub_x + sub_y) * (TILE_HEIGHT / 2.0) / LEPTONS_PER_CELL as f32;
+
+    let z_lift = coords.z as f32 / LEPTONS_PER_CELL as f32 * HEIGHT_STEP;
+
+    (cell_sx + sub_sx, cell_sy + sub_sy - z_lift)
+}
+
 /// Convert screen-space pixel position back to isometric cell coordinates.
 ///
 /// Inverse of `iso_to_screen`. Assumes z=0 (ground level). Returns floating-point
@@ -739,5 +767,45 @@ mod tests {
         let (rx, ry) = screen_to_iso_with_height(300.0, 240.0, &height_map);
         assert!((rx - 15.0).abs() < 0.6, "rx={rx}, expected ~15");
         assert!((ry - 5.0).abs() < 0.6, "ry={ry}, expected ~5");
+    }
+
+    #[test]
+    fn lepton_to_screen_zero_matches_iso_origin() {
+        let (sx, sy) = lepton_to_screen(glam::IVec3::ZERO);
+        assert_eq!(sx, 0.0);
+        assert_eq!(sy, TILE_HEIGHT / 2.0);
+    }
+
+    #[test]
+    fn lepton_to_screen_integer_cell_lands_at_iso_center() {
+        // 4 cells east, 2 cells south = (4*256, 2*256, 0).
+        let (sx, sy) = lepton_to_screen(glam::IVec3::new(4 * 256, 2 * 256, 0));
+        assert_eq!(sx, (4.0 - 2.0) * TILE_WIDTH / 2.0);
+        assert_eq!(sy, (4.0 + 2.0) * TILE_HEIGHT / 2.0 + TILE_HEIGHT / 2.0);
+    }
+
+    #[test]
+    fn lepton_to_screen_sub_cell_offset_is_iso_subdivided() {
+        // Sub-cell offset of (128, 0) — half a cell east in lepton coords.
+        let (sx, sy) = lepton_to_screen(glam::IVec3::new(128, 0, 0));
+        assert!((sx - (128.0 - 0.0) * (TILE_WIDTH / 2.0) / 256.0).abs() < 1e-3);
+        assert!((sy - (TILE_HEIGHT / 2.0 + (128.0) * (TILE_HEIGHT / 2.0) / 256.0)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn lepton_to_screen_negative_coords_use_euclidean_rounding() {
+        // A particle at -50 leptons (west of origin) should land just west of cell 0.
+        // div_euclid(-50, 256) = -1, rem_euclid = 206. Screen X = -30 + 206*30/256 ≈ -5.86.
+        let (sx, _sy) = lepton_to_screen(glam::IVec3::new(-50, 0, 0));
+        assert!(sx < 0.0, "sx={sx}");
+        assert!(sx > -10.0, "sx={sx}");
+    }
+
+    #[test]
+    fn lepton_to_screen_z_lift_uses_height_step() {
+        // Z = 256 leptons = 1 cell of altitude → screen Y lifted by HEIGHT_STEP.
+        let (_, sy_low) = lepton_to_screen(glam::IVec3::ZERO);
+        let (_, sy_high) = lepton_to_screen(glam::IVec3::new(0, 0, 256));
+        assert!((sy_low - sy_high - HEIGHT_STEP).abs() < 1e-3);
     }
 }
