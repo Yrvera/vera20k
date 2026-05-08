@@ -206,6 +206,12 @@ pub(super) fn find_move_path(
                 if !grid.is_walkable_on_layer(x, y, layer) {
                     return false;
                 }
+                // Soft-blocked cells (code 2/5/6) must not be used as zigzag
+                // shortcuts: A* deliberately routed around them, smoothing
+                // through them would undo the detour.
+                if entity_block_map.is_some_and(|m| m.contains_key(&(x, y))) {
+                    return false;
+                }
                 match layer {
                     MovementLayer::Ground => !ground_blocks.is_some_and(|gb| gb.contains(&(x, y))),
                     MovementLayer::Bridge => !bridge_blocks.is_some_and(|bb| bb.contains(&(x, y))),
@@ -259,7 +265,12 @@ pub(super) fn find_move_path(
         } else {
             grid.is_walkable(x, y)
         };
-        terrain_ok && !entity_blocks.is_some_and(|eb| eb.contains(&(x, y)))
+        // Soft-blocked cells (code 2/5/6) must not be used as zigzag shortcuts:
+        // A* deliberately routed around them; smoothing through them would
+        // undo the detour and walk the unit straight through the blocker.
+        terrain_ok
+            && !entity_blocks.is_some_and(|eb| eb.contains(&(x, y)))
+            && !entity_block_map.is_some_and(|m| m.contains_key(&(x, y)))
     };
     let path = path_smooth::smooth_path(path, &smooth_walkable);
     let path = path_smooth::optimize_path(path, &smooth_walkable);
@@ -353,6 +364,10 @@ pub(super) fn try_repath_after_block(
     }
 
     let zone_mz = movement_zone.unwrap_or(MovementZone::Normal);
+    // The layered A* path consults ground_blocks/bridge_blocks (not entity_blocks)
+    // for per-layer hard blocking. Pass the merged set as ground_blocks so the
+    // layered search sees structure footprints / stationary obstacles the same
+    // way the flat search does.
     let path_result = find_move_path(
         ctx,
         layered_pathing,
@@ -361,7 +376,7 @@ pub(super) fn try_repath_after_block(
         effective_goal,
         terrain_costs,
         Some(&combined_blocks),
-        None,
+        Some(&combined_blocks),
         None,
         zone_mz,
         movement_zone,

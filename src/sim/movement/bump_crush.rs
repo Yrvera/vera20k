@@ -104,12 +104,17 @@ const NEIGHBOR_OFFSETS: [(i32, i32); 8] = [
 /// AStar_compute_edge_cost (0x00429830). Stationary units/buildings and
 /// enemies hard-block via the BTreeSet outputs.
 ///
+/// When `rules` is provided, structure footprints are expanded across all
+/// occupied cells (foundation + AddOccupy − RemoveOccupy). Without `rules`
+/// only the anchor cell is marked, which can let A* route through buildings.
+///
 /// Returns `(ground_blocks, bridge_blocks, entity_block_map)`.
 pub fn build_entity_block_sets(
     entities: &EntityStore,
     mover_owner: &str,
     alliances: &crate::map::houses::HouseAllianceMap,
     interner: &crate::sim::intern::StringInterner,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
 ) -> (
     BTreeSet<(u16, u16)>,
     BTreeSet<(u16, u16)>,
@@ -130,8 +135,23 @@ pub fn build_entity_block_sets(
         }
         let pos = (entity.position.rx, entity.position.ry);
         // Buildings always block (they never move). Always ground layer.
+        // With rules, expand to the full foundation so A* sees every occupied
+        // cell — without it, only the anchor blocks (legacy behavior).
         if entity.category == EntityCategory::Structure {
-            ground_blocked.insert(pos);
+            if let Some(obj) = rules.and_then(|r| r.object(interner.resolve(entity.type_ref))) {
+                let cells = crate::sim::production::building_footprint_cells(
+                    pos.0,
+                    pos.1,
+                    &obj.foundation,
+                    &obj.add_occupy,
+                    &obj.remove_occupy,
+                );
+                for cell in cells {
+                    ground_blocked.insert(cell);
+                }
+            } else {
+                ground_blocked.insert(pos);
+            }
             continue;
         }
         // Enemy units: soft-block with code 5 (cost 20x).
@@ -167,9 +187,10 @@ pub fn build_entity_block_set(
     mover_owner: &str,
     alliances: &crate::map::houses::HouseAllianceMap,
     interner: &crate::sim::intern::StringInterner,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
 ) -> (BTreeSet<(u16, u16)>, HashMap<(u16, u16), EntityBlockEntry>) {
     let (ground, bridge, entity_block_map) =
-        build_entity_block_sets(entities, mover_owner, alliances, interner);
+        build_entity_block_sets(entities, mover_owner, alliances, interner, rules);
     (ground.union(&bridge).copied().collect(), entity_block_map)
 }
 
