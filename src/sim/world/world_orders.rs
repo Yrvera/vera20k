@@ -13,6 +13,7 @@ use crate::sim::components::OrderIntent;
 use crate::sim::intern::InternedId;
 use crate::sim::movement;
 use crate::sim::movement::air_movement;
+use crate::sim::movement::bump_crush;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::pathfinding::PathGrid;
 use crate::util::fixed_math::SimFixed;
@@ -204,5 +205,159 @@ impl Simulation {
             }
         }
         any_captured
+    }
+
+    /// Pre-combat: entities with an `attack_target` that's out of weapon
+    /// range walk toward the target. Entities that just entered range halt
+    /// their movement so the combat tick can fire from a stationary
+    /// position.
+    ///
+    /// Range failure preserves the target; pursuit closes the gap.
+    ///
+    /// Skips entities that can't or shouldn't pursue:
+    /// - Structures (can't move)
+    /// - Aircraft (own state machine in `attack_mission.rs`)
+    /// - Deployed-fire infantry (locked while deployed)
+    /// - Entities inside transports
+    /// - Dying entities
+    pub(crate) fn tick_attack_pursuit(
+        &mut self,
+        rules: &RuleSet,
+        path_grid: Option<&PathGrid>,
+    ) {
+        let Some(grid) = path_grid else {
+            return;
+        };
+
+        // Phase 1: collect pursuit decisions (read-only on entities).
+        // Two action kinds: issue a new path, or clear an existing one.
+        enum PursuitAction {
+            IssueMove { entity_id: u64, goal: (u16, u16) },
+            ClearMovement { entity_id: u64 },
+        }
+
+        let keys: Vec<u64> = self.entities.keys_sorted();
+        let mut actions: Vec<PursuitAction> = Vec::new();
+
+        for &id in &keys {
+            let Some(entity) = self.entities.get(id) else {
+                continue;
+            };
+            let Some(attack) = entity.attack_target.as_ref() else {
+                continue;
+            };
+
+            // Skip filters — see "Skips" doc above.
+            if entity.dying {
+                continue;
+            }
+            if entity.category == EntityCategory::Structure {
+                continue;
+            }
+            if entity.aircraft_mission.is_some() {
+                continue;
+            }
+            if entity.is_deployed() {
+                continue;
+            }
+            if entity.passenger_role.is_inside_transport() {
+                continue;
+            }
+
+            // Resolve target coords using the same helper combat tick uses.
+            // None means entity-target despawned; combat tick's target-dead
+            // branch handles cleanup.
+            let target_pos = combat::resolve_target_coords(
+                &attack.target,
+                &self.entities,
+                Some(rules),
+                &self.interner,
+            );
+            let Some((trx, try_, tsx, tsy)) = target_pos else {
+                continue;
+            };
+
+            // Resolve weapon range using shared helper. None means no weapon
+            // can engage; combat tick will drop on its own weapon-select fail.
+            let Some(weapon_range) = combat::pursuit_weapon_range(
+                entity,
+                &attack.target,
+                &self.entities,
+                rules,
+                &self.interner,
+            ) else {
+                continue;
+            };
+
+            // Range check — same math as combat tick.
+            let dist_sq = combat::lepton_distance_sq_raw(
+                entity.position.rx,
+                entity.position.ry,
+                entity.position.sub_x,
+                entity.position.sub_y,
+                trx,
+                try_,
+                tsx,
+                tsy,
+            );
+            let in_range = combat::is_within_range_leptons(dist_sq, weapon_range);
+
+            if !in_range {
+                if entity.movement_target.is_none() {
+                    // Out of range, no current pursuit — issue a path.
+                    actions.push(PursuitAction::IssueMove {
+                        entity_id: id,
+                        goal: (trx, try_),
+                    });
+                }
+                // else: existing pursuit movement is still running; let it continue.
+            } else if entity.movement_target.is_some() {
+                // In range — halt for firing.
+                actions.push(PursuitAction::ClearMovement { entity_id: id });
+            }
+        }
+
+        // Phase 2: apply mutations.
+        for action in actions {
+            match action {
+                PursuitAction::IssueMove { entity_id, goal } => {
+                    let Some(info) = self.resolve_move_info(entity_id, Some(rules)) else {
+                        continue;
+                    };
+                    let owner_str = self
+                        .entities
+                        .get(entity_id)
+                        .map(|e| self.interner.resolve(e.owner).to_string())
+                        .unwrap_or_default();
+                    let (entity_blocks, entity_block_map) = bump_crush::build_entity_block_set(
+                        &self.entities,
+                        &owner_str,
+                        &self.house_alliances,
+                        &self.interner,
+                        Some(rules),
+                    );
+                    let cost_grid = self.terrain_costs.get(&info.speed_type);
+                    let _issued = movement::issue_move_command_with_layered(
+                        &mut self.entities,
+                        grid,
+                        entity_id,
+                        goal,
+                        info.speed,
+                        false, // queue
+                        cost_grid,
+                        Some(&entity_blocks),
+                        self.resolved_terrain.as_ref(),
+                        Some(&entity_block_map),
+                        info.mover_is_crusher,
+                    );
+                    // No-op if A* fails — pursuit retries next tick.
+                }
+                PursuitAction::ClearMovement { entity_id } => {
+                    if let Some(e) = self.entities.get_mut(entity_id) {
+                        e.movement_target = None;
+                    }
+                }
+            }
+        }
     }
 }

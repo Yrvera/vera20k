@@ -1150,6 +1150,10 @@ impl Simulation {
             turret::tick_turret_rotation(&mut self.entities, rules, tick_ms, &self.interner);
             spawned_entities |= self.tick_capture_orders();
             self.tick_order_intents_pre_combat(rules);
+            // Pursuit: walk units with out-of-range attack_target into range,
+            // halt movement on range entry. Must run before combat so combat
+            // sees the up-to-date movement_target this tick.
+            self.tick_attack_pursuit(rules, path_grid);
             let combat_result = combat::tick_combat_with_fog(
                 &mut self.entities,
                 &mut self.occupancy,

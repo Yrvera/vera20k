@@ -350,9 +350,11 @@ fn test_tick_combat_out_of_range() {
         target_health, 300,
         "Out-of-range target should not take damage"
     );
+    // Range failure preserves attack_target; pursuit (run from advance_tick,
+    // not from tick_combat in isolation) walks the unit into range.
     assert!(
-        store.get(1).unwrap().attack_target.is_none(),
-        "AttackTarget removed when out of range"
+        store.get(1).unwrap().attack_target.is_some(),
+        "AttackTarget preserved when out of range — pursuit closes the gap"
     );
 }
 
@@ -960,4 +962,69 @@ fn wall_damage_deterministic_across_replays() {
     };
 
     assert_eq!(snapshot_a, snapshot_b, "wall damage must be RNG-deterministic");
+}
+
+#[test]
+fn pursuit_weapon_range_for_entity_target() {
+    use crate::sim::combat::{TargetKind, pursuit_weapon_range};
+    let rules = test_rules();
+    let mut store = EntityStore::new();
+    store.insert(make_entity(1, "MTNK", 0, 0, 300));
+    store.insert(make_entity(2, "MTNK", 5, 0, 300));
+    let interner = test_interner();
+
+    let attacker = store.get(1).unwrap();
+    let range = pursuit_weapon_range(
+        attacker,
+        &TargetKind::Entity(2),
+        &store,
+        &rules,
+        &interner,
+    );
+    // 105mm Range=6.
+    assert_eq!(range, Some(crate::util::fixed_math::SimFixed::from_num(6)));
+}
+
+#[test]
+fn pursuit_weapon_range_for_cell_target() {
+    use crate::sim::combat::{TargetKind, pursuit_weapon_range};
+    let rules = test_rules();
+    let mut store = EntityStore::new();
+    store.insert(make_entity(1, "MTNK", 0, 0, 300));
+    let interner = test_interner();
+
+    let attacker = store.get(1).unwrap();
+    let range = pursuit_weapon_range(
+        attacker,
+        &TargetKind::Cell(50, 50),
+        &store,
+        &rules,
+        &interner,
+    );
+    // Cell target uses synthetic Structure category. MTNK 105mm Cannon is AG=true
+    // (default), AP Verses[heavy] = 75% > 0. Range = 6.
+    assert_eq!(range, Some(crate::util::fixed_math::SimFixed::from_num(6)));
+}
+
+#[test]
+fn pursuit_weapon_range_none_for_unarmed_attacker() {
+    use crate::sim::combat::{TargetKind, pursuit_weapon_range};
+    let rules_str = "[InfantryTypes]\n0=ENGI\n\n\
+                     [VehicleTypes]\n\n[BuildingTypes]\n\n[AircraftTypes]\n\n\
+                     [ENGI]\nStrength=75\nArmor=none\nSpeed=4\n";
+    let ini = IniFile::from_str(rules_str);
+    let rules = RuleSet::from_ini(&ini).expect("parse");
+    let mut store = EntityStore::new();
+    store.insert(make_entity(1, "ENGI", 0, 0, 75));
+    let interner = test_interner();
+
+    let attacker = store.get(1).unwrap();
+    let range = pursuit_weapon_range(
+        attacker,
+        &TargetKind::Cell(50, 50),
+        &store,
+        &rules,
+        &interner,
+    );
+    assert_eq!(range, None);
 }

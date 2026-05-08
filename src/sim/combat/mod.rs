@@ -32,6 +32,10 @@ mod combat_tests;
 #[path = "combat_force_fire_cell_tests.rs"]
 mod combat_force_fire_cell_tests;
 
+#[cfg(test)]
+#[path = "combat_pursuit_tests.rs"]
+mod combat_pursuit_tests;
+
 use std::collections::BTreeMap;
 
 use crate::sim::miner::ResourceNode;
@@ -245,8 +249,10 @@ fn cell_center_coords(rx: u16, ry: u16) -> (u16, u16, SimFixed, SimFixed) {
 ///
 /// Returns `None` if the target is `Entity(id)` and the entity no longer
 /// exists (despawned). `Cell` targets always resolve.
-#[allow(dead_code)] // Used by aircraft refactor (Task 5); also useful for future combat tick rewrites.
-fn resolve_target_coords(
+///
+/// Shared by the combat tick and the pursuit pre-combat stage so range
+/// decisions stay consistent.
+pub(crate) fn resolve_target_coords(
     target: &TargetKind,
     entities: &EntityStore,
     rules: Option<&RuleSet>,
@@ -256,6 +262,58 @@ fn resolve_target_coords(
         TargetKind::Entity(id) => entities.get(id).map(|t| target_coords(t, rules, interner)),
         TargetKind::Cell(rx, ry) => Some(cell_center_coords(rx, ry)),
     }
+}
+
+/// Resolve the effective weapon range for an attacker against a `TargetKind`.
+///
+/// Uses the same weapon-select inputs as the combat tick's Phase 2 weapon
+/// selection so pursuit and combat agree on "in range" at the boundary.
+///
+/// For `Entity` targets: uses the target's actual category and armor.
+/// For `Cell` targets: synthesizes `Structure` + attacker's own armor,
+/// matching the cell-target synthesis in the combat tick.
+///
+/// Returns `None` if no weapon engages the target (Verses 0% or projectile
+/// AA/AG mismatch). Pursuit treats `None` as "skip — combat tick will drop
+/// the attack on its own weapon-select fail."
+pub(crate) fn pursuit_weapon_range(
+    entity: &GameEntity,
+    target: &TargetKind,
+    entities: &EntityStore,
+    rules: &RuleSet,
+    interner: &StringInterner,
+) -> Option<SimFixed> {
+    use self::combat_weapon::select_weapon_with_ifv;
+    use crate::map::entities::EntityCategory;
+
+    let attacker_obj = rules.object(interner.resolve(entity.type_ref))?;
+    let (target_cat, target_armor) = match *target {
+        TargetKind::Entity(id) => {
+            let target_entity = entities.get(id)?;
+            let armor = rules
+                .object(interner.resolve(target_entity.type_ref))
+                .map(|o| o.armor.clone())
+                .unwrap_or_else(|| "none".to_string());
+            (target_entity.category, armor)
+        }
+        TargetKind::Cell(_, _) => {
+            // Synthetic — must match the combat tick's cell-target synthesis.
+            // Using attacker's own armor here is the pre-existing convention.
+            let armor = rules
+                .object(interner.resolve(entity.type_ref))
+                .map(|o| o.armor.clone())
+                .unwrap_or_else(|| "none".to_string());
+            (EntityCategory::Structure, armor)
+        }
+    };
+    select_weapon_with_ifv(
+        rules,
+        attacker_obj,
+        target_cat,
+        &target_armor,
+        entity.ifv_weapon_index,
+    )
+    .map(|sel| sel.weapon.range)
 }
 
 /// Issue an attack command: make `attacker` fire at `target`.
@@ -1409,20 +1467,10 @@ pub fn tick_combat_with_fog(
         } else {
             weapon.range
         };
+        // Range failure: range alone does not clear or retarget — the pursuit
+        // pre-combat stage walks the unit into range. Combat tick just skips
+        // this tick's fire attempt and lets the unit close the gap.
         if !is_within_range_leptons(dist_sq, effective_range) {
-            if let Some(new_target) = acquire_best_target(
-                entities,
-                rules,
-                interner,
-                snap,
-                obj,
-                fog,
-                garrison_retarget_range,
-            ) {
-                retarget_events.push((snap.stable_id, new_target));
-            } else {
-                remove_attack.push(snap.stable_id);
-            }
             continue;
         }
 
