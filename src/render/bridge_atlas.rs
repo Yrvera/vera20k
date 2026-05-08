@@ -16,21 +16,53 @@ use wgpu::util::DeviceExt;
 
 const SPRITE_PADDING: u32 = 1;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BridgeFrameKind {
+    Body,
+    Shadow,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct BridgeAtlasKey {
+    pub name: String,
+    pub frame: u8,
+    pub kind: BridgeFrameKind,
+}
+
 pub struct BridgeAtlas {
     pub texture: BatchTexture,
     pub depth_texture_view: wgpu::TextureView,
     pub zdepth_bind_group: wgpu::BindGroup,
-    entries: HashMap<OverlaySpriteKey, OverlaySpriteEntry>,
+    entries: HashMap<BridgeAtlasKey, OverlaySpriteEntry>,
 }
 
 impl BridgeAtlas {
+    pub fn body_entry(&self, name: &str, frame: u8) -> Option<&OverlaySpriteEntry> {
+        self.entries.get(&BridgeAtlasKey {
+            name: name.to_string(),
+            frame,
+            kind: BridgeFrameKind::Body,
+        })
+    }
+
+    pub fn shadow_entry(&self, name: &str, frame: u8) -> Option<&OverlaySpriteEntry> {
+        self.entries.get(&BridgeAtlasKey {
+            name: name.to_string(),
+            frame,
+            kind: BridgeFrameKind::Shadow,
+        })
+    }
+
+    /// Compatibility shim for the old `OverlaySpriteKey`-based lookup.
+    /// Routes to `body_entry`. REMOVE in Task 13 once `overlays.rs` no longer
+    /// dispatches bridges through this entry path.
     pub fn get(&self, key: &OverlaySpriteKey) -> Option<&OverlaySpriteEntry> {
-        self.entries.get(key)
+        self.body_entry(&key.name, key.frame)
     }
 }
 
 struct RenderedBridge {
-    key: OverlaySpriteKey,
+    key: BridgeAtlasKey,
     rgba: Vec<u8>,
     width: u32,
     height: u32,
@@ -59,7 +91,7 @@ pub fn build_bridge_atlas(
     rules_ini: &IniFile,
     art_registry: &ArtRegistry,
 ) -> Option<BridgeAtlas> {
-    let mut needed: HashSet<OverlaySpriteKey> = HashSet::new();
+    let mut needed: HashSet<BridgeAtlasKey> = HashSet::new();
     for entry in overlays {
         let Some(name) = overlay_names.get(&entry.overlay_id) else {
             continue;
@@ -67,10 +99,17 @@ pub fn build_bridge_atlas(
         if !is_high_bridge_body_name(name) {
             continue;
         }
+        // Pack body half (frames 0..18) AND shadow half (frames 18..36) — RE doc §3.3.2.
         for frame in 0u8..18u8 {
-            needed.insert(OverlaySpriteKey {
+            needed.insert(BridgeAtlasKey {
                 name: name.clone(),
                 frame,
+                kind: BridgeFrameKind::Body,
+            });
+            needed.insert(BridgeAtlasKey {
+                name: name.clone(),
+                frame,
+                kind: BridgeFrameKind::Shadow,
             });
         }
     }
@@ -112,7 +151,7 @@ pub fn build_bridge_atlas(
 fn render_bridge_sprite(
     asset_manager: &AssetManager,
     palette: &Palette,
-    key: &OverlaySpriteKey,
+    key: &BridgeAtlasKey,
     theater_ext: &str,
     theater_name: &str,
     rules_ini: &IniFile,
@@ -144,12 +183,19 @@ fn render_bridge_sprite(
         has_drawable.then_some(shp)
     })?;
 
-    let max_normal_frame: usize = if flags.bridge_deck {
+    // Bridge SHPs split frames into a body half (front) and shadow half (back).
+    // RE doc §3.3.2: shadow_frame_idx = (shp.frames.len() / 2) + state_byte.
+    let half: usize = if flags.bridge_deck {
         shp.frames.len() / 2
     } else {
         shp.frames.len()
     };
-    let requested_idx: usize = (key.frame as usize).min(max_normal_frame.saturating_sub(1));
+    let (window_start, window_len): (usize, usize) = match key.kind {
+        BridgeFrameKind::Body => (0, half),
+        BridgeFrameKind::Shadow => (half, shp.frames.len().saturating_sub(half)),
+    };
+    let requested_idx: usize =
+        window_start + (key.frame as usize).min(window_len.saturating_sub(1));
     let mut frame_idx = requested_idx;
     if !shp
         .frames
@@ -159,10 +205,11 @@ fn render_bridge_sprite(
         frame_idx = shp
             .frames
             .iter()
-            .take(max_normal_frame)
+            .skip(window_start)
+            .take(window_len)
             .enumerate()
             .find(|(_, fr)| fr.frame_width > 0 && fr.frame_height > 0)
-            .map(|(idx, _)| idx)?;
+            .map(|(idx, _)| window_start + idx)?;
     }
 
     let frame = &shp.frames[frame_idx];
@@ -256,7 +303,7 @@ fn pack_bridge_sprites(
     }
 
     let mut rgba: Vec<u8> = vec![0u8; (atlas_width * atlas_height * 4) as usize];
-    let mut entries: HashMap<OverlaySpriteKey, OverlaySpriteEntry> =
+    let mut entries: HashMap<BridgeAtlasKey, OverlaySpriteEntry> =
         HashMap::with_capacity(placements.len());
     let aw: f32 = atlas_width as f32;
     let ah: f32 = atlas_height as f32;
@@ -324,6 +371,26 @@ fn create_r8_texture(gpu: &GpuContext, data: &[u8], width: u32, height: u32) -> 
         data,
     );
     texture.create_view(&Default::default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn body_and_shadow_keys_are_distinct() {
+        let body = BridgeAtlasKey {
+            name: "BRIDGE1".into(),
+            frame: 5,
+            kind: BridgeFrameKind::Body,
+        };
+        let shadow = BridgeAtlasKey {
+            name: "BRIDGE1".into(),
+            frame: 5,
+            kind: BridgeFrameKind::Shadow,
+        };
+        assert_ne!(body, shadow);
+    }
 }
 
 fn decrement_numeric_suffix(name: &str) -> Option<String> {
