@@ -1463,20 +1463,10 @@ pub fn tick_combat_with_fog(
         } else {
             weapon.range
         };
+        // Range failure: range alone does not clear or retarget — the pursuit
+        // pre-combat stage walks the unit into range. Combat tick just skips
+        // this tick's fire attempt and lets the unit close the gap.
         if !is_within_range_leptons(dist_sq, effective_range) {
-            if let Some(new_target) = acquire_best_target(
-                entities,
-                rules,
-                interner,
-                snap,
-                obj,
-                fog,
-                garrison_retarget_range,
-            ) {
-                retarget_events.push((snap.stable_id, new_target));
-            } else {
-                remove_attack.push(snap.stable_id);
-            }
             continue;
         }
 
