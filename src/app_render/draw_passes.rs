@@ -65,6 +65,17 @@ pub(super) fn dispatch_draw_passes(
         "overlay_bridge_body",
     );
 
+    // --- Step 2.5: Bridge body shadow (passthrough — Z-test ON, Z-write OFF) ---
+    // Drawn after the body so the shadow reads body Z but does not write its
+    // own Z; units crossing afterwards still occlude the shadow correctly.
+    draw_pooled_bridge_passthrough(
+        &mut pass,
+        &state.batch_renderer,
+        pool,
+        state.bridge_atlas.as_ref(),
+        "overlay_bridge_body_shadow",
+    );
+
     // --- Step 3: Overlays (no depth test — passthrough) ---
     // Overlays don't read the Z-buffer — the tile blitter skips Z-testing
     // for tiles without Z-data (flag 0x02 clear at cell header byte 36).
@@ -153,6 +164,18 @@ pub(super) fn dispatch_draw_passes(
         pool,
         state.tile_atlas.as_ref(),
         "terrain_cliff",
+    );
+
+    // --- Step 7.5: Bridge railings (passthrough — Z-test ON, Z-write OFF) ---
+    // Drawn AFTER unit/ground merge AND AFTER cliff redraw, BEFORE debug.
+    // Anything between body and railings (units, anims, cliff redraw) sits
+    // ABOVE the deck but BELOW the railings.
+    draw_pooled_bridge_railing(
+        &mut pass,
+        &state.batch_renderer,
+        pool,
+        state.bridge_railing_atlas.as_ref(),
+        "overlay_bridge_railing",
     );
 
     // --- Step 8: Debug overlays ---
@@ -483,6 +506,35 @@ fn draw_pooled_passthrough_overlay<'a>(
     batch: &'a BatchRenderer,
     pool: &'a InstanceBufferPool,
     atlas: Option<&'a OverlayAtlas>,
+    key: &'static str,
+) {
+    if let (Some(a), Some((buf, count))) = (atlas, pool.get(key)) {
+        batch.draw_with_buffer_passthrough(pass, &a.texture, buf, count);
+    }
+}
+
+/// Draw a pooled bridge buffer with passthrough (no depth test, no depth
+/// write). Used for the body shadow pass — same texture as the bridge body,
+/// just a different draw pipeline.
+fn draw_pooled_bridge_passthrough<'a>(
+    pass: &mut wgpu::RenderPass<'a>,
+    batch: &'a BatchRenderer,
+    pool: &'a InstanceBufferPool,
+    atlas: Option<&'a BridgeAtlas>,
+    key: &'static str,
+) {
+    if let (Some(a), Some((buf, count))) = (atlas, pool.get(key)) {
+        batch.draw_with_buffer_passthrough(pass, &a.texture, buf, count);
+    }
+}
+
+/// Draw a pooled buffer using the bridge railing atlas with passthrough
+/// (Z-test ON, Z-write OFF).
+fn draw_pooled_bridge_railing<'a>(
+    pass: &mut wgpu::RenderPass<'a>,
+    batch: &'a BatchRenderer,
+    pool: &'a InstanceBufferPool,
+    atlas: Option<&'a crate::render::bridge_railing_atlas::BridgeRailingAtlas>,
     key: &'static str,
 ) {
     if let (Some(a), Some((buf, count))) = (atlas, pool.get(key)) {
