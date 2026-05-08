@@ -34,8 +34,9 @@ pub(super) struct WorldInstances {
     pub overlay: Vec<SpriteInstance>,
     /// Static smudge decals (craters, scorches) — drawn between terrain and entities.
     pub smudge: Vec<SpriteInstance>,
-    pub bridge_detail: Vec<SpriteInstance>,
     pub bridge_body: Vec<SpriteInstance>,
+    pub bridge_body_shadow: Vec<SpriteInstance>,
+    pub bridge_railing: Vec<SpriteInstance>,
     pub wall: Vec<SpriteInstance>,
     pub unit: Vec<SpriteInstance>,
     pub bridge_unit: Vec<SpriteInstance>,
@@ -149,24 +150,25 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         }
     };
 
-    // Overlays: map overlays, bridges, walls — each sorted by depth descending.
+    // Overlays: map overlays, walls — each sorted by depth descending. Low
+    // bridges (LOBRDG*) ride in `overlay`; high-bridge bodies are emitted by
+    // `app_instances::bridges` instead.
     let mut overlay: Vec<SpriteInstance> = std::mem::take(&mut state.cached_overlay_instances);
     overlay.clear();
-    let mut bridge_detail: Vec<SpriteInstance> = Vec::new();
-    let mut bridge_body: Vec<SpriteInstance> = Vec::new();
     let mut wall: Vec<SpriteInstance> = Vec::new();
-    app_instances::build_overlay_instances(
-        state,
-        sw,
-        sh,
-        &mut overlay,
-        &mut bridge_detail,
-        &mut bridge_body,
-        &mut wall,
-    );
+    app_instances::build_overlay_instances(state, sw, sh, &mut overlay, &mut wall);
+    // Bridge body, shadow, and railing emission live in app_instances::bridges
+    // (Phase D). Read from BridgeRuntimeCell post-tick (NOT OverlayGrid).
+    let mut bridge_body: Vec<SpriteInstance> = Vec::new();
+    let mut bridge_body_shadow: Vec<SpriteInstance> = Vec::new();
+    let mut bridge_railing: Vec<SpriteInstance> = Vec::new();
+    app_instances::bridges::build_bridge_body_instances(state, sw, sh, &mut bridge_body);
+    app_instances::bridges::build_bridge_shadow_instances(state, sw, sh, &mut bridge_body_shadow);
+    app_instances::bridges::build_bridge_railing_instances(state, sw, sh, &mut bridge_railing);
     sort_by_depth_desc(&mut overlay);
-    sort_by_depth_desc(&mut bridge_detail);
     sort_by_depth_desc(&mut bridge_body);
+    sort_by_depth_desc(&mut bridge_body_shadow);
+    sort_by_depth_desc(&mut bridge_railing);
     sort_by_depth_desc(&mut wall);
 
     // Smudges: static crater/scorch decals on top of terrain, under entities.
@@ -225,7 +227,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
             terrain.normal.len(),
             terrain.cliff_redraw.len(),
             total_grid,
-            overlay.len() + bridge_detail.len() + bridge_body.len(),
+            overlay.len() + bridge_body.len(),
             unit.len(),
             shp_paged.iter().map(|p| p.len()).sum::<usize>(),
         );
@@ -235,8 +237,9 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         terrain,
         overlay,
         smudge,
-        bridge_detail,
         bridge_body,
+        bridge_body_shadow,
+        bridge_railing,
         wall,
         unit,
         bridge_unit,

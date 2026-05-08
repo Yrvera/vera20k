@@ -180,6 +180,109 @@ fn bridge_cell_with_ground_block(
     terrain
 }
 
+/// Build a 3-cell EW bridge strip centered at `(center_rx, ry)`, with the
+/// `bridge_state` pre-classified so the orchestrator's HighDirect path
+/// fires the walker (overlay 0xDC → final-stage collapse on all 3 cells).
+///
+/// All 3 bridge cells share the same `level`, `deck_level`, and
+/// `ground_walk_blocked` flag. Caller mutates extras like `overlay_blocks`
+/// / `terrain_object_blocks` / `is_cliff_like` on the returned terrain
+/// before constructing the simulation if a specific fallout shape is
+/// being asserted (mutate the center cell at `center_rx, ry`).
+///
+/// Constraints: `center_rx >= 1` (strip needs the west neighbor in-grid).
+fn ew_high_bridge_strip_for_dispatch(
+    center_rx: u16,
+    ry: u16,
+    deck_level: u8,
+    ground_walk_blocked: bool,
+    level: u8,
+) -> (ResolvedTerrainGrid, BridgeRuntimeState) {
+    use crate::map::resolved_terrain::ResolvedTerrainCell;
+    use crate::sim::bridge_state::{Axis, BridgeCellRole, BridgeRuntimeCell, DamageState};
+    assert!(center_rx >= 1, "EW strip needs west neighbor in-grid");
+
+    let width = center_rx + 2; // 0..=(center_rx + 1)
+    let height = ry + 1;
+    let west = center_rx - 1;
+    let east = center_rx + 1;
+
+    let mut cells = Vec::with_capacity(width as usize * height as usize);
+    for y in 0..height {
+        for x in 0..width {
+            let on_bridge = y == ry && x >= west && x <= east;
+            cells.push(ResolvedTerrainCell {
+                rx: x,
+                ry: y,
+                source_tile_index: 0,
+                source_sub_tile: 0,
+                final_tile_index: 0,
+                final_sub_tile: 0,
+                level: if on_bridge { level } else { 0 },
+                filled_clear: false,
+                tileset_index: Some(0),
+                land_type: 0,
+                slope_type: 0,
+                template_height: 0,
+                render_offset_x: 0,
+                render_offset_y: 0,
+                terrain_class: crate::rules::terrain_rules::TerrainClass::Clear,
+                speed_costs: crate::rules::terrain_rules::SpeedCostProfile::default(),
+                is_water: on_bridge && ground_walk_blocked,
+                is_cliff_like: false,
+                is_cliff_redraw: false,
+                variant: 0,
+                is_rough: false,
+                is_road: false,
+                accepts_smudge: false,
+                has_ramp: false,
+                canonical_ramp: None,
+                ground_walk_blocked: on_bridge && ground_walk_blocked,
+                terrain_object_blocks: false,
+                overlay_blocks: false,
+                zone_type: 0,
+                base_ground_walk_blocked: false,
+                base_build_blocked: on_bridge && ground_walk_blocked,
+                build_blocked: on_bridge,
+                has_bridge_deck: on_bridge,
+                bridge_walkable: on_bridge,
+                bridge_transition: on_bridge,
+                bridge_deck_level: if on_bridge { deck_level } else { 0 },
+                bridge_layer: None,
+                radar_left: [0, 0, 0],
+                radar_right: [0, 0, 0],
+            });
+        }
+    }
+    let resolved = ResolvedTerrainGrid::from_cells(width, height, cells);
+
+    // Build bridge state, then override the 3 deck cells with overlay 0xDC
+    // (HIGH EW final-eligible). The HighDirect dispatcher path matches on
+    // overlay alone (no Z-gate, no role check), so a single hit at any of
+    // the 3 cells drives the walker to write 0xE8 / Destroyed across the
+    // (this, west, east) triple.
+    let mut state = BridgeRuntimeState::from_resolved_terrain(&resolved, true, 15);
+    for x in west..=east {
+        state.test_seed_cell(
+            x,
+            ry,
+            BridgeRuntimeCell {
+                deck_present: true,
+                destroyable: true,
+                deck_level,
+                bridge_group_id: Some(1),
+                damage_state: DamageState::Healthy { variant: 0 },
+                axis: Some(Axis::EW),
+                role: BridgeCellRole::Body,
+                anchor_span_id: Some(1),
+                overlay_byte: 0xDC,
+                damaged_variant: false,
+            },
+        );
+    }
+    (resolved, state)
+}
+
 fn alliance_map(pairs: &[(&str, &[&str])]) -> HouseAllianceMap {
     let mut map = HouseAllianceMap::default();
     for &(owner, allies) in pairs {
@@ -399,40 +502,58 @@ fn test_spawn_from_map_high_without_bridge_falls_back_to_ground() {
 
 #[test]
 fn test_bridge_damage_rebuilds_path_grid() {
+    // 3-cell EW strip at (1..=3, 0), all overlay 0xDC. HighDirect dispatcher
+    // path fires the EW walker → all 3 cells transition to 0xE8 + Destroyed
+    // → `is_bridge_walkable` returns false → rebuilt path grid says no bridge
+    // layer at any of the 3 cells.
     let mut sim = Simulation::new();
-    let resolved = single_bridge_cell(2, 0, 2);
+    let (resolved, bridge_state) =
+        ew_high_bridge_strip_for_dispatch(2, 0, 2, false, 0);
     sim.resolved_terrain = Some(resolved.clone());
-    sim.bridge_state = Some(BridgeRuntimeState::from_resolved_terrain(
-        &resolved, true, 20,
-    ));
-    // Build PathGrid before damage — bridge should be walkable.
+    sim.bridge_state = Some(bridge_state);
+
+    // Build PathGrid before damage — all 3 cells walkable on bridge layer.
     let grid_before =
         PathGrid::from_resolved_terrain_with_bridges(&resolved, sim.bridge_state.as_ref());
-    assert!(grid_before.is_walkable_on_layer(2, 0, MovementLayer::Bridge));
+    for x in 1..=3 {
+        assert!(grid_before.is_walkable_on_layer(x, 0, MovementLayer::Bridge));
+    }
 
-    let changes = sim.apply_bridge_damage_events(&[BridgeDamageEvent {
-        rx: 2,
-        ry: 0,
-        damage: 20,
-    }]);
-    assert_eq!(changes.len(), 1);
-    let _ = sim.resolve_bridge_state_changes(&changes);
-    // Rebuild PathGrid after damage — bridge should no longer be walkable.
+    let mut rules = combat_test_rules();
+    rules.resolve_bridge_warheads(&mut sim.interner);
+    let _despawned = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
+        &mut sim,
+        &rules,
+        &[BridgeDamageEvent {
+            rx: 2,
+            ry: 0,
+            damage: 20,
+            warhead_ref: crate::sim::intern::InternedId::default(),
+            is_ion_cannon: true,
+            impact_z: 4,
+        }],
+    );
+
+    // Rebuild PathGrid after damage — none of the 3 cells walkable on bridge.
     let grid_after = PathGrid::from_resolved_terrain_with_bridges(
         sim.resolved_terrain.as_ref().unwrap(),
         sim.bridge_state.as_ref(),
     );
-    assert!(!grid_after.is_walkable_on_layer(2, 0, MovementLayer::Bridge));
+    for x in 1..=3 {
+        assert!(
+            !grid_after.is_walkable_on_layer(x, 0, MovementLayer::Bridge),
+            "cell ({x}, 0) should not be walkable on bridge layer after collapse"
+        );
+    }
 }
 
 #[test]
 fn test_destroyed_bridge_snaps_unit_to_ground_when_ground_exists() {
     let mut sim = Simulation::new();
-    let resolved = bridge_cell_with_ground_block(5, 5, 3, false, 1);
+    let (resolved, bridge_state) =
+        ew_high_bridge_strip_for_dispatch(5, 5, 3, false, 1);
     sim.resolved_terrain = Some(resolved.clone());
-    sim.bridge_state = Some(BridgeRuntimeState::from_resolved_terrain(
-        &resolved, true, 15,
-    ));
+    sim.bridge_state = Some(bridge_state);
 
     sim.spawn_from_map_with_resolved(
         &[MapEntity {
@@ -452,14 +573,20 @@ fn test_destroyed_bridge_snaps_unit_to_ground_when_ground_exists() {
         Some(&resolved),
     );
 
-    let changes = sim.apply_bridge_damage_events(&[BridgeDamageEvent {
-        rx: 5,
-        ry: 5,
-        damage: 15,
-    }]);
-    assert_eq!(changes.len(), 1);
-    let fallout = sim.resolve_bridge_state_changes(&changes);
-    assert!(fallout.is_empty());
+    let mut rules = combat_test_rules();
+    rules.resolve_bridge_warheads(&mut sim.interner);
+    let _despawned = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
+        &mut sim,
+        &rules,
+        &[BridgeDamageEvent {
+            rx: 5,
+            ry: 5,
+            damage: 15,
+            warhead_ref: crate::sim::intern::InternedId::default(),
+            is_ion_cannon: true,
+            impact_z: 4,
+        }],
+    );
 
     let e = sim.entities.get(1).expect("surviving bridge unit");
     assert_eq!(e.position.z, 1);
@@ -470,14 +597,17 @@ fn test_destroyed_bridge_snaps_unit_to_ground_when_ground_exists() {
     assert!(e.movement_target.is_none());
 }
 
+/// Per HIGH §12.7 / §12.9: deck units snap to ground level on collapse —
+/// no damage, no despawn, even when the ground below is unwalkable (water,
+/// `is_water=true` + `ground_walk_blocked=true`). Vanilla has no drown
+/// mechanism.
 #[test]
-fn test_destroyed_bridge_despawns_unit_over_blocked_ground() {
+fn test_destroyed_bridge_snaps_unit_to_ground_over_water_below() {
     let mut sim = Simulation::new();
-    let resolved = bridge_cell_with_ground_block(5, 5, 3, true, 0);
+    let (resolved, bridge_state) =
+        ew_high_bridge_strip_for_dispatch(5, 5, 3, true, 0);
     sim.resolved_terrain = Some(resolved.clone());
-    sim.bridge_state = Some(BridgeRuntimeState::from_resolved_terrain(
-        &resolved, true, 15,
-    ));
+    sim.bridge_state = Some(bridge_state);
 
     sim.spawn_from_map_with_resolved(
         &[MapEntity {
@@ -497,26 +627,46 @@ fn test_destroyed_bridge_despawns_unit_over_blocked_ground() {
         Some(&resolved),
     );
 
-    let changes = sim.apply_bridge_damage_events(&[BridgeDamageEvent {
-        rx: 5,
-        ry: 5,
-        damage: 15,
-    }]);
-    let fallout = sim.resolve_bridge_state_changes(&changes);
-    assert_eq!(fallout, vec![1]);
-    assert!(sim.entities.get(1).is_none());
+    let mut rules = combat_test_rules();
+    rules.resolve_bridge_warheads(&mut sim.interner);
+    let _despawned = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
+        &mut sim,
+        &rules,
+        &[BridgeDamageEvent {
+            rx: 5,
+            ry: 5,
+            damage: 15,
+            warhead_ref: crate::sim::intern::InternedId::default(),
+            is_ion_cannon: true,
+            impact_z: 4,
+        }],
+    );
+
+    // DropIn correction: unit ALIVE, snapped to ground level=0, OnBridge
+    // cleared, locomotor flipped to Ground/Idle.
+    let e = sim.entities.get(1).expect("deck unit must SURVIVE collapse over water");
+    assert_eq!(
+        e.health.current, e.health.max,
+        "DropIn never harms — health stays at max"
+    );
+    assert_eq!(e.position.z, 0, "snapped to ground level");
+    assert!(!e.on_bridge);
+    assert!(e.bridge_occupancy.is_none());
+    let loco = e.locomotor.as_ref().expect("locomotor");
+    assert_eq!(loco.layer, MovementLayer::Ground);
+    assert!(e.movement_target.is_none());
 }
 
+/// Same DropIn correction over an overlay-blocked ground cell.
 #[test]
-fn test_destroyed_bridge_despawns_unit_over_overlay_blocked_ground() {
+fn test_destroyed_bridge_snaps_unit_to_ground_over_overlay_blocked() {
     let mut sim = Simulation::new();
-    let mut resolved = bridge_cell_with_ground_block(5, 5, 3, false, 0);
+    let (mut resolved, bridge_state) =
+        ew_high_bridge_strip_for_dispatch(5, 5, 3, false, 0);
     let idx = resolved.index(5, 5).expect("bridge index");
     resolved.cells[idx].overlay_blocks = true;
     sim.resolved_terrain = Some(resolved.clone());
-    sim.bridge_state = Some(BridgeRuntimeState::from_resolved_terrain(
-        &resolved, true, 15,
-    ));
+    sim.bridge_state = Some(bridge_state);
 
     sim.spawn_from_map_with_resolved(
         &[MapEntity {
@@ -536,26 +686,41 @@ fn test_destroyed_bridge_despawns_unit_over_overlay_blocked_ground() {
         Some(&resolved),
     );
 
-    let changes = sim.apply_bridge_damage_events(&[BridgeDamageEvent {
-        rx: 5,
-        ry: 5,
-        damage: 15,
-    }]);
-    let fallout = sim.resolve_bridge_state_changes(&changes);
-    assert_eq!(fallout, vec![1]);
-    assert!(sim.entities.get(1).is_none());
+    let mut rules = combat_test_rules();
+    rules.resolve_bridge_warheads(&mut sim.interner);
+    let _despawned = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
+        &mut sim,
+        &rules,
+        &[BridgeDamageEvent {
+            rx: 5,
+            ry: 5,
+            damage: 15,
+            warhead_ref: crate::sim::intern::InternedId::default(),
+            is_ion_cannon: true,
+            impact_z: 4,
+        }],
+    );
+
+    let e = sim
+        .entities
+        .get(1)
+        .expect("deck unit must SURVIVE over overlay-blocked ground");
+    assert_eq!(e.health.current, e.health.max, "DropIn never harms");
+    assert_eq!(e.position.z, 0);
+    assert!(!e.on_bridge);
+    assert!(e.bridge_occupancy.is_none());
 }
 
+/// Same DropIn correction over a terrain-object-blocked ground cell.
 #[test]
-fn test_destroyed_bridge_despawns_unit_over_terrain_object_blocked_ground() {
+fn test_destroyed_bridge_snaps_unit_to_ground_over_terrain_object_blocked() {
     let mut sim = Simulation::new();
-    let mut resolved = bridge_cell_with_ground_block(5, 5, 3, false, 0);
+    let (mut resolved, bridge_state) =
+        ew_high_bridge_strip_for_dispatch(5, 5, 3, false, 0);
     let idx = resolved.index(5, 5).expect("bridge index");
     resolved.cells[idx].terrain_object_blocks = true;
     sim.resolved_terrain = Some(resolved.clone());
-    sim.bridge_state = Some(BridgeRuntimeState::from_resolved_terrain(
-        &resolved, true, 15,
-    ));
+    sim.bridge_state = Some(bridge_state);
 
     sim.spawn_from_map_with_resolved(
         &[MapEntity {
@@ -575,26 +740,44 @@ fn test_destroyed_bridge_despawns_unit_over_terrain_object_blocked_ground() {
         Some(&resolved),
     );
 
-    let changes = sim.apply_bridge_damage_events(&[BridgeDamageEvent {
-        rx: 5,
-        ry: 5,
-        damage: 15,
-    }]);
-    let fallout = sim.resolve_bridge_state_changes(&changes);
-    assert_eq!(fallout, vec![1]);
-    assert!(sim.entities.get(1).is_none());
+    let mut rules = combat_test_rules();
+    rules.resolve_bridge_warheads(&mut sim.interner);
+    let _despawned = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
+        &mut sim,
+        &rules,
+        &[BridgeDamageEvent {
+            rx: 5,
+            ry: 5,
+            damage: 15,
+            warhead_ref: crate::sim::intern::InternedId::default(),
+            is_ion_cannon: true,
+            impact_z: 4,
+        }],
+    );
+
+    let e = sim
+        .entities
+        .get(1)
+        .expect("deck unit must SURVIVE over terrain-object-blocked ground");
+    assert_eq!(e.health.current, e.health.max, "DropIn never harms");
+    assert_eq!(e.position.z, 0);
+    assert!(!e.on_bridge);
+    assert!(e.bridge_occupancy.is_none());
 }
 
+/// After collapse, the rebuilt path grid reverts the bridge cell to its
+/// underlying ground walkability — a cliff-like cell stays unwalkable
+/// (per `from_resolved_terrain_with_bridges`'s `is_cliff_like` branch).
+/// Plus the DropIn correction: the deck unit still survives.
 #[test]
 fn test_destroyed_bridge_fallout_matches_rebuilt_ground_walkability() {
     let mut sim = Simulation::new();
-    let mut resolved = bridge_cell_with_ground_block(5, 5, 3, false, 0);
+    let (mut resolved, bridge_state) =
+        ew_high_bridge_strip_for_dispatch(5, 5, 3, false, 0);
     let idx = resolved.index(5, 5).expect("bridge index");
     resolved.cells[idx].is_cliff_like = true;
     sim.resolved_terrain = Some(resolved.clone());
-    sim.bridge_state = Some(BridgeRuntimeState::from_resolved_terrain(
-        &resolved, true, 15,
-    ));
+    sim.bridge_state = Some(bridge_state);
 
     sim.spawn_from_map_with_resolved(
         &[MapEntity {
@@ -614,24 +797,524 @@ fn test_destroyed_bridge_fallout_matches_rebuilt_ground_walkability() {
         Some(&resolved),
     );
 
-    let changes = sim.apply_bridge_damage_events(&[BridgeDamageEvent {
-        rx: 5,
-        ry: 5,
-        damage: 15,
-    }]);
+    let mut rules = combat_test_rules();
+    rules.resolve_bridge_warheads(&mut sim.interner);
+    let _despawned = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
+        &mut sim,
+        &rules,
+        &[BridgeDamageEvent {
+            rx: 5,
+            ry: 5,
+            damage: 15,
+            warhead_ref: crate::sim::intern::InternedId::default(),
+            is_ion_cannon: true,
+            impact_z: 4,
+        }],
+    );
 
     let rebuilt_grid = PathGrid::from_resolved_terrain_with_bridges(
         sim.resolved_terrain.as_ref().expect("resolved terrain"),
         sim.bridge_state.as_ref(),
     );
     assert!(
+        !rebuilt_grid.is_walkable_on_layer(5, 5, MovementLayer::Bridge),
+        "destroyed bridge layer should be unwalkable"
+    );
+    assert!(
         !rebuilt_grid.is_walkable_on_layer(5, 5, MovementLayer::Ground),
-        "destroyed bridge cell should stay ground-blocked when the rebuilt PathGrid says so"
+        "destroyed cliff-like cell falls back to unwalkable underlying terrain"
+    );
+    // DropIn correction: the unit survived stranded at ground level even
+    // though the underlying ground is cliff-like (vanilla never despawns).
+    let e = sim.entities.get(1).expect("deck unit survives");
+    assert_eq!(e.health.current, e.health.max, "DropIn never harms");
+    assert!(!e.on_bridge);
+}
+
+/// Full-pipeline cascade: ground-layer entity at a destroyed bridge cell is
+/// force-killed (health=0, dying=true) per HIGH §11.4 step 1 — mirrors the
+/// binary's `BlowUpBridge` ground-occupant pass with C4Warhead semantics.
+/// Bridge-deck entities go through DropIn (Step 2) and survive; this test
+/// covers the parallel ground-layer path.
+#[test]
+fn test_bridge_collapse_kills_ground_unit_under_destroyed_cell() {
+    let mut sim = Simulation::new();
+    let (resolved, bridge_state) =
+        ew_high_bridge_strip_for_dispatch(5, 5, 3, false, 0);
+    sim.resolved_terrain = Some(resolved.clone());
+    sim.bridge_state = Some(bridge_state);
+
+    // Spawn a GROUND unit at (5, 5) — same cell as the bridge above.
+    // `high: false` → spawn places it on the ground layer; on_bridge=false.
+    sim.spawn_from_map_with_resolved(
+        &[MapEntity {
+            owner: "Americans".to_string(),
+            type_id: "MTNK".to_string(),
+            health: 256,
+            cell_x: 5,
+            cell_y: 5,
+            facing: 64,
+            category: EntityCategory::Unit,
+            sub_cell: 0,
+            veterancy: 0,
+            high: false,
+        }],
+        Some(&combat_test_rules()),
+        &BTreeMap::new(),
+        Some(&resolved),
+    );
+    let id = sim
+        .entities
+        .iter_sorted()
+        .next()
+        .map(|(id, _)| id)
+        .expect("ground unit spawned");
+    assert!(!sim.entities.get(id).unwrap().on_bridge, "ground layer");
+
+    let mut rules = combat_test_rules();
+    rules.resolve_bridge_warheads(&mut sim.interner);
+    let _ = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
+        &mut sim,
+        &rules,
+        &[BridgeDamageEvent {
+            rx: 5,
+            ry: 5,
+            damage: 15,
+            warhead_ref: crate::sim::intern::InternedId::default(),
+            is_ion_cannon: true,
+            impact_z: 4,
+        }],
     );
 
-    let fallout = sim.resolve_bridge_state_changes(&changes);
-    assert_eq!(fallout, vec![1]);
-    assert!(sim.entities.get(1).is_none());
+    let e = sim
+        .entities
+        .get(id)
+        .expect("ground unit still in EntityStore (kill is via dying flag)");
+    assert_eq!(e.health.current, 0, "kill_ground_occupants_at zeroed HP");
+    assert!(e.dying, "dying flag set for next combat-tick death effects");
+    assert!(e.attack_target.is_none());
+    assert!(e.movement_target.is_none());
+}
+
+/// Full-pipeline walker: a single Ion-Cannon hit at the center of a 3-cell
+/// EW strip drives the HighDirect dispatcher → walker → all 3 cells of the
+/// (this, west, east) triple get overlay 0xE8 + DamageState::Destroyed.
+#[test]
+fn test_bridge_walker_collapses_full_3_cell_strip_on_single_hit() {
+    use crate::sim::bridge_state::DamageState;
+    let mut sim = Simulation::new();
+    let (resolved, bridge_state) =
+        ew_high_bridge_strip_for_dispatch(5, 5, 3, false, 0);
+    sim.resolved_terrain = Some(resolved);
+    sim.bridge_state = Some(bridge_state);
+
+    let mut rules = combat_test_rules();
+    rules.resolve_bridge_warheads(&mut sim.interner);
+    let _ = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
+        &mut sim,
+        &rules,
+        &[BridgeDamageEvent {
+            rx: 5,
+            ry: 5,
+            damage: 15,
+            warhead_ref: crate::sim::intern::InternedId::default(),
+            is_ion_cannon: true,
+            impact_z: 4,
+        }],
+    );
+
+    let bs = sim.bridge_state.as_ref().unwrap();
+    for x in 4..=6 {
+        let cell = bs.cell(x, 5).expect("bridge cell present");
+        assert_eq!(
+            cell.damage_state,
+            DamageState::Destroyed,
+            "cell ({x}, 5) must be destroyed by walker triple"
+        );
+        assert_eq!(
+            cell.overlay_byte, 0xE8,
+            "cell ({x}, 5) must hold the EW final-stage overlay"
+        );
+    }
+}
+
+/// Path mutual exclusion: a cell whose overlay has been TRANSITIONED out
+/// of the raw body range (e.g. 0x6) routes to the state-machine path,
+/// never to direct-overlay. The reverse (raw body overlay) routes to the
+/// direct path. Verifies the dispatcher's overlay invariant prevents
+/// double-firing on the same hit.
+#[test]
+fn test_bridge_dispatcher_state_machine_overlay_routes_to_high_sm_not_direct() {
+    use crate::sim::bridge_state::{
+        Axis, AnchorSpan, BridgeCellRole, BridgeRuntimeCell, DamageState,
+        Direction, DispatchPath,
+    };
+    let mut sim = Simulation::new();
+    let (resolved, mut bridge_state) =
+        ew_high_bridge_strip_for_dispatch(5, 5, 4, false, 0);
+    // Override center cell to the post-transition state: overlay 0x6 (out
+    // of the 0xCD..=0xE6 raw HIGH range), role=Anchor, damage_state=Damaged
+    // (so a single hit Damaged→Destroyed). Anchor span carries only the
+    // anchor itself so set_bridge_direction emits one BlowUpBridge action.
+    bridge_state.test_seed_cell(
+        5,
+        5,
+        BridgeRuntimeCell {
+            deck_present: true,
+            destroyable: true,
+            deck_level: 4,
+            bridge_group_id: Some(1),
+            damage_state: DamageState::Damaged,
+            axis: Some(Axis::EW),
+            role: BridgeCellRole::Anchor,
+            anchor_span_id: Some(1),
+            overlay_byte: 0x6,
+            damaged_variant: false,
+        },
+    );
+    bridge_state.test_seed_anchor_span(AnchorSpan {
+        id: 1,
+        anchor: (5, 5),
+        cells: [Some((5, 5)), None, None, None, None, None],
+        axis: Axis::EW,
+        direction: Direction::S,
+        damage_state: DamageState::Damaged,
+        bridge_group_id: 1,
+    });
+    sim.resolved_terrain = Some(resolved);
+    sim.bridge_state = Some(bridge_state);
+
+    // Path classifier: HighSM matches, HighDirect does NOT, when the
+    // overlay has been transitioned out of the raw body range.
+    let bs = sim.bridge_state.as_ref().unwrap();
+    let ctx = crate::sim::bridge_state::BridgeDamageContext {
+        damage: 15,
+        warhead_ref: crate::sim::intern::InternedId::default(),
+        is_ion_cannon: true,
+        bridge_strength: bs.bridge_strength(),
+        impact_z: 0,
+    };
+    let terrain = sim.resolved_terrain.as_ref().unwrap();
+    assert!(
+        bs.path_matches_cell(DispatchPath::HighStateMachine, 5, 5, &ctx, terrain),
+        "transitioned overlay routes to HighSM"
+    );
+    assert!(
+        !bs.path_matches_cell(DispatchPath::HighDirect, 5, 5, &ctx, terrain),
+        "transitioned overlay must NOT also match HighDirect"
+    );
+
+    // Conversely: a cell still in the raw body range routes to HighDirect
+    // and NOT to HighSM. Re-seed (4, 5) with overlay 0xDC.
+    let bs_mut = sim.bridge_state.as_mut().unwrap();
+    bs_mut.test_seed_cell(
+        4,
+        5,
+        BridgeRuntimeCell {
+            deck_present: true,
+            destroyable: true,
+            deck_level: 4,
+            bridge_group_id: Some(1),
+            damage_state: DamageState::Healthy { variant: 0 },
+            axis: Some(Axis::EW),
+            role: BridgeCellRole::Body,
+            anchor_span_id: Some(1),
+            overlay_byte: 0xDC,
+            damaged_variant: false,
+        },
+    );
+    let bs = sim.bridge_state.as_ref().unwrap();
+    assert!(
+        bs.path_matches_cell(DispatchPath::HighDirect, 4, 5, &ctx, terrain),
+        "raw body overlay routes to HighDirect"
+    );
+    assert!(
+        !bs.path_matches_cell(DispatchPath::HighStateMachine, 4, 5, &ctx, terrain),
+        "raw body overlay must NOT also match HighSM"
+    );
+}
+
+/// Integration test: full apply_bridge_damage_events pipeline on a
+/// state-machine path. Anchor cell with overlay 0x6 + Damaged →
+/// body driver fires Damaged→Destroyed → endpoint deactivation cascade
+/// runs via `refresh_bridge_zones_if_dirty`. Independently exercises the
+/// HighSM path (Task 15 coverage focused on HighDirect).
+#[test]
+fn test_bridge_orchestrator_state_machine_path_collapses_anchor_and_deactivates_endpoint() {
+    use crate::sim::bridge_state::{
+        Axis, AnchorSpan, BridgeCellRole, BridgeRuntimeCell, DamageState, Direction,
+    };
+    let mut sim = Simulation::new();
+    // Use the strip helper so resolved_terrain has a bridge group with
+    // ground neighbors → endpoint records exist.
+    let (resolved, mut bridge_state) =
+        ew_high_bridge_strip_for_dispatch(5, 5, 4, false, 0);
+    // Override (5, 5) to the post-transition Damaged state-machine setup.
+    bridge_state.test_seed_cell(
+        5,
+        5,
+        BridgeRuntimeCell {
+            deck_present: true,
+            destroyable: true,
+            deck_level: 4,
+            bridge_group_id: Some(1),
+            damage_state: DamageState::Damaged,
+            axis: Some(Axis::EW),
+            role: BridgeCellRole::Anchor,
+            anchor_span_id: Some(1),
+            overlay_byte: 0x6,
+            damaged_variant: false,
+        },
+    );
+    bridge_state.test_seed_anchor_span(AnchorSpan {
+        id: 1,
+        anchor: (5, 5),
+        cells: [Some((5, 5)), None, None, None, None, None],
+        axis: Axis::EW,
+        direction: Direction::S,
+        damage_state: DamageState::Damaged,
+        bridge_group_id: 1,
+    });
+    sim.resolved_terrain = Some(resolved);
+    sim.bridge_state = Some(bridge_state);
+
+    let pre_active: Vec<bool> = sim
+        .bridge_state
+        .as_ref()
+        .unwrap()
+        .endpoint_records()
+        .iter()
+        .map(|r| r.active)
+        .collect();
+
+    let mut rules = combat_test_rules();
+    rules.resolve_bridge_warheads(&mut sim.interner);
+    let _ = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
+        &mut sim,
+        &rules,
+        &[BridgeDamageEvent {
+            rx: 5,
+            ry: 5,
+            damage: 15,
+            warhead_ref: crate::sim::intern::InternedId::default(),
+            is_ion_cannon: true,
+            impact_z: 0, // Z-gate window for level=0 is [-1, 1]
+        }],
+    );
+
+    let bs = sim.bridge_state.as_ref().unwrap();
+    assert_eq!(
+        bs.cell(5, 5).unwrap().damage_state,
+        DamageState::Destroyed,
+        "body driver collapsed anchor on Damaged→Destroyed"
+    );
+    // Endpoint deactivation: at least one record was active pre-collapse
+    // and any active record for group 1 is now inactive.
+    if pre_active.iter().any(|&a| a) {
+        let post_active: Vec<bool> = bs
+            .endpoint_records()
+            .iter()
+            .map(|r| r.active)
+            .collect();
+        assert!(
+            post_active.iter().all(|&a| !a),
+            "all group-1 endpoints must deactivate after collapse \
+             (pre={pre_active:?}, post={post_active:?})"
+        );
+    }
+}
+
+/// Determinism: two independent simulations with identical seeds, identical
+/// resolved terrain, identical bridge runtime state, and identical damage
+/// events MUST produce the same state hash after running
+/// `apply_bridge_damage_events`. Lockstep invariant — any divergence in
+/// RNG draw order, iteration order, or non-deterministic sets desyncs
+/// multiplayer.
+#[test]
+fn test_bridge_collapse_is_deterministic_under_replay() {
+    fn run_one_collapse(seed: u64) -> u64 {
+        let mut sim = Simulation::new();
+        sim.rng = crate::sim::rng::SimRng::new(seed);
+        let (resolved, bridge_state) =
+            ew_high_bridge_strip_for_dispatch(5, 5, 4, false, 0);
+        sim.resolved_terrain = Some(resolved);
+        sim.bridge_state = Some(bridge_state);
+
+        let mut rules = combat_test_rules();
+        rules.resolve_bridge_warheads(&mut sim.interner);
+        let _ = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
+            &mut sim,
+            &rules,
+            &[BridgeDamageEvent {
+                rx: 5,
+                ry: 5,
+                damage: 100,
+                warhead_ref: crate::sim::intern::InternedId::default(),
+                is_ion_cannon: false, // exercises per-path RNG gate
+                impact_z: 4,
+            }],
+        );
+        sim.state_hash()
+    }
+
+    let h1 = run_one_collapse(0xCAFE_F00D);
+    let h2 = run_one_collapse(0xCAFE_F00D);
+    assert_eq!(
+        h1, h2,
+        "identical seed + inputs must produce identical post-collapse state hash"
+    );
+}
+
+/// Replay determinism with bridge collapse + rim refresh. The new
+/// `update_adjacent_bridges` step in the cascade introduces additional
+/// `BridgeRuntimeCell` writes (`damaged_variant`, `damage_state` resets).
+/// This test pins that those mutations are deterministic across two
+/// identical-seed runs, so the new sim writes can never silently desync
+/// lockstep.
+#[test]
+fn replay_determinism_with_bridge_collapse_and_rim_refresh() {
+    fn run_one(seed: u64) -> u64 {
+        let mut sim = Simulation::new();
+        sim.rng = crate::sim::rng::SimRng::new(seed);
+        let (resolved, bridge_state) =
+            ew_high_bridge_strip_for_dispatch(5, 5, 4, false, 0);
+        sim.resolved_terrain = Some(resolved);
+        sim.bridge_state = Some(bridge_state);
+
+        let mut rules = combat_test_rules();
+        rules.resolve_bridge_warheads(&mut sim.interner);
+        let _ = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
+            &mut sim,
+            &rules,
+            &[BridgeDamageEvent {
+                rx: 5,
+                ry: 5,
+                damage: 100,
+                warhead_ref: crate::sim::intern::InternedId::default(),
+                is_ion_cannon: false,
+                impact_z: 4,
+            }],
+        );
+        sim.state_hash()
+    }
+
+    let h1 = run_one(0xFEED_BEEF);
+    let h2 = run_one(0xFEED_BEEF);
+    assert_eq!(
+        h1, h2,
+        "identical seed + inputs must produce identical state hash across the rim-refresh cascade"
+    );
+}
+
+/// Snapshot regression: serialize the `BridgeRuntimeState` after a collapse
+/// (overlay-byte progression + DamageState::Destroyed cells +
+/// endpoint_records active flips), deserialize it, and assert the
+/// post-restore state matches the pre-serialize state. Locks down the
+/// snapshot contract across the orchestrator switchover.
+#[test]
+fn test_bridge_snapshot_roundtrip_preserves_state_after_collapse() {
+    use crate::sim::bridge_state::DamageState;
+    let mut sim = Simulation::new();
+    let (resolved, bridge_state) =
+        ew_high_bridge_strip_for_dispatch(5, 5, 4, false, 0);
+    sim.resolved_terrain = Some(resolved);
+    sim.bridge_state = Some(bridge_state);
+
+    let mut rules = combat_test_rules();
+    rules.resolve_bridge_warheads(&mut sim.interner);
+    let _ = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
+        &mut sim,
+        &rules,
+        &[BridgeDamageEvent {
+            rx: 5,
+            ry: 5,
+            damage: 15,
+            warhead_ref: crate::sim::intern::InternedId::default(),
+            is_ion_cannon: true,
+            impact_z: 4,
+        }],
+    );
+
+    let pre = sim.bridge_state.as_ref().unwrap().clone();
+    let json = serde_json::to_string(&pre).expect("serialize bridge_state");
+    let restored: crate::sim::bridge_state::BridgeRuntimeState =
+        serde_json::from_str(&json).expect("deserialize");
+
+    // Compare every cell in the strip + bridge_strength + endpoint_records.
+    for x in 4..=6 {
+        let pre_cell = pre.cell(x, 5).expect("pre cell");
+        let post_cell = restored.cell(x, 5).expect("restored cell");
+        assert_eq!(pre_cell, post_cell, "cell ({x}, 5) round-trip");
+        assert_eq!(post_cell.damage_state, DamageState::Destroyed);
+        assert_eq!(post_cell.overlay_byte, 0xE8);
+    }
+    assert_eq!(pre.bridge_strength(), restored.bridge_strength());
+    assert_eq!(pre.endpoint_records().len(), restored.endpoint_records().len());
+    for (a, b) in pre
+        .endpoint_records()
+        .iter()
+        .zip(restored.endpoint_records())
+    {
+        assert_eq!(a.active, b.active, "endpoint record active flag round-trip");
+    }
+}
+
+/// RNG draw-count parity: per-event the dispatcher consumes RNG draws in
+/// a fixed sequence. With non-IonCannon damage:
+///   1. Per-path BridgeStrength gate fires once before the first matching
+///      driver — `next_range_u32_inclusive(1, bridge_strength)`.
+///   2. Driver dispatch (walker / state machine) does not draw RNG itself.
+///   3. Cascade `spawn_bridge_debris` per destroyed cell consumes its
+///      well-known sequence (covered by orchestrator unit tests).
+///
+/// This integration test pins step 1: with `is_ion_cannon=false`, the
+/// orchestrator pulls exactly one BridgeStrength roll before falling
+/// through to HighDirect (HighSM raw-overlay rejects, LowSM rejects,
+/// LowDirect rejects). A parallel RNG primed with the same seed must
+/// yield the same post-event state.
+#[test]
+fn test_bridge_dispatcher_consumes_one_path_gate_draw_per_non_ion_event() {
+    let seed = 0xABCD_1234_u64;
+    let mut sim = Simulation::new();
+    sim.rng = crate::sim::rng::SimRng::new(seed);
+    let (resolved, bridge_state) =
+        ew_high_bridge_strip_for_dispatch(5, 5, 4, false, 0);
+    let bridge_strength = bridge_state.bridge_strength();
+    sim.resolved_terrain = Some(resolved);
+    sim.bridge_state = Some(bridge_state);
+
+    // Predict: HighSM rejected on raw-overlay; LowSM rejected
+    // (deck_level=4 vs want_high=false); LowDirect rejected (overlay not
+    // in LOW range). HighDirect matches → one BridgeStrength gate roll
+    // → walker (consumes no RNG) → cascade spawn_bridge_debris (consumes
+    // the well-known per-cell sequence — but with both bridge_explosions
+    // and metallic_debris empty in this fixture, the helper short-circuits
+    // on the empty-lists check and draws no RNG).
+    let mut predicted = crate::sim::rng::SimRng::new(seed);
+    let _gate = predicted.next_range_u32_inclusive(1, bridge_strength as u32);
+
+    let mut rules = combat_test_rules();
+    rules.resolve_bridge_warheads(&mut sim.interner);
+    // High damage so the gate roll passes deterministically (any roll < 9999
+    // succeeds when damage > roll).
+    let _ = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
+        &mut sim,
+        &rules,
+        &[BridgeDamageEvent {
+            rx: 5,
+            ry: 5,
+            damage: 9999,
+            warhead_ref: crate::sim::intern::InternedId::default(),
+            is_ion_cannon: false,
+            impact_z: 4,
+        }],
+    );
+
+    assert_eq!(
+        sim.rng.state(),
+        predicted.state(),
+        "non-IonCannon hit must consume exactly one BridgeStrength gate roll"
+    );
 }
 
 #[test]

@@ -367,6 +367,15 @@ pub(crate) fn spawn_entities(
                 .collect()
         })
         .unwrap_or_default();
+    sim.metallic_debris = rules
+        .map(|r| {
+            r.general
+                .metallic_debris
+                .iter()
+                .map(|s| sim.interner.intern(s))
+                .collect()
+        })
+        .unwrap_or_default();
     if !map_data.entities.is_empty() {
         let _count: u32 = sim.spawn_from_map_with_resolved(
             &map_data.entities,

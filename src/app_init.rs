@@ -40,6 +40,7 @@ use crate::map::triggers::TriggerMap;
 use crate::map::waypoints::{self, Waypoint};
 use crate::render::batch::BatchRenderer;
 use crate::render::bridge_atlas::BridgeAtlas;
+use crate::render::bridge_railing_atlas::BridgeRailingAtlas;
 use crate::render::cursor_atlas;
 use crate::render::gpu::GpuContext;
 use crate::render::overlay_atlas::OverlayAtlas;
@@ -68,6 +69,7 @@ pub struct MapLoadResult {
     pub sprite_atlas: Option<SpriteAtlas>,
     pub overlay_atlas: Option<OverlayAtlas>,
     pub bridge_atlas: Option<BridgeAtlas>,
+    pub bridge_railing_atlas: Option<BridgeRailingAtlas>,
     pub sidebar_cameo_atlas: Option<SidebarCameoAtlas>,
     pub sidebar_chrome: Option<SidebarChromeSet>,
     pub(crate) software_cursor: Option<crate::app_render::SoftwareCursor>,
@@ -423,6 +425,12 @@ pub fn load_map(
     if let (Some(sim), Some(ruleset)) = (&mut simulation, rules.as_ref()) {
         ruleset.intern_all_ids(&mut sim.interner);
     }
+    // Pre-resolve `[CombatDamage] IonCannonWarhead=` and `C4Warhead=` against
+    // the simulation interner. Combat reads these via accessors during the
+    // bridge-damage path; resolution must happen before any combat tick.
+    if let (Some(sim), Some(ruleset)) = (&mut simulation, rules.as_mut()) {
+        ruleset.resolve_bridge_warheads(&mut sim.interner);
+    }
 
     // SpawnPick phase is disabled — MCV always spawns directly at the chosen position.
     let spawn_pick_pending: bool = false;
@@ -540,8 +548,14 @@ pub fn load_map(
         }
     }
 
-    let (overlay_atlas, bridge_atlas, overlay_names, overlays_connected, tiberium_radar_colors) =
-        build_overlay_atlas_from_map(
+    let (
+        overlay_atlas,
+        bridge_atlas,
+        bridge_railing_atlas,
+        overlay_names,
+        overlays_connected,
+        tiberium_radar_colors,
+    ) = build_overlay_atlas_from_map(
             &map_data,
             &asset_manager,
             gpu,
@@ -763,6 +777,7 @@ pub fn load_map(
         sprite_atlas,
         overlay_atlas,
         bridge_atlas,
+        bridge_railing_atlas,
         sidebar_cameo_atlas,
         sidebar_chrome,
         software_cursor,

@@ -661,11 +661,11 @@ fn place_ready_building_rejects_destroyed_bridge_over_blocked_ground() {
     );
     sim.resolved_terrain = Some(resolved);
     if let Some(state) = sim.bridge_state.as_mut() {
-        let _ = state.apply_damage(crate::sim::bridge_state::BridgeDamageEvent {
-            rx: 12,
-            ry: 10,
-            damage: 5,
-        });
+        // Direct mutation replaces the legacy `apply_damage`. The placement
+        // gate reads `is_bridge_walkable`, which fails on `DamageState::Destroyed`.
+        if let Some(c) = state.cell_mut(12, 10) {
+            c.damage_state = crate::sim::bridge_state::DamageState::Destroyed;
+        }
     }
 
     assert!(!place_ready_building(

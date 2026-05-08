@@ -429,6 +429,10 @@ pub struct GeneralRules {
     pub mutate_explosion_warhead: String,
     /// Whether MutateExplosion is enabled (MutateExplosion= in [General]). Default true.
     pub mutate_explosion: bool,
+    /// `[General] MetallicDebris=` — list of animation names to spawn (50%-RNG
+    /// gated, count-checked) on bridge-cell collapse. Default 20 entries.
+    /// Mirrors gamemd `Rules+0x140` (data ptr) / `+0x14C` (count).
+    pub metallic_debris: Vec<String>,
 }
 
 /// Default animation rate when art.ini section is missing.
@@ -584,6 +588,15 @@ impl Default for GeneralRules {
             mutate_warhead: "Mutate".to_string(),
             mutate_explosion_warhead: "MutateExplosion".to_string(),
             mutate_explosion: true,
+            metallic_debris: vec![
+                "DBRIS1LG", "DBRIS2LG", "DBRIS3LG", "DBRIS4LG", "DBRIS5LG",
+                "DBRIS6LG", "DBRIS7LG", "DBRIS8LG", "DBRIS9LG", "DBRS10LG",
+                "DBRIS1SM", "DBRIS2SM", "DBRIS3SM", "DBRIS4SM", "DBRIS5SM",
+                "DBRIS6SM", "DBRIS7SM", "DBRIS8SM", "DBRIS9SM", "DBRS10SM",
+            ]
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect(),
         }
     }
 }
@@ -966,6 +979,16 @@ impl GeneralRules {
                 .unwrap_or("MutateExplosion")
                 .to_string(),
             mutate_explosion: general.get_bool("MutateExplosion").unwrap_or(true),
+            metallic_debris: general
+                .get("MetallicDebris")
+                .map(|v| {
+                    v.split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect::<Vec<_>>()
+                })
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| Self::default().metallic_debris),
         }
     }
 
@@ -1134,6 +1157,10 @@ pub struct RuleSet {
     pub super_weapons: HashMap<String, SuperWeaponType>,
     /// Default particle systems from `[CombatDamage]` (smoke, sparks, debris, fire-stream).
     pub combat_damage: CombatDamageDefaults,
+    /// Pre-resolved bridge-related warhead names (`[CombatDamage]
+    /// IonCannonWarhead=`, `C4Warhead=`). Resolution to interned IDs happens
+    /// at world init.
+    pub bridge_warheads: crate::rules::bridge_warheads::BridgeWarheads,
     /// Particle types in registry order. Index = `ParticleTypeId.0`.
     particle_types: Vec<ParticleType>,
     /// Uppercase name → `ParticleTypeId` for case-insensitive lookup.
@@ -1148,6 +1175,12 @@ pub struct RuleSet {
     /// Retained art.ini registry. Populated by app_init after `merge_art_data`
     /// so dispatchers (e.g. smudge spawning) can read per-anim spawn flags.
     pub art_registry: crate::rules::art_data::ArtRegistry,
+    /// Pre-resolved IonCannonWarhead InternedId. Set at sim init via
+    /// `resolve_bridge_warheads`; combat reads via `ion_cannon_warhead_id()`.
+    /// `None` until resolved.
+    ion_cannon_warhead_id: Option<crate::sim::intern::InternedId>,
+    /// Pre-resolved C4Warhead InternedId. Same lifecycle as above.
+    c4_warhead_id: Option<crate::sim::intern::InternedId>,
 }
 
 impl RuleSet {
@@ -1281,6 +1314,12 @@ impl RuleSet {
             .map(CombatDamageDefaults::from_ini_section)
             .unwrap_or_default();
 
+        // Parse [CombatDamage] bridge-warhead names (IonCannonWarhead, C4Warhead).
+        let bridge_warheads = ini
+            .section("CombatDamage")
+            .map(crate::rules::bridge_warheads::BridgeWarheads::from_ini_section)
+            .unwrap_or_default();
+
         // Parse [TerrainTypes] registry → per-type sections (TIBTRE01, TREE01, etc.).
         let mut terrain_object_types: HashMap<String, TerrainObjectType> = HashMap::new();
         let terrain_names: Vec<String> = parse_registry(ini, "TerrainTypes");
@@ -1344,12 +1383,15 @@ impl RuleSet {
             radar_event_config,
             super_weapons,
             combat_damage,
+            bridge_warheads,
             particle_types,
             particle_types_by_name,
             particle_system_types,
             particle_system_types_by_name,
             smudge_types: SmudgeTypeRegistry::from_rules_ini(ini),
             art_registry: crate::rules::art_data::ArtRegistry::empty(),
+            ion_cannon_warhead_id: None,
+            c4_warhead_id: None,
         })
     }
 
@@ -1370,6 +1412,40 @@ impl RuleSet {
         for id in &self.building_ids {
             interner.intern(id);
         }
+    }
+
+    /// Resolve `[CombatDamage] IonCannonWarhead=` and `C4Warhead=` against the
+    /// simulation interner. Call once at sim init after the warhead registry
+    /// is populated and before any combat tick.
+    pub fn resolve_bridge_warheads(
+        &mut self,
+        interner: &mut crate::sim::intern::StringInterner,
+    ) {
+        self.ion_cannon_warhead_id =
+            Some(interner.intern(&self.bridge_warheads.ion_cannon_name));
+        self.c4_warhead_id = Some(interner.intern(&self.bridge_warheads.c4_name));
+    }
+
+    /// Pre-resolved IonCannonWarhead InternedId.
+    ///
+    /// # Panics
+    /// Panics if `resolve_bridge_warheads` has not been called.
+    pub fn ion_cannon_warhead_id(&self) -> crate::sim::intern::InternedId {
+        self.ion_cannon_warhead_id.expect(
+            "RuleSet::resolve_bridge_warheads must be called at sim init \
+             before combat reads warhead IDs",
+        )
+    }
+
+    /// Pre-resolved C4Warhead InternedId.
+    ///
+    /// # Panics
+    /// Panics if `resolve_bridge_warheads` has not been called.
+    pub fn c4_warhead_id(&self) -> crate::sim::intern::InternedId {
+        self.c4_warhead_id.expect(
+            "RuleSet::resolve_bridge_warheads must be called at sim init \
+             before bridge cascade fires",
+        )
     }
 
     pub fn object(&self, id: &str) -> Option<&ObjectType> {
@@ -2168,6 +2244,22 @@ MutateWarhead=MyMutate\n\
     }
 
     #[test]
+    fn metallic_debris_default_matches_retail() {
+        let g = GeneralRules::default();
+        assert_eq!(g.metallic_debris.len(), 20);
+        assert_eq!(g.metallic_debris[0], "DBRIS1LG");
+        assert_eq!(g.metallic_debris[19], "DBRS10SM");
+    }
+
+    #[test]
+    fn metallic_debris_parses_from_ini() {
+        let ini =
+            IniFile::from_str("[General]\nMetallicDebris=ANIM1,ANIM2,ANIM3\n");
+        let g = GeneralRules::from_ini(&ini);
+        assert_eq!(g.metallic_debris, vec!["ANIM1", "ANIM2", "ANIM3"]);
+    }
+
+    #[test]
     fn bridge_rules_load_from_ini() {
         let ini = IniFile::from_str(
             "[InfantryTypes]\n\
@@ -2626,5 +2718,43 @@ ZAdjust=-10
         let obj = rules.object("GAREFN").expect("GAREFN");
         assert_eq!(obj.add_occupy, vec![(-1, 0), (-1, -1)]);
         assert_eq!(obj.remove_occupy, vec![(3, 1)]);
+    }
+
+    #[test]
+    fn resolve_bridge_warheads_populates_ids() {
+        use crate::sim::intern::StringInterner;
+        let ini: IniFile = IniFile::from_str(&make_test_rules());
+        let mut rules: RuleSet = RuleSet::from_ini(&ini).expect("rules parse");
+        let mut interner = StringInterner::default();
+        rules.resolve_bridge_warheads(&mut interner);
+        let ion_id = rules.ion_cannon_warhead_id();
+        let c4_id = rules.c4_warhead_id();
+        // Defaults match retail rulesmd.ini ("IonCannonWH" + "Super") because
+        // the test rules.ini has no `[CombatDamage]` overrides.
+        assert_eq!(interner.resolve(ion_id), "IonCannonWH");
+        assert_eq!(interner.resolve(c4_id), "Super");
+    }
+
+    #[test]
+    fn resolve_bridge_warheads_honors_combat_damage_overrides() {
+        use crate::sim::intern::StringInterner;
+        let rules_text = format!(
+            "{}\n[CombatDamage]\nIonCannonWarhead=CustomIon\nC4Warhead=CustomC4\n",
+            make_test_rules()
+        );
+        let ini: IniFile = IniFile::from_str(&rules_text);
+        let mut rules: RuleSet = RuleSet::from_ini(&ini).expect("rules parse");
+        let mut interner = StringInterner::default();
+        rules.resolve_bridge_warheads(&mut interner);
+        assert_eq!(interner.resolve(rules.ion_cannon_warhead_id()), "CustomIon");
+        assert_eq!(interner.resolve(rules.c4_warhead_id()), "CustomC4");
+    }
+
+    #[test]
+    #[should_panic(expected = "resolve_bridge_warheads")]
+    fn ion_cannon_warhead_id_panics_before_resolve() {
+        let ini: IniFile = IniFile::from_str(&make_test_rules());
+        let rules: RuleSet = RuleSet::from_ini(&ini).expect("rules parse");
+        let _ = rules.ion_cannon_warhead_id();
     }
 }

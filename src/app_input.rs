@@ -580,6 +580,7 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
     };
     let terrain_speed_config = current_sim.terrain_speed_config.clone();
     let bridge_explosions = current_sim.bridge_explosions.clone();
+    let metallic_debris = current_sim.metallic_debris.clone();
     let effect_frame_counts = current_sim.effect_frame_counts.clone();
     let terrain_costs = current_sim.terrain_costs.clone();
 
@@ -597,6 +598,7 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
         resolved_terrain,
         terrain_speed_config,
         bridge_explosions,
+        metallic_debris,
         effect_frame_counts,
         terrain_costs,
     );

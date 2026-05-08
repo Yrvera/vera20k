@@ -17,6 +17,7 @@
 
 pub mod batch;
 pub mod bridge_atlas;
+pub mod bridge_railing_atlas;
 pub mod cursor_atlas;
 pub mod egui_integration;
 pub mod gpu;

@@ -16,6 +16,7 @@
 //! - rules/ does NOT depend on: sim/, render/, ui/, sidebar/, audio/, net/
 
 pub mod art_data;
+pub mod bridge_warheads;
 pub mod combat_damage;
 pub mod error;
 pub mod flh;

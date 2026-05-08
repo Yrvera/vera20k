@@ -584,17 +584,15 @@ fn test_layered_path_rebuild_blocks_destroyed_bridge_deck() {
         "intact bridge should be traversable"
     );
 
-    let change = bridge_state
-        .apply_damage(BridgeDamageEvent {
-            rx: 1,
-            ry: 0,
-            damage: 10,
-        })
-        .expect("bridge group should be destroyed");
-    assert!(
-        change.destroyed_cells.len() >= 1,
-        "at least one bridge cell should be destroyed"
-    );
+    // Direct mutation replaces the legacy `apply_damage`. The orchestrator's
+    // walker performs the same per-cell damage-state transitions through
+    // `body_cell_advance_state`; this test only needs the destroyed
+    // damage_state for is_bridge_walkable to fail.
+    for (rx, ry) in [(1u16, 0u16), (2, 0), (3, 0)] {
+        if let Some(c) = bridge_state.cell_mut(rx, ry) {
+            c.damage_state = crate::sim::bridge_state::DamageState::Destroyed;
+        }
+    }
 
     let destroyed_grid =
         PathGrid::from_resolved_terrain_with_bridges(&terrain, Some(&bridge_state));
