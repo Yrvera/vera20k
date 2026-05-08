@@ -1491,6 +1491,11 @@ impl RuleSet {
         &self.particle_types[id.0 as usize]
     }
 
+    /// Iterate every parsed `[Particles]` definition.
+    pub fn particle_types_iter(&self) -> impl Iterator<Item = &ParticleType> {
+        self.particle_types.iter()
+    }
+
     /// Look up a particle system type by ID. Panics if `id` is out of range.
     pub fn particle_system_type(&self, id: ParticleSystemTypeId) -> &ParticleSystemType {
         &self.particle_system_types[id.0 as usize]
