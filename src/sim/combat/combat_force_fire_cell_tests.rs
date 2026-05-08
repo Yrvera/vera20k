@@ -103,3 +103,69 @@ fn new_constructor_creates_entity_variant() {
     let at = AttackTarget::new(123);
     assert!(matches!(at.target, TargetKind::Entity(123)));
 }
+
+#[test]
+fn force_fire_cell_pursuit_then_fire_integration() {
+    // Full pipeline: ctrl-click on a far cell → ForceAttackCell command →
+    // attack_target=Cell set → out of range → pursuit issues movement →
+    // (many ticks of walking) → in range → combat fires.
+    use crate::sim::command::{Command, CommandEnvelope};
+    use crate::sim::pathfinding::PathGrid;
+    use crate::sim::world::Simulation;
+    use std::collections::BTreeMap;
+
+    let rules = ff_rules();
+    let mut sim = Simulation::new();
+    sim.input_delay_ticks = 0;
+    sim.entities.insert(make_unit(1, "MTNK", 5, 5, 300));
+    // Replace sim interner with the test interner so type_ref/owner IDs from
+    // GameEntity::test_default resolve correctly.
+    sim.interner = crate::sim::intern::test_interner();
+    let owner_id = sim.interner.intern("Americans");
+    let grid = PathGrid::test_all_passable(64, 64);
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+
+    sim.pending_commands.push(CommandEnvelope::new(
+        owner_id,
+        sim.tick + 1,
+        Command::ForceAttackCell {
+            attacker_id: 1,
+            target_rx: 15,
+            target_ry: 5,
+        },
+    ));
+
+    // Tick 1: command applies, attack_target set, pursuit issues movement.
+    let pending: Vec<CommandEnvelope> = std::mem::take(&mut sim.pending_commands);
+    sim.advance_tick(&pending, Some(&rules), &height_map, Some(&grid), None, 100);
+
+    let entity = sim.entities.get(1).unwrap();
+    assert!(
+        entity.attack_target.is_some(),
+        "attack_target set after ForceAttackCell apply"
+    );
+    assert!(
+        entity.movement_target.is_some(),
+        "pursuit issued movement (out of range)"
+    );
+
+    // Tick many times until unit walks into range and fires.
+    let mut fired = false;
+    for _ in 0..400 {
+        let pending: Vec<CommandEnvelope> = std::mem::take(&mut sim.pending_commands);
+        sim.advance_tick(&pending, Some(&rules), &height_map, Some(&grid), None, 100);
+        if !sim.fire_events.is_empty() {
+            fired = true;
+            break;
+        }
+        assert!(
+            sim.entities.get(1).is_some_and(|e| e.attack_target.is_some()),
+            "attack_target dropped mid-pursuit (parity bug)"
+        );
+    }
+
+    assert!(
+        fired,
+        "unit should walk into range and fire within 400 ticks"
+    );
+}
