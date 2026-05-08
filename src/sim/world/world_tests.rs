@@ -1165,6 +1165,47 @@ fn test_bridge_collapse_is_deterministic_under_replay() {
     );
 }
 
+/// Replay determinism with bridge collapse + rim refresh. The new
+/// `update_adjacent_bridges` step in the cascade introduces additional
+/// `BridgeRuntimeCell` writes (`damaged_variant`, `damage_state` resets).
+/// This test pins that those mutations are deterministic across two
+/// identical-seed runs, so the new sim writes can never silently desync
+/// lockstep.
+#[test]
+fn replay_determinism_with_bridge_collapse_and_rim_refresh() {
+    fn run_one(seed: u64) -> u64 {
+        let mut sim = Simulation::new();
+        sim.rng = crate::sim::rng::SimRng::new(seed);
+        let (resolved, bridge_state) =
+            ew_high_bridge_strip_for_dispatch(5, 5, 4, false, 0);
+        sim.resolved_terrain = Some(resolved);
+        sim.bridge_state = Some(bridge_state);
+
+        let mut rules = combat_test_rules();
+        rules.resolve_bridge_warheads(&mut sim.interner);
+        let _ = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
+            &mut sim,
+            &rules,
+            &[BridgeDamageEvent {
+                rx: 5,
+                ry: 5,
+                damage: 100,
+                warhead_ref: crate::sim::intern::InternedId::default(),
+                is_ion_cannon: false,
+                impact_z: 4,
+            }],
+        );
+        sim.state_hash()
+    }
+
+    let h1 = run_one(0xFEED_BEEF);
+    let h2 = run_one(0xFEED_BEEF);
+    assert_eq!(
+        h1, h2,
+        "identical seed + inputs must produce identical state hash across the rim-refresh cascade"
+    );
+}
+
 /// Snapshot regression: serialize the `BridgeRuntimeState` after a collapse
 /// (overlay-byte progression + DamageState::Destroyed cells +
 /// endpoint_records active flips), deserialize it, and assert the
