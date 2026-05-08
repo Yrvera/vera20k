@@ -38,24 +38,26 @@ fn test_path_grid_set_blocked() {
 }
 
 #[test]
-fn test_octile_heuristic_cardinal() {
-    // Straight horizontal: 5 steps × 10 = 50.
-    let h: i32 = octile_heuristic(0, 0, 5, 0);
-    assert_eq!(h, 50);
+fn test_euclidean_heuristic_cardinal() {
+    // Pure cardinal: sqrt(25) * 1000 = 5000.
+    let h: i32 = euclidean_heuristic(0, 0, 5, 0);
+    assert_eq!(h, 5000);
 }
 
 #[test]
-fn test_octile_heuristic_diagonal() {
-    // Pure diagonal: 3 steps × 14 = 42.
-    let h: i32 = octile_heuristic(0, 0, 3, 3);
-    assert_eq!(h, 42);
+fn test_euclidean_heuristic_diagonal() {
+    // Pure diagonal (3,3): sqrt(18) * 1000 ≈ 4242.64;
+    // isqrt(18_000_000) = 4242 (4242² = 17_994_564, 4243² = 18_003_049).
+    let h: i32 = euclidean_heuristic(0, 0, 3, 3);
+    assert_eq!(h, 4242);
 }
 
 #[test]
-fn test_octile_heuristic_mixed() {
-    // dx=5, dy=3: 3 diagonal + 2 cardinal = 3*14 + 2*10 = 62.
-    let h: i32 = octile_heuristic(0, 0, 5, 3);
-    assert_eq!(h, 62);
+fn test_euclidean_heuristic_mixed() {
+    // dx=5, dy=3: sqrt(34) * 1000 ≈ 5830.95;
+    // isqrt(34_000_000) = 5830 (5830² = 33_988_900, 5831² = 34_000_561).
+    let h: i32 = euclidean_heuristic(0, 0, 5, 3);
+    assert_eq!(h, 5830);
 }
 
 #[test]
