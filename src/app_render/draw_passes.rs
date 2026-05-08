@@ -65,16 +65,14 @@ pub(super) fn dispatch_draw_passes(
         "overlay_bridge_body",
     );
 
-    // --- Step 2.5: Bridge body shadow (passthrough — Z-test ON, Z-write OFF) ---
-    // Drawn after the body so the shadow reads body Z but does not write its
-    // own Z; units crossing afterwards still occlude the shadow correctly.
-    draw_pooled_bridge_passthrough(
-        &mut pass,
-        &state.batch_renderer,
-        pool,
-        state.bridge_atlas.as_ref(),
-        "overlay_bridge_body_shadow",
-    );
+    // --- Step 2.5: Bridge body shadow (DISABLED) ---
+    // Phase D Task 8 wired this in, but bridge shadow SHP frames are not
+    // ordinary palette-indexed pixels — gamemd renders them via a translucent
+    // blitter that re-interprets the indices as shadow density. Passing them
+    // through the theater palette renders solid bright cyan instead of a
+    // shadow shape. Re-enable once a proper shadow blitter (or palette
+    // remap) lands. Pipeline plumbing — atlas pack, instance build, pooled
+    // upload — is preserved so the re-enable is a one-line draw call.
 
     // --- Step 3: Overlays (no depth test — passthrough) ---
     // Overlays don't read the Z-buffer — the tile blitter skips Z-testing
