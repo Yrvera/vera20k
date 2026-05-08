@@ -76,14 +76,7 @@ pub(super) fn dispatch_draw_passes(
     // Walls are NOT drawn here — they participate in the Y-sorted merge
     // (step 5) so they correctly interleave with buildings by depth.
 
-    draw_pooled_passthrough_overlay(
-        &mut pass,
-        &state.batch_renderer,
-        pool,
-        state.overlay_atlas.as_ref(),
-        "overlay_bridge_detail",
-    );
-    // Non-wall overlays (ore, trees, terrain objects) — no depth test.
+    // Non-wall overlays (ore, trees, terrain objects, low bridges) — no depth test.
     draw_pooled_passthrough_overlay(
         &mut pass,
         &state.batch_renderer,

@@ -9,7 +9,7 @@ use crate::map::overlay::OverlayEntry;
 use crate::map::overlay_types::{OverlayTypeFlags, OverlayTypeRegistry};
 use crate::render::batch::{BatchRenderer, BatchTexture};
 use crate::render::gpu::GpuContext;
-use crate::render::overlay_atlas::{OverlaySpriteEntry, OverlaySpriteKey};
+use crate::render::overlay_atlas::OverlaySpriteEntry;
 use crate::rules::art_data::{self, ArtRegistry};
 use crate::rules::ini_parser::IniFile;
 use wgpu::util::DeviceExt;
@@ -51,13 +51,6 @@ impl BridgeAtlas {
             frame,
             kind: BridgeFrameKind::Shadow,
         })
-    }
-
-    /// Compatibility shim for the old `OverlaySpriteKey`-based lookup.
-    /// Routes to `body_entry`. REMOVE in Task 13 once `overlays.rs` no longer
-    /// dispatches bridges through this entry path.
-    pub fn get(&self, key: &OverlaySpriteKey) -> Option<&OverlaySpriteEntry> {
-        self.body_entry(&key.name, key.frame)
     }
 }
 

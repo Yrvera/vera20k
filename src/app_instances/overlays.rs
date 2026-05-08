@@ -24,29 +24,11 @@ use super::helpers::{compute_sprite_depth, compute_sprite_depth_params, in_view}
 enum OverlayRenderBucket {
     Generic,
     Wall,
-    BridgeBody,
-    BridgeDetail,
 }
 
-fn bridge_y_offset_for_name(name: &str) -> f32 {
-    match name.to_ascii_uppercase().as_str() {
-        "BRIDGE1" | "BRIDGEB1" => -16.0,
-        "BRIDGE2" | "BRIDGEB2" => -31.0,
-        _ => 0.0,
-    }
-}
-
-fn classify_overlay_render_bucket(
-    name: &str,
-    overlay_id: u8,
-    is_wall: bool,
-) -> OverlayRenderBucket {
+fn classify_overlay_render_bucket(is_wall: bool) -> OverlayRenderBucket {
     if is_wall {
         OverlayRenderBucket::Wall
-    } else if is_high_bridge_body_name(name) {
-        OverlayRenderBucket::BridgeBody
-    } else if is_bridge_overlay_index(overlay_id) {
-        OverlayRenderBucket::BridgeDetail
     } else {
         OverlayRenderBucket::Generic
     }
@@ -173,13 +155,15 @@ pub(crate) fn build_damage_fire_instances(state: &AppState, paged: &mut [Vec<Spr
 }
 
 /// Build SpriteInstances for visible overlay objects and terrain objects.
+///
+/// Bridge body, body shadow, and railing instances are emitted separately by
+/// `app_instances::bridges` (Phase D). Low bridges (LOBRDG*) ride in the
+/// generic `instances` bucket and use the regular overlay atlas.
 pub(crate) fn build_overlay_instances(
     state: &AppState,
     sw: f32,
     sh: f32,
     instances: &mut Vec<SpriteInstance>,
-    bridge_detail_instances: &mut Vec<SpriteInstance>,
-    bridge_body_instances: &mut Vec<SpriteInstance>,
     wall_instances: &mut Vec<SpriteInstance>,
 ) {
     let atlas = match &state.overlay_atlas {
@@ -227,9 +211,17 @@ pub(crate) fn build_overlay_instances(
             continue;
         };
 
-        // Skip destroyed bridge overlays — the sim marks bridge cells destroyed
-        // but the overlay list is static map data. Without this check, destroyed
-        // bridges continue rendering visually even though units can't cross.
+        // High-bridge bodies are emitted by `app_instances::bridges` reading
+        // `BridgeRuntimeCell` post-tick. Skip them here so they don't double-
+        // render via the static map overlay list.
+        if is_high_bridge_body_name(name) {
+            continue;
+        }
+
+        // Skip destroyed low-bridge overlays — the sim marks bridge cells
+        // destroyed but the overlay list is static map data. Without this
+        // check, destroyed low bridges continue rendering visually even
+        // though units can't cross.
         if is_bridge_overlay_index(entry.overlay_id) {
             if let Some(bridge_state) = state
                 .simulation
@@ -266,16 +258,7 @@ pub(crate) fn build_overlay_instances(
             }
             if live_cell.overlay_id.is_some() {
                 // Use live overlay_data for all overlay types.
-                let base_frame = live_cell.overlay_data;
-                // Healthy bridges (frame 0 or 9) get per-cell Latin square variation.
-                if !is_wall && (base_frame == 0 || base_frame == 9) {
-                    const BRIDGE_FRAME_VARIATION: [u8; 16] =
-                        [0, 1, 2, 3, 3, 2, 1, 0, 2, 3, 0, 1, 1, 0, 3, 2];
-                    let idx: usize = ((entry.ry & 3) as usize) << 2 | (entry.rx & 3) as usize;
-                    base_frame + BRIDGE_FRAME_VARIATION[idx]
-                } else {
-                    base_frame
-                }
+                live_cell.overlay_data
             } else {
                 // No overlay in grid — fall back to static map frame.
                 entry.frame
@@ -298,28 +281,12 @@ pub(crate) fn build_overlay_instances(
                         (richness - 1).min(11) as u8
                     }
                 }
-            } else if !is_wall && (entry.frame == 0 || entry.frame == 9) {
-                const BRIDGE_FRAME_VARIATION: [u8; 16] =
-                    [0, 1, 2, 3, 3, 2, 1, 0, 2, 3, 0, 1, 1, 0, 3, 2];
-                let idx: usize = ((entry.ry & 3) as usize) << 2 | (entry.rx & 3) as usize;
-                entry.frame + BRIDGE_FRAME_VARIATION[idx]
             } else {
                 entry.frame
             }
         };
 
-        // Bridge overlay Y-offset. The direction-dependent values come from the
-        // isometric projection: EW and NS bridge decks have different vertical extents.
-        // heightOffset = cell.Level * CellHeight + direction_offset.
-        // Our iso_to_screen already applies cell.Level * CellHeight via z, so we only
-        // add the direction_offset. The CC_Draw_Shape Z parameter is a depth value
-        // for the blitter, NOT a screen Y offset — screen position comes from SHP frame
-        // draw offsets + centering flag.
-        //   EW (BRIDGE1/BRIDGEB1): -(CellHeight + 1) = -16px
-        //   NS (BRIDGE2/BRIDGEB2): -(CellHeight * 2 + 1) = -31px
-        //   Low (LOBRDG*/LOBRDB*): 0px (ground level)
-        let bridge_y_offset: f32 = bridge_y_offset_for_name(&upper);
-        let bucket = classify_overlay_render_bucket(&upper, entry.overlay_id, is_wall);
+        let bucket = classify_overlay_render_bucket(is_wall);
         // FA2 IsoView.cpp:5955-5956: track overlays render +CellHeight (15px) lower.
         let track_y_offset: f32 = if overlay_flags.map(|f| f.track).unwrap_or(false) {
             15.0
@@ -333,7 +300,7 @@ pub(crate) fn build_overlay_instances(
             .copied()
             .unwrap_or(0);
         let (screen_x, screen_y) = terrain::iso_to_screen(entry.rx, entry.ry, z);
-        let screen_y: f32 = screen_y + bridge_y_offset + track_y_offset;
+        let screen_y: f32 = screen_y + track_y_offset;
 
         // Playable area bounds — skip overlays outside LocalSize (border filler).
         if let Some(ref bounds) = local_bounds {
@@ -355,26 +322,9 @@ pub(crate) fn build_overlay_instances(
             name: name.clone(),
             frame: 0,
         };
-        let spr = match bucket {
-            OverlayRenderBucket::BridgeBody => {
-                state.bridge_atlas.as_ref().and_then(|bridge_atlas| {
-                    bridge_atlas
-                        .get(&key)
-                        .or_else(|| bridge_atlas.get(&key_fallback))
-                })
-            }
-            _ => atlas.get(&key).or_else(|| atlas.get(&key_fallback)),
-        };
+        let spr = atlas.get(&key).or_else(|| atlas.get(&key_fallback));
         let Some(spr) = spr else { continue };
-
-        // Depth for high bridges uses (tile.Level + HighBridgeHeight) where
-        // HighBridgeHeight=4. This pushes bridge overlays forward in the depth
-        // buffer so they render in front of terrain/water below the bridge.
-        let depth_z: u8 = if matches!(bucket, OverlayRenderBucket::BridgeBody) {
-            z.saturating_add(4)
-        } else {
-            z
-        };
+        let depth_z: u8 = z;
         // Walls use the same NW-corner render coords as buildings:
         // (Location.X - 128, Location.Y - 128). Apply -TILE_HEIGHT/2 to match.
         // Without this, a wall one cell behind a building lands at the same
@@ -405,8 +355,6 @@ pub(crate) fn build_overlay_instances(
 
         let target = match bucket {
             OverlayRenderBucket::Wall => &mut *wall_instances,
-            OverlayRenderBucket::BridgeBody => &mut *bridge_body_instances,
-            OverlayRenderBucket::BridgeDetail => &mut *bridge_detail_instances,
             OverlayRenderBucket::Generic => &mut *instances,
         };
         target.push(SpriteInstance {
@@ -425,9 +373,7 @@ pub(crate) fn build_overlay_instances(
 
     if std::env::var("RA2_DEBUG_BRIDGE_RENDER_BUCKETS").is_ok() {
         log::debug!(
-            "Bridge buckets: body={} detail={} generic={} walls={}",
-            bridge_body_instances.len(),
-            bridge_detail_instances.len(),
+            "Overlay buckets: generic={} walls={}",
             instances.len(),
             wall_instances.len()
         );
@@ -678,32 +624,15 @@ pub(crate) fn build_parachute_instances(
 
 #[cfg(test)]
 mod tests {
-    use super::{OverlayRenderBucket, bridge_y_offset_for_name, classify_overlay_render_bucket};
+    use super::{OverlayRenderBucket, classify_overlay_render_bucket};
 
     #[test]
-    fn high_bridge_body_uses_dedicated_bucket() {
-        assert_eq!(
-            classify_overlay_render_bucket("BRIDGE1", 24, false),
-            OverlayRenderBucket::BridgeBody
-        );
-        assert_eq!(
-            classify_overlay_render_bucket("BRIDGEB2", 238, false),
-            OverlayRenderBucket::BridgeBody
-        );
+    fn wall_routes_to_wall_bucket() {
+        assert_eq!(classify_overlay_render_bucket(true), OverlayRenderBucket::Wall);
     }
 
     #[test]
-    fn non_body_bridge_overlay_stays_passthrough() {
-        assert_eq!(
-            classify_overlay_render_bucket("LOBRDG10", 83, false),
-            OverlayRenderBucket::BridgeDetail
-        );
-    }
-
-    #[test]
-    fn bridge_offsets_match_direction() {
-        assert_eq!(bridge_y_offset_for_name("BRIDGE1"), -16.0);
-        assert_eq!(bridge_y_offset_for_name("BRIDGE2"), -31.0);
-        assert_eq!(bridge_y_offset_for_name("LOBRDG10"), 0.0);
+    fn non_wall_routes_to_generic_bucket() {
+        assert_eq!(classify_overlay_render_bucket(false), OverlayRenderBucket::Generic);
     }
 }
