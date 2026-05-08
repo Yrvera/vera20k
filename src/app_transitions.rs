@@ -54,6 +54,7 @@ pub(crate) fn transition_to_in_game(state: &mut AppState) {
             sprite_atlas: None,
             overlay_atlas: None,
             bridge_atlas: None,
+            bridge_railing_atlas: None,
             sidebar_cameo_atlas: None,
             sidebar_chrome: None,
             software_cursor: None,
@@ -104,6 +105,7 @@ pub(crate) fn transition_to_in_game(state: &mut AppState) {
     state.sprite_atlas = result.sprite_atlas;
     state.overlay_atlas = result.overlay_atlas;
     state.bridge_atlas = result.bridge_atlas;
+    state.bridge_railing_atlas = result.bridge_railing_atlas;
     state.sidebar_cameo_atlas = result.sidebar_cameo_atlas;
     state.sidebar_chrome = result.sidebar_chrome;
     if let Some(ref fnt) = result.fnt_file {

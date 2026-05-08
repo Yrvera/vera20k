@@ -13,6 +13,7 @@ use crate::map::overlay_types::{OverlayTypeRegistry, resolve_overlay_name_for_re
 use crate::map::waypoints;
 use crate::render::batch::BatchRenderer;
 use crate::render::bridge_atlas::{self, BridgeAtlas};
+use crate::render::bridge_railing_atlas::{self, BridgeRailingAtlas};
 use crate::render::gpu::GpuContext;
 use crate::render::overlay_atlas::{self, OverlayAtlas};
 use crate::rules::art_data::ArtRegistry;
@@ -281,6 +282,7 @@ pub(crate) fn build_overlay_atlas_from_map(
 ) -> (
     Option<OverlayAtlas>,
     Option<BridgeAtlas>,
+    Option<BridgeRailingAtlas>,
     BTreeMap<u8, String>,
     Vec<OverlayEntry>,
     HashMap<(u8, u8), [u8; 3]>,
@@ -309,6 +311,7 @@ pub(crate) fn build_overlay_atlas_from_map(
 
     if map_data.overlays.is_empty() && map_data.terrain_objects.is_empty() {
         return (
+            None,
             None,
             None,
             empty_names,
@@ -487,9 +490,21 @@ pub(crate) fn build_overlay_atlas_from_map(
         )
     });
 
+    let bridge_railing_atlas: Option<BridgeRailingAtlas> =
+        theater_palette.as_ref().and_then(|theater_pal| {
+            bridge_railing_atlas::build_bridge_railing_atlas(
+                gpu,
+                batch,
+                asset_manager,
+                theater_pal,
+                theater_ext,
+            )
+        });
+
     (
         atlas,
         bridge_atlas,
+        bridge_railing_atlas,
         overlay_names,
         wall_overlays,
         tiberium_radar_colors,

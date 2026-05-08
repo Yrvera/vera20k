@@ -39,6 +39,7 @@ use crate::map::triggers::TriggerMap;
 use crate::map::waypoints::Waypoint;
 use crate::render::batch::BatchRenderer;
 use crate::render::bridge_atlas::BridgeAtlas;
+use crate::render::bridge_railing_atlas::BridgeRailingAtlas;
 use crate::render::egui_integration::EguiIntegration;
 use crate::render::gpu::GpuContext;
 use crate::render::minimap::MinimapRenderer;
@@ -81,6 +82,7 @@ pub(crate) struct AppState {
     pub(crate) sprite_atlas: Option<SpriteAtlas>,
     pub(crate) overlay_atlas: Option<OverlayAtlas>,
     pub(crate) bridge_atlas: Option<BridgeAtlas>,
+    pub(crate) bridge_railing_atlas: Option<BridgeRailingAtlas>,
     /// Overlay entries from map for per-frame instance generation.
     pub(crate) overlays: Vec<OverlayEntry>,
     /// Terrain objects from map for per-frame instance generation.
@@ -561,6 +563,7 @@ impl App {
             sprite_atlas: None,
             overlay_atlas: None,
             bridge_atlas: None,
+            bridge_railing_atlas: None,
             overlays: Vec::new(),
             terrain_objects: Vec::new(),
             waypoints: HashMap::new(),
