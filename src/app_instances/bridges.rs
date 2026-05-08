@@ -11,8 +11,6 @@
 //! - Part of the app layer — may depend on everything.
 //! - Read-only access to sim state via `AppState`.
 
-use std::collections::BTreeMap;
-
 use crate::app::AppState;
 use crate::map::lighting;
 use crate::map::terrain::{self, TILE_HEIGHT, TILE_WIDTH};
@@ -44,14 +42,6 @@ pub const BRIDGE_SHADOW_EW_DX: i32 = -15;
 /// Shadow Y displacement on EW states 9..17. Verified -0x2D = +7
 /// (RE doc §3.3.2, ledger #10).
 pub const BRIDGE_SHADOW_EW_DY: i32 = 7;
-
-/// Per-cell deck-variant override consumed by the terrain instance builder
-/// to pick alt-art sub-tile UVs when `BridgeRuntimeCell.damaged_variant` is
-/// set. RE doc §3.2 + ledger #13.
-#[derive(Debug, Clone, Copy)]
-pub struct DeckVariantSelect {
-    pub use_alternate: bool,
-}
 
 /// Build sprite instances for the bridge body pass (RE doc §3.3, Step 5
 /// pass 1). Reads `BridgeRuntimeCell.overlay_byte` post-tick; uses
@@ -336,28 +326,6 @@ fn resolve_bridge_kind_and_sub_idx(
     };
     let sub_idx: u8 = state.resolved_terrain.as_ref()?.cell(rx, ry)?.final_sub_tile;
     Some((kind, sub_idx))
-}
-
-/// Walk all bridge cells with `damaged_variant: true` and return a sorted
-/// map of `(rx, ry) → DeckVariantSelect { use_alternate: true }`. Consumed
-/// by `app_render::build_instances` to pick the alt-art sub-tile UV for the
-/// deck TMP. RE doc §3.2 + ledger #13.
-pub fn build_bridge_deck_variant_overrides(
-    state: &AppState,
-) -> BTreeMap<(u16, u16), DeckVariantSelect> {
-    let mut out: BTreeMap<(u16, u16), DeckVariantSelect> = BTreeMap::new();
-    let Some(sim) = state.simulation.as_ref() else {
-        return out;
-    };
-    let Some(bridge_state) = sim.bridge_state.as_ref() else {
-        return out;
-    };
-    for ((rx, ry), cell) in bridge_state.iter_cells() {
-        if cell.damaged_variant {
-            out.insert((rx, ry), DeckVariantSelect { use_alternate: true });
-        }
-    }
-    out
 }
 
 #[cfg(test)]
