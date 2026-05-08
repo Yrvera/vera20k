@@ -36,6 +36,10 @@ pub(super) struct WorldInstances {
     pub smudge: Vec<SpriteInstance>,
     pub bridge_detail: Vec<SpriteInstance>,
     pub bridge_body: Vec<SpriteInstance>,
+    pub bridge_body_shadow: Vec<SpriteInstance>,
+    pub bridge_railing: Vec<SpriteInstance>,
+    pub deck_variant_overrides:
+        std::collections::BTreeMap<(u16, u16), crate::app_instances::bridges::DeckVariantSelect>,
     pub wall: Vec<SpriteInstance>,
     pub unit: Vec<SpriteInstance>,
     pub bridge_unit: Vec<SpriteInstance>,
@@ -153,20 +157,35 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     let mut overlay: Vec<SpriteInstance> = std::mem::take(&mut state.cached_overlay_instances);
     overlay.clear();
     let mut bridge_detail: Vec<SpriteInstance> = Vec::new();
-    let mut bridge_body: Vec<SpriteInstance> = Vec::new();
     let mut wall: Vec<SpriteInstance> = Vec::new();
+    // The legacy `BridgeBody` bucket inside `build_overlay_instances` is being
+    // replaced by `app_instances::bridges` (Phase D). We pass a discarded Vec
+    // here for the body slot until Task 13 removes the parameter.
+    let mut legacy_bridge_body_discarded: Vec<SpriteInstance> = Vec::new();
     app_instances::build_overlay_instances(
         state,
         sw,
         sh,
         &mut overlay,
         &mut bridge_detail,
-        &mut bridge_body,
+        &mut legacy_bridge_body_discarded,
         &mut wall,
     );
+    // Bridge body, shadow, and railing emission live in app_instances::bridges
+    // (Phase D Task 11). Read from BridgeRuntimeCell post-tick (NOT OverlayGrid).
+    let mut bridge_body: Vec<SpriteInstance> = Vec::new();
+    let mut bridge_body_shadow: Vec<SpriteInstance> = Vec::new();
+    let mut bridge_railing: Vec<SpriteInstance> = Vec::new();
+    app_instances::bridges::build_bridge_body_instances(state, sw, sh, &mut bridge_body);
+    app_instances::bridges::build_bridge_shadow_instances(state, sw, sh, &mut bridge_body_shadow);
+    app_instances::bridges::build_bridge_railing_instances(state, sw, sh, &mut bridge_railing);
+    let deck_variant_overrides =
+        app_instances::bridges::build_bridge_deck_variant_overrides(state);
     sort_by_depth_desc(&mut overlay);
     sort_by_depth_desc(&mut bridge_detail);
     sort_by_depth_desc(&mut bridge_body);
+    sort_by_depth_desc(&mut bridge_body_shadow);
+    sort_by_depth_desc(&mut bridge_railing);
     sort_by_depth_desc(&mut wall);
 
     // Smudges: static crater/scorch decals on top of terrain, under entities.
@@ -237,6 +256,9 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         smudge,
         bridge_detail,
         bridge_body,
+        bridge_body_shadow,
+        bridge_railing,
+        deck_variant_overrides,
         wall,
         unit,
         bridge_unit,
