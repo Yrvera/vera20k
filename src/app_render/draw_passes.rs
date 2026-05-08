@@ -29,6 +29,7 @@ pub(super) struct DrawPassData<'a> {
     pub unit_instances: &'a [SpriteInstance],
     pub shp_paged: &'a [Vec<SpriteInstance>],
     pub wall_instances: &'a [SpriteInstance],
+    pub particle_paged: &'a [Vec<SpriteInstance>],
     pub ghost_page: u8,
 }
 
@@ -175,6 +176,34 @@ pub(super) fn dispatch_draw_passes(
         state.bridge_railing_atlas.as_ref(),
         "overlay_bridge_railing",
     );
+
+    // --- Step 7.6: Particles (Layer 3, above all ground geometry incl. cliffs) ---
+    // ParticleClass::GetLayer = 3 in the original engine, drawing particles
+    // above Layer 2 (buildings, units, turrets) and above cliff redraw.
+    // Passthrough pipeline (no depth interaction) — particles are translucent
+    // and Y-sorted on the CPU, so no GPU depth read/write needed.
+    const PARTICLE_KEYS: [&str; 4] = [
+        "particle_p0",
+        "particle_p1",
+        "particle_p2",
+        "particle_p3",
+    ];
+    for (i, key) in PARTICLE_KEYS.iter().enumerate() {
+        if let Some(page) = state.sprite_atlas.as_ref().and_then(|a| a.page(i)) {
+            if let Some((buf, count)) = pool.get(key) {
+                if count == 0 {
+                    continue;
+                }
+                state.batch_renderer.draw_passthrough_range(
+                    &mut pass,
+                    &page.texture,
+                    buf,
+                    0,
+                    count,
+                );
+            }
+        }
+    }
 
     // --- Step 8: Debug overlays ---
     // Drawn above entities, below fog and UI.

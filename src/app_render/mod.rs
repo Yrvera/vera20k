@@ -102,6 +102,7 @@ pub(crate) fn render_game(
             unit_instances: &world.unit,
             shp_paged: &world.shp_paged,
             wall_instances: &world.wall,
+            particle_paged: &world.particle_paged,
             ghost_page: ui.ghost_page,
         },
     );
