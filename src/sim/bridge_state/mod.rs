@@ -78,6 +78,20 @@ impl DamageState {
         }
     }
 
+    /// Render-side state byte. Returns the *base* byte for `Healthy { variant }`
+    /// (`0` for NS, `9` for EW) regardless of the stored variant. The renderer
+    /// re-derives Latin-square jitter from cell `(x, y)` per the binary
+    /// `DrawOverlay_Body` path (RE doc §3.3.1, ledger #4).
+    pub fn render_state_byte(self, axis: Axis) -> u8 {
+        match self {
+            DamageState::Healthy { .. } => match axis {
+                Axis::NS => 0,
+                Axis::EW => 9,
+            },
+            other => other.to_state_byte(axis),
+        }
+    }
+
     /// Decode from binary state byte. Returns `None` for bytes outside the
     /// defined ranges (NS: 0..=8; EW: 9..=0x11).
     ///
@@ -1675,6 +1689,17 @@ mod tests {
     fn damage_state_from_byte_out_of_range_returns_none() {
         assert_eq!(DamageState::from_state_byte(0x12), None);
         assert_eq!(DamageState::from_state_byte(0xFF), None);
+    }
+
+    #[test]
+    fn render_state_byte_strips_healthy_variant() {
+        assert_eq!(DamageState::Healthy { variant: 0 }.render_state_byte(Axis::NS), 0);
+        assert_eq!(DamageState::Healthy { variant: 5 }.render_state_byte(Axis::NS), 0);
+        assert_eq!(DamageState::Healthy { variant: 0 }.render_state_byte(Axis::EW), 9);
+        assert_eq!(DamageState::Healthy { variant: 5 }.render_state_byte(Axis::EW), 9);
+        assert_eq!(DamageState::Damaged.render_state_byte(Axis::NS), 6);
+        assert_eq!(DamageState::Damaged.render_state_byte(Axis::EW), 0xF);
+        assert_eq!(DamageState::Destroyed.render_state_byte(Axis::NS), 0);
     }
 
     #[test]
