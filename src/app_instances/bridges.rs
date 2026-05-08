@@ -16,7 +16,8 @@ use crate::map::lighting;
 use crate::map::terrain::{self, TILE_HEIGHT, TILE_WIDTH};
 use crate::render::batch::SpriteInstance;
 use crate::render::bridge_atlas::is_high_bridge_body_name;
-use crate::sim::bridge_state::DamageState;
+use crate::render::bridge_railing_atlas::BridgeKind;
+use crate::sim::bridge_state::{BridgeRuntimeCell, DamageState};
 
 use super::helpers::{compute_sprite_depth_params, in_view};
 
@@ -225,6 +226,106 @@ pub fn build_bridge_shadow_instances(
             alpha: 1.0,
         });
     }
+}
+
+/// Build sprite instances for the bridge railing pass (RE doc §3.4.1, Step 7).
+/// Drawn AFTER unit/ground merge AND AFTER cliff redraw, BEFORE debug — see
+/// `draw_passes.rs` ordering. Skips cells where the railing-table entry is
+/// `None` (`shp_frame_1based == 0` ⇒ no railing for this sub-tile).
+pub fn build_bridge_railing_instances(
+    state: &AppState,
+    sw: f32,
+    sh: f32,
+    out: &mut Vec<SpriteInstance>,
+) {
+    let Some(sim) = state.simulation.as_ref() else {
+        return;
+    };
+    let Some(bridge_state) = sim.bridge_state.as_ref() else {
+        return;
+    };
+    let Some(atlas) = state.bridge_railing_atlas.as_ref() else {
+        return;
+    };
+    let (origin_y, world_height) = state
+        .terrain_grid
+        .as_ref()
+        .map(|g| (g.origin_y, g.world_height))
+        .unwrap_or((0.0, 1.0));
+    let (cam_x, cam_y) = (state.camera_x, state.camera_y);
+
+    for ((rx, ry), cell) in bridge_state.iter_cells() {
+        if !cell.deck_present || matches!(cell.damage_state, DamageState::Destroyed) {
+            continue;
+        }
+        let Some((kind, sub_idx)) = resolve_bridge_kind_and_sub_idx(state, rx, ry, cell) else {
+            continue;
+        };
+        let Some(entry) = atlas.entry(kind, sub_idx) else {
+            continue;
+        };
+
+        let z: u8 = state
+            .height_map
+            .get(&(rx, ry))
+            .copied()
+            .unwrap_or(cell.deck_level);
+        let (sx, sy) = terrain::iso_to_screen(rx, ry, z);
+        let final_x = sx + entry.dx as f32 + TILE_WIDTH / 2.0;
+        let final_y = sy + entry.dy as f32 + TILE_HEIGHT / 2.0;
+        if !in_view(final_x, final_y, 60.0, 60.0, cam_x, cam_y, sw, sh, 60.0) {
+            continue;
+        }
+
+        let depth_z = z.saturating_add(BRIDGE_HEIGHT_BONUS);
+        let depth = compute_sprite_depth_params(origin_y, world_height, final_y, depth_z);
+        // Railings use neutral tint per ledger #20.
+        let tint: [f32; 3] = lighting::DEFAULT_TINT;
+        out.push(SpriteInstance {
+            position: [final_x + entry.offset_x, final_y + entry.offset_y],
+            size: entry.pixel_size,
+            uv_origin: entry.uv_origin,
+            uv_size: entry.uv_size,
+            depth,
+            tint,
+            alpha: 1.0,
+        });
+    }
+}
+
+/// Resolve `(BridgeKind, sub_idx)` for a bridge cell.
+///
+/// Mapping per RE doc §3.4.1 + verified against the codebase
+/// (src/map/resolved_terrain.rs:48-55, src/map/overlay_types.rs:25-28):
+/// - `BRIDGE1`, `BRIDGEB1`, `BRIDGE2`, `BRIDGEB2` → Concrete (HIGH bridges).
+///   The `1` vs `2` suffix is axis (EW vs NS), not material — all four are
+///   concrete.
+/// - `LOBRDG*` → Wood (LOW bridges).
+///
+/// `sub_idx` comes from `ResolvedTerrainCell.final_sub_tile` and is used
+/// directly as the railing-table slot index.
+fn resolve_bridge_kind_and_sub_idx(
+    state: &AppState,
+    rx: u16,
+    ry: u16,
+    cell: &BridgeRuntimeCell,
+) -> Option<(BridgeKind, u8)> {
+    let name = state
+        .overlay_names
+        .get(&cell.overlay_byte)?
+        .to_ascii_uppercase();
+    let kind = if matches!(
+        name.as_str(),
+        "BRIDGE1" | "BRIDGEB1" | "BRIDGE2" | "BRIDGEB2"
+    ) {
+        BridgeKind::Concrete
+    } else if name.starts_with("LOBRDG") {
+        BridgeKind::Wood
+    } else {
+        return None;
+    };
+    let sub_idx: u8 = state.resolved_terrain.as_ref()?.cell(rx, ry)?.final_sub_tile;
+    Some((kind, sub_idx))
 }
 
 #[cfg(test)]
