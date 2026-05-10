@@ -55,7 +55,7 @@ pub(crate) struct AttackerSnapshot {
     pub sub_y: SimFixed,
     pub type_id: InternedId,
     pub cooldown_ticks: u16,
-    pub turret_facing: Option<u16>,
+    pub barrel_facing: Option<crate::sim::movement::FacingClass>,
     pub burst_remaining: u8,
     pub burst_delay_ticks: u8,
     /// IFV weapon index override (from Gunner=yes transport with passenger).
@@ -96,7 +96,7 @@ pub fn acquire_best_target_for_entity(
         sub_y: entity.position.sub_y,
         type_id: entity.type_ref,
         cooldown_ticks: 0,
-        turret_facing: entity.turret_facing,
+        barrel_facing: entity.barrel_facing,
         burst_remaining: 0,
         burst_delay_ticks: 0,
         ifv_weapon_index: entity.ifv_weapon_index,
@@ -299,30 +299,16 @@ pub fn tick_retaliation(entities: &mut EntityStore, rules: &RuleSet, interner: &
         };
 
         if retaliate {
-            // Compute facing toward attacker (lepton-precise for turrets).
+            // Read attacker rx/ry (only needed for body-only retaliators).
             let attacker_pos = match entities.get(attacker_sid) {
-                Some(a) => (
-                    a.position.rx,
-                    a.position.ry,
-                    a.position.sub_x,
-                    a.position.sub_y,
-                ),
+                Some(a) => (a.position.rx, a.position.ry),
                 None => continue,
             };
             if let Some(entity) = entities.get_mut(entity_id) {
-                if entity.turret_facing.is_some() {
-                    let desired_u16 = crate::sim::movement::turret::facing_toward_lepton(
-                        entity.position.rx,
-                        entity.position.ry,
-                        entity.position.sub_x,
-                        entity.position.sub_y,
-                        attacker_pos.0,
-                        attacker_pos.1,
-                        attacker_pos.2,
-                        attacker_pos.3,
-                    );
-                    entity.turret_facing = Some(desired_u16);
-                } else {
+                if entity.barrel_facing.is_none() {
+                    // Body-only retaliator — instantly face the attacker. Turreted
+                    // retaliators get their turret rotation driven by
+                    // tick_turret_rotation in subsequent ticks (matches gamemd).
                     let dx: i32 = attacker_pos.0 as i32 - entity.position.rx as i32;
                     let dy: i32 = attacker_pos.1 as i32 - entity.position.ry as i32;
                     entity.facing = crate::sim::movement::facing_from_delta(dx, dy);
