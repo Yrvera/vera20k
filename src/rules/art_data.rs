@@ -564,6 +564,81 @@ impl ArtRegistry {
             .map(|e| e.new_theater)
             .unwrap_or(false)
     }
+
+    /// Iterate all entries with their canonical (uppercase) name keys.
+    pub fn iter_entries(&self) -> impl Iterator<Item = (&str, &ArtEntry)> {
+        self.entries.iter().map(|(k, v)| (k.as_str(), v))
+    }
+
+    /// Mutable lookup; case-insensitive on the key.
+    pub fn get_mut(&mut self, image_id: &str) -> Option<&mut ArtEntry> {
+        self.entries.get_mut(&image_id.to_uppercase())
+    }
+
+    /// Eagerly populate `frame_width`/`frame_height` on entries whose anim has
+    /// a smudge-spawn flag (Crater/Burn/ForceBigCraters). Reads frame 0 of
+    /// each anim's SHP via the shared `anim_shp_candidates` filename
+    /// pipeline. Anims without a loadable SHP keep the (30, 30) defaults
+    /// from their initial parse.
+    ///
+    /// Returns `(populated, fallback)` for diagnostic logging:
+    ///   `populated` = anims whose SHP was found and dims were stored
+    ///   `fallback`  = smudge-flagged anims whose SHP failed to load
+    pub fn populate_anim_frame_dims(
+        &mut self,
+        asset_manager: &crate::assets::asset_manager::AssetManager,
+        theater_ext: &str,
+        theater_name: &str,
+    ) -> (u32, u32) {
+        // Two-pass: collect (name, image_id) under &self, then mutate via
+        // get_mut. Direct iter_mut would conflict with the &self call to
+        // resolve_effective_image_id.
+        let pending: Vec<(String, String)> = self
+            .iter_entries()
+            .filter(|(_name, entry)| entry.crater || entry.scorch || entry.force_big_craters)
+            .map(|(name, _entry)| {
+                let image_id: String = self.resolve_effective_image_id(name, name);
+                (name.to_string(), image_id)
+            })
+            .collect();
+
+        let mut populated: u32 = 0;
+        let mut fallback: u32 = 0;
+        for (name, image_id) in pending {
+            let candidates: Vec<String> = anim_shp_candidates(
+                Some(self),
+                &name,
+                &image_id,
+                theater_ext,
+                theater_name,
+            );
+            let shp_bytes: Option<&[u8]> = candidates
+                .iter()
+                .find_map(|c| asset_manager.get_ref(c));
+            let Some(data) = shp_bytes else {
+                fallback += 1;
+                continue;
+            };
+            let Ok(shp) = crate::assets::shp_file::ShpFile::from_bytes(data) else {
+                fallback += 1;
+                continue;
+            };
+            let Some(frame) = shp.frames.first() else {
+                fallback += 1;
+                continue;
+            };
+            let fw = frame.frame_width;
+            let fh = frame.frame_height;
+            if let Some(entry) = self.get_mut(&name) {
+                entry.frame_width = fw;
+                entry.frame_height = fh;
+                populated += 1;
+            } else {
+                fallback += 1;
+            }
+        }
+        (populated, fallback)
+    }
 }
 
 /// Generate filename candidates for standard SHP objects.
