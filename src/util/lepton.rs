@@ -67,6 +67,35 @@ pub const SUBCELL_4_X: SimFixed = SimFixed::lit("192");
 pub const SUBCELL_4_Y: SimFixed = SimFixed::lit("192");
 
 // ---------------------------------------------------------------------------
+// InRange (3D distance) constants
+// ---------------------------------------------------------------------------
+
+/// Leptons per cell-elevation level. The gameplay-grade Z conversion factor.
+/// Distinct from rendering's `HEIGHT_STEP = 15.0` pixels — THIS is the value
+/// combat uses for 3D distance.
+pub const LEPTONS_PER_LEVEL: i64 = 104;
+
+/// Sentinel weapon range meaning "always in range". When the configured
+/// weapon range equals -512 leptons, InRange short-circuits to true regardless
+/// of distance or other gates. Used by some special weapons.
+pub const WEAPON_RANGE_ALWAYS_IN_RANGE_LEPTONS: i64 = -512;
+
+/// Lepton threshold dividing low-flying from high-flying aircraft for InRange
+/// gating. Aircraft below this altitude are treated as low-flying (target Z
+/// snapped to ground for range checks); at or above, they're high-flying
+/// (AirRangeBonus may apply).
+///
+/// Placeholder pending runtime confirmation: chosen so cruise altitude
+/// (~1500 lep) classifies as high-flying and dive altitude (~500 lep)
+/// classifies as low-flying.
+pub const HIGH_FLIGHT_THRESHOLD_LEPTONS: i64 = 1000;
+
+/// Z bump in leptons added to a cell's ground height when a bridge deck is
+/// present on the cell. Placeholder = 4 × LEPTONS_PER_LEVEL = 416 lep,
+/// matching the Rules.ini `BridgeHeight=4` default.
+pub const BRIDGE_HEIGHT_DELTA_LEPTONS: i64 = 416;
+
+// ---------------------------------------------------------------------------
 // Conversion helpers
 // ---------------------------------------------------------------------------
 

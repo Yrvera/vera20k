@@ -272,7 +272,7 @@ fn capability_cursor_for_hover(
                     HoverTargetKind::FriendlyUnit | HoverTargetKind::FriendlyStructure
                 ) {
                     let in_range =
-                        any_selected_unit_in_range(sim, selected, hover.stable_id, rules);
+                        any_selected_unit_in_range(sim, selected, hover.stable_id, rules, sim.resolved_terrain.as_ref());
                     return if in_range {
                         if hover.kind == HoverTargetKind::FriendlyUnit {
                             CursorFeedbackKind::EnemyUnit
@@ -292,7 +292,7 @@ fn capability_cursor_for_hover(
         HoverTargetKind::FriendlyUnit => CursorFeedbackKind::FriendlyUnit,
         HoverTargetKind::FriendlyStructure => CursorFeedbackKind::FriendlyStructure,
         HoverTargetKind::EnemyUnit | HoverTargetKind::EnemyStructure => {
-            let in_range = any_selected_unit_in_range(sim, selected, hover.stable_id, rules);
+            let in_range = any_selected_unit_in_range(sim, selected, hover.stable_id, rules, sim.resolved_terrain.as_ref());
             if in_range {
                 if hover.kind == HoverTargetKind::EnemyUnit {
                     CursorFeedbackKind::EnemyUnit
@@ -313,6 +313,7 @@ fn any_selected_unit_in_range(
     selected_ids: &[u64],
     target_id: u64,
     rules: Option<&crate::rules::ruleset::RuleSet>,
+    terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
 ) -> bool {
     let rules = match rules {
         Some(r) => r,
@@ -334,26 +335,43 @@ fn any_selected_unit_in_range(
         let Some(obj) = rules.object(sim.interner.resolve(entity.type_ref)) else {
             continue;
         };
-        let weapon_range = obj
-            .primary
-            .as_ref()
-            .and_then(|w| rules.weapon(w))
-            .map(|w| w.range)
-            .unwrap_or(crate::util::fixed_math::SIM_ZERO);
-        if weapon_range <= crate::util::fixed_math::SIM_ZERO {
+        let weapon = match obj.primary.as_ref().and_then(|w| rules.weapon(w)) {
+            Some(w) => w,
+            None => continue,
+        };
+        if weapon.range <= crate::util::fixed_math::SIM_ZERO {
             continue;
         }
-        let dist_sq = combat::lepton_distance_sq_raw(
-            entity.position.rx,
-            entity.position.ry,
-            entity.position.sub_x,
-            entity.position.sub_y,
-            target_pos.0,
-            target_pos.1,
-            target_pos.2,
-            target_pos.3,
-        );
-        if combat::is_within_range_leptons(dist_sq, weapon_range) {
+        let in_range = if let Some(t) = terrain {
+            let src = (
+                entity.position.rx as i64 * 256 + entity.position.sub_x.to_num::<i64>(),
+                entity.position.ry as i64 * 256 + entity.position.sub_y.to_num::<i64>(),
+                combat::in_range::effective_z_leptons(entity),
+            );
+            combat::in_range::compute_in_range(
+                entity,
+                src,
+                &combat::TargetKind::Entity(target_id),
+                weapon,
+                rules,
+                &sim.interner,
+                &sim.entities,
+                t,
+            )
+        } else {
+            let dist_sq = combat::lepton_distance_sq_raw(
+                entity.position.rx,
+                entity.position.ry,
+                entity.position.sub_x,
+                entity.position.sub_y,
+                target_pos.0,
+                target_pos.1,
+                target_pos.2,
+                target_pos.3,
+            );
+            combat::is_within_range_leptons(dist_sq, weapon.range)
+        };
+        if in_range {
             return true;
         }
     }

@@ -63,6 +63,7 @@ fn make_obj(locomotor: LocomotorKind, category: ObjectCategory) -> ObjectType {
         turret_anim_y: 0,
         turret_anim_z_adjust: 0,
         guard_range: None,
+        air_range_bonus: None,
         explodes: false,
         death_weapon: None,
         super_weapon: None,

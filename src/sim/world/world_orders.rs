@@ -41,6 +41,7 @@ impl Simulation {
                 &self.interner,
                 attacker_id,
                 Some(&self.fog),
+                self.resolved_terrain.as_ref(),
             ) else {
                 continue;
             };

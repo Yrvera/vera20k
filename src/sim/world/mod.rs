@@ -1188,6 +1188,7 @@ impl Simulation {
                 &mut self.production.resource_nodes,
                 self.overlay_grid.as_ref(),
                 overlay_registry,
+                self.resolved_terrain.as_ref(),
                 self.tick,
                 tick_ms,
                 self.binary_frame,

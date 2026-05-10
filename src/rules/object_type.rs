@@ -257,6 +257,10 @@ pub struct ObjectType {
     /// Scan radius in cells for auto-targeting idle enemies. If None, defaults
     /// to the primary weapon's range at runtime.
     pub guard_range: Option<SimFixed>,
+    /// Range bonus (in cells) added to the weapon's max range when firing at
+    /// high-flying targets. Read from `AirRangeBonus=` in the unit section.
+    /// None means no bonus.
+    pub air_range_bonus: Option<SimFixed>,
     /// Whether this unit fires a warhead at its own position on death (e.g.,
     /// Apocalypse Tank explosion damages nearby units).
     pub explodes: bool,
@@ -774,6 +778,7 @@ impl ObjectType {
             turret_anim_y: section.get_i32("TurretAnimY").unwrap_or(0),
             turret_anim_z_adjust: section.get_i32("TurretAnimZAdjust").unwrap_or(0),
             guard_range: section.get_f32("GuardRange").map(sim_from_f32),
+            air_range_bonus: section.get_f32("AirRangeBonus").map(sim_from_f32),
             explodes: section.get_bool("Explodes").unwrap_or(false),
             death_weapon: section.get("DeathWeapon").map(|s| s.to_string()),
             super_weapon: section.get("SuperWeapon").map(|s| s.to_string()),
@@ -1483,5 +1488,23 @@ mod tests {
             parse_csv_string_list(Some(" A , B , ,C ")),
             vec!["A".to_string(), "B".to_string(), "C".to_string()]
         );
+    }
+
+    #[test]
+    fn parses_air_range_bonus() {
+        let ini: IniFile = IniFile::from_str(
+            "[MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\nAirRangeBonus=4\n",
+        );
+        let section = ini.section("MTNK").expect("section");
+        let obj = ObjectType::from_ini_section("MTNK", section, ObjectCategory::Vehicle);
+        assert_eq!(obj.air_range_bonus, Some(sim_from_f32(4.0)));
+    }
+
+    #[test]
+    fn air_range_bonus_default_none() {
+        let ini: IniFile = IniFile::from_str("[MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\n");
+        let section = ini.section("MTNK").expect("section");
+        let obj = ObjectType::from_ini_section("MTNK", section, ObjectCategory::Vehicle);
+        assert_eq!(obj.air_range_bonus, None);
     }
 }

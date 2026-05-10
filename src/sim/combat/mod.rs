@@ -23,6 +23,7 @@ mod combat_fire_gate;
 pub(crate) mod combat_targeting;
 pub(crate) mod combat_weapon;
 pub(crate) mod fire_decision;
+pub(crate) mod in_range;
 pub mod smudge_dispatch;
 
 #[cfg(test)]
@@ -470,6 +471,7 @@ pub fn tick_combat(
         &BTreeMap::new(),
         None,
         resource_nodes,
+        None,
         None,
         None,
         current_tick,
@@ -1000,6 +1002,7 @@ pub fn tick_combat_with_fog(
     resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
     overlay_grid: Option<&OverlayGrid>,
     overlay_registry: Option<&OverlayTypeRegistry>,
+    terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
     current_tick: u64,
     tick_ms: u32,
     binary_frame: u32,
@@ -1141,6 +1144,10 @@ pub fn tick_combat_with_fog(
             {
                 continue;
             }
+            // Garrison passive scan_range = half_foundation + 1 + OccupyWeaponRange,
+            // which never matches selected.weapon.range — same override-fallback
+            // case as the scan_range_override branch in acquire_best_target. Keep
+            // the 2D check until a future stage threads override-aware 3D.
             let dist_sq = lepton_distance_sq_raw(
                 pos_rx,
                 pos_ry,
@@ -1386,6 +1393,7 @@ pub fn tick_combat_with_fog(
                     obj,
                     fog,
                     garrison_retarget_range,
+                    terrain,
                 ) {
                     retarget_events.push((snap.stable_id, new_target));
                 } else {
@@ -1449,6 +1457,7 @@ pub fn tick_combat_with_fog(
                     obj,
                     fog,
                     garrison_retarget_range,
+                    terrain,
                 ) {
                     retarget_events.push((snap.stable_id, new_target));
                 } else {
@@ -1465,6 +1474,7 @@ pub fn tick_combat_with_fog(
                     obj,
                     fog,
                     garrison_retarget_range,
+                    terrain,
                 ) {
                     retarget_events.push((snap.stable_id, new_target));
                 } else {
@@ -1475,16 +1485,6 @@ pub fn tick_combat_with_fog(
         }
 
         // Range check (lepton-precise, sub-cell aware).
-        let dist_sq = lepton_distance_sq_raw(
-            snap.pos_rx,
-            snap.pos_ry,
-            snap.sub_x,
-            snap.sub_y,
-            target_rx,
-            target_ry,
-            target_sub_x,
-            target_sub_y,
-        );
         // Garrison range: (half_foundation + OccupyWeaponRange) cells (no +1 buffer for fire).
         let effective_range = if let Some(ref gs) = snap.garrison {
             let cells = gs.half_foundation as i32 + rules.garrison_rules.occupy_weapon_range;
@@ -1495,7 +1495,44 @@ pub fn tick_combat_with_fog(
         // Range failure: range alone does not clear or retarget — the pursuit
         // pre-combat stage walks the unit into range. Combat tick just skips
         // this tick's fire attempt and lets the unit close the gap.
-        if !is_within_range_leptons(dist_sq, effective_range) {
+        let in_range_for_fire = if !is_garrison && effective_range == weapon.range {
+            // Standard fire: 3D check via compute_in_range when terrain available.
+            match (terrain, entities.get(snap.stable_id)) {
+                (Some(t), Some(attacker_entity)) => {
+                    let src = (
+                        snap.pos_rx as i64 * 256 + snap.sub_x.to_num::<i64>(),
+                        snap.pos_ry as i64 * 256 + snap.sub_y.to_num::<i64>(),
+                        in_range::effective_z_leptons(attacker_entity),
+                    );
+                    in_range::compute_in_range(
+                        attacker_entity,
+                        src,
+                        &snap.target,
+                        weapon,
+                        rules,
+                        interner,
+                        entities,
+                        t,
+                    )
+                }
+                _ => {
+                    let dist_sq = lepton_distance_sq_raw(
+                        snap.pos_rx, snap.pos_ry, snap.sub_x, snap.sub_y,
+                        target_rx, target_ry, target_sub_x, target_sub_y,
+                    );
+                    is_within_range_leptons(dist_sq, effective_range)
+                }
+            }
+        } else {
+            // Garrison override path — preserve 2D until a later stage threads
+            // override-aware 3D.
+            let dist_sq = lepton_distance_sq_raw(
+                snap.pos_rx, snap.pos_ry, snap.sub_x, snap.sub_y,
+                target_rx, target_ry, target_sub_x, target_sub_y,
+            );
+            is_within_range_leptons(dist_sq, effective_range)
+        };
+        if !in_range_for_fire {
             continue;
         }
 
