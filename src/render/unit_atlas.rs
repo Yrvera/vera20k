@@ -62,8 +62,11 @@ pub struct UnitSpriteKey {
     pub layer: VxlLayer,
     /// HVA animation frame index. 0 for most units; >0 for multi-frame animations.
     pub frame: u32,
-    /// Terrain slope type (0–8). 0 = flat, 1-4 = edge ramps, 5-8 = corner ramps.
-    /// Different slopes produce distinct pre-rendered sprites with tilted models.
+    /// Terrain slope type (0–16). 0 = flat, 1-4 = edge ramps, 5-8 = corner
+    /// ramps, 9-12 = corner tilt at NW/NE/SE/SW (alias of 5-8 in gamemd.exe),
+    /// 13-16 = edge tilt at NW/NE/SE/SW. The consumer in app_instances/units.rs
+    /// clamps any value ≥ 17 to 0 before constructing this key. Different
+    /// slopes produce distinct pre-rendered sprites with tilted models.
     pub slope_type: u8,
 }
 
@@ -204,11 +207,12 @@ pub fn collect_needed_unit_keys(
             }
             let num_frames: u32 = frame_counts[&fc_key];
             let (step, buckets) = facing_config_for_layer(layer);
-            // Ground vehicles: generate all 9 slope variants (0-8) so no
-            // atlas rebuild is needed when driving onto ramps.
-            // Aircraft: only slope_type=0 (flat).
+            // Ground vehicles: pre-render all 17 slope variants (0-16) so no
+            // atlas rebuild is needed when driving onto any populated ramp
+            // (gamemd has no matrices for slopes 17-20; the consumer in
+            // app_instances/units.rs clamps those to 0). Aircraft never tilt.
             let slope_range: std::ops::RangeInclusive<u8> =
-                if is_ground_vehicle { 0..=8 } else { 0..=0 };
+                if is_ground_vehicle { 0..=16 } else { 0..=0 };
             for bucket in 0..buckets {
                 let facing: u8 = bucket.saturating_mul(step);
                 for frame in 0..num_frames {
@@ -330,8 +334,10 @@ pub fn build_unit_atlas(
             }
             let num_frames: u32 = frame_counts[&fc_key];
             let (step, buckets) = facing_config_for_layer(layer);
+            // Ground vehicles: 17 slope variants (0-16) covering every
+            // populated entry in gamemd's slope-matrix table.
             let slope_range: std::ops::RangeInclusive<u8> =
-                if is_ground_vehicle { 0..=8 } else { 0..=0 };
+                if is_ground_vehicle { 0..=16 } else { 0..=0 };
             for bucket in 0..buckets {
                 let facing: u8 = bucket.saturating_mul(step);
                 for frame in 0..num_frames {
@@ -429,8 +435,9 @@ pub fn build_unit_atlas(
             }
             let num_frames: u32 = frame_counts[&fc_key];
             let (step, buckets) = facing_config_for_layer(layer);
+            // Same slope range as the parent type (0-16 for ground vehicles).
             let slope_range: std::ops::RangeInclusive<u8> =
-                if is_ground_vehicle { 0..=8 } else { 0..=0 };
+                if is_ground_vehicle { 0..=16 } else { 0..=0 };
             for bucket in 0..buckets {
                 let facing: u8 = bucket.saturating_mul(step);
                 for frame in 0..num_frames {
