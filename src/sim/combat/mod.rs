@@ -1308,6 +1308,8 @@ pub fn tick_combat_with_fog(
     let mut reveal_events: Vec<RevealEvent> = Vec::new();
     let mut bridge_damage_events: Vec<BridgeDamageEvent> = Vec::new();
     let mut wall_damage_events: Vec<WallDamageEvent> = Vec::new();
+    let mut explosion_effects: Vec<ExplosionEffect> = Vec::new();
+    let mut smudge_spawn_requests: Vec<SmudgeSpawnRequest> = Vec::new();
     let mut burst_updates: Vec<(u64, u8, u8, u16)> = Vec::new(); // (id, burst_rem, burst_delay, rof_cd)
     let mut ammo_deduct: Vec<u64> = Vec::new(); // aircraft that fired this tick
     let mut garrison_advance: Vec<u64> = Vec::new(); // building IDs to advance fire index
@@ -1776,6 +1778,8 @@ pub fn tick_combat_with_fog(
     );
     bridge_damage_events.extend(death.bridge_damage_events);
     wall_damage_events.extend(death.wall_damage_events);
+    explosion_effects.extend(death.explosion_effects);
+    smudge_spawn_requests.extend(death.smudge_spawn_requests);
 
     // Phase 7: push sound events to the sink.
     if let Some(sink) = sound_sink {
@@ -1813,8 +1817,8 @@ pub fn tick_combat_with_fog(
         fire_events,
         destroyed_crewed_buildings: death.destroyed_crewed_buildings,
         destroyed_garrison_buildings: death.destroyed_garrison_buildings,
-        explosion_effects: death.explosion_effects,
-        smudge_spawn_requests: death.smudge_spawn_requests,
+        explosion_effects,
+        smudge_spawn_requests,
     }
 }
 
