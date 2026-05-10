@@ -132,14 +132,12 @@ impl Simulation {
             }
 
             // Turret facing for voxel units with Turret=yes.
-            let has_turret = rules
-                .and_then(|r| r.object(&map_ent.type_id))
-                .map(|obj| obj.has_turret)
-                .unwrap_or(false);
+            let obj = rules.and_then(|r| r.object(&map_ent.type_id));
+            let has_turret = obj.map(|o| o.has_turret).unwrap_or(false);
             if has_turret {
-                ge.turret_facing = Some(crate::sim::movement::turret::body_facing_to_turret(
-                    map_ent.facing,
-                ));
+                let initial = crate::sim::movement::turret::body_facing_to_turret(map_ent.facing);
+                let rot_byte = obj.map(|o| o.turret_rot.clamp(0, 0xFF) as u8).unwrap_or(5);
+                ge.barrel_facing = Some(crate::sim::movement::FacingClass::new(initial, rot_byte));
             }
             // VoxelAnimation default for voxel entities.
             if uses_voxel {
@@ -333,7 +331,9 @@ impl Simulation {
         }
 
         if obj.has_turret {
-            ge.turret_facing = Some(crate::sim::movement::turret::body_facing_to_turret(facing));
+            let initial = crate::sim::movement::turret::body_facing_to_turret(facing);
+            let rot_byte = obj.turret_rot.clamp(0, 0xFF) as u8;
+            ge.barrel_facing = Some(crate::sim::movement::FacingClass::new(initial, rot_byte));
         }
         if uses_voxel {
             ge.voxel_animation = Some(VoxelAnimation::new(1, 100));

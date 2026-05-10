@@ -92,9 +92,9 @@ pub struct GameEntity {
     pub attack_target: Option<AttackTarget>,
     /// Stable ID of the last entity that dealt damage (for retaliation).
     pub last_attacker_id: Option<u64>,
-    /// Independent turret facing — only on entities with Turret=yes in rules.ini.
-    /// 16-bit DirStruct (0–65535), full FacingClass precision.
-    pub turret_facing: Option<u16>,
+    /// Independent turret/barrel facing — only on entities with Turret=yes in rules.ini.
+    /// Timer-based 16-bit interpolator mirroring gamemd's BarrelFacing primitive.
+    pub barrel_facing: Option<crate::sim::movement::FacingClass>,
     /// Building construction animation progress.
     pub building_up: Option<BuildingUp>,
     /// Reverse build-up animation — building is undeploying into a mobile unit.
@@ -266,7 +266,7 @@ impl GameEntity {
             movement_target: None,
             attack_target: None,
             last_attacker_id: None,
-            turret_facing: None,
+            barrel_facing: None,
             building_up: None,
             building_down: None,
             building_anim_overlays: None,
@@ -409,7 +409,7 @@ mod tests {
         assert!(e.movement_target.is_none());
         assert!(e.attack_target.is_none());
         assert!(e.last_attacker_id.is_none());
-        assert!(e.turret_facing.is_none());
+        assert!(e.barrel_facing.is_none());
         assert!(e.miner.is_none());
         assert!(e.order_intent.is_none());
         assert!(!e.on_bridge);

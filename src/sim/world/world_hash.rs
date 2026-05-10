@@ -444,6 +444,13 @@ impl Simulation {
                 }
             }
             entity.ifv_weapon_index.hash(hasher);
+            // Barrel facing — Hash-derived, all primitive fields contribute.
+            if let Some(ref barrel) = entity.barrel_facing {
+                1u8.hash(hasher);
+                barrel.hash(hasher);
+            } else {
+                0u8.hash(hasher);
+            }
         }
     }
 }
