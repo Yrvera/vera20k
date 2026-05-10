@@ -1028,3 +1028,83 @@ fn pursuit_weapon_range_none_for_unarmed_attacker() {
     );
     assert_eq!(range, None);
 }
+
+// --- emit_warhead_detonation_effects helper tests ---------------------------
+
+fn emit_helper_test_warhead(animlist: &[&str]) -> crate::rules::warhead_type::WarheadType {
+    let animlist_csv = animlist.join(",");
+    let ini_text = format!("[WH]\nAnimList={}\n", animlist_csv);
+    let ini = IniFile::from_str(&ini_text);
+    let section = ini.section("WH").expect("section parses");
+    crate::rules::warhead_type::WarheadType::from_ini_section("WH", section)
+}
+
+#[test]
+fn emit_warhead_detonation_effects_empty_animlist_emits_nothing() {
+    let mut interner = crate::sim::intern::StringInterner::new();
+    let wh = emit_helper_test_warhead(&[]);
+    let mut explosions: Vec<ExplosionEffect> = Vec::new();
+    let mut smudges: Vec<SmudgeSpawnRequest> = Vec::new();
+    emit_warhead_detonation_effects(
+        &wh, 100, 5, 5, 0, &mut interner, &mut explosions, &mut smudges,
+    );
+    assert!(explosions.is_empty());
+    assert!(smudges.is_empty());
+}
+
+#[test]
+fn emit_warhead_detonation_effects_single_animlist_entry_emits_one_pair() {
+    let mut interner = crate::sim::intern::StringInterner::new();
+    let wh = emit_helper_test_warhead(&["EXPLOSION1"]);
+    let mut explosions: Vec<ExplosionEffect> = Vec::new();
+    let mut smudges: Vec<SmudgeSpawnRequest> = Vec::new();
+    emit_warhead_detonation_effects(
+        &wh, 100, 5, 5, 0, &mut interner, &mut explosions, &mut smudges,
+    );
+    assert_eq!(explosions.len(), 1);
+    assert_eq!(smudges.len(), 1);
+    let expected_id = interner.intern("EXPLOSION1");
+    assert_eq!(explosions[0].shp_name, expected_id);
+    assert_eq!(explosions[0].rx, 5);
+    assert_eq!(explosions[0].ry, 5);
+    assert_eq!(explosions[0].z, 0);
+    match &smudges[0] {
+        SmudgeSpawnRequest::Anim { anim_name, rx, ry, z } => {
+            assert_eq!(*anim_name, expected_id);
+            assert_eq!(*rx, 5);
+            assert_eq!(*ry, 5);
+            assert_eq!(*z, 0);
+        }
+        other => panic!("expected Anim variant, got {:?}", other),
+    }
+}
+
+#[test]
+fn emit_warhead_detonation_effects_animlist_index_is_damage_div_25_clamped() {
+    let mut interner = crate::sim::intern::StringInterner::new();
+    let wh = emit_helper_test_warhead(&["EXP1", "EXP2", "EXP3"]);
+
+    // damage=0 → idx=0 → EXP1.
+    let mut explosions: Vec<ExplosionEffect> = Vec::new();
+    let mut smudges: Vec<SmudgeSpawnRequest> = Vec::new();
+    emit_warhead_detonation_effects(
+        &wh, 0, 0, 0, 0, &mut interner, &mut explosions, &mut smudges,
+    );
+    assert_eq!(explosions[0].shp_name, interner.intern("EXP1"));
+
+    // damage=50 → idx=2 (50/25) → EXP3.
+    let mut explosions: Vec<ExplosionEffect> = Vec::new();
+    let mut smudges: Vec<SmudgeSpawnRequest> = Vec::new();
+    emit_warhead_detonation_effects(
+        &wh, 50, 0, 0, 0, &mut interner, &mut explosions, &mut smudges,
+    );
+    assert_eq!(explosions[0].shp_name, interner.intern("EXP3"));
+
+    // damage=10000 → idx clamped to len-1 (2) → EXP3.
+    let mut explosions: Vec<ExplosionEffect> = Vec::new();
+    let mut smudges: Vec<SmudgeSpawnRequest> = Vec::new();
+    emit_warhead_detonation_effects(
+        &wh, 10000, 0, 0, 0, &mut interner, &mut explosions, &mut smudges,
+    );
+    assert_eq!(explosions[0].shp_name, interner.intern("EXP3"));
+}
