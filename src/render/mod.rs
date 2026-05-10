@@ -40,3 +40,5 @@ pub mod upscale_pass;
 pub mod vxl_compute;
 pub mod vxl_normals;
 pub mod vxl_raster;
+#[cfg(test)]
+mod voxel_parity_tests;
