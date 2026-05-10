@@ -795,34 +795,15 @@ fn handle_entity_deaths(
                 }
             }
 
-            // Look up the warhead that dealt the killing blow for explosion selection.
+            // Look up the warhead that dealt the killing blow for InfDeath
+            // selection below. The AnimList anim + smudge are emitted at
+            // the per-shot fire site (and at the death-AoE loop), not here.
             let killing_warhead = damage_events
                 .iter()
                 .rfind(|(tid, _, _, _)| *tid == dead_id)
                 .and_then(|(_, dmg, _, wh_id)| {
                     rules.warhead(interner.resolve(*wh_id)).map(|wh| (wh, *dmg))
                 });
-
-            // Spawn explosion animation from the warhead's AnimList.
-            if let Some((wh, dmg)) = &killing_warhead {
-                if !wh.anim_list.is_empty() {
-                    let idx = (*dmg / ANIM_LIST_DAMAGE_STEP) as usize;
-                    let idx = idx.min(wh.anim_list.len() - 1);
-                    let interned_name = interner.intern(&wh.anim_list[idx]);
-                    explosion_effects.push(ExplosionEffect {
-                        shp_name: interned_name,
-                        rx,
-                        ry,
-                        z,
-                    });
-                    smudge_spawn_requests.push(SmudgeSpawnRequest::Anim {
-                        anim_name: interned_name,
-                        rx,
-                        ry,
-                        z: z as i32,
-                    });
-                }
-            }
 
             // Building-destruction smudges: emit one BuildingCenter event plus
             // one BuildingSurvivor event per foundation cell. Drained by

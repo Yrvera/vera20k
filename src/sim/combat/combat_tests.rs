@@ -1087,6 +1087,56 @@ fn v3_non_killing_aoe_emits_one_smudge_request() {
 }
 
 #[test]
+fn v3_killing_aoe_emits_exactly_one_smudge_request() {
+    // V3 splash kills a low-HP target. Only ONE detonation occurred → ONE
+    // Anim smudge request. After the kill-handler emission is removed
+    // (Task 4), the per-shot helper is the sole emitter on kills.
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n\n\
+         [VehicleTypes]\n0=MTNK\n1=WEAK\n\n\
+         [AircraftTypes]\n\n\
+         [BuildingTypes]\n\n\
+         [MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\nPrimary=V3W\n\n\
+         [WEAK]\nStrength=10\nArmor=heavy\nSpeed=6\n\n\
+         [V3W]\nDamage=200\nROF=20\nRange=10\nWarhead=V3WH\n\n\
+         [V3WH]\nCellSpread=1\nPercentAtMax=1\nAnimList=V3EXP\n\
+         Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+    ))
+    .expect("v3 kill test rules should parse");
+
+    let mut store = EntityStore::new();
+    store.insert(make_entity(1, "MTNK", 5, 5, 300));
+    store.insert(make_entity(2, "WEAK", 8, 5, 10)); // dies in one hit
+    let mut interner = test_interner();
+    issue_attack_command(&mut store, 1, 2, None, &interner);
+
+    let result = tick_combat(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        0u64,
+        100,
+    );
+
+    assert_eq!(
+        result.despawned_ids.len(),
+        1,
+        "target must die (test setup invariant)"
+    );
+    let anim_count = result
+        .smudge_spawn_requests
+        .iter()
+        .filter(|r| matches!(r, SmudgeSpawnRequest::Anim { .. }))
+        .count();
+    assert_eq!(
+        anim_count, 1,
+        "kill must emit exactly one Anim smudge — no double from kill-handler"
+    );
+}
+
+#[test]
 fn death_weapon_aoe_emits_separate_anim_from_killing_shot() {
     // A Demo-Truck-style entity (Explodes=yes, primary warhead with its own
     // AnimList) is killed by a tank with a different warhead and AnimList.
