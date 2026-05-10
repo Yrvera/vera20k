@@ -160,6 +160,7 @@ fn emit_line(instances: &mut Vec<SpriteInstance>, a: ScreenPt, b: ScreenPt) {
             tint: [BRACKET_COLOR[0], BRACKET_COLOR[1], BRACKET_COLOR[2]],
             alpha: BRACKET_COLOR[3],
             depth: BRACKET_DEPTH,
+            ..Default::default()
         });
     }
 }

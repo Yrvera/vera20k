@@ -139,6 +139,7 @@ pub(crate) fn build_terrain_cost_overlay_instances(
                 depth: DEBUG_OVERLAY_DEPTH,
                 tint,
                 alpha: 1.0,
+                ..Default::default()
             });
         }
     }
@@ -212,6 +213,7 @@ pub(crate) fn build_heightmap_overlay_instances(
             depth: cell_depth,
             tint,
             alpha: 1.0,
+            ..Default::default()
         });
     }
     instances
@@ -262,6 +264,7 @@ pub(crate) fn build_cell_grid_overlay_instances(
                 depth: GRID_DEPTH,
                 tint: TERRAIN_TINT,
                 alpha: 1.0,
+                ..Default::default()
             });
         }
     }
@@ -286,6 +289,7 @@ pub(crate) fn build_cell_grid_overlay_instances(
             depth: GRID_DEPTH - 0.0001,
             tint: OVERLAY_TINT,
             alpha: 1.0,
+            ..Default::default()
         });
     }
 
@@ -346,6 +350,7 @@ pub(crate) fn build_path_overlay_instances(
                 depth: PATH_DEPTH,
                 tint,
                 alpha: 1.0,
+                ..Default::default()
             });
         }
         // Also draw final_goal if it's not the last path step.
@@ -367,6 +372,7 @@ pub(crate) fn build_path_overlay_instances(
                         depth: PATH_DEPTH,
                         tint: GOAL_TINT,
                         alpha: 1.0,
+                        ..Default::default()
                     });
                 }
             }

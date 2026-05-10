@@ -107,6 +107,7 @@ pub fn build_visible_instances(
             depth: SMUDGE_DEPTH,
             tint: [1.0, 1.0, 1.0],
             alpha: 1.0,
+            ..Default::default()
         });
     }
     instances

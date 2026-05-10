@@ -19,7 +19,7 @@ use crate::render::sprite_atlas::ShpSpriteKey;
 use crate::render::unit_atlas::{
     UnitSpriteKey, VxlLayer, canonical_turret_facing, canonical_unit_facing,
 };
-use crate::rules::house_colors::HouseColorIndex;
+use crate::rules::house_colors::{self, HouseColorIndex};
 use crate::sim::components::HarvestOverlay;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -243,6 +243,8 @@ pub(crate) fn build_unit_instances(
                     depth,
                     tint,
                     alpha,
+                    house_color_idx: house_color_to_remap_row(hc),
+                    ..Default::default()
                 });
             }
         }
@@ -408,6 +410,8 @@ fn emit_turret_unit_sprites(
             depth,
             tint,
             alpha,
+            house_color_idx: house_color_to_remap_row(hc),
+            ..Default::default()
         });
     }
 
@@ -440,6 +444,8 @@ fn emit_turret_unit_sprites(
                 depth,
                 tint,
                 alpha,
+                house_color_idx: house_color_to_remap_row(hc),
+                ..Default::default()
             });
         }
     }
@@ -506,6 +512,7 @@ fn emit_harvest_overlay(
         depth,
         tint,
         alpha: 1.0,
+        ..Default::default()
     });
 }
 
@@ -528,4 +535,16 @@ fn harvest_arm_screen_offset(body_facing: u8) -> (f32, f32) {
     let screen_x: f32 = (cx - cy) * 60.0 / 2.0;
     let screen_y: f32 = (cx + cy) * 30.0 / 2.0;
     (screen_x, screen_y)
+}
+
+/// Map a HouseColorIndex to the per-house ramp row index in PaletteSet's
+/// house_ramp_tex. Row 0 is the no-remap fallback (mirrors the theater
+/// palette's [16, 32) range); civilian/neutral units (`NO_REMAP`) map to
+/// row 0. Real players occupy rows 1..N (the +1 reserves row 0).
+fn house_color_to_remap_row(hc: HouseColorIndex) -> u32 {
+    if hc == house_colors::NO_REMAP {
+        0
+    } else {
+        (hc.0 as u32) + 1
+    }
 }

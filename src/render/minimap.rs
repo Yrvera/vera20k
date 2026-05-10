@@ -451,6 +451,7 @@ impl MinimapRenderer {
             depth: MINIMAP_DEPTH,
             tint: [1.0, 1.0, 1.0],
             alpha: 1.0,
+            ..Default::default()
         }
     }
 
@@ -536,6 +537,7 @@ impl MinimapRenderer {
             depth: MINIMAP_DEPTH,
             tint: [1.0, 1.0, 1.0],
             alpha: 1.0,
+            ..Default::default()
         });
         // Bottom edge.
         lines.push(SpriteInstance {
@@ -546,6 +548,7 @@ impl MinimapRenderer {
             depth: MINIMAP_DEPTH,
             tint: [1.0, 1.0, 1.0],
             alpha: 1.0,
+            ..Default::default()
         });
         // Left edge.
         lines.push(SpriteInstance {
@@ -556,6 +559,7 @@ impl MinimapRenderer {
             depth: MINIMAP_DEPTH,
             tint: [1.0, 1.0, 1.0],
             alpha: 1.0,
+            ..Default::default()
         });
         // Right edge.
         lines.push(SpriteInstance {
@@ -566,6 +570,7 @@ impl MinimapRenderer {
             depth: MINIMAP_DEPTH,
             tint: [1.0, 1.0, 1.0],
             alpha: 1.0,
+            ..Default::default()
         });
 
         lines

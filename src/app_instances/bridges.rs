@@ -160,6 +160,7 @@ pub fn build_bridge_body_instances_inner(
             depth,
             tint,
             alpha: 1.0,
+            ..Default::default()
         });
     }
 }
@@ -286,6 +287,7 @@ pub fn build_bridge_shadow_instances(
             depth,
             tint,
             alpha: 1.0,
+            ..Default::default()
         });
     }
 }
@@ -351,6 +353,7 @@ pub fn build_bridge_railing_instances(
             depth,
             tint,
             alpha: 1.0,
+            ..Default::default()
         });
     }
 }

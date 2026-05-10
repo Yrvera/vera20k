@@ -84,6 +84,7 @@ pub(crate) fn build_world_effect_instances(state: &AppState, paged: &mut [Vec<Sp
             depth,
             tint,
             alpha: 1.0,
+            ..Default::default()
         });
     }
 }
@@ -149,6 +150,7 @@ pub(crate) fn build_damage_fire_instances(state: &AppState, paged: &mut [Vec<Spr
                 depth: fire_depth,
                 tint,
                 alpha: 1.0,
+                ..Default::default()
             });
         }
     }
@@ -368,6 +370,7 @@ pub(crate) fn build_overlay_instances(
             depth,
             tint,
             alpha: 1.0,
+            ..Default::default()
         });
     }
 
@@ -442,6 +445,7 @@ pub(crate) fn build_overlay_instances(
             depth,
             tint,
             alpha: 1.0,
+            ..Default::default()
         });
     }
 }
@@ -507,6 +511,7 @@ pub(crate) fn build_garrison_muzzle_flash_instances(
             depth,
             tint,
             alpha: 1.0,
+            ..Default::default()
         });
     }
 }
@@ -618,6 +623,7 @@ pub(crate) fn build_parachute_instances(
             depth,
             tint,
             alpha: 1.0,
+            ..Default::default()
         });
     }
 }

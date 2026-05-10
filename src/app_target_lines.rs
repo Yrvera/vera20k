@@ -222,6 +222,7 @@ fn emit_colored_line(
             tint,
             alpha: 1.0,
             depth: LINE_DEPTH,
+            ..Default::default()
         });
     }
 }

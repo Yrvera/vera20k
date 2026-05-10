@@ -365,6 +365,7 @@ fn push_chrome(
         depth,
         tint: [1.0, 1.0, 1.0],
         alpha: 1.0,
+        ..Default::default()
     });
 }
 
@@ -385,6 +386,7 @@ fn push_chrome_sized(
         depth,
         tint: [1.0, 1.0, 1.0],
         alpha: 1.0,
+        ..Default::default()
     });
 }
 
@@ -458,6 +460,7 @@ pub(crate) fn build_sidebar_cameo_instances(
                 depth: 0.00044,
                 tint: [1.0, 1.0, 1.0],
                 alpha: 1.0,
+                ..Default::default()
             });
 
             // GCLOCK2 overlay — select frame from progress (0.0-1.0).
@@ -481,6 +484,7 @@ pub(crate) fn build_sidebar_cameo_instances(
                     depth: 0.00043,
                     tint: [1.0, 1.0, 1.0],
                     alpha: 1.0,
+                    ..Default::default()
                 });
             }
         } else {
@@ -496,6 +500,7 @@ pub(crate) fn build_sidebar_cameo_instances(
                 depth: 0.00044,
                 tint: [1.0, 1.0, 1.0],
                 alpha: 1.0,
+                ..Default::default()
             });
         }
 
@@ -530,6 +535,7 @@ pub(crate) fn build_sidebar_cameo_instances(
                 depth: 0.00043,
                 tint: [1.0, 1.0, 1.0],
                 alpha: 1.0,
+                ..Default::default()
             });
         }
 
@@ -553,6 +559,7 @@ pub(crate) fn build_sidebar_cameo_instances(
                 depth: 0.00043,
                 tint: [1.0, 1.0, 1.0],
                 alpha: 1.0,
+                ..Default::default()
             });
         }
     }

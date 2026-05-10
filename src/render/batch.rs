@@ -33,7 +33,7 @@ const ZDEPTH_SHADER: &str = include_str!("zdepth_shader.wgsl");
 /// The vertex shader uses these along with the camera uniform to produce
 /// clip-space positions with correct depth ordering.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Debug, Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct SpriteInstance {
     /// Top-left corner position in world/screen pixels.
     pub position: [f32; 2],
@@ -52,10 +52,25 @@ pub struct SpriteInstance {
     /// Alpha multiplier for translucency. 1.0 = fully opaque, 0.5 = 50% translucent.
     /// Used for chrono warp "being warped" visual (50% during chrono delay).
     pub alpha: f32,
+    /// Per-house ramp row index. 0 = no remap (SHP / non-voxel paths;
+    /// row 0 of the PaletteSet house_ramp_tex mirrors the theater palette's
+    /// [16, 32) range, so byte ranges stay correct). 1..=MAX_HOUSES-1 =
+    /// per-house ramp row. Read by the voxel sprite fragment shader; other
+    /// pipelines ignore it.
+    pub house_color_idx: u32,
+    /// Bitfield of active visual FX. Bit 0 = cloak, bit 1 = EMP, bit 2 =
+    /// iron curtain, bit 3 = warp, bit 4 = mirror. Phase 1 stubs this as 0;
+    /// phases 2-5 populate.
+    pub fx_flags: u32,
+    /// FX scalar parameters: [cloak_alpha, emp_dim, ic_phase, warp_phase].
+    /// Stub in Phase 1.
+    pub fx_params: [f32; 4],
+    /// Iron-curtain tint: [r, g, b, intensity]. Stub in Phase 1.
+    pub ic_tint: [f32; 4],
 }
 
-/// Number of vertex attributes in SpriteInstance (position, size, uv_origin, uv_size, depth, tint, alpha).
-const INSTANCE_ATTRIBUTE_COUNT: usize = 7;
+/// Number of vertex attributes in SpriteInstance: 7 base + 4 voxel-shader fields.
+const INSTANCE_ATTRIBUTE_COUNT: usize = 11;
 
 /// Size of one SpriteInstance in bytes (4 × vec2f = 32 bytes).
 const INSTANCE_STRIDE: u64 = std::mem::size_of::<SpriteInstance>() as u64;
@@ -332,7 +347,14 @@ impl BatchRenderer {
                 }],
             });
 
-        // Instance buffer vertex layout: 4 × vec2f + 1 × f32 + 1 × vec3f at locations 0-5.
+        // Instance buffer vertex layout (matches SpriteInstance memory layout):
+        //   position(8) + size(8) + uv_origin(8) + uv_size(8) = 32 → loc 0-3
+        //   depth(4) + tint(12) + alpha(4) = 20 → loc 4-6 (offsets 32, 36, 48)
+        //   house_color_idx(4) at offset 52 → loc 7 (Uint32)
+        //   fx_flags(4) at offset 56 → loc 8 (Uint32)
+        //   fx_params(16) at offset 60 → loc 9 (Float32x4)
+        //   ic_tint(16) at offset 76 → loc 10 (Float32x4)
+        // Total stride: 92 bytes.
         let instance_attrs: [wgpu::VertexAttribute; INSTANCE_ATTRIBUTE_COUNT] = [
             wgpu::VertexAttribute {
                 format: wgpu::VertexFormat::Float32x2,
@@ -368,6 +390,26 @@ impl BatchRenderer {
                 format: wgpu::VertexFormat::Float32,
                 offset: 48,
                 shader_location: 6,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Uint32,
+                offset: 52,
+                shader_location: 7,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Uint32,
+                offset: 56,
+                shader_location: 8,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: 60,
+                shader_location: 9,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: 76,
+                shader_location: 10,
             },
         ];
 

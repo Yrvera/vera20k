@@ -265,6 +265,7 @@ impl SelectionOverlay {
                 depth: DRAG_RECT_DEPTH,
                 tint: [1.0, 1.0, 1.0],
                 alpha: 1.0,
+                ..Default::default()
             },
             // Bottom edge.
             SpriteInstance {
@@ -275,6 +276,7 @@ impl SelectionOverlay {
                 depth: DRAG_RECT_DEPTH,
                 tint: [1.0, 1.0, 1.0],
                 alpha: 1.0,
+                ..Default::default()
             },
             // Left edge.
             SpriteInstance {
@@ -285,6 +287,7 @@ impl SelectionOverlay {
                 depth: DRAG_RECT_DEPTH,
                 tint: [1.0, 1.0, 1.0],
                 alpha: 1.0,
+                ..Default::default()
             },
             // Right edge.
             SpriteInstance {
@@ -295,6 +298,7 @@ impl SelectionOverlay {
                 depth: DRAG_RECT_DEPTH,
                 tint: [1.0, 1.0, 1.0],
                 alpha: 1.0,
+                ..Default::default()
             },
         ]
     }
@@ -540,6 +544,7 @@ impl SelectionOverlay {
                     depth,
                     tint: [1.0, 1.0, 1.0],
                     alpha: 1.0,
+                    ..Default::default()
                 };
                 if cell_ok {
                     valid_cells.push(inst);
@@ -582,6 +587,7 @@ impl SelectionOverlay {
                 depth,
                 tint: [1.0, 1.0, 1.0],
                 alpha: 1.0,
+                ..Default::default()
             };
             if valid {
                 valid_cells.push(inst);
@@ -631,6 +637,7 @@ impl SelectionOverlay {
                 depth: DRAG_RECT_DEPTH,
                 tint,
                 alpha: 1.0,
+                ..Default::default()
             },
             entry.page,
         ))
