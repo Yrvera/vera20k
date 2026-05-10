@@ -365,9 +365,9 @@ pub(super) fn try_repath_after_block(
 
     let zone_mz = movement_zone.unwrap_or(MovementZone::Normal);
     // The layered A* path consults ground_blocks/bridge_blocks (not entity_blocks)
-    // for per-layer hard blocking. Pass the merged set as ground_blocks so the
-    // layered search sees structure footprints / stationary obstacles the same
-    // way the flat search does.
+    // for per-layer hard blocking. Pass the merged set as both ground_blocks and
+    // bridge_blocks so the layered search sees structure footprints / stationary
+    // obstacles on either layer the same way the flat search does.
     let path_result = find_move_path(
         ctx,
         layered_pathing,
@@ -377,7 +377,7 @@ pub(super) fn try_repath_after_block(
         terrain_costs,
         Some(&combined_blocks),
         Some(&combined_blocks),
-        None,
+        Some(&combined_blocks),
         zone_mz,
         movement_zone,
         too_big_to_fit_under_bridge,

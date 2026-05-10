@@ -244,9 +244,12 @@ pub fn issue_move_command_with_layered(
                     append_layer,
                     effective_target,
                     terrain_costs,
+                    // Pass the merged entity_blocks set to both layered slots so
+                    // the layered A* sees building footprints regardless of which
+                    // layer it expands. Mirrors the try_repath_after_block fix.
                     merged_entity_blocks_ref,
-                    None,
-                    None, // Layer-separated blocks not available here
+                    merged_entity_blocks_ref,
+                    merged_entity_blocks_ref,
                     zone_mz,
                     movement_zone,
                     too_big_to_fit_under_bridge,
@@ -286,9 +289,12 @@ pub fn issue_move_command_with_layered(
         current_layer,
         effective_target,
         terrain_costs,
+        // Pass the merged entity_blocks set to both layered slots so the
+        // layered A* sees building footprints regardless of which layer
+        // it expands. Mirrors the try_repath_after_block fix.
         merged_entity_blocks_ref,
-        None,
-        None, // Layer-separated blocks not available here
+        merged_entity_blocks_ref,
+        merged_entity_blocks_ref,
         zone_mz,
         movement_zone,
         too_big_to_fit_under_bridge,
