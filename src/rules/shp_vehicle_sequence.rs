@@ -104,6 +104,8 @@ mod tests {
             scorch: false,
             crater: false,
             force_big_craters: false,
+            frame_width: 30,
+            frame_height: 30,
             voxel: false,
             turret_offset: 0,
             y_draw_offset: 0,

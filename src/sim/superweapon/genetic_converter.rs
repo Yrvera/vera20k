@@ -99,6 +99,39 @@ fn apply_mutate_explosion(
         &owner_str,
     );
 
+    // Emit warhead AnimList anim + smudge for the Mutate detonation,
+    // kill-independent. Runs even if no infantry is in range.
+    let mut explosions: Vec<crate::sim::combat::ExplosionEffect> = Vec::new();
+    crate::sim::combat::emit_warhead_detonation_effects(
+        warhead,
+        base_damage,
+        target_rx,
+        target_ry,
+        0,
+        &mut sim.interner,
+        &mut explosions,
+        &mut sim.pending_smudge_requests,
+    );
+    for fx in &explosions {
+        let frames = sim
+            .effect_frame_counts
+            .get(&fx.shp_name)
+            .copied()
+            .unwrap_or(20);
+        sim.world_effects.push(WorldEffect {
+            shp_name: fx.shp_name,
+            rx: fx.rx,
+            ry: fx.ry,
+            z: fx.z,
+            frame: 0,
+            total_frames: frames,
+            rate_ms: 67,
+            elapsed_ms: 0,
+            translucent: true,
+            delay_ms: 0,
+        });
+    }
+
     let mut killed: Vec<(u16, u16)> = Vec::new();
     for (id, dmg) in &hits {
         // Pre-snapshot category + position + HP BEFORE mutating.

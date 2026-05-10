@@ -252,6 +252,40 @@ fn spawn_bolt(sim: &mut Simulation, rules: &RuleSet, rx: u16, ry: u16, owner: In
                 entity.health.current = entity.health.current.saturating_sub(damage);
             }
         }
+
+        // Emit warhead AnimList anim + smudge for this bolt detonation,
+        // kill-independent. The bolt visual above is the strike sprite;
+        // this is the warhead's AnimList anim (e.g. EXPLOSION).
+        let mut explosions: Vec<crate::sim::combat::ExplosionEffect> = Vec::new();
+        crate::sim::combat::emit_warhead_detonation_effects(
+            warhead,
+            rules.general.lightning_damage,
+            rx,
+            ry,
+            0,
+            &mut sim.interner,
+            &mut explosions,
+            &mut sim.pending_smudge_requests,
+        );
+        for fx in &explosions {
+            let frames = sim
+                .effect_frame_counts
+                .get(&fx.shp_name)
+                .copied()
+                .unwrap_or(20);
+            sim.world_effects.push(WorldEffect {
+                shp_name: fx.shp_name,
+                rx: fx.rx,
+                ry: fx.ry,
+                z: fx.z,
+                frame: 0,
+                total_frames: frames,
+                rate_ms: 67,
+                elapsed_ms: 0,
+                translucent: true,
+                delay_ms: 0,
+            });
+        }
     } else {
         log::warn!("Lightning warhead '{}' not found in rules", warhead_id);
     }
@@ -259,4 +293,56 @@ fn spawn_bolt(sim: &mut Simulation, rules: &RuleSet, rx: u16, ry: u16, owner: In
     // 3. Sound event for the bolt strike.
     sim.sound_events
         .push(SimSoundEvent::SuperWeaponStrike { rx, ry });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rules::ini_parser::IniFile;
+    use crate::sim::world::Simulation;
+
+    fn lightning_test_setup() -> (Simulation, RuleSet) {
+        // RuleSet only registers warheads referenced by a weapon, so a dummy
+        // unit + weapon are needed to anchor LWH in the warhead table.
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[InfantryTypes]\n0=DUMMY\n\n\
+             [VehicleTypes]\n\n\
+             [AircraftTypes]\n\n\
+             [BuildingTypes]\n\n\
+             [DUMMY]\nStrength=100\nArmor=none\nSpeed=4\nPrimary=DUMMYW\n\n\
+             [DUMMYW]\nDamage=1\nROF=1\nRange=1\nWarhead=LWH\n\n\
+             [General]\nLightningDamage=100\nLightningWarhead=LWH\n\n\
+             [LWH]\nCellSpread=1\nPercentAtMax=1\nAnimList=EXPLOSION\n\
+             Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+        ))
+        .expect("lightning test rules should parse");
+        let sim = Simulation::with_seed(1);
+        (sim, rules)
+    }
+
+    #[test]
+    fn lightning_strike_emits_anim_smudge_into_pending_requests() {
+        let (mut sim, rules) = lightning_test_setup();
+        let owner = sim.interner.intern("Americans");
+
+        spawn_bolt(&mut sim, &rules, 5, 5, owner);
+
+        let anim_count = sim
+            .pending_smudge_requests
+            .iter()
+            .filter(|r| matches!(r, crate::sim::combat::SmudgeSpawnRequest::Anim { .. }))
+            .count();
+        assert_eq!(
+            anim_count, 1,
+            "one bolt → one Anim smudge request in pending_smudge_requests"
+        );
+
+        let explosion_iid = sim.interner.intern("EXPLOSION");
+        assert!(
+            sim.world_effects.iter().any(|fx| fx.shp_name == explosion_iid
+                && fx.rx == 5
+                && fx.ry == 5),
+            "lightning warhead AnimList anim must be pushed to world_effects"
+        );
+    }
 }

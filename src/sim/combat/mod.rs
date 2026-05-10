@@ -65,6 +65,8 @@ use super::production::foundation_dimensions;
 const GAME_FPS: u32 = 15;
 /// Radius in cells that RevealOnFire clears shroud around the fire location.
 const REVEAL_ON_FIRE_RADIUS: u16 = 3;
+/// Step size for selecting explosion anim from a warhead's AnimList: idx = damage / 25.
+const ANIM_LIST_DAMAGE_STEP: u16 = 25;
 
 /// A cell area to reveal due to a RevealOnFire weapon firing.
 pub struct RevealEvent {
@@ -554,6 +556,45 @@ pub enum SmudgeSpawnRequest {
     },
 }
 
+/// Emit the warhead's AnimList animation and a paired smudge spawn request
+/// for one detonation at (rx, ry, z). Mirrors gamemd's WarheadType::Detonate
+/// dispatch into AnimClass::Start: every detonation that spawns an anim
+/// also runs the anim's first-frame smudge logic.
+///
+/// Pushes nothing if `warhead.anim_list` is empty.
+///
+/// `base_damage` is the post-modifier damage at the impact center; it
+/// drives AnimList selection via `damage / 25`, clamped to `len - 1`.
+pub(crate) fn emit_warhead_detonation_effects(
+    warhead: &WarheadType,
+    base_damage: i32,
+    rx: u16,
+    ry: u16,
+    z: u8,
+    interner: &mut StringInterner,
+    explosion_effects: &mut Vec<ExplosionEffect>,
+    smudge_spawn_requests: &mut Vec<SmudgeSpawnRequest>,
+) {
+    if warhead.anim_list.is_empty() {
+        return;
+    }
+    let idx = (base_damage / ANIM_LIST_DAMAGE_STEP as i32).max(0) as usize;
+    let idx = idx.min(warhead.anim_list.len() - 1);
+    let interned_name = interner.intern(&warhead.anim_list[idx]);
+    explosion_effects.push(ExplosionEffect {
+        shp_name: interned_name,
+        rx,
+        ry,
+        z,
+    });
+    smudge_spawn_requests.push(SmudgeSpawnRequest::Anim {
+        anim_name: interned_name,
+        rx,
+        ry,
+        z: z as i32,
+    });
+}
+
 /// Result of a combat tick: reveal events + stable IDs of despawned entities.
 pub struct CombatTickResult {
     pub reveal_events: Vec<RevealEvent>,
@@ -657,8 +698,6 @@ fn handle_entity_deaths(
     let mut wall_damage_events: Vec<WallDamageEvent> = Vec::new();
     let mut smudge_spawn_requests: Vec<SmudgeSpawnRequest> = Vec::new();
     let mut structure_destroyed: bool = false;
-    // Step size for selecting explosion anim from AnimList (damage / 25).
-    const ANIM_LIST_DAMAGE_STEP: u16 = 25;
     for &dead_id in dead_entities {
         let dead_info = entities.get(dead_id).map(|e| {
             if e.category == EntityCategory::Structure {
@@ -756,34 +795,15 @@ fn handle_entity_deaths(
                 }
             }
 
-            // Look up the warhead that dealt the killing blow for explosion selection.
+            // Look up the warhead that dealt the killing blow for InfDeath
+            // selection below. The AnimList anim + smudge are emitted at
+            // the per-shot fire site (and at the death-AoE loop), not here.
             let killing_warhead = damage_events
                 .iter()
                 .rfind(|(tid, _, _, _)| *tid == dead_id)
                 .and_then(|(_, dmg, _, wh_id)| {
                     rules.warhead(interner.resolve(*wh_id)).map(|wh| (wh, *dmg))
                 });
-
-            // Spawn explosion animation from the warhead's AnimList.
-            if let Some((wh, dmg)) = &killing_warhead {
-                if !wh.anim_list.is_empty() {
-                    let idx = (*dmg / ANIM_LIST_DAMAGE_STEP) as usize;
-                    let idx = idx.min(wh.anim_list.len() - 1);
-                    let interned_name = interner.intern(&wh.anim_list[idx]);
-                    explosion_effects.push(ExplosionEffect {
-                        shp_name: interned_name,
-                        rx,
-                        ry,
-                        z,
-                    });
-                    smudge_spawn_requests.push(SmudgeSpawnRequest::Anim {
-                        anim_name: interned_name,
-                        rx,
-                        ry,
-                        z: z as i32,
-                    });
-                }
-            }
 
             // Building-destruction smudges: emit one BuildingCenter event plus
             // one BuildingSurvivor event per foundation cell. Drained by
@@ -897,6 +917,16 @@ fn handle_entity_deaths(
             }
             // Ore destruction from death explosion.
             destroy_ore_at_impact(resource_nodes, *rx, *ry, *dmg, warhead.cell_spread);
+            emit_warhead_detonation_effects(
+                warhead,
+                *dmg,
+                *rx,
+                *ry,
+                *z,
+                interner,
+                &mut explosion_effects,
+                &mut smudge_spawn_requests,
+            );
         }
     }
 
@@ -1269,6 +1299,8 @@ pub fn tick_combat_with_fog(
     let mut reveal_events: Vec<RevealEvent> = Vec::new();
     let mut bridge_damage_events: Vec<BridgeDamageEvent> = Vec::new();
     let mut wall_damage_events: Vec<WallDamageEvent> = Vec::new();
+    let mut explosion_effects: Vec<ExplosionEffect> = Vec::new();
+    let mut smudge_spawn_requests: Vec<SmudgeSpawnRequest> = Vec::new();
     let mut burst_updates: Vec<(u64, u8, u8, u16)> = Vec::new(); // (id, burst_rem, burst_delay, rof_cd)
     let mut ammo_deduct: Vec<u64> = Vec::new(); // aircraft that fired this tick
     let mut garrison_advance: Vec<u64> = Vec::new(); // building IDs to advance fire index
@@ -1591,6 +1623,23 @@ pub fn tick_combat_with_fog(
             warhead.cell_spread,
         );
 
+        // Cell-target force-fire on terrain has no entity z; the dispatcher
+        // re-derives ground_z from terrain.cell(rx,ry).level, so 0 is safe.
+        let impact_z: u8 = match snap.target {
+            TargetKind::Entity(eid) => entities.get(eid).map(|e| e.position.z).unwrap_or(0),
+            TargetKind::Cell(_, _) => 0,
+        };
+        emit_warhead_detonation_effects(
+            warhead,
+            base_damage,
+            target_rx,
+            target_ry,
+            impact_z,
+            interner,
+            &mut explosion_effects,
+            &mut smudge_spawn_requests,
+        );
+
         if let Some(ref report_id) = weapon.report {
             fire_sounds.push((interner.intern(report_id), snap.pos_rx, snap.pos_ry));
         }
@@ -1737,6 +1786,8 @@ pub fn tick_combat_with_fog(
     );
     bridge_damage_events.extend(death.bridge_damage_events);
     wall_damage_events.extend(death.wall_damage_events);
+    explosion_effects.extend(death.explosion_effects);
+    smudge_spawn_requests.extend(death.smudge_spawn_requests);
 
     // Phase 7: push sound events to the sink.
     if let Some(sink) = sound_sink {
@@ -1774,8 +1825,8 @@ pub fn tick_combat_with_fog(
         fire_events,
         destroyed_crewed_buildings: death.destroyed_crewed_buildings,
         destroyed_garrison_buildings: death.destroyed_garrison_buildings,
-        explosion_effects: death.explosion_effects,
-        smudge_spawn_requests: death.smudge_spawn_requests,
+        explosion_effects,
+        smudge_spawn_requests,
     }
 }
 

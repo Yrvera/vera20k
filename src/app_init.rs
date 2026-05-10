@@ -257,12 +257,25 @@ pub fn load_map(
     // semantics and art-foundation data are available to the pipeline.
     let mut rules: Option<RuleSet> = load_rules_ini(&asset_manager);
     let art_result: Option<(ArtRegistry, IniFile)> = load_art_ini(&asset_manager);
-    let (art, art_ini): (Option<ArtRegistry>, Option<IniFile>) = match art_result {
+    let (mut art, art_ini): (Option<ArtRegistry>, Option<IniFile>) = match art_result {
         Some((reg, ini)) => (Some(reg), Some(ini)),
         None => (None, None),
     };
-    if let (Some(r), Some(a)) = (rules.as_mut(), art.as_ref()) {
+    if let (Some(r), Some(a)) = (rules.as_mut(), art.as_mut()) {
         r.merge_art_data(a);
+        // Eagerly populate per-anim SHP frame dimensions so the smudge
+        // dispatcher can size-filter without falling back to the (30, 30)
+        // default that always loses the threshold check.
+        let (populated, fallback) = a.populate_anim_frame_dims(
+            &asset_manager,
+            theater_ext,
+            &map_data.header.theater,
+        );
+        log::info!(
+            "Anim frame dims: {} populated, {} fallback (defaults to 30x30)",
+            populated,
+            fallback,
+        );
         // Retain the art registry on RuleSet so dispatchers (e.g. smudge
         // spawning) can read per-anim spawn flags via &RuleSet alone.
         // Cloned because downstream consumers in this function still read

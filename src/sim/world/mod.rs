@@ -212,6 +212,12 @@ pub struct Simulation {
     /// muzzle flash rendering and future projectile origin computation.
     #[serde(skip)]
     pub fire_events: Vec<SimFireEvent>,
+    /// Smudge spawn requests emitted by callsites that don't return through
+    /// `CombatTickResult` (superweapons, etc.). Drained alongside combat-emitted
+    /// smudge requests in the post-combat drain block. Ephemeral — never
+    /// persists across ticks.
+    #[serde(skip)]
+    pub pending_smudge_requests: Vec<crate::sim::combat::SmudgeSpawnRequest>,
     /// Bale deposit events emitted during refinery dock unloading — drained
     /// by the app layer for SpecialAnim trigger and particle bursts.
     #[serde(skip)]
@@ -350,6 +356,7 @@ impl Simulation {
             next_stable_entity_id: 1,
             sound_events: Vec::new(),
             fire_events: Vec::new(),
+            pending_smudge_requests: Vec::new(),
             bale_events: Vec::new(),
             ai_players: Vec::new(),
             houses: BTreeMap::new(),
@@ -1274,6 +1281,22 @@ impl Simulation {
                 self.resolved_terrain.as_ref(),
                 path_grid,
             ) {
+                // Phase 4.5 superweapon-emitted smudges first, then Phase 5
+                // combat-emitted. Drain order matches emission order so the
+                // RNG cursor advances deterministically.
+                crate::sim::combat::smudge_dispatch::drain_smudge_spawn_requests(
+                    &self.pending_smudge_requests,
+                    &rules.art_registry,
+                    &rules.smudge_types,
+                    &self.interner,
+                    smudge_grid,
+                    overlay,
+                    &self.occupancy,
+                    terrain,
+                    pg,
+                    &mut self.production.resource_nodes,
+                    &mut self.rng,
+                );
                 crate::sim::combat::smudge_dispatch::drain_smudge_spawn_requests(
                     &combat_result.smudge_spawn_requests,
                     &rules.art_registry,
@@ -1288,6 +1311,9 @@ impl Simulation {
                     &mut self.rng,
                 );
             }
+            // Always clear pending — even if grids were unbound (headless
+            // tests). The vec is per-tick ephemeral state.
+            self.pending_smudge_requests.clear();
             // --- Phase 5.5: ParticleSystems ---
             // DEPENDS ON: combat (gas/fire damage spawned this tick).
             // PRODUCES: damage applied via gas/fire particles, must be visible to phase 6 retaliation.

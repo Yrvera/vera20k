@@ -19,6 +19,10 @@ name = "extract-ini"
 path = "src/bin/extract-ini.rs"
 
 [[bin]]
+name = "inspect-maps"
+path = "src/bin/inspect-maps.rs"
+
+[[bin]]
 name = "bik-player"
 path = "src/bin/bik-player.rs"
 

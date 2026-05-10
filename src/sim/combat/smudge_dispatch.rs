@@ -55,12 +55,6 @@ use crate::sim::overlay_grid::OverlayGrid;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::smudge_grid::{SmudgeGrid, SmudgeKind};
 
-/// Default dmg/dmg2 values when AnimType frame dimensions aren't yet
-/// pre-computed. Matches gamemd's pre-cache fallback (AnimType+0x29C/+0x2A0
-/// init value of 0x1E = 30). Follow-up: replace with eager SHP frame-rect
-/// init for full parity on big-explosion smudge sizes.
-const DEFAULT_ANIM_FRAME_DIM: i32 = 30;
-
 /// Strict altitude gate from ledger #3: smudges only spawn when the anim
 /// is within 30 leptons of the ground.
 const SMUDGE_ALTITUDE_GATE_LEPTONS: i32 = 30;
@@ -103,8 +97,8 @@ pub fn try_dispatch_anim_smudge(
         return;
     }
 
-    let dmg = DEFAULT_ANIM_FRAME_DIM;
-    let dmg2 = DEFAULT_ANIM_FRAME_DIM;
+    let dmg: i32 = entry.frame_width as i32;
+    let dmg2: i32 = entry.frame_height as i32;
 
     if entry.scorch {
         if !entry.crater {

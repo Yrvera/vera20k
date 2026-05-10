@@ -40,15 +40,21 @@ const SPRITE_MARGIN: u32 = 2;
 const FP_SHIFT: i32 = 16;
 const FP_SCALE: f32 = (1 << FP_SHIFT) as f32; // 65536.0
 
-/// Edge ramp tilt angle (slope types 1-4): `atan(tan(30°) / sqrt(2))`.
-/// Derived from RA2's isometric geometry — one full cell edge raised by one height
-/// level. `VXL_Init_EdgeTiltAngle` computes `atan(2h / diag)`.
-const EDGE_TILT_RAD: f32 = 0.3876;
+/// Edge ramp tilt angle (slope types 1-4): `atan(2 × LevelHeight / cellDiagonal)`.
+///
+/// Reduces analytically to `atan(13√2 / 32) ≈ 0.521_476_7 rad ≈ 29.88°`, where
+/// `LevelHeight = 104 leptons` (the canonical RA2 vertical step) and
+/// `cellDiagonal = 256√2 leptons`. The factor of 2 reflects the rise across
+/// the full diagonal of a one-level edge ramp (two adjacent corners raised).
+const EDGE_TILT_RAD: f32 = 0.521_476_7;
 
-/// Corner ramp tilt angle (slope types 5-8): `atan(tan(30°) / 2)`.
-/// One corner raised by one height level across the cell diagonal.
-/// `VXL_Init_CornerTiltAngle` computes `atan(h / 256)`.
-const CORNER_TILT_RAD: f32 = 0.2810;
+/// Corner ramp tilt angle (slope types 5-8): `atan(LevelHeight / cellSide)`.
+///
+/// Reduces analytically to `atan(13 / 32) ≈ 0.385_882_7 rad ≈ 22.10°`, where
+/// `LevelHeight = 104 leptons` and `cellSide = 256 leptons`. One corner of
+/// the cell is raised half a level; the run is one cell side (not the
+/// diagonal) — that's what distinguishes corner from edge ramps.
+const CORNER_TILT_RAD: f32 = 0.385_882_7;
 
 /// Configuration for rendering a single VXL model frame.
 #[derive(Debug, Clone)]
@@ -788,5 +794,68 @@ mod tests {
         let iter: AxisIter = axis_order(5, -1.0);
         let vals: Vec<i32> = iter.iter().collect();
         assert_eq!(vals, vec![4, 3, 2, 1, 0]);
+    }
+
+    #[test]
+    fn test_edge_tilt_magnitude_matches_gamemd_formula() {
+        // Tripwire: catches accidental edits to EDGE_TILT_RAD that don't recompute
+        // the derivation chain. atan(2 × 104 / (256 × √2)) is the value the
+        // original game's edge-tilt init stores after reducing LevelHeight=104.
+        // Compute in f64 then cast to f32 to avoid f32 sqrt() rounding error
+        // bleeding into the reference value.
+        let expected: f32 = (2.0_f64 * 104.0 / (256.0 * 2.0_f64.sqrt())).atan() as f32;
+        assert!(
+            (EDGE_TILT_RAD - expected).abs() < 1e-6,
+            "EDGE_TILT_RAD={} drifted from formula {}",
+            EDGE_TILT_RAD,
+            expected
+        );
+    }
+
+    #[test]
+    fn test_corner_tilt_magnitude_matches_gamemd_formula() {
+        // Tripwire: catches accidental edits to CORNER_TILT_RAD. atan(104 / 256)
+        // is what the corner-tilt init stores after reducing LevelHeight=104.
+        let expected: f32 = (104.0_f64 / 256.0).atan() as f32;
+        assert!(
+            (CORNER_TILT_RAD - expected).abs() < 1e-6,
+            "CORNER_TILT_RAD={} drifted from formula {}",
+            CORNER_TILT_RAD,
+            expected
+        );
+    }
+
+    #[test]
+    fn test_slope_4_geometry_locks_current_direction() {
+        // Slope type 4 = "South" per the slope-type table (south corners
+        // raised). With compass=0° this reduces to Rx(EDGE_TILT_RAD), so
+        // glam's right-handed convention puts +Y at z=+sin(tilt) and -Y at
+        // z=-sin(tilt). Lock in those exact values — any silent sign flip
+        // in compute_slope_rotation, EDGE_TILT_RAD, or glam's convention
+        // will fail this test loudly.
+        //
+        // Whether "+Y" or "-Y" corresponds to world-south in the codebase's
+        // VXL model frame is verified separately by visual smoke check
+        // against gamemd.exe (see plan Task 5). If the visual check shows
+        // the unit leans the wrong way, the fix is to negate tilt_rad in
+        // compute_slope_rotation AND update this test's expected signs.
+        let slope_mat: Mat4 = compute_slope_rotation(4);
+
+        let plus_y: Vec3 = slope_mat.transform_point3(Vec3::Y);
+        let minus_y: Vec3 = slope_mat.transform_point3(-Vec3::Y);
+
+        let expected: f32 = EDGE_TILT_RAD.sin();
+        assert!(
+            (plus_y.z - expected).abs() < 1e-5,
+            "Expected (+Y).z = +sin(EDGE_TILT_RAD) = {} for slope_type=4; got {}",
+            expected,
+            plus_y.z
+        );
+        assert!(
+            (minus_y.z + expected).abs() < 1e-5,
+            "Expected (-Y).z = -sin(EDGE_TILT_RAD) = {} for slope_type=4; got {}",
+            -expected,
+            minus_y.z
+        );
     }
 }
