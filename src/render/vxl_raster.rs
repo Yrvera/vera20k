@@ -63,8 +63,11 @@ pub struct VxlRenderParams {
     pub frame: u32,
     /// Facing angle: 0–255 maps to 0–360° (RA2 convention).
     pub facing: u8,
-    /// Terrain slope type (0–8). 0 = flat, 1-4 = edge ramps, 5-8 = corner ramps.
-    /// The VXL model is tilted to match the terrain slope before camera projection.
+    /// Terrain slope type (0–16). 0 = flat, 1-4 = edge ramps (full-edge tilt),
+    /// 5-8 = corner ramps (corner tilt at NW/NE/SE/SW), 9-12 = corner tilt at
+    /// NW/NE/SE/SW (byte-identical aliases of 5-8 in gamemd.exe), 13-16 = edge
+    /// tilt at NW/NE/SE/SW. Slopes 17-20 are unpopulated in gamemd (BSS-zero
+    /// matrix); the consumer clamps them to 0 before this field is set.
     pub slope_type: u8,
     /// Pixel scale factor. Higher = larger sprite. Default: 1.045.
     /// TS default is CellSizeX=48; RA2 uses CellSizeX=60. Base scale = 60/48
@@ -246,26 +249,41 @@ pub struct SpriteBounds {
     pub offset_y: f32,
 }
 
-/// Compute the slope rotation matrix for a given terrain slope type (0–8).
+/// Compute the slope rotation matrix for a given terrain slope type (0–16).
 ///
 /// Formula: `slope_matrix = Rz(compass) * Rx(tilt) * Rz(-compass)`
 /// where compass is the slope direction angle and tilt is the pitch amount.
 ///
-/// Returns `Mat4::IDENTITY` for slope_type 0 (flat) or unknown types (9+).
+/// Slopes 9-12 produce the same matrices as 5-8 (corner tilt at NW/NE/SE/SW).
+/// Slopes 13-16 reuse the corner directions but with the steeper edge tilt
+/// magnitude — a combination not present in slopes 1-8.
+///
+/// Returns `Mat4::IDENTITY` for slope_type 0 (flat) and as a defensive
+/// fallback for any value ≥ 17 that bypasses the consumer-side clamp.
 fn compute_slope_rotation(slope_type: u8) -> Mat4 {
     let (compass_rad, tilt_rad): (f32, f32) = match slope_type {
         0 => return Mat4::IDENTITY,
         // Edge ramps (two adjacent corners raised one height level).
-        1 => (4.7124, EDGE_TILT_RAD),               // West,  270°
-        2 => (std::f32::consts::PI, EDGE_TILT_RAD), // North, 180°
+        1 => (4.7124, EDGE_TILT_RAD),                      // West,  270°
+        2 => (std::f32::consts::PI, EDGE_TILT_RAD),        // North, 180°
         3 => (std::f32::consts::FRAC_PI_2, EDGE_TILT_RAD), // East,  90°
-        4 => (0.0, EDGE_TILT_RAD),                  // South, 0°
+        4 => (0.0, EDGE_TILT_RAD),                         // South, 0°
         // Corner ramps (one corner raised one height level).
         5 => (3.9270, CORNER_TILT_RAD), // NW, 225°
         6 => (2.3562, CORNER_TILT_RAD), // NE, 135°
         7 => (0.7854, CORNER_TILT_RAD), // SE, 45°
         8 => (5.4978, CORNER_TILT_RAD), // SW, 315°
-        _ => return Mat4::IDENTITY,     // slopes 9-20: treat as flat for now
+        // Diagonal-corner CORNER tilt (byte-identical aliases of 5-8).
+        9 => (3.9270, CORNER_TILT_RAD),  // NW, 225°
+        10 => (2.3562, CORNER_TILT_RAD), // NE, 135°
+        11 => (0.7854, CORNER_TILT_RAD), // SE, 45°
+        12 => (5.4978, CORNER_TILT_RAD), // SW, 315°
+        // Diagonal-corner EDGE tilt (steeper variant of 9-12).
+        13 => (3.9270, EDGE_TILT_RAD), // NW, 225°
+        14 => (2.3562, EDGE_TILT_RAD), // NE, 135°
+        15 => (0.7854, EDGE_TILT_RAD), // SE, 45°
+        16 => (5.4978, EDGE_TILT_RAD), // SW, 315°
+        _ => return Mat4::IDENTITY,    // slopes 17-20: defensive identity clamp
     };
     Mat4::from_rotation_z(compass_rad)
         * Mat4::from_rotation_x(tilt_rad)
@@ -857,5 +875,65 @@ mod tests {
             -expected,
             minus_y.z
         );
+    }
+
+    #[test]
+    fn test_slopes_9_to_12_alias_corner_ramps_5_to_8() {
+        // gamemd's VXL_MasterLighting_Init populates slope-table entries 9-12
+        // with the same compass+tilt arguments as 5-8 (CORNER tilt at
+        // NW/NE/SE/SW). The matrices are byte-identical at runtime.
+        // A regression that swapped CORNER for EDGE on 9-12 would tilt these
+        // cells more steeply than gamemd does — a player-visible drift.
+        for (extended, base) in [(9, 5), (10, 6), (11, 7), (12, 8)] {
+            let ext_mat: Mat4 = compute_slope_rotation(extended);
+            let base_mat: Mat4 = compute_slope_rotation(base);
+            assert_eq!(
+                ext_mat, base_mat,
+                "slope_type={} should produce the same matrix as slope_type={}",
+                extended, base
+            );
+        }
+    }
+
+    #[test]
+    fn test_slopes_13_to_16_use_edge_tilt_at_corner_directions() {
+        // Slopes 13-16 reuse the corner compass directions (NW/NE/SE/SW from
+        // 5-8) but with the steeper EDGE tilt magnitude — a combination not
+        // present in slopes 1-8. The matrix must therefore differ from the
+        // CORNER-tilt variant at the same compass.
+        for (steep, corner) in [(13, 5), (14, 6), (15, 7), (16, 8)] {
+            let steep_mat: Mat4 = compute_slope_rotation(steep);
+            let corner_mat: Mat4 = compute_slope_rotation(corner);
+            assert_ne!(
+                steep_mat, corner_mat,
+                "slope_type={} (EDGE tilt) must not equal slope_type={} (CORNER tilt)",
+                steep, corner
+            );
+            // Sanity: also not identity.
+            assert_ne!(
+                steep_mat,
+                Mat4::IDENTITY,
+                "slope_type={} should produce a tilt, not identity",
+                steep
+            );
+        }
+    }
+
+    #[test]
+    fn test_slopes_17_to_20_return_identity() {
+        // gamemd has no matrix populated for slopes 17-20 (BSS-zero region
+        // at DAT_00b454B8). We deliberately diverge from gamemd's invisible-
+        // unit failure mode and clamp these to identity (flat) at the
+        // renderer. The consumer clamp in app_instances/units.rs is the
+        // primary boundary; this defensive arm catches any value that
+        // bypasses it.
+        for slope in 17..=20u8 {
+            assert_eq!(
+                compute_slope_rotation(slope),
+                Mat4::IDENTITY,
+                "slope_type={} must clamp to identity",
+                slope
+            );
+        }
     }
 }
