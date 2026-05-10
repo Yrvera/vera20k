@@ -36,7 +36,7 @@ pub fn list_available_maps() -> Result<Vec<MapMenuEntry>> {
             continue;
         };
         let ext = ext.to_ascii_lowercase();
-        if ext == "mmx" || ext == "map" || ext == "mpr" {
+        if matches!(ext.as_str(), "mmx" | "yro" | "map" | "mpr" | "yrm") {
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                 maps.push(read_map_menu_entry(&path, name));
             }
@@ -77,17 +77,23 @@ pub(crate) fn read_map_menu_entry(path: &Path, file_name: &str) -> MapMenuEntry 
 }
 
 pub(crate) fn read_map_ini_for_metadata(path: &Path) -> Option<IniFile> {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_ascii_lowercase())?;
-    if ext == "mmx" {
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.len() >= 2 && bytes[0] == 0 && bytes[1] == 0 {
+        // MIX-wrapped: pick the entry that parses as INI with a [Map] section
+        // (retail map MIXes also contain a tiny [MultiMaps] description stub).
         let archive = MixArchive::load(path).ok()?;
-        let first_id = archive.entries().first()?.id;
-        let map_data = archive.get_by_id(first_id)?;
-        IniFile::from_bytes(map_data).ok()
+        let mut entries = archive.entries().to_vec();
+        entries.sort_by(|a, b| b.size.cmp(&a.size));
+        for entry in &entries {
+            let data = archive.get_by_id(entry.id)?;
+            if let Ok(ini) = IniFile::from_bytes(data) {
+                if ini.section("Map").is_some() {
+                    return Some(ini);
+                }
+            }
+        }
+        None
     } else {
-        let bytes = std::fs::read(path).ok()?;
         IniFile::from_bytes(&bytes).ok()
     }
 }
@@ -103,7 +109,7 @@ pub(crate) fn load_map_by_name_or_path(ra2_dir: &Path, map_name: &str) -> Result
         return load_map_from_path(&in_ra2);
     }
 
-    for ext in ["mmx", "map", "mpr"] {
+    for ext in ["mmx", "yro", "map", "mpr", "yrm"] {
         let candidate = ra2_dir.join(format!("{}.{}", map_name, ext));
         if candidate.exists() {
             return load_map_from_path(&candidate);
@@ -111,24 +117,13 @@ pub(crate) fn load_map_by_name_or_path(ra2_dir: &Path, map_name: &str) -> Result
     }
 
     Err(anyhow::anyhow!(
-        "Map '{}' not found (checked cwd, RA2 dir, and .mmx/.map/.mpr variants)",
+        "Map '{}' not found (checked cwd, RA2 dir, and .mmx/.yro/.map/.mpr/.yrm variants)",
         map_name
     ))
 }
 
 pub(crate) fn load_map_from_path(path: &Path) -> Result<MapFile> {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_ascii_lowercase())
-        .unwrap_or_default();
-    if ext == "mmx" {
-        map_file::load_mmx(path).map_err(Into::into)
-    } else {
-        let bytes: Vec<u8> = std::fs::read(path)
-            .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", path.display(), e))?;
-        MapFile::from_bytes(&bytes).map_err(Into::into)
-    }
+    map_file::load_from_path(path).map_err(Into::into)
 }
 
 /// Try loading .mmx map files from a list of candidates.

@@ -238,22 +238,60 @@ impl MapFile {
     }
 }
 
-/// Load a .mmx file (MIX-wrapped map) from disk.
+/// Load a map file from disk, auto-detecting MIX-wrapped vs raw INI.
 ///
-/// .mmx files in the RA2 directory are small MIX archives containing a single
-/// map file. We load the archive and extract the first entry.
+/// Retail map files (`.mmx`, `.yro`, sometimes `.map`) are MIX archives
+/// containing two entries: the actual map INI and a tiny `[MultiMaps]`
+/// description stub. Editor-saved maps (`.map`, `.mpr`, `.yrm`) are raw INI
+/// text. We dispatch on the first two header bytes — `00 00` is the
+/// new-format MIX marker; anything else is treated as INI text.
+pub fn load_from_path(path: &Path) -> Result<MapFile, MapError> {
+    let bytes: Vec<u8> = std::fs::read(path)?;
+    if is_mix_header(&bytes) {
+        let archive: MixArchive = MixArchive::load(path)?;
+        let id: i32 = pick_map_entry_id(&archive)?;
+        let data: &[u8] = archive
+            .get_by_id(id)
+            .ok_or(MapError::MissingIsoMapPack)?;
+        MapFile::from_bytes(data)
+    } else {
+        MapFile::from_bytes(&bytes)
+    }
+}
+
+/// Backwards-compatible alias for callers still naming the MIX path explicitly.
 pub fn load_mmx(path: &Path) -> Result<MapFile, MapError> {
-    let archive: MixArchive = MixArchive::load(path)?;
-    let entries = archive.entries();
+    load_from_path(path)
+}
+
+/// New-format MIX marker: first two bytes are `0x00 0x00`.
+fn is_mix_header(bytes: &[u8]) -> bool {
+    bytes.len() >= 2 && bytes[0] == 0 && bytes[1] == 0
+}
+
+/// Pick the inner MIX entry that contains the actual map INI.
+///
+/// Retail map MIXes always pack two entries: the real map (~100 KB+) and a
+/// ~120-byte `[MultiMaps]` description stub. We try entries in descending
+/// size order and return the first one whose bytes parse as INI containing
+/// a `[Map]` section.
+fn pick_map_entry_id(archive: &MixArchive) -> Result<i32, MapError> {
+    let mut entries: Vec<_> = archive.entries().to_vec();
     if entries.is_empty() {
         return Err(MapError::MissingIsoMapPack);
     }
-    // Extract the first (and usually only) entry.
-    let first_id: i32 = entries[0].id;
-    let map_data: &[u8] = archive
-        .get_by_id(first_id)
-        .ok_or(MapError::MissingIsoMapPack)?;
-    MapFile::from_bytes(map_data)
+    entries.sort_by(|a, b| b.size.cmp(&a.size));
+    for entry in &entries {
+        let Some(data) = archive.get_by_id(entry.id) else {
+            continue;
+        };
+        if let Ok(ini) = IniFile::from_bytes(data) {
+            if ini.section("Map").is_some() {
+                return Ok(entry.id);
+            }
+        }
+    }
+    Err(MapError::MissingIsoMapPack)
 }
 
 /// Extract the [Map] header fields.
