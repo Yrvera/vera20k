@@ -32,6 +32,15 @@ pub struct ArtEntry {
     pub scorch: bool,
     pub crater: bool,
     pub force_big_craters: bool,
+    /// SHP frame 0's visible-content bounding-rect width, in pixels.
+    /// Used by the smudge dispatcher as a damage-tier proxy for size selection.
+    /// Default 30 — matches the original engine's uncached first-call fallback;
+    /// replaced with the actual SHP frame width by `populate_anim_frame_dims`
+    /// for anims with a Crater/Scorch/ForceBigCraters spawn flag.
+    pub frame_width: u16,
+    /// SHP frame 0's visible-content bounding-rect height, in pixels.
+    /// See `frame_width`.
+    pub frame_height: u16,
     /// Render as VXL+HVA model (true) or SHP sprite (false).
     pub voxel: bool,
     /// Optional voxel turret/barrel forward/backward alignment tweak.
@@ -356,6 +365,8 @@ impl ArtRegistry {
                     scorch,
                     crater,
                     force_big_craters,
+                    frame_width: 30,
+                    frame_height: 30,
                     voxel,
                     turret_offset,
                     y_draw_offset,
