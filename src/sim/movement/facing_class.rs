@@ -106,6 +106,30 @@ impl FacingClass {
         let delta: i32 = signed_step * (remaining as i32);
         ((self.current as i32) - delta).rem_euclid(65536) as u16
     }
+
+    /// Smooth setter — initiates a new rotation toward `new_target`.
+    /// Snapshots the current animated position into `prev` (research doc
+    /// §2.4) so retargets continue smoothly from the visible position.
+    ///
+    /// No-op when `new_target == current`. Returns true if state changed.
+    pub fn set(&mut self, new_target: u16, binary_frame: u32) -> bool {
+        if new_target == self.current {
+            return false;
+        }
+        if self.rot_per_frame > 0 {
+            // Snapshot animated value into prev BEFORE writing new target.
+            self.prev = self.current(binary_frame);
+        } else {
+            self.prev = self.current;
+        }
+        self.current = new_target;
+        if self.rot_per_frame > 0 {
+            let diff: i16 = self.current.wrapping_sub(self.prev) as i16;
+            self.duration_frames = diff.unsigned_abs() / self.rot_per_frame;
+            self.start_frame = Some(binary_frame);
+        }
+        true
+    }
 }
 
 #[cfg(test)]
@@ -221,5 +245,62 @@ mod tests {
         assert_eq!(fc.current(1), 0x0000);
         // At elapsed=2: complete.
         assert_eq!(fc.current(2), 0xFF00);
+    }
+
+    #[test]
+    fn set_no_op_when_target_equals_current() {
+        let mut fc = FacingClass::new(1000, 5);
+        let changed = fc.set(1000, 0);
+        assert!(!changed);
+        assert_eq!(fc.destination(), 1000);
+        assert!(fc.start_frame.is_none());
+    }
+
+    #[test]
+    fn set_initiates_rotation_when_target_differs() {
+        let mut fc = FacingClass::new(0, 5);
+        let changed = fc.set(12800, 0);
+        assert!(changed);
+        assert_eq!(fc.destination(), 12800);
+        assert_eq!(fc.start_frame, Some(0));
+        // duration = abs(12800 - 0) / 1280 = 10.
+        assert_eq!(fc.duration_frames, 10);
+    }
+
+    #[test]
+    fn set_snapshots_animated_into_prev_mid_rotation() {
+        let mut fc = FacingClass::new(0, 5);
+        fc.set(12800, 0); // start rotation: 0 → 12800 over 10 frames.
+
+        // At frame 5, animated = 6400. Now retarget.
+        assert_eq!(fc.current(5), 6400);
+        fc.set(25600, 5);
+
+        // After re-set, prev should be 6400 (the animated position at the
+        // moment of the new request), NOT 0 (the old prev).
+        assert_eq!(fc.prev, 6400);
+        assert_eq!(fc.destination(), 25600);
+        assert_eq!(fc.start_frame, Some(5));
+        // New duration = abs(25600 - 6400) / 1280 = 19200 / 1280 = 15.
+        assert_eq!(fc.duration_frames, 15);
+    }
+
+    #[test]
+    fn set_with_zero_rot_writes_destination_without_timer() {
+        let mut fc = FacingClass::new(0, 0);
+        let changed = fc.set(1000, 5);
+        assert!(changed);
+        assert_eq!(fc.destination(), 1000);
+        // No timer state set when rot is 0.
+        assert!(fc.start_frame.is_none());
+    }
+
+    #[test]
+    fn set_handles_wrap_around_shortest_path() {
+        // From 0x0100 to 0xFF00, shortest path is COUNTER-clockwise (-512 units).
+        let mut fc = FacingClass::new(0x0100, 1);
+        fc.set(0xFF00, 0);
+        // duration = abs((-512 as i16).unsigned_abs()) / 256 = 512/256 = 2.
+        assert_eq!(fc.duration_frames, 2);
     }
 }
