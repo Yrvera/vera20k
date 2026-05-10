@@ -455,6 +455,7 @@ pub fn tick_combat(
     resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
     current_tick: u64,
     tick_ms: u32,
+    binary_frame: u32,
 ) -> CombatTickResult {
     tick_combat_with_fog(
         entities,
@@ -469,6 +470,7 @@ pub fn tick_combat(
         None,
         current_tick,
         tick_ms,
+        binary_frame,
     )
 }
 
@@ -996,6 +998,7 @@ pub fn tick_combat_with_fog(
     overlay_registry: Option<&OverlayTypeRegistry>,
     current_tick: u64,
     tick_ms: u32,
+    binary_frame: u32,
 ) -> CombatTickResult {
     if tick_ms == 0 {
         return CombatTickResult {
@@ -1025,7 +1028,7 @@ pub fn tick_combat_with_fog(
     // Garrison auto-acquire: idle garrisoned buildings scan for hostile targets.
     // Runs before Phase 1 so newly-targeted buildings are included in snapshots.
     for &id in &keys {
-        let (is_candidate, owner, pos_rx, pos_ry, sub_x, sub_y, type_id, _turret_facing) = {
+        let (is_candidate, owner, pos_rx, pos_ry, sub_x, sub_y, type_id, _barrel_facing) = {
             let entity = match entities.get(id) {
                 Some(e) => e,
                 None => continue,
@@ -1046,7 +1049,7 @@ pub fn tick_combat_with_fog(
                 entity.position.sub_x,
                 entity.position.sub_y,
                 entity.type_ref,
-                entity.turret_facing,
+                entity.barrel_facing,
             )
         };
         if !is_candidate {
@@ -1215,7 +1218,7 @@ pub fn tick_combat_with_fog(
                 entity.position.sub_y,
                 entity.type_ref,
                 attack.cooldown_ticks,
-                entity.turret_facing,
+                entity.barrel_facing,
                 attack.burst_remaining,
                 attack.burst_delay_ticks,
                 entity.ifv_weapon_index,
@@ -1233,7 +1236,7 @@ pub fn tick_combat_with_fog(
             sub_y,
             type_id,
             cooldown_ticks,
-            turret_facing,
+            barrel_facing,
             burst_remaining,
             burst_delay_ticks,
             ifv_weapon_index,
@@ -1266,7 +1269,7 @@ pub fn tick_combat_with_fog(
             sub_y,
             type_id,
             cooldown_ticks,
-            turret_facing,
+            barrel_facing,
             burst_remaining,
             burst_delay_ticks,
             ifv_weapon_index,
@@ -1497,8 +1500,8 @@ pub fn tick_combat_with_fog(
             continue;
         }
 
-        // Turret alignment check (lepton-precise, 16-bit).
-        if let Some(turret_facing) = snap.turret_facing {
+        // Turret alignment check (FacingClass: destination match + not rotating).
+        if let Some(ref barrel) = snap.barrel_facing {
             let desired: u16 = crate::sim::movement::turret::facing_toward_lepton(
                 snap.pos_rx,
                 snap.pos_ry,
@@ -1509,7 +1512,14 @@ pub fn tick_combat_with_fog(
                 target_sub_x,
                 target_sub_y,
             );
-            if !crate::sim::movement::turret::is_turret_aligned_u16(turret_facing, desired) {
+            // Aligned iff destination matches AND no rotation in progress.
+            // Both checks needed: destination may match while interpolation
+            // is still mid-arc (animated value not yet at destination).
+            let aligned = barrel.current(binary_frame) == desired
+                && !barrel.is_rotating(binary_frame);
+            if !aligned {
+                // FireDecision::Facing — drives gattling spin-up via
+                // drives_gattling_spinup() == true.
                 continue;
             }
         }

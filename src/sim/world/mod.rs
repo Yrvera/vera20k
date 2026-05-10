@@ -1193,6 +1193,7 @@ impl Simulation {
                 overlay_registry,
                 self.tick,
                 tick_ms,
+                self.binary_frame,
             );
             destroyed_structure |= combat_result.structure_destroyed;
             // Decrement owned counts for entities killed in combat (dying=true set this tick).
