@@ -40,15 +40,21 @@ const SPRITE_MARGIN: u32 = 2;
 const FP_SHIFT: i32 = 16;
 const FP_SCALE: f32 = (1 << FP_SHIFT) as f32; // 65536.0
 
-/// Edge ramp tilt angle (slope types 1-4): `atan(tan(30°) / sqrt(2))`.
-/// Derived from RA2's isometric geometry — one full cell edge raised by one height
-/// level. `VXL_Init_EdgeTiltAngle` computes `atan(2h / diag)`.
-const EDGE_TILT_RAD: f32 = 0.3876;
+/// Edge ramp tilt angle (slope types 1-4): `atan(2 × LevelHeight / cellDiagonal)`.
+///
+/// Reduces analytically to `atan(13√2 / 32) ≈ 0.5215403 rad ≈ 29.88°`, where
+/// `LevelHeight = 104 leptons` (the canonical RA2 vertical step) and
+/// `cellDiagonal = 256√2 leptons`. The factor of 2 reflects the rise across
+/// the full diagonal of a one-level edge ramp (two adjacent corners raised).
+const EDGE_TILT_RAD: f32 = 0.521_540_3;
 
-/// Corner ramp tilt angle (slope types 5-8): `atan(tan(30°) / 2)`.
-/// One corner raised by one height level across the cell diagonal.
-/// `VXL_Init_CornerTiltAngle` computes `atan(h / 256)`.
-const CORNER_TILT_RAD: f32 = 0.2810;
+/// Corner ramp tilt angle (slope types 5-8): `atan(LevelHeight / cellSide)`.
+///
+/// Reduces analytically to `atan(13 / 32) ≈ 0.3858660 rad ≈ 22.10°`, where
+/// `LevelHeight = 104 leptons` and `cellSide = 256 leptons`. One corner of
+/// the cell is raised half a level; the run is one cell side (not the
+/// diagonal) — that's what distinguishes corner from edge ramps.
+const CORNER_TILT_RAD: f32 = 0.385_866_0;
 
 /// Configuration for rendering a single VXL model frame.
 #[derive(Debug, Clone)]
