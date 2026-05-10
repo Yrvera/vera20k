@@ -171,8 +171,8 @@ impl CachedUnitSprite {
 /// Collect the set of unit sprite keys needed by the current ECS world.
 ///
 /// Used by the incremental rebuild path to diff against the existing atlas.
-/// Ground vehicles get all 9 slope variants (0-8) pre-rendered so that no
-/// atlas rebuild is needed when they drive onto ramps.
+/// Ground vehicles get all 17 slope variants (0-16) pre-rendered so that no
+/// atlas rebuild is needed when they drive onto any populated ramp.
 pub fn collect_needed_unit_keys(
     entities: &crate::sim::entity_store::EntityStore,
     asset_manager: &AssetManager,
