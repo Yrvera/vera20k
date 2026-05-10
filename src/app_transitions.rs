@@ -51,6 +51,7 @@ pub(crate) fn transition_to_in_game(state: &mut AppState) {
             resolved_terrain: None,
             simulation: None,
             unit_atlas: None,
+            palette_set: None,
             sprite_atlas: None,
             overlay_atlas: None,
             bridge_atlas: None,
@@ -102,6 +103,7 @@ pub(crate) fn transition_to_in_game(state: &mut AppState) {
         sim.input_delay_ticks = state.configured_input_delay_ticks;
     }
     state.unit_atlas = result.unit_atlas;
+    state.palette_set = result.palette_set;
     state.sprite_atlas = result.sprite_atlas;
     state.overlay_atlas = result.overlay_atlas;
     state.bridge_atlas = result.bridge_atlas;

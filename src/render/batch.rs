@@ -1090,6 +1090,29 @@ impl BatchRenderer {
         render_pass.draw(0..6, 0..count);
     }
 
+    /// Draw a sub-range of voxel sprite instances using the voxel sprite pipeline.
+    /// Used by the multi-way Y-sort merge passes that interleave voxel and SHP
+    /// draw calls. Same semantics as `draw_voxel_sprites` but with a start index.
+    pub fn draw_voxel_sprites_range<'a>(
+        &'a self,
+        render_pass: &mut wgpu::RenderPass<'a>,
+        atlas: &'a BatchTexture,
+        palette_bind_group: &'a wgpu::BindGroup,
+        buffer: &'a wgpu::Buffer,
+        start: u32,
+        count: u32,
+    ) {
+        if count == 0 {
+            return;
+        }
+        render_pass.set_pipeline(&self.voxel_sprite_pipeline);
+        render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+        render_pass.set_bind_group(1, &atlas.bind_group, &[]);
+        render_pass.set_bind_group(2, palette_bind_group, &[]);
+        render_pass.set_vertex_buffer(0, buffer.slice(..));
+        render_pass.draw(0..6, start..start + count);
+    }
+
     /// Access the camera bind group for use by external pipelines (e.g., fog shader).
     pub fn camera_bind_group(&self) -> &wgpu::BindGroup {
         &self.camera_bind_group

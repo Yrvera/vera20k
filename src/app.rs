@@ -78,6 +78,8 @@ pub(crate) struct AppState {
     pub(crate) resolved_terrain: Option<ResolvedTerrainGrid>,
     pub(crate) simulation: Option<Simulation>,
     pub(crate) unit_atlas: Option<UnitAtlas>,
+    /// Palette + per-house RGB ramp GPU resources for the voxel sprite shader.
+    pub(crate) palette_set: Option<crate::render::palette_textures::PaletteSet>,
     pub(crate) vxl_compute: Option<crate::render::vxl_compute::VxlComputeRenderer>,
     pub(crate) sprite_atlas: Option<SpriteAtlas>,
     pub(crate) overlay_atlas: Option<OverlayAtlas>,
@@ -559,6 +561,7 @@ impl App {
             resolved_terrain: None,
             simulation: None,
             unit_atlas: None,
+            palette_set: None,
             vxl_compute: Some(vxl_compute),
             sprite_atlas: None,
             overlay_atlas: None,

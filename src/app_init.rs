@@ -66,6 +66,9 @@ pub struct MapLoadResult {
     pub resolved_terrain: Option<ResolvedTerrainGrid>,
     pub simulation: Option<Simulation>,
     pub unit_atlas: Option<UnitAtlas>,
+    /// Palette + per-house RGB ramp GPU resources for the voxel sprite shader.
+    /// None when no theater palette is available (rare).
+    pub palette_set: Option<crate::render::palette_textures::PaletteSet>,
     pub sprite_atlas: Option<SpriteAtlas>,
     pub overlay_atlas: Option<OverlayAtlas>,
     pub bridge_atlas: Option<BridgeAtlas>,
@@ -393,7 +396,7 @@ pub fn load_map(
         None => (None, None, None),
     };
 
-    let (simulation, mut unit_atlas, mut sprite_atlas) = spawn_entities(
+    let (simulation, mut unit_atlas, mut sprite_atlas, mut palette_set) = spawn_entities(
         &map_data,
         &resolved_terrain,
         &asset_manager,
@@ -464,7 +467,7 @@ pub fn load_map(
                 setup_ai_players(sim, &house_roster, local_owner);
             }
             if initial_local_owner.is_some() {
-                let (new_unit_atlas, new_sprite_atlas) = build_entity_atlases(
+                let (new_unit_atlas, new_sprite_atlas, new_palette_set) = build_entity_atlases(
                     sim,
                     &asset_manager,
                     gpu,
@@ -480,6 +483,7 @@ pub fn load_map(
                 );
                 unit_atlas = new_unit_atlas;
                 sprite_atlas = new_sprite_atlas;
+                palette_set = new_palette_set;
             }
         }
     }
@@ -787,6 +791,7 @@ pub fn load_map(
         resolved_terrain: Some(resolved_terrain),
         simulation,
         unit_atlas,
+        palette_set,
         sprite_atlas,
         overlay_atlas,
         bridge_atlas,
