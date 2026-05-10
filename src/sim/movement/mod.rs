@@ -56,6 +56,7 @@ pub mod air_movement;
 pub mod bump_crush;
 pub mod drive_track;
 pub mod droppod_movement;
+pub mod facing_class;
 pub mod group_destination;
 pub mod jumpjet_movement;
 pub mod locomotor;
@@ -65,6 +66,8 @@ pub mod scatter;
 pub mod teleport_movement;
 pub mod tunnel_movement;
 pub mod turret;
+
+pub use facing_class::FacingClass;
 
 // Re-export command functions so callers can use `movement::issue_move_command` etc.
 pub use movement_commands::{

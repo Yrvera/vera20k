@@ -23,6 +23,10 @@ name = "inspect-maps"
 path = "src/bin/inspect-maps.rs"
 
 [[bin]]
+name = "audit-assets"
+path = "src/bin/audit-assets.rs"
+
+[[bin]]
 name = "bik-player"
 path = "src/bin/bik-player.rs"
 

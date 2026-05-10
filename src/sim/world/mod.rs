@@ -198,6 +198,13 @@ pub struct Simulation {
     pub production: ProductionState,
     /// Current simulation tick (starts at 0, increments after each advance_tick).
     pub tick: u64,
+    /// Total accumulated sim-tick milliseconds since world creation.
+    /// Authoritative time source; binary_frame is derived from this.
+    pub total_sim_ms: u64,
+    /// Synthetic gamemd 15 Hz frame counter. Computed each tick as
+    /// (total_sim_ms * 15 / 1000). Used by FacingClass methods to compute
+    /// animated values that match gamemd binary-frame timing exactly.
+    pub binary_frame: u32,
     /// Single explicit deterministic PRNG stream for simulation logic.
     pub rng: SimRng,
     /// Deterministic fog/shroud visibility state.
@@ -350,6 +357,8 @@ impl Simulation {
             entities: EntityStore::new(),
             production: ProductionState::default(),
             tick: 0,
+            total_sim_ms: 0,
+            binary_frame: 0,
             rng: SimRng::new(seed),
             fog: FogState::default(),
             house_alliances: HouseAllianceMap::default(),
@@ -967,6 +976,11 @@ impl Simulation {
         overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
         tick_ms: u32,
     ) -> TickResult {
+        // Advance synthetic 15 Hz binary-frame counter. Drift-free: every
+        // binary-frame boundary is exactly when total_sim_ms crosses a
+        // multiple of 1000/15 ≈ 66.67ms.
+        self.total_sim_ms = self.total_sim_ms.saturating_add(tick_ms as u64);
+        self.binary_frame = ((self.total_sim_ms * 15) / 1000) as u32;
         let execute_tick = self.tick.saturating_add(1);
         // Rebuild per-owner entity index. Cheap linear scan; captures any
         // owner mutations from the previous tick (engineer capture, mind control).
@@ -1150,11 +1164,13 @@ impl Simulation {
             //   that combat (Phase 5) and animation (post-tick) read this tick.
             crate::sim::deploy::tick_deploy_state(&mut self.entities);
 
-            // --- Phase 5: Turrets + Combat ---
-            // DEPENDS ON: vision/fog (targeting uses fog state), power (cloaking),
-            //   turret rotation MUST run before combat so turrets are aligned when firing.
+            // --- Phase 5: Combat + Turret rotation ---
+            // DEPENDS ON: vision/fog (targeting uses fog state), power (cloaking).
+            // Combat reads barrel.current(binary_frame) at the START of the tick
+            // (matching gamemd's Fire_At_Target which uses last-frame facing).
+            // tick_turret_rotation runs AFTER combat to drive rotation toward the
+            // target for the NEXT frame's fire decision (matches Facing_Update order).
             // PRODUCES: damage, deaths, bridge damage, fire events, last_attacker_id.
-            turret::tick_turret_rotation(&mut self.entities, rules, tick_ms, &self.interner);
             spawned_entities |= self.tick_capture_orders();
             self.tick_order_intents_pre_combat(rules);
             // Pursuit: walk units with out-of-range attack_target into range,
@@ -1174,6 +1190,13 @@ impl Simulation {
                 overlay_registry,
                 self.tick,
                 tick_ms,
+                self.binary_frame,
+            );
+            turret::tick_turret_rotation(
+                &mut self.entities,
+                rules,
+                self.binary_frame,
+                &self.interner,
             );
             destroyed_structure |= combat_result.structure_destroyed;
             // Decrement owned counts for entities killed in combat (dying=true set this tick).
