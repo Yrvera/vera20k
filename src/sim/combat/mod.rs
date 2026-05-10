@@ -37,6 +37,10 @@ mod combat_force_fire_cell_tests;
 #[path = "combat_pursuit_tests.rs"]
 mod combat_pursuit_tests;
 
+#[cfg(test)]
+#[path = "combat_turret_facing_tests.rs"]
+mod combat_turret_facing_tests;
+
 use std::collections::BTreeMap;
 
 use crate::sim::miner::ResourceNode;

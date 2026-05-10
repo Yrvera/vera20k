@@ -126,6 +126,7 @@ fn test_tick_combat_applies_damage() {
         &mut BTreeMap::new(),
         0u64,
         100,
+        0u32,
     );
 
     let target_health = store.get(2).expect("target alive").health.current;
@@ -162,6 +163,7 @@ fn ic_target_takes_zero_damage() {
         &mut BTreeMap::new(),
         10u64,
         100,
+        0u32,
     );
     assert_eq!(
         store.get(2).expect("target alive").health.current,
@@ -191,6 +193,7 @@ fn test_tick_combat_only_emits_bridge_damage_for_wall_warheads() {
         None,
         0u64,
         100,
+        0u32,
     );
     assert!(
         result.bridge_damage_events.is_empty(),
@@ -231,6 +234,7 @@ fn test_tick_combat_only_emits_bridge_damage_for_wall_warheads() {
         None,
         0u64,
         100,
+        0u32,
     );
     assert_eq!(
         wall_result.bridge_damage_events,
@@ -267,6 +271,7 @@ fn test_tick_combat_respects_cooldown() {
         &mut BTreeMap::new(),
         0u64,
         100,
+        0u32,
     );
     let h1: u16 = store.get(2).unwrap().health.current;
 
@@ -279,6 +284,7 @@ fn test_tick_combat_respects_cooldown() {
         &mut BTreeMap::new(),
         0u64,
         100,
+        0u32,
     );
     let h2: u16 = store.get(2).unwrap().health.current;
     assert_eq!(h1, h2, "Should not fire during cooldown");
@@ -293,6 +299,7 @@ fn test_tick_combat_respects_cooldown() {
             &mut BTreeMap::new(),
         0u64,
             100,
+        0u32,
         );
     }
     let h3: u16 = store.get(2).unwrap().health.current;
@@ -316,6 +323,7 @@ fn test_tick_combat_kills_target() {
         &mut BTreeMap::new(),
         0u64,
         100,
+        0u32,
     );
 
     assert!(store.get(2).is_none(), "Dead entity should be removed");
@@ -343,6 +351,7 @@ fn test_tick_combat_out_of_range() {
         &mut BTreeMap::new(),
         0u64,
         100,
+        0u32,
     );
 
     let target_health = store.get(2).unwrap().health.current;
@@ -378,6 +387,7 @@ fn test_infantry_vs_heavy_armor() {
         &mut BTreeMap::new(),
         0u64,
         100,
+        0u32,
     );
 
     let h: u16 = store.get(2).unwrap().health.current;
@@ -422,6 +432,7 @@ fn test_prone_infantry_takes_scaled_direct_damage() {
         &mut BTreeMap::new(),
         0u64,
         100,
+        0u32,
     );
 
     let target_health = store.get(2).expect("target alive").health.current;
@@ -465,6 +476,7 @@ fn test_prone_infantry_takes_scaled_aoe_damage() {
         &mut BTreeMap::new(),
         0u64,
         100,
+        0u32,
     );
 
     let target_health = store.get(2).expect("target alive").health.current;
@@ -504,6 +516,7 @@ fn test_tick_combat_visibility_blocks_fire() {
         None,
         0u64,
         100,
+        0u32,
     );
 
     let target_health = store.get(2).expect("target alive").health.current;
@@ -540,6 +553,7 @@ fn test_tick_combat_retargets_by_distance_then_stable_id() {
         None,
         0u64,
         100,
+        0u32,
     );
 
     let attack = store
@@ -586,6 +600,7 @@ fn test_tick_combat_retargets_prefers_threat_class_when_distance_equal() {
         None,
         0u64,
         100,
+        0u32,
     );
 
     let attack = store
@@ -661,6 +676,7 @@ fn test_weapon_fire_destroys_ore_in_spread() {
         None,
         0u64,
         100,
+        0u32,
     );
 
     // Damage=120, ore_damage = 120/10 = 12 density levels.
@@ -715,6 +731,7 @@ fn test_direct_hit_weapon_destroys_center_ore() {
         None,
         0u64,
         100,
+        0u32,
     );
 
     // 105mm damage=65, ore_damage = 65/10 = 6.
@@ -764,6 +781,7 @@ fn test_weak_weapon_partial_ore_reduction() {
         None,
         0u64,
         100,
+        0u32,
     );
 
     // M60 damage=25, ore_damage = 25/10 = 2.
@@ -1061,6 +1079,7 @@ fn v3_non_killing_aoe_emits_one_smudge_request() {
         &mut BTreeMap::new(),
         0u64,
         100,
+        0u32,
     );
 
     assert!(
@@ -1118,6 +1137,7 @@ fn v3_killing_aoe_emits_exactly_one_smudge_request() {
         &mut BTreeMap::new(),
         0u64,
         100,
+        0u32,
     );
 
     assert_eq!(
@@ -1178,6 +1198,7 @@ fn death_weapon_aoe_emits_separate_anim_from_killing_shot() {
         &mut BTreeMap::new(),
         0u64,
         100,
+        0u32,
     );
 
     let tankexp = interner.intern("TANKEXP");
