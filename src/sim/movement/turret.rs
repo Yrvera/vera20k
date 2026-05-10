@@ -1,13 +1,9 @@
 //! Turret rotation system — rotates turrets toward attack targets or back to body facing.
 //!
-//! Units with `TurretFacing` have an independently rotating turret. When attacking,
-//! the turret rotates toward the target at the unit's ROT speed. When idle, it
-//! returns to body facing. The turret must be aligned with the target before the
-//! weapon can fire (checked in combat.rs).
-//!
-//! ## RA2 ROT convention
-//! ROT is in "degrees per game frame at 15 fps". Converting to facing delta per tick:
-//! `delta = ROT * 256 / 360 * tick_ms * 15 / 1000`
+//! Units with a barrel `FacingClass` have an independently rotating turret.
+//! When attacking, the turret rotates toward the target at the unit's ROT
+//! speed. When idle, it returns to body facing. The weapon-fire alignment
+//! check is performed in combat.rs against the FacingClass animated value.
 //!
 //! ## Dependency rules
 //! - Part of sim/ — depends on sim/components, sim/combat, rules/.
@@ -15,14 +11,9 @@
 
 use crate::rules::ruleset::RuleSet;
 use crate::sim::entity_store::EntityStore;
-use crate::sim::miner::MinerState;
 use crate::util::fixed_math::{SimFixed, facing_from_delta_int_u16};
 
-/// 16-bit turret alignment threshold — same angular tolerance as the u8 version
-/// (8/256 ≈ 3.1% of full circle), scaled to 16-bit: 2048/65536 ≈ 3.1%.
-pub const TURRET_ALIGN_THRESHOLD_U16: u16 = 2048;
-
-/// Compute the signed shortest-path rotation from `current` to `target` in facing space.
+/// Compute the signed shortest-path rotation from `current` to `target` in 8-bit facing space.
 /// Returns a value in -128..=127 (positive = clockwise, negative = counter-clockwise).
 pub fn shortest_rotation(current: u8, target: u8) -> i16 {
     let diff: i16 = target as i16 - current as i16;
@@ -36,7 +27,7 @@ pub fn shortest_rotation(current: u8, target: u8) -> i16 {
     }
 }
 
-/// Convert ROT (degrees/frame at 15fps) + tick_ms into a facing delta per tick.
+/// Convert ROT (degrees/frame at 15fps) + tick_ms into an 8-bit facing delta per tick.
 /// Returns the maximum facing units the entity can rotate this tick.
 pub fn rot_to_facing_delta(rot: i32, tick_ms: u32) -> u8 {
     if rot <= 0 || tick_ms == 0 {
@@ -49,47 +40,6 @@ pub fn rot_to_facing_delta(rot: i32, tick_ms: u32) -> u8 {
     let denominator: u64 = 360 * 1000;
     let delta: u64 = numerator.div_ceil(denominator);
     delta.clamp(1, 128) as u8
-}
-
-// ---------------------------------------------------------------------------
-// 16-bit turret facing functions (full FacingClass precision)
-// ---------------------------------------------------------------------------
-
-/// Signed shortest-path rotation in 16-bit facing space.
-/// Returns -32768..=32767 (positive = clockwise, negative = counter-clockwise).
-pub fn shortest_rotation_u16(current: u16, target: u16) -> i32 {
-    let diff: i32 = target as i32 - current as i32;
-    if diff > 32768 {
-        diff - 65536
-    } else if diff < -32768 {
-        diff + 65536
-    } else {
-        diff
-    }
-}
-
-/// Convert ROT (degrees/frame at 15fps) + tick_ms into a 16-bit facing delta.
-///
-/// With 65536 facing units per revolution, the per-tick delta is large enough
-/// that ceiling-division rounding error is negligible (<1%), fixing the
-/// rotation speed mismatch that plagued the 8-bit version at 45Hz.
-pub fn rot_to_facing_delta_u16(rot: i32, tick_ms: u32) -> u16 {
-    if rot <= 0 || tick_ms == 0 {
-        return 0;
-    }
-    // ROT degrees/frame × 15 frames/sec × tick_ms/1000 = degrees this tick
-    // degrees × 65536/360 = 16-bit facing units this tick
-    let numerator: u64 = rot as u64 * 65536 * 15 * tick_ms as u64;
-    let denominator: u64 = 360 * 1000;
-    let delta: u64 = numerator.div_ceil(denominator);
-    // No clamp(1,...) needed — at u16 scale even ROT=1, tick_ms=22 gives ~61.
-    delta.min(32768) as u16
-}
-
-/// Check whether a 16-bit turret facing is aligned with the desired target.
-pub fn is_turret_aligned_u16(turret_facing: u16, target_facing: u16) -> bool {
-    let rot: i32 = shortest_rotation_u16(turret_facing, target_facing);
-    rot.unsigned_abs() <= TURRET_ALIGN_THRESHOLD_U16 as u32
 }
 
 /// Compute 16-bit turret facing from source to target using lepton-precise
@@ -120,65 +70,52 @@ pub fn body_facing_to_turret(body: u8) -> u16 {
     (body as u16) << 8
 }
 
-/// Advance turret rotation for all entities with TurretFacing.
+/// Per-binary-frame turret rotation — drives barrel_facing toward each
+/// entity's desired facing.
 ///
-/// - If entity has AttackTarget: rotate turret toward target (lepton-precise).
-/// - Otherwise: rotate turret back to body facing (idle return).
+/// - If entity has AttackTarget: rotate barrel toward target (lepton-precise).
+/// - Otherwise: rotate barrel back to body facing (idle return — research
+///   doc §5.1, ledger #20).
 ///
-/// Uses 16-bit DirStruct precision (full FacingClass range), which eliminates
-/// the rotation-speed overshoot that occurred with 8-bit stepping.
+/// Calls FacingClass::set, which is a no-op when the desired facing equals
+/// the current destination — so this function is idempotent.
 pub fn tick_turret_rotation(
     entities: &mut EntityStore,
     rules: &RuleSet,
-    tick_ms: u32,
+    binary_frame: u32,
     interner: &crate::sim::intern::StringInterner,
 ) {
-    if tick_ms == 0 {
-        return;
-    }
-
     struct TurretUpdate {
         id: u64,
-        current_turret: u16,
         target_facing: u16,
-        max_delta: u16,
     }
     let mut updates: Vec<TurretUpdate> = Vec::new();
 
-    // Phase 1: collect all turret entities and their desired rotation.
+    // Phase 1: read each turreted entity's desired facing.
     let keys: Vec<u64> = entities.keys_sorted();
     for &id in &keys {
         let entity = match entities.get(id) {
             Some(e) => e,
             None => continue,
         };
-        let current_turret: u16 = match entity.turret_facing {
-            Some(tf) => tf,
-            None => continue,
-        };
-
-        let rot: i32 = rules
-            .object(interner.resolve(entity.type_ref))
-            .map(|obj| obj.turret_rot)
-            .unwrap_or(5);
-        let max_delta: u16 = rot_to_facing_delta_u16(rot, tick_ms);
-        let is_harvesting: bool = entity
-            .miner
-            .as_ref()
-            .is_some_and(|m| m.state == MinerState::Harvest);
+        if entity.barrel_facing.is_none() {
+            continue;
+        }
 
         let desired_facing: u16 = if let Some(ref attack) = entity.attack_target {
-            // Look up target position: Entity targets via stable ID, Cell
-            // targets via cell-center leptons (force-fire on ground).
+            // Look up target position. Entity targets via stable ID,
+            // Cell targets via cell-center leptons (force-fire on ground).
             let target_pos = match attack.target {
-                crate::sim::combat::TargetKind::Entity(id) => entities.get(id).map(|t| {
-                    (
-                        t.position.rx,
-                        t.position.ry,
-                        t.position.sub_x,
-                        t.position.sub_y,
-                    )
-                }),
+                crate::sim::combat::TargetKind::Entity(target_id) => {
+                    entities.get(target_id).map(|t| {
+                        (
+                            t.position.rx,
+                            t.position.ry,
+                            t.position.sub_x,
+                            t.position.sub_y,
+                        )
+                    })
+                }
                 crate::sim::combat::TargetKind::Cell(rx, ry) => Some((
                     rx,
                     ry,
@@ -186,8 +123,8 @@ pub fn tick_turret_rotation(
                     crate::util::fixed_math::SimFixed::from_num(128),
                 )),
             };
-            if let Some((trx, try_, tsx, tsy)) = target_pos {
-                facing_toward_lepton(
+            match target_pos {
+                Some((trx, try_, tsx, tsy)) => facing_toward_lepton(
                     entity.position.rx,
                     entity.position.ry,
                     entity.position.sub_x,
@@ -196,41 +133,41 @@ pub fn tick_turret_rotation(
                     try_,
                     tsx,
                     tsy,
-                )
-            } else {
-                body_facing_to_turret(entity.facing)
+                ),
+                // Target gone — idle-return to body facing.
+                None => body_facing_to_turret(entity.facing),
             }
-        } else if is_harvesting {
-            // Harvesting: spin turret continuously by targeting half-turn ahead.
-            current_turret.wrapping_add(32768)
         } else {
+            // No target — return to body facing (research doc §5.1).
             body_facing_to_turret(entity.facing)
         };
 
         updates.push(TurretUpdate {
             id,
-            current_turret,
             target_facing: desired_facing,
-            max_delta,
         });
     }
 
-    // Phase 2: apply rotation.
+    // Phase 2: apply rotation via FacingClass::set. Idempotent — no-op when
+    // target already equals current destination.
     for update in &updates {
-        let rotation: i32 = shortest_rotation_u16(update.current_turret, update.target_facing);
-        if rotation == 0 {
-            continue;
-        }
-
-        let clamped: i32 = if rotation > 0 {
-            rotation.min(update.max_delta as i32)
-        } else {
-            rotation.max(-(update.max_delta as i32))
-        };
-
-        let new_facing: u16 = (update.current_turret as i32 + clamped).rem_euclid(65536) as u16;
+        let rot_byte: u8 = rules
+            .object(
+                interner.resolve(
+                    entities
+                        .get(update.id)
+                        .map(|e| e.type_ref)
+                        .unwrap_or_default(),
+                ),
+            )
+            .map(|obj| obj.turret_rot.clamp(0, 0xFF) as u8)
+            .unwrap_or(5);
         if let Some(entity) = entities.get_mut(update.id) {
-            entity.turret_facing = Some(new_facing);
+            if let Some(ref mut barrel) = entity.barrel_facing {
+                // Refresh ROT in case rules changed (cheap; idempotent).
+                barrel.set_rot(rot_byte);
+                barrel.set(update.target_facing, binary_frame);
+            }
         }
     }
 }
@@ -271,87 +208,6 @@ mod tests {
         // ROT=7 (Grizzly), tick_ms=33: 7*256*15*33 / 360000 = ~2.46 -> 3
         let delta: u8 = rot_to_facing_delta(7, 33);
         assert!(delta >= 2 && delta <= 4, "delta={}", delta);
-    }
-
-    // -----------------------------------------------------------------------
-    // 16-bit turret facing tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_shortest_rotation_u16_clockwise() {
-        assert_eq!(shortest_rotation_u16(0, 1000), 1000);
-        assert_eq!(shortest_rotation_u16(50000, 51000), 1000);
-    }
-
-    #[test]
-    fn test_shortest_rotation_u16_counter_clockwise() {
-        assert_eq!(shortest_rotation_u16(1000, 0), -1000);
-    }
-
-    #[test]
-    fn test_shortest_rotation_u16_wrap() {
-        // From 65000 to 500: clockwise +1036, counter-clockwise -64536. Pick +1036.
-        assert_eq!(shortest_rotation_u16(65000, 500), 1036);
-        // From 500 to 65000: pick -1036.
-        assert_eq!(shortest_rotation_u16(500, 65000), -1036);
-    }
-
-    #[test]
-    fn test_rot_to_facing_delta_u16_speed_accuracy() {
-        // ROT=5 at tick_ms=22 (45Hz):
-        // numerator = 5 * 65536 * 15 * 22 = 108,288,000
-        // denominator = 360,000
-        // exact = 300.8, ceil = 301
-        let delta = rot_to_facing_delta_u16(5, 22);
-        assert_eq!(delta, 301);
-
-        // Per-second rate: 301 * 45 = 13,545
-        // gamemd: 5° × 65536/360 × 15 ≈ 13,653
-        // Error: (13653-13545)/13653 = 0.8% — acceptable.
-        let per_sec: u64 = delta as u64 * 45;
-        let gamemd_per_sec: u64 = 13653;
-        let error_pct: f64 =
-            (gamemd_per_sec as f64 - per_sec as f64).abs() / gamemd_per_sec as f64 * 100.0;
-        assert!(
-            error_pct < 1.5,
-            "ROT=5 speed error {error_pct:.1}% exceeds 1.5%"
-        );
-    }
-
-    #[test]
-    fn test_rot_to_facing_delta_u16_slow_turret() {
-        // ROT=1 at tick_ms=22:
-        // numerator = 1 * 65536 * 15 * 22 = 21,626,880
-        // denominator = 360,000
-        // exact = 60.08, ceil = 61
-        let delta = rot_to_facing_delta_u16(1, 22);
-        assert_eq!(delta, 61);
-
-        // Per-second: 61 * 45 = 2,745. gamemd: 2,731. Error ~0.5%.
-        let per_sec: u64 = delta as u64 * 45;
-        let gamemd_per_sec: u64 = 2731;
-        let error_pct: f64 =
-            (gamemd_per_sec as f64 - per_sec as f64).abs() / gamemd_per_sec as f64 * 100.0;
-        assert!(
-            error_pct < 1.5,
-            "ROT=1 speed error {error_pct:.1}% exceeds 1.5%"
-        );
-    }
-
-    #[test]
-    fn test_rot_to_facing_delta_u16_zero() {
-        assert_eq!(rot_to_facing_delta_u16(0, 22), 0);
-        assert_eq!(rot_to_facing_delta_u16(5, 0), 0);
-    }
-
-    #[test]
-    fn test_is_turret_aligned_u16() {
-        assert!(is_turret_aligned_u16(25600, 25600)); // exact
-        assert!(is_turret_aligned_u16(25600, 27000)); // within 2048
-        assert!(!is_turret_aligned_u16(25600, 30000)); // 4400 > 2048
-        // Wrap-around.
-        assert!(is_turret_aligned_u16(500, 65000)); // diff = -1036, within 2048
-        assert!(!is_turret_aligned_u16(500, 60000)); // diff = -6036, outside
     }
 
     #[test]

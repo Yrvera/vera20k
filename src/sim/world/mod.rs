@@ -1168,7 +1168,12 @@ impl Simulation {
             // DEPENDS ON: vision/fog (targeting uses fog state), power (cloaking),
             //   turret rotation MUST run before combat so turrets are aligned when firing.
             // PRODUCES: damage, deaths, bridge damage, fire events, last_attacker_id.
-            turret::tick_turret_rotation(&mut self.entities, rules, tick_ms, &self.interner);
+            turret::tick_turret_rotation(
+                &mut self.entities,
+                rules,
+                self.binary_frame,
+                &self.interner,
+            );
             spawned_entities |= self.tick_capture_orders();
             self.tick_order_intents_pre_combat(rules);
             // Pursuit: walk units with out-of-range attack_target into range,
