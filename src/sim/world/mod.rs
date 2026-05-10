@@ -1164,16 +1164,13 @@ impl Simulation {
             //   that combat (Phase 5) and animation (post-tick) read this tick.
             crate::sim::deploy::tick_deploy_state(&mut self.entities);
 
-            // --- Phase 5: Turrets + Combat ---
-            // DEPENDS ON: vision/fog (targeting uses fog state), power (cloaking),
-            //   turret rotation MUST run before combat so turrets are aligned when firing.
+            // --- Phase 5: Combat + Turret rotation ---
+            // DEPENDS ON: vision/fog (targeting uses fog state), power (cloaking).
+            // Combat reads barrel.current(binary_frame) at the START of the tick
+            // (matching gamemd's Fire_At_Target which uses last-frame facing).
+            // tick_turret_rotation runs AFTER combat to drive rotation toward the
+            // target for the NEXT frame's fire decision (matches Facing_Update order).
             // PRODUCES: damage, deaths, bridge damage, fire events, last_attacker_id.
-            turret::tick_turret_rotation(
-                &mut self.entities,
-                rules,
-                self.binary_frame,
-                &self.interner,
-            );
             spawned_entities |= self.tick_capture_orders();
             self.tick_order_intents_pre_combat(rules);
             // Pursuit: walk units with out-of-range attack_target into range,
@@ -1194,6 +1191,12 @@ impl Simulation {
                 self.tick,
                 tick_ms,
                 self.binary_frame,
+            );
+            turret::tick_turret_rotation(
+                &mut self.entities,
+                rules,
+                self.binary_frame,
+                &self.interner,
             );
             destroyed_structure |= combat_result.structure_destroyed;
             // Decrement owned counts for entities killed in combat (dying=true set this tick).
