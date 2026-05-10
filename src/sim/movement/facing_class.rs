@@ -130,6 +130,38 @@ impl FacingClass {
         }
         true
     }
+
+    /// Snap setter — writes target to both current and prev, resets the
+    /// timer. Mirrors gamemd's UpdateFacing (FUN_004C9300) used by spawn /
+    /// locomotor takeoff / deploy paths that want no smoothing.
+    /// Returns true if the destination changed.
+    pub fn snap(&mut self, new_target: u16, binary_frame: u32) -> bool {
+        let animated = self.current(binary_frame);
+        if animated == new_target && self.current == new_target {
+            self.duration_frames = 0;
+            return false;
+        }
+        self.current = new_target;
+        self.prev = new_target;
+        self.start_frame = Some(binary_frame);
+        self.duration_frames = 0;
+        true
+    }
+
+    /// Whether a rotation is currently in progress at the given binary
+    /// frame. Equivalent to gamemd's CDTimerClass::Remaining test on
+    /// FacingClass (research doc §5.5, §1.5). Computed on demand —
+    /// not cached.
+    pub fn is_rotating(&self, binary_frame: u32) -> bool {
+        if self.rot_per_frame == 0 {
+            return false;
+        }
+        let Some(start) = self.start_frame else {
+            return false;
+        };
+        let elapsed: u32 = binary_frame.saturating_sub(start);
+        (elapsed as u32) < (self.duration_frames as u32)
+    }
 }
 
 #[cfg(test)]
@@ -302,5 +334,65 @@ mod tests {
         fc.set(0xFF00, 0);
         // duration = abs((-512 as i16).unsigned_abs()) / 256 = 512/256 = 2.
         assert_eq!(fc.duration_frames, 2);
+    }
+
+    #[test]
+    fn snap_writes_both_current_and_prev() {
+        let mut fc = FacingClass::new(0, 5);
+        fc.snap(12800, 10);
+        assert_eq!(fc.current, 12800);
+        assert_eq!(fc.prev, 12800);
+        assert_eq!(fc.duration_frames, 0);
+        assert_eq!(fc.current(10), 12800); // animated = destination immediately
+    }
+
+    #[test]
+    fn snap_no_op_when_already_at_target() {
+        let mut fc = FacingClass::new(1000, 5);
+        let changed = fc.snap(1000, 0);
+        assert!(!changed);
+    }
+
+    #[test]
+    fn is_rotating_false_when_rot_zero() {
+        let fc = FacingClass::new(0, 0);
+        assert!(!fc.is_rotating(0));
+        assert!(!fc.is_rotating(100));
+    }
+
+    #[test]
+    fn is_rotating_false_when_no_start_frame() {
+        let fc = FacingClass::new(0, 5);
+        assert!(!fc.is_rotating(0));
+    }
+
+    #[test]
+    fn is_rotating_true_during_rotation_false_after() {
+        let mut fc = FacingClass::new(0, 5);
+        fc.set(12800, 0); // duration = 10
+        assert!(fc.is_rotating(0));
+        assert!(fc.is_rotating(5));
+        assert!(fc.is_rotating(9));
+        assert!(!fc.is_rotating(10)); // exactly at end
+        assert!(!fc.is_rotating(100));
+    }
+
+    #[test]
+    fn turret_spins_formula_smoke_test() {
+        // Forward-test the deferred Floating Disk permaspin formula:
+        // each frame, set target = ((current(f) >> 7 + 1) >> 1 + 8) << 8.
+        // ROT byte = 100 (Disk's ROT), per-frame step = 25600 in 16-bit units.
+        // Per-frame target advance = 8 << 8 = 2048 < 25600, so step_size = 0
+        // → snaps every frame to the new target. After 32 frames, full revolution.
+        let mut fc = FacingClass::new(0, 100);
+        for f in 0..32u32 {
+            let animated = fc.current(f);
+            let rounded_8bit: u16 = (((animated >> 7) + 1) >> 1) & 0xFF;
+            let next_target: u16 = ((rounded_8bit + 8) & 0xFF) << 8;
+            fc.set(next_target, f);
+        }
+        // After 32 frames of advancing by 8 8-bit units, we should be back at
+        // (8 * 32) % 256 = 256 % 256 = 0 (in 8-bit), so 0 << 8 = 0 in 16-bit.
+        assert_eq!(fc.current(32), 0);
     }
 }
