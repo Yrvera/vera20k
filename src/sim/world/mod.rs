@@ -198,6 +198,13 @@ pub struct Simulation {
     pub production: ProductionState,
     /// Current simulation tick (starts at 0, increments after each advance_tick).
     pub tick: u64,
+    /// Total accumulated sim-tick milliseconds since world creation.
+    /// Authoritative time source; binary_frame is derived from this.
+    pub total_sim_ms: u64,
+    /// Synthetic gamemd 15 Hz frame counter. Computed each tick as
+    /// (total_sim_ms * 15 / 1000). Used by FacingClass methods to compute
+    /// animated values that match gamemd binary-frame timing exactly.
+    pub binary_frame: u32,
     /// Single explicit deterministic PRNG stream for simulation logic.
     pub rng: SimRng,
     /// Deterministic fog/shroud visibility state.
@@ -350,6 +357,8 @@ impl Simulation {
             entities: EntityStore::new(),
             production: ProductionState::default(),
             tick: 0,
+            total_sim_ms: 0,
+            binary_frame: 0,
             rng: SimRng::new(seed),
             fog: FogState::default(),
             house_alliances: HouseAllianceMap::default(),
@@ -967,6 +976,11 @@ impl Simulation {
         overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
         tick_ms: u32,
     ) -> TickResult {
+        // Advance synthetic 15 Hz binary-frame counter. Drift-free: every
+        // binary-frame boundary is exactly when total_sim_ms crosses a
+        // multiple of 1000/15 ≈ 66.67ms.
+        self.total_sim_ms = self.total_sim_ms.saturating_add(tick_ms as u64);
+        self.binary_frame = ((self.total_sim_ms * 15) / 1000) as u32;
         let execute_tick = self.tick.saturating_add(1);
         // Rebuild per-owner entity index. Cheap linear scan; captures any
         // owner mutations from the previous tick (engineer capture, mind control).

@@ -19,6 +19,8 @@ impl Simulation {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
         self.tick.hash(&mut hasher);
+        self.total_sim_ms.hash(&mut hasher);
+        self.binary_frame.hash(&mut hasher);
         self.rng.state().hash(&mut hasher);
         self.next_stable_entity_id.hash(&mut hasher);
 
@@ -637,3 +639,46 @@ mod bridge_overlay_hash_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod binary_frame_tests {
+    use super::Simulation;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn binary_frame_drift_free_at_22ms_ticks() {
+        let mut sim = Simulation::new();
+        let height_map = BTreeMap::new();
+        // 45 ticks at 22ms = 990ms ≈ 14.85 binary frames; floor = 14.
+        for _ in 0..45 {
+            sim.advance_tick(&[], None, &height_map, None, None, 22);
+        }
+        assert_eq!(sim.total_sim_ms, 990);
+        assert_eq!(sim.binary_frame, 14);
+    }
+
+    #[test]
+    fn binary_frame_advances_each_66ms_block() {
+        let mut sim = Simulation::new();
+        let height_map = BTreeMap::new();
+        // Three 67ms ticks should each advance binary_frame by 1
+        // (67ms * 15 / 1000 = 1.005, floor = 1 per tick).
+        sim.advance_tick(&[], None, &height_map, None, None, 67);
+        assert_eq!(sim.binary_frame, 1);
+        sim.advance_tick(&[], None, &height_map, None, None, 67);
+        assert_eq!(sim.binary_frame, 2);
+        sim.advance_tick(&[], None, &height_map, None, None, 67);
+        assert_eq!(sim.binary_frame, 3);
+    }
+
+    #[test]
+    fn binary_frame_changes_state_hash() {
+        let mut sim_a = Simulation::new();
+        let sim_b = Simulation::new();
+        let height_map = BTreeMap::new();
+        sim_a.advance_tick(&[], None, &height_map, None, None, 100);
+        // sim_b stays at frame 0; sim_a is at (100*15/1000)=1.
+        assert_ne!(sim_a.state_hash(), sim_b.state_hash());
+    }
+}
+
