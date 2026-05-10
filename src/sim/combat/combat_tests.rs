@@ -1029,6 +1029,63 @@ fn pursuit_weapon_range_none_for_unarmed_attacker() {
     assert_eq!(range, None);
 }
 
+#[test]
+fn v3_non_killing_aoe_emits_one_smudge_request() {
+    // V3-style splash hits a heavy-armor target with HP > splash damage.
+    // Target survives — currently produces zero smudges in dev HEAD; with
+    // the per-shot helper wired, must emit exactly one Anim smudge request.
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n\n\
+         [VehicleTypes]\n0=MTNK\n1=V3\n\n\
+         [AircraftTypes]\n\n\
+         [BuildingTypes]\n\n\
+         [MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\nPrimary=V3W\n\n\
+         [V3]\nStrength=300\nArmor=heavy\nSpeed=6\nPrimary=V3W\n\n\
+         [V3W]\nDamage=100\nROF=20\nRange=10\nWarhead=V3WH\n\n\
+         [V3WH]\nCellSpread=1\nPercentAtMax=1\nAnimList=V3EXP\n\
+         Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+    ))
+    .expect("v3 test rules should parse");
+
+    let mut store = EntityStore::new();
+    store.insert(make_entity(1, "MTNK", 5, 5, 300));
+    store.insert(make_entity(2, "MTNK", 8, 5, 300)); // full HP — won't die
+    let mut interner = test_interner();
+    issue_attack_command(&mut store, 1, 2, None, &interner);
+
+    let result = tick_combat(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        0u64,
+        100,
+    );
+
+    assert!(
+        store.get(2).map(|e| e.health.current > 0).unwrap_or(false),
+        "target must survive (test setup invariant)"
+    );
+    let anim_count = result
+        .smudge_spawn_requests
+        .iter()
+        .filter(|r| matches!(r, SmudgeSpawnRequest::Anim { .. }))
+        .count();
+    assert_eq!(
+        anim_count, 1,
+        "one detonation must emit one Anim smudge request even on non-kill"
+    );
+    let v3exp = interner.intern("V3EXP");
+    assert!(
+        result
+            .smudge_spawn_requests
+            .iter()
+            .any(|r| matches!(r, SmudgeSpawnRequest::Anim { anim_name, .. } if *anim_name == v3exp)),
+        "Anim smudge must reference the V3 warhead's AnimList entry"
+    );
+}
+
 // --- emit_warhead_detonation_effects helper tests ---------------------------
 
 fn emit_helper_test_warhead(animlist: &[&str]) -> crate::rules::warhead_type::WarheadType {

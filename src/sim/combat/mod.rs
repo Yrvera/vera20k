@@ -1632,6 +1632,23 @@ pub fn tick_combat_with_fog(
             warhead.cell_spread,
         );
 
+        // Cell-target force-fire on terrain has no entity z; the dispatcher
+        // re-derives ground_z from terrain.cell(rx,ry).level, so 0 is safe.
+        let impact_z: u8 = match snap.target {
+            TargetKind::Entity(eid) => entities.get(eid).map(|e| e.position.z).unwrap_or(0),
+            TargetKind::Cell(_, _) => 0,
+        };
+        emit_warhead_detonation_effects(
+            warhead,
+            base_damage,
+            target_rx,
+            target_ry,
+            impact_z,
+            interner,
+            &mut explosion_effects,
+            &mut smudge_spawn_requests,
+        );
+
         if let Some(ref report_id) = weapon.report {
             fire_sounds.push((interner.intern(report_id), snap.pos_rx, snap.pos_ry));
         }
