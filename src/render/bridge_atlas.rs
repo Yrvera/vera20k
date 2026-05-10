@@ -54,6 +54,18 @@ impl BridgeAtlas {
     }
 }
 
+/// Atlas lookup interface — abstracts the GPU-backed `BridgeAtlas` so that
+/// instance builders can be exercised in unit tests with a pure-data mock.
+pub trait BridgeAtlasLookup {
+    fn body_entry(&self, name: &str, frame: u8) -> Option<&OverlaySpriteEntry>;
+}
+
+impl BridgeAtlasLookup for BridgeAtlas {
+    fn body_entry(&self, name: &str, frame: u8) -> Option<&OverlaySpriteEntry> {
+        BridgeAtlas::body_entry(self, name, frame)
+    }
+}
+
 struct RenderedBridge {
     key: BridgeAtlasKey,
     rgba: Vec<u8>,
