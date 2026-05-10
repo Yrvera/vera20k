@@ -335,22 +335,16 @@ pub fn issue_attack_command(
     let target_pos = entities
         .get(target_id)
         .map(|t| target_coords(t, rules, interner));
-    let (trx, try_, tsx, tsy) = match target_pos {
+    let (trx, try_, _tsx, _tsy) = match target_pos {
         Some(p) => p,
         None => return false,
     };
 
-    // Read attacker position before mutable borrow (needed for lepton facing).
+    // Read attacker position before mutable borrow (needed for body-facing delta).
     let attacker_pos = entities.get(attacker_id).map(|a| {
-        (
-            a.position.rx,
-            a.position.ry,
-            a.position.sub_x,
-            a.position.sub_y,
-            a.turret_facing.is_some(),
-        )
+        (a.position.rx, a.position.ry, a.barrel_facing.is_some())
     });
-    let (arx, ary, asx, asy, has_turret) = match attacker_pos {
+    let (arx, ary, has_turret) = match attacker_pos {
         Some(p) => p,
         None => return false,
     };
@@ -361,13 +355,11 @@ pub fn issue_attack_command(
         None => return false,
     };
 
-    // Update facing toward target (lepton-precise for turrets, cell-level for body).
-    if has_turret {
-        let desired_u16 = crate::sim::movement::turret::facing_toward_lepton(
-            arx, ary, asx, asy, trx, try_, tsx, tsy,
-        );
-        attacker.turret_facing = Some(desired_u16);
-    } else {
+    // Body-only: instantly face the target. For turreted units, the turret
+    // rotates over multiple ticks — driven by tick_turret_rotation reading
+    // attack_target — so we set NO facing here. This matches gamemd: command
+    // handlers set the target; Facing_Update drives the rotation.
+    if !has_turret {
         let dx: i32 = trx as i32 - arx as i32;
         let dy: i32 = try_ as i32 - ary as i32;
         attacker.facing = crate::sim::movement::facing_from_delta(dx, dy);
@@ -405,13 +397,11 @@ pub fn issue_attack_cell_command(
         (
             a.position.rx,
             a.position.ry,
-            a.position.sub_x,
-            a.position.sub_y,
-            a.turret_facing.is_some(),
+            a.barrel_facing.is_some(),
             has_weapon,
         )
     });
-    let (arx, ary, asx, asy, has_turret, has_weapon) = match attacker_info {
+    let (arx, ary, has_turret, has_weapon) = match attacker_info {
         Some(info) => info,
         None => return false,
     };
@@ -428,19 +418,14 @@ pub fn issue_attack_cell_command(
         return false;
     }
 
-    let (trx, try_, tsx, tsy) = cell_center_coords(target_rx, target_ry);
+    let (trx, try_, _tsx, _tsy) = cell_center_coords(target_rx, target_ry);
 
     let attacker = match entities.get_mut(attacker_id) {
         Some(a) => a,
         None => return false,
     };
 
-    if has_turret {
-        let desired_u16 = crate::sim::movement::turret::facing_toward_lepton(
-            arx, ary, asx, asy, trx, try_, tsx, tsy,
-        );
-        attacker.turret_facing = Some(desired_u16);
-    } else {
+    if !has_turret {
         let dx: i32 = trx as i32 - arx as i32;
         let dy: i32 = try_ as i32 - ary as i32;
         attacker.facing = crate::sim::movement::facing_from_delta(dx, dy);
