@@ -22,6 +22,7 @@ pub(crate) mod combat_aoe;
 mod combat_fire_gate;
 pub(crate) mod combat_targeting;
 pub(crate) mod combat_weapon;
+pub(crate) mod fire_decision;
 pub mod smudge_dispatch;
 
 #[cfg(test)]
