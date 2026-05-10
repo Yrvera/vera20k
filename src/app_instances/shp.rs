@@ -312,7 +312,11 @@ pub(crate) fn build_shp_instances(
                             unit_instances,
                             state,
                             turret_id,
-                            entity.turret_facing.unwrap_or(0u16),
+                            entity
+                                .barrel_facing
+                                .as_ref()
+                                .map(|f| f.current(sim.binary_frame))
+                                .unwrap_or(0u16),
                             hc,
                             sx,
                             sy,
