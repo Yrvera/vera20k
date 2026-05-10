@@ -824,4 +824,38 @@ mod tests {
             expected
         );
     }
+
+    #[test]
+    fn test_slope_4_geometry_locks_current_direction() {
+        // Slope type 4 = "South" per the slope-type table (south corners
+        // raised). With compass=0° this reduces to Rx(EDGE_TILT_RAD), so
+        // glam's right-handed convention puts +Y at z=+sin(tilt) and -Y at
+        // z=-sin(tilt). Lock in those exact values — any silent sign flip
+        // in compute_slope_rotation, EDGE_TILT_RAD, or glam's convention
+        // will fail this test loudly.
+        //
+        // Whether "+Y" or "-Y" corresponds to world-south in the codebase's
+        // VXL model frame is verified separately by visual smoke check
+        // against gamemd.exe (see plan Task 5). If the visual check shows
+        // the unit leans the wrong way, the fix is to negate tilt_rad in
+        // compute_slope_rotation AND update this test's expected signs.
+        let slope_mat: Mat4 = compute_slope_rotation(4);
+
+        let plus_y: Vec3 = slope_mat.transform_point3(Vec3::Y);
+        let minus_y: Vec3 = slope_mat.transform_point3(-Vec3::Y);
+
+        let expected: f32 = EDGE_TILT_RAD.sin();
+        assert!(
+            (plus_y.z - expected).abs() < 1e-5,
+            "Expected (+Y).z = +sin(EDGE_TILT_RAD) = {} for slope_type=4; got {}",
+            expected,
+            plus_y.z
+        );
+        assert!(
+            (minus_y.z + expected).abs() < 1e-5,
+            "Expected (-Y).z = -sin(EDGE_TILT_RAD) = {} for slope_type=4; got {}",
+            -expected,
+            minus_y.z
+        );
+    }
 }
