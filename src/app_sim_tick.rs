@@ -836,7 +836,6 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
         asset_manager,
         state.rules.as_ref(),
         state.art_registry.as_ref(),
-        &state.house_color_map,
         Some(&sim.interner),
     );
     let unit_rebuild: bool = match &state.unit_atlas {
@@ -881,10 +880,8 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
             &state.batch_renderer,
             &sim.entities,
             asset_manager,
-            &palette,
             state.rules.as_ref(),
             state.art_registry.as_ref(),
-            &state.house_color_map,
             existing,
             state.vxl_compute.as_mut(),
             Some(&sim.interner),

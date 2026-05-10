@@ -12,13 +12,12 @@
 //! Camera: 60° isometric tilt + 45° world rotation (matching RA2/YR original).
 //!
 //! ## Dependency rules
-//! - Part of render/ — depends on assets/ (VxlFile, HvaFile, Palette, VplFile).
+//! - Part of render/ — depends on assets/ (VxlFile, HvaFile, VplFile).
 //! - Uses glam for vector/matrix math.
 
 use glam::{Mat4, Vec3, Vec4};
 
 use crate::assets::hva_file::HvaFile;
-use crate::assets::pal_file::{Color, Palette};
 use crate::assets::vpl_file::VplFile;
 use crate::assets::vxl_file::{VxlFile, VxlLimb};
 use crate::render::vxl_normals;
@@ -106,8 +105,12 @@ impl Default for VxlRenderParams {
 /// A rendered 2D sprite produced by the software voxel rasterizer.
 #[derive(Debug, Clone)]
 pub struct VxlSprite {
-    /// RGBA pixel data (width × height × 4 bytes).
-    pub rgba: Vec<u8>,
+    /// Palette-index pixel data (row-major, width × height bytes).
+    /// Each byte is the post-VPL-shaded, pre-house-remap palette index.
+    /// Byte 0 = transparent (no voxel rasterized at this pixel) — invariant
+    /// matches the original engine's visibility-map convention. House remap
+    /// and theater palette lookup happen at fragment-shader time.
+    pub palette_indices: Vec<u8>,
     /// Per-pixel depth buffer (width × height floats). Used for depth-correct
     /// compositing of body/turret/barrel layers. NEG_INFINITY = no voxel.
     pub depth: Vec<f32>,
@@ -457,11 +460,9 @@ pub fn compute_sprite_bounds(
 pub fn render_vxl(
     vxl: &VxlFile,
     hva: Option<&HvaFile>,
-    palette: &Palette,
     params: &VxlRenderParams,
     vpl: Option<&VplFile>,
 ) -> VxlSprite {
-    let facing_rad: f32 = (params.facing as f32) / 256.0 * std::f32::consts::TAU;
     let scale: f32 = params.scale;
 
     // Phase 1: Precompute per-limb transforms, grids, and footprints.
@@ -470,7 +471,7 @@ pub fn render_vxl(
     // Handle empty models.
     if limb_data.is_empty() {
         return VxlSprite {
-            rgba: vec![0, 0, 0, 0],
+            palette_indices: vec![0],
             depth: vec![f32::NEG_INFINITY],
             width: 1,
             height: 1,
@@ -485,7 +486,9 @@ pub fn render_vxl(
     let height: u32 = bounds.height;
     let pixel_count: usize = width as usize * height as usize;
 
-    let mut rgba: Vec<u8> = vec![0u8; pixel_count * 4];
+    // Atlas pixels = post-VPL palette indices. Byte 0 = transparent (matches
+    // the engine's visibility-map convention; the fragment shader discards 0).
+    let mut palette_indices: Vec<u8> = vec![0u8; pixel_count];
     let mut depth_buf: Vec<f32> = vec![f32::NEG_INFINITY; pixel_count];
 
     let fill_size: i32 = bounds.fill_size;
@@ -494,9 +497,6 @@ pub fn render_vxl(
     let buf_off_y_fp: i32 = bounds.buf_off_y_fp;
 
     // --- Phase 3: Back-to-front spatial iteration per limb ---
-
-    // Pre-compute facing rotation matrix for fallback N·L shading.
-    let facing_rot: Mat4 = Mat4::from_rotation_z(facing_rad);
 
     for ld in &limb_data {
         // Determine iteration direction per axis from the camera transform.
@@ -525,7 +525,11 @@ pub fn render_vxl(
                     let color_index: u8 = unpack_color(packed);
                     let normal_index: u8 = unpack_normal(packed);
 
-                    // VPL Blinn-Phong lighting or fallback N·L shading.
+                    // Post-VPL palette index — the byte the engine writes to
+                    // its visibility map. House remap + RGB lookup happen at
+                    // fragment-shader time. No-VPL path falls back to raw
+                    // color_index (no per-pixel diffuse shading on this path;
+                    // production always has VPL loaded).
                     let final_color_index: u8 = match vpl {
                         Some(vpl_file) => {
                             let page: u8 = ld.vpl_pages[normal_index as usize];
@@ -533,21 +537,13 @@ pub fn render_vxl(
                         }
                         None => color_index,
                     };
-
-                    let base_color: Color = palette.colors[final_color_index as usize];
-
-                    let color: [u8; 4] = if vpl.is_some() {
-                        [base_color.r, base_color.g, base_color.b, base_color.a]
+                    // Guard the transparency invariant: byte 0 = "no voxel"
+                    // and must never be written for a real opaque voxel. If a
+                    // VPL page maps to 0, fall back to the raw color_index.
+                    let final_color_index: u8 = if final_color_index == 0 {
+                        color_index
                     } else {
-                        let normal: Vec3 = vxl_normals::get_normal(ld.normals_mode, normal_index);
-                        let rotated: Vec3 = facing_rot.transform_vector3(normal);
-                        let brightness: f32 = vxl_normals::diffuse_shade(
-                            rotated,
-                            params.light_dir,
-                            params.ambient,
-                            params.diffuse,
-                        );
-                        shade_color(base_color, brightness)
+                        final_color_index
                     };
 
                     // Project voxel center to screen space (fixed-point truncation).
@@ -577,11 +573,7 @@ pub fn render_vxl(
                                 continue;
                             }
                             depth_buf[buf_idx] = depth;
-                            let base: usize = buf_idx * 4;
-                            rgba[base] = color[0];
-                            rgba[base + 1] = color[1];
-                            rgba[base + 2] = color[2];
-                            rgba[base + 3] = color[3];
+                            palette_indices[buf_idx] = final_color_index;
                         }
                     }
                 }
@@ -590,7 +582,7 @@ pub fn render_vxl(
     }
 
     VxlSprite {
-        rgba,
+        palette_indices,
         depth: depth_buf,
         width,
         height,
@@ -635,16 +627,6 @@ pub fn hva_to_mat4(raw: &[f32; 12], limb_scale: f32) -> Mat4 {
     )
 }
 
-/// Apply brightness to a palette color (fallback when VPL is unavailable).
-fn shade_color(color: Color, brightness: f32) -> [u8; 4] {
-    [
-        (color.r as f32 * brightness).round().min(255.0) as u8,
-        (color.g as f32 * brightness).round().min(255.0) as u8,
-        (color.b as f32 * brightness).round().min(255.0) as u8,
-        color.a,
-    ]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -685,29 +667,24 @@ mod tests {
         }
     }
 
-    fn make_test_palette() -> Palette {
-        let mut colors: [Color; 256] = [Color::rgb(128, 128, 128); 256];
-        colors[0] = Color::transparent();
-        colors[10] = Color::rgb(255, 0, 0);
-        colors[20] = Color::rgb(0, 0, 255);
-        Palette { colors }
-    }
-
     #[test]
     fn test_render_produces_nonempty_sprite() {
         let vxl: VxlFile = make_test_vxl();
-        let palette: Palette = make_test_palette();
         let params: VxlRenderParams = VxlRenderParams::default();
-        let sprite: VxlSprite = render_vxl(&vxl, None, &palette, &params, None);
+        let sprite: VxlSprite = render_vxl(&vxl, None, &params, None);
 
         assert!(sprite.width > 0);
         assert!(sprite.height > 0);
         assert_eq!(
-            sprite.rgba.len(),
-            (sprite.width * sprite.height * 4) as usize
+            sprite.palette_indices.len(),
+            (sprite.width * sprite.height) as usize
         );
 
-        let opaque_count: usize = sprite.rgba.chunks(4).filter(|p| p[3] > 0).count();
+        let opaque_count: usize = sprite
+            .palette_indices
+            .iter()
+            .filter(|&&b| b != 0)
+            .count();
         assert!(
             opaque_count >= 2,
             "Expected at least 2 opaque pixels, got {}",
@@ -723,23 +700,21 @@ mod tests {
             palette: vec![],
             limbs: vec![],
         };
-        let palette: Palette = make_test_palette();
         let params: VxlRenderParams = VxlRenderParams::default();
-        let sprite: VxlSprite = render_vxl(&vxl, None, &palette, &params, None);
+        let sprite: VxlSprite = render_vxl(&vxl, None, &params, None);
         assert_eq!(sprite.width, 1);
         assert_eq!(sprite.height, 1);
-        assert_eq!(sprite.rgba[3], 0);
+        // Empty model → single transparent byte (palette index 0).
+        assert_eq!(sprite.palette_indices[0], 0);
     }
 
     #[test]
     fn test_facing_changes_output() {
         let vxl: VxlFile = make_test_vxl();
-        let palette: Palette = make_test_palette();
 
         let sprite_0: VxlSprite = render_vxl(
             &vxl,
             None,
-            &palette,
             &VxlRenderParams {
                 facing: 0,
                 ..Default::default()
@@ -749,7 +724,6 @@ mod tests {
         let sprite_128: VxlSprite = render_vxl(
             &vxl,
             None,
-            &palette,
             &VxlRenderParams {
                 facing: 128,
                 ..Default::default()
@@ -760,7 +734,7 @@ mod tests {
         let same_offset: bool = (sprite_0.offset_x - sprite_128.offset_x).abs() < 0.01
             && (sprite_0.offset_y - sprite_128.offset_y).abs() < 0.01;
         assert!(
-            !same_offset || sprite_0.rgba != sprite_128.rgba,
+            !same_offset || sprite_0.palette_indices != sprite_128.palette_indices,
             "Facing 0 and 128 should produce different output"
         );
     }
@@ -768,11 +742,10 @@ mod tests {
     #[test]
     fn test_point_plot_fills_pixels() {
         let vxl: VxlFile = make_test_vxl();
-        let palette: Palette = make_test_palette();
         let params: VxlRenderParams = VxlRenderParams::default();
-        let sprite: VxlSprite = render_vxl(&vxl, None, &palette, &params, None);
+        let sprite: VxlSprite = render_vxl(&vxl, None, &params, None);
 
-        let opaque: usize = sprite.rgba.chunks(4).filter(|p| p[3] > 0).count();
+        let opaque: usize = sprite.palette_indices.iter().filter(|&&b| b != 0).count();
         assert!(
             opaque >= 2,
             "Point-plot should produce at least 2 opaque pixels, got {}",

@@ -429,21 +429,26 @@ pub(crate) fn build_entity_atlases(
             Palette::from_bytes(&data).ok()
         })
     });
-    let unit_atlas: Option<UnitAtlas> = palette.as_ref().and_then(|pal| {
+    // Atlas build no longer needs the palette (tiles store palette indices,
+    // not RGB). The palette load above is kept because downstream PaletteSet
+    // construction (Task 1.9) will consume it. Skip the build if no palette
+    // is available — it indicates a missing theater asset and rendering
+    // wouldn't work anyway.
+    let unit_atlas: Option<UnitAtlas> = if palette.is_some() {
         unit_atlas::build_unit_atlas(
             gpu,
             batch,
             &sim.entities,
             asset_manager,
-            pal,
             rules,
             art,
-            house_colors,
             None, // initial build — no existing cache
             vxl_compute,
             Some(&sim.interner),
         )
-    });
+    } else {
+        None
+    };
     // Pre-load building types that can be spawned at runtime (e.g., ConYards from MCV deploy).
     let extra_buildings: Vec<&str> =
         deployable_building_types(&sim.entities, rules, Some(&sim.interner));

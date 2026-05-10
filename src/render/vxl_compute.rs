@@ -12,12 +12,11 @@
 //! the UnitAtlas texture.
 //!
 //! ## Dependency rules
-//! - Part of render/ — depends on assets/ (VplFile, Palette, VxlFile),
+//! - Part of render/ — depends on assets/ (VplFile, VxlFile),
 //!   render/vxl_raster (LimbRenderData, SpriteBounds), render/vxl_normals.
 
 use bytemuck::{Pod, Zeroable};
 
-use crate::assets::pal_file::Palette;
 use crate::assets::vpl_file::VplFile;
 use crate::render::vxl_raster::SpriteBounds;
 
@@ -85,13 +84,14 @@ pub struct VxlComputeRenderer {
     resolve_bgl: wgpu::BindGroupLayout,
     // Reusable buffers (grown on demand, never shrink).
     atomic_fb: wgpu::Buffer,
-    output_rgba: wgpu::Buffer,
+    /// Output buffer: one u32 per pixel, low byte = post-VPL palette index.
+    /// House remap and theater palette lookup happen at fragment-shader time.
+    output_palette_indices: wgpu::Buffer,
     staging: wgpu::Buffer,
     fb_capacity: u32, // current max pixel count
     // Persistent lookup tables (uploaded once per atlas build).
     vpl_buffer: Option<wgpu::Buffer>,
     vpl_section_count: u32,
-    palette_buffer: Option<wgpu::Buffer>,
 }
 
 impl VxlComputeRenderer {
@@ -125,8 +125,7 @@ impl VxlComputeRenderer {
                 bgl_uniform(0),    // ResolveParams
                 bgl_storage_rw(1), // atomic_fb
                 bgl_storage_ro(2), // vpl_table
-                bgl_storage_ro(3), // palette_rgba
-                bgl_storage_rw(4), // output_rgba
+                bgl_storage_rw(3), // output_palette_indices
             ],
         });
 
@@ -168,8 +167,8 @@ impl VxlComputeRenderer {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let output_rgba = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("vxl_output_rgba"),
+        let output_palette_indices = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("vxl_output_palette_indices"),
             size: fb_byte_size,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
@@ -187,12 +186,11 @@ impl VxlComputeRenderer {
             splat_bgl,
             resolve_bgl,
             atomic_fb,
-            output_rgba,
+            output_palette_indices,
             staging,
             fb_capacity: init_cap,
             vpl_buffer: None,
             vpl_section_count: 0,
-            palette_buffer: None,
         }
     }
 
@@ -226,31 +224,7 @@ impl VxlComputeRenderer {
         self.vpl_section_count = vpl.num_sections;
     }
 
-    /// Upload palette RGBA to GPU. Call once per house color change.
-    pub fn upload_palette(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        palette: &Palette,
-    ) {
-        let packed: Vec<u32> = palette
-            .colors
-            .iter()
-            .map(|c| u32::from_le_bytes([c.r, c.g, c.b, c.a]))
-            .collect();
-        let byte_data = bytemuck::cast_slice(&packed);
-
-        let buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("vxl_palette_rgba"),
-            size: byte_data.len() as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        queue.write_buffer(&buf, 0, byte_data);
-        self.palette_buffer = Some(buf);
-    }
-
-    /// Render a VXL sprite via GPU compute and read back the RGBA result.
+    /// Render a VXL sprite via GPU compute and read back the palette-index result.
     ///
     /// `limbs` contains pre-packed voxel data and transforms for each limb.
     /// Multiple VXL models can be composited by passing all their limbs
@@ -258,7 +232,8 @@ impl VxlComputeRenderer {
     /// `bounds` provides the sprite dimensions.
     /// `scale` is the pixel scale factor from VxlRenderParams.
     ///
-    /// Returns RGBA pixel data (width × height × 4 bytes).
+    /// Returns palette-index pixel data (width × height bytes). Each byte is
+    /// the post-VPL, pre-house-remap palette index. Byte 0 = transparent.
     pub fn render_sprite(
         &mut self,
         device: &wgpu::Device,
@@ -274,11 +249,7 @@ impl VxlComputeRenderer {
 
         if self.vpl_buffer.is_none() {
             log::warn!("VxlComputeRenderer: no VPL uploaded, returning empty sprite");
-            return vec![0u8; (pixel_count * 4) as usize];
-        }
-        if self.palette_buffer.is_none() {
-            log::warn!("VxlComputeRenderer: no palette uploaded, returning empty sprite");
-            return vec![0u8; (pixel_count * 4) as usize];
+            return vec![0u8; pixel_count as usize];
         }
 
         // Ensure buffers are large enough.
@@ -431,11 +402,7 @@ impl VxlComputeRenderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: self.palette_buffer.as_ref().unwrap().as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: self.output_rgba.as_entire_binding(),
+                    resource: self.output_palette_indices.as_entire_binding(),
                 },
             ],
         });
@@ -451,12 +418,19 @@ impl VxlComputeRenderer {
         }
 
         // Copy output to staging buffer for readback.
+        // Output is one u32 per pixel (low byte = palette index).
         let byte_size = (pixel_count as u64) * 4;
-        encoder.copy_buffer_to_buffer(&self.output_rgba, 0, &self.staging, 0, byte_size);
+        encoder.copy_buffer_to_buffer(
+            &self.output_palette_indices,
+            0,
+            &self.staging,
+            0,
+            byte_size,
+        );
 
         queue.submit(std::iter::once(encoder.finish()));
 
-        // Map staging buffer and read back RGBA.
+        // Map staging buffer and read back palette indices (low byte of each u32).
         let buffer_slice = self.staging.slice(..byte_size);
         let (sender, receiver) = std::sync::mpsc::channel();
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
@@ -467,7 +441,8 @@ impl VxlComputeRenderer {
         match receiver.recv() {
             Ok(Ok(())) => {
                 let mapped = buffer_slice.get_mapped_range();
-                let result: Vec<u8> = mapped.to_vec();
+                // Extract low byte of each u32 → palette-index byte per pixel.
+                let result: Vec<u8> = mapped.chunks_exact(4).map(|c| c[0]).collect();
                 drop(mapped);
                 self.staging.unmap();
                 result
@@ -475,12 +450,12 @@ impl VxlComputeRenderer {
             _ => {
                 log::error!("VxlComputeRenderer: staging buffer map failed");
                 self.staging.unmap();
-                vec![0u8; (pixel_count * 4) as usize]
+                vec![0u8; pixel_count as usize]
             }
         }
     }
 
-    /// Ensure atomic_fb, output_rgba, and staging buffers can hold `pixel_count` pixels.
+    /// Ensure atomic_fb, output, and staging buffers can hold `pixel_count` pixels.
     fn ensure_capacity(&mut self, device: &wgpu::Device, pixel_count: u32) {
         if pixel_count <= self.fb_capacity {
             return;
@@ -495,8 +470,8 @@ impl VxlComputeRenderer {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        self.output_rgba = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("vxl_output_rgba"),
+        self.output_palette_indices = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("vxl_output_palette_indices"),
             size: byte_size,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,

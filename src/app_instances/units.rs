@@ -224,7 +224,6 @@ pub(crate) fn build_unit_instances(
             let key: UnitSpriteKey = UnitSpriteKey {
                 type_id: type_str.to_string(),
                 facing: canonical_unit_facing(entity.facing),
-                house_color: hc,
                 layer: VxlLayer::Composite,
                 frame: anim_frame,
                 slope_type,
@@ -370,7 +369,6 @@ fn emit_turret_unit_sprites(
     let body_key = UnitSpriteKey {
         type_id: type_id.to_string(),
         facing: canonical_unit_facing(body_facing),
-        house_color: hc,
         layer: VxlLayer::Body,
         frame: anim_frame,
         slope_type,
@@ -378,7 +376,6 @@ fn emit_turret_unit_sprites(
     let turret_key = UnitSpriteKey {
         type_id: type_id.to_string(),
         facing: canonical_turret_facing(turret_facing),
-        house_color: hc,
         layer: VxlLayer::Turret,
         frame: anim_frame,
         slope_type,
@@ -386,7 +383,6 @@ fn emit_turret_unit_sprites(
     let barrel_key = UnitSpriteKey {
         type_id: type_id.to_string(),
         facing: canonical_turret_facing(turret_facing),
-        house_color: hc,
         layer: VxlLayer::Barrel,
         frame: anim_frame,
         slope_type,

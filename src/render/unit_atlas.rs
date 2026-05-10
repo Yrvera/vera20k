@@ -49,15 +49,18 @@ const TURRET_FACING_BUCKETS: u8 = 128;
 // VxlLayer lives in sim::components — re-exported here for convenience.
 pub use crate::sim::components::VxlLayer;
 
-/// Cache key: unique combination of object type, facing, house color, layer, frame, and slope.
+/// Cache key: unique combination of object type, facing, layer, frame, and slope.
+///
+/// Note: house color is NOT in the key. Atlas tiles store house-neutral palette
+/// indices (post-VPL, pre-house-remap); house remap happens at fragment-shader
+/// time. Dropping the house dimension is the central memory win of the GPU
+/// remap architecture — N players no longer multiply atlas size.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct UnitSpriteKey {
     /// Object type ID from rules.ini (e.g., "HTNK").
     pub type_id: String,
     /// Facing direction (0–255).
     pub facing: u8,
-    /// House color index for palette remapping (different per player).
-    pub house_color: HouseColorIndex,
     /// Which VXL layer this entry represents.
     pub layer: VxlLayer,
     /// HVA animation frame index. 0 for most units; >0 for multi-frame animations.
@@ -139,12 +142,13 @@ struct RenderedSprite {
     sprite: VxlSprite,
 }
 
-/// Cached rendered unit sprite — RGBA only, depth buffer stripped.
+/// Cached rendered unit sprite — palette indices only, depth buffer stripped.
 /// Depth is only used during VXL compositing (body+turret+barrel merge),
-/// not after packing. Stripping it saves ~40% cache memory per sprite.
+/// not after packing. One byte per pixel (palette index, post-VPL).
 struct CachedUnitSprite {
     key: UnitSpriteKey,
-    rgba: Vec<u8>,
+    /// Palette-index pixels (1 byte each, width × height total).
+    pixels: Vec<u8>,
     width: u32,
     height: u32,
     offset_x: f32,
@@ -155,7 +159,7 @@ impl CachedUnitSprite {
     fn from_rendered(rs: RenderedSprite) -> Self {
         Self {
             key: rs.key,
-            rgba: rs.sprite.rgba,
+            pixels: rs.sprite.palette_indices,
             width: rs.sprite.width,
             height: rs.sprite.height,
             offset_x: rs.sprite.offset_x,
@@ -174,7 +178,6 @@ pub fn collect_needed_unit_keys(
     asset_manager: &AssetManager,
     rules: Option<&RuleSet>,
     art: Option<&ArtRegistry>,
-    house_colors: &HouseColorMap,
     interner: Option<&crate::sim::intern::StringInterner>,
 ) -> HashSet<UnitSpriteKey> {
     use crate::map::entities::EntityCategory;
@@ -184,9 +187,7 @@ pub fn collect_needed_unit_keys(
         if !entity.is_voxel {
             continue;
         }
-        let owner_str = interner.map_or("", |i| i.resolve(entity.owner));
         let type_str = interner.map_or("", |i| i.resolve(entity.type_ref));
-        let color_idx: HouseColorIndex = house_colors.get(owner_str).copied().unwrap_or_default();
         // Ground vehicles can drive onto any ramp, so pre-render all 9 slope
         // variants (0=flat, 1-8=ramps) upfront. Aircraft never tilt on slopes.
         let is_ground_vehicle: bool = entity.category != EntityCategory::Aircraft;
@@ -220,7 +221,6 @@ pub fn collect_needed_unit_keys(
                         needed.insert(UnitSpriteKey {
                             type_id: type_str.to_string(),
                             facing,
-                            house_color: color_idx,
                             layer,
                             frame,
                             slope_type: slope,
@@ -239,7 +239,6 @@ pub fn collect_needed_unit_keys(
                 continue;
             }
             let btype_str = interner.map_or("", |i| i.resolve(entity.type_ref));
-            let bowner_str = interner.map_or("", |i| i.resolve(entity.owner));
             let obj = match rules.and_then(|r| r.object(btype_str)) {
                 Some(o) => o,
                 None => continue,
@@ -251,13 +250,11 @@ pub fn collect_needed_unit_keys(
                 Some(id) => id,
                 None => continue,
             };
-            let hc: HouseColorIndex = house_colors.get(bowner_str).copied().unwrap_or_default();
             for bucket in 0..TURRET_FACING_BUCKETS {
                 let facing: u8 = bucket.saturating_mul(TURRET_FACING_STEP);
                 needed.insert(UnitSpriteKey {
                     type_id: turret_id.clone(),
                     facing,
-                    house_color: hc,
                     layer: VxlLayer::Composite,
                     frame: 0,
                     slope_type: 0,
@@ -286,10 +283,8 @@ pub fn build_unit_atlas(
     batch: &BatchRenderer,
     entities: &crate::sim::entity_store::EntityStore,
     asset_manager: &AssetManager,
-    palette: &Palette,
     rules: Option<&RuleSet>,
     art: Option<&ArtRegistry>,
-    house_colors: &HouseColorMap,
     existing: Option<UnitAtlas>,
     mut compute: Option<&mut VxlComputeRenderer>,
     interner: Option<&crate::sim::intern::StringInterner>,
@@ -305,9 +300,7 @@ pub fn build_unit_atlas(
         if !entity.is_voxel {
             continue;
         }
-        let owner_str = interner.map_or("", |i| i.resolve(entity.owner));
         let type_str = interner.map_or("", |i| i.resolve(entity.type_ref));
-        let color_idx: HouseColorIndex = house_colors.get(owner_str).copied().unwrap_or_default();
         let is_ground_vehicle: bool = entity.category != EntityCategory::Aircraft;
         let has_turret: bool = rules
             .and_then(|r| r.object(type_str))
@@ -345,7 +338,6 @@ pub fn build_unit_atlas(
                         needed.insert(UnitSpriteKey {
                             type_id: type_str.to_string(),
                             facing,
-                            house_color: color_idx,
                             layer,
                             frame,
                             slope_type: slope,
@@ -364,7 +356,6 @@ pub fn build_unit_atlas(
                 continue;
             }
             let btype_str = interner.map_or("", |i| i.resolve(entity.type_ref));
-            let bowner_str = interner.map_or("", |i| i.resolve(entity.owner));
             let obj = match rules.and_then(|r| r.object(btype_str)) {
                 Some(o) => o,
                 None => continue,
@@ -376,13 +367,11 @@ pub fn build_unit_atlas(
                 Some(id) => id,
                 None => continue,
             };
-            let hc: HouseColorIndex = house_colors.get(bowner_str).copied().unwrap_or_default();
             for bucket in 0..TURRET_FACING_BUCKETS {
                 let facing: u8 = bucket.saturating_mul(TURRET_FACING_STEP);
                 needed.insert(UnitSpriteKey {
                     type_id: turret_id.clone(),
                     facing,
-                    house_color: hc,
                     layer: VxlLayer::Composite,
                     frame: 0,
                     slope_type: 0,
@@ -400,7 +389,6 @@ pub fn build_unit_atlas(
         if !entity.is_voxel {
             continue;
         }
-        let owner_str = interner.map_or("", |i| i.resolve(entity.owner));
         let type_str = interner.map_or("", |i| i.resolve(entity.type_ref));
         let uc_name = match rules
             .and_then(|r| r.object(type_str))
@@ -420,7 +408,6 @@ pub fn build_unit_atlas(
                 continue;
             }
         };
-        let color_idx: HouseColorIndex = house_colors.get(owner_str).copied().unwrap_or_default();
         let is_ground_vehicle: bool = entity.category != EntityCategory::Aircraft;
         let layers: &[VxlLayer] = if uc_obj.has_turret {
             &[VxlLayer::Body, VxlLayer::Turret, VxlLayer::Barrel]
@@ -445,7 +432,6 @@ pub fn build_unit_atlas(
                         needed.insert(UnitSpriteKey {
                             type_id: uc_name.clone(),
                             facing,
-                            house_color: color_idx,
                             layer,
                             frame,
                             slope_type: slope,
@@ -501,18 +487,18 @@ pub fn build_unit_atlas(
                     }
                 });
 
-        // Upload VPL and palette to GPU compute renderer if available.
+        // Upload VPL to GPU compute renderer if available.
+        // Palette upload no longer needed: atlas tiles store post-VPL palette
+        // indices and the fragment shader does the RGB lookup at draw time.
         if let Some(ref mut comp) = compute {
             if let Some(ref vpl_file) = vpl {
                 comp.upload_vpl(&gpu.device, &gpu.queue, vpl_file);
             }
-            comp.upload_palette(&gpu.device, &gpu.queue, palette);
         }
 
         for key in &new_keys {
             match render_unit_sprite(
                 asset_manager,
-                palette,
                 key,
                 rules,
                 art,
@@ -570,7 +556,6 @@ pub fn build_unit_atlas(
 /// Falls back to direct {TYPE_ID}.VXL if art data is unavailable.
 fn render_unit_sprite(
     asset_manager: &AssetManager,
-    palette: &Palette,
     key: &UnitSpriteKey,
     rules: Option<&RuleSet>,
     art: Option<&ArtRegistry>,
@@ -617,9 +602,9 @@ fn render_unit_sprite(
         ..VxlRenderParams::default()
     };
 
-    // Apply house color remapping: replace palette indices 16–31 with house ramp.
-    let ramp = house_colors::house_color_ramp(key.house_color);
-    let remapped_pal: Palette = palette.with_house_colors(ramp);
+    // House remap is no longer applied at bake time — the fragment shader
+    // does it via per-instance house_color_idx + house_ramp texture lookup.
+    // The rasterizer outputs post-VPL palette indices directly.
 
     // Branch based on layer: Composite renders all parts together,
     // Body/Turret/Barrel render only the requested part.
@@ -633,9 +618,6 @@ fn render_unit_sprite(
     let sprite: VxlSprite = if use_gpu {
         // GPU compute path for Composite layer.
         let comp = compute.as_deref_mut().unwrap();
-
-        // Upload house-color-remapped palette for this sprite.
-        comp.upload_palette(&gpu.device, &gpu.queue, &remapped_pal);
 
         // Prepare limb data for all VXLs (body + turret + barrel).
         let mut all_limb_data = Vec::new();
@@ -725,10 +707,11 @@ fn render_unit_sprite(
             })
             .collect();
 
-        let rgba = comp.render_sprite(&gpu.device, &gpu.queue, &gpu_limbs, &bounds, params.scale);
+        let palette_indices =
+            comp.render_sprite(&gpu.device, &gpu.queue, &gpu_limbs, &bounds, params.scale);
 
         VxlSprite {
-            rgba,
+            palette_indices,
             depth: vec![],
             width: bounds.width,
             height: bounds.height,
@@ -740,12 +723,11 @@ fn render_unit_sprite(
         match key.layer {
             VxlLayer::Composite => {
                 let body_sprite: VxlSprite =
-                    vxl_raster::render_vxl(&vxl, hva.as_ref(), &remapped_pal, &params, vpl);
+                    vxl_raster::render_vxl(&vxl, hva.as_ref(), &params, vpl);
                 let mut layers: Vec<VxlSprite> = vec![body_sprite];
                 if let Some(turret) = render_optional_layer(
                     asset_manager,
                     &format!("{}TUR", image),
-                    &remapped_pal,
                     &params,
                     vpl,
                 ) {
@@ -754,7 +736,6 @@ fn render_unit_sprite(
                 if let Some(barrel) = render_optional_layer(
                     asset_manager,
                     &format!("{}BARL", image),
-                    &remapped_pal,
                     &params,
                     vpl,
                 )
@@ -762,7 +743,6 @@ fn render_unit_sprite(
                     render_optional_layer(
                         asset_manager,
                         &format!("{}BARREL", image),
-                        &remapped_pal,
                         &params,
                         vpl,
                     )
@@ -773,18 +753,16 @@ fn render_unit_sprite(
             }
             VxlLayer::Body | VxlLayer::Turret | VxlLayer::Barrel => {
                 let body_sprite: VxlSprite =
-                    vxl_raster::render_vxl(&vxl, hva.as_ref(), &remapped_pal, &params, vpl);
+                    vxl_raster::render_vxl(&vxl, hva.as_ref(), &params, vpl);
                 let turret_sprite: Option<VxlSprite> = render_optional_layer(
                     asset_manager,
                     &format!("{}TUR", image),
-                    &remapped_pal,
                     &params,
                     vpl,
                 );
                 let barrel_sprite: Option<VxlSprite> = render_optional_layer(
                     asset_manager,
                     &format!("{}BARL", image),
-                    &remapped_pal,
                     &params,
                     vpl,
                 )
@@ -792,7 +770,6 @@ fn render_unit_sprite(
                     render_optional_layer(
                         asset_manager,
                         &format!("{}BARREL", image),
-                        &remapped_pal,
                         &params,
                         vpl,
                     )
@@ -883,7 +860,6 @@ fn detect_hva_frame_count(
 fn render_optional_layer(
     asset_manager: &AssetManager,
     layer_base: &str,
-    palette: &Palette,
     params: &VxlRenderParams,
     vpl: Option<&VplFile>,
 ) -> Option<VxlSprite> {
@@ -894,22 +870,17 @@ fn render_optional_layer(
     let hva = asset_manager
         .get_ref(&hva_name)
         .and_then(|data| HvaFile::from_bytes(data).ok());
-    Some(vxl_raster::render_vxl(
-        &vxl,
-        hva.as_ref(),
-        palette,
-        params,
-        vpl,
-    ))
+    Some(vxl_raster::render_vxl(&vxl, hva.as_ref(), params, vpl))
 }
 
 /// Composite body/turret/barrel layers using depth-correct Z-buffer merging.
 /// Each layer's per-pixel depth is compared against the shared depth buffer,
 /// so turret voxels behind the body are correctly occluded (and vice versa).
+/// Pixels are palette indices (1 byte each); byte 0 = transparent.
 fn composite_vxl_layers(layers: &[VxlSprite]) -> VxlSprite {
     if layers.is_empty() {
         return VxlSprite {
-            rgba: vec![0, 0, 0, 0],
+            palette_indices: vec![0],
             depth: vec![f32::NEG_INFINITY],
             width: 1,
             height: 1,
@@ -919,7 +890,7 @@ fn composite_vxl_layers(layers: &[VxlSprite]) -> VxlSprite {
     }
     if layers.len() == 1 {
         return VxlSprite {
-            rgba: layers[0].rgba.clone(),
+            palette_indices: layers[0].palette_indices.clone(),
             depth: layers[0].depth.clone(),
             width: layers[0].width,
             height: layers[0].height,
@@ -946,8 +917,8 @@ fn composite_vxl_layers(layers: &[VxlSprite]) -> VxlSprite {
     let width: u32 = (max_x_i - min_x_i).max(1) as u32;
     let height: u32 = (max_y_i - min_y_i).max(1) as u32;
     let pixel_count: usize = (width * height) as usize;
-    let mut rgba = vec![0u8; pixel_count * 4];
-    let mut depth_buf = vec![f32::NEG_INFINITY; pixel_count];
+    let mut palette_indices: Vec<u8> = vec![0u8; pixel_count];
+    let mut depth_buf: Vec<f32> = vec![f32::NEG_INFINITY; pixel_count];
 
     // Merge layers using shared depth buffer for correct occlusion.
     for layer in layers {
@@ -955,31 +926,29 @@ fn composite_vxl_layers(layers: &[VxlSprite]) -> VxlSprite {
         let dy: i32 = layer.offset_y as i32 - min_y_i;
         for y in 0..layer.height as i32 {
             for x in 0..layer.width as i32 {
-                let src_pix = (y as u32 * layer.width + x as u32) as usize;
-                let src_idx = src_pix * 4;
-                let a = layer.rgba[src_idx + 3];
-                if a == 0 {
-                    continue;
+                let src_pix: usize = (y as u32 * layer.width + x as u32) as usize;
+                let src_byte: u8 = layer.palette_indices[src_pix];
+                if src_byte == 0 {
+                    continue; // transparent source pixel
                 }
                 let px = dx + x;
                 let py = dy + y;
                 if px < 0 || py < 0 || px >= width as i32 || py >= height as i32 {
                     continue;
                 }
-                let dst_pix = (py as u32 * width + px as u32) as usize;
-                let src_depth = layer.depth[src_pix];
+                let dst_pix: usize = (py as u32 * width + px as u32) as usize;
+                let src_depth: f32 = layer.depth[src_pix];
                 // Only write pixel if it's closer (or equal) to the camera.
                 if src_depth >= depth_buf[dst_pix] {
                     depth_buf[dst_pix] = src_depth;
-                    let dst_idx = dst_pix * 4;
-                    rgba[dst_idx..dst_idx + 4].copy_from_slice(&layer.rgba[src_idx..src_idx + 4]);
+                    palette_indices[dst_pix] = src_byte;
                 }
             }
         }
     }
 
     VxlSprite {
-        rgba,
+        palette_indices,
         depth: depth_buf,
         width,
         height,
@@ -1017,7 +986,7 @@ fn pad_layer_to_union_bounds(layer: &VxlSprite, all_layers: &[&VxlSprite]) -> Vx
     let width: u32 = (max_x_i - min_x_i).max(1) as u32;
     let height: u32 = (max_y_i - min_y_i).max(1) as u32;
     let pixel_count: usize = (width * height) as usize;
-    let mut rgba: Vec<u8> = vec![0u8; pixel_count * 4];
+    let mut palette_indices: Vec<u8> = vec![0u8; pixel_count];
     let mut depth_buf: Vec<f32> = vec![f32::NEG_INFINITY; pixel_count];
 
     // Blit the requested layer into the union-sized canvas at its correct position.
@@ -1026,8 +995,8 @@ fn pad_layer_to_union_bounds(layer: &VxlSprite, all_layers: &[&VxlSprite]) -> Vx
     for y in 0..layer.height as i32 {
         for x in 0..layer.width as i32 {
             let src_pix: usize = (y as u32 * layer.width + x as u32) as usize;
-            let src_idx: usize = src_pix * 4;
-            if layer.rgba[src_idx + 3] == 0 {
+            let src_byte: u8 = layer.palette_indices[src_pix];
+            if src_byte == 0 {
                 continue;
             }
             let px: i32 = dx + x;
@@ -1036,14 +1005,13 @@ fn pad_layer_to_union_bounds(layer: &VxlSprite, all_layers: &[&VxlSprite]) -> Vx
                 continue;
             }
             let dst_pix: usize = (py as u32 * width + px as u32) as usize;
-            let dst_idx: usize = dst_pix * 4;
-            rgba[dst_idx..dst_idx + 4].copy_from_slice(&layer.rgba[src_idx..src_idx + 4]);
+            palette_indices[dst_pix] = src_byte;
             depth_buf[dst_pix] = layer.depth[src_pix];
         }
     }
 
     VxlSprite {
-        rgba,
+        palette_indices,
         depth: depth_buf,
         width,
         height,
@@ -1138,8 +1106,8 @@ fn pack_sprites(
         atlas_width = (atlas_width.saturating_mul(2)).min(max_texture_dim);
     }
 
-    // Allocate RGBA buffer and blit sprites.
-    let mut rgba: Vec<u8> = vec![0u8; (atlas_width * atlas_height * 4) as usize];
+    // Allocate palette-index buffer (one byte per pixel) and blit sprites.
+    let mut pixels: Vec<u8> = vec![0u8; (atlas_width * atlas_height) as usize];
     let mut entries: HashMap<UnitSpriteKey, UnitSpriteEntry> =
         HashMap::with_capacity(placements.len());
     let aw: f32 = atlas_width as f32;
@@ -1150,14 +1118,14 @@ fn pack_sprites(
         let w: u32 = rs.width;
         let h: u32 = rs.height;
 
-        // Blit sprite RGBA into atlas.
+        // Blit sprite palette indices into atlas (one byte per pixel).
         for y in 0..h {
-            let src_start: usize = (y * w * 4) as usize;
-            let src_end: usize = src_start + (w * 4) as usize;
-            let dst_start: usize = (((py + y) * atlas_width + px) * 4) as usize;
-            let dst_end: usize = dst_start + (w * 4) as usize;
-            if src_end <= rs.rgba.len() && dst_end <= rgba.len() {
-                rgba[dst_start..dst_end].copy_from_slice(&rs.rgba[src_start..src_end]);
+            let src_start: usize = (y * w) as usize;
+            let src_end: usize = src_start + w as usize;
+            let dst_start: usize = ((py + y) * atlas_width + px) as usize;
+            let dst_end: usize = dst_start + w as usize;
+            if src_end <= rs.pixels.len() && dst_end <= pixels.len() {
+                pixels[dst_start..dst_end].copy_from_slice(&rs.pixels[src_start..src_end]);
             }
         }
 
@@ -1173,7 +1141,8 @@ fn pack_sprites(
         );
     }
 
-    let texture: BatchTexture = batch.create_texture(gpu, &rgba, atlas_width, atlas_height);
+    let texture: BatchTexture =
+        batch.create_unit_atlas_texture(gpu, atlas_width, atlas_height, &pixels);
     UnitAtlas {
         texture,
         entries,

@@ -217,6 +217,9 @@ pub struct BatchRenderer {
     texture_bind_group_layout: wgpu::BindGroupLayout,
     /// Layout for zdepth texture bind groups (group 1): color + sampler + R8 depth.
     zdepth_texture_bind_group_layout: wgpu::BindGroupLayout,
+    /// Layout for the unit-atlas R8Uint texture (binding 0). Used by the voxel
+    /// sprite pipeline; tiles store palette indices, not RGB.
+    pub unit_atlas_bind_group_layout: wgpu::BindGroupLayout,
     /// Layout for camera uniform bind group (group 0).
     /// Stored so other pipelines (e.g., fog shader) can reuse the same layout.
     camera_bind_group_layout: wgpu::BindGroupLayout,
@@ -601,6 +604,24 @@ impl BatchRenderer {
                     cache: None,
                 });
 
+        // Bind group layout for the unit-atlas R8Uint texture (voxel sprite path).
+        // Single texture entry, no sampler — sampled via textureLoad with integer coords.
+        let unit_atlas_bind_group_layout: wgpu::BindGroupLayout = gpu
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("unit_atlas_bgl"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Uint,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                }],
+            });
+
         Self {
             pipeline,
             overlay_pipeline,
@@ -608,6 +629,7 @@ impl BatchRenderer {
             overlay_passthrough_pipeline,
             texture_bind_group_layout,
             zdepth_texture_bind_group_layout,
+            unit_atlas_bind_group_layout,
             camera_bind_group_layout,
             camera_buffer,
             camera_bind_group,
@@ -615,6 +637,78 @@ impl BatchRenderer {
             ui_camera_bind_group,
             instance_buffer: None,
             instance_count: 0,
+        }
+    }
+
+    /// Create a single-channel R8Uint atlas texture from byte data.
+    ///
+    /// Used for voxel sprite atlases where each byte is a palette index
+    /// (post-VPL, pre-house-remap). Sampled in shader via `textureLoad` (no
+    /// filtering, integer coords).
+    pub fn create_unit_atlas_texture(
+        &self,
+        gpu: &GpuContext,
+        width: u32,
+        height: u32,
+        pixels: &[u8],
+    ) -> BatchTexture {
+        debug_assert_eq!(
+            pixels.len(),
+            (width * height) as usize,
+            "pixel buffer size must equal width * height"
+        );
+
+        let texture: wgpu::Texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("unit_atlas_r8uint"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Uint,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+
+        gpu.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        let view: wgpu::TextureView = texture.create_view(&Default::default());
+        let bind_group: wgpu::BindGroup =
+            gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("unit_atlas_bg"),
+                layout: &self.unit_atlas_bind_group_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                }],
+            });
+
+        BatchTexture {
+            bind_group,
+            view,
+            width,
+            height,
         }
     }
 

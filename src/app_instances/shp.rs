@@ -360,7 +360,6 @@ fn emit_building_turret_vxl(
     let key = UnitSpriteKey {
         type_id: turret_id.to_string(),
         facing: canonical_turret_facing(turret_facing),
-        house_color: hc,
         layer: VxlLayer::Composite,
         frame: 0,
         slope_type: 0, // building turrets don't tilt on slopes
