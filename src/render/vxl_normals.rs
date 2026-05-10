@@ -18,8 +18,11 @@ const RA2_NORMAL_COUNT: usize = 256;
 /// Number of normals in Tiberian Sun mode (normals_mode = 2).
 const TS_NORMAL_COUNT: usize = 36;
 
-/// 256 RA2 normal vectors. Entries 252–255 are duplicates of 251
-/// (matching original game data).
+/// 256 RA2 normal vectors. The original engine ships only 245 distinct
+/// vectors; entries 245–249 are byte-duplicates of entry 244, and entries
+/// 250–255 never appear in the binary's lighting LUT (the original engine
+/// leaves them stale in memory). Padded here with +Z fallback for safety;
+/// retail VXL data should never reference indices >= 250.
 #[rustfmt::skip]
 static RA2_NORMALS: [[f32; 3]; RA2_NORMAL_COUNT] = [
     [ 0.526578, -0.359621, -0.770317], [ 0.150482,  0.435984,  0.887284],
@@ -142,11 +145,12 @@ static RA2_NORMALS: [[f32; 3]; RA2_NORMAL_COUNT] = [
     [-0.603512, -0.286615,  0.744060], [-0.188676, -0.547059,  0.815554],
     [-0.026045, -0.397820,  0.917094], [ 0.267897, -0.649041,  0.712023],
     [ 0.518246, -0.284891,  0.806386], [ 0.493451, -0.066533,  0.867225],
-    // Entry 244 (last from original data, entries 245–255 padded with +Z fallback).
+    // Entry 244 = last distinct vector from the original engine data.
+    // Entries 245–249 = byte-duplicates of 244 (matching the binary).
     [-0.328188,  0.140251,  0.934143], [-0.328188,  0.140251,  0.934143],
     [-0.328188,  0.140251,  0.934143], [-0.328188,  0.140251,  0.934143],
     [-0.328188,  0.140251,  0.934143], [-0.328188,  0.140251,  0.934143],
-    // Padding entries 252–255: rarely used indices, safe fallback (+Z up).
+    // Entries 250–255: never appear in the binary; padded with +Z fallback.
     [ 0.0, 0.0, 1.0], [ 0.0, 0.0, 1.0],
     [ 0.0, 0.0, 1.0], [ 0.0, 0.0, 1.0],
     [ 0.0, 0.0, 1.0], [ 0.0, 0.0, 1.0],
@@ -239,8 +243,9 @@ pub fn blinn_phong_pages(normals_mode: u8, facing_rad: f32) -> [u8; 256] {
     // Blinn-Phong halfway vector between light and viewer.
     let halfway: Vec3 = (light + viewer).normalize();
 
-    // YR specular strength constant.
-    const SPECULAR_STRENGTH: f32 = 3.4;
+    // YR specular strength constant. Schlick exponent in the original
+    // Blinn-Phong approximation; verified against the binary's call site.
+    const SPECULAR_STRENGTH: f32 = 3.0;
 
     let table: &[[f32; 3]] = match normals_mode {
         4 => &RA2_NORMALS,
