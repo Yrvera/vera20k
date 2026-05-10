@@ -1086,6 +1086,76 @@ fn v3_non_killing_aoe_emits_one_smudge_request() {
     );
 }
 
+#[test]
+fn death_weapon_aoe_emits_separate_anim_from_killing_shot() {
+    // A Demo-Truck-style entity (Explodes=yes, primary warhead with its own
+    // AnimList) is killed by a tank with a different warhead and AnimList.
+    // Per-shot emission (Task 2) → tank's TANKEXP anim. Death-AoE emission
+    // (Task 3) → demo's UCEXPLOD anim. Two distinct anim names must appear.
+    //
+    // Note: while the kill-handler block is still in place (removed in
+    // Task 4), the killing-shot anim is also emitted from the death handler,
+    // so the *count* of anim entries is currently 3. We verify the two
+    // distinct names without asserting total count; Task 4's test asserts
+    // single-emission per detonation.
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n\n\
+         [VehicleTypes]\n0=TNK\n1=DEMO\n\n\
+         [AircraftTypes]\n\n\
+         [BuildingTypes]\n\n\
+         [TNK]\nStrength=300\nArmor=heavy\nSpeed=6\nPrimary=TANKW\n\n\
+         [DEMO]\nStrength=100\nArmor=light\nSpeed=6\nPrimary=DEMOW\nExplodes=yes\n\n\
+         [TANKW]\nDamage=100\nROF=20\nRange=10\nWarhead=TANKHIT\n\n\
+         [DEMOW]\nDamage=200\nROF=50\nRange=4\nWarhead=DEMOWH\n\n\
+         [TANKHIT]\nCellSpread=0\nPercentAtMax=1\nAnimList=TANKEXP\n\
+         Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n\n\
+         [DEMOWH]\nCellSpread=2\nPercentAtMax=0.5\nAnimList=UCEXPLOD\n\
+         Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+    ))
+    .expect("demo-truck test rules should parse");
+
+    let mut store = EntityStore::new();
+    store.insert(make_entity(1, "TNK", 5, 5, 300));
+    store.insert(make_entity(2, "DEMO", 8, 5, 100));
+    let mut interner = test_interner();
+    issue_attack_command(&mut store, 1, 2, None, &interner);
+
+    let result = tick_combat(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        0u64,
+        100,
+    );
+
+    let tankexp = interner.intern("TANKEXP");
+    let ucexplod = interner.intern("UCEXPLOD");
+    let unique_anim_names: std::collections::BTreeSet<_> = result
+        .smudge_spawn_requests
+        .iter()
+        .filter_map(|r| match r {
+            SmudgeSpawnRequest::Anim { anim_name, .. } => Some(*anim_name),
+            _ => None,
+        })
+        .collect();
+
+    assert!(
+        unique_anim_names.contains(&tankexp),
+        "killing-shot warhead AnimList anim must be emitted"
+    );
+    assert!(
+        unique_anim_names.contains(&ucexplod),
+        "death-explosion warhead AnimList anim must be emitted"
+    );
+    assert_eq!(
+        unique_anim_names.len(),
+        2,
+        "exactly two distinct anim names — killing shot + death explosion"
+    );
+}
+
 // --- emit_warhead_detonation_effects helper tests ---------------------------
 
 fn emit_helper_test_warhead(animlist: &[&str]) -> crate::rules::warhead_type::WarheadType {

@@ -936,6 +936,16 @@ fn handle_entity_deaths(
             }
             // Ore destruction from death explosion.
             destroy_ore_at_impact(resource_nodes, *rx, *ry, *dmg, warhead.cell_spread);
+            emit_warhead_detonation_effects(
+                warhead,
+                *dmg,
+                *rx,
+                *ry,
+                *z,
+                interner,
+                &mut explosion_effects,
+                &mut smudge_spawn_requests,
+            );
         }
     }
 
