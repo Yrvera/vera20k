@@ -21,6 +21,38 @@ use crate::render::unit_atlas::{
 };
 use crate::rules::house_colors::HouseColorIndex;
 use crate::sim::components::HarvestOverlay;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// One-shot tripwire: fires the first time a `slope_type >= 17` byte is
+/// observed at the render hand-off. Subsequent observations are silent
+/// (single Relaxed load on the fast path, branch-prediction friendly).
+///
+/// Slopes 17-20 are unpopulated in gamemd's runtime slope-matrix table
+/// (BSS-zero at DAT_00b454B8 per VOXEL_SLOPE_TILT_SYSTEM.md). The
+/// existence of such bytes in shipping TMP data is empirically unknown;
+/// this log surfaces them at runtime so the deferred TMP scan can be
+/// scheduled if it ever fires.
+static WARNED_SLOPE_GE_17: AtomicBool = AtomicBool::new(false);
+
+fn warn_unexpected_slope_once(slope: u8, rx: u16, ry: u16) {
+    if WARNED_SLOPE_GE_17.load(Ordering::Relaxed) {
+        return;
+    }
+    if WARNED_SLOPE_GE_17
+        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+        .is_ok()
+    {
+        log::warn!(
+            "slope_type {} encountered at cell ({}, {}); gamemd has no \
+             matrix populated for slopes 17-20 — rendering flat. This \
+             is the first observation of this slope range in the \
+             current process; subsequent observations are silent.",
+            slope,
+            rx,
+            ry,
+        );
+    }
+}
 
 /// Iterate visible voxel units from EntityStore and build SpriteInstances.
 ///
@@ -74,7 +106,10 @@ pub(crate) fn build_unit_instances(
             continue;
         }
         // Determine terrain slope under this entity for tilted VXL rendering.
-        // Aircraft fly above terrain and never tilt on slopes.
+        // Aircraft fly above terrain and never tilt on slopes. Ground vehicles
+        // accept slopes 0-16 (gamemd's full populated range); bytes 17-20
+        // collapse to flat at this boundary because gamemd has no matrix
+        // populated for them — see VOXEL_SLOPE_TILT_SYSTEM.md addendum.
         let slope_type: u8 = if entity.category == EntityCategory::Aircraft {
             0
         } else {
@@ -82,7 +117,15 @@ pub(crate) fn build_unit_instances(
                 .resolved_terrain
                 .as_ref()
                 .and_then(|t| t.cell(pos.rx, pos.ry))
-                .map(|c| if c.slope_type <= 8 { c.slope_type } else { 0 })
+                .map(|c| {
+                    let raw = c.slope_type;
+                    if raw <= 16 {
+                        raw
+                    } else {
+                        warn_unexpected_slope_once(raw, pos.rx, pos.ry);
+                        0
+                    }
+                })
                 .unwrap_or(0)
         };
         // Screen position is computed by the sim layer (lepton_to_screen) every
