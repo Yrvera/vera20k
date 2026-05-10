@@ -6,7 +6,9 @@
 //! normal index for lighting.
 //!
 //! ## File structure
-//! - 802-byte header (32 file header + 2 remap bytes + 768 internal palette)
+//! - 32-byte file header (magic, palette_count, limb_count, tailer_count, body_size)
+//! - Variable-length palette section (palette_count × 770 bytes;
+//!   each page = 1 prefix byte + 768 RGB + 1 suffix byte)
 //! - Section headers (28 bytes × limb_count): limb names
 //! - Body data (sparse column voxels for each limb)
 //! - Section tailers (92 bytes × limb_count): bounds, size, scale, normals mode
@@ -23,8 +25,12 @@ use crate::util::read_helpers::{read_f32_le, read_u32_le};
 /// Expected magic string at the start of every VXL file.
 const VXL_MAGIC: &[u8; 16] = b"Voxel Animation\0";
 
-/// Total header size: 32 (file header) + 2 (remap) + 768 (palette) = 802 bytes.
-const VXL_HEADER_SIZE: usize = 802;
+/// File header size in bytes: magic(16) + palette_count(4) + limb_count(4)
+/// + tailer_count(4) + body_size(4).
+const VXL_FILE_HEADER_SIZE: usize = 32;
+
+/// One palette page on disk: 1 prefix byte + 768 RGB + 1 suffix byte.
+const VXL_PALETTE_PAGE_SIZE: usize = 770;
 
 /// Per-limb section header size in bytes (name + 3 u32 fields).
 const SECTION_HEADER_SIZE: usize = 28;
@@ -86,12 +92,12 @@ pub struct VxlFile {
 impl VxlFile {
     /// Parse a VXL file from raw bytes.
     pub fn from_bytes(data: &[u8]) -> Result<Self, AssetError> {
-        if data.len() < VXL_HEADER_SIZE {
+        if data.len() < VXL_FILE_HEADER_SIZE {
             return Err(AssetError::InvalidVxlFile {
                 reason: format!(
                     "File too small for header: {} bytes (need {})",
                     data.len(),
-                    VXL_HEADER_SIZE
+                    VXL_FILE_HEADER_SIZE
                 ),
             });
         }
@@ -103,6 +109,7 @@ impl VxlFile {
             });
         }
 
+        let palette_count: u32 = read_u32_le(data, 16);
         let limb_count: u32 = read_u32_le(data, 20);
         let tailer_count: u32 = read_u32_le(data, 24);
         let body_size: u32 = read_u32_le(data, 28);
@@ -121,26 +128,52 @@ impl VxlFile {
             });
         }
 
-        // Read internal palette (256 RGB triplets at offset 34).
-        let palette: Vec<[u8; 3]> = (0..256)
-            .map(|i| {
-                let off: usize = 34 + i * 3;
-                [data[off], data[off + 1], data[off + 2]]
-            })
-            .collect();
+        // Variable-length palette section: palette_count pages × 770 bytes.
+        // Each page: 1 prefix byte + 768 RGB triplet bytes + 1 suffix byte.
+        let palette_section_size: usize =
+            (palette_count as usize) * VXL_PALETTE_PAGE_SIZE;
+        let sections_start: usize = VXL_FILE_HEADER_SIZE + palette_section_size;
+
+        // Validate room for the palette section before reading from it.
+        if data.len() < sections_start {
+            return Err(AssetError::InvalidVxlFile {
+                reason: format!(
+                    "File too small for palette: {} bytes (need {} for palette_count={})",
+                    data.len(),
+                    sections_start,
+                    palette_count
+                ),
+            });
+        }
+
+        // Read the internal palette from the FIRST page only (typical: palette_count = 1).
+        // Skip the 1-byte prefix; read 256 RGB triplets. Internal palette is informational
+        // — the engine applies the theater palette at draw time.
+        let palette: Vec<[u8; 3]> = if palette_count >= 1 {
+            let palette_start: usize = VXL_FILE_HEADER_SIZE + 1; // skip prefix byte
+            (0..256)
+                .map(|i| {
+                    let off: usize = palette_start + i * 3;
+                    [data[off], data[off + 1], data[off + 2]]
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
 
         // Validate file has enough data for all sections.
-        let headers_end: usize = VXL_HEADER_SIZE + SECTION_HEADER_SIZE * limb_count as usize;
+        let headers_end: usize = sections_start + SECTION_HEADER_SIZE * limb_count as usize;
         let tailers_start: usize = headers_end + body_size as usize;
         let tailers_end: usize = tailers_start + SECTION_TAILER_SIZE * limb_count as usize;
 
         if data.len() < tailers_end {
             return Err(AssetError::InvalidVxlFile {
                 reason: format!(
-                    "File too small: {} bytes (need {} for {} limbs)",
+                    "File too small: {} bytes (need {} for {} limbs, palette_count={})",
                     data.len(),
                     tailers_end,
-                    limb_count
+                    limb_count,
+                    palette_count
                 ),
             });
         }
@@ -151,7 +184,8 @@ impl VxlFile {
         // Parse each limb: header + tailer + voxel data.
         let mut limbs: Vec<VxlLimb> = Vec::with_capacity(limb_count as usize);
         for i in 0..limb_count as usize {
-            let limb: VxlLimb = parse_limb(data, i, body_start, tailers_start)?;
+            let limb: VxlLimb =
+                parse_limb(data, i, sections_start, body_start, tailers_start)?;
             limbs.push(limb);
         }
 
@@ -168,11 +202,12 @@ impl VxlFile {
 fn parse_limb(
     data: &[u8],
     index: usize,
+    sections_start: usize,
     body_start: usize,
     tailers_start: usize,
 ) -> Result<VxlLimb, AssetError> {
     // Section header: name (16 bytes) + limb_number(4) + unk1(4) + unk2(4).
-    let hdr_off: usize = VXL_HEADER_SIZE + index * SECTION_HEADER_SIZE;
+    let hdr_off: usize = sections_start + index * SECTION_HEADER_SIZE;
     let name: String = vxl_decode::read_null_string(&data[hdr_off..hdr_off + 16]);
 
     // Section tailer: 92 bytes of metadata.
@@ -231,16 +266,17 @@ mod tests {
         let mut data: Vec<u8> = Vec::new();
 
         // File header (32 bytes).
-        data.extend_from_slice(b"Voxel Animation\0"); // 16: magic
+        data.extend_from_slice(b"Voxel Animation\0"); // 0: magic (16 bytes)
         data.extend_from_slice(&1u32.to_le_bytes()); // 16: palette_count
         data.extend_from_slice(&1u32.to_le_bytes()); // 20: limb_count
         data.extend_from_slice(&1u32.to_le_bytes()); // 24: tailer_count
         let body_size_offset: usize = data.len();
         data.extend_from_slice(&0u32.to_le_bytes()); // 28: body_size (patch later)
-        data.push(0);
-        data.push(0); // remap_start, remap_end
-        data.extend_from_slice(&[128u8; 768]); // internal palette
-        assert_eq!(data.len(), VXL_HEADER_SIZE);
+        // Palette page: 1 prefix byte + 768 RGB + 1 suffix byte = 770 bytes.
+        data.push(0); // prefix byte
+        data.extend_from_slice(&[128u8; 768]); // internal palette (256 RGB triplets)
+        data.push(0); // suffix byte
+        assert_eq!(data.len(), VXL_FILE_HEADER_SIZE + VXL_PALETTE_PAGE_SIZE);
 
         // Section header (28 bytes).
         data.extend_from_slice(b"body\0\0\0\0\0\0\0\0\0\0\0\0");
@@ -357,5 +393,94 @@ mod tests {
         assert!((limb.transform[0] - 1.0).abs() < f32::EPSILON);
         assert!((limb.transform[4] - 1.0).abs() < f32::EPSILON);
         assert!((limb.transform[8] - 1.0).abs() < f32::EPSILON);
+    }
+
+    /// Verify the parser handles palette_count != 1 correctly. The original
+    /// engine supports a variable-length palette section (palette_count × 770
+    /// bytes); a hard-coded 802-byte assumption breaks for any value other than 1.
+    #[test]
+    fn test_variable_palette_count() {
+        let data: Vec<u8> = make_test_vxl_with_palette_count(2);
+        let vxl: VxlFile = VxlFile::from_bytes(&data).expect("Should parse 2-page palette VXL");
+        assert_eq!(vxl.limb_count, 1);
+        // Palette is read from the first page, so 256 RGB entries are still produced.
+        assert_eq!(vxl.palette.len(), 256);
+        // Sections must land after both palette pages.
+        let limb: &VxlLimb = &vxl.limbs[0];
+        assert_eq!(limb.size_x, 2);
+        assert_eq!(limb.size_y, 2);
+        assert_eq!(limb.size_z, 2);
+    }
+
+    /// Build a VXL with N palette pages instead of 1 to exercise the
+    /// variable-length palette section. Same single-limb body as `make_test_vxl`.
+    fn make_test_vxl_with_palette_count(palette_count: u32) -> Vec<u8> {
+        let mut data: Vec<u8> = Vec::new();
+
+        data.extend_from_slice(b"Voxel Animation\0");
+        data.extend_from_slice(&palette_count.to_le_bytes());
+        data.extend_from_slice(&1u32.to_le_bytes()); // limb_count
+        data.extend_from_slice(&1u32.to_le_bytes()); // tailer_count
+        let body_size_offset: usize = data.len();
+        data.extend_from_slice(&0u32.to_le_bytes()); // body_size (patch later)
+
+        // Variable palette section: palette_count × 770 bytes.
+        for page in 0..palette_count {
+            data.push(0); // prefix byte
+            // Use a different fill per page to detect mis-indexing.
+            let fill: u8 = (page + 1) as u8 * 32;
+            data.extend_from_slice(&[fill; 768]);
+            data.push(0); // suffix byte
+        }
+
+        // Section header (28 bytes).
+        data.extend_from_slice(b"body\0\0\0\0\0\0\0\0\0\0\0\0");
+        data.extend_from_slice(&[0u8; 12]);
+
+        let body_start: usize = data.len();
+
+        // Span pointer table (4 columns × i32) and one trivial voxel run.
+        let span_start_pos: usize = data.len() - body_start;
+        data.extend_from_slice(&0i32.to_le_bytes());
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        data.extend_from_slice(&7i32.to_le_bytes());
+        let span_end_pos: usize = data.len() - body_start;
+        data.extend_from_slice(&[0u8; 16]);
+        let data_span_pos: usize = data.len() - body_start;
+        data.push(0);
+        data.push(2);
+        data.push(10);
+        data.push(20);
+        data.push(11);
+        data.push(21);
+        data.push(2);
+        data.push(1);
+        data.push(1);
+        data.push(50);
+        data.push(60);
+        data.push(1);
+
+        let body_size: u32 = (data.len() - body_start) as u32;
+        let bs: [u8; 4] = body_size.to_le_bytes();
+        data[body_size_offset..body_size_offset + 4].copy_from_slice(&bs);
+
+        // Section tailer (92 bytes).
+        data.extend_from_slice(&(span_start_pos as u32).to_le_bytes());
+        data.extend_from_slice(&(span_end_pos as u32).to_le_bytes());
+        data.extend_from_slice(&(data_span_pos as u32).to_le_bytes());
+        data.extend_from_slice(&1.0f32.to_le_bytes());
+        for k in 0..12 {
+            let v: f32 = if k == 0 || k == 4 || k == 8 { 1.0 } else { 0.0 };
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        for &v in &[0.0f32, 0.0, 0.0, 2.0, 2.0, 2.0] {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        data.push(2);
+        data.push(2);
+        data.push(2);
+        data.push(4);
+        data
     }
 }
