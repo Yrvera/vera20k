@@ -436,9 +436,19 @@ pub fn astar_search(
                 continue;
             }
 
-            // Walkability check on the determined layer
+            // Walkability check on the determined layer.
+            // Ground→Bridge entry requires the bridgehead flag (transition). A unit
+            // already on the bridge can move between any two bridge_walkable cells
+            // (body-to-body diagonals); only the Ground→Bridge transition needs the
+            // bridgehead.
             let neighbor_passable = if neighbor_use_bridge {
-                grid.is_walkable_on_layer(nx, ny, MovementLayer::Bridge)
+                let prev_on_bridge = is_at_bridge_level(current.height, cur_cell);
+                if prev_on_bridge {
+                    grid.is_walkable_on_layer(nx, ny, MovementLayer::Bridge)
+                } else {
+                    grid.is_walkable_on_layer(nx, ny, MovementLayer::Bridge)
+                        && neighbor_cell.transition
+                }
             } else {
                 is_cell_passable_for_mover(
                     grid,
