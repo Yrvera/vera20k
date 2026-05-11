@@ -126,7 +126,6 @@ mod tests {
             fire_up: 0,
             extra_light: 0,
             queueing_cell: None,
-            docking_offset: None,
             pads: Vec::new(),
             damage_fire_offsets: Vec::new(),
             height: 0,

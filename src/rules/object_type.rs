@@ -316,13 +316,18 @@ pub struct ObjectType {
     /// Queueing cell offset from building origin (QueueingCell= in art.ini).
     /// Where miners wait outside the dock. Merged from art.ini during init.
     pub queueing_cell: Option<(u16, u16)>,
-    /// First docking offset from art.ini (DockingOffset0=X,Y,Z in leptons).
-    /// Where units sit during dock operations. Merged from art.ini during init.
-    pub docking_offset: Option<(i32, i32, i32)>,
-    /// All docking pads on this building, parsed from art.ini `DockingOffset0..NumberOfDocks-1`.
-    /// Index in vec IS the pad index. `len() == number_of_docks` after merge.
-    /// Refineries / service depots / single-pad helipads use only `pads[0]`.
-    /// Airfields (GAAIRC, AMRADR) use all 4. Empty vec = building has no docking offsets defined.
+    /// All docking pads on this building, parsed from art.ini `DockingOffset0..N-1`.
+    /// Index in vec IS the pad index.
+    ///
+    /// After the art→rules merge:
+    /// - If art declared at least one `DockingOffset%d`, the vec is sized to
+    ///   `number_of_docks` (zero-padding any indices missing in art, truncating excess).
+    /// - If art declared none, the vec is left empty — consumers fall back to
+    ///   their own anchor (e.g. `refinery_pad_cell`'s rightmost-column default).
+    ///
+    /// Service depots / single-pad helipads / airfields with declared offsets
+    /// use this vec directly. Retail refineries (GAREFN/NAREFN/YAREFN) leave
+    /// it empty.
     pub pads: Vec<DockPad>,
     /// Cells added to the rectangular foundation (from art.ini AddOccupy1..N).
     /// Merged from art.ini during init.
@@ -836,7 +841,6 @@ impl ObjectType {
                 .map(|s| s.to_ascii_uppercase())
                 .collect(),
             queueing_cell: None,       // merged from art.ini later
-            docking_offset: None,      // merged from art.ini later
             pads: Vec::new(),          // merged from art.ini later
             add_occupy: Vec::new(),    // merged from art.ini later
             remove_occupy: Vec::new(), // merged from art.ini later

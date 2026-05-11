@@ -1652,15 +1652,18 @@ impl RuleSet {
                     obj.queueing_cell = entry.queueing_cell;
                     dock_patched += 1;
                 }
-                // Merge DockingOffset0 from art.ini (TibSun legacy dock system).
-                if entry.docking_offset.is_some() {
-                    obj.docking_offset = entry.docking_offset;
-                }
-                // Multi-pad merge: size to NumberOfDocks (from rules.ini), zero-pad
-                // missing entries, truncate excess. Mirrors the original game's
-                // memory layout where the pad array is sized by NumberOfDocks and
+                // Multi-pad merge: when art declares at least one DockingOffset,
+                // size pads to NumberOfDocks (from rules.ini), zero-padding missing
+                // indices and truncating excess. Mirrors the original game's
+                // memory layout where the array is sized by NumberOfDocks and
                 // unspecified DockingOffset%d slots default to (0,0,0).
-                {
+                //
+                // When art declares ZERO DockingOffset entries (retail refineries
+                // like GAREFN/NAREFN/YAREFN), obj.pads is left empty so existing
+                // fallback paths (e.g. refinery_pad_cell's rightmost-column
+                // anchor) keep firing. Otherwise zero-padding would silently
+                // shift refinery dock positions, which is out of scope here.
+                if !entry.pads.is_empty() {
                     let n = obj.number_of_docks as usize;
                     obj.pads = entry.pads.iter().take(n).copied().collect();
                     while obj.pads.len() < n {

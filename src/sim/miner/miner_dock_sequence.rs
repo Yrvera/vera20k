@@ -107,7 +107,7 @@ fn resolve_refinery_cells(
         .map(|o| foundation_dimensions(&o.foundation))
         .unwrap_or((1, 1));
     let qc = obj.and_then(|o| o.queueing_cell);
-    let dock_off = obj.and_then(|o| o.docking_offset);
+    let dock_off = obj.and_then(|o| o.pads.first().map(|p| p.lepton_offset));
     let rx = entity.position.rx;
     let ry = entity.position.ry;
     Some((
