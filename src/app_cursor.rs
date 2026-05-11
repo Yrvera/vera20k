@@ -456,6 +456,7 @@ pub(crate) fn cursor_id_for_feedback(kind: CursorFeedbackKind) -> Option<CursorI
         CursorFeedbackKind::MinimapMove => Some(CursorId::MinimapMove),
         CursorFeedbackKind::Enter => Some(CursorId::Enter),
         CursorFeedbackKind::EngineerRepair => Some(CursorId::EngineerRepair),
+        CursorFeedbackKind::Demolish => Some(CursorId::Demolish),
         CursorFeedbackKind::Deploy => Some(CursorId::Deploy),
         CursorFeedbackKind::SuperWeaponTarget(id) => Some(id),
     }

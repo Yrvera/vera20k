@@ -176,6 +176,9 @@ pub(crate) enum CursorFeedbackKind {
     Enter,
     /// Engineer repair cursor — engineer hovering a damaged friendly building.
     EngineerRepair,
+    /// C4 plant cursor — SEAL/Tanya/PTROOP hovering a CanC4 enemy structure
+    /// (action 0x10 in gamemd, distinct mouse.shp frames from Enter).
+    Demolish,
     /// Pan cursor — shown while middle-mouse dragging to scroll the map.
     Pan,
     /// Superweapon targeting reticle — shown while a charged SW is armed
