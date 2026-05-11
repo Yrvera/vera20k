@@ -33,7 +33,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 ///
 /// Names are in **map coordinates** (as defined by TS++). In the isometric view,
 /// map-North appears as screen upper-right. The actual tilt angles used for VXL
-/// rendering come from the slope_type number (1-8) indexed into a pre-computed
+/// rendering come from the slope_type number (1-16) indexed into a pre-computed
 /// matrix table — they don't depend on these labels.
 pub enum RampDirection {
     West,
