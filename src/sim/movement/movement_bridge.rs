@@ -92,46 +92,49 @@ pub(super) fn compute_bridge_transition(
     BridgeTransition::NoChange
 }
 
-/// Resolve bridge layer state at a cell boundary crossing using reactive height
-/// comparison.
+/// Apply the on_bridge cell-flag predicate at a cell-boundary crossing.
 ///
-/// Compares the unit's current Z to the destination cell's ground height to decide
-/// ground vs bridge level. The `_next_layer` parameter from path_layers is available
-/// but currently unused — see module-level TODO(RE).
+/// Reads src and dst PathCells and computes the BridgeStateUpdate using
+/// `compute_bridge_transition`. Writes `position.z` to the post-transition height
+/// (deck_level on Enter, dst.ground_level on Exit, or next_layer's effective height
+/// on NoChange).
+///
+/// Does NOT return a layer — the caller continues to use `next_layer` from A*'s
+/// `path_layers` for `loco.layer`. The predicate's role is independent: it drives
+/// `on_bridge` and `BridgeOccupancy` via the returned `BridgeStateUpdate`.
+///
+/// Fallback: returns `Unchanged` (no position.z modification) when `path_grid` is
+/// `None` or either cell lookup is out-of-bounds. Out-of-bounds at the boundary
+/// crossing indicates a path-data bug elsewhere; the resolver is not the recovery point.
 pub(super) fn resolve_cell_transition_bridge_state(
     position: &mut Position,
     path_grid: Option<&PathGrid>,
-    _next_layer: MovementLayer,
-    nx: u16,
-    ny: u16,
-    _diag_entity_id: u64,
-    _diag_source: &str,
-) -> (MovementLayer, Option<Option<u8>>) {
-    let mut pending_bridge_update: Option<Option<u8>> = None;
+    src: (u16, u16),
+    dst: (u16, u16),
+    next_layer: MovementLayer,
+) -> BridgeStateUpdate {
+    let Some(grid) = path_grid else {
+        return BridgeStateUpdate::Unchanged;
+    };
+    let (Some(src_cell), Some(dst_cell)) = (grid.cell(src.0, src.1), grid.cell(dst.0, dst.1))
+    else {
+        return BridgeStateUpdate::Unchanged;
+    };
 
-    if let Some(grid) = path_grid {
-        if let Some(cell) = grid.cell(nx, ny) {
-            if let Some(deck_level) = cell.bridge_deck_level_if_any() {
-                // Cell has a bridge deck. Use height comparison to decide layer.
-                //   abs(height_param - cell.height_level) < 2 -> ground level
-                //   else -> bridge level
-                let height_diff =
-                    (position.z as i16 - cell.ground_level as i16).unsigned_abs() as u8;
-                if height_diff >= HEIGHT_THRESHOLD {
-                    // Unit is at bridge level → stay on bridge deck.
-                    position.z = deck_level;
-                    pending_bridge_update = Some(Some(deck_level));
-                    return (MovementLayer::Bridge, pending_bridge_update);
-                }
-            }
-            // No bridge deck, or unit is at ground level → ground layer.
-            position.z = cell.ground_level;
-            pending_bridge_update = Some(None);
-            return (MovementLayer::Ground, pending_bridge_update);
+    match compute_bridge_transition(src_cell, dst_cell) {
+        BridgeTransition::Enter { deck_level } => {
+            position.z = deck_level;
+            BridgeStateUpdate::Set(deck_level)
+        }
+        BridgeTransition::Exit => {
+            position.z = dst_cell.ground_level;
+            BridgeStateUpdate::Clear
+        }
+        BridgeTransition::NoChange => {
+            position.z = dst_cell.effective_cell_z_for_layer(next_layer);
+            BridgeStateUpdate::Unchanged
         }
     }
-
-    (_next_layer, pending_bridge_update)
 }
 
 pub(super) fn apply_pending_bridge_render_state(
