@@ -208,6 +208,306 @@ impl Simulation {
         any_captured
     }
 
+    /// Tick C4 plant orders.
+    ///
+    /// Phase 1 (walk-up): for each entity with `c4_plant`, check if it's
+    /// Chebyshev-≤-1 adjacent to the target building's anchor cell; if so
+    /// and the building doesn't already have a `pending_c4_detonation`
+    /// claimed by another attacker, claim it. Second attackers on an
+    /// already-claimed target hover (no-op) — matches gamemd's `+0x6df`
+    /// marker check.
+    ///
+    /// Phase 2 (detonation): for each building with `pending_c4_detonation`,
+    /// if the elapsed tick count >= `rules.c4_delay_ticks`, apply C4Warhead
+    /// damage equal to the building's current HP. The pending state is NOT
+    /// cleared (gamemd parity): if the damage is nullified (IronCurtain),
+    /// it fires again next tick. When the building dies, the entity despawns
+    /// and the pending state goes with it.
+    ///
+    /// Returns true if any building was destroyed this tick.
+    pub(crate) fn tick_c4_plants(&mut self, rules: &RuleSet) -> bool {
+        use crate::sim::components::PendingC4Detonation;
+        let mut destroyed_structure = false;
+
+        // ---- Phase 1: walk-up + plant claim ----
+        // Snapshot attackers with c4_plant. Deterministic sorted order via
+        // keys_sorted then look up c4_plant.
+        let mut walkup: Vec<(u64, u64)> = Vec::new();
+        for sid in self.entities.keys_sorted() {
+            if let Some(e) = self.entities.get(sid) {
+                if let Some(plant) = e.c4_plant {
+                    if !e.dying {
+                        walkup.push((sid, plant.target_building_id));
+                    }
+                }
+            }
+        }
+
+        for (attacker_id, target_id) in walkup {
+            // Target gone or dying? Clear c4_plant.
+            let target_alive = self
+                .entities
+                .get(target_id)
+                .is_some_and(|b| b.category == EntityCategory::Structure && !b.dying);
+            if !target_alive {
+                if let Some(e) = self.entities.get_mut(attacker_id) {
+                    e.c4_plant = None;
+                }
+                continue;
+            }
+
+            // Adjacent to the target (Chebyshev distance ≤ 1)?
+            //
+            // gamemd has the SEAL walk INTO the building's cell, but our
+            // pathfinder treats building footprints as blocked, so exact-cell
+            // match would never trigger. Engineer-capture has the same
+            // constraint and uses Chebyshev-≤-1 (above); we do the same.
+            // Documented parity drift: SEAL stands one cell next to the
+            // building rather than inside it during the plant animation.
+            let attacker_cell = self
+                .entities
+                .get(attacker_id)
+                .map(|e| (e.position.rx, e.position.ry));
+            let target_cell = self
+                .entities
+                .get(target_id)
+                .map(|b| (b.position.rx, b.position.ry));
+            let adjacent_to_target = match (attacker_cell, target_cell) {
+                (Some((arx, ary)), Some((trx, try_))) => {
+                    let dx = (arx as i32 - trx as i32).abs();
+                    let dy = (ary as i32 - try_ as i32).abs();
+                    dx <= 1 && dy <= 1
+                }
+                _ => false,
+            };
+            if !adjacent_to_target {
+                continue; // walk-up still in progress; movement layer handles it
+            }
+
+            // Already claimed by another attacker?
+            let already_claimed = self
+                .entities
+                .get(target_id)
+                .is_some_and(|b| b.pending_c4_detonation.is_some());
+            if already_claimed {
+                // Second SEAL — hover, no-op. Matches gamemd's marker-set early-return.
+                continue;
+            }
+
+            // Claim the plant.
+            if let Some(b) = self.entities.get_mut(target_id) {
+                b.pending_c4_detonation = Some(PendingC4Detonation {
+                    plant_start_tick: self.tick,
+                    attacker_id,
+                });
+            }
+
+            // Drive the plant animation (FireUp = Attack sequence).
+            if let Some(a) = self.entities.get_mut(attacker_id) {
+                if let Some(ref mut anim) = a.animation {
+                    anim.switch_to(crate::sim::animation::SequenceKind::Attack);
+                }
+            }
+
+            // SealPlaceBomb spatial sound is queued via SimSoundEvent::C4Planted
+            // — variant added in Task 8a.
+        }
+
+        // ---- Phase 2: detonation ----
+        let mut det_keys: Vec<u64> = Vec::new();
+        for sid in self.entities.keys_sorted() {
+            if let Some(e) = self.entities.get(sid) {
+                if e.pending_c4_detonation.is_some() && !e.dying {
+                    det_keys.push(sid);
+                }
+            }
+        }
+
+        let c4_warhead_id = rules.c4_warhead_id();
+        let delay = rules.c4_delay_ticks as u64;
+
+        for building_id in det_keys {
+            let pending = self
+                .entities
+                .get(building_id)
+                .and_then(|e| e.pending_c4_detonation);
+            let Some(pending) = pending else { continue };
+
+            if self.tick.saturating_sub(pending.plant_start_tick) < delay {
+                continue;
+            }
+
+            // Timer elapsed — apply C4Warhead damage. Damage value = current_hp
+            // for guaranteed one-shot kill (matches gamemd's
+            // `&iStack_28 = this->Health` argument to TakeDamage).
+            // Pending state NOT cleared on purpose (gamemd parity).
+            let dmg: i32 = self
+                .entities
+                .get(building_id)
+                .map(|b| b.health.current as i32)
+                .unwrap_or(0);
+            if dmg <= 0 {
+                continue;
+            }
+
+            // Resolve kill-credit. Attacker may have despawned — fall back to None.
+            let attacker_for_credit: Option<u64> = self
+                .entities
+                .get(pending.attacker_id)
+                .map(|_| pending.attacker_id);
+
+            let killed = self.apply_c4_damage_to_building(
+                building_id,
+                dmg as u16,
+                c4_warhead_id,
+                attacker_for_credit,
+                rules,
+            );
+            if killed {
+                destroyed_structure = true;
+                // pending_c4_detonation goes away with the entity via despawn path.
+                // Trigger scatter walk-away for any attacker on this cell with
+                // c4_plant pointing at this building. Matches gamemd
+                // Mission_Enter post-detonation block.
+                self.queue_c4_post_detonation_scatter(building_id);
+            }
+        }
+
+        destroyed_structure
+    }
+
+    /// Post-detonation: any attacker that was on the destroyed building's
+    /// cell with `c4_plant` targeting this building scatters one cell in a
+    /// deterministic direction derived from the current tick. Matches gamemd
+    /// `Mission_Enter` post-detonation block:
+    /// `uVar13 = (tick >> 12 + 1) >> 1 & 7` → 1 of 8 directions via
+    /// the direction-delta tables.
+    ///
+    /// Also clears each attacker's `c4_plant`.
+    fn queue_c4_post_detonation_scatter(&mut self, dead_building_id: u64) {
+        // 8 cardinal+ordinal directions in standard RA2 order:
+        // N, NE, E, SE, S, SW, W, NW.
+        const DIR_DELTAS: [(i16, i16); 8] = [
+            (0, -1),  // N
+            (1, -1),  // NE
+            (1, 0),   // E
+            (1, 1),   // SE
+            (0, 1),   // S
+            (-1, 1),  // SW
+            (-1, 0),  // W
+            (-1, -1), // NW
+        ];
+        // Mirror gamemd's bit-twiddle: `(tick >> 12 + 1) >> 1 & 7`.
+        // C operator precedence: `>>` is left-to-right at same level, so
+        // this evaluates as `(((tick >> 12) + 1) >> 1) & 7`.
+        let dir: usize = ((((self.tick >> 12) + 1) >> 1) & 7) as usize;
+        let (dx, dy) = DIR_DELTAS[dir];
+
+        let bld_cell = self
+            .entities
+            .get(dead_building_id)
+            .map(|b| (b.position.rx, b.position.ry));
+        let Some((brx, bry)) = bld_cell else { return };
+
+        // Collect attackers on this cell with c4_plant on this building.
+        let mut scatterers: Vec<u64> = Vec::new();
+        for sid in self.entities.keys_sorted() {
+            if let Some(e) = self.entities.get(sid) {
+                if !e.dying
+                    && e.position.rx == brx
+                    && e.position.ry == bry
+                    && e.c4_plant
+                        .map_or(false, |p| p.target_building_id == dead_building_id)
+                {
+                    scatterers.push(sid);
+                }
+            }
+        }
+
+        for sid in scatterers {
+            let target_rx = (brx as i16 + dx).max(0) as u16;
+            let target_ry = (bry as i16 + dy).max(0) as u16;
+            if let Some(e) = self.entities.get_mut(sid) {
+                e.c4_plant = None;
+            }
+            // Queue a Move command for the next tick. Simpler than
+            // reimplementing the pathfind call; 1-tick delay is below the
+            // human-observable threshold.
+            if let Some(owner) = self.entities.get(sid).map(|e| e.owner) {
+                self.pending_commands
+                    .push(crate::sim::command::CommandEnvelope::new(
+                        owner,
+                        self.tick + 1,
+                        crate::sim::command::Command::Move {
+                            entity_id: sid,
+                            target_rx,
+                            target_ry,
+                            queue: false,
+                            group_id: None,
+                        },
+                    ));
+            }
+        }
+    }
+
+    /// Apply one C4Warhead damage instance to a building entity. Returns true
+    /// if the building died this call. Honors IronCurtain via the standard
+    /// invulnerability check. Used by `tick_c4_plants` Phase 2.
+    fn apply_c4_damage_to_building(
+        &mut self,
+        building_id: u64,
+        damage: u16,
+        warhead_id: crate::sim::intern::InternedId,
+        attacker_id: Option<u64>,
+        rules: &RuleSet,
+    ) -> bool {
+        // Check IC — if invulnerable, damage is nullified but pending state
+        // stays, so we try again next tick.
+        let invuln = self
+            .entities
+            .get(building_id)
+            .and_then(|e| e.invulnerability.clone());
+        if crate::sim::superweapon::invulnerability::is_invulnerable(
+            invuln.as_ref(),
+            self.tick as u32,
+        ) {
+            return false;
+        }
+
+        // Resolve warhead, apply Verses, subtract HP.
+        let warhead_name = self.interner.resolve(warhead_id).to_string();
+        let Some(warhead) = rules.warhead(&warhead_name) else {
+            return false;
+        };
+        let armor_idx: usize = match self.entities.get(building_id) {
+            Some(b) => {
+                let obj_armor = rules
+                    .object(self.interner.resolve(b.type_ref))
+                    .map(|o| o.armor.as_str())
+                    .unwrap_or("none");
+                crate::sim::combat::armor_index(obj_armor)
+            }
+            None => return false,
+        };
+        let verses_pct = warhead.verses.get(armor_idx).copied().unwrap_or(100);
+        let scaled = (damage as i32 * verses_pct as i32 / 100).max(0) as u16;
+
+        let Some(b) = self.entities.get_mut(building_id) else {
+            return false;
+        };
+        let new_hp = b.health.current.saturating_sub(scaled);
+        b.health.current = new_hp;
+        if new_hp == 0 {
+            b.dying = true;
+            if let Some(att) = attacker_id {
+                b.last_attacker_id = Some(att);
+            }
+            true
+        } else {
+            false
+        }
+    }
+
     /// Pre-combat: entities with an `attack_target` that's out of weapon
     /// range walk toward the target. Entities that just entered range halt
     /// their movement so the combat tick can fire from a stationary
