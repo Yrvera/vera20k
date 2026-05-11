@@ -497,6 +497,13 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                         let _ = (rx, ry);
                         continue;
                     }
+                    SimSoundEvent::C4Planted { rx, ry } => {
+                        let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
+                        GameSoundEvent::C4Planted {
+                            sound_id: "SealPlaceBomb".to_string(),
+                            screen_pos: Some((sx, sy)),
+                        }
+                    }
                 };
                 state.sound_events.push(app_event);
             }

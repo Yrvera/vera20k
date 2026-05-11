@@ -121,6 +121,15 @@ pub enum GameSoundEvent {
         screen_pos: Option<(f32, f32)>,
     },
 
+    /// Positional SFX from `[SealPlaceBomb]` — plays at the attacker's screen
+    /// position when a C4-capable infantry claims a plant on a CanC4 building.
+    C4Planted {
+        /// sound.ini ID for the SFX (resolves "SealPlaceBomb" → file).
+        sound_id: String,
+        /// Screen position for spatial audio.
+        screen_pos: Option<(f32, f32)>,
+    },
+
     /// Generic UI sound (button click, error beep, etc.).
     UiSound {
         /// sound.ini ID for the UI sound.
@@ -146,7 +155,8 @@ impl GameSoundEvent {
             | Self::UiSound { sound_id }
             | Self::StructureGarrisoned { sound_id }
             | Self::StructureAbandoned { sound_id }
-            | Self::BuildingGarrisonedSfx { sound_id, .. } => sound_id,
+            | Self::BuildingGarrisonedSfx { sound_id, .. }
+            | Self::C4Planted { sound_id, .. } => sound_id,
         }
     }
 
@@ -160,6 +170,7 @@ impl GameSoundEvent {
             Self::EntityUndeployed { screen_pos, .. } => *screen_pos,
             Self::ChronoTeleport { screen_pos, .. } => *screen_pos,
             Self::BuildingGarrisonedSfx { screen_pos, .. } => *screen_pos,
+            Self::C4Planted { screen_pos, .. } => *screen_pos,
             _ => None,
         }
     }

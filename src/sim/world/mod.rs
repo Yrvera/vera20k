@@ -161,6 +161,10 @@ pub enum SimSoundEvent {
     /// A paratrooper was dropped from a carrier aircraft.
     /// Played at the drop position; app layer resolves to [General] ChuteSound.
     ChuteSound { rx: u16, ry: u16 },
+    /// A C4-capable infantry claimed a plant on a CanC4 building.
+    /// Played at the attacker's position. App resolves to
+    /// `[SealPlaceBomb]` in soundmd.ini.
+    C4Planted { rx: u16, ry: u16 },
 }
 
 /// A fire event produced during combat — carries data for render-side

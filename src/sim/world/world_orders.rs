@@ -309,8 +309,15 @@ impl Simulation {
                 }
             }
 
-            // SealPlaceBomb spatial sound is queued via SimSoundEvent::C4Planted
-            // — variant added in Task 8a.
+            // SealPlaceBomb spatial sound. App-side dispatcher resolves to
+            // `[SealPlaceBomb]` from soundmd.ini.
+            if let Some(a) = self.entities.get(attacker_id) {
+                self.sound_events
+                    .push(crate::sim::world::SimSoundEvent::C4Planted {
+                        rx: a.position.rx,
+                        ry: a.position.ry,
+                    });
+            }
         }
 
         // ---- Phase 2: detonation ----
