@@ -167,7 +167,7 @@ pub fn build_bridge_body_instances_inner(
 
 /// Thin `AppState` wrapper around `build_bridge_body_instances_inner`. Pulls
 /// the seven fields the inner function needs out of `state` and forwards.
-pub fn build_bridge_body_instances(
+pub(crate) fn build_bridge_body_instances(
     state: &AppState,
     sw: f32,
     sh: f32,
@@ -207,7 +207,7 @@ pub fn build_bridge_body_instances(
 /// Step 5 pass 2). Shadow frame = `(frame_count / 2) + state`. EW states
 /// 9..17 get a `(BRIDGE_SHADOW_EW_DX, +BRIDGE_SHADOW_EW_DY)` shift per
 /// ledger #9–10. Drawn passthrough (Z-test ON, Z-write OFF, neutral tint).
-pub fn build_bridge_shadow_instances(
+pub(crate) fn build_bridge_shadow_instances(
     state: &AppState,
     sw: f32,
     sh: f32,
@@ -296,7 +296,7 @@ pub fn build_bridge_shadow_instances(
 /// Drawn AFTER unit/ground merge AND AFTER cliff redraw, BEFORE debug — see
 /// `draw_passes.rs` ordering. Skips cells where the railing-table entry is
 /// `None` (`shp_frame_1based == 0` ⇒ no railing for this sub-tile).
-pub fn build_bridge_railing_instances(
+pub(crate) fn build_bridge_railing_instances(
     state: &AppState,
     sw: f32,
     sh: f32,

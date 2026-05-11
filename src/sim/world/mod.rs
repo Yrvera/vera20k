@@ -29,7 +29,7 @@ use crate::map::triggers::TriggerMap;
 use crate::rules::locomotor_type::SpeedType;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::ai::{self, AiPlayerState};
-use crate::sim::bridge_state::{BridgeDamageEvent, BridgeRuntimeState, DamageState};
+use crate::sim::bridge_state::{BridgeRuntimeState, DamageState};
 use crate::sim::overlay_grid::{
     cleanup_wall_neighbors, damage_wall_overlay, WallDamageEvent,
 };
@@ -46,7 +46,6 @@ use crate::sim::intern::InternedId;
 use crate::sim::movement;
 use crate::sim::movement::air_movement;
 use crate::sim::movement::droppod_movement;
-use crate::sim::movement::locomotor::{GroundMovePhase, MovementLayer};
 use crate::sim::movement::parachute_descent;
 use crate::sim::movement::rocket_movement;
 use crate::sim::movement::teleport_movement;

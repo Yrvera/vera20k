@@ -14,7 +14,7 @@ use super::{
     SidebarTab, SidebarTabButton, SidebarView, compute_layout_with_spec,
 };
 
-pub fn build_sidebar_view(
+pub(crate) fn build_sidebar_view(
     screen_w: f32,
     screen_h: f32,
     active_tab: SidebarTab,
@@ -50,7 +50,7 @@ pub fn build_sidebar_view(
     )
 }
 
-pub fn build_sidebar_view_with_spec(
+pub(crate) fn build_sidebar_view_with_spec(
     layout_spec: SidebarChromeLayoutSpec,
     screen_w: f32,
     screen_h: f32,
@@ -443,7 +443,8 @@ fn collect_build_entries(
 
 #[cfg(test)]
 mod tests {
-    use super::super::{SidebarAction, SidebarTab, build_sidebar_view};
+    use super::build_sidebar_view;
+    use super::super::{SidebarAction, SidebarTab};
 
     fn approx_eq(a: f32, b: f32) {
         assert!(

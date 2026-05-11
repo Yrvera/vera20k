@@ -344,7 +344,7 @@ fn emit_building_turret_vxl(
     state: &AppState,
     turret_id: &str,
     turret_facing: u16,
-    hc: HouseColorIndex,
+    _hc: HouseColorIndex,
     building_sx: f32,
     building_sy: f32,
     _z: u8,

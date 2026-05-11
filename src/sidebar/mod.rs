@@ -15,7 +15,7 @@ use crate::sim::production::ProductionCategory;
 
 pub use layout_spec::{SIDEBAR_LAYOUT_FILE_NAME, SidebarChromeLayoutSpec};
 pub use power_bar_anim::PowerBarAnimState;
-pub use sidebar_view::{build_sidebar_view, build_sidebar_view_with_spec};
+pub(crate) use sidebar_view::build_sidebar_view_with_spec;
 
 /// Original RA2 sidebar chrome width (all SHPs are 168px wide).
 pub const SIDEBAR_WIDTH: f32 = 168.0;

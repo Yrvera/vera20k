@@ -16,16 +16,13 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::assets::asset_manager::AssetManager;
 use crate::assets::hva_file::HvaFile;
-use crate::assets::pal_file::Palette;
 use crate::assets::vpl_file::VplFile;
 use crate::assets::vxl_file::VxlFile;
-use crate::map::houses::HouseColorMap;
 use crate::render::batch::{BatchRenderer, BatchTexture};
 use crate::render::gpu::GpuContext;
 use crate::render::vxl_compute::VxlComputeRenderer;
 use crate::render::vxl_raster::{self, VxlRenderParams, VxlSprite};
 use crate::rules::art_data::{self, ArtRegistry};
-use crate::rules::house_colors::{self, HouseColorIndex};
 use crate::rules::ruleset::RuleSet;
 
 /// Maximum atlas texture width for unit sprites (pixels).
