@@ -136,6 +136,7 @@ impl Simulation {
                     e.attack_target = None;
                     e.order_intent = None;
                     e.dock_state = None;
+                    e.c4_plant = None;
                     Self::clear_aircraft_dock_phase(e);
                 }
                 // Snapshot speed, locomotor, and rules data in one lookup.
@@ -275,6 +276,7 @@ impl Simulation {
                     e.attack_target = None;
                     e.order_intent = None;
                     e.dock_state = None;
+                    e.c4_plant = None;
                 }
                 // Cancel any special locomotor states in progress.
                 if let Some(e) = self.entities.get_mut(*entity_id) {
