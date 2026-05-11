@@ -616,13 +616,19 @@ fn local_continuation_after_cell_depletes() {
     tick_miners_n(&mut sim, &rules, 30);
 
     let miner = get_miner(&sim, miner_id);
-    // After depleting (20,20), miner should have found (22,20) via local scan.
-    // It should be in MoveToOre or Harvest at the new cell.
-    let found_nearby = miner.target_ore_cell == Some((22, 20))
-        || matches!(miner.state, MinerState::MoveToOre | MinerState::Harvest);
+    // After (20,20) depletes, the short-scan continuation must pick (22,20)
+    // and the miner transitions to MoveToOre / Harvest (gamemd State 1
+    // depletion path: stay harvesting, move to new cell within
+    // TiberiumShortScan radius).
+    assert_eq!(
+        miner.target_ore_cell,
+        Some((22, 20)),
+        "Short-scan continuation should pick the nearby ore at (22, 20)"
+    );
     assert!(
-        found_nearby || !miner.cargo.is_empty(),
-        "Miner should find nearby ore via local continuation or have started returning"
+        matches!(miner.state, MinerState::MoveToOre | MinerState::Harvest),
+        "Miner should be moving to / harvesting the new cell; state was {:?}",
+        miner.state,
     );
 }
 
