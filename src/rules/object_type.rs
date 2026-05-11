@@ -545,6 +545,23 @@ pub struct ObjectType {
     /// Parsed from `SabotageCursor=yes` in rules.ini. Used by Tanya and Navy SEAL.
     pub sabotage_cursor: bool,
 
+    /// `C4=yes` on InfantryType. Gates the player-issued C4 plant mission path
+    /// (SEAL, Tanya, Psi-Corp Trooper). Distinct from `sabotage_cursor`, which
+    /// is now purely a modder-flag for cursor display on weapons; the live
+    /// cursor + click behavior is driven by `c4 + can_c4` instead.
+    pub c4: bool,
+
+    /// `CanC4=yes` on BuildingType. When false, the building cannot be C4'd by
+    /// SEAL/Tanya/PTROOP. Default `true` for buildings, `false` for non-buildings.
+    /// Stock buildings opting out: CAMISC01 (Oil Derrick), CAMISC02 (Barrel),
+    /// CAMSC09, CAMSC10 (McBurger Kong).
+    pub can_c4: bool,
+
+    /// `InvisibleInGame=yes` on BuildingType. Logical-only buildings (e.g., bridge
+    /// anchors) that should not receive C4 or other interaction cursors. No stock
+    /// targetable building sets this.
+    pub invisible_in_game: bool,
+
     /// Whether this building repairs docked ground units (UnitRepair=yes in rules.ini).
     /// Used by Service Depots (GADEPT, NADEPT, YADEPT).
     pub unit_repair: bool,
@@ -921,6 +938,11 @@ impl ObjectType {
                 .get_bool("AttackCursorOnFriendlies")
                 .unwrap_or(false),
             sabotage_cursor: section.get_bool("SabotageCursor").unwrap_or(false),
+            c4: section.get_bool("C4").unwrap_or(false),
+            can_c4: section
+                .get_bool("CanC4")
+                .unwrap_or(category == ObjectCategory::Building),
+            invisible_in_game: section.get_bool("InvisibleInGame").unwrap_or(false),
             unit_repair: section.get_bool("UnitRepair").unwrap_or(false),
             unit_reload: section.get_bool("UnitReload").unwrap_or(false),
             helipad: section.get_bool("Helipad").unwrap_or(false),
@@ -1371,6 +1393,54 @@ mod tests {
         let section2: &IniSection = ini2.section("VEH").unwrap();
         let obj2 = ObjectType::from_ini_section("VEH", section2, ObjectCategory::Vehicle);
         assert_eq!(obj2.size, 3);
+    }
+
+    #[test]
+    fn c4_flag_parses_from_ini() {
+        let ini = IniFile::from_str("[GHOST]\nC4=yes\n");
+        let section = ini.section("GHOST").unwrap();
+        let obj = ObjectType::from_ini_section("GHOST", section, ObjectCategory::Infantry);
+        assert!(obj.c4);
+    }
+
+    #[test]
+    fn c4_defaults_to_false() {
+        let ini = IniFile::from_str("[E1]\n");
+        let section = ini.section("E1").unwrap();
+        let obj = ObjectType::from_ini_section("E1", section, ObjectCategory::Infantry);
+        assert!(!obj.c4);
+    }
+
+    #[test]
+    fn can_c4_defaults_to_true_for_buildings() {
+        let ini = IniFile::from_str("[GAPILE]\n");
+        let section = ini.section("GAPILE").unwrap();
+        let obj = ObjectType::from_ini_section("GAPILE", section, ObjectCategory::Building);
+        assert!(obj.can_c4);
+    }
+
+    #[test]
+    fn can_c4_defaults_to_false_for_non_buildings() {
+        let ini = IniFile::from_str("[E1]\n");
+        let section = ini.section("E1").unwrap();
+        let obj = ObjectType::from_ini_section("E1", section, ObjectCategory::Infantry);
+        assert!(!obj.can_c4);
+    }
+
+    #[test]
+    fn can_c4_no_overrides_default() {
+        let ini = IniFile::from_str("[CAMISC01]\nCanC4=no\n");
+        let section = ini.section("CAMISC01").unwrap();
+        let obj = ObjectType::from_ini_section("CAMISC01", section, ObjectCategory::Building);
+        assert!(!obj.can_c4);
+    }
+
+    #[test]
+    fn invisible_in_game_defaults_to_false() {
+        let ini = IniFile::from_str("[GAPILE]\n");
+        let section = ini.section("GAPILE").unwrap();
+        let obj = ObjectType::from_ini_section("GAPILE", section, ObjectCategory::Building);
+        assert!(!obj.invisible_in_game);
     }
 
     #[test]
