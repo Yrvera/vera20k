@@ -462,4 +462,142 @@ mod tests {
         assert_eq!(update, BridgeStateUpdate::Unchanged);
         assert_eq!(p.z, 0);
     }
+
+    // ------------------------------------------------------------------------
+    // Render-state apply tests (apply_pending_bridge_render_state)
+    // ------------------------------------------------------------------------
+
+    use crate::rules::locomotor_type::{LocomotorKind, SpeedType};
+    use crate::sim::movement::locomotor::{AirMovePhase, GroundMovePhase};
+    use crate::util::fixed_math::{SIM_ONE, SIM_ZERO};
+
+    /// Build a minimal `LocomotorState` for tests. Lists all fields explicitly
+    /// with sensible defaults — LocomotorState has no `Default` impl.
+    fn make_loco(layer: MovementLayer) -> Option<LocomotorState> {
+        Some(LocomotorState {
+            kind: LocomotorKind::Drive,
+            layer,
+            phase: GroundMovePhase::Idle,
+            air_phase: AirMovePhase::Landed,
+            speed_multiplier: SIM_ONE,
+            speed_fraction: SIM_ONE,
+            fly_current_speed: SIM_ZERO,
+            altitude: SIM_ZERO,
+            target_altitude: SIM_ZERO,
+            climb_rate: SIM_ZERO,
+            jumpjet_speed: SIM_ZERO,
+            jumpjet_wobbles: 0.0,
+            jumpjet_accel: SIM_ZERO,
+            jumpjet_current_speed: SIM_ZERO,
+            jumpjet_deviation: 0,
+            jumpjet_crash_speed: SIM_ZERO,
+            jumpjet_turn_rate: 4,
+            balloon_hover: false,
+            hover_attack: false,
+            speed_type: SpeedType::Track,
+            movement_zone: MovementZone::Normal,
+            rot: 0,
+            override_state: None,
+            air_progress: SIM_ZERO,
+            infantry_wobble_phase: 0.0,
+            subcell_dest: None,
+        })
+    }
+
+    #[test]
+    fn render_state_on_bridge_decoupled_from_loco_layer() {
+        // active_layer=Bridge but bridge_update=Unchanged.
+        // on_bridge must retain its prior value (does NOT become true just because layer is Bridge).
+        let mut loco = make_loco(MovementLayer::Ground);
+        let mut occ: Option<BridgeOccupancy> = None;
+        let mut on_b = false;
+        apply_pending_bridge_render_state(
+            &mut loco,
+            &mut occ,
+            &mut on_b,
+            MovementLayer::Bridge,
+            BridgeStateUpdate::Unchanged,
+            42,
+        );
+        assert_eq!(loco.as_ref().unwrap().layer, MovementLayer::Bridge);
+        assert!(!on_b, "on_bridge must NOT be derived from active_layer");
+        assert!(occ.is_none(), "bridge_occupancy must be unchanged");
+    }
+
+    #[test]
+    fn render_state_ramp_going_up_keeps_on_bridge_false() {
+        // Going up onto a ramp: A*'s path puts the ramp on Bridge layer, but the
+        // predicate doesn't fire Enter until Ramp→Body next tick. So this tick:
+        //   active_layer = Bridge, bridge_update = Unchanged, on_bridge = false (prior).
+        let mut loco = make_loco(MovementLayer::Ground);
+        let mut occ: Option<BridgeOccupancy> = None;
+        let mut on_b = false;
+        apply_pending_bridge_render_state(
+            &mut loco,
+            &mut occ,
+            &mut on_b,
+            MovementLayer::Bridge,
+            BridgeStateUpdate::Unchanged,
+            42,
+        );
+        assert_eq!(loco.as_ref().unwrap().layer, MovementLayer::Bridge);
+        assert!(!on_b, "on_bridge must stay false on the ramp tick going up");
+    }
+
+    #[test]
+    fn render_state_ramp_going_down_keeps_on_bridge_true() {
+        // Coming off a bridge: A*'s path puts the ramp on Ground layer (is_at_bridge_level
+        // returns false), but the predicate hasn't fired Exit yet. on_bridge stays true.
+        let mut loco = make_loco(MovementLayer::Bridge);
+        let mut occ = Some(BridgeOccupancy { deck_level: 4 });
+        let mut on_b = true;
+        apply_pending_bridge_render_state(
+            &mut loco,
+            &mut occ,
+            &mut on_b,
+            MovementLayer::Ground,
+            BridgeStateUpdate::Unchanged,
+            42,
+        );
+        assert_eq!(loco.as_ref().unwrap().layer, MovementLayer::Ground);
+        assert!(on_b, "on_bridge must stay true on the ramp tick going down");
+        assert!(
+            occ.is_some(),
+            "bridge_occupancy must be unchanged on Unchanged"
+        );
+    }
+
+    #[test]
+    fn render_state_set_writes_occupancy() {
+        let mut loco = make_loco(MovementLayer::Bridge);
+        let mut occ: Option<BridgeOccupancy> = None;
+        let mut on_b = false;
+        apply_pending_bridge_render_state(
+            &mut loco,
+            &mut occ,
+            &mut on_b,
+            MovementLayer::Bridge,
+            BridgeStateUpdate::Set(4),
+            42,
+        );
+        assert!(on_b);
+        assert_eq!(occ.unwrap().deck_level, 4);
+    }
+
+    #[test]
+    fn render_state_clear_drops_occupancy() {
+        let mut loco = make_loco(MovementLayer::Ground);
+        let mut occ = Some(BridgeOccupancy { deck_level: 4 });
+        let mut on_b = true;
+        apply_pending_bridge_render_state(
+            &mut loco,
+            &mut occ,
+            &mut on_b,
+            MovementLayer::Ground,
+            BridgeStateUpdate::Clear,
+            42,
+        );
+        assert!(!on_b);
+        assert!(occ.is_none());
+    }
 }
