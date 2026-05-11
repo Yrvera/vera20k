@@ -137,26 +137,38 @@ pub(super) fn resolve_cell_transition_bridge_state(
     }
 }
 
+/// Apply the post-resolver bridge state to entity components.
+///
+/// `loco.layer` follows `active_layer` (= A*'s path_layer for this step), which drives
+/// walkability and cell_entry occupancy lookup.
+///
+/// `on_bridge` and `bridge_occupancy` are driven INDEPENDENTLY by `bridge_update` from
+/// the cell-flag predicate. This is the load-bearing G2 parity fix: the runtime
+/// on_bridge state is NOT derivable from the A* layer, because on a ramp going up
+/// loco.layer=Bridge but on_bridge=false (predicate hasn't fired Enter yet), and on a
+/// ramp going down loco.layer=Ground but on_bridge=true.
 pub(super) fn apply_pending_bridge_render_state(
     locomotor: &mut Option<LocomotorState>,
     bridge_occupancy: &mut Option<BridgeOccupancy>,
     on_bridge: &mut bool,
     active_layer: MovementLayer,
-    pending_bridge_update: Option<Option<u8>>,
+    bridge_update: BridgeStateUpdate,
     _diag_entity_id: u64,
 ) {
     if let Some(loco) = locomotor {
         loco.layer = active_layer;
     }
-    *on_bridge = active_layer == MovementLayer::Bridge;
-    if let Some(bridge_level) = pending_bridge_update {
-        match bridge_level {
-            Some(level) => {
-                *bridge_occupancy = Some(BridgeOccupancy { deck_level: level });
-            }
-            None => {
-                *bridge_occupancy = None;
-            }
+    match bridge_update {
+        BridgeStateUpdate::Set(deck_level) => {
+            *on_bridge = true;
+            *bridge_occupancy = Some(BridgeOccupancy { deck_level });
+        }
+        BridgeStateUpdate::Clear => {
+            *on_bridge = false;
+            *bridge_occupancy = None;
+        }
+        BridgeStateUpdate::Unchanged => {
+            // on_bridge and bridge_occupancy retain their previous values
         }
     }
 }
