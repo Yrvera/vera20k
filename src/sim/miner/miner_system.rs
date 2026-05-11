@@ -255,31 +255,9 @@ fn handle_search_ore(
 ) {
     let search_center = snap.miner.last_harvest_cell.unwrap_or((snap.rx, snap.ry));
 
-    // Build a reachability filter from the zone grid + harvester locomotor.
-    // If any of (zone_grid, locomotor, effective zone cell) is missing, fall
-    // back to unfiltered search for this tick — the next tick will likely
-    // succeed once the harvester moves to a passable cell.
-    let entity = sim.entities.get(snap.entity_id);
-    let mz = entity
-        .and_then(|e| e.locomotor.as_ref())
-        .map(|loc| loc.movement_zone)
-        .unwrap_or(MovementZone::Normal);
-    let layer = entity
-        .map(|e| e.movement_layer_or_ground())
-        .unwrap_or(MovementLayer::Ground);
-    let harvester_anchor = sim
-        .zone_grid
-        .as_ref()
-        .and_then(|zg| effective_zone_cell(zg, mz, snap.rx, snap.ry));
-
-    type OreFilter<'a> = dyn Fn((u16, u16)) -> bool + 'a;
-    let reachable_filter: Option<Box<OreFilter<'_>>> =
-        match (sim.zone_grid.as_ref(), harvester_anchor) {
-            (Some(zg), Some(anchor)) => Some(Box::new(move |ore_cell: (u16, u16)| {
-                ore_reachable(zg, mz, layer, anchor, ore_cell)
-            })),
-            _ => None,
-        };
+    // Reachability filter — see build_reachable_filter for the fallback
+    // semantics when zone_grid / locomotor / anchor is missing.
+    let reachable_filter = build_reachable_filter(sim, snap);
     let filter_ref: Option<&dyn Fn((u16, u16)) -> bool> = reachable_filter.as_deref();
 
     // Try local continuation scan first (short radius around last harvest spot).
