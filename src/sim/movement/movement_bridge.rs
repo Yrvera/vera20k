@@ -1,20 +1,15 @@
-//! Bridge layer transitions — resolves ground-to-bridge and bridge-to-ground layer changes
-//! during cell boundary crossings, and applies bridge render state for smooth visual transitions.
+//! Bridge layer transitions — applies the on_bridge cell-flag predicate at each
+//! cell boundary crossing, and decouples `on_bridge` from `loco.layer` so that the
+//! A* path layer (walkability-driving) and the runtime bridge state (predicate-driven)
+//! can disagree at ramp cells — which they must, to match the reference behavior.
 //!
-//! Uses **reactive height-based detection**:
-//! - `abs(unit_z - cell.ground_level) >= 2` → unit is at bridge level → stay on bridge
-//! - `abs(unit_z - cell.ground_level) < 2` → unit is at ground level → pass under
-//! - Ramp entry: `src_z == dst_ground + 4` with bridge flag → going UP onto bridge
-//! Path layers are NOT used for bridge state decisions; the unit's Z relative to the
-//! cell's ground height determines everything at runtime.
+//! Predicate:
+//!   Enter:  dst.height_level == src.height_level - 4 AND dst has bridge structural flag
+//!   Exit:   !(dst has bridge structural flag) AND src has bridge structural flag
+//! Both conditions independent; signed i8 height arithmetic.
 //!
-//! TODO(RE): The stock game keeps explicit bridge-layer state on the unit
-//! (`FootClass+0x79`) and feeds that into bridge-aware zone lookups. This module still
-//! infers bridge state from reactive height heuristics and ignores the pathfinder's
-//! `_next_layer` hints. Keep this conservative until the runtime bridge-layer update
-//! rules are fully wired in.
+//! See docs/plans/2026-05-11-bridge-locomotor-layer-correctness-design.md.
 
-use crate::rules::locomotor_type::MovementZone;
 use crate::sim::components::{BridgeOccupancy, Position};
 use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
 use crate::sim::pathfinding::PathGrid;
@@ -49,17 +44,8 @@ pub(super) enum BridgeStateUpdate {
     Unchanged,
 }
 
-/// Threshold for ground vs bridge level detection.
-/// If `abs(unit_z - cell.ground_level) >= HEIGHT_THRESHOLD`, unit is at bridge level.
-const HEIGHT_THRESHOLD: u8 = 2;
-
-/// Height of one ship Z-step in leptons.
-/// Computed as `ftol(sin(30 deg) * 256*sqrt(2) * 0.5) = 90`.
-#[allow(dead_code)]
-pub(super) const SHIP_HEIGHT_STEP: SimFixed = SimFixed::lit("90");
-
 /// Bridge vertical clearance in leptons.
-/// Equals `SHIP_HEIGHT_STEP * 4 = 360` -- the Z distance from water surface to bridge deck.
+/// 360 == 90 * 4 — the Z distance from water surface to bridge deck.
 /// Added to braking distance when a ship passes under a bridge cell.
 pub(super) const BRIDGE_Z_OFFSET: SimFixed = SimFixed::lit("360");
 
@@ -173,51 +159,6 @@ pub(super) fn apply_pending_bridge_render_state(
     }
 }
 
-/// Preemptive bridge detection for units approaching a bridge cell.
-///
-/// Uses height comparison to decide if the unit should be elevated to bridge
-/// deck level. Only fires when bridge_occupancy is not already set and the
-/// unit's Z indicates it's at bridge level relative to the next cell.
-///
-/// The planned next-step layer is only used as a conservative gate here: we
-/// never pre-claim bridge occupancy unless the path already says the next step
-/// is on the bridge layer. Full bridge-state parity is still pending the
-/// runtime layer-state RE noted in the module-level TODO(RE).
-pub(super) fn apply_bridge_lookahead_if_needed(
-    position: &mut Position,
-    bridge_occupancy: &mut Option<BridgeOccupancy>,
-    on_bridge: &mut bool,
-    mover_zone: MovementZone,
-    next_step: Option<(u16, u16)>,
-    next_step_layer: MovementLayer,
-    path_grid: Option<&PathGrid>,
-) {
-    if mover_zone.is_water_mover()
-        || bridge_occupancy.is_some()
-        || next_step_layer != MovementLayer::Bridge
-    {
-        return;
-    }
-
-    let Some((nx, ny)) = next_step else {
-        return;
-    };
-    if let Some(pg) = path_grid {
-        if let Some(cell) = pg.cell(nx, ny) {
-            if let Some(deck) = cell.bridge_deck_level_if_any() {
-                // Same height check as resolve: if unit Z is far from ground,
-                // it's approaching at bridge level (e.g., coming from a ramp).
-                let height_diff =
-                    (position.z as i16 - cell.ground_level as i16).unsigned_abs() as u8;
-                if height_diff >= HEIGHT_THRESHOLD {
-                    *bridge_occupancy = Some(BridgeOccupancy { deck_level: deck });
-                    *on_bridge = true;
-                    position.z = deck;
-                }
-            }
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {
