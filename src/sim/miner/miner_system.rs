@@ -213,6 +213,40 @@ fn process_miner(
 
 // -- State handlers --
 
+/// Build a zone-grid-based reachability filter for ore scans.
+///
+/// Returns `None` if any of (zone_grid, locomotor, effective zone cell)
+/// is missing. In that case the caller falls back to an unfiltered scan
+/// for this tick — the next tick will likely succeed once the harvester
+/// moves to a passable cell.
+///
+/// Shared by `handle_search_ore` (State 0 fresh search) and
+/// `handle_harvest` (State 1 cell-depletion continuation scan).
+fn build_reachable_filter<'a>(
+    sim: &'a Simulation,
+    snap: &MinerSnapshot,
+) -> Option<Box<dyn Fn((u16, u16)) -> bool + 'a>> {
+    let entity = sim.entities.get(snap.entity_id);
+    let mz = entity
+        .and_then(|e| e.locomotor.as_ref())
+        .map(|loc| loc.movement_zone)
+        .unwrap_or(MovementZone::Normal);
+    let layer = entity
+        .map(|e| e.movement_layer_or_ground())
+        .unwrap_or(MovementLayer::Ground);
+    let harvester_anchor = sim
+        .zone_grid
+        .as_ref()
+        .and_then(|zg| effective_zone_cell(zg, mz, snap.rx, snap.ry));
+
+    match (sim.zone_grid.as_ref(), harvester_anchor) {
+        (Some(zg), Some(anchor)) => Some(Box::new(move |ore_cell: (u16, u16)| {
+            ore_reachable(zg, mz, layer, anchor, ore_cell)
+        })),
+        _ => None,
+    }
+}
+
 fn handle_search_ore(
     sim: &Simulation,
     config: &MinerConfig,
