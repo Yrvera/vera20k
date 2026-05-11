@@ -442,13 +442,40 @@ fn handle_harvest(
         }
     }
 
-    // Cell depleted (or was already empty). If we have some cargo, return.
+    // Cell depleted. Per gamemd State 1 (Mission_Harvest case 1, after
+    // Harvest_Ore_Tick returns 0): before returning, do a short-radius
+    // continuation scan from the unit's current position. If ore is
+    // reachable within TiberiumShortScan, set it as the new target and
+    // keep harvesting. Only if nothing is found nearby does the miner
+    // return to refinery (with cargo) or fall back to the full
+    // SearchOre cascade (empty cargo).
+    //
+    // The filter's closure captures `&sim`; scope it so the immutable
+    // borrow drops before `begin_return` needs `&mut sim` below.
+    let continuation_target = {
+        let reachable_filter = build_reachable_filter(sim, snap);
+        let filter_ref: Option<&dyn Fn((u16, u16)) -> bool> = reachable_filter.as_deref();
+        search_local_ore(
+            &sim.production.resource_nodes,
+            (snap.rx, snap.ry),
+            config.local_continuation_radius,
+            filter_ref,
+        )
+    };
+    if let Some(next_cell) = continuation_target {
+        snap.miner.target_ore_cell = Some(next_cell);
+        snap.miner.state = MinerState::MoveToOre;
+        return;
+    }
+
+    // No nearby ore. If we have cargo, head home. Otherwise fall back
+    // to SearchOre's wider cascade (matches existing empty-cargo
+    // behavior; gamemd would return-to-refinery here too but our 4-stage
+    // SearchOre cascade is observably equivalent).
     if !snap.miner.cargo.is_empty() {
         begin_return(sim, rules, config, path_grid, snap);
         return;
     }
-
-    // No cargo — search for more ore (local continuation).
     snap.miner.state = MinerState::SearchOre;
 }
 
