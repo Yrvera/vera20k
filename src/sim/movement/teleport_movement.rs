@@ -331,6 +331,7 @@ mod tests {
             dock: vec![],
             queueing_cell: None,
             docking_offset: None,
+            pads: Vec::new(),
             add_occupy: Vec::new(),
             remove_occupy: Vec::new(),
             unloading_class: None,

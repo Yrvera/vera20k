@@ -1656,6 +1656,19 @@ impl RuleSet {
                 if entry.docking_offset.is_some() {
                     obj.docking_offset = entry.docking_offset;
                 }
+                // Multi-pad merge: size to NumberOfDocks (from rules.ini), zero-pad
+                // missing entries, truncate excess. Mirrors the original game's
+                // memory layout where the pad array is sized by NumberOfDocks and
+                // unspecified DockingOffset%d slots default to (0,0,0).
+                {
+                    let n = obj.number_of_docks as usize;
+                    obj.pads = entry.pads.iter().take(n).copied().collect();
+                    while obj.pads.len() < n {
+                        obj.pads.push(crate::rules::object_type::DockPad {
+                            lepton_offset: (0, 0, 0),
+                        });
+                    }
+                }
                 // Merge AddOccupy/RemoveOccupy from art.ini.
                 if !entry.add_occupy.is_empty() {
                     obj.add_occupy = entry.add_occupy.clone();
@@ -2871,5 +2884,75 @@ ZAdjust=-10
 
         // C4Delay must match the retail value (0.03 minutes = 27 ticks).
         assert_eq!(rules.c4_delay_ticks, 27, "C4Delay must parse to 27 ticks");
+    }
+
+    /// Helper: parse a (rules.ini, art.ini) pair into a merged RuleSet for
+    /// pad-merge tests. Keeps a minimal scaffolding (one BuildingType) so
+    /// `RuleSet::from_ini` does not reject the input.
+    fn parse_rules_with_art(building_section: &str, art_ini: &str) -> RuleSet {
+        let rules_str = format!(
+            "[General]\n\
+             BuildSpeed=1\n\
+             MultipleFactory=1\n\
+             LowPowerPenaltyModifier=1\n\
+             MinLowPowerProductionSpeed=1\n\
+             MaxLowPowerProductionSpeed=1\n\
+             [InfantryTypes]\n\
+             [VehicleTypes]\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             0=GAAIRC\n\
+             {}",
+            building_section,
+        );
+        let rules_ini = IniFile::from_str(&rules_str);
+        let mut rules = RuleSet::from_ini(&rules_ini).expect("rules parse");
+        let art_ini_parsed = IniFile::from_str(art_ini);
+        let art = crate::rules::art_data::ArtRegistry::from_ini(&art_ini_parsed);
+        rules.merge_art_data(&art);
+        rules
+    }
+
+    #[test]
+    fn merge_pads_zero_pads_missing_indices() {
+        // NumberOfDocks=4 but art only has DockingOffset0,1.
+        // Merge must produce pads.len() == 4 with indices 2,3 zero-init.
+        let rules = parse_rules_with_art(
+            "[GAAIRC]\nName=Airforce\nCost=1000\nStrength=1000\nNumberOfDocks=4\n",
+            "[GAAIRC]\n\
+             DockingOffset0=0,-128,0\n\
+             DockingOffset1=0,128,0\n",
+        );
+        let obj = rules.object("GAAIRC").expect("obj");
+        assert_eq!(obj.pads.len(), 4, "pads sized to NumberOfDocks");
+        assert_eq!(obj.pads[0].lepton_offset, (0, -128, 0));
+        assert_eq!(obj.pads[1].lepton_offset, (0, 128, 0));
+        assert_eq!(
+            obj.pads[2].lepton_offset,
+            (0, 0, 0),
+            "missing index 2 zero-init"
+        );
+        assert_eq!(
+            obj.pads[3].lepton_offset,
+            (0, 0, 0),
+            "missing index 3 zero-init"
+        );
+    }
+
+    #[test]
+    fn merge_pads_truncates_excess_offsets() {
+        // NumberOfDocks=2 but art has 4 offsets. Truncate.
+        let rules = parse_rules_with_art(
+            "[GAAIRC]\nName=Airforce\nCost=1000\nStrength=1000\nNumberOfDocks=2\n",
+            "[GAAIRC]\n\
+             DockingOffset0=0,0,0\n\
+             DockingOffset1=128,0,0\n\
+             DockingOffset2=256,0,0\n\
+             DockingOffset3=384,0,0\n",
+        );
+        let obj = rules.object("GAAIRC").expect("obj");
+        assert_eq!(obj.pads.len(), 2, "truncated to NumberOfDocks=2");
+        assert_eq!(obj.pads[0].lepton_offset, (0, 0, 0));
+        assert_eq!(obj.pads[1].lepton_offset, (128, 0, 0));
     }
 }

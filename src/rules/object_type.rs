@@ -125,6 +125,19 @@ impl FactoryType {
     }
 }
 
+/// One docking pad on a building. Stored in `ObjectType.pads` as a Vec
+/// whose index IS the pad index (0-based, matching `DockingOffset0..N-1`).
+///
+/// `lepton_offset` is parsed from art.ini `DockingOffset%d=X,Y,Z` and is
+/// interpreted as an offset from the building's geometric center (not its
+/// origin top-left). 256 leptons = 1 cell. Zero-initialized entries are
+/// valid: when rules declares `NumberOfDocks=N` but art only specifies
+/// `DockingOffset0..K-1` with K < N, the remaining pads get zero offsets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DockPad {
+    pub lepton_offset: (i32, i32, i32),
+}
+
 /// A game object definition parsed from a rules.ini section.
 ///
 /// Fields use sensible defaults when the INI key is absent, matching
@@ -306,6 +319,11 @@ pub struct ObjectType {
     /// First docking offset from art.ini (DockingOffset0=X,Y,Z in leptons).
     /// Where units sit during dock operations. Merged from art.ini during init.
     pub docking_offset: Option<(i32, i32, i32)>,
+    /// All docking pads on this building, parsed from art.ini `DockingOffset0..NumberOfDocks-1`.
+    /// Index in vec IS the pad index. `len() == number_of_docks` after merge.
+    /// Refineries / service depots / single-pad helipads use only `pads[0]`.
+    /// Airfields (GAAIRC, AMRADR) use all 4. Empty vec = building has no docking offsets defined.
+    pub pads: Vec<DockPad>,
     /// Cells added to the rectangular foundation (from art.ini AddOccupy1..N).
     /// Merged from art.ini during init.
     pub add_occupy: Vec<(i16, i16)>,
@@ -819,6 +837,7 @@ impl ObjectType {
                 .collect(),
             queueing_cell: None,       // merged from art.ini later
             docking_offset: None,      // merged from art.ini later
+            pads: Vec::new(),          // merged from art.ini later
             add_occupy: Vec::new(),    // merged from art.ini later
             remove_occupy: Vec::new(), // merged from art.ini later
             unloading_class: section.get("UnloadingClass").map(|s| s.to_string()),
