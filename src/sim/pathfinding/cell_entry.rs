@@ -9,9 +9,13 @@
 //! - Phase 1 (`check_terrain`): terrain + occupancy presence, no EntityStore needed
 //! - Phase 2 (`classify_occupied_cell`): blocker friendship/crush, needs &EntityStore
 //!
-//! TODO(RE): The stock search-time legality/cost predicate is richer than this runtime
-//! movement-side classification. Bridge legality, more terrain/object cases, and the
-//! exact cost classes still need to be pulled in from the RE corpus.
+//! Bridge legality is now driven by A*'s `path_layers` (set per-step by `astar_search`
+//! with the Ground→Bridge gates verified against the reference predicate), which
+//! approximates the post-switch output of the original two-pass `Can_Enter_Cell`. See
+//! docs/plans/2026-05-11-bridge-locomotor-layer-correctness-design.md §"Known Parity Boundary".
+//!
+//! TODO(RE): Cost-class refinements (search-time entity-block costs vs runtime bump) and
+//! some terrain edge cases still pending. Tracked separately from G2/G6.
 //!
 //! ## Dependency rules
 //! - Part of sim/ — depends on sim/bump_crush, sim/entity_store, sim/locomotor,
