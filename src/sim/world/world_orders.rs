@@ -322,6 +322,12 @@ impl Simulation {
                 }
             }
         }
+        // Early-out skips the rules.c4_warhead_id() lookup, which panics if
+        // resolve_bridge_warheads hasn't been called. Pre-feature tests don't
+        // call it; guarding here keeps them passing.
+        if det_keys.is_empty() {
+            return destroyed_structure;
+        }
 
         let c4_warhead_id = rules.c4_warhead_id();
         let delay = rules.c4_delay_ticks as u64;
