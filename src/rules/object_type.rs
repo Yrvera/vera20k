@@ -257,6 +257,10 @@ pub struct ObjectType {
     /// Scan radius in cells for auto-targeting idle enemies. If None, defaults
     /// to the primary weapon's range at runtime.
     pub guard_range: Option<SimFixed>,
+    /// Range bonus (in cells) added to the weapon's max range when firing at
+    /// high-flying targets. Read from `AirRangeBonus=` in the unit section.
+    /// None means no bonus.
+    pub air_range_bonus: Option<SimFixed>,
     /// Whether this unit fires a warhead at its own position on death (e.g.,
     /// Apocalypse Tank explosion damages nearby units).
     pub explodes: bool,
@@ -541,6 +545,24 @@ pub struct ObjectType {
     /// Parsed from `SabotageCursor=yes` in rules.ini. Used by Tanya and Navy SEAL.
     pub sabotage_cursor: bool,
 
+    /// `C4=yes` on InfantryType. Gates the player-issued C4 plant mission path
+    /// (SEAL, Tanya, Psi-Corp Trooper). Distinct from `sabotage_cursor`, which
+    /// is now purely a modder-flag for cursor display on weapons; the live
+    /// cursor + click behavior is driven by `c4 + can_c4` instead.
+    pub c4: bool,
+
+    /// `CanC4=yes` on BuildingType. When false, the building cannot be C4'd by
+    /// SEAL/Tanya/PTROOP. Default `true` for buildings, `false` for non-buildings.
+    /// Stock buildings opting out in retail rulesmd.ini: CAMISC01 (Concrete
+    /// Barrel), CAMISC02 (Wooden Barrel), CAMISC06 (Civilian Barrel variant),
+    /// AMMOCRAT (Ammo Crate).
+    pub can_c4: bool,
+
+    /// `InvisibleInGame=yes` on BuildingType. Logical-only buildings (e.g., bridge
+    /// anchors) that should not receive C4 or other interaction cursors. No stock
+    /// targetable building sets this.
+    pub invisible_in_game: bool,
+
     /// Whether this building repairs docked ground units (UnitRepair=yes in rules.ini).
     /// Used by Service Depots (GADEPT, NADEPT, YADEPT).
     pub unit_repair: bool,
@@ -774,6 +796,7 @@ impl ObjectType {
             turret_anim_y: section.get_i32("TurretAnimY").unwrap_or(0),
             turret_anim_z_adjust: section.get_i32("TurretAnimZAdjust").unwrap_or(0),
             guard_range: section.get_f32("GuardRange").map(sim_from_f32),
+            air_range_bonus: section.get_f32("AirRangeBonus").map(sim_from_f32),
             explodes: section.get_bool("Explodes").unwrap_or(false),
             death_weapon: section.get("DeathWeapon").map(|s| s.to_string()),
             super_weapon: section.get("SuperWeapon").map(|s| s.to_string()),
@@ -916,6 +939,11 @@ impl ObjectType {
                 .get_bool("AttackCursorOnFriendlies")
                 .unwrap_or(false),
             sabotage_cursor: section.get_bool("SabotageCursor").unwrap_or(false),
+            c4: section.get_bool("C4").unwrap_or(false),
+            can_c4: section
+                .get_bool("CanC4")
+                .unwrap_or(category == ObjectCategory::Building),
+            invisible_in_game: section.get_bool("InvisibleInGame").unwrap_or(false),
             unit_repair: section.get_bool("UnitRepair").unwrap_or(false),
             unit_reload: section.get_bool("UnitReload").unwrap_or(false),
             helipad: section.get_bool("Helipad").unwrap_or(false),
@@ -1369,6 +1397,54 @@ mod tests {
     }
 
     #[test]
+    fn c4_flag_parses_from_ini() {
+        let ini = IniFile::from_str("[GHOST]\nC4=yes\n");
+        let section = ini.section("GHOST").unwrap();
+        let obj = ObjectType::from_ini_section("GHOST", section, ObjectCategory::Infantry);
+        assert!(obj.c4);
+    }
+
+    #[test]
+    fn c4_defaults_to_false() {
+        let ini = IniFile::from_str("[E1]\n");
+        let section = ini.section("E1").unwrap();
+        let obj = ObjectType::from_ini_section("E1", section, ObjectCategory::Infantry);
+        assert!(!obj.c4);
+    }
+
+    #[test]
+    fn can_c4_defaults_to_true_for_buildings() {
+        let ini = IniFile::from_str("[GAPILE]\n");
+        let section = ini.section("GAPILE").unwrap();
+        let obj = ObjectType::from_ini_section("GAPILE", section, ObjectCategory::Building);
+        assert!(obj.can_c4);
+    }
+
+    #[test]
+    fn can_c4_defaults_to_false_for_non_buildings() {
+        let ini = IniFile::from_str("[E1]\n");
+        let section = ini.section("E1").unwrap();
+        let obj = ObjectType::from_ini_section("E1", section, ObjectCategory::Infantry);
+        assert!(!obj.can_c4);
+    }
+
+    #[test]
+    fn can_c4_no_overrides_default() {
+        let ini = IniFile::from_str("[CAMISC01]\nCanC4=no\n");
+        let section = ini.section("CAMISC01").unwrap();
+        let obj = ObjectType::from_ini_section("CAMISC01", section, ObjectCategory::Building);
+        assert!(!obj.can_c4);
+    }
+
+    #[test]
+    fn invisible_in_game_defaults_to_false() {
+        let ini = IniFile::from_str("[GAPILE]\n");
+        let section = ini.section("GAPILE").unwrap();
+        let obj = ObjectType::from_ini_section("GAPILE", section, ObjectCategory::Building);
+        assert!(!obj.invisible_in_game);
+    }
+
+    #[test]
     fn techno_type_particle_fields_default_to_empty() {
         let ini: IniFile = IniFile::from_str("[E1]\n");
         let section = ini.section("E1").unwrap();
@@ -1483,5 +1559,23 @@ mod tests {
             parse_csv_string_list(Some(" A , B , ,C ")),
             vec!["A".to_string(), "B".to_string(), "C".to_string()]
         );
+    }
+
+    #[test]
+    fn parses_air_range_bonus() {
+        let ini: IniFile = IniFile::from_str(
+            "[MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\nAirRangeBonus=4\n",
+        );
+        let section = ini.section("MTNK").expect("section");
+        let obj = ObjectType::from_ini_section("MTNK", section, ObjectCategory::Vehicle);
+        assert_eq!(obj.air_range_bonus, Some(sim_from_f32(4.0)));
+    }
+
+    #[test]
+    fn air_range_bonus_default_none() {
+        let ini: IniFile = IniFile::from_str("[MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\n");
+        let section = ini.section("MTNK").expect("section");
+        let obj = ObjectType::from_ini_section("MTNK", section, ObjectCategory::Vehicle);
+        assert_eq!(obj.air_range_bonus, None);
     }
 }

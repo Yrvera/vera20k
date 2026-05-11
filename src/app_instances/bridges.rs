@@ -11,13 +11,15 @@
 //! - Part of the app layer — may depend on everything.
 //! - Read-only access to sim state via `AppState`.
 
+use std::collections::BTreeMap;
+
 use crate::app::AppState;
-use crate::map::lighting;
+use crate::map::lighting::{self, LightingGrid};
 use crate::map::terrain::{self, TILE_HEIGHT, TILE_WIDTH};
 use crate::render::batch::SpriteInstance;
-use crate::render::bridge_atlas::is_high_bridge_body_name;
+use crate::render::bridge_atlas::{BridgeAtlasLookup, is_high_bridge_body_name};
 use crate::render::bridge_railing_atlas::BridgeKind;
-use crate::sim::bridge_state::{Axis, BridgeRuntimeCell, DamageState};
+use crate::sim::bridge_state::{Axis, BridgeRuntimeCell, BridgeRuntimeState, DamageState};
 
 use super::helpers::{compute_sprite_depth_params, in_view};
 
@@ -85,7 +87,86 @@ fn compute_bridge_body_shp_frame(state: DamageState, axis: Axis, rx: u16, ry: u1
 }
 
 /// Build sprite instances for the bridge body pass (RE doc §3.3, Step 5
-/// pass 1). Reads `BridgeRuntimeCell.overlay_byte` post-tick.
+/// pass 1). Reads `BridgeRuntimeCell.damage_state` post-tick.
+///
+/// Takes only the fields the body builder actually needs from `AppState`
+/// so the function is exercisable in unit tests with a pure-data mock atlas
+/// (`BridgeAtlasLookup` trait). Shadow + railing builders below still take
+/// `&AppState` directly — same minimal-context refactor pending.
+#[allow(clippy::too_many_arguments)]
+pub fn build_bridge_body_instances_inner(
+    bridge_state: &BridgeRuntimeState,
+    atlas: &dyn BridgeAtlasLookup,
+    overlay_names: &BTreeMap<u8, String>,
+    height_map: &BTreeMap<(u16, u16), u8>,
+    lighting_grid: &LightingGrid,
+    origin_y: f32,
+    world_height: f32,
+    cam_x: f32,
+    cam_y: f32,
+    sw: f32,
+    sh: f32,
+    out: &mut Vec<SpriteInstance>,
+) {
+    for ((rx, ry), cell) in bridge_state.iter_cells() {
+        if !cell.deck_present || matches!(cell.damage_state, DamageState::Destroyed) {
+            continue;
+        }
+        let Some(axis) = cell.axis else { continue };
+        let Some(name) = overlay_names.get(&cell.overlay_byte) else {
+            continue;
+        };
+        if !is_high_bridge_body_name(name) {
+            continue;
+        }
+
+        let frame = compute_bridge_body_shp_frame(cell.damage_state, axis, rx, ry);
+        let y_offset = match axis {
+            Axis::NS => BRIDGE_BODY_Y_OFFSET_NS,
+            Axis::EW => BRIDGE_BODY_Y_OFFSET_EW,
+        };
+
+        let z: u8 = height_map
+            .get(&(rx, ry))
+            .copied()
+            .unwrap_or(cell.deck_level);
+        let (sx, sy) = terrain::iso_to_screen(rx, ry, z);
+        let sy = sy + y_offset;
+        if !in_view(sx, sy, 120.0, 120.0, cam_x, cam_y, sw, sh, 120.0) {
+            continue;
+        }
+
+        let Some(spr) = atlas.body_entry(name, frame) else {
+            log::warn!(
+                "bridge body atlas miss: name={name} frame={frame} cell=({rx},{ry})"
+            );
+            continue;
+        };
+
+        let depth_z = z.saturating_add(BRIDGE_HEIGHT_BONUS);
+        let depth = compute_sprite_depth_params(origin_y, world_height, sy, depth_z);
+        let tint: [f32; 3] = lighting_grid
+            .get(&(rx, ry))
+            .copied()
+            .unwrap_or(lighting::DEFAULT_TINT);
+        out.push(SpriteInstance {
+            position: [
+                sx + TILE_WIDTH / 2.0 + spr.offset_x,
+                sy + TILE_HEIGHT / 2.0 + spr.offset_y,
+            ],
+            size: spr.pixel_size,
+            uv_origin: spr.uv_origin,
+            uv_size: spr.uv_size,
+            depth,
+            tint,
+            alpha: 1.0,
+            ..Default::default()
+        });
+    }
+}
+
+/// Thin `AppState` wrapper around `build_bridge_body_instances_inner`. Pulls
+/// the seven fields the inner function needs out of `state` and forwards.
 pub fn build_bridge_body_instances(
     state: &AppState,
     sw: f32,
@@ -106,64 +187,20 @@ pub fn build_bridge_body_instances(
         .as_ref()
         .map(|g| (g.origin_y, g.world_height))
         .unwrap_or((0.0, 1.0));
-    let (cam_x, cam_y) = (state.camera_x, state.camera_y);
-
-    for ((rx, ry), cell) in bridge_state.iter_cells() {
-        if !cell.deck_present || matches!(cell.damage_state, DamageState::Destroyed) {
-            continue;
-        }
-        let Some(axis) = cell.axis else { continue };
-        let Some(name) = state.overlay_names.get(&cell.overlay_byte) else {
-            continue;
-        };
-        if !is_high_bridge_body_name(name) {
-            continue;
-        }
-
-        let frame = compute_bridge_body_shp_frame(cell.damage_state, axis, rx, ry);
-        let y_offset = match axis {
-            Axis::NS => BRIDGE_BODY_Y_OFFSET_NS,
-            Axis::EW => BRIDGE_BODY_Y_OFFSET_EW,
-        };
-
-        let z: u8 = state
-            .height_map
-            .get(&(rx, ry))
-            .copied()
-            .unwrap_or(cell.deck_level);
-        let (sx, sy) = terrain::iso_to_screen(rx, ry, z);
-        let sy = sy + y_offset;
-        if !in_view(sx, sy, 120.0, 120.0, cam_x, cam_y, sw, sh, 120.0) {
-            continue;
-        }
-
-        let Some(spr) = atlas.body_entry(name, frame) else {
-            log::warn!(
-                "bridge body atlas miss: name={name} frame={frame} cell=({rx},{ry})"
-            );
-            continue;
-        };
-
-        let depth_z = z.saturating_add(BRIDGE_HEIGHT_BONUS);
-        let depth = compute_sprite_depth_params(origin_y, world_height, sy, depth_z);
-        let tint: [f32; 3] = state
-            .lighting_grid
-            .get(&(rx, ry))
-            .copied()
-            .unwrap_or(lighting::DEFAULT_TINT);
-        out.push(SpriteInstance {
-            position: [
-                sx + TILE_WIDTH / 2.0 + spr.offset_x,
-                sy + TILE_HEIGHT / 2.0 + spr.offset_y,
-            ],
-            size: spr.pixel_size,
-            uv_origin: spr.uv_origin,
-            uv_size: spr.uv_size,
-            depth,
-            tint,
-            alpha: 1.0,
-        });
-    }
+    build_bridge_body_instances_inner(
+        bridge_state,
+        atlas,
+        &state.overlay_names,
+        &state.height_map,
+        &state.lighting_grid,
+        origin_y,
+        world_height,
+        state.camera_x,
+        state.camera_y,
+        sw,
+        sh,
+        out,
+    );
 }
 
 /// Build sprite instances for the bridge body shadow pass (RE doc §3.3.2,
@@ -250,6 +287,7 @@ pub fn build_bridge_shadow_instances(
             depth,
             tint,
             alpha: 1.0,
+            ..Default::default()
         });
     }
 }
@@ -315,6 +353,7 @@ pub fn build_bridge_railing_instances(
             depth,
             tint,
             alpha: 1.0,
+            ..Default::default()
         });
     }
 }

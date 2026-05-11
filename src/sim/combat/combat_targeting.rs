@@ -17,6 +17,7 @@
 use super::combat_weapon::{VersesGate, select_weapon_with_ifv, verses_gate};
 use super::{is_within_range_leptons, lepton_distance_sq_raw};
 use crate::map::entities::EntityCategory;
+use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::object_type::ObjectCategory;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::entity_store::EntityStore;
@@ -66,12 +67,17 @@ pub(crate) struct AttackerSnapshot {
 
 /// Acquire the best currently valid target for one attacker entity.
 /// Returns the target's stable entity ID.
+///
+/// `terrain` is threaded through for the 3D InRange check; when `None`
+/// (headless tests, no map loaded), the range check falls back to the
+/// existing 2D behavior.
 pub fn acquire_best_target_for_entity(
     entities: &EntityStore,
     rules: &RuleSet,
     interner: &StringInterner,
     attacker_id: u64,
     fog: Option<&FogState>,
+    terrain: Option<&ResolvedTerrainGrid>,
 ) -> Option<u64> {
     let entity = entities.get(attacker_id)?;
     // Aircraft with 0 ammo should not acquire new targets — need to reload.
@@ -102,7 +108,7 @@ pub fn acquire_best_target_for_entity(
         ifv_weapon_index: entity.ifv_weapon_index,
         garrison: None,
     };
-    acquire_best_target(entities, rules, interner, &snapshot, obj, fog, None)
+    acquire_best_target(entities, rules, interner, &snapshot, obj, fog, None, terrain)
 }
 
 fn threat_class(rules: &RuleSet, interner: &StringInterner, type_id: InternedId) -> u8 {
@@ -133,6 +139,7 @@ pub(crate) fn acquire_best_target(
     attacker_obj: &crate::rules::object_type::ObjectType,
     fog: Option<&FogState>,
     scan_range_override: Option<SimFixed>,
+    terrain: Option<&ResolvedTerrainGrid>,
 ) -> Option<u64> {
     let mut best: Option<(i64, u8, u64)> = None;
 
@@ -190,6 +197,8 @@ pub(crate) fn acquire_best_target(
         // Use override (garrison), guard_range, or weapon range for the distance check.
         let scan_range = scan_range_override
             .unwrap_or_else(|| attacker_obj.guard_range.unwrap_or(selected.weapon.range));
+        // 2D dist_sq still feeds the ranking key below; the in-range boolean
+        // is computed separately via 3D when possible.
         let dist_sq = lepton_distance_sq_raw(
             attacker.pos_rx,
             attacker.pos_ry,
@@ -200,7 +209,34 @@ pub(crate) fn acquire_best_target(
             candidate.position.sub_x,
             candidate.position.sub_y,
         );
-        if !is_within_range_leptons(dist_sq, scan_range) {
+        let in_range = if scan_range == selected.weapon.range {
+            // Standard scan range — 3D check when terrain + attacker entity available.
+            match (terrain, entities.get(attacker.stable_id)) {
+                (Some(t), Some(attacker_entity)) => {
+                    let src = (
+                        attacker.pos_rx as i64 * 256 + attacker.sub_x.to_num::<i64>(),
+                        attacker.pos_ry as i64 * 256 + attacker.sub_y.to_num::<i64>(),
+                        super::in_range::effective_z_leptons(attacker_entity),
+                    );
+                    super::in_range::compute_in_range(
+                        attacker_entity,
+                        src,
+                        &super::TargetKind::Entity(candidate.stable_id),
+                        selected.weapon,
+                        rules,
+                        interner,
+                        entities,
+                        t,
+                    )
+                }
+                _ => is_within_range_leptons(dist_sq, scan_range),
+            }
+        } else {
+            // Override path (guard_range / garrison) — keep 2D until later stages
+            // refine override threading through compute_in_range.
+            is_within_range_leptons(dist_sq, scan_range)
+        };
+        if !in_range {
             continue;
         }
 

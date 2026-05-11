@@ -19,8 +19,40 @@ use crate::render::sprite_atlas::ShpSpriteKey;
 use crate::render::unit_atlas::{
     UnitSpriteKey, VxlLayer, canonical_turret_facing, canonical_unit_facing,
 };
-use crate::rules::house_colors::HouseColorIndex;
+use crate::rules::house_colors::{self, HouseColorIndex};
 use crate::sim::components::HarvestOverlay;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// One-shot tripwire: fires the first time a `slope_type >= 17` byte is
+/// observed at the render hand-off. Subsequent observations are silent
+/// (single Relaxed load on the fast path, branch-prediction friendly).
+///
+/// Slopes 17-20 are unpopulated in gamemd's runtime slope-matrix table
+/// (BSS-zero at DAT_00b454B8 per VOXEL_SLOPE_TILT_SYSTEM.md). The
+/// existence of such bytes in shipping TMP data is empirically unknown;
+/// this log surfaces them at runtime so the deferred TMP scan can be
+/// scheduled if it ever fires.
+static WARNED_SLOPE_GE_17: AtomicBool = AtomicBool::new(false);
+
+fn warn_unexpected_slope_once(slope: u8, rx: u16, ry: u16) {
+    if WARNED_SLOPE_GE_17.load(Ordering::Relaxed) {
+        return;
+    }
+    if WARNED_SLOPE_GE_17
+        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+        .is_ok()
+    {
+        log::warn!(
+            "slope_type {} encountered at cell ({}, {}); gamemd has no \
+             matrix populated for slopes 17-20 — rendering flat. This \
+             is the first observation of this slope range in the \
+             current process; subsequent observations are silent.",
+            slope,
+            rx,
+            ry,
+        );
+    }
+}
 
 /// Iterate visible voxel units from EntityStore and build SpriteInstances.
 ///
@@ -74,7 +106,10 @@ pub(crate) fn build_unit_instances(
             continue;
         }
         // Determine terrain slope under this entity for tilted VXL rendering.
-        // Aircraft fly above terrain and never tilt on slopes.
+        // Aircraft fly above terrain and never tilt on slopes. Ground vehicles
+        // accept slopes 0-16 (gamemd's full populated range); bytes 17-20
+        // collapse to flat at this boundary because gamemd has no matrix
+        // populated for them — see VOXEL_SLOPE_TILT_SYSTEM.md addendum.
         let slope_type: u8 = if entity.category == EntityCategory::Aircraft {
             0
         } else {
@@ -82,7 +117,15 @@ pub(crate) fn build_unit_instances(
                 .resolved_terrain
                 .as_ref()
                 .and_then(|t| t.cell(pos.rx, pos.ry))
-                .map(|c| if c.slope_type <= 8 { c.slope_type } else { 0 })
+                .map(|c| {
+                    let raw = c.slope_type;
+                    if raw <= 16 {
+                        raw
+                    } else {
+                        warn_unexpected_slope_once(raw, pos.rx, pos.ry);
+                        0
+                    }
+                })
                 .unwrap_or(0)
         };
         // Screen position is computed by the sim layer (lepton_to_screen) every
@@ -181,7 +224,6 @@ pub(crate) fn build_unit_instances(
             let key: UnitSpriteKey = UnitSpriteKey {
                 type_id: type_str.to_string(),
                 facing: canonical_unit_facing(entity.facing),
-                house_color: hc,
                 layer: VxlLayer::Composite,
                 frame: anim_frame,
                 slope_type,
@@ -201,6 +243,8 @@ pub(crate) fn build_unit_instances(
                     depth,
                     tint,
                     alpha,
+                    house_color_idx: house_color_to_remap_row(hc),
+                    ..Default::default()
                 });
             }
         }
@@ -327,7 +371,6 @@ fn emit_turret_unit_sprites(
     let body_key = UnitSpriteKey {
         type_id: type_id.to_string(),
         facing: canonical_unit_facing(body_facing),
-        house_color: hc,
         layer: VxlLayer::Body,
         frame: anim_frame,
         slope_type,
@@ -335,7 +378,6 @@ fn emit_turret_unit_sprites(
     let turret_key = UnitSpriteKey {
         type_id: type_id.to_string(),
         facing: canonical_turret_facing(turret_facing),
-        house_color: hc,
         layer: VxlLayer::Turret,
         frame: anim_frame,
         slope_type,
@@ -343,7 +385,6 @@ fn emit_turret_unit_sprites(
     let barrel_key = UnitSpriteKey {
         type_id: type_id.to_string(),
         facing: canonical_turret_facing(turret_facing),
-        house_color: hc,
         layer: VxlLayer::Barrel,
         frame: anim_frame,
         slope_type,
@@ -369,6 +410,8 @@ fn emit_turret_unit_sprites(
             depth,
             tint,
             alpha,
+            house_color_idx: house_color_to_remap_row(hc),
+            ..Default::default()
         });
     }
 
@@ -401,6 +444,8 @@ fn emit_turret_unit_sprites(
                 depth,
                 tint,
                 alpha,
+                house_color_idx: house_color_to_remap_row(hc),
+                ..Default::default()
             });
         }
     }
@@ -467,6 +512,7 @@ fn emit_harvest_overlay(
         depth,
         tint,
         alpha: 1.0,
+        ..Default::default()
     });
 }
 
@@ -489,4 +535,16 @@ fn harvest_arm_screen_offset(body_facing: u8) -> (f32, f32) {
     let screen_x: f32 = (cx - cy) * 60.0 / 2.0;
     let screen_y: f32 = (cx + cy) * 30.0 / 2.0;
     (screen_x, screen_y)
+}
+
+/// Map a HouseColorIndex to the per-house ramp row index in PaletteSet's
+/// house_ramp_tex. Row 0 is the no-remap fallback (mirrors the theater
+/// palette's [16, 32) range); civilian/neutral units (`NO_REMAP`) map to
+/// row 0. Real players occupy rows 1..N (the +1 reserves row 0).
+fn house_color_to_remap_row(hc: HouseColorIndex) -> u32 {
+    if hc == house_colors::NO_REMAP {
+        0
+    } else {
+        (hc.0 as u32) + 1
+    }
 }

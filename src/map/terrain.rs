@@ -586,6 +586,7 @@ pub fn build_visible_instances(
                 depth,
                 tint: cell.tint,
                 alpha: 1.0,
+                ..Default::default()
             };
             instances.normal.push(inst);
             // Cliff-redraw: same tile redrawn AFTER sprites using zdepth shader

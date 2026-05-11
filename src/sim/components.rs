@@ -611,6 +611,39 @@ pub struct BaleDepositEvent {
     pub tick: u64,
 }
 
+/// Per-attacker walk-up intent for the C4 plant mission.
+///
+/// Mirrors gamemd's SEAL/Tanya/PTROOP behavior: while this is `Some`, the
+/// unit pathfinds toward the target building. On arrival at the target's
+/// cell, `tick_c4_plants` claims the plant by setting
+/// `PendingC4Detonation` on the building. This state is cleared when the
+/// player retasks the unit (Move/Stop) or when the target is lost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct C4PlantState {
+    pub target_building_id: u64,
+}
+
+/// Per-building C4 detonation timer.
+///
+/// Set by `tick_c4_plants` when an attacker with `c4_plant` arrives on the
+/// building's cell. Once set, the building's update tick fires C4Warhead
+/// damage every tick after `plant_start_tick + rules.c4_delay_ticks`, using
+/// `damage = current_hp` for guaranteed one-shot kill.
+///
+/// **Never cleared** in the C4 path — matches gamemd's `+0x6df` marker
+/// semantics. When the building dies, this state is despawned with it.
+/// IronCurtain on the building does NOT clear this; damage attempts get
+/// nullified by `is_invulnerable` each tick until IC expires, at which
+/// point the next damage tick kills the building.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct PendingC4Detonation {
+    pub plant_start_tick: u64,
+    /// Original attacker for kill-credit. May refer to a despawned entity
+    /// at detonation time; in that case the credit is unattributed (the
+    /// binary uses a dangling pointer; we resolve gracefully to None).
+    pub attacker_id: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -657,6 +690,17 @@ mod tests {
         assert_send_sync::<AnimOverlayState>();
         assert_send_sync::<BuildingAnimOverlays>();
         assert_send_sync::<crate::sim::movement::locomotor::LocomotorState>();
+    }
+
+    #[test]
+    fn c4_state_types_are_send_sync_copy() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<C4PlantState>();
+        assert_send_sync::<PendingC4Detonation>();
+        // Compile-time Copy assertion via fn-bound:
+        fn _assert_copy<T: Copy>() {}
+        _assert_copy::<C4PlantState>();
+        _assert_copy::<PendingC4Detonation>();
     }
 
     #[test]

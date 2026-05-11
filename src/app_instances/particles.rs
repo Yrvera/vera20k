@@ -114,6 +114,7 @@ pub(crate) fn build_particle_instances(
                 depth,
                 tint: [1.0, 1.0, 1.0],
                 alpha,
+                ..Default::default()
             });
         }
     }

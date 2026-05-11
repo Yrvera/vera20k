@@ -3,11 +3,9 @@ use crate::render::vxl_raster::VxlSprite;
 
 #[test]
 fn test_unit_sprite_key_hash_equality() {
-    let hc = HouseColorIndex::default();
     let key1 = UnitSpriteKey {
         type_id: "HTNK".into(),
         facing: 64,
-        house_color: hc,
         layer: VxlLayer::Composite,
         frame: 0,
         slope_type: 0,
@@ -15,7 +13,6 @@ fn test_unit_sprite_key_hash_equality() {
     let key2 = UnitSpriteKey {
         type_id: "HTNK".into(),
         facing: 64,
-        house_color: hc,
         layer: VxlLayer::Composite,
         frame: 0,
         slope_type: 0,
@@ -23,7 +20,6 @@ fn test_unit_sprite_key_hash_equality() {
     let key3 = UnitSpriteKey {
         type_id: "HTNK".into(),
         facing: 128,
-        house_color: hc,
         layer: VxlLayer::Composite,
         frame: 0,
         slope_type: 0,
@@ -45,13 +41,11 @@ fn test_empty_world_returns_none() {
 
 #[test]
 fn test_key_collection_deduplicates() {
-    let hc = HouseColorIndex::default();
     let mut needed: HashSet<UnitSpriteKey> = HashSet::new();
     for facing in [64u8, 64, 128] {
         needed.insert(UnitSpriteKey {
             type_id: "HTNK".to_string(),
             facing,
-            house_color: hc,
             layer: VxlLayer::Composite,
             frame: 0,
             slope_type: 0,
@@ -62,20 +56,18 @@ fn test_key_collection_deduplicates() {
 
 #[test]
 fn test_composite_layers_depth_correct() {
-    // Body: 2x2, all at depth 1.0
+    // Body: 2x2, all at depth 1.0, palette index 10 (opaque).
     let body = VxlSprite {
-        rgba: vec![
-            10, 10, 10, 255, 10, 10, 10, 255, 10, 10, 10, 255, 10, 10, 10, 255,
-        ],
+        palette_indices: vec![10, 10, 10, 10],
         depth: vec![1.0, 1.0, 1.0, 1.0],
         width: 2,
         height: 2,
         offset_x: 0.0,
         offset_y: 0.0,
     };
-    // Turret: 1x1 at (1,1), depth 2.0 (closer) — should overwrite body.
+    // Turret: 1x1 at (1,1), depth 2.0 (closer), palette index 200 — overwrites body.
     let turret = VxlSprite {
-        rgba: vec![255, 0, 0, 255],
+        palette_indices: vec![200],
         depth: vec![2.0],
         width: 1,
         height: 1,
@@ -85,12 +77,12 @@ fn test_composite_layers_depth_correct() {
     let out = composite_vxl_layers(&[body.clone(), turret]);
     assert_eq!(out.width, 2);
     assert_eq!(out.height, 2);
-    let idx = ((1 * out.width + 1) * 4) as usize;
-    assert_eq!(&out.rgba[idx..idx + 4], &[255, 0, 0, 255]);
+    let idx = (1 * out.width + 1) as usize;
+    assert_eq!(out.palette_indices[idx], 200);
 
     // Turret behind body (depth 0.5 < body's 1.0) — body pixel wins.
     let turret_behind = VxlSprite {
-        rgba: vec![0, 255, 0, 255],
+        palette_indices: vec![150],
         depth: vec![0.5],
         width: 1,
         height: 1,
@@ -98,27 +90,25 @@ fn test_composite_layers_depth_correct() {
         offset_y: 1.0,
     };
     let out2 = composite_vxl_layers(&[body, turret_behind]);
-    let idx2 = ((1 * out2.width + 1) * 4) as usize;
+    let idx2 = (1 * out2.width + 1) as usize;
     // Body pixel should remain (depth 1.0 > 0.5).
-    assert_eq!(&out2.rgba[idx2..idx2 + 4], &[10, 10, 10, 255]);
+    assert_eq!(out2.palette_indices[idx2], 10);
 }
 
 #[test]
 fn test_pad_layer_to_union_bounds() {
-    // Body at offset (0,0), 2x2
+    // Body at offset (0,0), 2x2, palette index 10.
     let body = VxlSprite {
-        rgba: vec![
-            10, 10, 10, 255, 10, 10, 10, 255, 10, 10, 10, 255, 10, 10, 10, 255,
-        ],
+        palette_indices: vec![10, 10, 10, 10],
         depth: vec![1.0; 4],
         width: 2,
         height: 2,
         offset_x: 0.0,
         offset_y: 0.0,
     };
-    // Turret at offset (5,3), 1x1 — different origin from body.
+    // Turret at offset (5,3), 1x1, palette index 200 — different origin from body.
     let turret = VxlSprite {
-        rgba: vec![255, 0, 0, 255],
+        palette_indices: vec![200],
         depth: vec![2.0],
         width: 1,
         height: 1,
@@ -145,13 +135,12 @@ fn test_pad_layer_to_union_bounds() {
     assert!((padded_body.offset_x - 0.0).abs() < 0.01);
     assert!((padded_body.offset_y - 0.0).abs() < 0.01);
 
-    // Body pixels should be at (0,0) in the padded canvas.
-    assert_eq!(padded_body.rgba[3], 255); // alpha of pixel (0,0)
+    // Body pixel at (0,0) should be opaque (palette index 10).
+    assert_eq!(padded_body.palette_indices[0], 10);
 
-    // Turret pixel should be at (5,3) in the padded canvas.
+    // Turret pixel at (5,3) should be opaque (palette index 200).
     let turret_pix: usize = (3 * padded_turret.width + 5) as usize;
-    assert_eq!(padded_turret.rgba[turret_pix * 4 + 3], 255); // alpha
-    assert_eq!(padded_turret.rgba[turret_pix * 4], 255); // red channel
+    assert_eq!(padded_turret.palette_indices[turret_pix], 200);
 }
 
 #[test]

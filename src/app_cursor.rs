@@ -211,11 +211,22 @@ fn capability_cursor_for_hover(
                 .get(best_id)
                 .and_then(|e| rules.and_then(|r| r.object(sim.interner.resolve(e.type_ref)))),
         ) {
-            // 2. SabotageCursor: Tanya/Navy SEAL hovering an enemy structure.
-            if sel_obj.sabotage_cursor {
-                if matches!(hover.kind, HoverTargetKind::EnemyStructure) {
-                    return CursorFeedbackKind::Enter;
-                }
+            // 2. C4 plant: SEAL / Tanya / Psi-Corp Trooper hovering an enemy
+            //    structure with CanC4=yes, not InvisibleInGame, not iron-curtained.
+            //    SabotageCursor flag remains in the data model (parsed in
+            //    object_type.rs) for modder weapon-overlay use, but cursor
+            //    logic is now driven by C4=yes — matches gamemd action 0x10.
+            if sel_obj.c4
+                && matches!(hover.kind, HoverTargetKind::EnemyStructure)
+                && hovered_obj.map_or(false, |o| o.can_c4 && !o.invisible_in_game)
+                && !hovered_entity.is_some_and(|e| {
+                    crate::sim::superweapon::invulnerability::is_invulnerable(
+                        e.invulnerability.as_ref(),
+                        sim.tick as u32,
+                    )
+                })
+            {
+                return CursorFeedbackKind::Demolish;
             }
 
             let is_infantry = sel_entity.category == EntityCategory::Infantry;
@@ -272,7 +283,7 @@ fn capability_cursor_for_hover(
                     HoverTargetKind::FriendlyUnit | HoverTargetKind::FriendlyStructure
                 ) {
                     let in_range =
-                        any_selected_unit_in_range(sim, selected, hover.stable_id, rules);
+                        any_selected_unit_in_range(sim, selected, hover.stable_id, rules, sim.resolved_terrain.as_ref());
                     return if in_range {
                         if hover.kind == HoverTargetKind::FriendlyUnit {
                             CursorFeedbackKind::EnemyUnit
@@ -292,7 +303,7 @@ fn capability_cursor_for_hover(
         HoverTargetKind::FriendlyUnit => CursorFeedbackKind::FriendlyUnit,
         HoverTargetKind::FriendlyStructure => CursorFeedbackKind::FriendlyStructure,
         HoverTargetKind::EnemyUnit | HoverTargetKind::EnemyStructure => {
-            let in_range = any_selected_unit_in_range(sim, selected, hover.stable_id, rules);
+            let in_range = any_selected_unit_in_range(sim, selected, hover.stable_id, rules, sim.resolved_terrain.as_ref());
             if in_range {
                 if hover.kind == HoverTargetKind::EnemyUnit {
                     CursorFeedbackKind::EnemyUnit
@@ -313,6 +324,7 @@ fn any_selected_unit_in_range(
     selected_ids: &[u64],
     target_id: u64,
     rules: Option<&crate::rules::ruleset::RuleSet>,
+    terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
 ) -> bool {
     let rules = match rules {
         Some(r) => r,
@@ -334,26 +346,43 @@ fn any_selected_unit_in_range(
         let Some(obj) = rules.object(sim.interner.resolve(entity.type_ref)) else {
             continue;
         };
-        let weapon_range = obj
-            .primary
-            .as_ref()
-            .and_then(|w| rules.weapon(w))
-            .map(|w| w.range)
-            .unwrap_or(crate::util::fixed_math::SIM_ZERO);
-        if weapon_range <= crate::util::fixed_math::SIM_ZERO {
+        let weapon = match obj.primary.as_ref().and_then(|w| rules.weapon(w)) {
+            Some(w) => w,
+            None => continue,
+        };
+        if weapon.range <= crate::util::fixed_math::SIM_ZERO {
             continue;
         }
-        let dist_sq = combat::lepton_distance_sq_raw(
-            entity.position.rx,
-            entity.position.ry,
-            entity.position.sub_x,
-            entity.position.sub_y,
-            target_pos.0,
-            target_pos.1,
-            target_pos.2,
-            target_pos.3,
-        );
-        if combat::is_within_range_leptons(dist_sq, weapon_range) {
+        let in_range = if let Some(t) = terrain {
+            let src = (
+                entity.position.rx as i64 * 256 + entity.position.sub_x.to_num::<i64>(),
+                entity.position.ry as i64 * 256 + entity.position.sub_y.to_num::<i64>(),
+                combat::in_range::effective_z_leptons(entity),
+            );
+            combat::in_range::compute_in_range(
+                entity,
+                src,
+                &combat::TargetKind::Entity(target_id),
+                weapon,
+                rules,
+                &sim.interner,
+                &sim.entities,
+                t,
+            )
+        } else {
+            let dist_sq = combat::lepton_distance_sq_raw(
+                entity.position.rx,
+                entity.position.ry,
+                entity.position.sub_x,
+                entity.position.sub_y,
+                target_pos.0,
+                target_pos.1,
+                target_pos.2,
+                target_pos.3,
+            );
+            combat::is_within_range_leptons(dist_sq, weapon.range)
+        };
+        if in_range {
             return true;
         }
     }
@@ -438,6 +467,7 @@ pub(crate) fn cursor_id_for_feedback(kind: CursorFeedbackKind) -> Option<CursorI
         CursorFeedbackKind::MinimapMove => Some(CursorId::MinimapMove),
         CursorFeedbackKind::Enter => Some(CursorId::Enter),
         CursorFeedbackKind::EngineerRepair => Some(CursorId::EngineerRepair),
+        CursorFeedbackKind::Demolish => Some(CursorId::Demolish),
         CursorFeedbackKind::Deploy => Some(CursorId::Deploy),
         CursorFeedbackKind::SuperWeaponTarget(id) => Some(id),
     }

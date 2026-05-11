@@ -308,6 +308,67 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                 }
             }
 
+            // C4 plant: SEAL / Tanya / Psi-Corp Trooper clicking a CanC4 enemy
+            // structure. Ordered before the engineer-capture branch so C4 takes
+            // priority for any unit with both flags.
+            if !force_fire {
+                let c4_target = hover.as_ref().and_then(|target| {
+                    if !matches!(target.kind, HoverTargetKind::EnemyStructure) {
+                        return None;
+                    }
+                    let rules = state.rules.as_ref()?;
+                    let building = sim.entities.get(target.stable_id)?;
+                    let obj = rules.object(sim.interner.resolve(building.type_ref))?;
+                    if !obj.can_c4 || obj.invisible_in_game {
+                        return None;
+                    }
+                    // Reject IC'd target at issue time (matches gamemd's
+                    // What_Action_OnObject vtable[+0x80] check).
+                    if crate::sim::superweapon::invulnerability::is_invulnerable(
+                        building.invulnerability.as_ref(),
+                        sim.tick as u32,
+                    ) {
+                        return None;
+                    }
+                    Some(target.stable_id)
+                });
+                if let Some(building_id) = c4_target {
+                    let c4_attackers: Vec<u64> = selected_units
+                        .iter()
+                        .copied()
+                        .filter(|&sid| {
+                            sim.entities.get(sid).is_some_and(|e| {
+                                e.category == EntityCategory::Infantry
+                                    && state
+                                        .rules
+                                        .as_ref()
+                                        .and_then(|r| r.object(sim.interner.resolve(e.type_ref)))
+                                        .map_or(false, |o| o.c4)
+                            })
+                        })
+                        .collect();
+                    if !c4_attackers.is_empty() {
+                        for attacker_id in c4_attackers {
+                            queued.push(CommandEnvelope::new(
+                                owner_id,
+                                execute_tick,
+                                Command::PlantC4 {
+                                    attacker_id,
+                                    target_building_id: building_id,
+                                },
+                            ));
+                        }
+                        for cmd in queued {
+                            sim.pending_commands.push(cmd);
+                        }
+                        // EVA voice for the plant order. Matches gamemd's
+                        // VoiceSpecialAttack=SealSpecialAttack on [GHOST].
+                        emit_order_voice(state, "VoiceSpecialAttack");
+                        return true;
+                    }
+                }
+            }
+
             // Engineer capture: engineer clicking a capturable enemy building.
             if !force_fire {
                 let capture_target = hover.as_ref().and_then(|target| {

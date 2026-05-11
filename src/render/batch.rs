@@ -26,6 +26,11 @@ const BATCH_SHADER: &str = include_str!("batch_shader.wgsl");
 /// tiles (cliff occlusion) and overlays.
 const ZDEPTH_SHADER: &str = include_str!("zdepth_shader.wgsl");
 
+/// WGSL voxel-sprite shader: byte → (palette | house_ramp) → fx pipeline.
+/// Atlas is R8Uint (palette indices); palette + per-house RGB ramp are
+/// sampled via PaletteSet (bind group 2).
+const VOXEL_SPRITE_SHADER: &str = include_str!("sprite_voxel_shader.wgsl");
+
 /// Per-sprite instance data uploaded to the GPU each frame.
 ///
 /// Each instance defines one textured quad: position on screen, pixel size,
@@ -33,7 +38,7 @@ const ZDEPTH_SHADER: &str = include_str!("zdepth_shader.wgsl");
 /// The vertex shader uses these along with the camera uniform to produce
 /// clip-space positions with correct depth ordering.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Debug, Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct SpriteInstance {
     /// Top-left corner position in world/screen pixels.
     pub position: [f32; 2],
@@ -52,10 +57,25 @@ pub struct SpriteInstance {
     /// Alpha multiplier for translucency. 1.0 = fully opaque, 0.5 = 50% translucent.
     /// Used for chrono warp "being warped" visual (50% during chrono delay).
     pub alpha: f32,
+    /// Per-house ramp row index. 0 = no remap (SHP / non-voxel paths;
+    /// row 0 of the PaletteSet house_ramp_tex mirrors the theater palette's
+    /// [16, 32) range, so byte ranges stay correct). 1..=MAX_HOUSES-1 =
+    /// per-house ramp row. Read by the voxel sprite fragment shader; other
+    /// pipelines ignore it.
+    pub house_color_idx: u32,
+    /// Bitfield of active visual FX. Bit 0 = cloak, bit 1 = EMP, bit 2 =
+    /// iron curtain, bit 3 = warp, bit 4 = mirror. Phase 1 stubs this as 0;
+    /// phases 2-5 populate.
+    pub fx_flags: u32,
+    /// FX scalar parameters: [cloak_alpha, emp_dim, ic_phase, warp_phase].
+    /// Stub in Phase 1.
+    pub fx_params: [f32; 4],
+    /// Iron-curtain tint: [r, g, b, intensity]. Stub in Phase 1.
+    pub ic_tint: [f32; 4],
 }
 
-/// Number of vertex attributes in SpriteInstance (position, size, uv_origin, uv_size, depth, tint, alpha).
-const INSTANCE_ATTRIBUTE_COUNT: usize = 7;
+/// Number of vertex attributes in SpriteInstance: 7 base + 4 voxel-shader fields.
+const INSTANCE_ATTRIBUTE_COUNT: usize = 11;
 
 /// Size of one SpriteInstance in bytes (4 × vec2f = 32 bytes).
 const INSTANCE_STRIDE: u64 = std::mem::size_of::<SpriteInstance>() as u64;
@@ -217,6 +237,18 @@ pub struct BatchRenderer {
     texture_bind_group_layout: wgpu::BindGroupLayout,
     /// Layout for zdepth texture bind groups (group 1): color + sampler + R8 depth.
     zdepth_texture_bind_group_layout: wgpu::BindGroupLayout,
+    /// Layout for the unit-atlas R8Uint texture (binding 0). Used by the voxel
+    /// sprite pipeline; tiles store palette indices, not RGB.
+    pub unit_atlas_bind_group_layout: wgpu::BindGroupLayout,
+    /// Layout for the PaletteSet bind group (palette + house_ramp + sampler).
+    /// Stored here so the voxel sprite pipeline can be created at BatchRenderer
+    /// init time, before the actual PaletteSet exists. PaletteSet creates a
+    /// structurally-identical layout for its own bind group at theater load.
+    pub voxel_palette_bind_group_layout: wgpu::BindGroupLayout,
+    /// Voxel sprite pipeline: byte → (palette | house_ramp) → FX. Reads from
+    /// `unit_atlas_bind_group_layout` (group 1) + `voxel_palette_bind_group_layout`
+    /// (group 2). Same vertex layout as the other batch pipelines.
+    pub voxel_sprite_pipeline: wgpu::RenderPipeline,
     /// Layout for camera uniform bind group (group 0).
     /// Stored so other pipelines (e.g., fog shader) can reuse the same layout.
     camera_bind_group_layout: wgpu::BindGroupLayout,
@@ -329,7 +361,14 @@ impl BatchRenderer {
                 }],
             });
 
-        // Instance buffer vertex layout: 4 × vec2f + 1 × f32 + 1 × vec3f at locations 0-5.
+        // Instance buffer vertex layout (matches SpriteInstance memory layout):
+        //   position(8) + size(8) + uv_origin(8) + uv_size(8) = 32 → loc 0-3
+        //   depth(4) + tint(12) + alpha(4) = 20 → loc 4-6 (offsets 32, 36, 48)
+        //   house_color_idx(4) at offset 52 → loc 7 (Uint32)
+        //   fx_flags(4) at offset 56 → loc 8 (Uint32)
+        //   fx_params(16) at offset 60 → loc 9 (Float32x4)
+        //   ic_tint(16) at offset 76 → loc 10 (Float32x4)
+        // Total stride: 92 bytes.
         let instance_attrs: [wgpu::VertexAttribute; INSTANCE_ATTRIBUTE_COUNT] = [
             wgpu::VertexAttribute {
                 format: wgpu::VertexFormat::Float32x2,
@@ -365,6 +404,26 @@ impl BatchRenderer {
                 format: wgpu::VertexFormat::Float32,
                 offset: 48,
                 shader_location: 6,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Uint32,
+                offset: 52,
+                shader_location: 7,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Uint32,
+                offset: 56,
+                shader_location: 8,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: 60,
+                shader_location: 9,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: 76,
+                shader_location: 10,
             },
         ];
 
@@ -601,6 +660,130 @@ impl BatchRenderer {
                     cache: None,
                 });
 
+        // Bind group layout for the unit-atlas R8Uint texture (voxel sprite path).
+        // Single texture entry, no sampler — sampled via textureLoad with integer coords.
+        let unit_atlas_bind_group_layout: wgpu::BindGroupLayout = gpu
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("unit_atlas_bgl"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Uint,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                }],
+            });
+
+        // Bind group layout for the PaletteSet (palette texture + house_ramp
+        // texture + non-filtering sampler). Must structurally match
+        // PaletteSet::new()'s layout (wgpu compares layouts structurally, not
+        // by reference, so two distinct BindGroupLayouts with identical
+        // entries are interchangeable).
+        let voxel_palette_bind_group_layout: wgpu::BindGroupLayout =
+            gpu.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("voxel_palette_bgl_for_pipeline"),
+                    entries: &[
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float {
+                                    filterable: false,
+                                },
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float {
+                                    filterable: false,
+                                },
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 2,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                            count: None,
+                        },
+                    ],
+                });
+
+        // Voxel sprite pipeline: 3 bind groups (camera, atlas R8Uint, PaletteSet).
+        // Same vertex layout as the existing batch pipelines (uses all 11 attributes).
+        // Depth: write OFF, compare LessEqual — units sort against the depth
+        // buffer that terrain wrote, but don't write depth themselves (one
+        // unit's pixels shouldn't occlude another unit's translucent pixels).
+        let voxel_shader: wgpu::ShaderModule =
+            gpu.device
+                .create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("Voxel Sprite Shader"),
+                    source: wgpu::ShaderSource::Wgsl(VOXEL_SPRITE_SHADER.into()),
+                });
+        let voxel_sprite_pipeline_layout: wgpu::PipelineLayout =
+            gpu.device
+                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("Voxel Sprite Pipeline Layout"),
+                    bind_group_layouts: &[
+                        &camera_bind_group_layout,
+                        &unit_atlas_bind_group_layout,
+                        &voxel_palette_bind_group_layout,
+                    ],
+                    push_constant_ranges: &[],
+                });
+        let voxel_sprite_pipeline: wgpu::RenderPipeline =
+            gpu.device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("Voxel Sprite Pipeline"),
+                    layout: Some(&voxel_sprite_pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &voxel_shader,
+                        entry_point: Some("vs_main"),
+                        buffers: &[wgpu::VertexBufferLayout {
+                            array_stride: INSTANCE_STRIDE,
+                            step_mode: wgpu::VertexStepMode::Instance,
+                            attributes: &instance_attrs,
+                        }],
+                        compilation_options: Default::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &voxel_shader,
+                        entry_point: Some("fs_main"),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: gpu.surface_format,
+                            blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: Default::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState {
+                        topology: wgpu::PrimitiveTopology::TriangleList,
+                        ..Default::default()
+                    },
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: wgpu::TextureFormat::Depth32Float,
+                        depth_write_enabled: false,
+                        depth_compare: wgpu::CompareFunction::LessEqual,
+                        stencil: wgpu::StencilState::default(),
+                        bias: wgpu::DepthBiasState::default(),
+                    }),
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview: None,
+                    cache: None,
+                });
+
         Self {
             pipeline,
             overlay_pipeline,
@@ -608,6 +791,9 @@ impl BatchRenderer {
             overlay_passthrough_pipeline,
             texture_bind_group_layout,
             zdepth_texture_bind_group_layout,
+            unit_atlas_bind_group_layout,
+            voxel_palette_bind_group_layout,
+            voxel_sprite_pipeline,
             camera_bind_group_layout,
             camera_buffer,
             camera_bind_group,
@@ -615,6 +801,78 @@ impl BatchRenderer {
             ui_camera_bind_group,
             instance_buffer: None,
             instance_count: 0,
+        }
+    }
+
+    /// Create a single-channel R8Uint atlas texture from byte data.
+    ///
+    /// Used for voxel sprite atlases where each byte is a palette index
+    /// (post-VPL, pre-house-remap). Sampled in shader via `textureLoad` (no
+    /// filtering, integer coords).
+    pub fn create_unit_atlas_texture(
+        &self,
+        gpu: &GpuContext,
+        width: u32,
+        height: u32,
+        pixels: &[u8],
+    ) -> BatchTexture {
+        debug_assert_eq!(
+            pixels.len(),
+            (width * height) as usize,
+            "pixel buffer size must equal width * height"
+        );
+
+        let texture: wgpu::Texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("unit_atlas_r8uint"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Uint,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+
+        gpu.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        let view: wgpu::TextureView = texture.create_view(&Default::default());
+        let bind_group: wgpu::BindGroup =
+            gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("unit_atlas_bg"),
+                layout: &self.unit_atlas_bind_group_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                }],
+            });
+
+        BatchTexture {
+            bind_group,
+            view,
+            width,
+            height,
         }
     }
 
@@ -806,6 +1064,53 @@ impl BatchRenderer {
         render_pass.set_bind_group(1, &texture.bind_group, &[]);
         render_pass.set_vertex_buffer(0, buffer.slice(..));
         render_pass.draw(0..6, 0..count);
+    }
+
+    /// Draw voxel sprite instances using the voxel sprite pipeline.
+    ///
+    /// Bind groups: 0 = camera, 1 = unit atlas (R8Uint), 2 = PaletteSet (palette
+    /// + house_ramp + sampler). The fragment shader does the byte → (palette
+    /// or house_ramp) → fx pipeline per pixel.
+    pub fn draw_voxel_sprites<'a>(
+        &'a self,
+        render_pass: &mut wgpu::RenderPass<'a>,
+        atlas: &'a BatchTexture,
+        palette_bind_group: &'a wgpu::BindGroup,
+        buffer: &'a wgpu::Buffer,
+        count: u32,
+    ) {
+        if count == 0 {
+            return;
+        }
+        render_pass.set_pipeline(&self.voxel_sprite_pipeline);
+        render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+        render_pass.set_bind_group(1, &atlas.bind_group, &[]);
+        render_pass.set_bind_group(2, palette_bind_group, &[]);
+        render_pass.set_vertex_buffer(0, buffer.slice(..));
+        render_pass.draw(0..6, 0..count);
+    }
+
+    /// Draw a sub-range of voxel sprite instances using the voxel sprite pipeline.
+    /// Used by the multi-way Y-sort merge passes that interleave voxel and SHP
+    /// draw calls. Same semantics as `draw_voxel_sprites` but with a start index.
+    pub fn draw_voxel_sprites_range<'a>(
+        &'a self,
+        render_pass: &mut wgpu::RenderPass<'a>,
+        atlas: &'a BatchTexture,
+        palette_bind_group: &'a wgpu::BindGroup,
+        buffer: &'a wgpu::Buffer,
+        start: u32,
+        count: u32,
+    ) {
+        if count == 0 {
+            return;
+        }
+        render_pass.set_pipeline(&self.voxel_sprite_pipeline);
+        render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+        render_pass.set_bind_group(1, &atlas.bind_group, &[]);
+        render_pass.set_bind_group(2, palette_bind_group, &[]);
+        render_pass.set_vertex_buffer(0, buffer.slice(..));
+        render_pass.draw(0..6, start..start + count);
     }
 
     /// Access the camera bind group for use by external pipelines (e.g., fog shader).

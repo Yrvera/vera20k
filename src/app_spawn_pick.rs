@@ -96,7 +96,7 @@ pub(crate) fn handle_spawn_pick_click(state: &mut AppState) -> bool {
         if let Some(sim) = &state.simulation {
             let asset_manager = state.asset_manager.as_ref();
             if let Some(assets) = asset_manager {
-                let (new_unit_atlas, new_sprite_atlas) = build_entity_atlases(
+                let (new_unit_atlas, new_sprite_atlas, new_palette_set) = build_entity_atlases(
                     sim,
                     assets,
                     &state.gpu,
@@ -112,6 +112,7 @@ pub(crate) fn handle_spawn_pick_click(state: &mut AppState) -> bool {
                 );
                 state.unit_atlas = new_unit_atlas;
                 state.sprite_atlas = new_sprite_atlas;
+                state.palette_set = new_palette_set;
             }
         }
     }

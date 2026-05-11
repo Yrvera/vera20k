@@ -193,6 +193,7 @@ pub(crate) fn build_building_status_instances(
                     depth,
                     tint: [1.0, 1.0, 1.0],
                     alpha: 1.0,
+                    ..Default::default()
                 });
             }
         } else {
@@ -236,6 +237,7 @@ pub(crate) fn build_building_status_instances(
                     depth,
                     tint,
                     alpha: 1.0,
+                    ..Default::default()
                 });
             }
         }
@@ -349,6 +351,7 @@ pub(crate) fn build_occupant_pip_instances(
                 depth: 0.0006,
                 tint: [1.0, 1.0, 1.0],
                 alpha: 1.0,
+                ..Default::default()
             });
         }
     }
@@ -444,6 +447,7 @@ pub(crate) fn build_unit_status_bg_instances(
             depth: 0.0006,
             tint: [1.0, 1.0, 1.0],
             alpha: 1.0,
+            ..Default::default()
         });
     }
     instances
@@ -557,6 +561,7 @@ pub(crate) fn build_unit_status_fill_instances(
                     depth: 0.0005,
                     tint: [1.0, 1.0, 1.0],
                     alpha: 1.0,
+                    ..Default::default()
                 });
             }
         } else {
@@ -593,6 +598,7 @@ pub(crate) fn build_unit_status_fill_instances(
                     depth: 0.0005,
                     tint,
                     alpha: 1.0,
+                    ..Default::default()
                 });
             }
         }
@@ -713,6 +719,7 @@ pub(crate) fn build_cargo_pip_instances(state: &AppState, sw: f32, sh: f32) -> V
                 depth: 0.0004,
                 tint: [1.0, 1.0, 1.0],
                 alpha: 1.0,
+                ..Default::default()
             });
             pip_idx += 1;
         }
@@ -728,6 +735,7 @@ pub(crate) fn build_cargo_pip_instances(state: &AppState, sw: f32, sh: f32) -> V
                 depth: 0.0004,
                 tint: [1.0, 1.0, 1.0],
                 alpha: 1.0,
+                ..Default::default()
             });
             pip_idx += 1;
         }
@@ -743,6 +751,7 @@ pub(crate) fn build_cargo_pip_instances(state: &AppState, sw: f32, sh: f32) -> V
                 depth: 0.0004,
                 tint: [1.0, 1.0, 1.0],
                 alpha: 1.0,
+                ..Default::default()
             });
             pip_idx += 1;
         }
@@ -808,6 +817,7 @@ pub(crate) fn build_software_cursor_instances(state: &AppState) -> Vec<SpriteIns
         depth: 0.0001,
         tint: [1.0, 1.0, 1.0],
         alpha: 1.0,
+        ..Default::default()
     }]
 }
 

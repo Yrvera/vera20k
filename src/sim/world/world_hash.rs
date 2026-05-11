@@ -380,6 +380,8 @@ impl Simulation {
             }
 
             entity.capture_target.hash(hasher);
+            entity.c4_plant.hash(hasher);
+            entity.pending_c4_detonation.hash(hasher);
 
             match entity.deploy_state {
                 None => 0u8.hash(hasher),
@@ -686,6 +688,57 @@ mod binary_frame_tests {
         sim_a.advance_tick(&[], None, &height_map, None, None, 100);
         // sim_b stays at frame 0; sim_a is at (100*15/1000)=1.
         assert_ne!(sim_a.state_hash(), sim_b.state_hash());
+    }
+}
+
+#[cfg(test)]
+mod c4_hash_tests {
+    use super::Simulation;
+    use crate::map::entities::EntityCategory;
+    use crate::sim::components::{C4PlantState, Health, PendingC4Detonation};
+    use crate::sim::game_entity::GameEntity;
+
+    #[test]
+    fn c4_state_changes_hash() {
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Americans");
+        let type_id = sim.interner.intern("GHOST");
+        let id = sim.next_stable_entity_id;
+        sim.next_stable_entity_id += 1;
+        let e = GameEntity::new(
+            id,
+            10,
+            10,
+            0,
+            0,
+            owner,
+            Health { current: 125, max: 125 },
+            type_id,
+            EntityCategory::Infantry,
+            0,
+            5,
+            false,
+        );
+        sim.entities.insert(e);
+        let h_initial = sim.state_hash();
+
+        // Mutate c4_plant — hash must change.
+        sim.entities.get_mut(id).unwrap().c4_plant = Some(C4PlantState {
+            target_building_id: 99,
+        });
+        let h_with_plant = sim.state_hash();
+        assert_ne!(h_initial, h_with_plant, "c4_plant must affect state hash");
+
+        // Mutate pending_c4_detonation — hash must change again.
+        sim.entities.get_mut(id).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
+            plant_start_tick: 100,
+            attacker_id: 7,
+        });
+        let h_with_pending = sim.state_hash();
+        assert_ne!(
+            h_with_plant, h_with_pending,
+            "pending_c4_detonation must affect state hash"
+        );
     }
 }
 

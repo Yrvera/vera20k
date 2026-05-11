@@ -674,6 +674,7 @@ fn build_radar_anim_instance(state: &AppState) -> Vec<SpriteInstance> {
         depth: 0.00048,
         tint: [1.0, 1.0, 1.0],
         alpha: 1.0,
+        ..Default::default()
     }]
 }
 

@@ -497,6 +497,13 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                         let _ = (rx, ry);
                         continue;
                     }
+                    SimSoundEvent::C4Planted { rx, ry } => {
+                        let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
+                        GameSoundEvent::C4Planted {
+                            sound_id: "SealPlaceBomb".to_string(),
+                            screen_pos: Some((sx, sy)),
+                        }
+                    }
                 };
                 state.sound_events.push(app_event);
             }
@@ -836,7 +843,6 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
         asset_manager,
         state.rules.as_ref(),
         state.art_registry.as_ref(),
-        &state.house_color_map,
         Some(&sim.interner),
     );
     let unit_rebuild: bool = match &state.unit_atlas {
@@ -881,10 +887,8 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
             &state.batch_renderer,
             &sim.entities,
             asset_manager,
-            &palette,
             state.rules.as_ref(),
             state.art_registry.as_ref(),
-            &state.house_color_map,
             existing,
             state.vxl_compute.as_mut(),
             Some(&sim.interner),

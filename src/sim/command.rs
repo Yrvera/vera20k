@@ -124,6 +124,17 @@ pub enum Command {
         engineer_id: u64,
         target_building_id: u64,
     },
+    /// Order a C4-capable infantry (SEAL / Tanya / Psi-Corp Trooper) to plant
+    /// on an enemy building. The unit walks to the building's cell; on arrival
+    /// the building's `pending_c4_detonation` is set; after `C4Delay` ticks the
+    /// building takes full-HP damage with C4Warhead and dies. The attacker
+    /// survives and scatters one cell. Gating happens in `world_commands` —
+    /// attacker must have `C4=yes`, target must be a `CanC4=yes` building, not
+    /// invisible-in-game, not iron-curtained, not in fog.
+    PlantC4 {
+        attacker_id: u64,
+        target_building_id: u64,
+    },
     /// Fire a superweapon at a target cell.
     /// The sim validates that the owner has a ready instance of the specified SW type
     /// and dispatches to the appropriate launch handler.

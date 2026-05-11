@@ -118,6 +118,7 @@ pub(super) fn dispatch_draw_passes(
         data.bridge_shp_paged,
         state.unit_atlas.as_ref(),
         state.sprite_atlas.as_ref(),
+        state.palette_set.as_ref(),
     );
 
     // --- Step 5: Ground objects (unified multi-way Y-merge) ---
@@ -135,15 +136,20 @@ pub(super) fn dispatch_draw_passes(
         state.unit_atlas.as_ref(),
         state.sprite_atlas.as_ref(),
         state.overlay_atlas.as_ref(),
+        state.palette_set.as_ref(),
     );
 
     // --- Step 6: Building turrets ---
-    // Drawn AFTER all layer-2 objects (separate turret pass).
-    if let Some(unit_atlas) = state.unit_atlas.as_ref() {
+    // Drawn AFTER all layer-2 objects (separate turret pass). Building turret
+    // VXLs go through the voxel sprite pipeline like regular vehicle voxels.
+    if let (Some(unit_atlas), Some(palette_set)) =
+        (state.unit_atlas.as_ref(), state.palette_set.as_ref())
+    {
         if let Some((buf, count)) = pool.get("building_turret") {
-            state.batch_renderer.draw_passthrough_range(
+            state.batch_renderer.draw_voxel_sprites_range(
                 &mut pass,
                 &unit_atlas.texture,
+                &palette_set.bind_group,
                 buf,
                 0,
                 count,

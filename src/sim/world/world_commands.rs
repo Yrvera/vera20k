@@ -136,6 +136,7 @@ impl Simulation {
                     e.attack_target = None;
                     e.order_intent = None;
                     e.dock_state = None;
+                    e.c4_plant = None;
                     Self::clear_aircraft_dock_phase(e);
                 }
                 // Snapshot speed, locomotor, and rules data in one lookup.
@@ -275,6 +276,7 @@ impl Simulation {
                     e.attack_target = None;
                     e.order_intent = None;
                     e.dock_state = None;
+                    e.c4_plant = None;
                 }
                 // Cancel any special locomotor states in progress.
                 if let Some(e) = self.entities.get_mut(*entity_id) {
@@ -856,6 +858,109 @@ impl Simulation {
                 miner.state = crate::sim::miner::MinerState::MoveToOre;
                 // Clear in-progress movement so the miner re-paths to the new target.
                 e.movement_target = None;
+                true
+            }
+            Command::PlantC4 {
+                attacker_id,
+                target_building_id,
+            } => {
+                let Some(rules) = rules else { return false };
+                if !self.entity_owned_by_id(command_owner, *attacker_id) {
+                    return false;
+                }
+                if self
+                    .entities
+                    .get(*attacker_id)
+                    .is_some_and(|e| e.is_deployed())
+                {
+                    return false;
+                }
+                // Validate attacker has C4=yes flag.
+                let c4_ok = self.entities.get(*attacker_id).and_then(|e| {
+                    let obj = rules.object(self.interner.resolve(e.type_ref))?;
+                    obj.c4.then_some(())
+                });
+                if c4_ok.is_none() {
+                    return false;
+                }
+                // Validate target is a CanC4, non-invisible enemy building, not iron-curtained.
+                // TODO(parity): also reject selling-in-progress buildings (Mission==0x13);
+                // requires building Mission state which isn't modeled yet.
+                let target_info = self.entities.get(*target_building_id).and_then(|b| {
+                    if b.category != crate::map::entities::EntityCategory::Structure {
+                        return None;
+                    }
+                    if b.dying {
+                        return None;
+                    }
+                    let obj = rules.object(self.interner.resolve(b.type_ref))?;
+                    if !obj.can_c4 || obj.invisible_in_game {
+                        return None;
+                    }
+                    if crate::sim::superweapon::invulnerability::is_invulnerable(
+                        b.invulnerability.as_ref(),
+                        self.tick as u32,
+                    ) {
+                        return None;
+                    }
+                    Some((b.position.rx, b.position.ry, b.owner))
+                });
+                let Some((trx, try_, target_owner)) = target_info else {
+                    return false;
+                };
+                // Enemy-only.
+                if crate::map::houses::are_houses_friendly(
+                    &self.house_alliances,
+                    command_owner,
+                    self.interner.resolve(target_owner),
+                ) {
+                    return false;
+                }
+                // Clear conflicting state and set c4_plant.
+                if let Some(e) = self.entities.get_mut(*attacker_id) {
+                    e.attack_target = None;
+                    e.order_intent = None;
+                    e.dock_state = None;
+                    e.capture_target = None;
+                    e.c4_plant = Some(crate::sim::components::C4PlantState {
+                        target_building_id: *target_building_id,
+                    });
+                }
+                // Issue movement toward the building's cell.
+                let info = self.resolve_move_info(*attacker_id, Some(rules));
+                let speed = info
+                    .as_ref()
+                    .map(|i| i.speed)
+                    .unwrap_or(ra2_speed_to_leptons_per_second(4));
+                let speed_type = info
+                    .as_ref()
+                    .map(|i| i.speed_type)
+                    .unwrap_or(crate::rules::locomotor_type::SpeedType::Foot);
+                let crusher = info.as_ref().map_or(false, |i| i.mover_is_crusher);
+                let (entity_blocks, entity_block_map) =
+                    crate::sim::movement::bump_crush::build_entity_block_set(
+                        &self.entities,
+                        command_owner,
+                        &self.house_alliances,
+                        &self.interner,
+                        Some(rules),
+                    );
+                if let Some(grid) = path_grid {
+                    let cost_grid = self.terrain_costs.get(&speed_type);
+                    movement::issue_move_command_with_layered(
+                        &mut self.entities,
+                        grid,
+                        *attacker_id,
+                        (trx, try_),
+                        speed,
+                        false,
+                        cost_grid,
+                        Some(&entity_blocks),
+                        self.resolved_terrain.as_ref(),
+                        Some(&entity_block_map),
+                        crusher,
+                    );
+                }
                 true
             }
             Command::CaptureBuilding {

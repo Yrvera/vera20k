@@ -1099,3 +1099,253 @@ fn test_blocked_repath_uses_final_goal_not_segment_end() {
     // The segment path ends at (24, 2), but final_goal is (40, 2).
     assert_eq!(target.path.last(), Some(&(24, 2)));
 }
+
+/// Build a minimal Drive LocomotorState for layered-pathfinding tests. Required
+/// because the layered A* branch in find_move_path is only entered when the
+/// mover has a Drive/Walk/Mech locomotor; `test_default` leaves locomotor=None.
+fn make_drive_loco_for_test() -> crate::sim::movement::locomotor::LocomotorState {
+    use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
+    use crate::sim::movement::locomotor::{
+        AirMovePhase, GroundMovePhase, LocomotorState, MovementLayer,
+    };
+    use crate::util::fixed_math::SIM_ONE;
+    LocomotorState {
+        kind: LocomotorKind::Drive,
+        layer: MovementLayer::Ground,
+        phase: GroundMovePhase::Idle,
+        air_phase: AirMovePhase::Landed,
+        speed_multiplier: SIM_ONE,
+        speed_fraction: SIM_ONE,
+        fly_current_speed: SIM_ZERO,
+        altitude: SIM_ZERO,
+        target_altitude: SIM_ZERO,
+        climb_rate: SIM_ZERO,
+        jumpjet_speed: SIM_ZERO,
+        jumpjet_wobbles: 0.0,
+        jumpjet_accel: SIM_ZERO,
+        jumpjet_current_speed: SIM_ZERO,
+        jumpjet_deviation: 0,
+        jumpjet_crash_speed: SIM_ZERO,
+        jumpjet_turn_rate: 0,
+        balloon_hover: false,
+        hover_attack: false,
+        speed_type: SpeedType::Track,
+        movement_zone: MovementZone::Normal,
+        rot: 0,
+        override_state: None,
+        air_progress: SIM_ZERO,
+        infantry_wobble_phase: 0.0,
+        subcell_dest: None,
+    }
+}
+
+#[test]
+fn test_initial_layered_path_avoids_friendly_building_footprint() {
+    // A friendly Drive-locomotor unit ordered across a 2x2 friendly building
+    // foundation must plan a path that does NOT visit any foundation cell on
+    // the FIRST attempt — gamemd's Can_Enter_Cell returns code 7 (impassable)
+    // for unrelated allied buildings, so the layered A* must hard-block them.
+    use crate::sim::production::building_footprint_cells;
+    use std::collections::BTreeSet;
+
+    let mut entities = EntityStore::new();
+    let grid: PathGrid = PathGrid::new(15, 15);
+
+    // 2x2 friendly building anchored at (5,5) — covers (5,5), (6,5), (5,6), (6,6).
+    let foundation: BTreeSet<(u16, u16)> = building_footprint_cells(5, 5, "2x2", &[], &[])
+        .into_iter()
+        .collect();
+    let mut blocks = BTreeSet::new();
+    blocks.extend(foundation.iter().copied());
+
+    // Mover at (1,5), goal at (10,5) — straight east through the foundation.
+    let mut mover = GameEntity::test_default(1, "HTNK", "Americans", 1, 5);
+    mover.locomotor = Some(make_drive_loco_for_test());
+    entities.insert(mover);
+
+    assert!(issue_move_command(
+        &mut entities,
+        &grid,
+        1,
+        (10, 5),
+        SimFixed::from_num(1024),
+        false,         // queue
+        None,          // terrain_costs
+        Some(&blocks), // entity_blocks
+        None,          // entity_block_map
+        false,         // mover_is_crusher
+    ));
+
+    let entity = entities.get(1).expect("mover exists");
+    let target = entity
+        .movement_target
+        .as_ref()
+        .expect("initial path was planned");
+
+    for &cell in &target.path {
+        assert!(
+            !foundation.contains(&cell),
+            "Initial path visited foundation cell {:?} — layered A* did not see \
+             ground_blocks/bridge_blocks on the first plan. Path: {:?}",
+            cell,
+            target.path,
+        );
+    }
+    assert_eq!(target.path.first().copied(), Some((1, 5)));
+    assert_eq!(target.path.last().copied(), Some((10, 5)));
+}
+
+#[test]
+fn test_queued_append_layered_path_avoids_friendly_building_footprint() {
+    // Issue an initial move, then a queued (queue=true) move that crosses a
+    // 2x2 friendly building. The appended portion must avoid the foundation.
+    use crate::sim::production::building_footprint_cells;
+    use std::collections::BTreeSet;
+
+    let mut entities = EntityStore::new();
+    let grid: PathGrid = PathGrid::new(15, 15);
+
+    let foundation: BTreeSet<(u16, u16)> = building_footprint_cells(5, 5, "2x2", &[], &[])
+        .into_iter()
+        .collect();
+    let mut blocks = BTreeSet::new();
+    blocks.extend(foundation.iter().copied());
+
+    // Mover at (1,5). First move to (3,5) (no obstacle). Second move queued
+    // to (10,5) — appended portion crosses the foundation.
+    let mut mover = GameEntity::test_default(1, "HTNK", "Americans", 1, 5);
+    mover.locomotor = Some(make_drive_loco_for_test());
+    entities.insert(mover);
+
+    assert!(issue_move_command(
+        &mut entities,
+        &grid,
+        1,
+        (3, 5),
+        SimFixed::from_num(1024),
+        false, // queue=false (initial)
+        None,
+        Some(&blocks),
+        None,
+        false,
+    ));
+    assert!(issue_move_command(
+        &mut entities,
+        &grid,
+        1,
+        (10, 5),
+        SimFixed::from_num(1024),
+        true, // queue=true (append)
+        None,
+        Some(&blocks),
+        None,
+        false,
+    ));
+
+    let entity = entities.get(1).expect("mover exists");
+    let target = entity
+        .movement_target
+        .as_ref()
+        .expect("queued path exists");
+
+    for &cell in &target.path {
+        assert!(
+            !foundation.contains(&cell),
+            "Queued append path visited foundation cell {:?}. Path: {:?}",
+            cell,
+            target.path,
+        );
+    }
+    assert_eq!(target.path.first().copied(), Some((1, 5)));
+    assert_eq!(target.path.last().copied(), Some((10, 5)));
+}
+
+#[test]
+fn test_segment_exhaustion_repath_avoids_friendly_building_footprint() {
+    // A long path with a 2x2 friendly building at cell 30 (beyond the first
+    // 24-step segment). The initial segment doesn't see the foundation; the
+    // auto-repath at segment exhaustion must avoid it.
+    //
+    // The auto-repath at movement_tick.rs:166 builds its hard-block set freshly
+    // from EntityStore via bump_crush::build_entity_block_set, NOT from the
+    // entity_blocks arg passed to issue_move_command. So the foundation must be
+    // present as Structure entities in the store. Without rules wired into the
+    // test, build_entity_block_set adds the anchor cell of each Structure to
+    // mover_entity_blocks, so we insert one Structure per foundation cell.
+    use crate::sim::movement::tick_movement_with_grid;
+    use crate::sim::production::building_footprint_cells;
+    use std::collections::BTreeSet;
+
+    let mut entities = EntityStore::new();
+    let grid: PathGrid = PathGrid::new(45, 5);
+
+    // 2x2 building footprint at (30,2): covers (30,2), (31,2), (30,3), (31,3).
+    let foundation: BTreeSet<(u16, u16)> = building_footprint_cells(30, 2, "2x2", &[], &[])
+        .into_iter()
+        .collect();
+
+    // Insert one Structure entity per foundation cell so build_entity_block_set
+    // (called inside tick_movement_with_grid) puts every cell in mover_entity_blocks.
+    for (i, &(rx, ry)) in foundation.iter().enumerate() {
+        let mut blocker = GameEntity::test_default(100 + i as u64, "GAWALL", "Americans", rx, ry);
+        blocker.category = EntityCategory::Structure;
+        entities.insert(blocker);
+    }
+
+    let mut mover = GameEntity::test_default(1, "HTNK", "Americans", 1, 2);
+    mover.locomotor = Some(make_drive_loco_for_test());
+    entities.insert(mover);
+
+    // entity_blocks=None at command time → initial path goes straight east,
+    // truncated to 24 steps (1,2)..(24,2) which doesn't reach the foundation.
+    // The post-segment-exhaustion auto-repath is what must route around it.
+    assert!(issue_move_command(
+        &mut entities,
+        &grid,
+        1,
+        (40, 2),
+        SimFixed::from_num(15360), // very fast — exhausts segment quickly
+        false,
+        None,
+        None,
+        None,
+        false,
+    ));
+
+    // Tick until the first segment is exhausted and auto-repath fires. Capture
+    // the first path whose first cell is not (1,2) — that is the post-auto-repath
+    // segment, planned by the call site this test pins.
+    let mut occupancy = OccupancyGrid::rebuild(&entities);
+    let mut post_repath_path: Option<Vec<(u16, u16)>> = None;
+    for _ in 0..40 {
+        tick_movement_with_grid(
+            &mut entities,
+            Some(&grid),
+            &Default::default(),
+            &Default::default(),
+            &mut occupancy,
+            &mut SimRng::new(0),
+            250,
+            0,
+            &mut test_interner(),
+        );
+        if post_repath_path.is_none() {
+            if let Some(t) = entities.get(1).and_then(|e| e.movement_target.as_ref()) {
+                if t.path.first().is_some_and(|&c| c != (1, 2)) {
+                    post_repath_path = Some(t.path.clone());
+                }
+            }
+        }
+    }
+
+    let path = post_repath_path
+        .expect("auto-repath at segment exhaustion must fire and produce a new path");
+    for &cell in &path {
+        assert!(
+            !foundation.contains(&cell),
+            "Post-segment-exhaustion repath visited foundation cell {:?}. Path: {:?}",
+            cell,
+            path,
+        );
+    }
+}

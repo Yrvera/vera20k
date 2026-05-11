@@ -24,6 +24,7 @@ pub mod gpu;
 pub mod minimap;
 mod minimap_helpers;
 pub mod overlay_atlas;
+pub mod palette_textures;
 pub mod radar_anim;
 pub mod screenshot;
 pub mod selection_overlay;
@@ -39,3 +40,5 @@ pub mod upscale_pass;
 pub mod vxl_compute;
 pub mod vxl_normals;
 pub mod vxl_raster;
+#[cfg(test)]
+mod voxel_parity_tests;

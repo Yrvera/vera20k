@@ -1,9 +1,12 @@
 // VXL compute resolve shader — one thread per pixel.
 //
 // Reads the packed u32 from the atomic framebuffer, unpacks color_index and
-// VPL page, performs the two-step lighting lookup (VPL remap + palette RGBA),
-// writes the final RGBA to the output buffer, and clears the atomic FB entry
-// to 0xFFFFFFFF for the next sprite (combined resolve + clear).
+// VPL page, performs the VPL remap (post-VPL palette index lookup), writes
+// the resulting palette index byte to the output buffer (low byte of u32),
+// and clears the atomic FB entry to 0xFFFFFFFF for the next sprite.
+//
+// Output is the post-VPL, pre-house-remap palette index. House remap and
+// theater palette lookup happen at fragment-shader time, not here.
 
 struct ResolveParams {
     fb_width: u32,
@@ -18,10 +21,9 @@ struct ResolveParams {
 // VPL remap table: pages packed 4 entries per u32.
 // Layout: vpl_table[(page * 256 + color_index) / 4], byte (page * 256 + color_index) % 4.
 @group(0) @binding(2) var<storage, read> vpl_table: array<u32>;
-// Palette RGBA: 256 colors packed as u32 (R | G<<8 | B<<16 | A<<24).
-@group(0) @binding(3) var<storage, read> palette_rgba: array<u32>;
-// Output RGBA buffer: one u32 per pixel (R | G<<8 | B<<16 | A<<24).
-@group(0) @binding(4) var<storage, read_write> output_rgba: array<u32>;
+// Output palette-index buffer: one u32 per pixel, low byte = post-VPL palette
+// index (high 24 bits zero). Byte 0 = transparent.
+@group(0) @binding(3) var<storage, read_write> output_palette_indices: array<u32>;
 
 @compute @workgroup_size(256)
 fn resolve_main(@builtin(global_invocation_id) gid: vec3u) {
@@ -35,8 +37,8 @@ fn resolve_main(@builtin(global_invocation_id) gid: vec3u) {
     atomicStore(&atomic_fb[idx], 0xFFFFFFFFu);
 
     if (packed == 0xFFFFFFFFu) {
-        // No voxel hit — transparent pixel.
-        output_rgba[idx] = 0u;
+        // No voxel hit — transparent pixel (byte 0).
+        output_palette_indices[idx] = 0u;
         return;
     }
 
@@ -52,14 +54,7 @@ fn resolve_main(@builtin(global_invocation_id) gid: vec3u) {
     let vpl_word = vpl_table[vpl_word_idx];
     let shaded_index = (vpl_word >> (vpl_byte_idx * 8u)) & 0xFFu;
 
-    // Palette lookup: RGBA.
-    let rgba = palette_rgba[shaded_index];
-
-    // Transparent palette index 0 check.
-    if (shaded_index == 0u) {
-        output_rgba[idx] = 0u;
-        return;
-    }
-
-    output_rgba[idx] = rgba;
+    // Write the post-VPL palette index. Byte 0 = transparent (gamemd
+    // visibility-map invariant); the fragment shader discards byte-0 pixels.
+    output_palette_indices[idx] = shaded_index;
 }

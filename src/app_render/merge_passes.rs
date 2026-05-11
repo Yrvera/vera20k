@@ -10,23 +10,35 @@
 
 use crate::render::batch::{BatchRenderer, BatchTexture, InstanceBufferPool, SpriteInstance};
 use crate::render::overlay_atlas::OverlayAtlas;
+use crate::render::palette_textures::PaletteSet;
 use crate::render::sprite_atlas::SpriteAtlas;
 use crate::render::unit_atlas::UnitAtlas;
+
+/// Which pipeline a `DrawGroup` should dispatch through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DrawKind {
+    /// Standard SHP / overlay: RGBA atlas, batch_shader pipeline.
+    Shp,
+    /// Voxel unit: R8Uint atlas, sprite_voxel_shader pipeline + PaletteSet bind group.
+    Voxel,
+}
 
 /// Tracks a single draw group during the multi-way merge.
 ///
 /// Each group represents one GPU buffer + texture pair (e.g., VXL units, one SHP page,
 /// wall overlays). The `cursor` advances through the buffer as sub-ranges are drawn.
+/// `kind` determines which pipeline is used to dispatch the draw.
 struct DrawGroup<'tex, 'inst> {
     texture: &'tex BatchTexture,
     buffer: &'tex wgpu::Buffer,
     instances: &'inst [SpriteInstance],
     cursor: u32,
     total: u32,
+    kind: DrawKind,
 }
 
 impl<'tex, 'inst> DrawGroup<'tex, 'inst> {
-    fn new(
+    fn new_shp(
         texture: &'tex BatchTexture,
         buffer: &'tex wgpu::Buffer,
         instances: &'inst [SpriteInstance],
@@ -38,6 +50,23 @@ impl<'tex, 'inst> DrawGroup<'tex, 'inst> {
             instances,
             cursor: 0,
             total,
+            kind: DrawKind::Shp,
+        }
+    }
+
+    fn new_voxel(
+        texture: &'tex BatchTexture,
+        buffer: &'tex wgpu::Buffer,
+        instances: &'inst [SpriteInstance],
+        total: u32,
+    ) -> Self {
+        Self {
+            texture,
+            buffer,
+            instances,
+            cursor: 0,
+            total,
+            kind: DrawKind::Voxel,
         }
     }
 
@@ -61,11 +90,12 @@ pub(super) fn draw_merged_bridge_occluded_pass<'a>(
     shp_paged: &[Vec<SpriteInstance>],
     unit_atlas: Option<&'a UnitAtlas>,
     sprite_atlas: Option<&'a SpriteAtlas>,
+    palette_set: Option<&'a PaletteSet>,
 ) {
     let mut groups: Vec<DrawGroup<'a, '_>> = Vec::new();
     if let (Some(ua), Some((buf, count))) = (unit_atlas, pool.get("unit_bridge")) {
         if count > 0 {
-            groups.push(DrawGroup::new(&ua.texture, buf, unit_instances, count));
+            groups.push(DrawGroup::new_voxel(&ua.texture, buf, unit_instances, count));
         }
     }
 
@@ -81,7 +111,7 @@ pub(super) fn draw_merged_bridge_occluded_pass<'a>(
                 if let Some((buf, count)) = pool.get(key) {
                     if count > 0 {
                         let instances = shp_paged.get(i).map_or(&[][..], Vec::as_slice);
-                        groups.push(DrawGroup::new(&page.texture, buf, instances, count));
+                        groups.push(DrawGroup::new_shp(&page.texture, buf, instances, count));
                     }
                 }
             }
@@ -115,13 +145,26 @@ pub(super) fn draw_merged_bridge_occluded_pass<'a>(
             }
             end += 1;
         }
-        batch.draw_depth_range(
-            pass,
-            groups[best_idx].texture,
-            groups[best_idx].buffer,
-            start,
-            end - start,
-        );
+        let g = &groups[best_idx];
+        match g.kind {
+            DrawKind::Voxel => {
+                if let Some(ps) = palette_set {
+                    batch.draw_voxel_sprites_range(
+                        pass,
+                        g.texture,
+                        &ps.bind_group,
+                        g.buffer,
+                        start,
+                        end - start,
+                    );
+                }
+                // If palette_set is None, silently skip — shouldn't happen in
+                // practice since voxel groups only exist when a unit_atlas exists.
+            }
+            DrawKind::Shp => {
+                batch.draw_depth_range(pass, g.texture, g.buffer, start, end - start);
+            }
+        }
         groups[best_idx].cursor = end;
     }
 }
@@ -143,6 +186,7 @@ pub(super) fn draw_merged_object_pass<'a>(
     unit_atlas: Option<&'a UnitAtlas>,
     sprite_atlas: Option<&'a SpriteAtlas>,
     overlay_atlas: Option<&'a OverlayAtlas>,
+    palette_set: Option<&'a PaletteSet>,
 ) {
     // Each draw group has a bind group, pool buffer, extracted depth values, and cursor.
     // Depth values are extracted into Vec<f32> to avoid lifetime entanglement between
@@ -152,10 +196,10 @@ pub(super) fn draw_merged_object_pass<'a>(
     // (which ignores Z elevation).
     let mut groups: Vec<DrawGroup<'a, '_>> = Vec::new();
 
-    // VXL units draw group -- passthrough (no depth test).
+    // VXL units draw group -- voxel sprite pipeline (R8Uint atlas + PaletteSet).
     if let (Some(ua), Some((buf, count))) = (unit_atlas, pool.get("unit")) {
         if count > 0 {
-            groups.push(DrawGroup::new(&ua.texture, buf, unit_instances, count));
+            groups.push(DrawGroup::new_voxel(&ua.texture, buf, unit_instances, count));
         }
     }
 
@@ -167,7 +211,7 @@ pub(super) fn draw_merged_object_pass<'a>(
                 if let Some((buf, count)) = pool.get(key) {
                     if count > 0 {
                         let instances = shp_paged.get(i).map_or(&[][..], Vec::as_slice);
-                        groups.push(DrawGroup::new(&page.texture, buf, instances, count));
+                        groups.push(DrawGroup::new_shp(&page.texture, buf, instances, count));
                     }
                 }
             }
@@ -180,7 +224,7 @@ pub(super) fn draw_merged_object_pass<'a>(
     // in front of units at closer iso rows.
     if let (Some(oa), Some((buf, count))) = (overlay_atlas, pool.get("overlay_wall")) {
         if count > 0 {
-            groups.push(DrawGroup::new(&oa.texture, buf, wall_instances, count));
+            groups.push(DrawGroup::new_shp(&oa.texture, buf, wall_instances, count));
         }
     }
 
@@ -236,16 +280,36 @@ pub(super) fn draw_merged_object_pass<'a>(
             run_end += 1;
         }
 
-        // Draw the contiguous run -- all groups use passthrough (no depth test);
-        // sprites never interact with the Z-buffer.
+        // Draw the contiguous run. Voxel groups go through the voxel sprite
+        // pipeline (R8Uint atlas + PaletteSet bind group); SHP / wall groups
+        // go through passthrough (RGBA atlas, no depth test).
         let count = run_end - run_start;
-        batch.draw_passthrough_range(
-            pass,
-            groups[gi].texture,
-            groups[gi].buffer,
-            run_start,
-            count,
-        );
+        let g = &groups[gi];
+        match g.kind {
+            DrawKind::Voxel => {
+                if let Some(ps) = palette_set {
+                    batch.draw_voxel_sprites_range(
+                        pass,
+                        g.texture,
+                        &ps.bind_group,
+                        g.buffer,
+                        run_start,
+                        count,
+                    );
+                }
+                // If palette_set is None, silently skip (shouldn't happen in
+                // normal flow — voxel groups only exist when unit_atlas does).
+            }
+            DrawKind::Shp => {
+                batch.draw_passthrough_range(
+                    pass,
+                    g.texture,
+                    g.buffer,
+                    run_start,
+                    count,
+                );
+            }
+        }
         groups[gi].cursor = run_end;
     }
 }

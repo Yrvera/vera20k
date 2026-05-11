@@ -262,6 +262,7 @@ impl SidebarTextRenderer {
                 depth,
                 tint,
                 alpha: 1.0,
+                ..Default::default()
             });
             cursor_x += w + spacing;
         }

@@ -170,9 +170,12 @@ fn handle_path_exhaustion(
                 active_layer,
                 fg,
                 entity_cost_grid,
+                // Pass the merged entity_blocks set to both layered slots so the
+                // layered A* sees building footprints regardless of which layer
+                // it expands. Mirrors the try_repath_after_block fix.
                 mover_entity_blocks,
-                None,
-                None, // layer-separated entity blocks not yet wired
+                mover_entity_blocks,
+                mover_entity_blocks,
                 seg_zone_mz,
                 Some(snap.movement_zone),
                 snap.too_big_to_fit_under_bridge,

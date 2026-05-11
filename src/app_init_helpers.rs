@@ -337,7 +337,12 @@ pub(crate) fn spawn_entities(
     theater_unit_palette: Option<&Palette>,
     infantry_sequences: &crate::rules::infantry_sequence::InfantrySequenceRegistry,
     vxl_compute: Option<&mut crate::render::vxl_compute::VxlComputeRenderer>,
-) -> (Option<Simulation>, Option<UnitAtlas>, Option<SpriteAtlas>) {
+) -> (
+    Option<Simulation>,
+    Option<UnitAtlas>,
+    Option<SpriteAtlas>,
+    Option<crate::render::palette_textures::PaletteSet>,
+) {
     let mut sim: Simulation = Simulation::new();
     sim.resolved_terrain = Some(resolved_terrain.clone());
     let bridge_destroyable = map_data
@@ -386,7 +391,7 @@ pub(crate) fn spawn_entities(
         let miner_count: usize = sim.entities.values().filter(|e| e.miner.is_some()).count();
         log::info!("Miner components attached: {}", miner_count);
     }
-    let (unit_atlas, shp_atlas) = build_entity_atlases(
+    let (unit_atlas, shp_atlas, palette_set) = build_entity_atlases(
         &sim,
         asset_manager,
         gpu,
@@ -404,7 +409,7 @@ pub(crate) fn spawn_entities(
     if let Some(ref atlas) = unit_atlas {
         sim.update_voxel_anim_frame_counts(&atlas.frame_counts);
     }
-    (Some(sim), unit_atlas, shp_atlas)
+    (Some(sim), unit_atlas, shp_atlas, palette_set)
 }
 
 pub(crate) fn build_entity_atlases(
@@ -420,7 +425,11 @@ pub(crate) fn build_entity_atlases(
     theater_unit_palette: Option<&Palette>,
     infantry_sequences: &crate::rules::infantry_sequence::InfantrySequenceRegistry,
     vxl_compute: Option<&mut crate::render::vxl_compute::VxlComputeRenderer>,
-) -> (Option<UnitAtlas>, Option<SpriteAtlas>) {
+) -> (
+    Option<UnitAtlas>,
+    Option<SpriteAtlas>,
+    Option<crate::render::palette_textures::PaletteSet>,
+) {
     // Use the theater-specific unit palette if provided, otherwise fall back to search.
     let palette: Option<Palette> = theater_unit_palette.cloned().or_else(|| {
         let pal_names: &[&str] = &["unittem.pal", "unit.pal", "temperat.pal"];
@@ -429,21 +438,26 @@ pub(crate) fn build_entity_atlases(
             Palette::from_bytes(&data).ok()
         })
     });
-    let unit_atlas: Option<UnitAtlas> = palette.as_ref().and_then(|pal| {
+    // Atlas build no longer needs the palette (tiles store palette indices,
+    // not RGB). The palette load above is kept because downstream PaletteSet
+    // construction (Task 1.9) will consume it. Skip the build if no palette
+    // is available — it indicates a missing theater asset and rendering
+    // wouldn't work anyway.
+    let unit_atlas: Option<UnitAtlas> = if palette.is_some() {
         unit_atlas::build_unit_atlas(
             gpu,
             batch,
             &sim.entities,
             asset_manager,
-            pal,
             rules,
             art,
-            house_colors,
             None, // initial build — no existing cache
             vxl_compute,
             Some(&sim.interner),
         )
-    });
+    } else {
+        None
+    };
     // Pre-load building types that can be spawned at runtime (e.g., ConYards from MCV deploy).
     let extra_buildings: Vec<&str> =
         deployable_building_types(&sim.entities, rules, Some(&sim.interner));
@@ -465,5 +479,16 @@ pub(crate) fn build_entity_atlases(
             Some(&sim.interner),
         )
     });
-    (unit_atlas, shp_atlas)
+    // Build PaletteSet: theater palette + per-house RGB ramps for the voxel
+    // sprite shader. Active houses are derived from the house_colors map
+    // (deduplicated; row 0 of the ramp texture is the no-remap fallback).
+    let palette_set: Option<crate::render::palette_textures::PaletteSet> =
+        palette.as_ref().map(|pal| {
+            let mut active: Vec<crate::rules::house_colors::HouseColorIndex> =
+                house_colors.values().copied().collect();
+            active.sort_by_key(|h| h.0);
+            active.dedup();
+            crate::render::palette_textures::PaletteSet::new(gpu, pal, &active)
+        });
+    (unit_atlas, shp_atlas, palette_set)
 }

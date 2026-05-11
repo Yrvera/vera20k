@@ -257,6 +257,7 @@ pub(crate) fn build_shp_instances(
             depth,
             tint,
             alpha: 1.0,
+            ..Default::default()
         });
 
         // Emit building animation overlays and bib — but NOT during build-up/down.
@@ -360,7 +361,6 @@ fn emit_building_turret_vxl(
     let key = UnitSpriteKey {
         type_id: turret_id.to_string(),
         facing: canonical_turret_facing(turret_facing),
-        house_color: hc,
         layer: VxlLayer::Composite,
         frame: 0,
         slope_type: 0, // building turrets don't tilt on slopes
@@ -385,6 +385,7 @@ fn emit_building_turret_vxl(
         depth: turret_depth,
         tint,
         alpha: 1.0,
+        ..Default::default()
     });
 }
 
@@ -442,6 +443,7 @@ fn emit_building_bib(
         depth: building_depth,
         tint,
         alpha: 1.0,
+        ..Default::default()
     });
 }
 
@@ -603,6 +605,7 @@ fn emit_building_anims(
             depth: anim_depth,
             tint,
             alpha: 1.0,
+            ..Default::default()
         });
     }
 }

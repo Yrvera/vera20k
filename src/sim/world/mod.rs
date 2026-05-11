@@ -161,6 +161,10 @@ pub enum SimSoundEvent {
     /// A paratrooper was dropped from a carrier aircraft.
     /// Played at the drop position; app layer resolves to [General] ChuteSound.
     ChuteSound { rx: u16, ry: u16 },
+    /// A C4-capable infantry claimed a plant on a CanC4 building.
+    /// Played at the attacker's position. App resolves to
+    /// `[SealPlaceBomb]` in soundmd.ini.
+    C4Planted { rx: u16, ry: u16 },
 }
 
 /// A fire event produced during combat — carries data for render-side
@@ -1170,8 +1174,13 @@ impl Simulation {
             // (matching gamemd's Fire_At_Target which uses last-frame facing).
             // tick_turret_rotation runs AFTER combat to drive rotation toward the
             // target for the NEXT frame's fire decision (matches Facing_Update order).
+            // tick_c4_plants runs alongside tick_capture_orders — both convert
+            // walk-up intent into a state change on arrival. Detonation damage
+            // is applied here so combat-pre conditions (invulnerability, dying)
+            // are honored before tick_combat runs.
             // PRODUCES: damage, deaths, bridge damage, fire events, last_attacker_id.
             spawned_entities |= self.tick_capture_orders();
+            destroyed_structure |= self.tick_c4_plants(rules);
             self.tick_order_intents_pre_combat(rules);
             // Pursuit: walk units with out-of-range attack_target into range,
             // halt movement on range entry. Must run before combat so combat
@@ -1188,6 +1197,7 @@ impl Simulation {
                 &mut self.production.resource_nodes,
                 self.overlay_grid.as_ref(),
                 overlay_registry,
+                self.resolved_terrain.as_ref(),
                 self.tick,
                 tick_ms,
                 self.binary_frame,
@@ -1474,3 +1484,7 @@ mod tests;
 #[cfg(test)]
 #[path = "smudge_integration_tests.rs"]
 mod smudge_integration_tests;
+
+#[cfg(test)]
+#[path = "world_orders_c4_tests.rs"]
+mod world_orders_c4_tests;
