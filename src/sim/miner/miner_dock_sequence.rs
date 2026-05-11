@@ -1,13 +1,18 @@
 //! Refinery docking visual sequence — approach, link, unload, depart.
 //!
 //! Drives the sub-state machine (`RefineryDockPhase`) when the miner is in
-//! `MinerState::Dock`. Mirrors the four-state FSM used by gamemd's harvester
-//! deploy mission (cases 0/1/3/4): approach the queue, link onto the pad,
-//! deposit bales, then drive off the exit cell.
+//! `MinerState::Dock`. Mirrors the four-state FSM used by the original
+//! game's harvester deploy mission (cases 0/1/3/4): approach the queue,
+//! link onto the pad, deposit bales, then drive off the exit cell.
+//!
+//! `refinery_pad_cell` is a thin wrapper over
+//! [`crate::sim::docking::pad_geometry::pad_cell_for`] — that helper owns
+//! the single building-center-relative lepton→cell conversion shared with
+//! aircraft pad descent.
 //!
 //! ## Dependency rules
 //! - Part of sim/ — depends on sim/miner, sim/miner_dock, sim/components,
-//!   sim/movement, rules/.
+//!   sim/movement, sim/docking/pad_geometry, rules/.
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
 use crate::rules::ruleset::RuleSet;

@@ -2,14 +2,28 @@
 //!
 //! Aircraft with finite `Ammo=` (from rules.ini) deplete ammo on each weapon
 //! fire. When ammo reaches 0, the aircraft auto-returns to the nearest
-//! helipad/airfield owned by the same player, descends, reloads, and
-//! re-launches.
+//! helipad/airfield owned by the same player, descends onto its assigned
+//! pad cell, reloads, and re-launches.
 //!
-//! Uses the two-phase snapshot pattern from `building_dock.rs` and follows the
-//! `find_nearest_refinery()` approach from `miner_system.rs`.
+//! Multi-pad airfields (GAAIRC, AMRADR: `NumberOfDocks=4`) allocate pad
+//! indices via [`AirfieldDocks::try_reserve`] (first-empty-slot scan).
+//! Aircraft descends to the per-pad cell computed by
+//! [`crate::sim::docking::pad_geometry::pad_cell_for`].
+//!
+//! Two FSMs coexist:
+//! - `tick_aircraft_docks` (this module) handles aircraft *without* an
+//!   `AircraftMission` (legacy ammo state machine).
+//! - `tick_aircraft_missions` ([`crate::sim::aircraft`]) handles aircraft
+//!   *with* an `AircraftMission::Docking`/`DockedIdle`.
+//!
+//! Both call into `AirfieldDocks` for pad allocation.
+//!
+//! Uses the two-phase snapshot pattern from `building_dock.rs` and follows
+//! the `find_nearest_refinery()` approach from `miner_system.rs`.
 //!
 //! ## Dependency rules
-//! - Part of sim/ — depends on rules/, sim/components, sim/air_movement.
+//! - Part of sim/ — depends on rules/, sim/components, sim/air_movement,
+//!   sim/docking/pad_geometry.
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -126,10 +140,10 @@ impl AirfieldDocks {
         self.ensure_registered(airfield_sid, num_pads);
 
         // Already docked here? Return existing pad index (idempotent).
-        if let Some((af, pad)) = self.aircraft_to_pad.get(&aircraft_sid) {
-            if *af == airfield_sid {
-                return Some(*pad);
-            }
+        if let Some((af, pad)) = self.aircraft_to_pad.get(&aircraft_sid)
+            && *af == airfield_sid
+        {
+            return Some(*pad);
         }
 
         let pads = self.slots.get_mut(&airfield_sid).expect("registered above");
@@ -156,10 +170,10 @@ impl AirfieldDocks {
     /// just-freed pad index.
     pub fn release(&mut self, aircraft_sid: u64) -> Option<u64> {
         let (airfield_sid, pad_index) = self.aircraft_to_pad.remove(&aircraft_sid)?;
-        if let Some(pads) = self.slots.get_mut(&airfield_sid) {
-            if let Some(slot) = pads.get_mut(pad_index as usize) {
-                *slot = None;
-            }
+        if let Some(pads) = self.slots.get_mut(&airfield_sid)
+            && let Some(slot) = pads.get_mut(pad_index as usize)
+        {
+            *slot = None;
         }
         // Promote next from queue into the just-freed pad.
         if let Some(next) = self
@@ -167,10 +181,10 @@ impl AirfieldDocks {
             .get_mut(&airfield_sid)
             .and_then(|q| q.pop_front())
         {
-            if let Some(pads) = self.slots.get_mut(&airfield_sid) {
-                if let Some(slot) = pads.get_mut(pad_index as usize) {
-                    *slot = Some(next);
-                }
+            if let Some(pads) = self.slots.get_mut(&airfield_sid)
+                && let Some(slot) = pads.get_mut(pad_index as usize)
+            {
+                *slot = Some(next);
             }
             self.aircraft_to_pad.insert(next, (airfield_sid, pad_index));
             return Some(next);
@@ -195,20 +209,20 @@ impl AirfieldDocks {
     /// frees a pad, promotes the next queued aircraft into that same pad.
     pub fn cancel(&mut self, aircraft_sid: u64) {
         if let Some((airfield_sid, pad_index)) = self.aircraft_to_pad.remove(&aircraft_sid) {
-            if let Some(pads) = self.slots.get_mut(&airfield_sid) {
-                if let Some(slot) = pads.get_mut(pad_index as usize) {
-                    *slot = None;
-                }
+            if let Some(pads) = self.slots.get_mut(&airfield_sid)
+                && let Some(slot) = pads.get_mut(pad_index as usize)
+            {
+                *slot = None;
             }
             if let Some(next) = self
                 .queues
                 .get_mut(&airfield_sid)
                 .and_then(|q| q.pop_front())
             {
-                if let Some(pads) = self.slots.get_mut(&airfield_sid) {
-                    if let Some(slot) = pads.get_mut(pad_index as usize) {
-                        *slot = Some(next);
-                    }
+                if let Some(pads) = self.slots.get_mut(&airfield_sid)
+                    && let Some(slot) = pads.get_mut(pad_index as usize)
+                {
+                    *slot = Some(next);
                 }
                 self.aircraft_to_pad.insert(next, (airfield_sid, pad_index));
             }

@@ -465,10 +465,10 @@ pub fn tick_aircraft_missions(
                                 m.move_to = Some((px, py));
                             }
                             // Mirror into AircraftAmmo for downstream consumers.
-                            if let Some(entity) = sim.entities.get_mut(snap.id) {
-                                if let Some(ref mut ammo) = entity.aircraft_ammo {
-                                    ammo.target_pad = Some(reserved_pad);
-                                }
+                            if let Some(entity) = sim.entities.get_mut(snap.id)
+                                && let Some(ref mut ammo) = entity.aircraft_ammo
+                            {
+                                ammo.target_pad = Some(reserved_pad);
                             }
                         }
                     }
@@ -519,10 +519,10 @@ pub fn tick_aircraft_missions(
                         if air_phase == Some(AirMovePhase::Cruising) {
                             m.new_mission = AircraftMission::Idle;
                             // Clear target_pad now that the dock is released.
-                            if let Some(entity) = sim.entities.get_mut(snap.id) {
-                                if let Some(ref mut ammo) = entity.aircraft_ammo {
-                                    ammo.target_pad = None;
-                                }
+                            if let Some(entity) = sim.entities.get_mut(snap.id)
+                                && let Some(ref mut ammo) = entity.aircraft_ammo
+                            {
+                                ammo.target_pad = None;
                             }
                         }
                     }
