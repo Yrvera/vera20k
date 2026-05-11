@@ -35,8 +35,7 @@ use crate::util::fixed_math::{
 use super::bump_crush;
 use super::locomotor::{GroundMovePhase, MovementLayer};
 use super::movement_bridge::{
-    BRIDGE_Z_OFFSET, BridgeStateUpdate, apply_bridge_lookahead_if_needed,
-    apply_pending_bridge_render_state,
+    BRIDGE_Z_OFFSET, BridgeStateUpdate, apply_pending_bridge_render_state,
 };
 use super::movement_occupancy::{DeferredCellCheck, handle_deferred_occupancy};
 use super::movement_path::{find_move_path, supports_layered_bridge_pathing};
@@ -794,25 +793,10 @@ pub fn tick_movement_with_grids(
                 );
             }
 
-            // Preemptive bridge detection: if the unit is approaching a bridge
-            // cell on Bridge layer, set bridge_occupancy NOW so the renderer
-            // skips ground-height interpolation. Only applies when the path
-            // routes ON the bridge — not when walking under it on Ground layer.
-            let bridge_lookahead = if target.next_index < target.path.len() {
-                Some(target.path[target.next_index])
-            } else {
-                None
-            };
-            let lookahead_layer = target.layer_at(target.next_index);
-            apply_bridge_lookahead_if_needed(
-                &mut entity.position,
-                &mut entity.bridge_occupancy,
-                &mut entity.on_bridge,
-                snap.movement_zone,
-                bridge_lookahead,
-                lookahead_layer,
-                path_grid,
-            );
+            // (Removed apply_bridge_lookahead_if_needed call: anticipatory layer
+            // change was a workaround for the broken reactive heuristic. The
+            // cell-flag predicate now makes the layer transition at the cell
+            // boundary exactly, never anticipatorily — see movement_bridge.rs.)
 
             // DIAGNOSTIC: detect unexpected z-drop on bridge cells.
             // If bridge_occupancy is set but z is at ground level, something

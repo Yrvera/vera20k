@@ -408,7 +408,7 @@ mod tests {
     // Render-state apply tests (apply_pending_bridge_render_state)
     // ------------------------------------------------------------------------
 
-    use crate::rules::locomotor_type::{LocomotorKind, SpeedType};
+    use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
     use crate::sim::movement::locomotor::{AirMovePhase, GroundMovePhase};
     use crate::util::fixed_math::{SIM_ONE, SIM_ZERO};
 
