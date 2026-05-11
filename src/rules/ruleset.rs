@@ -2800,4 +2800,48 @@ ZAdjust=-10
         // 0.03 × 60 × 15 = 27 (.round())
         assert_eq!(rules.c4_delay_ticks, 27);
     }
+
+    #[test]
+    fn retail_rulesmd_c4_flags_parse_correctly() {
+        // Load the actual retail rulesmd.ini from the repo's ini/ directory.
+        let ini_text = std::fs::read_to_string("ini/rulesmd.ini").expect("ini/rulesmd.ini");
+        let ini = IniFile::from_str(&ini_text);
+        let rules = RuleSet::from_ini(&ini).expect("parse retail rulesmd");
+
+        // C4-capable units must have c4=true.
+        for unit in &["GHOST", "TANY", "PTROOP"] {
+            let obj = rules.object(unit).unwrap_or_else(|| panic!("no [{}]", unit));
+            assert!(obj.c4, "[{}] must have c4=true (C4=yes in INI)", unit);
+        }
+        // Non-C4 infantry must have c4=false.
+        for unit in &["E1", "ENGINEER", "CCOMAND"] {
+            if let Some(obj) = rules.object(unit) {
+                assert!(!obj.c4, "[{}] must have c4=false", unit);
+            }
+        }
+
+        // CanC4-opt-out buildings — verified by direct grep of ini/rulesmd.ini
+        // for `^CanC4=no`. Four sections match: CAMISC01, CAMISC02, CAMISC06,
+        // AMMOCRAT. (The plan originally listed CAMSC09/CAMSC10 in error;
+        // the retail INI does not set the flag on either.)
+        for bld in &["CAMISC01", "CAMISC02", "CAMISC06", "AMMOCRAT"] {
+            let obj = rules
+                .object(bld)
+                .unwrap_or_else(|| panic!("no [{}]", bld));
+            assert!(
+                !obj.can_c4,
+                "[{}] must have can_c4=false (CanC4=no in INI)",
+                bld
+            );
+        }
+        // Normal buildings inherit can_c4=true.
+        for bld in &["GAPILE", "NAHAND", "GAREFN"] {
+            if let Some(obj) = rules.object(bld) {
+                assert!(obj.can_c4, "[{}] must have can_c4=true (default)", bld);
+            }
+        }
+
+        // C4Delay must match the retail value (0.03 minutes = 27 ticks).
+        assert_eq!(rules.c4_delay_ticks, 27, "C4Delay must parse to 27 ticks");
+    }
 }

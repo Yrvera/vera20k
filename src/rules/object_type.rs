@@ -553,8 +553,9 @@ pub struct ObjectType {
 
     /// `CanC4=yes` on BuildingType. When false, the building cannot be C4'd by
     /// SEAL/Tanya/PTROOP. Default `true` for buildings, `false` for non-buildings.
-    /// Stock buildings opting out: CAMISC01 (Oil Derrick), CAMISC02 (Barrel),
-    /// CAMSC09, CAMSC10 (McBurger Kong).
+    /// Stock buildings opting out in retail rulesmd.ini: CAMISC01 (Concrete
+    /// Barrel), CAMISC02 (Wooden Barrel), CAMISC06 (Civilian Barrel variant),
+    /// AMMOCRAT (Ammo Crate).
     pub can_c4: bool,
 
     /// `InvisibleInGame=yes` on BuildingType. Logical-only buildings (e.g., bridge
