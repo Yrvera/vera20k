@@ -20,8 +20,9 @@ use crate::sim::aircraft::AircraftMission;
 use crate::sim::animation::Animation;
 use crate::sim::combat::AttackTarget;
 use crate::sim::components::{
-    BridgeOccupancy, BuildingAnimOverlays, BuildingDown, BuildingUp, DamageFireOverlays,
-    HarvestOverlay, Health, MovementTarget, OrderIntent, Position, VoxelAnimation,
+    BridgeOccupancy, BuildingAnimOverlays, BuildingDown, BuildingUp, C4PlantState,
+    DamageFireOverlays, HarvestOverlay, Health, MovementTarget, OrderIntent,
+    PendingC4Detonation, Position, VoxelAnimation,
 };
 use crate::sim::debug_event_log::{DebugEventKind, DebugEventLog};
 use crate::sim::deploy::DeployPhase;
@@ -199,6 +200,20 @@ pub struct GameEntity {
     /// Target building for engineer capture. Set by CaptureBuilding command,
     /// cleared on arrival (after capture) or if target is lost/destroyed.
     pub capture_target: Option<u64>,
+    /// Active C4 plant intent on this attacker. Set by `Command::PlantC4`,
+    /// cleared on arrival (after the building's pending detonation is set),
+    /// when the player retasks the unit, or when the target is lost.
+    /// `None` for non-C4 attackers or attackers not currently planting.
+    #[serde(default)]
+    pub c4_plant: Option<C4PlantState>,
+    /// Active C4 detonation timer on this building. Set by `tick_c4_plants`
+    /// when a C4-capable attacker arrives on this building's cell. Once set,
+    /// `tick_c4_plants` Phase 2 fires C4Warhead damage every tick after
+    /// `plant_start_tick + rules.c4_delay_ticks` until the building dies.
+    /// Never cleared in the C4 path — matches gamemd marker semantics.
+    /// `None` for non-buildings or buildings not currently being C4'd.
+    #[serde(default)]
+    pub pending_c4_detonation: Option<PendingC4Detonation>,
     /// Active deploy-fire phase. `None` = upright (default). `Some(Deploying)` /
     /// `Some(Deployed)` / `Some(Undeploying)` for the three machine states.
     /// Hashed for lockstep determinism. Set by `Command::ToggleInfantryDeploy`,
@@ -308,6 +323,8 @@ impl GameEntity {
             ifv_weapon_index: None,
             display_type_override: None,
             capture_target: None,
+            c4_plant: None,
+            pending_c4_detonation: None,
             deploy_state: None,
             debug_log: None,
         }
