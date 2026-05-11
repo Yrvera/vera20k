@@ -232,6 +232,14 @@ pub struct GeneralRules {
     /// Parsed from [AudioVisual] BuildingGarrisonedSound (typically "BuildingGarrisoned").
     /// None = no sound configured. Resolved at app layer to a sound.ini entry.
     pub building_garrisoned_sound: Option<String>,
+    /// Fallback sound played at the arrival cell of a self-teleport when the
+    /// per-unit `ChronoInSound=` is unset. Parsed from `[General] ChronoInSound=`
+    /// (stock default `ChronoMinerTeleport`). `None` = no sound.
+    pub chrono_in_sound: Option<String>,
+    /// Fallback sound played at the departure cell of a self-teleport when the
+    /// per-unit `ChronoOutSound=` is unset. Parsed from `[General] ChronoOutSound=`
+    /// (stock default `ChronoMinerTeleport`). `None` = no sound.
+    pub chrono_out_sound: Option<String>,
     /// Interval in minutes between low-power degradation damage ticks on Powered=yes buildings.
     /// Parsed from DamageDelay= in [General]. Default 1.0 minute.
     pub damage_delay_minutes: f32,
@@ -523,6 +531,8 @@ impl Default for GeneralRules {
             condition_red: 0.25,
             condition_red_x1000: 250,
             building_garrisoned_sound: None,
+            chrono_in_sound: Some("ChronoMinerTeleport".to_string()),
+            chrono_out_sound: Some("ChronoMinerTeleport".to_string()),
             damage_delay_minutes: 1.0,
             spy_power_blackout_frames: 1000,
             damage_fire_types: vec![],
@@ -816,6 +826,16 @@ impl GeneralRules {
                 .and_then(|s| s.get("BuildingGarrisonedSound"))
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_string()),
+            chrono_in_sound: general
+                .get("ChronoInSound")
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .or_else(|| Some("ChronoMinerTeleport".to_string())),
+            chrono_out_sound: general
+                .get("ChronoOutSound")
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .or_else(|| Some("ChronoMinerTeleport".to_string())),
             warp_in: AnimRef {
                 name: parse_anim_name("WarpIn", "WARPIN"),
                 rate_ms: defaults.warp_in.rate_ms,

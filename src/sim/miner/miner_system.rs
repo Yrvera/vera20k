@@ -739,9 +739,14 @@ fn spawn_warp_effects(
 
     // Resolve per-unit ChronoOut/InSound and emit positional sound events.
     // Source cell gets ChronoOutSound; destination gets ChronoInSound.
+    // Per-unit value wins; if absent, fall back to the Rules [General] default.
     let obj = rules.object_case_insensitive(sim.interner.resolve(type_id));
-    let chrono_out = obj.and_then(|o| o.chrono_out_sound.clone());
-    let chrono_in = obj.and_then(|o| o.chrono_in_sound.clone());
+    let chrono_out = obj
+        .and_then(|o| o.chrono_out_sound.clone())
+        .or_else(|| rules.general.chrono_out_sound.clone());
+    let chrono_in = obj
+        .and_then(|o| o.chrono_in_sound.clone())
+        .or_else(|| rules.general.chrono_in_sound.clone());
     if let Some(name) = chrono_out {
         let sound_id = sim.interner.intern(&name);
         sim.sound_events.push(SimSoundEvent::ChronoTeleport {

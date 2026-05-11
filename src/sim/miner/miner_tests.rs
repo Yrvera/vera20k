@@ -843,6 +843,119 @@ fn chrono_teleport_emits_in_and_out_sounds_at_correct_cells() {
     );
 }
 
+/// Variant of `miner_rules()` where CMIN omits the per-unit `ChronoInSound`
+/// and `ChronoOutSound` keys, and `[General]` sets distinctive fallback
+/// values. Used by the fallback-path test to prove the resolver reads from
+/// Rules when the per-unit field is absent.
+fn miner_rules_fallback_only() -> RuleSet {
+    let ini = IniFile::from_str(
+        "[General]\n\
+         ChronoInSound=FALLBACKIN\n\
+         ChronoOutSound=FALLBACKOUT\n\
+         [InfantryTypes]\n\
+         [VehicleTypes]\n\
+         0=HARV\n\
+         1=CMIN\n\
+         [AircraftTypes]\n\
+         [BuildingTypes]\n\
+         0=GAREFN\n\
+         [HARV]\n\
+         Name=War Miner\n\
+         Cost=1400\n\
+         Strength=600\n\
+         Armor=heavy\n\
+         Speed=4\n\
+         ROT=5\n\
+         Sight=5\n\
+         TechLevel=1\n\
+         Owner=Americans\n\
+         Harvester=yes\n\
+         Dock=GAREFN\n\
+         [CMIN]\n\
+         Name=Chrono Miner\n\
+         Cost=1400\n\
+         Strength=400\n\
+         Armor=light\n\
+         Speed=4\n\
+         Sight=5\n\
+         TechLevel=1\n\
+         Owner=Americans\n\
+         Harvester=yes\n\
+         Teleporter=yes\n\
+         Dock=GAREFN\n\
+         [GAREFN]\n\
+         Name=Ore Refinery\n\
+         Cost=2000\n\
+         Strength=900\n\
+         Armor=wood\n\
+         TechLevel=1\n\
+         Owner=Americans\n\
+         Foundation=4x3\n\
+         Refinery=yes\n\
+         FreeUnit=CMIN\n",
+    );
+    RuleSet::from_ini(&ini).expect("miner fallback rules")
+}
+
+/// When the per-unit `ChronoInSound=` / `ChronoOutSound=` are absent, the
+/// resolver must fall back to the `[General]` values from Rules. Confirms
+/// the two-level lookup matches the original engine's behavior.
+#[test]
+fn chrono_teleport_sound_falls_back_to_rules_general() {
+    use crate::sim::world::SimSoundEvent;
+
+    let mut sim = Simulation::new();
+    let rules = miner_rules_fallback_only();
+
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 80, 80);
+    spawn_refinery(&mut sim, 2, 10, 10);
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.cargo.push(CargoBale {
+            resource_type: ResourceType::Ore,
+            value: 25,
+        });
+        miner.state = MinerState::ReturnToRefinery;
+    }
+
+    sim.sound_events.clear();
+    tick_miners_n(&mut sim, &rules, 1);
+
+    let chrono_events: Vec<_> = sim
+        .sound_events
+        .iter()
+        .filter_map(|e| match e {
+            SimSoundEvent::ChronoTeleport {
+                sound_id,
+                rx,
+                ry,
+            } => Some((sim.interner.resolve(*sound_id).to_string(), *rx, *ry)),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(
+        chrono_events.len(),
+        2,
+        "fallback path must still emit exactly two sound events"
+    );
+    assert!(
+        chrono_events
+            .iter()
+            .any(|(s, rx, ry)| s == "FALLBACKOUT" && *rx == 80 && *ry == 80),
+        "Rules [General] ChronoOutSound must fire at source. got: {:?}",
+        chrono_events
+    );
+    assert!(
+        chrono_events
+            .iter()
+            .any(|(s, rx, ry)| s == "FALLBACKIN" && *rx == 14 && *ry == 11),
+        "Rules [General] ChronoInSound must fire at dest. got: {:?}",
+        chrono_events
+    );
+}
+
 // ==========================================================================
 // Test: Chrono Miner drives to ore (does NOT warp — only warps on return)
 // ==========================================================================
