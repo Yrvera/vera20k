@@ -627,6 +627,144 @@ fn local_continuation_after_cell_depletes() {
 }
 
 // ==========================================================================
+// Test 9a: Cell depletes with PARTIAL cargo → miner continues to nearby ore
+//          (the short-scan-before-return behavior, gamemd State 1)
+// ==========================================================================
+#[test]
+fn harvest_continues_to_nearby_ore_when_cell_depletes_partial_cargo() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 20, 20);
+    spawn_refinery(&mut sim, 2, 10, 10);
+    // Cell at miner's position: depletes after 2 bales.
+    place_ore(&mut sim, 20, 20, 2);
+    // Nearby ore well within TiberiumShortScan (radius 6 cells).
+    place_ore(&mut sim, 23, 20, 100);
+
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner");
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.state = MinerState::Harvest;
+        miner.target_ore_cell = Some((20, 20));
+        miner.harvest_timer = 0;
+    }
+
+    // Tick enough to deplete (20,20) and trigger the continuation scan.
+    tick_miners_n(&mut sim, &rules, 30);
+
+    let miner = get_miner(&sim, miner_id);
+    assert!(
+        !miner.cargo.is_empty(),
+        "Miner should have extracted bales before cell depleted"
+    );
+    assert_eq!(
+        miner.target_ore_cell,
+        Some((23, 20)),
+        "After cell depleted, miner should pick the nearby ore via short scan"
+    );
+    assert!(
+        matches!(miner.state, MinerState::MoveToOre | MinerState::Harvest),
+        "Miner should move to / be harvesting the new ore cell, not return-to-refinery; \
+         state was {:?}",
+        miner.state,
+    );
+    assert!(
+        !matches!(
+            miner.state,
+            MinerState::ReturnToRefinery | MinerState::Dock
+        ),
+        "Miner with ore nearby must NOT head to refinery on partial cargo"
+    );
+}
+
+// ==========================================================================
+// Test 9b: Cell depletes with PARTIAL cargo + no ore nearby → miner returns
+// ==========================================================================
+#[test]
+fn harvest_returns_when_no_ore_within_short_scan() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 20, 20);
+    spawn_refinery(&mut sim, 2, 10, 10);
+    // Only the miner's cell has ore. Nothing within the short-scan radius
+    // (default 6 cells). The further ore patch is well outside.
+    place_ore(&mut sim, 20, 20, 2);
+    place_ore(&mut sim, 50, 50, 100); // far outside local_continuation_radius
+
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner");
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.state = MinerState::Harvest;
+        miner.target_ore_cell = Some((20, 20));
+        miner.harvest_timer = 0;
+    }
+
+    tick_miners_n(&mut sim, &rules, 30);
+
+    let miner = get_miner(&sim, miner_id);
+    assert!(
+        !miner.cargo.is_empty(),
+        "Miner should have extracted bales before depletion"
+    );
+    assert!(
+        matches!(
+            miner.state,
+            MinerState::ReturnToRefinery | MinerState::Dock
+        ),
+        "With cargo but no nearby ore, miner must head to refinery; state was {:?}",
+        miner.state,
+    );
+}
+
+// ==========================================================================
+// Test 9c: EMPTY-cargo cell depletion falls back to SearchOre 4-stage cascade
+//          (regression guard: ensures the empty-cargo path keeps working)
+// ==========================================================================
+#[test]
+fn empty_cargo_cell_depletion_falls_back_to_full_search() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 20, 20);
+    spawn_refinery(&mut sim, 2, 10, 10);
+    // No ore on the miner's cell when Harvest state runs.
+    // Nothing within short-scan radius (6 cells).
+    // Ore exists within long-scan radius (default 48).
+    place_ore(&mut sim, 40, 20, 100); // ~20 cells away, within long scan
+
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner");
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.state = MinerState::Harvest;
+        miner.target_ore_cell = Some((20, 20));
+        miner.harvest_timer = 0;
+        // Cargo intentionally empty — extract_bale will fail on first tick.
+        assert!(miner.cargo.is_empty());
+    }
+
+    tick_miners_n(&mut sim, &rules, 5);
+
+    let miner = get_miner(&sim, miner_id);
+    assert!(
+        miner.cargo.is_empty(),
+        "No ore was on the cell, so no bales should have been extracted"
+    );
+    assert_eq!(
+        miner.target_ore_cell,
+        Some((40, 20)),
+        "Empty-cargo cell depletion should fall through SearchOre and find the \
+         long-scan ore at (40, 20)"
+    );
+    assert!(
+        matches!(miner.state, MinerState::MoveToOre),
+        "Miner should be heading to the new ore cell; state was {:?}",
+        miner.state,
+    );
+}
+
+// ==========================================================================
 // Test 10: Cargo pips always show 5 steps of 20%
 // ==========================================================================
 #[test]
