@@ -659,18 +659,16 @@ pub(super) fn process_cell_crossings(
         // Uses current sub_cell (from old cell). For infantry, reserve_destination
         // below may allocate a new sub-cell and correct it via update_sub_cell.
         occupancy.move_entity(old_rx, old_ry, nx, ny, entity_id, active_layer, *sub_cell);
-        // Bridge/layer resolution stays in one helper so cell transitions
-        // don't duplicate deck/ground height rules across the tick loop.
-        let (resolved_layer, bridge_update) = resolve_cell_transition_bridge_state(
+        // Bridge state resolution: apply the on_bridge cell-flag predicate.
+        // Returns ONLY a BridgeStateUpdate — loco.layer continues to follow
+        // A*'s path_layers (next_layer was set above from the path).
+        let bridge_update = resolve_cell_transition_bridge_state(
             position,
             path_grid,
+            (old_rx, old_ry),
+            (nx, ny),
             next_layer,
-            nx,
-            ny,
-            entity_id,
-            "cell_crossing",
         );
-        next_layer = resolved_layer;
         pending_bridge_update = bridge_update;
         active_layer = next_layer;
         if let Some(loco) = locomotor {
