@@ -1484,3 +1484,7 @@ mod tests;
 #[cfg(test)]
 #[path = "smudge_integration_tests.rs"]
 mod smudge_integration_tests;
+
+#[cfg(test)]
+#[path = "world_orders_c4_tests.rs"]
+mod world_orders_c4_tests;
