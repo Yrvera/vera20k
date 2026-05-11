@@ -157,7 +157,8 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
 /// 5. Infantry boarding: selected infantry hovering friendly transport (Passengers>0).
 /// 6. Infantry garrisoning: selected Occupier infantry hovering friendly CanBeOccupied building.
 /// 7. AttackCursorOnFriendlies: selected unit attacks friendlies, treat as attack target.
-/// 8. Generic friendly/enemy/in-range/out-of-range fallback.
+/// 8. Harvester docking: selected miner hovering friendly refinery (gamemd action 0x1A).
+/// 9. Generic friendly/enemy/in-range/out-of-range fallback.
 fn capability_cursor_for_hover(
     sim: &crate::sim::world::Simulation,
     selected: &[u64],
@@ -325,10 +326,24 @@ fn capability_cursor_for_hover(
                     };
                 }
             }
+
+            // 8. Harvester docking — selected miner hovering own/ally refinery.
+            //    Matches gamemd action 0x1A (TechnoClass dock branch). Alliance
+            //    gate comes from HoverTargetKind::FriendlyStructure; refinery
+            //    detection from RuleSet::is_refinery_type (same key used by
+            //    the click pipeline in app_context_order.rs).
+            if sel_entity.miner.is_some()
+                && matches!(hover.kind, HoverTargetKind::FriendlyStructure)
+                && hovered_entity.is_some_and(|e| {
+                    rules.is_some_and(|r| r.is_refinery_type(sim.interner.resolve(e.type_ref)))
+                })
+            {
+                return CursorFeedbackKind::Enter;
+            }
         }
     }
 
-    // 8. Generic fallback.
+    // 9. Generic fallback.
     match hover.kind {
         HoverTargetKind::FriendlyUnit => CursorFeedbackKind::FriendlyUnit,
         HoverTargetKind::FriendlyStructure => CursorFeedbackKind::FriendlyStructure,
@@ -705,6 +720,46 @@ mod tests {
             result,
             CursorFeedbackKind::Demolish,
             "SEAL hovering an enemy Power Plant should show Demolish cursor",
+        );
+    }
+
+    /// Chrono Miner hovering its own Allied Refinery should show the dock
+    /// (Enter) cursor. gamemd action 0x1A — the TechnoClass dock branch fires
+    /// for any harvester targeting a same-owner refinery.
+    #[test]
+    fn chrono_miner_hovering_own_refinery_shows_enter() {
+        let base = std::fs::read_to_string("ini/rules.ini").expect("ini/rules.ini");
+        let patch = std::fs::read_to_string("ini/rulesmd.ini").expect("ini/rulesmd.ini");
+        let mut ini = IniFile::from_str(&base);
+        let patch_ini = IniFile::from_str(&patch);
+        ini.merge(&patch_ini);
+        let mut rules = RuleSet::from_ini(&ini).expect("parse merged rules");
+
+        let mut sim = Simulation::new();
+        rules.resolve_bridge_warheads(&mut sim.interner);
+        let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+
+        let miner_id = sim
+            .spawn_object("CMIN", "Americans", 5, 5, 0, &rules, &height_map)
+            .expect("Chrono Miner spawned");
+        let refinery_id = sim
+            .spawn_object("GAREFN", "Americans", 10, 10, 0, &rules, &height_map)
+            .expect("Refinery spawned");
+
+        if let Some(e) = sim.entities.get_mut(miner_id) {
+            e.selected = true;
+        }
+
+        let hover = HoverTargetKindWithId {
+            kind: HoverTargetKind::FriendlyStructure,
+            stable_id: refinery_id,
+        };
+
+        let result = capability_cursor_for_hover(&sim, &[miner_id], &hover, Some(&rules));
+        assert_eq!(
+            result,
+            CursorFeedbackKind::Enter,
+            "Chrono Miner hovering its own Refinery should show the Enter (dock) cursor",
         );
     }
 
