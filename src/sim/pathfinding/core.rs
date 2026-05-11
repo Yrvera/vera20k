@@ -1066,6 +1066,33 @@ impl PathGrid {
             height,
         }
     }
+
+    /// Test-only helper: directly write a cell's bridge fields.
+    #[cfg(test)]
+    pub fn set_cell_for_test(
+        &mut self,
+        x: u16,
+        y: u16,
+        ground_level: u8,
+        bridge_walkable: bool,
+        transition: bool,
+    ) {
+        if x < self.width && y < self.height {
+            let idx = y as usize * self.width as usize + x as usize;
+            let bridge_deck_level = if bridge_walkable {
+                ground_level.saturating_add(4)
+            } else {
+                0
+            };
+            self.cells[idx] = PathCell {
+                ground_walkable: true,
+                bridge_walkable,
+                transition,
+                ground_level,
+                bridge_deck_level,
+            };
+        }
+    }
 }
 
 /// A* search node stored in the open set (priority queue).

@@ -320,4 +320,134 @@ mod tests {
             BridgeTransition::NoChange
         );
     }
+
+    // ------------------------------------------------------------------------
+    // Resolver tests (resolve_cell_transition_bridge_state)
+    // ------------------------------------------------------------------------
+
+    use crate::sim::components::Position;
+    use crate::sim::pathfinding::PathGrid;
+    use crate::util::fixed_math::SimFixed;
+
+    fn make_grid_with_cells(cells: &[(u16, u16, u8, bool, bool)]) -> PathGrid {
+        let mut g = PathGrid::new(16, 16);
+        for &(x, y, ground_level, bridge_walkable, transition) in cells {
+            g.set_cell_for_test(x, y, ground_level, bridge_walkable, transition);
+        }
+        g
+    }
+
+    fn pos_at(rx: u16, ry: u16, z: u8) -> Position {
+        Position {
+            rx,
+            ry,
+            z,
+            sub_x: SimFixed::ZERO,
+            sub_y: SimFixed::ZERO,
+            // screen_x/screen_y are #[serde(skip, default)] but Position has no
+            // Default impl, so we must initialize them explicitly in struct literals.
+            screen_x: 0.0,
+            screen_y: 0.0,
+        }
+    }
+
+    #[test]
+    fn resolver_fallback_when_path_grid_none() {
+        let mut p = pos_at(5, 5, 10);
+        let update = resolve_cell_transition_bridge_state(
+            &mut p,
+            None,
+            (5, 5),
+            (6, 5),
+            MovementLayer::Ground,
+        );
+        assert_eq!(update, BridgeStateUpdate::Unchanged);
+        assert_eq!(p.z, 10, "position.z must be untouched on Unchanged");
+    }
+
+    #[test]
+    fn resolver_fallback_when_cell_out_of_bounds() {
+        let g = make_grid_with_cells(&[]);
+        let mut p = pos_at(0, 0, 10);
+        // src in bounds, dst out of bounds:
+        let update = resolve_cell_transition_bridge_state(
+            &mut p,
+            Some(&g),
+            (0, 0),
+            (999, 999),
+            MovementLayer::Ground,
+        );
+        assert_eq!(update, BridgeStateUpdate::Unchanged);
+        assert_eq!(p.z, 10);
+    }
+
+    #[test]
+    fn resolver_enter_writes_deck_level_and_set() {
+        // src=ramp at h=4, dst=body at h=0 with bridge_walkable
+        let g = make_grid_with_cells(&[
+            (5, 5, 4, true, true),  // ramp
+            (6, 5, 0, true, false), // body
+        ]);
+        let mut p = pos_at(6, 5, 4);
+        let update = resolve_cell_transition_bridge_state(
+            &mut p,
+            Some(&g),
+            (5, 5),
+            (6, 5),
+            MovementLayer::Bridge,
+        );
+        assert_eq!(update, BridgeStateUpdate::Set(4));
+        assert_eq!(p.z, 4, "position.z must equal deck_level on Enter");
+    }
+
+    #[test]
+    fn resolver_exit_writes_ground_level_and_clear() {
+        // src=body at h=0 bridge_walkable, dst=ground at h=0 NOT bridge_walkable
+        let g = make_grid_with_cells(&[(5, 5, 0, true, false), (6, 5, 0, false, false)]);
+        let mut p = pos_at(6, 5, 4);
+        let update = resolve_cell_transition_bridge_state(
+            &mut p,
+            Some(&g),
+            (5, 5),
+            (6, 5),
+            MovementLayer::Ground,
+        );
+        assert_eq!(update, BridgeStateUpdate::Clear);
+        assert_eq!(p.z, 0, "position.z must equal dst.ground_level on Exit");
+    }
+
+    #[test]
+    fn resolver_no_change_with_next_layer_bridge_uses_deck() {
+        // Body-to-body. NoChange. next_layer=Bridge → position.z = dst.bridge_deck_level (4).
+        let g = make_grid_with_cells(&[(5, 5, 0, true, false), (6, 5, 0, true, false)]);
+        let mut p = pos_at(6, 5, 0);
+        let update = resolve_cell_transition_bridge_state(
+            &mut p,
+            Some(&g),
+            (5, 5),
+            (6, 5),
+            MovementLayer::Bridge,
+        );
+        assert_eq!(update, BridgeStateUpdate::Unchanged);
+        assert_eq!(
+            p.z, 4,
+            "NoChange with next_layer=Bridge must use bridge_deck_level"
+        );
+    }
+
+    #[test]
+    fn resolver_no_change_with_next_layer_ground_uses_ground() {
+        // Ground-to-ground. NoChange. next_layer=Ground → position.z = dst.ground_level (0).
+        let g = make_grid_with_cells(&[(5, 5, 0, false, false), (6, 5, 0, false, false)]);
+        let mut p = pos_at(6, 5, 0);
+        let update = resolve_cell_transition_bridge_state(
+            &mut p,
+            Some(&g),
+            (5, 5),
+            (6, 5),
+            MovementLayer::Ground,
+        );
+        assert_eq!(update, BridgeStateUpdate::Unchanged);
+        assert_eq!(p.z, 0);
+    }
 }
