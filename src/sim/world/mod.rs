@@ -1170,8 +1170,13 @@ impl Simulation {
             // (matching gamemd's Fire_At_Target which uses last-frame facing).
             // tick_turret_rotation runs AFTER combat to drive rotation toward the
             // target for the NEXT frame's fire decision (matches Facing_Update order).
+            // tick_c4_plants runs alongside tick_capture_orders — both convert
+            // walk-up intent into a state change on arrival. Detonation damage
+            // is applied here so combat-pre conditions (invulnerability, dying)
+            // are honored before tick_combat runs.
             // PRODUCES: damage, deaths, bridge damage, fire events, last_attacker_id.
             spawned_entities |= self.tick_capture_orders();
+            destroyed_structure |= self.tick_c4_plants(rules);
             self.tick_order_intents_pre_combat(rules);
             // Pursuit: walk units with out-of-range attack_target into range,
             // halt movement on range entry. Must run before combat so combat
