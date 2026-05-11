@@ -12,7 +12,9 @@
 // Bind groups:
 //   group 0: camera uniform
 //   group 1: atlas (R8Uint)
-//   group 2: palette (Rgba8Unorm) + house_ramp (Rgba8Unorm) + sampler
+//   group 2: palette (Rgba8UnormSrgb) + house_ramp (Rgba8UnormSrgb) + sampler
+//   (sRGB format → sampler returns linear RGB; tint multiply runs in
+//   linear space; sRGB surface re-encodes on output → round-trip identity)
 
 struct Camera {
     screen_size: vec2f,

@@ -37,10 +37,13 @@ pub const RAMP_SIZE: u32 = 16;
 
 /// GPU resources for voxel sprite color resolution.
 pub struct PaletteSet {
-    /// 1×256 Rgba8Unorm texture: palette[i] = RGB color for index i (alpha = 255).
+    /// 1×256 Rgba8UnormSrgb texture: palette[i] = RGB color for index i (alpha = 255).
+    /// sRGB format so the GPU sampler decodes the raw `.pal` display bytes
+    /// (which are sRGB-encoded) into linear RGB on read, matching the
+    /// pre-Phase-1 atlas semantics and the sRGB surface output.
     pub palette_tex: wgpu::Texture,
     pub palette_view: wgpu::TextureView,
-    /// 16 × MAX_HOUSES Rgba8Unorm texture: house_ramp[house][i] = RGB substitute
+    /// 16 × MAX_HOUSES Rgba8UnormSrgb texture: house_ramp[house][i] = RGB substitute
     /// for palette byte (16 + i). Row 0 is the no-remap fallback — populated
     /// with the theater palette's [16, 32) RGB range, so units with
     /// `HouseColorIndex == NO_REMAP` (civilians, neutrals) render their
@@ -73,7 +76,7 @@ impl PaletteSet {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
@@ -109,7 +112,7 @@ impl PaletteSet {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
@@ -142,8 +145,8 @@ impl PaletteSet {
             ..Default::default()
         });
 
-        // Binding 0: theater palette (Rgba8Unorm).
-        // Binding 1: per-house RGB ramp (Rgba8Unorm).
+        // Binding 0: theater palette (Rgba8UnormSrgb).
+        // Binding 1: per-house RGB ramp (Rgba8UnormSrgb).
         // Binding 2: point sampler.
         let bind_group_layout: wgpu::BindGroupLayout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -239,7 +242,8 @@ impl PaletteSet {
     }
 }
 
-/// Convert a 256-entry RGB palette to row-major Rgba8Unorm bytes (alpha = 255).
+/// Convert a 256-entry RGB palette to row-major Rgba8UnormSrgb bytes (alpha = 255).
+/// Bytes are written as-is — the sRGB texture format handles decode on sample.
 fn build_palette_bytes(palette: &Palette) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::with_capacity(PALETTE_ENTRIES as usize * 4);
     for i in 0..PALETTE_ENTRIES as usize {
