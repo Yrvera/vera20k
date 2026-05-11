@@ -203,3 +203,118 @@ pub(super) fn apply_bridge_lookahead_if_needed(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sim::pathfinding::PathCell;
+
+    /// Construct a synthetic PathCell with the bridge fields we care about.
+    fn cell(ground_level: u8, bridge_walkable: bool, transition: bool) -> PathCell {
+        let bridge_deck_level = if bridge_walkable {
+            ground_level.saturating_add(4)
+        } else {
+            0
+        };
+        PathCell {
+            ground_walkable: true,
+            bridge_walkable,
+            transition,
+            ground_level,
+            bridge_deck_level,
+        }
+    }
+
+    #[test]
+    fn entry_from_ramp_to_body() {
+        // Ramp at height 4 (bridge_walkable, transition=true) → Body at height 0
+        // (bridge_walkable, no transition).
+        let src = cell(4, true, true);
+        let dst = cell(0, true, false);
+        match compute_bridge_transition(&src, &dst) {
+            BridgeTransition::Enter { deck_level } => assert_eq!(deck_level, 4),
+            other => panic!("expected Enter, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn exit_from_body_to_ground() {
+        // Body at height 0 (bridge_walkable) → Ground at height 0 (NOT bridge_walkable).
+        let src = cell(0, true, false);
+        let dst = cell(0, false, false);
+        assert_eq!(
+            compute_bridge_transition(&src, &dst),
+            BridgeTransition::Exit
+        );
+    }
+
+    #[test]
+    fn body_to_body_no_change() {
+        let src = cell(0, true, false);
+        let dst = cell(0, true, false);
+        assert_eq!(
+            compute_bridge_transition(&src, &dst),
+            BridgeTransition::NoChange
+        );
+    }
+
+    #[test]
+    fn ground_to_ground_no_change() {
+        let src = cell(0, false, false);
+        let dst = cell(0, false, false);
+        assert_eq!(
+            compute_bridge_transition(&src, &dst),
+            BridgeTransition::NoChange
+        );
+    }
+
+    #[test]
+    fn ground_to_bridgehead_no_change() {
+        // Going UP onto a ramp is NOT an on_bridge transition: dst is HIGHER than src.
+        // src=ground 0, dst=ramp 4. dst_h(4) == src_h(0) - 4 (=-4)? No. Entry doesn't fire.
+        // src has no bridge_walkable; exit doesn't fire. NoChange.
+        let src = cell(0, false, false);
+        let dst = cell(4, true, true);
+        assert_eq!(
+            compute_bridge_transition(&src, &dst),
+            BridgeTransition::NoChange
+        );
+    }
+
+    #[test]
+    fn cliff_drop_off_bridge_ramp() {
+        // Edge case: src=ramp (h=4, bridge_walkable, transition),
+        // dst=ground at lower elevation (h=0, NOT bridge_walkable). Height-diff matches 4
+        // AND exit condition fires (!dst.bridge_walkable && src.bridge_walkable).
+        // Exit precedence: predicate produces Exit (since entry needs dst.bridge_walkable=true).
+        let src = cell(4, true, true);
+        let dst = cell(0, false, false);
+        assert_eq!(
+            compute_bridge_transition(&src, &dst),
+            BridgeTransition::Exit
+        );
+    }
+
+    #[test]
+    fn signed_height_arithmetic() {
+        // Verify wrapping_sub handles the i8 boundary. src.ground_level = 4 (as i8 = 4),
+        // dst.ground_level = 0 (as i8 = 0). 4.wrapping_sub(4) == 0. Entry should fire.
+        let src = cell(4, true, true);
+        let dst = cell(0, true, false);
+        assert!(matches!(
+            compute_bridge_transition(&src, &dst),
+            BridgeTransition::Enter { deck_level: 4 }
+        ));
+    }
+
+    #[test]
+    fn entry_without_bridge_walkable_no_change() {
+        // Height-diff matches 4 but dst is NOT bridge_walkable. Entry must NOT fire.
+        let src = cell(4, false, false);
+        let dst = cell(0, false, false);
+        assert_eq!(
+            compute_bridge_transition(&src, &dst),
+            BridgeTransition::NoChange
+        );
+    }
+}
