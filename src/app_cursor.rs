@@ -211,11 +211,22 @@ fn capability_cursor_for_hover(
                 .get(best_id)
                 .and_then(|e| rules.and_then(|r| r.object(sim.interner.resolve(e.type_ref)))),
         ) {
-            // 2. SabotageCursor: Tanya/Navy SEAL hovering an enemy structure.
-            if sel_obj.sabotage_cursor {
-                if matches!(hover.kind, HoverTargetKind::EnemyStructure) {
-                    return CursorFeedbackKind::Enter;
-                }
+            // 2. C4 plant: SEAL / Tanya / Psi-Corp Trooper hovering an enemy
+            //    structure with CanC4=yes, not InvisibleInGame, not iron-curtained.
+            //    SabotageCursor flag remains in the data model (parsed in
+            //    object_type.rs) for modder weapon-overlay use, but cursor
+            //    logic is now driven by C4=yes — matches gamemd action 0x10.
+            if sel_obj.c4
+                && matches!(hover.kind, HoverTargetKind::EnemyStructure)
+                && hovered_obj.map_or(false, |o| o.can_c4 && !o.invisible_in_game)
+                && !hovered_entity.is_some_and(|e| {
+                    crate::sim::superweapon::invulnerability::is_invulnerable(
+                        e.invulnerability.as_ref(),
+                        sim.tick as u32,
+                    )
+                })
+            {
+                return CursorFeedbackKind::Demolish;
             }
 
             let is_infantry = sel_entity.category == EntityCategory::Infantry;
