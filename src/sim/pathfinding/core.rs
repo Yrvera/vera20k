@@ -142,9 +142,10 @@ fn compute_neighbor_height(
     }
 
     // Case 3: Parent is NOT bridge, neighbor IS bridge.
-    // Ramp-up restricted to diff in [2, 4].
+    // Ground→Bridge entry requires height-diff EXACTLY 4 AND the bridgehead flag
+    // (transition). Diffs 2/3/5+ are always blocked; diff 0/1 fall to other cases.
     let diff = parent_height as i16 - neighbor_cell.ground_level as i16;
-    if (2..=4).contains(&diff) {
+    if diff == 4 && neighbor_cell.transition {
         neighbor_cell.bridge_deck_level
     } else {
         neighbor_cell.ground_level
