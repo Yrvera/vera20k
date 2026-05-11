@@ -601,25 +601,25 @@ pub fn tick_movement_with_grids(
                         let old_ry = entity.position.ry;
                         entity.position.rx = nx;
                         entity.position.ry = ny;
-                        // Bridge/layer resolution.
+                        // Bridge state resolution: apply the on_bridge cell-flag predicate.
+                        // loco.layer follows A*'s path_layer (next_layer). on_bridge is
+                        // updated by apply_pending_bridge_render_state from bridge_update below
+                        // — driven by the predicate, NOT the layer match.
                         if let Some(pg) = path_grid {
                             let next_layer = target.layer_at(target.next_index);
-                            let (resolved_layer, bridge_update) =
+                            let bridge_update =
                                 super::movement_bridge::resolve_cell_transition_bridge_state(
                                     &mut entity.position,
                                     Some(pg),
+                                    (old_rx, old_ry),
+                                    (nx, ny),
                                     next_layer,
-                                    nx,
-                                    ny,
-                                    entity_id,
-                                    "drive_track_jump",
                                 );
                             pending_bridge_update = bridge_update;
-                            active_layer = resolved_layer;
+                            active_layer = next_layer;
                             if let Some(ref mut loco) = entity.locomotor {
-                                loco.layer = resolved_layer;
+                                loco.layer = next_layer;
                             }
-                            entity.on_bridge = resolved_layer == MovementLayer::Bridge;
                         }
                         // Update occupancy grid: move entity from old cell to new cell.
                         occupancy.move_entity(
