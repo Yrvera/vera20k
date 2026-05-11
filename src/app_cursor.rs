@@ -205,6 +205,19 @@ fn capability_cursor_for_hover(
     let best_id = select_best_for_action(sim, selected, hover_pos, rules);
 
     if let Some(best_id) = best_id {
+        // DIAG c4-cursor: outer probe — fires for every hover, shows whether
+        // the sel_obj lookup succeeds. Remove once C4 bug is diagnosed.
+        log::info!(
+            "c4-cursor: best_id={} sel_type={:?} obj_lookup={}",
+            best_id,
+            sim.entities
+                .get(best_id)
+                .map(|e| sim.interner.resolve(e.type_ref)),
+            sim.entities
+                .get(best_id)
+                .and_then(|e| rules.and_then(|r| r.object(sim.interner.resolve(e.type_ref))))
+                .is_some(),
+        );
         if let (Some(sel_entity), Some(sel_obj)) = (
             sim.entities.get(best_id),
             sim.entities
@@ -216,6 +229,23 @@ fn capability_cursor_for_hover(
             //    SabotageCursor flag remains in the data model (parsed in
             //    object_type.rs) for modder weapon-overlay use, but cursor
             //    logic is now driven by C4=yes — matches gamemd action 0x10.
+            // DIAG c4-cursor: inner probe — shows each field of the C4 gate
+            // so we can see which condition rejects the Demolish cursor.
+            // Remove once C4 bug is diagnosed.
+            log::info!(
+                "c4-cursor: sel.c4={} hover.kind={:?} hover_type={:?} can_c4={:?} invis={:?} invuln={}",
+                sel_obj.c4,
+                hover.kind,
+                hovered_entity.map(|e| sim.interner.resolve(e.type_ref)),
+                hovered_obj.map(|o| o.can_c4),
+                hovered_obj.map(|o| o.invisible_in_game),
+                hovered_entity.is_some_and(|e| {
+                    crate::sim::superweapon::invulnerability::is_invulnerable(
+                        e.invulnerability.as_ref(),
+                        sim.tick as u32,
+                    )
+                }),
+            );
             if sel_obj.c4
                 && matches!(hover.kind, HoverTargetKind::EnemyStructure)
                 && hovered_obj.map_or(false, |o| o.can_c4 && !o.invisible_in_game)
@@ -604,8 +634,79 @@ pub(crate) fn super_weapon_cursor_id(action: &str) -> Option<CursorId> {
 
 #[cfg(test)]
 mod tests {
-    use super::super_weapon_cursor_id;
-    use crate::app_types::CursorId;
+    use super::{capability_cursor_for_hover, super_weapon_cursor_id};
+    use crate::app_entity_pick::HoverTargetKindWithId;
+    use crate::app_types::{CursorFeedbackKind, CursorId, HoverTargetKind};
+    use crate::rules::ini_parser::IniFile;
+    use crate::rules::ruleset::RuleSet;
+    use crate::sim::world::Simulation;
+    use std::collections::BTreeMap;
+
+    /// Repro for "SEAL right-click on enemy buildings does nothing".
+    /// Loads the actual retail INIs the runtime uses, spawns a SEAL via
+    /// `spawn_object` (the same code path the barracks uses on production
+    /// completion), then calls `capability_cursor_for_hover` and asserts
+    /// the returned cursor is `Demolish`. If it isn't, the body of the
+    /// function prints which gate condition rejected it.
+    #[test]
+    fn seal_hovering_enemy_building_shows_demolish() {
+        // 1. Load and merge retail INIs (same as app_init_helpers::load_rules_ini).
+        let base = std::fs::read_to_string("ini/rules.ini").expect("ini/rules.ini");
+        let patch = std::fs::read_to_string("ini/rulesmd.ini").expect("ini/rulesmd.ini");
+        let mut ini = IniFile::from_str(&base);
+        let patch_ini = IniFile::from_str(&patch);
+        ini.merge(&patch_ini);
+        let mut rules = RuleSet::from_ini(&ini).expect("parse merged rules");
+
+        // 2. Build a Simulation. resolve_bridge_warheads is required by the
+        //    c4 tick path even though we don't tick here — keeps the sim in a
+        //    consistent state with what the runtime would see.
+        let mut sim = Simulation::new();
+        rules.resolve_bridge_warheads(&mut sim.interner);
+        let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+
+        // 3. Spawn a SEAL and an enemy Power Plant via the same path the
+        //    barracks uses on production completion.
+        let seal_id = sim
+            .spawn_object("GHOST", "Americans", 5, 5, 0, &rules, &height_map)
+            .expect("SEAL spawned");
+        let bld_id = sim
+            .spawn_object("NAPOWR", "Soviets", 10, 10, 0, &rules, &height_map)
+            .expect("Power Plant spawned");
+
+        // 4. Mark the SEAL as selected (mirrors clicking it in-game).
+        if let Some(e) = sim.entities.get_mut(seal_id) {
+            e.selected = true;
+        }
+
+        // 5. Construct the hover descriptor the runtime would build when
+        //    the cursor is over an enemy building.
+        let hover = HoverTargetKindWithId {
+            kind: HoverTargetKind::EnemyStructure,
+            stable_id: bld_id,
+        };
+
+        // 6. Call the same function the live cursor pipeline calls.
+        let result = capability_cursor_for_hover(&sim, &[seal_id], &hover, Some(&rules));
+
+        // 7. Dump the gate inputs so we can see which condition fails
+        //    if the assertion below trips.
+        let seal_obj = rules.object("GHOST");
+        let bld_obj = rules.object("NAPOWR");
+        eprintln!(
+            "DIAG: seal.c4={:?} bld.can_c4={:?} bld.invis={:?} cursor={:?}",
+            seal_obj.map(|o| o.c4),
+            bld_obj.map(|o| o.can_c4),
+            bld_obj.map(|o| o.invisible_in_game),
+            result,
+        );
+
+        assert_eq!(
+            result,
+            CursorFeedbackKind::Demolish,
+            "SEAL hovering an enemy Power Plant should show Demolish cursor",
+        );
+    }
 
     #[test]
     fn maps_every_yr_active_action() {
