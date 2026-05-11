@@ -1161,6 +1161,10 @@ pub struct RuleSet {
     /// IonCannonWarhead=`, `C4Warhead=`). Resolution to interned IDs happens
     /// at world init.
     pub bridge_warheads: crate::rules::bridge_warheads::BridgeWarheads,
+    /// `[CombatDamage] C4Delay=`. Default `0.03` minutes = 27 ticks @ 15 fps.
+    /// Time between SEAL plant claim and detonation. Stored as integer ticks
+    /// (not minutes) so the per-tick comparison stays integer/lockstep-safe.
+    pub c4_delay_ticks: u32,
     /// Particle types in registry order. Index = `ParticleTypeId.0`.
     particle_types: Vec<ParticleType>,
     /// Uppercase name → `ParticleTypeId` for case-insensitive lookup.
@@ -1320,6 +1324,16 @@ impl RuleSet {
             .map(crate::rules::bridge_warheads::BridgeWarheads::from_ini_section)
             .unwrap_or_default();
 
+        // [CombatDamage] C4Delay = minutes (double). Default 0.03 = 27 ticks @ 15 fps.
+        // Stored as integer ticks for lockstep-safe per-tick comparison.
+        const SIM_TICKS_PER_SECOND: u32 = 15;
+        let c4_delay_ticks: u32 = ini
+            .section("CombatDamage")
+            .and_then(|s| s.get("C4Delay"))
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .map(|minutes| (minutes * 60.0 * SIM_TICKS_PER_SECOND as f64).round() as u32)
+            .unwrap_or(27); // 0.03 × 60 × 15 = 27
+
         // Parse [TerrainTypes] registry → per-type sections (TIBTRE01, TREE01, etc.).
         let mut terrain_object_types: HashMap<String, TerrainObjectType> = HashMap::new();
         let terrain_names: Vec<String> = parse_registry(ini, "TerrainTypes");
@@ -1384,6 +1398,7 @@ impl RuleSet {
             super_weapons,
             combat_damage,
             bridge_warheads,
+            c4_delay_ticks,
             particle_types,
             particle_types_by_name,
             particle_system_types,
@@ -2761,5 +2776,28 @@ ZAdjust=-10
         let ini: IniFile = IniFile::from_str(&make_test_rules());
         let rules: RuleSet = RuleSet::from_ini(&ini).expect("rules parse");
         let _ = rules.ion_cannon_warhead_id();
+    }
+
+    #[test]
+    fn c4_delay_defaults_to_27_ticks() {
+        let ini = IniFile::from_str("");
+        let rules = RuleSet::from_ini(&ini).expect("parse");
+        assert_eq!(rules.c4_delay_ticks, 27);
+    }
+
+    #[test]
+    fn c4_delay_parses_double_minutes_to_ticks() {
+        let ini = IniFile::from_str("[CombatDamage]\nC4Delay=0.1\n");
+        let rules = RuleSet::from_ini(&ini).expect("parse");
+        // 0.1 minutes × 60 × 15 = 90 ticks
+        assert_eq!(rules.c4_delay_ticks, 90);
+    }
+
+    #[test]
+    fn c4_delay_retail_default_value() {
+        let ini = IniFile::from_str("[CombatDamage]\nC4Delay=0.03\n");
+        let rules = RuleSet::from_ini(&ini).expect("parse");
+        // 0.03 × 60 × 15 = 27 (.round())
+        assert_eq!(rules.c4_delay_ticks, 27);
     }
 }
