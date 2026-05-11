@@ -63,6 +63,35 @@ pub(super) const SHIP_HEIGHT_STEP: SimFixed = SimFixed::lit("90");
 /// Added to braking distance when a ship passes under a bridge cell.
 pub(super) const BRIDGE_Z_OFFSET: SimFixed = SimFixed::lit("360");
 
+/// The on_bridge cell-flag predicate at a cell-boundary crossing.
+///
+/// Both conditions evaluate independently — they are mutually exclusive on retail data
+/// but the audit caught a doc pseudocode bug that incorrectly structured them as if/else.
+///
+/// Height arithmetic uses signed i8 via wrapping_sub. u8 subtraction would underflow on
+/// malformed maps with height ≥ 128; retail maps use 0-15 only, so wrapping is functionally
+/// identical in practice.
+pub(super) fn compute_bridge_transition(
+    src: &crate::sim::pathfinding::PathCell,
+    dst: &crate::sim::pathfinding::PathCell,
+) -> BridgeTransition {
+    let src_h = src.ground_level as i8;
+    let dst_h = dst.ground_level as i8;
+
+    let entry = dst_h == src_h.wrapping_sub(4) && dst.bridge_walkable;
+    let exit = !dst.bridge_walkable && src.bridge_walkable;
+
+    if entry {
+        return BridgeTransition::Enter {
+            deck_level: dst.bridge_deck_level_if_any().unwrap_or(dst.ground_level),
+        };
+    }
+    if exit {
+        return BridgeTransition::Exit;
+    }
+    BridgeTransition::NoChange
+}
+
 /// Resolve bridge layer state at a cell boundary crossing using reactive height
 /// comparison.
 ///
