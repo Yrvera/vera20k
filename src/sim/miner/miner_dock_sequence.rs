@@ -51,9 +51,11 @@ pub(super) fn refinery_queue_cell(
 
 /// Pad cell — on the refinery platform inside the building footprint.
 ///
-/// Uses art.ini `DockingOffset0=` when available (merged into ObjectType),
-/// converting from lepton offset to cell offset (256 leptons per cell).
-/// Otherwise falls back to rightmost foundation column, vertically centred.
+/// When art.ini declares a `DockingOffset0` (passed through as `docking_offset`),
+/// delegates to [`crate::sim::docking::pad_geometry::pad_cell_for`] for the
+/// shared building-center-relative lepton→cell conversion. Otherwise falls back
+/// to the rightmost foundation column, vertically centred (used by retail
+/// refineries which have no `DockingOffset0` in art).
 pub(super) fn refinery_pad_cell(
     rx: u16,
     ry: u16,
@@ -61,13 +63,11 @@ pub(super) fn refinery_pad_cell(
     height: u16,
     docking_offset: Option<(i32, i32, i32)>,
 ) -> (u16, u16) {
-    if let Some((dx, dy, _)) = docking_offset {
-        let cx = (dx + 128) / 256;
-        let cy = (dy + 128) / 256;
-        (
-            (rx as i32 + cx).max(0) as u16,
-            (ry as i32 + cy).max(0) as u16,
-        )
+    if let Some((dx, dy, dz)) = docking_offset {
+        let pad = crate::rules::object_type::DockPad {
+            lepton_offset: (dx, dy, dz),
+        };
+        crate::sim::docking::pad_geometry::pad_cell_for((rx, ry), (width, height), &pad)
     } else {
         (rx + width.saturating_sub(1), ry + height / 2)
     }
