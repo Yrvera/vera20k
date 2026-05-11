@@ -35,7 +35,8 @@ use crate::util::fixed_math::{
 use super::bump_crush;
 use super::locomotor::{GroundMovePhase, MovementLayer};
 use super::movement_bridge::{
-    BRIDGE_Z_OFFSET, apply_bridge_lookahead_if_needed, apply_pending_bridge_render_state,
+    BRIDGE_Z_OFFSET, BridgeStateUpdate, apply_bridge_lookahead_if_needed,
+    apply_pending_bridge_render_state,
 };
 use super::movement_occupancy::{DeferredCellCheck, handle_deferred_occupancy};
 use super::movement_path::{find_move_path, supports_layered_bridge_pathing};
@@ -411,7 +412,7 @@ pub fn tick_movement_with_grids(
         let aborted_for_stuck: bool;
         let mut active_layer: MovementLayer;
         let mut debug_events: Vec<(u32, DebugEventKind)> = Vec::new();
-        let mut pending_bridge_update: Option<Option<u8>> = None;
+        let mut pending_bridge_update: BridgeStateUpdate = BridgeStateUpdate::Unchanged;
         // Vehicle crush/bump needs immutable EntityStore access, which conflicts
         // with the mutable entity borrow. When detected, we save the target cell
         // and layer, break out of the while loop, release the borrow, then handle

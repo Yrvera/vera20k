@@ -389,8 +389,8 @@ pub(super) fn advance_lepton_position(
 pub(super) struct CrossingOutput {
     /// If set, the caller must handle deferred occupancy outside the entity borrow.
     pub deferred_cell_check: Option<DeferredCellCheck>,
-    /// Bridge render state to apply after the loop.
-    pub pending_bridge_update: Option<Option<u8>>,
+    /// Bridge render state to apply after the loop. Predicate-driven; see movement_bridge.rs.
+    pub pending_bridge_update: super::movement_bridge::BridgeStateUpdate,
     /// The resolved movement layer after all crossings.
     pub active_layer: MovementLayer,
     /// Debug events accumulated during crossing checks.
@@ -436,7 +436,8 @@ pub(super) fn process_cell_crossings(
 ) -> CrossingOutput {
     let mut debug_events: Vec<(u32, DebugEventKind)> = Vec::new();
     let mut deferred_cell_check: Option<DeferredCellCheck> = None;
-    let mut pending_bridge_update: Option<Option<u8>> = None;
+    let mut pending_bridge_update: super::movement_bridge::BridgeStateUpdate =
+        super::movement_bridge::BridgeStateUpdate::Unchanged;
     let mut aborted_for_stuck: bool = false;
 
     loop {
