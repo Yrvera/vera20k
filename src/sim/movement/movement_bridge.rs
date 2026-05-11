@@ -20,6 +20,35 @@ use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
 use crate::sim::pathfinding::PathGrid;
 use crate::util::fixed_math::SimFixed;
 
+/// Result of the gamemd on_bridge transition predicate at a cell boundary.
+///
+/// Two independent conditions:
+///   Enter: dst.height_level == src.height_level - 4 AND dst has bridge structural flag
+///   Exit:  !(dst has bridge structural flag) AND src has bridge structural flag
+/// Both conditions are mutually exclusive on retail data but evaluated
+/// independently to match the original behavior exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BridgeTransition {
+    /// Unit just entered the bridge body deck. Set on_bridge=true, position.z=deck_level.
+    Enter { deck_level: u8 },
+    /// Unit just exited the bridge structure. Set on_bridge=false, position.z=dst.ground_level.
+    Exit,
+    /// No layer-state change at this transition.
+    NoChange,
+}
+
+/// Bridge state update produced by `resolve_cell_transition_bridge_state`.
+/// Drives `on_bridge` and `BridgeOccupancy` independently from `loco.layer`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BridgeStateUpdate {
+    /// on_bridge = true; bridge_occupancy = Some(BridgeOccupancy { deck_level })
+    Set(u8),
+    /// on_bridge = false; bridge_occupancy = None
+    Clear,
+    /// Leave on_bridge and bridge_occupancy unchanged
+    Unchanged,
+}
+
 /// Threshold for ground vs bridge level detection.
 /// If `abs(unit_z - cell.ground_level) >= HEIGHT_THRESHOLD`, unit is at bridge level.
 const HEIGHT_THRESHOLD: u8 = 2;
