@@ -53,7 +53,11 @@ pub(crate) struct MoveInfo {
 
 impl Simulation {
     /// Snapshot entity + rules data needed for movement dispatch in one lookup.
-    pub(crate) fn resolve_move_info(&self, entity_id: u64, rules: Option<&RuleSet>) -> Option<MoveInfo> {
+    pub(crate) fn resolve_move_info(
+        &self,
+        entity_id: u64,
+        rules: Option<&RuleSet>,
+    ) -> Option<MoveInfo> {
         let e = self.entities.get(entity_id)?;
         let loco = e.locomotor.as_ref();
         let loco_kind = loco.map(|l| l.kind);
@@ -89,7 +93,11 @@ impl Simulation {
             mover_is_crusher: e.omni_crusher
                 || matches!(
                     loco.map(|l| l.movement_zone),
-                    Some(MovementZone::Crusher | MovementZone::AmphibiousCrusher | MovementZone::CrusherAll)
+                    Some(
+                        MovementZone::Crusher
+                            | MovementZone::AmphibiousCrusher
+                            | MovementZone::CrusherAll
+                    )
                 ),
         })
     }
@@ -542,12 +550,13 @@ impl Simulation {
                 if emit_undeploy_sound {
                     if let Some(sound_name) = undeploy_sound {
                         let sound_id = self.interner.intern(&sound_name);
-                        self.sound_events
-                            .push(crate::sim::world::SimSoundEvent::EntityUndeployed {
+                        self.sound_events.push(
+                            crate::sim::world::SimSoundEvent::EntityUndeployed {
                                 undeploy_sound_id: sound_id,
                                 rx,
                                 ry,
-                            });
+                            },
+                        );
                     }
                 }
                 true

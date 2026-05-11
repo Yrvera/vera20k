@@ -477,5 +477,8 @@ fn test_sw_armed_cleared_when_view_gone() {
     // No SW views — granting building destroyed.
     sync_targeting_mode(&mut armed, &mut preview, &[], &[], None);
 
-    assert!(armed.is_none(), "armed SW should clear when view disappears");
+    assert!(
+        armed.is_none(),
+        "armed SW should clear when view disappears"
+    );
 }

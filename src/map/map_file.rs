@@ -250,9 +250,7 @@ pub fn load_from_path(path: &Path) -> Result<MapFile, MapError> {
     if is_mix_header(&bytes) {
         let archive: MixArchive = MixArchive::load(path)?;
         let id: i32 = pick_map_entry_id(&archive)?;
-        let data: &[u8] = archive
-            .get_by_id(id)
-            .ok_or(MapError::MissingIsoMapPack)?;
+        let data: &[u8] = archive.get_by_id(id).ok_or(MapError::MissingIsoMapPack)?;
         MapFile::from_bytes(data)
     } else {
         MapFile::from_bytes(&bytes)

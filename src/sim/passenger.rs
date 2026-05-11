@@ -854,7 +854,10 @@ ConditionYellow=50%
             match evt {
                 SimSoundEvent::StructureGarrisoned { .. }
                 | SimSoundEvent::BuildingGarrisonedSfx { .. } => {
-                    panic!("garrison event should NOT emit on non-first occupant: {:?}", evt);
+                    panic!(
+                        "garrison event should NOT emit on non-first occupant: {:?}",
+                        evt
+                    );
                 }
                 _ => {}
             }
@@ -902,7 +905,10 @@ ConditionYellow=50%
                 found = true;
             }
         }
-        assert!(found, "expected StructureAbandoned event after last occupant left");
+        assert!(
+            found,
+            "expected StructureAbandoned event after last occupant left"
+        );
 
         // Confirm the revert actually happened (post-revert owner = Neutral).
         let bldg_owner_str = sim
@@ -910,7 +916,10 @@ ConditionYellow=50%
             .get(bldg)
             .map(|t| sim.interner.resolve(t.owner).to_string())
             .expect("building exists");
-        assert_eq!(bldg_owner_str, "Neutral", "owner should have reverted to Neutral");
+        assert_eq!(
+            bldg_owner_str, "Neutral",
+            "owner should have reverted to Neutral"
+        );
     }
 
     #[test]
@@ -966,7 +975,10 @@ ConditionYellow=50%
             match evt {
                 SimSoundEvent::StructureGarrisoned { .. }
                 | SimSoundEvent::BuildingGarrisonedSfx { .. } => {
-                    panic!("non-garrison transport should not emit garrison events: {:?}", evt);
+                    panic!(
+                        "non-garrison transport should not emit garrison events: {:?}",
+                        evt
+                    );
                 }
                 _ => {}
             }
@@ -1017,11 +1029,7 @@ ConditionYellow=50%
     /// building's state, then despawn the building (mirroring the combat
     /// death-loop side effects) and call the eject helper. This tests the
     /// helper end-to-end without needing a full combat tick + damage events.
-    fn eject_via_event(
-        sim: &mut Simulation,
-        rules: &RuleSet,
-        building_id: u64,
-    ) -> Vec<u64> {
+    fn eject_via_event(sim: &mut Simulation, rules: &RuleSet, building_id: u64) -> Vec<u64> {
         let event = {
             let bldg = sim.entities.get(building_id).expect("building present");
             let cargo = bldg.passenger_role.cargo().expect("cargo present");
@@ -1052,8 +1060,7 @@ ConditionYellow=50%
     fn test_garrison_eject_on_destruction_happy_path() {
         let rules = garrison_test_rules();
         let mut sim = Simulation::new();
-        let building_id =
-            spawn_garrison_building(&mut sim, &rules, "CAGAS01", "Allied", 10, 10);
+        let building_id = spawn_garrison_building(&mut sim, &rules, "CAGAS01", "Allied", 10, 10);
         let pax1 = place_inside_garrison(&mut sim, &rules, building_id, "E1", "Allied");
         let pax2 = place_inside_garrison(&mut sim, &rules, building_id, "E1", "Allied");
         let pax3 = place_inside_garrison(&mut sim, &rules, building_id, "E1", "Allied");
@@ -1062,7 +1069,10 @@ ConditionYellow=50%
         assert_eq!(survivor_ids.len(), 3, "all 3 occupants captured");
 
         // Building gone.
-        assert!(sim.entities.get(building_id).is_none(), "building despawned");
+        assert!(
+            sim.entities.get(building_id).is_none(),
+            "building despawned"
+        );
 
         for pid in [pax1, pax2, pax3] {
             let pax = sim.entities.get(pid).expect("survivor present");
@@ -1104,8 +1114,7 @@ ConditionYellow=50%
     fn test_garrison_eject_blocked_foundation_kills_occupants() {
         let rules = garrison_test_rules();
         let mut sim = Simulation::new();
-        let building_id =
-            spawn_garrison_building(&mut sim, &rules, "CAGAS01", "Allied", 10, 10);
+        let building_id = spawn_garrison_building(&mut sim, &rules, "CAGAS01", "Allied", 10, 10);
         let pax = place_inside_garrison(&mut sim, &rules, building_id, "E1", "Allied");
 
         // Block all 4 foundation cells of the 2x2 building with live entities.

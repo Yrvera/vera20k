@@ -44,7 +44,11 @@ fn decodes_fixture_frame_0_bit_exact() {
     let h = decoder.height() as usize;
     let y_size = w * h;
     let uv_size = (w / 2) * (h / 2);
-    assert_eq!(oracle.len(), y_size + 2 * uv_size, "oracle YUV size mismatch");
+    assert_eq!(
+        oracle.len(),
+        y_size + 2 * uv_size,
+        "oracle YUV size mismatch"
+    );
 
     let oracle_y = &oracle[..y_size];
     let oracle_u = &oracle[y_size..y_size + uv_size];
@@ -60,15 +64,13 @@ fn decodes_fixture_frame_0_bit_exact() {
     }
     for row in 0..h / 2 {
         assert_eq!(
-            &decoder.cur.u
-                [row * decoder.cur.stride_uv..row * decoder.cur.stride_uv + w / 2],
+            &decoder.cur.u[row * decoder.cur.stride_uv..row * decoder.cur.stride_uv + w / 2],
             &oracle_u[row * w / 2..row * w / 2 + w / 2],
             "U plane mismatch at row {}",
             row
         );
         assert_eq!(
-            &decoder.cur.v
-                [row * decoder.cur.stride_uv..row * decoder.cur.stride_uv + w / 2],
+            &decoder.cur.v[row * decoder.cur.stride_uv..row * decoder.cur.stride_uv + w / 2],
             &oracle_v[row * w / 2..row * w / 2 + w / 2],
             "V plane mismatch at row {}",
             row

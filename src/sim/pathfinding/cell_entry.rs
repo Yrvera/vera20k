@@ -405,7 +405,7 @@ mod tests {
         let result = find_primary_blocker(
             (5, 5),
             MovementLayer::Ground,
-            42, // mover_id
+            42,   // mover_id
             true, // mover_bypass_grid
             &occ,
             &entities,

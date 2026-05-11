@@ -722,28 +722,22 @@ fn render_unit_sprite(
                 let body_sprite: VxlSprite =
                     vxl_raster::render_vxl(&vxl, hva.as_ref(), &params, vpl);
                 let mut layers: Vec<VxlSprite> = vec![body_sprite];
-                if let Some(turret) = render_optional_layer(
-                    asset_manager,
-                    &format!("{}TUR", image),
-                    &params,
-                    vpl,
-                ) {
+                if let Some(turret) =
+                    render_optional_layer(asset_manager, &format!("{}TUR", image), &params, vpl)
+                {
                     layers.push(turret);
                 }
-                if let Some(barrel) = render_optional_layer(
-                    asset_manager,
-                    &format!("{}BARL", image),
-                    &params,
-                    vpl,
-                )
-                .or_else(|| {
-                    render_optional_layer(
-                        asset_manager,
-                        &format!("{}BARREL", image),
-                        &params,
-                        vpl,
-                    )
-                }) {
+                if let Some(barrel) =
+                    render_optional_layer(asset_manager, &format!("{}BARL", image), &params, vpl)
+                        .or_else(|| {
+                            render_optional_layer(
+                                asset_manager,
+                                &format!("{}BARREL", image),
+                                &params,
+                                vpl,
+                            )
+                        })
+                {
                     layers.push(barrel);
                 }
                 composite_vxl_layers(&layers)
@@ -751,26 +745,18 @@ fn render_unit_sprite(
             VxlLayer::Body | VxlLayer::Turret | VxlLayer::Barrel => {
                 let body_sprite: VxlSprite =
                     vxl_raster::render_vxl(&vxl, hva.as_ref(), &params, vpl);
-                let turret_sprite: Option<VxlSprite> = render_optional_layer(
-                    asset_manager,
-                    &format!("{}TUR", image),
-                    &params,
-                    vpl,
-                );
-                let barrel_sprite: Option<VxlSprite> = render_optional_layer(
-                    asset_manager,
-                    &format!("{}BARL", image),
-                    &params,
-                    vpl,
-                )
-                .or_else(|| {
-                    render_optional_layer(
-                        asset_manager,
-                        &format!("{}BARREL", image),
-                        &params,
-                        vpl,
-                    )
-                });
+                let turret_sprite: Option<VxlSprite> =
+                    render_optional_layer(asset_manager, &format!("{}TUR", image), &params, vpl);
+                let barrel_sprite: Option<VxlSprite> =
+                    render_optional_layer(asset_manager, &format!("{}BARL", image), &params, vpl)
+                        .or_else(|| {
+                            render_optional_layer(
+                                asset_manager,
+                                &format!("{}BARREL", image),
+                                &params,
+                                vpl,
+                            )
+                        });
 
                 let all_layers: Vec<&VxlSprite> = [Some(&body_sprite)]
                     .into_iter()

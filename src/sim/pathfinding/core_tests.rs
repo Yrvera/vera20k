@@ -105,11 +105,11 @@ fn test_path_step_count_chebyshev_open_grid() {
     // Path length includes the start cell, so it equals chebyshev + 1.
     let grid: PathGrid = PathGrid::new(20, 20);
     let cases: &[((u16, u16), (u16, u16), usize)] = &[
-        ((0, 0), (5, 0), 6),   // pure cardinal: 5 E steps -> 6 cells
-        ((0, 0), (0, 7), 8),   // pure cardinal: 7 S steps -> 8 cells
-        ((0, 0), (4, 4), 5),   // pure diagonal: 4 SE steps -> 5 cells
-        ((0, 0), (5, 3), 6),   // mixed: max(5,3) = 5 -> 6 cells
-        ((0, 0), (7, 2), 8),   // mixed: max(7,2) = 7 -> 8 cells
+        ((0, 0), (5, 0), 6),    // pure cardinal: 5 E steps -> 6 cells
+        ((0, 0), (0, 7), 8),    // pure cardinal: 7 S steps -> 8 cells
+        ((0, 0), (4, 4), 5),    // pure diagonal: 4 SE steps -> 5 cells
+        ((0, 0), (5, 3), 6),    // mixed: max(5,3) = 5 -> 6 cells
+        ((0, 0), (7, 2), 8),    // mixed: max(7,2) = 7 -> 8 cells
         ((10, 10), (3, 15), 8), // both axes nonzero, dx=7 dy=5 -> 8 cells
     ];
     for &(start, goal, expected_len) in cases {
@@ -138,21 +138,74 @@ fn test_cliff_cost_detours_under_uniform_base() {
     // (all flat): 4 steps ≈ 4000 g_cost. Alt should win.
     let cells = vec![
         // Row 0 (y=0): 0, [cliff height=4], 0
-        PathCell { ground_walkable: true, bridge_walkable: false, transition: false, ground_level: 0, bridge_deck_level: 0 },
-        PathCell { ground_walkable: true, bridge_walkable: false, transition: false, ground_level: 4, bridge_deck_level: 0 },
-        PathCell { ground_walkable: true, bridge_walkable: false, transition: false, ground_level: 0, bridge_deck_level: 0 },
+        PathCell {
+            ground_walkable: true,
+            bridge_walkable: false,
+            transition: false,
+            ground_level: 0,
+            bridge_deck_level: 0,
+        },
+        PathCell {
+            ground_walkable: true,
+            bridge_walkable: false,
+            transition: false,
+            ground_level: 4,
+            bridge_deck_level: 0,
+        },
+        PathCell {
+            ground_walkable: true,
+            bridge_walkable: false,
+            transition: false,
+            ground_level: 0,
+            bridge_deck_level: 0,
+        },
         // Row 1 (y=1): all flat 0
-        PathCell { ground_walkable: true, bridge_walkable: false, transition: false, ground_level: 0, bridge_deck_level: 0 },
-        PathCell { ground_walkable: true, bridge_walkable: false, transition: false, ground_level: 0, bridge_deck_level: 0 },
-        PathCell { ground_walkable: true, bridge_walkable: false, transition: false, ground_level: 0, bridge_deck_level: 0 },
+        PathCell {
+            ground_walkable: true,
+            bridge_walkable: false,
+            transition: false,
+            ground_level: 0,
+            bridge_deck_level: 0,
+        },
+        PathCell {
+            ground_walkable: true,
+            bridge_walkable: false,
+            transition: false,
+            ground_level: 0,
+            bridge_deck_level: 0,
+        },
+        PathCell {
+            ground_walkable: true,
+            bridge_walkable: false,
+            transition: false,
+            ground_level: 0,
+            bridge_deck_level: 0,
+        },
         // Row 2 (y=2): all flat 0 (filler so 3x3)
-        PathCell { ground_walkable: true, bridge_walkable: false, transition: false, ground_level: 0, bridge_deck_level: 0 },
-        PathCell { ground_walkable: true, bridge_walkable: false, transition: false, ground_level: 0, bridge_deck_level: 0 },
-        PathCell { ground_walkable: true, bridge_walkable: false, transition: false, ground_level: 0, bridge_deck_level: 0 },
+        PathCell {
+            ground_walkable: true,
+            bridge_walkable: false,
+            transition: false,
+            ground_level: 0,
+            bridge_deck_level: 0,
+        },
+        PathCell {
+            ground_walkable: true,
+            bridge_walkable: false,
+            transition: false,
+            ground_level: 0,
+            bridge_deck_level: 0,
+        },
+        PathCell {
+            ground_walkable: true,
+            bridge_walkable: false,
+            transition: false,
+            ground_level: 0,
+            bridge_deck_level: 0,
+        },
     ];
     let grid = PathGrid::from_cells(cells, 3, 3);
-    let path = find_path(&grid, (0, 0), (2, 0))
-        .expect("path should exist over flat alt route");
+    let path = find_path(&grid, (0, 0), (2, 0)).expect("path should exist over flat alt route");
     // Direct path through cliff would visit (1,0). Alt route avoids it.
     assert!(
         !path.contains(&(1, 0)),

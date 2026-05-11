@@ -23,9 +23,13 @@ pub(super) fn resolve_image_frame_count(
     sim: &Simulation,
     pt: &crate::rules::particle_type::ParticleType,
 ) -> u16 {
-    let Some(image) = pt.image.as_deref() else { return 0 };
+    let Some(image) = pt.image.as_deref() else {
+        return 0;
+    };
     let key = image.to_ascii_uppercase();
-    let Some(id) = sim.interner.get(&key) else { return 0 };
+    let Some(id) = sim.interner.get(&key) else {
+        return 0;
+    };
     sim.effect_frame_counts.get(&id).copied().unwrap_or(0)
 }
 
@@ -227,9 +231,7 @@ mod tests {
         use glam::IVec3;
 
         fn pt_rules(extra: &str) -> RuleSet {
-            let ini = format!(
-                "[Particles]\n1=Smk\n[Smk]\nBehavesLike=Smoke\nMaxEC=10\n{extra}\n"
-            );
+            let ini = format!("[Particles]\n1=Smk\n[Smk]\nBehavesLike=Smoke\nMaxEC=10\n{extra}\n");
             RuleSet::from_ini(&IniFile::from_str(&ini)).expect("rules parse")
         }
 

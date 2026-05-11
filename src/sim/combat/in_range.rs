@@ -175,9 +175,8 @@ pub(crate) fn compute_in_range(
         return compute_in_range_arcing_2d(src, target, weapon, rules, interner, entities);
     }
 
-    let max_range_lep = compute_effective_max_range_leptons(
-        attacker, target, weapon, rules, interner, entities,
-    );
+    let max_range_lep =
+        compute_effective_max_range_leptons(attacker, target, weapon, rules, interner, entities);
 
     let (tx, ty, tz) = resolve_target_coords_3d(target, entities, rules, interner, terrain);
 
@@ -255,8 +254,7 @@ fn resolve_target_coords_3d(
             let Some(t) = entities.get(id) else {
                 return (i64::MAX / 4, i64::MAX / 4, 0);
             };
-            let (rx, ry, sub_x, sub_y) =
-                resolve_entity_target_coords(t, rules, interner);
+            let (rx, ry, sub_x, sub_y) = resolve_entity_target_coords(t, rules, interner);
             let tx = rx as i64 * 256 + sub_x.to_num::<i64>();
             let ty = ry as i64 * 256 + sub_y.to_num::<i64>();
             let tz = if is_low_flying(t) {
@@ -288,8 +286,7 @@ fn resolve_target_xy_2d(
             let Some(t) = entities.get(id) else {
                 return (i64::MAX / 4, i64::MAX / 4);
             };
-            let (rx, ry, sub_x, sub_y) =
-                resolve_entity_target_coords(t, rules, interner);
+            let (rx, ry, sub_x, sub_y) = resolve_entity_target_coords(t, rules, interner);
             (
                 rx as i64 * 256 + sub_x.to_num::<i64>(),
                 ry as i64 * 256 + sub_y.to_num::<i64>(),
@@ -312,12 +309,10 @@ fn resolve_entity_target_coords(
             let (fw, fh) = foundation_dimensions(&obj.foundation);
             let offset_x = (fw.saturating_sub(1) as i32) * 128;
             let offset_y = (fh.saturating_sub(1) as i32) * 128;
-            let full_x: i32 = t.position.rx as i32 * 256
-                + t.position.sub_x.to_num::<i32>()
-                + offset_x;
-            let full_y: i32 = t.position.ry as i32 * 256
-                + t.position.sub_y.to_num::<i32>()
-                + offset_y;
+            let full_x: i32 =
+                t.position.rx as i32 * 256 + t.position.sub_x.to_num::<i32>() + offset_x;
+            let full_y: i32 =
+                t.position.ry as i32 * 256 + t.position.sub_y.to_num::<i32>() + offset_y;
             return (
                 (full_x / 256) as u16,
                 (full_y / 256) as u16,
@@ -326,7 +321,12 @@ fn resolve_entity_target_coords(
             );
         }
     }
-    (t.position.rx, t.position.ry, t.position.sub_x, t.position.sub_y)
+    (
+        t.position.rx,
+        t.position.ry,
+        t.position.sub_x,
+        t.position.sub_y,
+    )
 }
 
 /// Ground Z in leptons for a cell, plus bridge deck offset if a bridge deck
@@ -481,26 +481,44 @@ mod tests {
 
     fn default_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
         ResolvedTerrainCell {
-            rx, ry,
-            source_tile_index: 0, source_sub_tile: 0,
-            final_tile_index: 0, final_sub_tile: 0,
-            level: 0, filled_clear: true, tileset_index: Some(0),
-            land_type: 0, slope_type: 0, template_height: 0,
-            render_offset_x: 0, render_offset_y: 0,
+            rx,
+            ry,
+            source_tile_index: 0,
+            source_sub_tile: 0,
+            final_tile_index: 0,
+            final_sub_tile: 0,
+            level: 0,
+            filled_clear: true,
+            tileset_index: Some(0),
+            land_type: 0,
+            slope_type: 0,
+            template_height: 0,
+            render_offset_x: 0,
+            render_offset_y: 0,
             terrain_class: Default::default(),
             speed_costs: Default::default(),
-            is_water: false, is_cliff_like: false,
-            is_rough: false, is_road: false,
-            is_cliff_redraw: false, variant: 0,
-            has_ramp: false, canonical_ramp: None,
-            ground_walk_blocked: false, terrain_object_blocks: false,
-            overlay_blocks: false, zone_type: 0,
-            base_ground_walk_blocked: false, base_build_blocked: false,
+            is_water: false,
+            is_cliff_like: false,
+            is_rough: false,
+            is_road: false,
+            is_cliff_redraw: false,
+            variant: 0,
+            has_ramp: false,
+            canonical_ramp: None,
+            ground_walk_blocked: false,
+            terrain_object_blocks: false,
+            overlay_blocks: false,
+            zone_type: 0,
+            base_ground_walk_blocked: false,
+            base_build_blocked: false,
             build_blocked: false,
-            has_bridge_deck: false, bridge_walkable: false,
-            bridge_transition: false, bridge_deck_level: 0,
+            has_bridge_deck: false,
+            bridge_walkable: false,
+            bridge_transition: false,
+            bridge_deck_level: 0,
             bridge_layer: None,
-            radar_left: [0; 3], radar_right: [0; 3],
+            radar_left: [0; 3],
+            radar_right: [0; 3],
             accepts_smudge: true,
         }
     }
@@ -541,7 +559,13 @@ mod tests {
         e
     }
 
-    fn aircraft_target(rx: u16, ry: u16, level: u8, altitude_lep: i64, type_ref: &str) -> GameEntity {
+    fn aircraft_target(
+        rx: u16,
+        ry: u16,
+        level: u8,
+        altitude_lep: i64,
+        type_ref: &str,
+    ) -> GameEntity {
         let mut e = aircraft_at_altitude(altitude_lep);
         e.stable_id = 200;
         e.position.rx = rx;
@@ -572,9 +596,14 @@ mod tests {
         let terrain = flat_terrain(64, 64);
 
         let in_range = compute_in_range(
-            &attacker, src_at_cell(5, 5, 0),
+            &attacker,
+            src_at_cell(5, 5, 0),
             &TargetKind::Entity(200),
-            weapon, &rules, &interner, &entities, &terrain,
+            weapon,
+            &rules,
+            &interner,
+            &entities,
+            &terrain,
         );
         assert!(in_range, "sentinel range should always be in range");
     }
@@ -593,9 +622,14 @@ mod tests {
         let terrain = flat_terrain(64, 64);
 
         let at_boundary = compute_in_range(
-            &attacker, src_at_cell(0, 0, 0),
+            &attacker,
+            src_at_cell(0, 0, 0),
             &TargetKind::Entity(200),
-            weapon, &rules, &interner, &entities, &terrain,
+            weapon,
+            &rules,
+            &interner,
+            &entities,
+            &terrain,
         );
         assert!(at_boundary, "exact-range boundary should be inclusive");
 
@@ -605,18 +639,28 @@ mod tests {
         let mut entities2 = EntityStore::new();
         entities2.insert(over);
         let one_past = compute_in_range(
-            &attacker, src_at_cell(0, 0, 0),
+            &attacker,
+            src_at_cell(0, 0, 0),
             &TargetKind::Entity(200),
-            weapon, &rules, &interner, &entities2, &terrain,
+            weapon,
+            &rules,
+            &interner,
+            &entities2,
+            &terrain,
         );
-        assert!(!one_past, "one lepton past max range should be out of range");
+        assert!(
+            !one_past,
+            "one lepton past max range should be out of range"
+        );
     }
 
     // Test 3: Boundary strict min
     #[test]
     fn min_range_strict_at_exact_boundary() {
         let rules = rules_with_weapon(
-            "Damage=1\nROF=20\nRange=10\nMinimumRange=2\nWarhead=WH", "", "",
+            "Damage=1\nROF=20\nRange=10\nMinimumRange=2\nWarhead=WH",
+            "",
+            "",
         );
         let weapon = rules.weapon("GUN").expect("weapon");
         let attacker = ground_attacker(0, 0, 0, "ATKR");
@@ -628,11 +672,19 @@ mod tests {
         let mut entities = EntityStore::new();
         entities.insert(target);
         let at_min = compute_in_range(
-            &attacker, src_at_cell(0, 0, 0),
+            &attacker,
+            src_at_cell(0, 0, 0),
             &TargetKind::Entity(200),
-            weapon, &rules, &interner, &entities, &terrain,
+            weapon,
+            &rules,
+            &interner,
+            &entities,
+            &terrain,
         );
-        assert!(at_min, "at min-range boundary should be in range (inclusive)");
+        assert!(
+            at_min,
+            "at min-range boundary should be in range (inclusive)"
+        );
 
         // 1 lepton inside min (rx=1, sub_x=128+255=383 → 1*256+255=511 lep): strict — false.
         let mut inside = ground_target(1, 0, 0, "TGT");
@@ -640,11 +692,19 @@ mod tests {
         let mut entities2 = EntityStore::new();
         entities2.insert(inside);
         let inside_min = compute_in_range(
-            &attacker, src_at_cell(0, 0, 0),
+            &attacker,
+            src_at_cell(0, 0, 0),
             &TargetKind::Entity(200),
-            weapon, &rules, &interner, &entities2, &terrain,
+            weapon,
+            &rules,
+            &interner,
+            &entities2,
+            &terrain,
         );
-        assert!(!inside_min, "1 lep inside min-range should be rejected (strict <)");
+        assert!(
+            !inside_min,
+            "1 lep inside min-range should be rejected (strict <)"
+        );
     }
 
     // Test 4: 3D vs 2D divergence
@@ -661,9 +721,14 @@ mod tests {
         let terrain = flat_terrain(64, 64);
 
         let r4 = compute_in_range(
-            &attacker, src_at_cell(5, 5, 0),
+            &attacker,
+            src_at_cell(5, 5, 0),
             &TargetKind::Entity(200),
-            weapon, &rules, &interner, &entities, &terrain,
+            weapon,
+            &rules,
+            &interner,
+            &entities,
+            &terrain,
         );
         assert!(!r4, "1040 lep z-delta exceeds 1024 lep 2D range");
 
@@ -671,9 +736,14 @@ mod tests {
         let rules2 = rules_with_weapon("Damage=1\nROF=20\nRange=5\nWarhead=WH", "", "");
         let weapon2 = rules2.weapon("GUN").expect("weapon");
         let r5 = compute_in_range(
-            &attacker, src_at_cell(5, 5, 0),
+            &attacker,
+            src_at_cell(5, 5, 0),
             &TargetKind::Entity(200),
-            weapon2, &rules2, &interner, &entities, &terrain,
+            weapon2,
+            &rules2,
+            &interner,
+            &entities,
+            &terrain,
         );
         assert!(r5, "1040 lep z-delta within 1280 lep range");
     }
@@ -692,11 +762,19 @@ mod tests {
         let terrain = flat_terrain(64, 64);
 
         let in_range = compute_in_range(
-            &attacker, src_at_cell(0, 0, 0),
+            &attacker,
+            src_at_cell(0, 0, 0),
             &TargetKind::Entity(200),
-            weapon, &rules, &interner, &entities, &terrain,
+            weapon,
+            &rules,
+            &interner,
+            &entities,
+            &terrain,
         );
-        assert!(in_range, "low-flying target should snap to ground for range check");
+        assert!(
+            in_range,
+            "low-flying target should snap to ground for range check"
+        );
     }
 
     // Test 6: HighFlying does NOT snap, AirRange bonus applies
@@ -719,9 +797,14 @@ mod tests {
         let terrain = flat_terrain(64, 64);
 
         let in_range = compute_in_range(
-            &attacker, src_at_cell(0, 0, 0),
+            &attacker,
+            src_at_cell(0, 0, 0),
             &TargetKind::Entity(200),
-            weapon, &rules, &interner, &entities, &terrain,
+            weapon,
+            &rules,
+            &interner,
+            &entities,
+            &terrain,
         );
         assert!(
             !in_range,
@@ -760,9 +843,14 @@ mod tests {
         let terrain = flat_terrain(64, 64);
 
         let in_range = compute_in_range(
-            &attacker, src_at_cell(6, 1, 0),
+            &attacker,
+            src_at_cell(6, 1, 0),
             &TargetKind::Entity(300),
-            weapon, &rules, &interner, &entities, &terrain,
+            weapon,
+            &rules,
+            &interner,
+            &entities,
+            &terrain,
         );
         assert!(
             in_range,
@@ -774,7 +862,9 @@ mod tests {
     #[test]
     fn sentinel_overrides_min_range() {
         let rules = rules_with_weapon(
-            "Damage=1\nROF=20\nRange=-2\nMinimumRange=10\nWarhead=WH", "", "",
+            "Damage=1\nROF=20\nRange=-2\nMinimumRange=10\nWarhead=WH",
+            "",
+            "",
         );
         let weapon = rules.weapon("GUN").expect("weapon");
         let attacker = ground_attacker(5, 5, 0, "ATKR");
@@ -785,9 +875,14 @@ mod tests {
         let terrain = flat_terrain(64, 64);
 
         let in_range = compute_in_range(
-            &attacker, src_at_cell(5, 5, 0),
+            &attacker,
+            src_at_cell(5, 5, 0),
             &TargetKind::Entity(200),
-            weapon, &rules, &interner, &entities, &terrain,
+            weapon,
+            &rules,
+            &interner,
+            &entities,
+            &terrain,
         );
         assert!(in_range, "sentinel should bypass min-range gate");
     }
@@ -806,11 +901,19 @@ mod tests {
         let src = (5i64 * 256 + 128, 5i64 * 256 + 128, 5i64 * LEPTONS_PER_LEVEL);
 
         let in_range = compute_in_range(
-            &attacker, src,
+            &attacker,
+            src,
             &TargetKind::Cell(5, 5),
-            weapon, &rules, &interner, &entities, &terrain,
+            weapon,
+            &rules,
+            &interner,
+            &entities,
+            &terrain,
         );
-        assert!(!in_range, "5-level z-delta should reject cell-target via 3D dist");
+        assert!(
+            !in_range,
+            "5-level z-delta should reject cell-target via 3D dist"
+        );
     }
 
     // Test 10: Arcing weapon falls through to 2D
@@ -840,11 +943,19 @@ mod tests {
         let terrain = flat_terrain(64, 64);
 
         let in_range = compute_in_range(
-            &attacker, src_at_cell(0, 0, 0),
+            &attacker,
+            src_at_cell(0, 0, 0),
             &TargetKind::Entity(200),
-            weapon, &rules, &interner, &entities, &terrain,
+            weapon,
+            &rules,
+            &interner,
+            &entities,
+            &terrain,
         );
-        assert!(in_range, "arcing weapon should ignore z-delta and use 2D distance");
+        assert!(
+            in_range,
+            "arcing weapon should ignore z-delta and use 2D distance"
+        );
     }
 
     // Test 11: Bridge LOS gate
@@ -870,19 +981,35 @@ mod tests {
         // Attacker beneath deck (Z=0), target = cell on bridge cell (Z snaps to 416).
         let under = (5i64 * 256 + 128, 5i64 * 256 + 128, 0i64);
         let blocked = compute_in_range(
-            &attacker, under,
+            &attacker,
+            under,
             &TargetKind::Cell(5, 5),
-            weapon, &rules, &interner, &entities, &bridge_terrain,
+            weapon,
+            &rules,
+            &interner,
+            &entities,
+            &bridge_terrain,
         );
-        assert!(!blocked, "under-bridge attacker firing up at deck must be blocked");
+        assert!(
+            !blocked,
+            "under-bridge attacker firing up at deck must be blocked"
+        );
 
         // Attacker on the deck (Z=416). Same cell. Gate should NOT trigger.
         let on_deck = (5i64 * 256 + 128, 5i64 * 256 + 128, 416i64);
         let allowed = compute_in_range(
-            &attacker, on_deck,
+            &attacker,
+            on_deck,
             &TargetKind::Cell(5, 5),
-            weapon, &rules, &interner, &entities, &bridge_terrain,
+            weapon,
+            &rules,
+            &interner,
+            &entities,
+            &bridge_terrain,
         );
-        assert!(allowed, "attacker on the deck targeting the deck should not trip gate");
+        assert!(
+            allowed,
+            "attacker on the deck targeting the deck should not trip gate"
+        );
     }
 }

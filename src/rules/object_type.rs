@@ -817,8 +817,8 @@ impl ObjectType {
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_ascii_uppercase())
                 .collect(),
-            queueing_cell: None,  // merged from art.ini later
-            docking_offset: None, // merged from art.ini later
+            queueing_cell: None,       // merged from art.ini later
+            docking_offset: None,      // merged from art.ini later
             add_occupy: Vec::new(),    // merged from art.ini later
             remove_occupy: Vec::new(), // merged from art.ini later
             unloading_class: section.get("UnloadingClass").map(|s| s.to_string()),
@@ -1019,10 +1019,8 @@ impl ObjectType {
                     .map(parse_ivec3_offset)
                     .unwrap_or(IVec3::ZERO),
             ],
-            refinery_smoke_frames: section
-                .get_i32("RefinerySmokeFrames")
-                .unwrap_or(0)
-                .max(0) as u16,
+            refinery_smoke_frames: section.get_i32("RefinerySmokeFrames").unwrap_or(0).max(0)
+                as u16,
             gap_radius_in_cells: section
                 .get_i32("GapRadiusInCells")
                 .map(|n| n.clamp(0, u8::MAX as i32) as u8)
@@ -1039,9 +1037,18 @@ impl ObjectType {
 /// components default to 0.
 fn parse_ivec3_offset(raw: &str) -> IVec3 {
     let mut parts = raw.split(',').map(|s| s.trim());
-    let x = parts.next().and_then(|s| s.parse::<i32>().ok()).unwrap_or(0);
-    let y = parts.next().and_then(|s| s.parse::<i32>().ok()).unwrap_or(0);
-    let z = parts.next().and_then(|s| s.parse::<i32>().ok()).unwrap_or(0);
+    let x = parts
+        .next()
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(0);
+    let y = parts
+        .next()
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(0);
+    let z = parts
+        .next()
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(0);
     IVec3::new(x, y, z)
 }
 
@@ -1563,9 +1570,8 @@ mod tests {
 
     #[test]
     fn parses_air_range_bonus() {
-        let ini: IniFile = IniFile::from_str(
-            "[MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\nAirRangeBonus=4\n",
-        );
+        let ini: IniFile =
+            IniFile::from_str("[MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\nAirRangeBonus=4\n");
         let section = ini.section("MTNK").expect("section");
         let obj = ObjectType::from_ini_section("MTNK", section, ObjectCategory::Vehicle);
         assert_eq!(obj.air_range_bonus, Some(sim_from_f32(4.0)));

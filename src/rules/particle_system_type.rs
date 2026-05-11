@@ -146,10 +146,7 @@ impl ParticleSystemType {
     }
 
     /// Parse a ParticleSystemType plus its unresolved `HoldsWhat=` name string.
-    pub fn from_ini_section_pending(
-        name: &str,
-        section: &IniSection,
-    ) -> PendingParticleSystemType {
+    pub fn from_ini_section_pending(name: &str, section: &IniSection) -> PendingParticleSystemType {
         let behaves_like = section
             .get("BehavesLike")
             .and_then(ParticleSystemBehavesLike::parse)
@@ -261,9 +258,18 @@ fn parse_rgb_color(raw: &str) -> [u8; 3] {
 /// Missing or unparseable components default to 0.
 fn parse_coord_offset(raw: &str) -> IVec3 {
     let mut parts = raw.split(',').map(|s| s.trim());
-    let x = parts.next().and_then(|s| s.parse::<i32>().ok()).unwrap_or(0);
-    let y = parts.next().and_then(|s| s.parse::<i32>().ok()).unwrap_or(0);
-    let z = parts.next().and_then(|s| s.parse::<i32>().ok()).unwrap_or(0);
+    let x = parts
+        .next()
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(0);
+    let y = parts
+        .next()
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(0);
+    let z = parts
+        .next()
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(0);
     IVec3::new(x, y, z)
 }
 
@@ -274,17 +280,35 @@ mod tests {
 
     #[test]
     fn behaves_like_string_to_enum() {
-        assert_eq!(ParticleSystemBehavesLike::parse("Smoke"), Some(ParticleSystemBehavesLike::Smoke));
-        assert_eq!(ParticleSystemBehavesLike::parse("Gas"), Some(ParticleSystemBehavesLike::Gas));
-        assert_eq!(ParticleSystemBehavesLike::parse("Fire"), Some(ParticleSystemBehavesLike::Fire));
-        assert_eq!(ParticleSystemBehavesLike::parse("Spark"), Some(ParticleSystemBehavesLike::Spark));
-        assert_eq!(ParticleSystemBehavesLike::parse("Railgun"), Some(ParticleSystemBehavesLike::Railgun));
+        assert_eq!(
+            ParticleSystemBehavesLike::parse("Smoke"),
+            Some(ParticleSystemBehavesLike::Smoke)
+        );
+        assert_eq!(
+            ParticleSystemBehavesLike::parse("Gas"),
+            Some(ParticleSystemBehavesLike::Gas)
+        );
+        assert_eq!(
+            ParticleSystemBehavesLike::parse("Fire"),
+            Some(ParticleSystemBehavesLike::Fire)
+        );
+        assert_eq!(
+            ParticleSystemBehavesLike::parse("Spark"),
+            Some(ParticleSystemBehavesLike::Spark)
+        );
+        assert_eq!(
+            ParticleSystemBehavesLike::parse("Railgun"),
+            Some(ParticleSystemBehavesLike::Railgun)
+        );
         assert_eq!(ParticleSystemBehavesLike::parse("nope"), None);
     }
 
     #[test]
     fn behaves_like_parse_trims_whitespace() {
-        assert_eq!(ParticleSystemBehavesLike::parse("  Smoke  "), Some(ParticleSystemBehavesLike::Smoke));
+        assert_eq!(
+            ParticleSystemBehavesLike::parse("  Smoke  "),
+            Some(ParticleSystemBehavesLike::Smoke)
+        );
     }
 
     #[test]

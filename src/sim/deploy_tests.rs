@@ -10,7 +10,7 @@ use crate::rules::ruleset::RuleSet;
 use crate::sim::combat::AttackTarget;
 use crate::sim::command::{Command, CommandEnvelope};
 use crate::sim::components::Health;
-use crate::sim::deploy::{compute_anim_ticks, DeployPhase};
+use crate::sim::deploy::{DeployPhase, compute_anim_ticks};
 use crate::sim::game_entity::GameEntity;
 use crate::sim::world::{SimSoundEvent, Simulation};
 
@@ -130,7 +130,10 @@ fn spawn_infantry(sim: &mut Simulation, type_str: &str, owner: &str, rx: u16, ry
         0,
         0,
         owner_id,
-        Health { current: 125, max: 125 },
+        Health {
+            current: 125,
+            max: 125,
+        },
         type_id,
         EntityCategory::Infantry,
         0,
@@ -173,7 +176,12 @@ fn deploy_phase_advances_to_deployed() {
     let mut sim = Simulation::new();
     let gi = spawn_infantry(&mut sim, "E1", "Americans", 10, 10);
 
-    dispatch(&mut sim, "Americans", Command::ToggleInfantryDeploy { entity_id: gi }, &rules);
+    dispatch(
+        &mut sim,
+        "Americans",
+        Command::ToggleInfantryDeploy { entity_id: gi },
+        &rules,
+    );
     assert!(matches!(
         sim.entities.get(gi).unwrap().deploy_state,
         Some(DeployPhase::Deploying { .. })
@@ -181,7 +189,10 @@ fn deploy_phase_advances_to_deployed() {
 
     let n = compute_anim_ticks() as u32;
     tick_n(&mut sim, &rules, n);
-    assert_eq!(sim.entities.get(gi).unwrap().deploy_state, Some(DeployPhase::Deployed));
+    assert_eq!(
+        sim.entities.get(gi).unwrap().deploy_state,
+        Some(DeployPhase::Deployed)
+    );
 }
 
 #[test]
@@ -191,7 +202,12 @@ fn undeploy_phase_clears_to_none() {
     let gi = spawn_infantry(&mut sim, "E1", "Americans", 10, 10);
     sim.entities.get_mut(gi).unwrap().deploy_state = Some(DeployPhase::Deployed);
 
-    dispatch(&mut sim, "Americans", Command::ToggleInfantryDeploy { entity_id: gi }, &rules);
+    dispatch(
+        &mut sim,
+        "Americans",
+        Command::ToggleInfantryDeploy { entity_id: gi },
+        &rules,
+    );
     assert!(matches!(
         sim.entities.get(gi).unwrap().deploy_state,
         Some(DeployPhase::Undeploying { .. })
@@ -211,7 +227,12 @@ fn mid_deploying_toggle_ignored() {
         Some(DeployPhase::Deploying { ticks_remaining: 3 });
 
     let sounds_before = sim.sound_events.len();
-    dispatch(&mut sim, "Americans", Command::ToggleInfantryDeploy { entity_id: gi }, &rules);
+    dispatch(
+        &mut sim,
+        "Americans",
+        Command::ToggleInfantryDeploy { entity_id: gi },
+        &rules,
+    );
     // Tick advance still runs; Deploying decremented from 3 → 2 (or to Deployed if already 1).
     assert!(matches!(
         sim.entities.get(gi).unwrap().deploy_state,
@@ -221,10 +242,12 @@ fn mid_deploying_toggle_ignored() {
         .sound_events
         .iter()
         .skip(sounds_before)
-        .filter(|e| matches!(
-            e,
-            SimSoundEvent::EntityDeployed { .. } | SimSoundEvent::EntityUndeployed { .. }
-        ))
+        .filter(|e| {
+            matches!(
+                e,
+                SimSoundEvent::EntityDeployed { .. } | SimSoundEvent::EntityUndeployed { .. }
+            )
+        })
         .count();
     assert_eq!(new_deploy_undeploy_sounds, 0);
 }
@@ -237,7 +260,12 @@ fn mid_undeploying_toggle_ignored() {
     sim.entities.get_mut(gi).unwrap().deploy_state =
         Some(DeployPhase::Undeploying { ticks_remaining: 3 });
 
-    dispatch(&mut sim, "Americans", Command::ToggleInfantryDeploy { entity_id: gi }, &rules);
+    dispatch(
+        &mut sim,
+        "Americans",
+        Command::ToggleInfantryDeploy { entity_id: gi },
+        &rules,
+    );
     assert!(matches!(
         sim.entities.get(gi).unwrap().deploy_state,
         Some(DeployPhase::Undeploying { .. }) | None
@@ -254,7 +282,13 @@ fn move_silently_ignored_on_deployed() {
     let applied = apply(
         &mut sim,
         "Americans",
-        &Command::Move { entity_id: gi, target_rx: 30, target_ry: 30, queue: false, group_id: None },
+        &Command::Move {
+            entity_id: gi,
+            target_rx: 30,
+            target_ry: 30,
+            queue: false,
+            group_id: None,
+        },
         &rules,
     );
     assert!(!applied, "gate must reject Move on deployed unit");
@@ -273,7 +307,13 @@ fn move_silently_ignored_on_deploying() {
     let applied = apply(
         &mut sim,
         "Americans",
-        &Command::Move { entity_id: gi, target_rx: 30, target_ry: 30, queue: false, group_id: None },
+        &Command::Move {
+            entity_id: gi,
+            target_rx: 30,
+            target_ry: 30,
+            queue: false,
+            group_id: None,
+        },
         &rules,
     );
     assert!(!applied, "gate must reject Move on Deploying unit");
@@ -290,7 +330,13 @@ fn move_silently_ignored_on_undeploying() {
     let applied = apply(
         &mut sim,
         "Americans",
-        &Command::Move { entity_id: gi, target_rx: 30, target_ry: 30, queue: false, group_id: None },
+        &Command::Move {
+            entity_id: gi,
+            target_rx: 30,
+            target_ry: 30,
+            queue: false,
+            group_id: None,
+        },
         &rules,
     );
     assert!(!applied, "gate must reject Move on Undeploying unit");
@@ -306,7 +352,12 @@ fn attack_move_silently_ignored_on_deployed() {
     let applied = apply(
         &mut sim,
         "Americans",
-        &Command::AttackMove { entity_id: gi, target_rx: 30, target_ry: 30, queue: false },
+        &Command::AttackMove {
+            entity_id: gi,
+            target_rx: 30,
+            target_ry: 30,
+            queue: false,
+        },
         &rules,
     );
     assert!(!applied, "gate must reject AttackMove on deployed unit");
@@ -325,7 +376,10 @@ fn enter_transport_silently_ignored_on_deployed() {
     let applied = apply(
         &mut sim,
         "Americans",
-        &Command::EnterTransport { passenger_id: gi, transport_id: 9999 },
+        &Command::EnterTransport {
+            passenger_id: gi,
+            transport_id: 9999,
+        },
         &rules,
     );
     assert!(!applied, "gate must reject EnterTransport on deployed unit");
@@ -400,14 +454,21 @@ fn deploy_sound_emitted_on_phase_entry() {
     let mut sim = Simulation::new();
     let gi = spawn_infantry(&mut sim, "E1", "Americans", 25, 30);
 
-    dispatch(&mut sim, "Americans", Command::ToggleInfantryDeploy { entity_id: gi }, &rules);
+    dispatch(
+        &mut sim,
+        "Americans",
+        Command::ToggleInfantryDeploy { entity_id: gi },
+        &rules,
+    );
     let evs: Vec<_> = sim
         .sound_events
         .iter()
         .filter_map(|e| match e {
-            SimSoundEvent::EntityDeployed { deploy_sound_id, rx, ry } => {
-                Some((*deploy_sound_id, *rx, *ry))
-            }
+            SimSoundEvent::EntityDeployed {
+                deploy_sound_id,
+                rx,
+                ry,
+            } => Some((*deploy_sound_id, *rx, *ry)),
             _ => None,
         })
         .collect();
@@ -423,7 +484,12 @@ fn deploy_sound_suppressed_when_unset() {
     let mut sim = Simulation::new();
     let gi = spawn_infantry(&mut sim, "E1", "Americans", 25, 30);
 
-    dispatch(&mut sim, "Americans", Command::ToggleInfantryDeploy { entity_id: gi }, &rules);
+    dispatch(
+        &mut sim,
+        "Americans",
+        Command::ToggleInfantryDeploy { entity_id: gi },
+        &rules,
+    );
     let count = sim
         .sound_events
         .iter()
@@ -443,7 +509,12 @@ fn undeploy_sound_emitted_on_phase_entry() {
     let gi = spawn_infantry(&mut sim, "E1", "Americans", 25, 30);
     sim.entities.get_mut(gi).unwrap().deploy_state = Some(DeployPhase::Deployed);
 
-    dispatch(&mut sim, "Americans", Command::ToggleInfantryDeploy { entity_id: gi }, &rules);
+    dispatch(
+        &mut sim,
+        "Americans",
+        Command::ToggleInfantryDeploy { entity_id: gi },
+        &rules,
+    );
     let count = sim
         .sound_events
         .iter()
@@ -461,7 +532,9 @@ fn non_deploy_fire_infantry_no_op() {
     dispatch(
         &mut sim,
         "Soviets",
-        Command::ToggleInfantryDeploy { entity_id: conscript },
+        Command::ToggleInfantryDeploy {
+            entity_id: conscript,
+        },
         &rules,
     );
     assert!(sim.entities.get(conscript).unwrap().deploy_state.is_none());
@@ -477,8 +550,18 @@ fn hash_deterministic_through_full_cycle() {
     assert_eq!(gi_a, gi_b);
 
     for _ in 0..3 {
-        dispatch(&mut sim_a, "Americans", Command::ToggleInfantryDeploy { entity_id: gi_a }, &rules);
-        dispatch(&mut sim_b, "Americans", Command::ToggleInfantryDeploy { entity_id: gi_b }, &rules);
+        dispatch(
+            &mut sim_a,
+            "Americans",
+            Command::ToggleInfantryDeploy { entity_id: gi_a },
+            &rules,
+        );
+        dispatch(
+            &mut sim_b,
+            "Americans",
+            Command::ToggleInfantryDeploy { entity_id: gi_b },
+            &rules,
+        );
         let n = compute_anim_ticks() as u32;
         for _ in 0..n {
             tick_n(&mut sim_a, &rules, 1);
@@ -508,7 +591,7 @@ fn snapshot_round_trip_mid_deploying() {
 #[test]
 fn combat_fires_during_deployed_attack() {
     use crate::sim::animation::{
-        tick_animations, Animation, LoopMode, SequenceDef, SequenceKind, SequenceSet,
+        Animation, LoopMode, SequenceDef, SequenceKind, SequenceSet, tick_animations,
     };
 
     let _rules = make_rules_with_deploy();
@@ -553,7 +636,13 @@ fn combat_fires_during_deployed_attack() {
 
     let _ = tick_animations(&mut sim.entities, &sequences, 22, &sim.interner);
     assert_eq!(
-        sim.entities.get(gi).unwrap().animation.as_ref().unwrap().sequence,
+        sim.entities
+            .get(gi)
+            .unwrap()
+            .animation
+            .as_ref()
+            .unwrap()
+            .sequence,
         SequenceKind::DeployedFire
     );
 }

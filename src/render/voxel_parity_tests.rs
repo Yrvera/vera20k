@@ -80,7 +80,13 @@ mod tests {
         // wouldn't be doing its job otherwise).
         let count_10: usize = sprite.palette_indices.iter().filter(|&&b| b == 10).count();
         let count_20: usize = sprite.palette_indices.iter().filter(|&&b| b == 20).count();
-        assert!(count_10 > 0, "voxel with color_index=10 produced no output bytes");
-        assert!(count_20 > 0, "voxel with color_index=20 produced no output bytes");
+        assert!(
+            count_10 > 0,
+            "voxel with color_index=10 produced no output bytes"
+        );
+        assert!(
+            count_20 > 0,
+            "voxel with color_index=20 produced no output bytes"
+        );
     }
 }

@@ -9,7 +9,9 @@
 //! They are kept as pure functions so the runtime can adopt them incrementally
 //! once mutable overlay state and ZoneConnection records are available.
 
-use crate::sim::bridge_state::{AnchorSpan, Axis, BridgeRuntimeState, DamageState, Direction, Phase};
+use crate::sim::bridge_state::{
+    AnchorSpan, Axis, BridgeRuntimeState, DamageState, Direction, Phase,
+};
 
 const BRIDGE_GATE_BIT: u32 = 0x0100;
 const NO_ZONE_CONNECTION: i16 = -1;
@@ -348,11 +350,7 @@ fn read_u32_le(bytes: &[u8], off: usize) -> u32 {
 /// `_Low` variants are intentionally not a parameter: state transitions are
 /// identical, so the same function serves both. Overlay propagation (§11.2 +
 /// `pick_destruction_overlay`) is what distinguishes HIGH from LOW.
-pub fn apply_ramp_transition(
-    current_state: u8,
-    axis: Axis,
-    phase: Phase,
-) -> Option<u8> {
+pub fn apply_ramp_transition(current_state: u8, axis: Axis, phase: Phase) -> Option<u8> {
     match (axis, phase, current_state) {
         // --- NS axis (state 0..=8) ---
         // NS_DamageA: 0..=3 → 4, 5 → 6
@@ -419,15 +417,13 @@ pub fn pick_destruction_overlay(
 /// All 16 entries verified live byte-for-byte (indices 11..=15 explicitly
 /// initialized to `0xffffffff` in the function prologue — no fall-through).
 static DESTRUCTION_OVERLAY_HIGH_NS: [u8; 16] = [
-    0xFF, 0xD2, 0xD5, 0xFF, 0xD1, 0xD3, 0xD5, 0xFF,
-    0xD4, 0xD4, 0xE7, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xD2, 0xD5, 0xFF, 0xD1, 0xD3, 0xD5, 0xFF, 0xD4, 0xD4, 0xE7, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
 ];
 
 /// HIGH EW destruction overlay table per HIGH §11.2 (`ApplyBridgeDestruction_EW_High`
 /// @ `0x57ED00`). Indexed by `CheckBridgeNeighbors_NS_High` result.
 static DESTRUCTION_OVERLAY_HIGH_EW: [u8; 16] = [
-    0xFF, 0xDB, 0xDE, 0xFF, 0xDA, 0xDC, 0xDE, 0xFF,
-    0xDD, 0xDD, 0xE8, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xDB, 0xDE, 0xFF, 0xDA, 0xDC, 0xDE, 0xFF, 0xDD, 0xDD, 0xE8, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
 ];
 
 /// LOW NS destruction overlay table per `ApplyBridgeDestruction_NS_Low`
@@ -437,8 +433,7 @@ static DESTRUCTION_OVERLAY_HIGH_EW: [u8; 16] = [
 /// Progressive intermediates (handled by caller, not table):
 /// `0x5C → 0x5D`, `0x5E → 0x5F`.
 static DESTRUCTION_OVERLAY_LOW_NS: [u8; 16] = [
-    0xFF, 0x4F, 0x52, 0xFF, 0x4E, 0x50, 0x52, 0xFF,
-    0x51, 0x51, 0x64, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0x4F, 0x52, 0xFF, 0x4E, 0x50, 0x52, 0xFF, 0x51, 0x51, 0x64, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
 ];
 
 /// LOW EW destruction overlay table per `ApplyBridgeDestruction_EW_Low`
@@ -446,8 +441,7 @@ static DESTRUCTION_OVERLAY_LOW_NS: [u8; 16] = [
 /// result. Final destroyed byte = `0x65`. Outer overlay gate: `0x4A..=0x65`.
 /// Progressive intermediates: `0x60 → 0x61`, `0x62 → 0x63`.
 static DESTRUCTION_OVERLAY_LOW_EW: [u8; 16] = [
-    0xFF, 0x58, 0x5B, 0xFF, 0x57, 0x59, 0x5B, 0xFF,
-    0x5A, 0x5A, 0x65, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0x58, 0x5B, 0xFF, 0x57, 0x59, 0x5B, 0xFF, 0x5A, 0x5A, 0x65, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
 ];
 
 /// Per-cell action emitted by `set_bridge_direction` walker. The orchestrator
@@ -548,26 +542,39 @@ pub fn update_ramp_perpendicular(
     let target_x = anchor_pos.0 as i32 + dx;
     let target_y = anchor_pos.1 as i32 + dy;
     if target_x < 0 || target_y < 0 {
-        return RampOutcome { state_changed: false };
+        return RampOutcome {
+            state_changed: false,
+        };
     }
     let target_pos = (target_x as u16, target_y as u16);
 
     // Snapshot target read (avoids borrow conflict with subsequent mut access).
     let Some(target_cell) = state.cell(target_pos.0, target_pos.1).copied() else {
-        return RampOutcome { state_changed: false };
+        return RampOutcome {
+            state_changed: false,
+        };
     };
     // Anchor-flag gate. In binary: `target.flags & 0x80`. In our model:
     // role == Anchor.
-    if !matches!(target_cell.role, crate::sim::bridge_state::BridgeCellRole::Anchor) {
-        return RampOutcome { state_changed: false };
+    if !matches!(
+        target_cell.role,
+        crate::sim::bridge_state::BridgeCellRole::Anchor
+    ) {
+        return RampOutcome {
+            state_changed: false,
+        };
     }
     let Some(target_axis) = target_cell.axis else {
-        return RampOutcome { state_changed: false };
+        return RampOutcome {
+            state_changed: false,
+        };
     };
 
     let current_byte = target_cell.damage_state.to_state_byte(target_axis);
     let Some(next_byte) = apply_ramp_transition(current_byte, axis, phase) else {
-        return RampOutcome { state_changed: false };
+        return RampOutcome {
+            state_changed: false,
+        };
     };
 
     // Decode next byte. Per `apply_ramp_transition` docstring, next_byte == 0
@@ -580,16 +587,24 @@ pub fn update_ramp_perpendicular(
     } else {
         match DamageState::from_state_byte(next_byte) {
             Some(s) => s,
-            None => return RampOutcome { state_changed: false },
+            None => {
+                return RampOutcome {
+                    state_changed: false,
+                };
+            }
         }
     };
 
     // Mut access to write the new state.
     if let Some(cell_mut) = state.cell_mut(target_pos.0, target_pos.1) {
         cell_mut.damage_state = next_state;
-        RampOutcome { state_changed: true }
+        RampOutcome {
+            state_changed: true,
+        }
     } else {
-        RampOutcome { state_changed: false }
+        RampOutcome {
+            state_changed: false,
+        }
     }
 }
 
@@ -699,8 +714,8 @@ pub fn bridgehead_blow_up_row(
 mod tests {
     use super::*;
     use crate::sim::bridge_state::{
-        AnchorSpan, Axis, BridgeCellRole, BridgeRuntimeCell, BridgeRuntimeState,
-        DamageState, Direction, Phase,
+        AnchorSpan, Axis, BridgeCellRole, BridgeRuntimeCell, BridgeRuntimeState, DamageState,
+        Direction, Phase,
     };
 
     #[test]
@@ -997,74 +1012,110 @@ mod tests {
     #[test]
     fn ramp_ns_collapse_a_to_7() {
         for s in 0..=6 {
-            assert_eq!(apply_ramp_transition(s, Axis::NS, Phase::CollapseA), Some(7));
+            assert_eq!(
+                apply_ramp_transition(s, Axis::NS, Phase::CollapseA),
+                Some(7)
+            );
         }
     }
 
     #[test]
     fn ramp_ns_collapse_a_final_state_8_to_0() {
         // Collapse-final: caller must also clear bridge dir + IsoTileTypeIndex.
-        assert_eq!(apply_ramp_transition(8, Axis::NS, Phase::CollapseA), Some(0));
+        assert_eq!(
+            apply_ramp_transition(8, Axis::NS, Phase::CollapseA),
+            Some(0)
+        );
     }
 
     #[test]
     fn ramp_ns_collapse_b_to_8() {
         for s in 0..=6 {
-            assert_eq!(apply_ramp_transition(s, Axis::NS, Phase::CollapseB), Some(8));
+            assert_eq!(
+                apply_ramp_transition(s, Axis::NS, Phase::CollapseB),
+                Some(8)
+            );
         }
     }
 
     #[test]
     fn ramp_ns_collapse_b_final_state_7_to_0() {
-        assert_eq!(apply_ramp_transition(7, Axis::NS, Phase::CollapseB), Some(0));
+        assert_eq!(
+            apply_ramp_transition(7, Axis::NS, Phase::CollapseB),
+            Some(0)
+        );
     }
 
     #[test]
     fn ramp_ew_damage_a_healthy_to_e() {
         for s in 9..=12 {
-            assert_eq!(apply_ramp_transition(s, Axis::EW, Phase::DamageA), Some(0x0E));
+            assert_eq!(
+                apply_ramp_transition(s, Axis::EW, Phase::DamageA),
+                Some(0x0E)
+            );
         }
     }
 
     #[test]
     fn ramp_ew_damage_a_d_to_f() {
-        assert_eq!(apply_ramp_transition(0x0D, Axis::EW, Phase::DamageA), Some(0x0F));
+        assert_eq!(
+            apply_ramp_transition(0x0D, Axis::EW, Phase::DamageA),
+            Some(0x0F)
+        );
     }
 
     #[test]
     fn ramp_ew_damage_b_healthy_to_d() {
         for s in 9..=12 {
-            assert_eq!(apply_ramp_transition(s, Axis::EW, Phase::DamageB), Some(0x0D));
+            assert_eq!(
+                apply_ramp_transition(s, Axis::EW, Phase::DamageB),
+                Some(0x0D)
+            );
         }
     }
 
     #[test]
     fn ramp_ew_damage_b_e_to_f() {
-        assert_eq!(apply_ramp_transition(0x0E, Axis::EW, Phase::DamageB), Some(0x0F));
+        assert_eq!(
+            apply_ramp_transition(0x0E, Axis::EW, Phase::DamageB),
+            Some(0x0F)
+        );
     }
 
     #[test]
     fn ramp_ew_collapse_a_to_11() {
         for s in 9..=15 {
-            assert_eq!(apply_ramp_transition(s, Axis::EW, Phase::CollapseA), Some(0x11));
+            assert_eq!(
+                apply_ramp_transition(s, Axis::EW, Phase::CollapseA),
+                Some(0x11)
+            );
         }
     }
 
     #[test]
     fn ramp_ew_collapse_a_final_state_10_to_0() {
-        assert_eq!(apply_ramp_transition(0x10, Axis::EW, Phase::CollapseA), Some(0));
+        assert_eq!(
+            apply_ramp_transition(0x10, Axis::EW, Phase::CollapseA),
+            Some(0)
+        );
     }
 
     #[test]
     fn ramp_ew_collapse_b_to_10() {
         for s in 9..=15 {
-            assert_eq!(apply_ramp_transition(s, Axis::EW, Phase::CollapseB), Some(0x10));
+            assert_eq!(
+                apply_ramp_transition(s, Axis::EW, Phase::CollapseB),
+                Some(0x10)
+            );
         }
     }
 
     #[test]
     fn ramp_ew_collapse_b_final_state_11_to_0() {
-        assert_eq!(apply_ramp_transition(0x11, Axis::EW, Phase::CollapseB), Some(0));
+        assert_eq!(
+            apply_ramp_transition(0x11, Axis::EW, Phase::CollapseB),
+            Some(0)
+        );
     }
 
     #[test]
@@ -1127,8 +1178,16 @@ mod tests {
     fn destruction_overlay_low_unused_indices_return_none() {
         // Slots 0/3/7/11..=15 unused in both NS and EW LOW tables.
         for i in [0, 3, 7, 11, 12, 13, 14, 15] {
-            assert_eq!(pick_destruction_overlay(i, Axis::NS, false), None, "NS slot {i}");
-            assert_eq!(pick_destruction_overlay(i, Axis::EW, false), None, "EW slot {i}");
+            assert_eq!(
+                pick_destruction_overlay(i, Axis::NS, false),
+                None,
+                "NS slot {i}"
+            );
+            assert_eq!(
+                pick_destruction_overlay(i, Axis::EW, false),
+                None,
+                "EW slot {i}"
+            );
         }
     }
 
@@ -1138,8 +1197,12 @@ mod tests {
             id: 1,
             anchor: (5, 5),
             cells: [
-                Some((5, 5)), Some((6, 5)), Some((7, 5)),
-                Some((8, 5)), Some((4, 5)), None,
+                Some((5, 5)),
+                Some((6, 5)),
+                Some((7, 5)),
+                Some((8, 5)),
+                Some((4, 5)),
+                None,
             ],
             axis: Axis::NS,
             direction: Direction::E,
@@ -1147,11 +1210,15 @@ mod tests {
             bridge_group_id: 1,
         };
         let result = set_bridge_direction(&span, false);
-        let blow_ups = result.actions.iter()
+        let blow_ups = result
+            .actions
+            .iter()
             .filter(|(_, _, a)| matches!(a, CellAction::BlowUpBridge))
             .count();
         assert_eq!(blow_ups, 4);
-        let flag_only = result.actions.iter()
+        let flag_only = result
+            .actions
+            .iter()
             .filter(|(_, _, a)| matches!(a, CellAction::FlagOnly))
             .count();
         assert_eq!(flag_only, 1); // slot 3 (cell 4)
@@ -1169,7 +1236,12 @@ mod tests {
             bridge_group_id: 1,
         };
         let result = set_bridge_direction(&span, true);
-        assert!(result.actions.iter().all(|(_, _, a)| matches!(a, CellAction::FlagOnly)));
+        assert!(
+            result
+                .actions
+                .iter()
+                .all(|(_, _, a)| matches!(a, CellAction::FlagOnly))
+        );
     }
 
     #[test]
@@ -1178,8 +1250,11 @@ mod tests {
             id: 1,
             anchor: (5, 5),
             cells: [
-                Some((5, 5)), Some((6, 5)), Some((7, 5)),
-                Some((8, 5)), Some((4, 5)),
+                Some((5, 5)),
+                Some((6, 5)),
+                Some((7, 5)),
+                Some((8, 5)),
+                Some((4, 5)),
                 Some((6, 5)), // hypothetical slot 5
             ],
             axis: Axis::NS,
@@ -1188,7 +1263,9 @@ mod tests {
             bridge_group_id: 1,
         };
         let result = set_bridge_direction(&span, false);
-        let slot_5_action = result.actions.iter()
+        let slot_5_action = result
+            .actions
+            .iter()
             .find(|(_, slot, _)| *slot == 5)
             .map(|(_, _, a)| *a);
         assert_eq!(slot_5_action, Some(CellAction::FlagOnly));
@@ -1220,9 +1297,7 @@ mod tests {
     #[test]
     fn update_ramp_perpendicular_ns_damage_a_anchor_target_transitions_to_4() {
         let mut state = make_perpendicular_test_state();
-        let outcome = update_ramp_perpendicular(
-            &mut state, (5, 5), Axis::NS, Phase::DamageA, true,
-        );
+        let outcome = update_ramp_perpendicular(&mut state, (5, 5), Axis::NS, Phase::DamageA, true);
         assert!(outcome.state_changed);
         let target = state.cell(6, 5).expect("E target");
         assert_eq!(target.damage_state, DamageState::Healthy { variant: 4 });
@@ -1231,9 +1306,7 @@ mod tests {
     #[test]
     fn update_ramp_perpendicular_ns_damage_b_anchor_target_walks_west() {
         let mut state = make_perpendicular_test_state();
-        let outcome = update_ramp_perpendicular(
-            &mut state, (5, 5), Axis::NS, Phase::DamageB, true,
-        );
+        let outcome = update_ramp_perpendicular(&mut state, (5, 5), Axis::NS, Phase::DamageB, true);
         assert!(outcome.state_changed);
         let target = state.cell(4, 5).expect("W target");
         assert_eq!(target.damage_state, DamageState::Healthy { variant: 5 });
@@ -1244,9 +1317,7 @@ mod tests {
         let mut state = make_perpendicular_test_state();
         // Patch (6,5) to Body role (not Anchor).
         state.cell_mut(6, 5).unwrap().role = BridgeCellRole::Body;
-        let outcome = update_ramp_perpendicular(
-            &mut state, (5, 5), Axis::NS, Phase::DamageA, true,
-        );
+        let outcome = update_ramp_perpendicular(&mut state, (5, 5), Axis::NS, Phase::DamageA, true);
         assert!(!outcome.state_changed);
         assert_eq!(
             state.cell(6, 5).unwrap().damage_state,
@@ -1258,9 +1329,7 @@ mod tests {
     fn update_ramp_perpendicular_target_off_map_no_change() {
         let mut state = make_perpendicular_test_state();
         // Anchor at (0, 0) calling NS DamageB → walks W → target x = -1 → out of bounds.
-        let outcome = update_ramp_perpendicular(
-            &mut state, (0, 0), Axis::NS, Phase::DamageB, true,
-        );
+        let outcome = update_ramp_perpendicular(&mut state, (0, 0), Axis::NS, Phase::DamageB, true);
         assert!(!outcome.state_changed);
     }
 
@@ -1268,9 +1337,8 @@ mod tests {
     fn update_ramp_perpendicular_collapse_final_target_to_destroyed() {
         let mut state = make_perpendicular_test_state();
         state.cell_mut(6, 5).unwrap().damage_state = DamageState::PartialCollapseB;
-        let outcome = update_ramp_perpendicular(
-            &mut state, (5, 5), Axis::NS, Phase::CollapseA, true,
-        );
+        let outcome =
+            update_ramp_perpendicular(&mut state, (5, 5), Axis::NS, Phase::CollapseA, true);
         assert!(outcome.state_changed);
         let target = state.cell(6, 5).expect("E target");
         assert_eq!(target.damage_state, DamageState::Destroyed);
@@ -1301,9 +1369,8 @@ mod tests {
         // EW CollapseA → walks S → target (5, 6).
         // Target state byte 9 (Healthy{0} EW) → apply_ramp_transition EW
         // CollapseA: 9..=15 → 0x11 = PartialCollapseA.
-        let outcome = update_ramp_perpendicular(
-            &mut state, (5, 5), Axis::EW, Phase::CollapseA, true,
-        );
+        let outcome =
+            update_ramp_perpendicular(&mut state, (5, 5), Axis::EW, Phase::CollapseA, true);
         assert!(outcome.state_changed);
         let target = state.cell(5, 6).expect("S target");
         assert_eq!(target.damage_state, DamageState::PartialCollapseA);

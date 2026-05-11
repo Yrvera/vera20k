@@ -605,16 +605,9 @@ impl ArtRegistry {
         let mut populated: u32 = 0;
         let mut fallback: u32 = 0;
         for (name, image_id) in pending {
-            let candidates: Vec<String> = anim_shp_candidates(
-                Some(self),
-                &name,
-                &image_id,
-                theater_ext,
-                theater_name,
-            );
-            let shp_bytes: Option<&[u8]> = candidates
-                .iter()
-                .find_map(|c| asset_manager.get_ref(c));
+            let candidates: Vec<String> =
+                anim_shp_candidates(Some(self), &name, &image_id, theater_ext, theater_name);
+            let shp_bytes: Option<&[u8]> = candidates.iter().find_map(|c| asset_manager.get_ref(c));
             let Some(data) = shp_bytes else {
                 fallback += 1;
                 continue;

@@ -300,10 +300,12 @@ pub fn tick_aircraft_missions(
                 // Cell targets resolve to cell-center coords via the helper.
                 if matches!(*sub_state, 3 | 4) {
                     if let Some(entity) = sim.entities.get(snap.id) {
-                        if let Some(status) = crate::sim::aircraft::attack_mission::aircraft_target_status(
-                            entity.attack_target.as_ref(),
-                            &sim.entities,
-                        ) {
+                        if let Some(status) =
+                            crate::sim::aircraft::attack_mission::aircraft_target_status(
+                                entity.attack_target.as_ref(),
+                                &sim.entities,
+                            )
+                        {
                             let dx = (entity.position.rx as i32 - status.rx as i32).abs();
                             let dy = (entity.position.ry as i32 - status.ry as i32).abs();
                             let dist_cells = dx.max(dy);

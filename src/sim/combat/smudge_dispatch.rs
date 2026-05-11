@@ -91,7 +91,9 @@ pub fn try_dispatch_anim_smudge(
     resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
     rng: &mut SimRng,
 ) {
-    let Some(entry) = art.get(anim_name) else { return; };
+    let Some(entry) = art.get(anim_name) else {
+        return;
+    };
 
     if (coord.z - ground_z) >= SMUDGE_ALTITUDE_GATE_LEPTONS {
         return;
@@ -103,15 +105,31 @@ pub fn try_dispatch_anim_smudge(
     if entry.scorch {
         if !entry.crater {
             smudge_grid.try_place(
-                SmudgeKind::Burn, coord, dmg, dmg2, false,
-                smudge_types, terrain, overlay_grid, occupancy, rng,
+                SmudgeKind::Burn,
+                coord,
+                dmg,
+                dmg2,
+                false,
+                smudge_types,
+                terrain,
+                overlay_grid,
+                occupancy,
+                rng,
             );
             return;
         }
         if rng_below_half_normalized(rng) {
             smudge_grid.try_place(
-                SmudgeKind::Burn, coord, dmg, dmg2, false,
-                smudge_types, terrain, overlay_grid, occupancy, rng,
+                SmudgeKind::Burn,
+                coord,
+                dmg,
+                dmg2,
+                false,
+                smudge_types,
+                terrain,
+                overlay_grid,
+                occupancy,
+                rng,
             );
             return;
         }
@@ -123,13 +141,29 @@ pub fn try_dispatch_anim_smudge(
 
         if entry.force_big_craters {
             smudge_grid.try_place(
-                SmudgeKind::Crater, coord, 300, 300, true,
-                smudge_types, terrain, overlay_grid, occupancy, rng,
+                SmudgeKind::Crater,
+                coord,
+                300,
+                300,
+                true,
+                smudge_types,
+                terrain,
+                overlay_grid,
+                occupancy,
+                rng,
             );
         } else {
             smudge_grid.try_place(
-                SmudgeKind::Crater, coord, dmg, dmg2, false,
-                smudge_types, terrain, overlay_grid, occupancy, rng,
+                SmudgeKind::Crater,
+                coord,
+                dmg,
+                dmg2,
+                false,
+                smudge_types,
+                terrain,
+                overlay_grid,
+                occupancy,
+                rng,
             );
         }
     }
@@ -147,8 +181,11 @@ fn rng_below_half_normalized(rng: &mut SimRng) -> bool {
 /// to keep RNG advancement aligned with the original engine.
 #[allow(clippy::too_many_arguments)]
 pub fn try_dispatch_building_destruction_smudges(
-    rx: u16, ry: u16, building_z: i32,
-    foundation_w: u8, foundation_h: u8,
+    rx: u16,
+    ry: u16,
+    building_z: i32,
+    foundation_w: u8,
+    foundation_h: u8,
     art: &ArtRegistry,
     smudge_types: &SmudgeTypeRegistry,
     smudge_grid: &mut SmudgeGrid,
@@ -174,14 +211,30 @@ pub fn try_dispatch_building_destruction_smudges(
     };
     if roll < 50 {
         smudge_grid.try_place(
-            SmudgeKind::Burn, center, BUILDING_SMUDGE_DMG, BUILDING_SMUDGE_DMG, true,
-            smudge_types, terrain, overlay_grid, occupancy, rng,
+            SmudgeKind::Burn,
+            center,
+            BUILDING_SMUDGE_DMG,
+            BUILDING_SMUDGE_DMG,
+            true,
+            smudge_types,
+            terrain,
+            overlay_grid,
+            occupancy,
+            rng,
         );
     } else {
         reduce_tiberium(resource_nodes, (rx, ry), CRATER_ORE_REDUCTION);
         smudge_grid.try_place(
-            SmudgeKind::Crater, center, BUILDING_SMUDGE_DMG, BUILDING_SMUDGE_DMG, true,
-            smudge_types, terrain, overlay_grid, occupancy, rng,
+            SmudgeKind::Crater,
+            center,
+            BUILDING_SMUDGE_DMG,
+            BUILDING_SMUDGE_DMG,
+            true,
+            smudge_types,
+            terrain,
+            overlay_grid,
+            occupancy,
+            rng,
         );
     }
 }
@@ -222,14 +275,30 @@ pub fn try_dispatch_building_survivor_smudges(
         };
         if roll < 50 {
             smudge_grid.try_place(
-                SmudgeKind::Burn, coord, BUILDING_SMUDGE_DMG, BUILDING_SMUDGE_DMG, false,
-                smudge_types, terrain, overlay_grid, occupancy, rng,
+                SmudgeKind::Burn,
+                coord,
+                BUILDING_SMUDGE_DMG,
+                BUILDING_SMUDGE_DMG,
+                false,
+                smudge_types,
+                terrain,
+                overlay_grid,
+                occupancy,
+                rng,
             );
         } else {
             reduce_tiberium(resource_nodes, (snap_rx, snap_ry), CRATER_ORE_REDUCTION);
             smudge_grid.try_place(
-                SmudgeKind::Crater, coord, BUILDING_SMUDGE_DMG, BUILDING_SMUDGE_DMG, false,
-                smudge_types, terrain, overlay_grid, occupancy, rng,
+                SmudgeKind::Crater,
+                coord,
+                BUILDING_SMUDGE_DMG,
+                BUILDING_SMUDGE_DMG,
+                false,
+                smudge_types,
+                terrain,
+                overlay_grid,
+                occupancy,
+                rng,
             );
         }
     }
@@ -258,7 +327,12 @@ pub fn drain_smudge_spawn_requests(
 ) {
     for req in requests {
         match req {
-            SmudgeSpawnRequest::Anim { anim_name, rx, ry, z } => {
+            SmudgeSpawnRequest::Anim {
+                anim_name,
+                rx,
+                ry,
+                z,
+            } => {
                 let coord = SimCoord {
                     x: (*rx as i32) * 256 + 128,
                     y: (*ry as i32) * 256 + 128,
@@ -273,29 +347,54 @@ pub fn drain_smudge_spawn_requests(
                     .unwrap_or(0);
                 let name = interner.resolve(*anim_name);
                 try_dispatch_anim_smudge(
-                    art, smudge_types, name,
-                    coord, ground_z,
-                    smudge_grid, overlay_grid, occupancy, terrain,
-                    resource_nodes, rng,
+                    art,
+                    smudge_types,
+                    name,
+                    coord,
+                    ground_z,
+                    smudge_grid,
+                    overlay_grid,
+                    occupancy,
+                    terrain,
+                    resource_nodes,
+                    rng,
                 );
             }
             SmudgeSpawnRequest::BuildingCenter {
-                rx, ry, building_z, foundation_w, foundation_h,
+                rx,
+                ry,
+                building_z,
+                foundation_w,
+                foundation_h,
             } => {
                 try_dispatch_building_destruction_smudges(
-                    *rx, *ry, *building_z, *foundation_w, *foundation_h,
-                    art, smudge_types,
-                    smudge_grid, overlay_grid, occupancy, terrain,
-                    resource_nodes, rng,
+                    *rx,
+                    *ry,
+                    *building_z,
+                    *foundation_w,
+                    *foundation_h,
+                    art,
+                    smudge_types,
+                    smudge_grid,
+                    overlay_grid,
+                    occupancy,
+                    terrain,
+                    resource_nodes,
+                    rng,
                 );
             }
             SmudgeSpawnRequest::BuildingSurvivor { cell_rx, cell_ry } => {
                 try_dispatch_building_survivor_smudges(
                     &[(*cell_rx, *cell_ry)],
-                    art, smudge_types,
-                    smudge_grid, overlay_grid, occupancy, terrain,
+                    art,
+                    smudge_types,
+                    smudge_grid,
+                    overlay_grid,
+                    occupancy,
+                    terrain,
                     path_grid,
-                    resource_nodes, rng,
+                    resource_nodes,
+                    rng,
                 );
             }
         }
@@ -306,7 +405,9 @@ pub fn drain_smudge_spawn_requests(
 mod tests {
     use super::*;
 
-    fn approx_eq(a: i32, b: i32, tol: i32) -> bool { (a - b).abs() <= tol }
+    fn approx_eq(a: i32, b: i32, tol: i32) -> bool {
+        (a - b).abs() <= tol
+    }
 
     #[test]
     fn unit_vec_table_byte_0_matches_reference() {
@@ -315,7 +416,11 @@ mod tests {
         let (sin_q16, neg_cos_q16) = unit_vec_table()[0];
         // sin*65536 ≈ 65536, -cos*65536 ≈ 0 (within rounding)
         assert!(approx_eq(sin_q16, 65536, 50), "sin_q16 = {}", sin_q16);
-        assert!(approx_eq(neg_cos_q16, 0, 50), "neg_cos_q16 = {}", neg_cos_q16);
+        assert!(
+            approx_eq(neg_cos_q16, 0, 50),
+            "neg_cos_q16 = {}",
+            neg_cos_q16
+        );
     }
 
     #[test]
@@ -325,7 +430,11 @@ mod tests {
         // sin(angle) ≈ -0.0000958, -cos(angle) ≈ -1.0
         let (sin_q16, neg_cos_q16) = unit_vec_table()[64];
         assert!(approx_eq(sin_q16, 0, 50), "sin_q16 = {}", sin_q16);
-        assert!(approx_eq(neg_cos_q16, -65536, 50), "neg_cos_q16 = {}", neg_cos_q16);
+        assert!(
+            approx_eq(neg_cos_q16, -65536, 50),
+            "neg_cos_q16 = {}",
+            neg_cos_q16
+        );
     }
 
     #[test]
@@ -375,8 +484,9 @@ mod dispatch_tests {
         let ini = crate::rules::ini_parser::IniFile::from_bytes(
             b"[SmudgeTypes]\n1=CR1\n2=BURN1\n\
               [CR1]\nCrater=yes\nWidth=1\nHeight=1\n\
-              [BURN1]\nBurn=yes\nWidth=1\nHeight=1\n"
-        ).unwrap();
+              [BURN1]\nBurn=yes\nWidth=1\nHeight=1\n",
+        )
+        .unwrap();
         SmudgeTypeRegistry::from_rules_ini(&ini)
     }
 
@@ -394,26 +504,44 @@ mod dispatch_tests {
         // Reuse Task 7's defaults via copy-paste; intentionally not extracted to
         // a shared helper to keep tasks self-contained.
         ResolvedTerrainCell {
-            rx, ry,
-            source_tile_index: 0, source_sub_tile: 0,
-            final_tile_index: 0, final_sub_tile: 0,
-            level: 0, filled_clear: true, tileset_index: Some(0),
-            land_type: 0, slope_type: 0, template_height: 0,
-            render_offset_x: 0, render_offset_y: 0,
+            rx,
+            ry,
+            source_tile_index: 0,
+            source_sub_tile: 0,
+            final_tile_index: 0,
+            final_sub_tile: 0,
+            level: 0,
+            filled_clear: true,
+            tileset_index: Some(0),
+            land_type: 0,
+            slope_type: 0,
+            template_height: 0,
+            render_offset_x: 0,
+            render_offset_y: 0,
             terrain_class: Default::default(),
             speed_costs: Default::default(),
-            is_water: false, is_cliff_like: false,
-            is_rough: false, is_road: false,
-            is_cliff_redraw: false, variant: 0,
-            has_ramp: false, canonical_ramp: None,
-            ground_walk_blocked: false, terrain_object_blocks: false,
-            overlay_blocks: false, zone_type: 0,
-            base_ground_walk_blocked: false, base_build_blocked: false,
+            is_water: false,
+            is_cliff_like: false,
+            is_rough: false,
+            is_road: false,
+            is_cliff_redraw: false,
+            variant: 0,
+            has_ramp: false,
+            canonical_ramp: None,
+            ground_walk_blocked: false,
+            terrain_object_blocks: false,
+            overlay_blocks: false,
+            zone_type: 0,
+            base_ground_walk_blocked: false,
+            base_build_blocked: false,
             build_blocked: false,
-            has_bridge_deck: false, bridge_walkable: false,
-            bridge_transition: false, bridge_deck_level: 0,
+            has_bridge_deck: false,
+            bridge_walkable: false,
+            bridge_transition: false,
+            bridge_deck_level: 0,
             bridge_layer: None,
-            radar_left: [0; 3], radar_right: [0; 3],
+            radar_left: [0; 3],
+            radar_right: [0; 3],
             accepts_smudge: true,
         }
     }
@@ -428,10 +556,23 @@ mod dispatch_tests {
         let occupancy = OccupancyGrid::new();
         let mut rng = SimRng::new(1);
         let mut nodes = BTreeMap::new();
-        let coord = SimCoord { x: 4 * 256 + 128, y: 4 * 256 + 128, z: 100 };
+        let coord = SimCoord {
+            x: 4 * 256 + 128,
+            y: 4 * 256 + 128,
+            z: 100,
+        };
         try_dispatch_anim_smudge(
-            &art, &smudge_reg, "ANIM", coord, 0,
-            &mut grid, &overlay, &occupancy, &terrain, &mut nodes, &mut rng,
+            &art,
+            &smudge_reg,
+            "ANIM",
+            coord,
+            0,
+            &mut grid,
+            &overlay,
+            &occupancy,
+            &terrain,
+            &mut nodes,
+            &mut rng,
         );
         assert!(grid.iter_occupied().count() == 0);
     }
@@ -447,17 +588,43 @@ mod dispatch_tests {
         let mut rng = SimRng::new(1);
         let mut nodes = BTreeMap::new();
         // z - ground_z = 30 exactly -> must FAIL (strict <)
-        let coord = SimCoord { x: 4 * 256 + 128, y: 4 * 256 + 128, z: 30 };
+        let coord = SimCoord {
+            x: 4 * 256 + 128,
+            y: 4 * 256 + 128,
+            z: 30,
+        };
         try_dispatch_anim_smudge(
-            &art, &smudge_reg, "ANIM", coord, 0,
-            &mut grid, &overlay, &occupancy, &terrain, &mut nodes, &mut rng,
+            &art,
+            &smudge_reg,
+            "ANIM",
+            coord,
+            0,
+            &mut grid,
+            &overlay,
+            &occupancy,
+            &terrain,
+            &mut nodes,
+            &mut rng,
         );
         assert!(grid.iter_occupied().count() == 0);
         // z - ground_z = 29 -> must PASS
-        let coord = SimCoord { x: 4 * 256 + 128, y: 4 * 256 + 128, z: 29 };
+        let coord = SimCoord {
+            x: 4 * 256 + 128,
+            y: 4 * 256 + 128,
+            z: 29,
+        };
         try_dispatch_anim_smudge(
-            &art, &smudge_reg, "ANIM", coord, 0,
-            &mut grid, &overlay, &occupancy, &terrain, &mut nodes, &mut rng,
+            &art,
+            &smudge_reg,
+            "ANIM",
+            coord,
+            0,
+            &mut grid,
+            &overlay,
+            &occupancy,
+            &terrain,
+            &mut nodes,
+            &mut rng,
         );
         assert_eq!(grid.iter_occupied().count(), 1);
     }
@@ -479,14 +646,30 @@ mod dispatch_tests {
         let occupancy = OccupancyGrid::new();
         let mut rng = SimRng::new(1);
         let mut nodes = BTreeMap::new();
-        nodes.insert((4, 4), ResourceNode {
-            resource_type: crate::sim::miner::ResourceType::Ore,
-            remaining: 120 * 10, // 10 density levels of ore
-        });
-        let coord = SimCoord { x: 4 * 256 + 128, y: 4 * 256 + 128, z: 0 };
+        nodes.insert(
+            (4, 4),
+            ResourceNode {
+                resource_type: crate::sim::miner::ResourceType::Ore,
+                remaining: 120 * 10, // 10 density levels of ore
+            },
+        );
+        let coord = SimCoord {
+            x: 4 * 256 + 128,
+            y: 4 * 256 + 128,
+            z: 0,
+        };
         try_dispatch_anim_smudge(
-            &art, &smudge_reg, "ANIM", coord, 0,
-            &mut grid, &overlay, &occupancy, &terrain, &mut nodes, &mut rng,
+            &art,
+            &smudge_reg,
+            "ANIM",
+            coord,
+            0,
+            &mut grid,
+            &overlay,
+            &occupancy,
+            &terrain,
+            &mut nodes,
+            &mut rng,
         );
         // Smudge NOT placed (overlay blocks) but ore reduced by 6 density levels.
         assert_eq!(grid.iter_occupied().count(), 0);
@@ -506,10 +689,23 @@ mod dispatch_tests {
         let occupancy = OccupancyGrid::new();
         let mut rng = SimRng::new(1);
         let mut nodes = BTreeMap::new();
-        let coord = SimCoord { x: 4 * 256 + 128, y: 4 * 256 + 128, z: 0 };
+        let coord = SimCoord {
+            x: 4 * 256 + 128,
+            y: 4 * 256 + 128,
+            z: 0,
+        };
         try_dispatch_anim_smudge(
-            &art, &smudge_reg, "ANIM", coord, 0,
-            &mut grid, &overlay, &occupancy, &terrain, &mut nodes, &mut rng,
+            &art,
+            &smudge_reg,
+            "ANIM",
+            coord,
+            0,
+            &mut grid,
+            &overlay,
+            &occupancy,
+            &terrain,
+            &mut nodes,
+            &mut rng,
         );
         let placed = grid.cell(4, 4).type_id.unwrap();
         // BURN1 is index 1 in the registry above.
@@ -533,9 +729,19 @@ mod dispatch_tests {
             let mut rng = SimRng::new(1);
             let mut nodes = BTreeMap::new();
             try_dispatch_building_destruction_smudges(
-                4, 4, 0, 1, 1, // 1x1 foundation
-                &art, &smudge_reg, &mut grid,
-                &overlay, &occupancy, &terrain, &mut nodes, &mut rng,
+                4,
+                4,
+                0,
+                1,
+                1, // 1x1 foundation
+                &art,
+                &smudge_reg,
+                &mut grid,
+                &overlay,
+                &occupancy,
+                &terrain,
+                &mut nodes,
+                &mut rng,
             );
             assert_eq!(grid.iter_occupied().count(), 0);
         }
@@ -556,9 +762,19 @@ mod dispatch_tests {
 
             let mut rng_a = SimRng::new(42);
             try_dispatch_building_destruction_smudges(
-                4, 4, 0, 2, 2,
-                &art, &smudge_reg, &mut grid,
-                &overlay, &occupancy, &terrain, &mut nodes, &mut rng_a,
+                4,
+                4,
+                0,
+                2,
+                2,
+                &art,
+                &smudge_reg,
+                &mut grid,
+                &overlay,
+                &occupancy,
+                &terrain,
+                &mut nodes,
+                &mut rng_a,
             );
 
             // Probe RNG advanced by the same 3 calls the dispatcher makes

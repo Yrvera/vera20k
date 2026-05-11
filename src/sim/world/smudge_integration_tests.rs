@@ -30,7 +30,11 @@ fn build_test_sim_with_seed(seed: u64) -> Simulation {
     grid.test_force_set(
         2,
         3,
-        SmudgeCell { type_id: Some(0), footprint_origin: Some((2, 3)), frame_offset: 0 },
+        SmudgeCell {
+            type_id: Some(0),
+            footprint_origin: Some((2, 3)),
+            frame_offset: 0,
+        },
     );
     // 2x2 footprint at origin (5,5).
     let w: u8 = 2;

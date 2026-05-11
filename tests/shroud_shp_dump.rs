@@ -45,8 +45,8 @@ fn ra2_dir() -> Option<PathBuf> {
 /// Color a brightness byte for the diagnostic output.
 fn color_for_pixel(value: u8) -> [u8; 4] {
     match value {
-        0xFE => [40, 40, 60, 255],   // transparent — dim blue-gray
-        0x00 => [0, 0, 0, 255],      // full shroud — black
+        0xFE => [40, 40, 60, 255],    // transparent — dim blue-gray
+        0x00 => [0, 0, 0, 255],       // full shroud — black
         0x7F => [255, 255, 255, 255], // full clear — white
         v if v < 0x7F => {
             // partial shroud — darker for smaller values

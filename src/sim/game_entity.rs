@@ -21,8 +21,8 @@ use crate::sim::animation::Animation;
 use crate::sim::combat::AttackTarget;
 use crate::sim::components::{
     BridgeOccupancy, BuildingAnimOverlays, BuildingDown, BuildingUp, C4PlantState,
-    DamageFireOverlays, HarvestOverlay, Health, MovementTarget, OrderIntent,
-    PendingC4Detonation, Position, VoxelAnimation,
+    DamageFireOverlays, HarvestOverlay, Health, MovementTarget, OrderIntent, PendingC4Detonation,
+    Position, VoxelAnimation,
 };
 use crate::sim::debug_event_log::{DebugEventKind, DebugEventLog};
 use crate::sim::deploy::DeployPhase;
@@ -135,8 +135,7 @@ pub struct GameEntity {
     /// under a parachute, `None` otherwise. Set by
     /// `parachute_descent::begin_parachute_descent`, cleared on landing.
     #[serde(default)]
-    pub parachute_state:
-        Option<crate::sim::movement::parachute_descent::ParachuteDescentState>,
+    pub parachute_state: Option<crate::sim::movement::parachute_descent::ParachuteDescentState>,
     /// Active IronCurtain or ForceShield invulnerability timer.
     /// `None` = entity is vulnerable to damage. `Some` = all damage is nullified
     /// (except healing) until the timer expires. Applied by superweapon launch handlers.

@@ -274,7 +274,12 @@ fn second_c4_attacker_does_not_overwrite_plant() {
 
     // Another tick: pending must NOT have been overwritten by B.
     step(&mut sim, &rules, &heights);
-    let pending_after = sim.entities.get(bld).unwrap().pending_c4_detonation.unwrap();
+    let pending_after = sim
+        .entities
+        .get(bld)
+        .unwrap()
+        .pending_c4_detonation
+        .unwrap();
     assert_eq!(
         pending_after.plant_start_tick, pending.plant_start_tick,
         "pending plant_start_tick must not be overwritten by second attacker"
@@ -334,7 +339,11 @@ fn stop_cancels_walkup_but_not_already_claimed_plant() {
         "Stop must clear c4_plant during walk-up"
     );
     assert!(
-        sim.entities.get(bld).unwrap().pending_c4_detonation.is_none(),
+        sim.entities
+            .get(bld)
+            .unwrap()
+            .pending_c4_detonation
+            .is_none(),
         "no plant was claimed, building stays clean"
     );
 
@@ -351,7 +360,11 @@ fn stop_cancels_walkup_but_not_already_claimed_plant() {
     ));
     step(&mut sim, &rules, &heights);
     assert!(
-        sim.entities.get(bld).unwrap().pending_c4_detonation.is_some(),
+        sim.entities
+            .get(bld)
+            .unwrap()
+            .pending_c4_detonation
+            .is_some(),
         "PARITY: claimed plant survives Stop on attacker"
     );
 
@@ -391,7 +404,11 @@ fn cannot_c4_building_rejects_plant_command() {
         "PlantC4 must be silently rejected for CanC4=no buildings"
     );
     assert!(
-        sim.entities.get(oil).unwrap().pending_c4_detonation.is_none(),
+        sim.entities
+            .get(oil)
+            .unwrap()
+            .pending_c4_detonation
+            .is_none(),
         "rejected PlantC4 must not set pending_c4_detonation on the target"
     );
 }
@@ -419,7 +436,11 @@ fn non_c4_unit_rejects_plant_command() {
         "PlantC4 must be silently rejected for non-C4 attackers"
     );
     assert!(
-        sim.entities.get(bld).unwrap().pending_c4_detonation.is_none(),
+        sim.entities
+            .get(bld)
+            .unwrap()
+            .pending_c4_detonation
+            .is_none(),
         "rejected PlantC4 must not set pending_c4_detonation on the target"
     );
 }

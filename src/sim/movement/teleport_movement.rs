@@ -443,7 +443,13 @@ mod tests {
         entities.insert(e);
         let rules = default_rules();
 
-        assert!(issue_teleport_command(&mut entities, 1, (20, 20), &rules, false));
+        assert!(issue_teleport_command(
+            &mut entities,
+            1,
+            (20, 20),
+            &rules,
+            false
+        ));
         let entity = entities.get(1).expect("should exist");
         let ts = entity
             .teleport_state
@@ -495,7 +501,13 @@ mod tests {
         // Pass is_harvester=false so the test still exercises the full chrono-delay path.
         // (CMIN type fixture used here has harvester=false; the harvester instant-warp
         // path is covered by the dedicated tests below.)
-        assert!(issue_teleport_command(&mut entities, 1, (20, 20), &rules, false));
+        assert!(issue_teleport_command(
+            &mut entities,
+            1,
+            (20, 20),
+            &rules,
+            false
+        ));
         // Should have overridden to Teleport.
         let entity = entities.get(1).expect("should exist");
         let loco = entity.locomotor.as_ref().expect("has loco");

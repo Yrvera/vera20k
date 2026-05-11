@@ -98,11 +98,7 @@ pub fn try_drop(
     // ±128 lateral offset truncates to 0 and every drop lands on the same cell.
     let (facing, altitude, aircraft_x_lep, aircraft_y_lep) = match sim.entities.get(aircraft_id) {
         Some(a) => {
-            let alt = a
-                .locomotor
-                .as_ref()
-                .map(|l| l.altitude)
-                .unwrap_or(SIM_ZERO);
+            let alt = a.locomotor.as_ref().map(|l| l.altitude).unwrap_or(SIM_ZERO);
             let x_lep = a.position.rx as i32 * 256 + sim_to_i32(a.position.sub_x);
             let y_lep = a.position.ry as i32 * 256 + sim_to_i32(a.position.sub_y);
             (a.facing, alt, x_lep, y_lep)
@@ -234,7 +230,11 @@ mod tests {
             assert!(
                 (mag_sq - expected_sq).abs() < tolerance,
                 "facing={} produced offset ({},{}), mag²={}, expected ~{}",
-                facing, dx, dy, mag_sq, expected_sq,
+                facing,
+                dx,
+                dy,
+                mag_sq,
+                expected_sq,
             );
         }
     }
@@ -300,7 +300,15 @@ mod tests {
         // Facing 128 (South): LEFT = facing 64 (East, +X), RIGHT = facing 192 (West, -X).
         let (dx_left, _) = v_offset(128, 1); // ODD → LEFT
         let (dx_right, _) = v_offset(128, 0); // EVEN → RIGHT
-        assert!(dx_left > 100, "South-LEFT should be +X (East), got {}", dx_left);
-        assert!(dx_right < -100, "South-RIGHT should be -X (West), got {}", dx_right);
+        assert!(
+            dx_left > 100,
+            "South-LEFT should be +X (East), got {}",
+            dx_left
+        );
+        assert!(
+            dx_right < -100,
+            "South-RIGHT should be -X (West), got {}",
+            dx_right
+        );
     }
 }

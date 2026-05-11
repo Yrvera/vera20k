@@ -95,7 +95,12 @@ pub(super) fn draw_merged_bridge_occluded_pass<'a>(
     let mut groups: Vec<DrawGroup<'a, '_>> = Vec::new();
     if let (Some(ua), Some((buf, count))) = (unit_atlas, pool.get("unit_bridge")) {
         if count > 0 {
-            groups.push(DrawGroup::new_voxel(&ua.texture, buf, unit_instances, count));
+            groups.push(DrawGroup::new_voxel(
+                &ua.texture,
+                buf,
+                unit_instances,
+                count,
+            ));
         }
     }
 
@@ -199,7 +204,12 @@ pub(super) fn draw_merged_object_pass<'a>(
     // VXL units draw group -- voxel sprite pipeline (R8Uint atlas + PaletteSet).
     if let (Some(ua), Some((buf, count))) = (unit_atlas, pool.get("unit")) {
         if count > 0 {
-            groups.push(DrawGroup::new_voxel(&ua.texture, buf, unit_instances, count));
+            groups.push(DrawGroup::new_voxel(
+                &ua.texture,
+                buf,
+                unit_instances,
+                count,
+            ));
         }
     }
 
@@ -301,13 +311,7 @@ pub(super) fn draw_merged_object_pass<'a>(
                 // normal flow — voxel groups only exist when unit_atlas does).
             }
             DrawKind::Shp => {
-                batch.draw_passthrough_range(
-                    pass,
-                    g.texture,
-                    g.buffer,
-                    run_start,
-                    count,
-                );
+                batch.draw_passthrough_range(pass, g.texture, g.buffer, run_start, count);
             }
         }
         groups[gi].cursor = run_end;

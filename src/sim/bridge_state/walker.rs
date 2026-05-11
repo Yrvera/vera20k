@@ -162,33 +162,25 @@ impl BridgeRuntimeState {
     pub(super) fn is_ns_walker_overlay_high(overlay: u8) -> bool {
         // HIGH NS axis sub-range:
         //   [0xCD..=0xD5] ∪ [0xDF..=0xE2] ∪ {0xE7}
-        (0xCD..=0xD5).contains(&overlay)
-            || (0xDF..=0xE2).contains(&overlay)
-            || overlay == 0xE7
+        (0xCD..=0xD5).contains(&overlay) || (0xDF..=0xE2).contains(&overlay) || overlay == 0xE7
     }
 
     pub(super) fn is_ew_walker_overlay_high(overlay: u8) -> bool {
         // HIGH EW axis sub-range:
         //   [0xD6..=0xDE] ∪ [0xE3..=0xE6] ∪ {0xE8}
-        (0xD6..=0xDE).contains(&overlay)
-            || (0xE3..=0xE6).contains(&overlay)
-            || overlay == 0xE8
+        (0xD6..=0xDE).contains(&overlay) || (0xE3..=0xE6).contains(&overlay) || overlay == 0xE8
     }
 
     pub(super) fn is_ns_walker_overlay_low(overlay: u8) -> bool {
         // LOW NS axis sub-range:
         //   [0x4A..=0x52] ∪ [0x5C..=0x5F] ∪ {0x64}
-        (0x4A..=0x52).contains(&overlay)
-            || (0x5C..=0x5F).contains(&overlay)
-            || overlay == 0x64
+        (0x4A..=0x52).contains(&overlay) || (0x5C..=0x5F).contains(&overlay) || overlay == 0x64
     }
 
     pub(super) fn is_ew_walker_overlay_low(overlay: u8) -> bool {
         // LOW EW axis sub-range:
         //   [0x53..=0x5B] ∪ [0x60..=0x63] ∪ {0x65}
-        (0x53..=0x5B).contains(&overlay)
-            || (0x60..=0x63).contains(&overlay)
-            || overlay == 0x65
+        (0x53..=0x5B).contains(&overlay) || (0x60..=0x63).contains(&overlay) || overlay == 0x65
     }
 
     // ----- Perpendicular neighbor classifiers used by sibling cascade. -----
@@ -284,11 +276,7 @@ impl BridgeRuntimeState {
     /// writes the (this, north, south) length-axis triple. Returns the
     /// list of cells that hit final-collapse (overlay 0xE7) so the caller
     /// can emit BlowUpBridge actions.
-    fn apply_bridge_destruction_ns_high(
-        &mut self,
-        rx: u16,
-        ry: u16,
-    ) -> Vec<(u16, u16)> {
+    fn apply_bridge_destruction_ns_high(&mut self, rx: u16, ry: u16) -> Vec<(u16, u16)> {
         use crate::sim::bridge_specs::pick_destruction_overlay;
         use crate::sim::bridge_state::{Axis, DamageState};
 
@@ -343,11 +331,7 @@ impl BridgeRuntimeState {
     /// Sibling-cascade leaf for the EW body axis. Mirror of
     /// `apply_bridge_destruction_ns_high` with EW axis classifier, EW
     /// table, EW intermediates (0xE3 → 0xE4, 0xE5 → 0xE6), and final 0xE8.
-    fn apply_bridge_destruction_ew_high(
-        &mut self,
-        rx: u16,
-        ry: u16,
-    ) -> Vec<(u16, u16)> {
+    fn apply_bridge_destruction_ew_high(&mut self, rx: u16, ry: u16) -> Vec<(u16, u16)> {
         use crate::sim::bridge_specs::pick_destruction_overlay;
         use crate::sim::bridge_state::{Axis, DamageState};
 
@@ -416,9 +400,7 @@ impl BridgeRuntimeState {
         _terrain: &ResolvedTerrainGrid,
     ) -> StateOutcome {
         use crate::sim::bridge_specs::{CellAction, SetBridgeDirectionResult};
-        use crate::sim::bridge_state::{
-            compute_adjacent_bridges_dirty, Axis, DamageState,
-        };
+        use crate::sim::bridge_state::{Axis, DamageState, compute_adjacent_bridges_dirty};
 
         let Some(cell) = self.cell(rx, ry).copied() else {
             return StateOutcome::NoChange;
@@ -509,9 +491,7 @@ impl BridgeRuntimeState {
         _terrain: &ResolvedTerrainGrid,
     ) -> StateOutcome {
         use crate::sim::bridge_specs::{CellAction, SetBridgeDirectionResult};
-        use crate::sim::bridge_state::{
-            compute_adjacent_bridges_dirty, Axis, DamageState,
-        };
+        use crate::sim::bridge_state::{Axis, DamageState, compute_adjacent_bridges_dirty};
 
         let Some(cell) = self.cell(rx, ry).copied() else {
             return StateOutcome::NoChange;
@@ -652,11 +632,7 @@ impl BridgeRuntimeState {
     /// `apply_bridge_destruction_ns_high` with LOW outer gate
     /// (`[0x4A..=0x65]`), LOW NS table, LOW intermediates 0x5C/0x5E, and
     /// final 0x64.
-    fn apply_bridge_destruction_ns_low(
-        &mut self,
-        rx: u16,
-        ry: u16,
-    ) -> Vec<(u16, u16)> {
+    fn apply_bridge_destruction_ns_low(&mut self, rx: u16, ry: u16) -> Vec<(u16, u16)> {
         use crate::sim::bridge_specs::pick_destruction_overlay;
         use crate::sim::bridge_state::{Axis, DamageState};
 
@@ -705,11 +681,7 @@ impl BridgeRuntimeState {
 
     /// Sibling-cascade leaf for the LOW EW body axis. Intermediates
     /// 0x60/0x62 → 0x61/0x63; final 0x65.
-    fn apply_bridge_destruction_ew_low(
-        &mut self,
-        rx: u16,
-        ry: u16,
-    ) -> Vec<(u16, u16)> {
+    fn apply_bridge_destruction_ew_low(&mut self, rx: u16, ry: u16) -> Vec<(u16, u16)> {
         use crate::sim::bridge_specs::pick_destruction_overlay;
         use crate::sim::bridge_state::{Axis, DamageState};
 
@@ -773,9 +745,7 @@ impl BridgeRuntimeState {
         _terrain: &ResolvedTerrainGrid,
     ) -> StateOutcome {
         use crate::sim::bridge_specs::{CellAction, SetBridgeDirectionResult};
-        use crate::sim::bridge_state::{
-            compute_adjacent_bridges_dirty, Axis, DamageState,
-        };
+        use crate::sim::bridge_state::{Axis, DamageState, compute_adjacent_bridges_dirty};
 
         let Some(cell) = self.cell(rx, ry).copied() else {
             return StateOutcome::NoChange;
@@ -860,9 +830,7 @@ impl BridgeRuntimeState {
         _terrain: &ResolvedTerrainGrid,
     ) -> StateOutcome {
         use crate::sim::bridge_specs::{CellAction, SetBridgeDirectionResult};
-        use crate::sim::bridge_state::{
-            compute_adjacent_bridges_dirty, Axis, DamageState,
-        };
+        use crate::sim::bridge_state::{Axis, DamageState, compute_adjacent_bridges_dirty};
 
         let Some(cell) = self.cell(rx, ry).copied() else {
             return StateOutcome::NoChange;
@@ -937,9 +905,7 @@ impl BridgeRuntimeState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sim::bridge_state::{
-        Axis, BridgeCellRole, BridgeRuntimeCell, DamageState,
-    };
+    use crate::sim::bridge_state::{Axis, BridgeCellRole, BridgeRuntimeCell, DamageState};
 
     fn empty_terrain() -> ResolvedTerrainGrid {
         ResolvedTerrainGrid::from_cells(0, 0, Vec::new())
@@ -1269,7 +1235,13 @@ mod tests {
         assert_eq!(state.check_bridge_neighbors_ns_high(0, 0), 8);
     }
 
-    fn seed_low_body_cell(state: &mut BridgeRuntimeState, rx: u16, ry: u16, axis: Axis, overlay: u8) {
+    fn seed_low_body_cell(
+        state: &mut BridgeRuntimeState,
+        rx: u16,
+        ry: u16,
+        axis: Axis,
+        overlay: u8,
+    ) {
         state.test_seed_cell(
             rx,
             ry,

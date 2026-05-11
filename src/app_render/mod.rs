@@ -169,12 +169,7 @@ fn upload_to_gpu(
         }
     }
     pool.upload(&state.gpu, "building_turret", &world.building_turret);
-    const PARTICLE_KEYS: [&str; 4] = [
-        "particle_p0",
-        "particle_p1",
-        "particle_p2",
-        "particle_p3",
-    ];
+    const PARTICLE_KEYS: [&str; 4] = ["particle_p0", "particle_p1", "particle_p2", "particle_p3"];
     for (i, page_inst) in world.particle_paged.iter().enumerate() {
         if i < PARTICLE_KEYS.len() {
             pool.upload(&state.gpu, PARTICLE_KEYS[i], page_inst);

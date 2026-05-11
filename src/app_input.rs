@@ -256,8 +256,7 @@ fn apply_sidebar_action(state: &mut AppState, action: SidebarAction) {
             state.building_placement_preview = None;
         }
         SidebarAction::ArmSuperWeapon(section) => {
-            state.targeting_mode =
-                Some(crate::app_types::TargetingMode::SuperWeapon(section));
+            state.targeting_mode = Some(crate::app_types::TargetingMode::SuperWeapon(section));
             // Mutual exclusion: clear any pending building-placement preview.
             state.building_placement_preview = None;
             log::info!(

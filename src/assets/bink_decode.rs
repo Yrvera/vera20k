@@ -172,12 +172,7 @@ pub(crate) fn add_pixels8(dst: &mut [u8], block: &[i16; 64], stride: usize) {
 /// Copy an 8x8 block from `src` to `dst` at the given strides.
 ///
 /// Caller must ensure the src and dst rectangles do not overlap.
-pub(crate) fn copy_block8(
-    dst: &mut [u8],
-    src: &[u8],
-    dst_stride: usize,
-    src_stride: usize,
-) {
+pub(crate) fn copy_block8(dst: &mut [u8], src: &[u8], dst_stride: usize, src_stride: usize) {
     for row in 0..8 {
         dst[row * dst_stride..row * dst_stride + 8]
             .copy_from_slice(&src[row * src_stride..row * src_stride + 8]);
@@ -226,8 +221,8 @@ pub(crate) fn scale_block_8x8_to_16x16(src: &[u8; 64], dst: &mut [u8], stride: u
 
 use crate::assets::bink_bits::{BitReader, VlcTable};
 use crate::assets::bink_data::{
-    BINK_INTER_QUANT, BINK_INTRA_QUANT, BINK_PATTERNS, BINK_RLELENS, BINK_SCAN,
-    BINK_TREE_BITS, BINK_TREE_LENS, DC_START_BITS,
+    BINK_INTER_QUANT, BINK_INTRA_QUANT, BINK_PATTERNS, BINK_RLELENS, BINK_SCAN, BINK_TREE_BITS,
+    BINK_TREE_LENS, DC_START_BITS,
 };
 use crate::assets::bink_file::{BinkHeader, BinkVersion};
 use crate::assets::error::AssetError;
@@ -449,11 +444,7 @@ impl BinkDecoder {
     /// Prepare one bundle for decoding: reads its Huffman tree (or 16
     /// col_high trees for COLORS) and resets the bundle's cursors.
     /// Port of `read_bundle` at libavcodec/bink.c:285-313.
-    fn read_bundle(
-        &mut self,
-        r: &mut BitReader<'_>,
-        bundle_num: usize,
-    ) -> Result<(), AssetError> {
+    fn read_bundle(&mut self, r: &mut BitReader<'_>, bundle_num: usize) -> Result<(), AssetError> {
         if bundle_num == Src::Colors as usize {
             for i in 0..16 {
                 self.col_high[i] = HuffmanTree::read(r)?;
@@ -644,11 +635,7 @@ impl BinkDecoder {
     /// Decode unsigned run bundle. Either all-same (memset) or
     /// Huffman-per-entry.
     /// Port of `read_runs` at libavcodec/bink.c:331-353.
-    fn read_runs(
-        &mut self,
-        r: &mut BitReader<'_>,
-        bundle_num: usize,
-    ) -> Result<(), AssetError> {
+    fn read_runs(&mut self, r: &mut BitReader<'_>, bundle_num: usize) -> Result<(), AssetError> {
         let (len_bits, buf_end, tree, cur_dec_start) = {
             let b = &self.bundles[bundle_num];
             if b.skip_fills || b.cur_dec > b.cur_ptr {
@@ -692,11 +679,7 @@ impl BinkDecoder {
     /// tree picks the low nibble. The signed-bias transform for `version < 'i'`
     /// is skipped since BIKi+ does not use it.
     /// Port of `read_colors` at libavcodec/bink.c:458-498.
-    fn read_colors(
-        &mut self,
-        r: &mut BitReader<'_>,
-        bundle_num: usize,
-    ) -> Result<(), AssetError> {
+    fn read_colors(&mut self, r: &mut BitReader<'_>, bundle_num: usize) -> Result<(), AssetError> {
         let (len_bits, buf_end, tree, cur_dec_start) = {
             let b = &self.bundles[bundle_num];
             if b.skip_fills || b.cur_dec > b.cur_ptr {
@@ -1194,8 +1177,7 @@ impl BinkDecoder {
                                 reason: "RAW block COLORS OOB".to_string(),
                             });
                         }
-                        let src_window: [u8; 64] = self.bundle_data
-                            [start_off..start_off + 64]
+                        let src_window: [u8; 64] = self.bundle_data[start_off..start_off + 64]
                             .try_into()
                             .unwrap();
                         self.bundles[Src::Colors as usize].cur_ptr = start_off + 64;
@@ -1666,7 +1648,12 @@ impl HuffmanTree {
                     let mut src_window = [0u8; 16];
                     src_window[..2 * size].copy_from_slice(&in_arr[t..t + 2 * size]);
                     let mut dst_window = [0u8; 16];
-                    merge_lists(r, &mut dst_window[..2 * size], &src_window[..2 * size], size)?;
+                    merge_lists(
+                        r,
+                        &mut dst_window[..2 * size],
+                        &src_window[..2 * size],
+                        size,
+                    )?;
                     out_arr[t..t + 2 * size].copy_from_slice(&dst_window[..2 * size]);
                     t += size << 1;
                 }
@@ -1880,7 +1867,8 @@ mod tests {
         d.bundles[Src::BlockTypes as usize].len_bits = 8;
         let data = [0xBBu8];
         let mut r = crate::assets::bink_bits::BitReader::from_bytes(&data);
-        d.read_block_types(&mut r, Src::BlockTypes as usize).unwrap();
+        d.read_block_types(&mut r, Src::BlockTypes as usize)
+            .unwrap();
         assert!(d.bundles[Src::BlockTypes as usize].skip_fills);
     }
 
@@ -1904,7 +1892,8 @@ mod tests {
         d.bundles[Src::BlockTypes as usize].len_bits = 8;
         let data = [0x00u8];
         let mut r = crate::assets::bink_bits::BitReader::from_bytes(&data);
-        d.read_block_types(&mut r, Src::BlockTypes as usize).unwrap();
+        d.read_block_types(&mut r, Src::BlockTypes as usize)
+            .unwrap();
         assert!(d.bundles[Src::BlockTypes as usize].skip_fills);
     }
 

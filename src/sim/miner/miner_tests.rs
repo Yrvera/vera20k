@@ -676,10 +676,7 @@ fn harvest_continues_to_nearby_ore_when_cell_depletes_partial_cargo() {
         miner.state,
     );
     assert!(
-        !matches!(
-            miner.state,
-            MinerState::ReturnToRefinery | MinerState::Dock
-        ),
+        !matches!(miner.state, MinerState::ReturnToRefinery | MinerState::Dock),
         "Miner with ore nearby must NOT head to refinery on partial cargo"
     );
 }
@@ -715,10 +712,7 @@ fn harvest_returns_when_no_ore_within_short_scan() {
         "Miner should have extracted bales before depletion"
     );
     assert!(
-        matches!(
-            miner.state,
-            MinerState::ReturnToRefinery | MinerState::Dock
-        ),
+        matches!(miner.state, MinerState::ReturnToRefinery | MinerState::Dock),
         "With cargo but no nearby ore, miner must head to refinery; state was {:?}",
         miner.state,
     );
@@ -956,11 +950,9 @@ fn chrono_teleport_emits_in_and_out_sounds_at_correct_cells() {
         .sound_events
         .iter()
         .filter_map(|e| match e {
-            SimSoundEvent::ChronoTeleport {
-                sound_id,
-                rx,
-                ry,
-            } => Some((sim.interner.resolve(*sound_id).to_string(), *rx, *ry)),
+            SimSoundEvent::ChronoTeleport { sound_id, rx, ry } => {
+                Some((sim.interner.resolve(*sound_id).to_string(), *rx, *ry))
+            }
             _ => None,
         })
         .collect();
@@ -1070,11 +1062,9 @@ fn chrono_teleport_sound_falls_back_to_rules_general() {
         .sound_events
         .iter()
         .filter_map(|e| match e {
-            SimSoundEvent::ChronoTeleport {
-                sound_id,
-                rx,
-                ry,
-            } => Some((sim.interner.resolve(*sound_id).to_string(), *rx, *ry)),
+            SimSoundEvent::ChronoTeleport { sound_id, rx, ry } => {
+                Some((sim.interner.resolve(*sound_id).to_string(), *rx, *ry))
+            }
             _ => None,
         })
         .collect();
@@ -1968,8 +1958,16 @@ fn harvester_drives_into_refinery_foundation_without_bumping_it() {
     // can't `let p = entity.position` through a borrow — read individual
     // fields into primitives instead.
     let (rx_before, ry_before, sub_x_before, sub_y_before) = {
-        let r = sim.entities.get(refinery_id).expect("refinery just spawned");
-        (r.position.rx, r.position.ry, r.position.sub_x, r.position.sub_y)
+        let r = sim
+            .entities
+            .get(refinery_id)
+            .expect("refinery just spawned");
+        (
+            r.position.rx,
+            r.position.ry,
+            r.position.sub_x,
+            r.position.sub_y,
+        )
     };
 
     // Register foundation cells in OccupancyGrid (the real-game configuration —
@@ -2390,7 +2388,10 @@ fn full_dock_cycle_war_miner() {
         m.state,
     );
     assert!(m.cargo.is_empty(), "cargo must be drained");
-    assert!(m.reserved_refinery.is_none(), "reservation must be released");
+    assert!(
+        m.reserved_refinery.is_none(),
+        "reservation must be released"
+    );
     assert!(
         !sim.production.dock_reservations.is_occupied(100),
         "dock must be free for the next miner"

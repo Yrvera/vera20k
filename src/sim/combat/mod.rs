@@ -48,15 +48,15 @@ use crate::sim::miner::ResourceNode;
 
 use self::combat_weapon::select_weapon_with_ifv;
 use crate::map::entities::EntityCategory;
+use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::rules::object_type::ObjectType;
 use crate::rules::ruleset::RuleSet;
 use crate::rules::warhead_type::WarheadType;
 use crate::sim::animation::animation_is_prone;
-use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::sim::bridge_state::BridgeDamageEvent;
-use crate::sim::overlay_grid::{OverlayGrid, WallDamageEvent};
 use crate::sim::entity_store::EntityStore;
 use crate::sim::intern::{InternedId, StringInterner};
+use crate::sim::overlay_grid::{OverlayGrid, WallDamageEvent};
 use crate::sim::passenger::PassengerRole;
 use crate::sim::power_system::PowerState;
 use crate::sim::vision::FogState;
@@ -346,9 +346,9 @@ pub fn issue_attack_command(
     };
 
     // Read attacker position before mutable borrow (needed for body-facing delta).
-    let attacker_pos = entities.get(attacker_id).map(|a| {
-        (a.position.rx, a.position.ry, a.barrel_facing.is_some())
-    });
+    let attacker_pos = entities
+        .get(attacker_id)
+        .map(|a| (a.position.rx, a.position.ry, a.barrel_facing.is_some()));
     let (arx, ary, has_turret) = match attacker_pos {
         Some(p) => p,
         None => return false,
@@ -544,10 +544,7 @@ pub enum SmudgeSpawnRequest {
         foundation_h: u8,
     },
     /// Emitted per surviving foundation cell (SpawnSurvivors path).
-    BuildingSurvivor {
-        cell_rx: u16,
-        cell_ry: u16,
-    },
+    BuildingSurvivor { cell_rx: u16, cell_ry: u16 },
 }
 
 /// Emit the warhead's AnimList animation and a paired smudge spawn request
@@ -760,9 +757,7 @@ fn handle_entity_deaths(
             if is_garrison_building {
                 let (foundation_w, foundation_h) = rules
                     .object(type_id_str_for_branch)
-                    .map(|obj| {
-                        crate::sim::production::foundation_dimensions(&obj.foundation)
-                    })
+                    .map(|obj| crate::sim::production::foundation_dimensions(&obj.foundation))
                     .unwrap_or((1, 1));
                 destroyed_garrison_buildings.push(DestroyedGarrisonBuilding {
                     building_id: dead_id,
@@ -1326,7 +1321,17 @@ pub fn tick_combat_with_fog(
         // tuple: cell-center coords, "always alive" (cells don't despawn), no
         // category/type/owner — the unit fires its primary weapon and splash
         // delivers the damage.
-        let target_data: Option<(u16, u16, SimFixed, SimFixed, u16, EntityCategory, InternedId, InternedId, bool)> = match snap.target {
+        let target_data: Option<(
+            u16,
+            u16,
+            SimFixed,
+            SimFixed,
+            u16,
+            EntityCategory,
+            InternedId,
+            InternedId,
+            bool,
+        )> = match snap.target {
             TargetKind::Entity(target_id) => entities.get(target_id).map(|t| {
                 let (trx, try_, tsx, tsy) = target_coords(t, Some(rules), interner);
                 (
@@ -1343,7 +1348,8 @@ pub fn tick_combat_with_fog(
                     // and implement the real infantry prone-entry conditions so
                     // ProneDamage applies during normal gameplay instead of only when
                     // prone sequences are explicitly driven.
-                    t.category == EntityCategory::Infantry && animation_is_prone(t.animation.as_ref()),
+                    t.category == EntityCategory::Infantry
+                        && animation_is_prone(t.animation.as_ref()),
                 )
             }),
             TargetKind::Cell(rx, ry) => {
@@ -1517,8 +1523,14 @@ pub fn tick_combat_with_fog(
                 }
                 _ => {
                     let dist_sq = lepton_distance_sq_raw(
-                        snap.pos_rx, snap.pos_ry, snap.sub_x, snap.sub_y,
-                        target_rx, target_ry, target_sub_x, target_sub_y,
+                        snap.pos_rx,
+                        snap.pos_ry,
+                        snap.sub_x,
+                        snap.sub_y,
+                        target_rx,
+                        target_ry,
+                        target_sub_x,
+                        target_sub_y,
                     );
                     is_within_range_leptons(dist_sq, effective_range)
                 }
@@ -1527,8 +1539,14 @@ pub fn tick_combat_with_fog(
             // Garrison override path — preserve 2D until a later stage threads
             // override-aware 3D.
             let dist_sq = lepton_distance_sq_raw(
-                snap.pos_rx, snap.pos_ry, snap.sub_x, snap.sub_y,
-                target_rx, target_ry, target_sub_x, target_sub_y,
+                snap.pos_rx,
+                snap.pos_ry,
+                snap.sub_x,
+                snap.sub_y,
+                target_rx,
+                target_ry,
+                target_sub_x,
+                target_sub_y,
             );
             is_within_range_leptons(dist_sq, effective_range)
         };
@@ -1556,8 +1574,8 @@ pub fn tick_combat_with_fog(
             // Aligned iff destination matches AND no rotation in progress.
             // Both checks needed: destination may match while interpolation
             // is still mid-arc (animated value not yet at destination).
-            let aligned = barrel.current(binary_frame) == desired
-                && !barrel.is_rotating(binary_frame);
+            let aligned =
+                barrel.current(binary_frame) == desired && !barrel.is_rotating(binary_frame);
             if !aligned {
                 // FireDecision::Facing — drives gattling spin-up via
                 // drives_gattling_spinup() == true.

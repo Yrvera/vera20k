@@ -122,9 +122,7 @@ impl EntityStore {
     /// Returns an empty slice if the owner has no entities.
     /// O(1) lookup + O(n) iteration where n = that owner's entity count.
     pub fn ids_for_owner(&self, owner: crate::sim::intern::InternedId) -> &[u64] {
-        self.by_owner
-            .get(&owner)
-            .map_or(&[], |ids| ids.as_slice())
+        self.by_owner.get(&owner).map_or(&[], |ids| ids.as_slice())
     }
 
     /// Rebuild the per-owner index from primary storage.

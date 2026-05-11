@@ -132,15 +132,7 @@ mod tests {
     fn empty_grid_produces_empty_vec() {
         let grid = SmudgeGrid::new(8, 8);
         let registry = empty_registry();
-        let v = build_visible_instances(
-            &grid,
-            &registry,
-            &never_lookup,
-            0.0,
-            0.0,
-            800.0,
-            600.0,
-        );
+        let v = build_visible_instances(&grid, &registry, &never_lookup, 0.0, 0.0, 800.0, 600.0);
         assert!(v.is_empty());
     }
 
@@ -157,15 +149,7 @@ mod tests {
             },
         );
         let registry = empty_registry();
-        let v = build_visible_instances(
-            &grid,
-            &registry,
-            &never_lookup,
-            0.0,
-            0.0,
-            800.0,
-            600.0,
-        );
+        let v = build_visible_instances(&grid, &registry, &never_lookup, 0.0, 0.0, 800.0, 600.0);
         assert!(v.is_empty());
     }
 
@@ -189,15 +173,7 @@ mod tests {
                 frame_offset: 0,
             },
         );
-        let v = build_visible_instances(
-            &grid,
-            &registry,
-            &never_lookup,
-            0.0,
-            0.0,
-            800.0,
-            600.0,
-        );
+        let v = build_visible_instances(&grid, &registry, &never_lookup, 0.0, 0.0, 800.0, 600.0);
         assert!(v.is_empty());
     }
 

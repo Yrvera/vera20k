@@ -3716,21 +3716,20 @@ pub fn advance_drive_track(
         // Skip if at last_index (no next step) or if the next point is the
         // (0, 0) sentinel at a non-zero index (matches L6 in design ledger).
         let next_idx = idx + 1;
-        let (next_dx, next_dy, has_next) = if next_idx < points.len()
-            && (next_idx as u16) <= last_index
-        {
-            let npt = &points[next_idx];
-            let (ntx, nty, _) =
-                transform_track_point(npt.x, npt.y, npt.facing, state.transform_flags);
-            let is_sentinel = npt.x == 0 && npt.y == 0 && next_idx != 0;
-            if is_sentinel {
-                (0, 0, false)
+        let (next_dx, next_dy, has_next) =
+            if next_idx < points.len() && (next_idx as u16) <= last_index {
+                let npt = &points[next_idx];
+                let (ntx, nty, _) =
+                    transform_track_point(npt.x, npt.y, npt.facing, state.transform_flags);
+                let is_sentinel = npt.x == 0 && npt.y == 0 && next_idx != 0;
+                if is_sentinel {
+                    (0, 0, false)
+                } else {
+                    ((ntx as i32) - (tx as i32), (nty as i32) - (ty as i32), true)
+                }
             } else {
-                ((ntx as i32) - (tx as i32), (nty as i32) - (ty as i32), true)
-            }
-        } else {
-            (0, 0, false)
-        };
+                (0, 0, false)
+            };
 
         DriveTrackAdvance {
             sub_x: SimFixed::from_num(state.head_offset_x + tx as i32 + state.cell_offset_x),

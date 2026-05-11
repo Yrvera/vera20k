@@ -68,12 +68,24 @@ impl DamageState {
     pub fn to_state_byte(self, axis: Axis) -> u8 {
         let ns_base: u8 = 0;
         let ew_base: u8 = 9;
-        let base = match axis { Axis::NS => ns_base, Axis::EW => ew_base };
+        let base = match axis {
+            Axis::NS => ns_base,
+            Axis::EW => ew_base,
+        };
         match self {
             DamageState::Healthy { variant } => base + variant.min(5),
-            DamageState::Damaged => match axis { Axis::NS => 6, Axis::EW => 0xF },
-            DamageState::PartialCollapseA => match axis { Axis::NS => 7, Axis::EW => 0x11 },
-            DamageState::PartialCollapseB => match axis { Axis::NS => 8, Axis::EW => 0x10 },
+            DamageState::Damaged => match axis {
+                Axis::NS => 6,
+                Axis::EW => 0xF,
+            },
+            DamageState::PartialCollapseA => match axis {
+                Axis::NS => 7,
+                Axis::EW => 0x11,
+            },
+            DamageState::PartialCollapseB => match axis {
+                Axis::NS => 8,
+                Axis::EW => 0x10,
+            },
             DamageState::Destroyed => 0,
         }
     }
@@ -324,8 +336,7 @@ pub enum StateOutcome {
         /// `BlowUpBridge` cascade actions emitted by `set_bridge_direction`.
         /// Orchestrator dispatches these (kill ground occupants, Limbo
         /// bridge-deck, spawn debris).
-        set_bridge_direction:
-            crate::sim::bridge_specs::SetBridgeDirectionResult,
+        set_bridge_direction: crate::sim::bridge_specs::SetBridgeDirectionResult,
         /// Cells where `UpdateAdjacentBridges_High` should run for rim
         /// re-evaluation. Orchestrator (Phase F Task 27) runs the actual
         /// rim helper.
@@ -498,7 +509,13 @@ impl BridgeRuntimeState {
                 let span_id = next_span_id;
                 next_span_id = next_span_id.saturating_add(1);
                 let span = walk_anchor_pattern(
-                    span_id, (rx, ry), axis, direction, group_id, width, height,
+                    span_id,
+                    (rx, ry),
+                    axis,
+                    direction,
+                    group_id,
+                    width,
+                    height,
                 );
                 // Tag each cell in span.
                 for (slot, cell_pos) in span.iter_cells() {
@@ -794,10 +811,18 @@ impl BridgeRuntimeState {
                 }
                 // Fire UpdateRamp_*A and _*B on perpendicular targets.
                 let _ = crate::sim::bridge_specs::update_ramp_perpendicular(
-                    self, anchor_pos, axis, Phase::DamageA, is_high_bridge,
+                    self,
+                    anchor_pos,
+                    axis,
+                    Phase::DamageA,
+                    is_high_bridge,
                 );
                 let _ = crate::sim::bridge_specs::update_ramp_perpendicular(
-                    self, anchor_pos, axis, Phase::DamageB, is_high_bridge,
+                    self,
+                    anchor_pos,
+                    axis,
+                    Phase::DamageB,
+                    is_high_bridge,
                 );
                 StateOutcome::Absorbed
             }
@@ -805,10 +830,18 @@ impl BridgeRuntimeState {
                 // Full collapse — fire CollapseA + CollapseB perpendicular,
                 // anchor → Destroyed, set_bridge_direction cascade.
                 let _ = crate::sim::bridge_specs::update_ramp_perpendicular(
-                    self, anchor_pos, axis, Phase::CollapseA, is_high_bridge,
+                    self,
+                    anchor_pos,
+                    axis,
+                    Phase::CollapseA,
+                    is_high_bridge,
                 );
                 let _ = crate::sim::bridge_specs::update_ramp_perpendicular(
-                    self, anchor_pos, axis, Phase::CollapseB, is_high_bridge,
+                    self,
+                    anchor_pos,
+                    axis,
+                    Phase::CollapseB,
+                    is_high_bridge,
                 );
                 let mut destroyed = vec![anchor_pos];
                 if let Some(c) = self.cell_mut(anchor_pos.0, anchor_pos.1) {
@@ -820,7 +853,9 @@ impl BridgeRuntimeState {
                     let (dx, dy) = perp_dir.offset();
                     let nx = anchor_pos.0 as i32 + dx;
                     let ny = anchor_pos.1 as i32 + dy;
-                    if nx < 0 || ny < 0 { continue; }
+                    if nx < 0 || ny < 0 {
+                        continue;
+                    }
                     let pos = (nx as u16, ny as u16);
                     if let Some(c) = self.cell(pos.0, pos.1) {
                         if matches!(c.damage_state, DamageState::Destroyed)
@@ -842,7 +877,11 @@ impl BridgeRuntimeState {
             DamageState::PartialCollapseA => {
                 // Single CollapseA call, then collapse-finalize.
                 let _ = crate::sim::bridge_specs::update_ramp_perpendicular(
-                    self, anchor_pos, axis, Phase::CollapseA, is_high_bridge,
+                    self,
+                    anchor_pos,
+                    axis,
+                    Phase::CollapseA,
+                    is_high_bridge,
                 );
                 if let Some(c) = self.cell_mut(anchor_pos.0, anchor_pos.1) {
                     c.damage_state = DamageState::Destroyed;
@@ -858,7 +897,11 @@ impl BridgeRuntimeState {
             }
             DamageState::PartialCollapseB => {
                 let _ = crate::sim::bridge_specs::update_ramp_perpendicular(
-                    self, anchor_pos, axis, Phase::CollapseB, is_high_bridge,
+                    self,
+                    anchor_pos,
+                    axis,
+                    Phase::CollapseB,
+                    is_high_bridge,
                 );
                 if let Some(c) = self.cell_mut(anchor_pos.0, anchor_pos.1) {
                     c.damage_state = DamageState::Destroyed;
@@ -948,7 +991,12 @@ impl BridgeRuntimeState {
             Axis::EW => Direction::S,
         };
         let Some(anchor_pos) = crate::sim::bridge_specs::bridgehead_walk_to_anchor(
-            (rx, ry), axis, walk_dir, height_lookup, map_w, map_h,
+            (rx, ry),
+            axis,
+            walk_dir,
+            height_lookup,
+            map_w,
+            map_h,
         ) else {
             return StateOutcome::NoChange;
         };
@@ -957,10 +1005,18 @@ impl BridgeRuntimeState {
         match input_cell.damage_state {
             DamageState::Healthy { .. } => {
                 let _ = crate::sim::bridge_specs::update_ramp_perpendicular(
-                    self, anchor_pos, axis, Phase::DamageA, is_high_bridge,
+                    self,
+                    anchor_pos,
+                    axis,
+                    Phase::DamageA,
+                    is_high_bridge,
                 );
                 let _ = crate::sim::bridge_specs::update_ramp_perpendicular(
-                    self, anchor_pos, axis, Phase::DamageB, is_high_bridge,
+                    self,
+                    anchor_pos,
+                    axis,
+                    Phase::DamageB,
+                    is_high_bridge,
                 );
                 if let Some(c) = self.cell_mut(rx, ry) {
                     c.damage_state = DamageState::Damaged;
@@ -974,14 +1030,26 @@ impl BridgeRuntimeState {
                     .unwrap_or(0);
 
                 let row = crate::sim::bridge_specs::bridgehead_blow_up_row(
-                    anchor_pos, axis, anchor_height, map_w, map_h,
+                    anchor_pos,
+                    axis,
+                    anchor_height,
+                    map_w,
+                    map_h,
                 );
 
                 let _ = crate::sim::bridge_specs::update_ramp_perpendicular(
-                    self, anchor_pos, axis, Phase::CollapseA, is_high_bridge,
+                    self,
+                    anchor_pos,
+                    axis,
+                    Phase::CollapseA,
+                    is_high_bridge,
                 );
                 let _ = crate::sim::bridge_specs::update_ramp_perpendicular(
-                    self, anchor_pos, axis, Phase::CollapseB, is_high_bridge,
+                    self,
+                    anchor_pos,
+                    axis,
+                    Phase::CollapseB,
+                    is_high_bridge,
                 );
 
                 // Bridgehead's own state → Destroyed. NOTE: anchor's
@@ -993,9 +1061,7 @@ impl BridgeRuntimeState {
 
                 // Collect any perpendicular cells that hit collapse-final.
                 let mut destroyed = vec![(rx, ry)];
-                for &perp_dir in
-                    &[Direction::E, Direction::W, Direction::N, Direction::S]
-                {
+                for &perp_dir in &[Direction::E, Direction::W, Direction::N, Direction::S] {
                     let (dx, dy) = perp_dir.offset();
                     let nx = anchor_pos.0 as i32 + dx;
                     let ny = anchor_pos.1 as i32 + dy;
@@ -1017,11 +1083,7 @@ impl BridgeRuntimeState {
                 // we reuse the result type as a cascade carrier for the
                 // orchestrator. Slot index is 0 — bridgehead's row is not
                 // part of an AnchorSpan, so the slot has no meaning here.
-                let actions: Vec<(
-                    (u16, u16),
-                    usize,
-                    crate::sim::bridge_specs::CellAction,
-                )> = row
+                let actions: Vec<((u16, u16), usize, crate::sim::bridge_specs::CellAction)> = row
                     .iter()
                     .filter_map(|c| {
                         c.map(|cell| {
@@ -1122,7 +1184,8 @@ fn compute_bridge_endpoints(
                     continue;
                 }
                 if let Some(cell) = terrain.cell(nx, ny) {
-                    if !cell.ground_walk_blocked && !cell.is_water
+                    if !cell.ground_walk_blocked
+                        && !cell.is_water
                         && !ground_neighbors.contains(&(nx, ny))
                     {
                         ground_neighbors.push((nx, ny));
@@ -1143,8 +1206,8 @@ fn compute_bridge_endpoints(
             for j in (i + 1)..ground_neighbors.len() {
                 let (ax, ay) = ground_neighbors[i];
                 let (bx, by) = ground_neighbors[j];
-                let dist = (ax as i32 - bx as i32).unsigned_abs()
-                    + (ay as i32 - by as i32).unsigned_abs();
+                let dist =
+                    (ax as i32 - bx as i32).unsigned_abs() + (ay as i32 - by as i32).unsigned_abs();
                 if dist > best_dist {
                     best_dist = dist;
                     best_a = ground_neighbors[i];
@@ -1179,9 +1242,7 @@ fn cardinal_neighbors(
     })
 }
 
-fn bridge_layer_to_axis(
-    layer: Option<&crate::map::resolved_terrain::BridgeLayer>,
-) -> Option<Axis> {
+fn bridge_layer_to_axis(layer: Option<&crate::map::resolved_terrain::BridgeLayer>) -> Option<Axis> {
     layer.map(|bl| bridge_direction_to_axis(bl.direction))
 }
 
@@ -1383,8 +1444,7 @@ mod tests {
         // The orchestrator's outer gate is `is_destroyable()`. When a
         // bridge runtime is built with `destroyable=false`, the gate
         // closes and the dispatcher bails before any path fires.
-        let state =
-            BridgeRuntimeState::from_resolved_terrain(&make_bridge_terrain(), false, 50);
+        let state = BridgeRuntimeState::from_resolved_terrain(&make_bridge_terrain(), false, 50);
         assert!(!state.is_destroyable());
         assert!(state.is_bridge_walkable(1, 0));
     }
@@ -1393,13 +1453,23 @@ mod tests {
     fn bridge_endpoints_detected() {
         let state = BridgeRuntimeState::from_resolved_terrain(&make_bridge_terrain(), true, 300);
         let records = state.endpoint_records();
-        assert_eq!(records.len(), 1, "should have exactly one bridge endpoint record");
+        assert_eq!(
+            records.len(),
+            1,
+            "should have exactly one bridge endpoint record"
+        );
         let rec = &records[0];
         assert!(rec.active);
         assert_eq!(rec.group_id, 1);
         let endpoints = [rec.endpoint_a, rec.endpoint_b];
-        assert!(endpoints.contains(&(0, 0)), "endpoint_a or _b should be (0,0)");
-        assert!(endpoints.contains(&(4, 0)), "endpoint_a or _b should be (4,0)");
+        assert!(
+            endpoints.contains(&(0, 0)),
+            "endpoint_a or _b should be (0,0)"
+        );
+        assert!(
+            endpoints.contains(&(4, 0)),
+            "endpoint_a or _b should be (4,0)"
+        );
     }
 
     #[test]
@@ -1412,8 +1482,7 @@ mod tests {
         // dispatcher's terminal effect) and call the refresh helper
         // directly. The full pipeline is covered by world-level integration
         // tests in `world_tests.rs`.
-        let mut state =
-            BridgeRuntimeState::from_resolved_terrain(&make_bridge_terrain(), true, 50);
+        let mut state = BridgeRuntimeState::from_resolved_terrain(&make_bridge_terrain(), true, 50);
         // Pre-condition: endpoint exists and is active.
         let records = state.endpoint_records();
         assert_eq!(records.len(), 1);
@@ -1441,8 +1510,7 @@ mod tests {
         // Per the new state-machine semantic: a single destroyed cell in a
         // group severs the bridge — the endpoint flips inactive immediately,
         // not just when the entire group is destroyed.
-        let mut state =
-            BridgeRuntimeState::from_resolved_terrain(&make_bridge_terrain(), true, 50);
+        let mut state = BridgeRuntimeState::from_resolved_terrain(&make_bridge_terrain(), true, 50);
         assert!(state.endpoint_records()[0].active);
 
         // Destroy only ONE cell of the 3-cell group.
@@ -1460,8 +1528,7 @@ mod tests {
     #[test]
     fn refresh_endpoint_active_flags_leaves_intact_groups_active() {
         // No destroyed cells anywhere — refresh must not flip anything.
-        let mut state =
-            BridgeRuntimeState::from_resolved_terrain(&make_bridge_terrain(), true, 50);
+        let mut state = BridgeRuntimeState::from_resolved_terrain(&make_bridge_terrain(), true, 50);
         state.refresh_endpoint_active_flags();
         assert!(state.endpoint_records()[0].active);
     }
@@ -1477,8 +1544,14 @@ mod tests {
     #[test]
     fn direction_opposite_is_idempotent() {
         for dir in [
-            Direction::N, Direction::NE, Direction::E, Direction::SE,
-            Direction::S, Direction::SW, Direction::W, Direction::NW,
+            Direction::N,
+            Direction::NE,
+            Direction::E,
+            Direction::SE,
+            Direction::S,
+            Direction::SW,
+            Direction::W,
+            Direction::NW,
         ] {
             assert_eq!(dir.opposite().opposite(), dir);
         }
@@ -1540,21 +1613,19 @@ mod tests {
 
     #[test]
     fn bridge_runtime_state_snapshot_round_trip() {
-        let state = BridgeRuntimeState::from_resolved_terrain(
-            &make_bridge_terrain(), true, 1500,
-        );
+        let state = BridgeRuntimeState::from_resolved_terrain(&make_bridge_terrain(), true, 1500);
         let json = serde_json::to_string(&state).expect("serialize");
-        let restored: BridgeRuntimeState =
-            serde_json::from_str(&json).expect("deserialize");
+        let restored: BridgeRuntimeState = serde_json::from_str(&json).expect("deserialize");
         // Compare cell-by-cell across the full grid.
         for (rx, ry) in [(0, 0), (1, 0), (2, 0), (3, 0), (4, 0)] {
-            assert_eq!(state.cell(rx, ry), restored.cell(rx, ry), "cell ({rx},{ry})");
+            assert_eq!(
+                state.cell(rx, ry),
+                restored.cell(rx, ry),
+                "cell ({rx},{ry})"
+            );
         }
         // Compare anchor spans.
-        assert_eq!(
-            state.anchor_spans().len(),
-            restored.anchor_spans().len()
-        );
+        assert_eq!(state.anchor_spans().len(), restored.anchor_spans().len());
         for (id, span) in state.anchor_spans() {
             assert_eq!(restored.anchor_span(*id), Some(span));
         }
@@ -1572,11 +1643,7 @@ mod tests {
     fn overlay_byte_populated_at_map_load() {
         // make_bridge_terrain in this file creates a 5x1 strip; the constructor
         // populates overlay_byte from bridge_layer.overlay_id (or 0 if none).
-        let state = BridgeRuntimeState::from_resolved_terrain(
-            &make_bridge_terrain(),
-            true,
-            1500,
-        );
+        let state = BridgeRuntimeState::from_resolved_terrain(&make_bridge_terrain(), true, 1500);
         // Field is reachable on every populated bridge cell; type is u8.
         for (_, cell) in state.iter_cells() {
             let _byte: u8 = cell.overlay_byte;
@@ -1585,15 +1652,15 @@ mod tests {
 
     #[test]
     fn overlay_byte_round_trips_via_snapshot() {
-        let state = BridgeRuntimeState::from_resolved_terrain(
-            &make_bridge_terrain(), true, 1500,
-        );
+        let state = BridgeRuntimeState::from_resolved_terrain(&make_bridge_terrain(), true, 1500);
         let json = serde_json::to_string(&state).expect("serialize");
-        let restored: BridgeRuntimeState =
-            serde_json::from_str(&json).expect("deserialize");
+        let restored: BridgeRuntimeState = serde_json::from_str(&json).expect("deserialize");
         for ((rx, ry), cell) in state.iter_cells() {
             let r = restored.cell(rx, ry).expect("restored cell present");
-            assert_eq!(cell.overlay_byte, r.overlay_byte, "overlay_byte at ({rx},{ry})");
+            assert_eq!(
+                cell.overlay_byte, r.overlay_byte,
+                "overlay_byte at ({rx},{ry})"
+            );
         }
     }
 
@@ -1640,9 +1707,18 @@ mod tests {
 
     #[test]
     fn damage_state_to_byte_ns_axis() {
-        assert_eq!(DamageState::Healthy { variant: 0 }.to_state_byte(Axis::NS), 0);
-        assert_eq!(DamageState::Healthy { variant: 3 }.to_state_byte(Axis::NS), 3);
-        assert_eq!(DamageState::Healthy { variant: 5 }.to_state_byte(Axis::NS), 5);
+        assert_eq!(
+            DamageState::Healthy { variant: 0 }.to_state_byte(Axis::NS),
+            0
+        );
+        assert_eq!(
+            DamageState::Healthy { variant: 3 }.to_state_byte(Axis::NS),
+            3
+        );
+        assert_eq!(
+            DamageState::Healthy { variant: 5 }.to_state_byte(Axis::NS),
+            5
+        );
         assert_eq!(DamageState::Damaged.to_state_byte(Axis::NS), 6);
         assert_eq!(DamageState::PartialCollapseA.to_state_byte(Axis::NS), 7);
         assert_eq!(DamageState::PartialCollapseB.to_state_byte(Axis::NS), 8);
@@ -1651,8 +1727,14 @@ mod tests {
 
     #[test]
     fn damage_state_to_byte_ew_axis() {
-        assert_eq!(DamageState::Healthy { variant: 0 }.to_state_byte(Axis::EW), 9);
-        assert_eq!(DamageState::Healthy { variant: 5 }.to_state_byte(Axis::EW), 14);
+        assert_eq!(
+            DamageState::Healthy { variant: 0 }.to_state_byte(Axis::EW),
+            9
+        );
+        assert_eq!(
+            DamageState::Healthy { variant: 5 }.to_state_byte(Axis::EW),
+            14
+        );
         assert_eq!(DamageState::Damaged.to_state_byte(Axis::EW), 0xF);
         assert_eq!(DamageState::PartialCollapseA.to_state_byte(Axis::EW), 0x11);
         assert_eq!(DamageState::PartialCollapseB.to_state_byte(Axis::EW), 0x10);
@@ -1662,27 +1744,63 @@ mod tests {
     #[test]
     fn damage_state_to_byte_clamps_healthy_variant() {
         // Variant > 5 is invalid input; should clamp to 5 (max defined healthy).
-        assert_eq!(DamageState::Healthy { variant: 7 }.to_state_byte(Axis::NS), 5);
-        assert_eq!(DamageState::Healthy { variant: 10 }.to_state_byte(Axis::EW), 14);
+        assert_eq!(
+            DamageState::Healthy { variant: 7 }.to_state_byte(Axis::NS),
+            5
+        );
+        assert_eq!(
+            DamageState::Healthy { variant: 10 }.to_state_byte(Axis::EW),
+            14
+        );
     }
 
     #[test]
     fn damage_state_from_byte_ns_range() {
-        assert_eq!(DamageState::from_state_byte(0), Some(DamageState::Healthy { variant: 0 }));
-        assert_eq!(DamageState::from_state_byte(3), Some(DamageState::Healthy { variant: 3 }));
-        assert_eq!(DamageState::from_state_byte(5), Some(DamageState::Healthy { variant: 5 }));
+        assert_eq!(
+            DamageState::from_state_byte(0),
+            Some(DamageState::Healthy { variant: 0 })
+        );
+        assert_eq!(
+            DamageState::from_state_byte(3),
+            Some(DamageState::Healthy { variant: 3 })
+        );
+        assert_eq!(
+            DamageState::from_state_byte(5),
+            Some(DamageState::Healthy { variant: 5 })
+        );
         assert_eq!(DamageState::from_state_byte(6), Some(DamageState::Damaged));
-        assert_eq!(DamageState::from_state_byte(7), Some(DamageState::PartialCollapseA));
-        assert_eq!(DamageState::from_state_byte(8), Some(DamageState::PartialCollapseB));
+        assert_eq!(
+            DamageState::from_state_byte(7),
+            Some(DamageState::PartialCollapseA)
+        );
+        assert_eq!(
+            DamageState::from_state_byte(8),
+            Some(DamageState::PartialCollapseB)
+        );
     }
 
     #[test]
     fn damage_state_from_byte_ew_range() {
-        assert_eq!(DamageState::from_state_byte(9), Some(DamageState::Healthy { variant: 0 }));
-        assert_eq!(DamageState::from_state_byte(14), Some(DamageState::Healthy { variant: 5 }));
-        assert_eq!(DamageState::from_state_byte(0xF), Some(DamageState::Damaged));
-        assert_eq!(DamageState::from_state_byte(0x10), Some(DamageState::PartialCollapseB));
-        assert_eq!(DamageState::from_state_byte(0x11), Some(DamageState::PartialCollapseA));
+        assert_eq!(
+            DamageState::from_state_byte(9),
+            Some(DamageState::Healthy { variant: 0 })
+        );
+        assert_eq!(
+            DamageState::from_state_byte(14),
+            Some(DamageState::Healthy { variant: 5 })
+        );
+        assert_eq!(
+            DamageState::from_state_byte(0xF),
+            Some(DamageState::Damaged)
+        );
+        assert_eq!(
+            DamageState::from_state_byte(0x10),
+            Some(DamageState::PartialCollapseB)
+        );
+        assert_eq!(
+            DamageState::from_state_byte(0x11),
+            Some(DamageState::PartialCollapseA)
+        );
     }
 
     #[test]
@@ -1693,10 +1811,22 @@ mod tests {
 
     #[test]
     fn render_state_byte_strips_healthy_variant() {
-        assert_eq!(DamageState::Healthy { variant: 0 }.render_state_byte(Axis::NS), 0);
-        assert_eq!(DamageState::Healthy { variant: 5 }.render_state_byte(Axis::NS), 0);
-        assert_eq!(DamageState::Healthy { variant: 0 }.render_state_byte(Axis::EW), 9);
-        assert_eq!(DamageState::Healthy { variant: 5 }.render_state_byte(Axis::EW), 9);
+        assert_eq!(
+            DamageState::Healthy { variant: 0 }.render_state_byte(Axis::NS),
+            0
+        );
+        assert_eq!(
+            DamageState::Healthy { variant: 5 }.render_state_byte(Axis::NS),
+            0
+        );
+        assert_eq!(
+            DamageState::Healthy { variant: 0 }.render_state_byte(Axis::EW),
+            9
+        );
+        assert_eq!(
+            DamageState::Healthy { variant: 5 }.render_state_byte(Axis::EW),
+            9
+        );
         assert_eq!(DamageState::Damaged.render_state_byte(Axis::NS), 6);
         assert_eq!(DamageState::Damaged.render_state_byte(Axis::EW), 0xF);
         assert_eq!(DamageState::Destroyed.render_state_byte(Axis::NS), 0);
@@ -1764,7 +1894,8 @@ mod tests {
         // Non-anchor body cell with anchor_span_id=1 — used by
         // body_driver_non_anchor_body_cell_follows_to_anchor.
         state.test_seed_cell(
-            5, 4,
+            5,
+            4,
             BridgeRuntimeCell {
                 role: BridgeCellRole::Body,
                 ..healthy_template
@@ -1779,8 +1910,12 @@ mod tests {
             id: 1,
             anchor: (5, 5),
             cells: [
-                Some((5, 5)), Some((6, 5)), Some((7, 5)),
-                Some((8, 5)), Some((4, 5)), None,
+                Some((5, 5)),
+                Some((6, 5)),
+                Some((7, 5)),
+                Some((8, 5)),
+                Some((4, 5)),
+                None,
             ],
             axis: Axis::NS,
             direction: Direction::E,
@@ -1807,7 +1942,10 @@ mod tests {
         assert!(matches!(outcome, StateOutcome::Absorbed));
         // Anchor's damage_state advanced, not the input body cell's.
         assert_eq!(state.cell(5, 5).unwrap().damage_state, DamageState::Damaged);
-        assert_eq!(state.cell(5, 4).unwrap().damage_state, DamageState::Healthy { variant: 0 });
+        assert_eq!(
+            state.cell(5, 4).unwrap().damage_state,
+            DamageState::Healthy { variant: 0 }
+        );
     }
 
     #[test]
@@ -1824,9 +1962,12 @@ mod tests {
             } => {
                 assert!(destroyed_cells.contains(&(5, 5)));
                 // 4 BlowUpBridge actions per Task 12 invariant.
-                let blow_ups = set_bridge_direction.actions.iter()
-                    .filter(|(_, _, a)| matches!(a,
-                        crate::sim::bridge_specs::CellAction::BlowUpBridge))
+                let blow_ups = set_bridge_direction
+                    .actions
+                    .iter()
+                    .filter(|(_, _, a)| {
+                        matches!(a, crate::sim::bridge_specs::CellAction::BlowUpBridge)
+                    })
                     .count();
                 assert_eq!(blow_ups, 4);
                 // 2 perpendicular cells flagged dirty (E and W of (5,5)).
@@ -1835,7 +1976,10 @@ mod tests {
             }
             other => panic!("expected Collapsed, got {other:?}"),
         }
-        assert_eq!(state.cell(5, 5).unwrap().damage_state, DamageState::Destroyed);
+        assert_eq!(
+            state.cell(5, 5).unwrap().damage_state,
+            DamageState::Destroyed
+        );
     }
 
     #[test]
@@ -1844,7 +1988,10 @@ mod tests {
         state.cell_mut(5, 5).unwrap().damage_state = DamageState::PartialCollapseA;
         let outcome = state.body_cell_advance_state(5, 5, true);
         assert!(matches!(outcome, StateOutcome::Collapsed { .. }));
-        assert_eq!(state.cell(5, 5).unwrap().damage_state, DamageState::Destroyed);
+        assert_eq!(
+            state.cell(5, 5).unwrap().damage_state,
+            DamageState::Destroyed
+        );
     }
 
     #[test]
@@ -1853,7 +2000,10 @@ mod tests {
         state.cell_mut(5, 5).unwrap().damage_state = DamageState::PartialCollapseB;
         let outcome = state.body_cell_advance_state(5, 5, true);
         assert!(matches!(outcome, StateOutcome::Collapsed { .. }));
-        assert_eq!(state.cell(5, 5).unwrap().damage_state, DamageState::Destroyed);
+        assert_eq!(
+            state.cell(5, 5).unwrap().damage_state,
+            DamageState::Destroyed
+        );
     }
 
     #[test]
@@ -2152,8 +2302,7 @@ mod tests {
     fn bridgehead_advance_partial_collapse_states_no_change() {
         let mut state = make_bridgehead_state_ns();
         let terrain = make_bridgehead_terrain_ns();
-        for partial in [DamageState::PartialCollapseA, DamageState::PartialCollapseB]
-        {
+        for partial in [DamageState::PartialCollapseA, DamageState::PartialCollapseB] {
             state.cell_mut(2, 2).unwrap().damage_state = partial;
             let outcome = state.bridgehead_advance_state(2, 2, true, &terrain);
             assert_eq!(outcome, StateOutcome::NoChange);
@@ -2325,14 +2474,22 @@ mod tests {
         assert!(state.path_matches_cell(DispatchPath::HighStateMachine, 2, 0, &ctx_plus, &terrain));
         // impact_z=4 is -1 → boundary inclusive
         let ctx_minus = dispatch_test_ctx(100, 4);
-        assert!(
-            state.path_matches_cell(DispatchPath::HighStateMachine, 2, 0, &ctx_minus, &terrain)
-        );
+        assert!(state.path_matches_cell(
+            DispatchPath::HighStateMachine,
+            2,
+            0,
+            &ctx_minus,
+            &terrain
+        ));
         // impact_z=3 is -2 → outside window
         let ctx_below = dispatch_test_ctx(100, 3);
-        assert!(
-            !state.path_matches_cell(DispatchPath::HighStateMachine, 2, 0, &ctx_below, &terrain)
-        );
+        assert!(!state.path_matches_cell(
+            DispatchPath::HighStateMachine,
+            2,
+            0,
+            &ctx_below,
+            &terrain
+        ));
     }
 
     #[test]

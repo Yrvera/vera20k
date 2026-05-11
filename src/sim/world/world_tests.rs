@@ -507,8 +507,7 @@ fn test_bridge_damage_rebuilds_path_grid() {
     // → `is_bridge_walkable` returns false → rebuilt path grid says no bridge
     // layer at any of the 3 cells.
     let mut sim = Simulation::new();
-    let (resolved, bridge_state) =
-        ew_high_bridge_strip_for_dispatch(2, 0, 2, false, 0);
+    let (resolved, bridge_state) = ew_high_bridge_strip_for_dispatch(2, 0, 2, false, 0);
     sim.resolved_terrain = Some(resolved.clone());
     sim.bridge_state = Some(bridge_state);
 
@@ -550,8 +549,7 @@ fn test_bridge_damage_rebuilds_path_grid() {
 #[test]
 fn test_destroyed_bridge_snaps_unit_to_ground_when_ground_exists() {
     let mut sim = Simulation::new();
-    let (resolved, bridge_state) =
-        ew_high_bridge_strip_for_dispatch(5, 5, 3, false, 1);
+    let (resolved, bridge_state) = ew_high_bridge_strip_for_dispatch(5, 5, 3, false, 1);
     sim.resolved_terrain = Some(resolved.clone());
     sim.bridge_state = Some(bridge_state);
 
@@ -604,8 +602,7 @@ fn test_destroyed_bridge_snaps_unit_to_ground_when_ground_exists() {
 #[test]
 fn test_destroyed_bridge_snaps_unit_to_ground_over_water_below() {
     let mut sim = Simulation::new();
-    let (resolved, bridge_state) =
-        ew_high_bridge_strip_for_dispatch(5, 5, 3, true, 0);
+    let (resolved, bridge_state) = ew_high_bridge_strip_for_dispatch(5, 5, 3, true, 0);
     sim.resolved_terrain = Some(resolved.clone());
     sim.bridge_state = Some(bridge_state);
 
@@ -644,7 +641,10 @@ fn test_destroyed_bridge_snaps_unit_to_ground_over_water_below() {
 
     // DropIn correction: unit ALIVE, snapped to ground level=0, OnBridge
     // cleared, locomotor flipped to Ground/Idle.
-    let e = sim.entities.get(1).expect("deck unit must SURVIVE collapse over water");
+    let e = sim
+        .entities
+        .get(1)
+        .expect("deck unit must SURVIVE collapse over water");
     assert_eq!(
         e.health.current, e.health.max,
         "DropIn never harms — health stays at max"
@@ -661,8 +661,7 @@ fn test_destroyed_bridge_snaps_unit_to_ground_over_water_below() {
 #[test]
 fn test_destroyed_bridge_snaps_unit_to_ground_over_overlay_blocked() {
     let mut sim = Simulation::new();
-    let (mut resolved, bridge_state) =
-        ew_high_bridge_strip_for_dispatch(5, 5, 3, false, 0);
+    let (mut resolved, bridge_state) = ew_high_bridge_strip_for_dispatch(5, 5, 3, false, 0);
     let idx = resolved.index(5, 5).expect("bridge index");
     resolved.cells[idx].overlay_blocks = true;
     sim.resolved_terrain = Some(resolved.clone());
@@ -715,8 +714,7 @@ fn test_destroyed_bridge_snaps_unit_to_ground_over_overlay_blocked() {
 #[test]
 fn test_destroyed_bridge_snaps_unit_to_ground_over_terrain_object_blocked() {
     let mut sim = Simulation::new();
-    let (mut resolved, bridge_state) =
-        ew_high_bridge_strip_for_dispatch(5, 5, 3, false, 0);
+    let (mut resolved, bridge_state) = ew_high_bridge_strip_for_dispatch(5, 5, 3, false, 0);
     let idx = resolved.index(5, 5).expect("bridge index");
     resolved.cells[idx].terrain_object_blocks = true;
     sim.resolved_terrain = Some(resolved.clone());
@@ -772,8 +770,7 @@ fn test_destroyed_bridge_snaps_unit_to_ground_over_terrain_object_blocked() {
 #[test]
 fn test_destroyed_bridge_fallout_matches_rebuilt_ground_walkability() {
     let mut sim = Simulation::new();
-    let (mut resolved, bridge_state) =
-        ew_high_bridge_strip_for_dispatch(5, 5, 3, false, 0);
+    let (mut resolved, bridge_state) = ew_high_bridge_strip_for_dispatch(5, 5, 3, false, 0);
     let idx = resolved.index(5, 5).expect("bridge index");
     resolved.cells[idx].is_cliff_like = true;
     sim.resolved_terrain = Some(resolved.clone());
@@ -839,8 +836,7 @@ fn test_destroyed_bridge_fallout_matches_rebuilt_ground_walkability() {
 #[test]
 fn test_bridge_collapse_kills_ground_unit_under_destroyed_cell() {
     let mut sim = Simulation::new();
-    let (resolved, bridge_state) =
-        ew_high_bridge_strip_for_dispatch(5, 5, 3, false, 0);
+    let (resolved, bridge_state) = ew_high_bridge_strip_for_dispatch(5, 5, 3, false, 0);
     sim.resolved_terrain = Some(resolved.clone());
     sim.bridge_state = Some(bridge_state);
 
@@ -903,8 +899,7 @@ fn test_bridge_collapse_kills_ground_unit_under_destroyed_cell() {
 fn test_bridge_walker_collapses_full_3_cell_strip_on_single_hit() {
     use crate::sim::bridge_state::DamageState;
     let mut sim = Simulation::new();
-    let (resolved, bridge_state) =
-        ew_high_bridge_strip_for_dispatch(5, 5, 3, false, 0);
+    let (resolved, bridge_state) = ew_high_bridge_strip_for_dispatch(5, 5, 3, false, 0);
     sim.resolved_terrain = Some(resolved);
     sim.bridge_state = Some(bridge_state);
 
@@ -946,12 +941,10 @@ fn test_bridge_walker_collapses_full_3_cell_strip_on_single_hit() {
 #[test]
 fn test_bridge_dispatcher_state_machine_overlay_routes_to_high_sm_not_direct() {
     use crate::sim::bridge_state::{
-        Axis, AnchorSpan, BridgeCellRole, BridgeRuntimeCell, DamageState,
-        Direction, DispatchPath,
+        AnchorSpan, Axis, BridgeCellRole, BridgeRuntimeCell, DamageState, Direction, DispatchPath,
     };
     let mut sim = Simulation::new();
-    let (resolved, mut bridge_state) =
-        ew_high_bridge_strip_for_dispatch(5, 5, 4, false, 0);
+    let (resolved, mut bridge_state) = ew_high_bridge_strip_for_dispatch(5, 5, 4, false, 0);
     // Override center cell to the post-transition state: overlay 0x6 (out
     // of the 0xCD..=0xE6 raw HIGH range), role=Anchor, damage_state=Damaged
     // (so a single hit Damaged→Destroyed). Anchor span carries only the
@@ -1042,13 +1035,12 @@ fn test_bridge_dispatcher_state_machine_overlay_routes_to_high_sm_not_direct() {
 #[test]
 fn test_bridge_orchestrator_state_machine_path_collapses_anchor_and_deactivates_endpoint() {
     use crate::sim::bridge_state::{
-        Axis, AnchorSpan, BridgeCellRole, BridgeRuntimeCell, DamageState, Direction,
+        AnchorSpan, Axis, BridgeCellRole, BridgeRuntimeCell, DamageState, Direction,
     };
     let mut sim = Simulation::new();
     // Use the strip helper so resolved_terrain has a bridge group with
     // ground neighbors → endpoint records exist.
-    let (resolved, mut bridge_state) =
-        ew_high_bridge_strip_for_dispatch(5, 5, 4, false, 0);
+    let (resolved, mut bridge_state) = ew_high_bridge_strip_for_dispatch(5, 5, 4, false, 0);
     // Override (5, 5) to the post-transition Damaged state-machine setup.
     bridge_state.test_seed_cell(
         5,
@@ -1111,11 +1103,7 @@ fn test_bridge_orchestrator_state_machine_path_collapses_anchor_and_deactivates_
     // Endpoint deactivation: at least one record was active pre-collapse
     // and any active record for group 1 is now inactive.
     if pre_active.iter().any(|&a| a) {
-        let post_active: Vec<bool> = bs
-            .endpoint_records()
-            .iter()
-            .map(|r| r.active)
-            .collect();
+        let post_active: Vec<bool> = bs.endpoint_records().iter().map(|r| r.active).collect();
         assert!(
             post_active.iter().all(|&a| !a),
             "all group-1 endpoints must deactivate after collapse \
@@ -1135,8 +1123,7 @@ fn test_bridge_collapse_is_deterministic_under_replay() {
     fn run_one_collapse(seed: u64) -> u64 {
         let mut sim = Simulation::new();
         sim.rng = crate::sim::rng::SimRng::new(seed);
-        let (resolved, bridge_state) =
-            ew_high_bridge_strip_for_dispatch(5, 5, 4, false, 0);
+        let (resolved, bridge_state) = ew_high_bridge_strip_for_dispatch(5, 5, 4, false, 0);
         sim.resolved_terrain = Some(resolved);
         sim.bridge_state = Some(bridge_state);
 
@@ -1176,8 +1163,7 @@ fn replay_determinism_with_bridge_collapse_and_rim_refresh() {
     fn run_one(seed: u64) -> u64 {
         let mut sim = Simulation::new();
         sim.rng = crate::sim::rng::SimRng::new(seed);
-        let (resolved, bridge_state) =
-            ew_high_bridge_strip_for_dispatch(5, 5, 4, false, 0);
+        let (resolved, bridge_state) = ew_high_bridge_strip_for_dispatch(5, 5, 4, false, 0);
         sim.resolved_terrain = Some(resolved);
         sim.bridge_state = Some(bridge_state);
 
@@ -1215,8 +1201,7 @@ fn replay_determinism_with_bridge_collapse_and_rim_refresh() {
 fn test_bridge_snapshot_roundtrip_preserves_state_after_collapse() {
     use crate::sim::bridge_state::DamageState;
     let mut sim = Simulation::new();
-    let (resolved, bridge_state) =
-        ew_high_bridge_strip_for_dispatch(5, 5, 4, false, 0);
+    let (resolved, bridge_state) = ew_high_bridge_strip_for_dispatch(5, 5, 4, false, 0);
     sim.resolved_terrain = Some(resolved);
     sim.bridge_state = Some(bridge_state);
 
@@ -1249,7 +1234,10 @@ fn test_bridge_snapshot_roundtrip_preserves_state_after_collapse() {
         assert_eq!(post_cell.overlay_byte, 0xE8);
     }
     assert_eq!(pre.bridge_strength(), restored.bridge_strength());
-    assert_eq!(pre.endpoint_records().len(), restored.endpoint_records().len());
+    assert_eq!(
+        pre.endpoint_records().len(),
+        restored.endpoint_records().len()
+    );
     for (a, b) in pre
         .endpoint_records()
         .iter()
@@ -1277,8 +1265,7 @@ fn test_bridge_dispatcher_consumes_one_path_gate_draw_per_non_ion_event() {
     let seed = 0xABCD_1234_u64;
     let mut sim = Simulation::new();
     sim.rng = crate::sim::rng::SimRng::new(seed);
-    let (resolved, bridge_state) =
-        ew_high_bridge_strip_for_dispatch(5, 5, 4, false, 0);
+    let (resolved, bridge_state) = ew_high_bridge_strip_for_dispatch(5, 5, 4, false, 0);
     let bridge_strength = bridge_state.bridge_strength();
     sim.resolved_terrain = Some(resolved);
     sim.bridge_state = Some(bridge_state);
@@ -1343,7 +1330,14 @@ fn test_water_mover_lookahead_does_not_attach_bridge_occupancy_under_bridge() {
     });
 
     let path_grid = PathGrid::new(2, 1);
-    let _ = sim.advance_tick(&[], Some(&rules), &BTreeMap::new(), Some(&path_grid), None, 33);
+    let _ = sim.advance_tick(
+        &[],
+        Some(&rules),
+        &BTreeMap::new(),
+        Some(&path_grid),
+        None,
+        33,
+    );
 
     let boat = sim.entities.get(boat_id).expect("boat still exists");
     assert!(
@@ -1390,7 +1384,14 @@ fn test_too_big_ship_can_move_under_bridge_route() {
     // Use tick_ms=1000 so the ship crosses the cell boundary in 1 tick
     // (speed=256 * dt=1.0 = 256 leptons = 1 cell).
     let path_grid = PathGrid::new(2, 1);
-    let _ = sim.advance_tick(&[], Some(&rules), &BTreeMap::new(), Some(&path_grid), None, 1000);
+    let _ = sim.advance_tick(
+        &[],
+        Some(&rules),
+        &BTreeMap::new(),
+        Some(&path_grid),
+        None,
+        1000,
+    );
 
     let ship = sim.entities.get(ship_id).expect("ship still exists");
     assert!(
@@ -1429,7 +1430,14 @@ fn test_ship_turn_path_completes_without_drive_track_stall() {
 
     let path_grid = PathGrid::new(3, 3);
     for _ in 0..10 {
-        let _ = sim.advance_tick(&[], Some(&rules), &BTreeMap::new(), Some(&path_grid), None, 100);
+        let _ = sim.advance_tick(
+            &[],
+            Some(&rules),
+            &BTreeMap::new(),
+            Some(&path_grid),
+            None,
+            100,
+        );
     }
 
     let boat = sim.entities.get(boat_id).expect("boat still exists");
@@ -1485,7 +1493,14 @@ fn test_real_ship_locomotor_move_command_crosses_water_cells() {
         100,
     );
     for _ in 0..80 {
-        let _ = sim.advance_tick(&[], Some(&rules), &BTreeMap::new(), Some(&path_grid), None, 100);
+        let _ = sim.advance_tick(
+            &[],
+            Some(&rules),
+            &BTreeMap::new(),
+            Some(&path_grid),
+            None,
+            100,
+        );
     }
 
     let ship = sim.entities.get(ship_id).expect("ship still exists");
@@ -1543,7 +1558,14 @@ fn test_real_ship_locomotor_crosses_water_surface_cells_with_non_water_land_type
         100,
     );
     for _ in 0..80 {
-        let _ = sim.advance_tick(&[], Some(&rules), &BTreeMap::new(), Some(&path_grid), None, 100);
+        let _ = sim.advance_tick(
+            &[],
+            Some(&rules),
+            &BTreeMap::new(),
+            Some(&path_grid),
+            None,
+            100,
+        );
     }
 
     let ship = sim.entities.get(ship_id).expect("ship still exists");
@@ -1609,7 +1631,14 @@ fn test_real_ship_move_command_can_path_under_bridge_when_too_big() {
         .map(|mt| mt.path.clone())
         .expect("ship should have an initial path");
     for _ in 0..120 {
-        let _ = sim.advance_tick(&[], Some(&rules), &BTreeMap::new(), Some(&path_grid), None, 100);
+        let _ = sim.advance_tick(
+            &[],
+            Some(&rules),
+            &BTreeMap::new(),
+            Some(&path_grid),
+            None,
+            100,
+        );
     }
 
     let ship = sim.entities.get(ship_id).expect("ship still exists");
@@ -1816,7 +1845,14 @@ fn test_execute_tick_delay_blocks_early_execution() {
         },
     );
 
-    let _ = sim.advance_tick(&[delayed.clone()], None, &empty_heights(), Some(&grid), None, 33);
+    let _ = sim.advance_tick(
+        &[delayed.clone()],
+        None,
+        &empty_heights(),
+        Some(&grid),
+        None,
+        33,
+    );
     assert!(
         sim.entities
             .get(1)
@@ -1824,7 +1860,14 @@ fn test_execute_tick_delay_blocks_early_execution() {
             .is_none()
     );
 
-    let _ = sim.advance_tick(&[delayed.clone()], None, &empty_heights(), Some(&grid), None, 33);
+    let _ = sim.advance_tick(
+        &[delayed.clone()],
+        None,
+        &empty_heights(),
+        Some(&grid),
+        None,
+        33,
+    );
     assert!(
         sim.entities
             .get(1)
@@ -2211,7 +2254,14 @@ fn test_attack_move_auto_acquires_enemy() {
         },
     );
 
-    let _ = sim.advance_tick(&[cmd], Some(&rules), &empty_heights(), Some(&grid), None, 100);
+    let _ = sim.advance_tick(
+        &[cmd],
+        Some(&rules),
+        &empty_heights(),
+        Some(&grid),
+        None,
+        100,
+    );
     let attack = sim
         .entities
         .get(1)
@@ -2277,7 +2327,14 @@ fn test_attack_move_resumes_after_kill() {
         },
     );
 
-    let _ = sim.advance_tick(&[cmd], Some(&rules), &empty_heights(), Some(&grid), None, 100);
+    let _ = sim.advance_tick(
+        &[cmd],
+        Some(&rules),
+        &empty_heights(),
+        Some(&grid),
+        None,
+        100,
+    );
     assert!(
         sim.entities.get(1).unwrap().attack_target.is_none(),
         "target should die and attack should clear"
@@ -2597,8 +2654,7 @@ fn bridge_body_builder_queries_atlas_with_post_tick_state_byte_frame() {
 
     // Build a 3-cell EW bridge strip via the existing fixture. Cells at
     // (4,5), (5,5), (6,5) are seeded Healthy with overlay 0xDC, axis EW.
-    let (_resolved, mut bridge_state) =
-        ew_high_bridge_strip_for_dispatch(5, 5, 4, false, 0);
+    let (_resolved, mut bridge_state) = ew_high_bridge_strip_for_dispatch(5, 5, 4, false, 0);
 
     // Force the center cell to Damaged directly — Task 16 is about the
     // sim → render bridge, not about which damage path produced Damaged.
@@ -2646,8 +2702,7 @@ fn bridge_body_builder_queries_atlas_with_post_tick_state_byte_frame() {
     let lighting_grid: LightingGrid = LightingGrid::new();
 
     // Camera centered on cell (5, 5) so view culling doesn't reject it.
-    let (cam_target_x, cam_target_y) =
-        crate::map::terrain::iso_to_screen(5, 5, 4);
+    let (cam_target_x, cam_target_y) = crate::map::terrain::iso_to_screen(5, 5, 4);
 
     let mut out: Vec<crate::render::batch::SpriteInstance> = Vec::new();
     build_bridge_body_instances_inner(

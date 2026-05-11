@@ -55,8 +55,7 @@ fn decodes_all_fixture_frames_bit_exact() {
         let oracle_v = &oracle[base + y_size + uv_size..base + frame_bytes];
 
         for row in 0..h {
-            let got =
-                &decoder.cur.y[row * decoder.cur.stride_y..row * decoder.cur.stride_y + w];
+            let got = &decoder.cur.y[row * decoder.cur.stride_y..row * decoder.cur.stride_y + w];
             let want = &oracle_y[row * w..row * w + w];
             if got != want {
                 let col = (0..w).find(|&c| got[c] != want[c]).unwrap();
@@ -67,12 +66,12 @@ fn decodes_all_fixture_frames_bit_exact() {
             }
         }
         for row in 0..h / 2 {
-            let got_u = &decoder.cur.u
-                [row * decoder.cur.stride_uv..row * decoder.cur.stride_uv + w / 2];
+            let got_u =
+                &decoder.cur.u[row * decoder.cur.stride_uv..row * decoder.cur.stride_uv + w / 2];
             let want_u = &oracle_u[row * w / 2..row * w / 2 + w / 2];
             assert_eq!(got_u, want_u, "U mismatch at frame {} row {}", i, row);
-            let got_v = &decoder.cur.v
-                [row * decoder.cur.stride_uv..row * decoder.cur.stride_uv + w / 2];
+            let got_v =
+                &decoder.cur.v[row * decoder.cur.stride_uv..row * decoder.cur.stride_uv + w / 2];
             let want_v = &oracle_v[row * w / 2..row * w / 2 + w / 2];
             assert_eq!(got_v, want_v, "V mismatch at frame {} row {}", i, row);
         }

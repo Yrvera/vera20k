@@ -62,15 +62,31 @@ impl BridgeRailingAtlas {
 /// live-debugger capture replaces them. Each tuple is
 /// `(shp_frame_1based, dx, dy)`; `shp_frame == 0` ⇒ no railing for the slot.
 const CONCRETE_RAILING_VALUES: [(u8, i16, i16); 10] = [
-    (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0),
-    (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0),
+    (0, 0, 0),
+    (0, 0, 0),
+    (0, 0, 0),
+    (0, 0, 0),
+    (0, 0, 0),
+    (0, 0, 0),
+    (0, 0, 0),
+    (0, 0, 0),
+    (0, 0, 0),
+    (0, 0, 0),
 ];
 
 /// Wood-bridge railing values — placeholder all-zero entries until a
 /// live-debugger capture replaces them.
 const WOOD_RAILING_VALUES: [(u8, i16, i16); 10] = [
-    (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0),
-    (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0),
+    (0, 0, 0),
+    (0, 0, 0),
+    (0, 0, 0),
+    (0, 0, 0),
+    (0, 0, 0),
+    (0, 0, 0),
+    (0, 0, 0),
+    (0, 0, 0),
+    (0, 0, 0),
+    (0, 0, 0),
 ];
 
 pub fn build_bridge_railing_atlas(
@@ -207,7 +223,9 @@ fn pack_single_shp(
 
     let total_area: u64 = rendered
         .iter()
-        .map(|s| (s.width as u64 + SPRITE_PADDING as u64) * (s.height as u64 + SPRITE_PADDING as u64))
+        .map(|s| {
+            (s.width as u64 + SPRITE_PADDING as u64) * (s.height as u64 + SPRITE_PADDING as u64)
+        })
         .sum();
     let estimated_side: u32 = (total_area as f64).sqrt().ceil() as u32;
     let max_texture_dim: u32 = gpu.device.limits().max_texture_dimension_2d;
@@ -291,7 +309,10 @@ mod tests {
     fn build_table_returns_all_none_when_shp_frame_is_zero() {
         let table = build_table(&[(0, 0, 0); 10], &HashMap::new());
         for (slot, entry) in table.iter().enumerate() {
-            assert!(entry.is_none(), "slot {slot} should be None for shp_frame=0");
+            assert!(
+                entry.is_none(),
+                "slot {slot} should be None for shp_frame=0"
+            );
         }
     }
 
@@ -299,9 +320,21 @@ mod tests {
     fn build_table_skips_slots_with_missing_frame_entries() {
         // Slot 0 references frame 3 (1-based), but frame_entries is empty —
         // build_table must yield None rather than panicking.
-        let table = build_table(&[(3, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0),
-                                  (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0)],
-                                 &HashMap::new());
+        let table = build_table(
+            &[
+                (3, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+            ],
+            &HashMap::new(),
+        );
         assert!(table[0].is_none());
     }
 }

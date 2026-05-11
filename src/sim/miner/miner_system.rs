@@ -517,7 +517,13 @@ fn handle_return(
                         (snap.rx, snap.ry, snap.z),
                         (dock.0, dock.1, snap.z),
                     );
-                    issue_teleport_command(&mut sim.entities, snap.entity_id, dock, &rules.general, true);
+                    issue_teleport_command(
+                        &mut sim.entities,
+                        snap.entity_id,
+                        dock,
+                        &rules.general,
+                        true,
+                    );
                     // Stay in ReturnToRefinery — the teleport guard above
                     // will wait one tick for Relocate to land, then adjacency
                     // check below transitions to Dock/WaitForDock.
@@ -600,7 +606,13 @@ fn handle_forced_return(
                         (snap.rx, snap.ry, snap.z),
                         (dock.0, dock.1, snap.z),
                     );
-                    issue_teleport_command(&mut sim.entities, snap.entity_id, dock, &rules.general, true);
+                    issue_teleport_command(
+                        &mut sim.entities,
+                        snap.entity_id,
+                        dock,
+                        &rules.general,
+                        true,
+                    );
                     // Stay in ForcedReturn — teleport guard waits one tick for
                     // Relocate to land, then handle_return below takes over.
                     return;
@@ -702,7 +714,13 @@ fn begin_return(
                     (snap.rx, snap.ry, snap.z),
                     (dock.0, dock.1, snap.z),
                 );
-                issue_teleport_command(&mut sim.entities, snap.entity_id, dock, &rules.general, true);
+                issue_teleport_command(
+                    &mut sim.entities,
+                    snap.entity_id,
+                    dock,
+                    &rules.general,
+                    true,
+                );
             }
             // Both far (teleporting) and close (driving) → ReturnToRefinery.
             snap.miner.state = MinerState::ReturnToRefinery;

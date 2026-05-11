@@ -22,7 +22,7 @@ use crate::map::terrain;
 use crate::render::sprite_atlas;
 use crate::render::unit_atlas;
 use crate::sim::animation::{self, SequenceSet};
-use crate::sim::overlay_grid::{recalc_overlay_passability, OverlayGrid};
+use crate::sim::overlay_grid::{OverlayGrid, recalc_overlay_passability};
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::production;
 use crate::sim::replay::{ReplayHeader, ReplayLog};
@@ -370,11 +370,7 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                         // and select healthy/damaged variant based on health ratio.
                         continue;
                     }
-                    SimSoundEvent::ChronoTeleport {
-                        sound_id,
-                        rx,
-                        ry,
-                    } => {
+                    SimSoundEvent::ChronoTeleport { sound_id, rx, ry } => {
                         let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
                         GameSoundEvent::ChronoTeleport {
                             sound_id: sim.interner.resolve(sound_id).to_string(),
@@ -585,13 +581,7 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                         let overlay_ref: &OverlayGrid = overlay_grid;
                         let mut passability_changed = false;
                         for &(rx, ry) in &dirty {
-                            if recalc_overlay_passability(
-                                overlay_ref,
-                                terrain,
-                                registry,
-                                rx,
-                                ry,
-                            ) {
+                            if recalc_overlay_passability(overlay_ref, terrain, registry, rx, ry) {
                                 passability_changed = true;
                             }
                         }

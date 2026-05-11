@@ -269,11 +269,8 @@ pub fn load_map(
         // Eagerly populate per-anim SHP frame dimensions so the smudge
         // dispatcher can size-filter without falling back to the (30, 30)
         // default that always loses the threshold check.
-        let (populated, fallback) = a.populate_anim_frame_dims(
-            &asset_manager,
-            theater_ext,
-            &map_data.header.theater,
-        );
+        let (populated, fallback) =
+            a.populate_anim_frame_dims(&asset_manager, theater_ext, &map_data.header.theater);
         log::info!(
             "Anim frame dims: {} populated, {} fallback (defaults to 30x30)",
             populated,
@@ -573,18 +570,18 @@ pub fn load_map(
         overlays_connected,
         tiberium_radar_colors,
     ) = build_overlay_atlas_from_map(
-            &map_data,
-            &asset_manager,
-            gpu,
-            batch,
-            theater_ext,
-            &rules_ini,
-            art.as_ref().unwrap_or(&art_fallback),
-            overlay_iso_palette.as_ref(),
-            unit_palette.as_ref(),
-            overlay_tiberium_palette.as_ref(),
-            rules.as_ref().map(|r| &r.smudge_types),
-        );
+        &map_data,
+        &asset_manager,
+        gpu,
+        batch,
+        theater_ext,
+        &rules_ini,
+        art.as_ref().unwrap_or(&art_fallback),
+        overlay_iso_palette.as_ref(),
+        unit_palette.as_ref(),
+        overlay_tiberium_palette.as_ref(),
+        rules.as_ref().map(|r| &r.smudge_types),
+    );
 
     if let Some(sim) = &mut simulation {
         let seeded =
@@ -614,13 +611,11 @@ pub fn load_map(
         if let Some(rt) = &sim.resolved_terrain {
             let grid_width = rt.width();
             let grid_height = rt.height();
-            sim.overlay_grid = Some(
-                crate::sim::overlay_grid::OverlayGrid::from_overlay_entries(
-                    &map_data.overlays,
-                    grid_width,
-                    grid_height,
-                ),
-            );
+            sim.overlay_grid = Some(crate::sim::overlay_grid::OverlayGrid::from_overlay_entries(
+                &map_data.overlays,
+                grid_width,
+                grid_height,
+            ));
             log::info!(
                 "Overlay grid initialized: {}x{}, {} entries",
                 grid_width,
@@ -638,16 +633,14 @@ pub fn load_map(
         ) {
             let grid_width = rt.width();
             let grid_height = rt.height();
-            sim.smudge_grid = Some(
-                crate::sim::smudge_grid::SmudgeGrid::from_map_entries(
-                    &map_data.smudges,
-                    &rules_for_smudge.smudge_types,
-                    rt,
-                    overlay,
-                    grid_width,
-                    grid_height,
-                ),
-            );
+            sim.smudge_grid = Some(crate::sim::smudge_grid::SmudgeGrid::from_map_entries(
+                &map_data.smudges,
+                &rules_for_smudge.smudge_types,
+                rt,
+                overlay,
+                grid_width,
+                grid_height,
+            ));
             log::info!(
                 "Smudge grid initialized: {}x{}, {} entries",
                 grid_width,
@@ -680,8 +673,7 @@ pub fn load_map(
             if ent.category == crate::map::entities::EntityCategory::Structure {
                 let obj = rules.as_ref().and_then(|r| r.object(&ent.type_id));
                 let foundation: &str = obj.map(|o| o.foundation.as_str()).unwrap_or("1x1");
-                let add_occupy: &[(i16, i16)] =
-                    obj.map(|o| o.add_occupy.as_slice()).unwrap_or(&[]);
+                let add_occupy: &[(i16, i16)] = obj.map(|o| o.add_occupy.as_slice()).unwrap_or(&[]);
                 let remove_occupy: &[(i16, i16)] =
                     obj.map(|o| o.remove_occupy.as_slice()).unwrap_or(&[]);
                 grid.block_building_footprint(

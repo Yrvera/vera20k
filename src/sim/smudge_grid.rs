@@ -30,8 +30,9 @@ pub enum SmudgeKind {
 /// of any placed footprint always has `frame_offset == 0`. Non-origin cells
 /// are skipped at render time — multi-cell SmudgeType SHPs have a single
 /// composite frame, drawn once per footprint at the origin cell.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default,
-         serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
 pub struct SmudgeCell {
     pub type_id: Option<u16>,
     pub footprint_origin: Option<(u16, u16)>,
@@ -61,8 +62,12 @@ impl SmudgeGrid {
         }
     }
 
-    pub fn width(&self) -> u16 { self.width }
-    pub fn height(&self) -> u16 { self.height }
+    pub fn width(&self) -> u16 {
+        self.width
+    }
+    pub fn height(&self) -> u16 {
+        self.height
+    }
 
     pub fn cell(&self, rx: u16, ry: u16) -> &SmudgeCell {
         match self.index_of(rx, ry) {
@@ -131,7 +136,9 @@ impl SmudgeGrid {
                 );
                 continue;
             };
-            let Some(def) = registry.get(type_id) else { continue; };
+            let Some(def) = registry.get(type_id) else {
+                continue;
+            };
             if !grid.passes_placement_gates(
                 entry.rx, entry.ry, def.width, def.height, terrain, overlay, None,
             ) {
@@ -150,7 +157,10 @@ impl SmudgeGrid {
     /// no building, slope==0, accepts_smudge. All cells in the W×H footprint must pass.
     fn passes_placement_gates(
         &self,
-        rx: u16, ry: u16, w: u8, h: u8,
+        rx: u16,
+        ry: u16,
+        w: u8,
+        h: u8,
         terrain: &ResolvedTerrainGrid,
         overlay: &OverlayGrid,
         occupancy: Option<&OccupancyGrid>,
@@ -192,7 +202,9 @@ impl SmudgeGrid {
             for dx in 0..w as u16 {
                 let cx = rx + dx;
                 let cy = ry + dy;
-                let Some(idx) = self.index_of(cx, cy) else { continue; };
+                let Some(idx) = self.index_of(cx, cy) else {
+                    continue;
+                };
                 self.cells[idx] = SmudgeCell {
                     type_id: Some(type_id),
                     footprint_origin: Some((rx, ry)),
@@ -235,28 +247,36 @@ impl SmudgeGrid {
         let rx: u16 = (coord.x >> 8).clamp(0, self.width as i32 - 1) as u16;
         let ry: u16 = (coord.y >> 8).clamp(0, self.height as i32 - 1) as u16;
 
-        let unfiltered: Vec<u16> = registry.iter_with_id()
+        let unfiltered: Vec<u16> = registry
+            .iter_with_id()
             .filter(|(_, def)| match kind {
                 SmudgeKind::Burn => def.burn,
                 SmudgeKind::Crater => def.crater,
             })
             .map(|(id, _)| id)
             .collect();
-        if unfiltered.is_empty() { return false; }
+        if unfiltered.is_empty() {
+            return false;
+        }
 
         let mut filtered: Vec<u16> = if force_big {
-            unfiltered.iter().copied()
+            unfiltered
+                .iter()
+                .copied()
                 .filter(|&id| {
                     let d = registry.get(id).unwrap();
                     d.width >= 2 && d.height >= 2
-                }).collect()
+                })
+                .collect()
         } else {
-            unfiltered.iter().copied()
+            unfiltered
+                .iter()
+                .copied()
                 .filter(|&id| {
                     let d = registry.get(id).unwrap();
-                    (d.width == 1 && d.height == 1)
-                        || (0x3C < dmg && 0x32 < dmg2)
-                }).collect()
+                    (d.width == 1 && d.height == 1) || (0x3C < dmg && 0x32 < dmg2)
+                })
+                .collect()
         };
         if filtered.is_empty() {
             filtered = unfiltered;
@@ -267,7 +287,13 @@ impl SmudgeGrid {
         let chosen = registry.get(chosen_id).unwrap();
 
         if !self.passes_placement_gates(
-            rx, ry, chosen.width, chosen.height, terrain, overlay, Some(occupancy),
+            rx,
+            ry,
+            chosen.width,
+            chosen.height,
+            terrain,
+            overlay,
+            Some(occupancy),
         ) {
             return false;
         }
@@ -294,26 +320,44 @@ mod tests {
         for ry in 0..h {
             for rx in 0..w {
                 cells.push(ResolvedTerrainCell {
-                    rx, ry,
-                    source_tile_index: 0, source_sub_tile: 0,
-                    final_tile_index: 0, final_sub_tile: 0,
-                    level: 0, filled_clear: true, tileset_index: Some(0),
-                    land_type: 0, slope_type: 0, template_height: 0,
-                    render_offset_x: 0, render_offset_y: 0,
+                    rx,
+                    ry,
+                    source_tile_index: 0,
+                    source_sub_tile: 0,
+                    final_tile_index: 0,
+                    final_sub_tile: 0,
+                    level: 0,
+                    filled_clear: true,
+                    tileset_index: Some(0),
+                    land_type: 0,
+                    slope_type: 0,
+                    template_height: 0,
+                    render_offset_x: 0,
+                    render_offset_y: 0,
                     terrain_class: Default::default(),
                     speed_costs: Default::default(),
-                    is_water: false, is_cliff_like: false,
-                    is_rough: false, is_road: false,
-                    is_cliff_redraw: false, variant: 0,
-                    has_ramp: false, canonical_ramp: None,
-                    ground_walk_blocked: false, terrain_object_blocks: false,
-                    overlay_blocks: false, zone_type: 0,
-                    base_ground_walk_blocked: false, base_build_blocked: false,
+                    is_water: false,
+                    is_cliff_like: false,
+                    is_rough: false,
+                    is_road: false,
+                    is_cliff_redraw: false,
+                    variant: 0,
+                    has_ramp: false,
+                    canonical_ramp: None,
+                    ground_walk_blocked: false,
+                    terrain_object_blocks: false,
+                    overlay_blocks: false,
+                    zone_type: 0,
+                    base_ground_walk_blocked: false,
+                    base_build_blocked: false,
                     build_blocked: false,
-                    has_bridge_deck: false, bridge_walkable: false,
-                    bridge_transition: false, bridge_deck_level: 0,
+                    has_bridge_deck: false,
+                    bridge_walkable: false,
+                    bridge_transition: false,
+                    bridge_deck_level: 0,
                     bridge_layer: None,
-                    radar_left: [0; 3], radar_right: [0; 3],
+                    radar_left: [0; 3],
+                    radar_right: [0; 3],
                     accepts_smudge: accepts,
                 });
             }
@@ -323,8 +367,9 @@ mod tests {
 
     fn make_registry_with_one_crater_1x1() -> SmudgeTypeRegistry {
         let ini = crate::rules::ini_parser::IniFile::from_bytes(
-            b"[SmudgeTypes]\n1=CR1\n[CR1]\nCrater=yes\nWidth=1\nHeight=1\n"
-        ).unwrap();
+            b"[SmudgeTypes]\n1=CR1\n[CR1]\nCrater=yes\nWidth=1\nHeight=1\n",
+        )
+        .unwrap();
         SmudgeTypeRegistry::from_rules_ini(&ini)
     }
 
@@ -336,10 +381,22 @@ mod tests {
         let overlay = OverlayGrid::new(8, 8);
         let occupancy = OccupancyGrid::new();
         let mut rng = SimRng::new(1);
-        let coord = SimCoord { x: 4 * 256 + 128, y: 4 * 256 + 128, z: 0 };
+        let coord = SimCoord {
+            x: 4 * 256 + 128,
+            y: 4 * 256 + 128,
+            z: 0,
+        };
         assert!(grid.try_place(
-            SmudgeKind::Crater, coord, 30, 30, false,
-            &registry, &terrain, &overlay, &occupancy, &mut rng,
+            SmudgeKind::Crater,
+            coord,
+            30,
+            30,
+            false,
+            &registry,
+            &terrain,
+            &overlay,
+            &occupancy,
+            &mut rng,
         ));
         assert!(grid.cell(4, 4).type_id.is_some());
     }
@@ -352,10 +409,22 @@ mod tests {
         let overlay = OverlayGrid::new(8, 8);
         let occupancy = OccupancyGrid::new();
         let mut rng = SimRng::new(1);
-        let coord = SimCoord { x: 4 * 256 + 128, y: 4 * 256 + 128, z: 0 };
+        let coord = SimCoord {
+            x: 4 * 256 + 128,
+            y: 4 * 256 + 128,
+            z: 0,
+        };
         assert!(!grid.try_place(
-            SmudgeKind::Crater, coord, 30, 30, false,
-            &registry, &terrain, &overlay, &occupancy, &mut rng,
+            SmudgeKind::Crater,
+            coord,
+            30,
+            30,
+            false,
+            &registry,
+            &terrain,
+            &overlay,
+            &occupancy,
+            &mut rng,
         ));
         assert!(grid.cell(4, 4).type_id.is_none());
     }
@@ -369,10 +438,22 @@ mod tests {
         overlay.place_overlay(4, 4, 0, 0);
         let occupancy = OccupancyGrid::new();
         let mut rng = SimRng::new(1);
-        let coord = SimCoord { x: 4 * 256 + 128, y: 4 * 256 + 128, z: 0 };
+        let coord = SimCoord {
+            x: 4 * 256 + 128,
+            y: 4 * 256 + 128,
+            z: 0,
+        };
         assert!(!grid.try_place(
-            SmudgeKind::Crater, coord, 30, 30, false,
-            &registry, &terrain, &overlay, &occupancy, &mut rng,
+            SmudgeKind::Crater,
+            coord,
+            30,
+            30,
+            false,
+            &registry,
+            &terrain,
+            &overlay,
+            &occupancy,
+            &mut rng,
         ));
     }
 
@@ -383,22 +464,35 @@ mod tests {
         let ini = crate::rules::ini_parser::IniFile::from_bytes(
             b"[SmudgeTypes]\n1=CR1\n2=CR2\n\
               [CR1]\nCrater=yes\nWidth=1\nHeight=1\n\
-              [CR2]\nCrater=yes\nWidth=2\nHeight=2\n"
-        ).unwrap();
+              [CR2]\nCrater=yes\nWidth=2\nHeight=2\n",
+        )
+        .unwrap();
         let registry = SmudgeTypeRegistry::from_rules_ini(&ini);
         let mut grid = SmudgeGrid::new(8, 8);
         let terrain = make_terrain(8, 8, true);
         let overlay = OverlayGrid::new(8, 8);
         let occupancy = OccupancyGrid::new();
         let mut rng = SimRng::new(1);
-        let coord = SimCoord { x: 4 * 256 + 128, y: 4 * 256 + 128, z: 0 };
+        let coord = SimCoord {
+            x: 4 * 256 + 128,
+            y: 4 * 256 + 128,
+            z: 0,
+        };
         // Run try_place 50 times; with dmg=60, dmg2=50 only CR1 (1x1) should be picked.
         // Verify no 2x2 footprints land (CR2 would write 4 cells; CR1 writes 1).
         for _ in 0..50 {
             grid = SmudgeGrid::new(8, 8); // reset
             grid.try_place(
-                SmudgeKind::Crater, coord, 60, 50, false,
-                &registry, &terrain, &overlay, &occupancy, &mut rng,
+                SmudgeKind::Crater,
+                coord,
+                60,
+                50,
+                false,
+                &registry,
+                &terrain,
+                &overlay,
+                &occupancy,
+                &mut rng,
             );
             // Count occupied cells; must be 0 or 1, never 4.
             let occupied = grid.iter_occupied().count();
@@ -411,18 +505,31 @@ mod tests {
         // Registry has only a 2x2 crater; with force_big=false and dmg below threshold,
         // size filter eliminates it but fallback to unfiltered should still pick it.
         let ini = crate::rules::ini_parser::IniFile::from_bytes(
-            b"[SmudgeTypes]\n1=CR2\n[CR2]\nCrater=yes\nWidth=2\nHeight=2\n"
-        ).unwrap();
+            b"[SmudgeTypes]\n1=CR2\n[CR2]\nCrater=yes\nWidth=2\nHeight=2\n",
+        )
+        .unwrap();
         let registry = SmudgeTypeRegistry::from_rules_ini(&ini);
         let mut grid = SmudgeGrid::new(8, 8);
         let terrain = make_terrain(8, 8, true);
         let overlay = OverlayGrid::new(8, 8);
         let occupancy = OccupancyGrid::new();
         let mut rng = SimRng::new(1);
-        let coord = SimCoord { x: 4 * 256 + 128, y: 4 * 256 + 128, z: 0 };
+        let coord = SimCoord {
+            x: 4 * 256 + 128,
+            y: 4 * 256 + 128,
+            z: 0,
+        };
         assert!(grid.try_place(
-            SmudgeKind::Crater, coord, 30, 30, false,
-            &registry, &terrain, &overlay, &occupancy, &mut rng,
+            SmudgeKind::Crater,
+            coord,
+            30,
+            30,
+            false,
+            &registry,
+            &terrain,
+            &overlay,
+            &occupancy,
+            &mut rng,
         ));
         // 2x2 footprint placed at (4,4): 4 cells written.
         assert_eq!(grid.iter_occupied().count(), 4);

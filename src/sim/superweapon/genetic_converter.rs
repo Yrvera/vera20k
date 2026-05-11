@@ -80,10 +80,7 @@ fn apply_mutate_explosion(
 ) -> (Vec<(u16, u16)>, usize) {
     let warhead_id = rules.general.mutate_explosion_warhead.clone();
     let Some(warhead) = rules.warhead(&warhead_id) else {
-        log::warn!(
-            "MutateExplosionWarhead '{}' not found in rules",
-            warhead_id
-        );
+        log::warn!("MutateExplosionWarhead '{}' not found in rules", warhead_id);
         return (Vec::new(), 0);
     };
     let owner_str = sim.interner.resolve(owner).to_string();

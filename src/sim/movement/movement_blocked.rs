@@ -6,10 +6,10 @@
 use std::collections::{BTreeSet, HashMap};
 
 use crate::rules::locomotor_type::MovementZone;
-use crate::sim::pathfinding::EntityBlockEntry;
 use crate::sim::components::MovementTarget;
 use crate::sim::debug_event_log::DebugEventKind;
 use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
+use crate::sim::pathfinding::EntityBlockEntry;
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
 use crate::sim::rng::SimRng;
 use crate::util::fixed_math::{SIM_ZERO, SimFixed};

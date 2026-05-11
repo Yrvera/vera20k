@@ -334,8 +334,8 @@ pub fn tick_attack_state(
             }
 
             // Re-engage check: still have ammo and target alive?
-            let can_reengage = ammo_current + result_ammo_delta > 0
-                && target_status.is_some_and(|s| s.alive);
+            let can_reengage =
+                ammo_current + result_ammo_delta > 0 && target_status.is_some_and(|s| s.alive);
 
             if can_reengage {
                 AttackTickResult {

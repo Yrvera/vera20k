@@ -263,10 +263,10 @@ impl Simulation {
             return;
         };
         1u8.hash(hasher);
-        let mut entries: Vec<(u16, u16, Option<u16>, Option<(u16, u16)>, u8)> =
-            grid.iter_occupied()
-                .map(|(rx, ry, c)| (rx, ry, c.type_id, c.footprint_origin, c.frame_offset))
-                .collect();
+        let mut entries: Vec<(u16, u16, Option<u16>, Option<(u16, u16)>, u8)> = grid
+            .iter_occupied()
+            .map(|(rx, ry, c)| (rx, ry, c.type_id, c.footprint_origin, c.frame_offset))
+            .collect();
         entries.sort();
         entries.len().hash(hasher);
         for e in &entries {
@@ -605,7 +605,8 @@ mod bridge_overlay_hash_tests {
     fn make_bridge_state_with_overlay(byte: u8) -> BridgeRuntimeState {
         let mut state = BridgeRuntimeState::default();
         state.test_seed_cell(
-            2, 2,
+            2,
+            2,
             BridgeRuntimeCell {
                 deck_present: true,
                 destroyable: true,
@@ -712,7 +713,10 @@ mod c4_hash_tests {
             0,
             0,
             owner,
-            Health { current: 125, max: 125 },
+            Health {
+                current: 125,
+                max: 125,
+            },
             type_id,
             EntityCategory::Infantry,
             0,
@@ -741,4 +745,3 @@ mod c4_hash_tests {
         );
     }
 }
-

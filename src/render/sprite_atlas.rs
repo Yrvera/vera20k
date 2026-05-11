@@ -696,10 +696,7 @@ pub fn build_sprite_atlas(
             // Image= path → anim.pal palette. Register every distinct name.
             for pt in r.particle_types_iter() {
                 if let Some(image) = pt.image.as_deref() {
-                    if !effect_names
-                        .iter()
-                        .any(|n| n.eq_ignore_ascii_case(image))
-                    {
+                    if !effect_names.iter().any(|n| n.eq_ignore_ascii_case(image)) {
                         effect_names.push(image.to_string());
                     }
                 }
@@ -762,7 +759,8 @@ pub fn build_sprite_atlas(
                     // for keys not in effect_type_ids.
                     log::info!(
                         "Parachute SHP {}: {} frames loaded (unit palette per AltPalette=yes)",
-                        pc.shp_name, frame_count
+                        pc.shp_name,
+                        frame_count
                     );
                 } else {
                     log::warn!(

@@ -264,9 +264,8 @@ fn test_resolve_overlay_image_id_and_candidates() {
 
 #[test]
 fn parses_add_occupy_from_ini() {
-    let ini: IniFile = IniFile::from_str(
-        "[GAREFN]\nAddOccupy1=-1,0\nAddOccupy2=-1,-1\nRemoveOccupy1=3,1\n",
-    );
+    let ini: IniFile =
+        IniFile::from_str("[GAREFN]\nAddOccupy1=-1,0\nAddOccupy2=-1,-1\nRemoveOccupy1=3,1\n");
     let registry: ArtRegistry = ArtRegistry::from_ini(&ini);
     let entry: &ArtEntry = registry.get("GAREFN").expect("GAREFN");
     assert_eq!(entry.add_occupy, vec![(-1, 0), (-1, -1)]);
@@ -284,8 +283,7 @@ fn add_remove_occupy_empty_when_no_keys() {
 
 #[test]
 fn add_occupy_skips_malformed_entries() {
-    let ini: IniFile =
-        IniFile::from_str("[FOO]\nAddOccupy1=not_a_pair\nAddOccupy2=1,2\n");
+    let ini: IniFile = IniFile::from_str("[FOO]\nAddOccupy1=not_a_pair\nAddOccupy2=1,2\n");
     let registry: ArtRegistry = ArtRegistry::from_ini(&ini);
     let entry: &ArtEntry = registry.get("FOO").expect("FOO");
     // Matches damage_fire_offsets pattern: malformed entry is skipped, loop
@@ -304,7 +302,8 @@ fn parses_anim_smudge_flags() {
           ForceBigCraters=yes\n\
           \n\
           [ANIMC]\n",
-    ).unwrap();
+    )
+    .unwrap();
     let reg = ArtRegistry::from_ini(&ini);
     let a = reg.get("ANIMA").unwrap();
     assert!(a.scorch);

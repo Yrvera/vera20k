@@ -97,12 +97,8 @@ fn build_sim(rules: &RuleSet) -> (Simulation, PathGrid) {
     sim.fog.height = 100;
     let owner_id = sim.interner.intern("Americans");
     let mut house = crate::sim::house_state::HouseState::new(
-        owner_id,
-        /*side_index*/ 0,
-        /*country*/ None,
-        /*is_human*/ true,
-        /*credits*/ 10_000,
-        /*tech_level*/ 10,
+        owner_id, /*side_index*/ 0, /*country*/ None, /*is_human*/ true,
+        /*credits*/ 10_000, /*tech_level*/ 10,
     );
     house.base_center = Some((50, 90));
     house.waypoint_edge = crate::sim::house_state::closest_edge_for(
@@ -116,22 +112,10 @@ fn build_sim(rules: &RuleSet) -> (Simulation, PathGrid) {
     (sim, path_grid)
 }
 
-fn tick_n(
-    sim: &mut Simulation,
-    rules: &RuleSet,
-    path_grid: &PathGrid,
-    n: u32,
-) {
+fn tick_n(sim: &mut Simulation, rules: &RuleSet, path_grid: &PathGrid, n: u32) {
     let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
     for _ in 0..n {
-        sim.advance_tick(
-            &[],
-            Some(rules),
-            &height_map,
-            Some(path_grid),
-            None,
-            22,
-        );
+        sim.advance_tick(&[], Some(rules), &height_map, Some(path_grid), None, 22);
     }
 }
 
@@ -315,7 +299,11 @@ fn paradrop_descent_ends_with_landed_infantry_and_carrier_despawned() {
                 && e.parachute_state.is_none()
         })
         .count();
-    assert!(landed >= 1, "at least one E1 should have landed alive (got {})", landed);
+    assert!(
+        landed >= 1,
+        "at least one E1 should have landed alive (got {})",
+        landed
+    );
 
     // Carrier despawned (silent_despawn at boundary).
     assert!(
@@ -407,29 +395,47 @@ CellSpread=0
         sim.fog.width = 100;
         sim.fog.height = 100;
         let owner_id = sim.interner.intern("Yuri");
-        let mut house = crate::sim::house_state::HouseState::new(
-            owner_id, 2, None, true, 10_000, 10,
-        );
+        let mut house =
+            crate::sim::house_state::HouseState::new(owner_id, 2, None, true, 10_000, 10);
         house.waypoint_edge = 2; // South
         sim.houses.insert(owner_id, house);
         let path_grid = PathGrid::test_all_passable(100, 100);
 
         launch(
-            &mut sim, &rules, owner_id, 50, 20,
+            &mut sim,
+            &rules,
+            owner_id,
+            50,
+            20,
             ParaDropKind::Generic,
             Some(&path_grid),
         );
 
         let pdplane_id = find_pdplane(&sim).expect("PDPLANE must exist");
-        let cargo_count = sim.entities.get(pdplane_id).unwrap()
-            .passenger_role.cargo().map(|c| c.count()).unwrap_or(0);
+        let cargo_count = sim
+            .entities
+            .get(pdplane_id)
+            .unwrap()
+            .passenger_role
+            .cargo()
+            .map(|c| c.count())
+            .unwrap_or(0);
         assert_eq!(cargo_count, 5, "Yuri side should load 5 INIT");
 
         // Verify cargo type is INIT.
-        let cargo_ids = sim.entities.get(pdplane_id).unwrap()
-            .passenger_role.cargo().unwrap().passengers.clone();
+        let cargo_ids = sim
+            .entities
+            .get(pdplane_id)
+            .unwrap()
+            .passenger_role
+            .cargo()
+            .unwrap()
+            .passengers
+            .clone();
         for pax_id in cargo_ids {
-            let type_str = sim.interner.resolve(sim.entities.get(pax_id).unwrap().type_ref);
+            let type_str = sim
+                .interner
+                .resolve(sim.entities.get(pax_id).unwrap().type_ref);
             assert!(
                 type_str.eq_ignore_ascii_case("INIT"),
                 "Yuri cargo should be INIT, got {}",
@@ -444,22 +450,31 @@ CellSpread=0
         sim.fog.width = 100;
         sim.fog.height = 100;
         let owner_id = sim.interner.intern("Russians");
-        let mut house = crate::sim::house_state::HouseState::new(
-            owner_id, 1, None, true, 10_000, 10,
-        );
+        let mut house =
+            crate::sim::house_state::HouseState::new(owner_id, 1, None, true, 10_000, 10);
         house.waypoint_edge = 2;
         sim.houses.insert(owner_id, house);
         let path_grid = PathGrid::test_all_passable(100, 100);
 
         launch(
-            &mut sim, &rules, owner_id, 50, 20,
+            &mut sim,
+            &rules,
+            owner_id,
+            50,
+            20,
             ParaDropKind::Generic,
             Some(&path_grid),
         );
 
         let pdplane_id = find_pdplane(&sim).expect("PDPLANE must exist");
-        let cargo_count = sim.entities.get(pdplane_id).unwrap()
-            .passenger_role.cargo().map(|c| c.count()).unwrap_or(0);
+        let cargo_count = sim
+            .entities
+            .get(pdplane_id)
+            .unwrap()
+            .passenger_role
+            .cargo()
+            .map(|c| c.count())
+            .unwrap_or(0);
         assert_eq!(cargo_count, 4, "Soviet side should load 4 E2");
     }
 
@@ -469,22 +484,34 @@ CellSpread=0
         sim.fog.width = 100;
         sim.fog.height = 100;
         let owner_id = sim.interner.intern("Unknown");
-        let mut house = crate::sim::house_state::HouseState::new(
-            owner_id, 99, None, true, 10_000, 10,
-        );
+        let mut house =
+            crate::sim::house_state::HouseState::new(owner_id, 99, None, true, 10_000, 10);
         house.waypoint_edge = 2;
         sim.houses.insert(owner_id, house);
         let path_grid = PathGrid::test_all_passable(100, 100);
 
         launch(
-            &mut sim, &rules, owner_id, 50, 20,
+            &mut sim,
+            &rules,
+            owner_id,
+            50,
+            20,
             ParaDropKind::Generic,
             Some(&path_grid),
         );
 
         let pdplane_id = find_pdplane(&sim).expect("PDPLANE must exist");
-        let cargo_count = sim.entities.get(pdplane_id).unwrap()
-            .passenger_role.cargo().map(|c| c.count()).unwrap_or(0);
-        assert_eq!(cargo_count, 4, "Unknown side should fall back to Soviet (4 E2)");
+        let cargo_count = sim
+            .entities
+            .get(pdplane_id)
+            .unwrap()
+            .passenger_role
+            .cargo()
+            .map(|c| c.count())
+            .unwrap_or(0);
+        assert_eq!(
+            cargo_count, 4,
+            "Unknown side should fall back to Soviet (4 E2)"
+        );
     }
 }

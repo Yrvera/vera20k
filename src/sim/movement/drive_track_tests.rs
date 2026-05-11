@@ -290,9 +290,8 @@ fn select_drive_track_all_cardinal_straights_give_track_1() {
 #[test]
 fn build_sharp_turn_fallback_cardinals_use_raw_track_1() {
     for facing in [0u8, 64, 128, 192] {
-        let fb = build_sharp_turn_fallback(facing).unwrap_or_else(|| {
-            panic!("fallback should exist for cardinal facing {}", facing)
-        });
+        let fb = build_sharp_turn_fallback(facing)
+            .unwrap_or_else(|| panic!("fallback should exist for cardinal facing {}", facing));
         assert_eq!(
             fb.raw_track_index, 1,
             "cardinal facing {} should use RawTrack 1 (straight)",
@@ -304,9 +303,8 @@ fn build_sharp_turn_fallback_cardinals_use_raw_track_1() {
 #[test]
 fn build_sharp_turn_fallback_diagonals_use_raw_track_2() {
     for facing in [32u8, 96, 160, 224] {
-        let fb = build_sharp_turn_fallback(facing).unwrap_or_else(|| {
-            panic!("fallback should exist for diagonal facing {}", facing)
-        });
+        let fb = build_sharp_turn_fallback(facing)
+            .unwrap_or_else(|| panic!("fallback should exist for diagonal facing {}", facing));
         assert_eq!(
             fb.raw_track_index, 2,
             "diagonal facing {} should use RawTrack 2 (straight diagonal)",
@@ -384,13 +382,7 @@ fn sharp_turn_fallback_produces_valid_track_for_all_8_dirs() {
         let fb = build_sharp_turn_fallback(facing)
             .unwrap_or_else(|| panic!("fallback should exist for facing {}", facing));
         let (cdx, cdy) = dir_to_cell_delta(facing);
-        let state = begin_drive_track(
-            fb.raw_track_index,
-            fb.flags,
-            cdx,
-            cdy,
-            fb.target_facing,
-        );
+        let state = begin_drive_track(fb.raw_track_index, fb.flags, cdx, cdy, fb.target_facing);
         assert!(
             state.is_some(),
             "fallback track should initialize for facing {}",

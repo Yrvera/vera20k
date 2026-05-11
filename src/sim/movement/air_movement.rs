@@ -256,7 +256,8 @@ pub fn tick_air_movement(
 
         if has_movement {
             let can_move: bool = entity.locomotor.as_ref().is_some_and(|l| {
-                l.altitude >= checked_mul_log(l.target_altitude, SIM_HALF, "target_alt*0.5", entity_id)
+                l.altitude
+                    >= checked_mul_log(l.target_altitude, SIM_HALF, "target_alt*0.5", entity_id)
             });
 
             if can_move {
@@ -351,7 +352,8 @@ pub fn tick_air_movement(
                         dist_i32,
                         entity.facing
                     );
-                    let sp_fly = checked_mul_log(target.speed, fly_speed, "speed*fly_speed", entity_id);
+                    let sp_fly =
+                        checked_mul_log(target.speed, fly_speed, "speed*fly_speed", entity_id);
                     let move_lep = checked_mul_log(sp_fly, dt, "(speed*fly_speed)*dt", entity_id);
                     if move_lep > SIM_ZERO {
                         let (step_x, step_y) =

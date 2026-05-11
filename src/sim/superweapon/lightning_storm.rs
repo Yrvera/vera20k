@@ -339,9 +339,9 @@ mod tests {
 
         let explosion_iid = sim.interner.intern("EXPLOSION");
         assert!(
-            sim.world_effects.iter().any(|fx| fx.shp_name == explosion_iid
-                && fx.rx == 5
-                && fx.ry == 5),
+            sim.world_effects
+                .iter()
+                .any(|fx| fx.shp_name == explosion_iid && fx.rx == 5 && fx.ry == 5),
             "lightning warhead AnimList anim must be pushed to world_effects"
         );
     }

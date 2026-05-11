@@ -326,8 +326,7 @@ pub fn build_overlay_atlas(
                 }
                 None => {
                     smudge_failed_count += 1;
-                    let candidates: Vec<String> =
-                        smudge_shp_candidates(file_basename, theater_ext);
+                    let candidates: Vec<String> = smudge_shp_candidates(file_basename, theater_ext);
                     log::debug!(
                         "Smudge sprite not found: name={} (tried: {:?})",
                         def.name,

@@ -313,8 +313,13 @@ fn capability_cursor_for_hover(
                     hover.kind,
                     HoverTargetKind::FriendlyUnit | HoverTargetKind::FriendlyStructure
                 ) {
-                    let in_range =
-                        any_selected_unit_in_range(sim, selected, hover.stable_id, rules, sim.resolved_terrain.as_ref());
+                    let in_range = any_selected_unit_in_range(
+                        sim,
+                        selected,
+                        hover.stable_id,
+                        rules,
+                        sim.resolved_terrain.as_ref(),
+                    );
                     return if in_range {
                         if hover.kind == HoverTargetKind::FriendlyUnit {
                             CursorFeedbackKind::EnemyUnit
@@ -348,7 +353,13 @@ fn capability_cursor_for_hover(
         HoverTargetKind::FriendlyUnit => CursorFeedbackKind::FriendlyUnit,
         HoverTargetKind::FriendlyStructure => CursorFeedbackKind::FriendlyStructure,
         HoverTargetKind::EnemyUnit | HoverTargetKind::EnemyStructure => {
-            let in_range = any_selected_unit_in_range(sim, selected, hover.stable_id, rules, sim.resolved_terrain.as_ref());
+            let in_range = any_selected_unit_in_range(
+                sim,
+                selected,
+                hover.stable_id,
+                rules,
+                sim.resolved_terrain.as_ref(),
+            );
             if in_range {
                 if hover.kind == HoverTargetKind::EnemyUnit {
                     CursorFeedbackKind::EnemyUnit

@@ -528,10 +528,7 @@ pub(crate) fn build_garrison_muzzle_flash_instances(
 /// Palette: AltPalette=yes selects the unit/Convert palette in gamemd. This
 /// matches the default palette branch in `sprite_atlas` so long as the
 /// PARACH frames are NOT registered in `effect_type_ids` (see Task 8).
-pub(crate) fn build_parachute_instances(
-    state: &AppState,
-    paged: &mut [Vec<SpriteInstance>],
-) {
+pub(crate) fn build_parachute_instances(state: &AppState, paged: &mut [Vec<SpriteInstance>]) {
     /// Depth epsilon — chute sorts slightly above the GI body. Half of the
     /// per-Z bias used in `compute_sprite_depth_params`. Increase if
     /// z-fighting is observed in-game.
@@ -634,11 +631,17 @@ mod tests {
 
     #[test]
     fn wall_routes_to_wall_bucket() {
-        assert_eq!(classify_overlay_render_bucket(true), OverlayRenderBucket::Wall);
+        assert_eq!(
+            classify_overlay_render_bucket(true),
+            OverlayRenderBucket::Wall
+        );
     }
 
     #[test]
     fn non_wall_routes_to_generic_bucket() {
-        assert_eq!(classify_overlay_render_bucket(false), OverlayRenderBucket::Generic);
+        assert_eq!(
+            classify_overlay_render_bucket(false),
+            OverlayRenderBucket::Generic
+        );
     }
 }
