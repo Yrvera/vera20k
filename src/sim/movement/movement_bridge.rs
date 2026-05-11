@@ -159,7 +159,6 @@ pub(super) fn apply_pending_bridge_render_state(
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

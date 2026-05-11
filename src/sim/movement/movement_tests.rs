@@ -1451,7 +1451,15 @@ fn tick_bridge(
     let costs: BTreeMap<SpeedType, TerrainCostGrid> = BTreeMap::new();
     let alliances = HouseAllianceMap::new();
     let _ = tick_movement_with_grid(
-        entities, Some(grid), &costs, &alliances, occupancy, rng, ms, 0, interner,
+        entities,
+        Some(grid),
+        &costs,
+        &alliances,
+        occupancy,
+        rng,
+        ms,
+        0,
+        interner,
     );
 }
 
@@ -1491,7 +1499,14 @@ fn on_bridge_fires_at_ramp_to_body_only() {
     );
 
     // 512 lep/sec * 500ms = 256 leptons = exactly one cell jump (1,1)→(2,1).
-    tick_bridge(&mut entities, &grid, &mut occupancy, &mut rng, &mut interner, 500);
+    tick_bridge(
+        &mut entities,
+        &grid,
+        &mut occupancy,
+        &mut rng,
+        &mut interner,
+        500,
+    );
 
     let entity = entities.get(1).expect("entity exists");
     assert_eq!((entity.position.rx, entity.position.ry), (2, 1));
@@ -1550,7 +1565,14 @@ fn on_bridge_clears_at_ramp_to_ground_only() {
     let mut interner = test_interner();
 
     // Tick 1: body → ramp. on_bridge must STAY true (predicate NoChange).
-    tick_bridge(&mut entities, &grid, &mut occupancy, &mut rng, &mut interner, 500);
+    tick_bridge(
+        &mut entities,
+        &grid,
+        &mut occupancy,
+        &mut rng,
+        &mut interner,
+        500,
+    );
     let entity = entities.get(1).expect("entity exists");
     assert_eq!(
         (entity.position.rx, entity.position.ry),
@@ -1563,17 +1585,21 @@ fn on_bridge_clears_at_ramp_to_ground_only() {
     );
 
     // Tick 2: ramp → ground. on_bridge must CLEAR (predicate Exit).
-    tick_bridge(&mut entities, &grid, &mut occupancy, &mut rng, &mut interner, 500);
+    tick_bridge(
+        &mut entities,
+        &grid,
+        &mut occupancy,
+        &mut rng,
+        &mut interner,
+        500,
+    );
     let entity = entities.get(1).expect("entity exists");
     assert_eq!(
         (entity.position.rx, entity.position.ry),
         (3, 1),
         "after tick 2: at ground"
     );
-    assert!(
-        !entity.on_bridge,
-        "after Ramp→Ground: on_bridge must clear"
-    );
+    assert!(!entity.on_bridge, "after Ramp→Ground: on_bridge must clear");
     assert!(
         entity.bridge_occupancy.is_none(),
         "after Exit: BridgeOccupancy must be None"
@@ -1627,7 +1653,14 @@ fn no_bridge_lookahead_pre_claim() {
     // Tick 1: ground → ramp. Predicate NoChange (src.bridge_walkable=false; entry
     // would need src_h-4 = dst_h: src=4, dst=4 → no. Exit needs src.bridge_walkable;
     // it's false → no). BridgeOccupancy stays None.
-    tick_bridge(&mut entities, &grid, &mut occupancy, &mut rng, &mut interner, 500);
+    tick_bridge(
+        &mut entities,
+        &grid,
+        &mut occupancy,
+        &mut rng,
+        &mut interner,
+        500,
+    );
     let entity = entities.get(1).expect("entity exists");
     assert_eq!(
         (entity.position.rx, entity.position.ry),
@@ -1641,7 +1674,14 @@ fn no_bridge_lookahead_pre_claim() {
 
     // Tick 2: ramp → body. Now predicate fires Enter (src.bridge_walkable=true,
     // dst.bridge_walkable=true, dst_h(0) == src_h(4)-4 → entry fires).
-    tick_bridge(&mut entities, &grid, &mut occupancy, &mut rng, &mut interner, 500);
+    tick_bridge(
+        &mut entities,
+        &grid,
+        &mut occupancy,
+        &mut rng,
+        &mut interner,
+        500,
+    );
     let entity = entities.get(1).expect("entity exists");
     assert_eq!(
         (entity.position.rx, entity.position.ry),

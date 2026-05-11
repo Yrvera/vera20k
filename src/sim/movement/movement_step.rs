@@ -465,7 +465,7 @@ pub(super) fn process_cell_crossings(
             break;
         }
 
-        let mut next_layer = target.layer_at(target.next_index);
+        let next_layer = target.layer_at(target.next_index);
         let mut layer_grid_ok: Option<bool> = None;
         let mut layer_terrain_ok: Option<bool> = None;
 
