@@ -719,20 +719,22 @@ fn harvest_returns_when_no_ore_within_short_scan() {
 }
 
 // ==========================================================================
-// Test 9c: EMPTY-cargo cell depletion falls back to SearchOre 4-stage cascade
-//          (regression guard: ensures the empty-cargo path keeps working)
+// Test 9c: EMPTY-cargo cell depletion + short-scan miss → return to refinery
+//          (gamemd case-1 parity: cargo is irrelevant to the miss → state 2
+//           transition. Empty miners detour home before re-scanning, matching
+//           gamemd's observable travel path.)
 // ==========================================================================
 #[test]
-fn empty_cargo_cell_depletion_falls_back_to_full_search() {
+fn empty_cargo_cell_depletion_returns_to_refinery() {
     let mut sim = Simulation::new();
     let rules = miner_rules();
 
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 20, 20);
     spawn_refinery(&mut sim, 2, 10, 10);
-    // No ore on the miner's cell when Harvest state runs.
-    // Nothing within short-scan radius (6 cells).
-    // Ore exists within long-scan radius (default 48).
-    place_ore(&mut sim, 40, 20, 100); // ~20 cells away, within long scan
+    // No ore on the miner's cell. Nothing within short-scan radius (6 cells).
+    // The far ore patch is outside short-scan; gamemd does NOT run a long
+    // scan from case 1 — it transitions to state 2 (return) on miss.
+    place_ore(&mut sim, 40, 20, 100);
 
     {
         let entity = sim.entities.get_mut(miner_id).expect("miner");
@@ -751,15 +753,13 @@ fn empty_cargo_cell_depletion_falls_back_to_full_search() {
         miner.cargo.is_empty(),
         "No ore was on the cell, so no bales should have been extracted"
     );
-    assert_eq!(
-        miner.target_ore_cell,
-        Some((40, 20)),
-        "Empty-cargo cell depletion should fall through SearchOre and find the \
-         long-scan ore at (40, 20)"
-    );
     assert!(
-        matches!(miner.state, MinerState::MoveToOre),
-        "Miner should be heading to the new ore cell; state was {:?}",
+        matches!(
+            miner.state,
+            MinerState::ReturnToRefinery | MinerState::Dock
+        ),
+        "Empty-cargo miner on a depleted cell with no short-scan hit should \
+         head to the refinery (gamemd state 2); state was {:?}",
         miner.state,
     );
 }

@@ -442,16 +442,26 @@ fn handle_harvest(
         }
     }
 
-    // Cell depleted. Per gamemd State 1 (Mission_Harvest case 1, after
-    // Harvest_Ore_Tick returns 0): before returning, do a short-radius
-    // continuation scan from the unit's current position. If ore is
-    // reachable within TiberiumShortScan, set it as the new target and
-    // keep harvesting. Only if nothing is found nearby does the miner
-    // return to refinery (with cargo) or fall back to the full
-    // SearchOre cascade (empty cargo).
+    // Cell depleted. Mirrors gamemd Mission_Harvest case 1 when
+    // Harvest_Ore_Tick returns 0:
+    //   1. Full Harvester → state 2 (return), no scan.
+    //   2. Otherwise run a TiberiumShortScan continuation scan from the
+    //      current cell. Hit → keep harvesting (we use MoveToOre, which
+    //      re-enters Harvest on arrival).
+    //   3. Miss → state 2 (return), regardless of cargo. Empty miners
+    //      detour to the refinery and re-scan from there, matching the
+    //      original observable travel path.
     //
-    // The filter's closure captures `&sim`; scope it so the immutable
-    // borrow drops before `begin_return` needs `&mut sim` below.
+    // The is_full() early-out is redundant when extract_bale just filled
+    // the miner above, but covers the rare case of arriving at an
+    // already-empty cell while full.
+    if snap.miner.is_full() {
+        begin_return(sim, rules, config, path_grid, snap);
+        return;
+    }
+
+    // Short scan. The filter's closure captures `&sim`; scope it so the
+    // immutable borrow drops before `begin_return` needs `&mut sim` below.
     let continuation_target = {
         let reachable_filter = build_reachable_filter(sim, snap);
         let filter_ref: Option<&dyn Fn((u16, u16)) -> bool> = reachable_filter.as_deref();
@@ -468,15 +478,8 @@ fn handle_harvest(
         return;
     }
 
-    // No nearby ore. If we have cargo, head home. Otherwise fall back
-    // to SearchOre's wider cascade (matches existing empty-cargo
-    // behavior; gamemd would return-to-refinery here too but our 4-stage
-    // SearchOre cascade is observably equivalent).
-    if !snap.miner.cargo.is_empty() {
-        begin_return(sim, rules, config, path_grid, snap);
-        return;
-    }
-    snap.miner.state = MinerState::SearchOre;
+    // Scan miss → return to refinery.
+    begin_return(sim, rules, config, path_grid, snap);
 }
 
 fn handle_return(
