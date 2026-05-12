@@ -623,6 +623,50 @@ pub struct C4PlantState {
     pub target_building_id: u64,
 }
 
+/// Body rocking and slope-transition state for voxel-bodied units.
+///
+/// Tracks both the spring-damped roll/pitch angles (driven by weapon impacts
+/// and EMP wobble) and the 3-tick quaternion-SLERP slope transition when the
+/// unit moves to a cell with a different slope_type.
+///
+/// Optional component on `GameEntity` — present on vehicles, ships, and
+/// voxel-bodied buildings; `None` for infantry, aircraft, SHP-bodied
+/// buildings.
+#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
+pub struct RockingState {
+    /// Roll angle, rad. Positive sign matches AngleRotatedSideways convention.
+    pub angle_sideways: SimFixed,
+    /// Pitch angle, rad. Positive sign matches AngleRotatedForwards convention.
+    pub angle_forwards: SimFixed,
+    /// Roll angular velocity, rad/tick.
+    pub vel_sideways: SimFixed,
+    /// Pitch angular velocity, rad/tick.
+    pub vel_forwards: SimFixed,
+    /// If true, integrate without damping (EMP wobble, naval continuous rocking).
+    pub is_ship_rocking: bool,
+    /// Slope_type before the current transition (== curr_slope when no transition).
+    pub prev_slope: u8,
+    /// Current cell's slope_type.
+    pub curr_slope: u8,
+    /// Counts down from 3 to 0. Nonzero ⇒ render-time SLERP between prev and curr.
+    pub transition_ticks_remaining: u8,
+}
+
+impl RockingState {
+    /// Tilt-renderer deadband — both angles below this snap to zero and the unit
+    /// renders via the static atlas path.
+    pub const DEADBAND: SimFixed = SimFixed::lit("0.00002");
+
+    /// Returns true when the unit can render via the static atlas path
+    /// (no active rocking, no in-progress slope transition).
+    pub fn is_neutral(&self) -> bool {
+        !self.is_ship_rocking
+            && self.transition_ticks_remaining == 0
+            && self.angle_sideways.abs() <= Self::DEADBAND
+            && self.angle_forwards.abs() <= Self::DEADBAND
+    }
+}
+
 /// Per-building C4 detonation timer.
 ///
 /// Set by `tick_c4_plants` when an attacker with `c4_plant` arrives on the
@@ -719,6 +763,43 @@ mod tests {
     fn test_category_wraps_entity_category() {
         let cat: Category = Category(EntityCategory::Unit);
         assert_eq!(cat.0, EntityCategory::Unit);
+    }
+
+    #[test]
+    fn rocking_default_is_neutral() {
+        let r = RockingState::default();
+        assert!(r.is_neutral());
+    }
+
+    #[test]
+    fn rocking_active_angle_is_not_neutral() {
+        let mut r = RockingState::default();
+        r.angle_sideways = SimFixed::lit("0.01");
+        assert!(!r.is_neutral());
+    }
+
+    #[test]
+    fn rocking_within_deadband_is_neutral() {
+        let mut r = RockingState::default();
+        // SimFixed precision is ~1.5e-5, so 1e-5 rounds to 0; pick a value
+        // strictly between the smallest representable nonzero and DEADBAND.
+        // DEADBAND is 2e-5; SIM_EPSILON is ~1.5e-5 — exactly one delta below.
+        r.angle_sideways = SimFixed::DELTA;
+        assert!(r.is_neutral());
+    }
+
+    #[test]
+    fn rocking_transition_is_not_neutral() {
+        let mut r = RockingState::default();
+        r.transition_ticks_remaining = 1;
+        assert!(!r.is_neutral());
+    }
+
+    #[test]
+    fn rocking_ship_rocking_is_not_neutral() {
+        let mut r = RockingState::default();
+        r.is_ship_rocking = true;
+        assert!(!r.is_neutral());
     }
 
     #[test]
