@@ -74,6 +74,7 @@ pub mod slave_miner;
 // --- Economy, map resources ---
 pub mod ore_growth;
 pub mod radar;
+pub mod rocking;
 pub mod terrain_spawn;
 
 // --- Per-match settings, per-player state ---
