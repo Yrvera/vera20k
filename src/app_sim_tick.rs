@@ -506,6 +506,9 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
             if tick_result.destroyed_structure {
                 refresh_after_tick = true;
             }
+            if tick_result.bridge_state_changed {
+                refresh_after_tick = true;
+            }
             if tick_result.ownership_changed {
                 refresh_after_tick = true;
             }
