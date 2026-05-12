@@ -2824,6 +2824,204 @@ mod tests {
         assert!(!state.is_destroyable());
         assert_eq!(state.bridge_strength(), 800);
     }
+
+    // ---- G4 damaged-variant flood-fill tests ------------------------------------
+
+    /// Build a flat `width × height` `ResolvedTerrainGrid` where every cell
+    /// shares `final_tile_index = tile_id`, `has_damaged_data = true`, and
+    /// all other fields are zero/default. Suitable for flood-fill unit tests
+    /// that only care about tile_id equality + has_damaged_data gating.
+    fn flood_fill_terrain(width: u16, height: u16, tile_id: i32) -> ResolvedTerrainGrid {
+        let mut cells = Vec::with_capacity(width as usize * height as usize);
+        for ry in 0..height {
+            for rx in 0..width {
+                cells.push(ResolvedTerrainCell {
+                    rx,
+                    ry,
+                    source_tile_index: tile_id,
+                    source_sub_tile: 0,
+                    final_tile_index: tile_id,
+                    final_sub_tile: 0,
+                    level: 0,
+                    filled_clear: false,
+                    tileset_index: Some(0),
+                    land_type: 0,
+                    slope_type: 0,
+                    template_height: 0,
+                    render_offset_x: 0,
+                    render_offset_y: 0,
+                    terrain_class: TerrainClass::Clear,
+                    speed_costs: SpeedCostProfile::default(),
+                    is_water: false,
+                    is_cliff_like: false,
+                    is_cliff_redraw: false,
+                    variant: 0,
+                    is_rough: false,
+                    is_road: false,
+                    accepts_smudge: false,
+                    has_ramp: false,
+                    canonical_ramp: None,
+                    ground_walk_blocked: false,
+                    terrain_object_blocks: false,
+                    overlay_blocks: false,
+                    zone_type: 0,
+                    base_ground_walk_blocked: false,
+                    base_build_blocked: false,
+                    build_blocked: false,
+                    has_bridge_deck: false,
+                    bridge_walkable: false,
+                    bridge_transition: false,
+                    bridge_deck_level: 0,
+                    bridge_layer: None,
+                    radar_left: [0, 0, 0],
+                    radar_right: [0, 0, 0],
+                    has_damaged_data: true,
+                });
+            }
+        }
+        ResolvedTerrainGrid::from_cells(width, height, cells)
+    }
+
+    /// Build a `BridgeRuntimeState` with healthy body cells at the given coords.
+    fn flood_fill_bridge_state(coords: &[(u16, u16)]) -> BridgeRuntimeState {
+        let mut state = BridgeRuntimeState::default();
+        for &(rx, ry) in coords {
+            state.test_seed_cell(
+                rx,
+                ry,
+                BridgeRuntimeCell {
+                    deck_present: true,
+                    destroyable: true,
+                    deck_level: 0,
+                    bridge_group_id: Some(1),
+                    damage_state: DamageState::Healthy { variant: 0 },
+                    axis: Some(Axis::NS),
+                    role: BridgeCellRole::Body,
+                    anchor_span_id: Some(1),
+                    overlay_byte: 0,
+                    damaged_variant: false,
+                },
+            );
+        }
+        state
+    }
+
+    #[test]
+    fn flood_fill_kickoff_skips_when_no_damaged_data() {
+        let mut bs = flood_fill_bridge_state(&[(5, 5), (5, 6)]);
+        let mut terrain = flood_fill_terrain(10, 10, 42);
+        if let Some(c) = terrain.cell_mut(5, 5) {
+            c.has_damaged_data = false;
+        }
+        let count = bs.apply_damaged_variant_flood_fill(5, 5, true, &terrain);
+        assert_eq!(count, 0);
+        assert!(!bs.cell(5, 5).unwrap().damaged_variant);
+        assert!(!bs.cell(5, 6).unwrap().damaged_variant);
+    }
+
+    #[test]
+    fn flood_fill_propagates_to_same_tile_id_neighbors() {
+        let coords = [
+            (4, 4), (5, 4), (6, 4),
+            (4, 5), (5, 5), (6, 5),
+            (4, 6), (5, 6), (6, 6),
+        ];
+        let mut bs = flood_fill_bridge_state(&coords);
+        let terrain = flood_fill_terrain(10, 10, 42);
+        let count = bs.apply_damaged_variant_flood_fill(5, 5, true, &terrain);
+        assert_eq!(count, 9);
+        for &(rx, ry) in &coords {
+            assert!(
+                bs.cell(rx, ry).unwrap().damaged_variant,
+                "cell ({},{}) should be damaged",
+                rx,
+                ry
+            );
+        }
+    }
+
+    #[test]
+    fn flood_fill_stops_at_different_tile_id_boundary() {
+        let mut bs = flood_fill_bridge_state(&[(5, 5), (5, 6), (5, 7)]);
+        let mut terrain = flood_fill_terrain(10, 10, 42);
+        if let Some(c) = terrain.cell_mut(5, 6) {
+            c.final_tile_index = 99;
+        }
+        let _ = bs.apply_damaged_variant_flood_fill(5, 5, true, &terrain);
+        assert!(bs.cell(5, 5).unwrap().damaged_variant);
+        assert!(
+            !bs.cell(5, 6).unwrap().damaged_variant,
+            "boundary cell stays pristine"
+        );
+        assert!(
+            !bs.cell(5, 7).unwrap().damaged_variant,
+            "downstream cell stays pristine"
+        );
+    }
+
+    #[test]
+    fn flood_fill_idempotent_when_already_in_target_state() {
+        let mut bs = flood_fill_bridge_state(&[(5, 5)]);
+        if let Some(c) = bs.cell_mut(5, 5) {
+            c.damaged_variant = true;
+        }
+        let terrain = flood_fill_terrain(10, 10, 42);
+        let count = bs.apply_damaged_variant_flood_fill(5, 5, true, &terrain);
+        assert_eq!(count, 0, "no mutation when already in target state");
+    }
+
+    #[test]
+    fn flood_fill_eight_directions_includes_diagonals() {
+        let coords = [
+            (4, 4), (5, 4), (6, 4),
+            (4, 5), (5, 5), (6, 5),
+            (4, 6), (5, 6), (6, 6),
+        ];
+        let mut bs = flood_fill_bridge_state(&coords);
+        let terrain = flood_fill_terrain(10, 10, 42);
+        let count = bs.apply_damaged_variant_flood_fill(5, 5, true, &terrain);
+        assert_eq!(count, 9);
+        assert!(bs.cell(4, 4).unwrap().damaged_variant, "NW diagonal hit");
+        assert!(bs.cell(6, 4).unwrap().damaged_variant, "NE diagonal hit");
+        assert!(bs.cell(4, 6).unwrap().damaged_variant, "SW diagonal hit");
+        assert!(bs.cell(6, 6).unwrap().damaged_variant, "SE diagonal hit");
+    }
+
+    #[test]
+    fn flood_fill_clear_propagates_state_false() {
+        let coords = [(5u16, 5u16), (5, 6), (5, 7)];
+        let mut bs = flood_fill_bridge_state(&coords);
+        for &(rx, ry) in &coords {
+            if let Some(c) = bs.cell_mut(rx, ry) {
+                c.damaged_variant = true;
+            }
+        }
+        let terrain = flood_fill_terrain(10, 10, 42);
+        let count = bs.apply_damaged_variant_flood_fill(5, 5, false, &terrain);
+        assert_eq!(count, 3);
+        for &(rx, ry) in &coords {
+            assert!(!bs.cell(rx, ry).unwrap().damaged_variant);
+        }
+    }
+
+    #[test]
+    fn flood_fill_off_map_returns_zero() {
+        let mut bs = flood_fill_bridge_state(&[(5, 5)]);
+        let terrain = flood_fill_terrain(10, 10, 42);
+        let count = bs.apply_damaged_variant_flood_fill(99, 99, true, &terrain);
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn flood_fill_sentinel_tile_id_returns_zero() {
+        let mut bs = flood_fill_bridge_state(&[(5, 5)]);
+        let mut terrain = flood_fill_terrain(10, 10, 42);
+        if let Some(c) = terrain.cell_mut(5, 5) {
+            c.final_tile_index = 0xFFFF;
+        }
+        let count = bs.apply_damaged_variant_flood_fill(5, 5, true, &terrain);
+        assert_eq!(count, 0);
+    }
 }
 
 #[cfg(test)]
