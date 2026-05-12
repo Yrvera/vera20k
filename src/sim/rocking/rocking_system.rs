@@ -48,6 +48,78 @@ pub const FORCE_SATURATION: SimFixed = SimFixed::lit("4");
 /// applied to any target in the radius.
 pub const APPLY_AREA_FORCE_FLOOR: SimFixed = SimFixed::lit("0.3");
 
+/// Advance one rocking axis (sideways OR forwards) by one tick.
+///
+/// Step order (matches reference engine RockingUpdate):
+///   1. Zero-velocity short-circuit — if velocity == 0, force angle to 0.
+///   2. Integrate angle += velocity.
+///   3. Saturation clamp — only when stationary AND in normal range AND
+///      the integration step crossed the cap this tick. Moving units drift
+///      past the cap; out-of-range angles fall through to step 4.
+///   4. Dampening — moving units decay at `fallback * BASE_DECAY_RATE`;
+///      stationary units at `BASE_DECAY_RATE`. Out-of-range velocity is
+///      pushed in the same direction as the velocity sign (which is what
+///      produces the wide-amplitude run-away that L30 self-destruct catches).
+///   5. Deadband snap — `|angle| <= TILT_DEADBAND` clears both fields.
+///
+/// `cap` selects ±π/4 (default) or ±π/10 (forwards during vehicle-vs-building
+/// crush, currently DEFERRED).
+pub(crate) fn advance_axis(
+    angle: &mut SimFixed,
+    velocity: &mut SimFixed,
+    cap: SimFixed,
+    is_moving: bool,
+    fallback: SimFixed,
+) {
+    // L10: strict velocity == 0 → angle force-zero, skip integration.
+    if *velocity == SimFixed::ZERO {
+        *angle = SimFixed::ZERO;
+        return;
+    }
+
+    // L2: integrate.
+    let prev = *angle;
+    let new_angle = prev + *velocity;
+    *angle = new_angle;
+
+    let in_range = angle.abs() <= NORMAL_RANGE_PI2;
+
+    // L7: saturation fires only when stationary, in normal range, and crossing
+    // the cap this tick. Both clamp the angle and zero the velocity.
+    if !is_moving && in_range {
+        if new_angle > cap && prev < cap {
+            *angle = cap;
+            *velocity = SimFixed::ZERO;
+        } else if new_angle < -cap && prev > -cap {
+            *angle = -cap;
+            *velocity = SimFixed::ZERO;
+        }
+    }
+
+    // L3 / L4 / L5: dampening.
+    //   - in_range, moving:    velocity decays by fallback * BASE_DECAY_RATE
+    //   - in_range, stationary: velocity decays by BASE_DECAY_RATE
+    //   - out_of_range:        velocity is pushed in its own direction by
+    //                          BASE_DECAY_RATE (subtract -BASE_DECAY_RATE = +)
+    //                          — the runaway path the L30 self-destruct catches.
+    let decay = if is_moving {
+        fallback * BASE_DECAY_RATE
+    } else {
+        BASE_DECAY_RATE
+    };
+    if *velocity > SimFixed::ZERO {
+        *velocity -= if in_range { decay } else { -BASE_DECAY_RATE };
+    } else if *velocity < SimFixed::ZERO {
+        *velocity += if in_range { decay } else { -BASE_DECAY_RATE };
+    }
+
+    // L9: deadband snap clears both angle and velocity in the same tick.
+    if angle.abs() <= TILT_DEADBAND {
+        *angle = SimFixed::ZERO;
+        *velocity = SimFixed::ZERO;
+    }
+}
+
 /// Stub entry point — implemented in Task 11.
 pub fn tick(_entities: &mut EntityStore) {
     // Implemented in Task 11.
