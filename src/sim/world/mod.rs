@@ -999,6 +999,7 @@ impl Simulation {
         let mut executed_commands = 0usize;
         let mut spawned_entities = false;
         let mut destroyed_structure = false;
+        let mut bridge_state_changed = false;
         let mut passenger_ownership_changed = false;
 
         let mut due: Vec<&CommandEnvelope> = commands
@@ -1242,13 +1243,12 @@ impl Simulation {
             // (kill ground occupants → DropIn deck → debris → rim refresh
             // → TriggerEvent 31 → zone rebuild). Replaces the legacy
             // 2-call pipeline.
-            let bridge_state_changed_this_call =
+            bridge_state_changed |=
                 crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
                     self,
                     rules,
                     &combat_result.bridge_damage_events,
                 );
-            let _ = bridge_state_changed_this_call; // wired into TickResult in Task 3
             // Wall damage: feed combat-emitted wall hits through the per-cell damage
             // pipeline and despawn destroyed wall entities. Requires overlay_registry
             // (wall flag on OverlayType plus per-type Strength/DamageLevels); rules
@@ -1494,7 +1494,7 @@ impl Simulation {
             spawned_entities,
             destroyed_structure,
             ownership_changed: passenger_ownership_changed,
-            bridge_state_changed: false, // wired in Task 3
+            bridge_state_changed,
             movement: movement_stats,
         }
     }
