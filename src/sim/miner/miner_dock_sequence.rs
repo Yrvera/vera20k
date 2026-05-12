@@ -19,12 +19,21 @@ use crate::rules::ruleset::RuleSet;
 use crate::sim::components::BaleDepositEvent;
 use crate::sim::miner::{MinerConfig, MinerState, RefineryDockPhase};
 use crate::sim::movement;
+use crate::sim::movement::locomotor::MovementLayer;
+use crate::sim::occupancy::OccupancyGrid;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::world::{SimSoundEvent, Simulation};
 use crate::util::fixed_math::SimFixed;
 
 use super::miner_system::{MinerSnapshot, player_has_purifier};
 use crate::sim::production::{credits_entry_for_owner, foundation_dimensions};
+
+/// Maximum diamond-ring radius for the post-unload exit-cell spiral search.
+/// gamemd's `FootClass::Find_Nearby_Passable_Cell` derives its cap from
+/// `Speed + SightRange` (capped at 32). A miner-class unit lands at ~14.
+/// 16 covers the same footprint with a small safety margin and still
+/// terminates quickly when the area around the refinery is fully blocked.
+const EXIT_SEARCH_MAX_RADIUS: i32 = 16;
 
 /// Helper: record a dock phase transition to the snapshot's debug buffer.
 fn record_dock_phase(snap: &mut MinerSnapshot, old: RefineryDockPhase, new: RefineryDockPhase) {
@@ -80,19 +89,113 @@ pub(super) fn refinery_pad_cell(
 
 /// Exit cell — where the miner drives after undocking.
 ///
-/// Anchor is the foundation centroid (`BuildingClass::GetCoords()` overrides
-/// `ObjectClass::GetCoords()` and adds `W*128 - 128` / `H*128 - 128` to the
-/// top-left cell *center*). The undock helper then offsets that anchor by
-/// `(-0x80, +0x80)` leptons before integer-dividing into cell space:
-///   exit_lepton.x = rx*256 + W*128 - 128
-///   exit_lepton.y = ry*256 + H*128 + 128
-/// For a 4×3 refinery at (10, 10) this resolves to (11, 12) — one cell
-/// south-east of the foundation centroid, on the bib row. Larger refineries
-/// push the exit point further SE proportionally.
-pub(super) fn refinery_exit_cell(rx: u16, ry: u16, width: u16, height: u16) -> (u16, u16) {
-    let exit_x = (rx as i32 * 256 + width as i32 * 128 - 0x80) / 256;
-    let exit_y = (ry as i32 * 256 + height as i32 * 128 + 0x80) / 256;
-    (exit_x.max(0) as u16, exit_y.max(0) as u16)
+/// Mirrors gamemd's `ReleaseDockedHarvester` (0x4595C0): the harvester is
+/// released next to the refinery's west edge (foundation top-left minus one
+/// X, plus one Y) and `FootClass::Find_Nearby_Passable_Cell` then picks the
+/// nearest in-bounds, passable, unoccupied cell starting from that anchor.
+/// The shape works uniformly for every refinery foundation (4×3 GAREFN,
+/// 2×2 YAREFN, 3×3 Slave Miner refinery) because the anchor offset is
+/// foundation-relative and the spiral expands outward from there.
+///
+/// Returns the first passable cell found in a CW diamond-ring spiral.
+/// Falls back to the art.ini `QueueingCell` (or the geometric default from
+/// [`refinery_queue_cell`]) if no passable cell exists within
+/// [`EXIT_SEARCH_MAX_RADIUS`], or if no grid is available.
+pub(super) fn refinery_exit_cell(
+    rx: u16,
+    ry: u16,
+    width: u16,
+    height: u16,
+    queueing_cell: Option<(u16, u16)>,
+    path_grid: Option<&PathGrid>,
+    occupancy: Option<&OccupancyGrid>,
+) -> (u16, u16) {
+    let anchor_x = rx as i32 - 1;
+    let anchor_y = ry as i32 + 1;
+
+    if let Some(grid) = path_grid {
+        if let Some(cell) = find_nearby_passable_cell(
+            anchor_x,
+            anchor_y,
+            grid,
+            occupancy,
+            EXIT_SEARCH_MAX_RADIUS,
+        ) {
+            return cell;
+        }
+    }
+
+    refinery_queue_cell(rx, ry, width, height, queueing_cell)
+}
+
+/// Whether `(x, y)` is in-bounds, passable on the ground layer, and not
+/// occupied by any other ground-layer entity.
+///
+/// Bridge layer is intentionally ignored: refinery exit cells must drop the
+/// miner on land. `occupancy` may be `None` when only path passability is
+/// known (used by direct unit tests of the spiral algorithm).
+fn is_exit_cell_passable(
+    x: i32,
+    y: i32,
+    grid: &PathGrid,
+    occupancy: Option<&OccupancyGrid>,
+) -> bool {
+    if x < 0 || y < 0 || x >= grid.width() as i32 || y >= grid.height() as i32 {
+        return false;
+    }
+    let cx = x as u16;
+    let cy = y as u16;
+    if !grid.is_walkable(cx, cy) {
+        return false;
+    }
+    if let Some(occ) = occupancy {
+        if !occ.is_empty_on_layer(cx, cy, MovementLayer::Ground) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Diamond-ring spiral search from `(ox, oy)`.
+///
+/// Mirrors the iteration order of `FootClass::Find_Nearby_Passable_Cell`
+/// (gamemd 0x56DC20): ring `r=0` is the anchor itself; subsequent rings
+/// walk top/bottom rows first (delta = -r..=r), then left/right columns
+/// excluding corners (delta = 1-r..=r-1). Returns the **first** passable
+/// cell encountered (a simplification of the original's 24-candidate +
+/// frame-modulo tie-break — we just need one valid drop-off, not a randomized
+/// pick among many).
+pub(crate) fn find_nearby_passable_cell(
+    ox: i32,
+    oy: i32,
+    grid: &PathGrid,
+    occupancy: Option<&OccupancyGrid>,
+    max_radius: i32,
+) -> Option<(u16, u16)> {
+    if is_exit_cell_passable(ox, oy, grid, occupancy) {
+        return Some((ox as u16, oy as u16));
+    }
+    for r in 1..=max_radius {
+        // Segment 1: top + bottom rows.
+        for delta in -r..=r {
+            if is_exit_cell_passable(ox + delta, oy - r, grid, occupancy) {
+                return Some(((ox + delta) as u16, (oy - r) as u16));
+            }
+            if is_exit_cell_passable(ox + delta, oy + r, grid, occupancy) {
+                return Some(((ox + delta) as u16, (oy + r) as u16));
+            }
+        }
+        // Segment 2: left + right columns (corners already covered by segment 1).
+        for delta in (1 - r)..=(r - 1) {
+            if is_exit_cell_passable(ox - r, oy + delta, grid, occupancy) {
+                return Some(((ox - r) as u16, (oy + delta) as u16));
+            }
+            if is_exit_cell_passable(ox + r, oy + delta, grid, occupancy) {
+                return Some(((ox + r) as u16, (oy + delta) as u16));
+            }
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -105,6 +208,7 @@ fn resolve_refinery_cells(
     sim: &Simulation,
     rules: &RuleSet,
     ref_sid: u64,
+    path_grid: Option<&PathGrid>,
 ) -> Option<((u16, u16), (u16, u16), (u16, u16))> {
     let entity = sim.entities.get(ref_sid)?;
     let obj = rules.object_case_insensitive(sim.interner.resolve(entity.type_ref));
@@ -118,7 +222,7 @@ fn resolve_refinery_cells(
     Some((
         refinery_queue_cell(rx, ry, w, h, qc),
         refinery_pad_cell(rx, ry, w, h, dock_off),
-        refinery_exit_cell(rx, ry, w, h),
+        refinery_exit_cell(rx, ry, w, h, qc, path_grid, Some(&sim.occupancy)),
     ))
 }
 
@@ -152,7 +256,7 @@ pub(super) fn handle_dock_sequence(
         return;
     };
 
-    let Some((queue, pad, exit)) = resolve_refinery_cells(sim, rules, ref_sid) else {
+    let Some((queue, pad, exit)) = resolve_refinery_cells(sim, rules, ref_sid, path_grid) else {
         snap.miner.reserved_refinery = None;
         snap.miner.state = MinerState::SearchOre;
         snap.miner.dock_phase = RefineryDockPhase::Approach;
@@ -167,13 +271,13 @@ pub(super) fn handle_dock_sequence(
             phase_approach(sim, path_grid, snap, queue, pad, ref_sid);
         }
         RefineryDockPhase::Linked => {
-            phase_linked(sim, rules, snap, pad, ref_sid);
+            phase_linked(sim, rules, config, snap, pad, ref_sid);
         }
         RefineryDockPhase::Unloading => {
             phase_unloading(sim, rules, config, snap, ref_sid);
         }
         RefineryDockPhase::Departing => {
-            phase_departing(sim, snap, exit);
+            phase_departing(sim, path_grid, snap, exit);
         }
     }
 
@@ -221,6 +325,7 @@ fn phase_approach(
 fn phase_linked(
     sim: &mut Simulation,
     rules: &RuleSet,
+    #[expect(unused_variables, reason = "wired in Task 5")] config: &MinerConfig,
     snap: &mut MinerSnapshot,
     pad: (u16, u16),
     ref_sid: u64,
@@ -306,7 +411,12 @@ fn phase_unloading(
     snap.miner.dock_phase = RefineryDockPhase::Departing;
 }
 
-fn phase_departing(sim: &mut Simulation, snap: &mut MinerSnapshot, exit: (u16, u16)) {
+fn phase_departing(
+    sim: &mut Simulation,
+    path_grid: Option<&PathGrid>,
+    snap: &mut MinerSnapshot,
+    exit: (u16, u16),
+) {
     let moving = sim
         .entities
         .get(snap.entity_id)
@@ -318,16 +428,37 @@ fn phase_departing(sim: &mut Simulation, snap: &mut MinerSnapshot, exit: (u16, u
         .is_some_and(|e| e.teleport_state.is_some());
 
     if !moving && !at_exit {
-        movement::issue_direct_move(&mut sim.entities, snap.entity_id, exit, snap.speed);
-        // Exit cell sits on the foundation south edge (centroid + (-0x80,
-        // +0x80) leptons). The pad→exit straight line crosses interior
-        // foundation cells which are blocked in path_grid; mirror gamemd's
-        // locomotor head_to (which ignores cell occupancy during dock
-        // departure) by setting bypass_grid for this one move.
-        if let Some(entity) = sim.entities.get_mut(snap.entity_id)
-            && let Some(ref mut mt) = entity.movement_target
-        {
-            mt.bypass_grid = true;
+        // Pad→exit drive: the exit is outside the foundation but the pad is
+        // on the foundation east edge. A* must route AROUND the foundation
+        // (south or north side) — `astar_search` accepts a blocked start
+        // cell, so pathing out of the pad works even though the pad is
+        // inside the building footprint.
+        if let Some(grid) = path_grid {
+            let _ = movement::issue_move_command(
+                &mut sim.entities,
+                grid,
+                snap.entity_id,
+                exit,
+                snap.speed,
+                false,
+                None,
+                None,
+                None,
+                false,
+            );
+        } else {
+            // No grid (test-only edge case): fall back to single-cell direct
+            // move so the test harness still progresses.
+            movement::issue_direct_move(&mut sim.entities, snap.entity_id, exit, snap.speed);
+        }
+        // Force facing 0x47 at the START of the drive. gamemd's Force_Track
+        // call in ReleaseDockedHarvester sets track_index to 0x47 before any
+        // movement step, so the unit visually faces ESE throughout the exit
+        // drive. The arrival branch below re-snaps for safety in case the
+        // movement system rotated facing during travel.
+        if let Some(entity) = sim.entities.get_mut(snap.entity_id) {
+            entity.facing = 0x47;
+            entity.facing_target = Some(0x47);
         }
         return;
     }
