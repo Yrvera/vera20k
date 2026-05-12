@@ -431,7 +431,7 @@ fn chrono_miner_teleports_to_refinery_on_return() {
     // Distance ~95 cells → delay ≈ 95*256/48 ≈ 509 ticks. After the delay the
     // miner enters the 4-state dock FSM (Approach → Linked → Unloading →
     // Departing) and ends up at the exit cell. For the 4×3 refinery at (10, 10)
-    // the gamemd-formula exit cell is (11, 12).
+    // the ReleaseDockedHarvester exit cell is anchor (9, 11).
     tick_miners_n(&mut sim, &rules, 600);
 
     let entity = sim.entities.get(miner_id).expect("entity");
@@ -442,7 +442,7 @@ fn chrono_miner_teleports_to_refinery_on_return() {
     // After teleport + dock sequence, miner exits at the refinery exit cell.
     assert_eq!(
         (entity.position.rx, entity.position.ry),
-        (11, 12),
+        (9, 11),
         "Chrono Miner should be at exit cell after completing dock sequence"
     );
 }
@@ -904,10 +904,10 @@ fn forced_return_chrono_teleports() {
         "Teleport should be complete"
     );
     // After teleport + dock sequence, miner exits at the refinery exit cell.
-    // For the 4×3 refinery at (10, 10) the gamemd-formula exit cell is (11, 12).
+    // For the 4×3 refinery at (10, 10) the ReleaseDockedHarvester anchor is (9, 11).
     assert_eq!(
         (entity.position.rx, entity.position.ry),
-        (11, 12),
+        (9, 11),
         "Forced return should have teleported and docked — now at exit cell"
     );
 }
@@ -1402,26 +1402,44 @@ fn dock_wait_grants_reservation_when_free() {
 fn refinery_pad_and_exit_cells() {
     use super::miner_dock_sequence::{refinery_exit_cell, refinery_pad_cell, refinery_queue_cell};
 
+    let grid = PathGrid::test_all_passable(64, 64);
+
     // 4x3 foundation at (10, 10), no art.ini overrides:
     // queue = (14, 11), pad = (13, 11)
-    // exit = foundation_centroid_lepton + (-0x80, +0x80):
-    //   x = (10*256 + 4*128 - 128) / 256 = 2944 / 256 = 11
-    //   y = (10*256 + 3*128 + 128) / 256 = 3072 / 256 = 12
+    // exit anchor = (rx - 1, ry + 1) = (9, 11); passable on a clean grid.
     assert_eq!(refinery_queue_cell(10, 10, 4, 3, None), (14, 11));
     assert_eq!(refinery_pad_cell(10, 10, 4, 3, None), (13, 11));
-    assert_eq!(refinery_exit_cell(10, 10, 4, 3), (11, 12));
+    assert_eq!(
+        refinery_exit_cell(10, 10, 4, 3, None, Some(&grid), None),
+        (9, 11)
+    );
 
     // 3x3 foundation at (5, 5), no art.ini overrides:
-    // queue = (8, 6), pad = (7, 6)
-    // exit = (5*256 + 3*128 - 128)/256 = 1536/256 = 6,
-    //        (5*256 + 3*128 + 128)/256 = 1792/256 = 7
+    // queue = (8, 6), pad = (7, 6); exit anchor = (4, 6).
     assert_eq!(refinery_queue_cell(5, 5, 3, 3, None), (8, 6));
     assert_eq!(refinery_pad_cell(5, 5, 3, 3, None), (7, 6));
-    assert_eq!(refinery_exit_cell(5, 5, 3, 3), (6, 7));
+    assert_eq!(
+        refinery_exit_cell(5, 5, 3, 3, None, Some(&grid), None),
+        (4, 6)
+    );
+
+    // 2x2 foundation at (20, 20): exit anchor = (19, 21).
+    assert_eq!(
+        refinery_exit_cell(20, 20, 2, 2, None, Some(&grid), None),
+        (19, 21)
+    );
 
     // With QueueingCell override from art.ini:
     assert_eq!(refinery_queue_cell(10, 10, 4, 3, Some((4, 1))), (14, 11)); // same result for standard
     assert_eq!(refinery_queue_cell(10, 10, 4, 3, Some((3, 2))), (13, 12)); // custom position
+
+    // Fallback: no grid available → return QueueingCell (geometric default
+    // when no art.ini override).
+    assert_eq!(refinery_exit_cell(10, 10, 4, 3, None, None, None), (14, 11));
+    assert_eq!(
+        refinery_exit_cell(10, 10, 4, 3, Some((3, 2)), None, None),
+        (13, 12)
+    );
 }
 
 /// Verify the Unloading phase awards credits like the old handle_unload.
@@ -1506,11 +1524,10 @@ fn exit_pad_clears_ore_targets_on_arrival() {
     let config = MinerConfig::default();
     let path_grid = PathGrid::new(64, 64);
 
-    // 4×3 refinery at (10, 10). Exit cell = foundation_centroid + (-0x80, +0x80) leptons:
-    //   x = (10*256 + 4*128 - 128) / 256 = 11
-    //   y = (10*256 + 3*128 + 128) / 256 = 12
+    // 4×3 refinery at (10, 10). ReleaseDockedHarvester anchor + Find_Nearby_Passable_Cell:
+    //   anchor = (rx - 1, ry + 1) = (9, 11), passable on a clean grid.
     spawn_refinery(&mut sim, 100, 10, 10);
-    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 11, 12);
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 9, 11);
 
     // Set up the miner mid-Departing with stale archive populated.
     let entity = sim.entities.get_mut(miner_id).expect("miner entity");
@@ -1559,8 +1576,9 @@ fn exit_pad_blocks_transition_during_teleport() {
     let path_grid = PathGrid::new(64, 64);
 
     spawn_refinery(&mut sim, 100, 10, 10);
-    // Exit cell for the 4×3 refinery at (10, 10) is (11, 12) under the gamemd formula.
-    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 11, 12);
+    // Exit cell for the 4×3 refinery at (10, 10) is (9, 11) under the
+    // ReleaseDockedHarvester anchor + Find_Nearby_Passable_Cell rule.
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 9, 11);
 
     // Set up miner at the exit cell, in Departing, with a teleport in progress.
     let entity = sim.entities.get_mut(miner_id).expect("miner entity");
@@ -1619,28 +1637,28 @@ fn chrono_miner_archive_cleared_after_undock_picks_new_target() {
     let config = MinerConfig::default();
     let path_grid = PathGrid::new(64, 64);
 
-    // Refinery at (10, 10), 4x3 foundation. Gamemd-formula exit cell = (11, 12).
+    // Refinery at (10, 10), 4x3 foundation. ReleaseDockedHarvester exit cell = (9, 11).
     spawn_refinery(&mut sim, 100, 10, 10);
 
-    // Place ONE ore patch at (15, 13): within local_continuation_radius
-    // (default 6) of exit cell (11, 12). This is what the fresh local scan
+    // Place ONE ore patch at (13, 13): within local_continuation_radius
+    // (default 6) of exit cell (9, 11). This is what the fresh local scan
     // from current position should pick.
     sim.production.resource_nodes.insert(
-        (15, 13),
+        (13, 13),
         ResourceNode {
             resource_type: ResourceType::Ore,
             remaining: 1200,
         },
     );
 
-    // Spawn miner at exit cell (11, 12), mid-Departing. Stale archive points
+    // Spawn miner at exit cell (9, 11), mid-Departing. Stale archive points
     // far away (50, 50) — outside any scan radius from current position,
     // and no ore at that cell. If the archive were NOT cleared, the search
     // would start from (50, 50), the local scan would find nothing, the
     // archive check would also find nothing, and only the long scan would
     // eventually fall back to current position. With the fix the local scan
-    // from current position immediately picks (15, 13).
-    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 11, 12);
+    // from current position immediately picks (13, 13).
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 9, 11);
     let entity = sim.entities.get_mut(miner_id).expect("miner entity");
     let miner = entity.miner.as_mut().expect("miner component");
     miner.state = MinerState::Dock;
@@ -1659,7 +1677,7 @@ fn chrono_miner_archive_cleared_after_undock_picks_new_target() {
     let miner = entity.miner.as_ref().expect("miner component");
 
     // The stale (50, 50) target must be replaced. Any other value (None or
-    // Some((15, 13))) is acceptable — the precise target depends on which
+    // Some((13, 13))) is acceptable — the precise target depends on which
     // tick SearchOre ran in. The key property: the stale archive does not
     // survive the dock cycle.
     assert_ne!(
@@ -1675,8 +1693,8 @@ fn chrono_miner_archive_cleared_after_undock_picks_new_target() {
     if let Some(target) = miner.target_ore_cell {
         assert_eq!(
             target,
-            (15, 13),
-            "the only ore at (15, 13) should be picked. Got {:?}",
+            (13, 13),
+            "the only ore at (13, 13) should be picked. Got {:?}",
             target
         );
     }
@@ -2204,20 +2222,53 @@ fn unloading_applies_per_bale_purifier_bonus() {
     );
 }
 
-/// Exit cell formula matches gamemd: foundation_centroid_lepton + (-0x80, +0x80).
+/// Exit cell uses gamemd's ReleaseDockedHarvester anchor: foundation
+/// top-left offset by (-1, +1), then Find_Nearby_Passable_Cell.
 #[test]
 fn departing_uses_gamemd_exit_cell_formula() {
     use super::miner_dock_sequence::refinery_exit_cell;
-    // 4x3 refinery at (10, 20):
-    //   x = (10*256 + 4*128 - 128) / 256 = 2944 / 256 = 11
-    //   y = (20*256 + 3*128 + 128) / 256 = 5632 / 256 = 22
-    assert_eq!(refinery_exit_cell(10, 20, 4, 3), (11, 22));
-    // 3x3 refinery at (5, 5):
-    //   x = (1280 + 384 - 128)/256 = 1536/256 = 6
-    //   y = (1280 + 384 + 128)/256 = 1792/256 = 7
-    assert_eq!(refinery_exit_cell(5, 5, 3, 3), (6, 7));
-    // 1x1 refinery at origin: centroid = (128, 128); exit_lepton = (0, 256) → cell (0, 1).
-    assert_eq!(refinery_exit_cell(0, 0, 1, 1), (0, 1));
+    let grid = PathGrid::test_all_passable(64, 64);
+
+    // 4x3 refinery at (10, 20): anchor = (9, 21), passable on a clean grid.
+    assert_eq!(
+        refinery_exit_cell(10, 20, 4, 3, None, Some(&grid), None),
+        (9, 21)
+    );
+    // 3x3 refinery at (5, 5): anchor = (4, 6).
+    assert_eq!(
+        refinery_exit_cell(5, 5, 3, 3, None, Some(&grid), None),
+        (4, 6)
+    );
+    // 2x2 (YAREFN-shaped) at (12, 8): anchor = (11, 9).
+    assert_eq!(
+        refinery_exit_cell(12, 8, 2, 2, None, Some(&grid), None),
+        (11, 9)
+    );
+
+    // Anchor blocked → spiral expands to the next passable cell. Block
+    // (9, 11) and verify the search proceeds outward (ring 1 hits (8, 10)
+    // first via the top-row segment).
+    let mut blocked_grid = PathGrid::test_all_passable(64, 64);
+    blocked_grid.set_blocked(9, 11, true);
+    let next = refinery_exit_cell(10, 10, 4, 3, None, Some(&blocked_grid), None);
+    assert_ne!(next, (9, 11));
+    // Ring 1 top-row pair walks delta = -1..=1: (8,10), (10,10), (8,12),
+    // (10,12), ... The first passable cell is (8, 10).
+    assert_eq!(next, (8, 10));
+
+    // Anchor + every cell within the max radius blocked → fallback to
+    // QueueingCell. Block a 33×33 block centered on the anchor (radius 16).
+    let mut fully_blocked = PathGrid::test_all_passable(64, 64);
+    for x in 0..32 {
+        for y in 0..32 {
+            fully_blocked.set_blocked(x, y, true);
+        }
+    }
+    assert_eq!(
+        refinery_exit_cell(10, 10, 4, 3, Some((3, 2)), Some(&fully_blocked), None),
+        (13, 12),
+        "exhausted spiral must fall back to art.ini QueueingCell"
+    );
 }
 
 /// Departing snaps facing to 0x47 (east-southeast) and returns to SearchOre
@@ -2230,8 +2281,9 @@ fn departing_snaps_facing_to_0x47() {
     let path_grid = PathGrid::new(64, 64);
 
     spawn_refinery(&mut sim, 100, 10, 10);
-    // Place miner at the gamemd-formula exit cell (11, 12) for the 4×3 refinery at (10, 10).
-    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 11, 12);
+    // Place miner at the ReleaseDockedHarvester exit cell (9, 11) for the
+    // 4×3 refinery at (10, 10) — anchor (rx-1, ry+1), passable on a clean grid.
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 9, 11);
     {
         let entity = sim.entities.get_mut(miner_id).expect("miner entity");
         entity.facing = 0; // pre-set facing != 0x47
@@ -2370,12 +2422,14 @@ fn full_dock_cycle_war_miner() {
         credits_after - credits_before,
     );
 
-    // Final position at the exit cell (4×3 refinery at (10, 10) → exit (11, 12)).
+    // Final position at the exit cell. For a 4×3 refinery at (10, 10) the
+    // ReleaseDockedHarvester anchor is (rx-1, ry+1) = (9, 11); on a clean
+    // grid Find_Nearby_Passable_Cell returns the anchor immediately.
     let entity = sim.entities.get(miner_id).expect("entity");
     assert_eq!(
         (entity.position.rx, entity.position.ry),
-        (11, 12),
-        "miner should land at gamemd-formula exit cell"
+        (9, 11),
+        "miner should land at the ReleaseDockedHarvester exit cell"
     );
     assert_eq!(entity.facing, 0x47, "facing must snap to 0x47 on arrival");
 
@@ -2396,4 +2450,148 @@ fn full_dock_cycle_war_miner() {
         !sim.production.dock_reservations.is_occupied(100),
         "dock must be free for the next miner"
     );
+}
+
+// ==========================================================================
+// extract_bales_max — bulk-drain primitive (gamemd Harvest_Ore_Tick parity)
+// ==========================================================================
+
+#[test]
+fn extract_max_empty_cell() {
+    let mut sim = Simulation::new();
+    let config = MinerConfig::default();
+    let bales = super::miner_system::extract_bales_max(&mut sim, (5, 5), &config, 40);
+    assert!(bales.is_empty(), "no node at cell → no bales");
+}
+
+#[test]
+fn extract_max_full_drain_ore() {
+    let mut sim = Simulation::new();
+    let config = MinerConfig::default();
+    // 11 density levels of ore at base 120: remaining = 11 * 120 = 1320.
+    sim.production.resource_nodes.insert(
+        (5, 5),
+        ResourceNode {
+            resource_type: ResourceType::Ore,
+            remaining: 11 * 120,
+        },
+    );
+    let bales = super::miner_system::extract_bales_max(&mut sim, (5, 5), &config, 40);
+    assert_eq!(bales.len(), 11, "full drain extracts 11 bales");
+    assert!(
+        bales
+            .iter()
+            .all(|b| b.resource_type == ResourceType::Ore && b.value == config.ore_bale_value),
+        "all bales are ore-type with configured value"
+    );
+    assert!(
+        sim.production.resource_nodes.get(&(5, 5)).is_none(),
+        "node removed after full drain"
+    );
+}
+
+#[test]
+fn extract_max_partial_capacity() {
+    let mut sim = Simulation::new();
+    let config = MinerConfig::default();
+    sim.production.resource_nodes.insert(
+        (5, 5),
+        ResourceNode {
+            resource_type: ResourceType::Ore,
+            remaining: 11 * 120,
+        },
+    );
+    let bales = super::miner_system::extract_bales_max(&mut sim, (5, 5), &config, 3);
+    assert_eq!(bales.len(), 3, "capacity-limited to 3 bales");
+    let after = sim
+        .production
+        .resource_nodes
+        .get(&(5, 5))
+        .expect("still present");
+    assert_eq!(
+        after.remaining,
+        (11 - 3) * 120,
+        "remaining decremented by 3 density levels"
+    );
+}
+
+#[test]
+fn extract_max_partial_density_exact_match() {
+    let mut sim = Simulation::new();
+    let config = MinerConfig::default();
+    // 5 density levels of ore: remaining = 600. Empty capacity higher than
+    // available density → drain exactly 5, node removed.
+    sim.production.resource_nodes.insert(
+        (5, 5),
+        ResourceNode {
+            resource_type: ResourceType::Ore,
+            remaining: 5 * 120,
+        },
+    );
+    let bales = super::miner_system::extract_bales_max(&mut sim, (5, 5), &config, 40);
+    assert_eq!(bales.len(), 5, "extracts all 5 available density levels");
+    assert!(
+        sim.production.resource_nodes.get(&(5, 5)).is_none(),
+        "exact match drains the cell"
+    );
+}
+
+#[test]
+fn extract_max_gem_cell() {
+    let mut sim = Simulation::new();
+    let config = MinerConfig::default();
+    // 4 density levels of gems at base 180.
+    sim.production.resource_nodes.insert(
+        (5, 5),
+        ResourceNode {
+            resource_type: ResourceType::Gem,
+            remaining: 4 * 180,
+        },
+    );
+    let bales = super::miner_system::extract_bales_max(&mut sim, (5, 5), &config, 40);
+    assert_eq!(bales.len(), 4, "gem cell yields 4 bales");
+    assert!(
+        bales
+            .iter()
+            .all(|b| b.resource_type == ResourceType::Gem && b.value == config.gem_bale_value),
+        "all bales are gem-type with configured value"
+    );
+}
+
+#[test]
+fn extract_max_zero_capacity() {
+    let mut sim = Simulation::new();
+    let config = MinerConfig::default();
+    sim.production.resource_nodes.insert(
+        (5, 5),
+        ResourceNode {
+            resource_type: ResourceType::Ore,
+            remaining: 11 * 120,
+        },
+    );
+    let bales = super::miner_system::extract_bales_max(&mut sim, (5, 5), &config, 0);
+    assert!(bales.is_empty(), "zero capacity → no bales");
+    let after = sim
+        .production
+        .resource_nodes
+        .get(&(5, 5))
+        .expect("untouched");
+    assert_eq!(after.remaining, 11 * 120, "node remaining untouched");
+}
+
+#[test]
+fn extract_max_node_remaining_zero() {
+    let mut sim = Simulation::new();
+    let config = MinerConfig::default();
+    // Edge case: node present but remaining == 0 (matches gamemd's
+    // Reduce_Tiberium returning 0 for an empty cell).
+    sim.production.resource_nodes.insert(
+        (5, 5),
+        ResourceNode {
+            resource_type: ResourceType::Ore,
+            remaining: 0,
+        },
+    );
+    let bales = super::miner_system::extract_bales_max(&mut sim, (5, 5), &config, 40);
+    assert!(bales.is_empty(), "remaining==0 → no bales");
 }
