@@ -1081,6 +1081,20 @@ impl Simulation {
             );
         }
 
+        // --- Phase 2.5: Body rocking + slope-transition advance ---
+        // DEPENDS ON: all movement above (slope_type lookups must see the
+        //   latest entity positions); rules.general.fallback_coefficient for
+        //   the moving-vehicle decay scale.
+        // PRODUCES: per-entity RockingState (angles, velocities, slope blend
+        //   state) consumed by the renderer to compose the body matrix.
+        // Aircraft skip slope tilting; infantry skip ship rocking. Wide-amplitude
+        // self-destruct uses NoopSelfDestruct until combat-side damage lands
+        // (Task 19); swap in a real hook then.
+        if let (Some(rules), Some(terrain)) = (rules, self.resolved_terrain.as_ref()) {
+            let mut hook = crate::sim::rocking::self_destruct::NoopSelfDestruct;
+            crate::sim::rocking::tick(&mut self.entities, terrain, rules, &mut hook);
+        }
+
         // Aircraft mission state machines — between movement and combat.
         // Reads updated positions, controls firing and RTB decisions.
         if let Some(rules) = rules {

@@ -4,8 +4,13 @@
 //! (I16F16, ~1.5e-5 precision). Constants here are extracted from the
 //! reference engine; do not change without binary verification.
 
+use crate::map::entities::EntityCategory;
+use crate::map::resolved_terrain::ResolvedTerrainGrid;
+use crate::rules::ruleset::RuleSet;
 use crate::sim::components::RockingState;
 use crate::sim::entity_store::EntityStore;
+use crate::sim::game_entity::GameEntity;
+use crate::sim::rocking::self_destruct::SelfDestructHook;
 use crate::util::fixed_math::SimFixed;
 
 /// Tilt-renderer deadband. Both angles below this snap to zero and the unit
@@ -167,7 +172,93 @@ pub(crate) fn update_slope_transition(rocking: &mut RockingState, cell_slope: u8
     }
 }
 
-/// Stub entry point — implemented in Task 11.
-pub fn tick(_entities: &mut EntityStore) {
-    // Implemented in Task 11.
+/// Advance every entity's `RockingState` by one sim tick.
+///
+/// Order per entity:
+///   1. Read `cell.slope_type` at the entity's current position; aircraft are
+///      forced to slope_type=0 [L23]. Update slope-transition tracking.
+///   2. If `is_ship_rocking`: integrate without damping (`advance_ship_rocking`).
+///   3. Else: spring-damper on each axis (`advance_axis`). The forwards-axis
+///      ±π/10 override during vehicle-vs-building crush [L8] is DEFERRED until
+///      building-crushing lands; both axes use ±π/4 uniformly.
+///   4. Wide-amplitude self-destruct check [L30]: if either body angle now
+///      exceeds ±π, fire `hook`. Mirrors the end-of-RockingUpdate damage call
+///      in the reference engine.
+pub fn tick(
+    entities: &mut EntityStore,
+    terrain: &ResolvedTerrainGrid,
+    rules: &RuleSet,
+    self_destruct_hook: &mut dyn SelfDestructHook,
+) {
+    let keys = entities.keys_sorted();
+    for &id in &keys {
+        let Some(entity) = entities.get_mut(id) else {
+            continue;
+        };
+        if entity.rocking.is_none() {
+            continue;
+        }
+
+        // Read whole-entity properties before borrowing rocking mutably.
+        let raw_slope = terrain
+            .cell(entity.position.rx, entity.position.ry)
+            .map(|c| c.slope_type)
+            .unwrap_or(0);
+        // Aircraft skip slope tilting [L23]. Clamp to the 0..=20 range the
+        // slope-transition tracker expects (slope_type values 17..=20 are
+        // unpopulated but still legal).
+        let cell_slope = if entity.category == EntityCategory::Aircraft {
+            0
+        } else {
+            raw_slope.min(20)
+        };
+        let is_moving = entity_is_moving(entity);
+        let supports_ship_rock = entity_type_supports_ship_rocking(entity);
+        let fallback = rules.general.fallback_coefficient;
+
+        // 1–3: mutate the rocking state. The &mut borrow is scoped to this
+        // block so step 4 can take a fresh &mut GameEntity for the hook.
+        {
+            let rocking = entity.rocking.as_mut().unwrap();
+            update_slope_transition(rocking, cell_slope);
+
+            if rocking.is_ship_rocking {
+                advance_ship_rocking(rocking, supports_ship_rock);
+            } else {
+                // L8 forwards override (±π/10 during building-crush) is DEFERRED
+                // — the gate it depends on isn't wired yet. Both axes use ±π/4.
+                let forward_cap = SATURATION_PI4;
+                advance_axis(
+                    &mut rocking.angle_sideways,
+                    &mut rocking.vel_sideways,
+                    SATURATION_PI4,
+                    is_moving,
+                    fallback,
+                );
+                advance_axis(
+                    &mut rocking.angle_forwards,
+                    &mut rocking.vel_forwards,
+                    forward_cap,
+                    is_moving,
+                    fallback,
+                );
+            }
+        }
+
+        // 4: wide-amplitude self-destruct check [L30].
+        crate::sim::rocking::self_destruct::check_and_fire(entity, self_destruct_hook);
+    }
+}
+
+/// Whether the entity currently has an active movement path. Used to choose
+/// between the base decay rate (stationary) and the fallback-scaled decay
+/// rate (moving).
+fn entity_is_moving(entity: &GameEntity) -> bool {
+    entity.movement_target.is_some()
+}
+
+/// Working assumption per design doc §"Open Questions" #1: vehicles ship-rock,
+/// infantry/aircraft/structures don't. Revisit when RE confirms.
+fn entity_type_supports_ship_rocking(entity: &GameEntity) -> bool {
+    matches!(entity.category, EntityCategory::Unit)
 }
