@@ -434,3 +434,213 @@ fn c4_on_cabhut_collapses_bridge_and_hut_survives() {
         "TickResult.bridge_state_changed must fire at least once so the app rebuilds PathGrid"
     );
 }
+
+// ---- G4 damaged-variant lifecycle integration tests ------------------------
+
+/// 20×20 terrain with has_damaged_data=true and a common final_tile_index on
+/// every cell. Lets the damaged-variant flood-fill propagate freely across
+/// any bridge cells defined in the test BridgeRuntimeState.
+fn damaged_data_resolved_terrain(tile_id: i32) -> ResolvedTerrainGrid {
+    let mut cells = Vec::with_capacity(20 * 20);
+    for ry in 0..20u16 {
+        for rx in 0..20u16 {
+            cells.push(ResolvedTerrainCell {
+                rx,
+                ry,
+                source_tile_index: tile_id,
+                source_sub_tile: 0,
+                final_tile_index: tile_id,
+                final_sub_tile: 0,
+                level: 0,
+                filled_clear: false,
+                tileset_index: Some(0),
+                land_type: 0,
+                slope_type: 0,
+                template_height: 0,
+                render_offset_x: 0,
+                render_offset_y: 0,
+                terrain_class: TerrainClass::Clear,
+                speed_costs: SpeedCostProfile::default(),
+                is_water: false,
+                is_cliff_like: false,
+                is_cliff_redraw: false,
+                variant: 0,
+                is_rough: false,
+                is_road: false,
+                accepts_smudge: false,
+                has_ramp: false,
+                canonical_ramp: None,
+                ground_walk_blocked: false,
+                terrain_object_blocks: false,
+                overlay_blocks: false,
+                zone_type: 0,
+                base_ground_walk_blocked: false,
+                base_build_blocked: false,
+                build_blocked: false,
+                has_bridge_deck: false,
+                bridge_walkable: false,
+                bridge_transition: false,
+                bridge_deck_level: 0,
+                bridge_layer: None,
+                radar_left: [0, 0, 0],
+                radar_right: [0, 0, 0],
+                has_damaged_data: true,
+            });
+        }
+    }
+    ResolvedTerrainGrid::from_cells(20, 20, cells)
+}
+
+/// Seed a single NS-anchor body cell at `pos` with the given state. Uses span
+/// id derived from the coord so callers can place multiple independent
+/// anchors without collisions.
+fn seed_isolated_anchor(
+    bs: &mut BridgeRuntimeState,
+    pos: (u16, u16),
+    span_id: u16,
+    state: DamageState,
+    damaged_variant: bool,
+) {
+    let span = AnchorSpan {
+        id: span_id,
+        anchor: pos,
+        cells: [Some(pos), None, None, None, None, None],
+        axis: Axis::NS,
+        direction: Direction::S,
+        damage_state: state,
+        bridge_group_id: span_id,
+    };
+    bs.test_seed_anchor_span(span);
+    bs.test_seed_cell(
+        pos.0,
+        pos.1,
+        BridgeRuntimeCell {
+            deck_present: true,
+            destroyable: true,
+            deck_level: 0,
+            bridge_group_id: Some(span_id),
+            damage_state: state,
+            axis: Some(Axis::NS),
+            role: BridgeCellRole::Anchor,
+            anchor_span_id: Some(span_id),
+            overlay_byte: 0,
+            damaged_variant,
+        },
+    );
+}
+
+#[test]
+fn g4_damage_path_sets_damaged_variant_at_perpendicular_target() {
+    let mut bs = BridgeRuntimeState::default();
+    // Seed anchor at (10, 10) and a perpendicular target anchor at (11, 10)
+    // (one east — the DamageA perpendicular direction for an NS bridge).
+    seed_isolated_anchor(&mut bs, (10, 10), 1, DamageState::Healthy { variant: 0 }, false);
+    seed_isolated_anchor(&mut bs, (11, 10), 2, DamageState::Healthy { variant: 0 }, false);
+    let terrain = damaged_data_resolved_terrain(42);
+
+    let _ = bs.body_cell_advance_state(10, 10, true, &terrain);
+
+    assert!(
+        bs.cell(11, 10).unwrap().damaged_variant,
+        "perpendicular target must acquire damaged_variant after DamageA write"
+    );
+    assert!(
+        bs.cell(10, 10).unwrap().damaged_variant,
+        "same-tile_id seed neighbor must acquire damaged_variant via flood-fill propagation"
+    );
+}
+
+#[test]
+fn g4_collapse_path_keeps_damaged_variant_set() {
+    let mut bs = BridgeRuntimeState::default();
+    // Pre-damaged anchor + perpendicular target, both already flagged
+    // damaged_variant=true. The collapse step must NOT clear the bit.
+    seed_isolated_anchor(&mut bs, (10, 10), 1, DamageState::Damaged, true);
+    seed_isolated_anchor(&mut bs, (11, 10), 2, DamageState::Healthy { variant: 0 }, true);
+    let terrain = damaged_data_resolved_terrain(42);
+
+    let _ = bs.body_cell_advance_state(10, 10, true, &terrain);
+
+    assert!(
+        bs.cell(10, 10).unwrap().damaged_variant,
+        "collapse must preserve damaged_variant on seed cell (state=true from collapse callers)"
+    );
+    assert!(
+        bs.cell(11, 10).unwrap().damaged_variant,
+        "collapse must preserve damaged_variant on perpendicular target"
+    );
+}
+
+#[test]
+fn g4_repair_clears_damaged_variant_on_repaired_cells() {
+    let (mut sim, rules, heights) = build_sim();
+    // Replace dummy terrain with one that allows the flood-fill clear to
+    // actually fire (has_damaged_data=true).
+    sim.resolved_terrain = Some(damaged_data_resolved_terrain(42));
+    let cabhut = spawn_cabhut(&mut sim, 9, 10);
+    let engineer = spawn_engineer(&mut sim, 10, 10);
+    sim.entities.get_mut(engineer).unwrap().capture_target = Some(cabhut);
+    seed_destroyed_bridge(&mut sim);
+    // Pre-flag every bridge cell as damaged-variant.
+    {
+        let bs = sim.bridge_state.as_mut().unwrap();
+        for &(rx, ry) in BRIDGE_CELLS {
+            bs.cell_mut(rx, ry).unwrap().damaged_variant = true;
+        }
+    }
+
+    step(&mut sim, &rules, &heights);
+
+    let bs = sim.bridge_state.as_ref().unwrap();
+    for &(rx, ry) in BRIDGE_CELLS {
+        assert!(
+            !bs.cell(rx, ry).unwrap().damaged_variant,
+            "cell ({rx},{ry}) damaged_variant must be cleared after engineer-CABHUT repair"
+        );
+    }
+}
+
+#[test]
+fn g4_repair_flood_fill_propagates_clear_to_same_tile_id_bridge_neighbor() {
+    let (mut sim, rules, heights) = build_sim();
+    sim.resolved_terrain = Some(damaged_data_resolved_terrain(42));
+    let cabhut = spawn_cabhut(&mut sim, 9, 10);
+    let engineer = spawn_engineer(&mut sim, 10, 10);
+    sim.entities.get_mut(engineer).unwrap().capture_target = Some(cabhut);
+    seed_destroyed_bridge(&mut sim);
+
+    // Add an off-span bridge cell at (10, 14): same tile_id as BRIDGE_CELLS,
+    // adjacent to (10, 13). NOT a member of anchor_span 1, so it is NOT
+    // visited by body_cell_repair_state's per-cell walk. It can only get
+    // cleared via flood-fill propagation from a same-tile_id neighbor.
+    {
+        let bs = sim.bridge_state.as_mut().unwrap();
+        bs.test_seed_cell(
+            10,
+            14,
+            BridgeRuntimeCell {
+                deck_present: true,
+                destroyable: true,
+                deck_level: 0,
+                bridge_group_id: Some(1),
+                damage_state: DamageState::Destroyed,
+                axis: Some(Axis::NS),
+                role: BridgeCellRole::Body,
+                anchor_span_id: None,
+                overlay_byte: 0,
+                damaged_variant: true,
+            },
+        );
+        for &(rx, ry) in BRIDGE_CELLS {
+            bs.cell_mut(rx, ry).unwrap().damaged_variant = true;
+        }
+    }
+
+    step(&mut sim, &rules, &heights);
+
+    let bs = sim.bridge_state.as_ref().unwrap();
+    assert!(
+        !bs.cell(10, 14).unwrap().damaged_variant,
+        "off-span neighbor with matching tile_id must clear via flood-fill propagation"
+    );
+}
