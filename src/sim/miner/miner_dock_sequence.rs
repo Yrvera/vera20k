@@ -15,6 +15,7 @@
 //!   sim/movement, sim/docking/pad_geometry, rules/.
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
+use crate::rules::art_data::BuildingAnimKind;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::components::BaleDepositEvent;
 use crate::sim::miner::{MinerConfig, MinerState, RefineryDockPhase};
@@ -23,9 +24,9 @@ use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::occupancy::OccupancyGrid;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::world::{SimSoundEvent, Simulation};
-use crate::util::fixed_math::SimFixed;
+use crate::util::fixed_math::{SIM_TICK_HZ, SimFixed};
 
-use super::miner_system::{MinerSnapshot, player_has_purifier};
+use super::miner_system::{MinerSnapshot, effective_purifier_count};
 use crate::sim::production::{credits_entry_for_owner, foundation_dimensions};
 
 /// Maximum diamond-ring radius for the post-unload exit-cell spiral search.
@@ -229,6 +230,45 @@ fn unloading_class(rules: &RuleSet, type_id: &str) -> Option<String> {
         .and_then(|obj| obj.unloading_class.clone())
 }
 
+/// Resolve the refinery's deposit-anim cycle length, in sim ticks.
+///
+/// Picks the longest SpecialAnim slot on the building (multiple slots
+/// are allowed in art.ini; the cooldown must outlast the latest one).
+/// Returns 0 when the refinery type has no SpecialAnim — in that case
+/// `DepositCooldown` falls through to `Departing` on its first tick.
+fn deposit_anim_duration_ticks(sim: &Simulation, rules: &RuleSet, refinery_sid: u64) -> u16 {
+    let Some(building) = sim.entities.get(refinery_sid) else {
+        return 0;
+    };
+    let type_str = sim.interner.resolve(building.type_ref);
+    let Some(obj) = rules.object_case_insensitive(type_str) else {
+        return 0;
+    };
+    let Some(art_entry) = rules
+        .art_registry
+        .resolve_metadata_entry(type_str, &obj.image)
+    else {
+        return 0;
+    };
+    let max_ms: u32 = art_entry
+        .building_anims
+        .iter()
+        .filter(|a| matches!(a.kind, BuildingAnimKind::Special))
+        .filter(|a| a.loop_end > a.loop_start)
+        .map(|a| u32::from(a.loop_end - a.loop_start) * u32::from(a.rate))
+        .max()
+        .unwrap_or(0);
+    if max_ms == 0 {
+        return 0;
+    }
+    // SIM_TICK_HZ ticks/sec → 1000/SIM_TICK_HZ ms/tick. Round UP so a
+    // partial-tick remainder still completes the anim before the hold
+    // ends.
+    let tick_ms: u32 = 1000 / SIM_TICK_HZ;
+    let ticks: u32 = max_ms.div_ceil(tick_ms.max(1));
+    ticks.min(u16::MAX as u32) as u16
+}
+
 // ---------------------------------------------------------------------------
 // Main dock sequence handler
 // ---------------------------------------------------------------------------
@@ -272,8 +312,11 @@ pub(super) fn handle_dock_sequence(
         RefineryDockPhase::Unloading => {
             phase_unloading(sim, rules, config, snap, ref_sid);
         }
+        RefineryDockPhase::DepositCooldown => {
+            phase_deposit_cooldown(sim, snap);
+        }
         RefineryDockPhase::Departing => {
-            phase_departing(sim, path_grid, snap, exit);
+            phase_departing(sim, path_grid, snap, exit, ref_sid);
         }
     }
 
@@ -382,10 +425,24 @@ fn phase_unloading(
             *credits = credits.saturating_add(value);
         }
 
-        // Per-bale purifier bonus (matches gamemd's per-bale credit application).
-        if player_has_purifier(sim, rules, &owner_str) {
+        // Purifier bonus = real_purifiers + AI_virtual_purifiers, all
+        // sourced from the refinery's owner. Bonus credits are routed to
+        // the miner's owner alongside the base credits — matching the
+        // existing credit-destination convention. The per-bale split here
+        // is a downstream of the per-bale cargo model (Finding 1 will
+        // collapse this into one whole-slot dump); the formula itself is
+        // count-correct as of this fix.
+        let refinery_owner_id = sim.entities.get(ref_sid).map(|b| b.owner);
+        let refinery_owner: String = refinery_owner_id
+            .map(|id| sim.interner.resolve(id).to_string())
+            .unwrap_or_else(|| owner_str.clone());
+        let purifier_count = effective_purifier_count(sim, rules, &refinery_owner);
+        if purifier_count > 0 {
             let bonus_pct: i32 = rules.general.purifier_bonus_pct;
-            let bonus: i32 = value * bonus_pct / 100;
+            let bonus: i32 = value
+                .saturating_mul(purifier_count)
+                .saturating_mul(bonus_pct)
+                / 100;
             if bonus > 0 {
                 let credits = credits_entry_for_owner(sim, &owner_str);
                 *credits = credits.saturating_add(bonus);
@@ -404,14 +461,26 @@ fn phase_unloading(
         return;
     }
 
-    // Cargo empty — release dock and depart.
-    sim.production.dock_reservations.release(ref_sid);
+    // Cargo empty — seed the deposit-anim cooldown and transition. The
+    // dock reservation and the unloading-model override are both held
+    // through DepositCooldown so the visual matches a miner still parked
+    // on the pad while the deposit animation finishes. Both are released
+    // by `phase_departing` once the miner reaches the exit cell.
     snap.miner.home_refinery = Some(ref_sid);
+    snap.miner.deposit_cooldown_ticks = deposit_anim_duration_ticks(sim, rules, ref_sid);
+    snap.miner.dock_phase = RefineryDockPhase::DepositCooldown;
+}
 
+/// Hold on the pad until the last deposit animation completes, then
+/// hand off to `Departing`.
+fn phase_deposit_cooldown(sim: &mut Simulation, snap: &mut MinerSnapshot) {
+    if snap.miner.deposit_cooldown_ticks > 0 {
+        snap.miner.deposit_cooldown_ticks -= 1;
+        return;
+    }
     if let Some(entity) = sim.entities.get_mut(snap.entity_id) {
         entity.display_type_override = None;
     }
-
     snap.miner.dock_phase = RefineryDockPhase::Departing;
 }
 
@@ -420,6 +489,7 @@ fn phase_departing(
     path_grid: Option<&PathGrid>,
     snap: &mut MinerSnapshot,
     exit: (u16, u16),
+    ref_sid: u64,
 ) {
     let moving = sim
         .entities
@@ -471,6 +541,10 @@ fn phase_departing(
         if let Some(entity) = sim.entities.get_mut(snap.entity_id) {
             entity.facing = 0x47;
         }
+        // Release the dock here, not at cargo-empty, so the next queued
+        // miner cannot try_reserve onto a pad that the previous miner is
+        // still standing on / driving off.
+        sim.production.dock_reservations.release(ref_sid);
         snap.miner.reserved_refinery = None;
         snap.miner.dock_queued = false;
         snap.miner.forced_return = false;

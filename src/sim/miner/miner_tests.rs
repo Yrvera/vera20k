@@ -1873,7 +1873,7 @@ fn harvester_undocks_through_foundation_to_outside_ore() {
     // setup that makes the test meaningful — without it, movement_step's
     // walkability check would succeed regardless of bypass_grid.
     let mut path_grid = PathGrid::new(32, 32);
-    path_grid.block_building_footprint(10, 10, "4x3", &[], &[]);
+    path_grid.block_building_footprint(10, 10, "4x3", &[], &[], false);
 
     // Harvester at the dock pad (13, 11), cargo emptied, dock_phase=Departing.
     // Simulates "just finished unloading".
@@ -2039,7 +2039,7 @@ fn harvester_drives_into_refinery_foundation_without_bumping_it() {
     }
 
     let mut path_grid = PathGrid::new(32, 32);
-    path_grid.block_building_footprint(10, 10, "4x3", &[], &[]);
+    path_grid.block_building_footprint(10, 10, "4x3", &[], &[], false);
 
     // Harvester at queue cell (14, 11), state=Dock, dock_phase=Approach.
     // Reservation already held; first tick re-targets the pad and goes Linked.
@@ -2838,5 +2838,286 @@ fn dock_first_bale_waits_one_unload_interval() {
         get_miner(&sim, miner_id).cargo.len(),
         initial_cargo - 1,
         "first bale deposits on the 15th unloading tick after Linked",
+    );
+}
+
+/// Rules with a SpecialAnim wired up for GAREFN so the deposit cooldown
+/// has a non-zero duration. Uses LoopEnd=3 and the default Rate so the
+/// cooldown is small and easy to count: 3 frames × DEFAULT_ART_RATE_MS (67ms)
+/// / 22ms-per-tick → 10 sim ticks (rounded up).
+fn deposit_cooldown_rules() -> RuleSet {
+    let mut rules = miner_rules();
+    let art_ini = IniFile::from_str(
+        "[GAREFN]\n\
+         SpecialAnim=GAREFNAA\n\
+         [GAREFNAA]\n\
+         LoopStart=0\n\
+         LoopEnd=3\n",
+    );
+    let art = crate::rules::art_data::ArtRegistry::from_ini(&art_ini);
+    rules.merge_art_data(&art);
+    rules.art_registry = art;
+    rules
+}
+
+/// Verify the deposit-anim hold + relocated dock release:
+/// 1. Cargo empties → phase=DepositCooldown, dock still occupied.
+/// 2. After cooldown ticks → phase=Departing, dock STILL occupied.
+/// 3. After exit-cell arrival → dock released.
+///
+/// Sets the miner up in Unloading with empty cargo and `unload_timer = 0`
+/// so the cargo-empty branch fires on the very first tick. That keeps the
+/// test focused on the cooldown / release contract rather than the per-bale
+/// cadence (covered by other tests in this file).
+#[test]
+fn deposit_cooldown_holds_pad_and_defers_dock_release() {
+    let mut sim = Simulation::new();
+    let rules = deposit_cooldown_rules();
+
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
+    spawn_refinery(&mut sim, 2, 10, 10);
+
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        // Empty cargo + zero timer → first tick hits the cargo-empty branch.
+        miner.cargo.clear();
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::Unloading;
+        miner.reserved_refinery = Some(2);
+        miner.unload_timer = 0;
+    }
+    // Mark the dock occupied so we can assert release timing directly.
+    assert!(sim.production.dock_reservations.try_reserve(2, miner_id));
+    assert!(sim.production.dock_reservations.is_occupied(2));
+
+    // First tick: phase_unloading sees empty cargo, seeds the cooldown,
+    // transitions to DepositCooldown.
+    tick_miners_n(&mut sim, &rules, 1);
+
+    let m = get_miner(&sim, miner_id);
+    assert_eq!(
+        m.dock_phase,
+        RefineryDockPhase::DepositCooldown,
+        "cargo-empty should transition to DepositCooldown, not Departing",
+    );
+    assert!(
+        m.deposit_cooldown_ticks > 0,
+        "cooldown should be seeded from art.ini SpecialAnim",
+    );
+    assert!(
+        sim.production.dock_reservations.is_occupied(2),
+        "dock must stay occupied while the deposit anim is finishing",
+    );
+
+    let cooldown_at_entry = m.deposit_cooldown_ticks;
+
+    // Burn through the cooldown. Each tick decrements by 1; the transition
+    // fires on the tick where the counter is already 0.
+    tick_miners_n(&mut sim, &rules, cooldown_at_entry as usize + 1);
+
+    let m = get_miner(&sim, miner_id);
+    assert_eq!(
+        m.dock_phase,
+        RefineryDockPhase::Departing,
+        "phase should advance to Departing after cooldown completes",
+    );
+    assert!(
+        sim.production.dock_reservations.is_occupied(2),
+        "dock must STILL be occupied while the miner drives off the pad",
+    );
+
+    // Let the exit drive complete. 4×3 GAREFN at (10,10) → exit anchor (9, 11),
+    // a few cells from the pad. 200 ticks is plenty.
+    tick_miners_n(&mut sim, &rules, 200);
+
+    let m = get_miner(&sim, miner_id);
+    assert!(
+        m.state == MinerState::SearchOre || m.state == MinerState::WaitNoOre,
+        "miner should have returned to search after exit, got {:?}",
+        m.state,
+    );
+    assert!(
+        !sim.production.dock_reservations.is_occupied(2),
+        "dock must be released once the miner reaches the exit cell",
+    );
+}
+
+/// Without a SpecialAnim in art.ini the cooldown is 0 and DepositCooldown
+/// is a one-tick pass-through. Confirms the helper handles missing-anim
+/// gracefully (preserving prior behavior for tests that don't configure art).
+/// Verify the purifier bonus scales linearly with the number of purifiers
+/// owned. Two purifiers must produce 2× the bonus of one (regression for
+/// the old boolean-based formula that capped the bonus at +25% regardless
+/// of count).
+#[test]
+fn two_purifiers_stack_the_bonus_linearly() {
+    let mut sim = Simulation::new();
+    let rules = purifier_rules(25);
+
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
+    spawn_refinery(&mut sim, 2, 10, 10);
+    // Two OrePurifier buildings owned by the same player.
+    spawn_structure(&mut sim, 3, "GAPURI", 20, 20);
+    spawn_structure(&mut sim, 4, "GAPURI", 24, 20);
+
+    let credits_before = credits_for_owner(&sim, "Americans");
+
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.cargo.push(CargoBale {
+            resource_type: ResourceType::Ore,
+            value: 100,
+        });
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::Unloading;
+        miner.reserved_refinery = Some(2);
+        miner.unload_timer = 0;
+    }
+    sim.production.dock_reservations.try_reserve(2, miner_id);
+
+    tick_miners_n(&mut sim, &rules, 200);
+
+    // 100 base + (100 × 2 purifiers × 25 / 100) = 100 + 50 = 150.
+    let delta = credits_for_owner(&sim, "Americans") - credits_before;
+    assert_eq!(
+        delta, 150,
+        "2 purifiers @ 25% each should stack to +50% (got {} cr)",
+        delta,
+    );
+}
+
+/// AI player with `is_human=false` should receive the virtual-purifier
+/// bonus from `rules.general.ai_virtual_purifiers[difficulty]`. With the
+/// default `[4, 2, 0]` and difficulty=0 (Brutal), no real purifiers, and
+/// a 100-credit bale, total credits = 100 + (100 × 4 × 25 / 100) = 200.
+#[test]
+fn ai_brutal_gets_virtual_purifier_bonus() {
+    use crate::sim::house_state::HouseState;
+
+    let mut sim = Simulation::new();
+    let rules = purifier_rules(25);
+
+    // Mark the Americans house as AI, Brutal difficulty.
+    let owner_id = sim.interner.intern("Americans");
+    sim.houses.insert(
+        owner_id,
+        HouseState::new(owner_id, 0, None, false, 0, 10), // is_human=false
+    );
+    sim.game_options.ai_difficulty = 0; // Brutal (top of AIVirtualPurifiers)
+
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
+    spawn_refinery(&mut sim, 2, 10, 10);
+    // No real purifiers — bonus should come entirely from the AI table.
+
+    let credits_before = credits_for_owner(&sim, "Americans");
+
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.cargo.push(CargoBale {
+            resource_type: ResourceType::Ore,
+            value: 100,
+        });
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::Unloading;
+        miner.reserved_refinery = Some(2);
+        miner.unload_timer = 0;
+    }
+    sim.production.dock_reservations.try_reserve(2, miner_id);
+
+    tick_miners_n(&mut sim, &rules, 200);
+
+    let delta = credits_for_owner(&sim, "Americans") - credits_before;
+    assert_eq!(
+        delta, 200,
+        "Brutal AI with 0 real purifiers should get +4 virtual × 25% = +100% (got {} cr)",
+        delta,
+    );
+}
+
+/// Human player with `is_human=true` must NOT get the AI virtual bonus
+/// even though the table is configured. Guards against accidentally
+/// rewarding the human in skirmish.
+#[test]
+fn human_player_does_not_get_ai_virtual_bonus() {
+    use crate::sim::house_state::HouseState;
+
+    let mut sim = Simulation::new();
+    let rules = purifier_rules(25);
+
+    let owner_id = sim.interner.intern("Americans");
+    sim.houses.insert(
+        owner_id,
+        HouseState::new(owner_id, 0, None, true, 0, 10), // is_human=true
+    );
+    sim.game_options.ai_difficulty = 0;
+
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
+    spawn_refinery(&mut sim, 2, 10, 10);
+
+    let credits_before = credits_for_owner(&sim, "Americans");
+
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.cargo.push(CargoBale {
+            resource_type: ResourceType::Ore,
+            value: 100,
+        });
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::Unloading;
+        miner.reserved_refinery = Some(2);
+        miner.unload_timer = 0;
+    }
+    sim.production.dock_reservations.try_reserve(2, miner_id);
+
+    tick_miners_n(&mut sim, &rules, 200);
+
+    let delta = credits_for_owner(&sim, "Americans") - credits_before;
+    assert_eq!(
+        delta, 100,
+        "human player with no real purifiers gets base credits only (got {} cr)",
+        delta,
+    );
+}
+
+#[test]
+fn deposit_cooldown_zero_when_refinery_has_no_special_anim() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules(); // no art.ini → SpecialAnim absent
+
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
+    spawn_refinery(&mut sim, 2, 10, 10);
+
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.cargo.clear();
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::Unloading;
+        miner.reserved_refinery = Some(2);
+        miner.unload_timer = 0;
+    }
+    sim.production.dock_reservations.try_reserve(2, miner_id);
+
+    // Tick 1: Unloading sees empty cargo, seeds cooldown=0, transitions to
+    // DepositCooldown. Tick 2: DepositCooldown sees ticks==0, transitions
+    // straight to Departing. Verify the cooldown is genuinely zero.
+    tick_miners_n(&mut sim, &rules, 1);
+    let m = get_miner(&sim, miner_id);
+    assert_eq!(m.dock_phase, RefineryDockPhase::DepositCooldown);
+    assert_eq!(
+        m.deposit_cooldown_ticks, 0,
+        "no SpecialAnim ⇒ cooldown_ticks must be 0",
+    );
+
+    tick_miners_n(&mut sim, &rules, 1);
+    let m = get_miner(&sim, miner_id);
+    assert_eq!(
+        m.dock_phase,
+        RefineryDockPhase::Departing,
+        "zero cooldown should pass through to Departing on the next tick",
     );
 }

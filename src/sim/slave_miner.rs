@@ -19,8 +19,9 @@
 
 use crate::rules::ruleset::RuleSet;
 use crate::sim::intern::InternedId;
+use crate::sim::miner::miner_system::effective_purifier_count;
 use crate::sim::miner::{CargoBale, MinerConfig};
-use crate::sim::miner::{extract_bale, player_has_purifier, search_local_ore};
+use crate::sim::miner::{extract_bale, search_local_ore};
 use crate::sim::production::credits_entry_for_owner;
 use crate::sim::world::Simulation;
 
@@ -304,13 +305,20 @@ fn handle_slave_deposit(
     let bale: CargoBale = snap.harvester.cargo.remove(0);
     let mut value: i32 = i32::from(bale.value);
 
-    // Ore Purifier bonus applies to slave deposits too.
-    if player_has_purifier(sim, rules, sim.interner.resolve(snap.owner)) {
+    // Ore Purifier bonus stacks per real purifier owned by the slave's
+    // owner; non-human houses also receive the AI virtual-purifier bonus
+    // from rules.general.ai_virtual_purifiers.
+    let owner_str = sim.interner.resolve(snap.owner).to_string();
+    let purifier_count = effective_purifier_count(sim, rules, &owner_str);
+    if purifier_count > 0 {
         let bonus_pct: i32 = rules.general.purifier_bonus_pct;
-        value += value * bonus_pct / 100;
+        let bonus: i32 = value
+            .saturating_mul(purifier_count)
+            .saturating_mul(bonus_pct)
+            / 100;
+        value = value.saturating_add(bonus);
     }
 
-    let owner_str = sim.interner.resolve(snap.owner).to_string();
     let credits: &mut i32 = credits_entry_for_owner(sim, &owner_str);
     *credits = credits.saturating_add(value);
 

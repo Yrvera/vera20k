@@ -331,6 +331,12 @@ pub struct GeneralRules {
     /// Ore Purifier bonus as integer percentage (PurifierBonus= in [General]).
     /// Stored as `round(float_value * 100)`. 25 = 25% bonus. Default 25.
     pub purifier_bonus_pct: i32,
+    /// AI virtual purifier counts indexed by difficulty
+    /// (AIVirtualPurifiers= in [General]). Each entry is added to the AI
+    /// player's real purifier count when computing the deposit bonus. INI
+    /// convention is hardest-first, so the array is `[Brutal, Medium, Easy]`
+    /// with the retail default `[4, 2, 0]`.
+    pub ai_virtual_purifiers: [i32; 3],
 
     // -- Survivor spawning on sell/destroy --
     /// Divisor to compute survivor count for Allied buildings (AlliedSurvivorDivisor= in [General]).
@@ -564,6 +570,7 @@ impl Default for GeneralRules {
             chrono_minimum_delay: 16,
             chrono_range_minimum: 0,
             purifier_bonus_pct: 25,
+            ai_virtual_purifiers: [4, 2, 0],
             allied_survivor_divisor: 500,
             soviet_survivor_divisor: 250,
             third_survivor_divisor: 750,
@@ -918,6 +925,25 @@ impl GeneralRules {
             chrono_range_minimum: general.get_i32("ChronoRangeMinimum").unwrap_or(0),
             purifier_bonus_pct: (general.get_percent("PurifierBonus").unwrap_or(0.25) * 100.0)
                 .round() as i32,
+            ai_virtual_purifiers: {
+                let defaults = [4, 2, 0];
+                general
+                    .get("AIVirtualPurifiers")
+                    .and_then(|raw| {
+                        let parsed: Vec<i32> = raw
+                            .split(',')
+                            .map(|s| s.trim())
+                            .filter(|s| !s.is_empty())
+                            .filter_map(|s| s.parse::<i32>().ok())
+                            .collect();
+                        if parsed.len() == 3 {
+                            Some([parsed[0], parsed[1], parsed[2]])
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(defaults)
+            },
             allied_survivor_divisor: general.get_i32("AlliedSurvivorDivisor").unwrap_or(500),
             soviet_survivor_divisor: general.get_i32("SovietSurvivorDivisor").unwrap_or(250),
             third_survivor_divisor: general.get_i32("ThirdSurvivorDivisor").unwrap_or(750),

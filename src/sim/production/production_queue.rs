@@ -74,10 +74,15 @@ pub(in crate::sim) fn credits_entry_for_owner<'a>(
 ) -> &'a mut i32 {
     let key = sim.interner.intern(owner);
     // Ensure house entry exists (auto-create with defaults if missing).
+    // is_human defaults to true: in real games app_init seeds every house
+    // with its actual flag, so the only callers that hit this fallback are
+    // tests / edge cases that never declared a player. Defaulting to human
+    // keeps those paths from accidentally activating AI-only behavior
+    // (e.g., AIVirtualPurifiers credit bonus in the deposit path).
     if !sim.houses.contains_key(&key) {
         sim.houses.insert(
             key,
-            crate::sim::house_state::HouseState::new(key, 0, None, false, STARTING_CREDITS, 10),
+            crate::sim::house_state::HouseState::new(key, 0, None, true, STARTING_CREDITS, 10),
         );
     }
     &mut sim.houses.get_mut(&key).unwrap().credits

@@ -16,7 +16,7 @@ pub(crate) mod miner_system;
 #[path = "miner_tests.rs"]
 mod miner_tests;
 
-pub(crate) use self::miner_system::{extract_bale, player_has_purifier, search_local_ore};
+pub(crate) use self::miner_system::{extract_bale, search_local_ore};
 
 use std::collections::BTreeMap;
 
@@ -91,10 +91,19 @@ pub enum RefineryDockPhase {
     /// transition to Unloading.
     Linked,
     /// Per-bale deposit pulse. Each bale emits BaleDepositEvent.
-    /// On cargo empty: release reservation, transition to Departing.
+    /// On cargo empty: seed `deposit_cooldown_ticks` from the refinery's
+    /// SpecialAnim cycle and transition to DepositCooldown.
     Unloading,
+    /// Park on the pad while the last deposit animation finishes — keeps
+    /// the deposit anim from out-lasting a miner that has already driven
+    /// off. On cooldown expiry: clear the unloading-model override and
+    /// transition to Departing. The dock reservation is still held; the
+    /// next queued miner is released only once this miner clears the
+    /// exit cell.
+    DepositCooldown,
     /// Drive to exit cell at building_origin + (-0x80, +0x80) leptons.
-    /// On arrival: snap facing 0x47, return to SearchOre.
+    /// On arrival: snap facing 0x47, release dock reservation, return to
+    /// SearchOre.
     Departing,
 }
 
@@ -242,6 +251,10 @@ pub struct Miner {
     /// Current phase of the refinery docking sequence.
     /// Only meaningful when `state == MinerState::Dock`.
     pub dock_phase: RefineryDockPhase,
+    /// Sim ticks remaining in `DepositCooldown`. Seeded from the refinery's
+    /// SpecialAnim cycle length when the last bale pops; decremented each
+    /// tick of the cooldown phase.
+    pub deposit_cooldown_ticks: u16,
 }
 
 impl Miner {
@@ -285,6 +298,7 @@ impl Miner {
             rescan_cooldown: 0,
             last_harvest_cell: None,
             dock_phase: RefineryDockPhase::default(),
+            deposit_cooldown_ticks: 0,
         }
     }
 
