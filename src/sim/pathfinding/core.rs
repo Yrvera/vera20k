@@ -427,6 +427,25 @@ pub fn astar_search(
             // Compute what height the NEW node carries forward (separate computation)
             let neighbor_height = compute_neighbor_height(current.height, cur_cell, neighbor_cell);
 
+            // Height-diff legality gate. Diff-1 transitions require the LOWER cell to
+            // be a canonical ramp (slope_type != 0); diff ∈ {±2, ±3, ±4, ±5+} is
+            // always blocked. Legitimate bridge transitions arrive here as diff-0
+            // because `compute_neighbor_height` already shifts unit Z onto/off the deck.
+            let diff = neighbor_height as i16 - current.height as i16;
+            let lower_slope = if diff < 0 {
+                neighbor_cell.slope_type
+            } else {
+                cur_cell.slope_type
+            };
+            let legal = match diff.abs() {
+                0 => true,
+                1 => lower_slope != 0,
+                _ => false,
+            };
+            if !legal {
+                continue;
+            }
+
             // Closed check on appropriate list
             if neighbor_use_bridge {
                 if bridge_closed[n_idx] {
