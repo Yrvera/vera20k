@@ -650,13 +650,11 @@ impl Simulation {
             return C4DamageOutcome::default();
         }
 
-        // BridgeRepairHut target: skip damaging the hut and trigger bridge
-        // collapse instead. The hut survives the explosion. In vanilla YR
-        // this code path is unreachable because CABHUT's upstream Immune
-        // gate rejects C4 placement (tracked as
-        // `project_c4_bridge_hut_followup`). The branch lights up once that
-        // gate is fixed, and is the right entry point for a future
-        // demo-truck damage path.
+        // BridgeRepairHut target: reroute the explosion into the bridge
+        // collapse cascade and leave the hut at full HP. The hut never
+        // takes C4 / demo-truck damage — destruction is the linked bridge
+        // segment's, not the hut's. Also the right entry point for a
+        // future demo-truck damage path.
         let target_bridge_hut = self
             .entities
             .get(building_id)

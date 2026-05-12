@@ -1,6 +1,8 @@
 //! Integration tests for the engineer-bridge-repair flow + the C4-on-CABHUT
-//! collapse path (the latter `#[ignore]`-gated pending the upstream Immune
-//! fix tracked as `project_c4_bridge_hut_followup`).
+//! collapse path. Engineer entry repairs the bridge and consumes the
+//! engineer; C4 on the hut leaves the hut at full HP and collapses the
+//! bridge segment via the BridgeRepairHut branch in
+//! `apply_c4_damage_to_building`.
 
 use super::*;
 use crate::map::entities::EntityCategory;
@@ -15,11 +17,12 @@ use std::collections::BTreeMap;
 
 fn bridge_repair_test_rules() -> RuleSet {
     let ini: IniFile = IniFile::from_str(
-        "[InfantryTypes]\n0=ENGI\n\n\
+        "[InfantryTypes]\n0=ENGI\n1=GHOST\n\n\
          [VehicleTypes]\n\n\
          [AircraftTypes]\n\n\
          [BuildingTypes]\n0=CABHUT\n\n\
          [ENGI]\nStrength=75\nArmor=none\nSpeed=4\nPrimary=none\nEngineer=yes\n\n\
+         [GHOST]\nStrength=125\nArmor=flak\nSpeed=4\nPrimary=none\nC4=yes\n\n\
          [CABHUT]\nStrength=200\nArmor=concrete\nFoundation=1x1\nBridgeRepairHut=yes\n\n\
          [AudioVisual]\nRepairBridgeSound=BridgeRepaired\n\n\
          [CombatDamage]\nC4Warhead=SA\n\n\
@@ -50,6 +53,32 @@ fn spawn_engineer(sim: &mut Simulation, rx: u16, ry: u16) -> u64 {
         Health {
             current: 75,
             max: 75,
+        },
+        ty,
+        EntityCategory::Infantry,
+        0,
+        5,
+        false,
+    );
+    sim.entities.insert(e);
+    id
+}
+
+fn spawn_seal(sim: &mut Simulation, rx: u16, ry: u16) -> u64 {
+    let owner = sim.interner.intern("Americans");
+    let ty = sim.interner.intern("GHOST");
+    let id = sim.next_stable_entity_id;
+    sim.next_stable_entity_id += 1;
+    let e = GameEntity::new(
+        id,
+        rx,
+        ry,
+        0,
+        0,
+        owner,
+        Health {
+            current: 125,
+            max: 125,
         },
         ty,
         EntityCategory::Infantry,
@@ -260,27 +289,91 @@ fn engineer_far_from_bridge_at_cabhut_no_mutation() {
     assert!(!result.bridge_state_changed);
 }
 
+/// SEAL with `c4_plant` set, adjacent to a healthy CABHUT, must:
+///   - claim the plant on its first tick (adjacency-1),
+///   - leave the hut at full HP across the entire C4Delay window,
+///   - on timer expiry, route through the BridgeRepairHut branch in
+///     `apply_c4_damage_to_building` so the bridge collapses while the
+///     hut survives,
+///   - propagate `bridge_state_changed` to TickResult so the app rebuilds
+///     PathGrid.
+///
+/// Cascading-subsystem coverage (ground-occupant kill on BlowUpBridge
+/// cells, deck-tank drop, zone_grid rebuild) is intentionally NOT
+/// asserted here — those are owned by the bridge cascade tests proper.
+/// This test only asserts the C4-on-CABHUT integration points.
 #[test]
-#[ignore = "blocked on project_c4_bridge_hut_followup — upstream Immune gate"]
-fn c4_on_cabhut_destroys_bridge_when_upstream_immune_lifted() {
-    // SETUP NOTE: this test requires the upstream Immune-gate fix to land
-    // before C4 placement on CABHUT is reachable. Until then, the C4 plant
-    // path rejects the target before reaching apply_c4_damage_to_building.
-    //
-    // Test shape (when unblocked):
-    //   1. Spawn SEAL/Tanya with c4_plant.target_building_id = CABHUT.
-    //   2. Place a ground infantry on a bridge cell adjacent to the CABHUT.
-    //   3. Place a tank ON the bridge deck (OnBridge=true).
-    //   4. Run tick_c4_plants for c4_delay_ticks ticks.
-    //   5. Assert: CABHUT entity still alive (hut survives the explosion).
-    //   6. Assert: adjacent bridge cells now Destroyed.
-    //   7. Assert: TickResult.bridge_state_changed == true (so the app
-    //      rebuilds PathGrid after collapse).
-    //   8. Assert: the ground infantry on a BlowUpBridge cell is dying or
-    //      despawned (kill_ground_occupants_at fired).
-    //   9. Assert: the deck tank is at ground level with OnBridge=false
-    //      (drop_in_bridge_deck_entities fired).
-    //  10. Assert: zone_grid was rebuilt (zones cascade fired, e.g., check
-    //      via a known unreachability query that previously succeeded).
-    let _placeholder = ();
+fn c4_on_cabhut_collapses_bridge_and_hut_survives() {
+    let (mut sim, rules, heights) = build_sim();
+    let cabhut = spawn_cabhut(&mut sim, 9, 10);
+    let cabhut_max_hp = sim.entities.get(cabhut).unwrap().health.current;
+    let seal = spawn_seal(&mut sim, 10, 10); // Chebyshev-1 adjacent
+    sim.entities.get_mut(seal).unwrap().c4_plant =
+        Some(crate::sim::components::C4PlantState {
+            target_building_id: cabhut,
+        });
+    seed_bridge_with_state(&mut sim, DamageState::Healthy { variant: 0 });
+
+    // First tick: tick_c4_plants Phase 1 sees adjacency and claims.
+    step(&mut sim, &rules, &heights);
+    assert!(
+        sim.entities
+            .get(cabhut)
+            .and_then(|b| b.pending_c4_detonation)
+            .is_some(),
+        "plant must be claimed once SEAL is adjacent to CABHUT"
+    );
+    let plant_start = sim
+        .entities
+        .get(cabhut)
+        .unwrap()
+        .pending_c4_detonation
+        .unwrap()
+        .plant_start_tick;
+
+    // Throughout the C4Delay window: hut HP must stay at max — the
+    // BridgeRepairHut branch never damages the hut, even before the timer
+    // fires. Bridge stays Healthy until detonation, then flips.
+    let delay = rules.c4_delay_ticks as u64;
+    let mut bridge_state_changed_seen = false;
+    for _ in 0..(delay + 1) {
+        let result = step(&mut sim, &rules, &heights);
+        bridge_state_changed_seen |= result.bridge_state_changed;
+        // Hut HP invariant — hold across every tick of the window.
+        let cur = sim.entities.get(cabhut).unwrap().health.current;
+        assert_eq!(
+            cur, cabhut_max_hp,
+            "hut HP must stay at max during C4Delay (plant_start={plant_start}, sim.tick={})",
+            sim.tick
+        );
+    }
+
+    // After detonation: hut alive, bridge segment Destroyed,
+    // bridge_state_changed propagated at least once.
+    let hut = sim
+        .entities
+        .get(cabhut)
+        .expect("hut entity must survive the explosion");
+    assert_eq!(
+        hut.health.current, cabhut_max_hp,
+        "hut HP unchanged: BridgeRepairHut branch must skip damage"
+    );
+    assert!(!hut.dying, "hut must not be marked dying");
+
+    // Anchor cell must reach Destroyed via the body_cell_advance_state
+    // walker invoked by `dispatch_bridge_collapse_from_hut`. Body cells
+    // along the span propagate via the cascade machinery owned by the
+    // bridge_orchestrator tests — this test does not re-assert that here.
+    let bs = sim.bridge_state.as_ref().unwrap();
+    let anchor = bs.cell(10, 10).unwrap();
+    assert!(
+        matches!(anchor.damage_state, DamageState::Destroyed),
+        "anchor cell (10,10) must be Destroyed after C4 cascade, got {:?}",
+        anchor.damage_state
+    );
+
+    assert!(
+        bridge_state_changed_seen,
+        "TickResult.bridge_state_changed must fire at least once so the app rebuilds PathGrid"
+    );
 }
