@@ -155,6 +155,114 @@ pub(crate) fn apply_bridge_damage_events(
     !destroyed_set.is_empty()
 }
 
+/// Bridge-collapse dispatch from a `BridgeRepairHut` death event (C4 timer
+/// expired, demo-truck explosion). Drives every bridge cell in a 5×5 scan
+/// around `hut_center` to `Destroyed` via the forward state machine, then
+/// runs the same BlowUpBridge cascade as `apply_bridge_damage_events`:
+///   1. Scan finds bridge cells around the hut.
+///   2. Each cell with an anchor span is driven to convergence
+///      (`body_cell_advance_state` looped until `NoChange`).
+///   3. Cascade phase: kill ground occupants at BlowUpBridge cells; drop-in
+///      bridge-deck entities at destroyed cells; spawn debris; rim refresh;
+///      TriggerEvent broadcast; zone-graph rebuild.
+///
+/// Returns `true` if any bridge cell transitioned (caller ORs into
+/// `bridge_state_changed` so the app rebuilds the PathGrid).
+///
+/// Caller ensures the hut itself is not damaged — the hut survives the
+/// collapse, mirroring the original game's `BridgeRepairHut` death branch.
+pub(crate) fn dispatch_bridge_collapse_from_hut(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    hut_center: (u16, u16),
+) -> bool {
+    use crate::sim::bridge_state::cells_in_5x5_scan;
+
+    let scan: Vec<(u16, u16)> = cells_in_5x5_scan(hut_center).collect();
+
+    // Phase 1: drive every scanned bridge cell to convergence; collect
+    // Collapsed outcomes. The scope releases the &mut bridge_state borrow
+    // before Phase 3 takes &mut sim for the cascade helpers.
+    let mut outcomes: Vec<StateOutcome> = Vec::new();
+    {
+        let Some(bs) = sim.bridge_state.as_mut() else {
+            return false;
+        };
+        for cell_pos in &scan {
+            let has_span = bs
+                .cell(cell_pos.0, cell_pos.1)
+                .is_some_and(|c| c.anchor_span_id.is_some());
+            if !has_span {
+                continue;
+            }
+            // Drive forward state machine to convergence in this tick.
+            // Healthy → Damaged → Destroyed needs ≤2 transitions; partial
+            // collapse states reach Destroyed in 1.
+            loop {
+                let outcome = bs.body_cell_advance_state(
+                    cell_pos.0, cell_pos.1, /* is_high_bridge */ false,
+                );
+                match outcome {
+                    StateOutcome::NoChange => break,
+                    other => outcomes.push(other),
+                }
+            }
+        }
+    }
+
+    if outcomes.is_empty() {
+        return false;
+    }
+
+    // Phase 2: aggregate destroyed cells + BlowUpBridge cells + rim cells +
+    // zones-dirty from the collapsed outcomes (same shape as
+    // apply_bridge_damage_events).
+    let mut destroyed_set: BTreeSet<(u16, u16)> = BTreeSet::new();
+    let mut blow_up_cells: BTreeSet<(u16, u16)> = BTreeSet::new();
+    let mut rim_cells: BTreeSet<(u16, u16)> = BTreeSet::new();
+    let mut any_zones_dirty = false;
+    for outcome in &outcomes {
+        if let StateOutcome::Collapsed {
+            destroyed_cells,
+            set_bridge_direction,
+            adjacent_bridges_dirty,
+            zones_dirty,
+        } = outcome
+        {
+            destroyed_set.extend(destroyed_cells.iter().copied());
+            for (cell, _slot, action) in &set_bridge_direction.actions {
+                if matches!(action, crate::sim::bridge_specs::CellAction::BlowUpBridge) {
+                    blow_up_cells.insert(*cell);
+                    destroyed_set.insert(*cell);
+                }
+            }
+            rim_cells.extend(adjacent_bridges_dirty.iter().copied());
+            any_zones_dirty |= *zones_dirty;
+        }
+    }
+
+    // Phase 3: cascade. C4Warhead InfDeath is resolved outside the kill
+    // loop so the inner block doesn't hold `&sim.interner` while the kill
+    // loop needs `&mut sim`.
+    let c4_inf_death: u8 = {
+        let c4_id = rules.c4_warhead_id();
+        let name = sim.interner.resolve(c4_id);
+        rules.warhead(name).map(|wh| wh.inf_death).unwrap_or(1)
+    };
+    for &(rx, ry) in &blow_up_cells {
+        kill_ground_occupants_at(sim, rx, ry, c4_inf_death);
+    }
+    for &(rx, ry) in &destroyed_set {
+        drop_in_bridge_deck_entities(sim, rx, ry);
+    }
+    spawn_bridge_debris(sim, rules, &destroyed_set);
+    update_adjacent_bridges(sim, &rim_cells);
+    notify_bridge_span_collapse(sim, &destroyed_set);
+    refresh_bridge_zones_if_dirty(sim, any_zones_dirty);
+
+    !destroyed_set.is_empty()
+}
+
 /// Kill ground-layer entities at `(rx, ry)`. Mirrors the binary's
 /// `BlowUpBridge` ground-occupant pass: walk every entity at the cell
 /// that is NOT on the bridge layer and force-kill via C4Warhead semantics
