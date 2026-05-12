@@ -546,6 +546,138 @@ fn test_bridge_damage_rebuilds_path_grid() {
     }
 }
 
+/// End-to-end: a bridge collapse driven through the orchestrator must
+/// signal `state_changed = true`, AND the PathGrid that the app would
+/// rebuild post-tick (via PathGrid::from_resolved_terrain_with_bridges)
+/// must show the collapsed cells as non-walkable on the bridge layer.
+///
+/// Ledger #1 (one-tick delay), #4 (ground revert), #9 (layer separation).
+#[test]
+fn test_bridge_collapse_signals_pathgrid_refresh() {
+    let mut sim = Simulation::new();
+    let (resolved, bridge_state) = ew_high_bridge_strip_for_dispatch(2, 0, 2, false, 0);
+    sim.resolved_terrain = Some(resolved.clone());
+    sim.bridge_state = Some(bridge_state);
+
+    let mut rules = combat_test_rules();
+    rules.resolve_bridge_warheads(&mut sim.interner);
+
+    let state_changed = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
+        &mut sim,
+        &rules,
+        &[BridgeDamageEvent {
+            rx: 2,
+            ry: 0,
+            damage: 20,
+            warhead_ref: crate::sim::intern::InternedId::default(),
+            is_ion_cannon: true,
+            impact_z: 4,
+        }],
+    );
+    assert!(
+        state_changed,
+        "orchestrator must signal state_changed=true on collapse"
+    );
+
+    // The PathGrid the app would build after this tick (via rebuild_
+    // dynamic_path_grid → PathGrid::from_resolved_terrain_with_bridges):
+    let post_tick_grid = PathGrid::from_resolved_terrain_with_bridges(
+        sim.resolved_terrain.as_ref().unwrap(),
+        sim.bridge_state.as_ref(),
+    );
+    for x in 1..=3 {
+        assert!(
+            !post_tick_grid.is_walkable_on_layer(x, 0, MovementLayer::Bridge),
+            "cell ({x}, 0) must not be walkable on bridge layer after collapse"
+        );
+    }
+}
+
+/// No-collapse tick must NOT signal state_changed. Empty event lists
+/// (no bridge damage this tick) leave the path grid untouched — avoids
+/// firing unnecessary refresh ticks.
+#[test]
+fn test_no_collapse_does_not_signal_refresh() {
+    let mut sim = Simulation::new();
+    let (resolved, bridge_state) = ew_high_bridge_strip_for_dispatch(2, 0, 2, false, 0);
+    sim.resolved_terrain = Some(resolved);
+    sim.bridge_state = Some(bridge_state);
+
+    let rules = combat_test_rules();
+
+    let state_changed = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
+        &mut sim,
+        &rules,
+        &[],
+    );
+    assert!(
+        !state_changed,
+        "empty events must not signal state_changed"
+    );
+}
+
+/// Regression for ledger #2 / #3: when a bridge body span collapses, every
+/// cell that previously had `transition: true` must lose it. Otherwise A*
+/// would still permit Ground→Bridge entry into the destroyed span.
+///
+/// The fixture seeds Body-role cells with `bridge_transition = true`
+/// (mimicking bridgeheads from the PathCell projection's perspective).
+/// Post-collapse, `from_resolved_terrain_with_bridges` gates `transition`
+/// on `is_bridge_walkable`, so all 3 cells must drop the flag.
+///
+/// Guards against future per-cell-delta optimizations that might only
+/// update the directly-destroyed cell and miss adjacent transition cells.
+#[test]
+fn test_bridge_collapse_clears_transition_flag() {
+    let mut sim = Simulation::new();
+    let (resolved, bridge_state) = ew_high_bridge_strip_for_dispatch(2, 0, 2, false, 0);
+    sim.resolved_terrain = Some(resolved.clone());
+    sim.bridge_state = Some(bridge_state);
+
+    // Snapshot cells with transition=true before damage.
+    let grid_before =
+        PathGrid::from_resolved_terrain_with_bridges(&resolved, sim.bridge_state.as_ref());
+    let transition_cells_before: Vec<(u16, u16)> = (0..resolved.width())
+        .flat_map(|x| (0..resolved.height()).map(move |y| (x, y)))
+        .filter_map(|(x, y)| {
+            let cell = grid_before.cell(x, y)?;
+            cell.transition.then_some((x, y))
+        })
+        .collect();
+    assert!(
+        !transition_cells_before.is_empty(),
+        "test fixture must have at least one transition cell"
+    );
+
+    // Damage event collapses the entire EW strip.
+    let mut rules = combat_test_rules();
+    rules.resolve_bridge_warheads(&mut sim.interner);
+    let _ = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
+        &mut sim,
+        &rules,
+        &[BridgeDamageEvent {
+            rx: 2,
+            ry: 0,
+            damage: 20,
+            warhead_ref: crate::sim::intern::InternedId::default(),
+            is_ion_cannon: true,
+            impact_z: 4,
+        }],
+    );
+
+    let grid_after = PathGrid::from_resolved_terrain_with_bridges(
+        sim.resolved_terrain.as_ref().unwrap(),
+        sim.bridge_state.as_ref(),
+    );
+    for (x, y) in &transition_cells_before {
+        let cell = grid_after.cell(*x, *y).expect("cell exists");
+        assert!(
+            !cell.transition,
+            "cell ({x}, {y}) must lose transition flag after bridge collapse"
+        );
+    }
+}
+
 #[test]
 fn test_destroyed_bridge_snaps_unit_to_ground_when_ground_exists() {
     let mut sim = Simulation::new();
