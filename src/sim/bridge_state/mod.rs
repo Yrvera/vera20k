@@ -1079,7 +1079,7 @@ impl BridgeRuntimeState {
         &mut self,
         scan_cells: &[(u16, u16)],
         rng: &mut crate::sim::rng::SimRng,
-        _terrain: &ResolvedTerrainGrid,
+        terrain: &ResolvedTerrainGrid,
     ) -> RepairOutcome {
         let mut outcome = RepairOutcome::default();
 
@@ -1139,6 +1139,7 @@ impl BridgeRuntimeState {
                 if let Some(cell) = self.cell_mut(cell_pos.0, cell_pos.1) {
                     cell.damage_state = new_state;
                 }
+                let _ = self.apply_damaged_variant_flood_fill(cell_pos.0, cell_pos.1, false, terrain);
                 outcome.repaired_cells += 1;
 
                 let is_main_deck = matches!(
