@@ -3,11 +3,15 @@
 #![cfg(test)]
 
 use crate::sim::components::RockingState;
+use crate::sim::rocking::impulse::apply_rocker_impulse;
 use crate::sim::rocking::rocking_system::{
-    BASE_DECAY_RATE, NORMAL_RANGE_PI2, SATURATION_PI4, SATURATION_PI10, SLOPE_TRANSITION_TICKS,
-    TILT_DEADBAND, advance_axis, advance_ship_rocking, update_slope_transition,
+    BASE_DECAY_RATE, IMPULSE_VEL_CAP, NORMAL_RANGE_PI2, SATURATION_PI4, SATURATION_PI10,
+    SLOPE_TRANSITION_TICKS, TILT_DEADBAND, advance_axis, advance_ship_rocking,
+    update_slope_transition,
 };
 use crate::util::fixed_math::SimFixed;
+
+const DEFAULT_WEIGHT: SimFixed = SimFixed::lit("2.0");
 
 const FALLBACK: SimFixed = SimFixed::lit("0.1");
 
@@ -209,6 +213,179 @@ fn slope_change_mid_transition_resets_to_three() {
     assert_eq!(r.prev_slope, 5);
     assert_eq!(r.curr_slope, 7);
     assert_eq!(r.transition_ticks_remaining, SLOPE_TRANSITION_TICKS);
+}
+
+#[test]
+fn impulse_caps_at_005_per_axis() {
+    let mut r = RockingState::default();
+    apply_rocker_impulse(
+        &mut r,
+        SimFixed::from_num(100),
+        DEFAULT_WEIGHT,
+        SimFixed::ONE,
+        SimFixed::ZERO,
+    );
+    assert!(r.vel_sideways.abs() <= IMPULSE_VEL_CAP);
+    assert!(r.vel_forwards.abs() <= IMPULSE_VEL_CAP);
+}
+
+#[test]
+fn impulse_direction_from_x_axis_writes_sideways_only() {
+    let mut r = RockingState::default();
+    apply_rocker_impulse(
+        &mut r,
+        SimFixed::lit("4.0"),
+        DEFAULT_WEIGHT,
+        SimFixed::ONE,
+        SimFixed::ZERO,
+    );
+    // Force=4, Weight=2 → force_scaled = 0.04 × 4 / 2 = 0.08 → clamps to 0.05.
+    // nx = +1 → vel_side = -0.05; ny = 0 → vel_fwd = 0.
+    assert!(r.vel_sideways < SimFixed::ZERO);
+    assert_eq!(r.vel_forwards, SimFixed::ZERO);
+}
+
+#[test]
+fn impulse_zero_distance_does_nothing() {
+    let mut r = RockingState::default();
+    apply_rocker_impulse(
+        &mut r,
+        SimFixed::ONE,
+        DEFAULT_WEIGHT,
+        SimFixed::ZERO,
+        SimFixed::ZERO,
+    );
+    assert_eq!(r.vel_sideways, SimFixed::ZERO);
+    assert_eq!(r.vel_forwards, SimFixed::ZERO);
+}
+
+#[test]
+fn impulse_stacks_additively_until_cap() {
+    let mut r = RockingState::default();
+    // force=1.0, weight=2 → force_scaled = 0.04 × 1 / 2 = 0.02 (passes 0.01 floor).
+    apply_rocker_impulse(
+        &mut r,
+        SimFixed::lit("1.0"),
+        DEFAULT_WEIGHT,
+        SimFixed::ONE,
+        SimFixed::ZERO,
+    );
+    let v1 = r.vel_sideways;
+    apply_rocker_impulse(
+        &mut r,
+        SimFixed::lit("1.0"),
+        DEFAULT_WEIGHT,
+        SimFixed::ONE,
+        SimFixed::ZERO,
+    );
+    let v2 = r.vel_sideways;
+    assert!(v2.abs() > v1.abs() || v2.abs() == IMPULSE_VEL_CAP);
+}
+
+#[test]
+fn impulse_too_weak_dropped_by_floor_gate() {
+    let mut r = RockingState::default();
+    // force=0.1, weight=2 → force_scaled = 0.04 × 0.1 / 2 = 0.002 < 0.01 gate.
+    apply_rocker_impulse(
+        &mut r,
+        SimFixed::lit("0.1"),
+        DEFAULT_WEIGHT,
+        SimFixed::ONE,
+        SimFixed::ZERO,
+    );
+    assert_eq!(r.vel_sideways, SimFixed::ZERO);
+    assert_eq!(r.vel_forwards, SimFixed::ZERO);
+}
+
+#[test]
+fn impulse_heavier_unit_rocks_less_per_equal_force() {
+    // L12c: Weight=5 (Aircraft Carrier) rocks 2.5× less than Weight=2 default.
+    // Pick a force in the linear regime (below the 0.05 cap):
+    //   light: 0.04 × 1.5 / 2.0 = 0.03
+    //   heavy: 0.04 × 1.5 / 5.0 = 0.012
+    //   ratio: 0.03 / 0.012 = 2.5
+    let force = SimFixed::lit("1.5");
+    let mut light = RockingState::default();
+    apply_rocker_impulse(
+        &mut light,
+        force,
+        SimFixed::lit("2.0"),
+        SimFixed::ONE,
+        SimFixed::ZERO,
+    );
+    let mut heavy = RockingState::default();
+    apply_rocker_impulse(
+        &mut heavy,
+        force,
+        SimFixed::lit("5.0"),
+        SimFixed::ONE,
+        SimFixed::ZERO,
+    );
+    let ratio = light.vel_sideways.abs() / heavy.vel_sideways.abs();
+    assert!(
+        ratio > SimFixed::lit("2.4") && ratio < SimFixed::lit("2.6"),
+        "expected ~2.5× ratio (light/heavy), got {:?}",
+        ratio
+    );
+}
+
+#[test]
+fn impulse_zero_weight_falls_back_to_default() {
+    // Defensive: malformed INI section with Weight=0 must not panic or
+    // produce inf — should behave identically to Weight=2.0.
+    let mut r = RockingState::default();
+    apply_rocker_impulse(
+        &mut r,
+        SimFixed::lit("4.0"),
+        SimFixed::ZERO,
+        SimFixed::ONE,
+        SimFixed::ZERO,
+    );
+    let mut reference = RockingState::default();
+    apply_rocker_impulse(
+        &mut reference,
+        SimFixed::lit("4.0"),
+        DEFAULT_WEIGHT,
+        SimFixed::ONE,
+        SimFixed::ZERO,
+    );
+    assert_eq!(r.vel_sideways, reference.vel_sideways);
+}
+
+#[test]
+fn impulse_forwards_axis_halved_relative_to_sideways() {
+    // L12b asymmetry: pure +Y direction → vel_fwd = +ny × force_scaled × 0.5;
+    // pure +X direction → vel_side = -nx × force_scaled (no halving). Same
+    // force magnitude → forwards-axis impulse is exactly half the sideways one.
+    let force = SimFixed::lit("4.0");
+    let mut y_only = RockingState::default();
+    apply_rocker_impulse(
+        &mut y_only,
+        force,
+        DEFAULT_WEIGHT,
+        SimFixed::ZERO,
+        SimFixed::ONE,
+    );
+    let mut x_only = RockingState::default();
+    apply_rocker_impulse(
+        &mut x_only,
+        force,
+        DEFAULT_WEIGHT,
+        SimFixed::ONE,
+        SimFixed::ZERO,
+    );
+    // Sideways component (from +X impulse) is the full force-scaled
+    // value (clamped at 0.05); forwards component (from +Y) is half.
+    assert!(
+        (x_only.vel_sideways.abs() - SimFixed::lit("0.05")).abs() < SimFixed::lit("0.001"),
+        "x-only sideways should be ≈0.05, got {:?}",
+        x_only.vel_sideways,
+    );
+    assert!(
+        (y_only.vel_forwards.abs() - SimFixed::lit("0.025")).abs() < SimFixed::lit("0.001"),
+        "y-only forwards should be ≈0.025 (halved), got {:?}",
+        y_only.vel_forwards,
+    );
 }
 
 #[test]
