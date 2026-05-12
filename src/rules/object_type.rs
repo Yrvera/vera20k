@@ -160,6 +160,11 @@ pub struct ObjectType {
     pub armor: String,
     /// Movement speed (0 = immobile, e.g., buildings).
     pub speed: i32,
+    /// Inertia weight (`Weight=` in vehicle/aircraft sections). Default 2.0.
+    /// Used as the divisor in rocker-impulse force scaling: heavier units rock
+    /// proportionally less per equivalent impulse. Retail range: 0.5 (lightest
+    /// vehicles) to 5 (Aircraft Carrier).
+    pub weight: SimFixed,
     /// Fraction of max speed gained per tick during acceleration (AccelerationFactor=).
     /// Default 0.03. At 15 fps, reaches max speed in ~2 seconds.
     pub accel_factor: SimFixed,
@@ -745,6 +750,10 @@ impl ObjectType {
             strength: section.get_i32("Strength").unwrap_or(0),
             armor: section.get("Armor").unwrap_or("none").to_string(),
             speed: section.get_i32("Speed").unwrap_or(0),
+            weight: section
+                .get_f32("Weight")
+                .map(sim_from_f32)
+                .unwrap_or(SimFixed::lit("2.0")),
             accel_factor: section
                 .get_f32("AccelerationFactor")
                 .map(sim_from_f32)
@@ -1606,5 +1615,49 @@ mod tests {
         let section = ini.section("MTNK").expect("section");
         let obj = ObjectType::from_ini_section("MTNK", section, ObjectCategory::Vehicle);
         assert_eq!(obj.air_range_bonus, None);
+    }
+
+    #[test]
+    fn parse_weight_default_two() {
+        let ini: IniFile = IniFile::from_str("[MTNK]\nStrength=300\n");
+        let section = ini.section("MTNK").expect("section");
+        let obj = ObjectType::from_ini_section("MTNK", section, ObjectCategory::Vehicle);
+        assert_eq!(obj.weight, SimFixed::lit("2.0"));
+    }
+
+    #[test]
+    fn parse_weight_custom() {
+        let ini: IniFile = IniFile::from_str("[HTNK]\nWeight=3.5\n");
+        let section = ini.section("HTNK").expect("section");
+        let obj = ObjectType::from_ini_section("HTNK", section, ObjectCategory::Vehicle);
+        assert_eq!(obj.weight, SimFixed::lit("3.5"));
+    }
+
+    #[test]
+    fn parse_retail_weight_apocalypse_is_three_point_five() {
+        // Retail rulesmd.ini: APOC (Apocalypse Tank) has Weight=3.5.
+        // The heaviest unit in stock retail is CARRIER (Aircraft Carrier) at Weight=5.
+        let ini_text = std::fs::read_to_string("ini/rulesmd.ini").expect("rulesmd.ini missing");
+        let ini = IniFile::from_str(&ini_text);
+        let apoc = ObjectType::from_ini_section(
+            "APOC",
+            ini.section("APOC").expect("APOC section"),
+            ObjectCategory::Vehicle,
+        );
+        assert_eq!(apoc.weight, SimFixed::lit("3.5"));
+    }
+
+    #[test]
+    fn parse_retail_weight_grizzly_defaults_to_two() {
+        // Retail rulesmd.ini: MTNK (Grizzly) has no Weight= line, so it should
+        // fall back to the engine default 2.0.
+        let ini_text = std::fs::read_to_string("ini/rulesmd.ini").expect("rulesmd.ini missing");
+        let ini = IniFile::from_str(&ini_text);
+        let mtnk = ObjectType::from_ini_section(
+            "MTNK",
+            ini.section("MTNK").expect("MTNK section"),
+            ObjectCategory::Vehicle,
+        );
+        assert_eq!(mtnk.weight, SimFixed::lit("2.0"));
     }
 }

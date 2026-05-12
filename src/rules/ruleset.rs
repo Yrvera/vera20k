@@ -232,6 +232,13 @@ pub struct GeneralRules {
     /// Parsed from [AudioVisual] BuildingGarrisonedSound (typically "BuildingGarrisoned").
     /// None = no sound configured. Resolved at app layer to a sound.ini entry.
     pub building_garrisoned_sound: Option<String>,
+    /// Direct rocker force coefficient (DirectRockingCoefficient= in [AudioVisual]).
+    /// Multiplies the final DirectRocker impulse force. Default 1.5.
+    pub direct_rocking_coefficient: SimFixed,
+    /// Damping coefficient applied while a vehicle is moving (FallBackCoefficient=
+    /// in [AudioVisual]). Multiplies the base 0.002 rad/tick decay rate; smaller
+    /// values keep the body tilted longer between successive impulses. Default 0.1.
+    pub fallback_coefficient: SimFixed,
     /// Fallback sound played at the arrival cell of a self-teleport when the
     /// per-unit `ChronoInSound=` is unset. Parsed from `[General] ChronoInSound=`
     /// (stock default `ChronoMinerTeleport`). `None` = no sound.
@@ -531,6 +538,8 @@ impl Default for GeneralRules {
             condition_red: 0.25,
             condition_red_x1000: 250,
             building_garrisoned_sound: None,
+            direct_rocking_coefficient: SimFixed::lit("1.5"),
+            fallback_coefficient: SimFixed::lit("0.1"),
             chrono_in_sound: Some("ChronoMinerTeleport".to_string()),
             chrono_out_sound: Some("ChronoMinerTeleport".to_string()),
             damage_delay_minutes: 1.0,
@@ -825,6 +834,14 @@ impl GeneralRules {
                 .and_then(|s| s.get("BuildingGarrisonedSound"))
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_string()),
+            direct_rocking_coefficient: audio_visual
+                .and_then(|s| s.get_f32("DirectRockingCoefficient"))
+                .map(sim_from_f32)
+                .unwrap_or(SimFixed::lit("1.5")),
+            fallback_coefficient: audio_visual
+                .and_then(|s| s.get_f32("FallBackCoefficient"))
+                .map(sim_from_f32)
+                .unwrap_or(SimFixed::lit("0.1")),
             chrono_in_sound: general
                 .get("ChronoInSound")
                 .map(|s| s.trim().to_string())
@@ -2118,6 +2135,35 @@ MutateWarhead=MyMutate\n\
         assert_eq!(general.iron_curtain_invoke_anim, "IRONBLST");
         assert_eq!(general.force_shield_invoke_anim, "FORCSHLD");
         assert_eq!(general.mutate_explosion_warhead, "MutateExplosion");
+    }
+
+    #[test]
+    fn parse_rules_rocking_coefficients_defaults() {
+        // [General] must be present, otherwise GeneralRules::from_ini bails to
+        // Self::default(). Missing AudioVisual keys then fall back to defaults.
+        let ini = IniFile::from_str("[General]\n[AudioVisual]\n");
+        let r = GeneralRules::from_ini(&ini);
+        assert_eq!(r.direct_rocking_coefficient, SimFixed::lit("1.5"));
+        assert_eq!(r.fallback_coefficient, SimFixed::lit("0.1"));
+    }
+
+    #[test]
+    fn parse_rules_rocking_coefficients_explicit() {
+        let ini = IniFile::from_str(
+            "[General]\n[AudioVisual]\nDirectRockingCoefficient=2.0\nFallBackCoefficient=0.05\n",
+        );
+        let r = GeneralRules::from_ini(&ini);
+        assert_eq!(r.direct_rocking_coefficient, SimFixed::lit("2"));
+        assert_eq!(r.fallback_coefficient, SimFixed::lit("0.05"));
+    }
+
+    #[test]
+    fn parse_retail_rules_rocking_coefficients() {
+        let ini_text = std::fs::read_to_string("ini/rulesmd.ini").expect("rulesmd.ini missing");
+        let ini = IniFile::from_str(&ini_text);
+        let r = GeneralRules::from_ini(&ini);
+        assert_eq!(r.direct_rocking_coefficient, SimFixed::lit("1.5"));
+        assert_eq!(r.fallback_coefficient, SimFixed::lit("0.1"));
     }
 
     #[test]

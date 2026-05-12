@@ -17,6 +17,7 @@ fn make_obj(locomotor: LocomotorKind, category: ObjectCategory) -> ObjectType {
         strength: 100,
         armor: "none".to_string(),
         speed: 6,
+        weight: SimFixed::lit("2.0"),
         accel_factor: SimFixed::lit("0.03"),
         decel_factor: SimFixed::lit("0.02"),
         slowdown_distance: 512,
