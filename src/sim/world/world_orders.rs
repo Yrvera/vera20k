@@ -19,6 +19,23 @@ use crate::sim::pathfinding::PathGrid;
 use crate::util::fixed_math::SimFixed;
 use crate::util::fixed_math::ra2_speed_to_leptons_per_second;
 
+/// Result of one `apply_c4_damage_to_building` call.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct C4DamageOutcome {
+    /// HP reached 0; building marked dying this tick.
+    pub killed_building: bool,
+    /// The C4 hit a BridgeRepairHut, the hut survived, and the connected
+    /// bridge collapsed. The app needs to rebuild PathGrid.
+    pub bridge_state_changed: bool,
+}
+
+/// Result of `tick_c4_plants` across all per-tick plants + detonations.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct C4TickOutcome {
+    pub destroyed_structure: bool,
+    pub bridge_state_changed: bool,
+}
+
 impl Simulation {
     /// Pre-combat: entities with an OrderIntent but no current AttackTarget
     /// try to acquire a nearby enemy to engage.
@@ -358,10 +375,13 @@ impl Simulation {
     /// it fires again next tick. When the building dies, the entity despawns
     /// and the pending state goes with it.
     ///
-    /// Returns true if any building was destroyed this tick.
-    pub(crate) fn tick_c4_plants(&mut self, rules: &RuleSet) -> bool {
+    /// Returns the per-tick C4 outcome: `destroyed_structure` is true if any
+    /// building died, and `bridge_state_changed` is true if any C4 detonation
+    /// on a `BridgeRepairHut` collapsed a bridge.
+    pub(crate) fn tick_c4_plants(&mut self, rules: &RuleSet) -> C4TickOutcome {
         use crate::sim::components::PendingC4Detonation;
         let mut destroyed_structure = false;
+        let mut bridge_state_changed = false;
 
         // ---- Phase 1: walk-up + plant claim ----
         // Snapshot attackers with c4_plant. Deterministic sorted order via
@@ -467,7 +487,10 @@ impl Simulation {
         // resolve_bridge_warheads hasn't been called. Pre-feature tests don't
         // call it; guarding here keeps them passing.
         if det_keys.is_empty() {
-            return destroyed_structure;
+            return C4TickOutcome {
+                destroyed_structure,
+                bridge_state_changed,
+            };
         }
 
         let c4_warhead_id = rules.c4_warhead_id();
@@ -503,14 +526,15 @@ impl Simulation {
                 .get(pending.attacker_id)
                 .map(|_| pending.attacker_id);
 
-            let killed = self.apply_c4_damage_to_building(
+            let outcome = self.apply_c4_damage_to_building(
                 building_id,
                 dmg as u16,
                 c4_warhead_id,
                 attacker_for_credit,
                 rules,
             );
-            if killed {
+            bridge_state_changed |= outcome.bridge_state_changed;
+            if outcome.killed_building {
                 destroyed_structure = true;
                 // pending_c4_detonation goes away with the entity via despawn path.
                 // Trigger scatter walk-away for any attacker on this cell with
@@ -520,7 +544,10 @@ impl Simulation {
             }
         }
 
-        destroyed_structure
+        C4TickOutcome {
+            destroyed_structure,
+            bridge_state_changed,
+        }
     }
 
     /// Post-detonation: any attacker that was on the destroyed building's
@@ -597,9 +624,11 @@ impl Simulation {
         }
     }
 
-    /// Apply one C4Warhead damage instance to a building entity. Returns true
-    /// if the building died this call. Honors IronCurtain via the standard
-    /// invulnerability check. Used by `tick_c4_plants` Phase 2.
+    /// Apply one C4Warhead damage instance to a building entity. Returns
+    /// `C4DamageOutcome` reporting whether the building died and whether a
+    /// connected bridge collapsed (for `BridgeRepairHut` targets). Honors
+    /// IronCurtain via the standard invulnerability check. Used by
+    /// `tick_c4_plants` Phase 2.
     fn apply_c4_damage_to_building(
         &mut self,
         building_id: u64,
@@ -607,7 +636,7 @@ impl Simulation {
         warhead_id: crate::sim::intern::InternedId,
         attacker_id: Option<u64>,
         rules: &RuleSet,
-    ) -> bool {
+    ) -> C4DamageOutcome {
         // Check IC — if invulnerable, damage is nullified but pending state
         // stays, so we try again next tick.
         let invuln = self
@@ -618,13 +647,49 @@ impl Simulation {
             invuln.as_ref(),
             self.tick as u32,
         ) {
-            return false;
+            return C4DamageOutcome::default();
+        }
+
+        // BridgeRepairHut target: skip damaging the hut and trigger bridge
+        // collapse instead. The hut survives the explosion. In vanilla YR
+        // this code path is unreachable because CABHUT's upstream Immune
+        // gate rejects C4 placement (tracked as
+        // `project_c4_bridge_hut_followup`). The branch lights up once that
+        // gate is fixed, and is the right entry point for a future
+        // demo-truck damage path.
+        let target_bridge_hut = self
+            .entities
+            .get(building_id)
+            .and_then(|b| {
+                rules
+                    .object(self.interner.resolve(b.type_ref))
+                    .map(|t| t.bridge_repair_hut)
+            })
+            .unwrap_or(false);
+        if target_bridge_hut {
+            let bld_center = self
+                .entities
+                .get(building_id)
+                .map(|b| (b.position.rx, b.position.ry));
+            let bridge_state_changed = match bld_center {
+                Some(center) => {
+                    crate::sim::world::bridge_orchestrator::dispatch_bridge_collapse_from_hut(
+                        self, rules, center,
+                    )
+                }
+                None => false,
+            };
+            let _ = attacker_id; // hut survives — no last_attacker_id update
+            return C4DamageOutcome {
+                killed_building: false,
+                bridge_state_changed,
+            };
         }
 
         // Resolve warhead, apply Verses, subtract HP.
         let warhead_name = self.interner.resolve(warhead_id).to_string();
         let Some(warhead) = rules.warhead(&warhead_name) else {
-            return false;
+            return C4DamageOutcome::default();
         };
         let armor_idx: usize = match self.entities.get(building_id) {
             Some(b) => {
@@ -634,13 +699,13 @@ impl Simulation {
                     .unwrap_or("none");
                 crate::sim::combat::armor_index(obj_armor)
             }
-            None => return false,
+            None => return C4DamageOutcome::default(),
         };
         let verses_pct = warhead.verses.get(armor_idx).copied().unwrap_or(100);
         let scaled = (damage as i32 * verses_pct as i32 / 100).max(0) as u16;
 
         let Some(b) = self.entities.get_mut(building_id) else {
-            return false;
+            return C4DamageOutcome::default();
         };
         let new_hp = b.health.current.saturating_sub(scaled);
         b.health.current = new_hp;
@@ -649,9 +714,12 @@ impl Simulation {
             if let Some(att) = attacker_id {
                 b.last_attacker_id = Some(att);
             }
-            true
+            C4DamageOutcome {
+                killed_building: true,
+                bridge_state_changed: false,
+            }
         } else {
-            false
+            C4DamageOutcome::default()
         }
     }
 

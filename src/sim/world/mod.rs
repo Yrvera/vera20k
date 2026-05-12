@@ -1219,8 +1219,9 @@ impl Simulation {
             // BridgeRepairHut skip as defense in depth.
             let bridge_repaired = self.tick_bridge_repair_orders(rules);
             spawned_entities |= self.tick_capture_orders(rules);
-            destroyed_structure |= self.tick_c4_plants(rules);
-            bridge_state_changed |= bridge_repaired;
+            let c4_outcome = self.tick_c4_plants(rules);
+            destroyed_structure |= c4_outcome.destroyed_structure;
+            bridge_state_changed |= bridge_repaired | c4_outcome.bridge_state_changed;
             self.tick_order_intents_pre_combat(rules);
             // Pursuit: walk units with out-of-range attack_target into range,
             // halt movement on range entry. Must run before combat so combat
