@@ -668,6 +668,10 @@ pub struct PathCell {
     pub transition: bool,
     pub ground_level: u8,
     pub bridge_deck_level: u8,
+    /// Per-cell ramp/slope index (1-20 = canonical ramp direction; 0 = cliff or no ramp).
+    /// Sourced from the TMP tile `ramp_type` byte via `ResolvedTerrainCell.slope_type`.
+    /// Read by the A* height-diff legality gate for diff-1 transitions.
+    pub slope_type: u8,
 }
 
 impl PathCell {
@@ -705,6 +709,7 @@ const DEFAULT_WALKABLE_CELL: PathCell = PathCell {
     transition: false,
     ground_level: 0,
     bridge_deck_level: 0,
+    slope_type: 0,
 };
 
 /// Default blocked cell: not walkable, no bridges, level 0.
@@ -714,6 +719,7 @@ const DEFAULT_BLOCKED_CELL: PathCell = PathCell {
     transition: false,
     ground_level: 0,
     bridge_deck_level: 0,
+    slope_type: 0,
 };
 
 /// Unified walkability grid for pathfinding.
@@ -1015,6 +1021,7 @@ impl PathGrid {
                     .and_then(|state| state.cell(cell.rx, cell.ry))
                     .map(|runtime| runtime.deck_level)
                     .unwrap_or(cell.bridge_deck_level),
+                slope_type: cell.slope_type,
             })
             .collect();
         Self {
@@ -1038,6 +1045,7 @@ impl PathGrid {
                 || a.transition != b.transition
                 || a.ground_level != b.ground_level
                 || a.bridge_deck_level != b.bridge_deck_level
+                || a.slope_type != b.slope_type
             {
                 changed.push(((idx % w) as u16, (idx / w) as u16));
             }
@@ -1101,6 +1109,7 @@ impl PathGrid {
                 transition,
                 ground_level,
                 bridge_deck_level,
+                slope_type: 0,
             };
         }
     }

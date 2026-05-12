@@ -177,6 +177,7 @@ mod tests {
             transition,
             ground_level,
             bridge_deck_level,
+            slope_type: 0,
         }
     }
 

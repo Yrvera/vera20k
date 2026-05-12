@@ -430,6 +430,7 @@ fn path_grid_from_heights(heights: &[u8], width: u16, height: u16) -> PathGrid {
             transition: false,
             ground_level: h,
             bridge_deck_level: 0,
+            slope_type: 0,
         })
         .collect();
     PathGrid::from_cells(cells, width, height)
