@@ -145,6 +145,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
             sh,
             uv_fn,
             fog_vis,
+            None,
         )
     } else {
         terrain::TerrainInstances {

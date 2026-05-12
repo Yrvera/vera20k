@@ -532,6 +532,7 @@ pub fn build_visible_instances(
         crate::sim::intern::InternedId,
         &crate::sim::vision::FogState,
     )>,
+    bridge_state: Option<&crate::sim::bridge_state::BridgeRuntimeState>,
 ) -> TerrainInstances {
     let view_left: f32 = camera_x - CULL_MARGIN;
     let view_right: f32 = camera_x + screen_width + CULL_MARGIN;
@@ -571,8 +572,20 @@ pub fn build_visible_instances(
         let z_bias: f32 = cell.z as f32 * 0.0001;
         let depth: f32 = (1.0 - normalized - z_bias).clamp(0.001, 0.999);
 
+        // Bridge cells with baked damaged-variant TMP data ignore the FA2
+        // map-load PRNG variant and instead route to the per-frame
+        // damaged_variant bool from the sim's BridgeRuntimeState. Variant 1
+        // is the damaged baked art; variant 0 is the pristine art.
+        let effective_variant: u8 = if cell.has_damaged_data {
+            bridge_state
+                .and_then(|bs| bs.cell(cell.rx, cell.ry))
+                .map(|bc| bc.damaged_variant as u8)
+                .unwrap_or(0)
+        } else {
+            cell.variant
+        };
         let placement: Option<TilePlacement> = match &uv_fn {
-            Some(f) => f(cell.tile_id, cell.sub_tile, cell.variant),
+            Some(f) => f(cell.tile_id, cell.sub_tile, effective_variant),
             None => Some(TilePlacement {
                 uv_origin: [0.0, 0.0],
                 uv_size: [1.0, 1.0],
@@ -730,7 +743,7 @@ mod tests {
 
         // Camera at origin, 1024x768 viewport — only first cell should be visible.
         let result: TerrainInstances =
-            build_visible_instances(&grid, 0.0, 0.0, 1024.0, 768.0, None, None);
+            build_visible_instances(&grid, 0.0, 0.0, 1024.0, 768.0, None, None, None);
         assert_eq!(result.normal.len(), 1);
         assert_eq!(result.cliff_redraw.len(), 0);
     }
