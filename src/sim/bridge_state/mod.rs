@@ -350,6 +350,24 @@ pub enum StateOutcome {
     NoChange,
 }
 
+/// Outcome of a single `body_cell_repair_state` call. Carries the
+/// side-effects the caller must fire AFTER state mutation.
+///
+/// Side-effect gating mirrors the original engine's repair-walker semantics:
+///   - `zones_dirty`: rebuild PathGrid + zone grid. Set only when a
+///     **main-deck damaged or destroyed** cell was repaired —
+///     bridgehead-only repairs do NOT trigger zones rebuild.
+///   - `radar_cells`: mark these cells dirty in the minimap. Set only
+///     for cells that transitioned **from `Destroyed`** to `Healthy`.
+///   - `repaired_cells`: total mutated cell count for caller's
+///     `bridge_state_changed` decision and metrics.
+#[derive(Debug, Clone, Default)]
+pub struct RepairOutcome {
+    pub zones_dirty: bool,
+    pub radar_cells: Vec<(u16, u16)>,
+    pub repaired_cells: u32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct BridgeRuntimeCell {
     pub deck_present: bool,
