@@ -521,15 +521,19 @@ fn perpendicular_direction(axis: Axis, phase: Phase) -> Direction {
     }
 }
 
-/// Walk one perpendicular cell from `anchor_pos` and apply the `UpdateRamp_*`
-/// state-byte transition if the target is an anchor cell.
+/// Walk one perpendicular cell from `anchor_pos` and fire the appropriate
+/// per-target-role side effects, mirroring the reference UpdateRamp helpers.
 ///
-/// **State-byte branch only** — overlay-write branch deferred (see plan).
-/// Mirrors the anchor-flag-gated `+0x11E` write of binary `UpdateRamp_*_High`.
+/// - **Anchor target**: state-byte transition (`apply_ramp_transition`) +
+///   tile-class transition (`apply_anchor_class_transition`). Fires
+///   `apply_damaged_variant_flood_fill` after a successful state-byte write.
+/// - **Bridgehead target**: tile-class transition only. This is the
+///   mechanism by which the body-damage cascade shows the intermediate
+///   variant on a neighbor bridgehead.
+/// - **Other roles**: no-op.
 ///
 /// `is_high_bridge` is currently unused (state transitions are identical for
-/// HIGH and LOW per HIGH §11.1) but kept for API symmetry with the deferred
-/// overlay-write branch and future Task 14 (bridgehead driver).
+/// HIGH and LOW per HIGH §11.1) but kept for API symmetry.
 pub fn update_ramp_perpendicular(
     state: &mut BridgeRuntimeState,
     anchor_pos: (u16, u16),
@@ -538,6 +542,8 @@ pub fn update_ramp_perpendicular(
     _is_high_bridge: bool,
     terrain: &crate::map::resolved_terrain::ResolvedTerrainGrid,
 ) -> RampOutcome {
+    use crate::sim::bridge_state::BridgeCellRole;
+
     let dir = perpendicular_direction(axis, phase);
     let (dx, dy) = dir.offset();
     let target_x = anchor_pos.0 as i32 + dx;
@@ -555,83 +561,148 @@ pub fn update_ramp_perpendicular(
             state_changed: false,
         };
     };
-    // Anchor-flag gate. In binary: `target.flags & 0x80`. In our model:
-    // role == Anchor.
-    if !matches!(
-        target_cell.role,
-        crate::sim::bridge_state::BridgeCellRole::Anchor
-    ) {
-        return RampOutcome {
-            state_changed: false,
-        };
-    }
-    let Some(target_axis) = target_cell.axis else {
-        return RampOutcome {
-            state_changed: false,
-        };
-    };
 
-    let current_byte = target_cell.damage_state.to_state_byte(target_axis);
-    let Some(next_byte) = apply_ramp_transition(current_byte, axis, phase) else {
-        return RampOutcome {
-            state_changed: false,
-        };
-    };
+    let mut state_byte_changed = false;
+    let mut tile_class_changed = false;
 
-    // Decode next byte. Per `apply_ramp_transition` docstring, next_byte == 0
-    // only fires for the collapse-final case (state 7/8/0x10/0x11 + matching
-    // CollapseA/B phase). When the perpendicular target hits its recurse-to-0
-    // branch the binary sets `state = 0; IsoTileTypeIndex = -1`, which in our
-    // model is Destroyed. So decode 0 → Destroyed for this path.
-    let next_state = if next_byte == 0 {
-        DamageState::Destroyed
-    } else {
-        match DamageState::from_state_byte(next_byte) {
-            Some(s) => s,
-            None => {
+    match target_cell.role {
+        BridgeCellRole::Anchor => {
+            // State-byte branch (existing behavior).
+            let Some(target_axis) = target_cell.axis else {
                 return RampOutcome {
                     state_changed: false,
                 };
+            };
+            let current_byte = target_cell.damage_state.to_state_byte(target_axis);
+            if let Some(next_byte) = apply_ramp_transition(current_byte, axis, phase) {
+                // Decode next byte. Per `apply_ramp_transition` docstring,
+                // next_byte == 0 fires only for the collapse-final case
+                // (state 7/8/0x10/0x11 + matching CollapseA/B phase) and
+                // means Destroyed in our model.
+                let next_state = if next_byte == 0 {
+                    DamageState::Destroyed
+                } else {
+                    match DamageState::from_state_byte(next_byte) {
+                        Some(s) => s,
+                        None => {
+                            return RampOutcome {
+                                state_changed: false,
+                            };
+                        }
+                    }
+                };
+                if let Some(cell_mut) = state.cell_mut(target_pos.0, target_pos.1) {
+                    cell_mut.damage_state = next_state;
+                    state_byte_changed = true;
+                }
+            }
+
+            // Tile-class branch (new): asymmetric A/B progression on the
+            // anchor's bridgehead_anchor_class.
+            let new_class =
+                apply_anchor_class_transition(target_cell.bridgehead_anchor_class, phase);
+            if new_class != target_cell.bridgehead_anchor_class {
+                if let Some(cell_mut) = state.cell_mut(target_pos.0, target_pos.1) {
+                    cell_mut.bridgehead_anchor_class = new_class;
+                    tile_class_changed = true;
+                }
             }
         }
-    };
-
-    // Mut access to write the new state.
-    let wrote = if let Some(cell_mut) = state.cell_mut(target_pos.0, target_pos.1) {
-        cell_mut.damage_state = next_state;
-        true
-    } else {
-        false
-    };
-    if wrote {
-        // Propagate the damaged-variant bit across the perpendicular target's
-        // tile_id region. All four phases (DamageA/B, CollapseA/B) write
-        // state=true — damage AND collapse share the same propagation, so the
-        // bit persists through collapse without a separate clear path.
-        let _ = state.apply_damaged_variant_flood_fill(target_pos.0, target_pos.1, true, terrain);
+        BridgeCellRole::Bridgehead => {
+            // Tile-class write only. No state-byte transition because
+            // bridgeheads don't carry the anchor-flag in the reference
+            // model.
+            let new_class =
+                apply_anchor_class_transition(target_cell.bridgehead_anchor_class, phase);
+            if new_class != target_cell.bridgehead_anchor_class {
+                if let Some(cell_mut) = state.cell_mut(target_pos.0, target_pos.1) {
+                    cell_mut.bridgehead_anchor_class = new_class;
+                    tile_class_changed = true;
+                }
+            }
+        }
+        _ => {
+            return RampOutcome {
+                state_changed: false,
+            };
+        }
     }
+
+    // Damaged-variant flood-fill: fires on any successful state-byte write
+    // on an Anchor target. Composes with the new tile-class write — both
+    // can fire on the same call.
+    if state_byte_changed {
+        let _ =
+            state.apply_damaged_variant_flood_fill(target_pos.0, target_pos.1, true, terrain);
+    }
+
     RampOutcome {
-        state_changed: wrote,
+        state_changed: state_byte_changed || tile_class_changed,
+    }
+}
+
+/// Asymmetric tile-class transition table for `update_ramp_perpendicular`.
+///
+/// Mirrors the per-phase tile-class writes of the reference UpdateRamp
+/// helpers:
+/// - **DamageA**: preserve Variant0 and Damaged; no-op on Variant1 and
+///   AboutToFall.
+/// - **DamageB**: progress Variant0 → Variant1 and Variant1 → Damaged;
+///   no-op on Damaged and AboutToFall.
+/// - **CollapseA / CollapseB**: advance Variant0 / Variant1 / Damaged to
+///   Damaged; preserve AboutToFall (the recursive `+3 → +3` write in the
+///   reference is a no-op semantically).
+fn apply_anchor_class_transition(
+    current: crate::sim::bridge_state::BridgeheadAnchorClass,
+    phase: Phase,
+) -> crate::sim::bridge_state::BridgeheadAnchorClass {
+    use crate::sim::bridge_state::BridgeheadAnchorClass as BC;
+    match (current, phase) {
+        // DamageA: preserve all.
+        (BC::Variant0, Phase::DamageA) => BC::Variant0,
+        (BC::Variant1, Phase::DamageA) => BC::Variant1,
+        (BC::Damaged, Phase::DamageA) => BC::Damaged,
+        (BC::AboutToFall, Phase::DamageA) => BC::AboutToFall,
+
+        // DamageB: progress Variant0 → Variant1, Variant1 → Damaged.
+        (BC::Variant0, Phase::DamageB) => BC::Variant1,
+        (BC::Variant1, Phase::DamageB) => BC::Damaged,
+        (BC::Damaged, Phase::DamageB) => BC::Damaged,
+        (BC::AboutToFall, Phase::DamageB) => BC::AboutToFall,
+
+        // CollapseA / CollapseB: advance to Damaged, preserve AboutToFall.
+        (BC::Variant0, Phase::CollapseA | Phase::CollapseB) => BC::Damaged,
+        (BC::Variant1, Phase::CollapseA | Phase::CollapseB) => BC::Damaged,
+        (BC::Damaged, Phase::CollapseA | Phase::CollapseB) => BC::Damaged,
+        (BC::AboutToFall, Phase::CollapseA | Phase::CollapseB) => BC::AboutToFall,
     }
 }
 
 /// Walk from a bridgehead cell to its anchor body cell. Returns the anchor
-/// cell coord, or `None` if the walk hits an invalid intermediate (per-axis
-/// guard) or runs off the map.
+/// cell coord, or `None` if the start cell fails the per-axis parity /
+/// upper-bound gate or the walk runs off the map.
 ///
-/// Per HIGH §3.2 + verified live `0x576BA0`:
-/// - **NS branch:** reject `(height & 1) != 0` (all odd heights); walk
-///   `+DirectionOffset` until `height == 4`.
-/// - **EW branch:** reject `4 < height` (heights > 4 only); walk
-///   `+DirectionOffset` until `height == 2`.
+/// Per the HIGH bridge damage state machine:
+/// - **NS branch (start-cell gate):** reject `(h & 1) != 0` — odd heights
+///   (h=5, h=7) absorb damage with no state change.
+/// - **EW branch (start-cell gate):** reject `h > 4` — high-ramp peak
+///   (h=0xC) and other oversized heights early-return.
+/// - **Walk direction (NS):** `h < 4 → S`, `h == 4 → at anchor`, `h > 4 → N`.
+/// - **Walk direction (EW):** `h < 2 → E`, `h == 2 → at anchor`, `h > 2 → W`.
+/// - **Mid-walk parity:** none. The walk silently passes through odd-h
+///   intermediates. (The previous Rust check was stricter than the
+///   reference behavior and caused damage absorption on multi-cell ramps.)
 ///
-/// Field is `cell.height` at `CellClass+0x11A`. Companion `+0x11B` is
-/// `cell.Level` — read separately by callers needing the `level - 4`
-/// adjustment for `SetOverlayAndPropagate`.
+/// Walk terminates when `height == target` (4 NS / 2 EW). The 16-iter cap
+/// is an internal defensive bound — there is no equivalent cap in the
+/// reference, but bridges aren't placed near map edges in practice.
+///
+/// `cell_height` should read `ResolvedTerrainCell.template_height` (the
+/// TMP per-tile byte at offset 40, mirroring the reference's
+/// `CellClass+0x11A`).
 pub fn bridgehead_walk_to_anchor(
     start: (u16, u16),
     axis: Axis,
-    direction: Direction,
     cell_height: impl Fn((u16, u16)) -> Option<u8>,
     map_width: u16,
     map_height: u16,
@@ -640,31 +711,60 @@ pub fn bridgehead_walk_to_anchor(
         Axis::NS => 4,
         Axis::EW => 2,
     };
-    let (dx, dy) = direction.offset();
+
+    // Start-cell gate (parity check / upper-bound check). Only the START
+    // cell is gated; mid-walk intermediates pass through.
+    let start_h = cell_height(start)?;
+    match axis {
+        Axis::NS => {
+            if start_h & 1 != 0 {
+                return None;
+            }
+        }
+        Axis::EW => {
+            if start_h > 4 {
+                return None;
+            }
+        }
+    }
+    if start_h == target_height {
+        return Some(start);
+    }
+
     let mut current = start;
+    let mut h = start_h;
     for _ in 0..16 {
-        let h = cell_height(current)?;
-        match axis {
+        // Walk direction is recomputed each iteration. Height converges
+        // monotonically toward the target, so direction never flips in
+        // practice, but the recompute matches the reference loop body.
+        let dir = match axis {
             Axis::NS => {
-                if h & 1 != 0 {
-                    return None;
+                if h < 4 {
+                    Direction::S
+                } else {
+                    Direction::N
                 }
             }
             Axis::EW => {
-                if h > 4 {
-                    return None;
+                if h < 2 {
+                    Direction::E
+                } else {
+                    Direction::W
                 }
             }
-        }
-        if h == target_height {
-            return Some(current);
-        }
+        };
+        let (dx, dy) = dir.offset();
         let nx = current.0 as i32 + dx;
         let ny = current.1 as i32 + dy;
         if nx < 0 || ny < 0 || nx as u16 >= map_width || ny as u16 >= map_height {
             return None;
         }
         current = (nx as u16, ny as u16);
+        h = cell_height(current)?;
+        // No mid-walk parity check.
+        if h == target_height {
+            return Some(current);
+        }
     }
     None
 }
@@ -1443,63 +1543,328 @@ mod tests {
         assert_eq!(target.damage_state, DamageState::PartialCollapseA);
     }
 
-    #[test]
-    fn bridgehead_walk_ns_finds_anchor_at_height_4() {
-        let heights = |(x, y): (u16, u16)| {
-            if y != 0 {
-                return None;
-            }
-            match x {
-                0 => Some(8),
-                1 => Some(6),
-                2 => Some(4),
-                3 => Some(2),
-                4 => Some(0),
-                _ => None,
-            }
-        };
-        let r = bridgehead_walk_to_anchor((0, 0), Axis::NS, Direction::E, heights, 5, 1);
-        assert_eq!(r, Some((2, 0)));
+    /// Build a state with an Anchor at (2,2) and a perpendicular neighbor
+    /// at `neighbor_pos` of the given role and tile-class. NS axis fixed —
+    /// DamageA walks E (+X), DamageB walks W (-X).
+    fn perpendicular_neighbor_state(
+        neighbor_pos: (u16, u16),
+        neighbor_role: BridgeCellRole,
+        neighbor_class: crate::sim::bridge_state::BridgeheadAnchorClass,
+    ) -> BridgeRuntimeState {
+        let mut state = BridgeRuntimeState::default();
+        // Anchor at (2, 2).
+        state.test_seed_cell(
+            2,
+            2,
+            BridgeRuntimeCell {
+                deck_present: true,
+                destroyable: true,
+                deck_level: 0,
+                bridge_group_id: Some(1),
+                damage_state: DamageState::Healthy { variant: 0 },
+                axis: Some(Axis::NS),
+                role: BridgeCellRole::Anchor,
+                anchor_span_id: Some(1),
+                overlay_byte: 0x18,
+                damaged_variant: false,
+                bridgehead_anchor_class:
+                    crate::sim::bridge_state::BridgeheadAnchorClass::Variant0,
+            },
+        );
+        // Neighbor.
+        state.test_seed_cell(
+            neighbor_pos.0,
+            neighbor_pos.1,
+            BridgeRuntimeCell {
+                deck_present: true,
+                destroyable: true,
+                deck_level: 0,
+                bridge_group_id: Some(1),
+                damage_state: DamageState::Healthy { variant: 0 },
+                axis: Some(Axis::NS),
+                role: neighbor_role,
+                anchor_span_id: if matches!(neighbor_role, BridgeCellRole::Anchor) {
+                    Some(1)
+                } else {
+                    None
+                },
+                overlay_byte: 0,
+                damaged_variant: false,
+                bridgehead_anchor_class: neighbor_class,
+            },
+        );
+        state
     }
 
     #[test]
-    fn bridgehead_walk_ns_rejects_odd_intermediate() {
-        let heights = |(x, _y): (u16, u16)| match x {
-            0 => Some(8),
-            1 => Some(7),
-            _ => Some(0),
-        };
-        let r = bridgehead_walk_to_anchor((0, 0), Axis::NS, Direction::E, heights, 5, 1);
-        assert!(r.is_none());
+    fn update_ramp_perpendicular_damageb_progresses_bridgehead_variant0_to_variant1() {
+        use crate::sim::bridge_state::BridgeheadAnchorClass;
+        // NS DamageB walks W (-X) → neighbor at (1, 2).
+        let mut state = perpendicular_neighbor_state(
+            (1, 2),
+            BridgeCellRole::Bridgehead,
+            BridgeheadAnchorClass::Variant0,
+        );
+        let outcome = update_ramp_perpendicular(
+            &mut state,
+            (2, 2),
+            Axis::NS,
+            Phase::DamageB,
+            true,
+            &ramp_test_terrain(),
+        );
+        assert!(outcome.state_changed);
+        let neighbor = state.cell(1, 2).unwrap();
+        assert_eq!(
+            neighbor.bridgehead_anchor_class,
+            BridgeheadAnchorClass::Variant1,
+            "DamageB on Variant0 bridgehead must progress to Variant1",
+        );
+        // damage_state must NOT be modified on Bridgehead targets.
+        assert!(matches!(
+            neighbor.damage_state,
+            DamageState::Healthy { .. }
+        ));
     }
 
     #[test]
-    fn bridgehead_walk_ew_accepts_odd_intermediate_below_5() {
-        let heights = |(x, _y): (u16, u16)| match x {
-            0 => Some(4),
-            1 => Some(3),
-            2 => Some(2),
-            _ => None,
-        };
-        let r = bridgehead_walk_to_anchor((0, 0), Axis::EW, Direction::E, heights, 3, 1);
-        assert_eq!(r, Some((2, 0)));
+    fn update_ramp_perpendicular_damageb_progresses_variant1_to_damaged() {
+        use crate::sim::bridge_state::BridgeheadAnchorClass;
+        let mut state = perpendicular_neighbor_state(
+            (1, 2),
+            BridgeCellRole::Bridgehead,
+            BridgeheadAnchorClass::Variant1,
+        );
+        let outcome = update_ramp_perpendicular(
+            &mut state,
+            (2, 2),
+            Axis::NS,
+            Phase::DamageB,
+            true,
+            &ramp_test_terrain(),
+        );
+        assert!(outcome.state_changed);
+        let neighbor = state.cell(1, 2).unwrap();
+        assert_eq!(
+            neighbor.bridgehead_anchor_class,
+            BridgeheadAnchorClass::Damaged
+        );
     }
 
     #[test]
-    fn bridgehead_walk_ew_rejects_height_above_4() {
-        let heights = |(x, _y): (u16, u16)| match x {
-            0 => Some(5),
-            _ => Some(0),
-        };
-        let r = bridgehead_walk_to_anchor((0, 0), Axis::EW, Direction::E, heights, 3, 1);
-        assert!(r.is_none());
+    fn update_ramp_perpendicular_damagea_preserves_bridgehead_variant0() {
+        use crate::sim::bridge_state::BridgeheadAnchorClass;
+        // NS DamageA walks E (+X) → neighbor at (3, 2).
+        let mut state = perpendicular_neighbor_state(
+            (3, 2),
+            BridgeCellRole::Bridgehead,
+            BridgeheadAnchorClass::Variant0,
+        );
+        let outcome = update_ramp_perpendicular(
+            &mut state,
+            (2, 2),
+            Axis::NS,
+            Phase::DamageA,
+            true,
+            &ramp_test_terrain(),
+        );
+        // DamageA preserves Variant0 → no change → state_changed=false.
+        assert!(!outcome.state_changed);
+        let neighbor = state.cell(3, 2).unwrap();
+        assert_eq!(
+            neighbor.bridgehead_anchor_class,
+            BridgeheadAnchorClass::Variant0
+        );
     }
 
     #[test]
-    fn bridgehead_walk_returns_none_on_map_edge() {
-        let heights = |_: (u16, u16)| Some(8);
-        let r = bridgehead_walk_to_anchor((0, 0), Axis::NS, Direction::E, heights, 1, 1);
-        assert!(r.is_none());
+    fn update_ramp_perpendicular_damagea_preserves_bridgehead_damaged() {
+        use crate::sim::bridge_state::BridgeheadAnchorClass;
+        let mut state = perpendicular_neighbor_state(
+            (3, 2),
+            BridgeCellRole::Bridgehead,
+            BridgeheadAnchorClass::Damaged,
+        );
+        let outcome = update_ramp_perpendicular(
+            &mut state,
+            (2, 2),
+            Axis::NS,
+            Phase::DamageA,
+            true,
+            &ramp_test_terrain(),
+        );
+        assert!(!outcome.state_changed);
+        let neighbor = state.cell(3, 2).unwrap();
+        assert_eq!(
+            neighbor.bridgehead_anchor_class,
+            BridgeheadAnchorClass::Damaged
+        );
+    }
+
+    #[test]
+    fn update_ramp_perpendicular_body_role_is_noop() {
+        use crate::sim::bridge_state::BridgeheadAnchorClass;
+        // Body role is not Anchor and not Bridgehead — should be a no-op.
+        let mut state = perpendicular_neighbor_state(
+            (1, 2),
+            BridgeCellRole::Body,
+            BridgeheadAnchorClass::Variant0,
+        );
+        let outcome = update_ramp_perpendicular(
+            &mut state,
+            (2, 2),
+            Axis::NS,
+            Phase::DamageB,
+            true,
+            &ramp_test_terrain(),
+        );
+        assert!(!outcome.state_changed);
+        let neighbor = state.cell(1, 2).unwrap();
+        assert_eq!(
+            neighbor.bridgehead_anchor_class,
+            BridgeheadAnchorClass::Variant0
+        );
+    }
+
+    /// G4 regression guard: when both the state-byte and tile-class writes
+    /// fire on the same Anchor target, the damaged-variant flood-fill must
+    /// still fire (it gates only on state_byte_changed).
+    #[test]
+    fn update_ramp_perpendicular_flood_fill_still_fires_with_tile_class_write() {
+        use crate::sim::bridge_state::BridgeheadAnchorClass;
+        // Anchor target with Variant0 anchor class and damaged_data tile.
+        // DamageA on Anchor: state byte 0 → 4 (Healthy{4}); tile class
+        // Variant0 → Variant0 (no change). state_byte_changed=true →
+        // flood-fill fires. (The has_damaged_data flag is false in
+        // ramp_test_terrain, so the flood-fill no-ops out, but the call
+        // path is exercised.)
+        let mut state = perpendicular_neighbor_state(
+            (3, 2),
+            BridgeCellRole::Anchor,
+            BridgeheadAnchorClass::Variant0,
+        );
+        let outcome = update_ramp_perpendicular(
+            &mut state,
+            (2, 2),
+            Axis::NS,
+            Phase::DamageA,
+            true,
+            &ramp_test_terrain(),
+        );
+        assert!(outcome.state_changed);
+        // State byte advanced.
+        assert_eq!(
+            state.cell(3, 2).unwrap().damage_state,
+            DamageState::Healthy { variant: 4 }
+        );
+        // Tile class preserved (DamageA on Variant0).
+        assert_eq!(
+            state.cell(3, 2).unwrap().bridgehead_anchor_class,
+            BridgeheadAnchorClass::Variant0
+        );
+    }
+
+    /// Helper: build a height-lookup from a (X, Y) → height map.
+    fn walker_height_lookup(
+        cells: Vec<((u16, u16), u8)>,
+    ) -> impl Fn((u16, u16)) -> Option<u8> {
+        move |pos: (u16, u16)| {
+            cells
+                .iter()
+                .find_map(|&(p, h)| if p == pos { Some(h) } else { None })
+        }
+    }
+
+    #[test]
+    fn bridgehead_walk_ns_odd_height_returns_none() {
+        // h=5 (NS ramp) — start-cell parity gate fires.
+        let lookup = walker_height_lookup(vec![((5, 5), 5)]);
+        let out = bridgehead_walk_to_anchor((5, 5), Axis::NS, lookup, 32, 32);
+        assert!(out.is_none(), "h=5 must return None (parity gate)");
+    }
+
+    #[test]
+    fn bridgehead_walk_ns_h7_returns_none() {
+        let lookup = walker_height_lookup(vec![((5, 5), 7)]);
+        let out = bridgehead_walk_to_anchor((5, 5), Axis::NS, lookup, 32, 32);
+        assert!(out.is_none(), "h=7 must return None (parity gate)");
+    }
+
+    #[test]
+    fn bridgehead_walk_ns_h8_walks_north() {
+        // h=8 (high-ramp peak) — walks N (decreasing Y) → finds h=4 anchor.
+        let lookup = walker_height_lookup(vec![((5, 5), 8), ((5, 4), 4)]);
+        let out = bridgehead_walk_to_anchor((5, 5), Axis::NS, lookup, 32, 32);
+        assert_eq!(out, Some((5, 4)), "h=8 must walk N and find anchor");
+    }
+
+    #[test]
+    fn bridgehead_walk_ns_h0_walks_south() {
+        // h=0 → walks S (+Y).
+        let lookup = walker_height_lookup(vec![((5, 5), 0), ((5, 6), 4)]);
+        let out = bridgehead_walk_to_anchor((5, 5), Axis::NS, lookup, 32, 32);
+        assert_eq!(out, Some((5, 6)), "h=0 must walk S and find anchor");
+    }
+
+    #[test]
+    fn bridgehead_walk_ns_h4_returns_start() {
+        // h=4 is already at the anchor — return immediately.
+        let lookup = walker_height_lookup(vec![((5, 5), 4)]);
+        let out = bridgehead_walk_to_anchor((5, 5), Axis::NS, lookup, 32, 32);
+        assert_eq!(out, Some((5, 5)), "h=4 must return start");
+    }
+
+    #[test]
+    fn bridgehead_walk_ns_walks_through_odd_intermediate() {
+        // Mid-walk parity tolerance: walk passes through odd h=5 between
+        // h=8 start and h=4 anchor (previous Rust check rejected this).
+        let lookup = walker_height_lookup(vec![((5, 5), 8), ((5, 4), 5), ((5, 3), 4)]);
+        let out = bridgehead_walk_to_anchor((5, 5), Axis::NS, lookup, 32, 32);
+        assert_eq!(
+            out,
+            Some((5, 3)),
+            "walk must pass through odd-h intermediates and reach anchor",
+        );
+    }
+
+    #[test]
+    fn bridgehead_walk_ew_h_gt_4_returns_none() {
+        // h=0xC (EW high-ramp peak) — upper-bound gate fires.
+        let lookup = walker_height_lookup(vec![((5, 5), 0x0C)]);
+        let out = bridgehead_walk_to_anchor((5, 5), Axis::EW, lookup, 32, 32);
+        assert!(out.is_none(), "h=0xC EW must return None (upper-bound gate)");
+    }
+
+    #[test]
+    fn bridgehead_walk_ew_h0_walks_east() {
+        // h=0 → walks E (+X) → finds h=2 anchor.
+        let lookup = walker_height_lookup(vec![((5, 5), 0), ((6, 5), 2)]);
+        let out = bridgehead_walk_to_anchor((5, 5), Axis::EW, lookup, 32, 32);
+        assert_eq!(out, Some((6, 5)), "EW h=0 must walk E and find anchor");
+    }
+
+    #[test]
+    fn bridgehead_walk_ew_h4_walks_west() {
+        // h=4 (EW, > 2 but ≤ 4) → walks W (-X) → finds h=2 anchor.
+        let lookup = walker_height_lookup(vec![((5, 5), 4), ((4, 5), 2)]);
+        let out = bridgehead_walk_to_anchor((5, 5), Axis::EW, lookup, 32, 32);
+        assert_eq!(out, Some((4, 5)), "EW h=4 must walk W and find anchor");
+    }
+
+    #[test]
+    fn bridgehead_walk_ew_h2_returns_start() {
+        // h=2 is at the anchor — return immediately.
+        let lookup = walker_height_lookup(vec![((5, 5), 2)]);
+        let out = bridgehead_walk_to_anchor((5, 5), Axis::EW, lookup, 32, 32);
+        assert_eq!(out, Some((5, 5)), "EW h=2 must return start");
+    }
+
+    #[test]
+    fn bridgehead_walk_off_map_returns_none() {
+        // Start at (0, 0) h=8, walk N → off map → None.
+        let lookup = walker_height_lookup(vec![((0, 0), 8)]);
+        let out = bridgehead_walk_to_anchor((0, 0), Axis::NS, lookup, 32, 32);
+        assert!(out.is_none(), "off-map walk must return None");
     }
 
     #[test]

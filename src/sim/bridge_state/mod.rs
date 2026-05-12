@@ -1206,46 +1206,34 @@ impl BridgeRuntimeState {
         outcome
     }
 
-    /// Bridgehead-cell state-machine driver. Mirrors the bridgehead branch of
-    /// binary `ProcessBridgeDamageStateMachine_High @ 0x576BA0`.
+    /// Bridgehead-cell state-machine driver.
     ///
-    /// Counterpart to `body_cell_advance_state`. Filters on
-    /// `role == Bridgehead`, walks to the anchor body cell via
-    /// `bridgehead_walk_to_anchor`'s height predicate, then transitions per
-    /// the cell's `damage_state`. Fires perpendicular `UpdateRamp_*` writes
-    /// via `update_ramp_perpendicular` exactly like the body driver. On
-    /// collapse: emits a 3-cell `BlowUpBridge` row (body-axis-aligned via
-    /// `bridgehead_blow_up_row`) plus `adjacent_bridges_dirty` flags.
+    /// Sparse-by-design: most bridgehead cells absorb damage via the per-axis
+    /// start-cell gate inside `bridgehead_walk_to_anchor` (NS rejects odd
+    /// heights; EW rejects heights > 4). Only the small subset that passes
+    /// the gate reaches the anchor-write path.
     ///
-    /// Critical structural difference vs body branch: does NOT compose
-    /// `set_bridge_direction(anchor.span, false)`. Binary leaves the body
-    /// span's flag bits untouched on bridgehead destruction; the body span
-    /// survives with state byte advanced one tier via the perpendicular
-    /// `UpdateRamp_*_Collapse` call. Subsequent damage on body cells
-    /// continues the collapse via `body_cell_advance_state`.
+    /// On a successful walk:
+    /// - Writes `bridgehead_anchor_class = Damaged` on the anchor cell. The
+    ///   write is idempotent — repeat hits leave the anchor at `Damaged`.
+    /// - Fires `update_ramp_perpendicular(DamageA)` and `DamageB` on the
+    ///   anchor's perpendicular neighbors. These now do both the existing
+    ///   state-byte bump (on Anchor targets) AND the new tile-class write
+    ///   (on Anchor and Bridgehead targets).
+    /// - The hit bridgehead cell's own `damage_state` is NEVER modified.
     ///
     /// Returns:
-    /// - `StateOutcome::Absorbed` on bridgehead `Healthy → Damaged` (any
-    ///   cosmetic healthy variant jump-transitions to Damaged in one hit;
-    ///   mirrors binary writing overlay slot 2 raw which encodes step 3).
-    /// - `StateOutcome::Collapsed { destroyed_cells, set_bridge_direction
-    ///   (3-entry BlowUpBridge row — note: field name is reused from body
-    ///   driver; bridgehead does NOT call SetBridgeDirection_NESW),
-    ///   adjacent_bridges_dirty (perpendiculars of the *bridgehead* coord),
-    ///   zones_dirty: true }` on `Damaged → Destroyed`.
-    /// - `StateOutcome::NoChange` on non-bridgehead role, anchor walk
-    ///   failure (off-map / odd-height intermediate / `cell.axis == None`),
-    ///   already `Destroyed`, or `PartialCollapseA/B` (defensive).
+    /// - `StateOutcome::Absorbed` on a successful walk + anchor write.
+    /// - `StateOutcome::NoChange` on role mismatch, missing axis, gated
+    ///   start cell, or walk-off-map.
+    /// - **Never** returns `Collapsed`. Sustained bridgehead direct fire
+    ///   cannot collapse a bridge on this path; the body-cell cascade
+    ///   (via `body_cell_advance_state`) is the only collapse route.
     ///
     /// `is_high_bridge` is currently unused (state transitions identical
-    /// for HIGH and LOW per HIGH §11.1) but kept for API symmetry with the
-    /// future overlay-write branch and the body driver.
+    /// for HIGH and LOW per HIGH §11.1) but kept for API symmetry.
     ///
-    /// Height-source: `ResolvedTerrainCell.template_height`. Per HIGH §13.5
-    /// the binary field `+0x11A` is "bridge-class ID" (a different
-    /// abstraction); if parity tests reveal walker drift on real maps, a
-    /// derived `bridge_class_id` field on `ResolvedTerrainCell` will replace
-    /// the closure source.
+    /// Height-source: `ResolvedTerrainCell.template_height`.
     pub fn bridgehead_advance_state(
         &mut self,
         rx: u16,
@@ -1267,20 +1255,19 @@ impl BridgeRuntimeState {
             return StateOutcome::NoChange;
         };
 
-        // 3. Walk to anchor via height predicate.
+        // 3. Walk to anchor via the height-based predicate. The helper
+        //    computes walk direction internally per the start cell's height
+        //    and applies the per-axis start-cell gate. Failures (odd-h NS,
+        //    h>4 EW, off-map) yield None — the damage is absorbed without
+        //    state change.
         let map_w = self.width;
         let map_h = self.height;
         let height_lookup = |pos: (u16, u16)| -> Option<u8> {
             terrain.cell(pos.0, pos.1).map(|c| c.template_height)
         };
-        let walk_dir = match axis {
-            Axis::NS => Direction::E,
-            Axis::EW => Direction::S,
-        };
         let Some(anchor_pos) = crate::sim::bridge_specs::bridgehead_walk_to_anchor(
             (rx, ry),
             axis,
-            walk_dir,
             height_lookup,
             map_w,
             map_h,
@@ -1288,118 +1275,34 @@ impl BridgeRuntimeState {
             return StateOutcome::NoChange;
         };
 
-        // 4. Switch on bridgehead's damage_state.
-        match input_cell.damage_state {
-            DamageState::Healthy { .. } => {
-                let _ = crate::sim::bridge_specs::update_ramp_perpendicular(
-                    self,
-                    anchor_pos,
-                    axis,
-                    Phase::DamageA,
-                    is_high_bridge,
-                    terrain,
-                );
-                let _ = crate::sim::bridge_specs::update_ramp_perpendicular(
-                    self,
-                    anchor_pos,
-                    axis,
-                    Phase::DamageB,
-                    is_high_bridge,
-                    terrain,
-                );
-                if let Some(c) = self.cell_mut(rx, ry) {
-                    c.damage_state = DamageState::Damaged;
-                }
-                StateOutcome::Absorbed
-            }
-            DamageState::Damaged => {
-                let anchor_height = terrain
-                    .cell(anchor_pos.0, anchor_pos.1)
-                    .map(|c| c.template_height)
-                    .unwrap_or(0);
-
-                let row = crate::sim::bridge_specs::bridgehead_blow_up_row(
-                    anchor_pos,
-                    axis,
-                    anchor_height,
-                    map_w,
-                    map_h,
-                );
-
-                let _ = crate::sim::bridge_specs::update_ramp_perpendicular(
-                    self,
-                    anchor_pos,
-                    axis,
-                    Phase::CollapseA,
-                    is_high_bridge,
-                    terrain,
-                );
-                let _ = crate::sim::bridge_specs::update_ramp_perpendicular(
-                    self,
-                    anchor_pos,
-                    axis,
-                    Phase::CollapseB,
-                    is_high_bridge,
-                    terrain,
-                );
-
-                // Bridgehead's own state → Destroyed. NOTE: anchor's
-                // damage_state is NOT modified — body span survives with
-                // state byte advanced via the perpendicular UpdateRamp call.
-                if let Some(c) = self.cell_mut(rx, ry) {
-                    c.damage_state = DamageState::Destroyed;
-                }
-
-                // Collect any perpendicular cells that hit collapse-final.
-                let mut destroyed = vec![(rx, ry)];
-                for &perp_dir in &[Direction::E, Direction::W, Direction::N, Direction::S] {
-                    let (dx, dy) = perp_dir.offset();
-                    let nx = anchor_pos.0 as i32 + dx;
-                    let ny = anchor_pos.1 as i32 + dy;
-                    if nx < 0 || ny < 0 {
-                        continue;
-                    }
-                    let pos = (nx as u16, ny as u16);
-                    if let Some(c) = self.cell(pos.0, pos.1) {
-                        if matches!(c.damage_state, DamageState::Destroyed)
-                            && !destroyed.contains(&pos)
-                        {
-                            destroyed.push(pos);
-                        }
-                    }
-                }
-
-                // Emit the 3-cell BlowUpBridge row as a SetBridgeDirectionResult.
-                // Bridgehead branch does NOT call SetBridgeDirection_NESW;
-                // we reuse the result type as a cascade carrier for the
-                // orchestrator. Slot index is 0 — bridgehead's row is not
-                // part of an AnchorSpan, so the slot has no meaning here.
-                let actions: Vec<((u16, u16), usize, crate::sim::bridge_specs::CellAction)> = row
-                    .iter()
-                    .filter_map(|c| {
-                        c.map(|cell| {
-                            (
-                                cell,
-                                0usize,
-                                crate::sim::bridge_specs::CellAction::BlowUpBridge,
-                            )
-                        })
-                    })
-                    .collect();
-                let sbd = crate::sim::bridge_specs::SetBridgeDirectionResult { actions };
-
-                let adj = compute_adjacent_bridges_dirty(rx, ry, axis);
-                StateOutcome::Collapsed {
-                    destroyed_cells: destroyed,
-                    set_bridge_direction: sbd,
-                    adjacent_bridges_dirty: adj,
-                    zones_dirty: true,
-                }
-            }
-            DamageState::PartialCollapseA
-            | DamageState::PartialCollapseB
-            | DamageState::Destroyed => StateOutcome::NoChange,
+        // 4. Write the anchor's bridgehead_anchor_class to Damaged. The
+        //    write is idempotent on repeat hits (Damaged stays Damaged).
+        //    The hit bridgehead cell's own damage_state is never touched.
+        if let Some(anchor_cell) = self.cell_mut(anchor_pos.0, anchor_pos.1) {
+            anchor_cell.bridgehead_anchor_class = BridgeheadAnchorClass::Damaged;
         }
+
+        // 5. Fire the perpendicular DamageA + DamageB writes. These do the
+        //    state-byte bump on Anchor targets and the asymmetric A/B
+        //    tile-class progression on both Anchor and Bridgehead targets.
+        let _ = crate::sim::bridge_specs::update_ramp_perpendicular(
+            self,
+            anchor_pos,
+            axis,
+            Phase::DamageA,
+            is_high_bridge,
+            terrain,
+        );
+        let _ = crate::sim::bridge_specs::update_ramp_perpendicular(
+            self,
+            anchor_pos,
+            axis,
+            Phase::DamageB,
+            is_high_bridge,
+            terrain,
+        );
+
+        StateOutcome::Absorbed
     }
 
     /// Bridge endpoint records for zone connectivity.
@@ -2346,18 +2249,18 @@ mod tests {
         assert!(matches!(outcome, StateOutcome::NoChange));
     }
 
-    /// 5x5 grid; row Y=2 carries the NS bridgehead walk:
-    /// (2,2)=8 (bridgehead high-ramp peak), (3,2)=6, (4,2)=4 (anchor body).
+    /// 5x5 grid; column X=2 carries the NS bridgehead walk:
+    /// (2,4)=8 (bridgehead high-ramp peak), (2,3)=6, (2,2)=4 (anchor body),
+    /// (2,1)=0, (2,0)=0. Walk N from (2,4) terminates at (2,2).
     fn make_bridgehead_terrain_ns() -> crate::map::resolved_terrain::ResolvedTerrainGrid {
         let mut cells = Vec::with_capacity(25);
         for ry in 0..5u16 {
             for rx in 0..5u16 {
-                let template_height: u8 = if ry == 2 {
-                    match rx {
-                        0 | 1 => 10,
-                        2 => 8,
+                let template_height: u8 = if rx == 2 {
+                    match ry {
+                        4 => 8,
                         3 => 6,
-                        4 => 4,
+                        2 => 4,
                         _ => 0,
                     }
                 } else {
@@ -2410,14 +2313,15 @@ mod tests {
         ResolvedTerrainGrid::from_cells(5, 5, cells)
     }
 
-    /// Bridgehead at (2,2) NS, anchor at (4,2) NS, perpendicular partner
-    /// anchors at (3,2) west of anchor and (5,2) east of anchor.
-    /// All cells start `Healthy{0}`.
+    /// Bridgehead at (2,4) NS, anchor at (2,2) NS, perpendicular partner
+    /// anchors at (1,2) west and (3,2) east. All cells start `Healthy{0}`.
+    /// Walk N from (2,4) h=8 → (2,3) h=6 → (2,2) h=4 (anchor).
     fn make_bridgehead_state_ns() -> BridgeRuntimeState {
         let mut state = BridgeRuntimeState::default();
+        // Bridgehead at (2, 4).
         state.test_seed_cell(
             2,
-            2,
+            4,
             BridgeRuntimeCell {
                 deck_present: true,
                 destroyable: true,
@@ -2432,8 +2336,9 @@ mod tests {
                 bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
             },
         );
+        // Anchor at (2, 2).
         state.test_seed_cell(
-            4,
+            2,
             2,
             BridgeRuntimeCell {
                 deck_present: true,
@@ -2449,8 +2354,9 @@ mod tests {
                 bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
             },
         );
+        // DamageA neighbor (east of anchor) at (3, 2).
         state.test_seed_cell(
-            5,
+            3,
             2,
             BridgeRuntimeCell {
                 deck_present: true,
@@ -2466,8 +2372,9 @@ mod tests {
                 bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
             },
         );
+        // DamageB neighbor (west of anchor) at (1, 2).
         state.test_seed_cell(
-            3,
+            1,
             2,
             BridgeRuntimeCell {
                 deck_present: true,
@@ -2483,9 +2390,7 @@ mod tests {
                 bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
             },
         );
-        // Sentinel to grow state to 5x5 (matches terrain dimensions). The
-        // 3-cell BlowUp row reaches Y=3 and Y=1; without this, state's
-        // bounds check clamps the row to 2 cells.
+        // Sentinel to grow state to 5x5 (matches terrain dimensions).
         state.test_seed_cell(
             0,
             4,
@@ -2507,129 +2412,202 @@ mod tests {
     }
 
     #[test]
-    fn bridgehead_advance_healthy_to_damaged_ns() {
+    fn bridgehead_advance_first_hit_writes_anchor_damaged() {
         let mut state = make_bridgehead_state_ns();
         let terrain = make_bridgehead_terrain_ns();
-        let outcome = state.bridgehead_advance_state(2, 2, true, &terrain);
+        let pre_hit_bridgehead = *state.cell(2, 4).unwrap();
+        assert_eq!(
+            state.cell(2, 2).unwrap().bridgehead_anchor_class,
+            BridgeheadAnchorClass::Variant0
+        );
+
+        let outcome = state.bridgehead_advance_state(2, 4, true, &terrain);
         assert_eq!(outcome, StateOutcome::Absorbed);
-        assert_eq!(state.cell(2, 2).unwrap().damage_state, DamageState::Damaged);
-        // Anchor is NOT modified — only perpendicular partners.
+
+        // Bridgehead's own damage_state is NOT modified.
+        let post_bridgehead = *state.cell(2, 4).unwrap();
+        assert_eq!(post_bridgehead.damage_state, pre_hit_bridgehead.damage_state);
+
+        // Anchor's bridgehead_anchor_class becomes Damaged.
         assert_eq!(
-            state.cell(4, 2).unwrap().damage_state,
-            DamageState::Healthy { variant: 0 }
+            state.cell(2, 2).unwrap().bridgehead_anchor_class,
+            BridgeheadAnchorClass::Damaged
         );
-        // East partner — DamageA wrote state byte 4 → Healthy{4}.
-        assert_eq!(
-            state.cell(5, 2).unwrap().damage_state,
-            DamageState::Healthy { variant: 4 }
-        );
-        // West partner — DamageB wrote state byte 5 → Healthy{5}.
+
+        // East perpendicular partner (DamageA) — state byte 0 → 4 → Healthy{4}.
         assert_eq!(
             state.cell(3, 2).unwrap().damage_state,
+            DamageState::Healthy { variant: 4 }
+        );
+        // West perpendicular partner (DamageB) — state byte 0 → 5 → Healthy{5}.
+        assert_eq!(
+            state.cell(1, 2).unwrap().damage_state,
             DamageState::Healthy { variant: 5 }
         );
     }
 
     #[test]
-    fn bridgehead_advance_damaged_to_destroyed_ns() {
+    fn bridgehead_advance_repeat_hits_stay_damaged_no_collapse() {
         let mut state = make_bridgehead_state_ns();
-        state.cell_mut(2, 2).unwrap().damage_state = DamageState::Damaged;
         let terrain = make_bridgehead_terrain_ns();
-        let outcome = state.bridgehead_advance_state(2, 2, true, &terrain);
-        match outcome {
-            StateOutcome::Collapsed {
-                destroyed_cells,
-                set_bridge_direction,
-                adjacent_bridges_dirty,
-                zones_dirty,
-            } => {
-                assert!(destroyed_cells.contains(&(2, 2)));
-                assert_eq!(
-                    state.cell(2, 2).unwrap().damage_state,
-                    DamageState::Destroyed
-                );
-                // Anchor's damage_state must NOT be modified.
-                assert_eq!(
-                    state.cell(4, 2).unwrap().damage_state,
-                    DamageState::Healthy { variant: 0 },
-                    "anchor's damage_state must not be modified by bridgehead collapse"
-                );
-                // Perpendicular partners advance via CollapseA / CollapseB.
-                // CollapseA from anchor walks E to (5,2): state 0 → 7 = PartialCollapseA.
-                // CollapseB from anchor walks W to (3,2): state 0 → 8 = PartialCollapseB.
-                assert_eq!(
-                    state.cell(5, 2).unwrap().damage_state,
-                    DamageState::PartialCollapseA
-                );
-                assert_eq!(
-                    state.cell(3, 2).unwrap().damage_state,
-                    DamageState::PartialCollapseB
-                );
-                // 3-cell BlowUp row at anchor (4,2), template_height=4 (even),
-                // NS axis → column at X=4, Y in {1, 2, 3}.
-                assert_eq!(set_bridge_direction.actions.len(), 3);
-                let blow_cells: Vec<(u16, u16)> = set_bridge_direction
-                    .actions
-                    .iter()
-                    .map(|(c, _, _)| *c)
-                    .collect();
-                assert!(blow_cells.contains(&(4, 1)));
-                assert!(blow_cells.contains(&(4, 2)));
-                assert!(blow_cells.contains(&(4, 3)));
-                // adjacent_bridges_dirty uses bridgehead's coord (2,2), axis NS
-                // → perpendiculars E/W → (3,2) and (1,2).
-                let adj_set: std::collections::BTreeSet<(u16, u16)> =
-                    adjacent_bridges_dirty.iter().copied().collect();
-                assert!(adj_set.contains(&(3, 2)));
-                assert!(adj_set.contains(&(1, 2)));
-                assert!(zones_dirty);
-            }
-            other => panic!("expected Collapsed, got {:?}", other),
+        for _ in 0..100 {
+            let outcome = state.bridgehead_advance_state(2, 4, true, &terrain);
+            assert_eq!(
+                outcome,
+                StateOutcome::Absorbed,
+                "every hit must return Absorbed, never Collapsed",
+            );
         }
+        // Anchor's tile class stays Damaged (idempotent).
+        assert_eq!(
+            state.cell(2, 2).unwrap().bridgehead_anchor_class,
+            BridgeheadAnchorClass::Damaged
+        );
+        // Bridgehead cell's own damage_state never changes.
+        assert!(matches!(
+            state.cell(2, 4).unwrap().damage_state,
+            DamageState::Healthy { .. }
+        ));
     }
 
     #[test]
-    fn bridgehead_advance_destroyed_no_change() {
+    fn bridgehead_advance_odd_h_ns_absorbs_with_no_change() {
+        // Bridgehead at h=5 (odd NS ramp): parity gate fires.
         let mut state = make_bridgehead_state_ns();
-        state.cell_mut(2, 2).unwrap().damage_state = DamageState::Destroyed;
-        let terrain = make_bridgehead_terrain_ns();
+        let mut terrain = make_bridgehead_terrain_ns();
+        // Override (2, 4) height to 5 — odd, parity-gated.
+        if let Some(cell) = terrain.cells.get_mut(4 * 5 + 2) {
+            cell.template_height = 5;
+        }
+        let outcome = state.bridgehead_advance_state(2, 4, true, &terrain);
+        assert_eq!(outcome, StateOutcome::NoChange);
+        // Anchor's tile class unchanged.
+        assert_eq!(
+            state.cell(2, 2).unwrap().bridgehead_anchor_class,
+            BridgeheadAnchorClass::Variant0
+        );
+    }
+
+    #[test]
+    fn bridgehead_advance_h_gt_4_ew_absorbs_with_no_change() {
+        // Bridgehead at h=0xC (EW high-ramp peak): upper-bound gate fires.
+        // Use a fresh setup since the shared fixture is NS-axis.
+        let mut state = BridgeRuntimeState::default();
+        state.test_seed_cell(
+            2,
+            2,
+            BridgeRuntimeCell {
+                deck_present: true,
+                destroyable: true,
+                deck_level: 0,
+                bridge_group_id: Some(1),
+                damage_state: DamageState::Healthy { variant: 0 },
+                axis: Some(Axis::EW),
+                role: BridgeCellRole::Bridgehead,
+                anchor_span_id: None,
+                overlay_byte: 0x18,
+                damaged_variant: false,
+                bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
+            },
+        );
+        // 3x3 terrain with cell (2,2) h=0xC.
+        let mut cells = Vec::with_capacity(9);
+        for ry in 0..3u16 {
+            for rx in 0..3u16 {
+                cells.push(ResolvedTerrainCell {
+                    rx,
+                    ry,
+                    source_tile_index: 0,
+                    source_sub_tile: 0,
+                    final_tile_index: 0,
+                    final_sub_tile: 0,
+                    level: 0,
+                    filled_clear: false,
+                    tileset_index: Some(0),
+                    land_type: 0,
+                    slope_type: 0,
+                    template_height: if rx == 2 && ry == 2 { 0x0C } else { 0 },
+                    render_offset_x: 0,
+                    render_offset_y: 0,
+                    terrain_class: TerrainClass::Clear,
+                    speed_costs: SpeedCostProfile::default(),
+                    is_water: false,
+                    is_cliff_like: false,
+                    is_cliff_redraw: false,
+                    variant: 0,
+                    is_rough: false,
+                    is_road: false,
+                    accepts_smudge: false,
+                    has_ramp: false,
+                    canonical_ramp: None,
+                    ground_walk_blocked: false,
+                    terrain_object_blocks: false,
+                    overlay_blocks: false,
+                    zone_type: 0,
+                    base_ground_walk_blocked: false,
+                    base_build_blocked: false,
+                    build_blocked: false,
+                    has_bridge_deck: false,
+                    bridge_walkable: false,
+                    bridge_transition: false,
+                    bridge_deck_level: 0,
+                    bridge_layer: None,
+                    radar_left: [0, 0, 0],
+                    radar_right: [0, 0, 0],
+                    has_damaged_data: false,
+                });
+            }
+        }
+        let terrain = ResolvedTerrainGrid::from_cells(3, 3, cells);
         let outcome = state.bridgehead_advance_state(2, 2, true, &terrain);
         assert_eq!(outcome, StateOutcome::NoChange);
+    }
+
+    #[test]
+    fn bridgehead_advance_walks_through_odd_intermediate() {
+        // Mid-walk parity tolerance: walk passes through an odd h=5
+        // intermediate between h=8 start and h=4 anchor.
+        let mut state = make_bridgehead_state_ns();
+        let mut terrain = make_bridgehead_terrain_ns();
+        // Patch the walk path: (2,4)=8, (2,3)=5 (odd!), (2,2)=4.
+        if let Some(c) = terrain.cells.get_mut(3 * 5 + 2) {
+            c.template_height = 5;
+        }
+        let outcome = state.bridgehead_advance_state(2, 4, true, &terrain);
+        assert_eq!(outcome, StateOutcome::Absorbed);
+        assert_eq!(
+            state.cell(2, 2).unwrap().bridgehead_anchor_class,
+            BridgeheadAnchorClass::Damaged,
+            "walk must pass through odd-h intermediate and damage the anchor",
+        );
     }
 
     #[test]
     fn bridgehead_advance_non_bridgehead_role_no_change() {
         let mut state = make_bridgehead_state_ns();
-        state.cell_mut(2, 2).unwrap().role = BridgeCellRole::Body;
+        state.cell_mut(2, 4).unwrap().role = BridgeCellRole::Body;
         let terrain = make_bridgehead_terrain_ns();
-        let outcome = state.bridgehead_advance_state(2, 2, true, &terrain);
+        let outcome = state.bridgehead_advance_state(2, 4, true, &terrain);
         assert_eq!(outcome, StateOutcome::NoChange);
     }
 
     #[test]
     fn bridgehead_advance_anchor_walk_failure_no_change() {
+        // All heights = 10: start cell is even (passes parity gate) but walk
+        // never converges to h=4 within the 16-iter cap (heights stay 10
+        // along the column / walking off-map).
         let mut state = make_bridgehead_state_ns();
         let mut terrain = make_bridgehead_terrain_ns();
         for c in terrain.cells.iter_mut() {
             c.template_height = 10;
         }
-        let outcome = state.bridgehead_advance_state(2, 2, true, &terrain);
+        let outcome = state.bridgehead_advance_state(2, 4, true, &terrain);
         assert_eq!(outcome, StateOutcome::NoChange);
+        // Anchor's tile class unchanged.
         assert_eq!(
-            state.cell(2, 2).unwrap().damage_state,
-            DamageState::Healthy { variant: 0 }
+            state.cell(2, 2).unwrap().bridgehead_anchor_class,
+            BridgeheadAnchorClass::Variant0
         );
-    }
-
-    #[test]
-    fn bridgehead_advance_partial_collapse_states_no_change() {
-        let mut state = make_bridgehead_state_ns();
-        let terrain = make_bridgehead_terrain_ns();
-        for partial in [DamageState::PartialCollapseA, DamageState::PartialCollapseB] {
-            state.cell_mut(2, 2).unwrap().damage_state = partial;
-            let outcome = state.bridgehead_advance_state(2, 2, true, &terrain);
-            assert_eq!(outcome, StateOutcome::NoChange);
-        }
     }
 
     #[test]
