@@ -166,6 +166,17 @@ pub enum SimSoundEvent {
     /// Played at the attacker's position. App resolves to
     /// `[SealPlaceBomb]` in soundmd.ini.
     C4Planted { rx: u16, ry: u16 },
+    /// An engineer entered a `BridgeRepairHut` and triggered bridge repair.
+    /// Played at the BUILDING's cell, NOT the engineer's. `owner` is the
+    /// engineer's house — app layer plays `EVA_BridgeRepaired` only if
+    /// `owner` is the local human player. App layer plays the spatial
+    /// `[BridgeRepaired]` sound for everyone in range, gated on
+    /// `rules.bridge_rules.repair_sound.is_some()`.
+    BridgeRepaired {
+        rx: u16,
+        ry: u16,
+        owner: InternedId,
+    },
 }
 
 /// A fire event produced during combat — carries data for render-side
