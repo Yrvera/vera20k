@@ -196,8 +196,11 @@ pub struct GameEntity {
     /// When Some, the renderer should use this type's VXL model instead of `type_ref`.
     /// Set during refinery unloading (UnloadingClass= from rules.ini).
     pub display_type_override: Option<InternedId>,
-    /// Target building for engineer capture. Set by CaptureBuilding command,
-    /// cleared on arrival (after capture) or if target is lost/destroyed.
+    /// Target building for an engineer-arrival intent. Set by
+    /// `CaptureBuilding`, cleared on arrival or if the target is lost.
+    /// Overloaded: when the target's type has `BridgeRepairHut=yes`,
+    /// `tick_bridge_repair_orders` consumes the engineer for bridge repair
+    /// instead of capture (the original game never captures CABHUTs).
     pub capture_target: Option<u64>,
     /// Active C4 plant intent on this attacker. Set by `Command::PlantC4`,
     /// cleared on arrival (after the building's pending detonation is set),

@@ -49,7 +49,13 @@ fn saturation_clamps_when_stationary_and_crossing() {
 fn saturation_does_not_clamp_when_moving() {
     let mut a = SimFixed::lit("0.78");
     let mut v = SimFixed::lit("0.05");
-    advance_axis(&mut a, &mut v, SATURATION_PI4, true /* moving */, FALLBACK);
+    advance_axis(
+        &mut a,
+        &mut v,
+        SATURATION_PI4,
+        true, /* moving */
+        FALLBACK,
+    );
     // Moving → saturation skipped; angle drifts past π/4.
     assert!(a > SATURATION_PI4);
 }
@@ -517,7 +523,14 @@ fn make_test_simulation_with_one_vehicle() -> (Simulation, RuleSet, PathGrid) {
 }
 
 fn advance(sim: &mut Simulation, rules: &RuleSet, path_grid: &PathGrid) {
-    let _ = sim.advance_tick(&[], Some(rules), &BTreeMap::new(), Some(path_grid), None, TICK_MS);
+    let _ = sim.advance_tick(
+        &[],
+        Some(rules),
+        &BTreeMap::new(),
+        Some(path_grid),
+        None,
+        TICK_MS,
+    );
 }
 
 #[test]

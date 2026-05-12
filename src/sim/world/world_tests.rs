@@ -605,15 +605,9 @@ fn test_no_collapse_does_not_signal_refresh() {
 
     let rules = combat_test_rules();
 
-    let state_changed = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
-        &mut sim,
-        &rules,
-        &[],
-    );
-    assert!(
-        !state_changed,
-        "empty events must not signal state_changed"
-    );
+    let state_changed =
+        crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(&mut sim, &rules, &[]);
+    assert!(!state_changed, "empty events must not signal state_changed");
 }
 
 /// Regression for ledger #2 / #3: when a bridge body span collapses, every

@@ -1058,8 +1058,7 @@ impl BridgeRuntimeState {
             let anchor_pos = self.anchor_span(span_id).map(|s| s.anchor);
             if let Some((arx, ary)) = anchor_pos {
                 let new_anchor_state = self.cell(arx, ary).map(|c| c.damage_state);
-                if let (Some(state), Some(span)) =
-                    (new_anchor_state, self.anchor_span_mut(span_id))
+                if let (Some(state), Some(span)) = (new_anchor_state, self.anchor_span_mut(span_id))
                 {
                     span.damage_state = state;
                 }

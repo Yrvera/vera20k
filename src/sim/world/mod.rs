@@ -172,11 +172,7 @@ pub enum SimSoundEvent {
     /// `owner` is the local human player. App layer plays the spatial
     /// `[BridgeRepaired]` sound for everyone in range, gated on
     /// `rules.bridge_rules.repair_sound.is_some()`.
-    BridgeRepaired {
-        rx: u16,
-        ry: u16,
-        owner: InternedId,
-    },
+    BridgeRepaired { rx: u16, ry: u16, owner: InternedId },
 }
 
 /// A fire event produced during combat — carries data for render-side
