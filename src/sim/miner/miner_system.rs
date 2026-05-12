@@ -417,33 +417,35 @@ fn handle_harvest(
     }
 
     let cell = (snap.rx, snap.ry);
+    let empty: u16 = snap
+        .miner
+        .capacity_bales
+        .saturating_sub(snap.miner.cargo.len() as u16);
 
-    // Try to extract one bale from the cell.
-    let bale = extract_bale(sim, cell, config);
-    if let Some(bale) = bale {
-        snap.miner.cargo.push(bale);
+    // One extraction call drains min(empty_capacity, cell_density) bales
+    // in a single atomic mutation (matches gamemd's Harvest_Ore_Tick).
+    let bales = extract_bales_max(sim, cell, config, empty);
+
+    if !bales.is_empty() {
+        snap.miner.cargo.extend(bales);
         snap.miner.last_harvest_cell = Some(cell);
 
         if snap.miner.is_full() {
-            // Full — begin return.
             begin_return(sim, rules, config, path_grid, snap);
             return;
         }
-
-        // Cell still has resources? Continue harvesting.
-        let still_has = sim
-            .production
-            .resource_nodes
-            .get(&cell)
-            .is_some_and(|n| n.remaining > 0);
-        if still_has {
-            snap.miner.harvest_timer = config.harvest_tick_interval;
-            return;
-        }
+        // Bales extracted but miner not full → cell has either been
+        // drained (multi-bale exhausted it) or still has more density
+        // (capacity capped this call). Reset timer; next tick re-enters
+        // Harvest. If the cell is now empty the next call returns 0 and
+        // we fall through to short-scan; if it still has density we wait
+        // 18 frames per gamemd's step-counter gate.
+        snap.miner.harvest_timer = config.harvest_tick_interval;
+        return;
     }
 
-    // Cell depleted. Mirrors gamemd Mission_Harvest case 1 when
-    // Harvest_Ore_Tick returns 0:
+    // No bales extracted (cell empty). Mirrors gamemd Mission_Harvest
+    // case 1 when Harvest_Ore_Tick returns 0:
     //   1. Full Harvester → state 2 (return), no scan.
     //   2. Otherwise run a TiberiumShortScan continuation scan from the
     //      current cell. Hit → keep harvesting (we use MoveToOre, which
@@ -451,10 +453,6 @@ fn handle_harvest(
     //   3. Miss → state 2 (return), regardless of cargo. Empty miners
     //      detour to the refinery and re-scan from there, matching the
     //      original observable travel path.
-    //
-    // The is_full() early-out is redundant when extract_bale just filled
-    // the miner above, but covers the rare case of arriving at an
-    // already-empty cell while full.
     if snap.miner.is_full() {
         begin_return(sim, rules, config, path_grid, snap);
         return;

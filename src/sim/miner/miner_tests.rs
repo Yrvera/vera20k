@@ -599,8 +599,10 @@ fn local_continuation_after_cell_depletes() {
     // Miner at (20, 20). Two ore cells: one small (will deplete), one nearby.
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 20, 20);
     spawn_refinery(&mut sim, 2, 10, 10);
-    place_ore(&mut sim, 20, 20, 2); // Only 2 bales worth
-    place_ore(&mut sim, 22, 20, 100); // Nearby ore within local radius (6 cells)
+    // 2 density levels at (20, 20) and a richer patch nearby (within local
+    // continuation radius of 6 cells).
+    place_ore(&mut sim, 20, 20, 2 * 120);
+    place_ore(&mut sim, 22, 20, 100 * 120);
 
     // Put miner in Harvest state at its position.
     {
@@ -643,10 +645,10 @@ fn harvest_continues_to_nearby_ore_when_cell_depletes_partial_cargo() {
 
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 20, 20);
     spawn_refinery(&mut sim, 2, 10, 10);
-    // Cell at miner's position: depletes after 2 bales.
-    place_ore(&mut sim, 20, 20, 2);
+    // Cell at miner's position: 2 density levels (2 × ore-base 120 = 240).
+    place_ore(&mut sim, 20, 20, 2 * 120);
     // Nearby ore well within TiberiumShortScan (radius 6 cells).
-    place_ore(&mut sim, 23, 20, 100);
+    place_ore(&mut sim, 23, 20, 100 * 120);
 
     {
         let entity = sim.entities.get_mut(miner_id).expect("miner");
@@ -691,10 +693,11 @@ fn harvest_returns_when_no_ore_within_short_scan() {
 
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 20, 20);
     spawn_refinery(&mut sim, 2, 10, 10);
-    // Only the miner's cell has ore. Nothing within the short-scan radius
-    // (default 6 cells). The further ore patch is well outside.
-    place_ore(&mut sim, 20, 20, 2);
-    place_ore(&mut sim, 50, 50, 100); // far outside local_continuation_radius
+    // Only the miner's cell has ore (2 density levels = 240 base units).
+    // Nothing within the short-scan radius (default 6 cells). The further
+    // ore patch is well outside.
+    place_ore(&mut sim, 20, 20, 2 * 120);
+    place_ore(&mut sim, 50, 50, 100 * 120); // far outside local_continuation_radius
 
     {
         let entity = sim.entities.get_mut(miner_id).expect("miner");
@@ -1895,7 +1898,57 @@ fn harvester_undocks_through_foundation_to_outside_ore() {
     let mut occupancy = OccupancyGrid::new();
     let mut rng = SimRng::new(0);
 
-    for _tick in 0..120 {
+    // Phase A: tick until the miner exits the Dock state — this is the
+    // moment phase_departing's arrival branch runs and clears
+    // reserved_refinery. Asserting at that exact tick avoids racing the
+    // subsequent harvest cycle (which legitimately re-reserves the
+    // refinery once the cell is drained).
+    let mut departed_at: Option<usize> = None;
+    let mut reservation_observed_clear = false;
+    for tick in 0..60 {
+        crate::sim::miner::miner_system::tick_miners(&mut sim, &rules, &config, Some(&path_grid));
+        crate::sim::movement::tick_movement_with_grid(
+            &mut sim.entities,
+            Some(&path_grid),
+            &terrain_costs,
+            &alliances,
+            &mut occupancy,
+            &mut rng,
+            67,
+            sim.tick,
+            &mut sim.interner,
+        );
+        sim.tick += 1;
+
+        let miner = sim
+            .entities
+            .get(miner_id)
+            .and_then(|e| e.miner.as_ref())
+            .expect("miner alive");
+        if miner.state != MinerState::Dock {
+            if departed_at.is_none() {
+                departed_at = Some(tick);
+                // phase_departing's arrival branch clears reserved_refinery
+                // before transitioning state; observe it exactly here.
+                reservation_observed_clear = miner.reserved_refinery.is_none();
+            }
+            break;
+        }
+    }
+    assert!(
+        departed_at.is_some(),
+        "harvester should have transitioned out of Dock within 60 ticks",
+    );
+    assert!(
+        reservation_observed_clear,
+        "phase_departing should have cleared reserved_refinery when state left Dock",
+    );
+
+    // Phase B: continue ticking. The miner now runs SearchOre → MoveToOre
+    // toward the ore patch, proving the foundation-blocked path_grid did
+    // not strand it on the pad. After enough ticks it either reaches the
+    // ore cell or is in transit toward it.
+    for _ in 0..120 {
         crate::sim::miner::miner_system::tick_miners(&mut sim, &rules, &config, Some(&path_grid));
         crate::sim::movement::tick_movement_with_grid(
             &mut sim.entities,
@@ -1914,33 +1967,20 @@ fn harvester_undocks_through_foundation_to_outside_ore() {
     let entity = sim.entities.get(miner_id).expect("harvester still alive");
     let miner = entity.miner.as_ref().expect("miner component");
 
-    // (1) Harvester transitioned out of Dock state — phase_exit_pad reached
-    //     the arrival branch and ran cleanup.
-    assert_ne!(
-        miner.state,
-        MinerState::Dock,
-        "harvester should have transitioned out of Dock; pos=({},{}) state={:?}",
-        entity.position.rx,
-        entity.position.ry,
-        miner.state,
-    );
-
-    // (2) phase_exit_pad cleared the dock reservation on arrival.
-    assert!(
-        miner.reserved_refinery.is_none(),
-        "phase_exit_pad should have cleared reserved_refinery; got {:?}",
-        miner.reserved_refinery,
-    );
-
-    // (3) Harvester either escaped the foundation south edge OR is targeting
-    //     the ore patch — both prove SearchOre + A* succeeded from the
-    //     (formerly blocked) start cell.
+    // Harvester either escaped the foundation south edge, is targeting the
+    // ore patch, or has already harvested it and started returning — any
+    // of these proves SearchOre + A* succeeded from the (formerly blocked)
+    // pad cell.
     let escaped = entity.position.ry > 12 || entity.position.rx < 10 || entity.position.rx > 13;
     let targeting = miner.target_ore_cell == Some((11, 14));
+    let returning = matches!(
+        miner.state,
+        MinerState::ReturnToRefinery | MinerState::Dock
+    );
     assert!(
-        escaped || targeting,
-        "harvester should have escaped foundation or be targeting ore; \
-         pos=({},{}) target_ore={:?} state={:?}",
+        escaped || targeting || returning,
+        "harvester should have escaped foundation, be targeting ore, or be \
+         returning after harvest; pos=({},{}) target_ore={:?} state={:?}",
         entity.position.rx,
         entity.position.ry,
         miner.target_ore_cell,
