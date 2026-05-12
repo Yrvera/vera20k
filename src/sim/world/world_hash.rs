@@ -634,6 +634,7 @@ mod bridge_overlay_hash_tests {
                 anchor_span_id: None,
                 overlay_byte: byte,
                 damaged_variant: false,
+                bridgehead_anchor_class: crate::sim::bridge_state::BridgeheadAnchorClass::Variant0,
             },
         );
         state

@@ -218,6 +218,7 @@ fn seed_bridge_with_state(sim: &mut Simulation, state: DamageState) {
                 anchor_span_id: Some(1),
                 overlay_byte: 0,
                 damaged_variant: false,
+                bridgehead_anchor_class: crate::sim::bridge_state::BridgeheadAnchorClass::Variant0,
             },
         );
     }
@@ -525,6 +526,7 @@ fn seed_isolated_anchor(
             anchor_span_id: Some(span_id),
             overlay_byte: 0,
             damaged_variant,
+            bridgehead_anchor_class: crate::sim::bridge_state::BridgeheadAnchorClass::Variant0,
         },
     );
 }
@@ -629,6 +631,7 @@ fn g4_repair_flood_fill_propagates_clear_to_same_tile_id_bridge_neighbor() {
                 anchor_span_id: None,
                 overlay_byte: 0,
                 damaged_variant: true,
+                bridgehead_anchor_class: crate::sim::bridge_state::BridgeheadAnchorClass::Variant0,
             },
         );
         for &(rx, ry) in BRIDGE_CELLS {

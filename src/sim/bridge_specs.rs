@@ -1352,6 +1352,7 @@ mod tests {
             anchor_span_id: Some(1),
             overlay_byte: 0x18, // HIGH bridge anchor overlay
             damaged_variant: false,
+            bridgehead_anchor_class: crate::sim::bridge_state::BridgeheadAnchorClass::Variant0,
         };
         for (rx, ry) in [(4u16, 5u16), (5, 5), (6, 5)] {
             state.test_seed_cell(rx, ry, template);
@@ -1427,6 +1428,7 @@ mod tests {
             anchor_span_id: Some(1),
             overlay_byte: 0x18,
             damaged_variant: false,
+            bridgehead_anchor_class: crate::sim::bridge_state::BridgeheadAnchorClass::Variant0,
         };
         for (rx, ry) in [(5u16, 4u16), (5, 5), (5, 6)] {
             state.test_seed_cell(rx, ry, template);

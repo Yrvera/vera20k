@@ -444,6 +444,15 @@ pub struct BridgeRuntimeCell {
     /// Written only by the `ToggleBridgePavement`-equivalent path (deferred
     /// follow-up); defaults to `false` at map load.
     pub damaged_variant: bool,
+
+    /// Anchor tile-class mirror written by the bridgehead state machine when
+    /// damage lands on a bridgehead-class cell. Carries the visual variant
+    /// of the anchor (or neighbor bridgehead progressed via `DamageB`).
+    /// Defaults to `Variant0` at map load. The renderer follow-up will read
+    /// this to pick the anchor's TMP tile variant; G3 lands the sim-side
+    /// write only.
+    #[serde(default)]
+    pub bridgehead_anchor_class: BridgeheadAnchorClass,
 }
 
 /// A bridge's ground-level endpoint pair for zone connectivity.
@@ -537,6 +546,7 @@ impl BridgeRuntimeState {
                         .map(|bl| bl.overlay_id)
                         .unwrap_or(0),
                     damaged_variant: false,
+                    bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
                 });
                 for (nx, ny) in cardinal_neighbors(rx, ry, width, height) {
                     if let Some(neighbor) = terrain.cell(nx, ny) {
@@ -1982,6 +1992,7 @@ mod tests {
             anchor_span_id: Some(1),
             overlay_byte: 0x18,
             damaged_variant: false,
+            bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
         };
         state.test_seed_cell(5, 5, cell);
         let read = state.cell(5, 5).expect("seeded cell present");
@@ -2003,6 +2014,7 @@ mod tests {
             anchor_span_id: Some(1),
             overlay_byte: 0x18,
             damaged_variant: false,
+            bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
         };
         state.test_seed_cell(2, 2, cell);
         state.cell_mut(2, 2).unwrap().overlay_byte = 0xD2;
@@ -2181,6 +2193,7 @@ mod tests {
             anchor_span_id: Some(1),
             overlay_byte: 0x18,
             damaged_variant: false,
+            bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
         };
 
         // Anchor at (5,5).
@@ -2416,6 +2429,7 @@ mod tests {
                 anchor_span_id: None,
                 overlay_byte: 0x18,
                 damaged_variant: false,
+                bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
             },
         );
         state.test_seed_cell(
@@ -2432,6 +2446,7 @@ mod tests {
                 anchor_span_id: Some(1),
                 overlay_byte: 0x20,
                 damaged_variant: false,
+                bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
             },
         );
         state.test_seed_cell(
@@ -2448,6 +2463,7 @@ mod tests {
                 anchor_span_id: Some(1),
                 overlay_byte: 0x21,
                 damaged_variant: false,
+                bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
             },
         );
         state.test_seed_cell(
@@ -2464,6 +2480,7 @@ mod tests {
                 anchor_span_id: Some(1),
                 overlay_byte: 0x22,
                 damaged_variant: false,
+                bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
             },
         );
         // Sentinel to grow state to 5x5 (matches terrain dimensions). The
@@ -2483,6 +2500,7 @@ mod tests {
                 anchor_span_id: None,
                 overlay_byte: 0,
                 damaged_variant: false,
+                bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
             },
         );
         state
@@ -2704,6 +2722,7 @@ mod tests {
                 anchor_span_id: Some(1),
                 overlay_byte: 0xD0,
                 damaged_variant: false,
+                bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
             },
         );
         let terrain = make_terrain_at_level(2, 0, 5);
@@ -2732,6 +2751,7 @@ mod tests {
                 anchor_span_id: Some(1),
                 overlay_byte: 0x4F,
                 damaged_variant: false,
+                bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
             },
         );
         let terrain = make_terrain_at_level(2, 0, 2);
@@ -2766,6 +2786,7 @@ mod tests {
                 anchor_span_id: Some(1),
                 overlay_byte: 0x6,
                 damaged_variant: false,
+                bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
             },
         );
         let terrain = make_terrain_at_level(2, 0, 5);
@@ -2817,6 +2838,7 @@ mod tests {
                 anchor_span_id: Some(1),
                 overlay_byte: 0x6,
                 damaged_variant: false,
+                bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
             },
         );
         let terrain = make_terrain_at_level(2, 0, 5);
@@ -2939,6 +2961,7 @@ mod tests {
                     anchor_span_id: Some(1),
                     overlay_byte: 0,
                     damaged_variant: false,
+                    bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
                 },
             );
         }
@@ -3203,6 +3226,7 @@ mod repair_tests {
                     anchor_span_id: Some(1),
                     overlay_byte: 0,
                     damaged_variant: false,
+                    bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
                 },
             );
         }
@@ -3414,6 +3438,7 @@ mod repair_tests {
                     anchor_span_id: Some(2),
                     overlay_byte: 0,
                     damaged_variant: false,
+                    bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
                 },
             );
         }

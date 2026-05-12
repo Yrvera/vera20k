@@ -280,6 +280,7 @@ fn ew_high_bridge_strip_for_dispatch(
                 anchor_span_id: Some(1),
                 overlay_byte: 0xDC,
                 damaged_variant: false,
+                bridgehead_anchor_class: crate::sim::bridge_state::BridgeheadAnchorClass::Variant0,
             },
         );
     }
@@ -1093,6 +1094,7 @@ fn test_bridge_dispatcher_state_machine_overlay_routes_to_high_sm_not_direct() {
             anchor_span_id: Some(1),
             overlay_byte: 0x6,
             damaged_variant: false,
+            bridgehead_anchor_class: crate::sim::bridge_state::BridgeheadAnchorClass::Variant0,
         },
     );
     bridge_state.test_seed_anchor_span(AnchorSpan {
@@ -1144,6 +1146,7 @@ fn test_bridge_dispatcher_state_machine_overlay_routes_to_high_sm_not_direct() {
             anchor_span_id: Some(1),
             overlay_byte: 0xDC,
             damaged_variant: false,
+            bridgehead_anchor_class: crate::sim::bridge_state::BridgeheadAnchorClass::Variant0,
         },
     );
     let bs = sim.bridge_state.as_ref().unwrap();
@@ -1186,6 +1189,7 @@ fn test_bridge_orchestrator_state_machine_path_collapses_anchor_and_deactivates_
             anchor_span_id: Some(1),
             overlay_byte: 0x6,
             damaged_variant: false,
+            bridgehead_anchor_class: crate::sim::bridge_state::BridgeheadAnchorClass::Variant0,
         },
     );
     bridge_state.test_seed_anchor_span(AnchorSpan {
@@ -2803,6 +2807,7 @@ fn bridge_body_builder_queries_atlas_with_post_tick_state_byte_frame() {
             anchor_span_id: Some(1),
             overlay_byte: 0xDC,
             damaged_variant: false,
+            bridgehead_anchor_class: crate::sim::bridge_state::BridgeheadAnchorClass::Variant0,
         },
     );
 

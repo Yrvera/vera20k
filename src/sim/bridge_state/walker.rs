@@ -905,7 +905,9 @@ impl BridgeRuntimeState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sim::bridge_state::{Axis, BridgeCellRole, BridgeRuntimeCell, DamageState};
+    use crate::sim::bridge_state::{
+        Axis, BridgeCellRole, BridgeRuntimeCell, BridgeheadAnchorClass, DamageState,
+    };
 
     fn empty_terrain() -> ResolvedTerrainGrid {
         ResolvedTerrainGrid::from_cells(0, 0, Vec::new())
@@ -926,6 +928,7 @@ mod tests {
                 anchor_span_id: Some(1),
                 overlay_byte: overlay,
                 damaged_variant: false,
+                bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
             },
         );
     }
@@ -1134,6 +1137,7 @@ mod tests {
                     anchor_span_id: Some(1),
                     overlay_byte: 0xDD,
                     damaged_variant: false,
+                    bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
                 },
             );
         }
@@ -1175,6 +1179,7 @@ mod tests {
                     anchor_span_id: Some(1),
                     overlay_byte: 0xE3,
                     damaged_variant: false,
+                    bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
                 },
             );
         }
@@ -1256,6 +1261,7 @@ mod tests {
                 anchor_span_id: Some(2),
                 overlay_byte: overlay,
                 damaged_variant: false,
+                bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
             },
         );
     }

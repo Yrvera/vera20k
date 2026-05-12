@@ -984,6 +984,7 @@ mod tests {
                 anchor_span_id: Some(99),
                 overlay_byte: 0xE8,
                 damaged_variant: false,
+                bridgehead_anchor_class: crate::sim::bridge_state::BridgeheadAnchorClass::Variant0,
             },
         );
         // (6,2): dangling stub — anchor_span_id=99 but no AnchorSpan entry.
@@ -1001,6 +1002,7 @@ mod tests {
                 anchor_span_id: Some(99),
                 overlay_byte: 0xDC,
                 damaged_variant: false,
+                bridgehead_anchor_class: crate::sim::bridge_state::BridgeheadAnchorClass::Variant0,
             },
         );
         sim.bridge_state = Some(bs);
