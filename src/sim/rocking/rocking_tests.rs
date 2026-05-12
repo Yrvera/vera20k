@@ -2,8 +2,10 @@
 
 #![cfg(test)]
 
+use crate::sim::components::RockingState;
 use crate::sim::rocking::rocking_system::{
     BASE_DECAY_RATE, NORMAL_RANGE_PI2, SATURATION_PI4, SATURATION_PI10, TILT_DEADBAND, advance_axis,
+    advance_ship_rocking,
 };
 use crate::util::fixed_math::SimFixed;
 
@@ -110,6 +112,60 @@ fn moving_dampens_more_slowly_than_stationary() {
         v_moving,
         v_still
     );
+}
+
+#[test]
+fn ship_rocking_integrates_without_damping() {
+    let mut r = RockingState::default();
+    r.vel_sideways = SimFixed::lit("0.01");
+    advance_ship_rocking(&mut r, true);
+    assert_eq!(r.angle_sideways, SimFixed::lit("0.01"));
+    // Velocity is unchanged — no damping in this path.
+    assert_eq!(r.vel_sideways, SimFixed::lit("0.01"));
+}
+
+#[test]
+fn ship_rocking_clamps_upper_sideways() {
+    let mut r = RockingState::default();
+    r.angle_sideways = SATURATION_PI4;
+    r.vel_sideways = SimFixed::lit("0.1");
+    advance_ship_rocking(&mut r, true);
+    assert_eq!(r.angle_sideways, SATURATION_PI4);
+}
+
+#[test]
+fn ship_rocking_clamps_lower_both_axes() {
+    let mut r = RockingState::default();
+    r.angle_forwards = -SATURATION_PI4 + SimFixed::lit("0.001");
+    r.vel_forwards = SimFixed::lit("-0.01");
+    r.angle_sideways = -SATURATION_PI4 + SimFixed::lit("0.001");
+    r.vel_sideways = SimFixed::lit("-0.01");
+    advance_ship_rocking(&mut r, true);
+    assert_eq!(r.angle_forwards, -SATURATION_PI4);
+    assert_eq!(r.angle_sideways, -SATURATION_PI4);
+}
+
+#[test]
+fn ship_rocking_forwards_upper_is_unclamped() {
+    // Asymmetric: forwards upper is NOT clamped (only sideways upper).
+    let mut r = RockingState::default();
+    r.angle_forwards = SATURATION_PI4;
+    r.vel_forwards = SimFixed::lit("0.1");
+    advance_ship_rocking(&mut r, true);
+    assert!(
+        r.angle_forwards > SATURATION_PI4,
+        "forwards should drift past +π/4 unclamped, got {:?}",
+        r.angle_forwards,
+    );
+}
+
+#[test]
+fn ship_rocking_no_clamp_when_type_doesnt_support() {
+    let mut r = RockingState::default();
+    r.angle_sideways = SATURATION_PI4 + SimFixed::lit("0.5");
+    r.vel_sideways = SimFixed::lit("0.01");
+    advance_ship_rocking(&mut r, false);
+    assert!(r.angle_sideways > SATURATION_PI4);
 }
 
 #[test]

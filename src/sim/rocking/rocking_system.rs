@@ -4,6 +4,7 @@
 //! (I16F16, ~1.5e-5 precision). Constants here are extracted from the
 //! reference engine; do not change without binary verification.
 
+use crate::sim::components::RockingState;
 use crate::sim::entity_store::EntityStore;
 use crate::util::fixed_math::SimFixed;
 
@@ -117,6 +118,33 @@ pub(crate) fn advance_axis(
     if angle.abs() <= TILT_DEADBAND {
         *angle = SimFixed::ZERO;
         *velocity = SimFixed::ZERO;
+    }
+}
+
+/// Advance the ship-rocking path: integrate without damping, asymmetric
+/// one-sided clamp. Used for EMP wobble and naval continuous rocking.
+///
+/// `type_supports_ship_rocking` is the per-type allow flag — when false,
+/// integration still runs but no clamping is applied (matches the
+/// non-clamping branch in the reference engine for types that "shouldn't"
+/// ship-rock but had the flag set externally).
+pub(crate) fn advance_ship_rocking(rocking: &mut RockingState, type_supports_ship_rocking: bool) {
+    rocking.angle_forwards += rocking.vel_forwards;
+    rocking.angle_sideways += rocking.vel_sideways;
+    if !type_supports_ship_rocking {
+        return;
+    }
+    // Lower clamps to -π/4 on both axes.
+    if rocking.angle_forwards < -SATURATION_PI4 {
+        rocking.angle_forwards = -SATURATION_PI4;
+    }
+    if rocking.angle_sideways < -SATURATION_PI4 {
+        rocking.angle_sideways = -SATURATION_PI4;
+    }
+    // Asymmetric upper clamp — sideways only, forwards is allowed to drift
+    // positive without clamping (matches the reference engine).
+    if rocking.angle_sideways >= SATURATION_PI4 {
+        rocking.angle_sideways = SATURATION_PI4;
     }
 }
 
