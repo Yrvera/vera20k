@@ -976,6 +976,7 @@ fn make_resolved_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
         bridge_layer: None,
         radar_left: [0, 0, 0],
         radar_right: [0, 0, 0],
+            has_damaged_data: false,
     }
 }
 

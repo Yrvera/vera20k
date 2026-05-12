@@ -127,6 +127,11 @@ pub struct ResolvedTerrainCell {
     pub radar_left: [u8; 3],
     /// Per-tile radar minimap color (right half of isometric diamond), from TMP header.
     pub radar_right: [u8; 3],
+    /// True if this cell's underlying TMP sub-tile carries a baked damaged-variant
+    /// pixel set. Drives the kickoff gate of the bridge damage flood-fill (only
+    /// cells with baked damage art may initiate propagation) and the render-side
+    /// substitution that swaps in variant=1 when the bridge sim flags the cell.
+    pub has_damaged_data: bool,
 }
 
 impl ResolvedTerrainCell {
@@ -414,6 +419,7 @@ impl ResolvedTerrainGrid {
                     bridge_layer: overlay_effects.bridge_layer,
                     radar_left: metadata.radar_left,
                     radar_right: metadata.radar_right,
+                    has_damaged_data: metadata.has_damaged_data,
                 });
             }
         }
@@ -950,6 +956,9 @@ struct TileMetadata {
     radar_left: [u8; 3],
     /// Per-tile radar minimap color (right half of isometric diamond), from TMP header.
     radar_right: [u8; 3],
+    /// Mirrors `TmpTile.has_damaged_data` — set when the TMP sub-tile flag DWORD
+    /// declares a baked damaged-variant pixel set.
+    has_damaged_data: bool,
 }
 
 impl Default for TileMetadata {
@@ -974,6 +983,7 @@ impl Default for TileMetadata {
             build_blocked: false,
             radar_left: [0, 0, 0],
             radar_right: [0, 0, 0],
+            has_damaged_data: false,
         }
     }
 }
@@ -1137,6 +1147,7 @@ fn merge_tmp_metadata(metadata: &mut TileMetadata, tile: &TmpTile) {
     metadata.has_tmp_metadata = true;
     metadata.radar_left = tile.radar_left;
     metadata.radar_right = tile.radar_right;
+    metadata.has_damaged_data = tile.has_damaged_data;
 }
 
 /// Maps TMP ramp_type byte to canonical direction.
@@ -1564,6 +1575,7 @@ mod tests {
                 bridge_layer: None,
                 radar_left: [0, 0, 0],
                 radar_right: [0, 0, 0],
+                has_damaged_data: false,
             }],
         );
         let cell = grid.cell(0, 0).expect("resolved ramp cell");

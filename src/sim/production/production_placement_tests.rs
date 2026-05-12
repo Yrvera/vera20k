@@ -73,6 +73,7 @@ fn resolved_clear_grid_with_override(
                 bridge_layer: None,
                 radar_left: [0, 0, 0],
                 radar_right: [0, 0, 0],
+                            has_damaged_data: false,
             };
             override_cell(&mut cell);
             cells.push(cell);
