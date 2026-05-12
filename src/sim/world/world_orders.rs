@@ -208,6 +208,121 @@ impl Simulation {
         any_captured
     }
 
+    /// Tick bridge-repair orders: any engineer with `capture_target` pointing
+    /// at a `BridgeRepairHut=yes` building, Chebyshev-≤-1 adjacent, triggers
+    /// bridge repair on the cells in a 5×5 scan around the engineer.
+    ///
+    /// Flow:
+    ///   1. Emit `SimSoundEvent::BridgeRepaired` at the building's cell.
+    ///   2. Run `body_cell_repair_state` over the 5×5 scan around the engineer.
+    ///   3. Despawn the engineer (consumed by repair).
+    ///
+    /// Returns `true` if any repair mutated bridge state (caller ORs into
+    /// `TickResult.bridge_state_changed` so the app rebuilds PathGrid).
+    pub(crate) fn tick_bridge_repair_orders(&mut self, rules: &RuleSet) -> bool {
+        use crate::sim::bridge_state::cells_in_5x5_scan;
+
+        // Snapshot eligible engineers in deterministic order.
+        let candidates: Vec<(u64, u64, InternedId)> = self
+            .entities
+            .keys_sorted()
+            .into_iter()
+            .filter_map(|sid| {
+                let e = self.entities.get(sid)?;
+                if e.dying || e.capture_target.is_none() {
+                    return None;
+                }
+                Some((sid, e.capture_target.unwrap(), e.owner))
+            })
+            .collect();
+
+        let mut any_repair = false;
+
+        for (engineer_id, building_id, engineer_owner) in candidates {
+            // Resolve target type; only proceed for BridgeRepairHut=yes.
+            let target_bridge_hut = self
+                .entities
+                .get(building_id)
+                .and_then(|b| {
+                    rules
+                        .object(self.interner.resolve(b.type_ref))
+                        .map(|t| t.bridge_repair_hut)
+                })
+                .unwrap_or(false);
+            if !target_bridge_hut {
+                continue;
+            }
+
+            // Target alive + still a Structure.
+            let target_alive = self
+                .entities
+                .get(building_id)
+                .is_some_and(|b| b.category == EntityCategory::Structure && !b.dying);
+            if !target_alive {
+                if let Some(e) = self.entities.get_mut(engineer_id) {
+                    e.capture_target = None;
+                }
+                continue;
+            }
+
+            // Chebyshev-≤-1 adjacency. The engineer stands NEXT to the
+            // building (pathing treats the footprint as blocked, matching
+            // tick_capture_orders).
+            let Some((erx, ery)) = self
+                .entities
+                .get(engineer_id)
+                .map(|e| (e.position.rx, e.position.ry))
+            else {
+                continue;
+            };
+            let Some((brx, bry)) = self
+                .entities
+                .get(building_id)
+                .map(|b| (b.position.rx, b.position.ry))
+            else {
+                continue;
+            };
+            let dx = (erx as i32 - brx as i32).abs();
+            let dy = (ery as i32 - bry as i32).abs();
+            if dx > 1 || dy > 1 {
+                continue;
+            }
+
+            // ---- Trigger fires this tick ----
+
+            // Step A: emit BridgeRepaired sound event at the BUILDING's cell.
+            self.sound_events
+                .push(crate::sim::world::SimSoundEvent::BridgeRepaired {
+                    rx: brx,
+                    ry: bry,
+                    owner: engineer_owner,
+                });
+
+            // Step B: 5×5 scan from engineer cell + repair dispatch.
+            let scan: Vec<(u16, u16)> = cells_in_5x5_scan((erx, ery)).collect();
+            let outcome = if let Some(bs) = self.bridge_state.as_mut() {
+                bs.body_cell_repair_state(&scan, &mut self.rng)
+            } else {
+                crate::sim::bridge_state::RepairOutcome::default()
+            };
+
+            if outcome.zones_dirty || outcome.repaired_cells > 0 {
+                any_repair = true;
+            }
+
+            // Step C: radar-dirty propagation. No render-side dirty-cell API
+            // is wired up yet for bridges; the minimap refreshes after the
+            // PathGrid rebuild driven by `bridge_state_changed`. Reserved for
+            // a follow-up once a per-cell radar-dirty channel exists.
+            let _ = &outcome.radar_cells;
+
+            // Step D: engineer consumed.
+            self.despawn_entity(engineer_id);
+        }
+
+        any_repair
+    }
+
     /// Tick C4 plant orders.
     ///
     /// Phase 1 (walk-up): for each entity with `c4_plant`, check if it's
