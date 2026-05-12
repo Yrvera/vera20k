@@ -6,14 +6,70 @@
 
 use super::*;
 use crate::map::entities::EntityCategory;
+use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
 use crate::rules::ini_parser::IniFile;
 use crate::rules::ruleset::RuleSet;
+use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
 use crate::sim::bridge_state::{
     AnchorSpan, Axis, BridgeCellRole, BridgeRuntimeCell, BridgeRuntimeState, DamageState, Direction,
 };
 use crate::sim::components::Health;
 use crate::sim::game_entity::GameEntity;
 use std::collections::BTreeMap;
+
+/// Minimal 20x20 flat terrain so the repair path's `(bs, terrain)` gate
+/// succeeds. has_damaged_data=false → the embedded flood-fill clear is a
+/// no-op, leaving the repair test focused on damage-state transitions.
+fn dummy_resolved_terrain() -> ResolvedTerrainGrid {
+    let mut cells = Vec::with_capacity(20 * 20);
+    for ry in 0..20u16 {
+        for rx in 0..20u16 {
+            cells.push(ResolvedTerrainCell {
+                rx,
+                ry,
+                source_tile_index: 0,
+                source_sub_tile: 0,
+                final_tile_index: 0,
+                final_sub_tile: 0,
+                level: 0,
+                filled_clear: false,
+                tileset_index: Some(0),
+                land_type: 0,
+                slope_type: 0,
+                template_height: 0,
+                render_offset_x: 0,
+                render_offset_y: 0,
+                terrain_class: TerrainClass::Clear,
+                speed_costs: SpeedCostProfile::default(),
+                is_water: false,
+                is_cliff_like: false,
+                is_cliff_redraw: false,
+                variant: 0,
+                is_rough: false,
+                is_road: false,
+                accepts_smudge: false,
+                has_ramp: false,
+                canonical_ramp: None,
+                ground_walk_blocked: false,
+                terrain_object_blocks: false,
+                overlay_blocks: false,
+                zone_type: 0,
+                base_ground_walk_blocked: false,
+                base_build_blocked: false,
+                build_blocked: false,
+                has_bridge_deck: false,
+                bridge_walkable: false,
+                bridge_transition: false,
+                bridge_deck_level: 0,
+                bridge_layer: None,
+                radar_left: [0, 0, 0],
+                radar_right: [0, 0, 0],
+                has_damaged_data: false,
+            });
+        }
+    }
+    ResolvedTerrainGrid::from_cells(20, 20, cells)
+}
 
 fn bridge_repair_test_rules() -> RuleSet {
     let ini: IniFile = IniFile::from_str(
@@ -35,6 +91,7 @@ fn build_sim() -> (Simulation, RuleSet, BTreeMap<(u16, u16), u8>) {
     let mut sim = Simulation::new();
     let mut rules = bridge_repair_test_rules();
     rules.resolve_bridge_warheads(&mut sim.interner);
+    sim.resolved_terrain = Some(dummy_resolved_terrain());
     (sim, rules, BTreeMap::new())
 }
 

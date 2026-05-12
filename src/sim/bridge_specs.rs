@@ -536,6 +536,7 @@ pub fn update_ramp_perpendicular(
     axis: Axis,
     phase: Phase,
     _is_high_bridge: bool,
+    _terrain: &crate::map::resolved_terrain::ResolvedTerrainGrid,
 ) -> RampOutcome {
     let dir = perpendicular_direction(axis, phase);
     let (dx, dy) = dir.offset();
@@ -713,10 +714,68 @@ pub fn bridgehead_blow_up_row(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
+    use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
     use crate::sim::bridge_state::{
         AnchorSpan, Axis, BridgeCellRole, BridgeRuntimeCell, BridgeRuntimeState, DamageState,
         Direction, Phase,
     };
+
+    /// Build a minimal 20x20 flat terrain for `update_ramp_perpendicular`
+    /// tests. has_damaged_data=false so the embedded flood-fill writer's
+    /// gate fails — these tests assert only the `RampOutcome.state_changed`
+    /// path, not the damaged-variant propagation (covered by the dedicated
+    /// flood-fill tests in `bridge_state`).
+    fn ramp_test_terrain() -> ResolvedTerrainGrid {
+        let mut cells = Vec::with_capacity(20 * 20);
+        for ry in 0..20u16 {
+            for rx in 0..20u16 {
+                cells.push(ResolvedTerrainCell {
+                    rx,
+                    ry,
+                    source_tile_index: 0,
+                    source_sub_tile: 0,
+                    final_tile_index: 0,
+                    final_sub_tile: 0,
+                    level: 0,
+                    filled_clear: false,
+                    tileset_index: Some(0),
+                    land_type: 0,
+                    slope_type: 0,
+                    template_height: 0,
+                    render_offset_x: 0,
+                    render_offset_y: 0,
+                    terrain_class: TerrainClass::Clear,
+                    speed_costs: SpeedCostProfile::default(),
+                    is_water: false,
+                    is_cliff_like: false,
+                    is_cliff_redraw: false,
+                    variant: 0,
+                    is_rough: false,
+                    is_road: false,
+                    accepts_smudge: false,
+                    has_ramp: false,
+                    canonical_ramp: None,
+                    ground_walk_blocked: false,
+                    terrain_object_blocks: false,
+                    overlay_blocks: false,
+                    zone_type: 0,
+                    base_ground_walk_blocked: false,
+                    base_build_blocked: false,
+                    build_blocked: false,
+                    has_bridge_deck: false,
+                    bridge_walkable: false,
+                    bridge_transition: false,
+                    bridge_deck_level: 0,
+                    bridge_layer: None,
+                    radar_left: [0, 0, 0],
+                    radar_right: [0, 0, 0],
+                    has_damaged_data: false,
+                });
+            }
+        }
+        ResolvedTerrainGrid::from_cells(20, 20, cells)
+    }
 
     #[test]
     fn low_bridge_damage_step_ignores_non_bridge_overlay() {
@@ -1297,7 +1356,7 @@ mod tests {
     #[test]
     fn update_ramp_perpendicular_ns_damage_a_anchor_target_transitions_to_4() {
         let mut state = make_perpendicular_test_state();
-        let outcome = update_ramp_perpendicular(&mut state, (5, 5), Axis::NS, Phase::DamageA, true);
+        let outcome = update_ramp_perpendicular(&mut state, (5, 5), Axis::NS, Phase::DamageA, true, &ramp_test_terrain());
         assert!(outcome.state_changed);
         let target = state.cell(6, 5).expect("E target");
         assert_eq!(target.damage_state, DamageState::Healthy { variant: 4 });
@@ -1306,7 +1365,7 @@ mod tests {
     #[test]
     fn update_ramp_perpendicular_ns_damage_b_anchor_target_walks_west() {
         let mut state = make_perpendicular_test_state();
-        let outcome = update_ramp_perpendicular(&mut state, (5, 5), Axis::NS, Phase::DamageB, true);
+        let outcome = update_ramp_perpendicular(&mut state, (5, 5), Axis::NS, Phase::DamageB, true, &ramp_test_terrain());
         assert!(outcome.state_changed);
         let target = state.cell(4, 5).expect("W target");
         assert_eq!(target.damage_state, DamageState::Healthy { variant: 5 });
@@ -1317,7 +1376,7 @@ mod tests {
         let mut state = make_perpendicular_test_state();
         // Patch (6,5) to Body role (not Anchor).
         state.cell_mut(6, 5).unwrap().role = BridgeCellRole::Body;
-        let outcome = update_ramp_perpendicular(&mut state, (5, 5), Axis::NS, Phase::DamageA, true);
+        let outcome = update_ramp_perpendicular(&mut state, (5, 5), Axis::NS, Phase::DamageA, true, &ramp_test_terrain());
         assert!(!outcome.state_changed);
         assert_eq!(
             state.cell(6, 5).unwrap().damage_state,
@@ -1329,7 +1388,7 @@ mod tests {
     fn update_ramp_perpendicular_target_off_map_no_change() {
         let mut state = make_perpendicular_test_state();
         // Anchor at (0, 0) calling NS DamageB → walks W → target x = -1 → out of bounds.
-        let outcome = update_ramp_perpendicular(&mut state, (0, 0), Axis::NS, Phase::DamageB, true);
+        let outcome = update_ramp_perpendicular(&mut state, (0, 0), Axis::NS, Phase::DamageB, true, &ramp_test_terrain());
         assert!(!outcome.state_changed);
     }
 
@@ -1338,7 +1397,7 @@ mod tests {
         let mut state = make_perpendicular_test_state();
         state.cell_mut(6, 5).unwrap().damage_state = DamageState::PartialCollapseB;
         let outcome =
-            update_ramp_perpendicular(&mut state, (5, 5), Axis::NS, Phase::CollapseA, true);
+            update_ramp_perpendicular(&mut state, (5, 5), Axis::NS, Phase::CollapseA, true, &ramp_test_terrain());
         assert!(outcome.state_changed);
         let target = state.cell(6, 5).expect("E target");
         assert_eq!(target.damage_state, DamageState::Destroyed);
@@ -1370,7 +1429,7 @@ mod tests {
         // Target state byte 9 (Healthy{0} EW) → apply_ramp_transition EW
         // CollapseA: 9..=15 → 0x11 = PartialCollapseA.
         let outcome =
-            update_ramp_perpendicular(&mut state, (5, 5), Axis::EW, Phase::CollapseA, true);
+            update_ramp_perpendicular(&mut state, (5, 5), Axis::EW, Phase::CollapseA, true, &ramp_test_terrain());
         assert!(outcome.state_changed);
         let target = state.cell(5, 6).expect("S target");
         assert_eq!(target.damage_state, DamageState::PartialCollapseA);

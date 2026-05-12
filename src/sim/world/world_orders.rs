@@ -336,8 +336,10 @@ impl Simulation {
 
             // Step B: 5×5 scan from engineer cell + repair dispatch.
             let scan: Vec<(u16, u16)> = cells_in_5x5_scan((erx, ery)).collect();
-            let outcome = if let Some(bs) = self.bridge_state.as_mut() {
-                bs.body_cell_repair_state(&scan, &mut self.rng)
+            let outcome = if let (Some(bs), Some(terrain)) =
+                (self.bridge_state.as_mut(), self.resolved_terrain.as_ref())
+            {
+                bs.body_cell_repair_state(&scan, &mut self.rng, terrain)
             } else {
                 crate::sim::bridge_state::RepairOutcome::default()
             };

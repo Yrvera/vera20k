@@ -185,6 +185,9 @@ pub(crate) fn dispatch_bridge_collapse_from_hut(
     // before Phase 3 takes &mut sim for the cascade helpers.
     let mut outcomes: Vec<StateOutcome> = Vec::new();
     {
+        let Some(terrain) = sim.resolved_terrain.as_ref() else {
+            return false;
+        };
         let Some(bs) = sim.bridge_state.as_mut() else {
             return false;
         };
@@ -200,7 +203,10 @@ pub(crate) fn dispatch_bridge_collapse_from_hut(
             // collapse states reach Destroyed in 1.
             loop {
                 let outcome = bs.body_cell_advance_state(
-                    cell_pos.0, cell_pos.1, /* is_high_bridge */ false,
+                    cell_pos.0,
+                    cell_pos.1,
+                    /* is_high_bridge */ false,
+                    terrain,
                 );
                 match outcome {
                     StateOutcome::NoChange => break,
@@ -641,7 +647,8 @@ fn run_dispatch_loop(
                                 bridge_state
                                     .bridgehead_advance_state(event.rx, event.ry, true, terrain)
                             }
-                            _ => bridge_state.body_cell_advance_state(event.rx, event.ry, true),
+                            _ => bridge_state
+                                .body_cell_advance_state(event.rx, event.ry, true, terrain),
                         }
                     }
                     DispatchPath::LowStateMachine => {
@@ -650,7 +657,8 @@ fn run_dispatch_loop(
                                 bridge_state
                                     .bridgehead_advance_state(event.rx, event.ry, false, terrain)
                             }
-                            _ => bridge_state.body_cell_advance_state(event.rx, event.ry, false),
+                            _ => bridge_state
+                                .body_cell_advance_state(event.rx, event.ry, false, terrain),
                         }
                     }
                     DispatchPath::HighDirect => {

@@ -799,6 +799,7 @@ impl BridgeRuntimeState {
         rx: u16,
         ry: u16,
         is_high_bridge: bool,
+        terrain: &ResolvedTerrainGrid,
     ) -> StateOutcome {
         // 1. Resolve input cell.
         let Some(input_cell) = self.cell(rx, ry).copied() else {
@@ -857,6 +858,7 @@ impl BridgeRuntimeState {
                     axis,
                     Phase::DamageA,
                     is_high_bridge,
+                    terrain,
                 );
                 let _ = crate::sim::bridge_specs::update_ramp_perpendicular(
                     self,
@@ -864,6 +866,7 @@ impl BridgeRuntimeState {
                     axis,
                     Phase::DamageB,
                     is_high_bridge,
+                    terrain,
                 );
                 StateOutcome::Absorbed
             }
@@ -876,6 +879,7 @@ impl BridgeRuntimeState {
                     axis,
                     Phase::CollapseA,
                     is_high_bridge,
+                    terrain,
                 );
                 let _ = crate::sim::bridge_specs::update_ramp_perpendicular(
                     self,
@@ -883,6 +887,7 @@ impl BridgeRuntimeState {
                     axis,
                     Phase::CollapseB,
                     is_high_bridge,
+                    terrain,
                 );
                 let mut destroyed = vec![anchor_pos];
                 if let Some(c) = self.cell_mut(anchor_pos.0, anchor_pos.1) {
@@ -923,6 +928,7 @@ impl BridgeRuntimeState {
                     axis,
                     Phase::CollapseA,
                     is_high_bridge,
+                    terrain,
                 );
                 if let Some(c) = self.cell_mut(anchor_pos.0, anchor_pos.1) {
                     c.damage_state = DamageState::Destroyed;
@@ -943,6 +949,7 @@ impl BridgeRuntimeState {
                     axis,
                     Phase::CollapseB,
                     is_high_bridge,
+                    terrain,
                 );
                 if let Some(c) = self.cell_mut(anchor_pos.0, anchor_pos.1) {
                     c.damage_state = DamageState::Destroyed;
@@ -1072,6 +1079,7 @@ impl BridgeRuntimeState {
         &mut self,
         scan_cells: &[(u16, u16)],
         rng: &mut crate::sim::rng::SimRng,
+        _terrain: &ResolvedTerrainGrid,
     ) -> RepairOutcome {
         let mut outcome = RepairOutcome::default();
 
@@ -1252,6 +1260,7 @@ impl BridgeRuntimeState {
                     axis,
                     Phase::DamageA,
                     is_high_bridge,
+                    terrain,
                 );
                 let _ = crate::sim::bridge_specs::update_ramp_perpendicular(
                     self,
@@ -1259,6 +1268,7 @@ impl BridgeRuntimeState {
                     axis,
                     Phase::DamageB,
                     is_high_bridge,
+                    terrain,
                 );
                 if let Some(c) = self.cell_mut(rx, ry) {
                     c.damage_state = DamageState::Damaged;
@@ -1285,6 +1295,7 @@ impl BridgeRuntimeState {
                     axis,
                     Phase::CollapseA,
                     is_high_bridge,
+                    terrain,
                 );
                 let _ = crate::sim::bridge_specs::update_ramp_perpendicular(
                     self,
@@ -1292,6 +1303,7 @@ impl BridgeRuntimeState {
                     axis,
                     Phase::CollapseB,
                     is_high_bridge,
+                    terrain,
                 );
 
                 // Bridgehead's own state → Destroyed. NOTE: anchor's
@@ -2194,7 +2206,7 @@ mod tests {
     #[test]
     fn body_driver_anchor_healthy_advances_to_damaged_returns_absorbed() {
         let mut state = make_body_driver_test_state();
-        let outcome = state.body_cell_advance_state(5, 5, true);
+        let outcome = state.body_cell_advance_state(5, 5, true, &flood_fill_terrain(20, 20, 0));
         assert!(matches!(outcome, StateOutcome::Absorbed));
         assert_eq!(state.cell(5, 5).unwrap().damage_state, DamageState::Damaged);
     }
@@ -2203,7 +2215,7 @@ mod tests {
     fn body_driver_non_anchor_body_cell_follows_to_anchor() {
         let mut state = make_body_driver_test_state();
         // Damage on a body cell, not the anchor.
-        let outcome = state.body_cell_advance_state(5, 4, true);
+        let outcome = state.body_cell_advance_state(5, 4, true, &flood_fill_terrain(20, 20, 0));
         assert!(matches!(outcome, StateOutcome::Absorbed));
         // Anchor's damage_state advanced, not the input body cell's.
         assert_eq!(state.cell(5, 5).unwrap().damage_state, DamageState::Damaged);
@@ -2217,7 +2229,7 @@ mod tests {
     fn body_driver_damaged_anchor_collapses_and_emits_set_bridge_direction() {
         let mut state = make_body_driver_test_state();
         state.cell_mut(5, 5).unwrap().damage_state = DamageState::Damaged;
-        let outcome = state.body_cell_advance_state(5, 5, true);
+        let outcome = state.body_cell_advance_state(5, 5, true, &flood_fill_terrain(20, 20, 0));
         match outcome {
             StateOutcome::Collapsed {
                 destroyed_cells,
@@ -2251,7 +2263,7 @@ mod tests {
     fn body_driver_partial_collapse_a_collapses_with_single_ramp_call() {
         let mut state = make_body_driver_test_state();
         state.cell_mut(5, 5).unwrap().damage_state = DamageState::PartialCollapseA;
-        let outcome = state.body_cell_advance_state(5, 5, true);
+        let outcome = state.body_cell_advance_state(5, 5, true, &flood_fill_terrain(20, 20, 0));
         assert!(matches!(outcome, StateOutcome::Collapsed { .. }));
         assert_eq!(
             state.cell(5, 5).unwrap().damage_state,
@@ -2263,7 +2275,7 @@ mod tests {
     fn body_driver_partial_collapse_b_collapses_with_single_ramp_call() {
         let mut state = make_body_driver_test_state();
         state.cell_mut(5, 5).unwrap().damage_state = DamageState::PartialCollapseB;
-        let outcome = state.body_cell_advance_state(5, 5, true);
+        let outcome = state.body_cell_advance_state(5, 5, true, &flood_fill_terrain(20, 20, 0));
         assert!(matches!(outcome, StateOutcome::Collapsed { .. }));
         assert_eq!(
             state.cell(5, 5).unwrap().damage_state,
@@ -2275,7 +2287,7 @@ mod tests {
     fn body_driver_destroyed_anchor_returns_no_change() {
         let mut state = make_body_driver_test_state();
         state.cell_mut(5, 5).unwrap().damage_state = DamageState::Destroyed;
-        let outcome = state.body_cell_advance_state(5, 5, true);
+        let outcome = state.body_cell_advance_state(5, 5, true, &flood_fill_terrain(20, 20, 0));
         assert!(matches!(outcome, StateOutcome::NoChange));
     }
 
@@ -2283,14 +2295,14 @@ mod tests {
     fn body_driver_bridgehead_cell_returns_no_change() {
         let mut state = make_body_driver_test_state();
         state.cell_mut(5, 5).unwrap().role = BridgeCellRole::Bridgehead;
-        let outcome = state.body_cell_advance_state(5, 5, true);
+        let outcome = state.body_cell_advance_state(5, 5, true, &flood_fill_terrain(20, 20, 0));
         assert!(matches!(outcome, StateOutcome::NoChange));
     }
 
     #[test]
     fn body_driver_out_of_bounds_returns_no_change() {
         let mut state = make_body_driver_test_state();
-        let outcome = state.body_cell_advance_state(99, 99, true);
+        let outcome = state.body_cell_advance_state(99, 99, true, &flood_fill_terrain(20, 20, 0));
         assert!(matches!(outcome, StateOutcome::NoChange));
     }
 
@@ -3058,10 +3070,67 @@ mod scan_tests {
 #[cfg(test)]
 mod repair_tests {
     use super::*;
+    use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
+    use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
     use crate::sim::rng::SimRng;
 
     fn seeded_rng() -> SimRng {
         SimRng::new(0x4242_4242_4242_4242)
+    }
+
+    /// Minimal flat 20x20 terrain grid: all cells share tile_id=0,
+    /// has_damaged_data=false. Sufficient context for repair tests — the
+    /// flood-fill writer's gate fails on has_damaged_data=false, so repair
+    /// flood-fill calls become no-ops (terrain is required by signature only).
+    fn repair_test_terrain() -> ResolvedTerrainGrid {
+        let mut cells = Vec::with_capacity(20 * 20);
+        for ry in 0..20u16 {
+            for rx in 0..20u16 {
+                cells.push(ResolvedTerrainCell {
+                    rx,
+                    ry,
+                    source_tile_index: 0,
+                    source_sub_tile: 0,
+                    final_tile_index: 0,
+                    final_sub_tile: 0,
+                    level: 0,
+                    filled_clear: false,
+                    tileset_index: Some(0),
+                    land_type: 0,
+                    slope_type: 0,
+                    template_height: 0,
+                    render_offset_x: 0,
+                    render_offset_y: 0,
+                    terrain_class: TerrainClass::Clear,
+                    speed_costs: SpeedCostProfile::default(),
+                    is_water: false,
+                    is_cliff_like: false,
+                    is_cliff_redraw: false,
+                    variant: 0,
+                    is_rough: false,
+                    is_road: false,
+                    accepts_smudge: false,
+                    has_ramp: false,
+                    canonical_ramp: None,
+                    ground_walk_blocked: false,
+                    terrain_object_blocks: false,
+                    overlay_blocks: false,
+                    zone_type: 0,
+                    base_ground_walk_blocked: false,
+                    base_build_blocked: false,
+                    build_blocked: false,
+                    has_bridge_deck: false,
+                    bridge_walkable: false,
+                    bridge_transition: false,
+                    bridge_deck_level: 0,
+                    bridge_layer: None,
+                    radar_left: [0, 0, 0],
+                    radar_right: [0, 0, 0],
+                    has_damaged_data: false,
+                });
+            }
+        }
+        ResolvedTerrainGrid::from_cells(20, 20, cells)
     }
 
     /// Build a 5-cell test span along Y (NS bridge) with all cells seeded to
@@ -3118,7 +3187,7 @@ mod repair_tests {
         let mut bs = build_single_ns_span(DamageState::Destroyed);
         let mut rng = seeded_rng();
         let scan = vec![(10, 10)];
-        let outcome = bs.body_cell_repair_state(&scan, &mut rng);
+        let outcome = bs.body_cell_repair_state(&scan, &mut rng, &repair_test_terrain());
         assert!(outcome.zones_dirty, "main-deck repair must set zones_dirty");
         assert_eq!(outcome.radar_cells.len(), 5);
         assert_eq!(outcome.repaired_cells, 5);
@@ -3136,7 +3205,7 @@ mod repair_tests {
         let mut bs = build_single_ns_span(DamageState::Damaged);
         let mut rng = seeded_rng();
         let scan = vec![(10, 10)];
-        let outcome = bs.body_cell_repair_state(&scan, &mut rng);
+        let outcome = bs.body_cell_repair_state(&scan, &mut rng, &repair_test_terrain());
         assert!(outcome.zones_dirty);
         assert!(
             outcome.radar_cells.is_empty(),
@@ -3154,7 +3223,7 @@ mod repair_tests {
         let mut rng = seeded_rng();
         let rng_state_before = rng.state();
         let scan = vec![(10, 10)];
-        let outcome = bs.body_cell_repair_state(&scan, &mut rng);
+        let outcome = bs.body_cell_repair_state(&scan, &mut rng, &repair_test_terrain());
         assert!(
             !outcome.zones_dirty,
             "bridgehead-only repair must NOT set zones_dirty"
@@ -3180,7 +3249,7 @@ mod repair_tests {
         let mut rng = seeded_rng();
         let rng_state_before = rng.state();
         let scan = vec![(10, 10)];
-        let outcome = bs.body_cell_repair_state(&scan, &mut rng);
+        let outcome = bs.body_cell_repair_state(&scan, &mut rng, &repair_test_terrain());
         assert!(!outcome.zones_dirty);
         assert!(outcome.radar_cells.is_empty());
         assert_eq!(outcome.repaired_cells, 0);
@@ -3200,7 +3269,7 @@ mod repair_tests {
         let mut bs = build_single_ns_span(DamageState::PartialCollapseA);
         let mut rng = seeded_rng();
         let scan = vec![(10, 10)];
-        let outcome = bs.body_cell_repair_state(&scan, &mut rng);
+        let outcome = bs.body_cell_repair_state(&scan, &mut rng, &repair_test_terrain());
         assert!(outcome.zones_dirty);
         assert!(
             outcome.radar_cells.is_empty(),
@@ -3215,7 +3284,7 @@ mod repair_tests {
         let mut rng = seeded_rng();
         let rng_state_before = rng.state();
         let scan: Vec<(u16, u16)> = (0..25).map(|i| (i, 0)).collect();
-        let outcome = bs.body_cell_repair_state(&scan, &mut rng);
+        let outcome = bs.body_cell_repair_state(&scan, &mut rng, &repair_test_terrain());
         assert!(!outcome.zones_dirty);
         assert!(outcome.radar_cells.is_empty());
         assert_eq!(outcome.repaired_cells, 0);
@@ -3229,8 +3298,8 @@ mod repair_tests {
         let mut rng_a = seeded_rng();
         let mut rng_b = seeded_rng();
         let scan = vec![(10, 10)];
-        bs_a.body_cell_repair_state(&scan, &mut rng_a);
-        bs_b.body_cell_repair_state(&scan, &mut rng_b);
+        bs_a.body_cell_repair_state(&scan, &mut rng_a, &repair_test_terrain());
+        bs_b.body_cell_repair_state(&scan, &mut rng_b, &repair_test_terrain());
         for &(rx, ry) in &[(10, 9), (10, 10), (10, 11), (10, 12), (10, 13)] {
             let va = bs_a.cell(rx, ry).unwrap().damage_state;
             let vb = bs_b.cell(rx, ry).unwrap().damage_state;
@@ -3253,7 +3322,7 @@ mod repair_tests {
         let mut bs = build_single_ns_span(DamageState::Destroyed);
         let mut rng = seeded_rng();
         let scan = vec![(10, 10)];
-        bs.body_cell_repair_state(&scan, &mut rng);
+        bs.body_cell_repair_state(&scan, &mut rng, &repair_test_terrain());
 
         // Variants captured in slot order from the span definition:
         //   slot 0 = (10,10), slot 1 = (10,11), slot 2 = (10,12),
@@ -3323,7 +3392,7 @@ mod repair_tests {
         }
         let mut rng = seeded_rng();
         let scan: Vec<(u16, u16)> = cells_in_5x5_scan((10, 10)).collect();
-        let outcome = bs.body_cell_repair_state(&scan, &mut rng);
+        let outcome = bs.body_cell_repair_state(&scan, &mut rng, &repair_test_terrain());
         assert!(outcome.zones_dirty);
         // Span 1: 5 cells; Span 2: 5 cells minus the shared (10,11) cell
         // (already Healthy after span 1's pass) = 4. Total 9.
