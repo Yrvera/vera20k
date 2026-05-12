@@ -1242,12 +1242,13 @@ impl Simulation {
             // (kill ground occupants → DropIn deck → debris → rim refresh
             // → TriggerEvent 31 → zone rebuild). Replaces the legacy
             // 2-call pipeline.
-            let _bridge_fallout_ids =
+            let bridge_state_changed_this_call =
                 crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
                     self,
                     rules,
                     &combat_result.bridge_damage_events,
                 );
+            let _ = bridge_state_changed_this_call; // wired into TickResult in Task 3
             // Wall damage: feed combat-emitted wall hits through the per-cell damage
             // pipeline and despawn destroyed wall entities. Requires overlay_registry
             // (wall flag on OverlayType plus per-type Strength/DamageLevels); rules

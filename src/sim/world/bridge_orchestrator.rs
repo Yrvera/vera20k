@@ -41,27 +41,27 @@ use crate::sim::world::Simulation;
 /// 5. The first path that produces a non-`NoChange` outcome is the
 ///    winner; subsequent paths skip for that event.
 ///
-/// Returns the list of entity IDs despawned by the cascade. Per the
-/// DropIn correction (Task 11), this list is typically empty — bridge-
-/// deck entities survive stranded rather than despawning.
+/// Returns `true` if any event in the batch produced a `StateOutcome::Collapsed`
+/// — i.e. at least one bridge cell transitioned to `DamageState::Destroyed`.
+/// Callers use this to signal `TickResult.bridge_state_changed` so the app
+/// rebuilds the PathGrid before next tick's movement runs.
 ///
-/// **Task 9: cascade consumers are stubbed.** Outcomes are collected but
-/// no kill / DropIn / debris / rim / zone work happens yet — those wire
-/// in Tasks 10-13. Callers should not yet use the return value.
+/// Cascade side-effects (kill / DropIn / debris / rim / zone) run unconditionally
+/// when matching outcomes are present in this batch — they don't depend on
+/// the return value.
 pub(crate) fn apply_bridge_damage_events(
     sim: &mut Simulation,
     rules: &RuleSet,
     events: &[BridgeDamageEvent],
-) -> Vec<u64> {
-    let despawned_ids: Vec<u64> = Vec::new();
+) -> bool {
     if events.is_empty() {
-        return despawned_ids;
+        return false;
     }
 
     // Outer gate + read bridge_strength up front (immutable borrow scope).
     let bridge_strength = match sim.bridge_state.as_ref() {
         Some(bs) if bs.is_destroyable() => bs.bridge_strength(),
-        _ => return despawned_ids,
+        _ => return false,
     };
 
     // Run dispatch loop with split borrows: bridge_state &mut, terrain &,
@@ -149,7 +149,10 @@ pub(crate) fn apply_bridge_damage_events(
     // dirty.
     refresh_bridge_zones_if_dirty(sim, any_zones_dirty);
 
-    despawned_ids
+    // state_changed = "at least one cell collapsed this batch". The destroyed_set
+    // is built from StateOutcome::Collapsed outcomes earlier in this function;
+    // if it's non-empty, real work happened.
+    !destroyed_set.is_empty()
 }
 
 /// Kill ground-layer entities at `(rx, ry)`. Mirrors the binary's

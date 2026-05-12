@@ -520,7 +520,7 @@ fn test_bridge_damage_rebuilds_path_grid() {
 
     let mut rules = combat_test_rules();
     rules.resolve_bridge_warheads(&mut sim.interner);
-    let _despawned = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
+    let _state_changed = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
         &mut sim,
         &rules,
         &[BridgeDamageEvent {
@@ -573,7 +573,7 @@ fn test_destroyed_bridge_snaps_unit_to_ground_when_ground_exists() {
 
     let mut rules = combat_test_rules();
     rules.resolve_bridge_warheads(&mut sim.interner);
-    let _despawned = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
+    let _state_changed = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
         &mut sim,
         &rules,
         &[BridgeDamageEvent {
@@ -626,7 +626,7 @@ fn test_destroyed_bridge_snaps_unit_to_ground_over_water_below() {
 
     let mut rules = combat_test_rules();
     rules.resolve_bridge_warheads(&mut sim.interner);
-    let _despawned = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
+    let _state_changed = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
         &mut sim,
         &rules,
         &[BridgeDamageEvent {
@@ -687,7 +687,7 @@ fn test_destroyed_bridge_snaps_unit_to_ground_over_overlay_blocked() {
 
     let mut rules = combat_test_rules();
     rules.resolve_bridge_warheads(&mut sim.interner);
-    let _despawned = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
+    let _state_changed = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
         &mut sim,
         &rules,
         &[BridgeDamageEvent {
@@ -740,7 +740,7 @@ fn test_destroyed_bridge_snaps_unit_to_ground_over_terrain_object_blocked() {
 
     let mut rules = combat_test_rules();
     rules.resolve_bridge_warheads(&mut sim.interner);
-    let _despawned = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
+    let _state_changed = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
         &mut sim,
         &rules,
         &[BridgeDamageEvent {
@@ -796,7 +796,7 @@ fn test_destroyed_bridge_fallout_matches_rebuilt_ground_walkability() {
 
     let mut rules = combat_test_rules();
     rules.resolve_bridge_warheads(&mut sim.interner);
-    let _despawned = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
+    let _state_changed = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
         &mut sim,
         &rules,
         &[BridgeDamageEvent {
