@@ -31,9 +31,8 @@ use vera20k::rules::ini_parser::IniFile;
 use vera20k::rules::terrain_rules::TerrainRules;
 
 fn ra2_dir() -> String {
-    std::env::var("RA2_DIR").unwrap_or_else(|_| {
-        "C:/Users/enok/Documents/Command and Conquer Red Alert II".to_string()
-    })
+    std::env::var("RA2_DIR")
+        .unwrap_or_else(|_| "C:/Users/enok/Documents/Command and Conquer Red Alert II".to_string())
 }
 
 /// 8-directional neighbor offsets (matches A*'s ortho + diagonal step set).
@@ -143,12 +142,8 @@ fn scan_g5(grid: &ResolvedTerrainGrid) -> G5Report {
                 if level_diff.abs() != 1 {
                     continue;
                 }
-                let (lower, upper): (&ResolvedTerrainCell, &ResolvedTerrainCell) = if level_diff < 0
-                {
-                    (a, b)
-                } else {
-                    (b, a)
-                };
+                let (lower, upper): (&ResolvedTerrainCell, &ResolvedTerrainCell) =
+                    if level_diff < 0 { (a, b) } else { (b, a) };
                 // If either side is already blocked in Rust, G5 cannot produce
                 // a new divergence — the path is rejected for other reasons.
                 if a.ground_walk_blocked || b.ground_walk_blocked {
@@ -306,13 +301,23 @@ fn probe_g5_g6_against_retail_maps() {
         println!("  - {}", s);
     }
     println!();
+    println!("G5 (diff-1 SlopeIndex==0 on LOWER cell, Rust permits, gamemd blocks):");
     println!(
-        "G5 (diff-1 SlopeIndex==0 on LOWER cell, Rust permits, gamemd blocks):"
+        "  Total diff-1 walkable pairs across all maps: {}",
+        total_g5_diff1_pairs
     );
-    println!("  Total diff-1 walkable pairs across all maps: {}", total_g5_diff1_pairs);
-    println!("  Total raw firing pairs:                      {}", total_g5_fire);
-    println!("  Total TRUSTED firing pairs (both cells have resolved TMP metadata): {}", total_g5_fire_trusted);
-    println!("  Maps with at least one TRUSTED firing pair:  {}", maps_with_g5_fire.len());
+    println!(
+        "  Total raw firing pairs:                      {}",
+        total_g5_fire
+    );
+    println!(
+        "  Total TRUSTED firing pairs (both cells have resolved TMP metadata): {}",
+        total_g5_fire_trusted
+    );
+    println!(
+        "  Maps with at least one TRUSTED firing pair:  {}",
+        maps_with_g5_fire.len()
+    );
     println!("  (trusted=both cells resolved; raw includes cells where metadata is missing");
     println!("   and slope_type defaults to 0 — false positives.)");
     for (map, raw, trusted, meta_frac, ex) in &maps_with_g5_fire {
@@ -332,34 +337,25 @@ fn probe_g5_g6_against_retail_maps() {
         );
     }
     println!();
+    println!("G6 (bridgehead cells — upper-bound surface area for pre/post-vtable divergence):");
     println!(
-        "G6 (bridgehead cells — upper-bound surface area for pre/post-vtable divergence):"
+        "  Total bridgehead cells across all maps: {}",
+        total_g6_bridgeheads
     );
-    println!("  Total bridgehead cells across all maps: {}", total_g6_bridgeheads);
     println!(
         "  NOTE: G6 divergence requires runtime simultaneous ground+bridge layer occupancy on"
     );
-    println!(
-        "        a bridgehead cell. Stock maps do not preplace such configurations; whether"
-    );
+    println!("        a bridgehead cell. Stock maps do not preplace such configurations; whether");
     println!(
         "        normal play produces them is a runtime question not answerable from terrain."
     );
     println!();
     println!("=== INTERPRETATION ===");
     if total_g5_fire_trusted == 0 {
-        println!(
-            "G5: does NOT fire on any retail map (trusted count = 0). The diff-1"
-        );
-        println!(
-            "    SlopeIndex gate has zero observable surface area — every diff-1"
-        );
-        println!(
-            "    step on retail maps either has nonzero slope on the lower cell OR"
-        );
-        println!(
-            "    is already blocked by other gates."
-        );
+        println!("G5: does NOT fire on any retail map (trusted count = 0). The diff-1");
+        println!("    SlopeIndex gate has zero observable surface area — every diff-1");
+        println!("    step on retail maps either has nonzero slope on the lower cell OR");
+        println!("    is already blocked by other gates.");
         println!("    Recommendation: defer G5 indefinitely.");
     } else {
         println!(
@@ -367,12 +363,8 @@ fn probe_g5_g6_against_retail_maps() {
             maps_with_g5_fire.len(),
             total_g5_fire_trusted,
         );
-        println!(
-            "    The raw counts above are useful for regression monitoring — A* now",
-        );
-        println!(
-            "    blocks these pairs. Run `probe_g5_astar_rejects_all_trusted_firing_pairs`",
-        );
+        println!("    The raw counts above are useful for regression monitoring — A* now",);
+        println!("    blocks these pairs. Run `probe_g5_astar_rejects_all_trusted_firing_pairs`",);
         println!("    for empirical confirmation.");
     }
     if total_g6_bridgeheads == 0 {
@@ -382,12 +374,8 @@ fn probe_g5_g6_against_retail_maps() {
             "G6: {} bridgehead cells exist across {} maps. Divergence is bounded to that",
             total_g6_bridgeheads, maps_processed,
         );
-        println!(
-            "    surface area AND requires simultaneous-layer occupancy at runtime. Not"
-        );
-        println!(
-            "    answerable from terrain alone — needs a constructed scripted scenario."
-        );
+        println!("    surface area AND requires simultaneous-layer occupancy at runtime. Not");
+        println!("    answerable from terrain alone — needs a constructed scripted scenario.");
     }
 }
 

@@ -359,7 +359,7 @@ mod tests {
                     radar_left: [0; 3],
                     radar_right: [0; 3],
                     accepts_smudge: accepts,
-                                    has_damaged_data: false,
+                    has_damaged_data: false,
                 });
             }
         }
