@@ -147,8 +147,13 @@ impl Simulation {
     /// Tick engineer capture orders: check if any engineer with a capture_target
     /// has arrived adjacent to its target building. If so, transfer ownership and
     /// consume the engineer.
+    ///
+    /// Engineers targeting `BridgeRepairHut=yes` buildings are skipped here —
+    /// they are consumed earlier in the tick by `tick_bridge_repair_orders`.
+    /// This skip is defense in depth in case ordering ever changes; the
+    /// original game never captures CABHUTs.
     /// Returns true if any capture occurred (triggers atlas rebuild for new owner color).
-    pub(crate) fn tick_capture_orders(&mut self) -> bool {
+    pub(crate) fn tick_capture_orders(&mut self, rules: &RuleSet) -> bool {
         let mut any_captured = false;
         // Snapshot engineers with active capture targets.
         let captures: Vec<(u64, u64, InternedId)> = self
@@ -159,6 +164,20 @@ impl Simulation {
             .collect();
 
         for (engineer_id, building_id, engineer_owner) in captures {
+            // Skip BridgeRepairHut targets — repair tick handles them.
+            let target_bridge_hut = self
+                .entities
+                .get(building_id)
+                .and_then(|b| {
+                    rules
+                        .object(self.interner.resolve(b.type_ref))
+                        .map(|t| t.bridge_repair_hut)
+                })
+                .unwrap_or(false);
+            if target_bridge_hut {
+                continue;
+            }
+
             // Check building still exists and is capturable.
             let building_ok = self
                 .entities

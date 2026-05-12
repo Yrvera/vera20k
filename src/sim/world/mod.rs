@@ -1213,8 +1213,14 @@ impl Simulation {
             // is applied here so combat-pre conditions (invulnerability, dying)
             // are honored before tick_combat runs.
             // PRODUCES: damage, deaths, bridge damage, fire events, last_attacker_id.
-            spawned_entities |= self.tick_capture_orders();
+            // tick_bridge_repair_orders runs BEFORE tick_capture_orders so
+            // engineers targeting BridgeRepairHut buildings are consumed by
+            // repair, not by capture. tick_capture_orders has an explicit
+            // BridgeRepairHut skip as defense in depth.
+            let bridge_repaired = self.tick_bridge_repair_orders(rules);
+            spawned_entities |= self.tick_capture_orders(rules);
             destroyed_structure |= self.tick_c4_plants(rules);
+            bridge_state_changed |= bridge_repaired;
             self.tick_order_intents_pre_combat(rules);
             // Pursuit: walk units with out-of-range attack_target into range,
             // halt movement on range entry. Must run before combat so combat
