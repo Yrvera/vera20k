@@ -2635,3 +2635,139 @@ fn extract_max_node_remaining_zero() {
     let bales = super::miner_system::extract_bales_max(&mut sim, (5, 5), &config, 40);
     assert!(bales.is_empty(), "remaining==0 → no bales");
 }
+
+// ==========================================================================
+// Multi-bale extraction integration tests (parity contract for handle_harvest)
+// ==========================================================================
+
+/// Drives the full handle_harvest path: a War Miner sitting on an 11-density
+/// ore cell drains the entire cell in a single extraction call, matching
+/// gamemd's Harvest_Ore_Tick.
+#[test]
+fn harvester_drains_full_cell_in_one_extraction_tick() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    place_ore(&mut sim, 20, 20, 11 * 120);
+
+    // War Miner (capacity 40) on the ore cell, already in Harvest state and
+    // ready to fire (harvest_timer == 0).
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 20, 20);
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.state = MinerState::Harvest;
+        miner.target_ore_cell = Some((20, 20));
+        miner.harvest_timer = 0;
+    }
+
+    // Single tick: timer == 0 means extract_bales_max fires immediately and
+    // drains the cell in one call.
+    tick_miners_n(&mut sim, &rules, 1);
+
+    let miner = get_miner(&sim, miner_id);
+    assert_eq!(
+        miner.cargo.len(),
+        11,
+        "full cell drained in one extraction call"
+    );
+    assert!(
+        sim.production.resource_nodes.get(&(20, 20)).is_none(),
+        "cell removed after full drain"
+    );
+}
+
+/// One extraction call must not exceed remaining cargo capacity even when
+/// the cell has more density than the miner can hold.
+#[test]
+fn harvester_caps_extraction_at_remaining_capacity() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let config = MinerConfig::default();
+
+    place_ore(&mut sim, 20, 20, 11 * 120);
+
+    // War Miner with 38 of 40 bales already loaded — only 2 free slots.
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 20, 20);
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        for _ in 0..38 {
+            miner.cargo.push(CargoBale {
+                resource_type: ResourceType::Ore,
+                value: config.ore_bale_value,
+            });
+        }
+        miner.state = MinerState::Harvest;
+        miner.target_ore_cell = Some((20, 20));
+        miner.harvest_timer = 0;
+    }
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    let miner = get_miner(&sim, miner_id);
+    assert_eq!(miner.cargo.len(), 40, "capped at capacity");
+
+    // 2 bales extracted from an 11-density cell → 9 levels remain.
+    let after = sim
+        .production
+        .resource_nodes
+        .get(&(20, 20))
+        .expect("cell still has ore");
+    assert_eq!(after.remaining, 9 * 120, "cell drops to density 9");
+}
+
+/// After a partial-density cell is fully drained but the miner still has
+/// capacity, the next harvest cycle's empty-cell branch should kick a
+/// TiberiumShortScan continuation that picks up the neighbouring patch.
+#[test]
+fn harvester_continues_to_short_scan_when_partial_then_empty() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let config = MinerConfig::default();
+
+    // Density-5 cell at (20, 20). Another density-5 cell at (21, 20),
+    // safely within the local continuation radius (6 cells).
+    place_ore(&mut sim, 20, 20, 5 * 120);
+    place_ore(&mut sim, 21, 20, 5 * 120);
+
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 20, 20);
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.state = MinerState::Harvest;
+        miner.target_ore_cell = Some((20, 20));
+        miner.harvest_timer = 0;
+    }
+
+    // First tick: drain (20, 20) in one extraction → 5 bales. The post-
+    // success branch resets harvest_timer to harvest_tick_interval and the
+    // miner stays in Harvest waiting for the next cycle.
+    tick_miners_n(&mut sim, &rules, 1);
+    {
+        let miner = get_miner(&sim, miner_id);
+        assert_eq!(miner.cargo.len(), 5, "5 bales from density-5 cell");
+        assert_eq!(
+            miner.state,
+            MinerState::Harvest,
+            "stays in Harvest, timer reset"
+        );
+        assert!(
+            sim.production.resource_nodes.get(&(20, 20)).is_none(),
+            "cell drained"
+        );
+    }
+
+    // Tick out the harvest_tick_interval wait; the next extraction attempt
+    // hits an empty cell and the short-scan picks up (21, 20).
+    tick_miners_n(&mut sim, &rules, config.harvest_tick_interval as usize + 1);
+    {
+        let miner = get_miner(&sim, miner_id);
+        assert_eq!(
+            miner.state,
+            MinerState::MoveToOre,
+            "transitions to MoveToOre after empty-cell short scan"
+        );
+        assert_eq!(miner.target_ore_cell, Some((21, 20)));
+    }
+}
