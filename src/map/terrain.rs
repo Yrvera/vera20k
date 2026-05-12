@@ -154,6 +154,11 @@ pub struct TerrainCell {
     pub radar_left: [u8; 3],
     /// Per-tile radar minimap color (right half of isometric diamond), from TMP header.
     pub radar_right: [u8; 3],
+    /// Mirrors `ResolvedTerrainCell.has_damaged_data` — true when this cell's
+    /// TMP sub-tile carries a baked damaged-variant pixel set. Cached at
+    /// `TerrainGrid` construction; treat as map-load-immutable. Drives the
+    /// per-frame variant-override decision in `build_visible_instances`.
+    pub has_damaged_data: bool,
 }
 
 /// Pre-computed terrain grid ready for rendering.
@@ -378,6 +383,7 @@ pub fn build_terrain_grid(map: &MapFile, local_bounds: Option<LocalBounds>) -> T
             tint: [1.0, 1.0, 1.0],
             radar_left: [0, 0, 0],
             radar_right: [0, 0, 0],
+            has_damaged_data: false,
         });
 
         min_x = min_x.min(sx);
@@ -456,6 +462,7 @@ pub fn build_terrain_grid_from_resolved(
             tint: [1.0, 1.0, 1.0],
             radar_left: cell.radar_left,
             radar_right: cell.radar_right,
+            has_damaged_data: cell.has_damaged_data,
         });
         min_x = min_x.min(sx);
         min_y = min_y.min(sy);
@@ -695,6 +702,7 @@ mod tests {
                     tint: [1.0, 1.0, 1.0],
                     radar_left: [0, 0, 0],
                     radar_right: [0, 0, 0],
+                    has_damaged_data: false,
                 },
                 TerrainCell {
                     screen_x: 5000.0,
@@ -710,6 +718,7 @@ mod tests {
                     tint: [1.0, 1.0, 1.0],
                     radar_left: [0, 0, 0],
                     radar_right: [0, 0, 0],
+                    has_damaged_data: false,
                 },
             ],
             world_width: 5060.0,
