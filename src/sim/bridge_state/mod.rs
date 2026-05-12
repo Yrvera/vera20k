@@ -599,6 +599,12 @@ impl BridgeRuntimeState {
         self.anchor_spans.get(&id)
     }
 
+    /// Mutable counterpart to `anchor_span`. Used by `body_cell_repair_state`
+    /// to sync the span's mirror `damage_state` field after per-cell repair.
+    pub fn anchor_span_mut(&mut self, id: u16) -> Option<&mut AnchorSpan> {
+        self.anchor_spans.get_mut(&id)
+    }
+
     /// All anchor spans, sorted by ID (BTreeMap iteration order).
     pub fn anchor_spans(&self) -> &BTreeMap<u16, AnchorSpan> {
         &self.anchor_spans
@@ -935,6 +941,132 @@ impl BridgeRuntimeState {
             }
             DamageState::Destroyed => StateOutcome::NoChange,
         }
+    }
+
+    /// Reverse counterpart to `body_cell_advance_state`. Repairs cells found
+    /// in `scan_cells`: collects unique `anchor_span_id`s, iterates each
+    /// span's cells (slots 0..6), and transitions
+    /// `Damaged`/`Destroyed`/`PartialCollapse{A,B}` → `Healthy { variant }`.
+    ///
+    /// The Rust model uses anchor-span iteration in place of the binary's
+    /// 3-cell-perpendicular-strip walker — the cell-state mutations are
+    /// equivalent; the binary's RNG draw count differs (per-strip vs
+    /// per-cell), locked across our Rust clients by the iteration-order pin
+    /// test.
+    ///
+    /// **Side-effect gating:**
+    ///   - `outcome.zones_dirty = true` iff at least one **main-deck**
+    ///     (Anchor/Body/Tail role) damaged or destroyed cell was repaired.
+    ///     Bridgehead-only repairs do NOT set this flag.
+    ///   - `outcome.radar_cells` contains cells whose prior state was
+    ///     `Destroyed`. Cells transitioning from `Damaged` or
+    ///     `PartialCollapse{A,B}` are NOT added.
+    ///
+    /// **RNG draws** (locked for lockstep across Rust clients):
+    ///   - Main-deck damaged/destroyed/partial-collapse → 1 draw per cell
+    ///     (`rng.next_range_u32(4)` → variant `0..=3`). MUST stay in `0..=3`
+    ///     because variants 4/5 are RESERVED for `update_ramp_perpendicular`
+    ///     to encode NS DamageA/B (they would render as damage-progression
+    ///     SHP frames).
+    ///   - Bridgehead damaged → write `Healthy { variant: 0 }`, **0 draws**.
+    ///   - Already-`Healthy` or non-bridge cells → skip, **0 draws**.
+    ///
+    /// **Iteration order** (parity-critical, locked by test):
+    ///   1. Anchor spans collected into `BTreeSet<u16>` for sorted iteration.
+    ///   2. Within each span, cells iterated in slot order 0..=5.
+    ///   3. `None` slots skipped.
+    pub fn body_cell_repair_state(
+        &mut self,
+        scan_cells: &[(u16, u16)],
+        rng: &mut crate::sim::rng::SimRng,
+    ) -> RepairOutcome {
+        let mut outcome = RepairOutcome::default();
+
+        // Step 1: Collect unique anchor spans from scan cells.
+        let mut spans: BTreeSet<u16> = BTreeSet::new();
+        for &(rx, ry) in scan_cells {
+            if let Some(cell) = self.cell(rx, ry) {
+                if let Some(span_id) = cell.anchor_span_id {
+                    spans.insert(span_id);
+                }
+            }
+        }
+
+        // Step 2: Iterate each span; for each cell, transition damage_state.
+        for span_id in spans {
+            // Clone span cell list to avoid borrow conflict.
+            let cells_list: [Option<(u16, u16)>; 6] = match self.anchor_span(span_id) {
+                Some(span) => span.cells,
+                None => continue,
+            };
+
+            for slot in 0..6 {
+                let Some(cell_pos) = cells_list[slot] else {
+                    continue;
+                };
+                let Some(prior_state) = self.cell(cell_pos.0, cell_pos.1).map(|c| c.damage_state)
+                else {
+                    continue;
+                };
+                let Some(role) = self.cell(cell_pos.0, cell_pos.1).map(|c| c.role) else {
+                    continue;
+                };
+
+                let new_state: DamageState = match (role, prior_state) {
+                    // Already healthy: skip, no RNG draw.
+                    (_, DamageState::Healthy { .. }) => continue,
+
+                    // Bridgehead: fixed variant, no RNG.
+                    (BridgeCellRole::Bridgehead, _) => DamageState::Healthy { variant: 0 },
+
+                    // Main-deck (Anchor/Body/Tail) damaged/destroyed/partial: RNG variant.
+                    (
+                        BridgeCellRole::Anchor | BridgeCellRole::Body | BridgeCellRole::Tail,
+                        DamageState::Damaged
+                        | DamageState::Destroyed
+                        | DamageState::PartialCollapseA
+                        | DamageState::PartialCollapseB,
+                    ) => {
+                        // Variant range MUST be 0..=3 (rng.next_range_u32(4));
+                        // variants 4/5 encode NS DamageA/B in our render model
+                        // and would draw damage-progression SHP frames.
+                        let variant = rng.next_range_u32(4) as u8;
+                        DamageState::Healthy { variant }
+                    }
+                };
+
+                if let Some(cell) = self.cell_mut(cell_pos.0, cell_pos.1) {
+                    cell.damage_state = new_state;
+                }
+                outcome.repaired_cells += 1;
+
+                let is_main_deck = matches!(
+                    role,
+                    BridgeCellRole::Anchor | BridgeCellRole::Body | BridgeCellRole::Tail
+                );
+                if is_main_deck {
+                    outcome.zones_dirty = true;
+                }
+                if matches!(prior_state, DamageState::Destroyed) {
+                    outcome.radar_cells.push(cell_pos);
+                }
+            }
+
+            // Step 3: Sync the AnchorSpan's mirror `damage_state` field with
+            // the anchor cell's new state (the span struct caches this for
+            // queries; existing forward state machine does the same).
+            let anchor_pos = self.anchor_span(span_id).map(|s| s.anchor);
+            if let Some((arx, ary)) = anchor_pos {
+                let new_anchor_state = self.cell(arx, ary).map(|c| c.damage_state);
+                if let (Some(state), Some(span)) =
+                    (new_anchor_state, self.anchor_span_mut(span_id))
+                {
+                    span.damage_state = state;
+                }
+            }
+        }
+
+        outcome
     }
 
     /// Bridgehead-cell state-machine driver. Mirrors the bridgehead branch of
