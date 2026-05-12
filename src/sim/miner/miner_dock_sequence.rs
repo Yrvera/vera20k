@@ -114,13 +114,9 @@ pub(super) fn refinery_exit_cell(
     let anchor_y = ry as i32 + 1;
 
     if let Some(grid) = path_grid {
-        if let Some(cell) = find_nearby_passable_cell(
-            anchor_x,
-            anchor_y,
-            grid,
-            occupancy,
-            EXIT_SEARCH_MAX_RADIUS,
-        ) {
+        if let Some(cell) =
+            find_nearby_passable_cell(anchor_x, anchor_y, grid, occupancy, EXIT_SEARCH_MAX_RADIUS)
+        {
             return cell;
         }
     }

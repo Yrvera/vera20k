@@ -757,10 +757,7 @@ fn empty_cargo_cell_depletion_returns_to_refinery() {
         "No ore was on the cell, so no bales should have been extracted"
     );
     assert!(
-        matches!(
-            miner.state,
-            MinerState::ReturnToRefinery | MinerState::Dock
-        ),
+        matches!(miner.state, MinerState::ReturnToRefinery | MinerState::Dock),
         "Empty-cargo miner on a depleted cell with no short-scan hit should \
          head to the refinery (gamemd state 2); state was {:?}",
         miner.state,
@@ -1979,10 +1976,7 @@ fn harvester_undocks_through_foundation_to_outside_ore() {
     // pad cell.
     let escaped = entity.position.ry > 12 || entity.position.rx < 10 || entity.position.rx > 13;
     let targeting = miner.target_ore_cell == Some((11, 14));
-    let returning = matches!(
-        miner.state,
-        MinerState::ReturnToRefinery | MinerState::Dock
-    );
+    let returning = matches!(miner.state, MinerState::ReturnToRefinery | MinerState::Dock);
     assert!(
         escaped || targeting || returning,
         "harvester should have escaped foundation, be targeting ore, or be \
