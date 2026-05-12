@@ -14,6 +14,23 @@ pub mod walker;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+/// 8-neighbor direction offsets used by `apply_damaged_variant_flood_fill`.
+/// Order: N, NE, E, SE, S, SW, W, NW (standard RA2 8-facing convention).
+///
+/// The order does not affect the final bit state — the flood-fill is bool-idempotent
+/// via its early-return guard — but it is fixed for deterministic recursion order
+/// across lockstep clients.
+const EIGHT_NEIGHBOR_OFFSETS: [(i32, i32); 8] = [
+    (0, -1),  // N
+    (1, -1),  // NE
+    (1, 0),   // E
+    (1, 1),   // SE
+    (0, 1),   // S
+    (-1, 1),  // SW
+    (-1, 0),  // W
+    (-1, -1), // NW
+];
+
 /// Bridge body axis. Body cells are stacked along this axis; ramps face
 /// perpendicular.
 ///
@@ -941,6 +958,82 @@ impl BridgeRuntimeState {
             }
             DamageState::Destroyed => StateOutcome::NoChange,
         }
+    }
+
+    /// Propagate the damaged-variant bit across an 8-neighbor region bounded
+    /// by underlying-terrain `final_tile_index` equality. The kickoff call
+    /// gates on the seed cell's `has_damaged_data` flag; recursive calls skip
+    /// the gate (cells sharing a tile_index share the gate flag, since they're
+    /// rendered from the same TMP).
+    ///
+    /// `state == true` flips the bit on (damage / collapse caller path).
+    /// `state == false` flips it off (repair walker path).
+    ///
+    /// Idempotent: cells already in the target state return early without
+    /// recursing.
+    ///
+    /// Returns the count of cells mutated.
+    pub fn apply_damaged_variant_flood_fill(
+        &mut self,
+        rx: u16,
+        ry: u16,
+        state: bool,
+        terrain: &ResolvedTerrainGrid,
+    ) -> u32 {
+        self.apply_damaged_variant_flood_fill_internal(rx, ry, state, terrain, true)
+    }
+
+    fn apply_damaged_variant_flood_fill_internal(
+        &mut self,
+        rx: u16,
+        ry: u16,
+        state: bool,
+        terrain: &ResolvedTerrainGrid,
+        kickoff: bool,
+    ) -> u32 {
+        let cell_state = match self.cell(rx, ry) {
+            Some(c) => c.damaged_variant,
+            None => return 0,
+        };
+        if cell_state == state {
+            return 0;
+        }
+
+        let resolved = match terrain.cell(rx, ry) {
+            Some(c) => c,
+            None => return 0,
+        };
+        let seed_tile_id = resolved.final_tile_index;
+        if seed_tile_id == 0xFFFF || seed_tile_id < 0 {
+            return 0;
+        }
+
+        if kickoff && !resolved.has_damaged_data {
+            return 0;
+        }
+
+        if let Some(c) = self.cell_mut(rx, ry) {
+            c.damaged_variant = state;
+        }
+        let mut count: u32 = 1;
+
+        for (dx, dy) in EIGHT_NEIGHBOR_OFFSETS {
+            let nx_i = rx as i32 + dx;
+            let ny_i = ry as i32 + dy;
+            if nx_i < 0 || ny_i < 0 {
+                continue;
+            }
+            let nx = nx_i as u16;
+            let ny = ny_i as u16;
+            if let Some(n_resolved) = terrain.cell(nx, ny) {
+                if n_resolved.final_tile_index == seed_tile_id {
+                    count +=
+                        self.apply_damaged_variant_flood_fill_internal(nx, ny, state, terrain, false);
+                }
+            }
+        }
+
+        count
     }
 
     /// Reverse counterpart to `body_cell_advance_state`. Repairs cells found
