@@ -22,7 +22,7 @@ use crate::sim::combat::AttackTarget;
 use crate::sim::components::{
     BridgeOccupancy, BuildingAnimOverlays, BuildingDown, BuildingUp, C4PlantState,
     DamageFireOverlays, HarvestOverlay, Health, MovementTarget, OrderIntent, PendingC4Detonation,
-    Position, VoxelAnimation,
+    Position, RockingState, VoxelAnimation,
 };
 use crate::sim::debug_event_log::{DebugEventKind, DebugEventLog};
 use crate::sim::deploy::DeployPhase;
@@ -220,6 +220,11 @@ pub struct GameEntity {
     /// read it (weapon pick is target-driven).
     #[serde(default)]
     pub deploy_state: Option<DeployPhase>,
+    /// Body rocking + slope-transition state. `None` for entities that don't
+    /// rock (infantry, aircraft, SHP-bodied buildings). `Some(default)` for
+    /// vehicles and voxel-bodied buildings.
+    #[serde(default)]
+    pub rocking: Option<RockingState>,
     /// Debug event log — records movement/state transitions for the inspector panel.
     /// Only allocated when debug inspector is active (X hotkey). Not included in state hashing.
     #[serde(skip)]
@@ -325,6 +330,7 @@ impl GameEntity {
             c4_plant: None,
             pending_c4_detonation: None,
             deploy_state: None,
+            rocking: None,
             debug_log: None,
         }
     }
