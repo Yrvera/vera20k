@@ -1181,6 +1181,28 @@ fn index_of(width: u16, height: u16, rx: u16, ry: u16) -> Option<usize> {
     (rx < width && ry < height).then_some(ry as usize * width as usize + rx as usize)
 }
 
+/// Enumerate the 25 cells in a 5×5 inclusive `[-2..=+2]` scan around
+/// `center`. Yields cell coordinates clamped to non-negative `(u16, u16)`
+/// (cells with negative computed coords are skipped — they're off-map).
+///
+/// Used by the engineer-repair trigger and the hut-destruction collapse
+/// dispatch. Inclusive bounds `-2..=+2` produce exactly 25 cells when the
+/// center is interior; off-map negative cells are silently dropped.
+pub fn cells_in_5x5_scan(center: (u16, u16)) -> impl Iterator<Item = (u16, u16)> {
+    let (cx, cy) = (center.0 as i32, center.1 as i32);
+    (-2..=2i32).flat_map(move |dy| {
+        (-2..=2i32).filter_map(move |dx| {
+            let nx = cx + dx;
+            let ny = cy + dy;
+            if nx < 0 || ny < 0 || nx > u16::MAX as i32 || ny > u16::MAX as i32 {
+                None
+            } else {
+                Some((nx as u16, ny as u16))
+            }
+        })
+    })
+}
+
 /// For each bridge group, find the two ground cells on opposite sides.
 ///
 /// Algorithm: collect all ground cells cardinally adjacent to any bridge cell
@@ -2574,5 +2596,36 @@ mod tests {
         let state = BridgeRuntimeState::from_resolved_terrain(&make_bridge_terrain(), false, 800);
         assert!(!state.is_destroyable());
         assert_eq!(state.bridge_strength(), 800);
+    }
+}
+
+#[cfg(test)]
+mod scan_tests {
+    use super::cells_in_5x5_scan;
+
+    #[test]
+    fn cells_in_5x5_scan_interior_yields_25_cells() {
+        let cells: Vec<(u16, u16)> = cells_in_5x5_scan((10, 10)).collect();
+        assert_eq!(cells.len(), 25);
+        assert!(cells.contains(&(8, 8)));
+        assert!(cells.contains(&(12, 12)));
+        assert!(cells.contains(&(10, 10)));
+    }
+
+    #[test]
+    fn cells_in_5x5_scan_at_origin_clamps_negative() {
+        let cells: Vec<(u16, u16)> = cells_in_5x5_scan((0, 0)).collect();
+        // Only (0..=2, 0..=2) range — 3×3 = 9 cells.
+        assert_eq!(cells.len(), 9);
+        assert!(cells.contains(&(0, 0)));
+        assert!(cells.contains(&(2, 2)));
+        assert!(!cells.iter().any(|(x, _)| *x > 2));
+    }
+
+    #[test]
+    fn cells_in_5x5_scan_at_edge_clamps_one_side() {
+        let cells: Vec<(u16, u16)> = cells_in_5x5_scan((1, 5)).collect();
+        // X range: [0..=3] = 4. Y range: [3..=7] = 5. Total = 20.
+        assert_eq!(cells.len(), 20);
     }
 }
