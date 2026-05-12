@@ -82,6 +82,10 @@ pub struct TickResult {
     /// An entity's owner changed (garrison transfer, engineer capture) — sprite
     /// atlas needs rebuild for the new house color.
     pub ownership_changed: bool,
+    /// A bridge cell transitioned to `DamageState::Destroyed` this tick —
+    /// PathGrid needs rebuild so A* sees collapsed cells as non-traversable
+    /// starting next tick. Matches gamemd's one-tick-delayed visibility.
+    pub bridge_state_changed: bool,
     pub movement: movement::MovementTickStats,
 }
 
@@ -1489,6 +1493,7 @@ impl Simulation {
             spawned_entities,
             destroyed_structure,
             ownership_changed: passenger_ownership_changed,
+            bridge_state_changed: false, // wired in Task 3
             movement: movement_stats,
         }
     }
