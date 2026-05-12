@@ -139,13 +139,15 @@ pub fn build_entity_block_sets(
         // cell — without it, only the anchor blocks (legacy behavior).
         if entity.category == EntityCategory::Structure {
             if let Some(obj) = rules.and_then(|r| r.object(interner.resolve(entity.type_ref))) {
-                let cells = crate::sim::production::building_footprint_cells(
+                let footprint = crate::sim::production::building_footprint_cells(
                     pos.0,
                     pos.1,
                     &obj.foundation,
                     &obj.add_occupy,
                     &obj.remove_occupy,
                 );
+                let cells =
+                    crate::sim::production::building_movement_blocking_cells(&footprint, obj.bib);
                 for cell in cells {
                     ground_blocked.insert(cell);
                 }

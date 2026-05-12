@@ -440,7 +440,7 @@ fn test_block_building_footprint() {
     assert!(grid.is_walkable(3, 3));
     assert!(grid.is_walkable(4, 4));
     // Block a 2x2 building at (3, 3).
-    grid.block_building_footprint(3, 3, "2x2", &[], &[]);
+    grid.block_building_footprint(3, 3, "2x2", &[], &[], false);
     assert!(!grid.is_walkable(3, 3));
     assert!(!grid.is_walkable(4, 3));
     assert!(!grid.is_walkable(3, 4));
@@ -464,7 +464,7 @@ fn garefn_footprint_leaves_dock_pad_walkable() {
         })
         .collect();
     let mut grid: PathGrid = PathGrid::from_map_data(&cells, None, 32, 32);
-    grid.block_building_footprint(10, 10, "4x3", &[(-1, 0), (-1, -1)], &[(3, 1)]);
+    grid.block_building_footprint(10, 10, "4x3", &[(-1, 0), (-1, -1)], &[(3, 1)], false);
     // RemoveOccupy1=3,1 → cell (13, 11) should be walkable (the dock pad)
     assert!(
         grid.is_walkable(13, 11),
@@ -958,7 +958,7 @@ fn make_resolved_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
         bridge_layer: None,
         radar_left: [0, 0, 0],
         radar_right: [0, 0, 0],
-            has_damaged_data: false,
+        has_damaged_data: false,
     }
 }
 

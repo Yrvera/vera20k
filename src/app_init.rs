@@ -673,12 +673,14 @@ pub fn load_map(
                 let add_occupy: &[(i16, i16)] = obj.map(|o| o.add_occupy.as_slice()).unwrap_or(&[]);
                 let remove_occupy: &[(i16, i16)] =
                     obj.map(|o| o.remove_occupy.as_slice()).unwrap_or(&[]);
+                let has_bib: bool = obj.map(|o| o.bib).unwrap_or(false);
                 grid.block_building_footprint(
                     ent.cell_x,
                     ent.cell_y,
                     foundation,
                     add_occupy,
                     remove_occupy,
+                    has_bib,
                 );
             }
         }

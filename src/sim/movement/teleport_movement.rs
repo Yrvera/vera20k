@@ -327,6 +327,7 @@ mod tests {
             radar_visible: false,
             harvester: false,
             refinery: false,
+            bib: false,
             storage: 0,
             free_unit: None,
             dock: vec![],

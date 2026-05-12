@@ -311,6 +311,12 @@ pub struct ObjectType {
     pub harvester: bool,
     /// Whether this structure accepts ore/gem delivery (Refinery=yes in rules.ini).
     pub refinery: bool,
+    /// Whether this building has a bib (`Bib=yes` in rules.ini). When true, the
+    /// east-edge column of the foundation footprint is unit-passable — units
+    /// can drive across that strip even though the cells remain part of the
+    /// building's placement / ownership footprint. Matches the original
+    /// engine's HasBib relaxation in the per-cell occupant chain check.
+    pub bib: bool,
     /// Bonus credits storage for refineries (Storage= in rules.ini).
     /// Refineries typically have Storage=300 — added to owner credits on placement.
     pub storage: i32,
@@ -840,6 +846,7 @@ impl ObjectType {
             radar_visible: section.get_bool("RadarVisible").unwrap_or(false),
             harvester: section.get_bool("Harvester").unwrap_or(false),
             refinery: section.get_bool("Refinery").unwrap_or(false),
+            bib: section.get_bool("Bib").unwrap_or(false),
             storage: section.get_i32("Storage").unwrap_or(0),
             free_unit: section.get("FreeUnit").map(|s| s.to_string()),
             dock: section

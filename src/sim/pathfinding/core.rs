@@ -1074,7 +1074,11 @@ impl PathGrid {
 
     /// Mark cells occupied by a building footprint as blocked (ground layer).
     /// Buildings only block the ground layer — bridge decks above are unaffected.
-    /// AddOccupy/RemoveOccupy art.ini overrides are honored.
+    /// AddOccupy/RemoveOccupy art.ini overrides are honored. When `has_bib` is
+    /// true, the east-edge column of the footprint is left unblocked so units
+    /// can drive across the bib strip — matches the original engine's HasBib
+    /// relaxation in the per-cell occupant chain check (probes east neighbor;
+    /// skips blocking when that neighbor isn't the same building).
     pub fn block_building_footprint(
         &mut self,
         cell_rx: u16,
@@ -1082,15 +1086,18 @@ impl PathGrid {
         foundation: &str,
         add_occupy: &[(i16, i16)],
         remove_occupy: &[(i16, i16)],
+        has_bib: bool,
     ) {
-        let cells = crate::sim::production::building_footprint_cells(
+        let footprint = crate::sim::production::building_footprint_cells(
             cell_rx,
             cell_ry,
             foundation,
             add_occupy,
             remove_occupy,
         );
-        for (rx, ry) in cells {
+        let blocking =
+            crate::sim::production::building_movement_blocking_cells(&footprint, has_bib);
+        for (rx, ry) in blocking {
             self.set_blocked(rx, ry, true);
         }
     }
