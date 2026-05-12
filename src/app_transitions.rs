@@ -78,7 +78,6 @@ pub(crate) fn transition_to_in_game(state: &mut AppState) {
             bridge_height_map: BTreeMap::new(),
             lighting_grid: HashMap::new(),
             path_grid: None,
-            path_grid_base: None,
             rules: None,
             art_registry: None,
             csf: None,
@@ -163,7 +162,6 @@ pub(crate) fn transition_to_in_game(state: &mut AppState) {
     state.bridge_height_map = result.bridge_height_map;
     state.lighting_grid = result.lighting_grid;
     state.path_grid = result.path_grid;
-    state.path_grid_base = result.path_grid_base;
     state.rules = result.rules;
     state.art_registry = result.art_registry;
     state.infantry_sequences = result.infantry_sequences;

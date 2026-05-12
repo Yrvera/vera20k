@@ -594,7 +594,8 @@ impl Simulation {
     /// their Default values after deserialization.
     ///
     /// Note: `zone_grid` is NOT rebuilt here — it requires the app layer's
-    /// `PathGrid` (built from `path_grid_base` + building footprints). The caller
+    /// `PathGrid` (built from resolved terrain + bridge state + building
+    /// footprints). The caller
     /// should call `rebuild_dynamic_path_grid()` after this method, which triggers
     /// `rebuild_zone_grid()` as part of the normal tick flow.
     pub fn rebuild_caches_after_load(

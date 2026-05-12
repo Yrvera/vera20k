@@ -702,15 +702,9 @@ fn center_camera_on_waypoint(state: &mut AppState, waypoint_index: u32) {
 }
 
 pub(crate) fn rebuild_dynamic_path_grid(state: &mut AppState) {
-    // Build fresh from resolved terrain + current bridge runtime state. We
-    // no longer clone state.path_grid_base — it's a load-time cache that
-    // doesn't track runtime bridge collapse/repair. PathGrid::from_
-    // resolved_terrain_with_bridges queries BridgeRuntimeState.is_bridge_
-    // walkable per cell, which is the single source of truth for runtime
-    // bridge walkability (and reverts ground walkability under destroyed
-    // decks). Stamping building footprints and walls on top of that gives
-    // a grid that reflects every runtime mutation (collapse, build, sell,
-    // wall placement, wall destruction).
+    // Build fresh from terrain + current bridge_state every time. Bridge
+    // runtime walkability mutates during gameplay (collapse/repair), so a
+    // cached "terrain-only" base would silently go stale.
     let Some(rules) = state.rules.as_ref() else {
         return;
     };

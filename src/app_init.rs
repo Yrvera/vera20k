@@ -104,8 +104,6 @@ pub struct MapLoadResult {
     pub bridge_height_map: BTreeMap<(u16, u16), u8>,
     /// Pre-built pathfinding grid with water/cliff/building walkability.
     pub path_grid: Option<PathGrid>,
-    /// Terrain-only pathfinding grid before dynamic structure blocking.
-    pub path_grid_base: Option<PathGrid>,
     /// Parsed rules.ini data — kept for combat system weapon/warhead lookups.
     pub rules: Option<RuleSet>,
     /// Art.ini registry — kept for building animation overlay lookups at render time.
@@ -664,9 +662,8 @@ pub fn load_map(
 
     // Build PathGrid with terrain walkability derived from resolved terrain:
     // terrain/object/overlay blocking plus dynamic structure occupancy.
-    let (path_grid, path_grid_base): (Option<PathGrid>, Option<PathGrid>) = {
+    let path_grid: Option<PathGrid> = {
         let mut grid: PathGrid = PathGrid::from_resolved_terrain(&resolved_terrain);
-        let terrain_only = grid.clone();
 
         // Block building footprints using foundation sizes from rules.ini.
         for ent in &map_data.entities {
@@ -722,7 +719,7 @@ pub fn load_map(
             );
         }
 
-        (Some(grid), Some(terrain_only))
+        Some(grid)
     };
 
     // Prefer the first multiplayer start waypoint as the initial anchor when
@@ -809,7 +806,6 @@ pub fn load_map(
         height_map,
         bridge_height_map,
         path_grid,
-        path_grid_base,
         rules,
         art_registry: art,
         infantry_sequences,

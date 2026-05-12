@@ -173,8 +173,6 @@ pub(crate) struct AppState {
     pub(crate) selection_state: SelectionState,
     /// A* pathfinding grid — walkability data from terrain.
     pub(crate) path_grid: Option<PathGrid>,
-    /// Terrain-only A* pathfinding grid used to rebuild dynamic structure blocking.
-    pub(crate) path_grid_base: Option<PathGrid>,
     /// Sequence definitions per entity type for animation ticking.
     pub(crate) animation_sequences: BTreeMap<String, SequenceSet>,
     /// Game data from rules.ini — needed by combat system for weapon/warhead lookups.
@@ -620,7 +618,6 @@ impl App {
             software_cursor: None,
             selection_state: SelectionState::new(),
             path_grid: None,
-            path_grid_base: None,
             animation_sequences: BTreeMap::new(),
             rules: None,
             art_registry: None,
