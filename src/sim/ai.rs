@@ -1034,11 +1034,14 @@ mod tests {
         assert!(has_refinery_structure(&sim, "Americans", &rules));
         let credits_before_unload = production::credits_for_owner(&sim, "Americans");
 
+        // Whole-multiple of the ore base (120) so the cell drains cleanly.
+        // The production overlay seeder stores `(frame+1) * base`, so a
+        // sub-density-level leftover never occurs on real maps.
         sim.production.resource_nodes.insert(
             (19, 12),
             ResourceNode {
                 resource_type: ResourceType::Ore,
-                remaining: 20,
+                remaining: 120,
             },
         );
 
