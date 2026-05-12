@@ -43,10 +43,7 @@ impl TerrainObjectType {
             name: name.to_string(),
             spawns_tiberium: section.get_bool("SpawnsTiberium").unwrap_or(false),
             is_animated: section.get_bool("IsAnimated").unwrap_or(false),
-            animation_rate: section
-                .get_i32("AnimationRate")
-                .unwrap_or(0)
-                .clamp(0, 255) as u8,
+            animation_rate: section.get_i32("AnimationRate").unwrap_or(0).clamp(0, 255) as u8,
             animation_probability_micros,
         }
     }

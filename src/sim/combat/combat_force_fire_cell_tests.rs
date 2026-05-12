@@ -44,7 +44,10 @@ fn issue_attack_cell_sets_cell_target_for_armed_unit() {
 
     let ok = issue_attack_cell_command(&mut store, 1, 50, 50, Some(&rules), &interner);
 
-    assert!(ok, "issue_attack_cell_command should succeed for armed unit");
+    assert!(
+        ok,
+        "issue_attack_cell_command should succeed for armed unit"
+    );
     let attack = store.get(1).unwrap().attack_target.as_ref().unwrap();
     assert!(matches!(attack.target, TargetKind::Cell(50, 50)));
     assert_eq!(attack.cooldown_ticks, 0);
@@ -86,7 +89,10 @@ fn issue_attack_cell_returns_false_for_missing_attacker() {
 
     let ok = issue_attack_cell_command(&mut store, 999, 50, 50, Some(&rules), &interner);
 
-    assert!(!ok, "Should return false when attacker entity does not exist");
+    assert!(
+        !ok,
+        "Should return false when attacker entity does not exist"
+    );
 }
 
 #[test]
@@ -159,7 +165,9 @@ fn force_fire_cell_pursuit_then_fire_integration() {
             break;
         }
         assert!(
-            sim.entities.get(1).is_some_and(|e| e.attack_target.is_some()),
+            sim.entities
+                .get(1)
+                .is_some_and(|e| e.attack_target.is_some()),
             "attack_target dropped mid-pursuit (parity bug)"
         );
     }

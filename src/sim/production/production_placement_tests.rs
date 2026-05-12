@@ -1045,13 +1045,8 @@ fn sell_captured_civilian_ejects_reverts_and_keeps_building() {
     let amer_id = sim.interner.intern("Americans");
     let e1_id = sim.interner.intern("E1");
     for &pid in &[11u64, 12u64] {
-        let mut pax = crate::sim::game_entity::GameEntity::test_default(
-            pid,
-            "E1",
-            "Americans",
-            19,
-            20,
-        );
+        let mut pax =
+            crate::sim::game_entity::GameEntity::test_default(pid, "E1", "Americans", 19, 20);
         pax.owner = amer_id;
         pax.type_ref = e1_id;
         pax.passenger_role = PassengerRole::Inside { transport_id: 10 };
@@ -1111,8 +1106,7 @@ fn sell_captured_civilian_emits_structure_abandoned_with_pre_revert_owner() {
             cargo: PassengerCargo::new(5, 1),
         };
     }
-    let mut pax =
-        crate::sim::game_entity::GameEntity::test_default(21, "E1", "Americans", 29, 30);
+    let mut pax = crate::sim::game_entity::GameEntity::test_default(21, "E1", "Americans", 29, 30);
     pax.owner = amer_id;
     pax.type_ref = e1_id;
     pax.passenger_role = PassengerRole::Inside { transport_id: 20 };
@@ -1162,8 +1156,7 @@ fn sell_player_built_garrisoned_building_demolishes_and_ejects_alive() {
             cargo: PassengerCargo::new(5, 1),
         };
     }
-    let mut pax =
-        crate::sim::game_entity::GameEntity::test_default(31, "E1", "Americans", 39, 40);
+    let mut pax = crate::sim::game_entity::GameEntity::test_default(31, "E1", "Americans", 39, 40);
     pax.owner = amer_id;
     pax.type_ref = e1_id;
     pax.passenger_role = PassengerRole::Inside { transport_id: 30 };

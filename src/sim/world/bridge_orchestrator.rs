@@ -41,27 +41,27 @@ use crate::sim::world::Simulation;
 /// 5. The first path that produces a non-`NoChange` outcome is the
 ///    winner; subsequent paths skip for that event.
 ///
-/// Returns the list of entity IDs despawned by the cascade. Per the
-/// DropIn correction (Task 11), this list is typically empty — bridge-
-/// deck entities survive stranded rather than despawning.
+/// Returns `true` if any event in the batch produced a `StateOutcome::Collapsed`
+/// — i.e. at least one bridge cell transitioned to `DamageState::Destroyed`.
+/// Callers use this to signal `TickResult.bridge_state_changed` so the app
+/// rebuilds the PathGrid before next tick's movement runs.
 ///
-/// **Task 9: cascade consumers are stubbed.** Outcomes are collected but
-/// no kill / DropIn / debris / rim / zone work happens yet — those wire
-/// in Tasks 10-13. Callers should not yet use the return value.
+/// Cascade side-effects (kill / DropIn / debris / rim / zone) run unconditionally
+/// when matching outcomes are present in this batch — they don't depend on
+/// the return value.
 pub(crate) fn apply_bridge_damage_events(
     sim: &mut Simulation,
     rules: &RuleSet,
     events: &[BridgeDamageEvent],
-) -> Vec<u64> {
-    let despawned_ids: Vec<u64> = Vec::new();
+) -> bool {
     if events.is_empty() {
-        return despawned_ids;
+        return false;
     }
 
     // Outer gate + read bridge_strength up front (immutable borrow scope).
     let bridge_strength = match sim.bridge_state.as_ref() {
         Some(bs) if bs.is_destroyable() => bs.bridge_strength(),
-        _ => return despawned_ids,
+        _ => return false,
     };
 
     // Run dispatch loop with split borrows: bridge_state &mut, terrain &,
@@ -82,10 +82,7 @@ pub(crate) fn apply_bridge_damage_events(
         {
             destroyed_set.extend(destroyed_cells.iter().copied());
             for (cell, _slot, action) in &set_bridge_direction.actions {
-                if matches!(
-                    action,
-                    crate::sim::bridge_specs::CellAction::BlowUpBridge
-                ) {
+                if matches!(action, crate::sim::bridge_specs::CellAction::BlowUpBridge) {
                     blow_up_cells.insert(*cell);
                     destroyed_set.insert(*cell);
                 }
@@ -152,7 +149,10 @@ pub(crate) fn apply_bridge_damage_events(
     // dirty.
     refresh_bridge_zones_if_dirty(sim, any_zones_dirty);
 
-    despawned_ids
+    // state_changed = "at least one cell collapsed this batch". The destroyed_set
+    // is built from StateOutcome::Collapsed outcomes earlier in this function;
+    // if it's non-empty, real work happened.
+    !destroyed_set.is_empty()
 }
 
 /// Kill ground-layer entities at `(rx, ry)`. Mirrors the binary's
@@ -170,12 +170,7 @@ pub(crate) fn apply_bridge_damage_events(
 /// infantry play the C4-selected explosive death anim rather than the
 /// default Die1). Mirrors the combat-side path in
 /// `compute_dying_entities_combat_effects`.
-fn kill_ground_occupants_at(
-    sim: &mut Simulation,
-    rx: u16,
-    ry: u16,
-    c4_inf_death: u8,
-) {
+fn kill_ground_occupants_at(sim: &mut Simulation, rx: u16, ry: u16, c4_inf_death: u8) {
     use crate::sim::animation::death_sequence_for_inf_death;
     let death_seq = death_sequence_for_inf_death(c4_inf_death);
     let victims: Vec<u64> = sim
@@ -351,11 +346,7 @@ fn refresh_bridge_zones_if_dirty(sim: &mut Simulation, any_zones_dirty: bool) {
 /// Replaces the wrong-shape legacy `Simulation::spawn_bridge_explosions`,
 /// which drew 1 immediate BridgeExplosion + a 50% delayed BridgeExplosion
 /// — visible every collapse.
-fn spawn_bridge_debris(
-    sim: &mut Simulation,
-    rules: &RuleSet,
-    cells: &BTreeSet<(u16, u16)>,
-) {
+fn spawn_bridge_debris(sim: &mut Simulation, rules: &RuleSet, cells: &BTreeSet<(u16, u16)>) {
     use crate::sim::components::WorldEffect;
 
     let explosion_count = sim.bridge_explosions.len() as u32;
@@ -392,11 +383,7 @@ fn spawn_bridge_debris(
         if metallic_pass && voxel_max > 0 && metallic_count > 0 {
             let idx = sim.rng.next_range_u32(metallic_count) as usize;
             let anim_id = sim.metallic_debris[idx];
-            let frames = sim
-                .effect_frame_counts
-                .get(&anim_id)
-                .copied()
-                .unwrap_or(20);
+            let frames = sim.effect_frame_counts.get(&anim_id).copied().unwrap_or(20);
             sim.world_effects.push(WorldEffect {
                 shp_name: anim_id,
                 rx,
@@ -416,11 +403,7 @@ fn spawn_bridge_debris(
             let delay_frames = sim.rng.next_range_u32_inclusive(1, 5);
             let idx = sim.rng.next_range_u32(explosion_count) as usize;
             let anim_id = sim.bridge_explosions[idx];
-            let frames = sim
-                .effect_frame_counts
-                .get(&anim_id)
-                .copied()
-                .unwrap_or(20);
+            let frames = sim.effect_frame_counts.get(&anim_id).copied().unwrap_or(20);
             sim.world_effects.push(WorldEffect {
                 shp_name: anim_id,
                 rx,
@@ -459,9 +442,7 @@ fn drop_in_bridge_deck_entities(sim: &mut Simulation, rx: u16, ry: u16) {
     let to_snap: Vec<u64> = sim
         .entities
         .iter_sorted()
-        .filter(|(_, e)| {
-            e.position.rx == rx && e.position.ry == ry && e.is_on_bridge_layer()
-        })
+        .filter(|(_, e)| e.position.rx == rx && e.position.ry == ry && e.is_on_bridge_layer())
         .map(|(id, _)| id)
         .collect();
 
@@ -549,25 +530,19 @@ fn run_dispatch_loop(
                     DispatchPath::HighStateMachine => {
                         match bridge_state.cell(event.rx, event.ry).map(|c| c.role) {
                             Some(crate::sim::bridge_state::BridgeCellRole::Bridgehead) => {
-                                bridge_state.bridgehead_advance_state(
-                                    event.rx, event.ry, true, terrain,
-                                )
+                                bridge_state
+                                    .bridgehead_advance_state(event.rx, event.ry, true, terrain)
                             }
-                            _ => bridge_state.body_cell_advance_state(
-                                event.rx, event.ry, true,
-                            ),
+                            _ => bridge_state.body_cell_advance_state(event.rx, event.ry, true),
                         }
                     }
                     DispatchPath::LowStateMachine => {
                         match bridge_state.cell(event.rx, event.ry).map(|c| c.role) {
                             Some(crate::sim::bridge_state::BridgeCellRole::Bridgehead) => {
-                                bridge_state.bridgehead_advance_state(
-                                    event.rx, event.ry, false, terrain,
-                                )
+                                bridge_state
+                                    .bridgehead_advance_state(event.rx, event.ry, false, terrain)
                             }
-                            _ => bridge_state.body_cell_advance_state(
-                                event.rx, event.ry, false,
-                            ),
+                            _ => bridge_state.body_cell_advance_state(event.rx, event.ry, false),
                         }
                     }
                     DispatchPath::HighDirect => {
@@ -962,9 +937,6 @@ mod tests {
         let e = sim.entities.get(1).expect("ground entity untouched");
         assert_eq!(e.health.current, 256);
         assert!(!e.on_bridge);
-        assert_eq!(
-            e.locomotor.as_ref().unwrap().layer,
-            MovementLayer::Ground
-        );
+        assert_eq!(e.locomotor.as_ref().unwrap().layer, MovementLayer::Ground);
     }
 }

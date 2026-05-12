@@ -397,17 +397,29 @@ fn emit_turret_unit_sprites(
         .unwrap_or(0);
     let (tur_ox, tur_oy) = turret_screen_offset(art_offset, body_facing);
 
+    // All layers of a turreted unit share one depth so insertion order
+    // (body, then turret/barrel) controls visual stacking via stable sort.
+    // Per-layer depth derived from each sprite's bounding box caused tie-break
+    // collisions where body could sort over turret at certain facings.
+    let body_entry_opt = atlas_get_with_frame_fallback(atlas, &body_key);
+    let entity_depth_y: f32 = match body_entry_opt {
+        Some(e) => center_y + e.offset_y + e.pixel_size[1] + dock_depth_y_offset,
+        None => center_y + dock_depth_y_offset,
+    };
+    let entity_depth: f32 = apply_bridge_depth_bias(
+        state,
+        entity,
+        compute_sprite_depth(state, entity_depth_y, z),
+    );
+
     // Emit body first (always). Uses frame fallback for mismatched HVA counts.
-    if let Some(entry) = atlas_get_with_frame_fallback(atlas, &body_key) {
-        let depth_y: f32 = center_y + entry.offset_y + entry.pixel_size[1] + dock_depth_y_offset;
-        let depth: f32 =
-            apply_bridge_depth_bias(state, entity, compute_sprite_depth(state, depth_y, z));
+    if let Some(entry) = body_entry_opt {
         instances.push(SpriteInstance {
             position: [center_x + entry.offset_x, center_y + entry.offset_y],
             size: entry.pixel_size,
             uv_origin: entry.uv_origin,
             uv_size: entry.uv_size,
-            depth,
+            depth: entity_depth,
             tint,
             alpha,
             house_color_idx: house_color_to_remap_row(hc),
@@ -429,10 +441,6 @@ fn emit_turret_unit_sprites(
 
     for key in [first_key, second_key] {
         if let Some(entry) = atlas_get_with_frame_fallback(atlas, key) {
-            let depth_y: f32 =
-                center_y + entry.offset_y + entry.pixel_size[1] + dock_depth_y_offset;
-            let depth: f32 =
-                apply_bridge_depth_bias(state, entity, compute_sprite_depth(state, depth_y, z));
             instances.push(SpriteInstance {
                 position: [
                     center_x + entry.offset_x + tur_ox,
@@ -441,7 +449,7 @@ fn emit_turret_unit_sprites(
                 size: entry.pixel_size,
                 uv_origin: entry.uv_origin,
                 uv_size: entry.uv_size,
-                depth,
+                depth: entity_depth,
                 tint,
                 alpha,
                 house_color_idx: house_color_to_remap_row(hc),

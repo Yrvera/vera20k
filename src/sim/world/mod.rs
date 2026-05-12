@@ -10,12 +10,12 @@
 //! - `world_spawn.rs` — entity spawning from map data and production
 //! - `world_orders.rs` — order-intent tick systems (attack-move, guard, area-guard)
 
+pub(crate) mod bridge_orchestrator;
+pub mod edge_cell;
 mod world_commands;
 mod world_hash;
 mod world_orders;
 mod world_spawn;
-pub mod edge_cell;
-pub(crate) mod bridge_orchestrator;
 
 use std::collections::BTreeMap;
 
@@ -29,10 +29,7 @@ use crate::map::triggers::TriggerMap;
 use crate::rules::locomotor_type::SpeedType;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::ai::{self, AiPlayerState};
-use crate::sim::bridge_state::{BridgeDamageEvent, BridgeRuntimeState, DamageState};
-use crate::sim::overlay_grid::{
-    cleanup_wall_neighbors, damage_wall_overlay, WallDamageEvent,
-};
+use crate::sim::bridge_state::{BridgeRuntimeState, DamageState};
 use crate::sim::combat;
 use crate::sim::combat::combat_weapon::WeaponSlot;
 use crate::sim::command::{Command, CommandEnvelope};
@@ -46,7 +43,6 @@ use crate::sim::intern::InternedId;
 use crate::sim::movement;
 use crate::sim::movement::air_movement;
 use crate::sim::movement::droppod_movement;
-use crate::sim::movement::locomotor::{GroundMovePhase, MovementLayer};
 use crate::sim::movement::parachute_descent;
 use crate::sim::movement::rocket_movement;
 use crate::sim::movement::teleport_movement;
@@ -54,6 +50,7 @@ use crate::sim::movement::tunnel_movement;
 use crate::sim::movement::turret;
 use crate::sim::occupancy::OccupancyGrid;
 use crate::sim::ore_growth;
+use crate::sim::overlay_grid::{WallDamageEvent, cleanup_wall_neighbors, damage_wall_overlay};
 use crate::sim::particles::ParticleSystemStore;
 use crate::sim::passenger;
 use crate::sim::pathfinding::PathGrid;
@@ -85,6 +82,10 @@ pub struct TickResult {
     /// An entity's owner changed (garrison transfer, engineer capture) — sprite
     /// atlas needs rebuild for the new house color.
     pub ownership_changed: bool,
+    /// A bridge cell transitioned to `DamageState::Destroyed` this tick —
+    /// PathGrid needs rebuild so A* sees collapsed cells as non-traversable
+    /// starting next tick. Matches gamemd's one-tick-delayed visibility.
+    pub bridge_state_changed: bool,
     pub movement: movement::MovementTickStats,
 }
 
@@ -593,7 +594,8 @@ impl Simulation {
     /// their Default values after deserialization.
     ///
     /// Note: `zone_grid` is NOT rebuilt here — it requires the app layer's
-    /// `PathGrid` (built from `path_grid_base` + building footprints). The caller
+    /// `PathGrid` (built from resolved terrain + bridge state + building
+    /// footprints). The caller
     /// should call `rebuild_dynamic_path_grid()` after this method, which triggers
     /// `rebuild_zone_grid()` as part of the normal tick flow.
     pub fn rebuild_caches_after_load(
@@ -664,7 +666,10 @@ impl Simulation {
                     path_grid,
                     &self.terrain_costs,
                     self.resolved_terrain.as_ref(),
-                    self.bridge_state.as_ref().map(|bs| bs.endpoint_records()).unwrap_or(&[]),
+                    self.bridge_state
+                        .as_ref()
+                        .map(|bs| bs.endpoint_records())
+                        .unwrap_or(&[]),
                 ) {
                     log::trace!("zone: incremental update ({} cells changed)", changed.len(),);
                     self.prev_path_grid = Some(path_grid.clone());
@@ -678,7 +683,10 @@ impl Simulation {
             path_grid,
             &self.terrain_costs,
             self.resolved_terrain.as_ref(),
-            self.bridge_state.as_ref().map(|bs| bs.endpoint_records()).unwrap_or(&[]),
+            self.bridge_state
+                .as_ref()
+                .map(|bs| bs.endpoint_records())
+                .unwrap_or(&[]),
             width,
             height,
         ));
@@ -992,6 +1000,7 @@ impl Simulation {
         let mut executed_commands = 0usize;
         let mut spawned_entities = false;
         let mut destroyed_structure = false;
+        let mut bridge_state_changed = false;
         let mut passenger_ownership_changed = false;
 
         let mut due: Vec<&CommandEnvelope> = commands
@@ -1076,6 +1085,20 @@ impl Simulation {
                 rules.general.parachute_max_fall_rate,
                 self.tick,
             );
+        }
+
+        // --- Phase 2.5: Body rocking + slope-transition advance ---
+        // DEPENDS ON: all movement above (slope_type lookups must see the
+        //   latest entity positions); rules.general.fallback_coefficient for
+        //   the moving-vehicle decay scale.
+        // PRODUCES: per-entity RockingState (angles, velocities, slope blend
+        //   state) consumed by the renderer to compose the body matrix.
+        // Aircraft skip slope tilting; infantry skip ship rocking. Wide-amplitude
+        // self-destruct uses NoopSelfDestruct until combat-side damage lands
+        // (Task 19); swap in a real hook then.
+        if let (Some(rules), Some(terrain)) = (rules, self.resolved_terrain.as_ref()) {
+            let mut hook = crate::sim::rocking::self_destruct::NoopSelfDestruct;
+            crate::sim::rocking::tick(&mut self.entities, terrain, rules, &mut hook);
         }
 
         // Aircraft mission state machines — between movement and combat.
@@ -1221,7 +1244,7 @@ impl Simulation {
             // (kill ground occupants → DropIn deck → debris → rim refresh
             // → TriggerEvent 31 → zone rebuild). Replaces the legacy
             // 2-call pipeline.
-            let _bridge_fallout_ids =
+            bridge_state_changed |=
                 crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
                     self,
                     rules,
@@ -1472,6 +1495,7 @@ impl Simulation {
             spawned_entities,
             destroyed_structure,
             ownership_changed: passenger_ownership_changed,
+            bridge_state_changed,
             movement: movement_stats,
         }
     }

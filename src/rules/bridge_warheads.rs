@@ -71,9 +71,8 @@ mod tests {
 
     #[test]
     fn parses_keys_from_combat_damage_section() {
-        let ini = IniFile::from_str(
-            "[CombatDamage]\nIonCannonWarhead=CustomIon\nC4Warhead=CustomC4\n",
-        );
+        let ini =
+            IniFile::from_str("[CombatDamage]\nIonCannonWarhead=CustomIon\nC4Warhead=CustomC4\n");
         let section = ini.section("CombatDamage").unwrap();
         let bw = BridgeWarheads::from_ini_section(section);
         assert_eq!(bw.ion_cannon_name, "CustomIon");

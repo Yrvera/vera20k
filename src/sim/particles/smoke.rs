@@ -350,7 +350,10 @@ mod tests {
             tick_system(&mut sys, &mut sim, &rules);
             sim.tick += 1;
         }
-        assert!(sys.done_spawning, "done_spawning should be set after cutoff");
+        assert!(
+            sys.done_spawning,
+            "done_spawning should be set after cutoff"
+        );
     }
 
     #[test]

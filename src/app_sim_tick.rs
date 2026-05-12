@@ -22,7 +22,7 @@ use crate::map::terrain;
 use crate::render::sprite_atlas;
 use crate::render::unit_atlas;
 use crate::sim::animation::{self, SequenceSet};
-use crate::sim::overlay_grid::{recalc_overlay_passability, OverlayGrid};
+use crate::sim::overlay_grid::{OverlayGrid, recalc_overlay_passability};
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::production;
 use crate::sim::replay::{ReplayHeader, ReplayLog};
@@ -370,11 +370,7 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                         // and select healthy/damaged variant based on health ratio.
                         continue;
                     }
-                    SimSoundEvent::ChronoTeleport {
-                        sound_id,
-                        rx,
-                        ry,
-                    } => {
+                    SimSoundEvent::ChronoTeleport { sound_id, rx, ry } => {
                         let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
                         GameSoundEvent::ChronoTeleport {
                             sound_id: sim.interner.resolve(sound_id).to_string(),
@@ -510,6 +506,9 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
             if tick_result.destroyed_structure {
                 refresh_after_tick = true;
             }
+            if tick_result.bridge_state_changed {
+                refresh_after_tick = true;
+            }
             if tick_result.ownership_changed {
                 refresh_after_tick = true;
             }
@@ -585,13 +584,7 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                         let overlay_ref: &OverlayGrid = overlay_grid;
                         let mut passability_changed = false;
                         for &(rx, ry) in &dirty {
-                            if recalc_overlay_passability(
-                                overlay_ref,
-                                terrain,
-                                registry,
-                                rx,
-                                ry,
-                            ) {
+                            if recalc_overlay_passability(overlay_ref, terrain, registry, rx, ry) {
                                 passability_changed = true;
                             }
                         }
@@ -709,15 +702,22 @@ fn center_camera_on_waypoint(state: &mut AppState, waypoint_index: u32) {
 }
 
 pub(crate) fn rebuild_dynamic_path_grid(state: &mut AppState) {
-    let (Some(base_grid), Some(rules)) = (state.path_grid_base.as_ref(), state.rules.as_ref())
-    else {
+    // Build fresh from terrain + current bridge_state every time. Bridge
+    // runtime walkability mutates during gameplay (collapse/repair), so a
+    // cached "terrain-only" base would silently go stale.
+    let Some(rules) = state.rules.as_ref() else {
         return;
     };
     let Some(ref sim) = state.simulation else {
         return;
     };
+    let Some(terrain) = sim.resolved_terrain.as_ref() else {
+        return;
+    };
 
-    let mut grid: PathGrid = base_grid.clone();
+    let mut grid: PathGrid =
+        PathGrid::from_resolved_terrain_with_bridges(terrain, sim.bridge_state.as_ref());
+
     let mut structures: Vec<(u16, u16, String)> = sim
         .entities
         .values()

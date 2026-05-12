@@ -312,8 +312,10 @@ mod tests {
         // Entries 0..15: sym, len. Zero-len entries unused.
         let mut codes = [0u8; 16];
         let mut lens = [0u8; 16];
-        codes[0] = 0b0;  lens[0] = 1;  // symbol 0
-        codes[1] = 0b01; lens[1] = 2;  // NO: conflicts with 0b0 prefix
+        codes[0] = 0b0;
+        lens[0] = 1; // symbol 0
+        codes[1] = 0b01;
+        lens[1] = 2; // NO: conflicts with 0b0 prefix
         // Re-seed: single-bit 0 = sym 0, two-bit codes '01'=sym1, '11'=sym2.
         // LE reading: '01' means bit0=1 then bit1=0; stored as code=0b01.
         // Actually: in canonical LE layout the bit order matches the read order.
@@ -343,9 +345,12 @@ mod tests {
         // sym 2: len 2, code "11" → slot 3       (bits 11)
         let mut codes = [0u8; 16];
         let mut lens = [0u8; 16];
-        codes[0] = 0b0;  lens[0] = 1;
-        codes[1] = 0b01; lens[1] = 2;
-        codes[2] = 0b11; lens[2] = 2;
+        codes[0] = 0b0;
+        lens[0] = 1;
+        codes[1] = 0b01;
+        lens[1] = 2;
+        codes[2] = 0b11;
+        lens[2] = 2;
         let table = VlcTable::build(&codes, &lens).unwrap();
 
         // 1 real bit = 0. Peek wants 2 bits. Zero-padded peek = 0b00 → sym 0.
@@ -365,8 +370,8 @@ mod tests {
         // Mimics Bink tree 1 (len 1,2,3,4,5,6,7,8,8...). Just confirm build
         // succeeds and decodes round-trip correctly for symbol 0.
         let codes: [u8; 16] = [
-            0x00, 0x01, 0x03, 0x05, 0x07, 0x09, 0x0B, 0x0D,
-            0x0F, 0x13, 0x15, 0x17, 0x19, 0x1B, 0x1D, 0x1F,
+            0x00, 0x01, 0x03, 0x05, 0x07, 0x09, 0x0B, 0x0D, 0x0F, 0x13, 0x15, 0x17, 0x19, 0x1B,
+            0x1D, 0x1F,
         ];
         let lens: [u8; 16] = [1, 3, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5];
         let table = VlcTable::build(&codes, &lens).unwrap();

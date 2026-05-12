@@ -38,10 +38,7 @@ const PARTICLE_Y_LIFT: f32 = 15.0;
 /// Caller passes the paged output vector list (one Vec per atlas page, sized
 /// `state.sprite_atlas.page_count()`). This function appends; sorting is the
 /// caller's responsibility (see `build_world_instances`).
-pub(crate) fn build_particle_instances(
-    state: &AppState,
-    paged: &mut [Vec<SpriteInstance>],
-) {
+pub(crate) fn build_particle_instances(state: &AppState, paged: &mut [Vec<SpriteInstance>]) {
     let (sim, atlas, rules) = match (&state.simulation, &state.sprite_atlas, &state.rules) {
         (Some(s), Some(a), Some(r)) => (s, a, r),
         _ => return,
@@ -67,7 +64,9 @@ pub(crate) fn build_particle_instances(
 
         for p in &sys.particles {
             let pt = rules.particle_type(p.type_id);
-            let Some(image_name) = pt.image.as_deref() else { continue };
+            let Some(image_name) = pt.image.as_deref() else {
+                continue;
+            };
 
             let frame: u16 = match pt.behaves_like {
                 ParticleBehavesLike::Smoke | ParticleBehavesLike::Gas => p.animation_state as u16,
@@ -84,7 +83,9 @@ pub(crate) fn build_particle_instances(
                 frame,
                 house_color: HouseColorIndex(0),
             };
-            let Some(entry) = atlas.get(&key) else { continue };
+            let Some(entry) = atlas.get(&key) else {
+                continue;
+            };
 
             let (sx, sy_raw) = terrain::lepton_to_screen(p.coords);
             let sy = sy_raw - PARTICLE_Y_LIFT;

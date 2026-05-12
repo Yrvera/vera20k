@@ -96,10 +96,7 @@ impl SmudgeTypeRegistry {
     }
 
     pub fn iter_with_id(&self) -> impl Iterator<Item = (u16, &SmudgeTypeDef)> {
-        self.types
-            .iter()
-            .enumerate()
-            .map(|(i, t)| (i as u16, t))
+        self.types.iter().enumerate().map(|(i, t)| (i as u16, t))
     }
 }
 

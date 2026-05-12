@@ -197,7 +197,13 @@ mod tests {
 
     /// Helper: construct a FacingClass mid-rotation (skips set() so we can
     /// test current() in isolation).
-    fn mid_rotation(prev: u16, current: u16, start: u32, duration: u16, rot_byte: u8) -> FacingClass {
+    fn mid_rotation(
+        prev: u16,
+        current: u16,
+        start: u32,
+        duration: u16,
+        rot_byte: u8,
+    ) -> FacingClass {
         let mut fc = FacingClass::new(current, rot_byte);
         fc.prev = prev;
         fc.start_frame = Some(start);
@@ -237,7 +243,7 @@ mod tests {
         // At elapsed=5, animated = 0 + 5 * 1280 = 6400.
         // Equivalently: animated = current - 5 * 1280 = 12800 - 6400 = 6400.
         let fc = mid_rotation(0, 12800, 0, 10, 5);
-        assert_eq!(fc.current(0), 0);    // remaining=10, animated = 12800 - 1280*10 = 0
+        assert_eq!(fc.current(0), 0); // remaining=10, animated = 12800 - 1280*10 = 0
         assert_eq!(fc.current(1), 1280);
         assert_eq!(fc.current(5), 6400);
         assert_eq!(fc.current(9), 11520);

@@ -515,14 +515,9 @@ pub fn tick_production(
 
         let spawned = sim.spawn_object(&done_type_str, &owner_str, rx, ry, 64, rules, height_map);
         if let Some(stable_id) = spawned {
-            // Aircraft spawned on helipad: set DockedIdle and reserve dock slot.
+            // Aircraft spawned on helipad: reserve dock slot then set
+            // DockedIdle carrying the assigned pad index.
             if let Some(af_id) = helipad_airfield {
-                if let Some(entity) = sim.entities.get_mut(stable_id) {
-                    entity.aircraft_mission =
-                        Some(crate::sim::aircraft::AircraftMission::DockedIdle {
-                            airfield_id: af_id,
-                        });
-                }
                 let max_slots = sim
                     .entities
                     .get(af_id)
@@ -532,9 +527,18 @@ pub fn tick_production(
                         Some(af_obj.number_of_docks.max(1))
                     })
                     .unwrap_or(1);
-                sim.production
+                let assigned_pad = sim
+                    .production
                     .airfield_docks
-                    .try_reserve(af_id, stable_id, max_slots);
+                    .try_reserve(af_id, stable_id, max_slots)
+                    .unwrap_or(0); // Fresh spawn on a single-pad helipad always wins pad 0.
+                if let Some(entity) = sim.entities.get_mut(stable_id) {
+                    entity.aircraft_mission =
+                        Some(crate::sim::aircraft::AircraftMission::DockedIdle {
+                            airfield_id: af_id,
+                            pad_index: assigned_pad,
+                        });
+                }
             }
             sim.sound_events
                 .push(crate::sim::world::SimSoundEvent::UnitComplete { owner: done.owner });

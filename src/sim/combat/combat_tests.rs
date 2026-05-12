@@ -244,7 +244,9 @@ fn test_tick_combat_only_emits_bridge_damage_for_wall_warheads() {
             rx: 8,
             ry: 5,
             damage: 65,
-            warhead_ref: interner.get("AP").expect("AP warhead interned by tick_combat"),
+            warhead_ref: interner
+                .get("AP")
+                .expect("AP warhead interned by tick_combat"),
             is_ion_cannon: false,
             impact_z: 0,
         }]
@@ -299,9 +301,9 @@ fn test_tick_combat_respects_cooldown() {
             &rules,
             &mut interner,
             &mut BTreeMap::new(),
-        0u64,
+            0u64,
             100,
-        0u32,
+            0u32,
         );
     }
     let h3: u16 = store.get(2).unwrap().health.current;
@@ -843,7 +845,10 @@ fn build_minimal_sim_with_gawall(rx: u16, ry: u16) -> (Simulation, RuleSet, Over
     let mut entity = GameEntity::test_default(1, "GAWALL", "Test", rx, ry);
     entity.owner = owner_id;
     entity.type_ref = type_id;
-    entity.health = Health { current: 400, max: 400 };
+    entity.health = Health {
+        current: 400,
+        max: 400,
+    };
     sim.entities.insert(entity);
     sim.entities.rebuild_owner_index();
 
@@ -863,15 +868,28 @@ fn wall_warhead_damages_and_destroys_wall_overlay() {
                 .is_some_and(|o| o.wall)
         })
         .count();
-    assert_eq!(initial_wall_entities, 1, "fixture must place exactly one wall entity");
+    assert_eq!(
+        initial_wall_entities, 1,
+        "fixture must place exactly one wall entity"
+    );
 
     // Forced destruction (u16::MAX bypasses the probabilistic gate).
-    let events = [WallDamageEvent { rx: 5, ry: 5, damage: u16::MAX }];
+    let events = [WallDamageEvent {
+        rx: 5,
+        ry: 5,
+        damage: u16::MAX,
+    }];
     sim.apply_wall_damage_events(&events, &rules, &registry);
 
     // Overlay cleared.
-    let grid = sim.overlay_grid.as_ref().expect("grid should still be present");
-    assert!(grid.cell(5, 5).overlay_id.is_none(), "overlay should be cleared");
+    let grid = sim
+        .overlay_grid
+        .as_ref()
+        .expect("grid should still be present");
+    assert!(
+        grid.cell(5, 5).overlay_id.is_none(),
+        "overlay should be cleared"
+    );
 
     // Wall entity removed.
     let remaining = sim
@@ -883,7 +901,10 @@ fn wall_warhead_damages_and_destroys_wall_overlay() {
                 .is_some_and(|o| o.wall)
         })
         .count();
-    assert_eq!(remaining, 0, "wall entity should be despawned after overlay destruction");
+    assert_eq!(
+        remaining, 0,
+        "wall entity should be despawned after overlay destruction"
+    );
 }
 
 /// Build a Simulation with a row of GAWALL at `(rx_range, ry)`. Each cell gets
@@ -906,7 +927,10 @@ fn build_minimal_sim_with_gawall_row(
         let mut entity = GameEntity::test_default(next_id, "GAWALL", "Test", rx, ry);
         entity.owner = owner_id;
         entity.type_ref = type_id;
-        entity.health = Health { current: 400, max: 400 };
+        entity.health = Health {
+            current: 400,
+            max: 400,
+        };
         sim.entities.insert(entity);
         next_id += 1;
     }
@@ -932,7 +956,11 @@ fn concrete_wall_chain_reaction_runs_without_panic() {
     // probabilistic check is skipped and the damage applies. Stage advances
     // to 3 → chain triggers 200-damage events on pristine same-type cardinal
     // neighbors. Outcome of those events depends on RNG roll vs strength=400.
-    let events = [WallDamageEvent { rx: 5, ry: 5, damage: 400 }];
+    let events = [WallDamageEvent {
+        rx: 5,
+        ry: 5,
+        damage: 400,
+    }];
     sim.apply_wall_damage_events(&events, &rules, &registry);
 
     // The chain code path ran (no panic). Assert (5,5) is at stage ≥ 3 or
@@ -967,11 +995,31 @@ fn build_minimal_sim_with_gawall_seeded(
 fn wall_damage_deterministic_across_replays() {
     let seed: u64 = 0x1234_5678;
     let events = [
-        WallDamageEvent { rx: 5, ry: 5, damage: 100 },
-        WallDamageEvent { rx: 5, ry: 5, damage: 100 },
-        WallDamageEvent { rx: 5, ry: 5, damage: 100 },
-        WallDamageEvent { rx: 5, ry: 5, damage: 100 },
-        WallDamageEvent { rx: 5, ry: 5, damage: 100 },
+        WallDamageEvent {
+            rx: 5,
+            ry: 5,
+            damage: 100,
+        },
+        WallDamageEvent {
+            rx: 5,
+            ry: 5,
+            damage: 100,
+        },
+        WallDamageEvent {
+            rx: 5,
+            ry: 5,
+            damage: 100,
+        },
+        WallDamageEvent {
+            rx: 5,
+            ry: 5,
+            damage: 100,
+        },
+        WallDamageEvent {
+            rx: 5,
+            ry: 5,
+            damage: 100,
+        },
     ];
 
     let snapshot_a: (Option<u8>, u8) = {
@@ -987,7 +1035,10 @@ fn wall_damage_deterministic_across_replays() {
         (cell.overlay_id, cell.overlay_data)
     };
 
-    assert_eq!(snapshot_a, snapshot_b, "wall damage must be RNG-deterministic");
+    assert_eq!(
+        snapshot_a, snapshot_b,
+        "wall damage must be RNG-deterministic"
+    );
 }
 
 #[test]
@@ -1000,13 +1051,7 @@ fn pursuit_weapon_range_for_entity_target() {
     let interner = test_interner();
 
     let attacker = store.get(1).unwrap();
-    let range = pursuit_weapon_range(
-        attacker,
-        &TargetKind::Entity(2),
-        &store,
-        &rules,
-        &interner,
-    );
+    let range = pursuit_weapon_range(attacker, &TargetKind::Entity(2), &store, &rules, &interner);
     // 105mm Range=6.
     assert_eq!(range, Some(crate::util::fixed_math::SimFixed::from_num(6)));
 }
@@ -1105,10 +1150,9 @@ fn v3_non_killing_aoe_emits_one_smudge_request() {
     );
     let v3exp = interner.intern("V3EXP");
     assert!(
-        result
-            .smudge_spawn_requests
-            .iter()
-            .any(|r| matches!(r, SmudgeSpawnRequest::Anim { anim_name, .. } if *anim_name == v3exp)),
+        result.smudge_spawn_requests.iter().any(
+            |r| matches!(r, SmudgeSpawnRequest::Anim { anim_name, .. } if *anim_name == v3exp)
+        ),
         "Anim smudge must reference the V3 warhead's AnimList entry"
     );
 }
@@ -1252,7 +1296,14 @@ fn emit_warhead_detonation_effects_empty_animlist_emits_nothing() {
     let mut explosions: Vec<ExplosionEffect> = Vec::new();
     let mut smudges: Vec<SmudgeSpawnRequest> = Vec::new();
     emit_warhead_detonation_effects(
-        &wh, 100, 5, 5, 0, &mut interner, &mut explosions, &mut smudges,
+        &wh,
+        100,
+        5,
+        5,
+        0,
+        &mut interner,
+        &mut explosions,
+        &mut smudges,
     );
     assert!(explosions.is_empty());
     assert!(smudges.is_empty());
@@ -1265,7 +1316,14 @@ fn emit_warhead_detonation_effects_single_animlist_entry_emits_one_pair() {
     let mut explosions: Vec<ExplosionEffect> = Vec::new();
     let mut smudges: Vec<SmudgeSpawnRequest> = Vec::new();
     emit_warhead_detonation_effects(
-        &wh, 100, 5, 5, 0, &mut interner, &mut explosions, &mut smudges,
+        &wh,
+        100,
+        5,
+        5,
+        0,
+        &mut interner,
+        &mut explosions,
+        &mut smudges,
     );
     assert_eq!(explosions.len(), 1);
     assert_eq!(smudges.len(), 1);
@@ -1275,7 +1333,12 @@ fn emit_warhead_detonation_effects_single_animlist_entry_emits_one_pair() {
     assert_eq!(explosions[0].ry, 5);
     assert_eq!(explosions[0].z, 0);
     match &smudges[0] {
-        SmudgeSpawnRequest::Anim { anim_name, rx, ry, z } => {
+        SmudgeSpawnRequest::Anim {
+            anim_name,
+            rx,
+            ry,
+            z,
+        } => {
             assert_eq!(*anim_name, expected_id);
             assert_eq!(*rx, 5);
             assert_eq!(*ry, 5);
@@ -1294,7 +1357,14 @@ fn emit_warhead_detonation_effects_animlist_index_is_damage_div_25_clamped() {
     let mut explosions: Vec<ExplosionEffect> = Vec::new();
     let mut smudges: Vec<SmudgeSpawnRequest> = Vec::new();
     emit_warhead_detonation_effects(
-        &wh, 0, 0, 0, 0, &mut interner, &mut explosions, &mut smudges,
+        &wh,
+        0,
+        0,
+        0,
+        0,
+        &mut interner,
+        &mut explosions,
+        &mut smudges,
     );
     assert_eq!(explosions[0].shp_name, interner.intern("EXP1"));
 
@@ -1302,7 +1372,14 @@ fn emit_warhead_detonation_effects_animlist_index_is_damage_div_25_clamped() {
     let mut explosions: Vec<ExplosionEffect> = Vec::new();
     let mut smudges: Vec<SmudgeSpawnRequest> = Vec::new();
     emit_warhead_detonation_effects(
-        &wh, 50, 0, 0, 0, &mut interner, &mut explosions, &mut smudges,
+        &wh,
+        50,
+        0,
+        0,
+        0,
+        &mut interner,
+        &mut explosions,
+        &mut smudges,
     );
     assert_eq!(explosions[0].shp_name, interner.intern("EXP3"));
 
@@ -1310,7 +1387,14 @@ fn emit_warhead_detonation_effects_animlist_index_is_damage_div_25_clamped() {
     let mut explosions: Vec<ExplosionEffect> = Vec::new();
     let mut smudges: Vec<SmudgeSpawnRequest> = Vec::new();
     emit_warhead_detonation_effects(
-        &wh, 10000, 0, 0, 0, &mut interner, &mut explosions, &mut smudges,
+        &wh,
+        10000,
+        0,
+        0,
+        0,
+        &mut interner,
+        &mut explosions,
+        &mut smudges,
     );
     assert_eq!(explosions[0].shp_name, interner.intern("EXP3"));
 }

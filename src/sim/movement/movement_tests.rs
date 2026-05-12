@@ -776,21 +776,43 @@ fn test_friendly_passable_moving_unit_not_blocked() {
     entities.insert(b);
 
     let alliances = HouseAllianceMap::new();
-    let (blocks, _penalty) =
-        bump_crush::build_entity_block_set(&entities, "Americans", &alliances, &mut test_interner(), None);
+    let (blocks, _penalty) = bump_crush::build_entity_block_set(
+        &entities,
+        "Americans",
+        &alliances,
+        &mut test_interner(),
+        None,
+    );
 
     // Stationary friendly at (3,0) is now soft-blocked (code 6, cost 8x) in
     // entity_block_map, not in the hard-block BTreeSet.
-    assert!(!blocks.contains(&(3, 0)), "Stationary friendly should be soft-blocked, not hard-blocked");
-    assert!(_penalty.contains_key(&(3, 0)), "Stationary friendly should be in entity_block_map");
-    assert_eq!(_penalty[&(3, 0)].cost_code, 6, "Stationary friendly should have cost_code 6");
+    assert!(
+        !blocks.contains(&(3, 0)),
+        "Stationary friendly should be soft-blocked, not hard-blocked"
+    );
+    assert!(
+        _penalty.contains_key(&(3, 0)),
+        "Stationary friendly should be in entity_block_map"
+    );
+    assert_eq!(
+        _penalty[&(3, 0)].cost_code,
+        6,
+        "Stationary friendly should have cost_code 6"
+    );
     // Moving friendly at (4,0) should be in entity_block_map with code 2.
     assert!(
         !blocks.contains(&(4, 0)),
         "Moving friendly should be passable"
     );
-    assert!(_penalty.contains_key(&(4, 0)), "Moving friendly should be in entity_block_map");
-    assert_eq!(_penalty[&(4, 0)].cost_code, 2, "Moving friendly should have cost_code 2");
+    assert!(
+        _penalty.contains_key(&(4, 0)),
+        "Moving friendly should be in entity_block_map"
+    );
+    assert_eq!(
+        _penalty[&(4, 0)].cost_code,
+        2,
+        "Moving friendly should have cost_code 2"
+    );
 }
 
 #[test]
@@ -815,14 +837,29 @@ fn test_enemy_unit_always_blocks_even_when_moving() {
     entities.insert(enemy);
 
     let alliances = HouseAllianceMap::new();
-    let (blocks, _penalty) =
-        bump_crush::build_entity_block_set(&entities, "Americans", &alliances, &mut test_interner(), None);
+    let (blocks, _penalty) = bump_crush::build_entity_block_set(
+        &entities,
+        "Americans",
+        &alliances,
+        &mut test_interner(),
+        None,
+    );
 
     // Enemy at (3,0) is now soft-blocked (code 5, cost 20x) in entity_block_map,
     // not in the hard-block BTreeSet.
-    assert!(!blocks.contains(&(3, 0)), "Enemy should be soft-blocked, not hard-blocked");
-    assert!(_penalty.contains_key(&(3, 0)), "Enemy should be in entity_block_map");
-    assert_eq!(_penalty[&(3, 0)].cost_code, 5, "Enemy should have cost_code 5");
+    assert!(
+        !blocks.contains(&(3, 0)),
+        "Enemy should be soft-blocked, not hard-blocked"
+    );
+    assert!(
+        _penalty.contains_key(&(3, 0)),
+        "Enemy should be in entity_block_map"
+    );
+    assert_eq!(
+        _penalty[&(3, 0)].cost_code,
+        5,
+        "Enemy should have cost_code 5"
+    );
 }
 
 #[test]
@@ -838,8 +875,18 @@ fn test_friendly_passable_path_goes_through_moving_friendly() {
     // (3,1) is a stationary friendly — in blocks.
     blocks.insert((3, 1));
 
-    let path =
-        find_path_with_costs(&grid, (0, 0), (6, 0), None, Some(&blocks), None, None, None, 0, false);
+    let path = find_path_with_costs(
+        &grid,
+        (0, 0),
+        (6, 0),
+        None,
+        Some(&blocks),
+        None,
+        None,
+        None,
+        0,
+        false,
+    );
     assert!(
         path.is_some(),
         "Should find path through moving-friendly cell"
@@ -1243,10 +1290,7 @@ fn test_queued_append_layered_path_avoids_friendly_building_footprint() {
     ));
 
     let entity = entities.get(1).expect("mover exists");
-    let target = entity
-        .movement_target
-        .as_ref()
-        .expect("queued path exists");
+    let target = entity.movement_target.as_ref().expect("queued path exists");
 
     for &cell in &target.path {
         assert!(
@@ -1348,4 +1392,309 @@ fn test_segment_exhaustion_repath_avoids_friendly_building_footprint() {
             path,
         );
     }
+}
+
+// ============================================================================
+// Bridge on_bridge timing integration tests (Plan: 2026-05-11 G2 fix).
+// Pin: predicate fires at Ramp→Body exactly, clears at Ramp→Ground exactly,
+// no anticipatory BridgeOccupancy pre-claim.
+// ============================================================================
+
+use crate::map::houses::HouseAllianceMap;
+use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
+use crate::sim::components::BridgeOccupancy;
+use crate::sim::movement::locomotor::{AirMovePhase, GroundMovePhase, LocomotorState};
+use crate::sim::movement::tick_movement_with_grid;
+use crate::sim::pathfinding::{PathGrid, terrain_cost::TerrainCostGrid};
+use crate::util::fixed_math::SIM_ONE;
+use std::collections::BTreeMap;
+
+fn make_drive_loco(layer: MovementLayer) -> LocomotorState {
+    LocomotorState {
+        kind: LocomotorKind::Drive,
+        layer,
+        phase: GroundMovePhase::Idle,
+        air_phase: AirMovePhase::Landed,
+        speed_multiplier: SIM_ONE,
+        speed_fraction: SIM_ONE,
+        fly_current_speed: SIM_ZERO,
+        altitude: SIM_ZERO,
+        target_altitude: SIM_ZERO,
+        climb_rate: SIM_ZERO,
+        jumpjet_speed: SIM_ZERO,
+        jumpjet_wobbles: 0.0,
+        jumpjet_accel: SIM_ZERO,
+        jumpjet_current_speed: SIM_ZERO,
+        jumpjet_deviation: 0,
+        jumpjet_crash_speed: SIM_ZERO,
+        jumpjet_turn_rate: 4,
+        balloon_hover: false,
+        hover_attack: false,
+        speed_type: SpeedType::Track,
+        movement_zone: MovementZone::Normal,
+        rot: 0,
+        override_state: None,
+        air_progress: SIM_ZERO,
+        infantry_wobble_phase: 0.0,
+        subcell_dest: None,
+    }
+}
+
+fn tick_bridge(
+    entities: &mut EntityStore,
+    grid: &PathGrid,
+    occupancy: &mut OccupancyGrid,
+    rng: &mut SimRng,
+    interner: &mut crate::sim::intern::StringInterner,
+    ms: u32,
+) {
+    let costs: BTreeMap<SpeedType, TerrainCostGrid> = BTreeMap::new();
+    let alliances = HouseAllianceMap::new();
+    let _ = tick_movement_with_grid(
+        entities,
+        Some(grid),
+        &costs,
+        &alliances,
+        occupancy,
+        rng,
+        ms,
+        0,
+        interner,
+    );
+}
+
+#[test]
+fn on_bridge_fires_at_ramp_to_body_only() {
+    // Layout: (1,1) is a ramp/bridgehead at raw h=4 (bridge_walkable, transition=true).
+    // (2,1) is a body cell at raw h=0 (bridge_walkable, no transition). Effective deck = 4.
+    let mut grid = PathGrid::new(10, 10);
+    grid.set_cell_for_test(1, 1, 4, true, true);
+    grid.set_cell_for_test(2, 1, 0, true, false);
+
+    let mut entities = EntityStore::new();
+    let mut e = GameEntity::test_default(1, "HTNK", "Americans", 1, 1);
+    e.position.z = 4;
+    e.on_bridge = false;
+    e.locomotor = Some(make_drive_loco(MovementLayer::Bridge));
+    e.movement_target = Some(MovementTarget {
+        path: vec![(1, 1), (2, 1)],
+        path_layers: vec![MovementLayer::Bridge, MovementLayer::Bridge],
+        next_index: 1,
+        speed: SimFixed::from_num(512),
+        move_dir_x: SimFixed::from_num(256),
+        move_dir_y: SIM_ZERO,
+        move_dir_len: SimFixed::from_num(256),
+        ..Default::default()
+    });
+    entities.insert(e);
+
+    let mut occupancy = OccupancyGrid::new();
+    occupancy.add(1, 1, 1, MovementLayer::Bridge, None);
+    let mut rng = SimRng::new(0);
+    let mut interner = test_interner();
+
+    assert!(
+        !entities.get(1).unwrap().on_bridge,
+        "pre-tick: on_bridge must be false on ramp"
+    );
+
+    // 512 lep/sec * 500ms = 256 leptons = exactly one cell jump (1,1)→(2,1).
+    tick_bridge(
+        &mut entities,
+        &grid,
+        &mut occupancy,
+        &mut rng,
+        &mut interner,
+        500,
+    );
+
+    let entity = entities.get(1).expect("entity exists");
+    assert_eq!((entity.position.rx, entity.position.ry), (2, 1));
+    assert!(
+        entity.on_bridge,
+        "on_bridge must fire on Ramp→Body transition"
+    );
+    assert_eq!(
+        entity
+            .bridge_occupancy
+            .as_ref()
+            .expect("BridgeOccupancy set on Enter")
+            .deck_level,
+        4
+    );
+}
+
+#[test]
+fn on_bridge_clears_at_ramp_to_ground_only() {
+    // body (1,1) raw h=0 bridge_walkable; ramp (2,1) raw h=4 bridge_walkable+transition;
+    // ground (3,1) raw h=4 no bridge_walkable.
+    // Path: (1,1)→(2,1)→(3,1). on_bridge stays true through the ramp tick and clears
+    // on Ramp→Ground.
+    let mut grid = PathGrid::new(10, 10);
+    grid.set_cell_for_test(1, 1, 0, true, false); // body
+    grid.set_cell_for_test(2, 1, 4, true, true); // ramp
+    grid.set_cell_for_test(3, 1, 4, false, false); // ground at h=4
+
+    let mut entities = EntityStore::new();
+    let mut e = GameEntity::test_default(1, "HTNK", "Americans", 1, 1);
+    e.position.z = 4;
+    e.on_bridge = true;
+    e.bridge_occupancy = Some(BridgeOccupancy { deck_level: 4 });
+    e.locomotor = Some(make_drive_loco(MovementLayer::Bridge));
+    e.movement_target = Some(MovementTarget {
+        path: vec![(1, 1), (2, 1), (3, 1)],
+        // body→ramp goes on Ground layer per is_at_bridge_level
+        // (parent at deck=4, neighbor h=4 → diff=0 < 2 → not at bridge level).
+        path_layers: vec![
+            MovementLayer::Bridge,
+            MovementLayer::Ground,
+            MovementLayer::Ground,
+        ],
+        next_index: 1,
+        speed: SimFixed::from_num(512),
+        move_dir_x: SimFixed::from_num(256),
+        move_dir_y: SIM_ZERO,
+        move_dir_len: SimFixed::from_num(256),
+        ..Default::default()
+    });
+    entities.insert(e);
+
+    let mut occupancy = OccupancyGrid::new();
+    occupancy.add(1, 1, 1, MovementLayer::Bridge, None);
+    let mut rng = SimRng::new(0);
+    let mut interner = test_interner();
+
+    // Tick 1: body → ramp. on_bridge must STAY true (predicate NoChange).
+    tick_bridge(
+        &mut entities,
+        &grid,
+        &mut occupancy,
+        &mut rng,
+        &mut interner,
+        500,
+    );
+    let entity = entities.get(1).expect("entity exists");
+    assert_eq!(
+        (entity.position.rx, entity.position.ry),
+        (2, 1),
+        "after tick 1: at ramp"
+    );
+    assert!(
+        entity.on_bridge,
+        "after tick 1 (on ramp): on_bridge must stay true"
+    );
+
+    // Tick 2: ramp → ground. on_bridge must CLEAR (predicate Exit).
+    tick_bridge(
+        &mut entities,
+        &grid,
+        &mut occupancy,
+        &mut rng,
+        &mut interner,
+        500,
+    );
+    let entity = entities.get(1).expect("entity exists");
+    assert_eq!(
+        (entity.position.rx, entity.position.ry),
+        (3, 1),
+        "after tick 2: at ground"
+    );
+    assert!(!entity.on_bridge, "after Ramp→Ground: on_bridge must clear");
+    assert!(
+        entity.bridge_occupancy.is_none(),
+        "after Exit: BridgeOccupancy must be None"
+    );
+}
+
+#[test]
+fn no_bridge_lookahead_pre_claim() {
+    // Regression: the deleted apply_bridge_lookahead_if_needed must not have crept
+    // back via another path. BridgeOccupancy must NOT be set before the unit
+    // physically crosses onto a body cell.
+    // ground (1,1) h=4 → ramp (2,1) raw h=4 bridge_walkable+transition → body
+    // (3,1) raw h=0 bridge_walkable.
+    let mut grid = PathGrid::new(10, 10);
+    grid.set_cell_for_test(1, 1, 4, false, false);
+    grid.set_cell_for_test(2, 1, 4, true, true);
+    grid.set_cell_for_test(3, 1, 0, true, false);
+
+    let mut entities = EntityStore::new();
+    let mut e = GameEntity::test_default(1, "HTNK", "Americans", 1, 1);
+    e.position.z = 4;
+    e.on_bridge = false;
+    e.bridge_occupancy = None;
+    e.locomotor = Some(make_drive_loco(MovementLayer::Ground));
+    e.movement_target = Some(MovementTarget {
+        path: vec![(1, 1), (2, 1), (3, 1)],
+        path_layers: vec![
+            MovementLayer::Ground,
+            MovementLayer::Bridge,
+            MovementLayer::Bridge,
+        ],
+        next_index: 1,
+        speed: SimFixed::from_num(512),
+        move_dir_x: SimFixed::from_num(256),
+        move_dir_y: SIM_ZERO,
+        move_dir_len: SimFixed::from_num(256),
+        ..Default::default()
+    });
+    entities.insert(e);
+
+    let mut occupancy = OccupancyGrid::new();
+    occupancy.add(1, 1, 1, MovementLayer::Ground, None);
+    let mut rng = SimRng::new(0);
+    let mut interner = test_interner();
+
+    assert!(
+        entities.get(1).unwrap().bridge_occupancy.is_none(),
+        "pre-tick: no pre-claim"
+    );
+
+    // Tick 1: ground → ramp. Predicate NoChange (src.bridge_walkable=false; entry
+    // would need src_h-4 = dst_h: src=4, dst=4 → no. Exit needs src.bridge_walkable;
+    // it's false → no). BridgeOccupancy stays None.
+    tick_bridge(
+        &mut entities,
+        &grid,
+        &mut occupancy,
+        &mut rng,
+        &mut interner,
+        500,
+    );
+    let entity = entities.get(1).expect("entity exists");
+    assert_eq!(
+        (entity.position.rx, entity.position.ry),
+        (2, 1),
+        "after tick 1: at ramp"
+    );
+    assert!(
+        entity.bridge_occupancy.is_none(),
+        "regression: BridgeOccupancy must NOT be pre-claimed on the ramp"
+    );
+
+    // Tick 2: ramp → body. Now predicate fires Enter (src.bridge_walkable=true,
+    // dst.bridge_walkable=true, dst_h(0) == src_h(4)-4 → entry fires).
+    tick_bridge(
+        &mut entities,
+        &grid,
+        &mut occupancy,
+        &mut rng,
+        &mut interner,
+        500,
+    );
+    let entity = entities.get(1).expect("entity exists");
+    assert_eq!(
+        (entity.position.rx, entity.position.ry),
+        (3, 1),
+        "after tick 2: on body"
+    );
+    assert!(entity.on_bridge, "after Ramp→Body: on_bridge must be true");
+    assert_eq!(
+        entity
+            .bridge_occupancy
+            .as_ref()
+            .expect("set on Enter")
+            .deck_level,
+        4
+    );
 }

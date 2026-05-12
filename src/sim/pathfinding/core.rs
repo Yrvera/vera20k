@@ -142,9 +142,10 @@ fn compute_neighbor_height(
     }
 
     // Case 3: Parent is NOT bridge, neighbor IS bridge.
-    // Ramp-up restricted to diff in [2, 4].
+    // Ground→Bridge entry requires height-diff EXACTLY 4 AND the bridgehead flag
+    // (transition). Diffs 2/3/5+ are always blocked; diff 0/1 fall to other cases.
     let diff = parent_height as i16 - neighbor_cell.ground_level as i16;
-    if (2..=4).contains(&diff) {
+    if diff == 4 && neighbor_cell.transition {
         neighbor_cell.bridge_deck_level
     } else {
         neighbor_cell.ground_level
@@ -435,9 +436,19 @@ pub fn astar_search(
                 continue;
             }
 
-            // Walkability check on the determined layer
+            // Walkability check on the determined layer.
+            // Ground→Bridge entry requires the bridgehead flag (transition). A unit
+            // already on the bridge can move between any two bridge_walkable cells
+            // (body-to-body diagonals); only the Ground→Bridge transition needs the
+            // bridgehead.
             let neighbor_passable = if neighbor_use_bridge {
-                grid.is_walkable_on_layer(nx, ny, MovementLayer::Bridge)
+                let prev_on_bridge = is_at_bridge_level(current.height, cur_cell);
+                if prev_on_bridge {
+                    grid.is_walkable_on_layer(nx, ny, MovementLayer::Bridge)
+                } else {
+                    grid.is_walkable_on_layer(nx, ny, MovementLayer::Bridge)
+                        && neighbor_cell.transition
+                }
             } else {
                 is_cell_passable_for_mover(
                     grid,
@@ -1064,6 +1075,33 @@ impl PathGrid {
             cells,
             width,
             height,
+        }
+    }
+
+    /// Test-only helper: directly write a cell's bridge fields.
+    #[cfg(test)]
+    pub fn set_cell_for_test(
+        &mut self,
+        x: u16,
+        y: u16,
+        ground_level: u8,
+        bridge_walkable: bool,
+        transition: bool,
+    ) {
+        if x < self.width && y < self.height {
+            let idx = y as usize * self.width as usize + x as usize;
+            let bridge_deck_level = if bridge_walkable {
+                ground_level.saturating_add(4)
+            } else {
+                0
+            };
+            self.cells[idx] = PathCell {
+                ground_walkable: true,
+                bridge_walkable,
+                transition,
+                ground_level,
+                bridge_deck_level,
+            };
         }
     }
 }

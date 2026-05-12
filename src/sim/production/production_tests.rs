@@ -789,19 +789,21 @@ fn harvester_moves_to_ore_and_back_with_path_grid() {
         .spawn_object("HARV", "Americans", 10, 10, 64, &rules, &height_map)
         .expect("spawn harvester");
     spawn_structure(&mut sim, 2, "Americans", "GAREFN", 8, 10);
+    // Whole-multiple of the ore base (120) so the cell drains cleanly. The
+    // production overlay seeder always stores `(frame+1) * base`, so cells
+    // in real maps never carry a sub-density-level leftover.
     sim.production.resource_nodes.insert(
         (12, 10),
         ResourceNode {
             resource_type: ResourceType::Ore,
-            remaining: 800,
+            remaining: 6 * 120,
         },
     );
 
     let before = credits_for_owner(&sim, "Americans");
     let mut moved = false;
     // Run enough ticks for a full harvest cycle: search → move to ore →
-    // harvest bales → return to refinery → dock → unload. HarvestRate=37
-    // ticks/bale, 40 bales = ~1500 ticks harvest + movement + dock time.
+    // harvest bales → return to refinery → dock → unload.
     for _ in 0..3000 {
         let _ = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 33);
         let pos = sim

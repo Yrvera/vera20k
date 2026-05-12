@@ -159,23 +159,38 @@ pub fn build_entity_block_sets(
         let is_friendly =
             crate::map::houses::are_houses_friendly(alliances, mover_owner, entity_owner_str);
         if !is_friendly {
-            entity_block_map.insert(pos, EntityBlockEntry { next_cell: None, cost_code: 5 });
+            entity_block_map.insert(
+                pos,
+                EntityBlockEntry {
+                    next_cell: None,
+                    cost_code: 5,
+                },
+            );
             continue;
         }
         // Friendly moving units: code-2 chain walk entry.
         if let Some(ref mt) = entity.movement_target {
             if let Some(&next_cell) = mt.path.get(mt.next_index) {
                 if next_cell != pos {
-                    entity_block_map.insert(pos, EntityBlockEntry {
-                        next_cell: Some(next_cell),
-                        cost_code: 2,
-                    });
+                    entity_block_map.insert(
+                        pos,
+                        EntityBlockEntry {
+                            next_cell: Some(next_cell),
+                            cost_code: 2,
+                        },
+                    );
                     continue;
                 }
             }
         }
         // Stationary friendly: soft-block with code 6 (cost 8x).
-        entity_block_map.insert(pos, EntityBlockEntry { next_cell: None, cost_code: 6 });
+        entity_block_map.insert(
+            pos,
+            EntityBlockEntry {
+                next_cell: None,
+                cost_code: 6,
+            },
+        );
     }
     (ground_blocked, bridge_blocked, entity_block_map)
 }
@@ -1261,7 +1276,10 @@ mod tests {
 
     // -- emit_crush_kill_sounds tests --
 
-    fn build_test_rules(crush_sound: Option<&str>, die_sound: Option<&str>) -> crate::rules::ruleset::RuleSet {
+    fn build_test_rules(
+        crush_sound: Option<&str>,
+        die_sound: Option<&str>,
+    ) -> crate::rules::ruleset::RuleSet {
         let mut e1 = String::from("Strength=125\nArmor=none\nSpeed=4\n");
         if let Some(s) = crush_sound {
             e1.push_str(&format!("CrushSound={}\n", s));
@@ -1277,7 +1295,11 @@ mod tests {
         crate::rules::ruleset::RuleSet::from_ini(&ini).expect("test rules build")
     }
 
-    fn build_victim(interner: &mut crate::sim::intern::StringInterner, rx: u16, ry: u16) -> GameEntity {
+    fn build_victim(
+        interner: &mut crate::sim::intern::StringInterner,
+        rx: u16,
+        ry: u16,
+    ) -> GameEntity {
         let mut victim = infantry(1, rx, ry, 2);
         victim.type_ref = interner.intern("E1");
         victim

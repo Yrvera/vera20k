@@ -106,7 +106,10 @@ mod tests {
             0,
             0,
             owner,
-            Health { current: 300, max: 300 },
+            Health {
+                current: 300,
+                max: 300,
+            },
             tref,
             cat,
             0,

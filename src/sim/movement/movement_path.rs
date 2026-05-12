@@ -8,9 +8,9 @@ use std::collections::{BTreeSet, HashMap};
 
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::locomotor_type::{LocomotorKind, MovementZone};
-use crate::sim::pathfinding::EntityBlockEntry;
 use crate::sim::components::MovementTarget;
 use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
+use crate::sim::pathfinding::EntityBlockEntry;
 use crate::sim::pathfinding::path_smooth;
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
 use crate::sim::pathfinding::zone_search;

@@ -125,6 +125,19 @@ impl FactoryType {
     }
 }
 
+/// One docking pad on a building. Stored in `ObjectType.pads` as a Vec
+/// whose index IS the pad index (0-based, matching `DockingOffset0..N-1`).
+///
+/// `lepton_offset` is parsed from art.ini `DockingOffset%d=X,Y,Z` and is
+/// interpreted as an offset from the building's geometric center (not its
+/// origin top-left). 256 leptons = 1 cell. Zero-initialized entries are
+/// valid: when rules declares `NumberOfDocks=N` but art only specifies
+/// `DockingOffset0..K-1` with K < N, the remaining pads get zero offsets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DockPad {
+    pub lepton_offset: (i32, i32, i32),
+}
+
 /// A game object definition parsed from a rules.ini section.
 ///
 /// Fields use sensible defaults when the INI key is absent, matching
@@ -147,6 +160,11 @@ pub struct ObjectType {
     pub armor: String,
     /// Movement speed (0 = immobile, e.g., buildings).
     pub speed: i32,
+    /// Inertia weight (`Weight=` in vehicle/aircraft sections). Default 2.0.
+    /// Used as the divisor in rocker-impulse force scaling: heavier units rock
+    /// proportionally less per equivalent impulse. Retail range: 0.5 (lightest
+    /// vehicles) to 5 (Aircraft Carrier).
+    pub weight: SimFixed,
     /// Fraction of max speed gained per tick during acceleration (AccelerationFactor=).
     /// Default 0.03. At 15 fps, reaches max speed in ~2 seconds.
     pub accel_factor: SimFixed,
@@ -303,9 +321,19 @@ pub struct ObjectType {
     /// Queueing cell offset from building origin (QueueingCell= in art.ini).
     /// Where miners wait outside the dock. Merged from art.ini during init.
     pub queueing_cell: Option<(u16, u16)>,
-    /// First docking offset from art.ini (DockingOffset0=X,Y,Z in leptons).
-    /// Where units sit during dock operations. Merged from art.ini during init.
-    pub docking_offset: Option<(i32, i32, i32)>,
+    /// All docking pads on this building, parsed from art.ini `DockingOffset0..N-1`.
+    /// Index in vec IS the pad index.
+    ///
+    /// After the art→rules merge:
+    /// - If art declared at least one `DockingOffset%d`, the vec is sized to
+    ///   `number_of_docks` (zero-padding any indices missing in art, truncating excess).
+    /// - If art declared none, the vec is left empty — consumers fall back to
+    ///   their own anchor (e.g. `refinery_pad_cell`'s rightmost-column default).
+    ///
+    /// Service depots / single-pad helipads / airfields with declared offsets
+    /// use this vec directly. Retail refineries (GAREFN/NAREFN/YAREFN) leave
+    /// it empty.
+    pub pads: Vec<DockPad>,
     /// Cells added to the rectangular foundation (from art.ini AddOccupy1..N).
     /// Merged from art.ini during init.
     pub add_occupy: Vec<(i16, i16)>,
@@ -722,6 +750,10 @@ impl ObjectType {
             strength: section.get_i32("Strength").unwrap_or(0),
             armor: section.get("Armor").unwrap_or("none").to_string(),
             speed: section.get_i32("Speed").unwrap_or(0),
+            weight: section
+                .get_f32("Weight")
+                .map(sim_from_f32)
+                .unwrap_or(SimFixed::lit("2.0")),
             accel_factor: section
                 .get_f32("AccelerationFactor")
                 .map(sim_from_f32)
@@ -817,8 +849,8 @@ impl ObjectType {
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_ascii_uppercase())
                 .collect(),
-            queueing_cell: None,  // merged from art.ini later
-            docking_offset: None, // merged from art.ini later
+            queueing_cell: None,       // merged from art.ini later
+            pads: Vec::new(),          // merged from art.ini later
             add_occupy: Vec::new(),    // merged from art.ini later
             remove_occupy: Vec::new(), // merged from art.ini later
             unloading_class: section.get("UnloadingClass").map(|s| s.to_string()),
@@ -1019,10 +1051,8 @@ impl ObjectType {
                     .map(parse_ivec3_offset)
                     .unwrap_or(IVec3::ZERO),
             ],
-            refinery_smoke_frames: section
-                .get_i32("RefinerySmokeFrames")
-                .unwrap_or(0)
-                .max(0) as u16,
+            refinery_smoke_frames: section.get_i32("RefinerySmokeFrames").unwrap_or(0).max(0)
+                as u16,
             gap_radius_in_cells: section
                 .get_i32("GapRadiusInCells")
                 .map(|n| n.clamp(0, u8::MAX as i32) as u8)
@@ -1039,9 +1069,18 @@ impl ObjectType {
 /// components default to 0.
 fn parse_ivec3_offset(raw: &str) -> IVec3 {
     let mut parts = raw.split(',').map(|s| s.trim());
-    let x = parts.next().and_then(|s| s.parse::<i32>().ok()).unwrap_or(0);
-    let y = parts.next().and_then(|s| s.parse::<i32>().ok()).unwrap_or(0);
-    let z = parts.next().and_then(|s| s.parse::<i32>().ok()).unwrap_or(0);
+    let x = parts
+        .next()
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(0);
+    let y = parts
+        .next()
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(0);
+    let z = parts
+        .next()
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(0);
     IVec3::new(x, y, z)
 }
 
@@ -1563,9 +1602,8 @@ mod tests {
 
     #[test]
     fn parses_air_range_bonus() {
-        let ini: IniFile = IniFile::from_str(
-            "[MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\nAirRangeBonus=4\n",
-        );
+        let ini: IniFile =
+            IniFile::from_str("[MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\nAirRangeBonus=4\n");
         let section = ini.section("MTNK").expect("section");
         let obj = ObjectType::from_ini_section("MTNK", section, ObjectCategory::Vehicle);
         assert_eq!(obj.air_range_bonus, Some(sim_from_f32(4.0)));
@@ -1577,5 +1615,49 @@ mod tests {
         let section = ini.section("MTNK").expect("section");
         let obj = ObjectType::from_ini_section("MTNK", section, ObjectCategory::Vehicle);
         assert_eq!(obj.air_range_bonus, None);
+    }
+
+    #[test]
+    fn parse_weight_default_two() {
+        let ini: IniFile = IniFile::from_str("[MTNK]\nStrength=300\n");
+        let section = ini.section("MTNK").expect("section");
+        let obj = ObjectType::from_ini_section("MTNK", section, ObjectCategory::Vehicle);
+        assert_eq!(obj.weight, SimFixed::lit("2.0"));
+    }
+
+    #[test]
+    fn parse_weight_custom() {
+        let ini: IniFile = IniFile::from_str("[HTNK]\nWeight=3.5\n");
+        let section = ini.section("HTNK").expect("section");
+        let obj = ObjectType::from_ini_section("HTNK", section, ObjectCategory::Vehicle);
+        assert_eq!(obj.weight, SimFixed::lit("3.5"));
+    }
+
+    #[test]
+    fn parse_retail_weight_apocalypse_is_three_point_five() {
+        // Retail rulesmd.ini: APOC (Apocalypse Tank) has Weight=3.5.
+        // The heaviest unit in stock retail is CARRIER (Aircraft Carrier) at Weight=5.
+        let ini_text = std::fs::read_to_string("ini/rulesmd.ini").expect("rulesmd.ini missing");
+        let ini = IniFile::from_str(&ini_text);
+        let apoc = ObjectType::from_ini_section(
+            "APOC",
+            ini.section("APOC").expect("APOC section"),
+            ObjectCategory::Vehicle,
+        );
+        assert_eq!(apoc.weight, SimFixed::lit("3.5"));
+    }
+
+    #[test]
+    fn parse_retail_weight_grizzly_defaults_to_two() {
+        // Retail rulesmd.ini: MTNK (Grizzly) has no Weight= line, so it should
+        // fall back to the engine default 2.0.
+        let ini_text = std::fs::read_to_string("ini/rulesmd.ini").expect("rulesmd.ini missing");
+        let ini = IniFile::from_str(&ini_text);
+        let mtnk = ObjectType::from_ini_section(
+            "MTNK",
+            ini.section("MTNK").expect("MTNK section"),
+            ObjectCategory::Vehicle,
+        );
+        assert_eq!(mtnk.weight, SimFixed::lit("2.0"));
     }
 }

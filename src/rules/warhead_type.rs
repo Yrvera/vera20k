@@ -51,8 +51,12 @@ pub struct WarheadType {
     // --- Bool fields (verified offsets from WarheadTypeClass::ReadINI) ---
     /// Conventional warhead — no special effects. Offset +0x14B.
     pub conventional: bool,
-    /// Rocks vehicles on impact. Offset +0x14C.
+    /// Area-damage rocker: detonation pushes a rocker impulse into every
+    /// vehicle in a 3×3 cell radius (Rocker= in [Warhead]). Default `no`.
     pub rocker: bool,
+    /// Direct-hit rocker: fires an impulse on the bullet's target if the
+    /// target is a vehicle (DirectRocker= in [Warhead]). Default `no`.
+    pub direct_rocker: bool,
     /// Spawns tiberium/ore on impact. Offset +0x14E.
     pub tiberium: bool,
     /// Bright flash on detonation. Offset +0x14F.
@@ -151,6 +155,7 @@ impl WarheadType {
             // Bool fields — all default false
             conventional: section.get_bool("Conventional").unwrap_or(false),
             rocker: section.get_bool("Rocker").unwrap_or(false),
+            direct_rocker: section.get_bool("DirectRocker").unwrap_or(false),
             tiberium: section.get_bool("Tiberium").unwrap_or(false),
             bright: section.get_bool("Bright").unwrap_or(false),
             prone_damage_basis_points: parse_prone_damage_basis_points(section),
@@ -299,6 +304,33 @@ mod tests {
         assert_eq!(ap.prone_damage_basis_points, 5_000);
         assert_eq!(gas.prone_damage_basis_points, 30_000);
         assert_eq!(raw.prone_damage_basis_points, 12_500);
+    }
+
+    #[test]
+    fn parse_rocker_default_false() {
+        let ini: IniFile = IniFile::from_str("[TestWH]\n");
+        let wh = WarheadType::from_ini_section("TestWH", ini.section("TestWH").unwrap());
+        assert!(!wh.rocker);
+        assert!(!wh.direct_rocker);
+    }
+
+    #[test]
+    fn parse_rocker_yes() {
+        let ini: IniFile = IniFile::from_str("[TestWH]\nRocker=yes\nDirectRocker=yes\n");
+        let wh = WarheadType::from_ini_section("TestWH", ini.section("TestWH").unwrap());
+        assert!(wh.rocker);
+        assert!(wh.direct_rocker);
+    }
+
+    #[test]
+    fn parse_retail_v3wh_has_rocker() {
+        let ini_text = std::fs::read_to_string("ini/rulesmd.ini").expect("rulesmd.ini missing");
+        let ini = IniFile::from_str(&ini_text);
+        let section = ini.section("V3WH").expect("V3WH missing from rulesmd.ini");
+        let wh = WarheadType::from_ini_section("V3WH", section);
+        assert!(wh.rocker, "V3WH should have Rocker=yes");
+        // V3WH does not set DirectRocker — default no.
+        assert!(!wh.direct_rocker);
     }
 
     #[test]

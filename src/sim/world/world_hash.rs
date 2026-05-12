@@ -263,10 +263,10 @@ impl Simulation {
             return;
         };
         1u8.hash(hasher);
-        let mut entries: Vec<(u16, u16, Option<u16>, Option<(u16, u16)>, u8)> =
-            grid.iter_occupied()
-                .map(|(rx, ry, c)| (rx, ry, c.type_id, c.footprint_origin, c.frame_offset))
-                .collect();
+        let mut entries: Vec<(u16, u16, Option<u16>, Option<(u16, u16)>, u8)> = grid
+            .iter_occupied()
+            .map(|(rx, ry, c)| (rx, ry, c.type_id, c.footprint_origin, c.frame_offset))
+            .collect();
         entries.sort();
         entries.len().hash(hasher);
         for e in &entries {
@@ -453,6 +453,22 @@ impl Simulation {
             } else {
                 0u8.hash(hasher);
             }
+
+            // Body rocking + slope-transition state. I16F16 doesn't implement
+            // Hash directly; .to_bits() gives the underlying i32.
+            if let Some(ref r) = entity.rocking {
+                1u8.hash(hasher);
+                r.angle_sideways.to_bits().hash(hasher);
+                r.angle_forwards.to_bits().hash(hasher);
+                r.vel_sideways.to_bits().hash(hasher);
+                r.vel_forwards.to_bits().hash(hasher);
+                r.is_ship_rocking.hash(hasher);
+                r.prev_slope.hash(hasher);
+                r.curr_slope.hash(hasher);
+                r.transition_ticks_remaining.hash(hasher);
+            } else {
+                0u8.hash(hasher);
+            }
         }
     }
 }
@@ -605,7 +621,8 @@ mod bridge_overlay_hash_tests {
     fn make_bridge_state_with_overlay(byte: u8) -> BridgeRuntimeState {
         let mut state = BridgeRuntimeState::default();
         state.test_seed_cell(
-            2, 2,
+            2,
+            2,
             BridgeRuntimeCell {
                 deck_present: true,
                 destroyable: true,
@@ -692,6 +709,85 @@ mod binary_frame_tests {
 }
 
 #[cfg(test)]
+mod rocking_hash_tests {
+    use super::Simulation;
+    use crate::map::entities::EntityCategory;
+    use crate::sim::components::{Health, RockingState};
+    use crate::sim::game_entity::GameEntity;
+    use crate::util::fixed_math::SimFixed;
+
+    fn make_sim_with_one_vehicle() -> Simulation {
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Americans");
+        let type_id = sim.interner.intern("HTNK");
+        let id = sim.next_stable_entity_id;
+        sim.next_stable_entity_id += 1;
+        let e = GameEntity::new(
+            id,
+            10,
+            10,
+            0,
+            0,
+            owner,
+            Health {
+                current: 400,
+                max: 400,
+            },
+            type_id,
+            EntityCategory::Unit,
+            0,
+            5,
+            true,
+        );
+        sim.entities.insert(e);
+        sim
+    }
+
+    #[test]
+    fn rocking_state_contributes_to_hash() {
+        let a = make_sim_with_one_vehicle();
+        let b = make_sim_with_one_vehicle();
+        assert_eq!(a.state_hash(), b.state_hash());
+
+        // Mutate only the rocking state of one — hashes must diverge.
+        let mut a = a;
+        let id = a.entities.values().next().unwrap().stable_id;
+        a.entities.get_mut(id).unwrap().rocking = Some(RockingState {
+            angle_sideways: SimFixed::lit("0.1"),
+            ..Default::default()
+        });
+        assert_ne!(a.state_hash(), b.state_hash());
+    }
+
+    #[test]
+    fn rocking_velocity_contributes_to_hash() {
+        let mut a = make_sim_with_one_vehicle();
+        let mut b = make_sim_with_one_vehicle();
+        let id_a = a.entities.values().next().unwrap().stable_id;
+        let id_b = b.entities.values().next().unwrap().stable_id;
+        a.entities.get_mut(id_a).unwrap().rocking = Some(RockingState {
+            vel_sideways: SimFixed::lit("0.01"),
+            ..Default::default()
+        });
+        b.entities.get_mut(id_b).unwrap().rocking = Some(RockingState {
+            vel_sideways: SimFixed::lit("0.02"),
+            ..Default::default()
+        });
+        assert_ne!(a.state_hash(), b.state_hash());
+    }
+
+    #[test]
+    fn rocking_none_vs_default_contributes_to_hash() {
+        let mut a = make_sim_with_one_vehicle();
+        let b = make_sim_with_one_vehicle();
+        let id = a.entities.values().next().unwrap().stable_id;
+        a.entities.get_mut(id).unwrap().rocking = Some(RockingState::default());
+        // a has Some(default), b has None — hashes must diverge.
+        assert_ne!(a.state_hash(), b.state_hash());
+    }
+}
+
+#[cfg(test)]
 mod c4_hash_tests {
     use super::Simulation;
     use crate::map::entities::EntityCategory;
@@ -712,7 +808,10 @@ mod c4_hash_tests {
             0,
             0,
             owner,
-            Health { current: 125, max: 125 },
+            Health {
+                current: 125,
+                max: 125,
+            },
             type_id,
             EntityCategory::Infantry,
             0,
@@ -741,4 +840,3 @@ mod c4_hash_tests {
         );
     }
 }
-

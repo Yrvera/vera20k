@@ -130,8 +130,7 @@ impl VxlFile {
 
         // Variable-length palette section: palette_count pages × 770 bytes.
         // Each page: 1 prefix byte + 768 RGB triplet bytes + 1 suffix byte.
-        let palette_section_size: usize =
-            (palette_count as usize) * VXL_PALETTE_PAGE_SIZE;
+        let palette_section_size: usize = (palette_count as usize) * VXL_PALETTE_PAGE_SIZE;
         let sections_start: usize = VXL_FILE_HEADER_SIZE + palette_section_size;
 
         // Validate room for the palette section before reading from it.
@@ -184,8 +183,7 @@ impl VxlFile {
         // Parse each limb: header + tailer + voxel data.
         let mut limbs: Vec<VxlLimb> = Vec::with_capacity(limb_count as usize);
         for i in 0..limb_count as usize {
-            let limb: VxlLimb =
-                parse_limb(data, i, sections_start, body_start, tailers_start)?;
+            let limb: VxlLimb = parse_limb(data, i, sections_start, body_start, tailers_start)?;
             limbs.push(limb);
         }
 

@@ -232,6 +232,21 @@ pub struct GeneralRules {
     /// Parsed from [AudioVisual] BuildingGarrisonedSound (typically "BuildingGarrisoned").
     /// None = no sound configured. Resolved at app layer to a sound.ini entry.
     pub building_garrisoned_sound: Option<String>,
+    /// Direct rocker force coefficient (DirectRockingCoefficient= in [AudioVisual]).
+    /// Multiplies the final DirectRocker impulse force. Default 1.5.
+    pub direct_rocking_coefficient: SimFixed,
+    /// Damping coefficient applied while a vehicle is moving (FallBackCoefficient=
+    /// in [AudioVisual]). Multiplies the base 0.002 rad/tick decay rate; smaller
+    /// values keep the body tilted longer between successive impulses. Default 0.1.
+    pub fallback_coefficient: SimFixed,
+    /// Fallback sound played at the arrival cell of a self-teleport when the
+    /// per-unit `ChronoInSound=` is unset. Parsed from `[General] ChronoInSound=`
+    /// (stock default `ChronoMinerTeleport`). `None` = no sound.
+    pub chrono_in_sound: Option<String>,
+    /// Fallback sound played at the departure cell of a self-teleport when the
+    /// per-unit `ChronoOutSound=` is unset. Parsed from `[General] ChronoOutSound=`
+    /// (stock default `ChronoMinerTeleport`). `None` = no sound.
+    pub chrono_out_sound: Option<String>,
     /// Interval in minutes between low-power degradation damage ticks on Powered=yes buildings.
     /// Parsed from DamageDelay= in [General]. Default 1.0 minute.
     pub damage_delay_minutes: f32,
@@ -492,7 +507,7 @@ impl Default for GeneralRules {
             parachute_render: None,
             amer_paradrop_list: vec![("E1".to_string(), 8)],
             ally_paradrop_list: vec![("E1".to_string(), 6)],
-            sov_paradrop_list:  vec![("E2".to_string(), 9)],
+            sov_paradrop_list: vec![("E2".to_string(), 9)],
             yuri_paradrop_list: vec![("INIT".to_string(), 6)],
             tiberium_grows: true,
             tiberium_spreads: true,
@@ -523,6 +538,10 @@ impl Default for GeneralRules {
             condition_red: 0.25,
             condition_red_x1000: 250,
             building_garrisoned_sound: None,
+            direct_rocking_coefficient: SimFixed::lit("1.5"),
+            fallback_coefficient: SimFixed::lit("0.1"),
+            chrono_in_sound: Some("ChronoMinerTeleport".to_string()),
+            chrono_out_sound: Some("ChronoMinerTeleport".to_string()),
             damage_delay_minutes: 1.0,
             spy_power_blackout_frames: 1000,
             damage_fire_types: vec![],
@@ -589,10 +608,9 @@ impl Default for GeneralRules {
             mutate_explosion_warhead: "MutateExplosion".to_string(),
             mutate_explosion: true,
             metallic_debris: vec![
-                "DBRIS1LG", "DBRIS2LG", "DBRIS3LG", "DBRIS4LG", "DBRIS5LG",
-                "DBRIS6LG", "DBRIS7LG", "DBRIS8LG", "DBRIS9LG", "DBRS10LG",
-                "DBRIS1SM", "DBRIS2SM", "DBRIS3SM", "DBRIS4SM", "DBRIS5SM",
-                "DBRIS6SM", "DBRIS7SM", "DBRIS8SM", "DBRIS9SM", "DBRS10SM",
+                "DBRIS1LG", "DBRIS2LG", "DBRIS3LG", "DBRIS4LG", "DBRIS5LG", "DBRIS6LG", "DBRIS7LG",
+                "DBRIS8LG", "DBRIS9LG", "DBRS10LG", "DBRIS1SM", "DBRIS2SM", "DBRIS3SM", "DBRIS4SM",
+                "DBRIS5SM", "DBRIS6SM", "DBRIS7SM", "DBRIS8SM", "DBRIS9SM", "DBRS10SM",
             ]
             .into_iter()
             .map(|s| s.to_string())
@@ -816,6 +834,24 @@ impl GeneralRules {
                 .and_then(|s| s.get("BuildingGarrisonedSound"))
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_string()),
+            direct_rocking_coefficient: audio_visual
+                .and_then(|s| s.get_f32("DirectRockingCoefficient"))
+                .map(sim_from_f32)
+                .unwrap_or(SimFixed::lit("1.5")),
+            fallback_coefficient: audio_visual
+                .and_then(|s| s.get_f32("FallBackCoefficient"))
+                .map(sim_from_f32)
+                .unwrap_or(SimFixed::lit("0.1")),
+            chrono_in_sound: general
+                .get("ChronoInSound")
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .or_else(|| Some("ChronoMinerTeleport".to_string())),
+            chrono_out_sound: general
+                .get("ChronoOutSound")
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .or_else(|| Some("ChronoMinerTeleport".to_string())),
             warp_in: AnimRef {
                 name: parse_anim_name("WarpIn", "WARPIN"),
                 rate_ms: defaults.warp_in.rate_ms,
@@ -880,7 +916,8 @@ impl GeneralRules {
             chrono_trigger: general.get_bool("ChronoTrigger").unwrap_or(true),
             chrono_minimum_delay: general.get_i32("ChronoMinimumDelay").unwrap_or(16),
             chrono_range_minimum: general.get_i32("ChronoRangeMinimum").unwrap_or(0),
-            purifier_bonus_pct: (general.get_percent("PurifierBonus").unwrap_or(0.25) * 100.0).round() as i32,
+            purifier_bonus_pct: (general.get_percent("PurifierBonus").unwrap_or(0.25) * 100.0)
+                .round() as i32,
             allied_survivor_divisor: general.get_i32("AlliedSurvivorDivisor").unwrap_or(500),
             soviet_survivor_divisor: general.get_i32("SovietSurvivorDivisor").unwrap_or(250),
             third_survivor_divisor: general.get_i32("ThirdSurvivorDivisor").unwrap_or(750),
@@ -1060,7 +1097,12 @@ impl GeneralRules {
         if let Some(ref pc) = self.parachute_render {
             log::info!(
                 "Parachute render config loaded: shp={} rate_ms={} loop_start={} end_frame={} z_adjust={} alt_palette={}",
-                pc.shp_name, pc.rate_ms, pc.loop_start, pc.end_frame, pc.z_adjust, pc.alt_palette,
+                pc.shp_name,
+                pc.rate_ms,
+                pc.loop_start,
+                pc.end_frame,
+                pc.z_adjust,
+                pc.alt_palette,
             );
         } else {
             log::warn!(
@@ -1432,12 +1474,8 @@ impl RuleSet {
     /// Resolve `[CombatDamage] IonCannonWarhead=` and `C4Warhead=` against the
     /// simulation interner. Call once at sim init after the warhead registry
     /// is populated and before any combat tick.
-    pub fn resolve_bridge_warheads(
-        &mut self,
-        interner: &mut crate::sim::intern::StringInterner,
-    ) {
-        self.ion_cannon_warhead_id =
-            Some(interner.intern(&self.bridge_warheads.ion_cannon_name));
+    pub fn resolve_bridge_warheads(&mut self, interner: &mut crate::sim::intern::StringInterner) {
+        self.ion_cannon_warhead_id = Some(interner.intern(&self.bridge_warheads.ion_cannon_name));
         self.c4_warhead_id = Some(interner.intern(&self.bridge_warheads.c4_name));
     }
 
@@ -1631,9 +1669,25 @@ impl RuleSet {
                     obj.queueing_cell = entry.queueing_cell;
                     dock_patched += 1;
                 }
-                // Merge DockingOffset0 from art.ini (TibSun legacy dock system).
-                if entry.docking_offset.is_some() {
-                    obj.docking_offset = entry.docking_offset;
+                // Multi-pad merge: when art declares at least one DockingOffset,
+                // size pads to NumberOfDocks (from rules.ini), zero-padding missing
+                // indices and truncating excess. Mirrors the original game's
+                // memory layout where the array is sized by NumberOfDocks and
+                // unspecified DockingOffset%d slots default to (0,0,0).
+                //
+                // When art declares ZERO DockingOffset entries (retail refineries
+                // like GAREFN/NAREFN/YAREFN), obj.pads is left empty so existing
+                // fallback paths (e.g. refinery_pad_cell's rightmost-column
+                // anchor) keep firing. Otherwise zero-padding would silently
+                // shift refinery dock positions, which is out of scope here.
+                if !entry.pads.is_empty() {
+                    let n = obj.number_of_docks as usize;
+                    obj.pads = entry.pads.iter().take(n).copied().collect();
+                    while obj.pads.len() < n {
+                        obj.pads.push(crate::rules::object_type::DockPad {
+                            lepton_offset: (0, 0, 0),
+                        });
+                    }
                 }
                 // Merge AddOccupy/RemoveOccupy from art.ini.
                 if !entry.add_occupy.is_empty() {
@@ -1822,9 +1876,7 @@ fn parse_prerequisite_groups(ini: &IniFile) -> HashMap<String, Vec<String>> {
 /// Two-pass parse of `[Particles]`: collect `Pending` entries from each
 /// referenced section, then resolve each `NextParticle=` name to a
 /// `ParticleTypeId`. Missing references log a warning and stay `None`.
-fn parse_particle_types(
-    ini: &IniFile,
-) -> (Vec<ParticleType>, HashMap<String, ParticleTypeId>) {
+fn parse_particle_types(ini: &IniFile) -> (Vec<ParticleType>, HashMap<String, ParticleTypeId>) {
     let ids: Vec<String> = parse_registry(ini, "Particles");
     if ids.is_empty() {
         return (Vec::new(), HashMap::new());
@@ -1847,7 +1899,10 @@ fn parse_particle_types(
     // Build the name → ID map (uppercase keys for case-insensitive lookup).
     let mut by_name: HashMap<String, ParticleTypeId> = HashMap::with_capacity(pending.len());
     for (idx, p) in pending.iter().enumerate() {
-        by_name.insert(p.partial.name.to_ascii_uppercase(), ParticleTypeId(idx as u32));
+        by_name.insert(
+            p.partial.name.to_ascii_uppercase(),
+            ParticleTypeId(idx as u32),
+        );
     }
 
     // Pass 2: resolve NextParticle references.
@@ -1882,7 +1937,10 @@ fn parse_particle_types(
 fn parse_particle_system_types(
     ini: &IniFile,
     p_by_name: &HashMap<String, ParticleTypeId>,
-) -> (Vec<ParticleSystemType>, HashMap<String, ParticleSystemTypeId>) {
+) -> (
+    Vec<ParticleSystemType>,
+    HashMap<String, ParticleSystemTypeId>,
+) {
     let ids: Vec<String> = parse_registry(ini, "ParticleSystems");
     if ids.is_empty() {
         return (Vec::new(), HashMap::new());
@@ -2080,6 +2138,35 @@ MutateWarhead=MyMutate\n\
     }
 
     #[test]
+    fn parse_rules_rocking_coefficients_defaults() {
+        // [General] must be present, otherwise GeneralRules::from_ini bails to
+        // Self::default(). Missing AudioVisual keys then fall back to defaults.
+        let ini = IniFile::from_str("[General]\n[AudioVisual]\n");
+        let r = GeneralRules::from_ini(&ini);
+        assert_eq!(r.direct_rocking_coefficient, SimFixed::lit("1.5"));
+        assert_eq!(r.fallback_coefficient, SimFixed::lit("0.1"));
+    }
+
+    #[test]
+    fn parse_rules_rocking_coefficients_explicit() {
+        let ini = IniFile::from_str(
+            "[General]\n[AudioVisual]\nDirectRockingCoefficient=2.0\nFallBackCoefficient=0.05\n",
+        );
+        let r = GeneralRules::from_ini(&ini);
+        assert_eq!(r.direct_rocking_coefficient, SimFixed::lit("2"));
+        assert_eq!(r.fallback_coefficient, SimFixed::lit("0.05"));
+    }
+
+    #[test]
+    fn parse_retail_rules_rocking_coefficients() {
+        let ini_text = std::fs::read_to_string("ini/rulesmd.ini").expect("rulesmd.ini missing");
+        let ini = IniFile::from_str(&ini_text);
+        let r = GeneralRules::from_ini(&ini);
+        assert_eq!(r.direct_rocking_coefficient, SimFixed::lit("1.5"));
+        assert_eq!(r.fallback_coefficient, SimFixed::lit("0.1"));
+    }
+
+    #[test]
     fn test_object_lookup() {
         let ini: IniFile = IniFile::from_str(&make_test_rules());
         let rules: RuleSet = RuleSet::from_ini(&ini).expect("Should parse");
@@ -2273,8 +2360,7 @@ MutateWarhead=MyMutate\n\
 
     #[test]
     fn metallic_debris_parses_from_ini() {
-        let ini =
-            IniFile::from_str("[General]\nMetallicDebris=ANIM1,ANIM2,ANIM3\n");
+        let ini = IniFile::from_str("[General]\nMetallicDebris=ANIM1,ANIM2,ANIM3\n");
         let g = GeneralRules::from_ini(&ini);
         assert_eq!(g.metallic_debris, vec!["ANIM1", "ANIM2", "ANIM3"]);
     }
@@ -2565,7 +2651,10 @@ DefaultSparkSystem=SparkSys
             rs.combat_damage.default_fire_stream_system.as_deref(),
             Some("FireStreamSys")
         );
-        assert_eq!(rs.combat_damage.default_spark_system.as_deref(), Some("SparkSys"));
+        assert_eq!(
+            rs.combat_damage.default_spark_system.as_deref(),
+            Some("SparkSys")
+        );
         // Other slots stay None when the key isn't present.
         assert!(rs.combat_damage.default_repair_particle_system.is_none());
     }
@@ -2602,7 +2691,7 @@ DefaultSparkSystem=SparkSys
         assert_eq!(g.paradrop_aircraft_type, "PDPLANE");
         assert_eq!(g.amer_paradrop_list, vec![("E1".to_string(), 8)]);
         assert_eq!(g.ally_paradrop_list, vec![("E1".to_string(), 6)]);
-        assert_eq!(g.sov_paradrop_list,  vec![("E2".to_string(), 9)]);
+        assert_eq!(g.sov_paradrop_list, vec![("E2".to_string(), 9)]);
         assert_eq!(g.yuri_paradrop_list, vec![("INIT".to_string(), 6)]);
     }
 
@@ -2729,7 +2818,8 @@ ZAdjust=-10
             "{}\n[BuildingTypes]\n0=GAREFN\n[GAREFN]\nName=Refinery\nCost=2000\nFoundation=4x3\n",
             make_test_rules()
         );
-        let art_text = "[GAREFN]\nFoundation=4x3\nAddOccupy1=-1,0\nAddOccupy2=-1,-1\nRemoveOccupy1=3,1\n";
+        let art_text =
+            "[GAREFN]\nFoundation=4x3\nAddOccupy1=-1,0\nAddOccupy2=-1,-1\nRemoveOccupy1=3,1\n";
         let rules_ini: IniFile = IniFile::from_str(&rules_text);
         let mut rules: RuleSet = RuleSet::from_ini(&rules_ini).expect("rules parse");
         let art_ini: IniFile = IniFile::from_str(art_text);
@@ -2810,7 +2900,9 @@ ZAdjust=-10
 
         // C4-capable units must have c4=true.
         for unit in &["GHOST", "TANY", "PTROOP"] {
-            let obj = rules.object(unit).unwrap_or_else(|| panic!("no [{}]", unit));
+            let obj = rules
+                .object(unit)
+                .unwrap_or_else(|| panic!("no [{}]", unit));
             assert!(obj.c4, "[{}] must have c4=true (C4=yes in INI)", unit);
         }
         // Non-C4 infantry must have c4=false.
@@ -2825,9 +2917,7 @@ ZAdjust=-10
         // AMMOCRAT. (The plan originally listed CAMSC09/CAMSC10 in error;
         // the retail INI does not set the flag on either.)
         for bld in &["CAMISC01", "CAMISC02", "CAMISC06", "AMMOCRAT"] {
-            let obj = rules
-                .object(bld)
-                .unwrap_or_else(|| panic!("no [{}]", bld));
+            let obj = rules.object(bld).unwrap_or_else(|| panic!("no [{}]", bld));
             assert!(
                 !obj.can_c4,
                 "[{}] must have can_c4=false (CanC4=no in INI)",
@@ -2843,5 +2933,75 @@ ZAdjust=-10
 
         // C4Delay must match the retail value (0.03 minutes = 27 ticks).
         assert_eq!(rules.c4_delay_ticks, 27, "C4Delay must parse to 27 ticks");
+    }
+
+    /// Helper: parse a (rules.ini, art.ini) pair into a merged RuleSet for
+    /// pad-merge tests. Keeps a minimal scaffolding (one BuildingType) so
+    /// `RuleSet::from_ini` does not reject the input.
+    fn parse_rules_with_art(building_section: &str, art_ini: &str) -> RuleSet {
+        let rules_str = format!(
+            "[General]\n\
+             BuildSpeed=1\n\
+             MultipleFactory=1\n\
+             LowPowerPenaltyModifier=1\n\
+             MinLowPowerProductionSpeed=1\n\
+             MaxLowPowerProductionSpeed=1\n\
+             [InfantryTypes]\n\
+             [VehicleTypes]\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             0=GAAIRC\n\
+             {}",
+            building_section,
+        );
+        let rules_ini = IniFile::from_str(&rules_str);
+        let mut rules = RuleSet::from_ini(&rules_ini).expect("rules parse");
+        let art_ini_parsed = IniFile::from_str(art_ini);
+        let art = crate::rules::art_data::ArtRegistry::from_ini(&art_ini_parsed);
+        rules.merge_art_data(&art);
+        rules
+    }
+
+    #[test]
+    fn merge_pads_zero_pads_missing_indices() {
+        // NumberOfDocks=4 but art only has DockingOffset0,1.
+        // Merge must produce pads.len() == 4 with indices 2,3 zero-init.
+        let rules = parse_rules_with_art(
+            "[GAAIRC]\nName=Airforce\nCost=1000\nStrength=1000\nNumberOfDocks=4\n",
+            "[GAAIRC]\n\
+             DockingOffset0=0,-128,0\n\
+             DockingOffset1=0,128,0\n",
+        );
+        let obj = rules.object("GAAIRC").expect("obj");
+        assert_eq!(obj.pads.len(), 4, "pads sized to NumberOfDocks");
+        assert_eq!(obj.pads[0].lepton_offset, (0, -128, 0));
+        assert_eq!(obj.pads[1].lepton_offset, (0, 128, 0));
+        assert_eq!(
+            obj.pads[2].lepton_offset,
+            (0, 0, 0),
+            "missing index 2 zero-init"
+        );
+        assert_eq!(
+            obj.pads[3].lepton_offset,
+            (0, 0, 0),
+            "missing index 3 zero-init"
+        );
+    }
+
+    #[test]
+    fn merge_pads_truncates_excess_offsets() {
+        // NumberOfDocks=2 but art has 4 offsets. Truncate.
+        let rules = parse_rules_with_art(
+            "[GAAIRC]\nName=Airforce\nCost=1000\nStrength=1000\nNumberOfDocks=2\n",
+            "[GAAIRC]\n\
+             DockingOffset0=0,0,0\n\
+             DockingOffset1=128,0,0\n\
+             DockingOffset2=256,0,0\n\
+             DockingOffset3=384,0,0\n",
+        );
+        let obj = rules.object("GAAIRC").expect("obj");
+        assert_eq!(obj.pads.len(), 2, "truncated to NumberOfDocks=2");
+        assert_eq!(obj.pads[0].lepton_offset, (0, 0, 0));
+        assert_eq!(obj.pads[1].lepton_offset, (128, 0, 0));
     }
 }

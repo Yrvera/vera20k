@@ -105,11 +105,11 @@ fn test_path_step_count_chebyshev_open_grid() {
     // Path length includes the start cell, so it equals chebyshev + 1.
     let grid: PathGrid = PathGrid::new(20, 20);
     let cases: &[((u16, u16), (u16, u16), usize)] = &[
-        ((0, 0), (5, 0), 6),   // pure cardinal: 5 E steps -> 6 cells
-        ((0, 0), (0, 7), 8),   // pure cardinal: 7 S steps -> 8 cells
-        ((0, 0), (4, 4), 5),   // pure diagonal: 4 SE steps -> 5 cells
-        ((0, 0), (5, 3), 6),   // mixed: max(5,3) = 5 -> 6 cells
-        ((0, 0), (7, 2), 8),   // mixed: max(7,2) = 7 -> 8 cells
+        ((0, 0), (5, 0), 6),    // pure cardinal: 5 E steps -> 6 cells
+        ((0, 0), (0, 7), 8),    // pure cardinal: 7 S steps -> 8 cells
+        ((0, 0), (4, 4), 5),    // pure diagonal: 4 SE steps -> 5 cells
+        ((0, 0), (5, 3), 6),    // mixed: max(5,3) = 5 -> 6 cells
+        ((0, 0), (7, 2), 8),    // mixed: max(7,2) = 7 -> 8 cells
         ((10, 10), (3, 15), 8), // both axes nonzero, dx=7 dy=5 -> 8 cells
     ];
     for &(start, goal, expected_len) in cases {
@@ -138,21 +138,74 @@ fn test_cliff_cost_detours_under_uniform_base() {
     // (all flat): 4 steps ≈ 4000 g_cost. Alt should win.
     let cells = vec![
         // Row 0 (y=0): 0, [cliff height=4], 0
-        PathCell { ground_walkable: true, bridge_walkable: false, transition: false, ground_level: 0, bridge_deck_level: 0 },
-        PathCell { ground_walkable: true, bridge_walkable: false, transition: false, ground_level: 4, bridge_deck_level: 0 },
-        PathCell { ground_walkable: true, bridge_walkable: false, transition: false, ground_level: 0, bridge_deck_level: 0 },
+        PathCell {
+            ground_walkable: true,
+            bridge_walkable: false,
+            transition: false,
+            ground_level: 0,
+            bridge_deck_level: 0,
+        },
+        PathCell {
+            ground_walkable: true,
+            bridge_walkable: false,
+            transition: false,
+            ground_level: 4,
+            bridge_deck_level: 0,
+        },
+        PathCell {
+            ground_walkable: true,
+            bridge_walkable: false,
+            transition: false,
+            ground_level: 0,
+            bridge_deck_level: 0,
+        },
         // Row 1 (y=1): all flat 0
-        PathCell { ground_walkable: true, bridge_walkable: false, transition: false, ground_level: 0, bridge_deck_level: 0 },
-        PathCell { ground_walkable: true, bridge_walkable: false, transition: false, ground_level: 0, bridge_deck_level: 0 },
-        PathCell { ground_walkable: true, bridge_walkable: false, transition: false, ground_level: 0, bridge_deck_level: 0 },
+        PathCell {
+            ground_walkable: true,
+            bridge_walkable: false,
+            transition: false,
+            ground_level: 0,
+            bridge_deck_level: 0,
+        },
+        PathCell {
+            ground_walkable: true,
+            bridge_walkable: false,
+            transition: false,
+            ground_level: 0,
+            bridge_deck_level: 0,
+        },
+        PathCell {
+            ground_walkable: true,
+            bridge_walkable: false,
+            transition: false,
+            ground_level: 0,
+            bridge_deck_level: 0,
+        },
         // Row 2 (y=2): all flat 0 (filler so 3x3)
-        PathCell { ground_walkable: true, bridge_walkable: false, transition: false, ground_level: 0, bridge_deck_level: 0 },
-        PathCell { ground_walkable: true, bridge_walkable: false, transition: false, ground_level: 0, bridge_deck_level: 0 },
-        PathCell { ground_walkable: true, bridge_walkable: false, transition: false, ground_level: 0, bridge_deck_level: 0 },
+        PathCell {
+            ground_walkable: true,
+            bridge_walkable: false,
+            transition: false,
+            ground_level: 0,
+            bridge_deck_level: 0,
+        },
+        PathCell {
+            ground_walkable: true,
+            bridge_walkable: false,
+            transition: false,
+            ground_level: 0,
+            bridge_deck_level: 0,
+        },
+        PathCell {
+            ground_walkable: true,
+            bridge_walkable: false,
+            transition: false,
+            ground_level: 0,
+            bridge_deck_level: 0,
+        },
     ];
     let grid = PathGrid::from_cells(cells, 3, 3);
-    let path = find_path(&grid, (0, 0), (2, 0))
-        .expect("path should exist over flat alt route");
+    let path = find_path(&grid, (0, 0), (2, 0)).expect("path should exist over flat alt route");
     // Direct path through cliff would visit (1,0). Alt route avoids it.
     assert!(
         !path.contains(&(1, 0)),
@@ -1760,4 +1813,127 @@ fn test_cliff_cost_uses_effective_height_not_ground_level() {
         path.is_some(),
         "Bridge(deck=4) to land(ground=4) should not have false cliff penalty"
     );
+}
+
+// ============================================================================
+// Bridge-locomotor A* regression tests (Plan: 2026-05-11 G3/G4 fixes).
+// Pin: diff-2 and diff-3 blocked, diff-4 with bridgehead allowed, diff-4
+// without bridgehead rejected, body-to-body diagonals still allowed.
+// ============================================================================
+
+fn make_grid_for_bridge_test() -> PathGrid {
+    // 10x10 grid. Default cells are ground_walkable at height 0.
+    PathGrid::new(10, 10)
+}
+
+#[test]
+fn astar_blocks_height_diff_2() {
+    // Adjacent ground cells at heights 0 and 2, no bridge. Should NOT path through.
+    let mut g = make_grid_for_bridge_test();
+    g.set_cell_for_test(2, 1, 2, false, false);
+    let result = astar_search(
+        &g,
+        (1, 1),
+        MovementLayer::Ground,
+        (3, 1),
+        &AStarOptions::default(),
+    );
+    if let Some(path) = result {
+        assert!(
+            !path.iter().any(|s| (s.rx, s.ry) == (2, 1)),
+            "A* must not route through diff-2 ground step"
+        );
+    }
+}
+
+#[test]
+fn astar_blocks_height_diff_3() {
+    let mut g = make_grid_for_bridge_test();
+    g.set_cell_for_test(2, 1, 3, false, false);
+    let result = astar_search(
+        &g,
+        (1, 1),
+        MovementLayer::Ground,
+        (3, 1),
+        &AStarOptions::default(),
+    );
+    if let Some(path) = result {
+        assert!(
+            !path.iter().any(|s| (s.rx, s.ry) == (2, 1)),
+            "A* must not route through diff-3 ground step"
+        );
+    }
+}
+
+#[test]
+fn astar_allows_height_diff_4_with_bridgehead() {
+    // Ground at (1,1) raw h=4 → bridgehead (2,1) raw h=0 (bridge_walkable+transition)
+    // → body (3,1) raw h=0 (bridge_walkable only).
+    let mut g = make_grid_for_bridge_test();
+    g.set_cell_for_test(1, 1, 4, false, false);
+    g.set_cell_for_test(2, 1, 0, true, true); // bridgehead
+    g.set_cell_for_test(3, 1, 0, true, false); // body
+    let result = astar_search(
+        &g,
+        (1, 1),
+        MovementLayer::Ground,
+        (3, 1),
+        &AStarOptions::default(),
+    );
+    assert!(result.is_some(), "A* must find a path through bridgehead");
+    let path = result.unwrap();
+    let step_2_1 = path.iter().find(|s| (s.rx, s.ry) == (2, 1));
+    assert!(step_2_1.is_some(), "Path must include (2,1)");
+    assert_eq!(
+        step_2_1.unwrap().layer,
+        MovementLayer::Bridge,
+        "Bridgehead step must be on Bridge layer (G3)"
+    );
+}
+
+#[test]
+fn astar_blocks_height_diff_4_without_bridgehead() {
+    // Same as above but (2,1) has transition=false (body cell, not bridgehead).
+    // A* must NOT route Ground→Bridge through this cell.
+    let mut g = make_grid_for_bridge_test();
+    g.set_cell_for_test(1, 1, 4, false, false);
+    g.set_cell_for_test(2, 1, 0, true, false); // body, no transition
+    g.set_cell_for_test(3, 1, 0, true, false);
+    let result = astar_search(
+        &g,
+        (1, 1),
+        MovementLayer::Ground,
+        (3, 1),
+        &AStarOptions::default(),
+    );
+    if let Some(path) = result {
+        let through_body = path
+            .iter()
+            .find(|s| (s.rx, s.ry) == (2, 1) && s.layer == MovementLayer::Bridge);
+        assert!(
+            through_body.is_none(),
+            "A* must not route Ground→Bridge through body cell without bridgehead (G3)"
+        );
+    }
+}
+
+#[test]
+fn astar_allows_body_to_body_diagonal() {
+    // Two adjacent body cells (bridge_walkable, no transition). Unit already on
+    // bridge can move between them. Regression: G3 fix must NOT over-tighten.
+    let mut g = make_grid_for_bridge_test();
+    g.set_cell_for_test(0, 1, 4, false, false); // ground at h=4
+    g.set_cell_for_test(1, 1, 0, true, true); // bridgehead
+    g.set_cell_for_test(2, 1, 0, true, false); // body
+    g.set_cell_for_test(2, 2, 0, true, false); // body diagonal
+    g.set_cell_for_test(3, 2, 0, true, true); // exit bridgehead
+    g.set_cell_for_test(4, 2, 4, false, false); // ground at h=4
+    let result = astar_search(
+        &g,
+        (0, 1),
+        MovementLayer::Ground,
+        (4, 2),
+        &AStarOptions::default(),
+    );
+    assert!(result.is_some(), "A* must find a path across the bridge");
 }

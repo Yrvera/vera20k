@@ -29,9 +29,7 @@ pub(crate) const DEPLOY_DEFAULT_TICKS: u16 = 55;
 /// `None` on `GameEntity.deploy_state` means upright (default). Any `Some(_)`
 /// variant gates the Set_Destination early-return — deployed units silently
 /// ignore Move/AttackMove/Enter/etc. until explicitly undeployed.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum DeployPhase {
     /// Deploy animation playing — sim ticks count down to Deployed.
     Deploying { ticks_remaining: u16 },

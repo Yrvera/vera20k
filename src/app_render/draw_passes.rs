@@ -188,12 +188,7 @@ pub(super) fn dispatch_draw_passes(
     // above Layer 2 (buildings, units, turrets) and above cliff redraw.
     // Passthrough pipeline (no depth interaction) — particles are translucent
     // and Y-sorted on the CPU, so no GPU depth read/write needed.
-    const PARTICLE_KEYS: [&str; 4] = [
-        "particle_p0",
-        "particle_p1",
-        "particle_p2",
-        "particle_p3",
-    ];
+    const PARTICLE_KEYS: [&str; 4] = ["particle_p0", "particle_p1", "particle_p2", "particle_p3"];
     for (i, key) in PARTICLE_KEYS.iter().enumerate() {
         if let Some(page) = state.sprite_atlas.as_ref().and_then(|a| a.page(i)) {
             if let Some((buf, count)) = pool.get(key) {

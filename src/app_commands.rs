@@ -302,11 +302,8 @@ pub(crate) fn launch_super_weapon_at_cursor(state: &mut AppState, section: &str)
 
     let owner: String = resolve_owner(state);
     let sw_type_id = intern_type(state, section);
-    let (rx, ry) = crate::app_sim_tick::screen_point_to_world_cell(
-        state,
-        state.cursor_x,
-        state.cursor_y,
-    );
+    let (rx, ry) =
+        crate::app_sim_tick::screen_point_to_world_cell(state, state.cursor_x, state.cursor_y);
     schedule_command(
         state,
         &owner,

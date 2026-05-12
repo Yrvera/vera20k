@@ -389,8 +389,8 @@ pub(super) fn advance_lepton_position(
 pub(super) struct CrossingOutput {
     /// If set, the caller must handle deferred occupancy outside the entity borrow.
     pub deferred_cell_check: Option<DeferredCellCheck>,
-    /// Bridge render state to apply after the loop.
-    pub pending_bridge_update: Option<Option<u8>>,
+    /// Bridge render state to apply after the loop. Predicate-driven; see movement_bridge.rs.
+    pub pending_bridge_update: super::movement_bridge::BridgeStateUpdate,
     /// The resolved movement layer after all crossings.
     pub active_layer: MovementLayer,
     /// Debug events accumulated during crossing checks.
@@ -436,7 +436,8 @@ pub(super) fn process_cell_crossings(
 ) -> CrossingOutput {
     let mut debug_events: Vec<(u32, DebugEventKind)> = Vec::new();
     let mut deferred_cell_check: Option<DeferredCellCheck> = None;
-    let mut pending_bridge_update: Option<Option<u8>> = None;
+    let mut pending_bridge_update: super::movement_bridge::BridgeStateUpdate =
+        super::movement_bridge::BridgeStateUpdate::Unchanged;
     let mut aborted_for_stuck: bool = false;
 
     loop {
@@ -464,7 +465,7 @@ pub(super) fn process_cell_crossings(
             break;
         }
 
-        let mut next_layer = target.layer_at(target.next_index);
+        let next_layer = target.layer_at(target.next_index);
         let mut layer_grid_ok: Option<bool> = None;
         let mut layer_terrain_ok: Option<bool> = None;
 
@@ -659,18 +660,16 @@ pub(super) fn process_cell_crossings(
         // Uses current sub_cell (from old cell). For infantry, reserve_destination
         // below may allocate a new sub-cell and correct it via update_sub_cell.
         occupancy.move_entity(old_rx, old_ry, nx, ny, entity_id, active_layer, *sub_cell);
-        // Bridge/layer resolution stays in one helper so cell transitions
-        // don't duplicate deck/ground height rules across the tick loop.
-        let (resolved_layer, bridge_update) = resolve_cell_transition_bridge_state(
+        // Bridge state resolution: apply the on_bridge cell-flag predicate.
+        // Returns ONLY a BridgeStateUpdate — loco.layer continues to follow
+        // A*'s path_layers (next_layer was set above from the path).
+        let bridge_update = resolve_cell_transition_bridge_state(
             position,
             path_grid,
+            (old_rx, old_ry),
+            (nx, ny),
             next_layer,
-            nx,
-            ny,
-            entity_id,
-            "cell_crossing",
         );
-        next_layer = resolved_layer;
         pending_bridge_update = bridge_update;
         active_layer = next_layer;
         if let Some(loco) = locomotor {

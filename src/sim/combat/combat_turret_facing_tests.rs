@@ -135,7 +135,10 @@ fn slow_rot_takes_more_frames_to_align_than_fast_rot() {
         .map(|f| f.is_rotating(sim_fast.binary_frame))
         .unwrap_or(false);
 
-    assert!(slow_rotating, "ROT=1 turret should still be rotating after 13 frames");
+    assert!(
+        slow_rotating,
+        "ROT=1 turret should still be rotating after 13 frames"
+    );
     assert!(
         !fast_rotating,
         "ROT=10 turret should be done rotating after 13 frames"

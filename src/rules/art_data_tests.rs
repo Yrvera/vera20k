@@ -264,9 +264,8 @@ fn test_resolve_overlay_image_id_and_candidates() {
 
 #[test]
 fn parses_add_occupy_from_ini() {
-    let ini: IniFile = IniFile::from_str(
-        "[GAREFN]\nAddOccupy1=-1,0\nAddOccupy2=-1,-1\nRemoveOccupy1=3,1\n",
-    );
+    let ini: IniFile =
+        IniFile::from_str("[GAREFN]\nAddOccupy1=-1,0\nAddOccupy2=-1,-1\nRemoveOccupy1=3,1\n");
     let registry: ArtRegistry = ArtRegistry::from_ini(&ini);
     let entry: &ArtEntry = registry.get("GAREFN").expect("GAREFN");
     assert_eq!(entry.add_occupy, vec![(-1, 0), (-1, -1)]);
@@ -284,8 +283,7 @@ fn add_remove_occupy_empty_when_no_keys() {
 
 #[test]
 fn add_occupy_skips_malformed_entries() {
-    let ini: IniFile =
-        IniFile::from_str("[FOO]\nAddOccupy1=not_a_pair\nAddOccupy2=1,2\n");
+    let ini: IniFile = IniFile::from_str("[FOO]\nAddOccupy1=not_a_pair\nAddOccupy2=1,2\n");
     let registry: ArtRegistry = ArtRegistry::from_ini(&ini);
     let entry: &ArtEntry = registry.get("FOO").expect("FOO");
     // Matches damage_fire_offsets pattern: malformed entry is skipped, loop
@@ -304,7 +302,8 @@ fn parses_anim_smudge_flags() {
           ForceBigCraters=yes\n\
           \n\
           [ANIMC]\n",
-    ).unwrap();
+    )
+    .unwrap();
     let reg = ArtRegistry::from_ini(&ini);
     let a = reg.get("ANIMA").unwrap();
     assert!(a.scorch);
@@ -317,4 +316,46 @@ fn parses_anim_smudge_flags() {
     assert!(!c.scorch);
     assert!(!c.crater);
     assert!(!c.force_big_craters);
+}
+
+#[test]
+fn parse_gaairc_four_pads() {
+    let ini: IniFile = IniFile::from_str(
+        "[GAAIRC]\n\
+         DockingOffset0=0,-128,0\n\
+         DockingOffset1=0,128,0\n\
+         DockingOffset2=256,-128,0\n\
+         DockingOffset3=256,128,0\n",
+    );
+    let reg: ArtRegistry = ArtRegistry::from_ini(&ini);
+    let entry: &ArtEntry = reg.get("GAAIRC").expect("GAAIRC entry");
+    assert_eq!(entry.pads.len(), 4, "should parse all 4 offsets");
+    assert_eq!(entry.pads[0].lepton_offset, (0, -128, 0));
+    assert_eq!(entry.pads[1].lepton_offset, (0, 128, 0));
+    assert_eq!(entry.pads[2].lepton_offset, (256, -128, 0));
+    assert_eq!(entry.pads[3].lepton_offset, (256, 128, 0));
+}
+
+#[test]
+fn parse_no_docking_offsets_yields_empty_vec() {
+    let ini: IniFile = IniFile::from_str("[GAHPAD]\nHeight=1\n");
+    let reg: ArtRegistry = ArtRegistry::from_ini(&ini);
+    let entry: &ArtEntry = reg.get("GAHPAD").expect("GAHPAD entry");
+    assert!(entry.pads.is_empty(), "no offsets → empty pads vec");
+}
+
+#[test]
+fn parse_partial_offsets_collects_what_exists() {
+    // art has only DockingOffset0 and DockingOffset2 (gap at 1).
+    // Parser collects what's present. The art→rules merge handles sizing to NumberOfDocks.
+    let ini: IniFile = IniFile::from_str(
+        "[ODD]\n\
+         DockingOffset0=64,0,0\n\
+         DockingOffset2=192,0,0\n",
+    );
+    let reg: ArtRegistry = ArtRegistry::from_ini(&ini);
+    let entry: &ArtEntry = reg.get("ODD").expect("ODD entry");
+    assert_eq!(entry.pads.len(), 2, "filter_map skips missing index 1");
+    assert_eq!(entry.pads[0].lepton_offset, (64, 0, 0));
+    assert_eq!(entry.pads[1].lepton_offset, (192, 0, 0));
 }

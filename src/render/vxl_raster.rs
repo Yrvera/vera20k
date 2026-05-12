@@ -267,10 +267,10 @@ fn compute_slope_rotation(slope_type: u8) -> Mat4 {
     let (compass_rad, tilt_rad): (f32, f32) = match slope_type {
         0 => return Mat4::IDENTITY,
         // Edge ramps (two adjacent corners raised one height level).
-        1 => (4.7124, EDGE_TILT_RAD),                      // West,  270°
-        2 => (std::f32::consts::PI, EDGE_TILT_RAD),        // North, 180°
+        1 => (4.7124, EDGE_TILT_RAD),               // West,  270°
+        2 => (std::f32::consts::PI, EDGE_TILT_RAD), // North, 180°
         3 => (std::f32::consts::FRAC_PI_2, EDGE_TILT_RAD), // East,  90°
-        4 => (0.0, EDGE_TILT_RAD),                         // South, 0°
+        4 => (0.0, EDGE_TILT_RAD),                  // South, 0°
         // Corner ramps (one corner raised one height level).
         5 => (3.9270, CORNER_TILT_RAD), // NW, 225°
         6 => (2.3562, CORNER_TILT_RAD), // NE, 135°
@@ -680,11 +680,7 @@ mod tests {
             (sprite.width * sprite.height) as usize
         );
 
-        let opaque_count: usize = sprite
-            .palette_indices
-            .iter()
-            .filter(|&&b| b != 0)
-            .count();
+        let opaque_count: usize = sprite.palette_indices.iter().filter(|&&b| b != 0).count();
         assert!(
             opaque_count >= 2,
             "Expected at least 2 opaque pixels, got {}",

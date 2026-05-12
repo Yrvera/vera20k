@@ -176,9 +176,10 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     if selected_ids.contains(&target.stable_id) {
                         if let Some(entity) = sim.entities.get(target.stable_id) {
                             if entity.category == EntityCategory::Structure {
-                                let obj = state.rules.as_ref().and_then(|r| {
-                                    r.object(sim.interner.resolve(entity.type_ref))
-                                });
+                                let obj = state
+                                    .rules
+                                    .as_ref()
+                                    .and_then(|r| r.object(sim.interner.resolve(entity.type_ref)));
                                 let cmd = if obj.map_or(false, |o| o.can_be_occupied)
                                     && entity.passenger_role.cargo().is_some_and(|c| !c.is_empty())
                                 {
@@ -570,11 +571,9 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                 let owner_id_for_fog = sim.interner.get(&owner).unwrap_or_default();
                 !sim.fog
                     .is_cell_revealed(owner_id_for_fog, target_rx, target_ry)
-                    || sim.fog.is_cell_gap_covered(
-                        owner_id_for_fog,
-                        target_rx,
-                        target_ry,
-                    )
+                    || sim
+                        .fog
+                        .is_cell_gap_covered(owner_id_for_fog, target_rx, target_ry)
             } else {
                 false
             };

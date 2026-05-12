@@ -7,7 +7,7 @@
 //! R8Uint atlas).
 //!
 //! Used to verify the GPU remap architecture's memory budget claim (atlas
-//! stays under 200 MB at 30-player saturation). The R8Uint atlas is 4×
+//! stays under 250 MB at 30-player saturation). The R8Uint atlas is 4×
 //! cheaper than the previous Rgba8Unorm atlas, AND drops the house
 //! dimension from the cache key — a combined ~120× memory win at
 //! saturation versus the pre-Phase-1 baseline.
@@ -22,7 +22,7 @@
 const VXL_TYPES_PER_PLAYER: usize = 30;
 
 /// Body/composite facing buckets (matches `unit_atlas::UNIT_FACING_BUCKETS`).
-const BODY_FACING_BUCKETS: usize = 64;
+const BODY_FACING_BUCKETS: usize = 128;
 
 /// Turret/barrel facing buckets (matches `unit_atlas::TURRET_FACING_BUCKETS`).
 const TURRET_FACING_BUCKETS: usize = 128;
@@ -40,9 +40,9 @@ const AVG_HVA_FRAMES: usize = 1;
 // Body and composite layers are ~48-56 px; turret/barrel layers are smaller
 // (~28-36 px) because the geometry footprint shrinks once the body is
 // excluded. Modeling these separately is more accurate than a uniform avg.
-const BODY_TILE_BYTES: usize = 56 * 56;        // ~3136 bytes
+const BODY_TILE_BYTES: usize = 56 * 56; // ~3136 bytes
 const TURRET_BARREL_TILE_BYTES: usize = 32 * 32; // ~1024 bytes
-const COMPOSITE_TILE_BYTES: usize = 48 * 48;     // ~2304 bytes
+const COMPOSITE_TILE_BYTES: usize = 48 * 48; // ~2304 bytes
 
 /// R8Uint atlas: 1 byte per pixel.
 const BYTES_PER_PIXEL: usize = 1;
@@ -71,25 +71,17 @@ fn main() {
     // Ground turret-bearing keys:
     //   Body × BODY_FACING × HVA_FRAMES × GROUND_SLOPE_VARIANTS
     //   + (Turret + Barrel) × TURRET_FACING × HVA_FRAMES × GROUND_SLOPE_VARIANTS
-    let body_keys: usize = ground_turret_types
-        * BODY_FACING_BUCKETS
-        * AVG_HVA_FRAMES
-        * GROUND_SLOPE_VARIANTS;
-    let turret_barrel_keys: usize = ground_turret_types
-        * 2
-        * TURRET_FACING_BUCKETS
-        * AVG_HVA_FRAMES
-        * GROUND_SLOPE_VARIANTS;
+    let body_keys: usize =
+        ground_turret_types * BODY_FACING_BUCKETS * AVG_HVA_FRAMES * GROUND_SLOPE_VARIANTS;
+    let turret_barrel_keys: usize =
+        ground_turret_types * 2 * TURRET_FACING_BUCKETS * AVG_HVA_FRAMES * GROUND_SLOPE_VARIANTS;
 
     // Ground composite (non-turret): single composite layer, 17 slopes.
-    let ground_composite_keys: usize = ground_composite_types
-        * BODY_FACING_BUCKETS
-        * AVG_HVA_FRAMES
-        * GROUND_SLOPE_VARIANTS;
+    let ground_composite_keys: usize =
+        ground_composite_types * BODY_FACING_BUCKETS * AVG_HVA_FRAMES * GROUND_SLOPE_VARIANTS;
 
     // Aircraft: single composite layer, 1 slope (slope_type = 0 always).
-    let aircraft_keys: usize =
-        aircraft_types * BODY_FACING_BUCKETS * AVG_HVA_FRAMES;
+    let aircraft_keys: usize = aircraft_types * BODY_FACING_BUCKETS * AVG_HVA_FRAMES;
 
     let composite_keys: usize = ground_composite_keys + aircraft_keys;
     let total_keys: usize = body_keys + turret_barrel_keys + composite_keys;
@@ -107,14 +99,26 @@ fn main() {
     println!("  ground turret-bearing:        {}", ground_turret_types);
     println!("  ground composite:             {}", ground_composite_types);
     println!("  aircraft:                     {}", aircraft_types);
-    println!("Body keys:                      {} ({:.1} MB)",
-        body_keys, body_bytes as f64 / 1_048_576.0);
-    println!("Turret + barrel keys:           {} ({:.1} MB)",
-        turret_barrel_keys, turret_barrel_bytes as f64 / 1_048_576.0);
-    println!("Composite keys (ground+air):    {} ({:.1} MB)",
-        composite_keys, composite_bytes as f64 / 1_048_576.0);
+    println!(
+        "Body keys:                      {} ({:.1} MB)",
+        body_keys,
+        body_bytes as f64 / 1_048_576.0
+    );
+    println!(
+        "Turret + barrel keys:           {} ({:.1} MB)",
+        turret_barrel_keys,
+        turret_barrel_bytes as f64 / 1_048_576.0
+    );
+    println!(
+        "Composite keys (ground+air):    {} ({:.1} MB)",
+        composite_keys,
+        composite_bytes as f64 / 1_048_576.0
+    );
     println!("Total atlas keys:               {}", total_keys);
-    println!("Estimated atlas memory:         {} bytes ({:.1} MB)", total_bytes, total_mb);
+    println!(
+        "Estimated atlas memory:         {} bytes ({:.1} MB)",
+        total_bytes, total_mb
+    );
     println!();
 
     // Compare against the pre-Phase-1 baseline:
@@ -126,16 +130,26 @@ fn main() {
         "Pre-Phase-1 baseline (30 houses × 4 bytes/pixel): {} bytes ({:.1} MB)",
         pre_phase1_bytes, pre_phase1_mb,
     );
-    println!("Phase 1 reduction:                                {}× smaller",
-        pre_phase1_bytes / total_bytes.max(1));
+    println!(
+        "Phase 1 reduction:                                {}× smaller",
+        pre_phase1_bytes / total_bytes.max(1)
+    );
 
-    // Verify the design's claimed budget (200 MB).
-    const BUDGET_MB: f64 = 200.0;
+    // Verify the design's claimed budget (250 MB after body facing step=2).
+    const BUDGET_MB: f64 = 250.0;
     println!();
     if total_mb <= BUDGET_MB {
-        println!("OK: under {:.0} MB budget ({:.1} MB headroom)", BUDGET_MB, BUDGET_MB - total_mb);
+        println!(
+            "OK: under {:.0} MB budget ({:.1} MB headroom)",
+            BUDGET_MB,
+            BUDGET_MB - total_mb
+        );
     } else {
-        eprintln!("FAIL: exceeds {:.0} MB budget by {:.1} MB", BUDGET_MB, total_mb - BUDGET_MB);
+        eprintln!(
+            "FAIL: exceeds {:.0} MB budget by {:.1} MB",
+            BUDGET_MB,
+            total_mb - BUDGET_MB
+        );
         std::process::exit(1);
     }
 }

@@ -15,16 +15,32 @@ fn main() {
     paths.sort();
 
     for path in &paths {
-        if !path.is_file() { continue; }
-        let Some(ext) = path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()) else { continue };
-        if !matches!(ext.as_str(), "mmx" | "yro" | "map" | "mpr" | "yrm") { continue; }
+        if !path.is_file() {
+            continue;
+        }
+        let Some(ext) = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+        else {
+            continue;
+        };
+        if !matches!(ext.as_str(), "mmx" | "yro" | "map" | "mpr" | "yrm") {
+            continue;
+        }
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
         let entry = by_ext.entry(ext.clone()).or_insert((0, 0));
         match map_file::load_from_path(path) {
             Ok(m) => {
                 entry.0 += 1;
-                println!("OK   {:<22} theater={:<10} {}x{}  cells={}",
-                    name, m.header.theater, m.header.width, m.header.height, m.cells.len());
+                println!(
+                    "OK   {:<22} theater={:<10} {}x{}  cells={}",
+                    name,
+                    m.header.theater,
+                    m.header.width,
+                    m.header.height,
+                    m.cells.len()
+                );
             }
             Err(e) => {
                 entry.1 += 1;

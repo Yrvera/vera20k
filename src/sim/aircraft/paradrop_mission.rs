@@ -48,10 +48,7 @@ pub fn tick_approach(
         }
     };
 
-    let cargo_count = aircraft
-        .passenger_role
-        .cargo()
-        .map_or(0, |c| c.count());
+    let cargo_count = aircraft.passenger_role.cargo().map_or(0, |c| c.count());
 
     // Cargo empty mid-approach → abort.
     if cargo_count == 0 {

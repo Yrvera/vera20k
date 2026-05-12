@@ -70,12 +70,21 @@ pub fn launch(
     let edge = match Edge::from_index(waypoint_edge_idx) {
         Some(e) => e,
         None => {
-            log::warn!("Paradrop launch: invalid waypoint_edge {}", waypoint_edge_idx);
+            log::warn!(
+                "Paradrop launch: invalid waypoint_edge {}",
+                waypoint_edge_idx
+            );
             return false;
         }
     };
     let edge_cell = match path_grid.and_then(|g| {
-        find_passable_at_edge(g, sim.fog.width, sim.fog.height, edge, (target_rx, target_ry))
+        find_passable_at_edge(
+            g,
+            sim.fog.width,
+            sim.fog.height,
+            edge,
+            (target_rx, target_ry),
+        )
     }) {
         Some(c) => c,
         None => {

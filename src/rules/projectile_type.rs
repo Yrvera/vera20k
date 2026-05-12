@@ -17,6 +17,7 @@
 //! - Part of rules/ — no dependencies on sim/, render/, ui/, etc.
 
 use crate::rules::ini_parser::IniSection;
+use fixed::types::I8F8;
 
 /// A projectile definition parsed from a rules.ini section.
 ///
@@ -125,6 +126,11 @@ pub struct ProjectileType {
     /// Projectile trail color as RGB. (+0x2D4)
     pub color: [u8; 3],
 
+    /// Per-bullet rocker force scale (RockerScale= in [Projectile] section).
+    /// Multiplies the DirectRocker impulse force. Default 1.0. Stored as Q8.8
+    /// (matches the gamemd representation).
+    pub rocker_scale: I8F8,
+
     // --- String/reference fields ---
     /// Weapon fired on airburst detonation (weapon type name).
     pub airburst_weapon: Option<String>,
@@ -222,6 +228,11 @@ impl ProjectileType {
                 .unwrap_or(0.0),
             // Color
             color,
+            // Rocker
+            rocker_scale: section
+                .get_f32("RockerScale")
+                .map(I8F8::from_num)
+                .unwrap_or(I8F8::ONE),
             // String/reference fields
             airburst_weapon: section.get("AirburstWeapon").map(|s| s.trim().to_string()),
             shrapnel_weapon: section.get("ShrapnelWeapon").map(|s| s.trim().to_string()),
@@ -374,6 +385,22 @@ mod tests {
         assert_eq!(proj.airburst_weapon.as_deref(), Some("V3Warhead"));
         assert_eq!(proj.shrapnel_weapon.as_deref(), Some("ShrapWep"));
         assert_eq!(proj.trailer.as_deref(), Some("V3TRAIL"));
+    }
+
+    #[test]
+    fn parse_rocker_scale_default_one() {
+        let ini: IniFile = IniFile::from_str("[TestBullet]\n");
+        let section = ini.section("TestBullet").unwrap();
+        let p = ProjectileType::from_ini_section("TestBullet", section, None);
+        assert_eq!(p.rocker_scale, I8F8::ONE);
+    }
+
+    #[test]
+    fn parse_rocker_scale_custom() {
+        let ini: IniFile = IniFile::from_str("[TestBullet]\nRockerScale=2.5\n");
+        let section = ini.section("TestBullet").unwrap();
+        let p = ProjectileType::from_ini_section("TestBullet", section, None);
+        assert_eq!(p.rocker_scale, I8F8::from_num(2.5));
     }
 
     #[test]

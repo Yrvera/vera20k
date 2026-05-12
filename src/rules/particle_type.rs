@@ -181,8 +181,14 @@ impl ParticleType {
             behaves_like,
             image: section.get("Image").map(|s| s.to_string()),
 
-            max_dc: section.get_i32("MaxDC").unwrap_or(0).clamp(0, u16::MAX as i32) as u16,
-            max_ec: section.get_i32("MaxEC").unwrap_or(0).clamp(0, u16::MAX as i32) as u16,
+            max_dc: section
+                .get_i32("MaxDC")
+                .unwrap_or(0)
+                .clamp(0, u16::MAX as i32) as u16,
+            max_ec: section
+                .get_i32("MaxEC")
+                .unwrap_or(0)
+                .clamp(0, u16::MAX as i32) as u16,
             damage: section.get_i32("Damage").unwrap_or(0),
             warhead: section.get("Warhead").map(|s| s.to_string()),
             start_frame: section
@@ -292,9 +298,18 @@ fn parse_rgb_color(raw: &str) -> [u8; 3] {
 /// Missing or unparseable components default to 0.
 fn parse_coord_offset(raw: &str) -> IVec3 {
     let mut parts = raw.split(',').map(|s| s.trim());
-    let x = parts.next().and_then(|s| s.parse::<i32>().ok()).unwrap_or(0);
-    let y = parts.next().and_then(|s| s.parse::<i32>().ok()).unwrap_or(0);
-    let z = parts.next().and_then(|s| s.parse::<i32>().ok()).unwrap_or(0);
+    let x = parts
+        .next()
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(0);
+    let y = parts
+        .next()
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(0);
+    let z = parts
+        .next()
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(0);
     IVec3::new(x, y, z)
 }
 
@@ -305,17 +320,35 @@ mod tests {
 
     #[test]
     fn behaves_like_string_to_enum() {
-        assert_eq!(ParticleBehavesLike::parse("Gas"), Some(ParticleBehavesLike::Gas));
-        assert_eq!(ParticleBehavesLike::parse("Smoke"), Some(ParticleBehavesLike::Smoke));
-        assert_eq!(ParticleBehavesLike::parse("Fire"), Some(ParticleBehavesLike::Fire));
-        assert_eq!(ParticleBehavesLike::parse("Spark"), Some(ParticleBehavesLike::Spark));
-        assert_eq!(ParticleBehavesLike::parse("Railgun"), Some(ParticleBehavesLike::Railgun));
+        assert_eq!(
+            ParticleBehavesLike::parse("Gas"),
+            Some(ParticleBehavesLike::Gas)
+        );
+        assert_eq!(
+            ParticleBehavesLike::parse("Smoke"),
+            Some(ParticleBehavesLike::Smoke)
+        );
+        assert_eq!(
+            ParticleBehavesLike::parse("Fire"),
+            Some(ParticleBehavesLike::Fire)
+        );
+        assert_eq!(
+            ParticleBehavesLike::parse("Spark"),
+            Some(ParticleBehavesLike::Spark)
+        );
+        assert_eq!(
+            ParticleBehavesLike::parse("Railgun"),
+            Some(ParticleBehavesLike::Railgun)
+        );
         assert_eq!(ParticleBehavesLike::parse("nope"), None);
     }
 
     #[test]
     fn behaves_like_parse_trims_whitespace() {
-        assert_eq!(ParticleBehavesLike::parse("  Gas  "), Some(ParticleBehavesLike::Gas));
+        assert_eq!(
+            ParticleBehavesLike::parse("  Gas  "),
+            Some(ParticleBehavesLike::Gas)
+        );
     }
 
     #[test]

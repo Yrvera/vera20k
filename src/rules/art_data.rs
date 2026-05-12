@@ -89,10 +89,12 @@ pub struct ArtEntry {
     /// Harvester queueing cell offset from building origin (QueueingCell= in art.ini).
     /// Where miners wait outside the dock when it is occupied. e.g. `(4, 1)` for GAREFN.
     pub queueing_cell: Option<(u16, u16)>,
-    /// First docking offset from art.ini (DockingOffset0=X,Y,Z).
-    /// Lepton offset from building origin where units dock. 256 leptons = 1 cell.
-    /// e.g. GAREFN has `DockingOffset0=0,-128,0`.
-    pub docking_offset: Option<(i32, i32, i32)>,
+    /// All `DockingOffset%d` entries actually present in this art.ini section,
+    /// in index order. Up to 8 (defensive ceiling for mod safety; retail uses
+    /// up to 4). The art→rules merge in [`crate::rules::ruleset`] is what
+    /// applies `NumberOfDocks`-aware sizing — see `ObjectType::pads` for the
+    /// merged shape.
+    pub pads: Vec<crate::rules::object_type::DockPad>,
     /// Pixel offsets where fire/smoke overlays appear when building health < ConditionYellow.
     /// Parsed from DamageFireOffset0=X,Y .. DamageFireOffset7=X,Y in art.ini. Max 8.
     pub damage_fire_offsets: Vec<(i32, i32)>,
@@ -269,17 +271,27 @@ impl ArtRegistry {
                 let y = parts.next()?.trim().parse::<u16>().ok()?;
                 Some((x, y))
             });
-            let docking_offset: Option<(i32, i32, i32)> =
-                section.get("DockingOffset0").and_then(|s| {
-                    let mut parts = s.split(',');
-                    let x = parts.next()?.trim().parse::<i32>().ok()?;
-                    let y = parts.next()?.trim().parse::<i32>().ok()?;
-                    let z = parts
-                        .next()
-                        .and_then(|v| v.trim().parse::<i32>().ok())
-                        .unwrap_or(0);
-                    Some((x, y, z))
-                });
+            // Multi-pad parser: read DockingOffset0..7 from art.ini.
+            // Over-reads here; the art→rules merge in ruleset.rs truncates or
+            // zero-pads to match rules.ini NumberOfDocks. 8 is a defensive
+            // ceiling for mod safety (retail uses up to 4).
+            let pads: Vec<crate::rules::object_type::DockPad> = (0..8)
+                .filter_map(|i| {
+                    let key = format!("DockingOffset{}", i);
+                    section.get(&key).and_then(|s| {
+                        let mut parts = s.split(',');
+                        let x = parts.next()?.trim().parse::<i32>().ok()?;
+                        let y = parts.next()?.trim().parse::<i32>().ok()?;
+                        let z = parts
+                            .next()
+                            .and_then(|v| v.trim().parse::<i32>().ok())
+                            .unwrap_or(0);
+                        Some(crate::rules::object_type::DockPad {
+                            lepton_offset: (x, y, z),
+                        })
+                    })
+                })
+                .collect();
             let damage_fire_offsets: Vec<(i32, i32)> = {
                 let mut offsets = Vec::new();
                 for i in 0..8 {
@@ -387,7 +399,7 @@ impl ArtRegistry {
                     fire_up,
                     extra_light,
                     queueing_cell,
-                    docking_offset,
+                    pads,
                     damage_fire_offsets,
                     height,
                     muzzle_flash_positions,
@@ -605,16 +617,9 @@ impl ArtRegistry {
         let mut populated: u32 = 0;
         let mut fallback: u32 = 0;
         for (name, image_id) in pending {
-            let candidates: Vec<String> = anim_shp_candidates(
-                Some(self),
-                &name,
-                &image_id,
-                theater_ext,
-                theater_name,
-            );
-            let shp_bytes: Option<&[u8]> = candidates
-                .iter()
-                .find_map(|c| asset_manager.get_ref(c));
+            let candidates: Vec<String> =
+                anim_shp_candidates(Some(self), &name, &image_id, theater_ext, theater_name);
+            let shp_bytes: Option<&[u8]> = candidates.iter().find_map(|c| asset_manager.get_ref(c));
             let Some(data) = shp_bytes else {
                 fallback += 1;
                 continue;

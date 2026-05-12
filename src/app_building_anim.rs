@@ -343,13 +343,18 @@ pub(crate) fn consume_bale_events(state: &mut AppState) {
     struct PerEvent {
         building_id: u64,
         special_anim: Option<(crate::sim::intern::InternedId, u16, u16, u16, u16)>,
-        particle_spawns: Vec<(crate::rules::particle_system_type::ParticleSystemTypeId, glam::IVec3)>,
+        particle_spawns: Vec<(
+            crate::rules::particle_system_type::ParticleSystemTypeId,
+            glam::IVec3,
+        )>,
     }
 
     let prepared: Vec<PerEvent> = {
-        let (Some(sim), Some(rules), Some(art_reg)) =
-            (state.simulation.as_ref(), state.rules.as_ref(), state.art_registry.as_ref())
-        else {
+        let (Some(sim), Some(rules), Some(art_reg)) = (
+            state.simulation.as_ref(),
+            state.rules.as_ref(),
+            state.art_registry.as_ref(),
+        ) else {
             return;
         };
         if sim.bale_events.is_empty() {
@@ -380,7 +385,13 @@ pub(crate) fn consume_bale_events(state: &mut AppState) {
                 }
                 let upper = a.anim_type.to_uppercase();
                 let id = sim.interner.get(&upper)?;
-                Some((id, a.loop_start, a.loop_end, a.start_frame.max(a.loop_start), a.rate))
+                Some((
+                    id,
+                    a.loop_start,
+                    a.loop_end,
+                    a.start_frame.max(a.loop_start),
+                    a.rate,
+                ))
             });
 
             // Resolve the particle system type id once. Skip if not configured.
@@ -401,11 +412,7 @@ pub(crate) fn consume_bale_events(state: &mut AppState) {
                         }
                         particle_spawns.push((
                             ps_id,
-                            glam::IVec3::new(
-                                origin_x + offset.x,
-                                origin_y + offset.y,
-                                offset.z,
-                            ),
+                            glam::IVec3::new(origin_x + offset.x, origin_y + offset.y, offset.z),
                         ));
                     }
                 }
@@ -460,7 +467,15 @@ pub(crate) fn consume_bale_events(state: &mut AppState) {
 
         // 2) Spawn particle systems at each non-zero offset.
         for (ps_id, coords) in ev.particle_spawns {
-            sim.spawn_particle_system(ps_id, coords, None, Some(ev.building_id), coords, None, rules);
+            sim.spawn_particle_system(
+                ps_id,
+                coords,
+                None,
+                Some(ev.building_id),
+                coords,
+                None,
+                rules,
+            );
         }
     }
 

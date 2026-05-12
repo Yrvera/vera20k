@@ -26,8 +26,7 @@ use super::helpers::{compute_sprite_depth_params, in_view};
 /// Latin-square jitter for healthy bridge body frames at base state byte 0
 /// (NS) or 9 (EW). Verified raw memory read at gamemd's `g_LatinSquare`
 /// (RE doc §5; ledger #1).
-const BRIDGE_BODY_LATIN_SQUARE: [u8; 16] =
-    [0, 1, 2, 3, 3, 2, 1, 0, 2, 3, 0, 1, 1, 0, 3, 2];
+const BRIDGE_BODY_LATIN_SQUARE: [u8; 16] = [0, 1, 2, 3, 3, 2, 1, 0, 2, 3, 0, 1, 1, 0, 3, 2];
 
 /// Body Y offset for state bytes 0..8 (NS axis — BRIDGE2 / BRIDGEB2).
 /// `-(CellHeight * 2 + 1) = -31px`. Matches the legacy
@@ -137,9 +136,7 @@ pub fn build_bridge_body_instances_inner(
         }
 
         let Some(spr) = atlas.body_entry(name, frame) else {
-            log::warn!(
-                "bridge body atlas miss: name={name} frame={frame} cell=({rx},{ry})"
-            );
+            log::warn!("bridge body atlas miss: name={name} frame={frame} cell=({rx},{ry})");
             continue;
         };
 
@@ -167,7 +164,7 @@ pub fn build_bridge_body_instances_inner(
 
 /// Thin `AppState` wrapper around `build_bridge_body_instances_inner`. Pulls
 /// the seven fields the inner function needs out of `state` and forwards.
-pub fn build_bridge_body_instances(
+pub(crate) fn build_bridge_body_instances(
     state: &AppState,
     sw: f32,
     sh: f32,
@@ -207,7 +204,7 @@ pub fn build_bridge_body_instances(
 /// Step 5 pass 2). Shadow frame = `(frame_count / 2) + state`. EW states
 /// 9..17 get a `(BRIDGE_SHADOW_EW_DX, +BRIDGE_SHADOW_EW_DY)` shift per
 /// ledger #9–10. Drawn passthrough (Z-test ON, Z-write OFF, neutral tint).
-pub fn build_bridge_shadow_instances(
+pub(crate) fn build_bridge_shadow_instances(
     state: &AppState,
     sw: f32,
     sh: f32,
@@ -266,9 +263,7 @@ pub fn build_bridge_shadow_instances(
         }
 
         let Some(spr) = atlas.shadow_entry(name, frame) else {
-            log::warn!(
-                "bridge shadow atlas miss: name={name} frame={frame} cell=({rx},{ry})"
-            );
+            log::warn!("bridge shadow atlas miss: name={name} frame={frame} cell=({rx},{ry})");
             continue;
         };
 
@@ -296,7 +291,7 @@ pub fn build_bridge_shadow_instances(
 /// Drawn AFTER unit/ground merge AND AFTER cliff redraw, BEFORE debug — see
 /// `draw_passes.rs` ordering. Skips cells where the railing-table entry is
 /// `None` (`shp_frame_1based == 0` ⇒ no railing for this sub-tile).
-pub fn build_bridge_railing_instances(
+pub(crate) fn build_bridge_railing_instances(
     state: &AppState,
     sw: f32,
     sh: f32,
@@ -389,7 +384,11 @@ fn resolve_bridge_kind_and_sub_idx(
     } else {
         return None;
     };
-    let sub_idx: u8 = state.resolved_terrain.as_ref()?.cell(rx, ry)?.final_sub_tile;
+    let sub_idx: u8 = state
+        .resolved_terrain
+        .as_ref()?
+        .cell(rx, ry)?
+        .final_sub_tile;
     Some((kind, sub_idx))
 }
 

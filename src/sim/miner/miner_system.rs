@@ -213,18 +213,19 @@ fn process_miner(
 
 // -- State handlers --
 
-fn handle_search_ore(
-    sim: &Simulation,
-    config: &MinerConfig,
-    _path_grid: Option<&PathGrid>,
-    snap: &mut MinerSnapshot,
-) {
-    let search_center = snap.miner.last_harvest_cell.unwrap_or((snap.rx, snap.ry));
-
-    // Build a reachability filter from the zone grid + harvester locomotor.
-    // If any of (zone_grid, locomotor, effective zone cell) is missing, fall
-    // back to unfiltered search for this tick — the next tick will likely
-    // succeed once the harvester moves to a passable cell.
+/// Build a zone-grid-based reachability filter for ore scans.
+///
+/// Returns `None` if any of (zone_grid, locomotor, effective zone cell)
+/// is missing. In that case the caller falls back to an unfiltered scan
+/// for this tick — the next tick will likely succeed once the harvester
+/// moves to a passable cell.
+///
+/// Shared by `handle_search_ore` (State 0 fresh search) and
+/// `handle_harvest` (State 1 cell-depletion continuation scan).
+fn build_reachable_filter<'a>(
+    sim: &'a Simulation,
+    snap: &MinerSnapshot,
+) -> Option<Box<dyn Fn((u16, u16)) -> bool + 'a>> {
     let entity = sim.entities.get(snap.entity_id);
     let mz = entity
         .and_then(|e| e.locomotor.as_ref())
@@ -238,14 +239,25 @@ fn handle_search_ore(
         .as_ref()
         .and_then(|zg| effective_zone_cell(zg, mz, snap.rx, snap.ry));
 
-    type OreFilter<'a> = dyn Fn((u16, u16)) -> bool + 'a;
-    let reachable_filter: Option<Box<OreFilter<'_>>> =
-        match (sim.zone_grid.as_ref(), harvester_anchor) {
-            (Some(zg), Some(anchor)) => Some(Box::new(move |ore_cell: (u16, u16)| {
-                ore_reachable(zg, mz, layer, anchor, ore_cell)
-            })),
-            _ => None,
-        };
+    match (sim.zone_grid.as_ref(), harvester_anchor) {
+        (Some(zg), Some(anchor)) => Some(Box::new(move |ore_cell: (u16, u16)| {
+            ore_reachable(zg, mz, layer, anchor, ore_cell)
+        })),
+        _ => None,
+    }
+}
+
+fn handle_search_ore(
+    sim: &Simulation,
+    config: &MinerConfig,
+    _path_grid: Option<&PathGrid>,
+    snap: &mut MinerSnapshot,
+) {
+    let search_center = snap.miner.last_harvest_cell.unwrap_or((snap.rx, snap.ry));
+
+    // Reachability filter — see build_reachable_filter for the fallback
+    // semantics when zone_grid / locomotor / anchor is missing.
+    let reachable_filter = build_reachable_filter(sim, snap);
     let filter_ref: Option<&dyn Fn((u16, u16)) -> bool> = reachable_filter.as_deref();
 
     // Try local continuation scan first (short radius around last harvest spot).
@@ -405,39 +417,67 @@ fn handle_harvest(
     }
 
     let cell = (snap.rx, snap.ry);
+    let empty: u16 = snap
+        .miner
+        .capacity_bales
+        .saturating_sub(snap.miner.cargo.len() as u16);
 
-    // Try to extract one bale from the cell.
-    let bale = extract_bale(sim, cell, config);
-    if let Some(bale) = bale {
-        snap.miner.cargo.push(bale);
+    // One extraction call drains min(empty_capacity, cell_density) bales
+    // in a single atomic mutation (matches gamemd's Harvest_Ore_Tick).
+    let bales = extract_bales_max(sim, cell, config, empty);
+
+    if !bales.is_empty() {
+        snap.miner.cargo.extend(bales);
         snap.miner.last_harvest_cell = Some(cell);
 
         if snap.miner.is_full() {
-            // Full — begin return.
             begin_return(sim, rules, config, path_grid, snap);
             return;
         }
-
-        // Cell still has resources? Continue harvesting.
-        let still_has = sim
-            .production
-            .resource_nodes
-            .get(&cell)
-            .is_some_and(|n| n.remaining > 0);
-        if still_has {
-            snap.miner.harvest_timer = config.harvest_tick_interval;
-            return;
-        }
+        // Bales extracted but miner not full → cell has either been
+        // drained (multi-bale exhausted it) or still has more density
+        // (capacity capped this call). Reset timer; next tick re-enters
+        // Harvest. If the cell is now empty the next call returns 0 and
+        // we fall through to short-scan; if it still has density we wait
+        // 18 frames per gamemd's step-counter gate.
+        snap.miner.harvest_timer = config.harvest_tick_interval;
+        return;
     }
 
-    // Cell depleted (or was already empty). If we have some cargo, return.
-    if !snap.miner.cargo.is_empty() {
+    // No bales extracted (cell empty). Mirrors gamemd Mission_Harvest
+    // case 1 when Harvest_Ore_Tick returns 0:
+    //   1. Full Harvester → state 2 (return), no scan.
+    //   2. Otherwise run a TiberiumShortScan continuation scan from the
+    //      current cell. Hit → keep harvesting (we use MoveToOre, which
+    //      re-enters Harvest on arrival).
+    //   3. Miss → state 2 (return), regardless of cargo. Empty miners
+    //      detour to the refinery and re-scan from there, matching the
+    //      original observable travel path.
+    if snap.miner.is_full() {
         begin_return(sim, rules, config, path_grid, snap);
         return;
     }
 
-    // No cargo — search for more ore (local continuation).
-    snap.miner.state = MinerState::SearchOre;
+    // Short scan. The filter's closure captures `&sim`; scope it so the
+    // immutable borrow drops before `begin_return` needs `&mut sim` below.
+    let continuation_target = {
+        let reachable_filter = build_reachable_filter(sim, snap);
+        let filter_ref: Option<&dyn Fn((u16, u16)) -> bool> = reachable_filter.as_deref();
+        search_local_ore(
+            &sim.production.resource_nodes,
+            (snap.rx, snap.ry),
+            config.local_continuation_radius,
+            filter_ref,
+        )
+    };
+    if let Some(next_cell) = continuation_target {
+        snap.miner.target_ore_cell = Some(next_cell);
+        snap.miner.state = MinerState::MoveToOre;
+        return;
+    }
+
+    // Scan miss → return to refinery.
+    begin_return(sim, rules, config, path_grid, snap);
 }
 
 fn handle_return(
@@ -478,7 +518,13 @@ fn handle_return(
                         (snap.rx, snap.ry, snap.z),
                         (dock.0, dock.1, snap.z),
                     );
-                    issue_teleport_command(&mut sim.entities, snap.entity_id, dock, &rules.general, true);
+                    issue_teleport_command(
+                        &mut sim.entities,
+                        snap.entity_id,
+                        dock,
+                        &rules.general,
+                        true,
+                    );
                     // Stay in ReturnToRefinery — the teleport guard above
                     // will wait one tick for Relocate to land, then adjacency
                     // check below transitions to Dock/WaitForDock.
@@ -561,7 +607,13 @@ fn handle_forced_return(
                         (snap.rx, snap.ry, snap.z),
                         (dock.0, dock.1, snap.z),
                     );
-                    issue_teleport_command(&mut sim.entities, snap.entity_id, dock, &rules.general, true);
+                    issue_teleport_command(
+                        &mut sim.entities,
+                        snap.entity_id,
+                        dock,
+                        &rules.general,
+                        true,
+                    );
                     // Stay in ForcedReturn — teleport guard waits one tick for
                     // Relocate to land, then handle_return below takes over.
                     return;
@@ -623,6 +675,71 @@ pub(crate) fn extract_bale(
     })
 }
 
+/// Drain as many bales from `cell` as fit within `empty_capacity_bales`.
+///
+/// Mirrors gamemd's harvester per-tick extraction:
+///   amount    = ftol(Storage - current_load)   // bales requested
+///   extracted = Reduce_Tiberium(amount)        // clamped to cell density
+///   AddAmount(extracted, type)                 // one storage update
+///
+/// One call drains `min(empty_capacity_bales, cell_density_levels)` bales
+/// in a single atomic mutation: one `node.remaining` decrement and one
+/// overlay update (or removal). Returns an empty Vec when the cell is
+/// missing, has `remaining == 0`, or `empty_capacity_bales == 0`.
+pub(crate) fn extract_bales_max(
+    sim: &mut Simulation,
+    cell: (u16, u16),
+    config: &MinerConfig,
+    empty_capacity_bales: u16,
+) -> Vec<CargoBale> {
+    if empty_capacity_bales == 0 {
+        return Vec::new();
+    }
+    let Some(node) = sim.production.resource_nodes.get(&cell) else {
+        return Vec::new();
+    };
+    if node.remaining == 0 {
+        return Vec::new();
+    }
+    let (value, base): (u16, u16) = match node.resource_type {
+        ResourceType::Ore => (config.ore_bale_value, 120),
+        ResourceType::Gem => (config.gem_bale_value, 180),
+    };
+    let resource_type = node.resource_type;
+    let density_levels = node.remaining / base;
+    if density_levels == 0 {
+        return Vec::new();
+    }
+    let n: u16 = empty_capacity_bales.min(density_levels);
+    let remaining_after: u16 = node.remaining - n * base;
+
+    let bales: Vec<CargoBale> = (0..n)
+        .map(|_| CargoBale {
+            resource_type,
+            value,
+        })
+        .collect();
+
+    if remaining_after == 0 {
+        sim.production.resource_nodes.remove(&cell);
+        if let Some(grid) = &mut sim.overlay_grid {
+            grid.clear_overlay(cell.0, cell.1);
+        }
+    } else {
+        sim.production
+            .resource_nodes
+            .get_mut(&cell)
+            .expect("node existed above")
+            .remaining = remaining_after;
+        if let Some(grid) = &mut sim.overlay_grid {
+            let frame = (remaining_after / base).saturating_sub(1).min(11) as u8;
+            grid.set_overlay_data(cell.0, cell.1, frame);
+        }
+    }
+
+    bales
+}
+
 /// Begin the return-to-refinery sequence.
 ///
 /// Chrono miners warp to the queue cell (outside the building footprint) via
@@ -663,7 +780,13 @@ fn begin_return(
                     (snap.rx, snap.ry, snap.z),
                     (dock.0, dock.1, snap.z),
                 );
-                issue_teleport_command(&mut sim.entities, snap.entity_id, dock, &rules.general, true);
+                issue_teleport_command(
+                    &mut sim.entities,
+                    snap.entity_id,
+                    dock,
+                    &rules.general,
+                    true,
+                );
             }
             // Both far (teleporting) and close (driving) → ReturnToRefinery.
             snap.miner.state = MinerState::ReturnToRefinery;
@@ -739,9 +862,14 @@ fn spawn_warp_effects(
 
     // Resolve per-unit ChronoOut/InSound and emit positional sound events.
     // Source cell gets ChronoOutSound; destination gets ChronoInSound.
+    // Per-unit value wins; if absent, fall back to the Rules [General] default.
     let obj = rules.object_case_insensitive(sim.interner.resolve(type_id));
-    let chrono_out = obj.and_then(|o| o.chrono_out_sound.clone());
-    let chrono_in = obj.and_then(|o| o.chrono_in_sound.clone());
+    let chrono_out = obj
+        .and_then(|o| o.chrono_out_sound.clone())
+        .or_else(|| rules.general.chrono_out_sound.clone());
+    let chrono_in = obj
+        .and_then(|o| o.chrono_in_sound.clone())
+        .or_else(|| rules.general.chrono_in_sound.clone());
     if let Some(name) = chrono_out {
         let sound_id = sim.interner.intern(&name);
         sim.sound_events.push(SimSoundEvent::ChronoTeleport {

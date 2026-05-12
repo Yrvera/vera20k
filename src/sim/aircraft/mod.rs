@@ -74,6 +74,9 @@ pub enum AircraftMission {
         sub_state: u8,
         /// Ticks remaining until next ammo point is restored (during reloading).
         reload_timer: u32,
+        /// Pad index assigned to this aircraft on the airfield (0-based).
+        /// Meaningful once `sub_state >= 1` (after pad reservation succeeds).
+        pad_index: u8,
     },
 
     /// Parked on helipad pad — freshly built, waiting for player command.
@@ -82,6 +85,8 @@ pub enum AircraftMission {
     DockedIdle {
         /// Airfield entity stable_id this aircraft is docked at.
         airfield_id: u64,
+        /// Pad index this aircraft is parked on (0-based).
+        pad_index: u8,
     },
 
     /// Paradrop carrier flying in toward the drop target.
@@ -300,10 +305,12 @@ pub fn tick_aircraft_missions(
                 // Cell targets resolve to cell-center coords via the helper.
                 if matches!(*sub_state, 3 | 4) {
                     if let Some(entity) = sim.entities.get(snap.id) {
-                        if let Some(status) = crate::sim::aircraft::attack_mission::aircraft_target_status(
-                            entity.attack_target.as_ref(),
-                            &sim.entities,
-                        ) {
+                        if let Some(status) =
+                            crate::sim::aircraft::attack_mission::aircraft_target_status(
+                                entity.attack_target.as_ref(),
+                                &sim.entities,
+                            )
+                        {
                             let dx = (entity.position.rx as i32 - status.rx as i32).abs();
                             let dy = (entity.position.ry as i32 - status.ry as i32).abs();
                             let dist_cells = dx.max(dy);
@@ -389,10 +396,13 @@ pub fn tick_aircraft_missions(
                 let dist = dx.max(dy);
 
                 if dist <= 2 {
+                    // sub_state 0 = WaitForDock; pad_index will be overwritten
+                    // by the try_reserve return once a pad is granted.
                     m.new_mission = AircraftMission::Docking {
                         airfield_id: *airfield_id,
                         sub_state: 0,
                         reload_timer: 0,
+                        pad_index: 0,
                     };
                 } else if entity.movement_target.is_none() {
                     m.move_to = Some((dock_rx, dock_ry));
@@ -403,6 +413,7 @@ pub fn tick_aircraft_missions(
                 airfield_id,
                 sub_state,
                 reload_timer,
+                pad_index,
             } => {
                 let entity = match sim.entities.get(snap.id) {
                     Some(e) => e,
@@ -426,7 +437,7 @@ pub fn tick_aircraft_missions(
                             .object(type_str)
                             .map(|o| o.number_of_docks.max(1))
                             .unwrap_or(1);
-                        if sim.production.airfield_docks.try_reserve(
+                        if let Some(reserved_pad) = sim.production.airfield_docks.try_reserve(
                             *airfield_id,
                             snap.id,
                             max_slots,
@@ -435,7 +446,30 @@ pub fn tick_aircraft_missions(
                                 airfield_id: *airfield_id,
                                 sub_state: 1,
                                 reload_timer: 0,
+                                pad_index: reserved_pad,
                             };
+                            // Re-target descent toward the per-pad cell so
+                            // multi-pad airfields visibly spread occupants.
+                            if let Some((px, py)) = sim.entities.get(*airfield_id).and_then(|af| {
+                                let obj = rules.object(sim.interner.resolve(af.type_ref))?;
+                                let foundation =
+                                    crate::sim::production::foundation_dimensions(&obj.foundation);
+                                obj.pads.get(reserved_pad as usize).map(|pad| {
+                                    crate::sim::docking::pad_geometry::pad_cell_for(
+                                        (af.position.rx, af.position.ry),
+                                        foundation,
+                                        pad,
+                                    )
+                                })
+                            }) {
+                                m.move_to = Some((px, py));
+                            }
+                            // Mirror into AircraftAmmo for downstream consumers.
+                            if let Some(entity) = sim.entities.get_mut(snap.id)
+                                && let Some(ref mut ammo) = entity.aircraft_ammo
+                            {
+                                ammo.target_pad = Some(reserved_pad);
+                            }
                         }
                     }
                     1 => {
@@ -445,6 +479,7 @@ pub fn tick_aircraft_missions(
                                 airfield_id: *airfield_id,
                                 sub_state: 2,
                                 reload_timer: reload_rate,
+                                pad_index: *pad_index,
                             };
                         }
                     }
@@ -460,12 +495,14 @@ pub fn tick_aircraft_missions(
                                     airfield_id: *airfield_id,
                                     sub_state: 3,
                                     reload_timer: 0,
+                                    pad_index: *pad_index,
                                 };
                             } else {
                                 m.new_mission = AircraftMission::Docking {
                                     airfield_id: *airfield_id,
                                     sub_state: 2,
                                     reload_timer: reload_rate,
+                                    pad_index: *pad_index,
                                 };
                             }
                         } else {
@@ -473,6 +510,7 @@ pub fn tick_aircraft_missions(
                                 airfield_id: *airfield_id,
                                 sub_state: 2,
                                 reload_timer: timer,
+                                pad_index: *pad_index,
                             };
                         }
                     }
@@ -480,6 +518,12 @@ pub fn tick_aircraft_missions(
                         // Launching — wait for cruising altitude.
                         if air_phase == Some(AirMovePhase::Cruising) {
                             m.new_mission = AircraftMission::Idle;
+                            // Clear target_pad now that the dock is released.
+                            if let Some(entity) = sim.entities.get_mut(snap.id)
+                                && let Some(ref mut ammo) = entity.aircraft_ammo
+                            {
+                                ammo.target_pad = None;
+                            }
                         }
                     }
                     _ => {
@@ -498,7 +542,10 @@ pub fn tick_aircraft_missions(
                 }
             }
 
-            AircraftMission::DockedIdle { airfield_id } => {
+            AircraftMission::DockedIdle {
+                airfield_id,
+                pad_index: _,
+            } => {
                 // Check if airfield still alive.
                 let af_ok = sim
                     .entities

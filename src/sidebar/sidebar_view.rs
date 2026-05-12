@@ -14,7 +14,7 @@ use super::{
     SidebarTab, SidebarTabButton, SidebarView, compute_layout_with_spec,
 };
 
-pub fn build_sidebar_view(
+pub(crate) fn build_sidebar_view(
     screen_w: f32,
     screen_h: f32,
     active_tab: SidebarTab,
@@ -50,7 +50,7 @@ pub fn build_sidebar_view(
     )
 }
 
-pub fn build_sidebar_view_with_spec(
+pub(crate) fn build_sidebar_view_with_spec(
     layout_spec: SidebarChromeLayoutSpec,
     screen_w: f32,
     screen_h: f32,
@@ -305,8 +305,8 @@ fn collect_build_entries(
         .and_then(crate::app_types::TargetingMode::as_building_placement)
         .and_then(|s| interner.and_then(|i| i.get(s)));
     // SW is_armed: matched by section name (string compare).
-    let armed_sw_section: Option<&str> = armed
-        .and_then(crate::app_types::TargetingMode::as_super_weapon);
+    let armed_sw_section: Option<&str> =
+        armed.and_then(crate::app_types::TargetingMode::as_super_weapon);
     let resolve = |id: InternedId| -> String {
         interner.map_or(format!("#{}", id.index()), |i| i.resolve(id).to_string())
     };
@@ -443,7 +443,8 @@ fn collect_build_entries(
 
 #[cfg(test)]
 mod tests {
-    use super::super::{SidebarAction, SidebarTab, build_sidebar_view};
+    use super::super::{SidebarAction, SidebarTab};
+    use super::build_sidebar_view;
 
     fn approx_eq(a: f32, b: f32) {
         assert!(

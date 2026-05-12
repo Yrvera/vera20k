@@ -167,7 +167,9 @@ fn main() {
     am.visit_archives(|arch_name, archive| {
         for entry in archive.entries() {
             total_entries += 1;
-            let Some(data) = archive.get_by_id(entry.id) else { continue };
+            let Some(data) = archive.get_by_id(entry.id) else {
+                continue;
+            };
             let Some(fmt) = detect_format(data) else {
                 skipped_entries += 1;
                 skipped_bytes += data.len() as u64;
@@ -175,14 +177,30 @@ fn main() {
             };
 
             let outcome: Result<(), String> = match fmt {
-                "shp" => ShpFile::from_bytes(data).map(|_| ()).map_err(|e| e.to_string()),
-                "vxl" => VxlFile::from_bytes(data).map(|_| ()).map_err(|e| e.to_string()),
-                "hva" => HvaFile::from_bytes(data).map(|_| ()).map_err(|e| e.to_string()),
-                "tmp" => TmpFile::from_bytes(data).map(|_| ()).map_err(|e| e.to_string()),
-                "pal" => Palette::from_bytes(data).map(|_| ()).map_err(|e| e.to_string()),
-                "csf" => CsfFile::from_bytes(data).map(|_| ()).map_err(|e| e.to_string()),
-                "vpl" => VplFile::from_bytes(data).map(|_| ()).map_err(|e| e.to_string()),
-                "fnt" => FntFile::from_bytes(data).map(|_| ()).map_err(|e| e.to_string()),
+                "shp" => ShpFile::from_bytes(data)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string()),
+                "vxl" => VxlFile::from_bytes(data)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string()),
+                "hva" => HvaFile::from_bytes(data)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string()),
+                "tmp" => TmpFile::from_bytes(data)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string()),
+                "pal" => Palette::from_bytes(data)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string()),
+                "csf" => CsfFile::from_bytes(data)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string()),
+                "vpl" => VplFile::from_bytes(data)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string()),
+                "fnt" => FntFile::from_bytes(data)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string()),
                 "aud" => match decode_aud(data) {
                     Some(_) => Ok(()),
                     None => Err("decode_aud returned None".to_string()),
@@ -210,12 +228,19 @@ fn main() {
     });
 
     println!("\n=== Per-format coverage (magic-byte sniffed) ===");
-    println!("{:<6}  {:>8}  {:>8}  {:>9}  {:>10}", "ext", "ok", "fail", "ok %", "MB");
+    println!(
+        "{:<6}  {:>8}  {:>8}  {:>9}  {:>10}",
+        "ext", "ok", "fail", "ok %", "MB"
+    );
     let mut grand_ok: u32 = 0;
     let mut grand_fail: u32 = 0;
     for (fmt, t) in &tallies {
         let total = t.ok + t.fail;
-        let pct = if total > 0 { 100.0 * (t.ok as f64) / (total as f64) } else { 0.0 };
+        let pct = if total > 0 {
+            100.0 * (t.ok as f64) / (total as f64)
+        } else {
+            0.0
+        };
         println!(
             ".{:<5}  {:>8}  {:>8}  {:>8.2}%  {:>10.2}",
             fmt,
@@ -249,9 +274,16 @@ fn main() {
         if t.failures.is_empty() {
             continue;
         }
-        println!("\n.{} ({} failures, showing up to {})", fmt, t.fail, FAILURE_SAMPLE_CAP);
+        println!(
+            "\n.{} ({} failures, showing up to {})",
+            fmt, t.fail, FAILURE_SAMPLE_CAP
+        );
         for ((arch, hash, size), msg) in t.failures.iter().zip(t.failure_msgs.iter()) {
-            let truncated = if msg.len() > 200 { &msg[..200] } else { msg.as_str() };
+            let truncated = if msg.len() > 200 {
+                &msg[..200]
+            } else {
+                msg.as_str()
+            };
             println!("  {arch:<32} hash={hash} size={size:>7}  {truncated}");
         }
     }

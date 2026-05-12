@@ -2,14 +2,28 @@
 //!
 //! Aircraft with finite `Ammo=` (from rules.ini) deplete ammo on each weapon
 //! fire. When ammo reaches 0, the aircraft auto-returns to the nearest
-//! helipad/airfield owned by the same player, descends, reloads, and
-//! re-launches.
+//! helipad/airfield owned by the same player, descends onto its assigned
+//! pad cell, reloads, and re-launches.
 //!
-//! Uses the two-phase snapshot pattern from `building_dock.rs` and follows the
-//! `find_nearest_refinery()` approach from `miner_system.rs`.
+//! Multi-pad airfields (GAAIRC, AMRADR: `NumberOfDocks=4`) allocate pad
+//! indices via [`AirfieldDocks::try_reserve`] (first-empty-slot scan).
+//! Aircraft descends to the per-pad cell computed by
+//! [`crate::sim::docking::pad_geometry::pad_cell_for`].
+//!
+//! Two FSMs coexist:
+//! - `tick_aircraft_docks` (this module) handles aircraft *without* an
+//!   `AircraftMission` (legacy ammo state machine).
+//! - `tick_aircraft_missions` ([`crate::sim::aircraft`]) handles aircraft
+//!   *with* an `AircraftMission::Docking`/`DockedIdle`.
+//!
+//! Both call into `AirfieldDocks` for pad allocation.
+//!
+//! Uses the two-phase snapshot pattern from `building_dock.rs` and follows
+//! the `find_nearest_refinery()` approach from `miner_system.rs`.
 //!
 //! ## Dependency rules
-//! - Part of sim/ — depends on rules/, sim/components, sim/air_movement.
+//! - Part of sim/ — depends on rules/, sim/components, sim/air_movement,
+//!   sim/docking/pad_geometry.
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -38,6 +52,11 @@ pub struct AircraftAmmo {
     pub dock_phase: Option<AircraftDockPhase>,
     /// Stable ID of the target helipad/airfield building.
     pub target_airfield: Option<u64>,
+    /// Pad index assigned by `AirfieldDocks::try_reserve` for the current
+    /// dock attempt. Set when transitioning from WaitForDock → Descending;
+    /// cleared on launch / no-airfield-available.
+    #[serde(default)]
+    pub target_pad: Option<u8>,
     /// Ticks remaining until the next ammo point is restored.
     pub reload_timer: u32,
     /// Cooldown ticks before re-scanning for a helipad (prevents per-tick scans).
@@ -52,6 +71,7 @@ impl AircraftAmmo {
             max: max_ammo,
             dock_phase: None,
             target_airfield: None,
+            target_pad: None,
             reload_timer: 0,
             rescan_cooldown: 0,
         }
@@ -77,117 +97,153 @@ pub enum AircraftDockPhase {
 // Multi-slot dock reservations for airfields
 // ---------------------------------------------------------------------------
 
-/// Multi-slot dock reservation manager for airfields.
+/// Pad-aware multi-slot dock reservation manager for airfields.
 ///
-/// Unlike `DockReservations` (single occupant per building), airfields support
-/// `NumberOfDocks` simultaneous occupants (e.g., 4 for Allied Air Force Command).
+/// Each airfield has `NumberOfDocks` pads. `slots[airfield]` is a
+/// `Vec<Option<u64>>` indexed by pad index (vec length = NumberOfDocks).
+/// First-empty-slot allocation mirrors the original game's behavior:
+/// arrivals receive pads 0, 1, 2, ... in order; when a specific pad is
+/// freed, the next queued aircraft takes that same pad index.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct AirfieldDocks {
-    /// Maps airfield stable_id → (occupied_count, max_slots).
-    slots: BTreeMap<u64, (u8, u8)>,
-    /// Maps airfield stable_id → FIFO queue of waiting aircraft stable_ids.
+    /// Per-airfield occupancy: pad_index → occupant aircraft (None = empty).
+    /// Vec length equals `NumberOfDocks` for the airfield.
+    slots: BTreeMap<u64, Vec<Option<u64>>>,
+    /// Per-airfield FIFO queue of aircraft waiting for a free pad.
     queues: BTreeMap<u64, VecDeque<u64>>,
-    /// Maps aircraft stable_id → airfield stable_id (reverse lookup for cancel).
-    aircraft_to_airfield: BTreeMap<u64, u64>,
+    /// Reverse lookup: aircraft → (airfield, pad_index).
+    aircraft_to_pad: BTreeMap<u64, (u64, u8)>,
 }
 
 impl AirfieldDocks {
-    /// Register an airfield with its max dock count.
-    /// Called lazily when an aircraft first tries to dock.
-    fn ensure_registered(&mut self, airfield_sid: u64, max_slots: u8) {
-        self.slots.entry(airfield_sid).or_insert((0, max_slots));
+    /// Register an airfield with its pad count.
+    /// Called lazily when an aircraft first tries to dock. Idempotent.
+    fn ensure_registered(&mut self, airfield_sid: u64, num_pads: u8) {
+        self.slots
+            .entry(airfield_sid)
+            .or_insert_with(|| vec![None; num_pads as usize]);
     }
 
-    /// Try to reserve a dock slot for `aircraft_sid` at `airfield_sid`.
+    /// Try to reserve a pad slot for `aircraft_sid` at `airfield_sid`.
     ///
-    /// Returns `true` if the aircraft now occupies a slot (immediately granted).
-    /// Returns `false` if all slots are full — the aircraft is enqueued.
-    pub fn try_reserve(&mut self, airfield_sid: u64, aircraft_sid: u64, max_slots: u8) -> bool {
-        self.ensure_registered(airfield_sid, max_slots);
+    /// Returns `Some(pad_index)` if a pad was assigned (immediately granted).
+    /// Returns `None` if all pads are full — the aircraft is enqueued.
+    ///
+    /// First-empty-slot policy: scans pad indices left-to-right and returns
+    /// the first index whose slot is `None`.
+    pub fn try_reserve(
+        &mut self,
+        airfield_sid: u64,
+        aircraft_sid: u64,
+        num_pads: u8,
+    ) -> Option<u8> {
+        self.ensure_registered(airfield_sid, num_pads);
 
-        // Already docked here?
-        if self.aircraft_to_airfield.get(&aircraft_sid) == Some(&airfield_sid) {
-            return true;
+        // Already docked here? Return existing pad index (idempotent).
+        if let Some((af, pad)) = self.aircraft_to_pad.get(&aircraft_sid)
+            && *af == airfield_sid
+        {
+            return Some(*pad);
         }
 
-        let (occupied, max) = self.slots.get_mut(&airfield_sid).unwrap();
-        if *occupied < *max {
-            *occupied += 1;
-            self.aircraft_to_airfield.insert(aircraft_sid, airfield_sid);
-            return true;
+        let pads = self.slots.get_mut(&airfield_sid).expect("registered above");
+        for (idx, slot) in pads.iter_mut().enumerate() {
+            if slot.is_none() {
+                *slot = Some(aircraft_sid);
+                let pad_index = idx as u8;
+                self.aircraft_to_pad
+                    .insert(aircraft_sid, (airfield_sid, pad_index));
+                return Some(pad_index);
+            }
         }
 
-        // Full — enqueue.
+        // All pads full — enqueue.
         let queue = self.queues.entry(airfield_sid).or_default();
         if !queue.contains(&aircraft_sid) {
             queue.push_back(aircraft_sid);
         }
-        false
+        None
     }
 
-    /// Release a dock slot for `aircraft_sid`. Returns whether a queued
-    /// aircraft was promoted (and its stable_id if so).
+    /// Release the aircraft's pad. Returns the next aircraft promoted from
+    /// the airfield's queue, if any. The promoted aircraft inherits the
+    /// just-freed pad index.
     pub fn release(&mut self, aircraft_sid: u64) -> Option<u64> {
-        let Some(airfield_sid) = self.aircraft_to_airfield.remove(&aircraft_sid) else {
-            return None;
-        };
-        if let Some((occupied, _)) = self.slots.get_mut(&airfield_sid) {
-            *occupied = occupied.saturating_sub(1);
+        let (airfield_sid, pad_index) = self.aircraft_to_pad.remove(&aircraft_sid)?;
+        if let Some(pads) = self.slots.get_mut(&airfield_sid)
+            && let Some(slot) = pads.get_mut(pad_index as usize)
+        {
+            *slot = None;
         }
-        // Promote next from queue.
-        if let Some(queue) = self.queues.get_mut(&airfield_sid) {
-            if let Some(next) = queue.pop_front() {
-                if let Some((occupied, _)) = self.slots.get_mut(&airfield_sid) {
-                    *occupied += 1;
-                }
-                self.aircraft_to_airfield.insert(next, airfield_sid);
-                return Some(next);
+        // Promote next from queue into the just-freed pad.
+        if let Some(next) = self
+            .queues
+            .get_mut(&airfield_sid)
+            .and_then(|q| q.pop_front())
+        {
+            if let Some(pads) = self.slots.get_mut(&airfield_sid)
+                && let Some(slot) = pads.get_mut(pad_index as usize)
+            {
+                *slot = Some(next);
             }
+            self.aircraft_to_pad.insert(next, (airfield_sid, pad_index));
+            return Some(next);
         }
         None
     }
 
-    /// Check if an airfield has at least one free dock slot.
-    /// Does not modify state — read-only probe.
-    pub fn has_free_slot(&self, airfield_sid: u64, max_slots: u8) -> bool {
+    /// Check if an airfield has at least one free pad. Read-only probe.
+    pub fn has_free_slot(&self, airfield_sid: u64, num_pads: u8) -> bool {
         match self.slots.get(&airfield_sid) {
-            Some((occupied, max)) => *occupied < *max,
-            None => max_slots > 0, // Not yet registered = all slots free.
+            Some(pads) => pads.iter().any(|s| s.is_none()),
+            None => num_pads > 0, // Not yet registered = all pads free.
         }
     }
 
-    /// Cancel an aircraft's reservation or queue position.
+    /// Look up which (airfield, pad_index) this aircraft is parked on.
+    pub fn pad_for(&self, aircraft_sid: u64) -> Option<(u64, u8)> {
+        self.aircraft_to_pad.get(&aircraft_sid).copied()
+    }
+
+    /// Cancel an aircraft's reservation or queue position. If cancellation
+    /// frees a pad, promotes the next queued aircraft into that same pad.
     pub fn cancel(&mut self, aircraft_sid: u64) {
-        if let Some(airfield_sid) = self.aircraft_to_airfield.remove(&aircraft_sid) {
-            if let Some((occupied, _)) = self.slots.get_mut(&airfield_sid) {
-                *occupied = occupied.saturating_sub(1);
+        if let Some((airfield_sid, pad_index)) = self.aircraft_to_pad.remove(&aircraft_sid) {
+            if let Some(pads) = self.slots.get_mut(&airfield_sid)
+                && let Some(slot) = pads.get_mut(pad_index as usize)
+            {
+                *slot = None;
             }
-            // Promote next from queue.
-            if let Some(queue) = self.queues.get_mut(&airfield_sid) {
-                if let Some(next) = queue.pop_front() {
-                    if let Some((occupied, _)) = self.slots.get_mut(&airfield_sid) {
-                        *occupied += 1;
-                    }
-                    self.aircraft_to_airfield.insert(next, airfield_sid);
+            if let Some(next) = self
+                .queues
+                .get_mut(&airfield_sid)
+                .and_then(|q| q.pop_front())
+            {
+                if let Some(pads) = self.slots.get_mut(&airfield_sid)
+                    && let Some(slot) = pads.get_mut(pad_index as usize)
+                {
+                    *slot = Some(next);
                 }
+                self.aircraft_to_pad.insert(next, (airfield_sid, pad_index));
             }
         } else {
-            // Remove from all queues (linear scan, but rare).
+            // Not docked anywhere — remove from any queue.
             for queue in self.queues.values_mut() {
                 queue.retain(|&sid| sid != aircraft_sid);
             }
         }
     }
 
-    /// Remove dead entities (aircraft or airfields) from all tracking.
+    /// Remove dead entities (aircraft or airfields). Promotes queued
+    /// aircraft into pads freed by dead occupants.
     pub fn cleanup_dead(&mut self, alive: &BTreeSet<u64>) {
-        // Remove dead airfields.
+        // Drop dead airfields entirely.
         self.slots.retain(|sid, _| alive.contains(sid));
         self.queues.retain(|sid, _| alive.contains(sid));
 
-        // Remove dead aircraft from occupant tracking and free their slots.
+        // Release any dead aircraft (promotes from queue per release()).
         let dead_aircraft: Vec<u64> = self
-            .aircraft_to_airfield
+            .aircraft_to_pad
             .keys()
             .filter(|sid| !alive.contains(sid))
             .copied()
@@ -196,10 +252,11 @@ impl AirfieldDocks {
             self.release(sid);
         }
 
-        // Remove dead aircraft from queues.
+        // Scrub dead aircraft from queues.
         for queue in self.queues.values_mut() {
             queue.retain(|sid| alive.contains(sid));
         }
+        self.queues.retain(|_, q| !q.is_empty());
     }
 }
 
@@ -350,6 +407,8 @@ pub fn tick_aircraft_docks(sim: &mut Simulation, rules: &RuleSet) {
         id: u64,
         new_dock_phase: Option<Option<AircraftDockPhase>>, // Some(None) = clear
         new_target_airfield: Option<Option<u64>>,
+        /// Some(Some(pad)) = set pad_index; Some(None) = clear; None = leave alone.
+        new_target_pad: Option<Option<u8>>,
         new_reload_timer: Option<u32>,
         new_rescan_cooldown: Option<u16>,
         restore_ammo: i32,
@@ -367,6 +426,7 @@ pub fn tick_aircraft_docks(sim: &mut Simulation, rules: &RuleSet) {
             id: snap.id,
             new_dock_phase: None,
             new_target_airfield: None,
+            new_target_pad: None,
             new_reload_timer: None,
             new_rescan_cooldown: None,
             restore_ammo: 0,
@@ -444,6 +504,7 @@ pub fn tick_aircraft_docks(sim: &mut Simulation, rules: &RuleSet) {
                             // No airfield — hover and rescan later.
                             m.new_dock_phase = Some(None);
                             m.new_target_airfield = Some(None);
+                            m.new_target_pad = Some(None);
                             m.new_rescan_cooldown = Some(RESCAN_COOLDOWN_TICKS);
                         }
                     }
@@ -453,6 +514,7 @@ pub fn tick_aircraft_docks(sim: &mut Simulation, rules: &RuleSet) {
             Some(AircraftDockPhase::WaitForDock) => {
                 let Some(af_sid) = snap.target_airfield else {
                     m.new_dock_phase = Some(None);
+                    m.new_target_pad = Some(None);
                     mutations.push(m);
                     continue;
                 };
@@ -463,7 +525,7 @@ pub fn tick_aircraft_docks(sim: &mut Simulation, rules: &RuleSet) {
                     .map(|obj| obj.number_of_docks.max(1))
                     .unwrap_or(1);
 
-                if sim
+                if let Some(pad_index) = sim
                     .production
                     .airfield_docks
                     .try_reserve(af_sid, snap.id, max_slots)
@@ -471,8 +533,28 @@ pub fn tick_aircraft_docks(sim: &mut Simulation, rules: &RuleSet) {
                     m.new_dock_phase = Some(Some(AircraftDockPhase::Descending));
                     m.set_air_phase = Some(AirMovePhase::Descending);
                     m.clear_movement = true;
+                    m.new_target_pad = Some(Some(pad_index));
+
+                    // Re-target descent toward the assigned per-pad cell so
+                    // multi-pad airfields visibly spread occupants. Falls back
+                    // to whatever was previously targeted (building center)
+                    // when the building has no DockingOffset%d in art.
+                    if let Some((px, py)) = sim.entities.get(af_sid).and_then(|af| {
+                        let obj = rules.object(sim.interner.resolve(af.type_ref))?;
+                        let foundation =
+                            crate::sim::production::foundation_dimensions(&obj.foundation);
+                        obj.pads.get(pad_index as usize).map(|pad| {
+                            crate::sim::docking::pad_geometry::pad_cell_for(
+                                (af.position.rx, af.position.ry),
+                                foundation,
+                                pad,
+                            )
+                        })
+                    }) {
+                        m.air_move_to = Some((px, py));
+                    }
                 }
-                // Otherwise keep waiting.
+                // Otherwise keep waiting (pad busy, aircraft remains in WaitForDock).
             }
 
             Some(AircraftDockPhase::Descending) => {
@@ -493,6 +575,7 @@ pub fn tick_aircraft_docks(sim: &mut Simulation, rules: &RuleSet) {
                         // Fully reloaded — launch.
                         m.new_dock_phase = Some(Some(AircraftDockPhase::Launching));
                         m.set_air_phase = Some(AirMovePhase::Ascending);
+                        m.new_target_pad = Some(None); // pad released
                         // Release dock slot.
                         sim.production.airfield_docks.release(snap.id);
                     } else {
@@ -524,6 +607,9 @@ pub fn tick_aircraft_docks(sim: &mut Simulation, rules: &RuleSet) {
                 }
                 if let Some(new_af) = m.new_target_airfield {
                     ammo.target_airfield = new_af;
+                }
+                if let Some(new_pad) = m.new_target_pad {
+                    ammo.target_pad = new_pad;
                 }
                 if let Some(new_timer) = m.new_reload_timer {
                     ammo.reload_timer = new_timer;
@@ -584,11 +670,11 @@ mod tests {
     #[test]
     fn airfield_docks_basic_reserve() {
         let mut docks = AirfieldDocks::default();
-        // Airfield 100 has 2 slots.
-        assert!(docks.try_reserve(100, 1, 2));
-        assert!(docks.try_reserve(100, 2, 2));
-        // 3rd aircraft should queue.
-        assert!(!docks.try_reserve(100, 3, 2));
+        // 2-pad airfield: first two aircraft get pads 0 and 1.
+        assert_eq!(docks.try_reserve(100, 1, 2), Some(0));
+        assert_eq!(docks.try_reserve(100, 2, 2), Some(1));
+        // 3rd aircraft queues.
+        assert_eq!(docks.try_reserve(100, 3, 2), None);
         assert_eq!(docks.queues[&100].len(), 1);
     }
 
@@ -600,7 +686,7 @@ mod tests {
         docks.try_reserve(100, 3, 1); // queued
         let promoted = docks.release(1);
         assert_eq!(promoted, Some(2));
-        assert!(docks.aircraft_to_airfield.contains_key(&2));
+        assert_eq!(docks.pad_for(2), Some((100, 0)), "promoted into pad 0");
     }
 
     #[test]
@@ -610,9 +696,9 @@ mod tests {
         docks.try_reserve(100, 2, 2);
         docks.try_reserve(100, 3, 2); // queued
         docks.cancel(1);
-        // Slot freed, queued #3 should be promoted.
-        assert!(docks.aircraft_to_airfield.contains_key(&3));
-        assert_eq!(docks.slots[&100].0, 2); // still 2 occupied
+        // Pad 0 freed; queued #3 promoted into pad 0 specifically.
+        assert_eq!(docks.pad_for(3), Some((100, 0)));
+        assert_eq!(docks.pad_for(2), Some((100, 1)));
     }
 
     #[test]
@@ -623,17 +709,70 @@ mod tests {
         docks.try_reserve(100, 3, 2); // queued
         let alive: BTreeSet<u64> = [100, 2, 3].into_iter().collect();
         docks.cleanup_dead(&alive);
-        // Aircraft 1 died — slot freed, #3 promoted.
-        assert!(!docks.aircraft_to_airfield.contains_key(&1));
-        assert!(docks.aircraft_to_airfield.contains_key(&3));
+        // Aircraft 1 died — pad 0 freed, #3 promoted into pad 0.
+        assert_eq!(docks.pad_for(1), None);
+        assert_eq!(docks.pad_for(3), Some((100, 0)));
     }
 
     #[test]
     fn airfield_docks_idempotent_reserve() {
         let mut docks = AirfieldDocks::default();
-        assert!(docks.try_reserve(100, 1, 2));
-        assert!(docks.try_reserve(100, 1, 2)); // already occupying
-        assert_eq!(docks.slots[&100].0, 1); // still only 1 occupied
+        assert_eq!(docks.try_reserve(100, 1, 2), Some(0));
+        assert_eq!(docks.try_reserve(100, 1, 2), Some(0), "still pad 0");
+    }
+
+    #[test]
+    fn airfield_docks_four_pad_allocation_order() {
+        // GAAIRC has 4 pads. First 4 aircraft get pads 0..3 in arrival order.
+        let mut docks = AirfieldDocks::default();
+        assert_eq!(docks.try_reserve(100, 11, 4), Some(0));
+        assert_eq!(docks.try_reserve(100, 12, 4), Some(1));
+        assert_eq!(docks.try_reserve(100, 13, 4), Some(2));
+        assert_eq!(docks.try_reserve(100, 14, 4), Some(3));
+        // 5th queues.
+        assert_eq!(docks.try_reserve(100, 15, 4), None);
+        assert_eq!(docks.queues[&100].len(), 1);
+    }
+
+    #[test]
+    fn airfield_docks_release_pad_1_promotes_into_pad_1() {
+        // Parity-critical: when a specific pad is freed, the queued aircraft
+        // takes that same pad index — not "the next free pad".
+        let mut docks = AirfieldDocks::default();
+        docks.try_reserve(100, 11, 4); // pad 0
+        docks.try_reserve(100, 12, 4); // pad 1
+        docks.try_reserve(100, 13, 4); // pad 2
+        docks.try_reserve(100, 14, 4); // pad 3
+        docks.try_reserve(100, 15, 4); // queued
+        docks.release(12); // free pad 1
+        assert_eq!(
+            docks.pad_for(15),
+            Some((100, 1)),
+            "queued aircraft inherits the just-freed pad index"
+        );
+    }
+
+    #[test]
+    fn airfield_docks_single_pad_helipad() {
+        // Helipads (NAHPAD/GAHPAD) have NumberOfDocks=1.
+        let mut docks = AirfieldDocks::default();
+        assert_eq!(docks.try_reserve(200, 21, 1), Some(0));
+        assert_eq!(docks.try_reserve(200, 22, 1), None, "queued");
+        docks.release(21);
+        assert_eq!(docks.pad_for(22), Some((200, 0)));
+    }
+
+    #[test]
+    fn airfield_docks_pad_assignment_is_deterministic() {
+        // Replay/lockstep correctness: identical inputs produce identical
+        // pad assignments across two independent runs.
+        let mut run_a = AirfieldDocks::default();
+        let mut run_b = AirfieldDocks::default();
+        for ac in [11_u64, 12, 13, 14] {
+            let pa = run_a.try_reserve(100, ac, 4);
+            let pb = run_b.try_reserve(100, ac, 4);
+            assert_eq!(pa, pb, "aircraft {} got same pad in both runs", ac);
+        }
     }
 
     #[test]
@@ -642,5 +781,6 @@ mod tests {
         assert_eq!(ammo.current, 3);
         assert_eq!(ammo.max, 3);
         assert!(ammo.dock_phase.is_none());
+        assert!(ammo.target_pad.is_none());
     }
 }

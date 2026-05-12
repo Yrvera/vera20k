@@ -691,14 +691,10 @@ mod footprint_tests {
     #[test]
     fn garefn_real_footprint() {
         // GAREFN: Foundation=4x3, AddOccupy1=-1,0, AddOccupy2=-1,-1, RemoveOccupy1=3,1
-        let cells = building_footprint_cells(
-            10, 20, "4x3",
-            &[(-1, 0), (-1, -1)],
-            &[(3, 1)],
-        );
+        let cells = building_footprint_cells(10, 20, "4x3", &[(-1, 0), (-1, -1)], &[(3, 1)]);
         assert_eq!(cells.len(), 13); // 12 base + 2 added - 1 removed
-        assert!(cells.contains(&(9, 19)));   // (-1,-1) added
-        assert!(cells.contains(&(9, 20)));   // (-1, 0) added
+        assert!(cells.contains(&(9, 19))); // (-1,-1) added
+        assert!(cells.contains(&(9, 20))); // (-1, 0) added
         assert!(!cells.contains(&(13, 21))); // (3, 1) removed (the dock pad)
     }
 

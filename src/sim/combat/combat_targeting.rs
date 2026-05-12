@@ -108,7 +108,9 @@ pub fn acquire_best_target_for_entity(
         ifv_weapon_index: entity.ifv_weapon_index,
         garrison: None,
     };
-    acquire_best_target(entities, rules, interner, &snapshot, obj, fog, None, terrain)
+    acquire_best_target(
+        entities, rules, interner, &snapshot, obj, fog, None, terrain,
+    )
 }
 
 fn threat_class(rules: &RuleSet, interner: &StringInterner, type_id: InternedId) -> u8 {

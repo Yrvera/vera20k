@@ -534,11 +534,7 @@ impl Simulation {
     /// - Deployed-fire infantry (locked while deployed)
     /// - Entities inside transports
     /// - Dying entities
-    pub(crate) fn tick_attack_pursuit(
-        &mut self,
-        rules: &RuleSet,
-        path_grid: Option<&PathGrid>,
-    ) {
+    pub(crate) fn tick_attack_pursuit(&mut self, rules: &RuleSet, path_grid: Option<&PathGrid>) {
         let Some(grid) = path_grid else {
             return;
         };

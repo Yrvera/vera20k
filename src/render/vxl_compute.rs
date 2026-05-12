@@ -420,13 +420,7 @@ impl VxlComputeRenderer {
         // Copy output to staging buffer for readback.
         // Output is one u32 per pixel (low byte = palette index).
         let byte_size = (pixel_count as u64) * 4;
-        encoder.copy_buffer_to_buffer(
-            &self.output_palette_indices,
-            0,
-            &self.staging,
-            0,
-            byte_size,
-        );
+        encoder.copy_buffer_to_buffer(&self.output_palette_indices, 0, &self.staging, 0, byte_size);
 
         queue.submit(std::iter::once(encoder.finish()));
 

@@ -8,9 +8,15 @@
 
 /// 9 cell offsets for a 3×3 grid centered on (0,0), in binary order.
 pub const GRID_3X3_OFFSETS: [(i16, i16); 9] = [
-    (-1, -1), (0, -1), (1, -1),
-    (-1,  0), (0,  0), (1,  0),
-    (-1,  1), (0,  1), (1,  1),
+    (-1, -1),
+    (0, -1),
+    (1, -1),
+    (-1, 0),
+    (0, 0),
+    (1, 0),
+    (-1, 1),
+    (0, 1),
+    (1, 1),
 ];
 
 /// Iterate the 9 cells in a 3×3 grid around (center_rx, center_ry).
@@ -38,7 +44,7 @@ mod tests {
     fn centered_at_given_cell() {
         let cells: Vec<(u16, u16)> = iter_cells_3x3(10, 10).collect();
         assert!(cells.contains(&(10, 10))); // center
-        assert!(cells.contains(&(9, 9)));   // NW
+        assert!(cells.contains(&(9, 9))); // NW
         assert!(cells.contains(&(11, 11))); // SE
     }
 
@@ -54,6 +60,10 @@ mod tests {
     fn saturates_at_max() {
         let cells: Vec<(u16, u16)> = iter_cells_3x3(u16::MAX, u16::MAX).collect();
         assert_eq!(cells.len(), 9);
-        assert!(cells.iter().all(|(x, y)| *x >= u16::MAX - 1 && *y >= u16::MAX - 1));
+        assert!(
+            cells
+                .iter()
+                .all(|(x, y)| *x >= u16::MAX - 1 && *y >= u16::MAX - 1)
+        );
     }
 }
