@@ -130,6 +130,23 @@ pub enum GameSoundEvent {
         screen_pos: Option<(f32, f32)>,
     },
 
+    /// Positional SFX + EVA cue from a bridge repair triggered by an engineer
+    /// entering a `BridgeRepairHut`. Plays the spatial `[BridgeRepaired]`
+    /// sound (resolved from `rules.bridge_rules.repair_sound`) at the hut's
+    /// screen position when `sound_id` is non-empty. When `eva_sound_id` is
+    /// `Some`, the EVA arm plays it as a non-positional cue (gated upstream
+    /// on local-human owner).
+    BridgeRepaired {
+        /// Spatial `[BridgeRepaired]` SFX id. Empty when
+        /// `RepairBridgeSound=` is unset in rules.
+        sound_id: String,
+        /// Screen position for spatial audio.
+        screen_pos: Option<(f32, f32)>,
+        /// `Some(eva_id)` when the engineer's owner is the local human;
+        /// `None` otherwise.
+        eva_sound_id: Option<String>,
+    },
+
     /// Generic UI sound (button click, error beep, etc.).
     UiSound {
         /// sound.ini ID for the UI sound.
@@ -156,7 +173,8 @@ impl GameSoundEvent {
             | Self::StructureGarrisoned { sound_id }
             | Self::StructureAbandoned { sound_id }
             | Self::BuildingGarrisonedSfx { sound_id, .. }
-            | Self::C4Planted { sound_id, .. } => sound_id,
+            | Self::C4Planted { sound_id, .. }
+            | Self::BridgeRepaired { sound_id, .. } => sound_id,
         }
     }
 
@@ -171,6 +189,7 @@ impl GameSoundEvent {
             Self::ChronoTeleport { screen_pos, .. } => *screen_pos,
             Self::BuildingGarrisonedSfx { screen_pos, .. } => *screen_pos,
             Self::C4Planted { screen_pos, .. } => *screen_pos,
+            Self::BridgeRepaired { screen_pos, .. } => *screen_pos,
             _ => None,
         }
     }
