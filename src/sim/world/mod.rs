@@ -1530,3 +1530,7 @@ mod smudge_integration_tests;
 #[cfg(test)]
 #[path = "world_orders_c4_tests.rs"]
 mod world_orders_c4_tests;
+
+#[cfg(test)]
+#[path = "world_orders_bridge_repair_tests.rs"]
+mod world_orders_bridge_repair_tests;
