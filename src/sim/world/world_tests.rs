@@ -106,7 +106,7 @@ fn water_terrain_with_land_type(
                 bridge_layer: None,
                 radar_left: [0, 0, 0],
                 radar_right: [0, 0, 0],
-                            has_damaged_data: false,
+                has_damaged_data: false,
             });
         }
     }
@@ -157,7 +157,7 @@ fn single_bridge_cell(rx: u16, ry: u16, deck_level: u8) -> ResolvedTerrainGrid {
                 bridge_layer: None,
                 radar_left: [0, 0, 0],
                 radar_right: [0, 0, 0],
-                            has_damaged_data: false,
+                has_damaged_data: false,
             });
         }
     }
@@ -253,7 +253,7 @@ fn ew_high_bridge_strip_for_dispatch(
                 bridge_layer: None,
                 radar_left: [0, 0, 0],
                 radar_right: [0, 0, 0],
-                            has_damaged_data: false,
+                has_damaged_data: false,
             });
         }
     }
@@ -474,7 +474,7 @@ fn test_spawn_from_map_high_without_bridge_falls_back_to_ground() {
                         bridge_layer: None,
                         radar_left: [0, 0, 0],
                         radar_right: [0, 0, 0],
-                                            has_damaged_data: false,
+                        has_damaged_data: false,
                     },
                 )
             })
@@ -2713,7 +2713,7 @@ fn refresh_vision_heights_copies_path_cell_ground_levels() {
                 bridge_layer: None,
                 radar_left: [0, 0, 0],
                 radar_right: [0, 0, 0],
-                            has_damaged_data: false,
+                has_damaged_data: false,
             });
         }
     }
