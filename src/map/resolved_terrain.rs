@@ -881,6 +881,12 @@ impl ResolvedTerrainGrid {
                 if vc == 0 {
                     continue;
                 }
+                // Bridges with baked damaged variants reserve cell.variant for
+                // the per-frame damaged_variant pick (sim-driven), so the
+                // map-load PRNG must leave it at 0.
+                if cell.has_damaged_data {
+                    continue;
+                }
                 let mut hasher = DefaultHasher::new();
                 (cell.rx, cell.ry).hash(&mut hasher);
                 let hash = hasher.finish();
