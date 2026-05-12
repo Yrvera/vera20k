@@ -536,7 +536,7 @@ pub fn update_ramp_perpendicular(
     axis: Axis,
     phase: Phase,
     _is_high_bridge: bool,
-    _terrain: &crate::map::resolved_terrain::ResolvedTerrainGrid,
+    terrain: &crate::map::resolved_terrain::ResolvedTerrainGrid,
 ) -> RampOutcome {
     let dir = perpendicular_direction(axis, phase);
     let (dx, dy) = dir.offset();
@@ -597,15 +597,21 @@ pub fn update_ramp_perpendicular(
     };
 
     // Mut access to write the new state.
-    if let Some(cell_mut) = state.cell_mut(target_pos.0, target_pos.1) {
+    let wrote = if let Some(cell_mut) = state.cell_mut(target_pos.0, target_pos.1) {
         cell_mut.damage_state = next_state;
-        RampOutcome {
-            state_changed: true,
-        }
+        true
     } else {
-        RampOutcome {
-            state_changed: false,
-        }
+        false
+    };
+    if wrote {
+        // Propagate the damaged-variant bit across the perpendicular target's
+        // tile_id region. All four phases (DamageA/B, CollapseA/B) write
+        // state=true — damage AND collapse share the same propagation, so the
+        // bit persists through collapse without a separate clear path.
+        let _ = state.apply_damaged_variant_flood_fill(target_pos.0, target_pos.1, true, terrain);
+    }
+    RampOutcome {
+        state_changed: wrote,
     }
 }
 
