@@ -1504,7 +1504,9 @@ fn dock_exit_returns_to_search_ore() {
     sim.production.dock_reservations.try_reserve(2, miner_id);
 
     // Tick enough for unload (1 bale at 14 ticks) + exit movement + margin.
-    tick_miners_n(&mut sim, &rules, 50);
+    // Exit drive now goes west (~4 cells from pad to (9, 11) anchor) and
+    // routes via A*; ~150 ticks comfortably covers the longer post-fix path.
+    tick_miners_n(&mut sim, &rules, 150);
 
     let m = get_miner(&sim, miner_id);
     // After unloading, miner goes to SearchOre → WaitNoOre (no ore on map).
@@ -1903,9 +1905,13 @@ fn harvester_undocks_through_foundation_to_outside_ore() {
     // reserved_refinery. Asserting at that exact tick avoids racing the
     // subsequent harvest cycle (which legitimately re-reserves the
     // refinery once the cell is drained).
+    //
+    // The exit drive is now an A* path that routes AROUND the blocked
+    // foundation (~8-10 cells from pad (13, 11) to anchor (9, 11) via the
+    // south side); ~200 ticks is the comfortable upper bound.
     let mut departed_at: Option<usize> = None;
     let mut reservation_observed_clear = false;
-    for tick in 0..60 {
+    for tick in 0..200 {
         crate::sim::miner::miner_system::tick_miners(&mut sim, &rules, &config, Some(&path_grid));
         crate::sim::movement::tick_movement_with_grid(
             &mut sim.entities,
@@ -2390,7 +2396,13 @@ fn linked_to_unloading_on_pad_arrival() {
 
     let m = get_miner(&sim, miner_id);
     assert_eq!(m.dock_phase, RefineryDockPhase::Unloading);
-    assert_eq!(m.unload_timer, 0);
+    assert_eq!(
+        m.unload_timer,
+        (config.unload_tick_interval as i16) - 10,
+        "unload_timer should be initialised one decrement step below the \
+         full interval so the first bale pops exactly 15 ticks after \
+         Linked (matches gamemd per-bale gate at 14.4 frames)",
+    );
 
     let entity = sim.entities.get(miner_id).expect("entity");
     let override_id = entity
@@ -2770,4 +2782,67 @@ fn harvester_continues_to_short_scan_when_partial_then_empty() {
         );
         assert_eq!(miner.target_ore_cell, Some((21, 20)));
     }
+}
+
+/// gamemd parity: the first dock bale must wait
+/// `ceil(HarvesterDumpRate × 900) = 15` frames after the Linked →
+/// Unloading transition, not fire immediately. The dump counter starts
+/// at 0 on dock-link and a bale deposits only once the counter reaches
+/// 14.4. With our tenths-of-a-tick precision (timer decrements by 10
+/// per tick before the pop check) the first bale fires 15 unloading
+/// ticks after Linked.
+#[test]
+fn dock_first_bale_waits_one_unload_interval() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let config = MinerConfig::default();
+    let path_grid = PathGrid::new(64, 64);
+
+    spawn_refinery(&mut sim, 2, 10, 10);
+    // Place miner at the pad cell with no movement_target → phase_linked
+    // sees "arrived" and runs the init that seeds unload_timer.
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        entity.movement_target = None;
+        let miner = entity.miner.as_mut().expect("miner component");
+        for _ in 0..5 {
+            miner.cargo.push(CargoBale {
+                resource_type: ResourceType::Ore,
+                value: config.ore_bale_value,
+            });
+        }
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::Linked;
+        miner.reserved_refinery = Some(2);
+    }
+    sim.production.dock_reservations.try_reserve(2, miner_id);
+
+    // Linked tick: phase_linked seeds unload_timer and transitions to
+    // Unloading. No bale yet.
+    crate::sim::miner::miner_system::tick_miners(&mut sim, &rules, &config, Some(&path_grid));
+
+    let initial_cargo = get_miner(&sim, miner_id).cargo.len();
+    assert_eq!(initial_cargo, 5, "no bale should drop on the Linked tick");
+
+    // Ticks 2..15 (14 unloading ticks): timer decrements past zero, no pop
+    // yet (the decrement-then-check structure returns before pop on the
+    // tick the timer crosses ≤ 0).
+    let pre_drop_ticks = 14usize;
+    tick_miners_n(&mut sim, &rules, pre_drop_ticks);
+    assert_eq!(
+        get_miner(&sim, miner_id).cargo.len(),
+        initial_cargo,
+        "no bale should drop in the first {} unloading ticks",
+        pre_drop_ticks,
+    );
+
+    // Tick 16 overall (the 15th unloading tick after Linked): first bale
+    // deposits.
+    tick_miners_n(&mut sim, &rules, 1);
+    assert_eq!(
+        get_miner(&sim, miner_id).cargo.len(),
+        initial_cargo - 1,
+        "first bale deposits on the 15th unloading tick after Linked",
+    );
 }

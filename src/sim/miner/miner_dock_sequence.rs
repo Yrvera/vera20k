@@ -325,7 +325,7 @@ fn phase_approach(
 fn phase_linked(
     sim: &mut Simulation,
     rules: &RuleSet,
-    #[expect(unused_variables, reason = "wired in Task 5")] config: &MinerConfig,
+    config: &MinerConfig,
     snap: &mut MinerSnapshot,
     pad: (u16, u16),
     ref_sid: u64,
@@ -351,9 +351,17 @@ fn phase_linked(
         building_id: ref_sid,
     });
 
-    // Initialize unload_timer to 0 — first bale fires after one full
-    // unload_tick_interval, matching gamemd's per-bale gate.
-    snap.miner.unload_timer = 0;
+    // First dock bale must wait ceil(14.4) = 15 frames after dock-link,
+    // matching the per-bale gate where the dump counter starts at 0 on
+    // dock-link and a bale deposits only once the counter reaches
+    // HarvesterDumpRate × 900 = 14.4. With phase_unloading's
+    // decrement-then-check structure (`if timer > 0 { timer -= 10;
+    // return; }` before the pop), the pop fires on the tick when the
+    // timer crosses ≤ 0. Initialising the timer one decrement step below
+    // the full interval (`interval - 10`) lines that crossing up with
+    // tick 15 after the Linked transition. Previously initialised to 0,
+    // which dropped the first bale instantly.
+    snap.miner.unload_timer = (config.unload_tick_interval as i16).saturating_sub(10);
     snap.miner.dock_phase = RefineryDockPhase::Unloading;
 }
 
