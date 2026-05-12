@@ -363,10 +363,17 @@ fn probe_g5_g6_against_retail_maps() {
         println!("    Recommendation: defer G5 indefinitely.");
     } else {
         println!(
-            "G5: FIRES on {} maps ({} TRUSTED pairs total). Worth a /brainstorm session.",
+            "G5: SCAN-ONLY ({} maps, {} TRUSTED pairs). Legality gate landed 2026-05-12.",
             maps_with_g5_fire.len(),
             total_g5_fire_trusted,
         );
+        println!(
+            "    The raw counts above are useful for regression monitoring — A* now",
+        );
+        println!(
+            "    blocks these pairs. Run `probe_g5_astar_rejects_all_trusted_firing_pairs`",
+        );
+        println!("    for empirical confirmation.");
     }
     if total_g6_bridgeheads == 0 {
         println!("G6: no bridgehead cells found — divergence impossible. Defer.");
