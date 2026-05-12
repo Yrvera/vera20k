@@ -203,10 +203,7 @@ pub(crate) fn dispatch_bridge_collapse_from_hut(
             // collapse states reach Destroyed in 1.
             loop {
                 let outcome = bs.body_cell_advance_state(
-                    cell_pos.0,
-                    cell_pos.1,
-                    /* is_high_bridge */ false,
-                    terrain,
+                    cell_pos.0, cell_pos.1, /* is_high_bridge */ false, terrain,
                 );
                 match outcome {
                     StateOutcome::NoChange => break,
@@ -745,7 +742,7 @@ mod tests {
                     bridge_layer: None,
                     radar_left: [0, 0, 0],
                     radar_right: [0, 0, 0],
-                                    has_damaged_data: false,
+                    has_damaged_data: false,
                 });
             }
         }
