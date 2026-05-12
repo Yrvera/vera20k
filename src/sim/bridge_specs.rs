@@ -601,11 +601,11 @@ pub fn update_ramp_perpendicular(
             // anchor's bridgehead_anchor_class.
             let new_class =
                 apply_anchor_class_transition(target_cell.bridgehead_anchor_class, phase);
-            if new_class != target_cell.bridgehead_anchor_class {
-                if let Some(cell_mut) = state.cell_mut(target_pos.0, target_pos.1) {
-                    cell_mut.bridgehead_anchor_class = new_class;
-                    tile_class_changed = true;
-                }
+            if new_class != target_cell.bridgehead_anchor_class
+                && let Some(cell_mut) = state.cell_mut(target_pos.0, target_pos.1)
+            {
+                cell_mut.bridgehead_anchor_class = new_class;
+                tile_class_changed = true;
             }
         }
         BridgeCellRole::Bridgehead => {
@@ -614,11 +614,11 @@ pub fn update_ramp_perpendicular(
             // model.
             let new_class =
                 apply_anchor_class_transition(target_cell.bridgehead_anchor_class, phase);
-            if new_class != target_cell.bridgehead_anchor_class {
-                if let Some(cell_mut) = state.cell_mut(target_pos.0, target_pos.1) {
-                    cell_mut.bridgehead_anchor_class = new_class;
-                    tile_class_changed = true;
-                }
+            if new_class != target_cell.bridgehead_anchor_class
+                && let Some(cell_mut) = state.cell_mut(target_pos.0, target_pos.1)
+            {
+                cell_mut.bridgehead_anchor_class = new_class;
+                tile_class_changed = true;
             }
         }
         _ => {
@@ -632,8 +632,7 @@ pub fn update_ramp_perpendicular(
     // on an Anchor target. Composes with the new tile-class write — both
     // can fire on the same call.
     if state_byte_changed {
-        let _ =
-            state.apply_damaged_variant_flood_fill(target_pos.0, target_pos.1, true, terrain);
+        let _ = state.apply_damaged_variant_flood_fill(target_pos.0, target_pos.1, true, terrain);
     }
 
     RampOutcome {
@@ -1463,7 +1462,14 @@ mod tests {
     #[test]
     fn update_ramp_perpendicular_ns_damage_a_anchor_target_transitions_to_4() {
         let mut state = make_perpendicular_test_state();
-        let outcome = update_ramp_perpendicular(&mut state, (5, 5), Axis::NS, Phase::DamageA, true, &ramp_test_terrain());
+        let outcome = update_ramp_perpendicular(
+            &mut state,
+            (5, 5),
+            Axis::NS,
+            Phase::DamageA,
+            true,
+            &ramp_test_terrain(),
+        );
         assert!(outcome.state_changed);
         let target = state.cell(6, 5).expect("E target");
         assert_eq!(target.damage_state, DamageState::Healthy { variant: 4 });
@@ -1472,7 +1478,14 @@ mod tests {
     #[test]
     fn update_ramp_perpendicular_ns_damage_b_anchor_target_walks_west() {
         let mut state = make_perpendicular_test_state();
-        let outcome = update_ramp_perpendicular(&mut state, (5, 5), Axis::NS, Phase::DamageB, true, &ramp_test_terrain());
+        let outcome = update_ramp_perpendicular(
+            &mut state,
+            (5, 5),
+            Axis::NS,
+            Phase::DamageB,
+            true,
+            &ramp_test_terrain(),
+        );
         assert!(outcome.state_changed);
         let target = state.cell(4, 5).expect("W target");
         assert_eq!(target.damage_state, DamageState::Healthy { variant: 5 });
@@ -1483,7 +1496,14 @@ mod tests {
         let mut state = make_perpendicular_test_state();
         // Patch (6,5) to Body role (not Anchor).
         state.cell_mut(6, 5).unwrap().role = BridgeCellRole::Body;
-        let outcome = update_ramp_perpendicular(&mut state, (5, 5), Axis::NS, Phase::DamageA, true, &ramp_test_terrain());
+        let outcome = update_ramp_perpendicular(
+            &mut state,
+            (5, 5),
+            Axis::NS,
+            Phase::DamageA,
+            true,
+            &ramp_test_terrain(),
+        );
         assert!(!outcome.state_changed);
         assert_eq!(
             state.cell(6, 5).unwrap().damage_state,
@@ -1495,7 +1515,14 @@ mod tests {
     fn update_ramp_perpendicular_target_off_map_no_change() {
         let mut state = make_perpendicular_test_state();
         // Anchor at (0, 0) calling NS DamageB → walks W → target x = -1 → out of bounds.
-        let outcome = update_ramp_perpendicular(&mut state, (0, 0), Axis::NS, Phase::DamageB, true, &ramp_test_terrain());
+        let outcome = update_ramp_perpendicular(
+            &mut state,
+            (0, 0),
+            Axis::NS,
+            Phase::DamageB,
+            true,
+            &ramp_test_terrain(),
+        );
         assert!(!outcome.state_changed);
     }
 
@@ -1503,8 +1530,14 @@ mod tests {
     fn update_ramp_perpendicular_collapse_final_target_to_destroyed() {
         let mut state = make_perpendicular_test_state();
         state.cell_mut(6, 5).unwrap().damage_state = DamageState::PartialCollapseB;
-        let outcome =
-            update_ramp_perpendicular(&mut state, (5, 5), Axis::NS, Phase::CollapseA, true, &ramp_test_terrain());
+        let outcome = update_ramp_perpendicular(
+            &mut state,
+            (5, 5),
+            Axis::NS,
+            Phase::CollapseA,
+            true,
+            &ramp_test_terrain(),
+        );
         assert!(outcome.state_changed);
         let target = state.cell(6, 5).expect("E target");
         assert_eq!(target.damage_state, DamageState::Destroyed);
@@ -1536,8 +1569,14 @@ mod tests {
         // EW CollapseA → walks S → target (5, 6).
         // Target state byte 9 (Healthy{0} EW) → apply_ramp_transition EW
         // CollapseA: 9..=15 → 0x11 = PartialCollapseA.
-        let outcome =
-            update_ramp_perpendicular(&mut state, (5, 5), Axis::EW, Phase::CollapseA, true, &ramp_test_terrain());
+        let outcome = update_ramp_perpendicular(
+            &mut state,
+            (5, 5),
+            Axis::EW,
+            Phase::CollapseA,
+            true,
+            &ramp_test_terrain(),
+        );
         assert!(outcome.state_changed);
         let target = state.cell(5, 6).expect("S target");
         assert_eq!(target.damage_state, DamageState::PartialCollapseA);
@@ -1567,8 +1606,7 @@ mod tests {
                 anchor_span_id: Some(1),
                 overlay_byte: 0x18,
                 damaged_variant: false,
-                bridgehead_anchor_class:
-                    crate::sim::bridge_state::BridgeheadAnchorClass::Variant0,
+                bridgehead_anchor_class: crate::sim::bridge_state::BridgeheadAnchorClass::Variant0,
             },
         );
         // Neighbor.
@@ -1621,10 +1659,7 @@ mod tests {
             "DamageB on Variant0 bridgehead must progress to Variant1",
         );
         // damage_state must NOT be modified on Bridgehead targets.
-        assert!(matches!(
-            neighbor.damage_state,
-            DamageState::Healthy { .. }
-        ));
+        assert!(matches!(neighbor.damage_state, DamageState::Healthy { .. }));
     }
 
     #[test]
@@ -1765,9 +1800,7 @@ mod tests {
     }
 
     /// Helper: build a height-lookup from a (X, Y) → height map.
-    fn walker_height_lookup(
-        cells: Vec<((u16, u16), u8)>,
-    ) -> impl Fn((u16, u16)) -> Option<u8> {
+    fn walker_height_lookup(cells: Vec<((u16, u16), u8)>) -> impl Fn((u16, u16)) -> Option<u8> {
         move |pos: (u16, u16)| {
             cells
                 .iter()
@@ -1832,7 +1865,10 @@ mod tests {
         // h=0xC (EW high-ramp peak) — upper-bound gate fires.
         let lookup = walker_height_lookup(vec![((5, 5), 0x0C)]);
         let out = bridgehead_walk_to_anchor((5, 5), Axis::EW, lookup, 32, 32);
-        assert!(out.is_none(), "h=0xC EW must return None (upper-bound gate)");
+        assert!(
+            out.is_none(),
+            "h=0xC EW must return None (upper-bound gate)"
+        );
     }
 
     #[test]

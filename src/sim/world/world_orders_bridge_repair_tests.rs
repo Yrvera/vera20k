@@ -366,10 +366,9 @@ fn c4_on_cabhut_collapses_bridge_and_hut_survives() {
     let cabhut = spawn_cabhut(&mut sim, 9, 10);
     let cabhut_max_hp = sim.entities.get(cabhut).unwrap().health.current;
     let seal = spawn_seal(&mut sim, 10, 10); // Chebyshev-1 adjacent
-    sim.entities.get_mut(seal).unwrap().c4_plant =
-        Some(crate::sim::components::C4PlantState {
-            target_building_id: cabhut,
-        });
+    sim.entities.get_mut(seal).unwrap().c4_plant = Some(crate::sim::components::C4PlantState {
+        target_building_id: cabhut,
+    });
     seed_bridge_with_state(&mut sim, DamageState::Healthy { variant: 0 });
 
     // First tick: tick_c4_plants Phase 1 sees adjacency and claims.
@@ -536,8 +535,20 @@ fn g4_damage_path_sets_damaged_variant_at_perpendicular_target() {
     let mut bs = BridgeRuntimeState::default();
     // Seed anchor at (10, 10) and a perpendicular target anchor at (11, 10)
     // (one east — the DamageA perpendicular direction for an NS bridge).
-    seed_isolated_anchor(&mut bs, (10, 10), 1, DamageState::Healthy { variant: 0 }, false);
-    seed_isolated_anchor(&mut bs, (11, 10), 2, DamageState::Healthy { variant: 0 }, false);
+    seed_isolated_anchor(
+        &mut bs,
+        (10, 10),
+        1,
+        DamageState::Healthy { variant: 0 },
+        false,
+    );
+    seed_isolated_anchor(
+        &mut bs,
+        (11, 10),
+        2,
+        DamageState::Healthy { variant: 0 },
+        false,
+    );
     let terrain = damaged_data_resolved_terrain(42);
 
     let _ = bs.body_cell_advance_state(10, 10, true, &terrain);
@@ -558,7 +569,13 @@ fn g4_collapse_path_keeps_damaged_variant_set() {
     // Pre-damaged anchor + perpendicular target, both already flagged
     // damaged_variant=true. The collapse step must NOT clear the bit.
     seed_isolated_anchor(&mut bs, (10, 10), 1, DamageState::Damaged, true);
-    seed_isolated_anchor(&mut bs, (11, 10), 2, DamageState::Healthy { variant: 0 }, true);
+    seed_isolated_anchor(
+        &mut bs,
+        (11, 10),
+        2,
+        DamageState::Healthy { variant: 0 },
+        true,
+    );
     let terrain = damaged_data_resolved_terrain(42);
 
     let _ = bs.body_cell_advance_state(10, 10, true, &terrain);
@@ -651,8 +668,10 @@ fn g4_repair_flood_fill_propagates_clear_to_same_tile_id_bridge_neighbor() {
 /// Build a small NS-axis bridge with a bridgehead at (2, 4) (h=8) and an
 /// anchor at (2, 2) (h=4). Used by the bridgehead-direct-damage integration
 /// test. Resolved-terrain dims: 5x5.
-fn build_ns_bridge_with_bridgehead_for_dispatch()
--> (crate::map::resolved_terrain::ResolvedTerrainGrid, BridgeRuntimeState) {
+fn build_ns_bridge_with_bridgehead_for_dispatch() -> (
+    crate::map::resolved_terrain::ResolvedTerrainGrid,
+    BridgeRuntimeState,
+) {
     use crate::map::resolved_terrain::ResolvedTerrainCell;
     use crate::sim::bridge_state::BridgeheadAnchorClass;
     let mut cells = Vec::with_capacity(25);
@@ -814,19 +833,18 @@ fn ramp_fire_does_not_collapse_high_bridge() {
     let pre_bridgehead = *sim.bridge_state.as_ref().unwrap().cell(2, 4).unwrap();
 
     for _ in 0..10 {
-        let state_changed =
-            crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
-                &mut sim,
-                &rules,
-                &[BridgeDamageEvent {
-                    rx: 2,
-                    ry: 4,
-                    damage: 999,
-                    warhead_ref: crate::sim::intern::InternedId::default(),
-                    is_ion_cannon: true,
-                    impact_z: 4,
-                }],
-            );
+        let state_changed = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
+            &mut sim,
+            &rules,
+            &[BridgeDamageEvent {
+                rx: 2,
+                ry: 4,
+                damage: 999,
+                warhead_ref: crate::sim::intern::InternedId::default(),
+                is_ion_cannon: true,
+                impact_z: 4,
+            }],
+        );
         // No collapse → no path-grid refresh signal.
         assert!(
             !state_changed,

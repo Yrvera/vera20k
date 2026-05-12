@@ -1070,8 +1070,8 @@ impl BridgeRuntimeState {
             let ny = ny_i as u16;
             if let Some(n_resolved) = terrain.cell(nx, ny) {
                 if n_resolved.final_tile_index == seed_tile_id {
-                    count +=
-                        self.apply_damaged_variant_flood_fill_internal(nx, ny, state, terrain, false);
+                    count += self
+                        .apply_damaged_variant_flood_fill_internal(nx, ny, state, terrain, false);
                 }
             }
         }
@@ -1175,7 +1175,8 @@ impl BridgeRuntimeState {
                 if let Some(cell) = self.cell_mut(cell_pos.0, cell_pos.1) {
                     cell.damage_state = new_state;
                 }
-                let _ = self.apply_damaged_variant_flood_fill(cell_pos.0, cell_pos.1, false, terrain);
+                let _ =
+                    self.apply_damaged_variant_flood_fill(cell_pos.0, cell_pos.1, false, terrain);
                 outcome.repaired_cells += 1;
 
                 let is_main_deck = matches!(
@@ -1617,7 +1618,7 @@ mod tests {
                 bridge_layer: None,
                 radar_left: [0, 0, 0],
                 radar_right: [0, 0, 0],
-                            has_damaged_data: false,
+                has_damaged_data: false,
             });
         }
         ResolvedTerrainGrid::from_cells(5, 1, cells)
@@ -2306,7 +2307,7 @@ mod tests {
                     bridge_layer: None,
                     radar_left: [0, 0, 0],
                     radar_right: [0, 0, 0],
-                                    has_damaged_data: false,
+                    has_damaged_data: false,
                 });
             }
         }
@@ -2426,7 +2427,10 @@ mod tests {
 
         // Bridgehead's own damage_state is NOT modified.
         let post_bridgehead = *state.cell(2, 4).unwrap();
-        assert_eq!(post_bridgehead.damage_state, pre_hit_bridgehead.damage_state);
+        assert_eq!(
+            post_bridgehead.damage_state,
+            pre_hit_bridgehead.damage_state
+        );
 
         // Anchor's bridgehead_anchor_class becomes Damaged.
         assert_eq!(
@@ -2666,7 +2670,7 @@ mod tests {
                     bridge_layer: None,
                     radar_left: [0, 0, 0],
                     radar_right: [0, 0, 0],
-                                    has_damaged_data: false,
+                    has_damaged_data: false,
                 });
             }
         }
@@ -2962,9 +2966,15 @@ mod tests {
     #[test]
     fn flood_fill_propagates_to_same_tile_id_neighbors() {
         let coords = [
-            (4, 4), (5, 4), (6, 4),
-            (4, 5), (5, 5), (6, 5),
-            (4, 6), (5, 6), (6, 6),
+            (4, 4),
+            (5, 4),
+            (6, 4),
+            (4, 5),
+            (5, 5),
+            (6, 5),
+            (4, 6),
+            (5, 6),
+            (6, 6),
         ];
         let mut bs = flood_fill_bridge_state(&coords);
         let terrain = flood_fill_terrain(10, 10, 42);
@@ -3013,9 +3023,15 @@ mod tests {
     #[test]
     fn flood_fill_eight_directions_includes_diagonals() {
         let coords = [
-            (4, 4), (5, 4), (6, 4),
-            (4, 5), (5, 5), (6, 5),
-            (4, 6), (5, 6), (6, 6),
+            (4, 4),
+            (5, 4),
+            (6, 4),
+            (4, 5),
+            (5, 5),
+            (6, 5),
+            (4, 6),
+            (5, 6),
+            (6, 6),
         ];
         let mut bs = flood_fill_bridge_state(&coords);
         let terrain = flood_fill_terrain(10, 10, 42);
