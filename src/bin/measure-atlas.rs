@@ -7,7 +7,7 @@
 //! R8Uint atlas).
 //!
 //! Used to verify the GPU remap architecture's memory budget claim (atlas
-//! stays under 200 MB at 30-player saturation). The R8Uint atlas is 4×
+//! stays under 250 MB at 30-player saturation). The R8Uint atlas is 4×
 //! cheaper than the previous Rgba8Unorm atlas, AND drops the house
 //! dimension from the cache key — a combined ~120× memory win at
 //! saturation versus the pre-Phase-1 baseline.
@@ -22,7 +22,7 @@
 const VXL_TYPES_PER_PLAYER: usize = 30;
 
 /// Body/composite facing buckets (matches `unit_atlas::UNIT_FACING_BUCKETS`).
-const BODY_FACING_BUCKETS: usize = 64;
+const BODY_FACING_BUCKETS: usize = 128;
 
 /// Turret/barrel facing buckets (matches `unit_atlas::TURRET_FACING_BUCKETS`).
 const TURRET_FACING_BUCKETS: usize = 128;
@@ -135,8 +135,8 @@ fn main() {
         pre_phase1_bytes / total_bytes.max(1)
     );
 
-    // Verify the design's claimed budget (200 MB).
-    const BUDGET_MB: f64 = 200.0;
+    // Verify the design's claimed budget (250 MB after body facing step=2).
+    const BUDGET_MB: f64 = 250.0;
     println!();
     if total_mb <= BUDGET_MB {
         println!(

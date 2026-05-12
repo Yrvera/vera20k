@@ -29,16 +29,16 @@ use crate::rules::ruleset::RuleSet;
 
 /// Padding between sprites in the atlas to prevent texture bleeding.
 const SPRITE_PADDING: u32 = 1;
-/// Body/composite facing quantization step: 4 = 64 buckets (5.6° per bucket).
-/// Doubled from 32 to 64 to reduce visible rotation snapping. The original engine
-/// uses 32 facing directions with sub-tick interpolation; 64 atlas buckets
-/// approximates that smoothness without runtime re-rendering.
-const UNIT_FACING_STEP: u8 = 4;
+/// Body/composite facing quantization step: 2 = 128 buckets (2.8° per bucket).
+/// Doubled from 64→128 to bring body smoothness in line with the existing
+/// turret/barrel resolution. Eliminates the visible staircase that was
+/// noticeable during rotation at step=4 (5.6° per bucket).
+const UNIT_FACING_STEP: u8 = 2;
 /// Number of pre-rendered facing directions for body/composite sprites.
-const UNIT_FACING_BUCKETS: u8 = 64;
+const UNIT_FACING_BUCKETS: u8 = 128;
 /// Turret/barrel facing quantization step: 2 = 128 buckets (2.8° per bucket).
-/// Doubled from 64→128 to match body smoothness improvement. Turrets rotate
-/// frequently during combat, so finer resolution prevents visible stepping.
+/// Turrets rotate frequently during combat, so finer resolution prevents
+/// visible stepping.
 const TURRET_FACING_STEP: u8 = 2;
 /// Number of pre-rendered facing directions for turret/barrel sprites.
 const TURRET_FACING_BUCKETS: u8 = 128;
@@ -1003,12 +1003,12 @@ fn pad_layer_to_union_bounds(layer: &VxlSprite, all_layers: &[&VxlSprite]) -> Vx
     }
 }
 
-/// Canonicalize body/composite facing to one of 32 rendered facing buckets (step=8).
+/// Canonicalize body/composite facing to one of `UNIT_FACING_BUCKETS` buckets.
 pub fn canonical_unit_facing(facing: u8) -> u8 {
     (facing / UNIT_FACING_STEP) * UNIT_FACING_STEP
 }
 
-/// Canonicalize turret/barrel facing to one of 64 rendered facing buckets (step=4).
+/// Canonicalize turret/barrel facing to one of `TURRET_FACING_BUCKETS` buckets.
 /// Accepts 16-bit DirStruct, converts to 8-bit for sprite frame selection.
 /// This is the single u16→u8 conversion point for turret rendering.
 pub fn canonical_turret_facing(facing_u16: u16) -> u8 {

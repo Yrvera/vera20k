@@ -160,20 +160,20 @@ fn test_canonical_turret_facing() {
     assert_eq!(canonical_turret_facing(1024), 4);
     // u8 value 255 → u16 = 255<<8 = 65280
     assert_eq!(canonical_turret_facing(65280), 254);
-    // Verify finer than body facing (step=4).
-    assert_eq!(canonical_unit_facing(3), 0); // snaps to 0
+    // Verify body and turret facing share the same step granularity.
+    assert_eq!(canonical_unit_facing(3), 2); // step=2, snaps 3 to 2
     assert_eq!(canonical_turret_facing(768), 2); // u8=3, snaps to 2
 }
 
 #[test]
 fn test_facing_config_for_layer() {
     let (step, buckets) = super::facing_config_for_layer(VxlLayer::Body);
-    assert_eq!(step, 4);
-    assert_eq!(buckets, 64);
+    assert_eq!(step, 2);
+    assert_eq!(buckets, 128);
 
     let (step, buckets) = super::facing_config_for_layer(VxlLayer::Composite);
-    assert_eq!(step, 4);
-    assert_eq!(buckets, 64);
+    assert_eq!(step, 2);
+    assert_eq!(buckets, 128);
 
     let (step, buckets) = super::facing_config_for_layer(VxlLayer::Turret);
     assert_eq!(step, 2);
