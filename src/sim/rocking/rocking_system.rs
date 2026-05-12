@@ -148,6 +148,25 @@ pub(crate) fn advance_ship_rocking(rocking: &mut RockingState, type_supports_shi
     }
 }
 
+/// Update the slope-transition state for one entity.
+///
+/// If `cell_slope` differs from the tracked `curr_slope`, start (or
+/// restart) a fresh 3-tick transition: the old `curr_slope` becomes the
+/// new `prev_slope`, and the counter resets to `SLOPE_TRANSITION_TICKS`.
+/// Otherwise, decrement the counter (saturating at 0).
+///
+/// The render side reads `prev_slope`/`curr_slope`/`transition_ticks_remaining`
+/// to SLERP between the two slope matrices.
+pub(crate) fn update_slope_transition(rocking: &mut RockingState, cell_slope: u8) {
+    if cell_slope != rocking.curr_slope {
+        rocking.prev_slope = rocking.curr_slope;
+        rocking.curr_slope = cell_slope;
+        rocking.transition_ticks_remaining = SLOPE_TRANSITION_TICKS;
+    } else if rocking.transition_ticks_remaining > 0 {
+        rocking.transition_ticks_remaining -= 1;
+    }
+}
+
 /// Stub entry point — implemented in Task 11.
 pub fn tick(_entities: &mut EntityStore) {
     // Implemented in Task 11.

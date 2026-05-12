@@ -4,8 +4,8 @@
 
 use crate::sim::components::RockingState;
 use crate::sim::rocking::rocking_system::{
-    BASE_DECAY_RATE, NORMAL_RANGE_PI2, SATURATION_PI4, SATURATION_PI10, TILT_DEADBAND, advance_axis,
-    advance_ship_rocking,
+    BASE_DECAY_RATE, NORMAL_RANGE_PI2, SATURATION_PI4, SATURATION_PI10, SLOPE_TRANSITION_TICKS,
+    TILT_DEADBAND, advance_axis, advance_ship_rocking, update_slope_transition,
 };
 use crate::util::fixed_math::SimFixed;
 
@@ -166,6 +166,49 @@ fn ship_rocking_no_clamp_when_type_doesnt_support() {
     r.vel_sideways = SimFixed::lit("0.01");
     advance_ship_rocking(&mut r, false);
     assert!(r.angle_sideways > SATURATION_PI4);
+}
+
+#[test]
+fn slope_change_starts_three_tick_transition() {
+    let mut r = RockingState::default();
+    r.curr_slope = 0;
+    update_slope_transition(&mut r, 5);
+    assert_eq!(r.prev_slope, 0);
+    assert_eq!(r.curr_slope, 5);
+    assert_eq!(r.transition_ticks_remaining, SLOPE_TRANSITION_TICKS);
+}
+
+#[test]
+fn slope_unchanged_decrements_counter() {
+    let mut r = RockingState::default();
+    r.curr_slope = 5;
+    r.transition_ticks_remaining = 3;
+    update_slope_transition(&mut r, 5);
+    assert_eq!(r.transition_ticks_remaining, 2);
+    update_slope_transition(&mut r, 5);
+    assert_eq!(r.transition_ticks_remaining, 1);
+    update_slope_transition(&mut r, 5);
+    assert_eq!(r.transition_ticks_remaining, 0);
+}
+
+#[test]
+fn slope_counter_saturates_at_zero() {
+    let mut r = RockingState::default();
+    r.curr_slope = 5;
+    r.transition_ticks_remaining = 0;
+    update_slope_transition(&mut r, 5);
+    assert_eq!(r.transition_ticks_remaining, 0);
+}
+
+#[test]
+fn slope_change_mid_transition_resets_to_three() {
+    let mut r = RockingState::default();
+    r.curr_slope = 5;
+    r.transition_ticks_remaining = 1;
+    update_slope_transition(&mut r, 7);
+    assert_eq!(r.prev_slope, 5);
+    assert_eq!(r.curr_slope, 7);
+    assert_eq!(r.transition_ticks_remaining, SLOPE_TRANSITION_TICKS);
 }
 
 #[test]
