@@ -231,6 +231,7 @@ impl Simulation {
             cell.anchor_span_id.hash(hasher);
             cell.overlay_byte.hash(hasher);
             cell.damaged_variant.hash(hasher);
+            cell.bridgehead_anchor_class.hash(hasher);
         }
         // Hash AnchorSpan registry (Task 7 added this field). BTreeMap iterates
         // in sorted-key order, so iteration is deterministic.
@@ -663,6 +664,27 @@ mod bridge_overlay_hash_tests {
             sim_a.state_hash(),
             sim_b.state_hash(),
             "identical bridge states must hash equal",
+        );
+    }
+
+    #[test]
+    fn bridgehead_anchor_class_difference_changes_state_hash() {
+        use crate::sim::bridge_state::BridgeheadAnchorClass;
+        let mut sim_a = Simulation::new();
+        let mut sim_b = Simulation::new();
+
+        let mut state_a = make_bridge_state_with_overlay(0x18);
+        let state_b = make_bridge_state_with_overlay(0x18);
+        if let Some(cell) = state_a.cell_mut(2, 2) {
+            cell.bridgehead_anchor_class = BridgeheadAnchorClass::Damaged;
+        }
+        sim_a.bridge_state = Some(state_a);
+        sim_b.bridge_state = Some(state_b);
+
+        assert_ne!(
+            sim_a.state_hash(),
+            sim_b.state_hash(),
+            "bridgehead_anchor_class must contribute to state hash",
         );
     }
 }
