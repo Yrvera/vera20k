@@ -633,6 +633,47 @@ impl BridgeRuntimeState {
             }
         }
 
+        // Pass 4: register bridgehead cells. ResolvedTerrainCell sets
+        // bridge_walkable=true and has_bridge_deck=false at every bridgehead
+        // (see resolved_terrain.rs bridgehead pass). Bridgeheads are NOT
+        // created in pass 1 (no deck) and NOT touched by pass 3 (no
+        // bridge_layer). Without this pass the rebuild silently flips
+        // PathCell.bridge_walkable to false on every rebuild_dynamic_path_grid.
+        //
+        // Contract: deck_present=true permanently, damage_state=Healthy
+        // permanently, bridge_group_id=None, anchor_span_id=None, axis=None,
+        // overlay_byte=0. The dispatcher (path_matches_cell HighSM/LowSM)
+        // rejects Bridgehead+axis.is_none() so no damage-event RNG fires on
+        // these cells. Pass-3 bridgeheads (axis=Some) stay in the allowed set.
+        for cell in terrain.iter() {
+            if !cell.bridge_walkable || cell.has_bridge_deck {
+                continue;
+            }
+            let Some(idx) = index_of(width, height, cell.rx, cell.ry) else {
+                continue;
+            };
+            if cells[idx].is_some() {
+                // Defensive: pass 1 already registered a cell here. The
+                // condition (bw && !has_deck) should be mutually exclusive
+                // with pass 1's has_deck, so this branch is unreachable
+                // unless the resolved terrain is internally inconsistent.
+                continue;
+            }
+            cells[idx] = Some(BridgeRuntimeCell {
+                deck_present: true,
+                destroyable,
+                deck_level: cell.bridge_deck_level,
+                bridge_group_id: None,
+                damage_state: DamageState::Healthy { variant: 0 },
+                axis: None,
+                role: BridgeCellRole::Bridgehead,
+                anchor_span_id: None,
+                overlay_byte: 0,
+                damaged_variant: false,
+                bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
+            });
+        }
+
         let endpoint_records = compute_bridge_endpoints(&group_cells, terrain, width, height);
 
         Self {
@@ -749,6 +790,17 @@ impl BridgeRuntimeState {
                         | BridgeCellRole::Tail
                         | BridgeCellRole::Bridgehead
                 ) {
+                    return false;
+                }
+                // Pass-4 bridgeheads (registered by `from_resolved_terrain`'s
+                // bridgehead pass) have axis=None and would cause
+                // `bridgehead_advance_state` to return NoChange — but only
+                // after the per-path BridgeStrength RNG roll already burned a
+                // draw. Reject them here so the dispatcher never rolls RNG
+                // for a pass-4-targeted event (lockstep). Pass-3 bridgeheads
+                // (axis=Some, registered from `bridge_layer.direction`) keep
+                // their existing routing into the bridgehead state machine.
+                if matches!(cell.role, BridgeCellRole::Bridgehead) && cell.axis.is_none() {
                     return false;
                 }
                 // High vs low discriminator: deck_level >= 4 is "high"
@@ -1622,6 +1674,175 @@ mod tests {
             });
         }
         ResolvedTerrainGrid::from_cells(5, 1, cells)
+    }
+
+    /// 5x1 grid: ground(0,0), bridgehead(1,0), body(2,0), bridgehead(3,0),
+    /// ground(4,0). Bridgeheads carry realistic resolved-terrain shape:
+    /// bridge_walkable=true, has_bridge_deck=false, transition=true,
+    /// bridge_deck_level=4. Body at (2,0) has has_bridge_deck=true.
+    fn make_bridge_with_bridgeheads_terrain() -> ResolvedTerrainGrid {
+        let mut cells = Vec::new();
+        for rx in 0..5u16 {
+            let is_body = rx == 2;
+            let is_head = rx == 1 || rx == 3;
+            cells.push(ResolvedTerrainCell {
+                rx,
+                ry: 0,
+                source_tile_index: 0,
+                source_sub_tile: 0,
+                final_tile_index: 0,
+                final_sub_tile: 0,
+                level: 0,
+                filled_clear: false,
+                tileset_index: Some(0),
+                land_type: 0,
+                slope_type: 0,
+                template_height: 0,
+                render_offset_x: 0,
+                render_offset_y: 0,
+                terrain_class: TerrainClass::Clear,
+                speed_costs: SpeedCostProfile::default(),
+                is_water: false,
+                is_cliff_like: false,
+                is_cliff_redraw: false,
+                variant: 0,
+                is_rough: false,
+                is_road: false,
+                accepts_smudge: false,
+                has_ramp: false,
+                canonical_ramp: None,
+                ground_walk_blocked: is_body,
+                terrain_object_blocks: false,
+                overlay_blocks: false,
+                zone_type: 0,
+                base_ground_walk_blocked: false,
+                base_build_blocked: false,
+                build_blocked: is_body,
+                has_bridge_deck: is_body,
+                bridge_walkable: is_body || is_head,
+                bridge_transition: is_head,
+                bridge_deck_level: if is_body || is_head { 4 } else { 0 },
+                bridge_layer: None,
+                radar_left: [0, 0, 0],
+                radar_right: [0, 0, 0],
+                has_damaged_data: false,
+            });
+        }
+        ResolvedTerrainGrid::from_cells(5, 1, cells)
+    }
+
+    #[test]
+    fn bridgeheads_registered_with_bridgehead_role() {
+        let state = BridgeRuntimeState::from_resolved_terrain(
+            &make_bridge_with_bridgeheads_terrain(),
+            true,
+            300,
+        );
+        for rx in [1u16, 3] {
+            let cell = state.cell(rx, 0).expect("bridgehead cell must register");
+            assert!(matches!(cell.role, BridgeCellRole::Bridgehead));
+            assert!(cell.deck_present, "bridgeheads carry deck_present=true");
+            assert!(matches!(
+                cell.damage_state,
+                DamageState::Healthy { variant: 0 }
+            ));
+            assert!(cell.bridge_group_id.is_none());
+            assert!(cell.anchor_span_id.is_none());
+            assert!(cell.axis.is_none());
+            assert_eq!(cell.deck_level, 4);
+        }
+    }
+
+    #[test]
+    fn bridgehead_is_bridge_walkable_returns_true() {
+        let state = BridgeRuntimeState::from_resolved_terrain(
+            &make_bridge_with_bridgeheads_terrain(),
+            true,
+            300,
+        );
+        assert!(state.is_bridge_walkable(1, 0));
+        assert!(state.is_bridge_walkable(3, 0));
+    }
+
+    #[test]
+    fn bridgehead_survives_body_cell_collapse() {
+        let mut state = BridgeRuntimeState::from_resolved_terrain(
+            &make_bridge_with_bridgeheads_terrain(),
+            true,
+            50,
+        );
+        if let Some(c) = state.cell_mut(2, 0) {
+            c.damage_state = DamageState::Destroyed;
+        }
+        assert!(state.is_bridge_walkable(1, 0));
+        assert!(state.is_bridge_walkable(3, 0));
+        assert!(matches!(
+            state.cell(1, 0).unwrap().damage_state,
+            DamageState::Healthy { variant: 0 }
+        ));
+        assert!(matches!(
+            state.cell(3, 0).unwrap().damage_state,
+            DamageState::Healthy { variant: 0 }
+        ));
+        assert!(!state.is_bridge_walkable(2, 0));
+    }
+
+    #[test]
+    fn ns_walker_triple_skips_bridgehead_neighbors() {
+        // 3x4 NS bridge: head(2,1), body(2,2), head(2,3). The walker
+        // triple-writes (this, north=(2,1), south=(2,3)) which would
+        // corrupt the bridgeheads if Task 2's role skip were missing.
+        let mut state = BridgeRuntimeState::default();
+        state.test_seed_cell(
+            2,
+            2,
+            BridgeRuntimeCell {
+                deck_present: true,
+                destroyable: true,
+                deck_level: 4,
+                bridge_group_id: Some(1),
+                damage_state: DamageState::Healthy { variant: 0 },
+                axis: Some(Axis::NS),
+                role: BridgeCellRole::Body,
+                anchor_span_id: Some(1),
+                overlay_byte: 0xD3,
+                damaged_variant: false,
+                bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
+            },
+        );
+        for ry in [1u16, 3] {
+            state.test_seed_cell(
+                2,
+                ry,
+                BridgeRuntimeCell {
+                    deck_present: true,
+                    destroyable: true,
+                    deck_level: 4,
+                    bridge_group_id: None,
+                    damage_state: DamageState::Healthy { variant: 0 },
+                    axis: None,
+                    role: BridgeCellRole::Bridgehead,
+                    anchor_span_id: None,
+                    overlay_byte: 0,
+                    damaged_variant: false,
+                    bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
+                },
+            );
+        }
+        let terrain =
+            crate::map::resolved_terrain::ResolvedTerrainGrid::from_cells(3, 4, Vec::new());
+
+        let _ = state.destroy_bridge_walker_ns_high(2, 2, &terrain);
+
+        for ry in [1u16, 3] {
+            let head = state.cell(2, ry).expect("bridgehead survives walker");
+            assert_eq!(head.overlay_byte, 0, "bridgehead overlay_byte untouched");
+            assert!(matches!(
+                head.damage_state,
+                DamageState::Healthy { variant: 0 }
+            ));
+            assert!(matches!(head.role, BridgeCellRole::Bridgehead));
+        }
     }
 
     #[test]

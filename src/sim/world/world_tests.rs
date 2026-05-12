@@ -2875,3 +2875,190 @@ fn bridge_body_builder_queries_atlas_with_post_tick_state_byte_frame() {
         "expected at least one SpriteInstance for the Damaged EW bridge cell"
     );
 }
+
+// --- G7 bridgehead registration: cross-rebuild + A* invariants ---
+
+/// 5x1 high-bridge fixture with realistic bridgehead semantics:
+/// ground(h=4) → bridgehead → body(water, deck=4) → bridgehead → ground(h=4).
+/// Used by the two G7 invariant tests below.
+fn make_realistic_bridgehead_terrain() -> ResolvedTerrainGrid {
+    use crate::map::resolved_terrain::ResolvedTerrainCell;
+    let cells = vec![
+        ResolvedTerrainCell {
+            level: 4,
+            ..bridgehead_base_cell(0, 0)
+        },
+        ResolvedTerrainCell {
+            bridge_walkable: true,
+            bridge_transition: true,
+            bridge_deck_level: 4,
+            has_bridge_deck: false,
+            ..bridgehead_base_cell(1, 0)
+        },
+        ResolvedTerrainCell {
+            ground_walk_blocked: true,
+            build_blocked: true,
+            base_build_blocked: true,
+            bridge_walkable: true,
+            bridge_deck_level: 4,
+            has_bridge_deck: true,
+            is_water: true,
+            ..bridgehead_base_cell(2, 0)
+        },
+        ResolvedTerrainCell {
+            bridge_walkable: true,
+            bridge_transition: true,
+            bridge_deck_level: 4,
+            has_bridge_deck: false,
+            ..bridgehead_base_cell(3, 0)
+        },
+        ResolvedTerrainCell {
+            level: 4,
+            ..bridgehead_base_cell(4, 0)
+        },
+    ];
+    ResolvedTerrainGrid::from_cells(5, 1, cells)
+}
+
+fn bridgehead_base_cell(rx: u16, ry: u16) -> crate::map::resolved_terrain::ResolvedTerrainCell {
+    use crate::map::resolved_terrain::ResolvedTerrainCell;
+    use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
+    ResolvedTerrainCell {
+        rx,
+        ry,
+        source_tile_index: 0,
+        source_sub_tile: 0,
+        final_tile_index: 0,
+        final_sub_tile: 0,
+        level: 0,
+        filled_clear: false,
+        tileset_index: Some(0),
+        land_type: 0,
+        slope_type: 0,
+        template_height: 0,
+        render_offset_x: 0,
+        render_offset_y: 0,
+        terrain_class: TerrainClass::Clear,
+        speed_costs: SpeedCostProfile::default(),
+        is_water: false,
+        is_cliff_like: false,
+        is_cliff_redraw: false,
+        variant: 0,
+        is_rough: false,
+        is_road: false,
+        accepts_smudge: false,
+        has_ramp: false,
+        canonical_ramp: None,
+        ground_walk_blocked: false,
+        terrain_object_blocks: false,
+        overlay_blocks: false,
+        zone_type: 0,
+        base_ground_walk_blocked: false,
+        base_build_blocked: false,
+        build_blocked: false,
+        has_bridge_deck: false,
+        bridge_walkable: false,
+        bridge_transition: false,
+        bridge_deck_level: 0,
+        bridge_layer: None,
+        radar_left: [0, 0, 0],
+        radar_right: [0, 0, 0],
+        has_damaged_data: false,
+    }
+}
+
+#[test]
+fn test_bridgehead_walkability_invariant_across_non_bridge_rebuild_triggers() {
+    // In production app_sim_tick fires `rebuild_dynamic_path_grid` on each of
+    // `destroyed_structure | ownership_changed | spawned_entities` events.
+    // The rebuild is just `PathGrid::from_resolved_terrain_with_bridges(...)`.
+    // Calling it N times models N rebuild triggers; bridgehead walkability
+    // must hold across every rebuild.
+    let mut sim = Simulation::new();
+    let terrain = make_realistic_bridgehead_terrain();
+    sim.resolved_terrain = Some(terrain.clone());
+    sim.bridge_state = Some(BridgeRuntimeState::from_resolved_terrain(
+        &terrain, true, 10,
+    ));
+
+    for trigger_idx in 0..3 {
+        let grid = PathGrid::from_resolved_terrain_with_bridges(
+            sim.resolved_terrain.as_ref().unwrap(),
+            sim.bridge_state.as_ref(),
+        );
+        for rx in [1u16, 3] {
+            let pc = grid
+                .cell(rx, 0)
+                .expect("bridgehead cell exists in path grid");
+            assert!(
+                pc.bridge_walkable,
+                "bridgehead ({rx},0) lost bridge_walkable on rebuild #{trigger_idx}"
+            );
+            assert!(
+                pc.transition,
+                "bridgehead ({rx},0) lost transition on rebuild #{trigger_idx}"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_layered_astar_can_traverse_bridge_after_unrelated_rebuild() {
+    // Build a sim with the realistic bridgehead fixture. Find an A* layered
+    // path Ground(0,0) → Bridge(1,0)..(3,0) → Ground(4,0). Then rebuild the
+    // PathGrid (simulating an unrelated event like a building dying somewhere
+    // off-bridge) and re-find the same path. PRE-G7 this would fail on the
+    // second find: rebuild flips bridgehead bridge_walkable false → A* can't
+    // enter the bridge layer. POST-G7 both finds succeed.
+    let mut sim = Simulation::new();
+    let terrain = make_realistic_bridgehead_terrain();
+    sim.resolved_terrain = Some(terrain.clone());
+    sim.bridge_state = Some(BridgeRuntimeState::from_resolved_terrain(
+        &terrain, true, 10,
+    ));
+
+    let grid_initial = PathGrid::from_resolved_terrain_with_bridges(
+        sim.resolved_terrain.as_ref().unwrap(),
+        sim.bridge_state.as_ref(),
+    );
+    let path_initial = crate::sim::pathfinding::find_layered_path(
+        &grid_initial,
+        None,
+        None,
+        (0, 0),
+        MovementLayer::Ground,
+        (4, 0),
+        None,
+        None,
+        0,
+        false,
+    );
+    assert!(
+        path_initial.is_some(),
+        "intact bridge must allow Ground→Bridge→Ground A* path"
+    );
+
+    // Simulate the rebuild_dynamic_path_grid path that fires on every
+    // unrelated structure death / unit spawn / ownership change.
+    let grid_after_rebuild = PathGrid::from_resolved_terrain_with_bridges(
+        sim.resolved_terrain.as_ref().unwrap(),
+        sim.bridge_state.as_ref(),
+    );
+    let path_after_rebuild = crate::sim::pathfinding::find_layered_path(
+        &grid_after_rebuild,
+        None,
+        None,
+        (0, 0),
+        MovementLayer::Ground,
+        (4, 0),
+        None,
+        None,
+        0,
+        false,
+    );
+    assert!(
+        path_after_rebuild.is_some(),
+        "A* path must still exist after an unrelated rebuild (G7: bridgeheads \
+         must keep bridge_walkable across PathGrid refresh)"
+    );
+}

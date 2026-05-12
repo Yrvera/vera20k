@@ -634,7 +634,12 @@ fn test_layered_path_rebuild_blocks_destroyed_bridge_deck() {
                 bridge_walkable: true,
                 bridge_transition: true,
                 bridge_deck_level: 4,
-                has_bridge_deck: true,
+                // Realistic bridgehead semantics: walkable, transition cell,
+                // but NOT part of the deck. Pass 4 of
+                // BridgeRuntimeState::from_resolved_terrain registers these
+                // as Bridgehead-role cells so PathCell.bridge_walkable
+                // survives rebuild.
+                has_bridge_deck: false,
                 ..make_resolved_cell(1, 0)
             },
             ResolvedTerrainCell {
@@ -651,7 +656,7 @@ fn test_layered_path_rebuild_blocks_destroyed_bridge_deck() {
                 bridge_walkable: true,
                 bridge_transition: true,
                 bridge_deck_level: 4,
-                has_bridge_deck: true,
+                has_bridge_deck: false,
                 ..make_resolved_cell(3, 0)
             },
             ResolvedTerrainCell {
@@ -679,14 +684,12 @@ fn test_layered_path_rebuild_blocks_destroyed_bridge_deck() {
         "intact bridge should be traversable"
     );
 
-    // Direct mutation replaces the legacy `apply_damage`. The orchestrator's
-    // walker performs the same per-cell damage-state transitions through
-    // `body_cell_advance_state`; this test only needs the destroyed
-    // damage_state for is_bridge_walkable to fail.
-    for (rx, ry) in [(1u16, 0u16), (2, 0), (3, 0)] {
-        if let Some(c) = bridge_state.cell_mut(rx, ry) {
-            c.damage_state = crate::sim::bridge_state::DamageState::Destroyed;
-        }
+    // Destroy only the body cell (rx=2). The bridgeheads at rx=1 / rx=3 must
+    // stay Healthy — pass 4 of `from_resolved_terrain` creates them with
+    // `damage_state = Healthy { variant: 0 }` permanently, and the contract
+    // for `BridgeCellRole::Bridgehead` is that no code mutates that field.
+    if let Some(c) = bridge_state.cell_mut(2, 0) {
+        c.damage_state = crate::sim::bridge_state::DamageState::Destroyed;
     }
 
     let destroyed_grid =
@@ -707,6 +710,77 @@ fn test_layered_path_rebuild_blocks_destroyed_bridge_deck() {
         .is_none(),
         "destroyed bridge should invalidate the layered route"
     );
+}
+
+#[test]
+fn test_pathcell_bridge_walkable_preserved_for_bridgeheads_across_rebuild() {
+    // After the G7 fix, PathCell.bridge_walkable for pass-4 bridgeheads
+    // (rx=1, rx=3) must stay true across every PathGrid rebuild driven by
+    // from_resolved_terrain_with_bridges. Pre-fix this would flip to false
+    // because the bridgeheads aren't registered in BridgeRuntimeState.
+    let terrain = ResolvedTerrainGrid::from_cells(
+        5,
+        1,
+        vec![
+            ResolvedTerrainCell {
+                level: 4,
+                ..make_resolved_cell(0, 0)
+            },
+            ResolvedTerrainCell {
+                bridge_walkable: true,
+                bridge_transition: true,
+                bridge_deck_level: 4,
+                has_bridge_deck: false,
+                ..make_resolved_cell(1, 0)
+            },
+            ResolvedTerrainCell {
+                ground_walk_blocked: true,
+                build_blocked: true,
+                base_build_blocked: true,
+                bridge_walkable: true,
+                bridge_deck_level: 4,
+                has_bridge_deck: true,
+                is_water: true,
+                ..make_resolved_cell(2, 0)
+            },
+            ResolvedTerrainCell {
+                bridge_walkable: true,
+                bridge_transition: true,
+                bridge_deck_level: 4,
+                has_bridge_deck: false,
+                ..make_resolved_cell(3, 0)
+            },
+            ResolvedTerrainCell {
+                level: 4,
+                ..make_resolved_cell(4, 0)
+            },
+        ],
+    );
+    let bridge_state = BridgeRuntimeState::from_resolved_terrain(&terrain, true, 10);
+
+    // Multiple rebuilds: in production each fires from a non-bridge event
+    // (unit spawn, ownership change, destroyed structure).
+    for _ in 0..3 {
+        let grid = PathGrid::from_resolved_terrain_with_bridges(&terrain, Some(&bridge_state));
+        let pc1 = grid.cell(1, 0).expect("bridgehead cell exists");
+        let pc3 = grid.cell(3, 0).expect("bridgehead cell exists");
+        assert!(
+            pc1.bridge_walkable,
+            "rx=1 bridgehead must remain bridge_walkable"
+        );
+        assert!(
+            pc3.bridge_walkable,
+            "rx=3 bridgehead must remain bridge_walkable"
+        );
+        assert!(
+            pc1.transition,
+            "rx=1 bridgehead must remain a transition cell"
+        );
+        assert!(
+            pc3.transition,
+            "rx=3 bridgehead must remain a transition cell"
+        );
+    }
 }
 
 // --- Bridge height helper tests ---
