@@ -406,3 +406,196 @@ fn out_of_range_velocity_runs_away_not_inward() {
         v
     );
 }
+
+// ---- Integration tests (Task 12) -----------------------------------------
+//
+// End-to-end exercises of the full `Simulation::advance_tick` pipeline with
+// one vehicle that has rocking enabled. Validates:
+//   1. A finite impulse decays back to neutral over O(60) ticks.
+//   2. Two seeded runs given identical impulses produce bit-identical
+//      `state_hash()` outputs every tick (lockstep / replay invariant).
+//
+// The helper builds the minimum scaffolding `advance_tick` needs: a flat
+// 10×10 terrain, a path grid, a `RuleSet` with one vehicle type, and the
+// spawned MTNK with `rocking = Some(_)` set (production-side spawn doesn't
+// yet initialize that field; see plan §"Open Questions" — vehicles will get
+// it by default once combat lands).
+
+use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
+use crate::rules::ini_parser::IniFile;
+use crate::rules::ruleset::RuleSet;
+use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
+use crate::sim::pathfinding::PathGrid;
+use crate::sim::world::Simulation;
+use std::collections::BTreeMap;
+
+const GRID_W: u16 = 10;
+const GRID_H: u16 = 10;
+const TICK_MS: u32 = 33;
+
+fn flat_terrain(width: u16, height: u16) -> ResolvedTerrainGrid {
+    let mut cells = Vec::with_capacity((width as usize) * (height as usize));
+    for y in 0..height {
+        for x in 0..width {
+            cells.push(ResolvedTerrainCell {
+                rx: x,
+                ry: y,
+                source_tile_index: 0,
+                source_sub_tile: 0,
+                final_tile_index: 0,
+                final_sub_tile: 0,
+                level: 0,
+                filled_clear: true,
+                tileset_index: Some(0),
+                land_type: 0,
+                slope_type: 0,
+                template_height: 0,
+                render_offset_x: 0,
+                render_offset_y: 0,
+                terrain_class: TerrainClass::Clear,
+                speed_costs: SpeedCostProfile::default(),
+                is_water: false,
+                is_cliff_like: false,
+                is_cliff_redraw: false,
+                variant: 0,
+                is_rough: false,
+                is_road: false,
+                accepts_smudge: false,
+                has_ramp: false,
+                canonical_ramp: None,
+                ground_walk_blocked: false,
+                terrain_object_blocks: false,
+                overlay_blocks: false,
+                zone_type: 0,
+                base_ground_walk_blocked: false,
+                base_build_blocked: false,
+                build_blocked: false,
+                has_bridge_deck: false,
+                bridge_walkable: false,
+                bridge_transition: false,
+                bridge_deck_level: 0,
+                bridge_layer: None,
+                radar_left: [0, 0, 0],
+                radar_right: [0, 0, 0],
+            });
+        }
+    }
+    ResolvedTerrainGrid::from_cells(width, height, cells)
+}
+
+fn minimal_rules() -> RuleSet {
+    let ini = IniFile::from_str(
+        "[InfantryTypes]\n\n\
+         [VehicleTypes]\n0=MTNK\n\n\
+         [AircraftTypes]\n\n\
+         [BuildingTypes]\n\n\
+         [MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\n",
+    );
+    RuleSet::from_ini(&ini).expect("minimal rules should parse")
+}
+
+/// Build a simulation with a single MTNK at (5, 5), flat terrain, and the
+/// entity's `RockingState` initialized to default. Returns `(sim, rules,
+/// path_grid)` so each test can drive `advance_tick` directly.
+fn make_test_simulation_with_one_vehicle() -> (Simulation, RuleSet, PathGrid) {
+    let rules = minimal_rules();
+    let mut sim = Simulation::new();
+    sim.resolved_terrain = Some(flat_terrain(GRID_W, GRID_H));
+    let path_grid = PathGrid::new(GRID_W, GRID_H);
+
+    let id = sim
+        .spawn_object("MTNK", "Americans", 5, 5, 64, &rules, &BTreeMap::new())
+        .expect("spawn MTNK");
+    // Production-side spawn doesn't initialize `rocking` yet (sim-side only
+    // path lands with combat in Task 19); flip it on here so the rocking
+    // pipeline actually runs against this entity.
+    sim.entities
+        .get_mut(id)
+        .expect("spawned entity present")
+        .rocking = Some(RockingState::default());
+    (sim, rules, path_grid)
+}
+
+fn advance(sim: &mut Simulation, rules: &RuleSet, path_grid: &PathGrid) {
+    let _ = sim.advance_tick(&[], Some(rules), &BTreeMap::new(), Some(path_grid), None, TICK_MS);
+}
+
+#[test]
+fn integration_impulse_decays_to_neutral_over_60_ticks() {
+    let (mut sim, rules, path_grid) = make_test_simulation_with_one_vehicle();
+
+    // Apply a finite sideways impulse; default Weight=2.0 gives a scaled
+    // velocity of 0.04 * 1.0 / 2.0 = 0.02 rad/tick — well within the
+    // ±IMPULSE_VEL_CAP envelope, and large enough to actually settle visibly.
+    let weight = SimFixed::lit("2.0");
+    {
+        let e = sim.entities.values_mut().next().expect("one entity");
+        let r = e.rocking.as_mut().expect("rocking present");
+        apply_rocker_impulse(r, SimFixed::ONE, weight, SimFixed::ONE, SimFixed::ZERO);
+        assert!(
+            r.vel_sideways.abs() > SimFixed::ZERO,
+            "impulse should set nonzero sideways velocity, got {:?}",
+            r.vel_sideways,
+        );
+    }
+
+    // 60 ticks ≈ 1 second of sim time. Base decay 0.002 rad/tick against an
+    // initial 0.02 rad/tick velocity zeroes out well before this horizon.
+    for _ in 0..60 {
+        advance(&mut sim, &rules, &path_grid);
+    }
+
+    let e = sim.entities.values().next().expect("one entity");
+    let r = e.rocking.as_ref().expect("rocking present");
+    assert!(
+        r.is_neutral(),
+        "rocking should have decayed to neutral after 60 ticks; \
+         angles=({:?},{:?}) vels=({:?},{:?}) transition_remaining={}",
+        r.angle_sideways,
+        r.angle_forwards,
+        r.vel_sideways,
+        r.vel_forwards,
+        r.transition_ticks_remaining,
+    );
+}
+
+#[test]
+fn integration_determinism_same_impulse_same_hash() {
+    let (mut a, rules_a, grid_a) = make_test_simulation_with_one_vehicle();
+    let (mut b, rules_b, grid_b) = make_test_simulation_with_one_vehicle();
+
+    // Identical impulses on both sims, applied before any tick advances.
+    let weight = SimFixed::lit("2.0");
+    {
+        let ea = a.entities.values_mut().next().unwrap();
+        apply_rocker_impulse(
+            ea.rocking.as_mut().unwrap(),
+            SimFixed::lit("0.5"),
+            weight,
+            SimFixed::ONE,
+            SimFixed::ZERO,
+        );
+        let eb = b.entities.values_mut().next().unwrap();
+        apply_rocker_impulse(
+            eb.rocking.as_mut().unwrap(),
+            SimFixed::lit("0.5"),
+            weight,
+            SimFixed::ONE,
+            SimFixed::ZERO,
+        );
+    }
+
+    // Hashes must agree at every tick boundary, not just at the end. Catching
+    // the divergence tick is what makes this useful for replay debugging.
+    assert_eq!(a.state_hash(), b.state_hash(), "pre-tick hashes diverge");
+    for tick in 0..200 {
+        advance(&mut a, &rules_a, &grid_a);
+        advance(&mut b, &rules_b, &grid_b);
+        assert_eq!(
+            a.state_hash(),
+            b.state_hash(),
+            "state hash diverged at tick {}",
+            tick + 1,
+        );
+    }
+}
