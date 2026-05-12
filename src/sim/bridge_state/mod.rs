@@ -144,6 +144,32 @@ impl DamageState {
     }
 }
 
+/// Per-anchor tile-class state, mirroring the four bridgehead-class tile
+/// variants the bridge state machine writes when damage lands on a
+/// bridgehead-class cell. The four variants render as distinct anchor tiles:
+///
+/// - `Variant0` — intact anchor (map-load default).
+/// - `Variant1` — intact intermediate variant; reached only via the
+///   `DamageB` perpendicular write progressing a neighbor bridgehead.
+/// - `Damaged` — runtime "damaged" anchor tile. Single-step transition on
+///   any bridgehead direct hit; no progression beyond this from sustained
+///   direct fire.
+/// - `AboutToFall` — reached only via map-load (pre-damaged maps) or the
+///   body-cell collapse cascade landing on an already-near-collapse cell.
+///
+/// Meaningful only when `BridgeRuntimeCell.role` is `Anchor` or
+/// `Bridgehead`; the renderer ignores it on other roles.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, Default,
+)]
+pub enum BridgeheadAnchorClass {
+    #[default]
+    Variant0,
+    Variant1,
+    Damaged,
+    AboutToFall,
+}
+
 /// Cell role within an `AnchorSpan`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum BridgeCellRole {
