@@ -3325,9 +3325,7 @@ mod tests {
 
     /// Synthetic 3x3 grid with a single bridge anchor cell at (1,1).
     /// `pre_class` is written to that cell's bridgehead_anchor_class_at_load.
-    fn make_pre_class_terrain(
-        pre_class: Option<BridgeheadAnchorClass>,
-    ) -> ResolvedTerrainGrid {
+    fn make_pre_class_terrain(pre_class: Option<BridgeheadAnchorClass>) -> ResolvedTerrainGrid {
         use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
         let mut cells = Vec::with_capacity(9);
         for ry in 0..3u16 {

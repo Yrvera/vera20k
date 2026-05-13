@@ -596,13 +596,8 @@ impl ResolvedTerrainGrid {
                             for &ddy in ddy_options {
                                 let nx = crx + ddx;
                                 let ny = cry + ddy;
-                                if nx >= 0
-                                    && ny >= 0
-                                    && nx < width as i32
-                                    && ny < height as i32
-                                {
-                                    let nidx =
-                                        ny as usize * width as usize + nx as usize;
+                                if nx >= 0 && ny >= 0 && nx < width as i32 && ny < height as i32 {
+                                    let nidx = ny as usize * width as usize + nx as usize;
                                     if nidx < cells.len() && cells[nidx].has_bridge_deck {
                                         span_deck = Some(cells[nidx].bridge_deck_level);
                                         break 'outer;

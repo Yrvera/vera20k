@@ -844,8 +844,7 @@ mod tests {
         let grid = override_test_grid(Some(table));
         let bs = override_test_bridge_state(Some(Axis::NS), BridgeheadAnchorClass::AboutToFall);
 
-        let captured: std::cell::RefCell<Option<(u16, u8, u8)>> =
-            std::cell::RefCell::new(None);
+        let captured: std::cell::RefCell<Option<(u16, u8, u8)>> = std::cell::RefCell::new(None);
         let lookup = |tid: u16, sub: u8, var: u8| -> Option<TilePlacement> {
             *captured.borrow_mut() = Some((tid, sub, var));
             Some(TilePlacement {
@@ -879,8 +878,7 @@ mod tests {
         let grid = override_test_grid(Some(table));
         let bs = override_test_bridge_state(Some(Axis::NS), BridgeheadAnchorClass::Variant0);
 
-        let captured: std::cell::RefCell<Option<(u16, u8, u8)>> =
-            std::cell::RefCell::new(None);
+        let captured: std::cell::RefCell<Option<(u16, u8, u8)>> = std::cell::RefCell::new(None);
         let lookup = |tid: u16, sub: u8, var: u8| -> Option<TilePlacement> {
             *captured.borrow_mut() = Some((tid, sub, var));
             Some(TilePlacement {
@@ -905,8 +903,7 @@ mod tests {
         let grid = override_test_grid(None);
         let bs = override_test_bridge_state(Some(Axis::NS), BridgeheadAnchorClass::AboutToFall);
 
-        let captured: std::cell::RefCell<Option<(u16, u8, u8)>> =
-            std::cell::RefCell::new(None);
+        let captured: std::cell::RefCell<Option<(u16, u8, u8)>> = std::cell::RefCell::new(None);
         let lookup = |tid: u16, sub: u8, var: u8| -> Option<TilePlacement> {
             *captured.borrow_mut() = Some((tid, sub, var));
             Some(TilePlacement {
