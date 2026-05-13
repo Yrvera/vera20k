@@ -1023,6 +1023,18 @@ impl PathGrid {
                         // Destroyed bridge: revert to underlying terrain walkability.
                         !cell.is_cliff_like && !cell.ground_walk_blocked
                     }
+                } else if cell.bridge_walkable && cell.bridge_transition {
+                    // Bridgehead ramp: walkable on the ground layer regardless
+                    // of the TMP ramp tile's ground_walk_blocked flag. gamemd
+                    // gates ground entry through the SpeedType/LandType matrix
+                    // (land_type=Clear/Road → passable for vehicles/infantry);
+                    // we don't yet route non-water movers through that matrix,
+                    // so the boolean would otherwise reject a same-height
+                    // plateau→bridgehead step and trap the unit on the wrong
+                    // side. The bridge-layer gate at A* expansion still
+                    // enforces "enter bridge via bridgehead" via the
+                    // bridge_transition flag on the next deck cell.
+                    true
                 } else if cell.is_cliff_like {
                     false
                 } else {
