@@ -110,3 +110,17 @@ fn parses_morphable_flag_per_tileset() {
     // tile_id 1 = first tile of TileSet0001 (Morphable= unset → default false)
     assert!(!lookup.is_morphable(1));
 }
+
+#[test]
+fn parse_general_int_finds_bridge_middle_keys() {
+    let ini = "[General]\nBridgeSet=5\nBridgeMiddle1=7\nBridgeMiddle2=12\n\n[TileSet0000]\nTilesInSet=1\nFileName=clear\n";
+    assert_eq!(super::parse_general_int(ini, "BridgeMiddle1"), Some(7));
+    assert_eq!(super::parse_general_int(ini, "BridgeMiddle2"), Some(12));
+}
+
+#[test]
+fn parse_general_int_missing_bridge_middle_returns_none() {
+    let ini = "[General]\nBridgeSet=5\n\n[TileSet0000]\nTilesInSet=1\nFileName=clear\n";
+    assert_eq!(super::parse_general_int(ini, "BridgeMiddle1"), None);
+    assert_eq!(super::parse_general_int(ini, "BridgeMiddle2"), None);
+}

@@ -376,6 +376,12 @@ pub struct TheaterData {
     pub bridge_set: Option<u16>,
     /// Tileset index for wooden bridgehead tiles (WoodBridgeSet= in theater INI).
     pub wood_bridge_set: Option<u16>,
+    /// `[General] BridgeMiddle1=N` — BridgeSet-relative offset for the NS
+    /// bridgehead variant block. The 4 NS variant tile_ids occupy
+    /// `BridgeSet_start + {N-1, N, N+1, N+2}`. None if the key is absent.
+    pub bridge_middle_1: Option<u8>,
+    /// `[General] BridgeMiddle2=N` — same for EW.
+    pub bridge_middle_2: Option<u8>,
 }
 
 /// Load tileset data for a theater.
@@ -452,12 +458,38 @@ pub fn load_theater(asset_manager: &mut AssetManager, theater_name: &str) -> Opt
     let ini_text = String::from_utf8_lossy(&ini_data);
     let bridge_set = parse_general_int(&ini_text, "BridgeSet");
     let wood_bridge_set = parse_general_int(&ini_text, "WoodBridgeSet");
+    // BridgeMiddle1/2 select which 4 consecutive BridgeSet-relative tile_ids
+    // are the NS / EW bridgehead variant blocks. Parsed as u8 because retail
+    // values fit (temperate/snow/urban/desert/lunar = 7/12). Use the existing
+    // parse_general_int (returns u16) and downcast; None on absent key or
+    // out-of-range value.
+    let bridge_middle_1: Option<u8> =
+        parse_general_int(&ini_text, "BridgeMiddle1").and_then(|v| u8::try_from(v).ok());
+    let bridge_middle_2: Option<u8> =
+        parse_general_int(&ini_text, "BridgeMiddle2").and_then(|v| u8::try_from(v).ok());
     if bridge_set.is_some() || wood_bridge_set.is_some() {
         log::info!(
-            "Theater {}: BridgeSet={:?}, WoodBridgeSet={:?}",
+            "Theater {}: BridgeSet={:?}, WoodBridgeSet={:?}, BridgeMiddle1={:?}, BridgeMiddle2={:?}",
             theater_name,
             bridge_set,
             wood_bridge_set,
+            bridge_middle_1,
+            bridge_middle_2,
+        );
+    }
+    // Diagnostic: bridge anchor variant rendering needs both BridgeSet
+    // AND BridgeMiddle1/2. Log once at theater load if any are missing so
+    // mods without these keys produce a clear single warning rather than
+    // silent per-frame visual drift.
+    if bridge_set.is_some() && (bridge_middle_1.is_none() || bridge_middle_2.is_none()) {
+        log::info!(
+            "Theater {}: BridgeSet present but BridgeMiddle{} missing — bridgehead anchor damage visuals disabled",
+            theater_name,
+            match (bridge_middle_1, bridge_middle_2) {
+                (None, None) => "1+2",
+                (None, _) => "1",
+                _ => "2",
+            },
         );
     }
 
@@ -470,6 +502,8 @@ pub fn load_theater(asset_manager: &mut AssetManager, theater_name: &str) -> Opt
         ini_data,
         bridge_set,
         wood_bridge_set,
+        bridge_middle_1,
+        bridge_middle_2,
     })
 }
 
