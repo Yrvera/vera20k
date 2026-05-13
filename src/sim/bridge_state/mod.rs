@@ -144,18 +144,25 @@ impl DamageState {
     }
 }
 
-/// Per-anchor tile-class state, mirroring the four bridgehead-class tile
-/// variants the bridge state machine writes when damage lands on a
-/// bridgehead-class cell. The four variants render as distinct anchor tiles:
+/// Per-cell anchor tile-class for bridgehead-adjacent cells.
 ///
-/// - `Variant0` — intact anchor (map-load default).
-/// - `Variant1` — intact intermediate variant; reached only via the
-///   `DamageB` perpendicular write progressing a neighbor bridgehead.
-/// - `Damaged` — runtime "damaged" anchor tile. Single-step transition on
-///   any bridgehead direct hit; no progression beyond this from sustained
-///   direct fire.
-/// - `AboutToFall` — reached only via map-load (pre-damaged maps) or the
-///   body-cell collapse cascade landing on an already-near-collapse cell.
+/// Mirrors the four `IsoTileTypeIndex` slots used by the bridgehead state
+/// machine. Each value corresponds to a BridgeSet-relative tile_id offset
+/// (slot 0..3); the actual tile_ids are theater-portable via
+/// `BridgeMiddle1` / `BridgeMiddle2`.
+///
+/// - `Variant0` — pristine bridgehead (map-load default for cells with no
+///   author-damaged anchor placement).
+/// - `Variant1` — first DamageB intermediate. Reached only via neighbor
+///   `UpdateRamp_*_DamageB` progression on a Variant0 target.
+/// - `Damaged` — second DamageB intermediate. Reached only via neighbor
+///   `UpdateRamp_*_DamageB` progression on a Variant1 target. Also written
+///   by Collapse* paths advancing any non-AboutToFall variant.
+/// - `AboutToFall` — most-damaged variant. Two reach paths:
+///   1. **Direct hit on a bridgehead cell** — the bridgehead state machine
+///      writes the anchor straight to this slot (skipping Variant1/Damaged).
+///   2. **Map-load author-damaged anchor** — maps may place this tile_id
+///      directly; the renderer reflects it from frame 1.
 ///
 /// Meaningful only when `BridgeRuntimeCell.role` is `Anchor` or
 /// `Bridgehead`; the renderer ignores it on other roles.
@@ -1267,12 +1274,15 @@ impl BridgeRuntimeState {
     /// the gate reaches the anchor-write path.
     ///
     /// On a successful walk:
-    /// - Writes `bridgehead_anchor_class = Damaged` on the anchor cell. The
-    ///   write is idempotent — repeat hits leave the anchor at `Damaged`.
+    /// - Writes `bridgehead_anchor_class = AboutToFall` on the anchor cell.
+    ///   This is the **most-damaged variant** (4th slot in the enum, matching
+    ///   the reference engine's anchor-tile write target). The write is
+    ///   idempotent — repeat hits leave the anchor at AboutToFall.
     /// - Fires `update_ramp_perpendicular(DamageA)` and `DamageB` on the
-    ///   anchor's perpendicular neighbors. These now do both the existing
-    ///   state-byte bump (on Anchor targets) AND the new tile-class write
-    ///   (on Anchor and Bridgehead targets).
+    ///   anchor's perpendicular neighbors. These do both the existing
+    ///   state-byte bump (on Anchor targets) AND the asymmetric A/B
+    ///   tile-class progression (on Anchor and Bridgehead targets) —
+    ///   `Variant0 → Variant1 → Damaged` via DamageB; DamageA preserves.
     /// - The hit bridgehead cell's own `damage_state` is NEVER modified.
     ///
     /// Returns:
@@ -1328,11 +1338,14 @@ impl BridgeRuntimeState {
             return StateOutcome::NoChange;
         };
 
-        // 4. Write the anchor's bridgehead_anchor_class to Damaged. The
-        //    write is idempotent on repeat hits (Damaged stays Damaged).
-        //    The hit bridgehead cell's own damage_state is never touched.
+        // 4. Write the anchor's bridgehead_anchor_class to AboutToFall
+        //    (the most-damaged variant, 4th enum slot). Matches the
+        //    reference engine's first-hit write to the anchor's tile-class
+        //    field. The write is idempotent on repeat hits (AboutToFall
+        //    stays AboutToFall). The hit bridgehead cell's own
+        //    damage_state is never touched.
         if let Some(anchor_cell) = self.cell_mut(anchor_pos.0, anchor_pos.1) {
-            anchor_cell.bridgehead_anchor_class = BridgeheadAnchorClass::Damaged;
+            anchor_cell.bridgehead_anchor_class = BridgeheadAnchorClass::AboutToFall;
         }
 
         // 5. Fire the perpendicular DamageA + DamageB writes. These do the
@@ -2653,10 +2666,12 @@ mod tests {
             pre_hit_bridgehead.damage_state
         );
 
-        // Anchor's bridgehead_anchor_class becomes Damaged.
+        // Anchor's bridgehead_anchor_class becomes AboutToFall (4th slot —
+        // first-hit writes the most-damaged variant directly, skipping
+        // intermediate slots).
         assert_eq!(
             state.cell(2, 2).unwrap().bridgehead_anchor_class,
-            BridgeheadAnchorClass::Damaged
+            BridgeheadAnchorClass::AboutToFall
         );
 
         // East perpendicular partner (DamageA) — state byte 0 → 4 → Healthy{4}.
@@ -2683,10 +2698,10 @@ mod tests {
                 "every hit must return Absorbed, never Collapsed",
             );
         }
-        // Anchor's tile class stays Damaged (idempotent).
+        // Anchor's tile class stays AboutToFall (idempotent across hits).
         assert_eq!(
             state.cell(2, 2).unwrap().bridgehead_anchor_class,
-            BridgeheadAnchorClass::Damaged
+            BridgeheadAnchorClass::AboutToFall
         );
         // Bridgehead cell's own damage_state never changes.
         assert!(matches!(
@@ -2802,7 +2817,7 @@ mod tests {
         assert_eq!(outcome, StateOutcome::Absorbed);
         assert_eq!(
             state.cell(2, 2).unwrap().bridgehead_anchor_class,
-            BridgeheadAnchorClass::Damaged,
+            BridgeheadAnchorClass::AboutToFall,
             "walk must pass through odd-h intermediate and damage the anchor",
         );
     }

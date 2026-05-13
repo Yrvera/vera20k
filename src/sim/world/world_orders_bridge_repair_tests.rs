@@ -859,11 +859,13 @@ fn ramp_fire_does_not_collapse_high_bridge() {
         post_bridgehead.damage_state, pre_bridgehead.damage_state,
         "bridgehead damage_state must not change on direct fire",
     );
-    // Anchor's bridgehead_anchor_class = Damaged (idempotent across hits).
+    // Anchor's bridgehead_anchor_class = AboutToFall (idempotent across
+    // hits). Matches the reference engine's first-hit anchor-tile write
+    // target — the most-damaged variant, 4th enum slot.
     assert_eq!(
         bs.cell(2, 2).unwrap().bridgehead_anchor_class,
-        BridgeheadAnchorClass::Damaged,
-        "anchor tile-class must transition to Damaged on first hit",
+        BridgeheadAnchorClass::AboutToFall,
+        "anchor tile-class must transition to AboutToFall on first hit",
     );
     // Neither bridgehead nor anchor entered Destroyed.
     for cell in [bs.cell(2, 4).unwrap(), bs.cell(2, 2).unwrap()] {
