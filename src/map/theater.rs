@@ -672,6 +672,66 @@ pub fn collect_used_tiles(cells: &[(i32, u8)]) -> HashSet<TileKey> {
         .collect()
 }
 
+/// Inject TileKey entries for the 8 bridge anchor variant tile_ids × all
+/// sub_tiles in each tile_id's TMP template into the `needed` set used by
+/// the atlas pre-loader.
+///
+/// Required so the atlas has the variant tiles loaded before any bridge
+/// damage happens at runtime — without this, the first damage hit would be
+/// an atlas miss for the variant cell, producing a blank or fallback sprite
+/// on the same tick that the damage applies.
+///
+/// Silently skips tile_ids whose TMP file is absent from `asset_manager`
+/// (e.g., mod theaters missing a variant TMP). Logs one `WARN` per missing
+/// TMP at theater load.
+pub fn inject_bridge_anchor_variant_tiles(
+    needed: &mut HashSet<TileKey>,
+    table: &BridgeAnchorVariantTable,
+    lookup: &TilesetLookup,
+    asset_manager: &crate::assets::asset_manager::AssetManager,
+) {
+    let all_tile_ids = table.ns.iter().chain(table.ew.iter()).copied();
+    for tile_id in all_tile_ids {
+        let Some(filename) = lookup.filename(tile_id as i32) else {
+            log::warn!(
+                "Bridge anchor variant tile_id {} has no entry in TilesetLookup; skipping pre-load",
+                tile_id
+            );
+            continue;
+        };
+        let filename: String = filename.to_string();
+        let Some(tmp_data) = asset_manager.get_ref(&filename) else {
+            log::warn!(
+                "Bridge anchor variant TMP {} missing from MIX archives; cell will render as native tile_id on damage",
+                filename
+            );
+            continue;
+        };
+        let tmp = match TmpFile::from_bytes(tmp_data) {
+            Ok(t) => t,
+            Err(e) => {
+                log::warn!(
+                    "Bridge anchor variant TMP {} failed to parse: {:#}",
+                    filename,
+                    e
+                );
+                continue;
+            }
+        };
+        let cell_count = (tmp.template_width * tmp.template_height) as usize;
+        for sub_tile in 0..cell_count {
+            if tmp.tiles[sub_tile].is_none() {
+                continue;
+            }
+            needed.insert(TileKey {
+                tile_id,
+                sub_tile: sub_tile as u8,
+                variant: 0,
+            });
+        }
+    }
+}
+
 /// Load RGBA tile images for tiles needed by the map. Groups by tile_id
 /// to batch-load TMP files. Skips missing or unparseable TMP files.
 pub fn load_tile_images(
