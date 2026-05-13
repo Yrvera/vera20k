@@ -16,6 +16,7 @@ use crate::assets::pal_file::Palette;
 use crate::assets::tmp_file::TmpFile;
 use crate::map::map_file::MapError;
 use crate::rules::ini_parser::{IniFile, IniSection};
+use crate::sim::bridge_state::{Axis, BridgeheadAnchorClass};
 
 /// Marker for "no tile" in IsoMapPack5 data.
 /// The raw field is i32; -1 (0xFFFFFFFF) means clear ground.
@@ -382,6 +383,94 @@ pub struct TheaterData {
     pub bridge_middle_1: Option<u8>,
     /// `[General] BridgeMiddle2=N` — same for EW.
     pub bridge_middle_2: Option<u8>,
+}
+
+/// Theater-derived 4-NS + 4-EW tile_id table for HIGH bridge anchor variants.
+///
+/// Built once at theater load from `BridgeSet` (tileset start tile_id)
+/// + `BridgeMiddle1` / `BridgeMiddle2` (BridgeSet-relative offsets).
+/// The 4 variant tile_ids per axis occupy consecutive slots starting at
+/// `BridgeSet_start + (BridgeMiddle* - 1)`.
+///
+/// Enum order: `[Variant0, Variant1, Damaged, AboutToFall]`.
+#[derive(Debug, Clone, Copy)]
+pub struct BridgeAnchorVariantTable {
+    /// NS variant tile_ids in enum order (Variant0..AboutToFall).
+    pub ns: [u16; 4],
+    /// EW variant tile_ids in enum order.
+    pub ew: [u16; 4],
+}
+
+impl BridgeAnchorVariantTable {
+    /// Derive the variant table from a fully-loaded TheaterData.
+    ///
+    /// Returns None when BridgeSet, BridgeMiddle1, or BridgeMiddle2 is
+    /// absent, BridgeMiddle1 or BridgeMiddle2 is 0 (Variant0 = BS+M-1
+    /// would underflow), or any of the 8 computed tile_ids falls outside
+    /// the tileset bounds.
+    pub fn from_theater(td: &TheaterData) -> Option<Self> {
+        let bs_idx = td.bridge_set?;
+        let m1 = td.bridge_middle_1?;
+        let m2 = td.bridge_middle_2?;
+        if m1 < 1 || m2 < 1 {
+            return None;
+        }
+        let bs_start = td.lookup.bounds().get(bs_idx as usize).map(|b| b.start)?;
+        let max_tid = td.lookup.len() as u32;
+
+        let compute_axis = |m: u8| -> Option<[u16; 4]> {
+            let base = bs_start as u32 + (m as u32) - 1;
+            let highest = base + 3;
+            if highest >= max_tid {
+                return None;
+            }
+            Some([
+                base as u16,
+                (base + 1) as u16,
+                (base + 2) as u16,
+                (base + 3) as u16,
+            ])
+        };
+        let ns = compute_axis(m1)?;
+        let ew = compute_axis(m2)?;
+        Some(Self { ns, ew })
+    }
+
+    /// Look up the tile_id for a (axis, class) pair. Returns None when
+    /// class is Variant0 — callers fall through to the cell's native
+    /// tile_id in that case (no render-side override needed).
+    pub fn tile_id_for(&self, axis: Axis, class: BridgeheadAnchorClass) -> Option<u16> {
+        let slot = match class {
+            BridgeheadAnchorClass::Variant0 => return None,
+            BridgeheadAnchorClass::Variant1 => 1usize,
+            BridgeheadAnchorClass::Damaged => 2usize,
+            BridgeheadAnchorClass::AboutToFall => 3usize,
+        };
+        let arr = match axis {
+            Axis::NS => &self.ns,
+            Axis::EW => &self.ew,
+        };
+        Some(arr[slot])
+    }
+
+    /// Reverse-match a tile_id to (axis, class). Used at map load to
+    /// pre-classify author-damaged anchors. None when the tile_id is not
+    /// a variant.
+    pub fn match_tile_id(&self, tile_id: u16) -> Option<(Axis, BridgeheadAnchorClass)> {
+        const CLASS_ORDER: [BridgeheadAnchorClass; 4] = [
+            BridgeheadAnchorClass::Variant0,
+            BridgeheadAnchorClass::Variant1,
+            BridgeheadAnchorClass::Damaged,
+            BridgeheadAnchorClass::AboutToFall,
+        ];
+        if let Some(slot) = self.ns.iter().position(|&t| t == tile_id) {
+            return Some((Axis::NS, CLASS_ORDER[slot]));
+        }
+        if let Some(slot) = self.ew.iter().position(|&t| t == tile_id) {
+            return Some((Axis::EW, CLASS_ORDER[slot]));
+        }
+        None
+    }
 }
 
 /// Load tileset data for a theater.

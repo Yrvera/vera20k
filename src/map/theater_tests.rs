@@ -124,3 +124,143 @@ fn parse_general_int_missing_bridge_middle_returns_none() {
     assert_eq!(super::parse_general_int(ini, "BridgeMiddle1"), None);
     assert_eq!(super::parse_general_int(ini, "BridgeMiddle2"), None);
 }
+
+/// Helper: build a minimal TheaterData for variant-table tests. BridgeSet
+/// at tileset index 0 with 20 tiles starting at tile_id 0. Palettes are
+/// all-zero (tests never read pixels).
+fn synthetic_theater_with_bridge_keys(
+    bridge_middle_1: Option<u8>,
+    bridge_middle_2: Option<u8>,
+) -> super::TheaterData {
+    let ini = b"[TileSet0000]\nTilesInSet=20\nFileName=bridge\nSetName=Bridge\n";
+    let lookup = super::parse_tileset_ini(ini, "tem").unwrap();
+    let empty_palette = crate::assets::pal_file::Palette::from_bytes(&[0u8; 768])
+        .expect("768-byte zero palette parses");
+    super::TheaterData {
+        lookup,
+        iso_palette: empty_palette.clone(),
+        unit_palette: empty_palette.clone(),
+        tiberium_palette: empty_palette,
+        extension: "tem",
+        ini_data: Vec::new(),
+        bridge_set: Some(0),
+        wood_bridge_set: None,
+        bridge_middle_1,
+        bridge_middle_2,
+    }
+}
+
+#[test]
+fn variant_table_temperate_values() {
+    use super::BridgeAnchorVariantTable;
+    let td = synthetic_theater_with_bridge_keys(Some(7), Some(12));
+    let table = BridgeAnchorVariantTable::from_theater(&td).expect("table");
+    // BridgeSet starts at tile_id 0 (TilesInSet=20, first tileset). NS
+    // variants: BS + M1 + {-1, 0, 1, 2} = {6, 7, 8, 9}. EW: {11, 12, 13, 14}.
+    assert_eq!(table.ns, [6, 7, 8, 9]);
+    assert_eq!(table.ew, [11, 12, 13, 14]);
+}
+
+#[test]
+fn variant_table_returns_none_on_missing_middle_1() {
+    use super::BridgeAnchorVariantTable;
+    let td = synthetic_theater_with_bridge_keys(None, Some(12));
+    assert!(BridgeAnchorVariantTable::from_theater(&td).is_none());
+}
+
+#[test]
+fn variant_table_returns_none_on_missing_middle_2() {
+    use super::BridgeAnchorVariantTable;
+    let td = synthetic_theater_with_bridge_keys(Some(7), None);
+    assert!(BridgeAnchorVariantTable::from_theater(&td).is_none());
+}
+
+#[test]
+fn variant_table_returns_none_on_zero_middle() {
+    use super::BridgeAnchorVariantTable;
+    let td = synthetic_theater_with_bridge_keys(Some(0), Some(12));
+    assert!(BridgeAnchorVariantTable::from_theater(&td).is_none());
+}
+
+#[test]
+fn variant_table_returns_none_on_out_of_bounds() {
+    use super::BridgeAnchorVariantTable;
+    // TilesInSet=20 → max tile_id 19. BridgeMiddle1=18 → 4th variant
+    // = 0+18-1+3 = 20 (OOB).
+    let td = synthetic_theater_with_bridge_keys(Some(18), Some(12));
+    assert!(BridgeAnchorVariantTable::from_theater(&td).is_none());
+}
+
+#[test]
+fn tile_id_for_variant0_returns_none() {
+    use super::BridgeAnchorVariantTable;
+    use crate::sim::bridge_state::{Axis, BridgeheadAnchorClass};
+    let td = synthetic_theater_with_bridge_keys(Some(7), Some(12));
+    let table = BridgeAnchorVariantTable::from_theater(&td).unwrap();
+    assert_eq!(
+        table.tile_id_for(Axis::NS, BridgeheadAnchorClass::Variant0),
+        None
+    );
+    assert_eq!(
+        table.tile_id_for(Axis::EW, BridgeheadAnchorClass::Variant0),
+        None
+    );
+}
+
+#[test]
+fn tile_id_for_each_class_per_axis() {
+    use super::BridgeAnchorVariantTable;
+    use crate::sim::bridge_state::{Axis, BridgeheadAnchorClass};
+    let td = synthetic_theater_with_bridge_keys(Some(7), Some(12));
+    let table = BridgeAnchorVariantTable::from_theater(&td).unwrap();
+    assert_eq!(
+        table.tile_id_for(Axis::NS, BridgeheadAnchorClass::Variant1),
+        Some(7)
+    );
+    assert_eq!(
+        table.tile_id_for(Axis::NS, BridgeheadAnchorClass::Damaged),
+        Some(8)
+    );
+    assert_eq!(
+        table.tile_id_for(Axis::NS, BridgeheadAnchorClass::AboutToFall),
+        Some(9)
+    );
+    assert_eq!(
+        table.tile_id_for(Axis::EW, BridgeheadAnchorClass::AboutToFall),
+        Some(14)
+    );
+}
+
+#[test]
+fn match_tile_id_round_trip_all_variants() {
+    use super::BridgeAnchorVariantTable;
+    use crate::sim::bridge_state::{Axis, BridgeheadAnchorClass};
+    let td = synthetic_theater_with_bridge_keys(Some(7), Some(12));
+    let table = BridgeAnchorVariantTable::from_theater(&td).unwrap();
+    const CLASS_ORDER: [BridgeheadAnchorClass; 4] = [
+        BridgeheadAnchorClass::Variant0,
+        BridgeheadAnchorClass::Variant1,
+        BridgeheadAnchorClass::Damaged,
+        BridgeheadAnchorClass::AboutToFall,
+    ];
+    for (axis, expected_arr) in [(Axis::NS, &table.ns), (Axis::EW, &table.ew)] {
+        for (slot, &tid) in expected_arr.iter().enumerate() {
+            let (got_axis, got_class) = table.match_tile_id(tid).expect("matched");
+            assert_eq!(got_axis, axis);
+            assert_eq!(got_class, CLASS_ORDER[slot]);
+        }
+    }
+}
+
+#[test]
+fn match_tile_id_rejects_non_variant() {
+    use super::BridgeAnchorVariantTable;
+    let td = synthetic_theater_with_bridge_keys(Some(7), Some(12));
+    let table = BridgeAnchorVariantTable::from_theater(&td).unwrap();
+    // BS+5 (one before Variant0 NS), BS+10 (between NS and EW), BS+15
+    // (post-AboutToFall EW), 999 (outside BridgeSet).
+    assert_eq!(table.match_tile_id(5), None);
+    assert_eq!(table.match_tile_id(10), None);
+    assert_eq!(table.match_tile_id(15), None);
+    assert_eq!(table.match_tile_id(999), None);
+}
