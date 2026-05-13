@@ -553,7 +553,9 @@ impl BridgeRuntimeState {
                         .map(|bl| bl.overlay_id)
                         .unwrap_or(0),
                     damaged_variant: false,
-                    bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
+                    bridgehead_anchor_class: resolved
+                        .bridgehead_anchor_class_at_load
+                        .unwrap_or(BridgeheadAnchorClass::Variant0),
                 });
                 for (nx, ny) in cardinal_neighbors(rx, ry, width, height) {
                     if let Some(neighbor) = terrain.cell(nx, ny) {
@@ -3319,6 +3321,86 @@ mod tests {
         }
         let count = bs.apply_damaged_variant_flood_fill(5, 5, true, &terrain);
         assert_eq!(count, 0);
+    }
+
+    /// Synthetic 3x3 grid with a single bridge anchor cell at (1,1).
+    /// `pre_class` is written to that cell's bridgehead_anchor_class_at_load.
+    fn make_pre_class_terrain(
+        pre_class: Option<BridgeheadAnchorClass>,
+    ) -> ResolvedTerrainGrid {
+        use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
+        let mut cells = Vec::with_capacity(9);
+        for ry in 0..3u16 {
+            for rx in 0..3u16 {
+                let is_anchor = rx == 1 && ry == 1;
+                cells.push(ResolvedTerrainCell {
+                    rx,
+                    ry,
+                    source_tile_index: 0,
+                    source_sub_tile: 0,
+                    final_tile_index: 0,
+                    final_sub_tile: 0,
+                    level: 0,
+                    filled_clear: false,
+                    tileset_index: None,
+                    land_type: 0,
+                    slope_type: 0,
+                    template_height: 0,
+                    render_offset_x: 0,
+                    render_offset_y: 0,
+                    terrain_class: TerrainClass::Clear,
+                    speed_costs: SpeedCostProfile::default(),
+                    is_water: false,
+                    is_cliff_like: false,
+                    is_cliff_redraw: false,
+                    variant: 0,
+                    is_rough: false,
+                    is_road: false,
+                    accepts_smudge: false,
+                    has_ramp: false,
+                    canonical_ramp: None,
+                    ground_walk_blocked: false,
+                    terrain_object_blocks: false,
+                    overlay_blocks: false,
+                    zone_type: 0,
+                    base_ground_walk_blocked: false,
+                    base_build_blocked: false,
+                    build_blocked: false,
+                    has_bridge_deck: is_anchor,
+                    bridge_walkable: is_anchor,
+                    bridge_transition: false,
+                    bridge_deck_level: 0,
+                    bridge_layer: None,
+                    radar_left: [0, 0, 0],
+                    radar_right: [0, 0, 0],
+                    has_damaged_data: false,
+                    bridgehead_anchor_class_at_load: if is_anchor { pre_class } else { None },
+                });
+            }
+        }
+        ResolvedTerrainGrid::from_cells(3, 3, cells)
+    }
+
+    #[test]
+    fn from_resolved_terrain_copies_pre_damaged_anchor_class() {
+        let terrain = make_pre_class_terrain(Some(BridgeheadAnchorClass::AboutToFall));
+        let state = BridgeRuntimeState::from_resolved_terrain(&terrain, true, 1500);
+        let cell = state.cell(1, 1).expect("bridge cell exists");
+        assert_eq!(
+            cell.bridgehead_anchor_class,
+            BridgeheadAnchorClass::AboutToFall
+        );
+    }
+
+    #[test]
+    fn from_resolved_terrain_defaults_to_variant0_when_pre_class_is_none() {
+        let terrain = make_pre_class_terrain(None);
+        let state = BridgeRuntimeState::from_resolved_terrain(&terrain, true, 1500);
+        let cell = state.cell(1, 1).expect("bridge cell exists");
+        assert_eq!(
+            cell.bridgehead_anchor_class,
+            BridgeheadAnchorClass::Variant0
+        );
     }
 }
 
