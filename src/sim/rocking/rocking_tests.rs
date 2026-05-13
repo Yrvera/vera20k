@@ -484,6 +484,7 @@ fn flat_terrain(width: u16, height: u16) -> ResolvedTerrainGrid {
                 radar_left: [0, 0, 0],
                 radar_right: [0, 0, 0],
                 has_damaged_data: false,
+                bridgehead_anchor_class_at_load: None,
             });
         }
     }

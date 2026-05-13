@@ -107,6 +107,7 @@ fn water_terrain_with_land_type(
                 radar_left: [0, 0, 0],
                 radar_right: [0, 0, 0],
                 has_damaged_data: false,
+                bridgehead_anchor_class_at_load: None,
             });
         }
     }
@@ -158,6 +159,7 @@ fn single_bridge_cell(rx: u16, ry: u16, deck_level: u8) -> ResolvedTerrainGrid {
                 radar_left: [0, 0, 0],
                 radar_right: [0, 0, 0],
                 has_damaged_data: false,
+                bridgehead_anchor_class_at_load: None,
             });
         }
     }
@@ -254,6 +256,7 @@ fn ew_high_bridge_strip_for_dispatch(
                 radar_left: [0, 0, 0],
                 radar_right: [0, 0, 0],
                 has_damaged_data: false,
+                bridgehead_anchor_class_at_load: None,
             });
         }
     }
@@ -475,6 +478,7 @@ fn test_spawn_from_map_high_without_bridge_falls_back_to_ground() {
                         radar_left: [0, 0, 0],
                         radar_right: [0, 0, 0],
                         has_damaged_data: false,
+                        bridgehead_anchor_class_at_load: None,
                     },
                 )
             })
@@ -2714,6 +2718,7 @@ fn refresh_vision_heights_copies_path_cell_ground_levels() {
                 radar_left: [0, 0, 0],
                 radar_right: [0, 0, 0],
                 has_damaged_data: false,
+                bridgehead_anchor_class_at_load: None,
             });
         }
     }
@@ -2964,6 +2969,7 @@ fn bridgehead_base_cell(rx: u16, ry: u16) -> crate::map::resolved_terrain::Resol
         radar_left: [0, 0, 0],
         radar_right: [0, 0, 0],
         has_damaged_data: false,
+        bridgehead_anchor_class_at_load: None,
     }
 }
 

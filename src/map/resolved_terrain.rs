@@ -132,6 +132,17 @@ pub struct ResolvedTerrainCell {
     /// cells with baked damage art may initiate propagation) and the render-side
     /// substitution that swaps in variant=1 when the bridge sim flags the cell.
     pub has_damaged_data: bool,
+    /// Author-damaged anchor pre-classification: `Some(class)` if this
+    /// cell's `final_tile_index` matches one of the 8 bridgehead anchor
+    /// variant tile_ids in the current theater's BridgeAnchorVariantTable.
+    /// `None` when not a variant tile (the common case for both
+    /// non-bridge cells and pristine anchor cells).
+    ///
+    /// Sim's `BridgeRuntimeState::from_resolved_terrain` reads this to
+    /// initialize `BridgeRuntimeCell.bridgehead_anchor_class` instead of
+    /// the unconditional Variant0 default. None defaults to Variant0
+    /// sim-side.
+    pub bridgehead_anchor_class_at_load: Option<crate::sim::bridge_state::BridgeheadAnchorClass>,
 }
 
 impl ResolvedTerrainCell {
@@ -420,6 +431,7 @@ impl ResolvedTerrainGrid {
                     radar_left: metadata.radar_left,
                     radar_right: metadata.radar_right,
                     has_damaged_data: metadata.has_damaged_data,
+                    bridgehead_anchor_class_at_load: None,
                 });
             }
         }
@@ -562,15 +574,40 @@ impl ResolvedTerrainGrid {
                     // Prevents z-discontinuity at the ramp-to-span transition.
                     let crx = cell.rx as i32;
                     let cry = cell.ry as i32;
+                    // Expanding ring search for the bridge's actual deck cell.
+                    // On wide bridges with multi-row ramps (plateau-to-plateau
+                    // configurations), the outer ramp row is several cells away
+                    // from any body deck cell — its cardinal neighbors are all
+                    // other bridgeheads. Searching only at distance 1 produced
+                    // a mismatched deck_level via the cell.level+4 fallback,
+                    // which then desynced the A* height-diff legality gate at
+                    // the BH-to-BH transition between ramp rows. Walk outward
+                    // by Manhattan distance and pick up the body cell's
+                    // deck_level so the whole ramp stack agrees.
                     let mut span_deck: Option<u8> = None;
-                    for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
-                        let nx = crx + dx;
-                        let ny = cry + dy;
-                        if nx >= 0 && ny >= 0 && nx < width as i32 && ny < height as i32 {
-                            let nidx = ny as usize * width as usize + nx as usize;
-                            if nidx < cells.len() && cells[nidx].has_bridge_deck {
-                                span_deck = Some(cells[nidx].bridge_deck_level);
-                                break;
+                    'outer: for dist in 1..=5i32 {
+                        for ddx in -dist..=dist {
+                            let ddy_abs = dist - ddx.abs();
+                            let ddy_options: &[i32] = if ddy_abs == 0 {
+                                &[0]
+                            } else {
+                                &[ddy_abs, -ddy_abs]
+                            };
+                            for &ddy in ddy_options {
+                                let nx = crx + ddx;
+                                let ny = cry + ddy;
+                                if nx >= 0
+                                    && ny >= 0
+                                    && nx < width as i32
+                                    && ny < height as i32
+                                {
+                                    let nidx =
+                                        ny as usize * width as usize + nx as usize;
+                                    if nidx < cells.len() && cells[nidx].has_bridge_deck {
+                                        span_deck = Some(cells[nidx].bridge_deck_level);
+                                        break 'outer;
+                                    }
+                                }
                             }
                         }
                     }
@@ -902,6 +939,35 @@ impl ResolvedTerrainGrid {
                     "ResolvedTerrain: {} cells assigned tile variants",
                     variant_total,
                 );
+            }
+        }
+
+        // Pre-classify author-damaged anchor placements: cells whose
+        // tileset is BridgeSet AND whose final_tile_index matches one of
+        // the 4 NS or 4 EW variant tile_ids get a non-None
+        // bridgehead_anchor_class_at_load. Sim's bridge-state init reads
+        // this so maps that author pre-damaged anchors render correctly
+        // from frame 1.
+        if let Some(td) = theater_data {
+            if let Some(table) = crate::map::theater::BridgeAnchorVariantTable::from_theater(td) {
+                if let Some(bs_idx) = td.bridge_set {
+                    for cell in cells.iter_mut() {
+                        if cell.tileset_index != Some(bs_idx) {
+                            continue;
+                        }
+                        if cell.final_tile_index < 0 {
+                            continue;
+                        }
+                        let tid = if cell.final_tile_index == 0xFFFF {
+                            0
+                        } else {
+                            cell.final_tile_index as u16
+                        };
+                        if let Some((_axis, class)) = table.match_tile_id(tid) {
+                            cell.bridgehead_anchor_class_at_load = Some(class);
+                        }
+                    }
+                }
             }
         }
 
@@ -1582,6 +1648,7 @@ mod tests {
                 radar_left: [0, 0, 0],
                 radar_right: [0, 0, 0],
                 has_damaged_data: false,
+                bridgehead_anchor_class_at_load: None,
             }],
         );
         let cell = grid.cell(0, 0).expect("resolved ramp cell");

@@ -1033,6 +1033,7 @@ fn make_resolved_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
         radar_left: [0, 0, 0],
         radar_right: [0, 0, 0],
         has_damaged_data: false,
+        bridgehead_anchor_class_at_load: None,
     }
 }
 

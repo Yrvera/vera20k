@@ -65,6 +65,7 @@ fn dummy_resolved_terrain() -> ResolvedTerrainGrid {
                 radar_left: [0, 0, 0],
                 radar_right: [0, 0, 0],
                 has_damaged_data: false,
+                bridgehead_anchor_class_at_load: None,
             });
         }
     }
@@ -485,6 +486,7 @@ fn damaged_data_resolved_terrain(tile_id: i32) -> ResolvedTerrainGrid {
                 radar_left: [0, 0, 0],
                 radar_right: [0, 0, 0],
                 has_damaged_data: true,
+                bridgehead_anchor_class_at_load: None,
             });
         }
     }
@@ -730,6 +732,7 @@ fn build_ns_bridge_with_bridgehead_for_dispatch() -> (
                 radar_left: [0, 0, 0],
                 radar_right: [0, 0, 0],
                 has_damaged_data: false,
+                bridgehead_anchor_class_at_load: None,
             });
         }
     }

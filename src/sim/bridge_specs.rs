@@ -876,6 +876,7 @@ mod tests {
                     radar_left: [0, 0, 0],
                     radar_right: [0, 0, 0],
                     has_damaged_data: false,
+                    bridgehead_anchor_class_at_load: None,
                 });
             }
         }

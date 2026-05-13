@@ -79,6 +79,7 @@ fn water_row_terrain(width: u16) -> ResolvedTerrainGrid {
             radar_left: [0, 0, 0],
             radar_right: [0, 0, 0],
             has_damaged_data: false,
+            bridgehead_anchor_class_at_load: None,
         })
         .collect();
     ResolvedTerrainGrid::from_cells(width, 1, cells)
@@ -146,6 +147,7 @@ fn clear_beach_water_row_terrain() -> ResolvedTerrainGrid {
             radar_left: [0, 0, 0],
             radar_right: [0, 0, 0],
             has_damaged_data: false,
+            bridgehead_anchor_class_at_load: None,
         })
         .collect();
     ResolvedTerrainGrid::from_cells(3, 1, cells)

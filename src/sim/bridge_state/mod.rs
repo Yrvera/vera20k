@@ -1684,6 +1684,7 @@ mod tests {
                 radar_left: [0, 0, 0],
                 radar_right: [0, 0, 0],
                 has_damaged_data: false,
+                bridgehead_anchor_class_at_load: None,
             });
         }
         ResolvedTerrainGrid::from_cells(5, 1, cells)
@@ -1739,6 +1740,7 @@ mod tests {
                 radar_left: [0, 0, 0],
                 radar_right: [0, 0, 0],
                 has_damaged_data: false,
+                bridgehead_anchor_class_at_load: None,
             });
         }
         ResolvedTerrainGrid::from_cells(5, 1, cells)
@@ -2542,6 +2544,7 @@ mod tests {
                     radar_left: [0, 0, 0],
                     radar_right: [0, 0, 0],
                     has_damaged_data: false,
+                    bridgehead_anchor_class_at_load: None,
                 });
             }
         }
@@ -2795,6 +2798,7 @@ mod tests {
                     radar_left: [0, 0, 0],
                     radar_right: [0, 0, 0],
                     has_damaged_data: false,
+                    bridgehead_anchor_class_at_load: None,
                 });
             }
         }
@@ -2907,6 +2911,7 @@ mod tests {
                     radar_left: [0, 0, 0],
                     radar_right: [0, 0, 0],
                     has_damaged_data: false,
+                    bridgehead_anchor_class_at_load: None,
                 });
             }
         }
@@ -3155,6 +3160,7 @@ mod tests {
                     radar_left: [0, 0, 0],
                     radar_right: [0, 0, 0],
                     has_damaged_data: true,
+                    bridgehead_anchor_class_at_load: None,
                 });
             }
         }
@@ -3407,6 +3413,7 @@ mod repair_tests {
                     radar_left: [0, 0, 0],
                     radar_right: [0, 0, 0],
                     has_damaged_data: false,
+                    bridgehead_anchor_class_at_load: None,
                 });
             }
         }

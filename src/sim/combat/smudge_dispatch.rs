@@ -544,6 +544,7 @@ mod dispatch_tests {
             radar_right: [0; 3],
             accepts_smudge: true,
             has_damaged_data: false,
+            bridgehead_anchor_class_at_load: None,
         }
     }
 
