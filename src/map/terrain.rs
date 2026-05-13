@@ -179,6 +179,10 @@ pub struct TerrainGrid {
     pub origin_y: f32,
     /// Playable area bounds (from LocalSize). Used to clip overlays/entities too.
     pub local_bounds: Option<LocalBounds>,
+    /// Theater-derived bridge anchor variant tile_ids, threaded from
+    /// TheaterData at map-load. None when theater lacks BridgeMiddle1/2
+    /// keys — renderer override is then bypassed.
+    pub anchor_variant_table: Option<crate::map::theater::BridgeAnchorVariantTable>,
 }
 
 /// Convert isometric cell coordinates to screen-space pixel position.
@@ -414,6 +418,7 @@ pub fn build_terrain_grid(map: &MapFile, local_bounds: Option<LocalBounds>) -> T
         origin_x: min_x,
         origin_y: min_y,
         local_bounds,
+        anchor_variant_table: None,
     }
 }
 
@@ -424,6 +429,7 @@ pub fn build_terrain_grid(map: &MapFile, local_bounds: Option<LocalBounds>) -> T
 pub fn build_terrain_grid_from_resolved(
     resolved: &ResolvedTerrainGrid,
     local_bounds: Option<LocalBounds>,
+    anchor_variant_table: Option<crate::map::theater::BridgeAnchorVariantTable>,
 ) -> TerrainGrid {
     let mut cells: Vec<TerrainCell> = Vec::with_capacity(resolved.cells.len());
     let mut min_x: f32 = f32::MAX;
@@ -491,6 +497,7 @@ pub fn build_terrain_grid_from_resolved(
         origin_x: min_x,
         origin_y: min_y,
         local_bounds,
+        anchor_variant_table,
     }
 }
 
@@ -576,7 +583,7 @@ pub fn build_visible_instances(
         // map-load PRNG variant and instead route to the per-frame
         // damaged_variant bool from the sim's BridgeRuntimeState. Variant 1
         // is the damaged baked art; variant 0 is the pristine art.
-        let effective_variant: u8 = if cell.has_damaged_data {
+        let damaged_variant_swap: u8 = if cell.has_damaged_data {
             bridge_state
                 .and_then(|bs| bs.cell(cell.rx, cell.ry))
                 .map(|bc| bc.damaged_variant as u8)
@@ -584,8 +591,27 @@ pub fn build_visible_instances(
         } else {
             cell.variant
         };
+
+        // Bridge anchor tile_id override. Fires when sim reports a
+        // non-Variant0 bridgehead_anchor_class AND the theater carries
+        // the variant table. Swaps the cell's tile_id for the variant's
+        // tile_id; sub_tile is preserved (the reference engine only
+        // rewrites the tile-class field). When the override fires, the
+        // FA2 sibling-TMP slot is reset to 0 — the variant tile_ids ARE
+        // the damage progression, no further a/b/c/d swap.
+        let anchor_override = grid.anchor_variant_table.and_then(|table| {
+            let bc = bridge_state?.cell(cell.rx, cell.ry)?;
+            let axis = bc.axis?;
+            table.tile_id_for(axis, bc.bridgehead_anchor_class)
+        });
+
+        let (effective_tile_id, effective_variant) = match anchor_override {
+            Some(tid) => (tid, 0u8),
+            None => (cell.tile_id, damaged_variant_swap),
+        };
+
         let placement: Option<TilePlacement> = match &uv_fn {
-            Some(f) => f(cell.tile_id, cell.sub_tile, effective_variant),
+            Some(f) => f(effective_tile_id, cell.sub_tile, effective_variant),
             None => Some(TilePlacement {
                 uv_origin: [0.0, 0.0],
                 uv_size: [1.0, 1.0],
@@ -739,6 +765,7 @@ mod tests {
             origin_x: 0.0,
             origin_y: 0.0,
             local_bounds: None,
+            anchor_variant_table: None,
         };
 
         // Camera at origin, 1024x768 viewport — only first cell should be visible.
@@ -746,6 +773,155 @@ mod tests {
             build_visible_instances(&grid, 0.0, 0.0, 1024.0, 768.0, None, None, None);
         assert_eq!(result.normal.len(), 1);
         assert_eq!(result.cliff_redraw.len(), 0);
+    }
+
+    fn override_test_grid(
+        anchor_variant_table: Option<crate::map::theater::BridgeAnchorVariantTable>,
+    ) -> TerrainGrid {
+        TerrainGrid {
+            cells: vec![TerrainCell {
+                screen_x: 0.0,
+                screen_y: 0.0,
+                tile_id: 100,
+                sub_tile: 0,
+                z: 0,
+                rx: 0,
+                ry: 0,
+                is_water: false,
+                is_cliff_redraw: false,
+                variant: 0,
+                tint: [1.0; 3],
+                radar_left: [0; 3],
+                radar_right: [0; 3],
+                has_damaged_data: false,
+            }],
+            world_width: TILE_WIDTH,
+            world_height: TILE_HEIGHT,
+            origin_x: 0.0,
+            origin_y: 0.0,
+            local_bounds: None,
+            anchor_variant_table,
+        }
+    }
+
+    fn override_test_bridge_state(
+        axis: Option<crate::sim::bridge_state::Axis>,
+        class: crate::sim::bridge_state::BridgeheadAnchorClass,
+    ) -> crate::sim::bridge_state::BridgeRuntimeState {
+        use crate::sim::bridge_state::{
+            BridgeCellRole, BridgeRuntimeCell, BridgeRuntimeState, DamageState,
+        };
+        let mut bs = BridgeRuntimeState::default();
+        bs.test_seed_cell(
+            0,
+            0,
+            BridgeRuntimeCell {
+                deck_present: true,
+                destroyable: true,
+                deck_level: 0,
+                bridge_group_id: Some(1),
+                damage_state: DamageState::Healthy { variant: 0 },
+                axis,
+                role: BridgeCellRole::Anchor,
+                anchor_span_id: Some(1),
+                overlay_byte: 0,
+                damaged_variant: false,
+                bridgehead_anchor_class: class,
+            },
+        );
+        bs
+    }
+
+    #[test]
+    fn override_fires_when_class_is_aboutto_fall_with_table() {
+        use crate::map::theater::BridgeAnchorVariantTable;
+        use crate::sim::bridge_state::{Axis, BridgeheadAnchorClass};
+
+        let table = BridgeAnchorVariantTable {
+            ns: [200, 201, 202, 203],
+            ew: [300, 301, 302, 303],
+        };
+        let grid = override_test_grid(Some(table));
+        let bs = override_test_bridge_state(Some(Axis::NS), BridgeheadAnchorClass::AboutToFall);
+
+        let captured: std::cell::RefCell<Option<(u16, u8, u8)>> =
+            std::cell::RefCell::new(None);
+        let lookup = |tid: u16, sub: u8, var: u8| -> Option<TilePlacement> {
+            *captured.borrow_mut() = Some((tid, sub, var));
+            Some(TilePlacement {
+                uv_origin: [0.0, 0.0],
+                uv_size: [1.0, 1.0],
+                pixel_size: [TILE_WIDTH, TILE_HEIGHT],
+                draw_offset: [0.0, 0.0],
+            })
+        };
+        let uv_fn: UvLookupFn = Some(&lookup);
+
+        let _ = build_visible_instances(&grid, 0.0, 0.0, 1024.0, 768.0, uv_fn, None, Some(&bs));
+        let (tid, sub, var) = captured.borrow().expect("uv_fn was called");
+        // Override fired: tile_id = NS AboutToFall slot = 203.
+        assert_eq!(tid, 203);
+        // Sub-tile preserved.
+        assert_eq!(sub, 0);
+        // FA2 sibling-TMP slot reset to 0 on variant tiles.
+        assert_eq!(var, 0);
+    }
+
+    #[test]
+    fn override_bypassed_when_class_is_variant0() {
+        use crate::map::theater::BridgeAnchorVariantTable;
+        use crate::sim::bridge_state::{Axis, BridgeheadAnchorClass};
+
+        let table = BridgeAnchorVariantTable {
+            ns: [200, 201, 202, 203],
+            ew: [300, 301, 302, 303],
+        };
+        let grid = override_test_grid(Some(table));
+        let bs = override_test_bridge_state(Some(Axis::NS), BridgeheadAnchorClass::Variant0);
+
+        let captured: std::cell::RefCell<Option<(u16, u8, u8)>> =
+            std::cell::RefCell::new(None);
+        let lookup = |tid: u16, sub: u8, var: u8| -> Option<TilePlacement> {
+            *captured.borrow_mut() = Some((tid, sub, var));
+            Some(TilePlacement {
+                uv_origin: [0.0, 0.0],
+                uv_size: [1.0, 1.0],
+                pixel_size: [TILE_WIDTH, TILE_HEIGHT],
+                draw_offset: [0.0, 0.0],
+            })
+        };
+        let uv_fn: UvLookupFn = Some(&lookup);
+
+        let _ = build_visible_instances(&grid, 0.0, 0.0, 1024.0, 768.0, uv_fn, None, Some(&bs));
+        let (tid, _sub, _var) = captured.borrow().expect("uv_fn was called");
+        // Override bypassed: native tile_id retained.
+        assert_eq!(tid, 100);
+    }
+
+    #[test]
+    fn override_bypassed_when_table_is_none() {
+        use crate::sim::bridge_state::{Axis, BridgeheadAnchorClass};
+
+        let grid = override_test_grid(None);
+        let bs = override_test_bridge_state(Some(Axis::NS), BridgeheadAnchorClass::AboutToFall);
+
+        let captured: std::cell::RefCell<Option<(u16, u8, u8)>> =
+            std::cell::RefCell::new(None);
+        let lookup = |tid: u16, sub: u8, var: u8| -> Option<TilePlacement> {
+            *captured.borrow_mut() = Some((tid, sub, var));
+            Some(TilePlacement {
+                uv_origin: [0.0, 0.0],
+                uv_size: [1.0, 1.0],
+                pixel_size: [TILE_WIDTH, TILE_HEIGHT],
+                draw_offset: [0.0, 0.0],
+            })
+        };
+        let uv_fn: UvLookupFn = Some(&lookup);
+
+        let _ = build_visible_instances(&grid, 0.0, 0.0, 1024.0, 768.0, uv_fn, None, Some(&bs));
+        let (tid, _sub, _var) = captured.borrow().expect("uv_fn was called");
+        // Override bypassed (no table): native tile_id retained.
+        assert_eq!(tid, 100);
     }
 
     #[test]

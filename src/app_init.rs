@@ -318,8 +318,14 @@ pub fn load_map(
         lat_enabled,
         cliff_back,
     );
-    let mut grid: TerrainGrid =
-        terrain::build_terrain_grid_from_resolved(&resolved_terrain, local_bounds);
+    let anchor_variant_table = theater_result
+        .as_ref()
+        .and_then(crate::map::theater::BridgeAnchorVariantTable::from_theater);
+    let mut grid: TerrainGrid = terrain::build_terrain_grid_from_resolved(
+        &resolved_terrain,
+        local_bounds,
+        anchor_variant_table,
+    );
 
     // Build per-cell lighting tint from map [Lighting] section.
     let lighting_config = lighting::parse_lighting(&map_data.ini);
