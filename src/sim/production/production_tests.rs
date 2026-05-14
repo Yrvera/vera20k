@@ -15,6 +15,7 @@ use crate::rules::object_type::ObjectCategory;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::components::Health;
 use crate::sim::miner::{ResourceNode, ResourceType};
+use crate::sim::occupancy::CellListInsertion;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::world::Simulation;
 
@@ -536,6 +537,7 @@ pub(super) fn spawn_structure(
         sid,
         crate::sim::movement::locomotor::MovementLayer::Ground,
         None,
+        CellListInsertion::AppendBuilding,
     );
     if sim.next_stable_entity_id <= sid {
         sim.next_stable_entity_id = sid + 1;

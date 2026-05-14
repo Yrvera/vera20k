@@ -44,7 +44,7 @@ use super::{
     INFANTRY_WOBBLE_AMPLITUDE, MIN_BRAKE_FRACTION, MovementConfig, MovementTickStats,
     MoverSnapshot, PATH_STUCK_INIT, PathfindingContext, facing_from_delta, walking_to_subcell_dest,
 };
-use crate::sim::occupancy::OccupancyGrid;
+use crate::sim::occupancy::{CellListInsertion, OccupancyGrid};
 
 // Naval diagnostic functions moved to movement_occupancy.rs
 
@@ -630,6 +630,7 @@ pub fn tick_movement_with_grids(
                             entity_id,
                             active_layer,
                             entity.sub_cell,
+                            CellListInsertion::from_category(entity.category),
                         );
                         // Reserve destination cell.
                         super::movement_reservation::reserve_destination_after_transition(

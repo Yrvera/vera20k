@@ -9,7 +9,7 @@ use crate::sim::entity_store::EntityStore;
 use crate::sim::game_entity::GameEntity;
 use crate::sim::intern::test_interner;
 use crate::sim::movement::locomotor::MovementLayer;
-use crate::sim::occupancy::OccupancyGrid;
+use crate::sim::occupancy::{CellListInsertion, OccupancyGrid};
 use crate::sim::rng::SimRng;
 use crate::util::fixed_math::{SIM_ZERO, SimFixed};
 
@@ -1489,7 +1489,14 @@ fn on_bridge_fires_at_ramp_to_body_only() {
     entities.insert(e);
 
     let mut occupancy = OccupancyGrid::new();
-    occupancy.add(1, 1, 1, MovementLayer::Bridge, None);
+    occupancy.add(
+        1,
+        1,
+        1,
+        MovementLayer::Bridge,
+        None,
+        CellListInsertion::PrependNonBuilding,
+    );
     let mut rng = SimRng::new(0);
     let mut interner = test_interner();
 
@@ -1560,7 +1567,14 @@ fn on_bridge_clears_at_ramp_to_ground_only() {
     entities.insert(e);
 
     let mut occupancy = OccupancyGrid::new();
-    occupancy.add(1, 1, 1, MovementLayer::Bridge, None);
+    occupancy.add(
+        1,
+        1,
+        1,
+        MovementLayer::Bridge,
+        None,
+        CellListInsertion::PrependNonBuilding,
+    );
     let mut rng = SimRng::new(0);
     let mut interner = test_interner();
 
@@ -1641,7 +1655,14 @@ fn no_bridge_lookahead_pre_claim() {
     entities.insert(e);
 
     let mut occupancy = OccupancyGrid::new();
-    occupancy.add(1, 1, 1, MovementLayer::Ground, None);
+    occupancy.add(
+        1,
+        1,
+        1,
+        MovementLayer::Ground,
+        None,
+        CellListInsertion::PrependNonBuilding,
+    );
     let mut rng = SimRng::new(0);
     let mut interner = test_interner();
 

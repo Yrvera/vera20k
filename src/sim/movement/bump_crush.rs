@@ -408,9 +408,8 @@ pub fn collect_crush_victims(
     };
     let mut victims: Vec<u64> = Vec::new();
 
-    // Check infantry occupants.
-    for (eid, _sub) in occ.infantry(layer) {
-        if let Some(e) = entities.get(eid) {
+    for occupant in occ.iter_layer(layer) {
+        if let Some(e) = entities.get(occupant.entity_id) {
             if can_crush(
                 mover_zone,
                 mover_omni_crusher,
@@ -418,21 +417,7 @@ pub fn collect_crush_victims(
                 e.crushable,
                 e.omni_crush_resistant,
             ) {
-                victims.push(eid);
-            }
-        }
-    }
-    // Check vehicle/structure occupants (only OmniCrusher/CrusherAll can crush vehicles).
-    for eid in occ.blockers(layer) {
-        if let Some(e) = entities.get(eid) {
-            if can_crush(
-                mover_zone,
-                mover_omni_crusher,
-                e.category,
-                e.crushable,
-                e.omni_crush_resistant,
-            ) {
-                victims.push(eid);
+                victims.push(occupant.entity_id);
             }
         }
     }
@@ -490,6 +475,8 @@ pub fn cell_passable_after_crush(
     let Some(occ) = occupancy.get(cell.0, cell.1) else {
         return true; // empty cell
     };
+    // Boolean crush passability is category-specific; it does not choose a
+    // first occupant from CellClass list order.
     // All blockers must be crushable.
     for eid in occ.blockers(layer) {
         if let Some(e) = entities.get(eid) {
@@ -617,6 +604,7 @@ pub fn scatter_blocker(
 mod tests {
     use super::*;
     use crate::sim::game_entity::GameEntity;
+    use crate::sim::occupancy::CellListInsertion;
 
     fn infantry(id: u64, rx: u16, ry: u16, sub: u8) -> GameEntity {
         let mut e = GameEntity::test_default(id, "E1", "Allies", rx, ry);
@@ -644,7 +632,14 @@ mod tests {
     fn make_occ(entries: &[(u16, u16, u64, MovementLayer, Option<u8>)]) -> OccupancyGrid {
         let mut grid = OccupancyGrid::new();
         for &(rx, ry, eid, layer, sub) in entries {
-            grid.add(rx, ry, eid, layer, sub);
+            grid.add(
+                rx,
+                ry,
+                eid,
+                layer,
+                sub,
+                CellListInsertion::PrependNonBuilding,
+            );
         }
         grid
     }
@@ -878,7 +873,14 @@ mod tests {
         for &(dx, dy) in &NEIGHBOR_OFFSETS {
             let nx = (1 + dx) as u16;
             let ny = (1 + dy) as u16;
-            occupancy.add(nx, ny, 100, MovementLayer::Ground, None);
+            occupancy.add(
+                nx,
+                ny,
+                100,
+                MovementLayer::Ground,
+                None,
+                CellListInsertion::PrependNonBuilding,
+            );
         }
         let mut rng = SimRng::new(42);
 

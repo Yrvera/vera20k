@@ -9,6 +9,7 @@ use crate::sim::combat::DestroyedGarrisonBuilding;
 use crate::sim::components::{Health, Position};
 use crate::sim::intern::InternedId;
 use crate::sim::movement;
+use crate::sim::occupancy::CellListInsertion;
 use crate::sim::passenger::PassengerRole;
 use crate::sim::world::Simulation;
 use crate::util::fixed_math::ra2_speed_to_leptons_per_second;
@@ -326,6 +327,7 @@ fn eject_garrison_occupants(sim: &mut Simulation, rules: &RuleSet, building_id: 
             pax_id,
             crate::sim::movement::locomotor::MovementLayer::Ground,
             pax_sub_cell,
+            CellListInsertion::PrependNonBuilding,
         );
 
         // Scatter: issue a short move to a random adjacent cell.
@@ -473,6 +475,7 @@ pub fn eject_destruction_garrison(
             pax_id,
             crate::sim::movement::locomotor::MovementLayer::Ground,
             pax_sub_cell,
+            CellListInsertion::PrependNonBuilding,
         );
 
         // Scatter: short move to a random adjacent cell.

@@ -210,8 +210,8 @@ pub fn classify_occupied_cell(
     apply_overrides(result, mover_locomotor)
 }
 
-/// Find the primary blocker entity in a cell (first vehicle/structure, or first
-/// non-self infantry).
+/// Find the primary blocker entity in a cell using the current local
+/// approximation's first-match rule over the selected occupancy layer.
 ///
 /// When `mover_bypass_grid` is true, occupants whose category is `Structure` are
 /// skipped — this lets the harvester dock drive treat foundation cells as clear,
@@ -225,24 +225,20 @@ fn find_primary_blocker(
     entities: &EntityStore,
 ) -> Option<u64> {
     let occ = occupancy.get(target.0, target.1)?;
-    // Prefer vehicle/structure blockers over infantry, but skip structures
-    // when the mover has bypass_grid set (e.g. a harvester driving into a
-    // refinery's foundation footprint).
-    if let Some(bid) = occ.blockers(layer).find(|&bid| {
-        if !mover_bypass_grid {
-            return true;
+    for occupant in occ.iter_layer(layer) {
+        if occupant.entity_id == mover_id {
+            continue;
         }
-        entities
-            .get(bid)
-            .map(|e| e.category != EntityCategory::Structure)
-            .unwrap_or(true)
-    }) {
-        return Some(bid);
+        if mover_bypass_grid
+            && entities
+                .get(occupant.entity_id)
+                .is_some_and(|e| e.category == EntityCategory::Structure)
+        {
+            continue;
+        }
+        return Some(occupant.entity_id);
     }
-    // Fall back to first non-self infantry.
-    occ.infantry(layer)
-        .find(|&(id, _)| id != mover_id)
-        .map(|(id, _)| id)
+    None
 }
 
 /// Classify a single blocker as enemy, friendly-moving, or friendly-stationary.
@@ -286,6 +282,8 @@ fn apply_overrides(result: CellEntryResult, locomotor: LocomotorKind) -> CellEnt
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sim::occupancy::CellListInsertion;
+
     fn empty_occ() -> OccupancyGrid {
         OccupancyGrid::new()
     }
@@ -322,7 +320,14 @@ mod tests {
     #[test]
     fn test_vehicle_occupied_needs_check() {
         let mut occ = OccupancyGrid::new();
-        occ.add(5, 5, 42, MovementLayer::Ground, None);
+        occ.add(
+            5,
+            5,
+            42,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
         let result = check_terrain(
             (5, 5),
             MovementLayer::Ground,
@@ -337,7 +342,14 @@ mod tests {
     #[test]
     fn test_infantry_subcell_available() {
         let mut occ = OccupancyGrid::new();
-        occ.add(5, 5, 10, MovementLayer::Ground, Some(2));
+        occ.add(
+            5,
+            5,
+            10,
+            MovementLayer::Ground,
+            Some(2),
+            CellListInsertion::PrependNonBuilding,
+        );
         let result = check_terrain(
             (5, 5),
             MovementLayer::Ground,
@@ -352,9 +364,30 @@ mod tests {
     #[test]
     fn test_infantry_cell_full() {
         let mut occ = OccupancyGrid::new();
-        occ.add(5, 5, 10, MovementLayer::Ground, Some(2));
-        occ.add(5, 5, 11, MovementLayer::Ground, Some(3));
-        occ.add(5, 5, 12, MovementLayer::Ground, Some(4));
+        occ.add(
+            5,
+            5,
+            10,
+            MovementLayer::Ground,
+            Some(2),
+            CellListInsertion::PrependNonBuilding,
+        );
+        occ.add(
+            5,
+            5,
+            11,
+            MovementLayer::Ground,
+            Some(3),
+            CellListInsertion::PrependNonBuilding,
+        );
+        occ.add(
+            5,
+            5,
+            12,
+            MovementLayer::Ground,
+            Some(4),
+            CellListInsertion::PrependNonBuilding,
+        );
         let result = check_terrain(
             (5, 5),
             MovementLayer::Ground,
@@ -397,7 +430,14 @@ mod tests {
 
         // Cell occupancy: a Structure (refinery) at (5, 5).
         let mut occ = OccupancyGrid::new();
-        occ.add(5, 5, 100, MovementLayer::Ground, None);
+        occ.add(
+            5,
+            5,
+            100,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::AppendBuilding,
+        );
 
         // EntityStore with the structure entity.
         let mut entities = EntityStore::new();
@@ -433,5 +473,41 @@ mod tests {
             Some(100),
             "with bypass_grid=false, Structure must still be picked as blocker (regression)"
         );
+    }
+
+    #[test]
+    fn find_primary_blocker_follows_layer_order() {
+        use crate::sim::entity_store::EntityStore;
+        use crate::sim::game_entity::GameEntity;
+
+        let mut occ = OccupancyGrid::new();
+        occ.add(
+            5,
+            5,
+            10,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        occ.add(
+            5,
+            5,
+            20,
+            MovementLayer::Ground,
+            Some(2),
+            CellListInsertion::PrependNonBuilding,
+        );
+
+        let mut entities = EntityStore::new();
+        let mut blocker = GameEntity::test_default(10, "HTNK", "Allies", 5, 5);
+        blocker.category = EntityCategory::Unit;
+        entities.insert(blocker);
+        let mut infantry = GameEntity::test_default(20, "E1", "Allies", 5, 5);
+        infantry.category = EntityCategory::Infantry;
+        entities.insert(infantry);
+
+        let result =
+            find_primary_blocker((5, 5), MovementLayer::Ground, 42, false, &occ, &entities);
+        assert_eq!(result, Some(20));
     }
 }

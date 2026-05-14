@@ -23,7 +23,7 @@ use crate::rules::ruleset::GeneralRules;
 use crate::sim::debug_event_log::DebugEventKind;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::movement::locomotor::OverrideKind;
-use crate::sim::occupancy::OccupancyGrid;
+use crate::sim::occupancy::{CellListInsertion, OccupancyGrid};
 use crate::util::fixed_math::isqrt_i64;
 use crate::util::lepton::CELL_CENTER_LEPTON;
 
@@ -202,6 +202,7 @@ pub fn tick_teleport_movement(
                     id,
                     layer,
                     entity.sub_cell,
+                    CellListInsertion::from_category(entity.category),
                 );
                 // Harvester instant-warp: when chrono delay is 0, finish in one
                 // tick (cleanup runs at end of this tick) — no post-warp lock.

@@ -13,6 +13,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::map::entities::EntityCategory;
 use crate::sim::movement::locomotor::MovementLayer;
 
 /// Single occupant entry in a cell.
@@ -24,6 +25,23 @@ pub struct CellOccupant {
     pub sub_cell: Option<u8>,
 }
 
+/// Requested insertion order for a cell's selected gamemd object list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellListInsertion {
+    PrependNonBuilding,
+    AppendBuilding,
+}
+
+impl CellListInsertion {
+    pub fn from_category(category: EntityCategory) -> Self {
+        if category == EntityCategory::Structure {
+            Self::AppendBuilding
+        } else {
+            Self::PrependNonBuilding
+        }
+    }
+}
+
 /// All occupants of a single cell.
 #[derive(Debug, Clone, Default)]
 pub struct CellOccupancy {
@@ -32,7 +50,12 @@ pub struct CellOccupancy {
 }
 
 impl CellOccupancy {
-    /// Non-infantry occupants (vehicles/structures) on a given layer.
+    /// All occupants on a selected movement layer in gamemd list order.
+    pub fn iter_layer(&self, layer: MovementLayer) -> impl Iterator<Item = &CellOccupant> + '_ {
+        self.occupants.iter().filter(move |o| o.layer == layer)
+    }
+
+    /// Non-infantry occupants on a given layer, preserving layer-list order.
     pub fn blockers(&self, layer: MovementLayer) -> impl Iterator<Item = u64> + '_ {
         self.occupants
             .iter()
@@ -40,7 +63,7 @@ impl CellOccupancy {
             .map(|o| o.entity_id)
     }
 
-    /// Infantry occupants on a given layer: (entity_id, sub_cell).
+    /// Infantry occupants on a given layer, preserving layer-list order.
     pub fn infantry(&self, layer: MovementLayer) -> impl Iterator<Item = (u64, u8)> + '_ {
         self.occupants
             .iter()
@@ -85,7 +108,6 @@ impl OccupancyGrid {
     /// Rebuild occupancy from scratch by scanning all entities.
     /// Used at map load (deserialization) and for debug validation.
     pub fn rebuild(entities: &crate::sim::entity_store::EntityStore) -> Self {
-        use crate::map::entities::EntityCategory;
         use crate::sim::movement::locomotor::MovementLayer;
 
         let mut grid = Self::new();
@@ -110,7 +132,8 @@ impl OccupancyGrid {
             } else {
                 None
             };
-            grid.add(rx, ry, sid, layer, sub);
+            let insertion = CellListInsertion::from_category(entity.category);
+            grid.add(rx, ry, sid, layer, sub, insertion);
         }
         grid
     }
@@ -133,13 +156,32 @@ impl OccupancyGrid {
         entity_id: u64,
         layer: MovementLayer,
         sub_cell: Option<u8>,
+        insertion: CellListInsertion,
     ) {
-        let occ = self.cells.entry((rx, ry)).or_default();
-        occ.occupants.push(CellOccupant {
+        let new_occupant = CellOccupant {
             entity_id,
             layer,
             sub_cell,
-        });
+        };
+        let occ = self.cells.entry((rx, ry)).or_default();
+        match insertion {
+            CellListInsertion::PrependNonBuilding => {
+                let index = occ
+                    .occupants
+                    .iter()
+                    .position(|o| o.layer == layer)
+                    .unwrap_or(0);
+                occ.occupants.insert(index, new_occupant);
+            }
+            CellListInsertion::AppendBuilding => {
+                let index = occ
+                    .occupants
+                    .iter()
+                    .rposition(|o| o.layer == layer)
+                    .map_or(occ.occupants.len(), |i| i + 1);
+                occ.occupants.insert(index, new_occupant);
+            }
+        }
     }
 
     /// Remove an entity from a cell. No-op if entity not found.
@@ -163,9 +205,10 @@ impl OccupancyGrid {
         entity_id: u64,
         layer: MovementLayer,
         sub_cell: Option<u8>,
+        insertion: CellListInsertion,
     ) {
         self.remove(old_rx, old_ry, entity_id);
-        self.add(new_rx, new_ry, entity_id, layer, sub_cell);
+        self.add(new_rx, new_ry, entity_id, layer, sub_cell, insertion);
     }
 
     /// Update an entity's sub-cell within the same cell.
@@ -254,7 +297,14 @@ mod tests {
     #[test]
     fn add_and_get() {
         let mut grid = OccupancyGrid::new();
-        grid.add(5, 5, 1, MovementLayer::Ground, None);
+        grid.add(
+            5,
+            5,
+            1,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
         let occ = grid.get(5, 5).unwrap();
         assert_eq!(occ.occupants.len(), 1);
         assert_eq!(occ.occupants[0].entity_id, 1);
@@ -265,7 +315,14 @@ mod tests {
     #[test]
     fn remove_cleans_up_empty_cell() {
         let mut grid = OccupancyGrid::new();
-        grid.add(5, 5, 1, MovementLayer::Ground, None);
+        grid.add(
+            5,
+            5,
+            1,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
         grid.remove(5, 5, 1);
         assert!(grid.get(5, 5).is_none());
         assert_eq!(grid.occupied_cell_count(), 0);
@@ -281,8 +338,24 @@ mod tests {
     #[test]
     fn move_entity_transfers_between_cells() {
         let mut grid = OccupancyGrid::new();
-        grid.add(5, 5, 1, MovementLayer::Ground, None);
-        grid.move_entity(5, 5, 6, 6, 1, MovementLayer::Ground, None);
+        grid.add(
+            5,
+            5,
+            1,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        grid.move_entity(
+            5,
+            5,
+            6,
+            6,
+            1,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
         assert!(grid.get(5, 5).is_none());
         let occ = grid.get(6, 6).unwrap();
         assert_eq!(occ.occupants.len(), 1);
@@ -292,11 +365,37 @@ mod tests {
     #[test]
     fn layer_filtering() {
         let mut grid = OccupancyGrid::new();
-        grid.add(5, 5, 1, MovementLayer::Ground, None);
-        grid.add(5, 5, 2, MovementLayer::Bridge, None);
-        grid.add(5, 5, 3, MovementLayer::Ground, Some(2));
+        grid.add(
+            5,
+            5,
+            1,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        grid.add(
+            5,
+            5,
+            2,
+            MovementLayer::Bridge,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        grid.add(
+            5,
+            5,
+            3,
+            MovementLayer::Ground,
+            Some(2),
+            CellListInsertion::PrependNonBuilding,
+        );
 
         let occ = grid.get(5, 5).unwrap();
+        let ground_ids: Vec<u64> = occ
+            .iter_layer(MovementLayer::Ground)
+            .map(|o| o.entity_id)
+            .collect();
+        assert_eq!(ground_ids, vec![3, 1]);
         let ground_blockers: Vec<u64> = occ.blockers(MovementLayer::Ground).collect();
         assert_eq!(ground_blockers, vec![1]);
         let bridge_blockers: Vec<u64> = occ.blockers(MovementLayer::Bridge).collect();
@@ -310,7 +409,14 @@ mod tests {
     fn is_empty_on_layer() {
         let mut grid = OccupancyGrid::new();
         assert!(grid.is_empty_on_layer(5, 5, MovementLayer::Ground));
-        grid.add(5, 5, 1, MovementLayer::Bridge, None);
+        grid.add(
+            5,
+            5,
+            1,
+            MovementLayer::Bridge,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
         assert!(grid.is_empty_on_layer(5, 5, MovementLayer::Ground));
         assert!(!grid.is_empty_on_layer(5, 5, MovementLayer::Bridge));
     }
@@ -318,9 +424,30 @@ mod tests {
     #[test]
     fn infantry_subcells() {
         let mut grid = OccupancyGrid::new();
-        grid.add(5, 5, 10, MovementLayer::Ground, Some(2));
-        grid.add(5, 5, 11, MovementLayer::Ground, Some(3));
-        grid.add(5, 5, 12, MovementLayer::Ground, Some(4));
+        grid.add(
+            5,
+            5,
+            10,
+            MovementLayer::Ground,
+            Some(2),
+            CellListInsertion::PrependNonBuilding,
+        );
+        grid.add(
+            5,
+            5,
+            11,
+            MovementLayer::Ground,
+            Some(3),
+            CellListInsertion::PrependNonBuilding,
+        );
+        grid.add(
+            5,
+            5,
+            12,
+            MovementLayer::Ground,
+            Some(4),
+            CellListInsertion::PrependNonBuilding,
+        );
 
         let occ = grid.get(5, 5).unwrap();
         let inf: Vec<(u64, u8)> = occ.infantry(MovementLayer::Ground).collect();
@@ -333,7 +460,14 @@ mod tests {
         let mut grid = OccupancyGrid::new();
         for dy in 0..2u16 {
             for dx in 0..2u16 {
-                grid.add(10 + dx, 10 + dy, 100, MovementLayer::Ground, None);
+                grid.add(
+                    10 + dx,
+                    10 + dy,
+                    100,
+                    MovementLayer::Ground,
+                    None,
+                    CellListInsertion::AppendBuilding,
+                );
             }
         }
         assert!(grid.contains_entity(10, 10, 100));
@@ -353,7 +487,14 @@ mod tests {
     #[test]
     fn update_sub_cell() {
         let mut grid = OccupancyGrid::new();
-        grid.add(5, 5, 1, MovementLayer::Ground, Some(2));
+        grid.add(
+            5,
+            5,
+            1,
+            MovementLayer::Ground,
+            Some(2),
+            CellListInsertion::PrependNonBuilding,
+        );
         grid.update_sub_cell(5, 5, 1, Some(4));
         let occ = grid.get(5, 5).unwrap();
         let inf: Vec<(u64, u8)> = occ.infantry(MovementLayer::Ground).collect();
@@ -363,11 +504,247 @@ mod tests {
     #[test]
     fn count_on_layer() {
         let mut grid = OccupancyGrid::new();
-        grid.add(5, 5, 1, MovementLayer::Ground, None);
-        grid.add(5, 5, 2, MovementLayer::Ground, Some(2));
-        grid.add(5, 5, 3, MovementLayer::Bridge, None);
+        grid.add(
+            5,
+            5,
+            1,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        grid.add(
+            5,
+            5,
+            2,
+            MovementLayer::Ground,
+            Some(2),
+            CellListInsertion::PrependNonBuilding,
+        );
+        grid.add(
+            5,
+            5,
+            3,
+            MovementLayer::Bridge,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
         assert_eq!(grid.count_on_layer(5, 5, MovementLayer::Ground), 2);
         assert_eq!(grid.count_on_layer(5, 5, MovementLayer::Bridge), 1);
         assert_eq!(grid.count_on_layer(5, 5, MovementLayer::Air), 0);
+    }
+
+    #[test]
+    fn non_buildings_prepend_on_same_layer() {
+        let mut grid = OccupancyGrid::new();
+        grid.add(
+            5,
+            5,
+            1,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        grid.add(
+            5,
+            5,
+            2,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        let ids: Vec<u64> = grid
+            .get(5, 5)
+            .unwrap()
+            .iter_layer(MovementLayer::Ground)
+            .map(|o| o.entity_id)
+            .collect();
+        assert_eq!(ids, vec![2, 1]);
+    }
+
+    #[test]
+    fn buildings_append_on_same_layer() {
+        let mut grid = OccupancyGrid::new();
+        grid.add(
+            5,
+            5,
+            1,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        grid.add(
+            5,
+            5,
+            100,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::AppendBuilding,
+        );
+        grid.add(
+            5,
+            5,
+            2,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        let ids: Vec<u64> = grid
+            .get(5, 5)
+            .unwrap()
+            .iter_layer(MovementLayer::Ground)
+            .map(|o| o.entity_id)
+            .collect();
+        assert_eq!(ids, vec![2, 1, 100]);
+    }
+
+    #[test]
+    fn layers_have_independent_order() {
+        let mut grid = OccupancyGrid::new();
+        grid.add(
+            5,
+            5,
+            1,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        grid.add(
+            5,
+            5,
+            10,
+            MovementLayer::Bridge,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        grid.add(
+            5,
+            5,
+            2,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        grid.add(
+            5,
+            5,
+            20,
+            MovementLayer::Bridge,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        let ground: Vec<u64> = grid
+            .get(5, 5)
+            .unwrap()
+            .iter_layer(MovementLayer::Ground)
+            .map(|o| o.entity_id)
+            .collect();
+        let bridge: Vec<u64> = grid
+            .get(5, 5)
+            .unwrap()
+            .iter_layer(MovementLayer::Bridge)
+            .map(|o| o.entity_id)
+            .collect();
+        assert_eq!(ground, vec![2, 1]);
+        assert_eq!(bridge, vec![20, 10]);
+    }
+
+    #[test]
+    fn remove_preserves_remaining_order() {
+        let mut grid = OccupancyGrid::new();
+        grid.add(
+            5,
+            5,
+            1,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        grid.add(
+            5,
+            5,
+            2,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        grid.add(
+            5,
+            5,
+            3,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        grid.remove(5, 5, 2);
+        let ids: Vec<u64> = grid
+            .get(5, 5)
+            .unwrap()
+            .iter_layer(MovementLayer::Ground)
+            .map(|o| o.entity_id)
+            .collect();
+        assert_eq!(ids, vec![3, 1]);
+    }
+
+    #[test]
+    fn move_entity_reinserts_with_requested_order() {
+        let mut grid = OccupancyGrid::new();
+        grid.add(
+            1,
+            1,
+            1,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        grid.add(
+            2,
+            2,
+            2,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        grid.move_entity(
+            1,
+            1,
+            2,
+            2,
+            1,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        let ids: Vec<u64> = grid
+            .get(2, 2)
+            .unwrap()
+            .iter_layer(MovementLayer::Ground)
+            .map(|o| o.entity_id)
+            .collect();
+        assert_eq!(ids, vec![1, 2]);
+    }
+
+    #[test]
+    fn rebuild_uses_category_insertion() {
+        let mut entities = crate::sim::entity_store::EntityStore::new();
+        let mut first = crate::sim::game_entity::GameEntity::test_default(1, "E1", "Allies", 5, 5);
+        first.category = EntityCategory::Infantry;
+        first.sub_cell = Some(2);
+        let mut second =
+            crate::sim::game_entity::GameEntity::test_default(2, "HTNK", "Allies", 5, 5);
+        second.category = EntityCategory::Unit;
+        let mut structure =
+            crate::sim::game_entity::GameEntity::test_default(100, "GAPOWR", "Allies", 5, 5);
+        structure.category = EntityCategory::Structure;
+        entities.insert(first);
+        entities.insert(second);
+        entities.insert(structure);
+        let grid = OccupancyGrid::rebuild(&entities);
+        let ids: Vec<u64> = grid
+            .get(5, 5)
+            .unwrap()
+            .iter_layer(MovementLayer::Ground)
+            .map(|o| o.entity_id)
+            .collect();
+        assert_eq!(ids, vec![2, 1, 100]);
     }
 }

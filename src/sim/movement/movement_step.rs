@@ -22,7 +22,7 @@ use crate::sim::movement::movement_occupancy::{
 };
 use crate::sim::movement::movement_reservation::reserve_destination_after_transition;
 use crate::sim::movement::turret::{rot_to_facing_delta, shortest_rotation};
-use crate::sim::occupancy::OccupancyGrid;
+use crate::sim::occupancy::{CellListInsertion, OccupancyGrid};
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
 use crate::sim::rng::SimRng;
@@ -659,7 +659,17 @@ pub(super) fn process_cell_crossings(
         // Update occupancy grid: move entity from old cell to new cell.
         // Uses current sub_cell (from old cell). For infantry, reserve_destination
         // below may allocate a new sub-cell and correct it via update_sub_cell.
-        occupancy.move_entity(old_rx, old_ry, nx, ny, entity_id, active_layer, *sub_cell);
+        let insertion = CellListInsertion::from_category(category);
+        occupancy.move_entity(
+            old_rx,
+            old_ry,
+            nx,
+            ny,
+            entity_id,
+            active_layer,
+            *sub_cell,
+            insertion,
+        );
         // Bridge state resolution: apply the on_bridge cell-flag predicate.
         // Returns ONLY a BridgeStateUpdate — loco.layer continues to follow
         // A*'s path_layers (next_layer was set above from the path).

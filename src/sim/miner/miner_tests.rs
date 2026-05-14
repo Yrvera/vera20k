@@ -16,7 +16,7 @@ use crate::sim::miner::{
     CargoBale, Miner, MinerConfig, MinerKind, MinerState, RefineryDockPhase, ResourceNode,
     ResourceType,
 };
-use crate::sim::occupancy::OccupancyGrid;
+use crate::sim::occupancy::{CellListInsertion, OccupancyGrid};
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::production::credits_for_owner;
 use crate::sim::world::Simulation;
@@ -2034,7 +2034,14 @@ fn harvester_drives_into_refinery_foundation_without_bumping_it() {
     let mut occupancy = OccupancyGrid::new();
     for ry in 10u16..=12 {
         for rx in 10u16..=13 {
-            occupancy.add(rx, ry, refinery_id, MovementLayer::Ground, None);
+            occupancy.add(
+                rx,
+                ry,
+                refinery_id,
+                MovementLayer::Ground,
+                None,
+                CellListInsertion::AppendBuilding,
+            );
         }
     }
 
