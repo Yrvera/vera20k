@@ -18,9 +18,9 @@
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
 use std::cmp::Reverse;
-use std::collections::{BTreeSet, BinaryHeap, HashMap};
+use std::collections::{BTreeSet, BinaryHeap};
 
-use super::EntityBlockEntry;
+use super::LayeredEntityBlockMap;
 
 use super::terrain_cost::TerrainCostGrid;
 use super::zone_map::{ZONE_INVALID, ZoneAdjacency, ZoneGrid, ZoneId, ZoneMap};
@@ -72,7 +72,7 @@ pub fn find_path_zoned(
     mz: MovementZone,
     movement_zone: Option<MovementZone>,
     resolved_terrain: Option<&ResolvedTerrainGrid>,
-    entity_block_map: Option<&HashMap<(u16, u16), EntityBlockEntry>>,
+    entity_block_map: Option<&LayeredEntityBlockMap>,
     urgency: u8,
     mover_is_crusher: bool,
 ) -> Option<Vec<(u16, u16)>> {
@@ -238,7 +238,7 @@ pub fn find_layered_path_zoned(
     mz: MovementZone,
     terrain_costs: Option<&TerrainCostGrid>,
     movement_zone: Option<MovementZone>,
-    entity_block_map: Option<&HashMap<(u16, u16), EntityBlockEntry>>,
+    entity_block_map: Option<&LayeredEntityBlockMap>,
     urgency: u8,
     mover_is_crusher: bool,
 ) -> Option<Vec<LayeredPathStep>> {

@@ -791,11 +791,20 @@ fn test_friendly_passable_moving_unit_not_blocked() {
         "Stationary friendly should be soft-blocked, not hard-blocked"
     );
     assert!(
-        _penalty.contains_key(&(3, 0)),
+        _penalty.contains_key(
+            crate::sim::movement::locomotor::MovementLayer::Ground,
+            &(3, 0)
+        ),
         "Stationary friendly should be in entity_block_map"
     );
     assert_eq!(
-        _penalty[&(3, 0)].cost_code,
+        _penalty
+            .get(
+                crate::sim::movement::locomotor::MovementLayer::Ground,
+                &(3, 0)
+            )
+            .expect("ground stationary friendly soft blocker")
+            .cost_code,
         6,
         "Stationary friendly should have cost_code 6"
     );
@@ -805,11 +814,20 @@ fn test_friendly_passable_moving_unit_not_blocked() {
         "Moving friendly should be passable"
     );
     assert!(
-        _penalty.contains_key(&(4, 0)),
+        _penalty.contains_key(
+            crate::sim::movement::locomotor::MovementLayer::Ground,
+            &(4, 0)
+        ),
         "Moving friendly should be in entity_block_map"
     );
     assert_eq!(
-        _penalty[&(4, 0)].cost_code,
+        _penalty
+            .get(
+                crate::sim::movement::locomotor::MovementLayer::Ground,
+                &(4, 0)
+            )
+            .expect("ground moving friendly soft blocker")
+            .cost_code,
         2,
         "Moving friendly should have cost_code 2"
     );
@@ -852,11 +870,20 @@ fn test_enemy_unit_always_blocks_even_when_moving() {
         "Enemy should be soft-blocked, not hard-blocked"
     );
     assert!(
-        _penalty.contains_key(&(3, 0)),
+        _penalty.contains_key(
+            crate::sim::movement::locomotor::MovementLayer::Ground,
+            &(3, 0)
+        ),
         "Enemy should be in entity_block_map"
     );
     assert_eq!(
-        _penalty[&(3, 0)].cost_code,
+        _penalty
+            .get(
+                crate::sim::movement::locomotor::MovementLayer::Ground,
+                &(3, 0)
+            )
+            .expect("ground enemy soft blocker")
+            .cost_code,
         5,
         "Enemy should have cost_code 5"
     );

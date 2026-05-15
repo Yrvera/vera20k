@@ -76,6 +76,27 @@ pub enum TerrainCheckResult {
     NeedsBlockerCheck,
 }
 
+/// Layer selections used by Can_Enter_Cell-style checks.
+///
+/// The common case uses one layer for all phases. Bridge traversal may select
+/// the bridge object list while the post-traversal occupancy bits remain ground.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CanEnterLayerContext {
+    pub terrain_layer: MovementLayer,
+    pub object_list_layer: MovementLayer,
+    pub occupancy_bits_layer: MovementLayer,
+}
+
+impl CanEnterLayerContext {
+    pub fn single(layer: MovementLayer) -> Self {
+        Self {
+            terrain_layer: layer,
+            object_list_layer: layer,
+            occupancy_bits_layer: layer,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Phase 1: terrain + occupancy presence
 // ---------------------------------------------------------------------------
@@ -94,10 +115,29 @@ pub fn check_terrain(
     cost_grid: Option<&TerrainCostGrid>,
     occupancy: &OccupancyGrid,
 ) -> TerrainCheckResult {
+    check_terrain_with_layers(
+        target,
+        CanEnterLayerContext::single(target_layer),
+        mover_category,
+        path_grid,
+        cost_grid,
+        occupancy,
+    )
+}
+
+/// Check terrain and occupancy using explicit CanEnter layer selections.
+pub fn check_terrain_with_layers(
+    target: (u16, u16),
+    layers: CanEnterLayerContext,
+    mover_category: EntityCategory,
+    path_grid: Option<&PathGrid>,
+    cost_grid: Option<&TerrainCostGrid>,
+    occupancy: &OccupancyGrid,
+) -> TerrainCheckResult {
     let (nx, ny) = target;
 
     // --- Terrain walkability ---
-    let terrain_walkable = match target_layer {
+    let terrain_walkable = match layers.terrain_layer {
         MovementLayer::Ground => {
             let grid_ok = path_grid.map_or(true, |g| g.is_walkable(nx, ny));
             let cost_ok = cost_grid.map_or(true, |cg| cg.cost_at(nx, ny) > 0);
@@ -117,7 +157,8 @@ pub fn check_terrain(
 
     if mover_category == EntityCategory::Infantry {
         // Infantry: check sub-cell availability.
-        let sub = bump_crush::allocate_sub_cell_with_reserved(occ, target_layer, None);
+        let sub =
+            bump_crush::allocate_sub_cell_with_reserved(occ, layers.occupancy_bits_layer, None);
         if sub.is_some() {
             return TerrainCheckResult::Clear;
         }
@@ -128,7 +169,7 @@ pub fn check_terrain(
     // Vehicle/aircraft/structure: cell must be unoccupied on this layer.
     match occ {
         None => TerrainCheckResult::Clear,
-        Some(o) if o.is_empty_on(target_layer) => TerrainCheckResult::Clear,
+        Some(o) if o.is_empty_on(layers.occupancy_bits_layer) => TerrainCheckResult::Clear,
         Some(_) => TerrainCheckResult::NeedsBlockerCheck,
     }
 }
@@ -163,11 +204,43 @@ pub fn classify_occupied_cell(
     alliances: &HouseAllianceMap,
     interner: &crate::sim::intern::StringInterner,
 ) -> CellEntryResult {
+    classify_occupied_cell_with_layers(
+        target,
+        CanEnterLayerContext::single(target_layer),
+        mover_id,
+        mover_zone,
+        mover_omni_crusher,
+        mover_owner,
+        mover_locomotor,
+        mover_bypass_grid,
+        occupancy,
+        entities,
+        alliances,
+        interner,
+    )
+}
+
+/// Classify an occupied cell using explicit CanEnter layer selections.
+#[allow(clippy::too_many_arguments)]
+pub fn classify_occupied_cell_with_layers(
+    target: (u16, u16),
+    layers: CanEnterLayerContext,
+    mover_id: u64,
+    mover_zone: MovementZone,
+    mover_omni_crusher: bool,
+    mover_owner: &str,
+    mover_locomotor: LocomotorKind,
+    mover_bypass_grid: bool,
+    occupancy: &OccupancyGrid,
+    entities: &EntityStore,
+    alliances: &HouseAllianceMap,
+    interner: &crate::sim::intern::StringInterner,
+) -> CellEntryResult {
     // --- Crush check ---
     let victims = bump_crush::collect_crush_victims(
         target,
         occupancy,
-        target_layer,
+        layers.object_list_layer,
         mover_zone,
         mover_omni_crusher,
         entities,
@@ -176,7 +249,7 @@ pub fn classify_occupied_cell(
         && bump_crush::cell_passable_after_crush(
             target,
             occupancy,
-            target_layer,
+            layers.occupancy_bits_layer,
             mover_zone,
             mover_omni_crusher,
             entities,
@@ -188,7 +261,7 @@ pub fn classify_occupied_cell(
     // --- Find primary blocker ---
     let blocker_id = find_primary_blocker(
         target,
-        target_layer,
+        layers.object_list_layer,
         mover_id,
         mover_bypass_grid,
         occupancy,
@@ -509,5 +582,92 @@ mod tests {
         let result =
             find_primary_blocker((5, 5), MovementLayer::Ground, 42, false, &occ, &entities);
         assert_eq!(result, Some(20));
+    }
+
+    #[test]
+    fn split_context_uses_occupancy_bits_layer_for_presence() {
+        use crate::sim::pathfinding::PathGrid;
+
+        let mut grid = PathGrid::new(10, 10);
+        grid.set_cell_for_test(5, 5, 0, true, true);
+        let mut occ = OccupancyGrid::new();
+        occ.add(
+            5,
+            5,
+            10,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+
+        let result = check_terrain_with_layers(
+            (5, 5),
+            CanEnterLayerContext {
+                terrain_layer: MovementLayer::Bridge,
+                object_list_layer: MovementLayer::Bridge,
+                occupancy_bits_layer: MovementLayer::Ground,
+            },
+            EntityCategory::Unit,
+            Some(&grid),
+            None,
+            &occ,
+        );
+
+        assert_eq!(result, TerrainCheckResult::NeedsBlockerCheck);
+    }
+
+    #[test]
+    fn split_context_scans_object_list_layer_for_primary_blocker() {
+        use crate::sim::entity_store::EntityStore;
+        use crate::sim::game_entity::GameEntity;
+
+        let mut occ = OccupancyGrid::new();
+        occ.add(
+            5,
+            5,
+            10,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        occ.add(
+            5,
+            5,
+            20,
+            MovementLayer::Bridge,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+
+        let mut entities = EntityStore::new();
+        let mut ground = GameEntity::test_default(10, "HTNK", "Allies", 5, 5);
+        ground.category = EntityCategory::Unit;
+        entities.insert(ground);
+        let mut bridge = GameEntity::test_default(20, "HTNK", "Soviets", 5, 5);
+        bridge.category = EntityCategory::Unit;
+        entities.insert(bridge);
+
+        let alliances = HouseAllianceMap::new();
+        let interner = crate::sim::intern::test_interner();
+        let result = classify_occupied_cell_with_layers(
+            (5, 5),
+            CanEnterLayerContext {
+                terrain_layer: MovementLayer::Bridge,
+                object_list_layer: MovementLayer::Bridge,
+                occupancy_bits_layer: MovementLayer::Ground,
+            },
+            42,
+            MovementZone::Normal,
+            false,
+            "Allies",
+            LocomotorKind::Drive,
+            false,
+            &occ,
+            &entities,
+            &alliances,
+            &interner,
+        );
+
+        assert_eq!(result, CellEntryResult::OccupiedEnemy { blocker_id: 20 });
     }
 }

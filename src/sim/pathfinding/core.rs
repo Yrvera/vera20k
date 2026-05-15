@@ -13,8 +13,10 @@
 //! - Part of sim/ — depends on map/ (MapCell, TilesetLookup for walkability).
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
+use super::cell_entry::CanEnterLayerContext;
 use super::passability;
 use super::terrain_cost::TerrainCostGrid;
+use crate::map::bridge_facts::BRIDGE_FLAG_ANCHOR_SELF;
 use crate::map::map_file::MapCell;
 use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
 use crate::map::theater::TilesetLookup;
@@ -71,6 +73,52 @@ pub struct EntityBlockEntry {
     pub next_cell: Option<(u16, u16)>,
     /// Can_Enter_Cell return code: 2 (moving friendly), 5 (enemy), 6 (stationary friendly).
     pub cost_code: u8,
+}
+
+/// Entity soft blockers split by object-list layer.
+///
+/// gamemd.exe scans either `FirstObject` (ground) or `AltObject` (bridge)
+/// for soft blocker costs. Keeping those maps separate preserves stacked
+/// same-cell ground/bridge occupants instead of collapsing them by coordinate.
+#[derive(Debug, Clone, Default)]
+pub struct LayeredEntityBlockMap {
+    ground: HashMap<(u16, u16), EntityBlockEntry>,
+    bridge: HashMap<(u16, u16), EntityBlockEntry>,
+}
+
+impl LayeredEntityBlockMap {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn insert(
+        &mut self,
+        layer: MovementLayer,
+        cell: (u16, u16),
+        entry: EntityBlockEntry,
+    ) -> Option<EntityBlockEntry> {
+        match layer {
+            MovementLayer::Bridge => self.bridge.insert(cell, entry),
+            MovementLayer::Ground => self.ground.insert(cell, entry),
+            MovementLayer::Air | MovementLayer::Underground => None,
+        }
+    }
+
+    pub fn get(&self, layer: MovementLayer, cell: &(u16, u16)) -> Option<&EntityBlockEntry> {
+        match layer {
+            MovementLayer::Bridge => self.bridge.get(cell),
+            MovementLayer::Ground => self.ground.get(cell),
+            MovementLayer::Air | MovementLayer::Underground => None,
+        }
+    }
+
+    pub fn contains_key(&self, layer: MovementLayer, cell: &(u16, u16)) -> bool {
+        self.get(layer, cell).is_some()
+    }
+
+    pub fn contains_any(&self, cell: &(u16, u16)) -> bool {
+        self.ground.contains_key(cell) || self.bridge.contains_key(cell)
+    }
 }
 
 /// Per-direction tie-breaker offsets added to g-cost.
@@ -152,6 +200,154 @@ fn compute_neighbor_height(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BridgeTraversalInput<'a> {
+    pub candidate: &'a PathCell,
+    pub candidate_coord: (u16, u16),
+    pub direction: i8,
+    pub path_height: i16,
+    pub parent: Option<(&'a PathCell, (u16, u16))>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BridgeTraversalResult {
+    pub allowed: bool,
+    pub path_height: i16,
+    pub force_bridge_list: bool,
+}
+
+fn resolve_parent_for_bridge_traversal<'a>(
+    grid: &'a PathGrid,
+    candidate_coord: (u16, u16),
+    direction: i8,
+    explicit_parent: Option<(&'a PathCell, (u16, u16))>,
+) -> Option<(&'a PathCell, (u16, u16))> {
+    if let Some(parent) = explicit_parent {
+        return Some(parent);
+    }
+    if !(0..=7).contains(&direction) {
+        return None;
+    }
+    let rotated = ((direction - 4) & 7) as usize;
+    let (dx, dy, _) = NEIGHBORS[rotated];
+    let px = candidate_coord.0 as i32 + dx;
+    let py = candidate_coord.1 as i32 + dy;
+    if px < 0 || py < 0 || px >= grid.width() as i32 || py >= grid.height() as i32 {
+        return None;
+    }
+    let coord = (px as u16, py as u16);
+    grid.cell(coord.0, coord.1).map(|cell| (cell, coord))
+}
+
+pub(crate) fn check_bridge_traversal(
+    grid: &PathGrid,
+    input: BridgeTraversalInput<'_>,
+) -> BridgeTraversalResult {
+    let mut path_height = input.path_height;
+    if input.direction == -1 {
+        if path_height == -1 && input.candidate.has_structural_bridge() {
+            path_height = input.candidate.signed_level() + 4;
+        }
+        return BridgeTraversalResult {
+            allowed: true,
+            path_height,
+            force_bridge_list: false,
+        };
+    }
+
+    let Some((parent, _parent_coord)) = resolve_parent_for_bridge_traversal(
+        grid,
+        input.candidate_coord,
+        input.direction,
+        input.parent,
+    ) else {
+        return BridgeTraversalResult {
+            allowed: false,
+            path_height,
+            force_bridge_list: false,
+        };
+    };
+
+    if path_height == -1 && parent.has_structural_bridge() {
+        path_height = parent.signed_level() + 4;
+        if !input.candidate.has_bridgehead_transition() {
+            return BridgeTraversalResult {
+                allowed: false,
+                path_height,
+                force_bridge_list: false,
+            };
+        }
+    }
+
+    let candidate_level = input.candidate.signed_level();
+    let parent_selected = if parent.has_structural_bridge() {
+        parent.signed_level()
+    } else {
+        path_height
+    };
+    let diff = parent_selected - candidate_level;
+    let mut force_bridge_list = false;
+    let allowed = match diff.abs() {
+        0 => {
+            let all_bridge_transition = input.candidate.has_structural_bridge()
+                && input.candidate.has_bridgehead_transition()
+                && parent.has_structural_bridge();
+            all_bridge_transition || path_height == -1 || path_height == candidate_level
+        }
+        1 => {
+            if diff < 1 {
+                parent.slope_type != 0
+            } else {
+                input.candidate.slope_type != 0
+            }
+        }
+        4 => {
+            if parent.signed_level() == candidate_level - 4 {
+                path_height == candidate_level && parent.has_structural_bridge()
+            } else if candidate_level == parent.signed_level() - 4 {
+                if input.candidate.has_structural_bridge()
+                    && input.candidate.has_bridgehead_transition()
+                {
+                    force_bridge_list = true;
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        }
+        _ => false,
+    };
+
+    BridgeTraversalResult {
+        allowed,
+        path_height,
+        force_bridge_list,
+    }
+}
+
+fn can_enter_layer_context(
+    terrain_layer: MovementLayer,
+    object_list_layer: MovementLayer,
+    candidate: &PathCell,
+    path_height: i16,
+) -> CanEnterLayerContext {
+    let occupancy_bits_layer = if path_height != -1
+        && candidate.has_structural_bridge()
+        && path_height == candidate.signed_level() + 4
+    {
+        MovementLayer::Bridge
+    } else {
+        MovementLayer::Ground
+    };
+    CanEnterLayerContext {
+        terrain_layer,
+        object_list_layer,
+        occupancy_bits_layer,
+    }
+}
+
 fn encode_from(cell_idx: usize, on_bridge: bool) -> usize {
     cell_idx | if on_bridge { CAME_FROM_BRIDGE } else { 0 }
 }
@@ -175,7 +371,7 @@ pub struct AStarOptions<'a> {
     /// cost function for the 10-hop chain walk (matches gamemd.exe
     /// AStar_compute_edge_cost). The map is denormalized so no EntityStore
     /// lookup is required inside A*.
-    pub entity_block_map: Option<&'a HashMap<(u16, u16), EntityBlockEntry>>,
+    pub entity_block_map: Option<&'a LayeredEntityBlockMap>,
     /// Crusher units bypass all entity soft-block costs (codes 1-6).
     /// Buildings (code 7, in entity_blocks BTreeSet) still block.
     pub mover_is_crusher: bool,
@@ -422,7 +618,12 @@ pub fn astar_search(
             let neighbor_cell = grid.cell(nx, ny).unwrap_or(&DEFAULT_BLOCKED_CELL);
 
             // Closed-list selection: uses CURRENT node's height vs neighbor ground_level
-            let neighbor_use_bridge = is_at_bridge_level(current.height, neighbor_cell);
+            let mut neighbor_use_bridge = is_at_bridge_level(current.height, neighbor_cell);
+            let mut layer_context = CanEnterLayerContext::single(if neighbor_use_bridge {
+                MovementLayer::Bridge
+            } else {
+                MovementLayer::Ground
+            });
 
             // Compute what height the NEW node carries forward (separate computation)
             let neighbor_height = compute_neighbor_height(current.height, cur_cell, neighbor_cell);
@@ -431,19 +632,61 @@ pub fn astar_search(
             // be a canonical ramp (slope_type != 0); diff ∈ {±2, ±3, ±4, ±5+} is
             // always blocked. Legitimate bridge transitions arrive here as diff-0
             // because `compute_neighbor_height` already shifts unit Z onto/off the deck.
-            let diff = neighbor_height as i16 - current.height as i16;
-            let lower_slope = if diff < 0 {
-                neighbor_cell.slope_type
+            let needs_bridge_traversal = neighbor_cell.has_bridgehead_transition()
+                || !neighbor_cell.has_structural_bridge()
+                || !cur_cell.has_structural_bridge();
+            if needs_bridge_traversal {
+                let bridge_traversal = check_bridge_traversal(
+                    grid,
+                    BridgeTraversalInput {
+                        candidate: neighbor_cell,
+                        candidate_coord: (nx, ny),
+                        direction: dir_index as i8,
+                        path_height: current.height as i16,
+                        parent: Some((cur_cell, (cx, cy))),
+                    },
+                );
+                if !bridge_traversal.allowed {
+                    continue;
+                }
+                if bridge_traversal.force_bridge_list {
+                    neighbor_use_bridge = true;
+                }
+                layer_context = can_enter_layer_context(
+                    if neighbor_use_bridge {
+                        MovementLayer::Bridge
+                    } else {
+                        MovementLayer::Ground
+                    },
+                    if bridge_traversal.force_bridge_list {
+                        MovementLayer::Bridge
+                    } else {
+                        layer_context.object_list_layer
+                    },
+                    neighbor_cell,
+                    bridge_traversal.path_height,
+                );
             } else {
-                cur_cell.slope_type
-            };
-            let legal = match diff.abs() {
-                0 => true,
-                1 => lower_slope != 0,
-                _ => false,
-            };
-            if !legal {
-                continue;
+                let layer = if neighbor_use_bridge {
+                    MovementLayer::Bridge
+                } else {
+                    MovementLayer::Ground
+                };
+                layer_context = CanEnterLayerContext::single(layer);
+                let diff = neighbor_height as i16 - current.height as i16;
+                let lower_slope = if diff < 0 {
+                    neighbor_cell.slope_type
+                } else {
+                    cur_cell.slope_type
+                };
+                let legal = match diff.abs() {
+                    0 => true,
+                    1 => lower_slope != 0,
+                    _ => false,
+                };
+                if !legal {
+                    continue;
+                }
             }
 
             // Closed check on appropriate list
@@ -500,15 +743,20 @@ pub fn astar_search(
 
             // Entity blocks (layer-separated). Goal exempt.
             if (nx, ny) != goal {
-                let blocks = if neighbor_use_bridge {
-                    options.bridge_blocks
-                } else {
-                    options.entity_blocks
+                let blocks_for_layer = |layer| match layer {
+                    MovementLayer::Bridge => options.bridge_blocks,
+                    MovementLayer::Ground => options.entity_blocks,
+                    MovementLayer::Air | MovementLayer::Underground => None,
                 };
-                if let Some(b) = blocks {
-                    if b.contains(&(nx, ny)) {
-                        continue;
-                    }
+                let blocked_by_selected_layers = [
+                    blocks_for_layer(layer_context.object_list_layer),
+                    blocks_for_layer(layer_context.occupancy_bits_layer),
+                ]
+                .into_iter()
+                .flatten()
+                .any(|blocks| blocks.contains(&(nx, ny)));
+                if blocked_by_selected_layers {
+                    continue;
                 }
             }
 
@@ -587,9 +835,14 @@ pub fn astar_search(
             // Entity soft-block cost (codes 2/5/6). Goal exempt. Crusher exempt.
             if (nx, ny) != goal && !options.mover_is_crusher {
                 if let Some(map) = options.entity_block_map {
-                    if let Some(entry) = map.get(&(nx, ny)) {
+                    if let Some(entry) = map.get(layer_context.object_list_layer, &(nx, ny)) {
                         let mult = match entry.cost_code {
-                            2 => compute_code2_multiplier(options.urgency, (nx, ny), map),
+                            2 => compute_code2_multiplier(
+                                options.urgency,
+                                (nx, ny),
+                                layer_context.object_list_layer,
+                                map,
+                            ),
                             5 => CODE5_MULT_ENEMY,
                             6 => CODE6_MULT_STATIONARY_ALLY,
                             _ => 1,
@@ -684,6 +937,10 @@ pub fn is_cell_passable_for_mover(
 pub struct PathCell {
     pub ground_walkable: bool,
     pub bridge_walkable: bool,
+    /// True only for cells stamped with the authoritative high-bridge structural flag.
+    /// Ramp/transition cells may be bridge-walkable for A* without being structural.
+    pub bridge_structural: bool,
+    pub bridge_marker_0x80: bool,
     pub transition: bool,
     pub ground_level: u8,
     pub bridge_deck_level: u8,
@@ -707,6 +964,22 @@ impl PathCell {
         self.bridge_walkable.then_some(self.bridge_deck_level)
     }
 
+    pub fn has_structural_bridge(&self) -> bool {
+        self.bridge_structural
+    }
+
+    pub fn has_bridge_marker_0x80(&self) -> bool {
+        self.bridge_marker_0x80
+    }
+
+    pub fn has_bridgehead_transition(&self) -> bool {
+        self.transition
+    }
+
+    pub fn signed_level(&self) -> i16 {
+        self.ground_level as i8 as i16
+    }
+
     pub fn effective_cell_z_for_layer(&self, layer: MovementLayer) -> u8 {
         match layer {
             MovementLayer::Bridge => self.bridge_deck_level_if_any().unwrap_or(self.ground_level),
@@ -725,6 +998,8 @@ impl PathCell {
 const DEFAULT_WALKABLE_CELL: PathCell = PathCell {
     ground_walkable: true,
     bridge_walkable: false,
+    bridge_structural: false,
+    bridge_marker_0x80: false,
     transition: false,
     ground_level: 0,
     bridge_deck_level: 0,
@@ -735,6 +1010,8 @@ const DEFAULT_WALKABLE_CELL: PathCell = PathCell {
 const DEFAULT_BLOCKED_CELL: PathCell = PathCell {
     ground_walkable: false,
     bridge_walkable: false,
+    bridge_structural: false,
+    bridge_marker_0x80: false,
     transition: false,
     ground_level: 0,
     bridge_deck_level: 0,
@@ -1004,55 +1281,70 @@ impl PathGrid {
     ) -> Self {
         let cells = terrain
             .iter()
-            .map(|cell| PathCell {
-                // Walkability rules (matching old PathGrid::from_resolved_terrain):
-                // - Overlay blocks / terrain object blocks → blocked
-                // - Intact bridge deck → walkable (overrides underlying terrain)
-                // - Destroyed bridge deck → revert to underlying terrain
-                // - Cliff → blocked
-                // - Water → walkable (SpeedType cost=0 blocks ground in A*)
-                // - Everything else → use ground_walk_blocked
-                ground_walkable: if cell.overlay_blocks || cell.terrain_object_blocks {
-                    false
-                } else if cell.has_bridge_deck {
-                    let bridge_intact = bridge_state
+            .map(|cell| {
+                let bridge_structural = cell.bridge_facts.has_structural_bridge()
+                    || (cell.has_bridge_deck
+                        && !cell.bridge_layer.as_ref().is_some_and(|layer| {
+                            layer.direction == crate::map::resolved_terrain::BridgeDirection::Low
+                        })
+                        && cell.bridge_facts.family
+                            == crate::map::bridge_facts::BridgeStampFamily::None);
+                let bridge_intact = !bridge_structural
+                    || bridge_state
                         .map_or(true, |state| state.is_bridge_walkable(cell.rx, cell.ry));
-                    if bridge_intact {
+                PathCell {
+                    // Walkability rules (matching old PathGrid::from_resolved_terrain):
+                    // - Overlay blocks / terrain object blocks → blocked
+                    // - Intact bridge deck → walkable (overrides underlying terrain)
+                    // - Destroyed bridge deck → revert to underlying terrain
+                    // - Cliff → blocked
+                    // - Water → walkable (SpeedType cost=0 blocks ground in A*)
+                    // - Everything else → use ground_walk_blocked
+                    ground_walkable: if cell.overlay_blocks || cell.terrain_object_blocks {
+                        false
+                    } else if bridge_structural {
+                        if bridge_intact {
+                            true
+                        } else {
+                            // Destroyed bridge: revert to underlying terrain walkability.
+                            !cell.is_cliff_like && !cell.ground_walk_blocked
+                        }
+                    } else if cell.bridge_walkable && cell.bridge_transition {
+                        // Bridgehead ramp: walkable on the ground layer regardless
+                        // of the TMP ramp tile's ground_walk_blocked flag. gamemd
+                        // gates ground entry through the SpeedType/LandType matrix
+                        // (land_type=Clear/Road → passable for vehicles/infantry);
+                        // we don't yet route non-water movers through that matrix,
+                        // so the boolean would otherwise reject a same-height
+                        // plateau→bridgehead step and trap the unit on the wrong
+                        // side. The bridge-layer gate at A* expansion still
+                        // enforces "enter bridge via bridgehead" via the
+                        // bridge_transition flag on the next deck cell.
                         true
+                    } else if cell.is_cliff_like {
+                        false
                     } else {
-                        // Destroyed bridge: revert to underlying terrain walkability.
-                        !cell.is_cliff_like && !cell.ground_walk_blocked
-                    }
-                } else if cell.bridge_walkable && cell.bridge_transition {
-                    // Bridgehead ramp: walkable on the ground layer regardless
-                    // of the TMP ramp tile's ground_walk_blocked flag. gamemd
-                    // gates ground entry through the SpeedType/LandType matrix
-                    // (land_type=Clear/Road → passable for vehicles/infantry);
-                    // we don't yet route non-water movers through that matrix,
-                    // so the boolean would otherwise reject a same-height
-                    // plateau→bridgehead step and trap the unit on the wrong
-                    // side. The bridge-layer gate at A* expansion still
-                    // enforces "enter bridge via bridgehead" via the
-                    // bridge_transition flag on the next deck cell.
-                    true
-                } else if cell.is_cliff_like {
-                    false
-                } else {
-                    !cell.ground_walk_blocked || cell.is_water
-                },
-                bridge_walkable: bridge_state.map_or(cell.bridge_walkable, |state| {
-                    state.is_bridge_walkable(cell.rx, cell.ry)
-                }),
-                transition: bridge_state.map_or(cell.bridge_transition, |state| {
-                    cell.bridge_transition
-                        && (!cell.has_bridge_deck || state.is_bridge_walkable(cell.rx, cell.ry))
-                }),
-                ground_level: cell.level,
-                bridge_deck_level: bridge_state
-                    .and_then(|state| state.cell(cell.rx, cell.ry))
-                    .map(|runtime| runtime.deck_level)
-                    .unwrap_or(cell.bridge_deck_level),
-                slope_type: cell.slope_type,
+                        !cell.ground_walk_blocked || cell.is_water
+                    },
+                    bridge_walkable: if bridge_structural {
+                        cell.bridge_walkable && bridge_intact
+                    } else {
+                        cell.bridge_walkable
+                    },
+                    bridge_structural,
+                    bridge_marker_0x80: cell.bridge_facts.has_flag(BRIDGE_FLAG_ANCHOR_SELF),
+                    transition: if bridge_structural {
+                        cell.bridge_transition && bridge_intact
+                    } else {
+                        cell.bridge_transition
+                    },
+                    ground_level: cell.level,
+                    bridge_deck_level: bridge_state
+                        .and_then(|state| state.cell(cell.rx, cell.ry))
+                        .map(|runtime| runtime.deck_level)
+                        .unwrap_or(cell.bridge_deck_level),
+                    slope_type: cell.slope_type,
+                }
             })
             .collect();
         Self {
@@ -1073,6 +1365,8 @@ impl PathGrid {
         for (idx, (a, b)) in self.cells.iter().zip(other.cells.iter()).enumerate() {
             if a.ground_walkable != b.ground_walkable
                 || a.bridge_walkable != b.bridge_walkable
+                || a.bridge_structural != b.bridge_structural
+                || a.bridge_marker_0x80 != b.bridge_marker_0x80
                 || a.transition != b.transition
                 || a.ground_level != b.ground_level
                 || a.bridge_deck_level != b.bridge_deck_level
@@ -1144,6 +1438,8 @@ impl PathGrid {
             self.cells[idx] = PathCell {
                 ground_walkable: true,
                 bridge_walkable,
+                bridge_structural: bridge_walkable,
+                bridge_marker_0x80: false,
                 transition,
                 ground_level,
                 bridge_deck_level,
@@ -1232,7 +1528,8 @@ fn euclidean_heuristic(ax: u16, ay: u16, bx: u16, by: u16) -> i32 {
 fn compute_code2_multiplier(
     urgency: u8,
     start_cell: (u16, u16),
-    map: &HashMap<(u16, u16), EntityBlockEntry>,
+    layer: MovementLayer,
+    map: &LayeredEntityBlockMap,
 ) -> i32 {
     if urgency >= 2 {
         return CODE2_MULT_ROUTE_AROUND;
@@ -1243,7 +1540,7 @@ fn compute_code2_multiplier(
     // urgency == 0: chain walk.
     let mut cur = start_cell;
     for _ in 0..CODE2_CHAIN_MAX_HOPS {
-        let Some(entry) = map.get(&cur) else {
+        let Some(entry) = map.get(layer, &cur) else {
             // No blocker at this cell → chain clears.
             return CODE2_MULT_CLEARING;
         };
@@ -1292,7 +1589,7 @@ pub fn find_path_with_costs(
     entity_blocks: Option<&BTreeSet<(u16, u16)>>,
     movement_zone: Option<MovementZone>,
     resolved_terrain: Option<&ResolvedTerrainGrid>,
-    entity_block_map: Option<&HashMap<(u16, u16), EntityBlockEntry>>,
+    entity_block_map: Option<&LayeredEntityBlockMap>,
     urgency: u8,
     mover_is_crusher: bool,
 ) -> Option<Vec<(u16, u16)>> {
@@ -1326,7 +1623,7 @@ pub fn find_path_with_costs_corridor(
     allowed_zones: &BTreeSet<super::zone_map::ZoneId>,
     movement_zone: Option<MovementZone>,
     resolved_terrain: Option<&ResolvedTerrainGrid>,
-    entity_block_map: Option<&HashMap<(u16, u16), EntityBlockEntry>>,
+    entity_block_map: Option<&LayeredEntityBlockMap>,
     urgency: u8,
     mover_is_crusher: bool,
 ) -> Option<Vec<(u16, u16)>> {
@@ -1410,7 +1707,7 @@ pub fn find_layered_path(
     start_layer: MovementLayer,
     goal: (u16, u16),
     terrain_costs: Option<&TerrainCostGrid>,
-    entity_block_map: Option<&HashMap<(u16, u16), EntityBlockEntry>>,
+    entity_block_map: Option<&LayeredEntityBlockMap>,
     urgency: u8,
     mover_is_crusher: bool,
 ) -> Option<Vec<LayeredPathStep>> {

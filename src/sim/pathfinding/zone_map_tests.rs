@@ -431,6 +431,8 @@ fn path_grid_from_heights(heights: &[u8], width: u16, height: u16) -> PathGrid {
         .map(|&h| PathCell {
             ground_walkable: true,
             bridge_walkable: false,
+            bridge_structural: false,
+            bridge_marker_0x80: false,
             transition: false,
             ground_level: h,
             bridge_deck_level: 0,

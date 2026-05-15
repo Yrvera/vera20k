@@ -13,6 +13,7 @@ use crate::map::entities::EntityCategory;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::sim::components::MovementTarget;
 use crate::sim::entity_store::EntityStore;
+use crate::sim::pathfinding::LayeredEntityBlockMap;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
 use crate::util::fixed_math::{SIM_ZERO, SimFixed};
@@ -66,9 +67,7 @@ pub fn issue_move_command(
     queue: bool,
     terrain_costs: Option<&TerrainCostGrid>,
     entity_blocks: Option<&BTreeSet<(u16, u16)>>,
-    entity_block_map: Option<
-        &std::collections::HashMap<(u16, u16), crate::sim::pathfinding::EntityBlockEntry>,
-    >,
+    entity_block_map: Option<&LayeredEntityBlockMap>,
     mover_is_crusher: bool,
 ) -> bool {
     issue_move_command_with_layered(
@@ -161,9 +160,7 @@ pub fn issue_move_command_with_layered(
     terrain_costs: Option<&TerrainCostGrid>,
     entity_blocks: Option<&BTreeSet<(u16, u16)>>,
     resolved_terrain: Option<&ResolvedTerrainGrid>,
-    entity_block_map: Option<
-        &std::collections::HashMap<(u16, u16), crate::sim::pathfinding::EntityBlockEntry>,
-    >,
+    entity_block_map: Option<&LayeredEntityBlockMap>,
     mover_is_crusher: bool,
 ) -> bool {
     // Read the entity's current position and locomotor state.

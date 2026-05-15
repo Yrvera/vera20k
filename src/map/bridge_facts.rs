@@ -34,6 +34,21 @@ pub struct BridgeAnchorRelation {
     pub direction: u8,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeRampKind {
+    TopRight,
+    TopLeft,
+    Middle1,
+    Middle2,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BridgeRampTile {
+    pub kind: BridgeRampKind,
+    pub relative_tile_index: u16,
+    pub height_byte: u8,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct BridgeCellFacts {
     pub raw_flags: u32,
@@ -42,6 +57,7 @@ pub struct BridgeCellFacts {
     pub family: BridgeStampFamily,
     pub direction: Option<u8>,
     pub anchor: Option<BridgeAnchorRelation>,
+    pub ramp_tile: Option<BridgeRampTile>,
 }
 
 impl BridgeCellFacts {

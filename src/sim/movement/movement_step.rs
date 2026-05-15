@@ -423,9 +423,7 @@ pub(super) fn process_cell_crossings(
     resolved_terrain: Option<&ResolvedTerrainGrid>,
     entity_cost_grid: Option<&TerrainCostGrid>,
     mover_entity_blocks: Option<&BTreeSet<(u16, u16)>>,
-    mover_entity_block_map: Option<
-        &std::collections::HashMap<(u16, u16), crate::sim::pathfinding::EntityBlockEntry>,
-    >,
+    mover_entity_block_map: Option<&crate::sim::pathfinding::LayeredEntityBlockMap>,
     occupancy: &mut OccupancyGrid,
     stats: &mut MovementTickStats,
     finished_entities: &mut Vec<u64>,

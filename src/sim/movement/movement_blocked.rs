@@ -3,13 +3,13 @@
 //! Called from movement_tick when terrain, cliff, or occupancy checks fail.
 //! Manages the blocked_delay timer and path_stuck_counter to prevent thrashing.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 
 use crate::rules::locomotor_type::MovementZone;
 use crate::sim::components::MovementTarget;
 use crate::sim::debug_event_log::DebugEventKind;
 use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
-use crate::sim::pathfinding::EntityBlockEntry;
+use crate::sim::pathfinding::LayeredEntityBlockMap;
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
 use crate::sim::rng::SimRng;
 use crate::util::fixed_math::{SIM_ZERO, SimFixed};
@@ -38,7 +38,7 @@ pub(super) fn handle_blocked_tick(
     ctx: PathfindingContext<'_>,
     entity_cost_grid: Option<&TerrainCostGrid>,
     entity_blocks: Option<&BTreeSet<(u16, u16)>>,
-    entity_block_map: Option<&HashMap<(u16, u16), EntityBlockEntry>>,
+    entity_block_map: Option<&LayeredEntityBlockMap>,
     too_big_to_fit_under_bridge: bool,
     mcfg: MovementConfig,
     rng: &mut SimRng,

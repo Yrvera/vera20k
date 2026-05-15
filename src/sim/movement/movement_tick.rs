@@ -14,7 +14,7 @@
 //! ## Dependency rules
 //! - Internal to sim/movement — called via re-export in mod.rs.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::map::entities::EntityCategory;
 use crate::map::houses::HouseAllianceMap;
@@ -121,7 +121,7 @@ fn handle_path_exhaustion(
     ctx: PathfindingContext<'_>,
     entity_cost_grid: Option<&TerrainCostGrid>,
     mover_entity_blocks: Option<&BTreeSet<(u16, u16)>>,
-    mover_entity_block_map: Option<&HashMap<(u16, u16), crate::sim::pathfinding::EntityBlockEntry>>,
+    mover_entity_block_map: Option<&crate::sim::pathfinding::LayeredEntityBlockMap>,
     path_delay_ticks: u16,
     sim_tick: u64,
 ) -> PathExhaustionResult {
@@ -378,7 +378,7 @@ pub fn tick_movement_with_grids(
         crate::sim::intern::InternedId,
         (
             BTreeSet<(u16, u16)>,
-            HashMap<(u16, u16), crate::sim::pathfinding::EntityBlockEntry>,
+            crate::sim::pathfinding::LayeredEntityBlockMap,
         ),
     > = mover_owners
         .iter()
@@ -402,7 +402,7 @@ pub fn tick_movement_with_grids(
             snap.speed_type.and_then(|st| terrain_costs.get(&st));
         let (mover_entity_blocks, mover_entity_block_map): (
             Option<&BTreeSet<(u16, u16)>>,
-            Option<&HashMap<(u16, u16), crate::sim::pathfinding::EntityBlockEntry>>,
+            Option<&crate::sim::pathfinding::LayeredEntityBlockMap>,
         ) = entity_block_sets
             .get(&snap.owner)
             .map(|(b, m)| (Some(b), Some(m)))

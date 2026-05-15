@@ -64,8 +64,8 @@ pub(super) fn compute_bridge_transition(
     let src_h = src.ground_level as i8;
     let dst_h = dst.ground_level as i8;
 
-    let entry = dst_h == src_h.wrapping_sub(4) && dst.bridge_walkable;
-    let exit = !dst.bridge_walkable && src.bridge_walkable;
+    let entry = dst_h == src_h.wrapping_sub(4) && dst.has_structural_bridge();
+    let exit = !dst.has_structural_bridge() && src.has_structural_bridge();
 
     if entry {
         return BridgeTransition::Enter {
@@ -174,6 +174,8 @@ mod tests {
         PathCell {
             ground_walkable: true,
             bridge_walkable,
+            bridge_structural: bridge_walkable && !transition,
+            bridge_marker_0x80: false,
             transition,
             ground_level,
             bridge_deck_level,
@@ -240,14 +242,14 @@ mod tests {
     #[test]
     fn cliff_drop_off_bridge_ramp() {
         // Edge case: src=ramp (h=4, bridge_walkable, transition),
-        // dst=ground at lower elevation (h=0, NOT bridge_walkable). Height-diff matches 4
-        // AND exit condition fires (!dst.bridge_walkable && src.bridge_walkable).
-        // Exit precedence: predicate produces Exit (since entry needs dst.bridge_walkable=true).
+        // dst=ground at lower elevation (h=0, NOT bridge_walkable). Ramps are bridge-layer
+        // pathing cells but are not structural bridge body cells, so the on_bridge predicate
+        // does not fire Exit here.
         let src = cell(4, true, true);
         let dst = cell(0, false, false);
         assert_eq!(
             compute_bridge_transition(&src, &dst),
-            BridgeTransition::Exit
+            BridgeTransition::NoChange
         );
     }
 

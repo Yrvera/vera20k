@@ -3,20 +3,15 @@
 //! Per-tick entry that drains `BridgeDamageEvent`s emitted by combat, runs
 //! each event through the 4-path dispatcher (HighSM → LowSM → LowDirect →
 //! HighDirect, in fixed order), applies the per-path BridgeStrength RNG
-//! gate, runs the IonCannon retry loop on state-machine paths only, and
-//! (in later tasks) applies the BlowUpBridge cascade: ground-occupant
-//! kill, bridge-deck DropIn, debris spawn, rim refresh, trigger broadcast,
-//! zone rebuild.
+//! gate, runs the IonCannon retry loop on state-machine paths only, then
+//! applies the BlowUpBridge cascade: ground-occupant kill, bridge-deck
+//! DropIn, debris spawn, rim refresh, trigger broadcast, zone rebuild.
+//! `notify_bridge_span_collapse` is an intentional no-op on skirmish
+//! (TriggerEvent 31 is bound only by campaign / map triggers).
 //!
 //! ## Dependency rules
 //! Same as sim/world: depends on sim/bridge_state, sim/rng, rules/, map/;
 //! never render / ui / audio / net.
-//!
-//! ## Status
-//! Task 9: scaffolding + dispatcher loop only — cascade consumers stubbed.
-//! The orchestrator is NOT wired into the world tick yet; the legacy
-//! `Simulation::apply_bridge_damage_events` + `resolve_bridge_state_changes`
-//! still drive bridge damage. The atomic switchover lands in Task 14.
 
 use std::collections::BTreeSet;
 

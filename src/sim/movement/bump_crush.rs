@@ -11,9 +11,9 @@
 //! - Part of sim/ — depends on sim/entity_store, sim/game_entity, sim/locomotor,
 //!   sim/pathfinding, sim/rng, rules/locomotor_type.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 
-use crate::sim::pathfinding::EntityBlockEntry;
+use crate::sim::pathfinding::{EntityBlockEntry, LayeredEntityBlockMap};
 
 use crate::map::entities::EntityCategory;
 use crate::rules::locomotor_type::MovementZone;
@@ -98,11 +98,12 @@ const NEIGHBOR_OFFSETS: [(i32, i32); 8] = [
 /// matching the original engine's `FirstObject`/`AltObject` dual-layer system.
 ///
 /// RA2 cooperative pathfinding: friendly-moving units are recorded in an
-/// `entity_block_map` keyed by the blocker's current cell, with value equal
-/// to the blocker's next cell (movement_target.path[next_index]). The A* cost
-/// function walks this map to compute the code-2 dynamic cost per gamemd.exe
-/// AStar_compute_edge_cost (0x00429830). Stationary units/buildings and
-/// enemies hard-block via the BTreeSet outputs.
+/// `entity_block_map` keyed by selected object-list layer and the blocker's
+/// current cell, with value equal to the blocker's next cell
+/// (movement_target.path[next_index]). The A* cost function walks this map to
+/// compute the code-2 dynamic cost per gamemd.exe AStar_compute_edge_cost
+/// (0x00429830). Stationary units/buildings and enemies hard-block via the
+/// BTreeSet outputs.
 ///
 /// When `rules` is provided, structure footprints are expanded across all
 /// occupied cells (foundation + AddOccupy − RemoveOccupy). Without `rules`
@@ -118,11 +119,11 @@ pub fn build_entity_block_sets(
 ) -> (
     BTreeSet<(u16, u16)>,
     BTreeSet<(u16, u16)>,
-    HashMap<(u16, u16), EntityBlockEntry>,
+    LayeredEntityBlockMap,
 ) {
     let mut ground_blocked: BTreeSet<(u16, u16)> = BTreeSet::new();
     let bridge_blocked: BTreeSet<(u16, u16)> = BTreeSet::new();
-    let mut entity_block_map: HashMap<(u16, u16), EntityBlockEntry> = HashMap::new();
+    let mut entity_block_map = LayeredEntityBlockMap::new();
     for entity in entities.values() {
         // Entities inside transports don't occupy cells.
         if entity.passenger_role.is_inside_transport() {
@@ -162,6 +163,7 @@ pub fn build_entity_block_sets(
             crate::map::houses::are_houses_friendly(alliances, mover_owner, entity_owner_str);
         if !is_friendly {
             entity_block_map.insert(
+                layer,
                 pos,
                 EntityBlockEntry {
                     next_cell: None,
@@ -175,6 +177,7 @@ pub fn build_entity_block_sets(
             if let Some(&next_cell) = mt.path.get(mt.next_index) {
                 if next_cell != pos {
                     entity_block_map.insert(
+                        layer,
                         pos,
                         EntityBlockEntry {
                             next_cell: Some(next_cell),
@@ -187,6 +190,7 @@ pub fn build_entity_block_sets(
         }
         // Stationary friendly: soft-block with code 6 (cost 8x).
         entity_block_map.insert(
+            layer,
             pos,
             EntityBlockEntry {
                 next_cell: None,
@@ -205,7 +209,7 @@ pub fn build_entity_block_set(
     alliances: &crate::map::houses::HouseAllianceMap,
     interner: &crate::sim::intern::StringInterner,
     rules: Option<&crate::rules::ruleset::RuleSet>,
-) -> (BTreeSet<(u16, u16)>, HashMap<(u16, u16), EntityBlockEntry>) {
+) -> (BTreeSet<(u16, u16)>, LayeredEntityBlockMap) {
     let (ground, bridge, entity_block_map) =
         build_entity_block_sets(entities, mover_owner, alliances, interner, rules);
     (ground.union(&bridge).copied().collect(), entity_block_map)

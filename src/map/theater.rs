@@ -14,6 +14,7 @@ use std::collections::{HashMap, HashSet};
 use crate::assets::asset_manager::AssetManager;
 use crate::assets::pal_file::Palette;
 use crate::assets::tmp_file::TmpFile;
+use crate::map::bridge_facts::{BridgeRampKind, BridgeRampTile};
 use crate::map::map_file::MapError;
 use crate::rules::ini_parser::{IniFile, IniSection};
 use crate::sim::bridge_state::{Axis, BridgeheadAnchorClass};
@@ -377,6 +378,14 @@ pub struct TheaterData {
     pub bridge_set: Option<u16>,
     /// Tileset index for wooden bridgehead tiles (WoodBridgeSet= in theater INI).
     pub wood_bridge_set: Option<u16>,
+    /// `[General] BridgeTopLeft1=N` - BridgeSet-relative high bridge ramp tile key.
+    pub bridge_top_left_1: Option<u16>,
+    /// `[General] BridgeTopLeft2=N` - BridgeSet-relative high bridge ramp tile key.
+    pub bridge_top_left_2: Option<u16>,
+    /// `[General] BridgeTopRight1=N` - BridgeSet-relative high bridge ramp tile key.
+    pub bridge_top_right_1: Option<u16>,
+    /// `[General] BridgeTopRight2=N` - BridgeSet-relative high bridge ramp tile key.
+    pub bridge_top_right_2: Option<u16>,
     /// `[General] BridgeMiddle1=N` — BridgeSet-relative offset for the NS
     /// bridgehead variant block. The 4 NS variant tile_ids occupy
     /// `BridgeSet_start + {N-1, N, N+1, N+2}`. None if the key is absent.
@@ -399,6 +408,98 @@ pub struct BridgeAnchorVariantTable {
     pub ns: [u16; 4],
     /// EW variant tile_ids in enum order.
     pub ew: [u16; 4],
+}
+
+/// BridgeSet-relative tile keys used by gamemd.exe `MapClass::IsBridgeRampTile`.
+#[derive(Debug, Clone, Copy)]
+pub struct BridgeRampTileTable {
+    pub top_right_1: Option<u16>,
+    pub top_right_2: Option<u16>,
+    pub top_left_1: Option<u16>,
+    pub top_left_2: Option<u16>,
+    pub middle_1: Option<u16>,
+    pub middle_2: Option<u16>,
+}
+
+impl BridgeRampTileTable {
+    pub fn from_theater(td: &TheaterData) -> Option<Self> {
+        Some(Self {
+            top_right_1: td.bridge_top_right_1,
+            top_right_2: td.bridge_top_right_2,
+            top_left_1: td.bridge_top_left_1,
+            top_left_2: td.bridge_top_left_2,
+            middle_1: td.bridge_middle_1.map(u16::from),
+            middle_2: td.bridge_middle_2.map(u16::from),
+        })
+        .filter(|table| {
+            table.top_right_1.is_some()
+                || table.top_right_2.is_some()
+                || table.top_left_1.is_some()
+                || table.top_left_2.is_some()
+                || table.middle_1.is_some()
+                || table.middle_2.is_some()
+        })
+    }
+
+    pub fn match_relative_tile(
+        &self,
+        relative_tile_index: u16,
+        height_byte: u8,
+    ) -> Option<BridgeRampTile> {
+        if height_byte == 0x0C
+            && (self.top_right_1 == Some(relative_tile_index)
+                || self.top_right_2 == Some(relative_tile_index))
+        {
+            return Some(BridgeRampTile {
+                kind: BridgeRampKind::TopRight,
+                relative_tile_index,
+                height_byte,
+            });
+        }
+        if height_byte == 0x08
+            && (self.top_left_1 == Some(relative_tile_index)
+                || self.top_left_2 == Some(relative_tile_index))
+        {
+            return Some(BridgeRampTile {
+                kind: BridgeRampKind::TopLeft,
+                relative_tile_index,
+                height_byte,
+            });
+        }
+        if height_byte == 0x04 && in_four_tile_run(relative_tile_index, self.middle_1) {
+            return Some(BridgeRampTile {
+                kind: BridgeRampKind::Middle1,
+                relative_tile_index,
+                height_byte,
+            });
+        }
+        if height_byte == 0x02 && in_four_tile_run(relative_tile_index, self.middle_2) {
+            return Some(BridgeRampTile {
+                kind: BridgeRampKind::Middle2,
+                relative_tile_index,
+                height_byte,
+            });
+        }
+        None
+    }
+
+    pub fn match_tile_id(
+        &self,
+        tile_id: u16,
+        bridge_set_start: u16,
+        bridge_set_count: u16,
+        height_byte: u8,
+    ) -> Option<BridgeRampTile> {
+        let zero_based = tile_id.checked_sub(bridge_set_start)?;
+        if zero_based >= bridge_set_count {
+            return None;
+        }
+        self.match_relative_tile(zero_based + 1, height_byte)
+    }
+}
+
+fn in_four_tile_run(relative_tile_index: u16, start: Option<u16>) -> bool {
+    start.is_some_and(|first| relative_tile_index >= first && relative_tile_index < first + 4)
 }
 
 impl BridgeAnchorVariantTable {
@@ -547,6 +648,10 @@ pub fn load_theater(asset_manager: &mut AssetManager, theater_name: &str) -> Opt
     let ini_text = String::from_utf8_lossy(&ini_data);
     let bridge_set = parse_general_int(&ini_text, "BridgeSet");
     let wood_bridge_set = parse_general_int(&ini_text, "WoodBridgeSet");
+    let bridge_top_left_1 = parse_general_int(&ini_text, "BridgeTopLeft1");
+    let bridge_top_left_2 = parse_general_int(&ini_text, "BridgeTopLeft2");
+    let bridge_top_right_1 = parse_general_int(&ini_text, "BridgeTopRight1");
+    let bridge_top_right_2 = parse_general_int(&ini_text, "BridgeTopRight2");
     // BridgeMiddle1/2 select which 4 consecutive BridgeSet-relative tile_ids
     // are the NS / EW bridgehead variant blocks. Parsed as u8 because retail
     // values fit (temperate/snow/urban/desert/lunar = 7/12). Use the existing
@@ -591,6 +696,10 @@ pub fn load_theater(asset_manager: &mut AssetManager, theater_name: &str) -> Opt
         ini_data,
         bridge_set,
         wood_bridge_set,
+        bridge_top_left_1,
+        bridge_top_left_2,
+        bridge_top_right_1,
+        bridge_top_right_2,
         bridge_middle_1,
         bridge_middle_2,
     })

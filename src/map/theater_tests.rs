@@ -145,9 +145,86 @@ fn synthetic_theater_with_bridge_keys(
         ini_data: Vec::new(),
         bridge_set: Some(0),
         wood_bridge_set: None,
+        bridge_top_left_1: Some(1),
+        bridge_top_left_2: Some(2),
+        bridge_top_right_1: Some(4),
+        bridge_top_right_2: Some(5),
         bridge_middle_1,
         bridge_middle_2,
     }
+}
+
+#[test]
+fn ramp_tile_table_matches_binary_height_predicates() {
+    use crate::map::bridge_facts::BridgeRampKind;
+
+    let td = synthetic_theater_with_bridge_keys(Some(7), Some(12));
+    let table = BridgeRampTileTable::from_theater(&td).expect("ramp table");
+
+    assert_eq!(
+        table.match_relative_tile(4, 0x0C).map(|r| r.kind),
+        Some(BridgeRampKind::TopRight)
+    );
+    assert_eq!(table.match_relative_tile(4, 0x08).map(|r| r.kind), None);
+    assert_eq!(
+        table.match_relative_tile(1, 0x08).map(|r| r.kind),
+        Some(BridgeRampKind::TopLeft)
+    );
+    assert_eq!(
+        table.match_relative_tile(7, 0x04).map(|r| r.kind),
+        Some(BridgeRampKind::Middle1)
+    );
+    assert_eq!(
+        table.match_relative_tile(10, 0x04).map(|r| r.kind),
+        Some(BridgeRampKind::Middle1)
+    );
+    assert_eq!(table.match_relative_tile(11, 0x04), None);
+    assert_eq!(
+        table.match_relative_tile(12, 0x02).map(|r| r.kind),
+        Some(BridgeRampKind::Middle2)
+    );
+}
+
+#[test]
+fn ramp_tile_match_tile_id_uses_one_based_bridge_key() {
+    use crate::map::bridge_facts::BridgeRampKind;
+
+    let td = synthetic_theater_with_bridge_keys(Some(7), Some(12));
+    let table = BridgeRampTileTable::from_theater(&td).expect("ramp table");
+
+    assert_eq!(
+        table.match_tile_id(103, 100, 20, 0x0C).map(|r| r.kind),
+        Some(BridgeRampKind::TopRight)
+    );
+    assert_eq!(
+        table
+            .match_tile_id(103, 100, 20, 0x0C)
+            .map(|r| r.relative_tile_index),
+        Some(4)
+    );
+}
+
+#[test]
+fn ramp_tile_match_tile_id_rejects_tile_before_bridge_set() {
+    let td = synthetic_theater_with_bridge_keys(Some(7), Some(12));
+    let table = BridgeRampTileTable::from_theater(&td).expect("ramp table");
+
+    assert_eq!(table.match_tile_id(99, 100, 20, 0x0C), None);
+}
+
+#[test]
+fn ramp_tile_match_tile_id_rejects_tile_at_bridge_set_end() {
+    let table = BridgeRampTileTable {
+        top_right_1: Some(4),
+        top_right_2: None,
+        top_left_1: None,
+        top_left_2: None,
+        middle_1: None,
+        middle_2: None,
+    };
+
+    assert_eq!(table.match_tile_id(120, 100, 20, 0x0C), None);
+    assert_eq!(table.match_tile_id(104, 100, 20, 0x0C), None);
 }
 
 #[test]

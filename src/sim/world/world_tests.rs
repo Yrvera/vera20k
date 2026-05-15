@@ -2902,7 +2902,7 @@ fn make_realistic_bridgehead_terrain() -> ResolvedTerrainGrid {
             bridge_walkable: true,
             bridge_transition: true,
             bridge_deck_level: 4,
-            has_bridge_deck: false,
+            has_bridge_deck: true,
             ..bridgehead_base_cell(1, 0)
         },
         ResolvedTerrainCell {
@@ -2919,7 +2919,7 @@ fn make_realistic_bridgehead_terrain() -> ResolvedTerrainGrid {
             bridge_walkable: true,
             bridge_transition: true,
             bridge_deck_level: 4,
-            has_bridge_deck: false,
+            has_bridge_deck: true,
             ..bridgehead_base_cell(3, 0)
         },
         ResolvedTerrainCell {

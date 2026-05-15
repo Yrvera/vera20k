@@ -4,13 +4,13 @@
 //! retries after blockages with zone-aware corridor search, and determines whether
 //! an entity's locomotor supports layered bridge pathing.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::locomotor_type::{LocomotorKind, MovementZone};
 use crate::sim::components::MovementTarget;
 use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
-use crate::sim::pathfinding::EntityBlockEntry;
+use crate::sim::pathfinding::LayeredEntityBlockMap;
 use crate::sim::pathfinding::path_smooth;
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
 use crate::sim::pathfinding::zone_search;
@@ -20,28 +20,17 @@ use crate::util::fixed_math::facing_from_delta_int as facing_from_delta;
 
 use super::{MovementConfig, PathfindingContext};
 
-fn is_under_bridge_blocked_cell(cell: &crate::map::resolved_terrain::ResolvedTerrainCell) -> bool {
-    cell.is_elevated_bridge_cell()
-}
-
 pub(super) fn merge_path_blocks(
     entity_blocks: Option<&BTreeSet<(u16, u16)>>,
-    resolved_terrain: Option<&ResolvedTerrainGrid>,
-    movement_zone: Option<MovementZone>,
-    too_big_to_fit_under_bridge: bool,
+    _resolved_terrain: Option<&ResolvedTerrainGrid>,
+    _movement_zone: Option<MovementZone>,
+    _too_big_to_fit_under_bridge: bool,
 ) -> BTreeSet<(u16, u16)> {
-    let mut blocks = entity_blocks.cloned().unwrap_or_default();
-    if too_big_to_fit_under_bridge && movement_zone.is_some_and(|mz| !mz.is_water_mover()) {
-        // TODO(RE): The current under-bridge restriction is a hard path block. The RE notes
-        // still leave open whether RA2/YR treats TooBigToFitUnderBridge as a pure parking/
-        // eviction rule, a navigation restriction, or a mix depending on bridge state.
-        if let Some(terrain) = resolved_terrain {
-            for cell in terrain.iter().filter(|c| is_under_bridge_blocked_cell(c)) {
-                blocks.insert((cell.rx, cell.ry));
-            }
-        }
-    }
-    blocks
+    // gamemd does not gate movement on TooBigToFitUnderBridge — the flag at
+    // TechnoTypeClass+0xE16 is read only in the draw pipeline (sprite Z fudge
+    // for units on bridge edge cells). UnitClass::Can_Enter_Cell never touches
+    // it. See TOO_BIG_TO_FIT_UNDER_BRIDGE_GHIDRA_REPORT.md.
+    entity_blocks.cloned().unwrap_or_default()
 }
 
 pub(super) fn supports_layered_bridge_pathing(
@@ -163,7 +152,7 @@ pub(super) fn find_move_path(
     zone_mz: MovementZone,
     movement_zone: Option<MovementZone>,
     too_big_to_fit_under_bridge: bool,
-    entity_block_map: Option<&HashMap<(u16, u16), EntityBlockEntry>>,
+    entity_block_map: Option<&LayeredEntityBlockMap>,
     urgency: u8,
     mover_is_crusher: bool,
 ) -> Option<(Vec<(u16, u16)>, Vec<MovementLayer>)> {
@@ -209,7 +198,7 @@ pub(super) fn find_move_path(
                 // Soft-blocked cells (code 2/5/6) must not be used as zigzag
                 // shortcuts: A* deliberately routed around them, smoothing
                 // through them would undo the detour.
-                if entity_block_map.is_some_and(|m| m.contains_key(&(x, y))) {
+                if entity_block_map.is_some_and(|m| m.contains_key(layer, &(x, y))) {
                     return false;
                 }
                 match layer {
@@ -270,7 +259,7 @@ pub(super) fn find_move_path(
         // undo the detour and walk the unit straight through the blocker.
         terrain_ok
             && !entity_blocks.is_some_and(|eb| eb.contains(&(x, y)))
-            && !entity_block_map.is_some_and(|m| m.contains_key(&(x, y)))
+            && !entity_block_map.is_some_and(|m| m.contains_any(&(x, y)))
     };
     let path = path_smooth::smooth_path(path, &smooth_walkable);
     let path = path_smooth::optimize_path(path, &smooth_walkable);
@@ -319,7 +308,7 @@ pub(super) fn try_repath_after_block(
     movement_zone: Option<MovementZone>,
     too_big_to_fit_under_bridge: bool,
     mcfg: MovementConfig,
-    entity_block_map: Option<&HashMap<(u16, u16), EntityBlockEntry>>,
+    entity_block_map: Option<&LayeredEntityBlockMap>,
     urgency: u8,
     mover_is_crusher: bool,
     is_infantry: bool,
@@ -466,40 +455,12 @@ mod tests {
             bridge_transition: false,
             bridge_deck_level: 0,
             bridge_layer: None,
+            bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
             radar_left: [0, 0, 0],
             radar_right: [0, 0, 0],
             has_damaged_data: false,
             bridgehead_anchor_class_at_load: None,
         }
-    }
-
-    #[test]
-    fn merge_path_blocks_only_blocks_under_bridge_cells_for_land_movers() {
-        let terrain = ResolvedTerrainGrid::from_cells(
-            3,
-            1,
-            vec![
-                make_resolved_cell(0, 0),
-                ResolvedTerrainCell {
-                    bridge_walkable: true,
-                    bridge_deck_level: 1,
-                    ..make_resolved_cell(1, 0)
-                },
-                make_resolved_cell(2, 0),
-            ],
-        );
-
-        let land_blocks = merge_path_blocks(None, Some(&terrain), Some(MovementZone::Normal), true);
-        assert!(
-            land_blocks.contains(&(1, 0)),
-            "land movers marked too large should block under-bridge cells"
-        );
-
-        let water_blocks = merge_path_blocks(None, Some(&terrain), Some(MovementZone::Water), true);
-        assert!(
-            !water_blocks.contains(&(1, 0)),
-            "water movers should keep under-bridge cells available"
-        );
     }
 
     #[test]

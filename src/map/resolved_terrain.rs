@@ -495,6 +495,40 @@ impl ResolvedTerrainGrid {
             }
         }
 
+        if let Some(td) = theater_data {
+            if let (Some(bs_idx), Some(ramp_table)) = (
+                td.bridge_set,
+                crate::map::theater::BridgeRampTileTable::from_theater(td),
+            ) {
+                if let Some(bridge_set_bounds) = td.lookup.bounds().get(bs_idx as usize) {
+                    let bridge_set_start = bridge_set_bounds.start;
+                    let mut ramp_count = 0usize;
+                    for cell in &mut cells {
+                        if cell.final_tile_index < 0 {
+                            continue;
+                        }
+                        let tile_id = normalize_tile_id(cell.final_tile_index);
+                        let Some(ramp_tile) = ramp_table.match_tile_id(
+                            tile_id,
+                            bridge_set_start,
+                            bridge_set_bounds.count,
+                            cell.template_height,
+                        ) else {
+                            continue;
+                        };
+                        cell.bridge_facts.ramp_tile = Some(ramp_tile);
+                        ramp_count += 1;
+                    }
+                    if ramp_count > 0 {
+                        log::info!(
+                            "ResolvedTerrain: {} exact high bridge ramp cells detected",
+                            ramp_count,
+                        );
+                    }
+                }
+            }
+        }
+
         {
             let mut high_deck: Vec<(u16, u16, u8, u32)> = cells
                 .iter()
@@ -509,356 +543,6 @@ impl ResolvedTerrainGrid {
                 );
                 for (rx, ry, dl, flags) in &high_deck {
                     log::debug!("  ({}, {}) deck_level={} flags=0x{:X}", rx, ry, dl, flags);
-                }
-            }
-        }
-
-        if false {
-            // High bridges store only the center cell overlay but span 3 cells wide.
-            // Extrapolate bridge deck flags to the two perpendicular side cells so
-            // pathfinding treats the full bridge width as walkable.
-            //   EW (BRIDGE1/BRIDGEB1): bridge runs along rx, side cells at ry±1
-            //   NS (BRIDGE2/BRIDGEB2): bridge runs along ry, side cells at rx±1
-            let mut side_cells: Vec<(usize, u8, BridgeDirection)> = Vec::new();
-            for cell in &cells {
-                let bl = match &cell.bridge_layer {
-                    Some(bl)
-                        if bl.direction == BridgeDirection::EastWest
-                            || bl.direction == BridgeDirection::NorthSouth =>
-                    {
-                        bl
-                    }
-                    _ => continue,
-                };
-                let offsets: [(i32, i32); 2] = match bl.direction {
-                    BridgeDirection::EastWest => [(0, -1), (0, 1)],
-                    BridgeDirection::NorthSouth => [(-1, 0), (1, 0)],
-                    BridgeDirection::Low => unreachable!(),
-                };
-                for (dx, dy) in offsets {
-                    let sx = cell.rx as i32 + dx;
-                    let sy = cell.ry as i32 + dy;
-                    if sx < 0 || sy < 0 || sx >= width as i32 || sy >= height as i32 {
-                        continue;
-                    }
-                    if let Some(idx) = Some(sy as usize * width as usize + sx as usize) {
-                        if idx < cells.len() && !cells[idx].has_bridge_deck {
-                            side_cells.push((idx, bl.deck_level, bl.direction));
-                        }
-                    }
-                }
-            }
-            let extrapolated_count = side_cells.len();
-            for (idx, deck_level, _direction) in side_cells {
-                cells[idx].has_bridge_deck = true;
-                cells[idx].bridge_walkable = true;
-                cells[idx].bridge_deck_level = deck_level;
-                cells[idx].build_blocked = true;
-            }
-            if extrapolated_count > 0 {
-                log::info!(
-                    "ResolvedTerrain: extrapolated {} high bridge side cells",
-                    extrapolated_count,
-                );
-            }
-
-            // Normalize bridge deck levels via connected-component flood fill.
-            // All adjacent high bridge cells must share the same deck height so the
-            // bridge surface is flat. Center cells (ry=N) and their side cells
-            // (ry=N±1) are in different rows but must have the same deck_level.
-            // BFS finds each connected group of bridge cells and applies the max
-            // deck_level within each group.
-            {
-                let mut visited = vec![false; cells.len()];
-                let mut normalized: usize = 0;
-                for start in 0..cells.len() {
-                    if !cells[start].has_bridge_deck
-                        || visited[start]
-                        || cells[start]
-                            .bridge_layer
-                            .as_ref()
-                            .is_some_and(|bl| bl.direction == BridgeDirection::Low)
-                    {
-                        continue;
-                    }
-                    // BFS to find connected component of high bridge cells.
-                    let mut component: Vec<usize> = Vec::new();
-                    let mut queue = std::collections::VecDeque::new();
-                    queue.push_back(start);
-                    visited[start] = true;
-                    let mut max_level: u8 = 0;
-                    while let Some(idx) = queue.pop_front() {
-                        component.push(idx);
-                        max_level = max_level.max(cells[idx].bridge_deck_level);
-                        let crx = cells[idx].rx as i32;
-                        let cry = cells[idx].ry as i32;
-                        for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
-                            let nx = crx + dx;
-                            let ny = cry + dy;
-                            if nx < 0 || ny < 0 || nx >= width as i32 || ny >= height as i32 {
-                                continue;
-                            }
-                            let nidx = ny as usize * width as usize + nx as usize;
-                            if nidx < cells.len()
-                                && !visited[nidx]
-                                && cells[nidx].has_bridge_deck
-                                && !cells[nidx]
-                                    .bridge_layer
-                                    .as_ref()
-                                    .is_some_and(|bl| bl.direction == BridgeDirection::Low)
-                            {
-                                visited[nidx] = true;
-                                queue.push_back(nidx);
-                            }
-                        }
-                    }
-                    // Apply uniform deck_level to all cells in this bridge.
-                    for &idx in &component {
-                        if cells[idx].bridge_deck_level != max_level {
-                            normalized += 1;
-                            cells[idx].bridge_deck_level = max_level;
-                            if let Some(ref mut bl) = cells[idx].bridge_layer {
-                                bl.deck_level = max_level;
-                            }
-                        }
-                    }
-                }
-                if normalized > 0 {
-                    log::info!(
-                        "ResolvedTerrain: normalized deck_level for {} bridge cells",
-                        normalized,
-                    );
-                }
-            }
-
-            // Bridgehead TMP tiles (ramps at each end of a high bridge) are solid
-            // ground terrain, walkable on the ground layer. The original engine sets
-            // CellFlags::BridgeHead on these cells,
-            // enabling Ground↔Bridge layer transitions at the ramp.
-            // Mark them as transition cells so the layered A* can route through them.
-            // Do NOT set has_bridge_deck or bridge_walkable — they're ground terrain.
-            if let Some(td) = theater_data {
-                // Collect bridgehead cell indices first, then apply changes.
-                let mut bridgehead_updates: Vec<(usize, u8)> = Vec::new();
-                for (idx, cell) in cells.iter().enumerate() {
-                    let Some(ts_idx) = cell.tileset_index else {
-                        continue;
-                    };
-                    let is_bridgehead = td.bridge_set.is_some_and(|bs| ts_idx == bs)
-                        || td.wood_bridge_set.is_some_and(|ws| ts_idx == ws);
-                    if is_bridgehead && !cell.has_bridge_deck {
-                        // Use the deck_level from an adjacent bridge span cell so
-                        // the bridgehead matches the normalized bridge height.
-                        // Prevents z-discontinuity at the ramp-to-span transition.
-                        let crx = cell.rx as i32;
-                        let cry = cell.ry as i32;
-                        // Expanding ring search for the bridge's actual deck cell.
-                        // On wide bridges with multi-row ramps (plateau-to-plateau
-                        // configurations), the outer ramp row is several cells away
-                        // from any body deck cell — its cardinal neighbors are all
-                        // other bridgeheads. Searching only at distance 1 produced
-                        // a mismatched deck_level via the cell.level+4 fallback,
-                        // which then desynced the A* height-diff legality gate at
-                        // the BH-to-BH transition between ramp rows. Walk outward
-                        // by Manhattan distance and pick up the body cell's
-                        // deck_level so the whole ramp stack agrees.
-                        let mut span_deck: Option<u8> = None;
-                        'outer: for dist in 1..=5i32 {
-                            for ddx in -dist..=dist {
-                                let ddy_abs = dist - ddx.abs();
-                                let ddy_options: &[i32] = if ddy_abs == 0 {
-                                    &[0]
-                                } else {
-                                    &[ddy_abs, -ddy_abs]
-                                };
-                                for &ddy in ddy_options {
-                                    let nx = crx + ddx;
-                                    let ny = cry + ddy;
-                                    if nx >= 0 && ny >= 0 && nx < width as i32 && ny < height as i32
-                                    {
-                                        let nidx = ny as usize * width as usize + nx as usize;
-                                        if nidx < cells.len() && cells[nidx].has_bridge_deck {
-                                            span_deck = Some(cells[nidx].bridge_deck_level);
-                                            break 'outer;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        let deck = span_deck.unwrap_or_else(|| cell.level.saturating_add(4));
-                        bridgehead_updates.push((idx, deck));
-                    }
-                }
-                let bridgehead_count = bridgehead_updates.len();
-                for (idx, deck_level) in &bridgehead_updates {
-                    cells[*idx].bridge_transition = true;
-                    // bridge_walkable=true enables Ground↔Bridge layer transitions in
-                    // the layered A*. Bridgeheads are ground-level ramps, not elevated
-                    // deck cells, but they must be walkable on BOTH layers so the
-                    // pathfinder can switch layers here. Rendering uses bridge_occupancy
-                    // (runtime flag), not bridge_walkable, so this doesn't affect visuals.
-                    cells[*idx].bridge_walkable = true;
-                    cells[*idx].bridge_deck_level = *deck_level;
-                    log::info!(
-                        "BRIDGEHEAD cell ({},{}) ground_level={} deck_level={}",
-                        cells[*idx].rx,
-                        cells[*idx].ry,
-                        cells[*idx].level,
-                        deck_level,
-                    );
-                }
-                if bridgehead_count > 0 {
-                    log::info!(
-                        "ResolvedTerrain: {} bridgehead transition cells detected",
-                        bridgehead_count,
-                    );
-                }
-            }
-
-            // Gap-fill pass: bridge overlays may not exist on every cell (the sprite
-            // visually covers adjacent cells). Fill 1-cell gaps between bridge deck
-            // cells so the walkable surface is continuous. A cell is filled if it has
-            // has_bridge_deck neighbors on opposite sides (both rx±1 or both ry±1).
-            {
-                let mut gap_fills: Vec<(usize, u8)> = Vec::new();
-                for idx in 0..cells.len() {
-                    if cells[idx].has_bridge_deck {
-                        continue;
-                    }
-                    let rx = cells[idx].rx as i32;
-                    let ry = cells[idx].ry as i32;
-                    let w = width as i32;
-                    let h = height as i32;
-
-                    // Check rx-axis neighbors (both rx-1 and rx+1 have bridge deck).
-                    let left_idx = if rx > 0 {
-                        Some((ry * w + rx - 1) as usize)
-                    } else {
-                        None
-                    };
-                    let right_idx = if rx < w - 1 {
-                        Some((ry * w + rx + 1) as usize)
-                    } else {
-                        None
-                    };
-                    let rx_gap = left_idx.zip(right_idx).is_some_and(|(l, r)| {
-                        l < cells.len()
-                            && r < cells.len()
-                            && cells[l].has_bridge_deck
-                            && cells[r].has_bridge_deck
-                            && !cells[l]
-                                .bridge_layer
-                                .as_ref()
-                                .is_some_and(|bl| bl.direction == BridgeDirection::Low)
-                    });
-
-                    // Check ry-axis neighbors (both ry-1 and ry+1 have bridge deck).
-                    let up_idx = if ry > 0 {
-                        Some(((ry - 1) * w + rx) as usize)
-                    } else {
-                        None
-                    };
-                    let down_idx = if ry < h - 1 {
-                        Some(((ry + 1) * w + rx) as usize)
-                    } else {
-                        None
-                    };
-                    let ry_gap = up_idx.zip(down_idx).is_some_and(|(u, d)| {
-                        u < cells.len()
-                            && d < cells.len()
-                            && cells[u].has_bridge_deck
-                            && cells[d].has_bridge_deck
-                            && !cells[u]
-                                .bridge_layer
-                                .as_ref()
-                                .is_some_and(|bl| bl.direction == BridgeDirection::Low)
-                    });
-
-                    if rx_gap || ry_gap {
-                        // Use deck_level from a neighbor.
-                        let neighbor_level = if rx_gap {
-                            cells[left_idx.unwrap()].bridge_deck_level
-                        } else {
-                            cells[up_idx.unwrap()].bridge_deck_level
-                        };
-                        gap_fills.push((idx, neighbor_level));
-                    }
-                }
-                let gap_count = gap_fills.len();
-                for (idx, deck_level) in gap_fills {
-                    cells[idx].has_bridge_deck = true;
-                    cells[idx].bridge_walkable = true;
-                    cells[idx].bridge_deck_level = deck_level;
-                    cells[idx].build_blocked = true;
-                }
-                if gap_count > 0 {
-                    log::info!("ResolvedTerrain: filled {} bridge deck gaps", gap_count,);
-                }
-            }
-
-            // Log all high bridge deck cells (center + extrapolated) to diagnose gaps.
-            {
-                let mut high_deck: Vec<(u16, u16, u8, &str)> = cells
-                    .iter()
-                    .filter(|c| {
-                        c.has_bridge_deck
-                            && !c
-                                .bridge_layer
-                                .as_ref()
-                                .is_some_and(|bl| bl.direction == BridgeDirection::Low)
-                    })
-                    .map(|c| {
-                        let label = if c.bridge_layer.is_some() {
-                            "center"
-                        } else {
-                            "side"
-                        };
-                        (c.rx, c.ry, c.bridge_deck_level, label)
-                    })
-                    .collect();
-                high_deck.sort_by_key(|(rx, ry, _, _)| (*rx, *ry));
-                if !high_deck.is_empty() {
-                    log::info!("High bridge deck cells ({} total):", high_deck.len(),);
-                    for (rx, ry, dl, label) in &high_deck {
-                        log::info!("  ({}, {}) deck_level={} [{}]", rx, ry, dl, label);
-                    }
-                }
-            }
-
-            // Log overlay entries near bridge cells that were NOT classified as bridges.
-            // This helps diagnose gaps in the bridge deck coverage.
-            if let Some(first_center) = cells.iter().find(|c| {
-                c.bridge_layer
-                    .as_ref()
-                    .is_some_and(|bl| bl.direction != BridgeDirection::Low)
-            }) {
-                let center_ry = first_center.ry;
-                let center_rx = first_center.rx;
-                let mut unrecognized: Vec<(u16, u16, u8, String)> = Vec::new();
-                for overlay in &map.overlays {
-                    // Check overlays near the bridge span (±3 cells).
-                    if overlay.ry.abs_diff(center_ry) <= 3
-                        && overlay.rx >= center_rx.saturating_sub(2)
-                    {
-                        let idx = overlay.ry as usize * width as usize + overlay.rx as usize;
-                        if idx < cells.len() && !cells[idx].has_bridge_deck {
-                            let name = overlay_registry
-                                .and_then(|reg| reg.name(overlay.overlay_id))
-                                .unwrap_or("?")
-                                .to_string();
-                            unrecognized.push((overlay.rx, overlay.ry, overlay.overlay_id, name));
-                        }
-                    }
-                }
-                if !unrecognized.is_empty() {
-                    unrecognized.sort_by_key(|(rx, ry, _, _)| (*rx, *ry));
-                    log::info!(
-                        "Overlays near bridge NOT classified as deck ({}):",
-                        unrecognized.len(),
-                    );
-                    for (rx, ry, id, name) in &unrecognized {
-                        log::info!("  ({}, {}) overlay_id={} name={}", rx, ry, id, name);
-                    }
                 }
             }
         }
