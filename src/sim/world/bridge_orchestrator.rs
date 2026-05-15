@@ -740,6 +740,7 @@ mod tests {
                     bridge_transition: is_bridge,
                     bridge_deck_level: if is_bridge { deck_level } else { 0 },
                     bridge_layer: None,
+                    bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
                     radar_left: [0, 0, 0],
                     radar_right: [0, 0, 0],
                     has_damaged_data: false,

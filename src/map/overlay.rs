@@ -43,6 +43,58 @@ pub struct OverlayEntry {
     pub frame: u8,
 }
 
+/// Full `[OverlayDataPack]` byte grid.
+///
+/// `present` matters because `gamemd.exe` only performs the final per-cell
+/// `cell+0x11E` overwrite when the section exists and decodes.
+#[derive(Debug, Clone)]
+pub struct OverlayDataPack {
+    bytes: Vec<u8>,
+    present: bool,
+}
+
+impl OverlayDataPack {
+    pub fn from_decoded(bytes: Vec<u8>) -> Self {
+        let mut normalized = bytes;
+        normalized.resize(OVERLAY_TOTAL_CELLS, 0);
+        Self {
+            bytes: normalized,
+            present: true,
+        }
+    }
+
+    pub fn missing() -> Self {
+        Self {
+            bytes: vec![0; OVERLAY_TOTAL_CELLS],
+            present: false,
+        }
+    }
+
+    pub fn is_present(&self) -> bool {
+        self.present
+    }
+
+    pub fn byte_at(&self, rx: u16, ry: u16) -> u8 {
+        if rx as usize >= OVERLAY_GRID_SIZE || ry as usize >= OVERLAY_GRID_SIZE {
+            return 0;
+        }
+        let idx = ry as usize * OVERLAY_GRID_SIZE + rx as usize;
+        self.bytes[idx]
+    }
+}
+
+impl Default for OverlayDataPack {
+    fn default() -> Self {
+        Self::missing()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ParsedOverlayPacks {
+    pub entries: Vec<OverlayEntry>,
+    pub data: OverlayDataPack,
+}
+
 /// A named terrain object placed on the map (trees, rocks).
 ///
 /// These come from the [Terrain] INI section. Unlike overlays (which are
@@ -62,15 +114,26 @@ pub struct TerrainObject {
 /// Both sections are base64-encoded, LCW-compressed grids of 262,144 bytes.
 /// Returns a list of cells where an overlay is present (type != 0xFF).
 pub fn parse_overlays(ini: &IniFile) -> Vec<OverlayEntry> {
+    parse_overlay_packs(ini).entries
+}
+
+/// Parse overlay entries and preserve the full overlay-data byte grid.
+pub fn parse_overlay_packs(ini: &IniFile) -> ParsedOverlayPacks {
     let overlay_pack: Vec<u8> = match decode_pack_section(ini, "OverlayPack") {
         Some(data) => data,
         None => {
             log::trace!("No [OverlayPack] section in map");
-            return Vec::new();
+            return ParsedOverlayPacks {
+                entries: Vec::new(),
+                data: decode_pack_section(ini, "OverlayDataPack")
+                    .map(OverlayDataPack::from_decoded)
+                    .unwrap_or_else(OverlayDataPack::missing),
+            };
         }
     };
-    let data_pack: Vec<u8> = decode_pack_section(ini, "OverlayDataPack")
-        .unwrap_or_else(|| vec![0u8; OVERLAY_TOTAL_CELLS]);
+    let data: OverlayDataPack = decode_pack_section(ini, "OverlayDataPack")
+        .map(OverlayDataPack::from_decoded)
+        .unwrap_or_else(OverlayDataPack::missing);
 
     let mut entries: Vec<OverlayEntry> = Vec::new();
     let max_idx: usize = overlay_pack.len().min(OVERLAY_TOTAL_CELLS);
@@ -82,11 +145,7 @@ pub fn parse_overlays(ini: &IniFile) -> Vec<OverlayEntry> {
         }
         let rx: u16 = (idx % OVERLAY_GRID_SIZE) as u16;
         let ry: u16 = (idx / OVERLAY_GRID_SIZE) as u16;
-        let frame: u8 = if idx < data_pack.len() {
-            data_pack[idx]
-        } else {
-            0
-        };
+        let frame: u8 = data.byte_at(rx, ry);
 
         entries.push(OverlayEntry {
             rx,
@@ -97,7 +156,7 @@ pub fn parse_overlays(ini: &IniFile) -> Vec<OverlayEntry> {
     }
 
     log::info!("Parsed {} overlay entries from OverlayPack", entries.len());
-    entries
+    ParsedOverlayPacks { entries, data }
 }
 
 /// Parse terrain objects from the [Terrain] INI section.
@@ -277,6 +336,39 @@ pub fn compute_wall_connectivity(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overlay_data_pack_returns_byte_for_empty_overlay_cell() {
+        let mut bytes = vec![0; OVERLAY_TOTAL_CELLS];
+        bytes[7 * OVERLAY_GRID_SIZE + 9] = 42;
+        let data = OverlayDataPack::from_decoded(bytes);
+
+        assert!(data.is_present());
+        assert_eq!(data.byte_at(9, 7), 42);
+    }
+
+    #[test]
+    fn overlay_data_pack_returns_zero_out_of_range() {
+        let data = OverlayDataPack::from_decoded(vec![1; OVERLAY_TOTAL_CELLS]);
+
+        assert_eq!(data.byte_at(512, 0), 0);
+        assert_eq!(data.byte_at(0, 512), 0);
+    }
+
+    #[test]
+    fn overlay_data_pack_missing_reports_absent_and_returns_zero() {
+        let data = OverlayDataPack::missing();
+
+        assert!(!data.is_present());
+        assert_eq!(data.byte_at(1, 1), 0);
+    }
+
+    #[test]
+    fn parse_overlays_still_returns_entries_for_existing_callers() {
+        let ini = IniFile::from_str("[Other]\nFoo=Bar\n");
+
+        assert!(parse_overlays(&ini).is_empty());
+    }
 
     #[test]
     fn test_parse_terrain_objects() {

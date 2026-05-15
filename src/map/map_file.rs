@@ -22,7 +22,7 @@ use crate::map::briefing::{self, BriefingSection};
 use crate::map::cell_tags::{self, CellTagMap};
 use crate::map::entities::{self, MapEntity};
 use crate::map::events::{self, EventMap};
-use crate::map::overlay::{self, OverlayEntry, TerrainObject};
+use crate::map::overlay::{self, OverlayDataPack, OverlayEntry, TerrainObject};
 use crate::map::preview::{self, PreviewSection};
 use crate::map::tags::{self, TagMap};
 use crate::map::trigger_graph::{self, TriggerGraph};
@@ -164,6 +164,9 @@ pub struct MapFile {
     pub entities: Vec<MapEntity>,
     /// Overlay objects from [OverlayPack] + [OverlayDataPack] (ore, walls, fences, etc.).
     pub overlays: Vec<OverlayEntry>,
+    /// Full `[OverlayDataPack]` bytes. Presence is tracked because missing packs
+    /// do not overwrite bridge state bytes in `gamemd.exe`.
+    pub overlay_data: OverlayDataPack,
     /// Pre-placed smudges from the map's `[Smudge]` section.
     /// `IsBaked != 0` entries are filtered at parse time.
     pub smudges: Vec<MapSmudgeEntry>,
@@ -202,7 +205,7 @@ impl MapFile {
         let preview: PreviewSection = preview::parse_preview_section(&ini);
         let cells: Vec<MapCell> = parse_iso_map_pack(&ini)?;
         let entities: Vec<MapEntity> = entities::parse_map_entities(&ini);
-        let overlays: Vec<OverlayEntry> = overlay::parse_overlays(&ini);
+        let overlay_packs = overlay::parse_overlay_packs(&ini);
         let terrain_objects: Vec<TerrainObject> = overlay::parse_terrain_objects(&ini);
         let smudges: Vec<MapSmudgeEntry> = parse_map_smudges(&ini);
         let waypoints: HashMap<u32, Waypoint> = waypoints::parse_waypoints(&ini);
@@ -221,7 +224,8 @@ impl MapFile {
             preview,
             cells,
             entities,
-            overlays,
+            overlays: overlay_packs.entries,
+            overlay_data: overlay_packs.data,
             smudges,
             terrain_objects,
             waypoints,
@@ -235,6 +239,14 @@ impl MapFile {
             special_flags,
             ini,
         })
+    }
+
+    pub fn overlay_data_at(&self, rx: u16, ry: u16) -> u8 {
+        self.overlay_data.byte_at(rx, ry)
+    }
+
+    pub fn has_overlay_data_pack(&self) -> bool {
+        self.overlay_data.is_present()
     }
 }
 

@@ -517,6 +517,7 @@ mod tests {
             bridge_transition: false,
             bridge_deck_level: 0,
             bridge_layer: None,
+            bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
             radar_left: [0; 3],
             radar_right: [0; 3],
             accepts_smudge: true,

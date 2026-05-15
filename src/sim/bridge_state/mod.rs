@@ -510,13 +510,14 @@ impl BridgeRuntimeState {
         let mut next_group_id: u16 = 1;
         let mut next_span_id: u16 = 1;
 
-        // Pass 1: BFS-group bridge cells by deck presence (existing
-        // group_cells used for endpoint_records + zone connectivity).
+        // Pass 1: BFS-group structural bridge cells. High bridges use the
+        // authoritative SetBridgeDirection-equivalent facts; low bridges and
+        // existing test fixtures keep the legacy deck fallback.
         for cell in terrain.iter() {
             let Some(index) = index_of(width, height, cell.rx, cell.ry) else {
                 continue;
             };
-            if visited[index] || !cell.has_bridge_deck {
+            if visited[index] || !resolved_cell_has_runtime_deck(cell) {
                 continue;
             }
             let group_id = next_group_id;
@@ -533,7 +534,7 @@ impl BridgeRuntimeState {
                 let Some(resolved) = terrain.cell(rx, ry) else {
                     continue;
                 };
-                if !resolved.has_bridge_deck {
+                if !resolved_cell_has_runtime_deck(resolved) {
                     continue;
                 }
                 visited[idx] = true;
@@ -543,14 +544,15 @@ impl BridgeRuntimeState {
                     destroyable,
                     deck_level: resolved.bridge_deck_level,
                     bridge_group_id: Some(group_id),
-                    damage_state: DamageState::Healthy { variant: 0 },
-                    axis: bridge_layer_to_axis(resolved.bridge_layer.as_ref()),
+                    damage_state: initial_bridge_damage_state(resolved),
+                    axis: bridge_fact_axis(resolved)
+                        .or_else(|| bridge_layer_to_axis(resolved.bridge_layer.as_ref())),
                     role: BridgeCellRole::Body, // overwritten in pass 2
                     anchor_span_id: None,
                     overlay_byte: resolved
-                        .bridge_layer
-                        .as_ref()
-                        .map(|bl| bl.overlay_id)
+                        .bridge_facts
+                        .overlay_id
+                        .or_else(|| resolved.bridge_layer.as_ref().map(|bl| bl.overlay_id))
                         .unwrap_or(0),
                     damaged_variant: false,
                     bridgehead_anchor_class: resolved
@@ -559,7 +561,7 @@ impl BridgeRuntimeState {
                 });
                 for (nx, ny) in cardinal_neighbors(rx, ry, width, height) {
                     if let Some(neighbor) = terrain.cell(nx, ny) {
-                        if neighbor.has_bridge_deck {
+                        if resolved_cell_has_runtime_deck(neighbor) {
                             queue.push_back((nx, ny));
                         }
                     }
@@ -570,22 +572,37 @@ impl BridgeRuntimeState {
             }
         }
 
-        // Pass 2: walk anchor patterns. For each cell whose
-        // bridge_layer.overlay_id matches an anchor-overlay class, emit one
-        // AnchorSpan and tag member cells with role + anchor_span_id.
+        // Pass 2: walk anchor patterns. High bridges trust the 0x80 anchor
+        // fact. Low/legacy bridges keep the previous bridge_layer fallback.
         for (&group_id, members) in &group_cells {
             for &(rx, ry) in members {
                 let Some(resolved) = terrain.cell(rx, ry) else {
                     continue;
                 };
-                let Some(bl) = resolved.bridge_layer.as_ref() else {
-                    continue;
-                };
-                if !is_anchor_overlay(bl.overlay_id) {
+                let fact_anchor = resolved.bridge_facts.is_anchor_self();
+                let legacy_anchor = resolved.bridge_facts.family
+                    == crate::map::bridge_facts::BridgeStampFamily::None
+                    && resolved
+                        .bridge_layer
+                        .as_ref()
+                        .is_some_and(|bl| is_anchor_overlay(bl.overlay_id));
+                if !fact_anchor && !legacy_anchor {
                     continue;
                 }
-                let axis = bridge_direction_to_axis(bl.direction);
-                let direction = anchor_walk_direction(axis);
+                let (axis, direction) = if fact_anchor {
+                    let stamp_direction = resolved.bridge_facts.direction.unwrap_or(0);
+                    (
+                        bridge_stamp_direction_to_axis(stamp_direction),
+                        bridge_stamp_direction_to_direction(stamp_direction),
+                    )
+                } else {
+                    let bl = resolved
+                        .bridge_layer
+                        .as_ref()
+                        .expect("legacy anchor checked bridge_layer above");
+                    let axis = bridge_direction_to_axis(bl.direction);
+                    (axis, anchor_walk_direction(axis))
+                };
                 let span_id = next_span_id;
                 next_span_id = next_span_id.saturating_add(1);
                 let span = walk_anchor_pattern(
@@ -1530,6 +1547,51 @@ fn bridge_layer_to_axis(layer: Option<&crate::map::resolved_terrain::BridgeLayer
     layer.map(|bl| bridge_direction_to_axis(bl.direction))
 }
 
+fn resolved_cell_has_runtime_deck(
+    cell: &crate::map::resolved_terrain::ResolvedTerrainCell,
+) -> bool {
+    cell.bridge_facts.has_structural_bridge()
+        || (cell.has_bridge_deck
+            && cell.bridge_facts.family == crate::map::bridge_facts::BridgeStampFamily::None)
+}
+
+fn bridge_fact_axis(cell: &crate::map::resolved_terrain::ResolvedTerrainCell) -> Option<Axis> {
+    cell.bridge_facts
+        .direction
+        .map(bridge_stamp_direction_to_axis)
+}
+
+fn initial_bridge_damage_state(
+    cell: &crate::map::resolved_terrain::ResolvedTerrainCell,
+) -> DamageState {
+    if cell.bridge_facts.family != crate::map::bridge_facts::BridgeStampFamily::None {
+        DamageState::from_state_byte(cell.bridge_facts.state_byte)
+            .unwrap_or(DamageState::Healthy { variant: 0 })
+    } else {
+        DamageState::Healthy { variant: 0 }
+    }
+}
+
+fn bridge_stamp_direction_to_axis(direction: u8) -> Axis {
+    match direction & 7 {
+        2 | 6 => Axis::EW,
+        _ => Axis::NS,
+    }
+}
+
+fn bridge_stamp_direction_to_direction(direction: u8) -> Direction {
+    match direction & 7 {
+        0 => Direction::N,
+        1 => Direction::NE,
+        2 => Direction::E,
+        3 => Direction::SE,
+        4 => Direction::S,
+        5 => Direction::SW,
+        6 => Direction::W,
+        _ => Direction::NW,
+    }
+}
+
 fn bridge_direction_to_axis(d: crate::map::resolved_terrain::BridgeDirection) -> Axis {
     use crate::map::resolved_terrain::BridgeDirection;
     match d {
@@ -1683,6 +1745,7 @@ mod tests {
                 bridge_transition: rx == 1 || rx == 3,
                 bridge_deck_level: if on_bridge { 4 } else { 0 },
                 bridge_layer: None,
+                bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
                 radar_left: [0, 0, 0],
                 radar_right: [0, 0, 0],
                 has_damaged_data: false,
@@ -1739,6 +1802,7 @@ mod tests {
                 bridge_transition: is_head,
                 bridge_deck_level: if is_body || is_head { 4 } else { 0 },
                 bridge_layer: None,
+                bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
                 radar_left: [0, 0, 0],
                 radar_right: [0, 0, 0],
                 has_damaged_data: false,
@@ -2065,6 +2129,111 @@ mod tests {
         let cell = state.cell(1, 0).expect("bridge cell");
         assert!(cell.deck_present);
         assert!(matches!(cell.damage_state, DamageState::Healthy { .. }));
+    }
+
+    #[test]
+    fn stamped_high_bridge_facts_create_anchor_span_without_bridge_layer() {
+        use crate::map::bridge_facts::{
+            BridgeCellFacts, BridgeStampFamily, stamp_set_bridge_direction,
+        };
+
+        let width = 10u16;
+        let height = 10u16;
+        let mut facts = vec![BridgeCellFacts::default(); width as usize * height as usize];
+        stamp_set_bridge_direction(
+            &mut facts,
+            width,
+            height,
+            (5, 5),
+            BridgeStampFamily::Nesw,
+            0,
+            true,
+        );
+        facts[5usize * width as usize + 5].overlay_id = Some(0x18);
+
+        let mut cells = Vec::new();
+        for ry in 0..height {
+            for rx in 0..width {
+                let idx = ry as usize * width as usize + rx as usize;
+                let structural = facts[idx].has_structural_bridge();
+                cells.push(ResolvedTerrainCell {
+                    rx,
+                    ry,
+                    source_tile_index: 0,
+                    source_sub_tile: 0,
+                    final_tile_index: 0,
+                    final_sub_tile: 0,
+                    level: 0,
+                    filled_clear: false,
+                    tileset_index: Some(0),
+                    land_type: 0,
+                    slope_type: 0,
+                    template_height: 0,
+                    render_offset_x: 0,
+                    render_offset_y: 0,
+                    terrain_class: TerrainClass::Clear,
+                    speed_costs: SpeedCostProfile::default(),
+                    is_water: false,
+                    is_cliff_like: false,
+                    is_cliff_redraw: false,
+                    variant: 0,
+                    is_rough: false,
+                    is_road: false,
+                    accepts_smudge: false,
+                    has_ramp: false,
+                    canonical_ramp: None,
+                    ground_walk_blocked: structural,
+                    terrain_object_blocks: false,
+                    overlay_blocks: false,
+                    zone_type: 0,
+                    base_ground_walk_blocked: false,
+                    base_build_blocked: false,
+                    build_blocked: structural,
+                    has_bridge_deck: false,
+                    bridge_walkable: structural,
+                    bridge_transition: facts[idx].has_transition_flag(),
+                    bridge_deck_level: if structural { 4 } else { 0 },
+                    bridge_layer: None,
+                    bridge_facts: facts[idx],
+                    radar_left: [0, 0, 0],
+                    radar_right: [0, 0, 0],
+                    has_damaged_data: false,
+                    bridgehead_anchor_class_at_load: None,
+                });
+            }
+        }
+
+        let terrain = ResolvedTerrainGrid::from_cells(width, height, cells);
+        let state = BridgeRuntimeState::from_resolved_terrain(&terrain, true, 1500);
+
+        assert_eq!(state.anchor_spans().len(), 1);
+        let span = state.anchor_spans().values().next().expect("span");
+        assert_eq!(span.anchor, (5, 5));
+        assert_eq!(span.axis, Axis::NS);
+        assert_eq!(span.direction, Direction::N);
+        assert_eq!(
+            span.cells,
+            [
+                Some((5, 5)),
+                Some((5, 4)),
+                Some((5, 3)),
+                Some((5, 2)),
+                Some((5, 6)),
+                None,
+            ]
+        );
+        assert_eq!(state.cell(5, 5).expect("anchor").overlay_byte, 0x18);
+        assert!(matches!(
+            state.cell(5, 5).expect("anchor").role,
+            BridgeCellRole::Anchor
+        ));
+        assert!(state.cell(5, 4).is_some());
+        assert!(state.cell(5, 3).is_some());
+        assert!(state.cell(5, 6).is_some());
+        assert!(
+            state.cell(5, 2).is_none(),
+            "slot 3 is flag-only and must not create a runtime bridge cell"
+        );
     }
 
     #[test]
@@ -2543,6 +2712,7 @@ mod tests {
                     bridge_transition: false,
                     bridge_deck_level: 0,
                     bridge_layer: None,
+                    bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
                     radar_left: [0, 0, 0],
                     radar_right: [0, 0, 0],
                     has_damaged_data: false,
@@ -2797,6 +2967,7 @@ mod tests {
                     bridge_transition: false,
                     bridge_deck_level: 0,
                     bridge_layer: None,
+                    bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
                     radar_left: [0, 0, 0],
                     radar_right: [0, 0, 0],
                     has_damaged_data: false,
@@ -2910,6 +3081,7 @@ mod tests {
                     bridge_transition: false,
                     bridge_deck_level: 0,
                     bridge_layer: None,
+                    bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
                     radar_left: [0, 0, 0],
                     radar_right: [0, 0, 0],
                     has_damaged_data: false,
@@ -3159,6 +3331,7 @@ mod tests {
                     bridge_transition: false,
                     bridge_deck_level: 0,
                     bridge_layer: None,
+                    bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
                     radar_left: [0, 0, 0],
                     radar_right: [0, 0, 0],
                     has_damaged_data: true,
@@ -3369,6 +3542,7 @@ mod tests {
                     bridge_transition: false,
                     bridge_deck_level: 0,
                     bridge_layer: None,
+                    bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
                     radar_left: [0, 0, 0],
                     radar_right: [0, 0, 0],
                     has_damaged_data: false,
@@ -3490,6 +3664,7 @@ mod repair_tests {
                     bridge_transition: false,
                     bridge_deck_level: 0,
                     bridge_layer: None,
+                    bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
                     radar_left: [0, 0, 0],
                     radar_right: [0, 0, 0],
                     has_damaged_data: false,
