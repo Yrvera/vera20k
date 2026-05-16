@@ -48,13 +48,12 @@ pub const BRIDGE_SHADOW_EW_DX: i32 = -15;
 pub const BRIDGE_SHADOW_EW_DY: i32 = 7;
 
 /// Translate a cell's `(damage_state, axis)` into the SHP frame index for
-/// `bridge.tem` / `bridgb.tem`. Per `BRIDGE_RENDERING_GHIDRA_REPORT.md` §12,
-/// the SHP body half is laid out:
-///   - frames `0..8`: EW body (healthy 0..5, damaged 6, partial 7-8)
-///   - frames `9..17`: NS body
+/// `bridge.tem` / `bridgb.tem`.
 ///
-/// This is the *opposite* of the sim's state-byte encoding (`Axis::NS = 0..8`,
-/// `Axis::EW = 9..17`), so the renderer flips the axis-to-frame-range mapping.
+/// The frame family follows the canonical bridge state byte encoding. Do not
+/// reinterpret the axis labels here: map-load/runtime state already resolved
+/// the bridge family, and `DamageState::to_state_byte(axis)` is the source of
+/// truth for whether the body uses frames `0..8` or `9..17`.
 ///
 /// Latin-square jitter applies ONLY to the boundary state (`variant: 0`),
 /// matching binary `DrawOverlay_Body @ 0x47F6A0`: `if (state == 0 || state ==
@@ -64,8 +63,8 @@ pub const BRIDGE_SHADOW_EW_DY: i32 = 7;
 /// (BRIDGE_DISPLAY_TABLE_GHIDRA_REPORT.md §3.3.1).
 fn compute_bridge_body_shp_frame(state: DamageState, axis: Axis, rx: u16, ry: u16) -> u8 {
     let axis_base: u8 = match axis {
-        Axis::EW => 0,
-        Axis::NS => 9,
+        Axis::NS => 0,
+        Axis::EW => 9,
     };
     let local: u8 = match state {
         DamageState::Healthy { variant: 0 } => {
@@ -406,21 +405,19 @@ mod tests {
         assert_eq!(BRIDGE_BODY_LATIN_SQUARE[((2 & 3) << 2) | (1 & 3)], 3);
     }
 
-    /// SHP frame selection routes EW cells to body frames 0..8 and NS cells
-    /// to 9..17 — the inverse of the sim's state-byte encoding. Per
-    /// `BRIDGE_RENDERING_GHIDRA_REPORT.md` §12, bridge.tem packs EW body
-    /// frames at 0-8 and NS body frames at 9-17.
+    /// SHP frame selection follows the same frame family as the state byte:
+    /// NS uses `0..8`, EW uses `9..17`.
     #[test]
     fn damaged_cell_routes_to_axis_correct_shp_frame() {
-        // NS Damaged → SHP frame 9 + 6 = 15.
+        // NS Damaged -> SHP frame 0 + 6 = 6.
         assert_eq!(
             compute_bridge_body_shp_frame(DamageState::Damaged, Axis::NS, 0, 0),
-            15
+            6
         );
-        // EW Damaged → SHP frame 0 + 6 = 6.
+        // EW Damaged -> SHP frame 9 + 6 = 15.
         assert_eq!(
             compute_bridge_body_shp_frame(DamageState::Damaged, Axis::EW, 0, 0),
-            6
+            15
         );
     }
 
@@ -431,15 +428,15 @@ mod tests {
     /// variant` directly, no jitter. Per BRIDGE_DISPLAY_TABLE §3.3.1.
     #[test]
     fn healthy_variant_zero_uses_latin_square_jitter() {
-        // (1, 2) → LATIN[9] = 3 → EW body SHP frame = 0 + 3 = 3.
+        // (1, 2) -> LATIN[9] = 3 -> EW body SHP frame = 9 + 3 = 12.
         assert_eq!(
             compute_bridge_body_shp_frame(DamageState::Healthy { variant: 0 }, Axis::EW, 1, 2),
-            3
+            12
         );
-        // Same xy on NS axis → SHP frame = 9 + 3 = 12.
+        // Same xy on NS axis -> SHP frame = 0 + 3 = 3.
         assert_eq!(
             compute_bridge_body_shp_frame(DamageState::Healthy { variant: 0 }, Axis::NS, 1, 2),
-            12
+            3
         );
     }
 
@@ -450,20 +447,20 @@ mod tests {
         // 0..=3 healthy targets per HIGH §11.1.
         assert_eq!(
             compute_bridge_body_shp_frame(DamageState::Healthy { variant: 4 }, Axis::EW, 1, 2),
-            4
-        );
-        assert_eq!(
-            compute_bridge_body_shp_frame(DamageState::Healthy { variant: 5 }, Axis::EW, 1, 2),
-            5
-        );
-        // Same variants on NS axis: frame = 9 + variant.
-        assert_eq!(
-            compute_bridge_body_shp_frame(DamageState::Healthy { variant: 4 }, Axis::NS, 1, 2),
             13
         );
         assert_eq!(
-            compute_bridge_body_shp_frame(DamageState::Healthy { variant: 5 }, Axis::NS, 1, 2),
+            compute_bridge_body_shp_frame(DamageState::Healthy { variant: 5 }, Axis::EW, 1, 2),
             14
+        );
+        // Same variants on NS axis: frame = 0 + variant.
+        assert_eq!(
+            compute_bridge_body_shp_frame(DamageState::Healthy { variant: 4 }, Axis::NS, 1, 2),
+            4
+        );
+        assert_eq!(
+            compute_bridge_body_shp_frame(DamageState::Healthy { variant: 5 }, Axis::NS, 1, 2),
+            5
         );
         // Different (rx, ry) does NOT change the result for non-zero variants
         // (Latin-square is bypassed) — guards against a future refactor
