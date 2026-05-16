@@ -22,7 +22,7 @@ use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::occupancy::{CellOccupancy, OccupancyGrid};
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::rng::SimRng;
-use crate::util::fixed_math::{SimFixed, fixed_distance};
+use crate::util::fixed_math::{fixed_distance, SimFixed};
 
 /// Functional infantry sub-cell positions. The original engine uses sub-cells
 /// 2 (NE), 3 (SW), 4 (SE) — three corners of the isometric diamond. Sub-cells
@@ -129,11 +129,9 @@ pub fn build_entity_block_sets(
         if entity.passenger_role.is_inside_transport() {
             continue;
         }
-        let layer = entity.movement_layer_or_ground();
-        // Air and underground entities never block ground/bridge pathfinding.
-        if matches!(layer, MovementLayer::Air | MovementLayer::Underground) {
+        let Some(layer) = entity.occupancy_list_layer() else {
             continue;
-        }
+        };
         let pos = (entity.position.rx, entity.position.ry);
         // Buildings always block (they never move). Always ground layer.
         // With rules, expand to the full foundation so A* sees every occupied

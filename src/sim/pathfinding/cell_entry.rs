@@ -21,8 +21,8 @@
 //! - Part of sim/ — depends on sim/bump_crush, sim/entity_store, sim/locomotor,
 //!   sim/pathfinding, map/entities, map/houses, rules/locomotor_type.
 
-use super::PathGrid;
 use super::terrain_cost::TerrainCostGrid;
+use super::PathGrid;
 use crate::map::entities::EntityCategory;
 use crate::map::houses::{self, HouseAllianceMap};
 use crate::rules::locomotor_type::{LocomotorKind, MovementZone};
@@ -169,10 +169,13 @@ pub fn check_terrain_with_layers(
     let occ = occupancy.get(nx, ny);
 
     if mover_category == EntityCategory::Infantry {
-        // Infantry: check sub-cell availability.
+        let selected_list_blocked = occ.is_some_and(|o| {
+            o.has_blockers_on(layers.object_list_layer)
+                || o.infantry(layers.object_list_layer).next().is_some()
+        });
         let sub =
             bump_crush::allocate_sub_cell_with_reserved(occ, layers.occupancy_bits_layer, None);
-        if sub.is_some() {
+        if sub.is_some() && !selected_list_blocked {
             return TerrainCheckResult::Clear;
         }
         // No sub-cell available — needs blocker classification.
@@ -182,7 +185,12 @@ pub fn check_terrain_with_layers(
     // Vehicle/aircraft/structure: cell must be unoccupied on this layer.
     match occ {
         None => TerrainCheckResult::Clear,
-        Some(o) if o.is_empty_on(layers.occupancy_bits_layer) => TerrainCheckResult::Clear,
+        Some(o)
+            if o.is_empty_on(layers.object_list_layer)
+                && o.is_empty_on(layers.occupancy_bits_layer) =>
+        {
+            TerrainCheckResult::Clear
+        }
         Some(_) => TerrainCheckResult::NeedsBlockerCheck,
     }
 }
@@ -636,6 +644,38 @@ mod tests {
             5,
             10,
             MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+
+        let result = check_terrain_with_layers(
+            (5, 5),
+            CanEnterLayerContext {
+                terrain_layer: MovementLayer::Bridge,
+                object_list_layer: MovementLayer::Bridge,
+                occupancy_bits_layer: MovementLayer::Ground,
+            },
+            EntityCategory::Unit,
+            Some(&grid),
+            None,
+            &occ,
+        );
+
+        assert_eq!(result, TerrainCheckResult::NeedsBlockerCheck);
+    }
+
+    #[test]
+    fn split_context_uses_object_list_layer_for_selected_blockers() {
+        use crate::sim::pathfinding::PathGrid;
+
+        let mut grid = PathGrid::new(10, 10);
+        grid.set_cell_for_test(5, 5, 0, true, true);
+        let mut occ = OccupancyGrid::new();
+        occ.add(
+            5,
+            5,
+            10,
+            MovementLayer::Bridge,
             None,
             CellListInsertion::PrependNonBuilding,
         );

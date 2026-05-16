@@ -350,21 +350,43 @@ impl GameEntity {
         }
     }
 
-    /// Shared owner for "which movement layer should this entity be treated as on?"
+    /// Runtime movement/path layer with Ground as the fallback.
     ///
-    /// `on_bridge` is the authoritative source for bridge layer state — it survives
-    /// repath operations that may reset `locomotor.layer`. Ground is the default
-    /// when no locomotor is attached.
+    /// This is not the object-list selector. Use `occupancy_list_layer` when
+    /// selecting gamemd `FirstObject` versus `AltObject` style occupancy.
     pub fn movement_layer_or_ground(&self) -> crate::sim::movement::locomotor::MovementLayer {
-        if self.on_bridge {
-            return crate::sim::movement::locomotor::MovementLayer::Bridge;
-        }
         self.locomotor.as_ref().map_or(
             crate::sim::movement::locomotor::MovementLayer::Ground,
             |l| l.layer,
         )
     }
 
+    /// Object-list layer for occupancy/cache membership.
+    ///
+    /// This mirrors gamemd's `ObjectClass+0x8C` / `OnBridge` selector for
+    /// `CellClass::FirstObject` versus `AltObject`. It is intentionally not the
+    /// same as locomotor/path layer; ramps can have `loco.layer` and `on_bridge`
+    /// disagree for a tick.
+    pub fn occupancy_list_layer(&self) -> Option<crate::sim::movement::locomotor::MovementLayer> {
+        use crate::sim::movement::locomotor::MovementLayer;
+
+        let motion_layer = self
+            .locomotor
+            .as_ref()
+            .map_or(MovementLayer::Ground, |l| l.layer);
+        if matches!(
+            motion_layer,
+            MovementLayer::Air | MovementLayer::Underground
+        ) {
+            return None;
+        }
+
+        Some(if self.on_bridge {
+            MovementLayer::Bridge
+        } else {
+            MovementLayer::Ground
+        })
+    }
     /// Whether this entity is currently on a bridge deck.
     pub fn is_on_bridge_layer(&self) -> bool {
         self.on_bridge

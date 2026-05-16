@@ -44,6 +44,14 @@ pub(super) enum BridgeStateUpdate {
     Unchanged,
 }
 
+pub(super) fn projected_on_bridge(current: bool, update: BridgeStateUpdate) -> bool {
+    match update {
+        BridgeStateUpdate::Set(_) => true,
+        BridgeStateUpdate::Clear => false,
+        BridgeStateUpdate::Unchanged => current,
+    }
+}
+
 /// Bridge vertical clearance in leptons.
 /// 360 == 90 * 4 — the Z distance from water surface to bridge deck.
 /// Added to braking distance when a ship passes under a bridge cell.
@@ -265,6 +273,14 @@ mod tests {
             compute_bridge_transition(&src, &dst),
             BridgeTransition::Enter { deck_level: 4 }
         ));
+    }
+
+    #[test]
+    fn projected_on_bridge_applies_pending_update_without_mutation() {
+        assert!(projected_on_bridge(false, BridgeStateUpdate::Set(4)));
+        assert!(!projected_on_bridge(true, BridgeStateUpdate::Clear));
+        assert!(projected_on_bridge(true, BridgeStateUpdate::Unchanged));
+        assert!(!projected_on_bridge(false, BridgeStateUpdate::Unchanged));
     }
 
     #[test]

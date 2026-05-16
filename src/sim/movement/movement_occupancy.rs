@@ -26,7 +26,7 @@ use crate::sim::pathfinding::{BridgeTraversalInput, PathGrid};
 use crate::sim::rng::SimRng;
 
 use super::{
-    MovementConfig, MovementTickStats, MoverSnapshot, PATH_STUCK_INIT, PathfindingContext,
+    MovementConfig, MovementTickStats, MoverSnapshot, PathfindingContext, PATH_STUCK_INIT,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,12 +94,13 @@ pub(super) fn detect_deferred_cell_check(
     layer_context: CanEnterLayerContext,
     next_cell: (u16, u16),
     current_cell: (u16, u16),
-    active_layer: MovementLayer,
+    current_object_list_layer: MovementLayer,
     occupancy: &OccupancyGrid,
 ) -> Option<DeferredCellCheck> {
-    let next_layer = layer_context.occupancy_bits_layer;
-    let is_self_cell =
-        (next_cell.0, next_cell.1, next_layer) == (current_cell.0, current_cell.1, active_layer);
+    let object_list_layer = layer_context.object_list_layer;
+    let occupancy_bits_layer = layer_context.occupancy_bits_layer;
+    let is_self_cell = (next_cell.0, next_cell.1, object_list_layer)
+        == (current_cell.0, current_cell.1, current_object_list_layer);
     if is_self_cell {
         return None;
     }
@@ -118,12 +119,21 @@ pub(super) fn detect_deferred_cell_check(
 
     let cell_occ = occupancy.get(next_cell.0, next_cell.1);
     if mover_category == EntityCategory::Infantry {
-        if bump_crush::allocate_sub_cell_with_reserved(cell_occ, next_layer, None).is_none() {
+        if bump_crush::allocate_sub_cell_with_reserved(cell_occ, occupancy_bits_layer, None)
+            .is_none()
+            || cell_occ.is_some_and(|o| {
+                o.has_blockers_on(object_list_layer)
+                    || o.infantry(object_list_layer).next().is_some()
+            })
+        {
             return Some(DeferredCellCheck::Infantry(next_cell, layer_context));
         }
-    } else if cell_occ
-        .is_some_and(|o| o.has_blockers_on(next_layer) || o.infantry(next_layer).next().is_some())
-    {
+    } else if cell_occ.is_some_and(|o| {
+        o.has_blockers_on(object_list_layer)
+            || o.infantry(object_list_layer).next().is_some()
+            || o.has_blockers_on(occupancy_bits_layer)
+            || o.infantry(occupancy_bits_layer).next().is_some()
+    }) {
         return Some(DeferredCellCheck::Vehicle(next_cell, layer_context));
     }
 
@@ -560,5 +570,35 @@ mod tests {
         );
 
         assert_eq!(check, Some(DeferredCellCheck::Vehicle((1, 0), layers)));
+    }
+
+    #[test]
+    fn deferred_detection_uses_object_list_layer_for_selected_blockers() {
+        let mut occupancy = OccupancyGrid::new();
+        occupancy.add(
+            5,
+            5,
+            10,
+            MovementLayer::Bridge,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+
+        let layers = CanEnterLayerContext {
+            terrain_layer: MovementLayer::Bridge,
+            object_list_layer: MovementLayer::Bridge,
+            occupancy_bits_layer: MovementLayer::Ground,
+        };
+        let check = detect_deferred_cell_check(
+            EntityCategory::Unit,
+            false,
+            layers,
+            (5, 5),
+            (4, 5),
+            MovementLayer::Ground,
+            &occupancy,
+        );
+
+        assert_eq!(check, Some(DeferredCellCheck::Vehicle((5, 5), layers)));
     }
 }

@@ -622,6 +622,11 @@ pub fn tick_movement_with_grids(
                         let old_ry = entity.position.ry;
                         entity.position.rx = nx;
                         entity.position.ry = ny;
+                        let mut occupancy_layer = if entity.on_bridge {
+                            MovementLayer::Bridge
+                        } else {
+                            MovementLayer::Ground
+                        };
                         // Bridge state resolution: apply the on_bridge cell-flag predicate.
                         // loco.layer follows A*'s path_layer (next_layer). on_bridge is
                         // updated by apply_pending_bridge_render_state from bridge_update below
@@ -637,6 +642,15 @@ pub fn tick_movement_with_grids(
                                     next_layer,
                                 );
                             pending_bridge_update = bridge_update;
+                            let new_on_bridge = super::movement_bridge::projected_on_bridge(
+                                entity.on_bridge,
+                                bridge_update,
+                            );
+                            occupancy_layer = if new_on_bridge {
+                                MovementLayer::Bridge
+                            } else {
+                                MovementLayer::Ground
+                            };
                             active_layer = next_layer;
                             if let Some(ref mut loco) = entity.locomotor {
                                 loco.layer = next_layer;
@@ -649,7 +663,7 @@ pub fn tick_movement_with_grids(
                             nx,
                             ny,
                             entity_id,
-                            active_layer,
+                            occupancy_layer,
                             entity.sub_cell,
                             CellListInsertion::from_category(entity.category),
                         );

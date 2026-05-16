@@ -11,7 +11,7 @@ use crate::sim::intern::test_interner;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::occupancy::{CellListInsertion, OccupancyGrid};
 use crate::sim::rng::SimRng;
-use crate::util::fixed_math::{SIM_ZERO, SimFixed};
+use crate::util::fixed_math::{SimFixed, SIM_ZERO};
 
 // --- Facing calculation tests ---
 // Cell deltas map directly to screen-relative RA2 DirStruct values:
@@ -1432,7 +1432,7 @@ use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
 use crate::sim::components::BridgeOccupancy;
 use crate::sim::movement::locomotor::{AirMovePhase, GroundMovePhase, LocomotorState};
 use crate::sim::movement::tick_movement_with_grid;
-use crate::sim::pathfinding::{PathGrid, terrain_cost::TerrainCostGrid};
+use crate::sim::pathfinding::{terrain_cost::TerrainCostGrid, PathGrid};
 use crate::util::fixed_math::SIM_ONE;
 use std::collections::BTreeMap;
 
@@ -1520,7 +1520,7 @@ fn on_bridge_fires_at_ramp_to_body_only() {
         1,
         1,
         1,
-        MovementLayer::Bridge,
+        MovementLayer::Ground,
         None,
         CellListInsertion::PrependNonBuilding,
     );
@@ -1556,6 +1556,13 @@ fn on_bridge_fires_at_ramp_to_body_only() {
             .deck_level,
         4
     );
+    let cell = occupancy.get(2, 1).expect("destination occupancy");
+    assert_eq!(
+        cell.count_on(MovementLayer::Bridge),
+        1,
+        "Ramp->Body inserts into bridge object list after on_bridge projects true"
+    );
+    assert_eq!(cell.count_on(MovementLayer::Ground), 0);
 }
 
 #[test]
@@ -1624,6 +1631,13 @@ fn on_bridge_clears_at_ramp_to_ground_only() {
         entity.on_bridge,
         "after tick 1 (on ramp): on_bridge must stay true"
     );
+    let ramp_cell = occupancy.get(2, 1).expect("ramp occupancy");
+    assert_eq!(
+        ramp_cell.count_on(MovementLayer::Bridge),
+        1,
+        "Body->Ramp keeps bridge object list while on_bridge remains true"
+    );
+    assert_eq!(ramp_cell.count_on(MovementLayer::Ground), 0);
 
     // Tick 2: ramp → ground. on_bridge must CLEAR (predicate Exit).
     tick_bridge(
@@ -1645,6 +1659,9 @@ fn on_bridge_clears_at_ramp_to_ground_only() {
         entity.bridge_occupancy.is_none(),
         "after Exit: BridgeOccupancy must be None"
     );
+    let ground_cell = occupancy.get(3, 1).expect("ground occupancy");
+    assert_eq!(ground_cell.count_on(MovementLayer::Ground), 1);
+    assert_eq!(ground_cell.count_on(MovementLayer::Bridge), 0);
 }
 
 #[test]
@@ -1719,6 +1736,13 @@ fn no_bridge_lookahead_pre_claim() {
         entity.bridge_occupancy.is_none(),
         "regression: BridgeOccupancy must NOT be pre-claimed on the ramp"
     );
+    let ramp_cell = occupancy.get(2, 1).expect("ramp occupancy");
+    assert_eq!(
+        ramp_cell.count_on(MovementLayer::Ground),
+        1,
+        "Ground->Ramp stays ground object list while on_bridge remains false"
+    );
+    assert_eq!(ramp_cell.count_on(MovementLayer::Bridge), 0);
 
     // Tick 2: ramp → body. Now predicate fires Enter (src.bridge_walkable=true,
     // dst.bridge_walkable=true, dst_h(0) == src_h(4)-4 → entry fires).
@@ -1745,4 +1769,75 @@ fn no_bridge_lookahead_pre_claim() {
             .deck_level,
         4
     );
+    let body_cell = occupancy.get(3, 1).expect("body occupancy");
+    assert_eq!(body_cell.count_on(MovementLayer::Bridge), 1);
+    assert_eq!(body_cell.count_on(MovementLayer::Ground), 0);
+}
+
+#[test]
+fn multi_crossing_preserves_first_bridge_set_update() {
+    let mut grid = PathGrid::new(10, 10);
+    grid.set_cell_for_test(1, 1, 4, true, true);
+    grid.set_cell_for_test(2, 1, 0, true, false);
+    grid.set_cell_for_test(3, 1, 0, true, false);
+
+    let mut entities = EntityStore::new();
+    let mut e = GameEntity::test_default(1, "HTNK", "Americans", 1, 1);
+    e.position.z = 4;
+    e.on_bridge = false;
+    e.locomotor = Some(make_drive_loco(MovementLayer::Bridge));
+    e.movement_target = Some(MovementTarget {
+        path: vec![(1, 1), (2, 1), (3, 1)],
+        path_layers: vec![
+            MovementLayer::Bridge,
+            MovementLayer::Bridge,
+            MovementLayer::Bridge,
+        ],
+        next_index: 1,
+        speed: SimFixed::from_num(1024),
+        move_dir_x: SimFixed::from_num(256),
+        move_dir_y: SIM_ZERO,
+        move_dir_len: SimFixed::from_num(256),
+        ..Default::default()
+    });
+    entities.insert(e);
+
+    let mut occupancy = OccupancyGrid::new();
+    occupancy.add(
+        1,
+        1,
+        1,
+        MovementLayer::Ground,
+        None,
+        CellListInsertion::PrependNonBuilding,
+    );
+    let mut rng = SimRng::new(0);
+    let mut interner = test_interner();
+
+    tick_bridge(
+        &mut entities,
+        &grid,
+        &mut occupancy,
+        &mut rng,
+        &mut interner,
+        500,
+    );
+
+    let entity = entities.get(1).expect("entity exists");
+    assert_eq!((entity.position.rx, entity.position.ry), (3, 1));
+    assert!(
+        entity.on_bridge,
+        "first Ramp->Body Set must survive later Unchanged"
+    );
+    assert_eq!(
+        entity
+            .bridge_occupancy
+            .as_ref()
+            .expect("BridgeOccupancy set")
+            .deck_level,
+        4
+    );
+    let cell = occupancy.get(3, 1).expect("final occupancy");
+    assert_eq!(cell.count_on(MovementLayer::Bridge), 1);
+    assert_eq!(cell.count_on(MovementLayer::Ground), 0);
 }

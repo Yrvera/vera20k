@@ -18,24 +18,24 @@ use crate::sim::movement::locomotor::{GroundMovePhase, LocomotorState, MovementL
 use crate::sim::movement::movement_blocked::handle_blocked_tick;
 use crate::sim::movement::movement_bridge::resolve_cell_transition_bridge_state;
 use crate::sim::movement::movement_occupancy::{
-    DeferredCellCheck, detect_deferred_cell_check, naval_terrain_diag,
-    resolve_runtime_can_enter_layers,
+    detect_deferred_cell_check, naval_terrain_diag, resolve_runtime_can_enter_layers,
+    DeferredCellCheck,
 };
 use crate::sim::movement::movement_reservation::reserve_destination_after_transition;
 use crate::sim::movement::turret::{rot_to_facing_delta, shortest_rotation};
 use crate::sim::occupancy::{CellListInsertion, OccupancyGrid};
-use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
+use crate::sim::pathfinding::PathGrid;
 use crate::sim::rng::SimRng;
 use crate::util::fixed_math::{
-    SIM_HALF, SIM_ONE, SIM_ZERO, SimFixed, facing_from_delta_int as facing_from_delta,
-    fixed_distance,
+    facing_from_delta_int as facing_from_delta, fixed_distance, SimFixed, SIM_HALF, SIM_ONE,
+    SIM_ZERO,
 };
 use crate::util::lepton::CELL_CENTER_LEPTON;
 
 use super::{
-    CLIFF_HEIGHT_THRESHOLD, MovementConfig, MovementTickStats, MoverSnapshot, PATH_STUCK_INIT,
-    PathfindingContext,
+    MovementConfig, MovementTickStats, MoverSnapshot, PathfindingContext, CLIFF_HEIGHT_THRESHOLD,
+    PATH_STUCK_INIT,
 };
 
 pub(super) fn apply_cell_transition_remainder(
@@ -437,6 +437,7 @@ pub(super) fn process_cell_crossings(
     let mut deferred_cell_check: Option<DeferredCellCheck> = None;
     let mut pending_bridge_update: super::movement_bridge::BridgeStateUpdate =
         super::movement_bridge::BridgeStateUpdate::Unchanged;
+    let mut projected_on_bridge_state = snap.on_bridge;
     let mut aborted_for_stuck: bool = false;
 
     loop {
@@ -635,13 +636,18 @@ pub(super) fn process_cell_crossings(
             next_layer,
             position.z,
         );
+        let current_object_list_layer = if projected_on_bridge_state {
+            MovementLayer::Bridge
+        } else {
+            MovementLayer::Ground
+        };
         if let Some(check) = detect_deferred_cell_check(
             snap.category,
             target.bypass_grid,
             layer_context,
             (nx, ny),
             (position.rx, position.ry),
-            active_layer,
+            current_object_list_layer,
             occupancy,
         ) {
             deferred_cell_check = Some(check);
@@ -662,6 +668,26 @@ pub(super) fn process_cell_crossings(
             ny,
             category == EntityCategory::Infantry,
         );
+        let bridge_update = resolve_cell_transition_bridge_state(
+            position,
+            path_grid,
+            (old_rx, old_ry),
+            (nx, ny),
+            next_layer,
+        );
+        projected_on_bridge_state =
+            super::movement_bridge::projected_on_bridge(projected_on_bridge_state, bridge_update);
+        if !matches!(
+            bridge_update,
+            super::movement_bridge::BridgeStateUpdate::Unchanged
+        ) {
+            pending_bridge_update = bridge_update;
+        }
+        let occupancy_layer = if projected_on_bridge_state {
+            MovementLayer::Bridge
+        } else {
+            MovementLayer::Ground
+        };
         // Update occupancy grid: move entity from old cell to new cell.
         // Uses current sub_cell (from old cell). For infantry, reserve_destination
         // below may allocate a new sub-cell and correct it via update_sub_cell.
@@ -672,21 +698,10 @@ pub(super) fn process_cell_crossings(
             nx,
             ny,
             entity_id,
-            active_layer,
+            occupancy_layer,
             *sub_cell,
             insertion,
         );
-        // Bridge state resolution: apply the on_bridge cell-flag predicate.
-        // Returns ONLY a BridgeStateUpdate — loco.layer continues to follow
-        // A*'s path_layers (next_layer was set above from the path).
-        let bridge_update = resolve_cell_transition_bridge_state(
-            position,
-            path_grid,
-            (old_rx, old_ry),
-            (nx, ny),
-            next_layer,
-        );
-        pending_bridge_update = bridge_update;
         active_layer = next_layer;
         if let Some(loco) = locomotor {
             loco.layer = next_layer;

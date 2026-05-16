@@ -537,6 +537,7 @@ fn spawn_bridge_debris(sim: &mut Simulation, rules: &RuleSet, cells: &BTreeSet<(
 /// deck entities over unwalkable ground.
 fn drop_in_bridge_deck_entities(sim: &mut Simulation, rx: u16, ry: u16) {
     use crate::sim::movement::locomotor::{GroundMovePhase, MovementLayer};
+    use crate::sim::occupancy::CellListInsertion;
 
     let ground_level = sim
         .resolved_terrain
@@ -553,6 +554,7 @@ fn drop_in_bridge_deck_entities(sim: &mut Simulation, rx: u16, ry: u16) {
         .collect();
 
     for id in to_snap {
+        let mut relayer = None;
         if let Some(entity) = sim.entities.get_mut(id) {
             entity.bridge_occupancy = None;
             entity.on_bridge = false;
@@ -563,6 +565,24 @@ fn drop_in_bridge_deck_entities(sim: &mut Simulation, rx: u16, ry: u16) {
                 loco.layer = MovementLayer::Ground;
                 loco.phase = GroundMovePhase::Idle;
             }
+            relayer = Some((
+                entity.position.rx,
+                entity.position.ry,
+                entity.sub_cell,
+                CellListInsertion::from_category(entity.category),
+            ));
+        }
+        if let Some((rx, ry, sub_cell, insertion)) = relayer {
+            sim.occupancy.move_entity(
+                rx,
+                ry,
+                rx,
+                ry,
+                id,
+                MovementLayer::Ground,
+                sub_cell,
+                insertion,
+            );
         }
     }
 }
@@ -686,7 +706,8 @@ mod tests {
     use crate::sim::movement::locomotor::{
         AirMovePhase, GroundMovePhase, LocomotorState, MovementLayer,
     };
-    use crate::util::fixed_math::{SIM_ZERO, SimFixed};
+    use crate::sim::occupancy::CellListInsertion;
+    use crate::util::fixed_math::{SimFixed, SIM_ZERO};
 
     /// Build a single-cell terrain grid where (5,5) is a bridge deck at
     /// `deck_level`, ground level=0, water below (`is_water=true`,
@@ -818,6 +839,14 @@ mod tests {
         let mut sim = Simulation::new();
         sim.resolved_terrain = Some(water_below_bridge_terrain(3));
         let id = spawn_deck_unit(&mut sim);
+        sim.occupancy.add(
+            5,
+            5,
+            id,
+            MovementLayer::Bridge,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
 
         drop_in_bridge_deck_entities(&mut sim, 5, 5);
 
@@ -837,6 +866,9 @@ mod tests {
             "layer flipped Bridge → Ground"
         );
         assert_eq!(loco.phase, GroundMovePhase::Idle, "phase reset to Idle");
+        let cell = sim.occupancy.get(5, 5).expect("occupancy retained");
+        assert_eq!(cell.count_on(MovementLayer::Ground), 1);
+        assert_eq!(cell.count_on(MovementLayer::Bridge), 0);
     }
 
     /// Build a minimal RuleSet whose `bridge_rules.voxel_max` matches the
@@ -1042,9 +1074,17 @@ mod tests {
         );
         entity.on_bridge = false; // ground-layer occupant
         let mut loco = drive_loco_on_bridge();
-        loco.layer = MovementLayer::Ground;
+        loco.layer = MovementLayer::Bridge;
         entity.locomotor = Some(loco);
         sim.entities.insert(entity);
+        sim.occupancy.add(
+            5,
+            5,
+            1,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
 
         drop_in_bridge_deck_entities(&mut sim, 5, 5);
 
@@ -1052,6 +1092,9 @@ mod tests {
         let e = sim.entities.get(1).expect("ground entity untouched");
         assert_eq!(e.health.current, 256);
         assert!(!e.on_bridge);
-        assert_eq!(e.locomotor.as_ref().unwrap().layer, MovementLayer::Ground);
+        assert_eq!(e.locomotor.as_ref().unwrap().layer, MovementLayer::Bridge);
+        let cell = sim.occupancy.get(5, 5).expect("ground occupancy");
+        assert_eq!(cell.count_on(MovementLayer::Ground), 1);
+        assert_eq!(cell.count_on(MovementLayer::Bridge), 0);
     }
 }
