@@ -18,7 +18,7 @@ use crate::sim::components::{
     BridgeOccupancy, BuildingDown, BuildingUp, HarvestOverlay, Health, VoxelAnimation,
 };
 use crate::sim::game_entity::GameEntity;
-use crate::sim::miner::{Miner, MinerConfig, miner_kind_for_object};
+use crate::sim::miner::{miner_kind_for_object, Miner, MinerConfig};
 use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
 use crate::sim::occupancy::CellListInsertion;
 use crate::sim::production::{building_footprint_cells, foundation_dimensions};
@@ -163,6 +163,7 @@ impl Simulation {
             // Crush properties from rules.ini.
             if let Some(obj) = rules.and_then(|r| r.object(&map_ent.type_id)) {
                 ge.crushable = obj.crushable;
+                ge.deployed_crushable = obj.deployed_crushable;
                 ge.omni_crusher = obj.omni_crusher;
                 ge.omni_crush_resistant = obj.omni_crush_resistant;
                 ge.zfudge_bridge = obj.zfudge_bridge;
@@ -360,6 +361,7 @@ impl Simulation {
             ge.animation = Some(Animation::new(SequenceKind::Stand));
         }
         ge.crushable = obj.crushable;
+        ge.deployed_crushable = obj.deployed_crushable;
         ge.omni_crusher = obj.omni_crusher;
         ge.omni_crush_resistant = obj.omni_crush_resistant;
         ge.zfudge_bridge = obj.zfudge_bridge;

@@ -374,6 +374,7 @@ mod tests {
             factory: None,
             exit_coord: None,
             crushable: false,
+            deployed_crushable: true,
             no_force_shield: false,
             omni_crusher: false,
             omni_crush_resistant: false,

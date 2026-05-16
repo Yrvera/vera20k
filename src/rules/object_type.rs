@@ -30,7 +30,7 @@ use glam::IVec3;
 use crate::rules::ini_parser::IniSection;
 use crate::rules::jumpjet_params::JumpjetParams;
 use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
-use crate::util::fixed_math::{SimFixed, sim_from_f32};
+use crate::util::fixed_math::{sim_from_f32, SimFixed};
 
 /// Which type registry an object belongs to.
 ///
@@ -436,6 +436,9 @@ pub struct ObjectType {
     /// Only specific infantry (GI, GGI, SEAL, Rocketeer, Lunar) and some walls
     /// have this set to true.
     pub crushable: bool,
+    /// Whether deployed infantry remains crushable by regular crushers.
+    /// Defaults to true; stock Guardian GI overrides this with `DeployedCrushable=no`.
+    pub deployed_crushable: bool,
     /// When true, this building cannot receive ForceShield invulnerability.
     /// From `NoForceShield=yes` in rulesmd.ini.
     pub no_force_shield: bool,
@@ -925,6 +928,7 @@ impl ObjectType {
 
             // Crush properties -- default false for all types.
             crushable: section.get_bool("Crushable").unwrap_or(false),
+            deployed_crushable: section.get_bool("DeployedCrushable").unwrap_or(true),
             no_force_shield: section.get_bool("NoForceShield").unwrap_or(false),
             omni_crusher: section.get_bool("OmniCrusher").unwrap_or(false),
             omni_crush_resistant: section.get_bool("OmniCrushResistant").unwrap_or(false),
@@ -1640,6 +1644,19 @@ mod tests {
         assert!(!obj.crawls);
         assert!(obj.veteran_fearless);
         assert!(obj.elite_fearless);
+    }
+
+    #[test]
+    fn parses_deployed_crushable_with_default_yes() {
+        let ini = IniFile::from_str("[E1]\nCrushable=yes\n");
+        let section = ini.section("E1").unwrap();
+        let obj = ObjectType::from_ini_section("E1", section, ObjectCategory::Infantry);
+        assert!(obj.deployed_crushable);
+
+        let ini = IniFile::from_str("[GGI]\nCrushable=yes\nDeployedCrushable=no\n");
+        let section = ini.section("GGI").unwrap();
+        let obj = ObjectType::from_ini_section("GGI", section, ObjectCategory::Infantry);
+        assert!(!obj.deployed_crushable);
     }
 
     #[test]

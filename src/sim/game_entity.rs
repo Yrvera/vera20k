@@ -57,6 +57,10 @@ impl InfantryRuntime {
     }
 }
 
+fn default_true() -> bool {
+    true
+}
+
 /// Unified entity struct — replaces all hecs ECS components.
 ///
 /// Every game object (unit, infantry, building, aircraft) is one `GameEntity`.
@@ -179,6 +183,10 @@ pub struct GameEntity {
     /// Whether this entity can be crushed by vehicles (Crushable= in rules.ini).
     /// Default false — only specific infantry and some walls are crushable.
     pub crushable: bool,
+    /// Whether deployed infantry remains crushable by regular crushers.
+    /// Defaults true; `DeployedCrushable=no` low-silhouette infantry blocks regular crush.
+    #[serde(default = "default_true")]
+    pub deployed_crushable: bool,
     /// Whether this entity can crush non-Crushable targets (OmniCrusher= in rules.ini).
     /// Only Battle Fortress has this in YR.
     pub omni_crusher: bool,
@@ -343,6 +351,7 @@ impl GameEntity {
                 None
             },
             crushable: false,
+            deployed_crushable: true,
             omni_crusher: false,
             omni_crush_resistant: false,
             zfudge_bridge: 7,

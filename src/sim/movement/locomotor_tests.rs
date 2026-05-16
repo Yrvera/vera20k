@@ -5,7 +5,7 @@ use super::*;
 use crate::rules::jumpjet_params::JumpjetParams;
 use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
 use crate::rules::object_type::{ObjectCategory, ObjectType, PipScale};
-use crate::util::fixed_math::{SIM_ONE, SimFixed, sim_from_f32};
+use crate::util::fixed_math::{sim_from_f32, SimFixed, SIM_ONE};
 
 /// Helper to create a minimal ObjectType with the given locomotor.
 fn make_obj(locomotor: LocomotorKind, category: ObjectCategory) -> ObjectType {
@@ -122,6 +122,7 @@ fn make_obj(locomotor: LocomotorKind, category: ObjectCategory) -> ObjectType {
         factory: None,
         exit_coord: None,
         crushable: false,
+        deployed_crushable: true,
         no_force_shield: false,
         omni_crusher: false,
         omni_crush_resistant: false,
