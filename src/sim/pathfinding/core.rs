@@ -20,7 +20,7 @@ use crate::map::bridge_facts::BRIDGE_FLAG_ANCHOR_SELF;
 use crate::map::map_file::MapCell;
 use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
 use crate::map::theater::TilesetLookup;
-use crate::map::tube_facts::TubeId;
+use crate::map::tube_facts::{TubeId, TubeSource};
 use crate::rules::locomotor_type::MovementZone;
 use crate::sim::bridge_state::BridgeRuntimeState;
 use crate::sim::movement::locomotor::MovementLayer;
@@ -137,6 +137,10 @@ const DIR_TIEBREAK: [i32; 8] = [
     4, // W   (original ≈0.004)
     8, // NW  (original ≈0.008)
 ];
+
+/// Direction-8 tube edge tie-breaker. The recovered normal-direction table has
+/// only 8 entries; keep tube jumps after normal edges when costs tie.
+const TUBE_DIR_TIEBREAK: i32 = 9;
 
 /// 8-directional neighbor offsets: (dx, dy, is_diagonal).
 /// Order: N, NE, E, SE, S, SW, W, NW.
@@ -355,6 +359,18 @@ fn encode_from(cell_idx: usize, on_bridge: bool) -> usize {
 
 fn decode_from(value: usize) -> (usize, bool) {
     (value & !CAME_FROM_BRIDGE, value & CAME_FROM_BRIDGE != 0)
+}
+
+fn explicit_tube_edge(
+    terrain: Option<&ResolvedTerrainGrid>,
+    coord: (u16, u16),
+) -> Option<((u16, u16), usize)> {
+    let terrain = terrain?;
+    let tube = terrain.tube_at_cell(coord.0, coord.1)?;
+    if tube.source != TubeSource::ExplicitMap || tube.path_len() == 0 || tube.exit == (0, 0) {
+        return None;
+    }
+    Some((tube.exit, tube.path_len()))
 }
 
 /// Configuration for the unified A* search. All fields optional; defaults
@@ -874,6 +890,49 @@ pub fn astar_search(
                     height: neighbor_height,
                     on_bridge: neighbor_use_bridge,
                 }));
+            }
+        }
+
+        // Direction 8 is a TubeClass jump. It is not an adjacent neighbor and
+        // must not use the normal terrain/height/corner-cut predicates. Auto
+        // low-bridge shells have path_len=0 and remain predicate-only.
+        if !on_bridge {
+            if let Some(((nx, ny), path_len)) =
+                explicit_tube_edge(options.resolved_terrain, (cx, cy))
+            {
+                if nx < grid.width() && ny < grid.height() {
+                    let n_idx = ny as usize * w + nx as usize;
+                    if !ground_closed[n_idx] {
+                        if let Some((zone_map, allowed)) = options.corridor {
+                            let cell_zone = zone_map.zone_at(nx, ny, MovementLayer::Ground);
+                            if cell_zone != super::zone_map::ZONE_INVALID
+                                && !allowed.contains(&cell_zone)
+                            {
+                                continue;
+                            }
+                        }
+
+                        let neighbor_cell = grid.cell(nx, ny).unwrap_or(&DEFAULT_BLOCKED_CELL);
+                        let neighbor_height = neighbor_cell.ground_level;
+                        let tube_steps = i32::try_from(path_len).unwrap_or(1).max(1);
+                        let tentative_g =
+                            current.g_cost + STEP_COST * tube_steps + TUBE_DIR_TIEBREAK;
+
+                        if tentative_g < ground_g[n_idx] {
+                            ground_g[n_idx] = tentative_g;
+                            ground_from[n_idx] = encode_from(c_idx, on_bridge);
+                            let h = euclidean_heuristic(nx, ny, goal.0, goal.1);
+                            open.push(Reverse(AStarNode {
+                                f_cost: tentative_g + h,
+                                g_cost: tentative_g,
+                                x: nx,
+                                y: ny,
+                                height: neighbor_height,
+                                on_bridge: false,
+                            }));
+                        }
+                    }
+                }
             }
         }
     }
@@ -1735,6 +1794,7 @@ pub fn find_layered_path(
     start_layer: MovementLayer,
     goal: (u16, u16),
     terrain_costs: Option<&TerrainCostGrid>,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
     entity_block_map: Option<&LayeredEntityBlockMap>,
     urgency: u8,
     mover_is_crusher: bool,
@@ -1749,6 +1809,7 @@ pub fn find_layered_path(
         goal,
         &AStarOptions {
             terrain_costs,
+            resolved_terrain,
             entity_blocks: ground_blocks,
             bridge_blocks,
             entity_block_map,

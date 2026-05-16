@@ -3058,6 +3058,7 @@ fn test_layered_astar_can_traverse_bridge_after_unrelated_rebuild() {
         (4, 0),
         None,
         None,
+        None,
         0,
         false,
     );
@@ -3079,6 +3080,7 @@ fn test_layered_astar_can_traverse_bridge_after_unrelated_rebuild() {
         (0, 0),
         MovementLayer::Ground,
         (4, 0),
+        None,
         None,
         None,
         0,

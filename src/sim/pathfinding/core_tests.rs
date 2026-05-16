@@ -5,7 +5,7 @@
 use super::*;
 use crate::map::map_file::MapCell;
 use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid, YR_CELL_LAND_TUNNEL};
-use crate::map::tube_facts::TubeId;
+use crate::map::tube_facts::{TubeFact, TubeId};
 use crate::rules::locomotor_type::SpeedType;
 use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
 use crate::sim::bridge_state::{BridgeDamageEvent, BridgeRuntimeState};
@@ -912,6 +912,7 @@ fn test_layered_path_transitions_onto_bridge_and_stays_on_deck() {
         (4, 0),
         None,
         None,
+        None,
         0,
         false,
     )
@@ -941,6 +942,7 @@ fn test_layered_path_stays_on_ground_when_bridge_not_needed() {
         (0, 0),
         MovementLayer::Ground,
         (2, 0),
+        None,
         None,
         None,
         0,
@@ -1006,6 +1008,7 @@ fn test_layered_path_rebuild_blocks_destroyed_bridge_deck() {
             (4, 0),
             None,
             None,
+            None,
             0,
             false,
         )
@@ -1031,6 +1034,7 @@ fn test_layered_path_rebuild_blocks_destroyed_bridge_deck() {
             (0, 0),
             MovementLayer::Ground,
             (4, 0),
+            None,
             None,
             None,
             0,
@@ -1442,6 +1446,76 @@ fn path_grid_preserves_low_bridge_tube_metadata() {
     assert!(path_cell.is_low_bridge_tube_cell());
 }
 
+#[test]
+fn astar_uses_explicit_nonzero_tube_edge() {
+    let mut cells: Vec<_> = (0..5).map(|x| make_resolved_cell(x, 0)).collect();
+    cells[0].yr_cell_land_type = YR_CELL_LAND_TUNNEL;
+    cells[0].tube_index = Some(TubeId(0));
+    for cell in &mut cells[1..4] {
+        cell.ground_walk_blocked = true;
+        cell.base_ground_walk_blocked = true;
+    }
+    let terrain = ResolvedTerrainGrid::from_cells_with_tubes(
+        5,
+        1,
+        cells,
+        vec![TubeFact::explicit((0, 0), (4, 0), 2, vec![2, 2, 2, 2])],
+    );
+    let grid = PathGrid::from_resolved_terrain(&terrain);
+
+    let path = find_path_with_costs(
+        &grid,
+        (0, 0),
+        (4, 0),
+        None,
+        None,
+        None,
+        Some(&terrain),
+        None,
+        0,
+        false,
+    )
+    .expect("explicit nonzero tube should bridge blocked intermediate cells");
+
+    assert_eq!(path, vec![(0, 0), (4, 0)]);
+}
+
+#[test]
+fn astar_rejects_zero_step_auto_shell_tube_edge() {
+    let mut cells: Vec<_> = (0..5).map(|x| make_resolved_cell(x, 0)).collect();
+    cells[0].yr_cell_land_type = YR_CELL_LAND_TUNNEL;
+    cells[0].tube_index = Some(TubeId(0));
+    for cell in &mut cells[1..4] {
+        cell.ground_walk_blocked = true;
+        cell.base_ground_walk_blocked = true;
+    }
+    let terrain = ResolvedTerrainGrid::from_cells_with_tubes(
+        5,
+        1,
+        cells,
+        vec![TubeFact::auto_low_bridge((0, 0), 2)],
+    );
+    let grid = PathGrid::from_resolved_terrain(&terrain);
+
+    let path = find_path_with_costs(
+        &grid,
+        (0, 0),
+        (4, 0),
+        None,
+        None,
+        None,
+        Some(&terrain),
+        None,
+        0,
+        false,
+    );
+
+    assert!(
+        path.is_none(),
+        "zero-step auto shell must not create a visible tube route"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Entity-block (friendly-passable) pathfinding tests
 // ---------------------------------------------------------------------------
@@ -1851,6 +1925,7 @@ fn soft_blocker_cost_uses_selected_bridge_object_list_layer() {
         MovementLayer::Bridge,
         (6, 1),
         None,
+        None,
         Some(&ebm),
         2,
         false,
@@ -1879,6 +1954,7 @@ fn soft_blocker_cost_uses_selected_bridge_object_list_layer() {
         (0, 1),
         MovementLayer::Bridge,
         (6, 1),
+        None,
         None,
         Some(&ebm),
         2,
@@ -2370,6 +2446,7 @@ fn test_height_based_bridge_routing_deck_at_4() {
         (4, 0),
         None,
         None,
+        None,
         0,
         false,
     )
@@ -2429,6 +2506,7 @@ fn test_cliff_cost_uses_effective_height_not_ground_level() {
         (0, 0),
         MovementLayer::Bridge,
         (2, 0),
+        None,
         None,
         None,
         0,

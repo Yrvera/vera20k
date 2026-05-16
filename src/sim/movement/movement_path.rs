@@ -10,11 +10,11 @@ use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::locomotor_type::{LocomotorKind, MovementZone};
 use crate::sim::components::MovementTarget;
 use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
-use crate::sim::pathfinding::LayeredEntityBlockMap;
 use crate::sim::pathfinding::path_smooth;
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
 use crate::sim::pathfinding::zone_search;
-use crate::sim::pathfinding::{MAX_PATH_SEGMENT_STEPS, PathGrid, truncate_layered_path};
+use crate::sim::pathfinding::LayeredEntityBlockMap;
+use crate::sim::pathfinding::{truncate_layered_path, PathGrid, MAX_PATH_SEGMENT_STEPS};
 use crate::sim::rng::SimRng;
 use crate::util::fixed_math::facing_from_delta_int as facing_from_delta;
 
@@ -178,6 +178,7 @@ pub(super) fn find_move_path(
             zone_mz,
             terrain_costs,
             movement_zone,
+            resolved_terrain,
             entity_block_map,
             urgency,
             mover_is_crusher,
@@ -191,6 +192,11 @@ pub(super) fn find_move_path(
             );
             let coords: Vec<(u16, u16)> = path.iter().map(|step| (step.rx, step.ry)).collect();
             let layers: Vec<MovementLayer> = path.iter().map(|step| step.layer).collect();
+            if contains_non_adjacent_step(&coords) {
+                let (coords, layers) =
+                    truncate_layered_path(coords, layers, MAX_PATH_SEGMENT_STEPS);
+                return Some((coords, layers));
+            }
             let layered_smooth_walkable = |x: u16, y: u16, layer: MovementLayer| -> bool {
                 if !grid.is_walkable_on_layer(x, y, layer) {
                     return false;
@@ -242,6 +248,12 @@ pub(super) fn find_move_path(
         mover_is_crusher,
     )?;
 
+    if contains_non_adjacent_step(&path) {
+        let path_layers = build_flat_fallback_layers(&path, start_layer, grid);
+        let (path, path_layers) = truncate_layered_path(path, path_layers, MAX_PATH_SEGMENT_STEPS);
+        return Some((path, path_layers));
+    }
+
     let smooth_walkable = |x: u16, y: u16| -> bool {
         let terrain_ok = if movement_zone.is_some_and(|mz| mz.is_water_mover()) {
             crate::sim::pathfinding::is_cell_passable_for_mover(
@@ -266,6 +278,14 @@ pub(super) fn find_move_path(
     let path_layers = build_flat_fallback_layers(&path, start_layer, grid);
     let (path, path_layers) = truncate_layered_path(path, path_layers, MAX_PATH_SEGMENT_STEPS);
     Some((path, path_layers))
+}
+
+fn contains_non_adjacent_step(path: &[(u16, u16)]) -> bool {
+    path.windows(2).any(|pair| {
+        let dx = pair[1].0.abs_diff(pair[0].0);
+        let dy = pair[1].1.abs_diff(pair[0].1);
+        dx > 1 || dy > 1
+    })
 }
 
 /// Build per-cell movement layers for a flat A* fallback path.
@@ -412,9 +432,14 @@ pub(super) fn try_repath_after_block(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
+    use crate::map::resolved_terrain::{
+        ResolvedTerrainCell, ResolvedTerrainGrid, YR_CELL_LAND_TUNNEL,
+    };
+    use crate::map::tube_facts::{TubeFact, TubeId};
     use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
     use crate::sim::pathfinding::passability::LandType;
+    use crate::sim::pathfinding::zone_map::ZoneGrid;
+    use std::collections::BTreeMap;
 
     fn make_resolved_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
         ResolvedTerrainCell {
@@ -502,5 +527,50 @@ mod tests {
             "water mover redirect should stay on water, got {:?}",
             redirected
         );
+    }
+
+    #[test]
+    fn explicit_tube_path_survives_zone_precheck_and_smoothing() {
+        let mut cells: Vec<_> = (0..5).map(|x| make_resolved_cell(x, 0)).collect();
+        cells[0].yr_cell_land_type = YR_CELL_LAND_TUNNEL;
+        cells[0].tube_index = Some(TubeId(0));
+        for cell in &mut cells[1..4] {
+            cell.ground_walk_blocked = true;
+            cell.base_ground_walk_blocked = true;
+        }
+        let terrain = ResolvedTerrainGrid::from_cells_with_tubes(
+            5,
+            1,
+            cells,
+            vec![TubeFact::explicit((0, 0), (4, 0), 2, vec![2, 2, 2, 2])],
+        );
+        let grid = PathGrid::from_resolved_terrain(&terrain);
+        let zone_grid = ZoneGrid::build(&grid, &BTreeMap::new(), 5, 1);
+
+        let (path, layers) = find_move_path(
+            PathfindingContext {
+                path_grid: Some(&grid),
+                zone_grid: Some(&zone_grid),
+                resolved_terrain: Some(&terrain),
+            },
+            false,
+            (0, 0),
+            MovementLayer::Ground,
+            (4, 0),
+            None,
+            None,
+            None,
+            None,
+            MovementZone::Normal,
+            Some(MovementZone::Normal),
+            false,
+            None,
+            0,
+            false,
+        )
+        .expect("movement path should use explicit tube despite disconnected zones");
+
+        assert_eq!(path, vec![(0, 0), (4, 0)]);
+        assert_eq!(layers, vec![MovementLayer::Ground, MovementLayer::Ground]);
     }
 }
