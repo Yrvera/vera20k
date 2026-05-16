@@ -533,17 +533,22 @@ fn dock_queuing_one_at_a_time() {
 }
 
 // ==========================================================================
-// Test 8: Credits arrive incrementally during unload (not instant)
+// Test 8: Credits arrive per slot drain (whole-slot dump per timer tick)
 // ==========================================================================
+/// gamemd dumps an entire StorageClass slot (all bales of one resource type)
+/// per HarvesterDumpRate threshold crossing. Pure-ore cargo drains in one
+/// dump tick (~15 frames after dock-link); mixed ore+gems drains in two.
+/// Test pure-ore (1 slot) and mixed (2 slots) and assert each slot fully
+/// arrives on a single tick.
 #[test]
-fn credits_arrive_incrementally_during_unload() {
+fn credits_arrive_per_slot_during_unload() {
+    // --- Pure ore (1 slot) ---
     let mut sim = Simulation::new();
     let rules = miner_rules();
 
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 14, 11);
     spawn_refinery(&mut sim, 2, 10, 10);
 
-    // Load 10 bales (250 credits total).
     {
         let entity = sim.entities.get_mut(miner_id).expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
@@ -556,35 +561,68 @@ fn credits_arrive_incrementally_during_unload() {
         miner.state = MinerState::Dock;
         miner.dock_phase = RefineryDockPhase::Unloading;
         miner.reserved_refinery = Some(2);
+        miner.unload_timer = 0;
     }
+    sim.production.dock_reservations.try_reserve(2, miner_id);
 
     let before = credits_for_owner(&sim, "Americans");
 
-    // After 1 tick: dock grants, transition to Unload, first bale popped immediately.
+    // Single tick at timer=0 drains the entire ore slot → 10 × 25 = 250
+    // credits in one shot.
     tick_miners_n(&mut sim, &rules, 1);
-    let after_1 = credits_for_owner(&sim, "Americans");
-    // First unload_timer is 0, so first bale pops on first unload tick.
-    assert!(
-        after_1 - before <= 25,
-        "Should have at most 1 bale worth after first tick"
-    );
-
-    // After a few more ticks, should have more but NOT all.
-    // unload_tick_interval=57, so 10 bails need ~570 ticks total.
-    tick_miners_n(&mut sim, &rules, 50);
-    let after_51 = credits_for_owner(&sim, "Americans");
-    assert!(
-        after_51 - before < 250,
-        "Credits should not be fully delivered after only 51 ticks (need ~570 ticks for 10 bails)"
-    );
-
-    // After enough ticks, all 250 delivered.
-    tick_miners_n(&mut sim, &rules, 600);
-    let after_all = credits_for_owner(&sim, "Americans");
+    let after = credits_for_owner(&sim, "Americans");
     assert_eq!(
-        after_all - before,
+        after - before,
         250,
-        "All 10 bales = 250 credits should be delivered"
+        "pure-ore cargo must drain in one slot dump (250 cr in one tick)",
+    );
+
+    // --- Mixed ore + gems (2 slots) ---
+    let mut sim = Simulation::new();
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 14, 11);
+    spawn_refinery(&mut sim, 2, 10, 10);
+
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        for _ in 0..10 {
+            miner.cargo.push(CargoBale {
+                resource_type: ResourceType::Ore,
+                value: 25,
+            });
+        }
+        for _ in 0..5 {
+            miner.cargo.push(CargoBale {
+                resource_type: ResourceType::Gem,
+                value: 50,
+            });
+        }
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::Unloading;
+        miner.reserved_refinery = Some(2);
+        miner.unload_timer = 0;
+    }
+    sim.production.dock_reservations.try_reserve(2, miner_id);
+
+    let before = credits_for_owner(&sim, "Americans");
+    tick_miners_n(&mut sim, &rules, 1);
+    let after_first_drain = credits_for_owner(&sim, "Americans");
+    assert_eq!(
+        after_first_drain - before,
+        250,
+        "first drain must be ORE slot (slot 0) = 10 × 25 = 250 cr",
+    );
+
+    // Second drain fires one full unload_tick_interval later. With the
+    // decrement-then-check structure (timer -= 10 happens BEFORE the drain
+    // check), timer crosses ≤ 0 on the 16th tick after the first drain
+    // (144 → 134 → ... → 4 → -6 → drain).
+    tick_miners_n(&mut sim, &rules, 16);
+    let after_second_drain = credits_for_owner(&sim, "Americans");
+    assert_eq!(
+        after_second_drain - before,
+        250 + 250,
+        "second drain must be GEM slot = 5 × 50 = 250 cr (total 500)",
     );
 }
 
@@ -1516,11 +1554,14 @@ fn dock_exit_returns_to_search_ore() {
     assert!(m.cargo.is_empty(), "Cargo should be empty");
 }
 
-/// After Departing arrival, both `target_ore_cell` and `last_harvest_cell` must
-/// be cleared so SearchOre re-scans from the exit cell instead of biasing
-/// toward the previous patch (which may sit on the back side of the refinery).
+/// After Departing arrival: `target_ore_cell` is cleared (the pending
+/// pre-dock target has been consumed), but `last_harvest_cell` is
+/// PRESERVED — gamemd's `+0x218` ghost-cell archive survives the
+/// entire dock cycle (Mission_Deploy_Building and UndockUnit leave
+/// it untouched), so the next SearchOre can return directly to the
+/// nearby productive patch saved when this miner became full.
 #[test]
-fn exit_pad_clears_ore_targets_on_arrival() {
+fn exit_pad_preserves_archive_on_arrival() {
     let mut sim = Simulation::new();
     let rules = miner_rules();
     let config = MinerConfig::default();
@@ -1531,7 +1572,8 @@ fn exit_pad_clears_ore_targets_on_arrival() {
     spawn_refinery(&mut sim, 100, 10, 10);
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 9, 11);
 
-    // Set up the miner mid-Departing with stale archive populated.
+    // Set up the miner mid-Departing with an archive populated (as if a
+    // prior State 1 full-path saved a nearby productive patch).
     let entity = sim.entities.get_mut(miner_id).expect("miner entity");
     let miner = entity.miner.as_mut().expect("miner component");
     miner.state = MinerState::Dock;
@@ -1539,7 +1581,7 @@ fn exit_pad_clears_ore_targets_on_arrival() {
     miner.reserved_refinery = Some(100);
     miner.dock_queued = false;
     miner.target_ore_cell = Some((20, 20)); // pre-dock target
-    miner.last_harvest_cell = Some((20, 20)); // pre-dock archive
+    miner.last_harvest_cell = Some((20, 20)); // archive from State 1 full-path
 
     // Tick the miner system — should detect arrival and run the cleanup.
     crate::sim::miner::miner_system::tick_miners(&mut sim, &rules, &config, Some(&path_grid));
@@ -1553,11 +1595,13 @@ fn exit_pad_clears_ore_targets_on_arrival() {
     );
     assert!(
         miner.target_ore_cell.is_none(),
-        "target_ore_cell must be cleared"
+        "target_ore_cell must be cleared (pre-dock target consumed)"
     );
-    assert!(
-        miner.last_harvest_cell.is_none(),
-        "last_harvest_cell must be cleared"
+    assert_eq!(
+        miner.last_harvest_cell,
+        Some((20, 20)),
+        "last_harvest_cell (archive) must SURVIVE the dock cycle — \
+         gamemd's +0x218 is untouched by the unload state machine",
     );
     assert!(
         miner.reserved_refinery.is_none(),
@@ -1620,18 +1664,11 @@ fn exit_pad_blocks_transition_during_teleport() {
 
 /// Smoke test for the post-undock flow with a stale archive.
 ///
-/// Sets up a chrono miner mid-Departing with `last_harvest_cell` pointing to a
-/// patch outside the local scan radius. After the fix, the archive is cleared
-/// at exit and SearchOre runs with the miner's current position as search
-/// center, picking the only ore patch in range. Verifies the field-clear
-/// behavior end-to-end (state transitions Departing → SearchOre → MoveToOre,
-/// archive is cleared, fresh target is picked from current position).
-///
-/// NOTE: this does NOT verify the headbutt symptom is fixed. The fix clears
-/// the archive but the search algorithm still picks by geometric distance
-/// (no pathfinding-aware reachability). If a back-side ore patch is the
-/// closest in the user's scenario, the headbutt may recur. That hypothesis
-/// must be tested in-game.
+/// Sets up a chrono miner mid-Departing with `last_harvest_cell` pointing
+/// to a depleted cell. The archive survives the dock cycle (gamemd parity)
+/// but the next SearchOre's archive-consumption check sees no ore at the
+/// archived location, clears the archive, and falls through to the long
+/// scan which finds the only patch on the map.
 #[test]
 fn chrono_miner_archive_cleared_after_undock_picks_new_target() {
     let mut sim = Simulation::new();
@@ -2164,13 +2201,14 @@ fn approach_to_linked_on_reservation_grant() {
     );
 }
 
-/// Unloading emits one BaleDepositEvent per bale popped.
+/// Unloading emits one BaleDepositEvent per StorageClass slot drained
+/// (matches gamemd: SpecialAnim fires per slot, not per bale).
 #[test]
-fn unloading_emits_bale_event_per_bale() {
+fn unloading_emits_one_event_per_slot_drain() {
+    // --- 5 ore bales = 1 slot → 1 event ---
     let mut sim = Simulation::new();
     let rules = miner_rules();
 
-    // Place miner directly in Unloading at the pad cell.
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
     spawn_refinery(&mut sim, 2, 10, 10);
 
@@ -2190,15 +2228,48 @@ fn unloading_emits_bale_event_per_bale() {
     }
     sim.production.dock_reservations.try_reserve(2, miner_id);
 
-    // Tick enough to cycle through 5 bales (~14 ticks each, plus the trailing
-    // empty-cargo tick that transitions to Departing).
     tick_miners_n(&mut sim, &rules, 200);
 
     assert_eq!(
         sim.bale_events.len(),
-        5,
-        "expected one BaleDepositEvent per bale popped, got {} events",
+        1,
+        "pure-ore cargo must drain in one slot dump = one BaleDepositEvent",
+    );
+    assert_eq!(sim.bale_events[0].building_id, 2);
+
+    // --- 5 ore + 3 gems = 2 slots → 2 events ---
+    let mut sim = Simulation::new();
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
+    spawn_refinery(&mut sim, 2, 10, 10);
+
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        for _ in 0..5 {
+            miner.cargo.push(CargoBale {
+                resource_type: ResourceType::Ore,
+                value: 25,
+            });
+        }
+        for _ in 0..3 {
+            miner.cargo.push(CargoBale {
+                resource_type: ResourceType::Gem,
+                value: 50,
+            });
+        }
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::Unloading;
+        miner.reserved_refinery = Some(2);
+        miner.unload_timer = 0;
+    }
+    sim.production.dock_reservations.try_reserve(2, miner_id);
+
+    tick_miners_n(&mut sim, &rules, 200);
+
+    assert_eq!(
         sim.bale_events.len(),
+        2,
+        "ore + gem cargo must produce two BaleDepositEvents (one per slot)",
     );
     for event in &sim.bale_events {
         assert_eq!(event.building_id, 2);
@@ -2229,11 +2300,12 @@ fn purifier_rules(bonus_pct: i32) -> RuleSet {
     RuleSet::from_ini(&ini).expect("purifier rules")
 }
 
-/// Per-bale purifier bonus is applied inline as each bale is deposited
-/// (matches gamemd's per-bale credit application). With one bale (value 100)
-/// and a 25% PurifierBonus, total credits gain = 100 + 25 = 125.
+/// Purifier bonus is applied per slot drain on the full slot value
+/// (matches gamemd's `bonus = slot_value × purifier_count × PurifierBonus`).
+/// With one ore slot of value 100 and a 25% PurifierBonus, total credits
+/// gain = 100 + (100 × 1 × 25 / 100) = 125.
 #[test]
-fn unloading_applies_per_bale_purifier_bonus() {
+fn unloading_applies_per_slot_purifier_bonus() {
     let mut sim = Simulation::new();
     let rules = purifier_rules(25);
 
@@ -2401,8 +2473,9 @@ fn linked_to_unloading_on_pad_arrival() {
         m.unload_timer,
         (config.unload_tick_interval as i16) - 10,
         "unload_timer should be initialised one decrement step below the \
-         full interval so the first bale pops exactly 15 ticks after \
-         Linked (matches gamemd per-bale gate at 14.4 frames)",
+         full interval so the first slot drain fires exactly 15 ticks \
+         after Linked (matches gamemd dump-tick gate at HarvesterDumpRate \
+         × 900 = 14.4 frames)",
     );
 
     let entity = sim.entities.get(miner_id).expect("entity");
@@ -2456,12 +2529,11 @@ fn full_dock_cycle_war_miner() {
     // 10 bales × ~14 ticks unload + drive to exit cell + arrival snap.
     tick_miners_n(&mut sim, &rules, 400);
 
-    // Bale events: one per bale.
+    // Bale events: one per slot drain. Pre-loaded with pure ore → 1 slot → 1 event.
     assert_eq!(
         sim.bale_events.len(),
-        bale_count as usize,
-        "expected {} bale events, got {}",
-        bale_count,
+        1,
+        "expected 1 bale event (one slot drain), got {}",
         sim.bale_events.len(),
     );
 
@@ -2790,10 +2862,11 @@ fn harvester_continues_to_short_scan_when_partial_then_empty() {
 /// Unloading transition, not fire immediately. The dump counter starts
 /// at 0 on dock-link and a bale deposits only once the counter reaches
 /// 14.4. With our tenths-of-a-tick precision (timer decrements by 10
-/// per tick before the pop check) the first bale fires 15 unloading
-/// ticks after Linked.
+/// per tick before the drain check) the first slot drain fires 15
+/// unloading ticks after Linked, dumping ALL bales of the first
+/// non-empty resource type at once (matches gamemd's per-slot dump).
 #[test]
-fn dock_first_bale_waits_one_unload_interval() {
+fn dock_first_slot_drain_waits_one_unload_interval() {
     let mut sim = Simulation::new();
     let rules = miner_rules();
     let config = MinerConfig::default();
@@ -2820,31 +2893,31 @@ fn dock_first_bale_waits_one_unload_interval() {
     sim.production.dock_reservations.try_reserve(2, miner_id);
 
     // Linked tick: phase_linked seeds unload_timer and transitions to
-    // Unloading. No bale yet.
+    // Unloading. No drain yet.
     crate::sim::miner::miner_system::tick_miners(&mut sim, &rules, &config, Some(&path_grid));
 
     let initial_cargo = get_miner(&sim, miner_id).cargo.len();
-    assert_eq!(initial_cargo, 5, "no bale should drop on the Linked tick");
+    assert_eq!(initial_cargo, 5, "no drain should fire on the Linked tick");
 
-    // Ticks 2..15 (14 unloading ticks): timer decrements past zero, no pop
-    // yet (the decrement-then-check structure returns before pop on the
-    // tick the timer crosses ≤ 0).
+    // Ticks 2..15 (14 unloading ticks): timer decrements past zero, no drain
+    // yet (decrement-then-check returns before drain on the tick the
+    // timer crosses ≤ 0).
     let pre_drop_ticks = 14usize;
     tick_miners_n(&mut sim, &rules, pre_drop_ticks);
     assert_eq!(
         get_miner(&sim, miner_id).cargo.len(),
         initial_cargo,
-        "no bale should drop in the first {} unloading ticks",
+        "no drain should fire in the first {} unloading ticks",
         pre_drop_ticks,
     );
 
-    // Tick 16 overall (the 15th unloading tick after Linked): first bale
-    // deposits.
+    // Tick 16 overall (the 15th unloading tick after Linked): the entire
+    // ore slot drains in one shot.
     tick_miners_n(&mut sim, &rules, 1);
     assert_eq!(
         get_miner(&sim, miner_id).cargo.len(),
-        initial_cargo - 1,
-        "first bale deposits on the 15th unloading tick after Linked",
+        0,
+        "entire ore slot drains on the 15th unloading tick after Linked",
     );
 }
 

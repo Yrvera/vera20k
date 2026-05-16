@@ -18,7 +18,7 @@
 use crate::rules::art_data::BuildingAnimKind;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::components::BaleDepositEvent;
-use crate::sim::miner::{MinerConfig, MinerState, RefineryDockPhase};
+use crate::sim::miner::{MinerConfig, MinerState, RefineryDockPhase, ResourceType};
 use crate::sim::movement;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::occupancy::OccupancyGrid;
@@ -416,22 +416,39 @@ fn phase_unloading(
         return;
     }
 
-    if let Some(bale) = snap.miner.cargo.pop() {
-        let value: i32 = i32::from(bale.value);
-        let owner_str = sim.interner.resolve(snap.owner).to_string();
+    // Drain one resource-type "slot" per threshold crossing — all bales
+    // of the same type drop in one atomic step. The 14.4-tick interval
+    // is the latency between SLOT drains, not between bale credits.
+    //
+    // Slot order is fixed: Ore first, then Gems, so mixed cargo drains
+    // ore first.
+    const SLOT_ORDER: [ResourceType; 2] = [ResourceType::Ore, ResourceType::Gem];
+    let next_slot = SLOT_ORDER
+        .iter()
+        .copied()
+        .find(|t| snap.miner.cargo.iter().any(|b| b.resource_type == *t));
 
+    if let Some(slot_type) = next_slot {
+        let mut slot_value: i32 = 0;
+        snap.miner.cargo.retain(|b| {
+            if b.resource_type == slot_type {
+                slot_value = slot_value.saturating_add(i32::from(b.value));
+                false
+            } else {
+                true
+            }
+        });
+
+        let owner_str = sim.interner.resolve(snap.owner).to_string();
         {
             let credits = credits_entry_for_owner(sim, &owner_str);
-            *credits = credits.saturating_add(value);
+            *credits = credits.saturating_add(slot_value);
         }
 
-        // Purifier bonus = real_purifiers + AI_virtual_purifiers, all
-        // sourced from the refinery's owner. Bonus credits are routed to
-        // the miner's owner alongside the base credits — matching the
-        // existing credit-destination convention. The per-bale split here
-        // is a downstream of the per-bale cargo model (Finding 1 will
-        // collapse this into one whole-slot dump); the formula itself is
-        // count-correct as of this fix.
+        // Purifier bonus applied once per slot drain:
+        //   bonus = floor(slot_value × purifier_count × PurifierBonus)
+        // Multiplying by the whole slot eliminates the per-bale integer
+        // truncation that previously under-paid by ~PurifierBonus% per bale.
         let refinery_owner_id = sim.entities.get(ref_sid).map(|b| b.owner);
         let refinery_owner: String = refinery_owner_id
             .map(|id| sim.interner.resolve(id).to_string())
@@ -439,7 +456,7 @@ fn phase_unloading(
         let purifier_count = effective_purifier_count(sim, rules, &refinery_owner);
         if purifier_count > 0 {
             let bonus_pct: i32 = rules.general.purifier_bonus_pct;
-            let bonus: i32 = value
+            let bonus: i32 = slot_value
                 .saturating_mul(purifier_count)
                 .saturating_mul(bonus_pct)
                 / 100;
@@ -449,6 +466,8 @@ fn phase_unloading(
             }
         }
 
+        // One deposit event per slot drain — drives one SpecialAnim play
+        // and one smoke-particle spawn per slot.
         sim.bale_events.push(BaleDepositEvent {
             building_id: ref_sid,
             tick: sim.tick,
@@ -548,9 +567,11 @@ fn phase_departing(
         snap.miner.reserved_refinery = None;
         snap.miner.dock_queued = false;
         snap.miner.forced_return = false;
-        // Clear stale ore targets so SearchOre re-scans from the exit cell.
+        // Clear the pending ore target (it has been consumed). Preserve
+        // `last_harvest_cell` — the ghost-cell archive must survive the
+        // entire dock cycle so the next `SearchOre` returns directly to
+        // the productive patch saved when this miner became full.
         snap.miner.target_ore_cell = None;
-        snap.miner.last_harvest_cell = None;
         snap.miner.dock_phase = RefineryDockPhase::Approach;
         snap.miner.state = MinerState::SearchOre;
         return;

@@ -253,48 +253,34 @@ fn handle_search_ore(
     _path_grid: Option<&PathGrid>,
     snap: &mut MinerSnapshot,
 ) {
-    let search_center = snap.miner.last_harvest_cell.unwrap_or((snap.rx, snap.ry));
-
     // Reachability filter — see build_reachable_filter for the fallback
     // semantics when zone_grid / locomotor / anchor is missing.
     let reachable_filter = build_reachable_filter(sim, snap);
     let filter_ref: Option<&dyn Fn((u16, u16)) -> bool> = reachable_filter.as_deref();
 
-    // Try local continuation scan first (short radius around last harvest spot).
-    if let Some(cell) = search_local_ore(
-        &sim.production.resource_nodes,
-        search_center,
-        config.local_continuation_radius,
-        filter_ref,
-    ) {
-        snap.miner.target_ore_cell = Some(cell);
-        snap.miner.state = MinerState::MoveToOre;
-        return;
-    }
-
-    // gamemd.exe (0x0073E844): both war miners and chrono miners use
-    // TiberiumLongScan for the initial search — no early exit for chrono.
-    // The only chrono-specific behavior is stopping piggybacked locomotion
-    // before the scan, which we handle elsewhere.
-
-    // ArchiveTarget pattern (from RA1): if we remember a productive patch and it
-    // still has ore AND it's reachable, go back there before doing a full global
-    // search. Skipping the reachability check here would re-target a patch the
-    // harvester can't reach (e.g., walled off mid-cycle).
+    // Archive ghost-cell consumption: if `last_harvest_cell` is set,
+    // drive straight to it and clear. The archive is written by
+    // `save_archive_via_short_scan` when the miner becomes full.
+    // Reachability is re-checked because the patch may have been walled
+    // off between the save and the next cycle.
     if let Some(archive) = snap.miner.last_harvest_cell {
         let archive_has_ore = sim.production.resource_nodes.contains_key(&archive);
         let archive_reachable = filter_ref.is_none_or(|f| f(archive));
         if archive_has_ore && archive_reachable {
             snap.miner.target_ore_cell = Some(archive);
             snap.miner.state = MinerState::MoveToOre;
-            // Clear archive so we don't loop back forever if it depletes on arrival.
             snap.miner.last_harvest_cell = None;
             return;
         }
+        // Stale archive (depleted or unreachable) — drop it so we don't
+        // keep retrying.
+        snap.miner.last_harvest_cell = None;
     }
 
-    // Long-range bounded scan from the miner's current position (TiberiumLongScan).
-    // Finds a new ore patch within a larger radius before falling back to unbounded global.
+    // Long-range bounded scan from the miner's current position
+    // (TiberiumLongScan). Single scan with no separate short-scan
+    // pre-pass — the search expands outward and picks the best cell
+    // within radius. Used for both war miners and chrono miners.
     if let Some(cell) = search_local_ore(
         &sim.production.resource_nodes,
         (snap.rx, snap.ry),
@@ -428,9 +414,12 @@ fn handle_harvest(
 
     if !bales.is_empty() {
         snap.miner.cargo.extend(bales);
-        snap.miner.last_harvest_cell = Some(cell);
 
         if snap.miner.is_full() {
+            // Becoming-full: save an archive ghost cell pointing at a
+            // nearby still-productive patch so the next `SearchOre`
+            // (after dock) returns directly to it.
+            save_archive_via_short_scan(sim, config, snap);
             begin_return(sim, rules, config, path_grid, snap);
             return;
         }
@@ -444,16 +433,14 @@ fn handle_harvest(
         return;
     }
 
-    // No bales extracted (cell empty). Mirrors gamemd Mission_Harvest
-    // case 1 when Harvest_Ore_Tick returns 0:
-    //   1. Full Harvester → state 2 (return), no scan.
-    //   2. Otherwise run a TiberiumShortScan continuation scan from the
-    //      current cell. Hit → keep harvesting (we use MoveToOre, which
+    // No bales extracted (cell empty). Three sub-paths:
+    //   1. Full → return, save archive via short scan.
+    //   2. Otherwise run a short continuation scan from the current
+    //      cell. Hit → keep harvesting (we use MoveToOre, which
     //      re-enters Harvest on arrival).
-    //   3. Miss → state 2 (return), regardless of cargo. Empty miners
-    //      detour to the refinery and re-scan from there, matching the
-    //      original observable travel path.
+    //   3. Miss while not full → return, clear archive.
     if snap.miner.is_full() {
+        save_archive_via_short_scan(sim, config, snap);
         begin_return(sim, rules, config, path_grid, snap);
         return;
     }
@@ -476,8 +463,24 @@ fn handle_harvest(
         return;
     }
 
-    // Scan miss → return to refinery.
+    // Scan miss while not full → return to refinery, clear archive.
+    snap.miner.last_harvest_cell = None;
     begin_return(sim, rules, config, path_grid, snap);
+}
+
+/// Save a fresh ghost-cell archive by running a short-radius scan from
+/// the miner's current position. Called when the miner becomes full so
+/// the next `SearchOre` cycle can return directly to a nearby still-
+/// productive patch. On scan miss, clears the archive.
+fn save_archive_via_short_scan(sim: &Simulation, config: &MinerConfig, snap: &mut MinerSnapshot) {
+    let reachable_filter = build_reachable_filter(sim, snap);
+    let filter_ref: Option<&dyn Fn((u16, u16)) -> bool> = reachable_filter.as_deref();
+    snap.miner.last_harvest_cell = search_local_ore(
+        &sim.production.resource_nodes,
+        (snap.rx, snap.ry),
+        config.local_continuation_radius,
+        filter_ref,
+    );
 }
 
 fn handle_return(

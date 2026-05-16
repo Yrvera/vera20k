@@ -90,7 +90,10 @@ pub enum RefineryDockPhase {
     /// DockDeploy sound, set display_type_override, init unload_timer,
     /// transition to Unloading.
     Linked,
-    /// Per-bale deposit pulse. Each bale emits BaleDepositEvent.
+    /// Per-slot deposit pulse. Each timer crossing (HarvesterDumpRate × 900
+    /// = 14.4 ticks) drains one StorageClass slot — all bales of one
+    /// resource type at once — and emits a single BaleDepositEvent.
+    /// Slot order matches gamemd: Ore (slot 0) first, Gems (slot 1) second.
     /// On cargo empty: seed `deposit_cooldown_ticks` from the refinery's
     /// SpecialAnim cycle and transition to DepositCooldown.
     Unloading,
@@ -246,7 +249,11 @@ pub struct Miner {
     pub dock_queued: bool,
     /// Cooldown ticks before re-scanning for ore in WaitNoOre state.
     pub rescan_cooldown: u8,
-    /// Last cell we successfully harvested from (for local continuation search).
+    /// Archive ("ghost cell") of a nearby still-productive ore patch,
+    /// saved on the `Harvest` → `ReturnToRefinery` transition (when the
+    /// miner becomes full). Survives the entire dock cycle so the next
+    /// `SearchOre` returns directly to it; consumed and cleared at
+    /// `SearchOre` entry.
     pub last_harvest_cell: Option<(u16, u16)>,
     /// Current phase of the refinery docking sequence.
     /// Only meaningful when `state == MinerState::Dock`.
