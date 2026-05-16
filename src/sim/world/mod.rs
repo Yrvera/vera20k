@@ -1198,6 +1198,10 @@ impl Simulation {
             //   that combat (Phase 5) and animation (post-tick) read this tick.
             crate::sim::deploy::tick_deploy_state(&mut self.entities);
 
+            // Infantry fear decay and runtime prone transitions happen after
+            // deploy state and before combat consumes the prone bit.
+            crate::sim::infantry::tick_fear_for_entities(&mut self.entities, rules, &self.interner);
+
             // --- Phase 5: Combat + Turret rotation ---
             // DEPENDS ON: vision/fog (targeting uses fog state), power (cloaking).
             // Combat reads barrel.current(binary_frame) at the START of the tick

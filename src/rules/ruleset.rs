@@ -222,6 +222,8 @@ pub struct GeneralRules {
     /// Health ratio threshold below which the bar turns yellow (ConditionYellow= in [AudioVisual]).
     /// Default 0.5 (50%).
     pub condition_yellow: f32,
+    /// `condition_yellow` pre-scaled to integer x1000 for deterministic sim comparisons.
+    pub condition_yellow_x1000: i64,
     /// Health ratio threshold below which the bar turns red (ConditionRed= in [AudioVisual]).
     /// Default 0.25 (25%).
     pub condition_red: f32,
@@ -541,6 +543,7 @@ impl Default for GeneralRules {
             attack_cursor_on_disguise: false,
             tree_targeting: false,
             condition_yellow: 0.5,
+            condition_yellow_x1000: 500,
             condition_red: 0.25,
             condition_red_x1000: 250,
             building_garrisoned_sound: None,
@@ -773,6 +776,9 @@ impl GeneralRules {
                 .unwrap_or_else(|| default.to_string())
         };
         let defaults = Self::default();
+        let condition_yellow_f32: f32 = audio_visual
+            .and_then(|s| s.get_percent("ConditionYellow"))
+            .unwrap_or(0.5);
         let condition_red_f32: f32 = audio_visual
             .and_then(|s| s.get_percent("ConditionRed"))
             .unwrap_or(0.25);
@@ -832,9 +838,8 @@ impl GeneralRules {
             growth_rate_minutes: general.get_f32("GrowthRate").unwrap_or(5.0),
             attack_cursor_on_disguise: general.get_bool("AttackCursorOnDisguise").unwrap_or(false),
             tree_targeting: general.get_bool("TreeTargeting").unwrap_or(false),
-            condition_yellow: audio_visual
-                .and_then(|s| s.get_percent("ConditionYellow"))
-                .unwrap_or(0.5),
+            condition_yellow: condition_yellow_f32,
+            condition_yellow_x1000: (condition_yellow_f32 as f64 * 1000.0) as i64,
             condition_red: condition_red_f32,
             condition_red_x1000: (condition_red_f32 as f64 * 1000.0) as i64,
             building_garrisoned_sound: audio_visual
@@ -1667,15 +1672,27 @@ impl RuleSet {
         let mut patched: u32 = 0;
         let mut dock_patched: u32 = 0;
         let mut buildings_checked: u32 = 0;
+        let mut infantry_checked: u32 = 0;
+        let mut crawls_patched: u32 = 0;
         for obj in self.objects.values_mut() {
-            if obj.category != crate::rules::object_type::ObjectCategory::Building {
-                continue;
-            }
-            buildings_checked += 1;
             // Resolve the art.ini section: use Image= override if present,
             // otherwise fall back to the object ID itself.
             let art_key: &str = &obj.image;
             let entry = art.get(art_key).or_else(|| art.get(&obj.id));
+            if obj.category == crate::rules::object_type::ObjectCategory::Infantry {
+                infantry_checked += 1;
+                if let Some(entry) = entry {
+                    obj.crawls = entry.crawls;
+                    if entry.crawls {
+                        crawls_patched += 1;
+                    }
+                }
+                continue;
+            }
+            if obj.category != crate::rules::object_type::ObjectCategory::Building {
+                continue;
+            }
+            buildings_checked += 1;
             if let Some(entry) = entry {
                 if let Some(ref foundation) = entry.foundation {
                     if obj.foundation != *foundation {
@@ -1729,6 +1746,11 @@ impl RuleSet {
             patched,
             dock_patched,
             buildings_checked,
+        );
+        log::trace!(
+            "Merged infantry art metadata: {} Crawls flags ({} infantry checked)",
+            crawls_patched,
+            infantry_checked,
         );
     }
 
@@ -2854,6 +2876,24 @@ ZAdjust=-10
         let obj = rules.object("GAREFN").expect("GAREFN");
         assert_eq!(obj.add_occupy, vec![(-1, 0), (-1, -1)]);
         assert_eq!(obj.remove_occupy, vec![(3, 1)]);
+    }
+
+    #[test]
+    fn merge_art_propagates_infantry_crawls_without_building_side_effects() {
+        let rules_text = format!(
+            "{}\n[InfantryTypes]\n0=E1\n\n[BuildingTypes]\n0=GAPOWR\n\n[E1]\nName=GI\nImage=GI\nStrength=125\nArmor=flak\nSpeed=4\n\n[GAPOWR]\nName=Power\nStrength=750\nArmor=wood\nFoundation=2x2\n",
+            make_test_rules()
+        );
+        let rules_ini = IniFile::from_str(&rules_text);
+        let mut rules = RuleSet::from_ini(&rules_ini).expect("rules parse");
+        let art_ini = IniFile::from_str("[GI]\nCrawls=yes\n\n[GAPOWR]\nCrawls=yes\n");
+        let art = crate::rules::art_data::ArtRegistry::from_ini(&art_ini);
+        rules.merge_art_data(&art);
+
+        assert!(rules.object("E1").expect("E1").crawls);
+        let building = rules.object("GAPOWR").expect("GAPOWR");
+        assert!(!building.crawls);
+        assert_eq!(building.foundation, "2x2");
     }
 
     #[test]

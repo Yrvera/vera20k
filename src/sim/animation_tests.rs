@@ -367,6 +367,118 @@ fn test_tick_attack_triggers_fire_animation() {
     assert_eq!(anim.sequence, SequenceKind::Attack);
 }
 
+fn add_prone_sequences(set: &mut SequenceSet) {
+    for (kind, next) in [
+        (SequenceKind::Prone, None),
+        (SequenceKind::Crawl, None),
+        (SequenceKind::FireProne, Some(SequenceKind::Prone)),
+        (SequenceKind::Down, Some(SequenceKind::Prone)),
+        (SequenceKind::Up, Some(SequenceKind::Stand)),
+    ] {
+        set.insert(
+            kind,
+            SequenceDef {
+                start_frame: 200,
+                frame_count: 1,
+                facings: 8,
+                facing_multiplier: 1,
+                tick_ms: 16,
+                loop_mode: next.map_or(LoopMode::Loop, LoopMode::TransitionTo),
+                clockwise_facings: false,
+            },
+        );
+    }
+}
+
+#[test]
+fn test_runtime_prone_drives_prone_crawl_and_fireprone() {
+    let mut interner = make_test_interner();
+    let mut sequences = BTreeMap::new();
+    let mut set = default_infantry_sequences();
+    add_prone_sequences(&mut set);
+    sequences.insert("E1".to_string(), set);
+
+    let mut store = EntityStore::new();
+    let mut idle = make_infantry_entity(1, 0, &mut interner);
+    idle.infantry.as_mut().unwrap().is_prone = true;
+    store.insert(idle);
+    tick_animations(&mut store, &sequences, 1, &interner);
+    assert_eq!(
+        store.get(1).unwrap().animation.as_ref().unwrap().sequence,
+        SequenceKind::Prone
+    );
+
+    let mut moving = make_infantry_entity(2, 0, &mut interner);
+    moving.infantry.as_mut().unwrap().is_prone = true;
+    moving.movement_target = Some(make_movement_target());
+    store.insert(moving);
+    tick_animations(&mut store, &sequences, 1, &interner);
+    assert_eq!(
+        store.get(2).unwrap().animation.as_ref().unwrap().sequence,
+        SequenceKind::Crawl
+    );
+
+    let mut firing = make_infantry_entity(3, 0, &mut interner);
+    firing.infantry.as_mut().unwrap().is_prone = true;
+    firing.attack_target = Some(AttackTarget::new(999));
+    store.insert(firing);
+    tick_animations(&mut store, &sequences, 1, &interner);
+    assert_eq!(
+        store.get(3).unwrap().animation.as_ref().unwrap().sequence,
+        SequenceKind::FireProne
+    );
+}
+
+#[test]
+fn test_down_and_up_transitions_are_preserved_until_complete() {
+    let mut interner = make_test_interner();
+    let mut store = EntityStore::new();
+    let mut e = make_infantry_entity(1, 0, &mut interner);
+    e.infantry.as_mut().unwrap().is_prone = true;
+    e.animation = Some(Animation::new(SequenceKind::Down));
+    e.movement_target = Some(make_movement_target());
+    store.insert(e);
+
+    let mut set = default_infantry_sequences();
+    set.insert(
+        SequenceKind::Down,
+        SequenceDef {
+            start_frame: 200,
+            frame_count: 3,
+            facings: 8,
+            facing_multiplier: 3,
+            tick_ms: 100,
+            loop_mode: LoopMode::TransitionTo(SequenceKind::Prone),
+            clockwise_facings: false,
+        },
+    );
+    set.insert(
+        SequenceKind::Prone,
+        SequenceDef {
+            start_frame: 210,
+            frame_count: 1,
+            facings: 8,
+            facing_multiplier: 1,
+            tick_ms: 100,
+            loop_mode: LoopMode::Loop,
+            clockwise_facings: false,
+        },
+    );
+    let mut sequences = BTreeMap::new();
+    sequences.insert("E1".to_string(), set);
+
+    tick_animations(&mut store, &sequences, 100, &interner);
+    assert_eq!(
+        store.get(1).unwrap().animation.as_ref().unwrap().sequence,
+        SequenceKind::Down
+    );
+    tick_animations(&mut store, &sequences, 300, &interner);
+    assert_eq!(
+        store.get(1).unwrap().animation.as_ref().unwrap().sequence,
+        SequenceKind::Prone
+    );
+}
+
 #[test]
 fn test_tick_dying_entity_skips_transitions() {
     let mut interner = make_test_interner();

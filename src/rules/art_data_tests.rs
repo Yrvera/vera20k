@@ -76,10 +76,10 @@ fn test_voxel_asset_names() {
 #[test]
 fn test_from_ini_parses_entries() {
     let ini: IniFile = IniFile::from_str(
-        "[GAPOWR]\nNewTheater=yes\nCameo=GAPICON\n\n[HTNK]\nVoxel=yes\nAltCameo=HTKALT\n\n[NACNST]\nImage=CIVNC\n",
+        "[GAPOWR]\nNewTheater=yes\nCameo=GAPICON\n\n[HTNK]\nVoxel=yes\nAltCameo=HTKALT\n\n[NACNST]\nImage=CIVNC\n\n[GI]\nCrawls=yes\n",
     );
     let reg: ArtRegistry = ArtRegistry::from_ini(&ini);
-    assert_eq!(reg.len(), 3);
+    assert_eq!(reg.len(), 4);
 
     let gapowr: &ArtEntry = reg.get("GAPOWR").expect("GAPOWR exists");
     assert!(gapowr.new_theater);
@@ -94,6 +94,9 @@ fn test_from_ini_parses_entries() {
 
     let nacnst: &ArtEntry = reg.get("NACNST").expect("NACNST exists");
     assert_eq!(nacnst.image.as_deref(), Some("CIVNC"));
+
+    let gi: &ArtEntry = reg.get("GI").expect("GI exists");
+    assert!(gi.crawls);
 }
 
 #[test]

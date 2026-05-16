@@ -41,6 +41,22 @@ use crate::sim::passenger::PassengerRole;
 use crate::sim::slave_miner::SlaveHarvester;
 use crate::sim::superweapon::invulnerability::InvulnerabilityState;
 
+/// Infantry-only runtime fear/prone state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct InfantryRuntime {
+    pub fear_level: u16,
+    pub is_prone: bool,
+}
+
+impl InfantryRuntime {
+    pub fn new() -> Self {
+        Self {
+            fear_level: 0,
+            is_prone: false,
+        }
+    }
+}
+
 /// Unified entity struct — replaces all hecs ECS components.
 ///
 /// Every game object (unit, infantry, building, aircraft) is one `GameEntity`.
@@ -227,6 +243,9 @@ pub struct GameEntity {
     /// read it (weapon pick is target-driven).
     #[serde(default)]
     pub deploy_state: Option<DeployPhase>,
+    /// Infantry fear/prone runtime. `None` for non-infantry entities.
+    #[serde(default)]
+    pub infantry: Option<InfantryRuntime>,
     /// Body rocking + slope-transition state. `None` for entities that don't
     /// rock (infantry, aircraft, SHP-bodied buildings). `Some(default)` for
     /// vehicles and voxel-bodied buildings.
@@ -338,6 +357,11 @@ impl GameEntity {
             c4_plant: None,
             pending_c4_detonation: None,
             deploy_state: None,
+            infantry: if category == EntityCategory::Infantry {
+                Some(InfantryRuntime::new())
+            } else {
+                None
+            },
             rocking: None,
             debug_log: None,
         }
@@ -387,6 +411,7 @@ impl GameEntity {
             MovementLayer::Ground
         })
     }
+
     /// Whether this entity is currently on a bridge deck.
     pub fn is_on_bridge_layer(&self) -> bool {
         self.on_bridge

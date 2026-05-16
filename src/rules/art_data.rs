@@ -61,6 +61,8 @@ pub struct ArtEntry {
     /// Infantry animation sequence definition name (e.g., "ConSequence").
     /// Points to a `[ConSequence]`-style section in art.ini with frame layouts.
     pub sequence: Option<String>,
+    /// Infantry `Crawls=` art flag. Merged into ObjectType for sim stance speed.
+    pub crawls: bool,
     /// Muzzle offset for primary weapon fire (from art.ini `PrimaryFireFLH=`).
     pub primary_fire_flh: Flh,
     /// Muzzle offset for secondary weapon fire (from art.ini `SecondaryFireFLH=`).
@@ -241,6 +243,7 @@ impl ArtRegistry {
                 .get("Sequence")
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_string());
+            let crawls = section.get_bool("Crawls").unwrap_or(false);
             let primary_fire_flh: Flh = parse_flh(section.get("PrimaryFireFLH"));
             let secondary_fire_flh: Flh = parse_flh(section.get("SecondaryFireFLH"));
             let elite_primary_fire_flh: Option<Flh> = section
@@ -388,6 +391,7 @@ impl ArtRegistry {
                     bib_shape,
                     palette,
                     sequence,
+                    crawls,
                     primary_fire_flh,
                     secondary_fire_flh,
                     elite_primary_fire_flh,

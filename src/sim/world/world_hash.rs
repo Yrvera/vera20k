@@ -408,6 +408,14 @@ impl Simulation {
                 }
             }
 
+            if let Some(infantry) = entity.infantry {
+                1u8.hash(hasher);
+                infantry.fear_level.hash(hasher);
+                infantry.is_prone.hash(hasher);
+            } else {
+                0u8.hash(hasher);
+            }
+
             if let Some(ref miner) = entity.miner {
                 1u8.hash(hasher);
                 (miner.state as u8).hash(hasher);
@@ -637,6 +645,61 @@ mod tube_movement_hash_tests {
         sim_a.entities.insert(entity_a);
         sim_b.entities.insert(entity_b);
 
+        assert_ne!(sim_a.state_hash(), sim_b.state_hash());
+    }
+}
+
+#[cfg(test)]
+mod infantry_hash_tests {
+    use super::Simulation;
+    use crate::map::entities::EntityCategory;
+    use crate::sim::components::Health;
+    use crate::sim::game_entity::{GameEntity, InfantryRuntime};
+
+    fn infantry_entity(sim: &mut Simulation) -> GameEntity {
+        GameEntity::new(
+            1,
+            0,
+            0,
+            0,
+            0,
+            sim.interner.intern("Allies"),
+            Health {
+                current: 100,
+                max: 100,
+            },
+            sim.interner.intern("E1"),
+            EntityCategory::Infantry,
+            0,
+            5,
+            false,
+        )
+    }
+
+    #[test]
+    fn infantry_fear_and_prone_change_hash() {
+        let mut sim_a = Simulation::new();
+        let mut sim_b = Simulation::new();
+        let mut a = infantry_entity(&mut sim_a);
+        let b = infantry_entity(&mut sim_b);
+        a.infantry = Some(InfantryRuntime {
+            fear_level: 10,
+            is_prone: false,
+        });
+        sim_a.entities.insert(a);
+        sim_b.entities.insert(b);
+        assert_ne!(sim_a.state_hash(), sim_b.state_hash());
+
+        let mut sim_a = Simulation::new();
+        let mut sim_b = Simulation::new();
+        let mut a = infantry_entity(&mut sim_a);
+        let b = infantry_entity(&mut sim_b);
+        a.infantry = Some(InfantryRuntime {
+            fear_level: 0,
+            is_prone: true,
+        });
+        sim_a.entities.insert(a);
+        sim_b.entities.insert(b);
         assert_ne!(sim_a.state_hash(), sim_b.state_hash());
     }
 }

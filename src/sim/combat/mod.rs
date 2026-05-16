@@ -52,9 +52,9 @@ use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::rules::object_type::ObjectType;
 use crate::rules::ruleset::RuleSet;
 use crate::rules::warhead_type::WarheadType;
-use crate::sim::animation::animation_is_prone;
 use crate::sim::bridge_state::BridgeDamageEvent;
 use crate::sim::entity_store::EntityStore;
+use crate::sim::infantry;
 use crate::sim::intern::{InternedId, StringInterner};
 use crate::sim::overlay_grid::{OverlayGrid, WallDamageEvent};
 use crate::sim::passenger::PassengerRole;
@@ -902,6 +902,16 @@ fn handle_entity_deaths(
                         continue;
                     }
                     target.health.current = target.health.current.saturating_sub(aoe_dmg);
+                    if let Some(obj) = rules.object(interner.resolve(target.type_ref)) {
+                        infantry::apply_fear_from_damage(
+                            obj,
+                            target,
+                            aoe_dmg,
+                            false,
+                            rules.general.condition_red_x1000,
+                            rules.general.condition_yellow_x1000,
+                        );
+                    }
                 }
             }
             // Ore destruction from death explosion.
@@ -1343,13 +1353,7 @@ pub fn tick_combat_with_fog(
                     t.category,
                     t.type_ref,
                     t.owner,
-                    // TODO(RE): This currently keys off prone animation sequences because
-                    // the runtime has no separate prone-state bit yet. Reverse engineer
-                    // and implement the real infantry prone-entry conditions so
-                    // ProneDamage applies during normal gameplay instead of only when
-                    // prone sequences are explicitly driven.
-                    t.category == EntityCategory::Infantry
-                        && animation_is_prone(t.animation.as_ref()),
+                    t.category == EntityCategory::Infantry && infantry::is_prone_for_damage(t),
                 )
             }),
             TargetKind::Cell(rx, ry) => {
@@ -1810,6 +1814,16 @@ pub fn tick_combat_with_fog(
                 continue;
             }
             target.health.current = target.health.current.saturating_sub(*damage);
+            if let Some(obj) = rules.object(interner.resolve(target.type_ref)) {
+                infantry::apply_fear_from_damage(
+                    obj,
+                    target,
+                    *damage,
+                    true,
+                    rules.general.condition_red_x1000,
+                    rules.general.condition_yellow_x1000,
+                );
+            }
             if target.health.current == 0 {
                 dead_entities.push(*target_id);
             }

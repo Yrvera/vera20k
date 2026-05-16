@@ -275,3 +275,5 @@ fn walking_to_subcell_dest(
 
 #[cfg(test)]
 mod movement_tests;
+#[cfg(test)]
+mod prone_speed_tests;

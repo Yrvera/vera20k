@@ -23,6 +23,7 @@ use crate::rules::locomotor_type::{MovementZone, SpeedType};
 use crate::sim::components::{MovementTarget, Position};
 use crate::sim::debug_event_log::DebugEventKind;
 use crate::sim::entity_store::EntityStore;
+use crate::sim::infantry;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
 use crate::sim::pathfinding::terrain_speed::{self, TerrainSpeedConfig};
@@ -403,6 +404,14 @@ pub fn tick_movement_with_grids(
         let Some(snap) = snapshot_mover(entities, entity_id) else {
             continue;
         };
+        let prone_crawls = entities.get(entity_id).and_then(|entity| {
+            if !infantry::is_prone_for_damage(entity) {
+                return None;
+            }
+            let rules = rules?;
+            let obj = rules.object(interner.resolve(entity.type_ref))?;
+            Some(obj.crawls)
+        });
         let entity_cost_grid: Option<&TerrainCostGrid> =
             snap.speed_type.and_then(|st| terrain_costs.get(&st));
         let (mover_entity_blocks, mover_entity_block_map): (
@@ -575,7 +584,10 @@ pub fn tick_movement_with_grids(
                 // No ramping data — constant speed fallback.
                 target.current_speed = target.speed;
             }
-            let effective_speed: SimFixed = target.current_speed * cell_speed_mod;
+            let mut effective_speed: SimFixed = target.current_speed * cell_speed_mod;
+            if let Some(crawls) = prone_crawls {
+                effective_speed = infantry::apply_prone_speed(effective_speed, crawls);
+            }
 
             // Advance sub_x/sub_y toward the next cell — either via drive track
             // (smooth curve) or straight-line lepton vector.

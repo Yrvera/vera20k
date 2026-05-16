@@ -443,13 +443,47 @@ pub fn tick_animations(
                 }
             }
             None => {
+                let runtime_prone = entity
+                    .infantry
+                    .as_ref()
+                    .is_some_and(|infantry| infantry.is_prone);
+                if !matches!(anim.sequence, SequenceKind::Down | SequenceKind::Up) && runtime_prone
+                {
+                    if let Some(set) = seq_set {
+                        if has_attack && !has_movement {
+                            if set.get(&SequenceKind::FireProne).is_some() {
+                                anim.switch_to(SequenceKind::FireProne);
+                            } else if set.get(&SequenceKind::SecondaryProne).is_some() {
+                                anim.switch_to(SequenceKind::SecondaryProne);
+                            }
+                        } else if has_movement {
+                            if set.get(&SequenceKind::Crawl).is_some() {
+                                anim.switch_to(SequenceKind::Crawl);
+                            }
+                        } else if set.get(&SequenceKind::Prone).is_some() {
+                            anim.switch_to(SequenceKind::Prone);
+                        }
+                    }
+                }
                 // Standard cascade for upright entities — preserved verbatim from prior logic.
-                if has_movement && anim.sequence == SequenceKind::Stand {
+                if !matches!(anim.sequence, SequenceKind::Down | SequenceKind::Up)
+                    && !runtime_prone
+                    && has_movement
+                    && anim.sequence == SequenceKind::Stand
+                {
                     anim.switch_to(SequenceKind::Walk);
-                } else if !has_movement && anim.sequence == SequenceKind::Walk {
+                } else if !matches!(anim.sequence, SequenceKind::Down | SequenceKind::Up)
+                    && !runtime_prone
+                    && !has_movement
+                    && matches!(anim.sequence, SequenceKind::Walk | SequenceKind::Crawl)
+                {
                     anim.switch_to(SequenceKind::Stand);
                 }
-                if has_attack && !has_movement {
+                if !matches!(anim.sequence, SequenceKind::Down | SequenceKind::Up)
+                    && !runtime_prone
+                    && has_attack
+                    && !has_movement
+                {
                     if let Some(set) = seq_set {
                         match anim.sequence {
                             SequenceKind::Stand if set.get(&SequenceKind::Attack).is_some() => {

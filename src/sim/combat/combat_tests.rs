@@ -66,6 +66,7 @@ fn make_infantry_entity(id: u64, type_ref: &str, rx: u16, ry: u16, hp: u16) -> G
     e.category = EntityCategory::Infantry;
     e.is_voxel = false;
     e.animation = Some(Animation::new(SequenceKind::Stand));
+    e.infantry = Some(crate::sim::game_entity::InfantryRuntime::new());
     e
 }
 
@@ -138,12 +139,38 @@ fn test_tick_combat_applies_damage() {
 }
 
 #[test]
+fn combat_damage_landed_applies_infantry_fear() {
+    let rules = test_rules();
+    let mut store = EntityStore::new();
+    store.insert(make_entity(1, "MTNK", 5, 5, 300));
+    store.insert(make_infantry_entity(2, "E1", 8, 5, 125));
+    let mut interner = test_interner();
+    issue_attack_command(&mut store, 1, 2, None, &interner);
+
+    tick_combat(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        0,
+        100,
+        0,
+    );
+
+    assert_eq!(
+        store.get(2).unwrap().infantry.as_ref().unwrap().fear_level,
+        100
+    );
+}
+
+#[test]
 fn ic_target_takes_zero_damage() {
     use crate::sim::superweapon::invulnerability::{InvulnKind, InvulnerabilityState};
     let rules: RuleSet = test_rules();
     let mut store = EntityStore::new();
     store.insert(make_entity(1, "MTNK", 5, 5, 300));
-    store.insert(make_entity(2, "MTNK", 8, 5, 300));
+    store.insert(make_infantry_entity(2, "E1", 8, 5, 125));
     let mut interner = test_interner();
     issue_attack_command(&mut store, 1, 2, None, &interner);
     // Apply IronCurtain invulnerability to the target.
@@ -169,6 +196,15 @@ fn ic_target_takes_zero_damage() {
         store.get(2).expect("target alive").health.current,
         initial_hp,
         "IC-invulnerable target must take zero damage"
+    );
+    assert!(
+        store
+            .get(2)
+            .unwrap()
+            .infantry
+            .as_ref()
+            .is_some_and(|inf| inf.fear_level == 0),
+        "invulnerable targets should not gain fear because no damage lands"
     );
 }
 
@@ -422,7 +458,7 @@ fn test_prone_infantry_takes_scaled_direct_damage() {
     let mut store = EntityStore::new();
     store.insert(make_entity(1, "MTNK", 5, 5, 300));
     let mut target = make_infantry_entity(2, "E2", 8, 5, 125);
-    target.animation = Some(Animation::new(SequenceKind::Prone));
+    target.infantry.as_mut().unwrap().is_prone = true;
     store.insert(target);
 
     let mut interner = test_interner();
@@ -466,7 +502,7 @@ fn test_prone_infantry_takes_scaled_aoe_damage() {
     let mut store = EntityStore::new();
     store.insert(make_entity(1, "MTNK", 5, 5, 300));
     let mut target = make_infantry_entity(2, "E2", 8, 5, 125);
-    target.animation = Some(Animation::new(SequenceKind::Prone));
+    target.infantry.as_mut().unwrap().is_prone = true;
     store.insert(target);
 
     let mut interner = test_interner();

@@ -115,6 +115,7 @@ mod tests {
             bib_shape: None,
             palette: None,
             sequence: None,
+            crawls: false,
             primary_fire_flh: Default::default(),
             secondary_fire_flh: Default::default(),
             elite_primary_fire_flh: None,
