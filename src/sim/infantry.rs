@@ -7,7 +7,7 @@ use crate::rules::object_type::ObjectType;
 use crate::sim::animation::SequenceKind;
 use crate::sim::deploy::DeployPhase;
 use crate::sim::game_entity::GameEntity;
-use crate::util::fixed_math::{SIM_ZERO, SimFixed};
+use crate::util::fixed_math::{SimFixed, SIM_ZERO};
 
 const MAX_FEAR: u16 = 300;
 const FIRST_HIT_FEAR: u16 = 100;
@@ -115,7 +115,8 @@ pub fn tick_fear_decay_and_prone(
         return None;
     }
 
-    if !infantry.is_prone && infantry.fear_level >= PRONE_THRESHOLD {
+    if !infantry.is_prone && infantry.fear_level >= PRONE_THRESHOLD && obj.crawls && !obj.fraidycat
+    {
         infantry.is_prone = true;
         Some(SequenceKind::Down)
     } else if infantry.is_prone && infantry.fear_level < PRONE_THRESHOLD {
@@ -199,6 +200,13 @@ mod tests {
         .expect("rules should parse")
     }
 
+    fn infantry_obj(section: &str, crawls: bool) -> crate::rules::object_type::ObjectType {
+        let rules = rules_for(section);
+        let mut obj = rules.object("E1").expect("E1").clone();
+        obj.crawls = crawls;
+        obj
+    }
+
     fn infantry(hp: u16) -> GameEntity {
         let mut e = GameEntity::new(
             1,
@@ -278,17 +286,16 @@ mod tests {
 
     #[test]
     fn decay_thresholds_and_fearless_decay_gate() {
-        let rules = rules_for("");
-        let obj = rules.object("E1").unwrap();
+        let obj = infantry_obj("", true);
         let mut e = infantry(100);
         e.infantry.as_mut().unwrap().fear_level = 50;
-        assert_eq!(tick_fear_decay_and_prone(obj, &mut e), None);
+        assert_eq!(tick_fear_decay_and_prone(&obj, &mut e), None);
         assert!(!e.infantry.unwrap().is_prone);
 
         let mut e = infantry(100);
         e.infantry.as_mut().unwrap().fear_level = 51;
         assert_eq!(
-            tick_fear_decay_and_prone(obj, &mut e),
+            tick_fear_decay_and_prone(&obj, &mut e),
             Some(SequenceKind::Down)
         );
         assert!(e.infantry.unwrap().is_prone);
@@ -297,7 +304,7 @@ mod tests {
         e.infantry.as_mut().unwrap().fear_level = 50;
         e.infantry.as_mut().unwrap().is_prone = true;
         assert_eq!(
-            tick_fear_decay_and_prone(obj, &mut e),
+            tick_fear_decay_and_prone(&obj, &mut e),
             Some(SequenceKind::Up)
         );
         assert!(!e.infantry.unwrap().is_prone);
@@ -309,16 +316,66 @@ mod tests {
         assert_eq!(tick_fear_decay_and_prone(obj, &mut e), None);
         assert_eq!(e.infantry.unwrap().fear_level, 100);
 
-        let rules = rules_for("VeteranAbilities=FEARLESS\n");
-        let obj = rules.object("E1").unwrap();
+        let obj = infantry_obj("VeteranAbilities=FEARLESS\n", true);
         let mut e = infantry(100);
         e.veterancy = 100;
         e.infantry.as_mut().unwrap().fear_level = 100;
         assert_eq!(
-            tick_fear_decay_and_prone(obj, &mut e),
+            tick_fear_decay_and_prone(&obj, &mut e),
             Some(SequenceKind::Down)
         );
         assert_eq!(e.infantry.unwrap().fear_level, 99);
+    }
+
+    #[test]
+    fn fraidycat_rejects_fear_driven_down() {
+        for crawls in [true, false] {
+            let obj = infantry_obj("Fraidycat=yes\n", crawls);
+            let mut e = infantry(100);
+            e.infantry.as_mut().unwrap().fear_level = MAX_FEAR;
+
+            assert_eq!(tick_fear_decay_and_prone(&obj, &mut e), None);
+            let infantry = e.infantry.unwrap();
+            assert_eq!(infantry.fear_level, MAX_FEAR - 1);
+            assert!(!infantry.is_prone);
+        }
+    }
+
+    #[test]
+    fn crawls_gate_only_blocks_down_not_recovery() {
+        let obj = infantry_obj("", false);
+        let mut standing = infantry(100);
+        standing.infantry.as_mut().unwrap().fear_level = 51;
+
+        assert_eq!(tick_fear_decay_and_prone(&obj, &mut standing), None);
+        let runtime = standing.infantry.unwrap();
+        assert_eq!(runtime.fear_level, 50);
+        assert!(!runtime.is_prone);
+
+        let obj = infantry_obj("", true);
+        let mut standing = infantry(100);
+        standing.infantry.as_mut().unwrap().fear_level = 51;
+
+        assert_eq!(
+            tick_fear_decay_and_prone(&obj, &mut standing),
+            Some(SequenceKind::Down)
+        );
+        let runtime = standing.infantry.unwrap();
+        assert_eq!(runtime.fear_level, 50);
+        assert!(runtime.is_prone);
+
+        let obj = infantry_obj("", false);
+        let mut prone = infantry(100);
+        prone.infantry.as_mut().unwrap().fear_level = 50;
+        prone.infantry.as_mut().unwrap().is_prone = true;
+
+        assert_eq!(
+            tick_fear_decay_and_prone(&obj, &mut prone),
+            Some(SequenceKind::Up)
+        );
+        let runtime = prone.infantry.unwrap();
+        assert_eq!(runtime.fear_level, 49);
+        assert!(!runtime.is_prone);
     }
 
     #[test]
