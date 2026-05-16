@@ -1,13 +1,10 @@
 //! Bridge railing atlas — RAILBRDG.tem SHP packed into a single atlas page,
-//! plus concrete + wood lookup tables that map a deck sub-tile index to a
-//! railing frame entry.
+//! plus concrete + wood lookup tables that map a bridge table slot to a
+//! sub-tile-gated railing frame entry.
 //!
-//! Mirrors the binary's `g_BridgeRailingSHP` (theater-loaded) and the two
-//! parallel 10-entry railing tables (concrete + wood). See
-//! `ra2-rust-game-docs/BRIDGE_DISPLAY_TABLE_GHIDRA_REPORT.md` §3.4.1 for the
-//! entry format. Final values live in
-//! `ra2-rust-game-docs/BRIDGE_RAILING_TABLE_VALUES.md` once a live-debugger
-//! capture is taken (Phase D Task 3).
+//! This renderer path still loads RAILBRDG, but its 10-entry table now uses the
+//! recovered DAT_00ABC210 values from
+//! `ra2-rust-game-docs/BRIDGE_THEATER_LOAD_TABLE_WRITERS_GHIDRA_REPORT.md`.
 //!
 //! ## Dependency rules
 //! - Part of render/ — depends on assets/ + render/batch.
@@ -33,6 +30,7 @@ pub enum BridgeKind {
 #[derive(Clone, Copy, Debug)]
 pub struct RailingEntry {
     pub shp_frame: u8,
+    pub required_sub_tile: u8,
     pub dx: i16,
     pub dy: i16,
     pub uv_origin: [f32; 2],
@@ -44,50 +42,122 @@ pub struct RailingEntry {
 
 pub struct BridgeRailingAtlas {
     pub texture: BatchTexture,
+    tile_bases: Option<BridgeRailingTileBases>,
     concrete_table: [Option<RailingEntry>; 10],
     wood_table: [Option<RailingEntry>; 10],
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BridgeRailingTileBases {
+    pub slope_set_pieces_start: u16,
+    pub slope_set_pieces2_start: u16,
+}
+
+impl BridgeRailingTileBases {
+    fn table_slot_for_tile_index(self, tile_index: i32) -> Option<u8> {
+        let tile_index = u16::try_from(tile_index).ok()?;
+        table_slot_in_range(tile_index, self.slope_set_pieces_start)
+            .or_else(|| table_slot_in_range(tile_index, self.slope_set_pieces2_start))
+    }
+}
+
 impl BridgeRailingAtlas {
-    pub fn entry(&self, kind: BridgeKind, sub_idx: u8) -> Option<&RailingEntry> {
+    pub fn entry(
+        &self,
+        kind: BridgeKind,
+        table_slot: u8,
+        caller_sub_tile: u8,
+    ) -> Option<&RailingEntry> {
         let table = match kind {
             BridgeKind::Concrete => &self.concrete_table,
             BridgeKind::Wood => &self.wood_table,
         };
-        table.get(sub_idx as usize).and_then(Option::as_ref)
+        entry_from_table(table, table_slot, caller_sub_tile)
+    }
+
+    pub fn entry_for_tile(
+        &self,
+        kind: BridgeKind,
+        tile_index: i32,
+        caller_sub_tile: u8,
+    ) -> Option<&RailingEntry> {
+        let table = match kind {
+            BridgeKind::Concrete => &self.concrete_table,
+            BridgeKind::Wood => &self.wood_table,
+        };
+        entry_for_tile_from_table(table, self.tile_bases?, tile_index, caller_sub_tile)
     }
 }
 
-/// Concrete-bridge railing values — placeholder all-zero entries until a
-/// live-debugger capture replaces them. Each tuple is
-/// `(shp_frame_1based, dx, dy)`; `shp_frame == 0` ⇒ no railing for the slot.
-const CONCRETE_RAILING_VALUES: [(u8, i16, i16); 10] = [
-    (0, 0, 0),
-    (0, 0, 0),
-    (0, 0, 0),
-    (0, 0, 0),
-    (0, 0, 0),
-    (0, 0, 0),
-    (0, 0, 0),
-    (0, 0, 0),
-    (0, 0, 0),
-    (0, 0, 0),
+fn table_slot_in_range(tile_index: u16, range_start: u16) -> Option<u8> {
+    let local = u32::from(tile_index).checked_sub(u32::from(range_start))?;
+    (local < 10).then_some(local as u8)
+}
+
+fn entry_from_table(
+    table: &[Option<RailingEntry>; 10],
+    table_slot: u8,
+    caller_sub_tile: u8,
+) -> Option<&RailingEntry> {
+    table
+        .get(table_slot as usize)
+        .and_then(Option::as_ref)
+        .filter(|entry| entry.required_sub_tile == caller_sub_tile)
+}
+
+fn entry_for_tile_from_table(
+    table: &[Option<RailingEntry>; 10],
+    tile_bases: BridgeRailingTileBases,
+    tile_index: i32,
+    caller_sub_tile: u8,
+) -> Option<&RailingEntry> {
+    let table_slot = tile_bases.table_slot_for_tile_index(tile_index)?;
+    entry_from_table(table, table_slot, caller_sub_tile)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RailingTableValue {
+    shp_frame_1based: u8,
+    required_sub_tile: u8,
+    dx: i16,
+    dy: i16,
+}
+
+const SKIP_RAILING: RailingTableValue = RailingTableValue {
+    shp_frame_1based: 0,
+    required_sub_tile: 0,
+    dx: 0,
+    dy: 0,
+};
+
+// Verified DAT_00ABC210 values. FUN_00547230 uses this same 10-entry table for
+// both DAT_00ABC1F8 and DAT_00AA1098 ranges.
+const DAT_00ABC210_RAILING_VALUES: [RailingTableValue; 10] = [
+    SKIP_RAILING,
+    SKIP_RAILING,
+    SKIP_RAILING,
+    SKIP_RAILING,
+    RailingTableValue {
+        shp_frame_1based: 13,
+        required_sub_tile: 6,
+        dx: 48,
+        dy: 12,
+    },
+    SKIP_RAILING,
+    RailingTableValue {
+        shp_frame_1based: 14,
+        required_sub_tile: 1,
+        dx: 48,
+        dy: 12,
+    },
+    SKIP_RAILING,
+    SKIP_RAILING,
+    SKIP_RAILING,
 ];
 
-/// Wood-bridge railing values — placeholder all-zero entries until a
-/// live-debugger capture replaces them.
-const WOOD_RAILING_VALUES: [(u8, i16, i16); 10] = [
-    (0, 0, 0),
-    (0, 0, 0),
-    (0, 0, 0),
-    (0, 0, 0),
-    (0, 0, 0),
-    (0, 0, 0),
-    (0, 0, 0),
-    (0, 0, 0),
-    (0, 0, 0),
-    (0, 0, 0),
-];
+const CONCRETE_RAILING_VALUES: [RailingTableValue; 10] = DAT_00ABC210_RAILING_VALUES;
+
+const WOOD_RAILING_VALUES: [RailingTableValue; 10] = DAT_00ABC210_RAILING_VALUES;
 
 pub fn build_bridge_railing_atlas(
     gpu: &GpuContext,
@@ -95,6 +165,7 @@ pub fn build_bridge_railing_atlas(
     asset_manager: &AssetManager,
     theater_palette: &Palette,
     theater_ext: &str,
+    tile_bases: Option<BridgeRailingTileBases>,
 ) -> Option<BridgeRailingAtlas> {
     let candidates = [
         format!("railbrdg.{}", theater_ext),
@@ -117,28 +188,30 @@ pub fn build_bridge_railing_atlas(
 
     Some(BridgeRailingAtlas {
         texture,
+        tile_bases,
         concrete_table,
         wood_table,
     })
 }
 
 fn build_table(
-    values: &[(u8, i16, i16); 10],
+    values: &[RailingTableValue; 10],
     frame_entries: &HashMap<usize, FrameEntry>,
 ) -> [Option<RailingEntry>; 10] {
     let mut out: [Option<RailingEntry>; 10] = [None; 10];
-    for (slot, &(shp_frame_1based, dx, dy)) in values.iter().enumerate() {
-        if shp_frame_1based == 0 {
+    for (slot, value) in values.iter().enumerate() {
+        if value.shp_frame_1based == 0 {
             continue;
         }
-        let frame_0based = (shp_frame_1based - 1) as usize;
+        let frame_0based = (value.shp_frame_1based - 1) as usize;
         let Some(e) = frame_entries.get(&frame_0based) else {
             continue;
         };
         out[slot] = Some(RailingEntry {
-            shp_frame: shp_frame_1based,
-            dx,
-            dy,
+            shp_frame: value.shp_frame_1based,
+            required_sub_tile: value.required_sub_tile,
+            dx: value.dx,
+            dy: value.dy,
             uv_origin: e.uv_origin,
             uv_size: e.uv_size,
             pixel_size: e.pixel_size,
@@ -305,9 +378,34 @@ fn pack_single_shp(
 mod tests {
     use super::*;
 
+    fn test_frame_entries() -> HashMap<usize, FrameEntry> {
+        HashMap::from([
+            (
+                12,
+                FrameEntry {
+                    uv_origin: [0.0, 0.0],
+                    uv_size: [1.0, 1.0],
+                    pixel_size: [60.0, 30.0],
+                    offset_x: -30.0,
+                    offset_y: -15.0,
+                },
+            ),
+            (
+                13,
+                FrameEntry {
+                    uv_origin: [0.0, 0.0],
+                    uv_size: [1.0, 1.0],
+                    pixel_size: [60.0, 30.0],
+                    offset_x: -30.0,
+                    offset_y: -15.0,
+                },
+            ),
+        ])
+    }
+
     #[test]
     fn build_table_returns_all_none_when_shp_frame_is_zero() {
-        let table = build_table(&[(0, 0, 0); 10], &HashMap::new());
+        let table = build_table(&[SKIP_RAILING; 10], &HashMap::new());
         for (slot, entry) in table.iter().enumerate() {
             assert!(
                 entry.is_none(),
@@ -320,21 +418,58 @@ mod tests {
     fn build_table_skips_slots_with_missing_frame_entries() {
         // Slot 0 references frame 3 (1-based), but frame_entries is empty —
         // build_table must yield None rather than panicking.
-        let table = build_table(
-            &[
-                (3, 0, 0),
-                (0, 0, 0),
-                (0, 0, 0),
-                (0, 0, 0),
-                (0, 0, 0),
-                (0, 0, 0),
-                (0, 0, 0),
-                (0, 0, 0),
-                (0, 0, 0),
-                (0, 0, 0),
-            ],
-            &HashMap::new(),
-        );
+        let mut values = [SKIP_RAILING; 10];
+        values[0] = RailingTableValue {
+            shp_frame_1based: 3,
+            required_sub_tile: 0,
+            dx: 0,
+            dy: 0,
+        };
+        let table = build_table(&values, &HashMap::new());
         assert!(table[0].is_none());
+    }
+
+    #[test]
+    fn dat_00abc210_slots_gate_on_required_sub_tile() {
+        let frames = test_frame_entries();
+        let table = build_table(&DAT_00ABC210_RAILING_VALUES, &frames);
+
+        let slot_4 = entry_from_table(&table, 4, 6).expect("slot 4 should match sub-tile 6");
+        assert_eq!(slot_4.shp_frame, 13);
+        assert_eq!(slot_4.required_sub_tile, 6);
+        assert_eq!((slot_4.dx, slot_4.dy), (48, 12));
+        assert!(entry_from_table(&table, 4, 1).is_none());
+
+        let slot_6 = entry_from_table(&table, 6, 1).expect("slot 6 should match sub-tile 1");
+        assert_eq!(slot_6.shp_frame, 14);
+        assert_eq!(slot_6.required_sub_tile, 1);
+        assert_eq!((slot_6.dx, slot_6.dy), (48, 12));
+        assert!(entry_from_table(&table, 6, 6).is_none());
+
+        assert!(entry_from_table(&table, 0, 0).is_none());
+        assert!(entry_from_table(&table, 5, 0).is_none());
+    }
+
+    #[test]
+    fn tile_index_lookup_derives_slot_before_sub_tile_gate() {
+        let frames = test_frame_entries();
+        let table = build_table(&DAT_00ABC210_RAILING_VALUES, &frames);
+        let tile_bases = BridgeRailingTileBases {
+            slope_set_pieces_start: 100,
+            slope_set_pieces2_start: 200,
+        };
+
+        let slot_4 =
+            entry_for_tile_from_table(&table, tile_bases, 104, 6).expect("slot 4/sub-tile 6");
+        assert_eq!(slot_4.shp_frame, 13);
+        assert!(entry_for_tile_from_table(&table, tile_bases, 104, 4).is_none());
+
+        let slot_6 =
+            entry_for_tile_from_table(&table, tile_bases, 206, 1).expect("slot 6/sub-tile 1");
+        assert_eq!(slot_6.shp_frame, 14);
+        assert!(entry_for_tile_from_table(&table, tile_bases, 206, 6).is_none());
+
+        assert!(entry_for_tile_from_table(&table, tile_bases, 99, 6).is_none());
+        assert!(entry_for_tile_from_table(&table, tile_bases, 210, 1).is_none());
     }
 }

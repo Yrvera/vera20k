@@ -22,11 +22,13 @@ use crate::map::briefing::{self, BriefingSection};
 use crate::map::cell_tags::{self, CellTagMap};
 use crate::map::entities::{self, MapEntity};
 use crate::map::events::{self, EventMap};
-use crate::map::overlay::{self, OverlayEntry, TerrainObject};
+use crate::map::overlay::{self, OverlayDataPack, OverlayEntry, TerrainObject};
 use crate::map::preview::{self, PreviewSection};
 use crate::map::tags::{self, TagMap};
 use crate::map::trigger_graph::{self, TriggerGraph};
 use crate::map::triggers::{self, TriggerMap};
+use crate::map::tube_facts::TubeFact;
+use crate::map::tubes;
 use crate::map::variable_names::{self, LocalVariableMap};
 use crate::map::waypoints::{self, Waypoint};
 use crate::rules::error::RulesError;
@@ -164,6 +166,9 @@ pub struct MapFile {
     pub entities: Vec<MapEntity>,
     /// Overlay objects from [OverlayPack] + [OverlayDataPack] (ore, walls, fences, etc.).
     pub overlays: Vec<OverlayEntry>,
+    /// Full `[OverlayDataPack]` bytes. Presence is tracked because missing packs
+    /// do not overwrite bridge state bytes in `gamemd.exe`.
+    pub overlay_data: OverlayDataPack,
     /// Pre-placed smudges from the map's `[Smudge]` section.
     /// `IsBaked != 0` entries are filtered at parse time.
     pub smudges: Vec<MapSmudgeEntry>,
@@ -187,6 +192,8 @@ pub struct MapFile {
     pub trigger_graph: TriggerGraph,
     /// Parsed `[SpecialFlags]` section (TiberiumGrows, TiberiumSpreads overrides).
     pub special_flags: SpecialFlagsSection,
+    /// Explicit full TubeClass records parsed from `[Tubes]`.
+    pub explicit_tubes: Vec<TubeFact>,
     /// Full parsed INI for accessing additional sections (e.g., [Houses]).
     pub ini: IniFile,
 }
@@ -202,7 +209,7 @@ impl MapFile {
         let preview: PreviewSection = preview::parse_preview_section(&ini);
         let cells: Vec<MapCell> = parse_iso_map_pack(&ini)?;
         let entities: Vec<MapEntity> = entities::parse_map_entities(&ini);
-        let overlays: Vec<OverlayEntry> = overlay::parse_overlays(&ini);
+        let overlay_packs = overlay::parse_overlay_packs(&ini);
         let terrain_objects: Vec<TerrainObject> = overlay::parse_terrain_objects(&ini);
         let smudges: Vec<MapSmudgeEntry> = parse_map_smudges(&ini);
         let waypoints: HashMap<u32, Waypoint> = waypoints::parse_waypoints(&ini);
@@ -212,6 +219,7 @@ impl MapFile {
         let events: EventMap = events::parse_events(&ini);
         let actions: ActionMap = actions::parse_actions(&ini);
         let local_variables: LocalVariableMap = variable_names::parse_local_variables(&ini);
+        let explicit_tubes: Vec<TubeFact> = tubes::parse_tubes(&ini);
         let trigger_graph: TriggerGraph =
             trigger_graph::build_trigger_graph(&cell_tags, &tags, &triggers, &events, &actions);
         Ok(MapFile {
@@ -221,7 +229,8 @@ impl MapFile {
             preview,
             cells,
             entities,
-            overlays,
+            overlays: overlay_packs.entries,
+            overlay_data: overlay_packs.data,
             smudges,
             terrain_objects,
             waypoints,
@@ -233,8 +242,17 @@ impl MapFile {
             local_variables,
             trigger_graph,
             special_flags,
+            explicit_tubes,
             ini,
         })
+    }
+
+    pub fn overlay_data_at(&self, rx: u16, ry: u16) -> u8 {
+        self.overlay_data.byte_at(rx, ry)
+    }
+
+    pub fn has_overlay_data_pack(&self) -> bool {
+        self.overlay_data.is_present()
     }
 }
 

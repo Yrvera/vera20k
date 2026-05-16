@@ -253,48 +253,34 @@ fn handle_search_ore(
     _path_grid: Option<&PathGrid>,
     snap: &mut MinerSnapshot,
 ) {
-    let search_center = snap.miner.last_harvest_cell.unwrap_or((snap.rx, snap.ry));
-
     // Reachability filter — see build_reachable_filter for the fallback
     // semantics when zone_grid / locomotor / anchor is missing.
     let reachable_filter = build_reachable_filter(sim, snap);
     let filter_ref: Option<&dyn Fn((u16, u16)) -> bool> = reachable_filter.as_deref();
 
-    // Try local continuation scan first (short radius around last harvest spot).
-    if let Some(cell) = search_local_ore(
-        &sim.production.resource_nodes,
-        search_center,
-        config.local_continuation_radius,
-        filter_ref,
-    ) {
-        snap.miner.target_ore_cell = Some(cell);
-        snap.miner.state = MinerState::MoveToOre;
-        return;
-    }
-
-    // gamemd.exe (0x0073E844): both war miners and chrono miners use
-    // TiberiumLongScan for the initial search — no early exit for chrono.
-    // The only chrono-specific behavior is stopping piggybacked locomotion
-    // before the scan, which we handle elsewhere.
-
-    // ArchiveTarget pattern (from RA1): if we remember a productive patch and it
-    // still has ore AND it's reachable, go back there before doing a full global
-    // search. Skipping the reachability check here would re-target a patch the
-    // harvester can't reach (e.g., walled off mid-cycle).
+    // Archive ghost-cell consumption: if `last_harvest_cell` is set,
+    // drive straight to it and clear. The archive is written by
+    // `save_archive_via_short_scan` when the miner becomes full.
+    // Reachability is re-checked because the patch may have been walled
+    // off between the save and the next cycle.
     if let Some(archive) = snap.miner.last_harvest_cell {
         let archive_has_ore = sim.production.resource_nodes.contains_key(&archive);
         let archive_reachable = filter_ref.is_none_or(|f| f(archive));
         if archive_has_ore && archive_reachable {
             snap.miner.target_ore_cell = Some(archive);
             snap.miner.state = MinerState::MoveToOre;
-            // Clear archive so we don't loop back forever if it depletes on arrival.
             snap.miner.last_harvest_cell = None;
             return;
         }
+        // Stale archive (depleted or unreachable) — drop it so we don't
+        // keep retrying.
+        snap.miner.last_harvest_cell = None;
     }
 
-    // Long-range bounded scan from the miner's current position (TiberiumLongScan).
-    // Finds a new ore patch within a larger radius before falling back to unbounded global.
+    // Long-range bounded scan from the miner's current position
+    // (TiberiumLongScan). Single scan with no separate short-scan
+    // pre-pass — the search expands outward and picks the best cell
+    // within radius. Used for both war miners and chrono miners.
     if let Some(cell) = search_local_ore(
         &sim.production.resource_nodes,
         (snap.rx, snap.ry),
@@ -428,9 +414,12 @@ fn handle_harvest(
 
     if !bales.is_empty() {
         snap.miner.cargo.extend(bales);
-        snap.miner.last_harvest_cell = Some(cell);
 
         if snap.miner.is_full() {
+            // Becoming-full: save an archive ghost cell pointing at a
+            // nearby still-productive patch so the next `SearchOre`
+            // (after dock) returns directly to it.
+            save_archive_via_short_scan(sim, config, snap);
             begin_return(sim, rules, config, path_grid, snap);
             return;
         }
@@ -444,16 +433,14 @@ fn handle_harvest(
         return;
     }
 
-    // No bales extracted (cell empty). Mirrors gamemd Mission_Harvest
-    // case 1 when Harvest_Ore_Tick returns 0:
-    //   1. Full Harvester → state 2 (return), no scan.
-    //   2. Otherwise run a TiberiumShortScan continuation scan from the
-    //      current cell. Hit → keep harvesting (we use MoveToOre, which
+    // No bales extracted (cell empty). Three sub-paths:
+    //   1. Full → return, save archive via short scan.
+    //   2. Otherwise run a short continuation scan from the current
+    //      cell. Hit → keep harvesting (we use MoveToOre, which
     //      re-enters Harvest on arrival).
-    //   3. Miss → state 2 (return), regardless of cargo. Empty miners
-    //      detour to the refinery and re-scan from there, matching the
-    //      original observable travel path.
+    //   3. Miss while not full → return, clear archive.
     if snap.miner.is_full() {
+        save_archive_via_short_scan(sim, config, snap);
         begin_return(sim, rules, config, path_grid, snap);
         return;
     }
@@ -476,8 +463,24 @@ fn handle_harvest(
         return;
     }
 
-    // Scan miss → return to refinery.
+    // Scan miss while not full → return to refinery, clear archive.
+    snap.miner.last_harvest_cell = None;
     begin_return(sim, rules, config, path_grid, snap);
+}
+
+/// Save a fresh ghost-cell archive by running a short-radius scan from
+/// the miner's current position. Called when the miner becomes full so
+/// the next `SearchOre` cycle can return directly to a nearby still-
+/// productive patch. On scan miss, clears the archive.
+fn save_archive_via_short_scan(sim: &Simulation, config: &MinerConfig, snap: &mut MinerSnapshot) {
+    let reachable_filter = build_reachable_filter(sim, snap);
+    let filter_ref: Option<&dyn Fn((u16, u16)) -> bool> = reachable_filter.as_deref();
+    snap.miner.last_harvest_cell = search_local_ore(
+        &sim.production.resource_nodes,
+        (snap.rx, snap.ry),
+        config.local_continuation_radius,
+        filter_ref,
+    );
 }
 
 fn handle_return(
@@ -507,8 +510,9 @@ fn handle_return(
         ) {
             snap.miner.reserved_refinery = Some(rsid);
             if snap.miner.kind == MinerKind::Chrono {
+                let center = refinery_center_cell_for_sid(sim, rules, rsid).unwrap_or(dock);
                 let threshold = config.too_far_threshold_chrono as u32;
-                let far_enough = cell_dist_sq((snap.rx, snap.ry), dock) > threshold * threshold;
+                let far_enough = cell_dist_sq((snap.rx, snap.ry), center) > threshold * threshold;
                 if far_enough {
                     // Warp to queue cell via the teleport locomotor system.
                     spawn_warp_effects(
@@ -597,8 +601,9 @@ fn handle_forced_return(
             snap.miner.reserved_refinery = Some(rsid);
             // Chrono Miners teleport on forced return — but only if far enough.
             if snap.miner.kind == MinerKind::Chrono {
+                let center = refinery_center_cell_for_sid(sim, rules, rsid).unwrap_or(dock);
                 let threshold = config.too_far_threshold_chrono as u32;
-                let far_enough = cell_dist_sq((snap.rx, snap.ry), dock) > threshold * threshold;
+                let far_enough = cell_dist_sq((snap.rx, snap.ry), center) > threshold * threshold;
                 if far_enough {
                     spawn_warp_effects(
                         sim,
@@ -762,11 +767,14 @@ fn begin_return(
     ) {
         snap.miner.reserved_refinery = Some(rsid);
         if snap.miner.kind == MinerKind::Chrono {
-            // Original engine (0x0073EE51): chrono miners only teleport if
-            // distance > ChronoHarvTooFarDistance (default 50 cells). When
-            // close enough, they drive like a War Miner.
+            // Chrono miners teleport when farther from the refinery than
+            // ChronoHarvTooFarDistance (default 50 cells). Distance is
+            // measured from the miner to the refinery's foundation center,
+            // not to the queue cell, so the boundary doesn't shift with
+            // foundation size.
+            let center = refinery_center_cell_for_sid(sim, rules, rsid).unwrap_or(dock);
             let threshold = config.too_far_threshold_chrono as u32;
-            let far_enough = cell_dist_sq((snap.rx, snap.ry), dock) > threshold * threshold;
+            let far_enough = cell_dist_sq((snap.rx, snap.ry), center) > threshold * threshold;
 
             if far_enough {
                 // Warp to queue cell (outside building footprint) via the
@@ -953,6 +961,22 @@ fn refinery_dock_for_sid(sim: &Simulation, rules: &RuleSet, ref_sid: u64) -> Opt
     ))
 }
 
+/// Foundation geometric-center cell for a refinery. Used as the reference
+/// point for the chrono teleport-vs-drive distance check, matching the
+/// original engine's distance-to-building-center comparison.
+fn refinery_center_cell_for_sid(
+    sim: &Simulation,
+    rules: &RuleSet,
+    ref_sid: u64,
+) -> Option<(u16, u16)> {
+    let entity = sim.entities.get(ref_sid)?;
+    let obj = rules.object_case_insensitive(sim.interner.resolve(entity.type_ref));
+    let (w, h) = obj
+        .map(|o| foundation_dimensions(&o.foundation))
+        .unwrap_or((1, 1));
+    Some((entity.position.rx + w / 2, entity.position.ry + h / 2))
+}
+
 /// Dock cell (queue position) — uses art.ini QueueingCell when available.
 ///
 /// Falls back to geometric approximation: one cell east of the building's
@@ -1126,15 +1150,63 @@ fn cell_dist_sq(a: (u16, u16), b: (u16, u16)) -> u32 {
 
 /// Check whether the player owns at least one Ore Purifier building.
 ///
-/// Scans entities for any alive structure owned by this player where the rules
-/// ObjectType has `ore_purifier == true`. When true, all harvested ore receives
-/// PurifierBonus (default 25%) extra credits during unloading.
+/// Retained for callers that only need a boolean signal (e.g., UI hints).
+/// For deposit-time credit math use [`count_purifiers_for_owner`] — gamemd
+/// multiplies the bonus by the live count, so a 2-purifier player should
+/// receive +50%, not +25%.
 pub(crate) fn player_has_purifier(sim: &Simulation, rules: &RuleSet, owner: &str) -> bool {
-    sim.entities.values().any(|e| {
-        e.category == EntityCategory::Structure
-            && sim.interner.resolve(e.owner).eq_ignore_ascii_case(owner)
-            && rules
-                .object_case_insensitive(sim.interner.resolve(e.type_ref))
-                .is_some_and(|obj| obj.ore_purifier)
-    })
+    count_purifiers_for_owner(sim, rules, owner) > 0
+}
+
+/// Count alive Ore Purifier buildings owned by `owner` (case-insensitive).
+///
+/// Used by the deposit-bonus formula in `phase_unloading` and by the Slave
+/// Miner deposit path. The bonus is `count × PurifierBonus × amount`, so
+/// every real purifier stacks the bonus linearly.
+pub(crate) fn count_purifiers_for_owner(sim: &Simulation, rules: &RuleSet, owner: &str) -> i32 {
+    sim.entities
+        .values()
+        .filter(|e| {
+            e.category == EntityCategory::Structure
+                && sim.interner.resolve(e.owner).eq_ignore_ascii_case(owner)
+                && rules
+                    .object_case_insensitive(sim.interner.resolve(e.type_ref))
+                    .is_some_and(|obj| obj.ore_purifier)
+        })
+        .count() as i32
+}
+
+/// Effective purifier count used in the deposit bonus formula.
+///
+/// Returns `real_purifiers + AI_virtual_purifiers`, where the AI term is
+/// `general.ai_virtual_purifiers[difficulty]` for non-human houses in
+/// skirmish/campaign play, and 0 otherwise. Both terms are sourced from
+/// the refinery's owner — credit destination is a separate concern.
+pub(crate) fn effective_purifier_count(
+    sim: &Simulation,
+    rules: &RuleSet,
+    refinery_owner: &str,
+) -> i32 {
+    let real = count_purifiers_for_owner(sim, rules, refinery_owner);
+    // Apply the AI virtual bonus only when a HouseState explicitly says
+    // the refinery's owner is non-human. Real games seed every house
+    // through app init with the correct flag; tests/edge cases that fall
+    // through to the credits_entry_for_owner auto-create get is_human=true
+    // (the safer default) and therefore skip the AI bonus, as intended.
+    let is_ai =
+        crate::sim::house_state::house_state_for_owner(&sim.houses, refinery_owner, &sim.interner)
+            .is_some_and(|h| !h.is_human);
+    if !is_ai {
+        return real;
+    }
+    let difficulty = sim.game_options.ai_difficulty;
+    let table = rules.general.ai_virtual_purifiers;
+    // INI ordering is `[Brutal, Medium, Easy]`. Defensive bounds-check in
+    // case the difficulty index drifts out of range.
+    let virtual_count = if (0..3).contains(&difficulty) {
+        table[difficulty as usize]
+    } else {
+        0
+    };
+    real + virtual_count
 }

@@ -49,7 +49,13 @@ fn saturation_clamps_when_stationary_and_crossing() {
 fn saturation_does_not_clamp_when_moving() {
     let mut a = SimFixed::lit("0.78");
     let mut v = SimFixed::lit("0.05");
-    advance_axis(&mut a, &mut v, SATURATION_PI4, true /* moving */, FALLBACK);
+    advance_axis(
+        &mut a,
+        &mut v,
+        SATURATION_PI4,
+        true, /* moving */
+        FALLBACK,
+    );
     // Moving → saturation skipped; angle drifts past π/4.
     assert!(a > SATURATION_PI4);
 }
@@ -448,6 +454,7 @@ fn flat_terrain(width: u16, height: u16) -> ResolvedTerrainGrid {
                 filled_clear: true,
                 tileset_index: Some(0),
                 land_type: 0,
+                yr_cell_land_type: 0,
                 slope_type: 0,
                 template_height: 0,
                 render_offset_x: 0,
@@ -475,8 +482,12 @@ fn flat_terrain(width: u16, height: u16) -> ResolvedTerrainGrid {
                 bridge_transition: false,
                 bridge_deck_level: 0,
                 bridge_layer: None,
+                bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+                tube_index: None,
                 radar_left: [0, 0, 0],
                 radar_right: [0, 0, 0],
+                has_damaged_data: false,
+                bridgehead_anchor_class_at_load: None,
             });
         }
     }
@@ -517,7 +528,14 @@ fn make_test_simulation_with_one_vehicle() -> (Simulation, RuleSet, PathGrid) {
 }
 
 fn advance(sim: &mut Simulation, rules: &RuleSet, path_grid: &PathGrid) {
-    let _ = sim.advance_tick(&[], Some(rules), &BTreeMap::new(), Some(path_grid), None, TICK_MS);
+    let _ = sim.advance_tick(
+        &[],
+        Some(rules),
+        &BTreeMap::new(),
+        Some(path_grid),
+        None,
+        TICK_MS,
+    );
 }
 
 #[test]

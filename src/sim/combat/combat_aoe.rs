@@ -17,8 +17,8 @@ use super::{apply_prone_damage_modifier, armor_index, lepton_distance_sq_raw};
 use crate::map::entities::EntityCategory;
 use crate::rules::ruleset::RuleSet;
 use crate::rules::warhead_type::WarheadType;
-use crate::sim::animation::animation_is_prone;
 use crate::sim::entity_store::EntityStore;
+use crate::sim::infantry;
 use crate::sim::intern::StringInterner;
 use crate::util::fixed_math::{SIM_ZERO, SimFixed, isqrt_i64};
 use crate::util::lepton::CELL_CENTER_LEPTON;
@@ -96,8 +96,8 @@ pub(crate) fn apply_aoe_damage(
             warhead.percent_at_max,
             verses_pct,
         );
-        let prone_infantry = entity.category == EntityCategory::Infantry
-            && animation_is_prone(entity.animation.as_ref());
+        let prone_infantry =
+            entity.category == EntityCategory::Infantry && infantry::is_prone_for_damage(entity);
         let dmg: u16 = apply_prone_damage_modifier(prone_infantry, warhead, raw_damage as i32);
 
         if dmg > 0 {

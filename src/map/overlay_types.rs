@@ -34,6 +34,17 @@ pub fn is_high_bridge_index(id: u8) -> bool {
     matches!(id, 24 | 25 | 237 | 238)
 }
 
+/// Check if an overlay index is one of the four high-bridge map-load anchors
+/// that dispatch through `SetBridgeDirection`.
+pub fn is_high_bridge_anchor_overlay_index(id: u8) -> bool {
+    crate::map::bridge_facts::high_bridge_stamp_for_overlay(id).is_some()
+}
+
+/// Get the binary `SetBridgeDirection` direction for a high-bridge anchor.
+pub fn high_bridge_stamp_direction(id: u8) -> Option<u8> {
+    crate::map::bridge_facts::high_bridge_stamp_for_overlay(id).map(|(_, dir)| dir)
+}
+
 /// Get the bridge direction from a high bridge overlay index.
 /// Returns None for low bridges or non-bridge indices.
 pub fn high_bridge_direction(id: u8) -> Option<u8> {
@@ -417,6 +428,21 @@ mod tests {
         let reg: OverlayTypeRegistry = OverlayTypeRegistry::from_ini(&ini, None);
         assert!(reg.is_empty());
         assert_eq!(reg.name(0), None);
+    }
+
+    #[test]
+    fn test_high_bridge_anchor_overlay_helpers_are_narrow() {
+        for id in [0x18, 0x19, 0xED, 0xEE] {
+            assert!(is_high_bridge_anchor_overlay_index(id));
+            assert!(high_bridge_stamp_direction(id).is_some());
+            assert!(is_bridge_overlay_index(id));
+        }
+        for id in [0x4A, 0x7A, 0xCD, 0xE9] {
+            assert!(!is_high_bridge_anchor_overlay_index(id));
+            assert_eq!(high_bridge_stamp_direction(id), None);
+        }
+        assert!(is_bridge_overlay_index(0x4A));
+        assert!(is_bridge_overlay_index(0xCD));
     }
 
     #[test]

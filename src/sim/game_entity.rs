@@ -35,10 +35,31 @@ use crate::sim::movement::droppod_movement::DropPodState;
 use crate::sim::movement::locomotor::LocomotorState;
 use crate::sim::movement::rocket_movement::RocketState;
 use crate::sim::movement::teleport_movement::TeleportState;
+use crate::sim::movement::tube_movement::LowBridgeTubeMovementState;
 use crate::sim::movement::tunnel_movement::TunnelState;
 use crate::sim::passenger::PassengerRole;
 use crate::sim::slave_miner::SlaveHarvester;
 use crate::sim::superweapon::invulnerability::InvulnerabilityState;
+
+/// Infantry-only runtime fear/prone state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct InfantryRuntime {
+    pub fear_level: u16,
+    pub is_prone: bool,
+}
+
+impl InfantryRuntime {
+    pub fn new() -> Self {
+        Self {
+            fear_level: 0,
+            is_prone: false,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
 
 /// Unified entity struct — replaces all hecs ECS components.
 ///
@@ -127,6 +148,9 @@ pub struct GameEntity {
     pub teleport_state: Option<TeleportState>,
     /// Tunnel movement state machine (dig in/underground/dig out phases).
     pub tunnel_state: Option<TunnelState>,
+    /// Active low-bridge TubeClass movement. Separate from subterranean tunnels.
+    #[serde(default)]
+    pub low_bridge_tube_state: Option<LowBridgeTubeMovementState>,
     /// Rocket/missile flight state machine (launch/ascend/terminal/detonate).
     pub rocket_state: Option<RocketState>,
     /// Drop pod descent state machine (falling/landing).
@@ -159,6 +183,10 @@ pub struct GameEntity {
     /// Whether this entity can be crushed by vehicles (Crushable= in rules.ini).
     /// Default false — only specific infantry and some walls are crushable.
     pub crushable: bool,
+    /// Whether deployed infantry remains crushable by regular crushers.
+    /// Defaults true; `DeployedCrushable=no` low-silhouette infantry blocks regular crush.
+    #[serde(default = "default_true")]
+    pub deployed_crushable: bool,
     /// Whether this entity can crush non-Crushable targets (OmniCrusher= in rules.ini).
     /// Only Battle Fortress has this in YR.
     pub omni_crusher: bool,
@@ -196,8 +224,11 @@ pub struct GameEntity {
     /// When Some, the renderer should use this type's VXL model instead of `type_ref`.
     /// Set during refinery unloading (UnloadingClass= from rules.ini).
     pub display_type_override: Option<InternedId>,
-    /// Target building for engineer capture. Set by CaptureBuilding command,
-    /// cleared on arrival (after capture) or if target is lost/destroyed.
+    /// Target building for an engineer-arrival intent. Set by
+    /// `CaptureBuilding`, cleared on arrival or if the target is lost.
+    /// Overloaded: when the target's type has `BridgeRepairHut=yes`,
+    /// `tick_bridge_repair_orders` consumes the engineer for bridge repair
+    /// instead of capture (the original game never captures CABHUTs).
     pub capture_target: Option<u64>,
     /// Active C4 plant intent on this attacker. Set by `Command::PlantC4`,
     /// cleared on arrival (after the building's pending detonation is set),
@@ -220,6 +251,9 @@ pub struct GameEntity {
     /// read it (weapon pick is target-driven).
     #[serde(default)]
     pub deploy_state: Option<DeployPhase>,
+    /// Infantry fear/prone runtime. `None` for non-infantry entities.
+    #[serde(default)]
+    pub infantry: Option<InfantryRuntime>,
     /// Body rocking + slope-transition state. `None` for entities that don't
     /// rock (infantry, aircraft, SHP-bodied buildings). `Some(default)` for
     /// vehicles and voxel-bodied buildings.
@@ -300,6 +334,7 @@ impl GameEntity {
             order_intent: None,
             teleport_state: None,
             tunnel_state: None,
+            low_bridge_tube_state: None,
             rocket_state: None,
             droppod_state: None,
             parachute_state: None,
@@ -316,6 +351,7 @@ impl GameEntity {
                 None
             },
             crushable: false,
+            deployed_crushable: true,
             omni_crusher: false,
             omni_crush_resistant: false,
             zfudge_bridge: 7,
@@ -330,6 +366,11 @@ impl GameEntity {
             c4_plant: None,
             pending_c4_detonation: None,
             deploy_state: None,
+            infantry: if category == EntityCategory::Infantry {
+                Some(InfantryRuntime::new())
+            } else {
+                None
+            },
             rocking: None,
             debug_log: None,
         }
@@ -342,19 +383,42 @@ impl GameEntity {
         }
     }
 
-    /// Shared owner for "which movement layer should this entity be treated as on?"
+    /// Runtime movement/path layer with Ground as the fallback.
     ///
-    /// `on_bridge` is the authoritative source for bridge layer state — it survives
-    /// repath operations that may reset `locomotor.layer`. Ground is the default
-    /// when no locomotor is attached.
+    /// This is not the object-list selector. Use `occupancy_list_layer` when
+    /// selecting gamemd `FirstObject` versus `AltObject` style occupancy.
     pub fn movement_layer_or_ground(&self) -> crate::sim::movement::locomotor::MovementLayer {
-        if self.on_bridge {
-            return crate::sim::movement::locomotor::MovementLayer::Bridge;
-        }
         self.locomotor.as_ref().map_or(
             crate::sim::movement::locomotor::MovementLayer::Ground,
             |l| l.layer,
         )
+    }
+
+    /// Object-list layer for occupancy/cache membership.
+    ///
+    /// This mirrors gamemd's `ObjectClass+0x8C` / `OnBridge` selector for
+    /// `CellClass::FirstObject` versus `AltObject`. It is intentionally not the
+    /// same as locomotor/path layer; ramps can have `loco.layer` and `on_bridge`
+    /// disagree for a tick.
+    pub fn occupancy_list_layer(&self) -> Option<crate::sim::movement::locomotor::MovementLayer> {
+        use crate::sim::movement::locomotor::MovementLayer;
+
+        let motion_layer = self
+            .locomotor
+            .as_ref()
+            .map_or(MovementLayer::Ground, |l| l.layer);
+        if matches!(
+            motion_layer,
+            MovementLayer::Air | MovementLayer::Underground
+        ) {
+            return None;
+        }
+
+        Some(if self.on_bridge {
+            MovementLayer::Bridge
+        } else {
+            MovementLayer::Ground
+        })
     }
 
     /// Whether this entity is currently on a bridge deck.

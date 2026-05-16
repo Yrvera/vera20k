@@ -24,7 +24,7 @@ use crate::sim::debug_event_log::DebugEventKind;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::movement::facing_from_delta;
 use crate::sim::movement::locomotor::MovementLayer;
-use crate::sim::occupancy::OccupancyGrid;
+use crate::sim::occupancy::{CellListInsertion, OccupancyGrid};
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
 use crate::sim::pathfinding::{PathGrid, find_path_with_costs};
 use crate::util::fixed_math::{SIM_ZERO, SimFixed, dt_from_tick_ms, int_distance_to_sim};
@@ -277,6 +277,7 @@ pub fn tick_tunnel_movement(
                         id,
                         MovementLayer::Ground,
                         entity.sub_cell,
+                        CellListInsertion::from_category(entity.category),
                     );
                     finished.push(id);
                 }

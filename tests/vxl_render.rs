@@ -110,13 +110,13 @@ fn render_real_vxl_to_png() {
             ..Default::default()
         };
 
-        let sprite: VxlSprite = render_vxl(&vxl, hva.as_ref(), &palette, &params, vpl.as_ref());
+        let sprite: VxlSprite = render_vxl(&vxl, hva.as_ref(), &params, vpl.as_ref());
 
         assert!(sprite.width > 0, "Sprite width should be > 0");
         assert!(sprite.height > 0, "Sprite height should be > 0");
 
         // Check that at least some pixels are opaque.
-        let opaque: usize = sprite.rgba.chunks(4).filter(|p| p[3] > 0).count();
+        let opaque: usize = sprite.palette_indices.iter().filter(|&&p| p != 0).count();
         assert!(
             opaque > 0,
             "Facing {} produced an all-transparent sprite",
@@ -125,7 +125,8 @@ fn render_real_vxl_to_png() {
 
         // Save as PNG for visual inspection.
         let filename: String = format!("debug_vxl_{}_{}.png", stem, facing);
-        save_rgba_png(&filename, &sprite.rgba, sprite.width, sprite.height);
+        let rgba = palette_indices_to_rgba(&sprite.palette_indices, &palette);
+        save_rgba_png(&filename, &rgba, sprite.width, sprite.height);
         println!(
             "  facing={:3}: {}x{} px, {} opaque pixels, offset=({:.1},{:.1}) → {}",
             facing, sprite.width, sprite.height, opaque, sprite.offset_x, sprite.offset_y, filename
@@ -133,6 +134,18 @@ fn render_real_vxl_to_png() {
     }
 
     println!("\n=== VXL render test passed ===");
+}
+
+fn palette_indices_to_rgba(indices: &[u8], palette: &Palette) -> Vec<u8> {
+    let mut rgba = Vec::with_capacity(indices.len() * 4);
+    for &index in indices {
+        let color = palette.colors[index as usize];
+        rgba.push(color.r);
+        rgba.push(color.g);
+        rgba.push(color.b);
+        rgba.push(color.a);
+    }
+    rgba
 }
 
 /// Save RGBA data as a PNG file in the project root.

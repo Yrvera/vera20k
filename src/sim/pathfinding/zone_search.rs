@@ -18,17 +18,18 @@
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
 use std::cmp::Reverse;
-use std::collections::{BTreeSet, BinaryHeap, HashMap};
+use std::collections::{BTreeSet, BinaryHeap};
 
-use super::EntityBlockEntry;
+use super::LayeredEntityBlockMap;
 
 use super::terrain_cost::TerrainCostGrid;
-use super::zone_map::{ZONE_INVALID, ZoneAdjacency, ZoneGrid, ZoneId, ZoneMap};
+use super::zone_map::{ZoneAdjacency, ZoneGrid, ZoneId, ZoneMap, ZONE_INVALID};
 use super::{
-    LayeredPathStep, PathGrid, find_layered_path, find_path_with_costs,
-    find_path_with_costs_corridor,
+    find_layered_path, find_path_with_costs, find_path_with_costs_corridor, LayeredPathStep,
+    PathGrid,
 };
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
+use crate::map::tube_facts::TubeSource;
 use crate::rules::locomotor_type::MovementZone;
 use crate::sim::movement::locomotor::MovementLayer;
 
@@ -52,6 +53,51 @@ fn can_use_reduced_zone_precheck(movement_zone: Option<MovementZone>) -> bool {
     }
 }
 
+fn can_reach_same_or_zoned(
+    zg: &ZoneGrid,
+    mz: MovementZone,
+    from: (u16, u16),
+    from_layer: MovementLayer,
+    to: (u16, u16),
+    to_layer: MovementLayer,
+) -> bool {
+    from == to || zg.can_reach(mz, from, from_layer, to, to_layer)
+}
+
+fn can_reach_through_explicit_tube(
+    zg: &ZoneGrid,
+    mz: MovementZone,
+    start: (u16, u16),
+    start_layer: MovementLayer,
+    goal: (u16, u16),
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+) -> bool {
+    let Some(terrain) = resolved_terrain else {
+        return false;
+    };
+    terrain.tube_facts().iter().any(|tube| {
+        tube.source == TubeSource::ExplicitMap
+            && tube.path_len() > 0
+            && tube.exit != (0, 0)
+            && can_reach_same_or_zoned(
+                zg,
+                mz,
+                start,
+                start_layer,
+                tube.entry,
+                MovementLayer::Ground,
+            )
+            && can_reach_same_or_zoned(
+                zg,
+                mz,
+                tube.exit,
+                MovementLayer::Ground,
+                goal,
+                MovementLayer::Ground,
+            )
+    })
+}
+
 /// Zone-aware path search for flat (ground-only) paths.
 ///
 /// Uses zone reachability plus a corridor-Dijkstra approximation, then runs A*
@@ -72,7 +118,7 @@ pub fn find_path_zoned(
     mz: MovementZone,
     movement_zone: Option<MovementZone>,
     resolved_terrain: Option<&ResolvedTerrainGrid>,
-    entity_block_map: Option<&HashMap<(u16, u16), EntityBlockEntry>>,
+    entity_block_map: Option<&LayeredEntityBlockMap>,
     urgency: u8,
     mover_is_crusher: bool,
 ) -> Option<Vec<(u16, u16)>> {
@@ -114,6 +160,27 @@ pub fn find_path_zoned(
         goal,
         MovementLayer::Ground,
     ) {
+        if can_reach_through_explicit_tube(
+            zg,
+            mz,
+            start,
+            MovementLayer::Ground,
+            goal,
+            resolved_terrain,
+        ) {
+            return find_path_with_costs(
+                grid,
+                start,
+                goal,
+                costs,
+                entity_blocks,
+                movement_zone,
+                resolved_terrain,
+                entity_block_map,
+                urgency,
+                mover_is_crusher,
+            );
+        }
         log::trace!(
             "zone_search: unreachable {:?} ({:?}→{:?}), skipping A*",
             mz,
@@ -238,7 +305,8 @@ pub fn find_layered_path_zoned(
     mz: MovementZone,
     terrain_costs: Option<&TerrainCostGrid>,
     movement_zone: Option<MovementZone>,
-    entity_block_map: Option<&HashMap<(u16, u16), EntityBlockEntry>>,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    entity_block_map: Option<&LayeredEntityBlockMap>,
     urgency: u8,
     mover_is_crusher: bool,
 ) -> Option<Vec<LayeredPathStep>> {
@@ -251,6 +319,7 @@ pub fn find_layered_path_zoned(
             start_layer,
             goal,
             terrain_costs,
+            resolved_terrain,
             entity_block_map,
             urgency,
             mover_is_crusher,
@@ -261,6 +330,21 @@ pub fn find_layered_path_zoned(
     // so a single ground-layer check covers cross-bridge reachability.
     if let Some(zg) = zone_grid {
         if !zg.can_reach(mz, start, start_layer, goal, MovementLayer::Ground) {
+            if can_reach_through_explicit_tube(zg, mz, start, start_layer, goal, resolved_terrain) {
+                return find_layered_path(
+                    grid,
+                    ground_blocks,
+                    bridge_blocks,
+                    start,
+                    start_layer,
+                    goal,
+                    terrain_costs,
+                    resolved_terrain,
+                    entity_block_map,
+                    urgency,
+                    mover_is_crusher,
+                );
+            }
             log::trace!(
                 "zone_search: layered unreachable {:?} ({:?} layer={:?} -> {:?}), skipping A*",
                 mz,
@@ -280,6 +364,7 @@ pub fn find_layered_path_zoned(
         start_layer,
         goal,
         terrain_costs,
+        resolved_terrain,
         entity_block_map,
         urgency,
         mover_is_crusher,

@@ -348,6 +348,7 @@ mod tests {
             filled_clear: false,
             tileset_index: Some(0),
             land_type: 0,
+            yr_cell_land_type: 0,
             slope_type: 0,
             template_height: 0,
             render_offset_x: 0,
@@ -375,8 +376,12 @@ mod tests {
             bridge_transition: false,
             bridge_deck_level: 0,
             bridge_layer: None,
+            bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+            tube_index: None,
             radar_left: [0, 0, 0],
             radar_right: [0, 0, 0],
+            has_damaged_data: false,
+            bridgehead_anchor_class_at_load: None,
         }
     }
 }

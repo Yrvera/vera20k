@@ -4,12 +4,28 @@
 
 use super::*;
 use crate::map::map_file::MapCell;
-use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
+use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid, YR_CELL_LAND_TUNNEL};
+use crate::map::tube_facts::{TubeFact, TubeId};
 use crate::rules::locomotor_type::SpeedType;
 use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
 use crate::sim::bridge_state::{BridgeDamageEvent, BridgeRuntimeState};
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
+
+fn bridge_test_cell(level: u8, structural: bool, transition: bool, slope_type: u8) -> PathCell {
+    PathCell {
+        ground_walkable: true,
+        bridge_walkable: structural,
+        bridge_structural: structural,
+        bridge_marker_0x80: false,
+        transition,
+        ground_level: level,
+        bridge_deck_level: level.saturating_add(4),
+        slope_type,
+        tube_index: None,
+        low_bridge_tube_cell: false,
+    }
+}
 
 #[test]
 fn test_path_grid_new_all_walkable() {
@@ -66,6 +82,278 @@ fn test_euclidean_heuristic_zero() {
     // goal as the lowest-f node when popped.
     let h: i32 = euclidean_heuristic(7, 7, 7, 7);
     assert_eq!(h, 0);
+}
+
+#[test]
+fn bridge_traversal_direction_minus_one_seeds_candidate_bridge_height_without_bridgehead() {
+    let candidate = bridge_test_cell(2, true, false, 0);
+    let grid = PathGrid::from_cells(vec![candidate], 1, 1);
+
+    let result = check_bridge_traversal(
+        &grid,
+        BridgeTraversalInput {
+            candidate: grid.cell(0, 0).unwrap(),
+            candidate_coord: (0, 0),
+            direction: -1,
+            path_height: -1,
+            parent: None,
+        },
+    );
+
+    assert!(result.allowed);
+    assert_eq!(result.path_height, 6);
+    assert!(!result.force_bridge_list);
+}
+
+#[test]
+fn bridge_traversal_explicit_parent_unknown_height_requires_candidate_transition() {
+    let parent = bridge_test_cell(0, true, false, 0);
+    let candidate = bridge_test_cell(0, true, false, 0);
+    let grid = PathGrid::from_cells(vec![parent, candidate], 2, 1);
+
+    let result = check_bridge_traversal(
+        &grid,
+        BridgeTraversalInput {
+            candidate: grid.cell(1, 0).unwrap(),
+            candidate_coord: (1, 0),
+            direction: 2,
+            path_height: -1,
+            parent: Some((grid.cell(0, 0).unwrap(), (0, 0))),
+        },
+    );
+
+    assert!(!result.allowed);
+    assert_eq!(result.path_height, 4);
+}
+
+#[test]
+fn bridge_traversal_diff_zero_blocks_when_path_height_disagrees() {
+    let parent = bridge_test_cell(0, false, false, 0);
+    let candidate = bridge_test_cell(0, false, false, 0);
+    let grid = PathGrid::from_cells(vec![parent, candidate], 2, 1);
+
+    let result = check_bridge_traversal(
+        &grid,
+        BridgeTraversalInput {
+            candidate: grid.cell(1, 0).unwrap(),
+            candidate_coord: (1, 0),
+            direction: 2,
+            path_height: 4,
+            parent: Some((grid.cell(0, 0).unwrap(), (0, 0))),
+        },
+    );
+
+    assert!(!result.allowed);
+}
+
+#[test]
+fn bridge_traversal_diff_one_lower_parent_requires_parent_slope() {
+    let parent = bridge_test_cell(0, false, false, 0);
+    let candidate = bridge_test_cell(1, false, false, 0);
+    let grid = PathGrid::from_cells(vec![parent, candidate], 2, 1);
+
+    let blocked = check_bridge_traversal(
+        &grid,
+        BridgeTraversalInput {
+            candidate: grid.cell(1, 0).unwrap(),
+            candidate_coord: (1, 0),
+            direction: 2,
+            path_height: 0,
+            parent: Some((grid.cell(0, 0).unwrap(), (0, 0))),
+        },
+    );
+    assert!(!blocked.allowed);
+
+    let parent = bridge_test_cell(0, false, false, 1);
+    let candidate = bridge_test_cell(1, false, false, 0);
+    let grid = PathGrid::from_cells(vec![parent, candidate], 2, 1);
+    let allowed = check_bridge_traversal(
+        &grid,
+        BridgeTraversalInput {
+            candidate: grid.cell(1, 0).unwrap(),
+            candidate_coord: (1, 0),
+            direction: 2,
+            path_height: 0,
+            parent: Some((grid.cell(0, 0).unwrap(), (0, 0))),
+        },
+    );
+    assert!(allowed.allowed);
+}
+
+#[test]
+fn bridge_traversal_diff_one_higher_parent_requires_candidate_slope() {
+    let parent = bridge_test_cell(1, false, false, 0);
+    let candidate = bridge_test_cell(0, false, false, 0);
+    let grid = PathGrid::from_cells(vec![parent, candidate], 2, 1);
+
+    let blocked = check_bridge_traversal(
+        &grid,
+        BridgeTraversalInput {
+            candidate: grid.cell(1, 0).unwrap(),
+            candidate_coord: (1, 0),
+            direction: 2,
+            path_height: 1,
+            parent: Some((grid.cell(0, 0).unwrap(), (0, 0))),
+        },
+    );
+    assert!(!blocked.allowed);
+
+    let parent = bridge_test_cell(1, false, false, 0);
+    let candidate = bridge_test_cell(0, false, false, 1);
+    let grid = PathGrid::from_cells(vec![parent, candidate], 2, 1);
+    let allowed = check_bridge_traversal(
+        &grid,
+        BridgeTraversalInput {
+            candidate: grid.cell(1, 0).unwrap(),
+            candidate_coord: (1, 0),
+            direction: 2,
+            path_height: 1,
+            parent: Some((grid.cell(0, 0).unwrap(), (0, 0))),
+        },
+    );
+    assert!(allowed.allowed);
+}
+
+#[test]
+fn bridge_traversal_diff_four_candidate_low_parent_high_forces_bridge_list() {
+    let parent = bridge_test_cell(4, true, false, 0);
+    let candidate = bridge_test_cell(0, true, true, 0);
+    let grid = PathGrid::from_cells(vec![parent, candidate], 2, 1);
+
+    let result = check_bridge_traversal(
+        &grid,
+        BridgeTraversalInput {
+            candidate: grid.cell(1, 0).unwrap(),
+            candidate_coord: (1, 0),
+            direction: 2,
+            path_height: 4,
+            parent: Some((grid.cell(0, 0).unwrap(), (0, 0))),
+        },
+    );
+
+    assert!(result.allowed);
+    assert!(result.force_bridge_list);
+}
+
+#[test]
+fn bridge_traversal_diff_four_candidate_high_parent_low_requires_parent_structural() {
+    let parent = bridge_test_cell(0, false, false, 0);
+    let candidate = bridge_test_cell(4, true, true, 0);
+    let grid = PathGrid::from_cells(vec![parent, candidate], 2, 1);
+
+    let blocked = check_bridge_traversal(
+        &grid,
+        BridgeTraversalInput {
+            candidate: grid.cell(1, 0).unwrap(),
+            candidate_coord: (1, 0),
+            direction: 2,
+            path_height: 0,
+            parent: Some((grid.cell(0, 0).unwrap(), (0, 0))),
+        },
+    );
+    assert!(!blocked.allowed);
+
+    let parent = bridge_test_cell(0, true, false, 0);
+    let candidate = bridge_test_cell(4, true, true, 0);
+    let grid = PathGrid::from_cells(vec![parent, candidate], 2, 1);
+    let allowed = check_bridge_traversal(
+        &grid,
+        BridgeTraversalInput {
+            candidate: grid.cell(1, 0).unwrap(),
+            candidate_coord: (1, 0),
+            direction: 2,
+            path_height: 4,
+            parent: Some((grid.cell(0, 0).unwrap(), (0, 0))),
+        },
+    );
+    assert!(allowed.allowed);
+}
+
+#[test]
+fn bridge_traversal_invalid_diff_blocks() {
+    let parent = bridge_test_cell(0, false, false, 0);
+    let candidate = bridge_test_cell(2, false, false, 0);
+    let grid = PathGrid::from_cells(vec![parent, candidate], 2, 1);
+
+    let result = check_bridge_traversal(
+        &grid,
+        BridgeTraversalInput {
+            candidate: grid.cell(1, 0).unwrap(),
+            candidate_coord: (1, 0),
+            direction: 2,
+            path_height: 0,
+            parent: Some((grid.cell(0, 0).unwrap(), (0, 0))),
+        },
+    );
+
+    assert!(!result.allowed);
+}
+
+#[test]
+fn bridge_traversal_null_parent_valid_direction_reconstructs_predecessor() {
+    let parent = bridge_test_cell(0, false, false, 1);
+    let candidate = bridge_test_cell(1, false, false, 0);
+    let grid = PathGrid::from_cells(vec![parent, candidate], 2, 1);
+
+    let result = check_bridge_traversal(
+        &grid,
+        BridgeTraversalInput {
+            candidate: grid.cell(1, 0).unwrap(),
+            candidate_coord: (1, 0),
+            direction: 2,
+            path_height: 0,
+            parent: None,
+        },
+    );
+
+    assert!(result.allowed);
+}
+
+#[test]
+fn can_enter_layers_keep_bridge_object_list_with_ground_occupancy_bits() {
+    let candidate = bridge_test_cell(0, true, true, 0);
+
+    let layers = can_enter_layer_context(
+        MovementLayer::Bridge,
+        MovementLayer::Bridge,
+        &candidate,
+        candidate.signed_level(),
+    );
+
+    assert_eq!(layers.terrain_layer, MovementLayer::Bridge);
+    assert_eq!(layers.object_list_layer, MovementLayer::Bridge);
+    assert_eq!(layers.occupancy_bits_layer, MovementLayer::Ground);
+}
+
+#[test]
+fn can_enter_layers_resnapshot_bridge_occupancy_bits_at_deck_height() {
+    let candidate = bridge_test_cell(0, true, true, 0);
+
+    let layers = can_enter_layer_context(
+        MovementLayer::Bridge,
+        MovementLayer::Bridge,
+        &candidate,
+        candidate.signed_level() + 4,
+    );
+
+    assert_eq!(layers.object_list_layer, MovementLayer::Bridge);
+    assert_eq!(layers.occupancy_bits_layer, MovementLayer::Bridge);
+}
+
+#[test]
+fn can_enter_layers_non_bridge_cells_retain_single_ground_layer() {
+    let candidate = bridge_test_cell(0, false, false, 0);
+
+    let layers = can_enter_layer_context(
+        MovementLayer::Ground,
+        MovementLayer::Ground,
+        &candidate,
+        candidate.signed_level(),
+    );
+
+    assert_eq!(layers.terrain_layer, MovementLayer::Ground);
+    assert_eq!(layers.object_list_layer, MovementLayer::Ground);
+    assert_eq!(layers.occupancy_bits_layer, MovementLayer::Ground);
 }
 
 #[test]
@@ -133,75 +421,123 @@ fn test_path_step_count_chebyshev_open_grid() {
 #[test]
 fn test_cliff_cost_detours_under_uniform_base() {
     // 3x3 grid. Direct row 0 has a height-step at (1,0): ground=4 between
-    // ground=0 cells. Direct path is 2 steps but pays cliff×4 twice
-    // (entering and leaving) ≈ 10000 g_cost. Alt path goes via row 1
-    // (all flat): 4 steps ≈ 4000 g_cost. Alt should win.
+    // ground=0 cells. Both edges (0,0)→(1,0) and (1,0)→(2,0) have diff=4,
+    // which the height-diff legality gate hard-blocks (diff>=2 always blocks
+    // in astar_search). A* must detour via row 1 (all flat).
+    // (Pre-gate, the path was permitted at ~10000 g_cost vs ~4000 for the
+    // alt; the alt won on cost. The new gate makes the detour the only
+    // option, but the visible outcome is identical.)
     let cells = vec![
         // Row 0 (y=0): 0, [cliff height=4], 0
         PathCell {
             ground_walkable: true,
             bridge_walkable: false,
+            bridge_structural: false,
+            bridge_marker_0x80: false,
             transition: false,
             ground_level: 0,
             bridge_deck_level: 0,
+            slope_type: 0,
+            tube_index: None,
+            low_bridge_tube_cell: false,
         },
         PathCell {
             ground_walkable: true,
             bridge_walkable: false,
+            bridge_structural: false,
+            bridge_marker_0x80: false,
             transition: false,
             ground_level: 4,
             bridge_deck_level: 0,
+            slope_type: 0,
+            tube_index: None,
+            low_bridge_tube_cell: false,
         },
         PathCell {
             ground_walkable: true,
             bridge_walkable: false,
+            bridge_structural: false,
+            bridge_marker_0x80: false,
             transition: false,
             ground_level: 0,
             bridge_deck_level: 0,
+            slope_type: 0,
+            tube_index: None,
+            low_bridge_tube_cell: false,
         },
         // Row 1 (y=1): all flat 0
         PathCell {
             ground_walkable: true,
             bridge_walkable: false,
+            bridge_structural: false,
+            bridge_marker_0x80: false,
             transition: false,
             ground_level: 0,
             bridge_deck_level: 0,
+            slope_type: 0,
+            tube_index: None,
+            low_bridge_tube_cell: false,
         },
         PathCell {
             ground_walkable: true,
             bridge_walkable: false,
+            bridge_structural: false,
+            bridge_marker_0x80: false,
             transition: false,
             ground_level: 0,
             bridge_deck_level: 0,
+            slope_type: 0,
+            tube_index: None,
+            low_bridge_tube_cell: false,
         },
         PathCell {
             ground_walkable: true,
             bridge_walkable: false,
+            bridge_structural: false,
+            bridge_marker_0x80: false,
             transition: false,
             ground_level: 0,
             bridge_deck_level: 0,
+            slope_type: 0,
+            tube_index: None,
+            low_bridge_tube_cell: false,
         },
         // Row 2 (y=2): all flat 0 (filler so 3x3)
         PathCell {
             ground_walkable: true,
             bridge_walkable: false,
+            bridge_structural: false,
+            bridge_marker_0x80: false,
             transition: false,
             ground_level: 0,
             bridge_deck_level: 0,
+            slope_type: 0,
+            tube_index: None,
+            low_bridge_tube_cell: false,
         },
         PathCell {
             ground_walkable: true,
             bridge_walkable: false,
+            bridge_structural: false,
+            bridge_marker_0x80: false,
             transition: false,
             ground_level: 0,
             bridge_deck_level: 0,
+            slope_type: 0,
+            tube_index: None,
+            low_bridge_tube_cell: false,
         },
         PathCell {
             ground_walkable: true,
             bridge_walkable: false,
+            bridge_structural: false,
+            bridge_marker_0x80: false,
             transition: false,
             ground_level: 0,
             bridge_deck_level: 0,
+            slope_type: 0,
+            tube_index: None,
+            low_bridge_tube_cell: false,
         },
     ];
     let grid = PathGrid::from_cells(cells, 3, 3);
@@ -221,9 +557,14 @@ fn test_layered_path_cell_bridge_helpers() {
     let bridge_cell = PathCell {
         ground_walkable: true,
         bridge_walkable: true,
+        bridge_structural: false,
+        bridge_marker_0x80: false,
         transition: true,
         ground_level: 1,
         bridge_deck_level: 4,
+        slope_type: 0,
+        tube_index: None,
+        low_bridge_tube_cell: false,
     };
     assert!(bridge_cell.is_bridge_transition_cell());
     assert!(bridge_cell.is_elevated_bridge_cell());
@@ -241,9 +582,14 @@ fn test_layered_path_cell_bridge_helpers() {
     let low_bridge = PathCell {
         ground_walkable: true,
         bridge_walkable: true,
+        bridge_structural: false,
+        bridge_marker_0x80: false,
         transition: false,
         ground_level: 2,
         bridge_deck_level: 2,
+        slope_type: 0,
+        tube_index: None,
+        low_bridge_tube_cell: false,
     };
     assert!(!low_bridge.is_bridge_transition_cell());
     assert!(!low_bridge.is_elevated_bridge_cell());
@@ -426,7 +772,7 @@ fn test_block_building_footprint() {
     assert!(grid.is_walkable(3, 3));
     assert!(grid.is_walkable(4, 4));
     // Block a 2x2 building at (3, 3).
-    grid.block_building_footprint(3, 3, "2x2", &[], &[]);
+    grid.block_building_footprint(3, 3, "2x2", &[], &[], false);
     assert!(!grid.is_walkable(3, 3));
     assert!(!grid.is_walkable(4, 3));
     assert!(!grid.is_walkable(3, 4));
@@ -450,7 +796,7 @@ fn garefn_footprint_leaves_dock_pad_walkable() {
         })
         .collect();
     let mut grid: PathGrid = PathGrid::from_map_data(&cells, None, 32, 32);
-    grid.block_building_footprint(10, 10, "4x3", &[(-1, 0), (-1, -1)], &[(3, 1)]);
+    grid.block_building_footprint(10, 10, "4x3", &[(-1, 0), (-1, -1)], &[(3, 1)], false);
     // RemoveOccupy1=3,1 → cell (13, 11) should be walkable (the dock pad)
     assert!(
         grid.is_walkable(13, 11),
@@ -566,6 +912,7 @@ fn test_layered_path_transitions_onto_bridge_and_stays_on_deck() {
         (4, 0),
         None,
         None,
+        None,
         0,
         false,
     )
@@ -574,53 +921,6 @@ fn test_layered_path_transitions_onto_bridge_and_stays_on_deck() {
     assert_eq!(path.first().map(|step| (step.rx, step.ry)), Some((0, 0)));
     assert_eq!(path.last().map(|step| (step.rx, step.ry)), Some((4, 0)));
     assert!(path.len() >= 2, "path should have at least start and goal");
-}
-
-#[test]
-fn test_layered_path_no_reconstruct_panic_at_bridgehead_height_collapse() {
-    // Regression: reconstruct_path_dual used to panic with "hit unvisited cell
-    // at idx=... bridge=true" when a high-ground cell was adjacent to a
-    // bridge-deck cell. Push-time layer flag (from parent's height) said
-    // BRIDGE but pop-time re-derivation (from node's own collapsed height)
-    // said GROUND, so came_from lookup hit usize::MAX and asserted.
-    //
-    // Repro: parent at level=5 steps to bridge cell (ground=0, deck=4).
-    // compute_neighbor_height: diff=5, NOT in [2,4] → ground_level=0.
-    // Push-time: abs(5-0)=5 >= 2 → stored in bridge_from.
-    // Old pop-time: abs(0-0)=0 < 2 → read ground_from → usize::MAX → panic.
-    // is_infantry=true makes goal_height=ground_level so current.height==goal_height.
-    let terrain = ResolvedTerrainGrid::from_cells(
-        2,
-        1,
-        vec![
-            ResolvedTerrainCell {
-                level: 5,
-                ..make_resolved_cell(0, 0)
-            },
-            ResolvedTerrainCell {
-                level: 0,
-                bridge_walkable: true,
-                bridge_transition: true,
-                bridge_deck_level: 4,
-                has_bridge_deck: true,
-                ..make_resolved_cell(1, 0)
-            },
-        ],
-    );
-    let grid = PathGrid::from_resolved_terrain(&terrain);
-    let path = astar_search(
-        &grid,
-        (0, 0),
-        MovementLayer::Ground,
-        (1, 0),
-        &AStarOptions {
-            is_infantry: true,
-            ..Default::default()
-        },
-    )
-    .expect("path should exist at bridgehead height-collapse boundary");
-    assert_eq!(path.first().map(|s| (s.rx, s.ry)), Some((0, 0)));
-    assert_eq!(path.last().map(|s| (s.rx, s.ry)), Some((1, 0)));
 }
 
 #[test]
@@ -642,6 +942,7 @@ fn test_layered_path_stays_on_ground_when_bridge_not_needed() {
         (0, 0),
         MovementLayer::Ground,
         (2, 0),
+        None,
         None,
         None,
         0,
@@ -667,6 +968,8 @@ fn test_layered_path_rebuild_blocks_destroyed_bridge_deck() {
                 bridge_walkable: true,
                 bridge_transition: true,
                 bridge_deck_level: 4,
+                // Binary high-bridge bridgeheads carry both 0x100 and 0x200:
+                // they are structural transition cells, not ramp metadata.
                 has_bridge_deck: true,
                 ..make_resolved_cell(1, 0)
             },
@@ -705,6 +1008,7 @@ fn test_layered_path_rebuild_blocks_destroyed_bridge_deck() {
             (4, 0),
             None,
             None,
+            None,
             0,
             false,
         )
@@ -712,14 +1016,12 @@ fn test_layered_path_rebuild_blocks_destroyed_bridge_deck() {
         "intact bridge should be traversable"
     );
 
-    // Direct mutation replaces the legacy `apply_damage`. The orchestrator's
-    // walker performs the same per-cell damage-state transitions through
-    // `body_cell_advance_state`; this test only needs the destroyed
-    // damage_state for is_bridge_walkable to fail.
-    for (rx, ry) in [(1u16, 0u16), (2, 0), (3, 0)] {
-        if let Some(c) = bridge_state.cell_mut(rx, ry) {
-            c.damage_state = crate::sim::bridge_state::DamageState::Destroyed;
-        }
+    // Destroy only the body cell (rx=2). The bridgeheads at rx=1 / rx=3 must
+    // stay Healthy — pass 4 of `from_resolved_terrain` creates them with
+    // `damage_state = Healthy { variant: 0 }` permanently, and the contract
+    // for `BridgeCellRole::Bridgehead` is that no code mutates that field.
+    if let Some(c) = bridge_state.cell_mut(2, 0) {
+        c.damage_state = crate::sim::bridge_state::DamageState::Destroyed;
     }
 
     let destroyed_grid =
@@ -734,12 +1036,84 @@ fn test_layered_path_rebuild_blocks_destroyed_bridge_deck() {
             (4, 0),
             None,
             None,
+            None,
             0,
             false,
         )
         .is_none(),
         "destroyed bridge should invalidate the layered route"
     );
+}
+
+#[test]
+fn test_pathcell_bridge_walkable_preserved_for_bridgeheads_across_rebuild() {
+    // After the G7 fix, PathCell.bridge_walkable for pass-4 bridgeheads
+    // (rx=1, rx=3) must stay true across every PathGrid rebuild driven by
+    // from_resolved_terrain_with_bridges. Pre-fix this would flip to false
+    // because the bridgeheads aren't registered in BridgeRuntimeState.
+    let terrain = ResolvedTerrainGrid::from_cells(
+        5,
+        1,
+        vec![
+            ResolvedTerrainCell {
+                level: 4,
+                ..make_resolved_cell(0, 0)
+            },
+            ResolvedTerrainCell {
+                bridge_walkable: true,
+                bridge_transition: true,
+                bridge_deck_level: 4,
+                has_bridge_deck: false,
+                ..make_resolved_cell(1, 0)
+            },
+            ResolvedTerrainCell {
+                ground_walk_blocked: true,
+                build_blocked: true,
+                base_build_blocked: true,
+                bridge_walkable: true,
+                bridge_deck_level: 4,
+                has_bridge_deck: true,
+                is_water: true,
+                ..make_resolved_cell(2, 0)
+            },
+            ResolvedTerrainCell {
+                bridge_walkable: true,
+                bridge_transition: true,
+                bridge_deck_level: 4,
+                has_bridge_deck: false,
+                ..make_resolved_cell(3, 0)
+            },
+            ResolvedTerrainCell {
+                level: 4,
+                ..make_resolved_cell(4, 0)
+            },
+        ],
+    );
+    let bridge_state = BridgeRuntimeState::from_resolved_terrain(&terrain, true, 10);
+
+    // Multiple rebuilds: in production each fires from a non-bridge event
+    // (unit spawn, ownership change, destroyed structure).
+    for _ in 0..3 {
+        let grid = PathGrid::from_resolved_terrain_with_bridges(&terrain, Some(&bridge_state));
+        let pc1 = grid.cell(1, 0).expect("bridgehead cell exists");
+        let pc3 = grid.cell(3, 0).expect("bridgehead cell exists");
+        assert!(
+            pc1.bridge_walkable,
+            "rx=1 bridgehead must remain bridge_walkable"
+        );
+        assert!(
+            pc3.bridge_walkable,
+            "rx=3 bridgehead must remain bridge_walkable"
+        );
+        assert!(
+            pc1.transition,
+            "rx=1 bridgehead must remain a transition cell"
+        );
+        assert!(
+            pc3.transition,
+            "rx=3 bridgehead must remain a transition cell"
+        );
+    }
 }
 
 // --- Bridge height helper tests ---
@@ -749,9 +1123,14 @@ fn test_is_at_bridge_level_no_bridge() {
     let cell = PathCell {
         ground_walkable: true,
         bridge_walkable: false,
+        bridge_structural: false,
+        bridge_marker_0x80: false,
         transition: false,
         ground_level: 0,
         bridge_deck_level: 0,
+        slope_type: 0,
+        tube_index: None,
+        low_bridge_tube_cell: false,
     };
     // Non-bridge cell is never "at bridge level"
     assert!(!is_at_bridge_level(0, &cell));
@@ -763,9 +1142,14 @@ fn test_is_at_bridge_level_ground_near() {
     let cell = PathCell {
         ground_walkable: true,
         bridge_walkable: true,
+        bridge_structural: false,
+        bridge_marker_0x80: false,
         transition: false,
         ground_level: 0,
         bridge_deck_level: 4,
+        slope_type: 0,
+        tube_index: None,
+        low_bridge_tube_cell: false,
     };
     // path_height=0, ground=0 -> diff=0 < 2 -> ground list
     assert!(!is_at_bridge_level(0, &cell));
@@ -778,9 +1162,14 @@ fn test_is_at_bridge_level_bridge_far() {
     let cell = PathCell {
         ground_walkable: true,
         bridge_walkable: true,
+        bridge_structural: false,
+        bridge_marker_0x80: false,
         transition: false,
         ground_level: 0,
         bridge_deck_level: 4,
+        slope_type: 0,
+        tube_index: None,
+        low_bridge_tube_cell: false,
     };
     // path_height=4, ground=0 -> diff=4 >= 2 -> bridge list
     assert!(is_at_bridge_level(4, &cell));
@@ -793,16 +1182,26 @@ fn test_compute_neighbor_height_no_bridge() {
     let parent = PathCell {
         ground_walkable: true,
         bridge_walkable: false,
+        bridge_structural: false,
+        bridge_marker_0x80: false,
         transition: false,
         ground_level: 2,
         bridge_deck_level: 0,
+        slope_type: 0,
+        tube_index: None,
+        low_bridge_tube_cell: false,
     };
     let neighbor = PathCell {
         ground_walkable: true,
         bridge_walkable: false,
+        bridge_structural: false,
+        bridge_marker_0x80: false,
         transition: false,
         ground_level: 3,
         bridge_deck_level: 0,
+        slope_type: 0,
+        tube_index: None,
+        low_bridge_tube_cell: false,
     };
     // Case 1: neighbor not bridge -> ground_level
     assert_eq!(compute_neighbor_height(2, &parent, &neighbor), 3);
@@ -813,16 +1212,26 @@ fn test_compute_neighbor_height_parent_on_bridge_deck() {
     let parent = PathCell {
         ground_walkable: true,
         bridge_walkable: true,
+        bridge_structural: false,
+        bridge_marker_0x80: false,
         transition: false,
         ground_level: 0,
         bridge_deck_level: 4,
+        slope_type: 0,
+        tube_index: None,
+        low_bridge_tube_cell: false,
     };
     let neighbor = PathCell {
         ground_walkable: true,
         bridge_walkable: true,
+        bridge_structural: false,
+        bridge_marker_0x80: false,
         transition: false,
         ground_level: 0,
         bridge_deck_level: 4,
+        slope_type: 0,
+        tube_index: None,
+        low_bridge_tube_cell: false,
     };
     // Case 2a: parent on bridge at deck level -> stay on bridge
     assert_eq!(compute_neighbor_height(4, &parent, &neighbor), 4);
@@ -833,16 +1242,26 @@ fn test_compute_neighbor_height_parent_under_bridge() {
     let parent = PathCell {
         ground_walkable: true,
         bridge_walkable: true,
+        bridge_structural: false,
+        bridge_marker_0x80: false,
         transition: false,
         ground_level: 0,
         bridge_deck_level: 4,
+        slope_type: 0,
+        tube_index: None,
+        low_bridge_tube_cell: false,
     };
     let neighbor = PathCell {
         ground_walkable: true,
         bridge_walkable: true,
+        bridge_structural: false,
+        bridge_marker_0x80: false,
         transition: false,
         ground_level: 0,
         bridge_deck_level: 4,
+        slope_type: 0,
+        tube_index: None,
+        low_bridge_tube_cell: false,
     };
     // Case 2b: parent on bridge cell but at ground level -> stay under
     assert_eq!(compute_neighbor_height(0, &parent, &neighbor), 0);
@@ -853,16 +1272,26 @@ fn test_compute_neighbor_height_ramp_up() {
     let parent = PathCell {
         ground_walkable: true,
         bridge_walkable: false,
+        bridge_structural: false,
+        bridge_marker_0x80: false,
         transition: false,
         ground_level: 4,
         bridge_deck_level: 0,
+        slope_type: 0,
+        tube_index: None,
+        low_bridge_tube_cell: false,
     };
     let neighbor = PathCell {
         ground_walkable: true,
         bridge_walkable: true,
+        bridge_structural: false,
+        bridge_marker_0x80: false,
         transition: true,
         ground_level: 0,
         bridge_deck_level: 4,
+        slope_type: 0,
+        tube_index: None,
+        low_bridge_tube_cell: false,
     };
     // Case 3: parent not bridge, neighbor is bridge,
     // diff = 4 - 0 = 4, in [2,4] -> ramp up to bridge deck
@@ -874,16 +1303,26 @@ fn test_compute_neighbor_height_pass_under() {
     let parent = PathCell {
         ground_walkable: true,
         bridge_walkable: false,
+        bridge_structural: false,
+        bridge_marker_0x80: false,
         transition: false,
         ground_level: 0,
         bridge_deck_level: 0,
+        slope_type: 0,
+        tube_index: None,
+        low_bridge_tube_cell: false,
     };
     let neighbor = PathCell {
         ground_walkable: true,
         bridge_walkable: true,
+        bridge_structural: false,
+        bridge_marker_0x80: false,
         transition: false,
         ground_level: 0,
         bridge_deck_level: 4,
+        slope_type: 0,
+        tube_index: None,
+        low_bridge_tube_cell: false,
     };
     // Case 3: parent not bridge, neighbor is bridge,
     // diff = 0 - 0 = 0, NOT in [2,4] -> pass under
@@ -895,16 +1334,26 @@ fn test_compute_neighbor_height_extreme_diff_no_ramp() {
     let parent = PathCell {
         ground_walkable: true,
         bridge_walkable: false,
+        bridge_structural: false,
+        bridge_marker_0x80: false,
         transition: false,
         ground_level: 8,
         bridge_deck_level: 0,
+        slope_type: 0,
+        tube_index: None,
+        low_bridge_tube_cell: false,
     };
     let neighbor = PathCell {
         ground_walkable: true,
         bridge_walkable: true,
+        bridge_structural: false,
+        bridge_marker_0x80: false,
         transition: true,
         ground_level: 0,
         bridge_deck_level: 4,
+        slope_type: 0,
+        tube_index: None,
+        low_bridge_tube_cell: false,
     };
     // Case 3: diff = 8 - 0 = 8, NOT in [2,4] -> stays at ground (no ramp)
     assert_eq!(compute_neighbor_height(8, &parent, &neighbor), 0);
@@ -947,6 +1396,7 @@ fn make_resolved_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
         filled_clear: false,
         tileset_index: Some(0),
         land_type: 0,
+        yr_cell_land_type: 0,
         slope_type: 0,
         template_height: 0,
         render_offset_x: 0,
@@ -974,9 +1424,96 @@ fn make_resolved_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
         bridge_transition: false,
         bridge_deck_level: 0,
         bridge_layer: None,
+        bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+        tube_index: None,
         radar_left: [0, 0, 0],
         radar_right: [0, 0, 0],
+        has_damaged_data: false,
+        bridgehead_anchor_class_at_load: None,
     }
+}
+
+#[test]
+fn path_grid_preserves_low_bridge_tube_metadata() {
+    let mut cell = make_resolved_cell(0, 0);
+    cell.yr_cell_land_type = YR_CELL_LAND_TUNNEL;
+    cell.tube_index = Some(TubeId(7));
+    let terrain = ResolvedTerrainGrid::from_cells(1, 1, vec![cell]);
+
+    let grid = PathGrid::from_resolved_terrain(&terrain);
+    let path_cell = grid.cell(0, 0).expect("path cell");
+    assert_eq!(path_cell.tube_index, Some(TubeId(7)));
+    assert!(path_cell.is_low_bridge_tube_cell());
+}
+
+#[test]
+fn astar_uses_explicit_nonzero_tube_edge() {
+    let mut cells: Vec<_> = (0..5).map(|x| make_resolved_cell(x, 0)).collect();
+    cells[0].yr_cell_land_type = YR_CELL_LAND_TUNNEL;
+    cells[0].tube_index = Some(TubeId(0));
+    for cell in &mut cells[1..4] {
+        cell.ground_walk_blocked = true;
+        cell.base_ground_walk_blocked = true;
+    }
+    let terrain = ResolvedTerrainGrid::from_cells_with_tubes(
+        5,
+        1,
+        cells,
+        vec![TubeFact::explicit((0, 0), (4, 0), 2, vec![2, 2, 2, 2])],
+    );
+    let grid = PathGrid::from_resolved_terrain(&terrain);
+
+    let path = find_path_with_costs(
+        &grid,
+        (0, 0),
+        (4, 0),
+        None,
+        None,
+        None,
+        Some(&terrain),
+        None,
+        0,
+        false,
+    )
+    .expect("explicit nonzero tube should bridge blocked intermediate cells");
+
+    assert_eq!(path, vec![(0, 0), (4, 0)]);
+}
+
+#[test]
+fn astar_rejects_zero_step_auto_shell_tube_edge() {
+    let mut cells: Vec<_> = (0..5).map(|x| make_resolved_cell(x, 0)).collect();
+    cells[0].yr_cell_land_type = YR_CELL_LAND_TUNNEL;
+    cells[0].tube_index = Some(TubeId(0));
+    for cell in &mut cells[1..4] {
+        cell.ground_walk_blocked = true;
+        cell.base_ground_walk_blocked = true;
+    }
+    let terrain = ResolvedTerrainGrid::from_cells_with_tubes(
+        5,
+        1,
+        cells,
+        vec![TubeFact::auto_low_bridge((0, 0), 2)],
+    );
+    let grid = PathGrid::from_resolved_terrain(&terrain);
+
+    let path = find_path_with_costs(
+        &grid,
+        (0, 0),
+        (4, 0),
+        None,
+        None,
+        None,
+        Some(&terrain),
+        None,
+        0,
+        false,
+    );
+
+    assert!(
+        path.is_none(),
+        "zero-step auto shell must not create a visible tube route"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1109,10 +1646,10 @@ fn test_entity_blocks_fully_surrounded_no_path() {
 fn code2_urgency_2_routes_around_blocker() {
     // Urgency=2 → 1000x multiplier, so A* should detour one cell off the direct row.
     let grid = PathGrid::new(10, 3);
-    let mut ebm: std::collections::HashMap<(u16, u16), EntityBlockEntry> =
-        std::collections::HashMap::new();
+    let mut ebm = LayeredEntityBlockMap::new();
     // Blocker sitting at (3,1) with next cell (4,1).
     ebm.insert(
+        MovementLayer::Ground,
         (3, 1),
         EntityBlockEntry {
             next_cell: Some((4, 1)),
@@ -1145,9 +1682,9 @@ fn code2_urgency_1_picks_alt_when_available() {
     // Urgency=1 → 4x multiplier. With a parallel alt row of equal terrain
     // cost, A* should prefer the alt row over paying 4x on the blocker cell.
     let grid = PathGrid::new(10, 3);
-    let mut ebm: std::collections::HashMap<(u16, u16), EntityBlockEntry> =
-        std::collections::HashMap::new();
+    let mut ebm = LayeredEntityBlockMap::new();
     ebm.insert(
+        MovementLayer::Ground,
         (3, 1),
         EntityBlockEntry {
             next_cell: Some((4, 1)),
@@ -1180,10 +1717,10 @@ fn code2_urgency_0_chain_clears_uses_baseline() {
     // should detect the cleared tail within 10 hops and return the baseline
     // cost (1x), so the path may run straight through the blocker cell.
     let grid = PathGrid::new(10, 3);
-    let mut ebm: std::collections::HashMap<(u16, u16), EntityBlockEntry> =
-        std::collections::HashMap::new();
+    let mut ebm = LayeredEntityBlockMap::new();
     // Chain: (3,1)→(4,1), (4,1)→(5,1), (5,1)→(6,1). (6,1) has no blocker.
     ebm.insert(
+        MovementLayer::Ground,
         (3, 1),
         EntityBlockEntry {
             next_cell: Some((4, 1)),
@@ -1191,6 +1728,7 @@ fn code2_urgency_0_chain_clears_uses_baseline() {
         },
     );
     ebm.insert(
+        MovementLayer::Ground,
         (4, 1),
         EntityBlockEntry {
             next_cell: Some((5, 1)),
@@ -1198,6 +1736,7 @@ fn code2_urgency_0_chain_clears_uses_baseline() {
         },
     );
     ebm.insert(
+        MovementLayer::Ground,
         (5, 1),
         EntityBlockEntry {
             next_cell: Some((6, 1)),
@@ -1233,12 +1772,12 @@ fn code2_urgency_0_ten_step_jam_uses_4x() {
     // should return 4x (jam). The path should still go through if no alt,
     // but we verify the multiplier doesn't explode to 1000.
     let grid = PathGrid::new(12, 3);
-    let mut ebm: std::collections::HashMap<(u16, u16), EntityBlockEntry> =
-        std::collections::HashMap::new();
+    let mut ebm = LayeredEntityBlockMap::new();
     // 11-link chain (>10 hops): (0,1)→(1,1)→...→(10,1). Each link maps to the
     // next cell and the chain runs 11 deep — chain walk exhausts at 10.
     for x in 0..11u16 {
         ebm.insert(
+            MovementLayer::Ground,
             (x, 1),
             EntityBlockEntry {
                 next_cell: Some((x + 1, 1)),
@@ -1275,9 +1814,9 @@ fn code2_goal_cell_exempt_from_multiplier() {
     // A blocker at the goal cell must not increase cost — the mover is
     // entitled to reach its goal regardless.
     let grid = PathGrid::new(10, 3);
-    let mut ebm: std::collections::HashMap<(u16, u16), EntityBlockEntry> =
-        std::collections::HashMap::new();
+    let mut ebm = LayeredEntityBlockMap::new();
     ebm.insert(
+        MovementLayer::Ground,
         (5, 1),
         EntityBlockEntry {
             next_cell: Some((6, 1)),
@@ -1298,6 +1837,169 @@ fn code2_goal_cell_exempt_from_multiplier() {
     )
     .expect("goal cell should be reachable even with urgency=2 blocker on it");
     assert_eq!(path.last(), Some(&(5, 1)));
+}
+
+#[test]
+fn soft_blocker_cost_uses_selected_ground_object_list_layer() {
+    let grid = PathGrid::new(7, 3);
+    let mut ebm = LayeredEntityBlockMap::new();
+    ebm.insert(
+        MovementLayer::Bridge,
+        (3, 1),
+        EntityBlockEntry {
+            next_cell: Some((4, 1)),
+            cost_code: 2,
+        },
+    );
+
+    let bridge_only_path = find_path_with_costs(
+        &grid,
+        (0, 1),
+        (6, 1),
+        None,
+        None,
+        None,
+        None,
+        Some(&ebm),
+        2,
+        false,
+    )
+    .expect("bridge-layer soft blocker must not affect ground path");
+    assert!(
+        bridge_only_path.contains(&(3, 1)),
+        "ground A* should ignore bridge object-list blocker at the same cell: {:?}",
+        bridge_only_path
+    );
+
+    ebm.insert(
+        MovementLayer::Ground,
+        (3, 1),
+        EntityBlockEntry {
+            next_cell: Some((4, 1)),
+            cost_code: 2,
+        },
+    );
+    let ground_path = find_path_with_costs(
+        &grid,
+        (0, 1),
+        (6, 1),
+        None,
+        None,
+        None,
+        None,
+        Some(&ebm),
+        2,
+        false,
+    )
+    .expect("ground path should still exist by detouring");
+    assert!(
+        !ground_path.contains(&(3, 1)),
+        "ground A* should apply ground object-list blocker cost: {:?}",
+        ground_path
+    );
+}
+
+#[test]
+fn soft_blocker_cost_uses_selected_bridge_object_list_layer() {
+    let mut grid = PathGrid::new(7, 3);
+    for y in 0..3 {
+        for x in 0..7 {
+            grid.set_cell_for_test(x, y, 0, true, false);
+        }
+    }
+
+    let mut ebm = LayeredEntityBlockMap::new();
+    ebm.insert(
+        MovementLayer::Ground,
+        (3, 1),
+        EntityBlockEntry {
+            next_cell: Some((4, 1)),
+            cost_code: 2,
+        },
+    );
+    let ground_only_path = find_layered_path(
+        &grid,
+        None,
+        None,
+        (0, 1),
+        MovementLayer::Bridge,
+        (6, 1),
+        None,
+        None,
+        Some(&ebm),
+        2,
+        false,
+    )
+    .expect("ground-layer soft blocker must not affect bridge path");
+    assert!(
+        ground_only_path
+            .iter()
+            .any(|step| (step.rx, step.ry) == (3, 1)),
+        "bridge A* should ignore ground object-list blocker at the same cell: {:?}",
+        ground_only_path
+    );
+
+    ebm.insert(
+        MovementLayer::Bridge,
+        (3, 1),
+        EntityBlockEntry {
+            next_cell: Some((4, 1)),
+            cost_code: 2,
+        },
+    );
+    let bridge_path = find_layered_path(
+        &grid,
+        None,
+        None,
+        (0, 1),
+        MovementLayer::Bridge,
+        (6, 1),
+        None,
+        None,
+        Some(&ebm),
+        2,
+        false,
+    )
+    .expect("bridge path should still exist by detouring");
+    assert!(
+        !bridge_path.iter().any(|step| (step.rx, step.ry) == (3, 1)),
+        "bridge A* should apply bridge object-list blocker cost: {:?}",
+        bridge_path
+    );
+}
+
+#[test]
+fn code2_chain_lookup_stays_on_selected_layer() {
+    let mut ebm = LayeredEntityBlockMap::new();
+    ebm.insert(
+        MovementLayer::Bridge,
+        (3, 1),
+        EntityBlockEntry {
+            next_cell: Some((4, 1)),
+            cost_code: 2,
+        },
+    );
+    for x in 4..15u16 {
+        ebm.insert(
+            MovementLayer::Ground,
+            (x, 1),
+            EntityBlockEntry {
+                next_cell: Some((x + 1, 1)),
+                cost_code: 2,
+            },
+        );
+    }
+
+    assert_eq!(
+        compute_code2_multiplier(0, (3, 1), MovementLayer::Bridge, &ebm),
+        CODE2_MULT_CLEARING,
+        "bridge chain must not continue through ground-layer blockers"
+    );
+    assert_eq!(
+        compute_code2_multiplier(0, (4, 1), MovementLayer::Ground, &ebm),
+        CODE2_MULT_JAM,
+        "ground-only chain behavior remains unchanged"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1744,6 +2446,7 @@ fn test_height_based_bridge_routing_deck_at_4() {
         (4, 0),
         None,
         None,
+        None,
         0,
         false,
     )
@@ -1803,6 +2506,7 @@ fn test_cliff_cost_uses_effective_height_not_ground_level() {
         (0, 0),
         MovementLayer::Bridge,
         (2, 0),
+        None,
         None,
         None,
         0,
@@ -1936,4 +2640,377 @@ fn astar_allows_body_to_body_diagonal() {
         &AStarOptions::default(),
     );
     assert!(result.is_some(), "A* must find a path across the bridge");
+}
+
+#[test]
+fn astar_blocks_structural_body_to_body_bad_height_jump() {
+    let parent = bridge_test_cell(0, true, false, 0);
+    let candidate = bridge_test_cell(4, true, false, 0);
+    let grid = PathGrid::from_cells(vec![parent, candidate], 2, 1);
+
+    let result = astar_search(
+        &grid,
+        (0, 0),
+        MovementLayer::Bridge,
+        (1, 0),
+        &AStarOptions::default(),
+    );
+
+    assert!(
+        result.is_none(),
+        "A* must not bypass height legality for structural bridge body cells"
+    );
+}
+
+// ============================================================================
+// Height-diff legality gate (CheckBridgeTraversal port).
+// Pins: diff-1 transitions require the LOWER cell's slope_type != 0;
+// diff ∈ {±2, ±3, ±5+} always block; diff-4 reaching the gate is non-bridge
+// cliff and blocks too (legitimate bridge entries carry through as diff-0 via
+// compute_neighbor_height Case 3).
+// ============================================================================
+
+#[test]
+fn diff_1_slope_zero_lower_blocks_going_up() {
+    // 3x1 grid: level 0 (slope 0) — level 1 (slope 0) — level 0 (slope 0).
+    // Both diff-1 edges have a slope=0 lower cell — gate must block both.
+    let cells = vec![
+        PathCell {
+            ground_walkable: true,
+            bridge_walkable: false,
+            bridge_structural: false,
+            bridge_marker_0x80: false,
+            transition: false,
+            ground_level: 0,
+            bridge_deck_level: 0,
+            slope_type: 0,
+            tube_index: None,
+            low_bridge_tube_cell: false,
+        },
+        PathCell {
+            ground_walkable: true,
+            bridge_walkable: false,
+            bridge_structural: false,
+            bridge_marker_0x80: false,
+            transition: false,
+            ground_level: 1,
+            bridge_deck_level: 0,
+            slope_type: 0,
+            tube_index: None,
+            low_bridge_tube_cell: false,
+        },
+        PathCell {
+            ground_walkable: true,
+            bridge_walkable: false,
+            bridge_structural: false,
+            bridge_marker_0x80: false,
+            transition: false,
+            ground_level: 0,
+            bridge_deck_level: 0,
+            slope_type: 0,
+            tube_index: None,
+            low_bridge_tube_cell: false,
+        },
+    ];
+    let grid = PathGrid::from_cells(cells, 3, 1);
+    let path = find_path(&grid, (0, 0), (2, 0));
+    assert!(
+        path.is_none(),
+        "diff-1 cliff with slope=0 lower cell must block A* — got {:?}",
+        path
+    );
+}
+
+#[test]
+fn diff_1_slope_only_on_upper_cell_still_blocks() {
+    // 3x1 grid: level 0 (slope 0) — level 1 (slope 2, ramp) — level 0 (slope 0).
+    // The UPPER cell has slope=2, but the LOWER cell on each edge is the
+    // level-0 flat with slope=0 — and the gate reads the LOWER cell's slope.
+    // So both edges must still block.
+    let cells = vec![
+        PathCell {
+            ground_walkable: true,
+            bridge_walkable: false,
+            bridge_structural: false,
+            bridge_marker_0x80: false,
+            transition: false,
+            ground_level: 0,
+            bridge_deck_level: 0,
+            slope_type: 0,
+            tube_index: None,
+            low_bridge_tube_cell: false,
+        },
+        PathCell {
+            ground_walkable: true,
+            bridge_walkable: false,
+            bridge_structural: false,
+            bridge_marker_0x80: false,
+            transition: false,
+            ground_level: 1,
+            bridge_deck_level: 0,
+            slope_type: 2,
+            tube_index: None,
+            low_bridge_tube_cell: false,
+        },
+        PathCell {
+            ground_walkable: true,
+            bridge_walkable: false,
+            bridge_structural: false,
+            bridge_marker_0x80: false,
+            transition: false,
+            ground_level: 0,
+            bridge_deck_level: 0,
+            slope_type: 0,
+            tube_index: None,
+            low_bridge_tube_cell: false,
+        },
+    ];
+    let grid = PathGrid::from_cells(cells, 3, 1);
+    let path = find_path(&grid, (0, 0), (2, 0));
+    assert!(
+        path.is_none(),
+        "lower cell (level-0 flat, slope=0) gates the edge — upper-side slope is irrelevant"
+    );
+}
+
+#[test]
+fn diff_1_slope_nonzero_lower_permits() {
+    // 3x1 grid: level 0 (slope 2) — level 1 (slope 0) — level 0 (slope 2).
+    // The LOWER cell on each edge has slope=2, so the gate permits and A*
+    // finds the path 0→1→2.
+    let cells = vec![
+        PathCell {
+            ground_walkable: true,
+            bridge_walkable: false,
+            bridge_structural: false,
+            bridge_marker_0x80: false,
+            transition: false,
+            ground_level: 0,
+            bridge_deck_level: 0,
+            slope_type: 2,
+            tube_index: None,
+            low_bridge_tube_cell: false,
+        },
+        PathCell {
+            ground_walkable: true,
+            bridge_walkable: false,
+            bridge_structural: false,
+            bridge_marker_0x80: false,
+            transition: false,
+            ground_level: 1,
+            bridge_deck_level: 0,
+            slope_type: 0,
+            tube_index: None,
+            low_bridge_tube_cell: false,
+        },
+        PathCell {
+            ground_walkable: true,
+            bridge_walkable: false,
+            bridge_structural: false,
+            bridge_marker_0x80: false,
+            transition: false,
+            ground_level: 0,
+            bridge_deck_level: 0,
+            slope_type: 2,
+            tube_index: None,
+            low_bridge_tube_cell: false,
+        },
+    ];
+    let grid = PathGrid::from_cells(cells, 3, 1);
+    let path = find_path(&grid, (0, 0), (2, 0))
+        .expect("lower-cell slope=2 must permit diff-1 transitions");
+    assert_eq!(path.first().copied(), Some((0, 0)));
+    assert_eq!(path.last().copied(), Some((2, 0)));
+}
+
+#[test]
+fn diff_1_slope_zero_lower_blocks_going_down() {
+    // 2x1 grid stepping DOWN: level 1 → level 0. Lower cell has slope=0.
+    // Symmetry check that the gate fires regardless of step direction.
+    let cells = vec![
+        PathCell {
+            ground_walkable: true,
+            bridge_walkable: false,
+            bridge_structural: false,
+            bridge_marker_0x80: false,
+            transition: false,
+            ground_level: 1,
+            bridge_deck_level: 0,
+            slope_type: 0,
+            tube_index: None,
+            low_bridge_tube_cell: false,
+        },
+        PathCell {
+            ground_walkable: true,
+            bridge_walkable: false,
+            bridge_structural: false,
+            bridge_marker_0x80: false,
+            transition: false,
+            ground_level: 0,
+            bridge_deck_level: 0,
+            slope_type: 0,
+            tube_index: None,
+            low_bridge_tube_cell: false,
+        },
+    ];
+    let grid = PathGrid::from_cells(cells, 2, 1);
+    let path = find_path(&grid, (0, 0), (1, 0));
+    assert!(
+        path.is_none(),
+        "going-down diff-1 with slope=0 lower must block — got {:?}",
+        path
+    );
+}
+
+#[test]
+fn l6_canary_unit_at_deck_height_stepping_to_non_bridge_produces_nonzero_diff() {
+    // Design ledger L6: the divergent diff-0 case (unit Z mismatched with
+    // src ground level on a non-bridge transition) cannot arise in our model
+    // because compute_neighbor_height keeps unit Z synced with cell state.
+    //
+    // This canary fixes the invariant in a unit test. A unit on a bridge deck
+    // (height=4) stepping into a non-bridge cell takes Case 1, which returns
+    // neighbor.ground_level (0), giving diff=-4. The legality gate then
+    // blocks via `_ => false`.
+    //
+    // If this test ever fails, compute_neighbor_height has been refactored
+    // in a way that lets the divergent diff-0 state arise — at which point
+    // the legality gate needs an explicit diff-0 guard.
+    let parent = PathCell {
+        ground_walkable: true,
+        bridge_walkable: true,
+        bridge_structural: false,
+        bridge_marker_0x80: false,
+        transition: false,
+        ground_level: 0,
+        bridge_deck_level: 4,
+        slope_type: 0,
+        tube_index: None,
+        low_bridge_tube_cell: false,
+    };
+    let neighbor = PathCell {
+        ground_walkable: true,
+        bridge_walkable: false,
+        bridge_structural: false,
+        bridge_marker_0x80: false,
+        transition: false,
+        ground_level: 0,
+        bridge_deck_level: 0,
+        slope_type: 0,
+        tube_index: None,
+        low_bridge_tube_cell: false,
+    };
+    let h = compute_neighbor_height(4, &parent, &neighbor);
+    assert_eq!(h, 0, "Case 1: non-bridge neighbor returns its ground_level");
+    let diff = h as i16 - 4i16;
+    assert_eq!(
+        diff.abs(),
+        4,
+        "L6 invariant: unit at deck height stepping to non-bridge produces |diff|=4, not 0"
+    );
+}
+
+#[test]
+fn diff_2_blocks_regardless_of_slope() {
+    // 2x1 grid: level 0 — level 2. Both cells have slope=2 (would permit
+    // diff-1 either way). diff>=2 always hard-blocks even with ramps.
+    let cells = vec![
+        PathCell {
+            ground_walkable: true,
+            bridge_walkable: false,
+            bridge_structural: false,
+            bridge_marker_0x80: false,
+            transition: false,
+            ground_level: 0,
+            bridge_deck_level: 0,
+            slope_type: 2,
+            tube_index: None,
+            low_bridge_tube_cell: false,
+        },
+        PathCell {
+            ground_walkable: true,
+            bridge_walkable: false,
+            bridge_structural: false,
+            bridge_marker_0x80: false,
+            transition: false,
+            ground_level: 2,
+            bridge_deck_level: 0,
+            slope_type: 2,
+            tube_index: None,
+            low_bridge_tube_cell: false,
+        },
+    ];
+    let grid = PathGrid::from_cells(cells, 2, 1);
+    let path = find_path(&grid, (0, 0), (1, 0));
+    assert!(
+        path.is_none(),
+        "diff-2 must always block, even with slope=2 on both cells — got {:?}",
+        path
+    );
+}
+
+#[test]
+fn diff_3_blocks_regardless_of_slope() {
+    let cells = vec![
+        PathCell {
+            ground_walkable: true,
+            bridge_walkable: false,
+            bridge_structural: false,
+            bridge_marker_0x80: false,
+            transition: false,
+            ground_level: 0,
+            bridge_deck_level: 0,
+            slope_type: 2,
+            tube_index: None,
+            low_bridge_tube_cell: false,
+        },
+        PathCell {
+            ground_walkable: true,
+            bridge_walkable: false,
+            bridge_structural: false,
+            bridge_marker_0x80: false,
+            transition: false,
+            ground_level: 3,
+            bridge_deck_level: 0,
+            slope_type: 2,
+            tube_index: None,
+            low_bridge_tube_cell: false,
+        },
+    ];
+    let grid = PathGrid::from_cells(cells, 2, 1);
+    let path = find_path(&grid, (0, 0), (1, 0));
+    assert!(path.is_none(), "diff-3 must block — got {:?}", path);
+}
+
+#[test]
+fn diff_5_blocks_regardless_of_slope() {
+    let cells = vec![
+        PathCell {
+            ground_walkable: true,
+            bridge_walkable: false,
+            bridge_structural: false,
+            bridge_marker_0x80: false,
+            transition: false,
+            ground_level: 0,
+            bridge_deck_level: 0,
+            slope_type: 2,
+            tube_index: None,
+            low_bridge_tube_cell: false,
+        },
+        PathCell {
+            ground_walkable: true,
+            bridge_walkable: false,
+            bridge_structural: false,
+            bridge_marker_0x80: false,
+            transition: false,
+            ground_level: 5,
+            bridge_deck_level: 0,
+            slope_type: 2,
+            tube_index: None,
+            low_bridge_tube_cell: false,
+        },
+    ];
+    let grid = PathGrid::from_cells(cells, 2, 1);
+    let path = find_path(&grid, (0, 0), (1, 0));
+    assert!(path.is_none(), "diff-5 must block — got {:?}", path);
 }

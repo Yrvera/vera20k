@@ -500,6 +500,49 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                             screen_pos: Some((sx, sy)),
                         }
                     }
+                    SimSoundEvent::BridgeRepaired { rx, ry, owner } => {
+                        // Spatial SFX gated on rules.bridge_rules.repair_sound
+                        // being set (the original game gates on
+                        // `RulesClass+0x248 != -1`).
+                        let sound_id = state
+                            .rules
+                            .as_ref()
+                            .and_then(|r| r.bridge_rules.repair_sound.clone())
+                            .unwrap_or_default();
+                        let screen_pos = if sound_id.is_empty() {
+                            None
+                        } else {
+                            let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
+                            Some((sx, sy))
+                        };
+                        // EVA cue gated on local-human owner. Resolves
+                        // `EVA_BridgeRepaired` from the registry (no faction
+                        // fallback needed — bridge repair is faction-agnostic).
+                        let owner_str = sim.interner.resolve(owner);
+                        let eva_sound_id = if local_owner_name
+                            .as_deref()
+                            .is_some_and(|l| l.eq_ignore_ascii_case(owner_str))
+                        {
+                            let faction = crate::app_building_anim::eva_faction_key(
+                                owner_str,
+                                &state.house_roster,
+                            );
+                            state
+                                .eva_registry
+                                .get("EVA_BridgeRepaired", faction)
+                                .map(|s| s.to_string())
+                        } else {
+                            None
+                        };
+                        if sound_id.is_empty() && eva_sound_id.is_none() {
+                            continue;
+                        }
+                        GameSoundEvent::BridgeRepaired {
+                            sound_id,
+                            screen_pos,
+                            eva_sound_id,
+                        }
+                    }
                 };
                 state.sound_events.push(app_event);
             }
@@ -740,7 +783,8 @@ pub(crate) fn rebuild_dynamic_path_grid(state: &mut AppState) {
         let foundation = obj.map(|o| o.foundation.as_str()).unwrap_or("1x1");
         let add_occupy: &[(i16, i16)] = obj.map(|o| o.add_occupy.as_slice()).unwrap_or(&[]);
         let remove_occupy: &[(i16, i16)] = obj.map(|o| o.remove_occupy.as_slice()).unwrap_or(&[]);
-        grid.block_building_footprint(*rx, *ry, foundation, add_occupy, remove_occupy);
+        let has_bib: bool = obj.map(|o| o.bib).unwrap_or(false);
+        grid.block_building_footprint(*rx, *ry, foundation, add_occupy, remove_occupy, has_bib);
     }
 
     // Block wall overlay cells (auto-filled walls have no entity but still block movement).
@@ -751,7 +795,7 @@ pub(crate) fn rebuild_dynamic_path_grid(state: &mut AppState) {
                 .map(|f| f.wall)
                 .unwrap_or(false);
             if is_wall {
-                grid.block_building_footprint(entry.rx, entry.ry, "1x1", &[], &[]);
+                grid.block_building_footprint(entry.rx, entry.ry, "1x1", &[], &[], false);
             }
         }
     }

@@ -49,6 +49,7 @@ fn water_row_terrain(width: u16) -> ResolvedTerrainGrid {
             filled_clear: false,
             tileset_index: Some(0),
             land_type: crate::sim::pathfinding::passability::LandType::Water.as_index(),
+            yr_cell_land_type: crate::sim::pathfinding::passability::LandType::Water.as_index(),
             slope_type: 0,
             template_height: 0,
             render_offset_x: 0,
@@ -76,8 +77,12 @@ fn water_row_terrain(width: u16) -> ResolvedTerrainGrid {
             bridge_transition: false,
             bridge_deck_level: 0,
             bridge_layer: None,
+            bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+            tube_index: None,
             radar_left: [0, 0, 0],
             radar_right: [0, 0, 0],
+            has_damaged_data: false,
+            bridgehead_anchor_class_at_load: None,
         })
         .collect();
     ResolvedTerrainGrid::from_cells(width, 1, cells)
@@ -103,6 +108,7 @@ fn clear_beach_water_row_terrain() -> ResolvedTerrainGrid {
             filled_clear: false,
             tileset_index: Some(0),
             land_type,
+            yr_cell_land_type: land_type,
             slope_type: 0,
             template_height: 0,
             render_offset_x: 0,
@@ -142,8 +148,12 @@ fn clear_beach_water_row_terrain() -> ResolvedTerrainGrid {
             bridge_transition: false,
             bridge_deck_level: 0,
             bridge_layer: None,
+            bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+            tube_index: None,
             radar_left: [0, 0, 0],
             radar_right: [0, 0, 0],
+            has_damaged_data: false,
+            bridgehead_anchor_class_at_load: None,
         })
         .collect();
     ResolvedTerrainGrid::from_cells(3, 1, cells)
@@ -425,9 +435,14 @@ fn path_grid_from_heights(heights: &[u8], width: u16, height: u16) -> PathGrid {
         .map(|&h| PathCell {
             ground_walkable: true,
             bridge_walkable: false,
+            bridge_structural: false,
+            bridge_marker_0x80: false,
             transition: false,
             ground_level: h,
             bridge_deck_level: 0,
+            slope_type: 0,
+            tube_index: None,
+            low_bridge_tube_cell: false,
         })
         .collect();
     PathGrid::from_cells(cells, width, height)

@@ -231,12 +231,21 @@ impl Simulation {
             cell.anchor_span_id.hash(hasher);
             cell.overlay_byte.hash(hasher);
             cell.damaged_variant.hash(hasher);
+            cell.bridgehead_anchor_class.hash(hasher);
         }
         // Hash AnchorSpan registry (Task 7 added this field). BTreeMap iterates
         // in sorted-key order, so iteration is deterministic.
         for (id, span) in bridge_state.anchor_spans() {
             id.hash(hasher);
             span.hash(hasher);
+        }
+        bridge_state.endpoint_records().len().hash(hasher);
+        for record in bridge_state.endpoint_records() {
+            record.endpoint_a.hash(hasher);
+            record.endpoint_b.hash(hasher);
+            record.group_id.hash(hasher);
+            record.active.hash(hasher);
+            record.bridge_kind.hash(hasher);
         }
     }
 
@@ -357,6 +366,7 @@ impl Simulation {
                 0u8.hash(hasher);
             }
             entity.on_bridge.hash(hasher);
+            entity.low_bridge_tube_state.hash(hasher);
 
             if let Some(ref inv) = entity.invulnerability {
                 1u8.hash(hasher);
@@ -375,6 +385,9 @@ impl Simulation {
                 1u8.hash(hasher);
                 attack.cooldown_ticks.hash(hasher);
                 attack.target.hash(hasher);
+                attack.burst_remaining.hash(hasher);
+                attack.burst_delay_ticks.hash(hasher);
+                attack.pending_infantry_fire.hash(hasher);
             } else {
                 0u8.hash(hasher);
             }
@@ -396,6 +409,14 @@ impl Simulation {
                     3u8.hash(hasher);
                     ticks_remaining.hash(hasher);
                 }
+            }
+
+            if let Some(infantry) = entity.infantry {
+                1u8.hash(hasher);
+                infantry.fear_level.hash(hasher);
+                infantry.is_prone.hash(hasher);
+            } else {
+                0u8.hash(hasher);
             }
 
             if let Some(ref miner) = entity.miner {
@@ -586,6 +607,139 @@ mod particle_hash_tests {
 }
 
 #[cfg(test)]
+mod tube_movement_hash_tests {
+    use super::Simulation;
+    use crate::map::tube_facts::TubeId;
+    use crate::sim::components::Health;
+    use crate::sim::game_entity::GameEntity;
+    use crate::sim::movement::tube_movement::{LowBridgeTubeMovementState, LowBridgeTubePhase};
+
+    #[test]
+    fn active_low_bridge_tube_state_changes_hash() {
+        let mut sim_a = Simulation::new();
+        let mut sim_b = Simulation::new();
+        let owner = sim_a.interner.intern("Allies");
+        let type_ref = sim_a.interner.intern("MTNK");
+        let mut entity_a = GameEntity::new(
+            1,
+            0,
+            0,
+            0,
+            0,
+            owner,
+            Health {
+                current: 100,
+                max: 100,
+            },
+            type_ref,
+            crate::map::entities::EntityCategory::Unit,
+            0,
+            5,
+            true,
+        );
+        let entity_b = entity_a.clone();
+        entity_a.low_bridge_tube_state = Some(LowBridgeTubeMovementState {
+            tube_id: TubeId(3),
+            cursor: 1,
+            entry: (0, 0),
+            exit: (4, 0),
+            phase: LowBridgeTubePhase::Traversing,
+        });
+        sim_a.entities.insert(entity_a);
+        sim_b.entities.insert(entity_b);
+
+        assert_ne!(sim_a.state_hash(), sim_b.state_hash());
+    }
+}
+
+#[cfg(test)]
+mod infantry_hash_tests {
+    use super::Simulation;
+    use crate::map::entities::EntityCategory;
+    use crate::sim::animation::SequenceKind;
+    use crate::sim::combat::{AttackTarget, PendingInfantryFire};
+    use crate::sim::components::Health;
+    use crate::sim::game_entity::{GameEntity, InfantryRuntime};
+
+    fn infantry_entity(sim: &mut Simulation) -> GameEntity {
+        GameEntity::new(
+            1,
+            0,
+            0,
+            0,
+            0,
+            sim.interner.intern("Allies"),
+            Health {
+                current: 100,
+                max: 100,
+            },
+            sim.interner.intern("E1"),
+            EntityCategory::Infantry,
+            0,
+            5,
+            false,
+        )
+    }
+
+    #[test]
+    fn infantry_fear_and_prone_change_hash() {
+        let mut sim_a = Simulation::new();
+        let mut sim_b = Simulation::new();
+        let mut a = infantry_entity(&mut sim_a);
+        let b = infantry_entity(&mut sim_b);
+        a.infantry = Some(InfantryRuntime {
+            fear_level: 10,
+            is_prone: false,
+        });
+        sim_a.entities.insert(a);
+        sim_b.entities.insert(b);
+        assert_ne!(sim_a.state_hash(), sim_b.state_hash());
+
+        let mut sim_a = Simulation::new();
+        let mut sim_b = Simulation::new();
+        let mut a = infantry_entity(&mut sim_a);
+        let b = infantry_entity(&mut sim_b);
+        a.infantry = Some(InfantryRuntime {
+            fear_level: 0,
+            is_prone: true,
+        });
+        sim_a.entities.insert(a);
+        sim_b.entities.insert(b);
+        assert_ne!(sim_a.state_hash(), sim_b.state_hash());
+    }
+
+    #[test]
+    fn pending_infantry_fire_changes_hash() {
+        let mut sim_a = Simulation::new();
+        let mut sim_b = Simulation::new();
+        let mut a = infantry_entity(&mut sim_a);
+        let mut b = infantry_entity(&mut sim_b);
+        a.attack_target = Some(AttackTarget::new(99));
+        b.attack_target = Some(AttackTarget::new(99));
+        sim_a.entities.insert(a);
+        sim_b.entities.insert(b);
+        assert_eq!(sim_a.state_hash(), sim_b.state_hash());
+
+        sim_a
+            .entities
+            .get_mut(1)
+            .unwrap()
+            .attack_target
+            .as_mut()
+            .unwrap()
+            .pending_infantry_fire = Some(PendingInfantryFire {
+            sequence: SequenceKind::Attack,
+            fire_frame: 2,
+        });
+        assert_ne!(
+            sim_a.state_hash(),
+            sim_b.state_hash(),
+            "pending infantry fire state must affect state hash"
+        );
+    }
+}
+
+#[cfg(test)]
 mod smudge_hash_tests {
     use super::*;
     use crate::sim::smudge_grid::{SmudgeCell, SmudgeGrid};
@@ -615,7 +769,8 @@ mod smudge_hash_tests {
 mod bridge_overlay_hash_tests {
     use super::Simulation;
     use crate::sim::bridge_state::{
-        Axis, BridgeCellRole, BridgeRuntimeCell, BridgeRuntimeState, DamageState,
+        Axis, BridgeCellRole, BridgeEndpointRecord, BridgeRecordKind, BridgeRuntimeCell,
+        BridgeRuntimeState, DamageState,
     };
 
     fn make_bridge_state_with_overlay(byte: u8) -> BridgeRuntimeState {
@@ -634,6 +789,7 @@ mod bridge_overlay_hash_tests {
                 anchor_span_id: None,
                 overlay_byte: byte,
                 damaged_variant: false,
+                bridgehead_anchor_class: crate::sim::bridge_state::BridgeheadAnchorClass::Variant0,
             },
         );
         state
@@ -662,6 +818,55 @@ mod bridge_overlay_hash_tests {
             sim_a.state_hash(),
             sim_b.state_hash(),
             "identical bridge states must hash equal",
+        );
+    }
+
+    #[test]
+    fn bridgehead_anchor_class_difference_changes_state_hash() {
+        use crate::sim::bridge_state::BridgeheadAnchorClass;
+        let mut sim_a = Simulation::new();
+        let mut sim_b = Simulation::new();
+
+        let mut state_a = make_bridge_state_with_overlay(0x18);
+        let state_b = make_bridge_state_with_overlay(0x18);
+        if let Some(cell) = state_a.cell_mut(2, 2) {
+            cell.bridgehead_anchor_class = BridgeheadAnchorClass::Damaged;
+        }
+        sim_a.bridge_state = Some(state_a);
+        sim_b.bridge_state = Some(state_b);
+
+        assert_ne!(
+            sim_a.state_hash(),
+            sim_b.state_hash(),
+            "bridgehead_anchor_class must contribute to state hash",
+        );
+    }
+
+    #[test]
+    fn bridge_endpoint_record_kind_difference_changes_state_hash() {
+        let mut sim_a = Simulation::new();
+        let mut sim_b = Simulation::new();
+
+        let mut state_a = make_bridge_state_with_overlay(0x18);
+        let mut state_b = make_bridge_state_with_overlay(0x18);
+        let mut record = BridgeEndpointRecord {
+            endpoint_a: (1, 1),
+            endpoint_b: (4, 1),
+            group_id: 1,
+            active: true,
+            bridge_kind: BridgeRecordKind::High,
+        };
+        state_a.test_set_endpoint_records(vec![record]);
+        record.bridge_kind = BridgeRecordKind::Low;
+        state_b.test_set_endpoint_records(vec![record]);
+
+        sim_a.bridge_state = Some(state_a);
+        sim_b.bridge_state = Some(state_b);
+
+        assert_ne!(
+            sim_a.state_hash(),
+            sim_b.state_hash(),
+            "bridge endpoint record kind must contribute to state hash",
         );
     }
 }

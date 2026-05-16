@@ -24,8 +24,10 @@ Thumbs.db
 !/docs/index.md
 
 CLAUDE.md
+AGENTS.md
 .mcp.json
 /.claude/
+/.agents/
 /todo/
 /logs/
 /saves/

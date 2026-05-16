@@ -4,44 +4,33 @@
 //! retries after blockages with zone-aware corridor search, and determines whether
 //! an entity's locomotor supports layered bridge pathing.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::locomotor_type::{LocomotorKind, MovementZone};
 use crate::sim::components::MovementTarget;
 use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
-use crate::sim::pathfinding::EntityBlockEntry;
 use crate::sim::pathfinding::path_smooth;
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
 use crate::sim::pathfinding::zone_search;
-use crate::sim::pathfinding::{MAX_PATH_SEGMENT_STEPS, PathGrid, truncate_layered_path};
+use crate::sim::pathfinding::LayeredEntityBlockMap;
+use crate::sim::pathfinding::{truncate_layered_path, PathGrid, MAX_PATH_SEGMENT_STEPS};
 use crate::sim::rng::SimRng;
 use crate::util::fixed_math::facing_from_delta_int as facing_from_delta;
 
 use super::{MovementConfig, PathfindingContext};
 
-fn is_under_bridge_blocked_cell(cell: &crate::map::resolved_terrain::ResolvedTerrainCell) -> bool {
-    cell.is_elevated_bridge_cell()
-}
-
 pub(super) fn merge_path_blocks(
     entity_blocks: Option<&BTreeSet<(u16, u16)>>,
-    resolved_terrain: Option<&ResolvedTerrainGrid>,
-    movement_zone: Option<MovementZone>,
-    too_big_to_fit_under_bridge: bool,
+    _resolved_terrain: Option<&ResolvedTerrainGrid>,
+    _movement_zone: Option<MovementZone>,
+    _too_big_to_fit_under_bridge: bool,
 ) -> BTreeSet<(u16, u16)> {
-    let mut blocks = entity_blocks.cloned().unwrap_or_default();
-    if too_big_to_fit_under_bridge && movement_zone.is_some_and(|mz| !mz.is_water_mover()) {
-        // TODO(RE): The current under-bridge restriction is a hard path block. The RE notes
-        // still leave open whether RA2/YR treats TooBigToFitUnderBridge as a pure parking/
-        // eviction rule, a navigation restriction, or a mix depending on bridge state.
-        if let Some(terrain) = resolved_terrain {
-            for cell in terrain.iter().filter(|c| is_under_bridge_blocked_cell(c)) {
-                blocks.insert((cell.rx, cell.ry));
-            }
-        }
-    }
-    blocks
+    // gamemd does not gate movement on TooBigToFitUnderBridge — the flag at
+    // TechnoTypeClass+0xE16 is read only in the draw pipeline (sprite Z fudge
+    // for units on bridge edge cells). UnitClass::Can_Enter_Cell never touches
+    // it. See TOO_BIG_TO_FIT_UNDER_BRIDGE_GHIDRA_REPORT.md.
+    entity_blocks.cloned().unwrap_or_default()
 }
 
 pub(super) fn supports_layered_bridge_pathing(
@@ -163,7 +152,7 @@ pub(super) fn find_move_path(
     zone_mz: MovementZone,
     movement_zone: Option<MovementZone>,
     too_big_to_fit_under_bridge: bool,
-    entity_block_map: Option<&HashMap<(u16, u16), EntityBlockEntry>>,
+    entity_block_map: Option<&LayeredEntityBlockMap>,
     urgency: u8,
     mover_is_crusher: bool,
 ) -> Option<(Vec<(u16, u16)>, Vec<MovementLayer>)> {
@@ -189,6 +178,7 @@ pub(super) fn find_move_path(
             zone_mz,
             terrain_costs,
             movement_zone,
+            resolved_terrain,
             entity_block_map,
             urgency,
             mover_is_crusher,
@@ -202,6 +192,11 @@ pub(super) fn find_move_path(
             );
             let coords: Vec<(u16, u16)> = path.iter().map(|step| (step.rx, step.ry)).collect();
             let layers: Vec<MovementLayer> = path.iter().map(|step| step.layer).collect();
+            if contains_non_adjacent_step(&coords) {
+                let (coords, layers) =
+                    truncate_layered_path(coords, layers, MAX_PATH_SEGMENT_STEPS);
+                return Some((coords, layers));
+            }
             let layered_smooth_walkable = |x: u16, y: u16, layer: MovementLayer| -> bool {
                 if !grid.is_walkable_on_layer(x, y, layer) {
                     return false;
@@ -209,7 +204,7 @@ pub(super) fn find_move_path(
                 // Soft-blocked cells (code 2/5/6) must not be used as zigzag
                 // shortcuts: A* deliberately routed around them, smoothing
                 // through them would undo the detour.
-                if entity_block_map.is_some_and(|m| m.contains_key(&(x, y))) {
+                if entity_block_map.is_some_and(|m| m.contains_key(layer, &(x, y))) {
                     return false;
                 }
                 match layer {
@@ -253,6 +248,12 @@ pub(super) fn find_move_path(
         mover_is_crusher,
     )?;
 
+    if contains_non_adjacent_step(&path) {
+        let path_layers = build_flat_fallback_layers(&path, start_layer, grid);
+        let (path, path_layers) = truncate_layered_path(path, path_layers, MAX_PATH_SEGMENT_STEPS);
+        return Some((path, path_layers));
+    }
+
     let smooth_walkable = |x: u16, y: u16| -> bool {
         let terrain_ok = if movement_zone.is_some_and(|mz| mz.is_water_mover()) {
             crate::sim::pathfinding::is_cell_passable_for_mover(
@@ -270,13 +271,21 @@ pub(super) fn find_move_path(
         // undo the detour and walk the unit straight through the blocker.
         terrain_ok
             && !entity_blocks.is_some_and(|eb| eb.contains(&(x, y)))
-            && !entity_block_map.is_some_and(|m| m.contains_key(&(x, y)))
+            && !entity_block_map.is_some_and(|m| m.contains_any(&(x, y)))
     };
     let path = path_smooth::smooth_path(path, &smooth_walkable);
     let path = path_smooth::optimize_path(path, &smooth_walkable);
     let path_layers = build_flat_fallback_layers(&path, start_layer, grid);
     let (path, path_layers) = truncate_layered_path(path, path_layers, MAX_PATH_SEGMENT_STEPS);
     Some((path, path_layers))
+}
+
+fn contains_non_adjacent_step(path: &[(u16, u16)]) -> bool {
+    path.windows(2).any(|pair| {
+        let dx = pair[1].0.abs_diff(pair[0].0);
+        let dy = pair[1].1.abs_diff(pair[0].1);
+        dx > 1 || dy > 1
+    })
 }
 
 /// Build per-cell movement layers for a flat A* fallback path.
@@ -319,7 +328,7 @@ pub(super) fn try_repath_after_block(
     movement_zone: Option<MovementZone>,
     too_big_to_fit_under_bridge: bool,
     mcfg: MovementConfig,
-    entity_block_map: Option<&HashMap<(u16, u16), EntityBlockEntry>>,
+    entity_block_map: Option<&LayeredEntityBlockMap>,
     urgency: u8,
     mover_is_crusher: bool,
     is_infantry: bool,
@@ -423,9 +432,14 @@ pub(super) fn try_repath_after_block(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
+    use crate::map::resolved_terrain::{
+        ResolvedTerrainCell, ResolvedTerrainGrid, YR_CELL_LAND_TUNNEL,
+    };
+    use crate::map::tube_facts::{TubeFact, TubeId};
     use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
     use crate::sim::pathfinding::passability::LandType;
+    use crate::sim::pathfinding::zone_map::ZoneGrid;
+    use std::collections::BTreeMap;
 
     fn make_resolved_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
         ResolvedTerrainCell {
@@ -439,6 +453,7 @@ mod tests {
             filled_clear: false,
             tileset_index: Some(0),
             land_type: 0,
+            yr_cell_land_type: 0,
             slope_type: 0,
             template_height: 0,
             render_offset_x: 0,
@@ -466,38 +481,13 @@ mod tests {
             bridge_transition: false,
             bridge_deck_level: 0,
             bridge_layer: None,
+            bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+            tube_index: None,
             radar_left: [0, 0, 0],
             radar_right: [0, 0, 0],
+            has_damaged_data: false,
+            bridgehead_anchor_class_at_load: None,
         }
-    }
-
-    #[test]
-    fn merge_path_blocks_only_blocks_under_bridge_cells_for_land_movers() {
-        let terrain = ResolvedTerrainGrid::from_cells(
-            3,
-            1,
-            vec![
-                make_resolved_cell(0, 0),
-                ResolvedTerrainCell {
-                    bridge_walkable: true,
-                    bridge_deck_level: 1,
-                    ..make_resolved_cell(1, 0)
-                },
-                make_resolved_cell(2, 0),
-            ],
-        );
-
-        let land_blocks = merge_path_blocks(None, Some(&terrain), Some(MovementZone::Normal), true);
-        assert!(
-            land_blocks.contains(&(1, 0)),
-            "land movers marked too large should block under-bridge cells"
-        );
-
-        let water_blocks = merge_path_blocks(None, Some(&terrain), Some(MovementZone::Water), true);
-        assert!(
-            !water_blocks.contains(&(1, 0)),
-            "water movers should keep under-bridge cells available"
-        );
     }
 
     #[test]
@@ -537,5 +527,50 @@ mod tests {
             "water mover redirect should stay on water, got {:?}",
             redirected
         );
+    }
+
+    #[test]
+    fn explicit_tube_path_survives_zone_precheck_and_smoothing() {
+        let mut cells: Vec<_> = (0..5).map(|x| make_resolved_cell(x, 0)).collect();
+        cells[0].yr_cell_land_type = YR_CELL_LAND_TUNNEL;
+        cells[0].tube_index = Some(TubeId(0));
+        for cell in &mut cells[1..4] {
+            cell.ground_walk_blocked = true;
+            cell.base_ground_walk_blocked = true;
+        }
+        let terrain = ResolvedTerrainGrid::from_cells_with_tubes(
+            5,
+            1,
+            cells,
+            vec![TubeFact::explicit((0, 0), (4, 0), 2, vec![2, 2, 2, 2])],
+        );
+        let grid = PathGrid::from_resolved_terrain(&terrain);
+        let zone_grid = ZoneGrid::build(&grid, &BTreeMap::new(), 5, 1);
+
+        let (path, layers) = find_move_path(
+            PathfindingContext {
+                path_grid: Some(&grid),
+                zone_grid: Some(&zone_grid),
+                resolved_terrain: Some(&terrain),
+            },
+            false,
+            (0, 0),
+            MovementLayer::Ground,
+            (4, 0),
+            None,
+            None,
+            None,
+            None,
+            MovementZone::Normal,
+            Some(MovementZone::Normal),
+            false,
+            None,
+            0,
+            false,
+        )
+        .expect("movement path should use explicit tube despite disconnected zones");
+
+        assert_eq!(path, vec![(0, 0), (4, 0)]);
+        assert_eq!(layers, vec![MovementLayer::Ground, MovementLayer::Ground]);
     }
 }

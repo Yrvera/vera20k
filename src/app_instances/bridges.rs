@@ -28,13 +28,13 @@ use super::helpers::{compute_sprite_depth_params, in_view};
 /// (RE doc §5; ledger #1).
 const BRIDGE_BODY_LATIN_SQUARE: [u8; 16] = [0, 1, 2, 3, 3, 2, 1, 0, 2, 3, 0, 1, 1, 0, 3, 2];
 
-/// Body Y offset for state bytes 0..8 (NS axis — BRIDGE2 / BRIDGEB2).
-/// `-(CellHeight * 2 + 1) = -31px`. Matches the legacy
-/// `bridge_y_offset_for_name` mapping that this module replaced.
-const BRIDGE_BODY_Y_OFFSET_NS: f32 = -31.0;
-/// Body Y offset for state bytes 9..17 (EW axis — BRIDGE1 / BRIDGEB1).
-/// `-(CellHeight + 1) = -16px`.
-const BRIDGE_BODY_Y_OFFSET_EW: f32 = -16.0;
+/// Body Y offset for bridge state bytes 0..=8.
+/// Verified in `CellClass__Get_Draw_Offset @ 0x00480110`: HasBridge applies
+/// `-0x10`, and only state bytes 9..=17 receive the extra `-0x0f`.
+const BRIDGE_BODY_Y_OFFSET_STATE_0_TO_8: f32 = -16.0;
+/// Body Y offset for bridge state bytes 9..=17.
+/// This follows the state byte, not the flipped SHP frame range.
+const BRIDGE_BODY_Y_OFFSET_STATE_9_TO_17: f32 = -31.0;
 
 /// Bonus added to `cell.deck_level` before the depth calc for HasBridge cells.
 /// RE doc §3.3.1, ledger #6.
@@ -85,6 +85,13 @@ fn compute_bridge_body_shp_frame(state: DamageState, axis: Axis, rx: u16, ry: u1
     axis_base + local
 }
 
+fn compute_bridge_body_y_offset(state: DamageState, axis: Axis) -> f32 {
+    match state.to_state_byte(axis) {
+        9..=17 => BRIDGE_BODY_Y_OFFSET_STATE_9_TO_17,
+        _ => BRIDGE_BODY_Y_OFFSET_STATE_0_TO_8,
+    }
+}
+
 /// Build sprite instances for the bridge body pass (RE doc §3.3, Step 5
 /// pass 1). Reads `BridgeRuntimeCell.damage_state` post-tick.
 ///
@@ -120,10 +127,7 @@ pub fn build_bridge_body_instances_inner(
         }
 
         let frame = compute_bridge_body_shp_frame(cell.damage_state, axis, rx, ry);
-        let y_offset = match axis {
-            Axis::NS => BRIDGE_BODY_Y_OFFSET_NS,
-            Axis::EW => BRIDGE_BODY_Y_OFFSET_EW,
-        };
+        let y_offset = compute_bridge_body_y_offset(cell.damage_state, axis);
 
         let z: u8 = height_map
             .get(&(rx, ry))
@@ -239,10 +243,7 @@ pub(crate) fn build_bridge_shadow_instances(
         }
 
         let frame = compute_bridge_body_shp_frame(cell.damage_state, axis, rx, ry);
-        let y_offset = match axis {
-            Axis::NS => BRIDGE_BODY_Y_OFFSET_NS,
-            Axis::EW => BRIDGE_BODY_Y_OFFSET_EW,
-        };
+        let y_offset = compute_bridge_body_y_offset(cell.damage_state, axis);
 
         let z: u8 = state
             .height_map
@@ -290,7 +291,7 @@ pub(crate) fn build_bridge_shadow_instances(
 /// Build sprite instances for the bridge railing pass (RE doc §3.4.1, Step 7).
 /// Drawn AFTER unit/ground merge AND AFTER cliff redraw, BEFORE debug — see
 /// `draw_passes.rs` ordering. Skips cells where the railing-table entry is
-/// `None` (`shp_frame_1based == 0` ⇒ no railing for this sub-tile).
+/// `None` (`shp_frame_1based == 0` means no railing for this table slot).
 pub(crate) fn build_bridge_railing_instances(
     state: &AppState,
     sw: f32,
@@ -317,10 +318,12 @@ pub(crate) fn build_bridge_railing_instances(
         if !cell.deck_present || matches!(cell.damage_state, DamageState::Destroyed) {
             continue;
         }
-        let Some((kind, sub_idx)) = resolve_bridge_kind_and_sub_idx(state, rx, ry, cell) else {
+        let Some((kind, tile_index, caller_sub_tile)) =
+            resolve_bridge_kind_and_sub_idx(state, rx, ry, cell)
+        else {
             continue;
         };
-        let Some(entry) = atlas.entry(kind, sub_idx) else {
+        let Some(entry) = atlas.entry_for_tile(kind, tile_index, caller_sub_tile) else {
             continue;
         };
 
@@ -353,7 +356,7 @@ pub(crate) fn build_bridge_railing_instances(
     }
 }
 
-/// Resolve `(BridgeKind, sub_idx)` for a bridge cell.
+/// Resolve `(BridgeKind, tile_index, caller_sub_tile)` for a bridge cell.
 ///
 /// Mapping per RE doc §3.4.1 + verified against the codebase
 /// (src/map/resolved_terrain.rs:48-55, src/map/overlay_types.rs:25-28):
@@ -362,14 +365,16 @@ pub(crate) fn build_bridge_railing_instances(
 ///   concrete.
 /// - `LOBRDG*` → Wood (LOW bridges).
 ///
-/// `sub_idx` comes from `ResolvedTerrainCell.final_sub_tile` and is used
-/// directly as the railing-table slot index.
+/// `final_tile_index` maps to the binary `CellClass+0x38` input for the current
+/// static renderer path; `final_sub_tile` maps to `CellClass+0x11A`, the
+/// required-sub-tile comparator. See
+/// `BRIDGE_RAILING_SLOT_SUBTILE_SOURCE_GHIDRA_REPORT.md`.
 fn resolve_bridge_kind_and_sub_idx(
     state: &AppState,
     rx: u16,
     ry: u16,
     cell: &BridgeRuntimeCell,
-) -> Option<(BridgeKind, u8)> {
+) -> Option<(BridgeKind, i32, u8)> {
     let name = state
         .overlay_names
         .get(&cell.overlay_byte)?
@@ -384,12 +389,10 @@ fn resolve_bridge_kind_and_sub_idx(
     } else {
         return None;
     };
-    let sub_idx: u8 = state
-        .resolved_terrain
-        .as_ref()?
-        .cell(rx, ry)?
-        .final_sub_tile;
-    Some((kind, sub_idx))
+    let terrain_cell = state.resolved_terrain.as_ref()?.cell(rx, ry)?;
+    let tile_index = terrain_cell.final_tile_index;
+    let caller_sub_tile = terrain_cell.final_sub_tile;
+    Some((kind, tile_index, caller_sub_tile))
 }
 
 #[cfg(test)]
@@ -468,6 +471,40 @@ mod tests {
         assert_eq!(
             compute_bridge_body_shp_frame(DamageState::Healthy { variant: 4 }, Axis::EW, 0, 0),
             compute_bridge_body_shp_frame(DamageState::Healthy { variant: 4 }, Axis::EW, 1, 2)
+        );
+    }
+
+    #[test]
+    fn bridge_body_y_offset_follows_state_byte_range() {
+        for state in [
+            DamageState::Healthy { variant: 0 },
+            DamageState::Healthy { variant: 5 },
+            DamageState::Damaged,
+            DamageState::PartialCollapseA,
+            DamageState::PartialCollapseB,
+        ] {
+            assert_eq!(compute_bridge_body_y_offset(state, Axis::NS), -16.0);
+        }
+
+        for state in [
+            DamageState::Healthy { variant: 0 },
+            DamageState::Healthy { variant: 5 },
+            DamageState::Damaged,
+            DamageState::PartialCollapseA,
+            DamageState::PartialCollapseB,
+        ] {
+            assert_eq!(compute_bridge_body_y_offset(state, Axis::EW), -31.0);
+        }
+
+        // Destroyed cells are skipped before rendering, but their binary state
+        // byte encoding is still 0, so the helper should follow the low range.
+        assert_eq!(
+            compute_bridge_body_y_offset(DamageState::Destroyed, Axis::NS),
+            -16.0
+        );
+        assert_eq!(
+            compute_bridge_body_y_offset(DamageState::Destroyed, Axis::EW),
+            -16.0
         );
     }
 

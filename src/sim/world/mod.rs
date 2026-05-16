@@ -166,6 +166,13 @@ pub enum SimSoundEvent {
     /// Played at the attacker's position. App resolves to
     /// `[SealPlaceBomb]` in soundmd.ini.
     C4Planted { rx: u16, ry: u16 },
+    /// An engineer entered a `BridgeRepairHut` and triggered bridge repair.
+    /// Played at the BUILDING's cell, NOT the engineer's. `owner` is the
+    /// engineer's house — app layer plays `EVA_BridgeRepaired` only if
+    /// `owner` is the local human player. App layer plays the spatial
+    /// `[BridgeRepaired]` sound for everyone in range, gated on
+    /// `rules.bridge_rules.repair_sound.is_some()`.
+    BridgeRepaired { rx: u16, ry: u16, owner: InternedId },
 }
 
 /// A fire event produced during combat — carries data for render-side
@@ -1191,6 +1198,10 @@ impl Simulation {
             //   that combat (Phase 5) and animation (post-tick) read this tick.
             crate::sim::deploy::tick_deploy_state(&mut self.entities);
 
+            // Infantry fear decay and runtime prone transitions happen after
+            // deploy state and before combat consumes the prone bit.
+            crate::sim::infantry::tick_fear_for_entities(&mut self.entities, rules, &self.interner);
+
             // --- Phase 5: Combat + Turret rotation ---
             // DEPENDS ON: vision/fog (targeting uses fog state), power (cloaking).
             // Combat reads barrel.current(binary_frame) at the START of the tick
@@ -1202,8 +1213,15 @@ impl Simulation {
             // is applied here so combat-pre conditions (invulnerability, dying)
             // are honored before tick_combat runs.
             // PRODUCES: damage, deaths, bridge damage, fire events, last_attacker_id.
-            spawned_entities |= self.tick_capture_orders();
-            destroyed_structure |= self.tick_c4_plants(rules);
+            // tick_bridge_repair_orders runs BEFORE tick_capture_orders so
+            // engineers targeting BridgeRepairHut buildings are consumed by
+            // repair, not by capture. tick_capture_orders has an explicit
+            // BridgeRepairHut skip as defense in depth.
+            let bridge_repaired = self.tick_bridge_repair_orders(rules);
+            spawned_entities |= self.tick_capture_orders(rules);
+            let c4_outcome = self.tick_c4_plants(rules);
+            destroyed_structure |= c4_outcome.destroyed_structure;
+            bridge_state_changed |= bridge_repaired | c4_outcome.bridge_state_changed;
             self.tick_order_intents_pre_combat(rules);
             // Pursuit: walk units with out-of-range attack_target into range,
             // halt movement on range entry. Must run before combat so combat
@@ -1512,3 +1530,7 @@ mod smudge_integration_tests;
 #[cfg(test)]
 #[path = "world_orders_c4_tests.rs"]
 mod world_orders_c4_tests;
+
+#[cfg(test)]
+#[path = "world_orders_bridge_repair_tests.rs"]
+mod world_orders_bridge_repair_tests;

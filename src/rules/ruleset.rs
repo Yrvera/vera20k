@@ -222,6 +222,8 @@ pub struct GeneralRules {
     /// Health ratio threshold below which the bar turns yellow (ConditionYellow= in [AudioVisual]).
     /// Default 0.5 (50%).
     pub condition_yellow: f32,
+    /// `condition_yellow` pre-scaled to integer x1000 for deterministic sim comparisons.
+    pub condition_yellow_x1000: i64,
     /// Health ratio threshold below which the bar turns red (ConditionRed= in [AudioVisual]).
     /// Default 0.25 (25%).
     pub condition_red: f32,
@@ -331,6 +333,12 @@ pub struct GeneralRules {
     /// Ore Purifier bonus as integer percentage (PurifierBonus= in [General]).
     /// Stored as `round(float_value * 100)`. 25 = 25% bonus. Default 25.
     pub purifier_bonus_pct: i32,
+    /// AI virtual purifier counts indexed by difficulty
+    /// (AIVirtualPurifiers= in [General]). Each entry is added to the AI
+    /// player's real purifier count when computing the deposit bonus. INI
+    /// convention is hardest-first, so the array is `[Brutal, Medium, Easy]`
+    /// with the retail default `[4, 2, 0]`.
+    pub ai_virtual_purifiers: [i32; 3],
 
     // -- Survivor spawning on sell/destroy --
     /// Divisor to compute survivor count for Allied buildings (AlliedSurvivorDivisor= in [General]).
@@ -535,6 +543,7 @@ impl Default for GeneralRules {
             attack_cursor_on_disguise: false,
             tree_targeting: false,
             condition_yellow: 0.5,
+            condition_yellow_x1000: 500,
             condition_red: 0.25,
             condition_red_x1000: 250,
             building_garrisoned_sound: None,
@@ -564,6 +573,7 @@ impl Default for GeneralRules {
             chrono_minimum_delay: 16,
             chrono_range_minimum: 0,
             purifier_bonus_pct: 25,
+            ai_virtual_purifiers: [4, 2, 0],
             allied_survivor_divisor: 500,
             soviet_survivor_divisor: 250,
             third_survivor_divisor: 750,
@@ -766,6 +776,9 @@ impl GeneralRules {
                 .unwrap_or_else(|| default.to_string())
         };
         let defaults = Self::default();
+        let condition_yellow_f32: f32 = audio_visual
+            .and_then(|s| s.get_percent("ConditionYellow"))
+            .unwrap_or(0.5);
         let condition_red_f32: f32 = audio_visual
             .and_then(|s| s.get_percent("ConditionRed"))
             .unwrap_or(0.25);
@@ -825,9 +838,8 @@ impl GeneralRules {
             growth_rate_minutes: general.get_f32("GrowthRate").unwrap_or(5.0),
             attack_cursor_on_disguise: general.get_bool("AttackCursorOnDisguise").unwrap_or(false),
             tree_targeting: general.get_bool("TreeTargeting").unwrap_or(false),
-            condition_yellow: audio_visual
-                .and_then(|s| s.get_percent("ConditionYellow"))
-                .unwrap_or(0.5),
+            condition_yellow: condition_yellow_f32,
+            condition_yellow_x1000: (condition_yellow_f32 as f64 * 1000.0) as i64,
             condition_red: condition_red_f32,
             condition_red_x1000: (condition_red_f32 as f64 * 1000.0) as i64,
             building_garrisoned_sound: audio_visual
@@ -918,6 +930,25 @@ impl GeneralRules {
             chrono_range_minimum: general.get_i32("ChronoRangeMinimum").unwrap_or(0),
             purifier_bonus_pct: (general.get_percent("PurifierBonus").unwrap_or(0.25) * 100.0)
                 .round() as i32,
+            ai_virtual_purifiers: {
+                let defaults = [4, 2, 0];
+                general
+                    .get("AIVirtualPurifiers")
+                    .and_then(|raw| {
+                        let parsed: Vec<i32> = raw
+                            .split(',')
+                            .map(|s| s.trim())
+                            .filter(|s| !s.is_empty())
+                            .filter_map(|s| s.parse::<i32>().ok())
+                            .collect();
+                        if parsed.len() == 3 {
+                            Some([parsed[0], parsed[1], parsed[2]])
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(defaults)
+            },
             allied_survivor_divisor: general.get_i32("AlliedSurvivorDivisor").unwrap_or(500),
             soviet_survivor_divisor: general.get_i32("SovietSurvivorDivisor").unwrap_or(250),
             third_survivor_divisor: general.get_i32("ThirdSurvivorDivisor").unwrap_or(750),
@@ -1641,15 +1672,31 @@ impl RuleSet {
         let mut patched: u32 = 0;
         let mut dock_patched: u32 = 0;
         let mut buildings_checked: u32 = 0;
+        let mut infantry_checked: u32 = 0;
+        let mut crawls_patched: u32 = 0;
         for obj in self.objects.values_mut() {
-            if obj.category != crate::rules::object_type::ObjectCategory::Building {
-                continue;
-            }
-            buildings_checked += 1;
             // Resolve the art.ini section: use Image= override if present,
             // otherwise fall back to the object ID itself.
             let art_key: &str = &obj.image;
             let entry = art.get(art_key).or_else(|| art.get(&obj.id));
+            if obj.category == crate::rules::object_type::ObjectCategory::Infantry {
+                infantry_checked += 1;
+                if let Some(entry) = entry {
+                    obj.crawls = entry.crawls;
+                    obj.fire_up_frame = entry.fire_up;
+                    obj.fire_prone_frame = entry.fire_prone;
+                    obj.secondary_fire_frame = entry.secondary_fire;
+                    obj.secondary_prone_frame = entry.secondary_prone;
+                    if entry.crawls {
+                        crawls_patched += 1;
+                    }
+                }
+                continue;
+            }
+            if obj.category != crate::rules::object_type::ObjectCategory::Building {
+                continue;
+            }
+            buildings_checked += 1;
             if let Some(entry) = entry {
                 if let Some(ref foundation) = entry.foundation {
                     if obj.foundation != *foundation {
@@ -1703,6 +1750,11 @@ impl RuleSet {
             patched,
             dock_patched,
             buildings_checked,
+        );
+        log::trace!(
+            "Merged infantry art metadata: {} Crawls flags ({} infantry checked)",
+            crawls_patched,
+            infantry_checked,
         );
     }
 
@@ -2828,6 +2880,32 @@ ZAdjust=-10
         let obj = rules.object("GAREFN").expect("GAREFN");
         assert_eq!(obj.add_occupy, vec![(-1, 0), (-1, -1)]);
         assert_eq!(obj.remove_occupy, vec![(3, 1)]);
+    }
+
+    #[test]
+    fn merge_art_propagates_infantry_crawls_without_building_side_effects() {
+        let rules_text = format!(
+            "{}\n[InfantryTypes]\n0=E1\n\n[BuildingTypes]\n0=GAPOWR\n\n[E1]\nName=GI\nImage=GI\nStrength=125\nArmor=flak\nSpeed=4\n\n[GAPOWR]\nName=Power\nStrength=750\nArmor=wood\nFoundation=2x2\n",
+            make_test_rules()
+        );
+        let rules_ini = IniFile::from_str(&rules_text);
+        let mut rules = RuleSet::from_ini(&rules_ini).expect("rules parse");
+        let art_ini = IniFile::from_str(
+            "[GI]\nCrawls=yes\nFireUp=2\nFireProne=3\nSecondaryFire=4\nSecondaryProne=5\n\n[GAPOWR]\nCrawls=yes\nFireUp=9\n",
+        );
+        let art = crate::rules::art_data::ArtRegistry::from_ini(&art_ini);
+        rules.merge_art_data(&art);
+
+        let infantry = rules.object("E1").expect("E1");
+        assert!(infantry.crawls);
+        assert_eq!(infantry.fire_up_frame, 2);
+        assert_eq!(infantry.fire_prone_frame, 3);
+        assert_eq!(infantry.secondary_fire_frame, 4);
+        assert_eq!(infantry.secondary_prone_frame, 5);
+        let building = rules.object("GAPOWR").expect("GAPOWR");
+        assert!(!building.crawls);
+        assert_eq!(building.fire_up_frame, 0);
+        assert_eq!(building.foundation, "2x2");
     }
 
     #[test]

@@ -18,9 +18,10 @@ use crate::sim::components::{
     BridgeOccupancy, BuildingDown, BuildingUp, HarvestOverlay, Health, VoxelAnimation,
 };
 use crate::sim::game_entity::GameEntity;
-use crate::sim::miner::{Miner, MinerConfig, miner_kind_for_object};
+use crate::sim::miner::{miner_kind_for_object, Miner, MinerConfig};
 use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
-use crate::sim::production::foundation_dimensions;
+use crate::sim::occupancy::CellListInsertion;
+use crate::sim::production::{building_footprint_cells, foundation_dimensions};
 use crate::sim::vision::MAX_SIGHT_RANGE;
 use crate::util::fixed_math::SimFixed;
 
@@ -162,6 +163,7 @@ impl Simulation {
             // Crush properties from rules.ini.
             if let Some(obj) = rules.and_then(|r| r.object(&map_ent.type_id)) {
                 ge.crushable = obj.crushable;
+                ge.deployed_crushable = obj.deployed_crushable;
                 ge.omni_crusher = obj.omni_crusher;
                 ge.omni_crush_resistant = obj.omni_crush_resistant;
                 ge.zfudge_bridge = obj.zfudge_bridge;
@@ -251,13 +253,21 @@ impl Simulation {
             self.entities.insert(ge);
             self.increment_owned_count(&owner_str, category);
             // Register in occupancy grid.
+            let insertion = CellListInsertion::from_category(category);
             if let Some(cells) = spawn_cells {
                 for (rx, ry) in cells {
-                    self.occupancy.add(rx, ry, spawn_sid, spawn_layer, None);
+                    self.occupancy
+                        .add(rx, ry, spawn_sid, spawn_layer, None, insertion);
                 }
             } else {
-                self.occupancy
-                    .add(spawn_rx, spawn_ry, spawn_sid, spawn_layer, spawn_sub_cell);
+                self.occupancy.add(
+                    spawn_rx,
+                    spawn_ry,
+                    spawn_sid,
+                    spawn_layer,
+                    spawn_sub_cell,
+                    insertion,
+                );
             }
             count += 1;
         }
@@ -351,6 +361,7 @@ impl Simulation {
             ge.animation = Some(Animation::new(SequenceKind::Stand));
         }
         ge.crushable = obj.crushable;
+        ge.deployed_crushable = obj.deployed_crushable;
         ge.omni_crusher = obj.omni_crusher;
         ge.omni_crush_resistant = obj.omni_crush_resistant;
         ge.zfudge_bridge = obj.zfudge_bridge;
@@ -414,17 +425,28 @@ impl Simulation {
         self.entities.insert(ge);
         self.increment_owned_count(&spawn_owner_str, spawn_category);
         // Register in occupancy grid.
+        let insertion = CellListInsertion::from_category(spawn_category);
         if spawn_category == EntityCategory::Structure {
-            let (fw, fh) = foundation_dimensions(&obj.foundation);
-            for dy in 0..fh {
-                for dx in 0..fw {
-                    self.occupancy
-                        .add(spawn_rx + dx, spawn_ry + dy, stable_id, spawn_layer, None);
-                }
+            let cells = building_footprint_cells(
+                spawn_rx,
+                spawn_ry,
+                &obj.foundation,
+                &obj.add_occupy,
+                &obj.remove_occupy,
+            );
+            for (rx, ry) in cells {
+                self.occupancy
+                    .add(rx, ry, stable_id, spawn_layer, None, insertion);
             }
         } else {
-            self.occupancy
-                .add(spawn_rx, spawn_ry, stable_id, spawn_layer, spawn_sub_cell);
+            self.occupancy.add(
+                spawn_rx,
+                spawn_ry,
+                stable_id,
+                spawn_layer,
+                spawn_sub_cell,
+                insertion,
+            );
         }
         Some(stable_id)
     }

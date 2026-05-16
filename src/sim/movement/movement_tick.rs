@@ -14,7 +14,7 @@
 //! ## Dependency rules
 //! - Internal to sim/movement — called via re-export in mod.rs.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::map::entities::EntityCategory;
 use crate::map::houses::HouseAllianceMap;
@@ -23,6 +23,7 @@ use crate::rules::locomotor_type::{MovementZone, SpeedType};
 use crate::sim::components::{MovementTarget, Position};
 use crate::sim::debug_event_log::DebugEventKind;
 use crate::sim::entity_store::EntityStore;
+use crate::sim::infantry;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
 use crate::sim::pathfinding::terrain_speed::{self, TerrainSpeedConfig};
@@ -40,11 +41,12 @@ use super::movement_bridge::{
 use super::movement_occupancy::{DeferredCellCheck, handle_deferred_occupancy};
 use super::movement_path::{find_move_path, supports_layered_bridge_pathing};
 use super::movement_step;
+use super::tube_movement::{self, TubePathStepResult};
 use super::{
     INFANTRY_WOBBLE_AMPLITUDE, MIN_BRAKE_FRACTION, MovementConfig, MovementTickStats,
     MoverSnapshot, PATH_STUCK_INIT, PathfindingContext, facing_from_delta, walking_to_subcell_dest,
 };
-use crate::sim::occupancy::OccupancyGrid;
+use crate::sim::occupancy::{CellListInsertion, OccupancyGrid};
 
 // Naval diagnostic functions moved to movement_occupancy.rs
 
@@ -121,7 +123,7 @@ fn handle_path_exhaustion(
     ctx: PathfindingContext<'_>,
     entity_cost_grid: Option<&TerrainCostGrid>,
     mover_entity_blocks: Option<&BTreeSet<(u16, u16)>>,
-    mover_entity_block_map: Option<&HashMap<(u16, u16), crate::sim::pathfinding::EntityBlockEntry>>,
+    mover_entity_block_map: Option<&crate::sim::pathfinding::LayeredEntityBlockMap>,
     path_delay_ticks: u16,
     sim_tick: u64,
 ) -> PathExhaustionResult {
@@ -355,13 +357,17 @@ pub fn tick_movement_with_grids(
     // preventing duplicate scatter commands from multiple movers.
     let mut already_scattered: BTreeSet<u64> = BTreeSet::new();
 
+    if let Some(terrain) = resolved_terrain {
+        tube_movement::tick_low_bridge_tube_movement(entities, occupancy, terrain);
+    }
+
     // Collect movers in deterministic order: ground/bridge entities with a movement_target.
     let keys = entities.keys_sorted();
     let mut movers: Vec<u64> = Vec::new();
     let mut mover_owners: BTreeSet<crate::sim::intern::InternedId> = BTreeSet::new();
     for &id in &keys {
         if let Some(entity) = entities.get(id) {
-            if entity.movement_target.is_none() {
+            if entity.movement_target.is_none() || entity.low_bridge_tube_state.is_some() {
                 continue;
             }
             let layer = entity.movement_layer_or_ground();
@@ -378,7 +384,7 @@ pub fn tick_movement_with_grids(
         crate::sim::intern::InternedId,
         (
             BTreeSet<(u16, u16)>,
-            HashMap<(u16, u16), crate::sim::pathfinding::EntityBlockEntry>,
+            crate::sim::pathfinding::LayeredEntityBlockMap,
         ),
     > = mover_owners
         .iter()
@@ -398,11 +404,19 @@ pub fn tick_movement_with_grids(
         let Some(snap) = snapshot_mover(entities, entity_id) else {
             continue;
         };
+        let prone_crawls = entities.get(entity_id).and_then(|entity| {
+            if !infantry::is_prone_for_damage(entity) {
+                return None;
+            }
+            let rules = rules?;
+            let obj = rules.object(interner.resolve(entity.type_ref))?;
+            Some(obj.crawls)
+        });
         let entity_cost_grid: Option<&TerrainCostGrid> =
             snap.speed_type.and_then(|st| terrain_costs.get(&st));
         let (mover_entity_blocks, mover_entity_block_map): (
             Option<&BTreeSet<(u16, u16)>>,
-            Option<&HashMap<(u16, u16), crate::sim::pathfinding::EntityBlockEntry>>,
+            Option<&crate::sim::pathfinding::LayeredEntityBlockMap>,
         ) = entity_block_sets
             .get(&snap.owner)
             .map(|(b, m)| (Some(b), Some(m)))
@@ -457,6 +471,22 @@ pub fn tick_movement_with_grids(
                     debug_events.extend(evts);
                 }
                 PathExhaustionResult::NotExhausted => {}
+            }
+
+            match tube_movement::try_begin_path_tube_step(
+                &mut entity.low_bridge_tube_state,
+                target,
+                &entity.position,
+                resolved_terrain,
+            ) {
+                TubePathStepResult::NotTubeStep => {}
+                TubePathStepResult::Began => {
+                    continue;
+                }
+                TubePathStepResult::Blocked => {
+                    finished_entities.push(entity_id);
+                    continue;
+                }
             }
 
             // Vehicles rotate in place before moving (RA2 behavior).
@@ -554,7 +584,10 @@ pub fn tick_movement_with_grids(
                 // No ramping data — constant speed fallback.
                 target.current_speed = target.speed;
             }
-            let effective_speed: SimFixed = target.current_speed * cell_speed_mod;
+            let mut effective_speed: SimFixed = target.current_speed * cell_speed_mod;
+            if let Some(crawls) = prone_crawls {
+                effective_speed = infantry::apply_prone_speed(effective_speed, crawls);
+            }
 
             // Advance sub_x/sub_y toward the next cell — either via drive track
             // (smooth curve) or straight-line lepton vector.
@@ -601,6 +634,11 @@ pub fn tick_movement_with_grids(
                         let old_ry = entity.position.ry;
                         entity.position.rx = nx;
                         entity.position.ry = ny;
+                        let mut occupancy_layer = if entity.on_bridge {
+                            MovementLayer::Bridge
+                        } else {
+                            MovementLayer::Ground
+                        };
                         // Bridge state resolution: apply the on_bridge cell-flag predicate.
                         // loco.layer follows A*'s path_layer (next_layer). on_bridge is
                         // updated by apply_pending_bridge_render_state from bridge_update below
@@ -616,6 +654,15 @@ pub fn tick_movement_with_grids(
                                     next_layer,
                                 );
                             pending_bridge_update = bridge_update;
+                            let new_on_bridge = super::movement_bridge::projected_on_bridge(
+                                entity.on_bridge,
+                                bridge_update,
+                            );
+                            occupancy_layer = if new_on_bridge {
+                                MovementLayer::Bridge
+                            } else {
+                                MovementLayer::Ground
+                            };
                             active_layer = next_layer;
                             if let Some(ref mut loco) = entity.locomotor {
                                 loco.layer = next_layer;
@@ -628,8 +675,9 @@ pub fn tick_movement_with_grids(
                             nx,
                             ny,
                             entity_id,
-                            active_layer,
+                            occupancy_layer,
                             entity.sub_cell,
+                            CellListInsertion::from_category(entity.category),
                         );
                         // Reserve destination cell.
                         super::movement_reservation::reserve_destination_after_transition(

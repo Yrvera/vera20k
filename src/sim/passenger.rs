@@ -18,6 +18,7 @@ use crate::sim::components::OrderIntent;
 use crate::sim::game_entity::GameEntity;
 use crate::sim::intern::StringInterner;
 use crate::sim::movement;
+use crate::sim::occupancy::CellListInsertion;
 use crate::sim::world::{SimSoundEvent, Simulation};
 use crate::util::fixed_math::ra2_speed_to_leptons_per_second;
 use crate::util::lepton;
@@ -535,6 +536,7 @@ fn tick_unloading(sim: &mut Simulation, rules: &RuleSet) -> bool {
             pax_id,
             crate::sim::movement::locomotor::MovementLayer::Ground,
             pax_sub_cell,
+            CellListInsertion::PrependNonBuilding,
         );
 
         // Scatter: issue a short move to a random adjacent cell so ejected

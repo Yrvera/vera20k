@@ -15,6 +15,7 @@ use super::terrain_cost::TerrainCostGrid;
 use super::zone_map::{ZONE_INVALID, ZoneAdjacency, ZoneId, ZoneInfo, ZoneMap};
 use crate::map::resolved_terrain::{ResolvedTerrainGrid, zone_class};
 use crate::rules::locomotor_type::MovementZone;
+use crate::sim::bridge_state::BridgeEndpointRecord;
 use crate::sim::movement::locomotor::MovementLayer;
 
 /// 8-directional neighbor offsets: (dx, dy, is_diagonal).
@@ -49,6 +50,23 @@ const MOVEMENT_CLASS_PASSABILITY: [[u8; 8]; 13] = [
     [2, 2, 2, 1, 1, 2, 2, 3], // WaterBeach
     [1, 1, 1, 2, 2, 2, 2, 3], // CrusherAll
 ];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BridgeRecordFilter {
+    /// `UpdateBridgeZonesHelper @ 0x0056C510` uses active records while adding
+    /// bridge zone edges; the verified loop does not read `bridge_kind`.
+    AllActive,
+    /// `FindBridgeRecord @ 0x0056DA10` skips records where `bridge_kind != 0`.
+    HighActiveOnly,
+}
+
+fn bridge_record_matches(record: &BridgeEndpointRecord, filter: BridgeRecordFilter) -> bool {
+    record.active
+        && match filter {
+            BridgeRecordFilter::AllActive => true,
+            BridgeRecordFilter::HighActiveOnly => record.is_high(),
+        }
+}
 
 /// Build a zone map and adjacency graph for one MovementZone.
 #[cfg(test)]
@@ -612,12 +630,13 @@ pub(crate) fn extract_adjacency(
 pub(crate) fn inject_bridge_adjacency(
     adj: &mut ZoneAdjacency,
     ground_zones: &[ZoneId],
-    bridge_records: &[crate::sim::bridge_state::BridgeEndpointRecord],
+    bridge_records: &[BridgeEndpointRecord],
     width: u16,
+    filter: BridgeRecordFilter,
 ) {
     let w = width as usize;
     for record in bridge_records {
-        if !record.active {
+        if !bridge_record_matches(record, filter) {
             continue;
         }
         let (ax, ay) = record.endpoint_a;
@@ -652,9 +671,10 @@ pub(crate) fn inject_bridge_adjacency(
 /// bridge endpoint and store its ground cell coordinates.
 pub(crate) fn build_bridge_redirect(
     path_grid: &PathGrid,
-    bridge_records: &[crate::sim::bridge_state::BridgeEndpointRecord],
+    bridge_records: &[BridgeEndpointRecord],
     width: u16,
     height: u16,
+    filter: BridgeRecordFilter,
 ) -> Option<Vec<Option<(u16, u16)>>> {
     if bridge_records.is_empty() {
         return None;
@@ -674,7 +694,7 @@ pub(crate) fn build_bridge_redirect(
             let mut best_dist = u32::MAX;
 
             for record in bridge_records {
-                if !record.active {
+                if !bridge_record_matches(record, filter) {
                     continue;
                 }
                 let da = (rx as i32 - record.endpoint_a.0 as i32).unsigned_abs()
@@ -707,4 +727,68 @@ pub(crate) fn build_bridge_redirect(
 pub(crate) fn add_adjacency(adj: &mut [Vec<ZoneId>], a: ZoneId, b: ZoneId) {
     adj[a as usize].push(b);
     adj[b as usize].push(a);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sim::bridge_state::{BridgeEndpointRecord, BridgeRecordKind};
+
+    fn bridge_record(kind: BridgeRecordKind) -> BridgeEndpointRecord {
+        BridgeEndpointRecord {
+            endpoint_a: (0, 0),
+            endpoint_b: (4, 0),
+            group_id: 1,
+            active: true,
+            bridge_kind: kind,
+        }
+    }
+
+    #[test]
+    fn bridge_redirect_ignores_low_bridge_records() {
+        let mut grid = PathGrid::new(5, 1);
+        for rx in 1..=3 {
+            grid.set_cell_for_test(rx, 0, 0, true, false);
+        }
+
+        let records = [bridge_record(BridgeRecordKind::Low)];
+        let redirect =
+            build_bridge_redirect(&grid, &records, 5, 1, BridgeRecordFilter::HighActiveOnly);
+
+        assert!(redirect.is_none());
+    }
+
+    #[test]
+    fn bridge_adjacency_filter_all_active_includes_low_records() {
+        let ground_zones = [1, ZONE_INVALID, ZONE_INVALID, ZONE_INVALID, 2];
+        let records = [bridge_record(BridgeRecordKind::Low)];
+        let mut adj = ZoneAdjacency::new(vec![vec![], vec![], vec![]]);
+
+        inject_bridge_adjacency(
+            &mut adj,
+            &ground_zones,
+            &records,
+            5,
+            BridgeRecordFilter::AllActive,
+        );
+
+        assert!(adj.are_adjacent(1, 2));
+    }
+
+    #[test]
+    fn bridge_adjacency_filter_high_active_only_skips_low_records() {
+        let ground_zones = [1, ZONE_INVALID, ZONE_INVALID, ZONE_INVALID, 2];
+        let records = [bridge_record(BridgeRecordKind::Low)];
+        let mut adj = ZoneAdjacency::new(vec![vec![], vec![], vec![]]);
+
+        inject_bridge_adjacency(
+            &mut adj,
+            &ground_zones,
+            &records,
+            5,
+            BridgeRecordFilter::HighActiveOnly,
+        );
+
+        assert!(!adj.are_adjacent(1, 2));
+    }
 }

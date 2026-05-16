@@ -137,6 +137,10 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         } else {
             None
         };
+        let bridge_state = state
+            .simulation
+            .as_ref()
+            .and_then(|sim| sim.bridge_state.as_ref());
         terrain::build_visible_instances(
             grid,
             state.camera_x,
@@ -145,6 +149,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
             sh,
             uv_fn,
             fog_vis,
+            bridge_state,
         )
     } else {
         terrain::TerrainInstances {

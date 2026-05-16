@@ -233,12 +233,14 @@ impl ZoneGrid {
                     zone_map.zone_ids_slice(),
                     bridge_records,
                     width,
+                    zone_build::BridgeRecordFilter::AllActive,
                 );
                 zone_map.set_bridge_redirect(zone_build::build_bridge_redirect(
                     path_grid,
                     bridge_records,
                     width,
                     height,
+                    zone_build::BridgeRecordFilter::HighActiveOnly,
                 ));
             }
 

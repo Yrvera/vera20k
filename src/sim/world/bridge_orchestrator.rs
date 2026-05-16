@@ -3,20 +3,15 @@
 //! Per-tick entry that drains `BridgeDamageEvent`s emitted by combat, runs
 //! each event through the 4-path dispatcher (HighSM → LowSM → LowDirect →
 //! HighDirect, in fixed order), applies the per-path BridgeStrength RNG
-//! gate, runs the IonCannon retry loop on state-machine paths only, and
-//! (in later tasks) applies the BlowUpBridge cascade: ground-occupant
-//! kill, bridge-deck DropIn, debris spawn, rim refresh, trigger broadcast,
-//! zone rebuild.
+//! gate, runs the IonCannon retry loop on state-machine paths only, then
+//! applies the BlowUpBridge cascade: ground-occupant kill, bridge-deck
+//! DropIn, debris spawn, rim refresh, trigger broadcast, zone rebuild.
+//! `notify_bridge_span_collapse` is an intentional no-op on skirmish
+//! (TriggerEvent 31 is bound only by campaign / map triggers).
 //!
 //! ## Dependency rules
 //! Same as sim/world: depends on sim/bridge_state, sim/rng, rules/, map/;
 //! never render / ui / audio / net.
-//!
-//! ## Status
-//! Task 9: scaffolding + dispatcher loop only — cascade consumers stubbed.
-//! The orchestrator is NOT wired into the world tick yet; the legacy
-//! `Simulation::apply_bridge_damage_events` + `resolve_bridge_state_changes`
-//! still drive bridge damage. The atomic switchover lands in Task 14.
 
 use std::collections::BTreeSet;
 
@@ -152,6 +147,117 @@ pub(crate) fn apply_bridge_damage_events(
     // state_changed = "at least one cell collapsed this batch". The destroyed_set
     // is built from StateOutcome::Collapsed outcomes earlier in this function;
     // if it's non-empty, real work happened.
+    !destroyed_set.is_empty()
+}
+
+/// Bridge-collapse dispatch from a `BridgeRepairHut` death event (C4 timer
+/// expired, demo-truck explosion). Drives every bridge cell in a 5×5 scan
+/// around `hut_center` to `Destroyed` via the forward state machine, then
+/// runs the same BlowUpBridge cascade as `apply_bridge_damage_events`:
+///   1. Scan finds bridge cells around the hut.
+///   2. Each cell with an anchor span is driven to convergence
+///      (`body_cell_advance_state` looped until `NoChange`).
+///   3. Cascade phase: kill ground occupants at BlowUpBridge cells; drop-in
+///      bridge-deck entities at destroyed cells; spawn debris; rim refresh;
+///      TriggerEvent broadcast; zone-graph rebuild.
+///
+/// Returns `true` if any bridge cell transitioned (caller ORs into
+/// `bridge_state_changed` so the app rebuilds the PathGrid).
+///
+/// Caller ensures the hut itself is not damaged — the hut survives the
+/// collapse, mirroring the original game's `BridgeRepairHut` death branch.
+pub(crate) fn dispatch_bridge_collapse_from_hut(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    hut_center: (u16, u16),
+) -> bool {
+    use crate::sim::bridge_state::cells_in_5x5_scan;
+
+    let scan: Vec<(u16, u16)> = cells_in_5x5_scan(hut_center).collect();
+
+    // Phase 1: drive every scanned bridge cell to convergence; collect
+    // Collapsed outcomes. The scope releases the &mut bridge_state borrow
+    // before Phase 3 takes &mut sim for the cascade helpers.
+    let mut outcomes: Vec<StateOutcome> = Vec::new();
+    {
+        let Some(terrain) = sim.resolved_terrain.as_ref() else {
+            return false;
+        };
+        let Some(bs) = sim.bridge_state.as_mut() else {
+            return false;
+        };
+        for cell_pos in &scan {
+            let has_span = bs
+                .cell(cell_pos.0, cell_pos.1)
+                .is_some_and(|c| c.anchor_span_id.is_some());
+            if !has_span {
+                continue;
+            }
+            // Drive forward state machine to convergence in this tick.
+            // Healthy → Damaged → Destroyed needs ≤2 transitions; partial
+            // collapse states reach Destroyed in 1.
+            loop {
+                let outcome = bs.body_cell_advance_state(
+                    cell_pos.0, cell_pos.1, /* is_high_bridge */ false, terrain,
+                );
+                match outcome {
+                    StateOutcome::NoChange => break,
+                    other => outcomes.push(other),
+                }
+            }
+        }
+    }
+
+    if outcomes.is_empty() {
+        return false;
+    }
+
+    // Phase 2: aggregate destroyed cells + BlowUpBridge cells + rim cells +
+    // zones-dirty from the collapsed outcomes (same shape as
+    // apply_bridge_damage_events).
+    let mut destroyed_set: BTreeSet<(u16, u16)> = BTreeSet::new();
+    let mut blow_up_cells: BTreeSet<(u16, u16)> = BTreeSet::new();
+    let mut rim_cells: BTreeSet<(u16, u16)> = BTreeSet::new();
+    let mut any_zones_dirty = false;
+    for outcome in &outcomes {
+        if let StateOutcome::Collapsed {
+            destroyed_cells,
+            set_bridge_direction,
+            adjacent_bridges_dirty,
+            zones_dirty,
+        } = outcome
+        {
+            destroyed_set.extend(destroyed_cells.iter().copied());
+            for (cell, _slot, action) in &set_bridge_direction.actions {
+                if matches!(action, crate::sim::bridge_specs::CellAction::BlowUpBridge) {
+                    blow_up_cells.insert(*cell);
+                    destroyed_set.insert(*cell);
+                }
+            }
+            rim_cells.extend(adjacent_bridges_dirty.iter().copied());
+            any_zones_dirty |= *zones_dirty;
+        }
+    }
+
+    // Phase 3: cascade. C4Warhead InfDeath is resolved outside the kill
+    // loop so the inner block doesn't hold `&sim.interner` while the kill
+    // loop needs `&mut sim`.
+    let c4_inf_death: u8 = {
+        let c4_id = rules.c4_warhead_id();
+        let name = sim.interner.resolve(c4_id);
+        rules.warhead(name).map(|wh| wh.inf_death).unwrap_or(1)
+    };
+    for &(rx, ry) in &blow_up_cells {
+        kill_ground_occupants_at(sim, rx, ry, c4_inf_death);
+    }
+    for &(rx, ry) in &destroyed_set {
+        drop_in_bridge_deck_entities(sim, rx, ry);
+    }
+    spawn_bridge_debris(sim, rules, &destroyed_set);
+    update_adjacent_bridges(sim, &rim_cells);
+    notify_bridge_span_collapse(sim, &destroyed_set);
+    refresh_bridge_zones_if_dirty(sim, any_zones_dirty);
+
     !destroyed_set.is_empty()
 }
 
@@ -431,6 +537,7 @@ fn spawn_bridge_debris(sim: &mut Simulation, rules: &RuleSet, cells: &BTreeSet<(
 /// deck entities over unwalkable ground.
 fn drop_in_bridge_deck_entities(sim: &mut Simulation, rx: u16, ry: u16) {
     use crate::sim::movement::locomotor::{GroundMovePhase, MovementLayer};
+    use crate::sim::occupancy::CellListInsertion;
 
     let ground_level = sim
         .resolved_terrain
@@ -447,6 +554,7 @@ fn drop_in_bridge_deck_entities(sim: &mut Simulation, rx: u16, ry: u16) {
         .collect();
 
     for id in to_snap {
+        let mut relayer = None;
         if let Some(entity) = sim.entities.get_mut(id) {
             entity.bridge_occupancy = None;
             entity.on_bridge = false;
@@ -457,6 +565,24 @@ fn drop_in_bridge_deck_entities(sim: &mut Simulation, rx: u16, ry: u16) {
                 loco.layer = MovementLayer::Ground;
                 loco.phase = GroundMovePhase::Idle;
             }
+            relayer = Some((
+                entity.position.rx,
+                entity.position.ry,
+                entity.sub_cell,
+                CellListInsertion::from_category(entity.category),
+            ));
+        }
+        if let Some((rx, ry, sub_cell, insertion)) = relayer {
+            sim.occupancy.move_entity(
+                rx,
+                ry,
+                rx,
+                ry,
+                id,
+                MovementLayer::Ground,
+                sub_cell,
+                insertion,
+            );
         }
     }
 }
@@ -533,7 +659,8 @@ fn run_dispatch_loop(
                                 bridge_state
                                     .bridgehead_advance_state(event.rx, event.ry, true, terrain)
                             }
-                            _ => bridge_state.body_cell_advance_state(event.rx, event.ry, true),
+                            _ => bridge_state
+                                .body_cell_advance_state(event.rx, event.ry, true, terrain),
                         }
                     }
                     DispatchPath::LowStateMachine => {
@@ -542,7 +669,8 @@ fn run_dispatch_loop(
                                 bridge_state
                                     .bridgehead_advance_state(event.rx, event.ry, false, terrain)
                             }
-                            _ => bridge_state.body_cell_advance_state(event.rx, event.ry, false),
+                            _ => bridge_state
+                                .body_cell_advance_state(event.rx, event.ry, false, terrain),
                         }
                     }
                     DispatchPath::HighDirect => {
@@ -578,6 +706,7 @@ mod tests {
     use crate::sim::movement::locomotor::{
         AirMovePhase, GroundMovePhase, LocomotorState, MovementLayer,
     };
+    use crate::sim::occupancy::CellListInsertion;
     use crate::util::fixed_math::{SIM_ZERO, SimFixed};
 
     /// Build a single-cell terrain grid where (5,5) is a bridge deck at
@@ -600,6 +729,7 @@ mod tests {
                     filled_clear: false,
                     tileset_index: Some(0),
                     land_type: 0,
+                    yr_cell_land_type: 0,
                     slope_type: 0,
                     template_height: 0,
                     render_offset_x: 0,
@@ -627,8 +757,12 @@ mod tests {
                     bridge_transition: is_bridge,
                     bridge_deck_level: if is_bridge { deck_level } else { 0 },
                     bridge_layer: None,
+                    bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+                    tube_index: None,
                     radar_left: [0, 0, 0],
                     radar_right: [0, 0, 0],
+                    has_damaged_data: false,
+                    bridgehead_anchor_class_at_load: None,
                 });
             }
         }
@@ -705,6 +839,14 @@ mod tests {
         let mut sim = Simulation::new();
         sim.resolved_terrain = Some(water_below_bridge_terrain(3));
         let id = spawn_deck_unit(&mut sim);
+        sim.occupancy.add(
+            5,
+            5,
+            id,
+            MovementLayer::Bridge,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
 
         drop_in_bridge_deck_entities(&mut sim, 5, 5);
 
@@ -724,6 +866,9 @@ mod tests {
             "layer flipped Bridge → Ground"
         );
         assert_eq!(loco.phase, GroundMovePhase::Idle, "phase reset to Idle");
+        let cell = sim.occupancy.get(5, 5).expect("occupancy retained");
+        assert_eq!(cell.count_on(MovementLayer::Ground), 1);
+        assert_eq!(cell.count_on(MovementLayer::Bridge), 0);
     }
 
     /// Build a minimal RuleSet whose `bridge_rules.voxel_max` matches the
@@ -867,6 +1012,7 @@ mod tests {
                 anchor_span_id: Some(99),
                 overlay_byte: 0xE8,
                 damaged_variant: false,
+                bridgehead_anchor_class: crate::sim::bridge_state::BridgeheadAnchorClass::Variant0,
             },
         );
         // (6,2): dangling stub — anchor_span_id=99 but no AnchorSpan entry.
@@ -884,6 +1030,7 @@ mod tests {
                 anchor_span_id: Some(99),
                 overlay_byte: 0xDC,
                 damaged_variant: false,
+                bridgehead_anchor_class: crate::sim::bridge_state::BridgeheadAnchorClass::Variant0,
             },
         );
         sim.bridge_state = Some(bs);
@@ -927,9 +1074,17 @@ mod tests {
         );
         entity.on_bridge = false; // ground-layer occupant
         let mut loco = drive_loco_on_bridge();
-        loco.layer = MovementLayer::Ground;
+        loco.layer = MovementLayer::Bridge;
         entity.locomotor = Some(loco);
         sim.entities.insert(entity);
+        sim.occupancy.add(
+            5,
+            5,
+            1,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
 
         drop_in_bridge_deck_entities(&mut sim, 5, 5);
 
@@ -937,6 +1092,9 @@ mod tests {
         let e = sim.entities.get(1).expect("ground entity untouched");
         assert_eq!(e.health.current, 256);
         assert!(!e.on_bridge);
-        assert_eq!(e.locomotor.as_ref().unwrap().layer, MovementLayer::Ground);
+        assert_eq!(e.locomotor.as_ref().unwrap().layer, MovementLayer::Bridge);
+        let cell = sim.occupancy.get(5, 5).expect("ground occupancy");
+        assert_eq!(cell.count_on(MovementLayer::Ground), 1);
+        assert_eq!(cell.count_on(MovementLayer::Bridge), 0);
     }
 }

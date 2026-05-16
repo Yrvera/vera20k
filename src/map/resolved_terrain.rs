@@ -19,13 +19,17 @@ pub mod zone_class {
 }
 
 use crate::assets::tmp_file::{TmpFile, TmpTile};
+use crate::map::bridge_facts::BridgeCellFacts;
 use crate::map::lat;
 use crate::map::map_file::{MapCell, MapFile};
 use crate::map::overlay::OverlayEntry;
 use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::map::theater::{self, TheaterData, TileKey};
+use crate::map::tube_facts::{TubeFact, TubeId};
 use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass, TerrainRules};
 use std::collections::{BTreeMap, HashMap, HashSet};
+
+pub const YR_CELL_LAND_TUNNEL: u8 = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Canonical ramp direction from TS++ TIBSUN_DEFINES.H (slope types 1-4).
@@ -76,6 +80,10 @@ pub struct ResolvedTerrainCell {
     pub filled_clear: bool,
     pub tileset_index: Option<u16>,
     pub land_type: u8,
+    /// Final CellClass LandType value for binary predicates that need the
+    /// original gamemd.exe value. Do not confuse this with `land_type`, which
+    /// is the compressed passability-matrix column.
+    pub yr_cell_land_type: u8,
     pub slope_type: u8,
     pub template_height: u8,
     pub render_offset_x: i32,
@@ -123,10 +131,29 @@ pub struct ResolvedTerrainCell {
     pub bridge_transition: bool,
     pub bridge_deck_level: u8,
     pub bridge_layer: Option<BridgeLayer>,
+    pub bridge_facts: BridgeCellFacts,
+    /// CellClass+0x116 equivalent: index into `ResolvedTerrainGrid::tube_facts`.
+    pub tube_index: Option<TubeId>,
     /// Per-tile radar minimap color (left half of isometric diamond), from TMP header.
     pub radar_left: [u8; 3],
     /// Per-tile radar minimap color (right half of isometric diamond), from TMP header.
     pub radar_right: [u8; 3],
+    /// True if this cell's underlying TMP sub-tile carries a baked damaged-variant
+    /// pixel set. Drives the kickoff gate of the bridge damage flood-fill (only
+    /// cells with baked damage art may initiate propagation) and the render-side
+    /// substitution that swaps in variant=1 when the bridge sim flags the cell.
+    pub has_damaged_data: bool,
+    /// Author-damaged anchor pre-classification: `Some(class)` if this
+    /// cell's `final_tile_index` matches one of the 8 bridgehead anchor
+    /// variant tile_ids in the current theater's BridgeAnchorVariantTable.
+    /// `None` when not a variant tile (the common case for both
+    /// non-bridge cells and pristine anchor cells).
+    ///
+    /// Sim's `BridgeRuntimeState::from_resolved_terrain` reads this to
+    /// initialize `BridgeRuntimeCell.bridgehead_anchor_class` instead of
+    /// the unconditional Variant0 default. None defaults to Variant0
+    /// sim-side.
+    pub bridgehead_anchor_class_at_load: Option<crate::sim::bridge_state::BridgeheadAnchorClass>,
 }
 
 impl ResolvedTerrainCell {
@@ -145,6 +172,14 @@ impl ResolvedTerrainCell {
     pub fn bridge_deck_level_if_any(&self) -> Option<u8> {
         self.has_bridge_deck.then_some(self.bridge_deck_level)
     }
+
+    pub fn bridge_flags(&self) -> u32 {
+        self.bridge_facts.raw_flags
+    }
+
+    pub fn is_low_bridge_tube_cell(&self) -> bool {
+        self.tube_index.is_some() && self.yr_cell_land_type == YR_CELL_LAND_TUNNEL
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -152,14 +187,25 @@ pub struct ResolvedTerrainGrid {
     width: u16,
     height: u16,
     pub cells: Vec<ResolvedTerrainCell>,
+    tube_facts: Vec<TubeFact>,
 }
 
 impl ResolvedTerrainGrid {
     pub fn from_cells(width: u16, height: u16, cells: Vec<ResolvedTerrainCell>) -> Self {
+        Self::from_cells_with_tubes(width, height, cells, Vec::new())
+    }
+
+    pub fn from_cells_with_tubes(
+        width: u16,
+        height: u16,
+        cells: Vec<ResolvedTerrainCell>,
+        tube_facts: Vec<TubeFact>,
+    ) -> Self {
         Self {
             width,
             height,
             cells,
+            tube_facts,
         }
     }
 
@@ -193,6 +239,43 @@ impl ResolvedTerrainGrid {
         self.cells.iter()
     }
 
+    pub fn tube_facts(&self) -> &[TubeFact] {
+        &self.tube_facts
+    }
+
+    pub fn tube(&self, tube_id: TubeId) -> Option<&TubeFact> {
+        self.tube_facts.get(tube_id.as_usize())
+    }
+
+    pub fn tube_at_cell(&self, rx: u16, ry: u16) -> Option<&TubeFact> {
+        let tube_id = self.cell(rx, ry)?.tube_index?;
+        self.tube(tube_id)
+    }
+
+    pub fn step_coord_by_direction(&self, coord: (u16, u16), direction: u8) -> Option<(u16, u16)> {
+        if direction == 8 {
+            return Some(
+                self.tube_at_cell(coord.0, coord.1)
+                    .map_or((0, 0), |tube| tube.exit),
+            );
+        }
+        let (dx, dy) = direction_offset(direction)?;
+        let nx = coord.0 as i32 + dx;
+        let ny = coord.1 as i32 + dy;
+        if nx < 0 || ny < 0 || nx >= self.width as i32 || ny >= self.height as i32 {
+            return None;
+        }
+        Some((nx as u16, ny as u16))
+    }
+
+    pub fn walk_directions_from(&self, start: (u16, u16), directions: &[u8]) -> Option<(u16, u16)> {
+        let mut coord = start;
+        for &direction in directions {
+            coord = self.step_coord_by_direction(coord, direction)?;
+        }
+        Some(coord)
+    }
+
     pub fn build(
         map: &MapFile,
         theater_data: Option<&TheaterData>,
@@ -208,6 +291,7 @@ impl ResolvedTerrainGrid {
                 width: 0,
                 height: 0,
                 cells: Vec::new(),
+                tube_facts: Vec::new(),
             };
         }
 
@@ -277,18 +361,9 @@ impl ResolvedTerrainGrid {
                     level,
                 );
                 let canonical_ramp = canonical_ramp_from_slope_type(metadata.slope_type);
-                // Low bridges override underlying terrain to Road (NoUseTileLandType=true,
-                // Land=Road in rulesmd.ini). This makes water cells under low bridges
-                // passable for ground units.
-                if overlay_effects.is_low_bridge {
-                    metadata.is_water = false;
-                    metadata.is_road = true;
-                    metadata.ground_blocked = false;
-                    metadata.is_cliff_like = false;
-                    metadata.terrain_class = TerrainClass::Road;
-                    metadata.land_type =
-                        crate::sim::pathfinding::passability::LandType::Road.as_index();
-                }
+                // Low bridge overlays are visual/damage facts. Movement is
+                // driven by the final YR cell land type plus TubeClass facts,
+                // not by forcing the surface terrain into ordinary road.
                 // Road/pavement overlays override underlying terrain to Road.
                 // Matches original engine: RecalcLandType sets LandType=Road(1)
                 // when overlay.Wall is true.
@@ -297,6 +372,7 @@ impl ResolvedTerrainGrid {
                     metadata.terrain_class = TerrainClass::Road;
                     metadata.land_type =
                         crate::sim::pathfinding::passability::LandType::Road.as_index();
+                    metadata.yr_cell_land_type = metadata.land_type;
                 }
                 // Tiberium/ore overlays change the effective terrain type for passability.
                 // Matches original engine: RecalcLandType sets cell+0xEC when tiberium present.
@@ -305,6 +381,7 @@ impl ResolvedTerrainGrid {
                 if overlay_effects.has_tiberium {
                     metadata.land_type =
                         crate::sim::pathfinding::passability::LandType::Tiberium.as_index();
+                    metadata.yr_cell_land_type = metadata.land_type;
                     metadata.terrain_class = TerrainClass::Tiberium;
                     if let Some(tib_semantics) =
                         terrain_rules.and_then(|tr| tr.semantics_by_name("Tiberium"))
@@ -325,8 +402,6 @@ impl ResolvedTerrainGrid {
                     zone_class::IMPASSABLE
                 } else if overlay_effects.is_gate {
                     zone_class::IMPASSABLE
-                } else if overlay_effects.is_low_bridge {
-                    zone_class::GROUND
                 } else if metadata.is_water {
                     zone_class::WATER
                 } else if metadata.land_type
@@ -348,6 +423,7 @@ impl ResolvedTerrainGrid {
                     || overlay_effects.overlay_blocks
                     || canonical_ramp.is_some();
                 let bridge_walkable = overlay_effects.has_bridge_deck
+                    && !overlay_effects.is_low_bridge
                     && !terrain_object_blocks
                     && !overlay_effects.overlay_blocks;
                 // Smudges (craters, scorches) only place on tiles whose tileset has
@@ -369,7 +445,7 @@ impl ResolvedTerrainGrid {
                 // the A* can switch Bridge→Ground mid-span and units clip
                 // through the bridge.
                 let bridge_transition = false;
-                let build_blocked = base_build_blocked || bridge_walkable;
+                let build_blocked = base_build_blocked || overlay_effects.has_bridge_deck;
                 cells.push(ResolvedTerrainCell {
                     rx,
                     ry,
@@ -381,6 +457,7 @@ impl ResolvedTerrainGrid {
                     filled_clear: raw.is_none(),
                     tileset_index: metadata.tileset_index,
                     land_type: metadata.land_type,
+                    yr_cell_land_type: metadata.yr_cell_land_type,
                     slope_type: metadata.slope_type,
                     template_height: metadata.template_height,
                     render_offset_x: metadata.render_offset_x,
@@ -412,334 +489,116 @@ impl ResolvedTerrainGrid {
                         .map(|layer| layer.deck_level)
                         .unwrap_or(level),
                     bridge_layer: overlay_effects.bridge_layer,
+                    bridge_facts: BridgeCellFacts::default(),
+                    tube_index: None,
                     radar_left: metadata.radar_left,
                     radar_right: metadata.radar_right,
+                    has_damaged_data: metadata.has_damaged_data,
+                    bridgehead_anchor_class_at_load: None,
                 });
             }
         }
 
-        // High bridges store only the center cell overlay but span 3 cells wide.
-        // Extrapolate bridge deck flags to the two perpendicular side cells so
-        // pathfinding treats the full bridge width as walkable.
-        //   EW (BRIDGE1/BRIDGEB1): bridge runs along rx, side cells at ry±1
-        //   NS (BRIDGE2/BRIDGEB2): bridge runs along ry, side cells at rx±1
-        let mut side_cells: Vec<(usize, u8, BridgeDirection)> = Vec::new();
-        for cell in &cells {
-            let bl = match &cell.bridge_layer {
-                Some(bl)
-                    if bl.direction == BridgeDirection::EastWest
-                        || bl.direction == BridgeDirection::NorthSouth =>
-                {
-                    bl
-                }
-                _ => continue,
-            };
-            let offsets: [(i32, i32); 2] = match bl.direction {
-                BridgeDirection::EastWest => [(0, -1), (0, 1)],
-                BridgeDirection::NorthSouth => [(-1, 0), (1, 0)],
-                BridgeDirection::Low => unreachable!(),
-            };
-            for (dx, dy) in offsets {
-                let sx = cell.rx as i32 + dx;
-                let sy = cell.ry as i32 + dy;
-                if sx < 0 || sy < 0 || sx >= width as i32 || sy >= height as i32 {
-                    continue;
-                }
-                if let Some(idx) = Some(sy as usize * width as usize + sx as usize) {
-                    if idx < cells.len() && !cells[idx].has_bridge_deck {
-                        side_cells.push((idx, bl.deck_level, bl.direction));
-                    }
-                }
+        let mut bridge_facts = vec![BridgeCellFacts::default(); cells.len()];
+        for overlay in &map.overlays {
+            if overlay.rx < width && overlay.ry < height {
+                let idx = overlay.ry as usize * width as usize + overlay.rx as usize;
+                bridge_facts[idx].overlay_id = Some(overlay.overlay_id);
+            }
+            if let Some((family, direction)) =
+                crate::map::bridge_facts::high_bridge_stamp_for_overlay(overlay.overlay_id)
+            {
+                crate::map::bridge_facts::stamp_set_bridge_direction(
+                    &mut bridge_facts,
+                    width,
+                    height,
+                    (overlay.rx, overlay.ry),
+                    family,
+                    direction,
+                    true,
+                );
             }
         }
-        let extrapolated_count = side_cells.len();
-        for (idx, deck_level, _direction) in side_cells {
-            cells[idx].has_bridge_deck = true;
-            cells[idx].bridge_walkable = true;
-            cells[idx].bridge_deck_level = deck_level;
-            cells[idx].build_blocked = true;
-        }
-        if extrapolated_count > 0 {
-            log::info!(
-                "ResolvedTerrain: extrapolated {} high bridge side cells",
-                extrapolated_count,
-            );
+
+        if map.has_overlay_data_pack() {
+            for (idx, cell) in cells.iter().enumerate() {
+                bridge_facts[idx].state_byte = map.overlay_data_at(cell.rx, cell.ry);
+            }
         }
 
-        // Normalize bridge deck levels via connected-component flood fill.
-        // All adjacent high bridge cells must share the same deck height so the
-        // bridge surface is flat. Center cells (ry=N) and their side cells
-        // (ry=N±1) are in different rows but must have the same deck_level.
-        // BFS finds each connected group of bridge cells and applies the max
-        // deck_level within each group.
-        {
-            let mut visited = vec![false; cells.len()];
-            let mut normalized: usize = 0;
-            for start in 0..cells.len() {
-                if !cells[start].has_bridge_deck
-                    || visited[start]
-                    || cells[start]
-                        .bridge_layer
-                        .as_ref()
-                        .is_some_and(|bl| bl.direction == BridgeDirection::Low)
-                {
-                    continue;
-                }
-                // BFS to find connected component of high bridge cells.
-                let mut component: Vec<usize> = Vec::new();
-                let mut queue = std::collections::VecDeque::new();
-                queue.push_back(start);
-                visited[start] = true;
-                let mut max_level: u8 = 0;
-                while let Some(idx) = queue.pop_front() {
-                    component.push(idx);
-                    max_level = max_level.max(cells[idx].bridge_deck_level);
-                    let crx = cells[idx].rx as i32;
-                    let cry = cells[idx].ry as i32;
-                    for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
-                        let nx = crx + dx;
-                        let ny = cry + dy;
-                        if nx < 0 || ny < 0 || nx >= width as i32 || ny >= height as i32 {
+        for (cell, facts) in cells.iter_mut().zip(bridge_facts) {
+            cell.bridge_facts = facts;
+
+            if facts.has_structural_bridge() {
+                cell.has_bridge_deck = true;
+                cell.bridge_walkable = !cell.terrain_object_blocks && !cell.overlay_blocks;
+                cell.bridge_deck_level = cell.level.saturating_add(4);
+                cell.build_blocked = cell.base_build_blocked || cell.bridge_walkable;
+            } else if facts.family != crate::map::bridge_facts::BridgeStampFamily::None
+                && cell
+                    .bridge_layer
+                    .as_ref()
+                    .is_some_and(|bl| bl.direction != BridgeDirection::Low)
+            {
+                cell.has_bridge_deck = false;
+                cell.bridge_walkable = false;
+                cell.bridge_deck_level = cell.level;
+                cell.build_blocked = cell.base_build_blocked;
+            }
+
+            if facts.has_transition_flag() {
+                cell.bridge_transition = true;
+            }
+        }
+
+        if let Some(td) = theater_data {
+            if let (Some(bs_idx), Some(ramp_table)) = (
+                td.bridge_set,
+                crate::map::theater::BridgeRampTileTable::from_theater(td),
+            ) {
+                if let Some(bridge_set_bounds) = td.lookup.bounds().get(bs_idx as usize) {
+                    let bridge_set_start = bridge_set_bounds.start;
+                    let mut ramp_count = 0usize;
+                    for cell in &mut cells {
+                        if cell.final_tile_index < 0 {
                             continue;
                         }
-                        let nidx = ny as usize * width as usize + nx as usize;
-                        if nidx < cells.len()
-                            && !visited[nidx]
-                            && cells[nidx].has_bridge_deck
-                            && !cells[nidx]
-                                .bridge_layer
-                                .as_ref()
-                                .is_some_and(|bl| bl.direction == BridgeDirection::Low)
-                        {
-                            visited[nidx] = true;
-                            queue.push_back(nidx);
-                        }
+                        let tile_id = normalize_tile_id(cell.final_tile_index);
+                        let Some(ramp_tile) = ramp_table.match_tile_id(
+                            tile_id,
+                            bridge_set_start,
+                            bridge_set_bounds.count,
+                            cell.template_height,
+                        ) else {
+                            continue;
+                        };
+                        cell.bridge_facts.ramp_tile = Some(ramp_tile);
+                        ramp_count += 1;
+                    }
+                    if ramp_count > 0 {
+                        log::info!(
+                            "ResolvedTerrain: {} exact high bridge ramp cells detected",
+                            ramp_count,
+                        );
                     }
                 }
-                // Apply uniform deck_level to all cells in this bridge.
-                for &idx in &component {
-                    if cells[idx].bridge_deck_level != max_level {
-                        normalized += 1;
-                        cells[idx].bridge_deck_level = max_level;
-                        if let Some(ref mut bl) = cells[idx].bridge_layer {
-                            bl.deck_level = max_level;
-                        }
-                    }
-                }
-            }
-            if normalized > 0 {
-                log::info!(
-                    "ResolvedTerrain: normalized deck_level for {} bridge cells",
-                    normalized,
-                );
             }
         }
 
-        // Bridgehead TMP tiles (ramps at each end of a high bridge) are solid
-        // ground terrain, walkable on the ground layer. The original engine sets
-        // CellFlags::BridgeHead on these cells,
-        // enabling Ground↔Bridge layer transitions at the ramp.
-        // Mark them as transition cells so the layered A* can route through them.
-        // Do NOT set has_bridge_deck or bridge_walkable — they're ground terrain.
-        if let Some(td) = theater_data {
-            // Collect bridgehead cell indices first, then apply changes.
-            let mut bridgehead_updates: Vec<(usize, u8)> = Vec::new();
-            for (idx, cell) in cells.iter().enumerate() {
-                let Some(ts_idx) = cell.tileset_index else {
-                    continue;
-                };
-                let is_bridgehead = td.bridge_set.is_some_and(|bs| ts_idx == bs)
-                    || td.wood_bridge_set.is_some_and(|ws| ts_idx == ws);
-                if is_bridgehead && !cell.has_bridge_deck {
-                    // Use the deck_level from an adjacent bridge span cell so
-                    // the bridgehead matches the normalized bridge height.
-                    // Prevents z-discontinuity at the ramp-to-span transition.
-                    let crx = cell.rx as i32;
-                    let cry = cell.ry as i32;
-                    let mut span_deck: Option<u8> = None;
-                    for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
-                        let nx = crx + dx;
-                        let ny = cry + dy;
-                        if nx >= 0 && ny >= 0 && nx < width as i32 && ny < height as i32 {
-                            let nidx = ny as usize * width as usize + nx as usize;
-                            if nidx < cells.len() && cells[nidx].has_bridge_deck {
-                                span_deck = Some(cells[nidx].bridge_deck_level);
-                                break;
-                            }
-                        }
-                    }
-                    let deck = span_deck.unwrap_or_else(|| cell.level.saturating_add(4));
-                    bridgehead_updates.push((idx, deck));
-                }
-            }
-            let bridgehead_count = bridgehead_updates.len();
-            for (idx, deck_level) in &bridgehead_updates {
-                cells[*idx].bridge_transition = true;
-                // bridge_walkable=true enables Ground↔Bridge layer transitions in
-                // the layered A*. Bridgeheads are ground-level ramps, not elevated
-                // deck cells, but they must be walkable on BOTH layers so the
-                // pathfinder can switch layers here. Rendering uses bridge_occupancy
-                // (runtime flag), not bridge_walkable, so this doesn't affect visuals.
-                cells[*idx].bridge_walkable = true;
-                cells[*idx].bridge_deck_level = *deck_level;
-                log::info!(
-                    "BRIDGEHEAD cell ({},{}) ground_level={} deck_level={}",
-                    cells[*idx].rx,
-                    cells[*idx].ry,
-                    cells[*idx].level,
-                    deck_level,
-                );
-            }
-            if bridgehead_count > 0 {
-                log::info!(
-                    "ResolvedTerrain: {} bridgehead transition cells detected",
-                    bridgehead_count,
-                );
-            }
-        }
-
-        // Gap-fill pass: bridge overlays may not exist on every cell (the sprite
-        // visually covers adjacent cells). Fill 1-cell gaps between bridge deck
-        // cells so the walkable surface is continuous. A cell is filled if it has
-        // has_bridge_deck neighbors on opposite sides (both rx±1 or both ry±1).
         {
-            let mut gap_fills: Vec<(usize, u8)> = Vec::new();
-            for idx in 0..cells.len() {
-                if cells[idx].has_bridge_deck {
-                    continue;
-                }
-                let rx = cells[idx].rx as i32;
-                let ry = cells[idx].ry as i32;
-                let w = width as i32;
-                let h = height as i32;
-
-                // Check rx-axis neighbors (both rx-1 and rx+1 have bridge deck).
-                let left_idx = if rx > 0 {
-                    Some((ry * w + rx - 1) as usize)
-                } else {
-                    None
-                };
-                let right_idx = if rx < w - 1 {
-                    Some((ry * w + rx + 1) as usize)
-                } else {
-                    None
-                };
-                let rx_gap = left_idx.zip(right_idx).is_some_and(|(l, r)| {
-                    l < cells.len()
-                        && r < cells.len()
-                        && cells[l].has_bridge_deck
-                        && cells[r].has_bridge_deck
-                        && !cells[l]
-                            .bridge_layer
-                            .as_ref()
-                            .is_some_and(|bl| bl.direction == BridgeDirection::Low)
-                });
-
-                // Check ry-axis neighbors (both ry-1 and ry+1 have bridge deck).
-                let up_idx = if ry > 0 {
-                    Some(((ry - 1) * w + rx) as usize)
-                } else {
-                    None
-                };
-                let down_idx = if ry < h - 1 {
-                    Some(((ry + 1) * w + rx) as usize)
-                } else {
-                    None
-                };
-                let ry_gap = up_idx.zip(down_idx).is_some_and(|(u, d)| {
-                    u < cells.len()
-                        && d < cells.len()
-                        && cells[u].has_bridge_deck
-                        && cells[d].has_bridge_deck
-                        && !cells[u]
-                            .bridge_layer
-                            .as_ref()
-                            .is_some_and(|bl| bl.direction == BridgeDirection::Low)
-                });
-
-                if rx_gap || ry_gap {
-                    // Use deck_level from a neighbor.
-                    let neighbor_level = if rx_gap {
-                        cells[left_idx.unwrap()].bridge_deck_level
-                    } else {
-                        cells[up_idx.unwrap()].bridge_deck_level
-                    };
-                    gap_fills.push((idx, neighbor_level));
-                }
-            }
-            let gap_count = gap_fills.len();
-            for (idx, deck_level) in gap_fills {
-                cells[idx].has_bridge_deck = true;
-                cells[idx].bridge_walkable = true;
-                cells[idx].bridge_deck_level = deck_level;
-                cells[idx].build_blocked = true;
-            }
-            if gap_count > 0 {
-                log::info!("ResolvedTerrain: filled {} bridge deck gaps", gap_count,);
-            }
-        }
-
-        // Log all high bridge deck cells (center + extrapolated) to diagnose gaps.
-        {
-            let mut high_deck: Vec<(u16, u16, u8, &str)> = cells
+            let mut high_deck: Vec<(u16, u16, u8, u32)> = cells
                 .iter()
-                .filter(|c| {
-                    c.has_bridge_deck
-                        && !c
-                            .bridge_layer
-                            .as_ref()
-                            .is_some_and(|bl| bl.direction == BridgeDirection::Low)
-                })
-                .map(|c| {
-                    let label = if c.bridge_layer.is_some() {
-                        "center"
-                    } else {
-                        "side"
-                    };
-                    (c.rx, c.ry, c.bridge_deck_level, label)
-                })
+                .filter(|c| c.bridge_facts.has_structural_bridge())
+                .map(|c| (c.rx, c.ry, c.bridge_deck_level, c.bridge_facts.raw_flags))
                 .collect();
             high_deck.sort_by_key(|(rx, ry, _, _)| (*rx, *ry));
             if !high_deck.is_empty() {
-                log::info!("High bridge deck cells ({} total):", high_deck.len(),);
-                for (rx, ry, dl, label) in &high_deck {
-                    log::info!("  ({}, {}) deck_level={} [{}]", rx, ry, dl, label);
-                }
-            }
-        }
-
-        // Log overlay entries near bridge cells that were NOT classified as bridges.
-        // This helps diagnose gaps in the bridge deck coverage.
-        if let Some(first_center) = cells.iter().find(|c| {
-            c.bridge_layer
-                .as_ref()
-                .is_some_and(|bl| bl.direction != BridgeDirection::Low)
-        }) {
-            let center_ry = first_center.ry;
-            let center_rx = first_center.rx;
-            let mut unrecognized: Vec<(u16, u16, u8, String)> = Vec::new();
-            for overlay in &map.overlays {
-                // Check overlays near the bridge span (±3 cells).
-                if overlay.ry.abs_diff(center_ry) <= 3 && overlay.rx >= center_rx.saturating_sub(2)
-                {
-                    let idx = overlay.ry as usize * width as usize + overlay.rx as usize;
-                    if idx < cells.len() && !cells[idx].has_bridge_deck {
-                        let name = overlay_registry
-                            .and_then(|reg| reg.name(overlay.overlay_id))
-                            .unwrap_or("?")
-                            .to_string();
-                        unrecognized.push((overlay.rx, overlay.ry, overlay.overlay_id, name));
-                    }
-                }
-            }
-            if !unrecognized.is_empty() {
-                unrecognized.sort_by_key(|(rx, ry, _, _)| (*rx, *ry));
-                log::info!(
-                    "Overlays near bridge NOT classified as deck ({}):",
-                    unrecognized.len(),
+                log::debug!(
+                    "High bridge stamped structural cells ({} total):",
+                    high_deck.len(),
                 );
-                for (rx, ry, id, name) in &unrecognized {
-                    log::info!("  ({}, {}) overlay_id={} name={}", rx, ry, id, name);
+                for (rx, ry, dl, flags) in &high_deck {
+                    log::debug!("  ({}, {}) deck_level={} flags=0x{:X}", rx, ry, dl, flags);
                 }
             }
         }
@@ -875,6 +734,12 @@ impl ResolvedTerrainGrid {
                 if vc == 0 {
                     continue;
                 }
+                // Bridges with baked damaged variants reserve cell.variant for
+                // the per-frame damaged_variant pick (sim-driven), so the
+                // map-load PRNG must leave it at 0.
+                if cell.has_damaged_data {
+                    continue;
+                }
                 let mut hasher = DefaultHasher::new();
                 (cell.rx, cell.ry).hash(&mut hasher);
                 let hash = hasher.finish();
@@ -893,10 +758,44 @@ impl ResolvedTerrainGrid {
             }
         }
 
+        // Pre-classify author-damaged anchor placements: cells whose
+        // tileset is BridgeSet AND whose final_tile_index matches one of
+        // the 4 NS or 4 EW variant tile_ids get a non-None
+        // bridgehead_anchor_class_at_load. Sim's bridge-state init reads
+        // this so maps that author pre-damaged anchors render correctly
+        // from frame 1.
+        if let Some(td) = theater_data {
+            if let Some(table) = crate::map::theater::BridgeAnchorVariantTable::from_theater(td) {
+                if let Some(bs_idx) = td.bridge_set {
+                    for cell in cells.iter_mut() {
+                        if cell.tileset_index != Some(bs_idx) {
+                            continue;
+                        }
+                        if cell.final_tile_index < 0 {
+                            continue;
+                        }
+                        let tid = if cell.final_tile_index == 0xFFFF {
+                            0
+                        } else {
+                            cell.final_tile_index as u16
+                        };
+                        if let Some((_axis, class)) = table.match_tile_id(tid) {
+                            cell.bridgehead_anchor_class_at_load = Some(class);
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut tube_facts =
+            seed_explicit_map_tubes(&mut cells, width, height, &map.explicit_tubes);
+        build_auto_low_bridge_tubes(&mut cells, width, height, theater_data, &mut tube_facts);
+
         Self {
             width,
             height,
             cells,
+            tube_facts,
         }
     }
 
@@ -931,6 +830,9 @@ struct TileMetadata {
     has_tmp_metadata: bool,
     /// Mapped land type (0-7) for passability matrix lookups.
     land_type: u8,
+    /// Final gamemd CellClass LandType value where Rust needs the binary
+    /// predicate. This is not the TMP terrain_type byte.
+    yr_cell_land_type: u8,
     /// Raw TMP terrain_type byte (0-15) for rules.ini semantic lookups.
     raw_land_type: u8,
     slope_type: u8,
@@ -950,6 +852,9 @@ struct TileMetadata {
     radar_left: [u8; 3],
     /// Per-tile radar minimap color (right half of isometric diamond), from TMP header.
     radar_right: [u8; 3],
+    /// Mirrors `TmpTile.has_damaged_data` — set when the TMP sub-tile flag DWORD
+    /// declares a baked damaged-variant pixel set.
+    has_damaged_data: bool,
 }
 
 impl Default for TileMetadata {
@@ -958,6 +863,7 @@ impl Default for TileMetadata {
             tileset_index: None,
             has_tmp_metadata: false,
             land_type: 0,
+            yr_cell_land_type: 0,
             raw_land_type: 0,
             slope_type: 0,
             template_height: 0,
@@ -974,6 +880,7 @@ impl Default for TileMetadata {
             build_blocked: false,
             radar_left: [0, 0, 0],
             radar_right: [0, 0, 0],
+            has_damaged_data: false,
         }
     }
 }
@@ -1020,6 +927,115 @@ fn normalize_tile_id(tile_index: i32) -> u16 {
         0
     } else {
         tile_index as u16
+    }
+}
+
+const AUTO_TUBE_DIRECTIONS: [u8; 4] = [2, 4, 6, 0];
+
+fn build_auto_low_bridge_tubes(
+    cells: &mut [ResolvedTerrainCell],
+    width: u16,
+    height: u16,
+    theater_data: Option<&TheaterData>,
+    tubes: &mut Vec<TubeFact>,
+) {
+    for cell in cells.iter_mut() {
+        if cell.yr_cell_land_type != YR_CELL_LAND_TUNNEL || cell.tube_index.is_some() {
+            continue;
+        }
+        let Some(direction) = auto_tube_direction_for_tile(cell.final_tile_index, theater_data)
+        else {
+            continue;
+        };
+        let Some(_idx) = (cell.rx < width && cell.ry < height).then_some(()) else {
+            continue;
+        };
+        let Ok(raw_id) = u16::try_from(tubes.len()) else {
+            log::warn!(
+                "ResolvedTerrain: tube registry exceeded u16::MAX; skipping tube at ({}, {})",
+                cell.rx,
+                cell.ry
+            );
+            continue;
+        };
+        let tube_id = TubeId(raw_id);
+        tubes.push(TubeFact::auto_low_bridge((cell.rx, cell.ry), direction));
+        cell.tube_index = Some(tube_id);
+    }
+}
+
+fn seed_explicit_map_tubes(
+    cells: &mut [ResolvedTerrainCell],
+    width: u16,
+    height: u16,
+    explicit_tubes: &[TubeFact],
+) -> Vec<TubeFact> {
+    let mut tubes = Vec::with_capacity(explicit_tubes.len());
+    for tube in explicit_tubes {
+        let Ok(raw_id) = u16::try_from(tubes.len()) else {
+            log::warn!(
+                "ResolvedTerrain: explicit [Tubes] registry exceeded u16::MAX; skipping remaining tubes"
+            );
+            break;
+        };
+        let tube_id = TubeId(raw_id);
+        tubes.push(tube.clone());
+        let (rx, ry) = tube.entry;
+        if rx >= width || ry >= height {
+            log::warn!(
+                "ResolvedTerrain: explicit [Tubes] entry cell ({}, {}) outside resolved grid",
+                rx,
+                ry
+            );
+            continue;
+        }
+        let idx = ry as usize * width as usize + rx as usize;
+        if let Some(cell) = cells.get_mut(idx) {
+            cell.tube_index = Some(tube_id);
+        }
+    }
+    tubes
+}
+
+fn auto_tube_direction_for_tile(
+    final_tile_index: i32,
+    theater_data: Option<&TheaterData>,
+) -> Option<u8> {
+    let tile_id = normalize_tile_id(final_tile_index);
+    let td = theater_data?;
+    for tileset_index in [
+        td.tunnels,
+        td.track_tunnels,
+        td.dirt_tunnels,
+        td.dirt_track_tunnels,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let Some(bounds) = td.lookup.bounds().get(tileset_index as usize) else {
+            continue;
+        };
+        let Some(offset) = tile_id.checked_sub(bounds.start) else {
+            continue;
+        };
+        if offset < 4 {
+            return AUTO_TUBE_DIRECTIONS.get(offset as usize).copied();
+        }
+    }
+    None
+}
+
+fn direction_offset(direction: u8) -> Option<(i32, i32)> {
+    match direction & 7 {
+        0 => Some((0, -1)),
+        1 => Some((1, -1)),
+        2 => Some((1, 0)),
+        3 => Some((1, 1)),
+        4 => Some((0, 1)),
+        5 => Some((-1, 1)),
+        6 => Some((-1, 0)),
+        7 => Some((-1, -1)),
+        _ => None,
     }
 }
 
@@ -1113,6 +1129,7 @@ fn metadata_from_set_name(set_name: Option<&str>, tileset_index: Option<u16>) ->
     TileMetadata {
         tileset_index,
         land_type,
+        yr_cell_land_type: land_type,
         terrain_class,
         is_water,
         is_cliff_like,
@@ -1126,6 +1143,7 @@ fn metadata_from_set_name(set_name: Option<&str>, tileset_index: Option<u16>) ->
 
 fn merge_tmp_metadata(metadata: &mut TileMetadata, tile: &TmpTile) {
     metadata.raw_land_type = tile.terrain_type;
+    metadata.yr_cell_land_type = yr_cell_land_type_from_tmp(tile.terrain_type);
     metadata.land_type =
         crate::sim::pathfinding::passability::tmp_terrain_to_land_type(tile.terrain_type)
             .as_index();
@@ -1137,6 +1155,15 @@ fn merge_tmp_metadata(metadata: &mut TileMetadata, tile: &TmpTile) {
     metadata.has_tmp_metadata = true;
     metadata.radar_left = tile.radar_left;
     metadata.radar_right = tile.radar_right;
+    metadata.has_damaged_data = tile.has_damaged_data;
+}
+
+fn yr_cell_land_type_from_tmp(tmp_terrain_type: u8) -> u8 {
+    if tmp_terrain_type == 5 {
+        YR_CELL_LAND_TUNNEL
+    } else {
+        crate::sim::pathfinding::passability::tmp_terrain_to_land_type(tmp_terrain_type).as_index()
+    }
 }
 
 /// Maps TMP ramp_type byte to canonical direction.
@@ -1268,6 +1295,7 @@ mod tests {
     use crate::assets::tmp_file::TmpTile;
     use crate::map::overlay::TerrainObject;
     use crate::map::overlay_types::OverlayTypeRegistry;
+    use crate::map::tube_facts::TubeSource;
     use crate::rules::ini_parser::IniFile;
     use crate::rules::terrain_rules::{TerrainClass, TerrainRules};
     use std::collections::HashSet;
@@ -1293,6 +1321,7 @@ mod tests {
             cells,
             entities: Vec::new(),
             overlays,
+            overlay_data: crate::map::overlay::OverlayDataPack::default(),
             smudges: Vec::new(),
             terrain_objects,
             waypoints: HashMap::new(),
@@ -1304,8 +1333,127 @@ mod tests {
             local_variables: HashMap::new(),
             trigger_graph: crate::map::trigger_graph::TriggerGraph::default(),
             special_flags: crate::map::basic::SpecialFlagsSection::default(),
+            explicit_tubes: Vec::new(),
             ini: IniFile::from_str(""),
         }
+    }
+
+    fn make_test_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
+        ResolvedTerrainCell {
+            rx,
+            ry,
+            source_tile_index: 0,
+            source_sub_tile: 0,
+            final_tile_index: 0,
+            final_sub_tile: 0,
+            level: 0,
+            filled_clear: false,
+            tileset_index: Some(0),
+            land_type: 0,
+            yr_cell_land_type: 0,
+            slope_type: 0,
+            template_height: 0,
+            render_offset_x: 0,
+            render_offset_y: 0,
+            terrain_class: TerrainClass::Clear,
+            speed_costs: SpeedCostProfile::default(),
+            is_water: false,
+            is_cliff_like: false,
+            is_cliff_redraw: false,
+            variant: 0,
+            is_rough: false,
+            is_road: false,
+            accepts_smudge: false,
+            has_ramp: false,
+            canonical_ramp: None,
+            ground_walk_blocked: false,
+            terrain_object_blocks: false,
+            overlay_blocks: false,
+            zone_type: 0,
+            base_ground_walk_blocked: false,
+            base_build_blocked: false,
+            build_blocked: false,
+            has_bridge_deck: false,
+            bridge_walkable: false,
+            bridge_transition: false,
+            bridge_deck_level: 0,
+            bridge_layer: None,
+            bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+            tube_index: None,
+            radar_left: [0, 0, 0],
+            radar_right: [0, 0, 0],
+            has_damaged_data: false,
+            bridgehead_anchor_class_at_load: None,
+        }
+    }
+
+    #[test]
+    fn direction_8_steps_through_cell_tube() {
+        let mut cells = vec![
+            make_test_cell(0, 0),
+            make_test_cell(1, 0),
+            make_test_cell(2, 0),
+        ];
+        cells[1].yr_cell_land_type = YR_CELL_LAND_TUNNEL;
+        cells[1].tube_index = Some(TubeId(0));
+        let tube = TubeFact {
+            entry: (1, 0),
+            exit: (2, 0),
+            direction: 2,
+            path_steps: Vec::new(),
+            source: TubeSource::AutoLowBridge,
+        };
+        let grid = ResolvedTerrainGrid::from_cells_with_tubes(3, 1, cells, vec![tube]);
+
+        assert_eq!(grid.step_coord_by_direction((1, 0), 8), Some((2, 0)));
+        assert_eq!(grid.walk_directions_from((0, 0), &[2, 8]), Some((2, 0)));
+    }
+
+    #[test]
+    fn direction_8_without_valid_tube_returns_zero_coord() {
+        let grid = ResolvedTerrainGrid::from_cells(1, 1, vec![make_test_cell(0, 0)]);
+
+        assert_eq!(grid.step_coord_by_direction((0, 0), 8), Some((0, 0)));
+    }
+
+    #[test]
+    fn explicit_map_tubes_seed_resolved_grid() {
+        let mut map = make_map(
+            vec![
+                MapCell {
+                    rx: 0,
+                    ry: 0,
+                    tile_index: 0,
+                    sub_tile: 0,
+                    z: 0,
+                },
+                MapCell {
+                    rx: 1,
+                    ry: 0,
+                    tile_index: 0,
+                    sub_tile: 0,
+                    z: 0,
+                },
+                MapCell {
+                    rx: 2,
+                    ry: 0,
+                    tile_index: 0,
+                    sub_tile: 0,
+                    z: 0,
+                },
+            ],
+            Vec::new(),
+            Vec::new(),
+        );
+        map.explicit_tubes = vec![TubeFact::explicit((0, 0), (2, 0), 2, vec![2, 2])];
+
+        let grid = ResolvedTerrainGrid::build(&map, None, None, None, None, false, 0);
+
+        let cell = grid.cell(0, 0).expect("entry cell");
+        assert_eq!(cell.tube_index, Some(TubeId(0)));
+        assert_eq!(grid.tube_facts().len(), 1);
+        assert_eq!(grid.tube_facts()[0].source, TubeSource::ExplicitMap);
+        assert_eq!(grid.step_coord_by_direction((0, 0), 8), Some((2, 0)));
     }
 
     #[test]
@@ -1535,6 +1683,7 @@ mod tests {
                 filled_clear: false,
                 tileset_index: Some(0),
                 land_type: metadata.land_type,
+                yr_cell_land_type: metadata.yr_cell_land_type,
                 slope_type: metadata.slope_type,
                 template_height: 0,
                 render_offset_x: 0,
@@ -1562,8 +1711,12 @@ mod tests {
                 bridge_transition: false,
                 bridge_deck_level: 0,
                 bridge_layer: None,
+                bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+                tube_index: None,
                 radar_left: [0, 0, 0],
                 radar_right: [0, 0, 0],
+                has_damaged_data: false,
+                bridgehead_anchor_class_at_load: None,
             }],
         );
         let cell = grid.cell(0, 0).expect("resolved ramp cell");

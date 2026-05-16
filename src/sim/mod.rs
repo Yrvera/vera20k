@@ -57,6 +57,7 @@ pub mod bridge_state;
 
 // --- Infantry deploy-fire state machine ---
 pub mod deploy;
+pub mod infantry;
 
 // --- Persistent cell occupancy ---
 pub mod occupancy;

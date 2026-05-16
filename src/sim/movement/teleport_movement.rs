@@ -23,7 +23,7 @@ use crate::rules::ruleset::GeneralRules;
 use crate::sim::debug_event_log::DebugEventKind;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::movement::locomotor::OverrideKind;
-use crate::sim::occupancy::OccupancyGrid;
+use crate::sim::occupancy::{CellListInsertion, OccupancyGrid};
 use crate::util::fixed_math::isqrt_i64;
 use crate::util::lepton::CELL_CENTER_LEPTON;
 
@@ -202,6 +202,7 @@ pub fn tick_teleport_movement(
                     id,
                     layer,
                     entity.sub_cell,
+                    CellListInsertion::from_category(entity.category),
                 );
                 // Harvester instant-warp: when chrono delay is 0, finish in one
                 // tick (cleanup runs at end of this tick) — no post-warp lock.
@@ -287,6 +288,10 @@ mod tests {
             requires_stolen_third_tech: false,
             primary: None,
             secondary: None,
+            fire_up_frame: 0,
+            fire_prone_frame: 0,
+            secondary_fire_frame: 0,
+            secondary_prone_frame: 0,
             image: "CMIN".to_string(),
             power: 0,
             foundation: "1x1".to_string(),
@@ -327,6 +332,7 @@ mod tests {
             radar_visible: false,
             harvester: false,
             refinery: false,
+            bib: false,
             storage: 0,
             free_unit: None,
             dock: vec![],
@@ -341,6 +347,11 @@ mod tests {
             slave_regen_rate: 0,
             slave_reload_rate: 0,
             slaved: false,
+            fearless: false,
+            fraidycat: false,
+            crawls: false,
+            veteran_fearless: false,
+            elite_fearless: false,
             harvest_rate: 0,
             resource_gatherer: false,
             resource_destination: false,
@@ -367,6 +378,7 @@ mod tests {
             factory: None,
             exit_coord: None,
             crushable: false,
+            deployed_crushable: true,
             no_force_shield: false,
             omni_crusher: false,
             omni_crush_resistant: false,

@@ -19,6 +19,23 @@ use crate::sim::pathfinding::PathGrid;
 use crate::util::fixed_math::SimFixed;
 use crate::util::fixed_math::ra2_speed_to_leptons_per_second;
 
+/// Result of one `apply_c4_damage_to_building` call.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct C4DamageOutcome {
+    /// HP reached 0; building marked dying this tick.
+    pub killed_building: bool,
+    /// The C4 hit a BridgeRepairHut, the hut survived, and the connected
+    /// bridge collapsed. The app needs to rebuild PathGrid.
+    pub bridge_state_changed: bool,
+}
+
+/// Result of `tick_c4_plants` across all per-tick plants + detonations.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct C4TickOutcome {
+    pub destroyed_structure: bool,
+    pub bridge_state_changed: bool,
+}
+
 impl Simulation {
     /// Pre-combat: entities with an OrderIntent but no current AttackTarget
     /// try to acquire a nearby enemy to engage.
@@ -147,8 +164,13 @@ impl Simulation {
     /// Tick engineer capture orders: check if any engineer with a capture_target
     /// has arrived adjacent to its target building. If so, transfer ownership and
     /// consume the engineer.
+    ///
+    /// Engineers targeting `BridgeRepairHut=yes` buildings are skipped here —
+    /// they are consumed earlier in the tick by `tick_bridge_repair_orders`.
+    /// This skip is defense in depth in case ordering ever changes; the
+    /// original game never captures CABHUTs.
     /// Returns true if any capture occurred (triggers atlas rebuild for new owner color).
-    pub(crate) fn tick_capture_orders(&mut self) -> bool {
+    pub(crate) fn tick_capture_orders(&mut self, rules: &RuleSet) -> bool {
         let mut any_captured = false;
         // Snapshot engineers with active capture targets.
         let captures: Vec<(u64, u64, InternedId)> = self
@@ -159,6 +181,20 @@ impl Simulation {
             .collect();
 
         for (engineer_id, building_id, engineer_owner) in captures {
+            // Skip BridgeRepairHut targets — repair tick handles them.
+            let target_bridge_hut = self
+                .entities
+                .get(building_id)
+                .and_then(|b| {
+                    rules
+                        .object(self.interner.resolve(b.type_ref))
+                        .map(|t| t.bridge_repair_hut)
+                })
+                .unwrap_or(false);
+            if target_bridge_hut {
+                continue;
+            }
+
             // Check building still exists and is capturable.
             let building_ok = self
                 .entities
@@ -208,6 +244,123 @@ impl Simulation {
         any_captured
     }
 
+    /// Tick bridge-repair orders: any engineer with `capture_target` pointing
+    /// at a `BridgeRepairHut=yes` building, Chebyshev-≤-1 adjacent, triggers
+    /// bridge repair on the cells in a 5×5 scan around the engineer.
+    ///
+    /// Flow:
+    ///   1. Emit `SimSoundEvent::BridgeRepaired` at the building's cell.
+    ///   2. Run `body_cell_repair_state` over the 5×5 scan around the engineer.
+    ///   3. Despawn the engineer (consumed by repair).
+    ///
+    /// Returns `true` if any repair mutated bridge state (caller ORs into
+    /// `TickResult.bridge_state_changed` so the app rebuilds PathGrid).
+    pub(crate) fn tick_bridge_repair_orders(&mut self, rules: &RuleSet) -> bool {
+        use crate::sim::bridge_state::cells_in_5x5_scan;
+
+        // Snapshot eligible engineers in deterministic order.
+        let candidates: Vec<(u64, u64, InternedId)> = self
+            .entities
+            .keys_sorted()
+            .into_iter()
+            .filter_map(|sid| {
+                let e = self.entities.get(sid)?;
+                if e.dying || e.capture_target.is_none() {
+                    return None;
+                }
+                Some((sid, e.capture_target.unwrap(), e.owner))
+            })
+            .collect();
+
+        let mut any_repair = false;
+
+        for (engineer_id, building_id, engineer_owner) in candidates {
+            // Resolve target type; only proceed for BridgeRepairHut=yes.
+            let target_bridge_hut = self
+                .entities
+                .get(building_id)
+                .and_then(|b| {
+                    rules
+                        .object(self.interner.resolve(b.type_ref))
+                        .map(|t| t.bridge_repair_hut)
+                })
+                .unwrap_or(false);
+            if !target_bridge_hut {
+                continue;
+            }
+
+            // Target alive + still a Structure.
+            let target_alive = self
+                .entities
+                .get(building_id)
+                .is_some_and(|b| b.category == EntityCategory::Structure && !b.dying);
+            if !target_alive {
+                if let Some(e) = self.entities.get_mut(engineer_id) {
+                    e.capture_target = None;
+                }
+                continue;
+            }
+
+            // Chebyshev-≤-1 adjacency. The engineer stands NEXT to the
+            // building (pathing treats the footprint as blocked, matching
+            // tick_capture_orders).
+            let Some((erx, ery)) = self
+                .entities
+                .get(engineer_id)
+                .map(|e| (e.position.rx, e.position.ry))
+            else {
+                continue;
+            };
+            let Some((brx, bry)) = self
+                .entities
+                .get(building_id)
+                .map(|b| (b.position.rx, b.position.ry))
+            else {
+                continue;
+            };
+            let dx = (erx as i32 - brx as i32).abs();
+            let dy = (ery as i32 - bry as i32).abs();
+            if dx > 1 || dy > 1 {
+                continue;
+            }
+
+            // ---- Trigger fires this tick ----
+
+            // Step A: emit BridgeRepaired sound event at the BUILDING's cell.
+            self.sound_events
+                .push(crate::sim::world::SimSoundEvent::BridgeRepaired {
+                    rx: brx,
+                    ry: bry,
+                    owner: engineer_owner,
+                });
+
+            // Step B: 5×5 scan from engineer cell + repair dispatch.
+            let scan: Vec<(u16, u16)> = cells_in_5x5_scan((erx, ery)).collect();
+            let outcome = if let (Some(bs), Some(terrain)) =
+                (self.bridge_state.as_mut(), self.resolved_terrain.as_ref())
+            {
+                bs.body_cell_repair_state(&scan, &mut self.rng, terrain)
+            } else {
+                crate::sim::bridge_state::RepairOutcome::default()
+            };
+
+            if outcome.zones_dirty || outcome.repaired_cells > 0 {
+                any_repair = true;
+            }
+
+            // Step C: radar-dirty propagation. No render-side dirty-cell API
+            // is wired up yet for bridges; the minimap refreshes after the
+            // PathGrid rebuild driven by `bridge_state_changed`. Reserved for
+            // a follow-up once a per-cell radar-dirty channel exists.
+            let _ = &outcome.radar_cells;
+
+            // Step D: engineer consumed.
+            self.despawn_entity(engineer_id);
+        }
+
+        any_repair
+    }
+
     /// Tick C4 plant orders.
     ///
     /// Phase 1 (walk-up): for each entity with `c4_plant`, check if it's
@@ -224,10 +377,13 @@ impl Simulation {
     /// it fires again next tick. When the building dies, the entity despawns
     /// and the pending state goes with it.
     ///
-    /// Returns true if any building was destroyed this tick.
-    pub(crate) fn tick_c4_plants(&mut self, rules: &RuleSet) -> bool {
+    /// Returns the per-tick C4 outcome: `destroyed_structure` is true if any
+    /// building died, and `bridge_state_changed` is true if any C4 detonation
+    /// on a `BridgeRepairHut` collapsed a bridge.
+    pub(crate) fn tick_c4_plants(&mut self, rules: &RuleSet) -> C4TickOutcome {
         use crate::sim::components::PendingC4Detonation;
         let mut destroyed_structure = false;
+        let mut bridge_state_changed = false;
 
         // ---- Phase 1: walk-up + plant claim ----
         // Snapshot attackers with c4_plant. Deterministic sorted order via
@@ -333,7 +489,10 @@ impl Simulation {
         // resolve_bridge_warheads hasn't been called. Pre-feature tests don't
         // call it; guarding here keeps them passing.
         if det_keys.is_empty() {
-            return destroyed_structure;
+            return C4TickOutcome {
+                destroyed_structure,
+                bridge_state_changed,
+            };
         }
 
         let c4_warhead_id = rules.c4_warhead_id();
@@ -369,14 +528,15 @@ impl Simulation {
                 .get(pending.attacker_id)
                 .map(|_| pending.attacker_id);
 
-            let killed = self.apply_c4_damage_to_building(
+            let outcome = self.apply_c4_damage_to_building(
                 building_id,
                 dmg as u16,
                 c4_warhead_id,
                 attacker_for_credit,
                 rules,
             );
-            if killed {
+            bridge_state_changed |= outcome.bridge_state_changed;
+            if outcome.killed_building {
                 destroyed_structure = true;
                 // pending_c4_detonation goes away with the entity via despawn path.
                 // Trigger scatter walk-away for any attacker on this cell with
@@ -386,7 +546,10 @@ impl Simulation {
             }
         }
 
-        destroyed_structure
+        C4TickOutcome {
+            destroyed_structure,
+            bridge_state_changed,
+        }
     }
 
     /// Post-detonation: any attacker that was on the destroyed building's
@@ -463,9 +626,11 @@ impl Simulation {
         }
     }
 
-    /// Apply one C4Warhead damage instance to a building entity. Returns true
-    /// if the building died this call. Honors IronCurtain via the standard
-    /// invulnerability check. Used by `tick_c4_plants` Phase 2.
+    /// Apply one C4Warhead damage instance to a building entity. Returns
+    /// `C4DamageOutcome` reporting whether the building died and whether a
+    /// connected bridge collapsed (for `BridgeRepairHut` targets). Honors
+    /// IronCurtain via the standard invulnerability check. Used by
+    /// `tick_c4_plants` Phase 2.
     fn apply_c4_damage_to_building(
         &mut self,
         building_id: u64,
@@ -473,7 +638,7 @@ impl Simulation {
         warhead_id: crate::sim::intern::InternedId,
         attacker_id: Option<u64>,
         rules: &RuleSet,
-    ) -> bool {
+    ) -> C4DamageOutcome {
         // Check IC — if invulnerable, damage is nullified but pending state
         // stays, so we try again next tick.
         let invuln = self
@@ -484,13 +649,47 @@ impl Simulation {
             invuln.as_ref(),
             self.tick as u32,
         ) {
-            return false;
+            return C4DamageOutcome::default();
+        }
+
+        // BridgeRepairHut target: reroute the explosion into the bridge
+        // collapse cascade and leave the hut at full HP. The hut never
+        // takes C4 / demo-truck damage — destruction is the linked bridge
+        // segment's, not the hut's. Also the right entry point for a
+        // future demo-truck damage path.
+        let target_bridge_hut = self
+            .entities
+            .get(building_id)
+            .and_then(|b| {
+                rules
+                    .object(self.interner.resolve(b.type_ref))
+                    .map(|t| t.bridge_repair_hut)
+            })
+            .unwrap_or(false);
+        if target_bridge_hut {
+            let bld_center = self
+                .entities
+                .get(building_id)
+                .map(|b| (b.position.rx, b.position.ry));
+            let bridge_state_changed = match bld_center {
+                Some(center) => {
+                    crate::sim::world::bridge_orchestrator::dispatch_bridge_collapse_from_hut(
+                        self, rules, center,
+                    )
+                }
+                None => false,
+            };
+            let _ = attacker_id; // hut survives — no last_attacker_id update
+            return C4DamageOutcome {
+                killed_building: false,
+                bridge_state_changed,
+            };
         }
 
         // Resolve warhead, apply Verses, subtract HP.
         let warhead_name = self.interner.resolve(warhead_id).to_string();
         let Some(warhead) = rules.warhead(&warhead_name) else {
-            return false;
+            return C4DamageOutcome::default();
         };
         let armor_idx: usize = match self.entities.get(building_id) {
             Some(b) => {
@@ -500,13 +699,13 @@ impl Simulation {
                     .unwrap_or("none");
                 crate::sim::combat::armor_index(obj_armor)
             }
-            None => return false,
+            None => return C4DamageOutcome::default(),
         };
         let verses_pct = warhead.verses.get(armor_idx).copied().unwrap_or(100);
         let scaled = (damage as i32 * verses_pct as i32 / 100).max(0) as u16;
 
         let Some(b) = self.entities.get_mut(building_id) else {
-            return false;
+            return C4DamageOutcome::default();
         };
         let new_hp = b.health.current.saturating_sub(scaled);
         b.health.current = new_hp;
@@ -515,9 +714,12 @@ impl Simulation {
             if let Some(att) = attacker_id {
                 b.last_attacker_id = Some(att);
             }
-            true
+            C4DamageOutcome {
+                killed_building: true,
+                bridge_state_changed: false,
+            }
         } else {
-            false
+            C4DamageOutcome::default()
         }
     }
 

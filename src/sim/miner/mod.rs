@@ -16,7 +16,7 @@ pub(crate) mod miner_system;
 #[path = "miner_tests.rs"]
 mod miner_tests;
 
-pub(crate) use self::miner_system::{extract_bale, player_has_purifier, search_local_ore};
+pub(crate) use self::miner_system::{extract_bale, search_local_ore};
 
 use std::collections::BTreeMap;
 
@@ -90,11 +90,23 @@ pub enum RefineryDockPhase {
     /// DockDeploy sound, set display_type_override, init unload_timer,
     /// transition to Unloading.
     Linked,
-    /// Per-bale deposit pulse. Each bale emits BaleDepositEvent.
-    /// On cargo empty: release reservation, transition to Departing.
+    /// Per-slot deposit pulse. Each timer crossing (HarvesterDumpRate × 900
+    /// = 14.4 ticks) drains one StorageClass slot — all bales of one
+    /// resource type at once — and emits a single BaleDepositEvent.
+    /// Slot order matches gamemd: Ore (slot 0) first, Gems (slot 1) second.
+    /// On cargo empty: seed `deposit_cooldown_ticks` from the refinery's
+    /// SpecialAnim cycle and transition to DepositCooldown.
     Unloading,
+    /// Park on the pad while the last deposit animation finishes — keeps
+    /// the deposit anim from out-lasting a miner that has already driven
+    /// off. On cooldown expiry: clear the unloading-model override and
+    /// transition to Departing. The dock reservation is still held; the
+    /// next queued miner is released only once this miner clears the
+    /// exit cell.
+    DepositCooldown,
     /// Drive to exit cell at building_origin + (-0x80, +0x80) leptons.
-    /// On arrival: snap facing 0x47, return to SearchOre.
+    /// On arrival: snap facing 0x47, release dock reservation, return to
+    /// SearchOre.
     Departing,
 }
 
@@ -237,11 +249,19 @@ pub struct Miner {
     pub dock_queued: bool,
     /// Cooldown ticks before re-scanning for ore in WaitNoOre state.
     pub rescan_cooldown: u8,
-    /// Last cell we successfully harvested from (for local continuation search).
+    /// Archive ("ghost cell") of a nearby still-productive ore patch,
+    /// saved on the `Harvest` → `ReturnToRefinery` transition (when the
+    /// miner becomes full). Survives the entire dock cycle so the next
+    /// `SearchOre` returns directly to it; consumed and cleared at
+    /// `SearchOre` entry.
     pub last_harvest_cell: Option<(u16, u16)>,
     /// Current phase of the refinery docking sequence.
     /// Only meaningful when `state == MinerState::Dock`.
     pub dock_phase: RefineryDockPhase,
+    /// Sim ticks remaining in `DepositCooldown`. Seeded from the refinery's
+    /// SpecialAnim cycle length when the last bale pops; decremented each
+    /// tick of the cooldown phase.
+    pub deposit_cooldown_ticks: u16,
 }
 
 impl Miner {
@@ -285,6 +305,7 @@ impl Miner {
             rescan_cooldown: 0,
             last_harvest_cell: None,
             dock_phase: RefineryDockPhase::default(),
+            deposit_cooldown_ticks: 0,
         }
     }
 

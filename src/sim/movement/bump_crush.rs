@@ -11,18 +11,19 @@
 //! - Part of sim/ — depends on sim/entity_store, sim/game_entity, sim/locomotor,
 //!   sim/pathfinding, sim/rng, rules/locomotor_type.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 
-use crate::sim::pathfinding::EntityBlockEntry;
+use crate::sim::pathfinding::{EntityBlockEntry, LayeredEntityBlockMap};
 
 use crate::map::entities::EntityCategory;
 use crate::rules::locomotor_type::MovementZone;
 use crate::sim::entity_store::EntityStore;
+use crate::sim::game_entity::GameEntity;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::occupancy::{CellOccupancy, OccupancyGrid};
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::rng::SimRng;
-use crate::util::fixed_math::{SimFixed, fixed_distance};
+use crate::util::fixed_math::{fixed_distance, SimFixed};
 
 /// Functional infantry sub-cell positions. The original engine uses sub-cells
 /// 2 (NE), 3 (SW), 4 (SE) — three corners of the isometric diamond. Sub-cells
@@ -98,11 +99,12 @@ const NEIGHBOR_OFFSETS: [(i32, i32); 8] = [
 /// matching the original engine's `FirstObject`/`AltObject` dual-layer system.
 ///
 /// RA2 cooperative pathfinding: friendly-moving units are recorded in an
-/// `entity_block_map` keyed by the blocker's current cell, with value equal
-/// to the blocker's next cell (movement_target.path[next_index]). The A* cost
-/// function walks this map to compute the code-2 dynamic cost per gamemd.exe
-/// AStar_compute_edge_cost (0x00429830). Stationary units/buildings and
-/// enemies hard-block via the BTreeSet outputs.
+/// `entity_block_map` keyed by selected object-list layer and the blocker's
+/// current cell, with value equal to the blocker's next cell
+/// (movement_target.path[next_index]). The A* cost function walks this map to
+/// compute the code-2 dynamic cost per gamemd.exe AStar_compute_edge_cost
+/// (0x00429830). Stationary units/buildings and enemies hard-block via the
+/// BTreeSet outputs.
 ///
 /// When `rules` is provided, structure footprints are expanded across all
 /// occupied cells (foundation + AddOccupy − RemoveOccupy). Without `rules`
@@ -118,34 +120,34 @@ pub fn build_entity_block_sets(
 ) -> (
     BTreeSet<(u16, u16)>,
     BTreeSet<(u16, u16)>,
-    HashMap<(u16, u16), EntityBlockEntry>,
+    LayeredEntityBlockMap,
 ) {
     let mut ground_blocked: BTreeSet<(u16, u16)> = BTreeSet::new();
     let bridge_blocked: BTreeSet<(u16, u16)> = BTreeSet::new();
-    let mut entity_block_map: HashMap<(u16, u16), EntityBlockEntry> = HashMap::new();
+    let mut entity_block_map = LayeredEntityBlockMap::new();
     for entity in entities.values() {
         // Entities inside transports don't occupy cells.
         if entity.passenger_role.is_inside_transport() {
             continue;
         }
-        let layer = entity.movement_layer_or_ground();
-        // Air and underground entities never block ground/bridge pathfinding.
-        if matches!(layer, MovementLayer::Air | MovementLayer::Underground) {
+        let Some(layer) = entity.occupancy_list_layer() else {
             continue;
-        }
+        };
         let pos = (entity.position.rx, entity.position.ry);
         // Buildings always block (they never move). Always ground layer.
         // With rules, expand to the full foundation so A* sees every occupied
         // cell — without it, only the anchor blocks (legacy behavior).
         if entity.category == EntityCategory::Structure {
             if let Some(obj) = rules.and_then(|r| r.object(interner.resolve(entity.type_ref))) {
-                let cells = crate::sim::production::building_footprint_cells(
+                let footprint = crate::sim::production::building_footprint_cells(
                     pos.0,
                     pos.1,
                     &obj.foundation,
                     &obj.add_occupy,
                     &obj.remove_occupy,
                 );
+                let cells =
+                    crate::sim::production::building_movement_blocking_cells(&footprint, obj.bib);
                 for cell in cells {
                     ground_blocked.insert(cell);
                 }
@@ -160,6 +162,7 @@ pub fn build_entity_block_sets(
             crate::map::houses::are_houses_friendly(alliances, mover_owner, entity_owner_str);
         if !is_friendly {
             entity_block_map.insert(
+                layer,
                 pos,
                 EntityBlockEntry {
                     next_cell: None,
@@ -173,6 +176,7 @@ pub fn build_entity_block_sets(
             if let Some(&next_cell) = mt.path.get(mt.next_index) {
                 if next_cell != pos {
                     entity_block_map.insert(
+                        layer,
                         pos,
                         EntityBlockEntry {
                             next_cell: Some(next_cell),
@@ -185,6 +189,7 @@ pub fn build_entity_block_sets(
         }
         // Stationary friendly: soft-block with code 6 (cost 8x).
         entity_block_map.insert(
+            layer,
             pos,
             EntityBlockEntry {
                 next_cell: None,
@@ -203,7 +208,7 @@ pub fn build_entity_block_set(
     alliances: &crate::map::houses::HouseAllianceMap,
     interner: &crate::sim::intern::StringInterner,
     rules: Option<&crate::rules::ruleset::RuleSet>,
-) -> (BTreeSet<(u16, u16)>, HashMap<(u16, u16), EntityBlockEntry>) {
+) -> (BTreeSet<(u16, u16)>, LayeredEntityBlockMap) {
     let (ground, bridge, entity_block_map) =
         build_entity_block_sets(entities, mover_owner, alliances, interner, rules);
     (ground.union(&bridge).copied().collect(), entity_block_map)
@@ -355,6 +360,7 @@ pub fn can_crush(
     mover_omni_crusher: bool,
     target_category: EntityCategory,
     target_crushable: bool,
+    target_low_silhouette: bool,
     target_omni_crush_resistant: bool,
 ) -> bool {
     // Structures and aircraft are never crushed.
@@ -383,11 +389,27 @@ pub fn can_crush(
         | MovementZone::Destroyer
         | MovementZone::AmphibiousDestroyer
         | MovementZone::InfantryDestroyer => {
-            target_category == EntityCategory::Infantry && target_crushable
+            target_category == EntityCategory::Infantry
+                && target_crushable
+                && !target_low_silhouette
         }
         // Non-crusher zones cannot crush anything.
         _ => false,
     }
+}
+
+fn is_low_silhouette_for_crush(entity: &GameEntity) -> bool {
+    if entity.category != EntityCategory::Infantry {
+        return false;
+    }
+    if entity.infantry.is_some_and(|infantry| infantry.is_prone) {
+        return true;
+    }
+    matches!(
+        entity.deploy_state,
+        Some(crate::sim::deploy::DeployPhase::Deployed)
+            | Some(crate::sim::deploy::DeployPhase::Undeploying { .. })
+    ) && !entity.deployed_crushable
 }
 
 /// Collect entity IDs in a cell that the mover would crush on entry.
@@ -406,31 +428,17 @@ pub fn collect_crush_victims(
     };
     let mut victims: Vec<u64> = Vec::new();
 
-    // Check infantry occupants.
-    for (eid, _sub) in occ.infantry(layer) {
-        if let Some(e) = entities.get(eid) {
+    for occupant in occ.iter_layer(layer) {
+        if let Some(e) = entities.get(occupant.entity_id) {
             if can_crush(
                 mover_zone,
                 mover_omni_crusher,
                 e.category,
                 e.crushable,
+                is_low_silhouette_for_crush(e),
                 e.omni_crush_resistant,
             ) {
-                victims.push(eid);
-            }
-        }
-    }
-    // Check vehicle/structure occupants (only OmniCrusher/CrusherAll can crush vehicles).
-    for eid in occ.blockers(layer) {
-        if let Some(e) = entities.get(eid) {
-            if can_crush(
-                mover_zone,
-                mover_omni_crusher,
-                e.category,
-                e.crushable,
-                e.omni_crush_resistant,
-            ) {
-                victims.push(eid);
+                victims.push(occupant.entity_id);
             }
         }
     }
@@ -488,6 +496,8 @@ pub fn cell_passable_after_crush(
     let Some(occ) = occupancy.get(cell.0, cell.1) else {
         return true; // empty cell
     };
+    // Boolean crush passability is category-specific; it does not choose a
+    // first occupant from CellClass list order.
     // All blockers must be crushable.
     for eid in occ.blockers(layer) {
         if let Some(e) = entities.get(eid) {
@@ -496,6 +506,7 @@ pub fn cell_passable_after_crush(
                 mover_omni_crusher,
                 e.category,
                 e.crushable,
+                is_low_silhouette_for_crush(e),
                 e.omni_crush_resistant,
             ) {
                 return false;
@@ -510,6 +521,7 @@ pub fn cell_passable_after_crush(
                 mover_omni_crusher,
                 e.category,
                 e.crushable,
+                is_low_silhouette_for_crush(e),
                 e.omni_crush_resistant,
             ) {
                 return false;
@@ -614,7 +626,8 @@ pub fn scatter_blocker(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sim::game_entity::GameEntity;
+    use crate::sim::game_entity::{GameEntity, InfantryRuntime};
+    use crate::sim::occupancy::CellListInsertion;
 
     fn infantry(id: u64, rx: u16, ry: u16, sub: u8) -> GameEntity {
         let mut e = GameEntity::test_default(id, "E1", "Allies", rx, ry);
@@ -642,7 +655,14 @@ mod tests {
     fn make_occ(entries: &[(u16, u16, u64, MovementLayer, Option<u8>)]) -> OccupancyGrid {
         let mut grid = OccupancyGrid::new();
         for &(rx, ry, eid, layer, sub) in entries {
-            grid.add(rx, ry, eid, layer, sub);
+            grid.add(
+                rx,
+                ry,
+                eid,
+                layer,
+                sub,
+                CellListInsertion::PrependNonBuilding,
+            );
         }
         grid
     }
@@ -657,6 +677,7 @@ mod tests {
             EntityCategory::Infantry,
             true,
             false,
+            false,
         ));
     }
 
@@ -668,6 +689,19 @@ mod tests {
             EntityCategory::Infantry,
             false,
             false,
+            false,
+        ));
+    }
+
+    #[test]
+    fn test_regular_crusher_cannot_crush_low_silhouette_infantry() {
+        assert!(!can_crush(
+            MovementZone::Crusher,
+            false, // omni_crusher
+            EntityCategory::Infantry,
+            true,
+            true, // low_silhouette
+            false,
         ));
     }
 
@@ -678,6 +712,7 @@ mod tests {
             false, // omni_crusher
             EntityCategory::Infantry,
             false,
+            true, // low_silhouette does not gate CrusherAll/Omni-style crush
             false,
         ));
     }
@@ -690,6 +725,7 @@ mod tests {
             EntityCategory::Unit,
             false,
             false,
+            false,
         ));
     }
 
@@ -699,6 +735,7 @@ mod tests {
             MovementZone::CrusherAll,
             true, // omni_crusher
             EntityCategory::Infantry,
+            true,
             true,
             true, // omni_crush_resistant
         ));
@@ -712,6 +749,7 @@ mod tests {
             EntityCategory::Structure,
             true,
             false,
+            false,
         ));
     }
 
@@ -721,6 +759,7 @@ mod tests {
             MovementZone::Crusher,
             false, // omni_crusher
             EntityCategory::Unit,
+            false,
             false,
             false,
         ));
@@ -733,6 +772,7 @@ mod tests {
             false, // omni_crusher
             EntityCategory::Infantry,
             true,
+            false,
             false,
         ));
     }
@@ -836,6 +876,71 @@ mod tests {
         assert!(victims.is_empty());
     }
 
+    #[test]
+    fn test_collect_crush_victims_skips_deployed_uncrushable_infantry() {
+        let mut store = EntityStore::new();
+        let mut inf = infantry(1, 5, 5, 2);
+        inf.deploy_state = Some(crate::sim::deploy::DeployPhase::Deployed);
+        inf.deployed_crushable = false;
+        store.insert(inf);
+
+        let grid = make_occ(&[(5, 5, 1, MovementLayer::Ground, Some(2))]);
+
+        let victims = collect_crush_victims(
+            (5, 5),
+            &grid,
+            MovementLayer::Ground,
+            MovementZone::Crusher,
+            false,
+            &store,
+        );
+        assert!(victims.is_empty());
+    }
+
+    #[test]
+    fn test_collect_crush_victims_keeps_deployed_crushable_infantry_crushable() {
+        let mut store = EntityStore::new();
+        let mut inf = infantry(1, 5, 5, 2);
+        inf.deploy_state = Some(crate::sim::deploy::DeployPhase::Deployed);
+        inf.deployed_crushable = true;
+        store.insert(inf);
+
+        let grid = make_occ(&[(5, 5, 1, MovementLayer::Ground, Some(2))]);
+
+        let victims = collect_crush_victims(
+            (5, 5),
+            &grid,
+            MovementLayer::Ground,
+            MovementZone::Crusher,
+            false,
+            &store,
+        );
+        assert_eq!(victims, vec![1]);
+    }
+
+    #[test]
+    fn test_collect_crush_victims_skips_prone_infantry_for_regular_crusher() {
+        let mut store = EntityStore::new();
+        let mut inf = infantry(1, 5, 5, 2);
+        inf.infantry = Some(InfantryRuntime {
+            fear_level: 50,
+            is_prone: true,
+        });
+        store.insert(inf);
+
+        let grid = make_occ(&[(5, 5, 1, MovementLayer::Ground, Some(2))]);
+
+        let victims = collect_crush_victims(
+            (5, 5),
+            &grid,
+            MovementLayer::Ground,
+            MovementZone::Crusher,
+            false,
+            &store,
+        );
+        assert!(victims.is_empty());
+    }
+
     // -- scatter_blocker tests --
 
     #[test]
@@ -876,7 +981,14 @@ mod tests {
         for &(dx, dy) in &NEIGHBOR_OFFSETS {
             let nx = (1 + dx) as u16;
             let ny = (1 + dy) as u16;
-            occupancy.add(nx, ny, 100, MovementLayer::Ground, None);
+            occupancy.add(
+                nx,
+                ny,
+                100,
+                MovementLayer::Ground,
+                None,
+                CellListInsertion::PrependNonBuilding,
+            );
         }
         let mut rng = SimRng::new(42);
 

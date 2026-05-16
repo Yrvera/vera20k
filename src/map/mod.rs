@@ -16,6 +16,7 @@
 
 pub mod actions;
 pub mod basic;
+pub mod bridge_facts;
 pub mod briefing;
 pub mod cell_tags;
 pub mod entities;
@@ -33,6 +34,8 @@ pub mod terrain;
 pub mod theater;
 pub mod trigger_graph;
 pub mod triggers;
+pub mod tube_facts;
+pub mod tubes;
 pub mod variable_names;
 pub mod waypoints;
 // Future modules — uncomment as implemented:

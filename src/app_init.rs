@@ -40,7 +40,7 @@ use crate::map::triggers::TriggerMap;
 use crate::map::waypoints::{self, Waypoint};
 use crate::render::batch::BatchRenderer;
 use crate::render::bridge_atlas::BridgeAtlas;
-use crate::render::bridge_railing_atlas::BridgeRailingAtlas;
+use crate::render::bridge_railing_atlas::{BridgeRailingAtlas, BridgeRailingTileBases};
 use crate::render::cursor_atlas;
 use crate::render::gpu::GpuContext;
 use crate::render::overlay_atlas::OverlayAtlas;
@@ -318,8 +318,14 @@ pub fn load_map(
         lat_enabled,
         cliff_back,
     );
-    let mut grid: TerrainGrid =
-        terrain::build_terrain_grid_from_resolved(&resolved_terrain, local_bounds);
+    let anchor_variant_table = theater_result
+        .as_ref()
+        .and_then(crate::map::theater::BridgeAnchorVariantTable::from_theater);
+    let mut grid: TerrainGrid = terrain::build_terrain_grid_from_resolved(
+        &resolved_terrain,
+        local_bounds,
+        anchor_variant_table,
+    );
 
     // Build per-cell lighting tint from map [Lighting] section.
     let lighting_config = lighting::parse_lighting(&map_data.ini);
@@ -379,6 +385,16 @@ pub fn load_map(
     // Build height lookup for entity/overlay elevation (shared between subsystems).
     let height_map: BTreeMap<(u16, u16), u8> = resolved_terrain.build_height_map();
     let bridge_height_map: BTreeMap<(u16, u16), u8> = resolved_terrain.build_bridge_height_map();
+
+    let bridge_railing_tile_bases = theater_result
+        .as_ref()
+        .and_then(|td| td.bridge_railing_slope_starts())
+        .map(
+            |(slope_set_pieces_start, slope_set_pieces2_start)| BridgeRailingTileBases {
+                slope_set_pieces_start,
+                slope_set_pieces2_start,
+            },
+        );
 
     // Extract theater palettes for entity/overlay rendering.
     // Move palettes out of TheaterData (no longer needed after tile atlas is built).
@@ -579,6 +595,7 @@ pub fn load_map(
         unit_palette.as_ref(),
         overlay_tiberium_palette.as_ref(),
         rules.as_ref().map(|r| &r.smudge_types),
+        bridge_railing_tile_bases,
     );
 
     if let Some(sim) = &mut simulation {
@@ -673,12 +690,14 @@ pub fn load_map(
                 let add_occupy: &[(i16, i16)] = obj.map(|o| o.add_occupy.as_slice()).unwrap_or(&[]);
                 let remove_occupy: &[(i16, i16)] =
                     obj.map(|o| o.remove_occupy.as_slice()).unwrap_or(&[]);
+                let has_bib: bool = obj.map(|o| o.bib).unwrap_or(false);
                 grid.block_building_footprint(
                     ent.cell_x,
                     ent.cell_y,
                     foundation,
                     add_occupy,
                     remove_occupy,
+                    has_bib,
                 );
             }
         }

@@ -36,6 +36,30 @@ fn test_rules() -> RuleSet {
     RuleSet::from_ini(&ini).expect("test rules should parse")
 }
 
+fn infantry_fire_frame_rules() -> RuleSet {
+    let rules_ini: IniFile = IniFile::from_str(
+        "\
+[InfantryTypes]\n0=E1\n1=E2\n\n\
+[VehicleTypes]\n0=MTNK\n\n\
+[AircraftTypes]\n\n\
+[BuildingTypes]\n\n\
+[E1]\nStrength=125\nArmor=flak\nSpeed=4\nImage=GI\nPrimary=M60\nSecondary=Para\n\n\
+[E2]\nStrength=125\nArmor=flak\nSpeed=4\n\n\
+[MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\n\n\
+[M60]\nDamage=25\nROF=20\nRange=5\nWarhead=SA\n\n\
+[Para]\nDamage=40\nROF=15\nRange=5\nWarhead=AP\n\n\
+[SA]\nVerses=100%,100%,100%,90%,70%,0%,100%,25%,25%,0%,0%\n\n\
+[AP]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,0%,0%\n",
+    );
+    let mut rules = RuleSet::from_ini(&rules_ini).expect("infantry rules should parse");
+    let art_ini = IniFile::from_str(
+        "[GI]\nCrawls=yes\nFireUp=2\nFireProne=3\nSecondaryFire=4\nSecondaryProne=5\n",
+    );
+    let art = crate::rules::art_data::ArtRegistry::from_ini(&art_ini);
+    rules.merge_art_data(&art);
+    rules
+}
+
 fn make_entity(id: u64, type_ref: &str, rx: u16, ry: u16, hp: u16) -> GameEntity {
     let mut e = GameEntity::test_default(id, type_ref, "Test", rx, ry);
     e.health = Health {
@@ -66,7 +90,18 @@ fn make_infantry_entity(id: u64, type_ref: &str, rx: u16, ry: u16, hp: u16) -> G
     e.category = EntityCategory::Infantry;
     e.is_voxel = false;
     e.animation = Some(Animation::new(SequenceKind::Stand));
+    e.infantry = Some(crate::sim::game_entity::InfantryRuntime::new());
     e
+}
+
+fn set_anim_frame(store: &mut EntityStore, id: u64, frame: u16) {
+    store
+        .get_mut(id)
+        .unwrap()
+        .animation
+        .as_mut()
+        .unwrap()
+        .frame_index = frame;
 }
 
 #[test]
@@ -138,12 +173,38 @@ fn test_tick_combat_applies_damage() {
 }
 
 #[test]
+fn combat_damage_landed_applies_infantry_fear() {
+    let rules = test_rules();
+    let mut store = EntityStore::new();
+    store.insert(make_entity(1, "MTNK", 5, 5, 300));
+    store.insert(make_infantry_entity(2, "E1", 8, 5, 125));
+    let mut interner = test_interner();
+    issue_attack_command(&mut store, 1, 2, None, &interner);
+
+    tick_combat(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        0,
+        100,
+        0,
+    );
+
+    assert_eq!(
+        store.get(2).unwrap().infantry.as_ref().unwrap().fear_level,
+        100
+    );
+}
+
+#[test]
 fn ic_target_takes_zero_damage() {
     use crate::sim::superweapon::invulnerability::{InvulnKind, InvulnerabilityState};
     let rules: RuleSet = test_rules();
     let mut store = EntityStore::new();
     store.insert(make_entity(1, "MTNK", 5, 5, 300));
-    store.insert(make_entity(2, "MTNK", 8, 5, 300));
+    store.insert(make_infantry_entity(2, "E1", 8, 5, 125));
     let mut interner = test_interner();
     issue_attack_command(&mut store, 1, 2, None, &interner);
     // Apply IronCurtain invulnerability to the target.
@@ -169,6 +230,15 @@ fn ic_target_takes_zero_damage() {
         store.get(2).expect("target alive").health.current,
         initial_hp,
         "IC-invulnerable target must take zero damage"
+    );
+    assert!(
+        store
+            .get(2)
+            .unwrap()
+            .infantry
+            .as_ref()
+            .is_some_and(|inf| inf.fear_level == 0),
+        "invulnerable targets should not gain fear because no damage lands"
     );
 }
 
@@ -403,6 +473,226 @@ fn test_infantry_vs_heavy_armor() {
 }
 
 #[test]
+fn infantry_standing_fire_waits_for_fire_frame() {
+    let rules = infantry_fire_frame_rules();
+    let mut store = EntityStore::new();
+    store.insert(make_infantry_entity(1, "E1", 5, 5, 125));
+    store.insert(make_infantry_entity(2, "E2", 8, 5, 125));
+    let mut interner = test_interner();
+    issue_attack_command(&mut store, 1, 2, None, &interner);
+
+    tick_combat(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        0,
+        100,
+        0,
+    );
+
+    assert_eq!(store.get(2).unwrap().health.current, 125);
+    let attack = store.get(1).unwrap().attack_target.as_ref().unwrap();
+    assert_eq!(
+        attack.pending_infantry_fire.unwrap(),
+        PendingInfantryFire {
+            sequence: SequenceKind::Attack,
+            fire_frame: 2
+        }
+    );
+    assert_eq!(
+        store.get(1).unwrap().animation.as_ref().unwrap().sequence,
+        SequenceKind::Attack
+    );
+
+    set_anim_frame(&mut store, 1, 1);
+    tick_combat(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        1,
+        100,
+        0,
+    );
+    assert_eq!(store.get(2).unwrap().health.current, 125);
+
+    set_anim_frame(&mut store, 1, 2);
+    tick_combat(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        2,
+        100,
+        0,
+    );
+    assert_eq!(store.get(2).unwrap().health.current, 100);
+    assert!(
+        store
+            .get(1)
+            .unwrap()
+            .attack_target
+            .as_ref()
+            .unwrap()
+            .pending_infantry_fire
+            .is_none()
+    );
+}
+
+#[test]
+fn prone_infantry_uses_prone_fire_sequence_and_frame() {
+    let rules = infantry_fire_frame_rules();
+    let mut store = EntityStore::new();
+    let mut attacker = make_infantry_entity(1, "E1", 5, 5, 125);
+    attacker.infantry.as_mut().unwrap().is_prone = true;
+    attacker.animation = Some(Animation::new(SequenceKind::Prone));
+    store.insert(attacker);
+    store.insert(make_infantry_entity(2, "E2", 8, 5, 125));
+    let mut interner = test_interner();
+    issue_attack_command(&mut store, 1, 2, None, &interner);
+
+    tick_combat(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        0,
+        100,
+        0,
+    );
+    let attack = store.get(1).unwrap().attack_target.as_ref().unwrap();
+    assert_eq!(
+        attack.pending_infantry_fire.unwrap(),
+        PendingInfantryFire {
+            sequence: SequenceKind::FireProne,
+            fire_frame: 3
+        }
+    );
+    assert_eq!(store.get(2).unwrap().health.current, 125);
+
+    set_anim_frame(&mut store, 1, 2);
+    tick_combat(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        1,
+        100,
+        0,
+    );
+    assert_eq!(store.get(2).unwrap().health.current, 125);
+
+    set_anim_frame(&mut store, 1, 3);
+    tick_combat(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        2,
+        100,
+        0,
+    );
+    assert_eq!(store.get(2).unwrap().health.current, 100);
+}
+
+#[test]
+fn deployed_gi_uses_deployed_fire_visual_with_target_driven_weapon() {
+    let rules = infantry_fire_frame_rules();
+    let mut store = EntityStore::new();
+    let mut attacker = make_infantry_entity(1, "E1", 5, 5, 125);
+    attacker.deploy_state = Some(crate::sim::deploy::DeployPhase::Deployed);
+    attacker.animation = Some(Animation::new(SequenceKind::Deployed));
+    store.insert(attacker);
+    store.insert(make_entity(2, "MTNK", 8, 5, 300));
+    let mut interner = test_interner();
+    issue_attack_command(&mut store, 1, 2, None, &interner);
+
+    tick_combat(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        0,
+        100,
+        0,
+    );
+    let attack = store.get(1).unwrap().attack_target.as_ref().unwrap();
+    assert_eq!(
+        attack.pending_infantry_fire.unwrap(),
+        PendingInfantryFire {
+            sequence: SequenceKind::DeployedFire,
+            fire_frame: 5
+        }
+    );
+    assert_eq!(store.get(2).unwrap().health.current, 300);
+
+    set_anim_frame(&mut store, 1, 5);
+    tick_combat(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        1,
+        100,
+        0,
+    );
+    assert_eq!(
+        store.get(2).unwrap().health.current,
+        260,
+        "heavy target should force secondary Para damage while visual uses DeployedFire"
+    );
+}
+
+#[test]
+fn delayed_infantry_fire_cancels_when_target_dies_before_fire_frame() {
+    let rules = infantry_fire_frame_rules();
+    let mut store = EntityStore::new();
+    store.insert(make_infantry_entity(1, "E1", 5, 5, 125));
+    store.insert(make_infantry_entity(2, "E2", 8, 5, 125));
+    let mut interner = test_interner();
+    issue_attack_command(&mut store, 1, 2, None, &interner);
+
+    tick_combat(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        0,
+        100,
+        0,
+    );
+    store.get_mut(2).unwrap().health.current = 0;
+    set_anim_frame(&mut store, 1, 2);
+
+    tick_combat(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        1,
+        100,
+        0,
+    );
+
+    assert_eq!(store.get(2).unwrap().health.current, 0);
+    assert!(
+        store.get(1).unwrap().attack_target.is_none(),
+        "dead target should cancel delayed shot instead of spawning stale damage"
+    );
+}
+
+#[test]
 fn test_prone_infantry_takes_scaled_direct_damage() {
     let rules = RuleSet::from_ini(&IniFile::from_str(
         "[InfantryTypes]\n0=E1\n1=E2\n\n\
@@ -422,7 +712,7 @@ fn test_prone_infantry_takes_scaled_direct_damage() {
     let mut store = EntityStore::new();
     store.insert(make_entity(1, "MTNK", 5, 5, 300));
     let mut target = make_infantry_entity(2, "E2", 8, 5, 125);
-    target.animation = Some(Animation::new(SequenceKind::Prone));
+    target.infantry.as_mut().unwrap().is_prone = true;
     store.insert(target);
 
     let mut interner = test_interner();
@@ -466,7 +756,7 @@ fn test_prone_infantry_takes_scaled_aoe_damage() {
     let mut store = EntityStore::new();
     store.insert(make_entity(1, "MTNK", 5, 5, 300));
     let mut target = make_infantry_entity(2, "E2", 8, 5, 125);
-    target.animation = Some(Animation::new(SequenceKind::Prone));
+    target.infantry.as_mut().unwrap().is_prone = true;
     store.insert(target);
 
     let mut interner = test_interner();

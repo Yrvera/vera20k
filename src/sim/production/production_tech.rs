@@ -622,6 +622,47 @@ pub fn building_footprint_cells(
     cells.into_iter().collect()
 }
 
+/// Cells that block unit movement, given the full footprint and whether the
+/// building has a bib (`Bib=yes` in rules.ini).
+///
+/// For non-bib buildings, this is just the full footprint. For `Bib=yes`
+/// buildings, the east-edge column of the footprint is excluded — those cells
+/// are unit-passable in the original engine via the per-occupant-chain bib
+/// relaxation in `Can_Enter_Cell` (probes the east neighbor; if it isn't part
+/// of the same building, the building stops blocking the cell).
+///
+/// "East edge" = any cell in `footprint` whose east neighbor `(x+1, y)` is
+/// outside the footprint. Works for any foundation shape: rectangles,
+/// AddOccupy/RemoveOccupy-adjusted footprints, and the SW-outlier AddOccupy
+/// rows used by stock refineries.
+///
+/// Placement validation, ownership marking, and selection geometry continue to
+/// use the full footprint (`building_footprint_cells`) — only pathfinding /
+/// occupancy / unit-vs-building blocking should use this filtered set.
+pub fn building_movement_blocking_cells(
+    footprint: &[(u16, u16)],
+    has_bib: bool,
+) -> Vec<(u16, u16)> {
+    if !has_bib {
+        return footprint.to_vec();
+    }
+    use std::collections::BTreeSet;
+    let set: BTreeSet<(u16, u16)> = footprint.iter().copied().collect();
+    footprint
+        .iter()
+        .copied()
+        .filter(|&(x, y)| {
+            let east = x.checked_add(1).map(|nx| (nx, y));
+            // East-edge cell = no east neighbor in footprint. Drop it.
+            match east {
+                Some(neighbor) => set.contains(&neighbor),
+                // u16 overflow at world east edge — treat as east-edge (drop).
+                None => false,
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod build_time_integer_tests {
     use super::*;
@@ -715,5 +756,51 @@ mod footprint_tests {
     fn deduplication() {
         let cells = building_footprint_cells(10, 20, "2x2", &[(0, 0)], &[]);
         assert_eq!(cells.len(), 4);
+    }
+
+    #[test]
+    fn movement_blocking_no_bib_keeps_full_footprint() {
+        let footprint = building_footprint_cells(10, 20, "4x3", &[], &[]);
+        let blocking = building_movement_blocking_cells(&footprint, false);
+        assert_eq!(blocking.len(), footprint.len());
+    }
+
+    #[test]
+    fn movement_blocking_with_bib_drops_east_edge_rectangle() {
+        // Plain 4x3 with bib → east column (x = 13) drops.
+        let footprint = building_footprint_cells(10, 20, "4x3", &[], &[]);
+        let blocking = building_movement_blocking_cells(&footprint, true);
+        // 12 base cells - 3 east-edge column (13, 20), (13, 21), (13, 22) = 9.
+        assert_eq!(blocking.len(), 9);
+        assert!(!blocking.contains(&(13, 20)));
+        assert!(!blocking.contains(&(13, 21)));
+        assert!(!blocking.contains(&(13, 22)));
+        assert!(blocking.contains(&(12, 20)));
+        assert!(blocking.contains(&(10, 22)));
+    }
+
+    #[test]
+    fn movement_blocking_with_bib_garefn_drops_dock_row_too() {
+        // GAREFN-shaped: 4x3 + AddOccupy(-1,0), (-1,-1) - RemoveOccupy(3,1).
+        // Full footprint = 13 cells. East-edge cells with bib relaxation:
+        //   (-1, -1) east (0, -1) outside → drop
+        //   (2,  1) east (3,  1) outside (RemoveOccupy'd) → drop
+        //   (3,  0) east (4,  0) outside → drop
+        //   (3,  2) east (4,  2) outside → drop
+        // 13 - 4 = 9 blocking cells.
+        let footprint = building_footprint_cells(10, 20, "4x3", &[(-1, 0), (-1, -1)], &[(3, 1)]);
+        assert_eq!(footprint.len(), 13);
+        let blocking = building_movement_blocking_cells(&footprint, true);
+        assert_eq!(blocking.len(), 9);
+        // (9, 19) = AddOccupy SW outlier with no east neighbor in footprint → dropped.
+        assert!(!blocking.contains(&(9, 19)));
+        // (12, 21) = west of dock pad, east neighbor (13, 21) is RemoveOccupy'd → dropped.
+        assert!(!blocking.contains(&(12, 21)));
+        // (13, 20) = east edge row 0 → dropped.
+        assert!(!blocking.contains(&(13, 20)));
+        // (9, 20) = AddOccupy (-1, 0), east neighbor (10, 20) IS in footprint → kept.
+        assert!(blocking.contains(&(9, 20)));
+        // (10, 20) origin cell, east neighbor (11, 20) IS in footprint → kept.
+        assert!(blocking.contains(&(10, 20)));
     }
 }

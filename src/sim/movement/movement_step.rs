@@ -19,10 +19,11 @@ use crate::sim::movement::movement_blocked::handle_blocked_tick;
 use crate::sim::movement::movement_bridge::resolve_cell_transition_bridge_state;
 use crate::sim::movement::movement_occupancy::{
     DeferredCellCheck, detect_deferred_cell_check, naval_terrain_diag,
+    resolve_runtime_can_enter_layers,
 };
 use crate::sim::movement::movement_reservation::reserve_destination_after_transition;
 use crate::sim::movement::turret::{rot_to_facing_delta, shortest_rotation};
-use crate::sim::occupancy::OccupancyGrid;
+use crate::sim::occupancy::{CellListInsertion, OccupancyGrid};
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
 use crate::sim::rng::SimRng;
@@ -423,9 +424,7 @@ pub(super) fn process_cell_crossings(
     resolved_terrain: Option<&ResolvedTerrainGrid>,
     entity_cost_grid: Option<&TerrainCostGrid>,
     mover_entity_blocks: Option<&BTreeSet<(u16, u16)>>,
-    mover_entity_block_map: Option<
-        &std::collections::HashMap<(u16, u16), crate::sim::pathfinding::EntityBlockEntry>,
-    >,
+    mover_entity_block_map: Option<&crate::sim::pathfinding::LayeredEntityBlockMap>,
     occupancy: &mut OccupancyGrid,
     stats: &mut MovementTickStats,
     finished_entities: &mut Vec<u64>,
@@ -438,6 +437,7 @@ pub(super) fn process_cell_crossings(
     let mut deferred_cell_check: Option<DeferredCellCheck> = None;
     let mut pending_bridge_update: super::movement_bridge::BridgeStateUpdate =
         super::movement_bridge::BridgeStateUpdate::Unchanged;
+    let mut projected_on_bridge_state = snap.on_bridge;
     let mut aborted_for_stuck: bool = false;
 
     loop {
@@ -572,7 +572,7 @@ pub(super) fn process_cell_crossings(
             break;
         }
 
-        // --- Cliff detection (Can_Enter_Cell code 6) ---
+        // --- Cliff detection ---
         // Original engine: if height difference >= 3 levels and not a
         // bridge ramp, treat as cliff. Catches stale paths after terrain
         // changes, bump/scatter toward cliff edges, etc.
@@ -629,13 +629,25 @@ pub(super) fn process_cell_crossings(
         // Occupancy check: vehicles defer to crush/bump/attack handler,
         // infantry defer to sub-cell/attack handler. Both break out of the
         // loop to release the mutable entity borrow for blocker lookups.
+        let layer_context = resolve_runtime_can_enter_layers(
+            path_grid,
+            (position.rx, position.ry),
+            (nx, ny),
+            next_layer,
+            position.z,
+        );
+        let current_object_list_layer = if projected_on_bridge_state {
+            MovementLayer::Bridge
+        } else {
+            MovementLayer::Ground
+        };
         if let Some(check) = detect_deferred_cell_check(
             snap.category,
             target.bypass_grid,
-            next_layer,
+            layer_context,
             (nx, ny),
             (position.rx, position.ry),
-            active_layer,
+            current_object_list_layer,
             occupancy,
         ) {
             deferred_cell_check = Some(check);
@@ -656,13 +668,6 @@ pub(super) fn process_cell_crossings(
             ny,
             category == EntityCategory::Infantry,
         );
-        // Update occupancy grid: move entity from old cell to new cell.
-        // Uses current sub_cell (from old cell). For infantry, reserve_destination
-        // below may allocate a new sub-cell and correct it via update_sub_cell.
-        occupancy.move_entity(old_rx, old_ry, nx, ny, entity_id, active_layer, *sub_cell);
-        // Bridge state resolution: apply the on_bridge cell-flag predicate.
-        // Returns ONLY a BridgeStateUpdate — loco.layer continues to follow
-        // A*'s path_layers (next_layer was set above from the path).
         let bridge_update = resolve_cell_transition_bridge_state(
             position,
             path_grid,
@@ -670,7 +675,33 @@ pub(super) fn process_cell_crossings(
             (nx, ny),
             next_layer,
         );
-        pending_bridge_update = bridge_update;
+        projected_on_bridge_state =
+            super::movement_bridge::projected_on_bridge(projected_on_bridge_state, bridge_update);
+        if !matches!(
+            bridge_update,
+            super::movement_bridge::BridgeStateUpdate::Unchanged
+        ) {
+            pending_bridge_update = bridge_update;
+        }
+        let occupancy_layer = if projected_on_bridge_state {
+            MovementLayer::Bridge
+        } else {
+            MovementLayer::Ground
+        };
+        // Update occupancy grid: move entity from old cell to new cell.
+        // Uses current sub_cell (from old cell). For infantry, reserve_destination
+        // below may allocate a new sub-cell and correct it via update_sub_cell.
+        let insertion = CellListInsertion::from_category(category);
+        occupancy.move_entity(
+            old_rx,
+            old_ry,
+            nx,
+            ny,
+            entity_id,
+            occupancy_layer,
+            *sub_cell,
+            insertion,
+        );
         active_layer = next_layer;
         if let Some(loco) = locomotor {
             loco.layer = next_layer;

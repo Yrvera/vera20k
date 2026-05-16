@@ -61,6 +61,8 @@ pub struct ArtEntry {
     /// Infantry animation sequence definition name (e.g., "ConSequence").
     /// Points to a `[ConSequence]`-style section in art.ini with frame layouts.
     pub sequence: Option<String>,
+    /// Infantry `Crawls=` art flag. Merged into ObjectType for sim stance speed.
+    pub crawls: bool,
     /// Muzzle offset for primary weapon fire (from art.ini `PrimaryFireFLH=`).
     pub primary_fire_flh: Flh,
     /// Muzzle offset for secondary weapon fire (from art.ini `SecondaryFireFLH=`).
@@ -82,6 +84,15 @@ pub struct ArtEntry {
     /// Weapon discharge delay in animation frames (from `FireUp=`, default 0).
     /// Distinct from the `FireUp` sequence action in infantry sequences.
     pub fire_up: u8,
+    /// Infantry primary prone discharge frame (`FireProne=`).
+    /// Defaults to `FireUp` when absent, matching the InfantryType read fallback.
+    pub fire_prone: u8,
+    /// Infantry secondary standing discharge frame (`SecondaryFire=`).
+    /// Defaults to `FireUp` when absent.
+    pub secondary_fire: u8,
+    /// Infantry secondary prone/deploy discharge frame (`SecondaryProne=`).
+    /// Defaults to `SecondaryFire` when absent.
+    pub secondary_prone: u8,
     /// Extra ambient light added to this building's cell (ExtraLight= in art.ini).
     /// Positive = brighten, negative = darken. Scale: 1000 ≈ 1.0 brightness unit.
     /// Retail values: GADPSA=350, GAICBM=-100.
@@ -241,6 +252,7 @@ impl ArtRegistry {
                 .get("Sequence")
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_string());
+            let crawls = section.get_bool("Crawls").unwrap_or(false);
             let primary_fire_flh: Flh = parse_flh(section.get("PrimaryFireFLH"));
             let secondary_fire_flh: Flh = parse_flh(section.get("SecondaryFireFLH"));
             let elite_primary_fire_flh: Option<Flh> = section
@@ -264,6 +276,18 @@ impl ArtRegistry {
                 .get_i32("FireUp")
                 .map(|v| v.max(0) as u8)
                 .unwrap_or(0);
+            let fire_prone: u8 = section
+                .get_i32("FireProne")
+                .map(|v| v.max(0) as u8)
+                .unwrap_or(fire_up);
+            let secondary_fire: u8 = section
+                .get_i32("SecondaryFire")
+                .map(|v| v.max(0) as u8)
+                .unwrap_or(fire_up);
+            let secondary_prone: u8 = section
+                .get_i32("SecondaryProne")
+                .map(|v| v.max(0) as u8)
+                .unwrap_or(secondary_fire);
             let extra_light: i32 = section.get_i32("ExtraLight").unwrap_or(0);
             let queueing_cell: Option<(u16, u16)> = section.get("QueueingCell").and_then(|s| {
                 let mut parts = s.split(',');
@@ -388,6 +412,7 @@ impl ArtRegistry {
                     bib_shape,
                     palette,
                     sequence,
+                    crawls,
                     primary_fire_flh,
                     secondary_fire_flh,
                     elite_primary_fire_flh,
@@ -397,6 +422,9 @@ impl ArtRegistry {
                     standing_frames,
                     shp_facings,
                     fire_up,
+                    fire_prone,
+                    secondary_fire,
+                    secondary_prone,
                     extra_light,
                     queueing_cell,
                     pads,

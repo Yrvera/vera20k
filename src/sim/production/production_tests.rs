@@ -15,6 +15,7 @@ use crate::rules::object_type::ObjectCategory;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::components::Health;
 use crate::sim::miner::{ResourceNode, ResourceType};
+use crate::sim::occupancy::CellListInsertion;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::world::Simulation;
 
@@ -274,6 +275,7 @@ pub(super) fn water_terrain(width: u16, height: u16) -> ResolvedTerrainGrid {
                 filled_clear: false,
                 tileset_index: Some(0),
                 land_type: 4,
+                yr_cell_land_type: 4,
                 slope_type: 0,
                 template_height: 0,
                 render_offset_x: 0,
@@ -301,8 +303,12 @@ pub(super) fn water_terrain(width: u16, height: u16) -> ResolvedTerrainGrid {
                 bridge_transition: false,
                 bridge_deck_level: 0,
                 bridge_layer: None,
+                bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+                tube_index: None,
                 radar_left: [0, 0, 0],
                 radar_right: [0, 0, 0],
+                has_damaged_data: false,
+                bridgehead_anchor_class_at_load: None,
             });
         }
     }
@@ -534,6 +540,7 @@ pub(super) fn spawn_structure(
         sid,
         crate::sim::movement::locomotor::MovementLayer::Ground,
         None,
+        CellListInsertion::AppendBuilding,
     );
     if sim.next_stable_entity_id <= sid {
         sim.next_stable_entity_id = sid + 1;

@@ -311,6 +311,12 @@ pub struct ObjectType {
     pub harvester: bool,
     /// Whether this structure accepts ore/gem delivery (Refinery=yes in rules.ini).
     pub refinery: bool,
+    /// Whether this building has a bib (`Bib=yes` in rules.ini). When true, the
+    /// east-edge column of the foundation footprint is unit-passable — units
+    /// can drive across that strip even though the cells remain part of the
+    /// building's placement / ownership footprint. Matches the original
+    /// engine's HasBib relaxation in the per-cell occupant chain check.
+    pub bib: bool,
     /// Bonus credits storage for refineries (Storage= in rules.ini).
     /// Refineries typically have Storage=300 — added to owner credits on placement.
     pub storage: i32,
@@ -360,6 +366,24 @@ pub struct ObjectType {
     /// Whether this infantry is a slave unit (Slaved=yes in rules.ini).
     /// Slave units are bound to a master (Slave Miner) and have restricted AI.
     pub slaved: bool,
+    /// `Fearless=yes` on InfantryType. Suppresses fear/prone panic changes.
+    pub fearless: bool,
+    /// `Fraidycat=yes` on InfantryType. First fear hit immediately maxes fear.
+    pub fraidycat: bool,
+    /// `Crawls=yes` from art.ini. Controls the prone movement speed branch.
+    pub crawls: bool,
+    /// Primary standing infantry projectile/damage frame from art.ini `FireUp=`.
+    pub fire_up_frame: u8,
+    /// Primary prone infantry projectile/damage frame from art.ini `FireProne=`.
+    pub fire_prone_frame: u8,
+    /// Secondary standing infantry projectile/damage frame from art.ini `SecondaryFire=`.
+    pub secondary_fire_frame: u8,
+    /// Secondary prone/deploy infantry projectile/damage frame from art.ini `SecondaryProne=`.
+    pub secondary_prone_frame: u8,
+    /// Whether VeteranAbilities includes FEARLESS for this type.
+    pub veteran_fearless: bool,
+    /// Whether EliteAbilities includes FEARLESS for this type.
+    pub elite_fearless: bool,
     /// Frames between bale pickups for slave harvesters (HarvestRate= in rules.ini). Default 0.
     pub harvest_rate: u32,
     /// AI flag: this unit earns money (ResourceGatherer=yes in rules.ini). Default false.
@@ -420,6 +444,9 @@ pub struct ObjectType {
     /// Only specific infantry (GI, GGI, SEAL, Rocketeer, Lunar) and some walls
     /// have this set to true.
     pub crushable: bool,
+    /// Whether deployed infantry remains crushable by regular crushers.
+    /// Defaults to true; stock Guardian GI overrides this with `DeployedCrushable=no`.
+    pub deployed_crushable: bool,
     /// When true, this building cannot receive ForceShield invulnerability.
     /// From `NoForceShield=yes` in rulesmd.ini.
     pub no_force_shield: bool,
@@ -840,6 +867,7 @@ impl ObjectType {
             radar_visible: section.get_bool("RadarVisible").unwrap_or(false),
             harvester: section.get_bool("Harvester").unwrap_or(false),
             refinery: section.get_bool("Refinery").unwrap_or(false),
+            bib: section.get_bool("Bib").unwrap_or(false),
             storage: section.get_i32("Storage").unwrap_or(0),
             free_unit: section.get("FreeUnit").map(|s| s.to_string()),
             dock: section
@@ -862,6 +890,15 @@ impl ObjectType {
             slave_regen_rate: section.get_i32("SlaveRegenRate").unwrap_or(0).max(0) as u32,
             slave_reload_rate: section.get_i32("SlaveReloadRate").unwrap_or(0).max(0) as u32,
             slaved: section.get_bool("Slaved").unwrap_or(false),
+            fearless: section.get_bool("Fearless").unwrap_or(false),
+            fraidycat: section.get_bool("Fraidycat").unwrap_or(false),
+            crawls: false,
+            fire_up_frame: 0,
+            fire_prone_frame: 0,
+            secondary_fire_frame: 0,
+            secondary_prone_frame: 0,
+            veteran_fearless: ability_list_has(section.get_list("VeteranAbilities"), "FEARLESS"),
+            elite_fearless: ability_list_has(section.get_list("EliteAbilities"), "FEARLESS"),
             harvest_rate: section.get_i32("HarvestRate").unwrap_or(0).max(0) as u32,
             resource_gatherer: section.get_bool("ResourceGatherer").unwrap_or(false),
             resource_destination: section.get_bool("ResourceDestination").unwrap_or(false),
@@ -903,6 +940,7 @@ impl ObjectType {
 
             // Crush properties -- default false for all types.
             crushable: section.get_bool("Crushable").unwrap_or(false),
+            deployed_crushable: section.get_bool("DeployedCrushable").unwrap_or(true),
             no_force_shield: section.get_bool("NoForceShield").unwrap_or(false),
             omni_crusher: section.get_bool("OmniCrusher").unwrap_or(false),
             omni_crush_resistant: section.get_bool("OmniCrushResistant").unwrap_or(false),
@@ -1082,6 +1120,12 @@ fn parse_ivec3_offset(raw: &str) -> IVec3 {
         .and_then(|s| s.parse::<i32>().ok())
         .unwrap_or(0);
     IVec3::new(x, y, z)
+}
+
+fn ability_list_has(list: Option<Vec<&str>>, needle: &str) -> bool {
+    list.unwrap_or_default()
+        .into_iter()
+        .any(|ability| ability.eq_ignore_ascii_case(needle))
 }
 
 /// Parse a CSV string list, trimming each entry and dropping empties. Returns
@@ -1598,6 +1642,33 @@ mod tests {
             parse_csv_string_list(Some(" A , B , ,C ")),
             vec!["A".to_string(), "B".to_string(), "C".to_string()]
         );
+    }
+
+    #[test]
+    fn parses_infantry_fear_flags_and_fearless_abilities() {
+        let ini = IniFile::from_str(
+            "[E1]\nFearless=yes\nFraidycat=yes\nVeteranAbilities=FEARLESS\nEliteAbilities=SELF_HEAL,FEARLESS\n",
+        );
+        let section = ini.section("E1").unwrap();
+        let obj = ObjectType::from_ini_section("E1", section, ObjectCategory::Infantry);
+        assert!(obj.fearless);
+        assert!(obj.fraidycat);
+        assert!(!obj.crawls);
+        assert!(obj.veteran_fearless);
+        assert!(obj.elite_fearless);
+    }
+
+    #[test]
+    fn parses_deployed_crushable_with_default_yes() {
+        let ini = IniFile::from_str("[E1]\nCrushable=yes\n");
+        let section = ini.section("E1").unwrap();
+        let obj = ObjectType::from_ini_section("E1", section, ObjectCategory::Infantry);
+        assert!(obj.deployed_crushable);
+
+        let ini = IniFile::from_str("[GGI]\nCrushable=yes\nDeployedCrushable=no\n");
+        let section = ini.section("GGI").unwrap();
+        let obj = ObjectType::from_ini_section("GGI", section, ObjectCategory::Infantry);
+        assert!(!obj.deployed_crushable);
     }
 
     #[test]
