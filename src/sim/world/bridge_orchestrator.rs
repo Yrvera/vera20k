@@ -707,7 +707,7 @@ mod tests {
         AirMovePhase, GroundMovePhase, LocomotorState, MovementLayer,
     };
     use crate::sim::occupancy::CellListInsertion;
-    use crate::util::fixed_math::{SimFixed, SIM_ZERO};
+    use crate::util::fixed_math::{SIM_ZERO, SimFixed};
 
     /// Build a single-cell terrain grid where (5,5) is a bridge deck at
     /// `deck_level`, ground level=0, water below (`is_water=true`,

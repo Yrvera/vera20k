@@ -21,8 +21,8 @@
 //! - Part of sim/ — depends on sim/bump_crush, sim/entity_store, sim/locomotor,
 //!   sim/pathfinding, map/entities, map/houses, rules/locomotor_type.
 
-use super::terrain_cost::TerrainCostGrid;
 use super::PathGrid;
+use super::terrain_cost::TerrainCostGrid;
 use crate::map::entities::EntityCategory;
 use crate::map::houses::{self, HouseAllianceMap};
 use crate::rules::locomotor_type::{LocomotorKind, MovementZone};

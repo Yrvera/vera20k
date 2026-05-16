@@ -26,7 +26,7 @@ use crate::sim::pathfinding::{BridgeTraversalInput, PathGrid};
 use crate::sim::rng::SimRng;
 
 use super::{
-    MovementConfig, MovementTickStats, MoverSnapshot, PathfindingContext, PATH_STUCK_INIT,
+    MovementConfig, MovementTickStats, MoverSnapshot, PATH_STUCK_INIT, PathfindingContext,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

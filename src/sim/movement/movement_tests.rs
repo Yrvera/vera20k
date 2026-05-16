@@ -11,7 +11,7 @@ use crate::sim::intern::test_interner;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::occupancy::{CellListInsertion, OccupancyGrid};
 use crate::sim::rng::SimRng;
-use crate::util::fixed_math::{SimFixed, SIM_ZERO};
+use crate::util::fixed_math::{SIM_ZERO, SimFixed};
 
 // --- Facing calculation tests ---
 // Cell deltas map directly to screen-relative RA2 DirStruct values:
@@ -1432,7 +1432,7 @@ use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
 use crate::sim::components::BridgeOccupancy;
 use crate::sim::movement::locomotor::{AirMovePhase, GroundMovePhase, LocomotorState};
 use crate::sim::movement::tick_movement_with_grid;
-use crate::sim::pathfinding::{terrain_cost::TerrainCostGrid, PathGrid};
+use crate::sim::pathfinding::{PathGrid, terrain_cost::TerrainCostGrid};
 use crate::util::fixed_math::SIM_ONE;
 use std::collections::BTreeMap;
 

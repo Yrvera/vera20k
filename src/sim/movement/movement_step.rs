@@ -18,24 +18,24 @@ use crate::sim::movement::locomotor::{GroundMovePhase, LocomotorState, MovementL
 use crate::sim::movement::movement_blocked::handle_blocked_tick;
 use crate::sim::movement::movement_bridge::resolve_cell_transition_bridge_state;
 use crate::sim::movement::movement_occupancy::{
-    detect_deferred_cell_check, naval_terrain_diag, resolve_runtime_can_enter_layers,
-    DeferredCellCheck,
+    DeferredCellCheck, detect_deferred_cell_check, naval_terrain_diag,
+    resolve_runtime_can_enter_layers,
 };
 use crate::sim::movement::movement_reservation::reserve_destination_after_transition;
 use crate::sim::movement::turret::{rot_to_facing_delta, shortest_rotation};
 use crate::sim::occupancy::{CellListInsertion, OccupancyGrid};
-use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
 use crate::sim::pathfinding::PathGrid;
+use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
 use crate::sim::rng::SimRng;
 use crate::util::fixed_math::{
-    facing_from_delta_int as facing_from_delta, fixed_distance, SimFixed, SIM_HALF, SIM_ONE,
-    SIM_ZERO,
+    SIM_HALF, SIM_ONE, SIM_ZERO, SimFixed, facing_from_delta_int as facing_from_delta,
+    fixed_distance,
 };
 use crate::util::lepton::CELL_CENTER_LEPTON;
 
 use super::{
-    MovementConfig, MovementTickStats, MoverSnapshot, PathfindingContext, CLIFF_HEIGHT_THRESHOLD,
-    PATH_STUCK_INIT,
+    CLIFF_HEIGHT_THRESHOLD, MovementConfig, MovementTickStats, MoverSnapshot, PATH_STUCK_INIT,
+    PathfindingContext,
 };
 
 pub(super) fn apply_cell_transition_remainder(
