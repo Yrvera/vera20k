@@ -366,6 +366,7 @@ impl Simulation {
                 0u8.hash(hasher);
             }
             entity.on_bridge.hash(hasher);
+            entity.low_bridge_tube_state.hash(hasher);
 
             if let Some(ref inv) = entity.invulnerability {
                 1u8.hash(hasher);
@@ -591,6 +592,52 @@ mod particle_hash_tests {
             sim_b.state_hash(),
             "terrain_spawners must affect state hash",
         );
+    }
+}
+
+#[cfg(test)]
+mod tube_movement_hash_tests {
+    use super::Simulation;
+    use crate::map::tube_facts::TubeId;
+    use crate::sim::components::Health;
+    use crate::sim::game_entity::GameEntity;
+    use crate::sim::movement::tube_movement::{LowBridgeTubeMovementState, LowBridgeTubePhase};
+
+    #[test]
+    fn active_low_bridge_tube_state_changes_hash() {
+        let mut sim_a = Simulation::new();
+        let mut sim_b = Simulation::new();
+        let owner = sim_a.interner.intern("Allies");
+        let type_ref = sim_a.interner.intern("MTNK");
+        let mut entity_a = GameEntity::new(
+            1,
+            0,
+            0,
+            0,
+            0,
+            owner,
+            Health {
+                current: 100,
+                max: 100,
+            },
+            type_ref,
+            crate::map::entities::EntityCategory::Unit,
+            0,
+            5,
+            true,
+        );
+        let entity_b = entity_a.clone();
+        entity_a.low_bridge_tube_state = Some(LowBridgeTubeMovementState {
+            tube_id: TubeId(3),
+            cursor: 1,
+            entry: (0, 0),
+            exit: (4, 0),
+            phase: LowBridgeTubePhase::Traversing,
+        });
+        sim_a.entities.insert(entity_a);
+        sim_b.entities.insert(entity_b);
+
+        assert_ne!(sim_a.state_hash(), sim_b.state_hash());
     }
 }
 

@@ -48,18 +48,31 @@ pub enum CellEntryResult {
     Crushable { victims: Vec<u64> },
     /// Code 2: Blocked by a moving friendly unit. Wait, then repath.
     TemporaryBlock { blocker_id: u64 },
-    /// Code 3: Bridge ramp transition. Adjust Z, enter with elevation change.
-    /// Current implementation still treats this as Clear because bridge-layer state
-    /// handling is centralized in movement_bridge.rs.
-    BridgeRamp,
-    /// Code 4: Friendly stationary unit occupying. Try bump/scatter, or wait.
-    OccupiedFriendly { blocker_id: u64 },
+    /// Code 3: Allied building/scatter-required soft block.
+    ScatterRequired { blocker_id: Option<u64> },
+    /// Code 4: Friendly wall/overlay soft block.
+    FriendlyWall,
     /// Code 5: Enemy unit occupying. Attack blocker while waiting.
     OccupiedEnemy { blocker_id: u64 },
-    /// Code 6: Cliff or steep elevation change. Repath or stop.
-    Cliff,
+    /// Code 6: Friendly stationary non-building occupant.
+    FriendlyStationary { blocker_id: u64 },
     /// Code 7: Terrain impassable (water, building footprint, etc.). Abort.
     Impassable,
+}
+
+impl CellEntryResult {
+    pub fn yr_code(&self) -> u8 {
+        match self {
+            Self::Clear => 0,
+            Self::Crushable { .. } => 1,
+            Self::TemporaryBlock { .. } => 2,
+            Self::ScatterRequired { .. } => 3,
+            Self::FriendlyWall => 4,
+            Self::OccupiedEnemy { .. } => 5,
+            Self::FriendlyStationary { .. } => 6,
+            Self::Impassable => 7,
+        }
+    }
 }
 
 /// Phase 1 result — terrain and basic occupancy check (no EntityStore needed).
@@ -330,11 +343,11 @@ fn classify_blocker(
     if !is_friendly {
         return CellEntryResult::OccupiedEnemy { blocker_id };
     }
-    // Friendly: moving → temporary block, stationary → occupied.
+    // Friendly: moving -> temporary block, stationary -> code 6.
     if blocker.movement_target.is_some() {
         CellEntryResult::TemporaryBlock { blocker_id }
     } else {
-        CellEntryResult::OccupiedFriendly { blocker_id }
+        CellEntryResult::FriendlyStationary { blocker_id }
     }
 }
 
@@ -494,6 +507,33 @@ mod tests {
             LocomotorKind::Drive,
         );
         assert_eq!(result, CellEntryResult::OccupiedEnemy { blocker_id: 1 });
+    }
+
+    #[test]
+    fn cell_entry_result_yr_codes_match_verified_table() {
+        assert_eq!(CellEntryResult::Clear.yr_code(), 0);
+        assert_eq!(CellEntryResult::Crushable { victims: vec![1] }.yr_code(), 1);
+        assert_eq!(
+            CellEntryResult::TemporaryBlock { blocker_id: 1 }.yr_code(),
+            2
+        );
+        assert_eq!(
+            CellEntryResult::ScatterRequired {
+                blocker_id: Some(1),
+            }
+            .yr_code(),
+            3
+        );
+        assert_eq!(CellEntryResult::FriendlyWall.yr_code(), 4);
+        assert_eq!(
+            CellEntryResult::OccupiedEnemy { blocker_id: 1 }.yr_code(),
+            5
+        );
+        assert_eq!(
+            CellEntryResult::FriendlyStationary { blocker_id: 1 }.yr_code(),
+            6
+        );
+        assert_eq!(CellEntryResult::Impassable.yr_code(), 7);
     }
 
     #[test]

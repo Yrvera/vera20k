@@ -19,6 +19,7 @@ use crate::sim::movement::movement_blocked::handle_blocked_tick;
 use crate::sim::movement::movement_bridge::resolve_cell_transition_bridge_state;
 use crate::sim::movement::movement_occupancy::{
     DeferredCellCheck, detect_deferred_cell_check, naval_terrain_diag,
+    resolve_runtime_can_enter_layers,
 };
 use crate::sim::movement::movement_reservation::reserve_destination_after_transition;
 use crate::sim::movement::turret::{rot_to_facing_delta, shortest_rotation};
@@ -570,7 +571,7 @@ pub(super) fn process_cell_crossings(
             break;
         }
 
-        // --- Cliff detection (Can_Enter_Cell code 6) ---
+        // --- Cliff detection ---
         // Original engine: if height difference >= 3 levels and not a
         // bridge ramp, treat as cliff. Catches stale paths after terrain
         // changes, bump/scatter toward cliff edges, etc.
@@ -627,10 +628,17 @@ pub(super) fn process_cell_crossings(
         // Occupancy check: vehicles defer to crush/bump/attack handler,
         // infantry defer to sub-cell/attack handler. Both break out of the
         // loop to release the mutable entity borrow for blocker lookups.
+        let layer_context = resolve_runtime_can_enter_layers(
+            path_grid,
+            (position.rx, position.ry),
+            (nx, ny),
+            next_layer,
+            position.z,
+        );
         if let Some(check) = detect_deferred_cell_check(
             snap.category,
             target.bypass_grid,
-            next_layer,
+            layer_context,
             (nx, ny),
             (position.rx, position.ry),
             active_layer,

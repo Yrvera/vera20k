@@ -64,6 +64,7 @@ pub mod parachute_descent;
 pub mod rocket_movement;
 pub mod scatter;
 pub mod teleport_movement;
+pub mod tube_movement;
 pub mod tunnel_movement;
 pub mod turret;
 
@@ -83,7 +84,7 @@ pub use movement_tick::tick_movement_with_grids;
 /// Initial path retry counter before giving up (original engine: FootClass+0x64C, init=10).
 /// Decremented on each failed Find_Path. At 0 the unit abandons the move order.
 const PATH_STUCK_INIT: u8 = 10;
-/// Minimum height level difference to trigger cliff detection (Can_Enter_Cell code 6).
+/// Minimum height level difference to trigger Rust's defensive cliff detection.
 /// Original engine: abs(current_z / HeightStep - cell.height) >= 3 levels.
 const CLIFF_HEIGHT_THRESHOLD: u16 = 3;
 /// Infantry wobble vertical bob amplitude in screen pixels.

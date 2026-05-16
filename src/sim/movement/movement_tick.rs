@@ -40,6 +40,7 @@ use super::movement_bridge::{
 use super::movement_occupancy::{DeferredCellCheck, handle_deferred_occupancy};
 use super::movement_path::{find_move_path, supports_layered_bridge_pathing};
 use super::movement_step;
+use super::tube_movement::{self, TubePathStepResult};
 use super::{
     INFANTRY_WOBBLE_AMPLITUDE, MIN_BRAKE_FRACTION, MovementConfig, MovementTickStats,
     MoverSnapshot, PATH_STUCK_INIT, PathfindingContext, facing_from_delta, walking_to_subcell_dest,
@@ -355,13 +356,17 @@ pub fn tick_movement_with_grids(
     // preventing duplicate scatter commands from multiple movers.
     let mut already_scattered: BTreeSet<u64> = BTreeSet::new();
 
+    if let Some(terrain) = resolved_terrain {
+        tube_movement::tick_low_bridge_tube_movement(entities, occupancy, terrain);
+    }
+
     // Collect movers in deterministic order: ground/bridge entities with a movement_target.
     let keys = entities.keys_sorted();
     let mut movers: Vec<u64> = Vec::new();
     let mut mover_owners: BTreeSet<crate::sim::intern::InternedId> = BTreeSet::new();
     for &id in &keys {
         if let Some(entity) = entities.get(id) {
-            if entity.movement_target.is_none() {
+            if entity.movement_target.is_none() || entity.low_bridge_tube_state.is_some() {
                 continue;
             }
             let layer = entity.movement_layer_or_ground();
@@ -457,6 +462,22 @@ pub fn tick_movement_with_grids(
                     debug_events.extend(evts);
                 }
                 PathExhaustionResult::NotExhausted => {}
+            }
+
+            match tube_movement::try_begin_path_tube_step(
+                &mut entity.low_bridge_tube_state,
+                target,
+                &entity.position,
+                resolved_terrain,
+            ) {
+                TubePathStepResult::NotTubeStep => {}
+                TubePathStepResult::Began => {
+                    continue;
+                }
+                TubePathStepResult::Blocked => {
+                    finished_entities.push(entity_id);
+                    continue;
+                }
             }
 
             // Vehicles rotate in place before moving (RA2 behavior).

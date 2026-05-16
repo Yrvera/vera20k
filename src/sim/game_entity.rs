@@ -35,6 +35,7 @@ use crate::sim::movement::droppod_movement::DropPodState;
 use crate::sim::movement::locomotor::LocomotorState;
 use crate::sim::movement::rocket_movement::RocketState;
 use crate::sim::movement::teleport_movement::TeleportState;
+use crate::sim::movement::tube_movement::LowBridgeTubeMovementState;
 use crate::sim::movement::tunnel_movement::TunnelState;
 use crate::sim::passenger::PassengerRole;
 use crate::sim::slave_miner::SlaveHarvester;
@@ -127,6 +128,9 @@ pub struct GameEntity {
     pub teleport_state: Option<TeleportState>,
     /// Tunnel movement state machine (dig in/underground/dig out phases).
     pub tunnel_state: Option<TunnelState>,
+    /// Active low-bridge TubeClass movement. Separate from subterranean tunnels.
+    #[serde(default)]
+    pub low_bridge_tube_state: Option<LowBridgeTubeMovementState>,
     /// Rocket/missile flight state machine (launch/ascend/terminal/detonate).
     pub rocket_state: Option<RocketState>,
     /// Drop pod descent state machine (falling/landing).
@@ -303,6 +307,7 @@ impl GameEntity {
             order_intent: None,
             teleport_state: None,
             tunnel_state: None,
+            low_bridge_tube_state: None,
             rocket_state: None,
             droppod_state: None,
             parachute_state: None,

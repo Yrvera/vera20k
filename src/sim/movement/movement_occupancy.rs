@@ -20,9 +20,9 @@ use crate::sim::movement::drive_track::DriveTrackState;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::movement::movement_blocked::handle_blocked_tick;
 use crate::sim::occupancy::OccupancyGrid;
-use crate::sim::pathfinding::PathGrid;
-use crate::sim::pathfinding::cell_entry::{self, CellEntryResult};
+use crate::sim::pathfinding::cell_entry::{self, CanEnterLayerContext, CellEntryResult};
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
+use crate::sim::pathfinding::{BridgeTraversalInput, PathGrid};
 use crate::sim::rng::SimRng;
 
 use super::{
@@ -31,19 +31,73 @@ use super::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DeferredCellCheck {
-    Infantry((u16, u16), MovementLayer),
-    Vehicle((u16, u16), MovementLayer),
+    Infantry((u16, u16), CanEnterLayerContext),
+    Vehicle((u16, u16), CanEnterLayerContext),
+}
+
+pub(super) fn resolve_runtime_can_enter_layers(
+    path_grid: Option<&PathGrid>,
+    current_cell: (u16, u16),
+    next_cell: (u16, u16),
+    next_layer: MovementLayer,
+    path_height: u8,
+) -> CanEnterLayerContext {
+    let base = CanEnterLayerContext::single(next_layer);
+    let Some(grid) = path_grid else {
+        return base;
+    };
+    let (Some(parent), Some(candidate)) = (
+        grid.cell(current_cell.0, current_cell.1),
+        grid.cell(next_cell.0, next_cell.1),
+    ) else {
+        return base;
+    };
+
+    let needs_bridge_traversal = candidate.has_bridgehead_transition()
+        || !candidate.has_structural_bridge()
+        || !parent.has_structural_bridge();
+    if !needs_bridge_traversal {
+        return base;
+    }
+
+    let bridge_traversal = crate::sim::pathfinding::check_bridge_traversal(
+        grid,
+        BridgeTraversalInput {
+            candidate,
+            candidate_coord: next_cell,
+            // Explicit parent is supplied, so the direction is not used for
+            // predecessor reconstruction. It only needs to avoid the -1 seed path.
+            direction: 0,
+            path_height: path_height as i16,
+            parent: Some((parent, current_cell)),
+        },
+    );
+    if !bridge_traversal.allowed {
+        return base;
+    }
+
+    crate::sim::pathfinding::can_enter_layer_context(
+        next_layer,
+        if bridge_traversal.force_bridge_list {
+            MovementLayer::Bridge
+        } else {
+            base.object_list_layer
+        },
+        candidate,
+        bridge_traversal.path_height,
+    )
 }
 
 pub(super) fn detect_deferred_cell_check(
     mover_category: EntityCategory,
     mover_bypass_grid: bool,
-    next_layer: MovementLayer,
+    layer_context: CanEnterLayerContext,
     next_cell: (u16, u16),
     current_cell: (u16, u16),
     active_layer: MovementLayer,
     occupancy: &OccupancyGrid,
 ) -> Option<DeferredCellCheck> {
+    let next_layer = layer_context.occupancy_bits_layer;
     let is_self_cell =
         (next_cell.0, next_cell.1, next_layer) == (current_cell.0, current_cell.1, active_layer);
     if is_self_cell {
@@ -65,12 +119,12 @@ pub(super) fn detect_deferred_cell_check(
     let cell_occ = occupancy.get(next_cell.0, next_cell.1);
     if mover_category == EntityCategory::Infantry {
         if bump_crush::allocate_sub_cell_with_reserved(cell_occ, next_layer, None).is_none() {
-            return Some(DeferredCellCheck::Infantry(next_cell, next_layer));
+            return Some(DeferredCellCheck::Infantry(next_cell, layer_context));
         }
     } else if cell_occ
         .is_some_and(|o| o.has_blockers_on(next_layer) || o.infantry(next_layer).next().is_some())
     {
-        return Some(DeferredCellCheck::Vehicle(next_cell, next_layer));
+        return Some(DeferredCellCheck::Vehicle(next_cell, layer_context));
     }
 
     None
@@ -152,10 +206,12 @@ pub(super) fn handle_deferred_occupancy(
     interner: &crate::sim::intern::StringInterner,
 ) -> Vec<(u32, DebugEventKind)> {
     let mut debug_events: Vec<(u32, DebugEventKind)> = Vec::new();
-    let (nx, ny, next_layer) = match check {
-        DeferredCellCheck::Infantry((nx, ny), layer)
-        | DeferredCellCheck::Vehicle((nx, ny), layer) => (nx, ny, layer),
+    let (nx, ny, layer_context) = match check {
+        DeferredCellCheck::Infantry((nx, ny), layers)
+        | DeferredCellCheck::Vehicle((nx, ny), layers) => (nx, ny, layers),
     };
+    let object_list_layer = layer_context.object_list_layer;
+    let occupancy_bits_layer = layer_context.occupancy_bits_layer;
     let mover_loco_kind = snap
         .locomotor
         .as_ref()
@@ -170,9 +226,9 @@ pub(super) fn handle_deferred_occupancy(
             )
         );
     let is_infantry = snap.category == EntityCategory::Infantry;
-    let entry_result = cell_entry::classify_occupied_cell(
+    let entry_result = cell_entry::classify_occupied_cell_with_layers(
         (nx, ny),
-        next_layer,
+        layer_context,
         entity_id,
         snap.movement_zone,
         snap.omni_crusher,
@@ -186,13 +242,14 @@ pub(super) fn handle_deferred_occupancy(
     );
     if snap.movement_zone.is_water_mover() {
         log::info!(
-            "NAVAL occupancy block: entity={} cur=({},{}) next=({},{}) layer={:?} result={:?} blocked_delay={} path_blocked={} {} {}",
+            "NAVAL occupancy block: entity={} cur=({},{}) next=({},{}) object_layer={:?} occupancy_layer={:?} result={:?} blocked_delay={} path_blocked={} {} {}",
             entity_id,
             entities.get(entity_id).map(|e| e.position.rx).unwrap_or(nx),
             entities.get(entity_id).map(|e| e.position.ry).unwrap_or(ny),
             nx,
             ny,
-            next_layer,
+            object_list_layer,
+            occupancy_bits_layer,
             entry_result,
             entities
                 .get(entity_id)
@@ -205,13 +262,14 @@ pub(super) fn handle_deferred_occupancy(
                 .map(|mt| mt.path_blocked)
                 .unwrap_or(false),
             naval_terrain_diag(resolved_terrain, (nx, ny)),
-            naval_occ_diag(occupancy, next_layer, (nx, ny)),
+            naval_occ_diag(occupancy, occupancy_bits_layer, (nx, ny)),
         );
     }
 
     match entry_result {
-        CellEntryResult::Clear | CellEntryResult::BridgeRamp => {
-            // Locomotor override (JumpJet) cleared the block.
+        CellEntryResult::Clear | CellEntryResult::ScatterRequired { .. } => {
+            // Locomotor override (JumpJet) cleared the block. Code 3 is kept
+            // soft until the dedicated building scatter producer is ported.
             if let Some(entity) = entities.get_mut(entity_id) {
                 snap_motion_to_cell_center(&mut entity.position, &mut entity.drive_track);
                 if let Some(ref mut target) = entity.movement_target {
@@ -237,7 +295,7 @@ pub(super) fn handle_deferred_occupancy(
                 }
             }
         }
-        CellEntryResult::OccupiedFriendly { blocker_id } => {
+        CellEntryResult::FriendlyStationary { blocker_id } => {
             // Scatter the stationary friendly blocker out of the way.
             // Matches original engine: CellClass::Scatter_Objects with force=1
             // tells the BLOCKER to move, not the mover. The blocker receives a
@@ -245,7 +303,12 @@ pub(super) fn handle_deferred_occupancy(
             let mut scattered = false;
             if !already_scattered.contains(&blocker_id) {
                 scattered = bump_crush::scatter_blocker(
-                    entities, blocker_id, path_grid, occupancy, next_layer, rng,
+                    entities,
+                    blocker_id,
+                    path_grid,
+                    occupancy,
+                    object_list_layer,
+                    rng,
                 );
                 if scattered {
                     already_scattered.insert(blocker_id);
@@ -350,7 +413,12 @@ pub(super) fn handle_deferred_occupancy(
                         // Wait expired — try scattering the blocker, then repath.
                         if !already_scattered.contains(&blocker_id) {
                             let scattered = bump_crush::scatter_blocker(
-                                entities, blocker_id, path_grid, occupancy, next_layer, rng,
+                                entities,
+                                blocker_id,
+                                path_grid,
+                                occupancy,
+                                object_list_layer,
+                                rng,
                             );
                             if scattered {
                                 already_scattered.insert(blocker_id);
@@ -393,7 +461,7 @@ pub(super) fn handle_deferred_occupancy(
                 }
             }
         }
-        CellEntryResult::Cliff | CellEntryResult::Impassable => {
+        CellEntryResult::FriendlyWall | CellEntryResult::Impassable => {
             // Shouldn't reach here from NeedsBlockerCheck, but handle gracefully.
             if let Some(entity) = entities.get_mut(entity_id) {
                 snap_motion_to_cell_center(&mut entity.position, &mut entity.drive_track);
@@ -430,4 +498,67 @@ pub(super) fn handle_deferred_occupancy(
     }
 
     debug_events
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sim::occupancy::CellListInsertion;
+
+    #[test]
+    fn runtime_layers_keep_bridge_object_list_with_ground_occupancy_bits() {
+        let mut grid = PathGrid::new(2, 1);
+        grid.set_cell_for_test(0, 0, 4, true, false);
+        grid.set_cell_for_test(1, 0, 0, true, true);
+
+        let layers =
+            resolve_runtime_can_enter_layers(Some(&grid), (0, 0), (1, 0), MovementLayer::Bridge, 0);
+
+        assert_eq!(layers.terrain_layer, MovementLayer::Bridge);
+        assert_eq!(layers.object_list_layer, MovementLayer::Bridge);
+        assert_eq!(layers.occupancy_bits_layer, MovementLayer::Ground);
+    }
+
+    #[test]
+    fn runtime_layers_resnapshot_bridge_occupancy_bits_at_deck_height() {
+        let mut grid = PathGrid::new(2, 1);
+        grid.set_cell_for_test(0, 0, 4, true, false);
+        grid.set_cell_for_test(1, 0, 0, true, true);
+
+        let layers =
+            resolve_runtime_can_enter_layers(Some(&grid), (0, 0), (1, 0), MovementLayer::Bridge, 4);
+
+        assert_eq!(layers.object_list_layer, MovementLayer::Bridge);
+        assert_eq!(layers.occupancy_bits_layer, MovementLayer::Bridge);
+    }
+
+    #[test]
+    fn deferred_detection_uses_occupancy_bits_layer_not_object_list_layer() {
+        let mut occupancy = OccupancyGrid::new();
+        occupancy.add(
+            1,
+            0,
+            10,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+
+        let layers = CanEnterLayerContext {
+            terrain_layer: MovementLayer::Bridge,
+            object_list_layer: MovementLayer::Bridge,
+            occupancy_bits_layer: MovementLayer::Ground,
+        };
+        let check = detect_deferred_cell_check(
+            EntityCategory::Unit,
+            false,
+            layers,
+            (1, 0),
+            (0, 0),
+            MovementLayer::Ground,
+            &occupancy,
+        );
+
+        assert_eq!(check, Some(DeferredCellCheck::Vehicle((1, 0), layers)));
+    }
 }
