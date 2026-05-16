@@ -35,6 +35,7 @@ pub mod theater;
 pub mod trigger_graph;
 pub mod triggers;
 pub mod tube_facts;
+pub mod tubes;
 pub mod variable_names;
 pub mod waypoints;
 // Future modules — uncomment as implemented:

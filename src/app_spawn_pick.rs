@@ -177,6 +177,7 @@ fn build_temp_map_data_for_seeding(state: &AppState) -> crate::map::map_file::Ma
         actions: std::collections::HashMap::new(),
         trigger_graph: crate::map::trigger_graph::TriggerGraph::default(),
         local_variables: std::collections::HashMap::new(),
+        explicit_tubes: Vec::new(),
         preview: crate::map::preview::PreviewSection::default(),
     }
 }

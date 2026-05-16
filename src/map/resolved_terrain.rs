@@ -787,7 +787,9 @@ impl ResolvedTerrainGrid {
             }
         }
 
-        let tube_facts = build_auto_low_bridge_tubes(&mut cells, width, height, theater_data);
+        let mut tube_facts =
+            seed_explicit_map_tubes(&mut cells, width, height, &map.explicit_tubes);
+        build_auto_low_bridge_tubes(&mut cells, width, height, theater_data, &mut tube_facts);
 
         Self {
             width,
@@ -935,8 +937,8 @@ fn build_auto_low_bridge_tubes(
     width: u16,
     height: u16,
     theater_data: Option<&TheaterData>,
-) -> Vec<TubeFact> {
-    let mut tubes = Vec::new();
+    tubes: &mut Vec<TubeFact>,
+) {
     for cell in cells.iter_mut() {
         if cell.yr_cell_land_type != YR_CELL_LAND_TUNNEL || cell.tube_index.is_some() {
             continue;
@@ -959,6 +961,38 @@ fn build_auto_low_bridge_tubes(
         let tube_id = TubeId(raw_id);
         tubes.push(TubeFact::auto_low_bridge((cell.rx, cell.ry), direction));
         cell.tube_index = Some(tube_id);
+    }
+}
+
+fn seed_explicit_map_tubes(
+    cells: &mut [ResolvedTerrainCell],
+    width: u16,
+    height: u16,
+    explicit_tubes: &[TubeFact],
+) -> Vec<TubeFact> {
+    let mut tubes = Vec::with_capacity(explicit_tubes.len());
+    for tube in explicit_tubes {
+        let Ok(raw_id) = u16::try_from(tubes.len()) else {
+            log::warn!(
+                "ResolvedTerrain: explicit [Tubes] registry exceeded u16::MAX; skipping remaining tubes"
+            );
+            break;
+        };
+        let tube_id = TubeId(raw_id);
+        tubes.push(tube.clone());
+        let (rx, ry) = tube.entry;
+        if rx >= width || ry >= height {
+            log::warn!(
+                "ResolvedTerrain: explicit [Tubes] entry cell ({}, {}) outside resolved grid",
+                rx,
+                ry
+            );
+            continue;
+        }
+        let idx = ry as usize * width as usize + rx as usize;
+        if let Some(cell) = cells.get_mut(idx) {
+            cell.tube_index = Some(tube_id);
+        }
     }
     tubes
 }
@@ -1299,6 +1333,7 @@ mod tests {
             local_variables: HashMap::new(),
             trigger_graph: crate::map::trigger_graph::TriggerGraph::default(),
             special_flags: crate::map::basic::SpecialFlagsSection::default(),
+            explicit_tubes: Vec::new(),
             ini: IniFile::from_str(""),
         }
     }
@@ -1379,6 +1414,46 @@ mod tests {
         let grid = ResolvedTerrainGrid::from_cells(1, 1, vec![make_test_cell(0, 0)]);
 
         assert_eq!(grid.step_coord_by_direction((0, 0), 8), Some((0, 0)));
+    }
+
+    #[test]
+    fn explicit_map_tubes_seed_resolved_grid() {
+        let mut map = make_map(
+            vec![
+                MapCell {
+                    rx: 0,
+                    ry: 0,
+                    tile_index: 0,
+                    sub_tile: 0,
+                    z: 0,
+                },
+                MapCell {
+                    rx: 1,
+                    ry: 0,
+                    tile_index: 0,
+                    sub_tile: 0,
+                    z: 0,
+                },
+                MapCell {
+                    rx: 2,
+                    ry: 0,
+                    tile_index: 0,
+                    sub_tile: 0,
+                    z: 0,
+                },
+            ],
+            Vec::new(),
+            Vec::new(),
+        );
+        map.explicit_tubes = vec![TubeFact::explicit((0, 0), (2, 0), 2, vec![2, 2])];
+
+        let grid = ResolvedTerrainGrid::build(&map, None, None, None, None, false, 0);
+
+        let cell = grid.cell(0, 0).expect("entry cell");
+        assert_eq!(cell.tube_index, Some(TubeId(0)));
+        assert_eq!(grid.tube_facts().len(), 1);
+        assert_eq!(grid.tube_facts()[0].source, TubeSource::ExplicitMap);
+        assert_eq!(grid.step_coord_by_direction((0, 0), 8), Some((2, 0)));
     }
 
     #[test]
