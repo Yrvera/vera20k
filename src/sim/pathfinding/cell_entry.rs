@@ -169,10 +169,8 @@ pub fn check_terrain_with_layers(
     let occ = occupancy.get(nx, ny);
 
     if mover_category == EntityCategory::Infantry {
-        let selected_list_blocked = occ.is_some_and(|o| {
-            o.has_blockers_on(layers.object_list_layer)
-                || o.infantry(layers.object_list_layer).next().is_some()
-        });
+        let selected_list_blocked =
+            occ.is_some_and(|o| o.has_blockers_on(layers.object_list_layer));
         let sub =
             bump_crush::allocate_sub_cell_with_reserved(occ, layers.occupancy_bits_layer, None);
         if sub.is_some() && !selected_list_blocked {
