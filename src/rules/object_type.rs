@@ -30,7 +30,7 @@ use glam::IVec3;
 use crate::rules::ini_parser::IniSection;
 use crate::rules::jumpjet_params::JumpjetParams;
 use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
-use crate::util::fixed_math::{sim_from_f32, SimFixed};
+use crate::util::fixed_math::{SimFixed, sim_from_f32};
 
 /// Which type registry an object belongs to.
 ///
@@ -372,6 +372,14 @@ pub struct ObjectType {
     pub fraidycat: bool,
     /// `Crawls=yes` from art.ini. Controls the prone movement speed branch.
     pub crawls: bool,
+    /// Primary standing infantry projectile/damage frame from art.ini `FireUp=`.
+    pub fire_up_frame: u8,
+    /// Primary prone infantry projectile/damage frame from art.ini `FireProne=`.
+    pub fire_prone_frame: u8,
+    /// Secondary standing infantry projectile/damage frame from art.ini `SecondaryFire=`.
+    pub secondary_fire_frame: u8,
+    /// Secondary prone/deploy infantry projectile/damage frame from art.ini `SecondaryProne=`.
+    pub secondary_prone_frame: u8,
     /// Whether VeteranAbilities includes FEARLESS for this type.
     pub veteran_fearless: bool,
     /// Whether EliteAbilities includes FEARLESS for this type.
@@ -885,6 +893,10 @@ impl ObjectType {
             fearless: section.get_bool("Fearless").unwrap_or(false),
             fraidycat: section.get_bool("Fraidycat").unwrap_or(false),
             crawls: false,
+            fire_up_frame: 0,
+            fire_prone_frame: 0,
+            secondary_fire_frame: 0,
+            secondary_prone_frame: 0,
             veteran_fearless: ability_list_has(section.get_list("VeteranAbilities"), "FEARLESS"),
             elite_fearless: ability_list_has(section.get_list("EliteAbilities"), "FEARLESS"),
             harvest_rate: section.get_i32("HarvestRate").unwrap_or(0).max(0) as u32,

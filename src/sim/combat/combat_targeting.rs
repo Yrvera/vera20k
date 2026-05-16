@@ -46,6 +46,7 @@ pub(crate) struct GarrisonSnapshot {
 pub(crate) struct AttackerSnapshot {
     pub stable_id: u64,
     pub owner: InternedId,
+    pub category: EntityCategory,
     /// What the attacker is firing at — entity ID or cell coord.
     /// Cell targets skip auto-retarget and friendly-fire checks (the player
     /// explicitly chose this cell).
@@ -56,6 +57,12 @@ pub(crate) struct AttackerSnapshot {
     pub sub_y: SimFixed,
     pub type_id: InternedId,
     pub cooldown_ticks: u16,
+    pub animation_sequence: Option<crate::sim::animation::SequenceKind>,
+    pub animation_frame: Option<u16>,
+    pub is_prone: bool,
+    pub is_fully_deployed: bool,
+    pub has_movement: bool,
+    pub pending_infantry_fire: Option<super::PendingInfantryFire>,
     pub barrel_facing: Option<crate::sim::movement::FacingClass>,
     pub burst_remaining: u8,
     pub burst_delay_ticks: u8,
@@ -95,6 +102,7 @@ pub fn acquire_best_target_for_entity(
     let snapshot = AttackerSnapshot {
         stable_id: entity.stable_id,
         owner: entity.owner,
+        category: entity.category,
         target: super::TargetKind::Entity(0), // Dummy — no current target when acquiring fresh
         pos_rx: entity.position.rx,
         pos_ry: entity.position.ry,
@@ -102,6 +110,15 @@ pub fn acquire_best_target_for_entity(
         sub_y: entity.position.sub_y,
         type_id: entity.type_ref,
         cooldown_ticks: 0,
+        animation_sequence: entity.animation.as_ref().map(|a| a.sequence),
+        animation_frame: entity.animation.as_ref().map(|a| a.frame_index),
+        is_prone: entity
+            .infantry
+            .as_ref()
+            .is_some_and(|infantry| infantry.is_prone),
+        is_fully_deployed: entity.is_fully_deployed(),
+        has_movement: entity.movement_target.is_some(),
+        pending_infantry_fire: None,
         barrel_facing: entity.barrel_facing,
         burst_remaining: 0,
         burst_delay_ticks: 0,

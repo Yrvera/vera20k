@@ -603,6 +603,10 @@ fn combat_fires_during_deployed_attack() {
         cooldown_ticks: 10,
         burst_remaining: 0,
         burst_delay_ticks: 0,
+        pending_infantry_fire: Some(crate::sim::combat::PendingInfantryFire {
+            sequence: SequenceKind::DeployedFire,
+            fire_frame: 2,
+        }),
     });
     sim.entities.get_mut(gi).unwrap().animation = Some(Animation::new(SequenceKind::Deployed));
 

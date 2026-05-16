@@ -46,7 +46,7 @@ use std::collections::BTreeMap;
 
 use crate::sim::miner::ResourceNode;
 
-use self::combat_weapon::select_weapon_with_ifv;
+use self::combat_weapon::{WeaponSlot, select_weapon_with_ifv};
 use crate::map::entities::EntityCategory;
 use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::rules::object_type::ObjectType;
@@ -63,6 +63,7 @@ use crate::sim::vision::FogState;
 use crate::sim::world::{SimFireEvent, SimSoundEvent};
 use crate::util::fixed_math::{SIM_ZERO, SimFixed, sim_to_i32};
 
+use super::animation::SequenceKind;
 use super::game_entity::GameEntity;
 use super::occupancy::OccupancyGrid;
 use super::production::foundation_dimensions;
@@ -156,6 +157,15 @@ pub enum TargetKind {
     Cell(u16, u16),
 }
 
+/// Infantry shot waiting for its current fire animation to reach the discharge frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct PendingInfantryFire {
+    /// Fire sequence started when the shot was accepted.
+    pub sequence: SequenceKind,
+    /// Animation frame index that spawns the projectile/damage.
+    pub fire_frame: u16,
+}
+
 /// Component: this entity is attacking a specific target.
 ///
 /// Attached by `issue_attack_command()` (entity targets) or
@@ -173,11 +183,61 @@ pub struct AttackTarget {
     pub burst_remaining: u8,
     /// Ticks between individual burst shots (short inter-shot delay).
     pub burst_delay_ticks: u8,
+    /// Infantry-only delayed shot latch. `None` for vehicles/buildings/aircraft.
+    #[serde(default)]
+    pub pending_infantry_fire: Option<PendingInfantryFire>,
 }
 
 /// Delay in simulation ticks between individual shots within a burst.
 /// 1 game frame (~66ms) — fast but visible.
 const BURST_INTER_SHOT_DELAY: u8 = 1;
+
+fn infantry_fire_sequence(
+    obj: &ObjectType,
+    weapon_slot: WeaponSlot,
+    is_prone: bool,
+    is_fully_deployed: bool,
+) -> SequenceKind {
+    if is_fully_deployed {
+        return SequenceKind::DeployedFire;
+    }
+    match (weapon_slot, is_prone) {
+        (WeaponSlot::Primary, true) => SequenceKind::FireProne,
+        (WeaponSlot::Primary, false) => SequenceKind::Attack,
+        (WeaponSlot::Secondary, true) if obj.secondary_prone_frame != obj.fire_up_frame => {
+            SequenceKind::SecondaryProne
+        }
+        (WeaponSlot::Secondary, false) if obj.secondary_fire_frame != obj.fire_up_frame => {
+            SequenceKind::SecondaryFire
+        }
+        _ => SequenceKind::Attack,
+    }
+}
+
+fn infantry_fire_frame(
+    obj: &ObjectType,
+    weapon_slot: WeaponSlot,
+    is_prone: bool,
+    is_fully_deployed: bool,
+) -> u16 {
+    let frame = match (weapon_slot, is_prone || is_fully_deployed) {
+        (WeaponSlot::Primary, false) => obj.fire_up_frame,
+        (WeaponSlot::Primary, true) => obj.fire_prone_frame,
+        (WeaponSlot::Secondary, false) => obj.secondary_fire_frame,
+        (WeaponSlot::Secondary, true) => obj.secondary_prone_frame,
+    };
+    frame as u16
+}
+
+fn infantry_idle_sequence(is_prone: bool, is_fully_deployed: bool) -> SequenceKind {
+    if is_fully_deployed {
+        SequenceKind::Deployed
+    } else if is_prone {
+        SequenceKind::Prone
+    } else {
+        SequenceKind::Stand
+    }
+}
 
 impl AttackTarget {
     /// Entity-targeted attack: fire at a specific entity by stable ID.
@@ -187,6 +247,7 @@ impl AttackTarget {
             cooldown_ticks: 0,
             burst_remaining: 0,
             burst_delay_ticks: 0,
+            pending_infantry_fire: None,
         }
     }
 
@@ -197,6 +258,7 @@ impl AttackTarget {
             cooldown_ticks: 0,
             burst_remaining: 0,
             burst_delay_ticks: 0,
+            pending_infantry_fire: None,
         }
     }
 }
@@ -1203,6 +1265,11 @@ pub fn tick_combat_with_fog(
             };
             attack.cooldown_ticks = attack.cooldown_ticks.saturating_sub(1);
             attack.burst_delay_ticks = attack.burst_delay_ticks.saturating_sub(1);
+            let attack_target = attack.target;
+            let cooldown_ticks = attack.cooldown_ticks;
+            let burst_remaining = attack.burst_remaining;
+            let burst_delay_ticks = attack.burst_delay_ticks;
+            let pending_infantry_fire = attack.pending_infantry_fire;
             // Skip snapshot for entities blocked by locomotor state (cooldowns still tick).
             if fire_blocked.contains(&id) {
                 continue;
@@ -1227,16 +1294,26 @@ pub fn tick_combat_with_fog(
             let base = (
                 entity.stable_id,
                 entity.owner,
-                attack.target,
+                entity.category,
+                attack_target,
                 entity.position.rx,
                 entity.position.ry,
                 entity.position.sub_x,
                 entity.position.sub_y,
                 entity.type_ref,
-                attack.cooldown_ticks,
+                cooldown_ticks,
+                entity.animation.as_ref().map(|a| a.sequence),
+                entity.animation.as_ref().map(|a| a.frame_index),
+                entity
+                    .infantry
+                    .as_ref()
+                    .is_some_and(|infantry| infantry.is_prone),
+                entity.is_fully_deployed(),
+                entity.movement_target.is_some(),
+                pending_infantry_fire,
                 entity.barrel_facing,
-                attack.burst_remaining,
-                attack.burst_delay_ticks,
+                burst_remaining,
+                burst_delay_ticks,
                 entity.ifv_weapon_index,
             );
             (base, garrison_cargo)
@@ -1245,6 +1322,7 @@ pub fn tick_combat_with_fog(
         let (
             stable_id,
             owner,
+            category,
             target,
             pos_rx,
             pos_ry,
@@ -1252,6 +1330,12 @@ pub fn tick_combat_with_fog(
             sub_y,
             type_id,
             cooldown_ticks,
+            animation_sequence,
+            animation_frame,
+            is_prone,
+            is_fully_deployed,
+            has_movement,
+            pending_infantry_fire,
             barrel_facing,
             burst_remaining,
             burst_delay_ticks,
@@ -1278,6 +1362,7 @@ pub fn tick_combat_with_fog(
         snapshots.push(AttackerSnapshot {
             stable_id,
             owner,
+            category,
             target,
             pos_rx,
             pos_ry,
@@ -1285,6 +1370,12 @@ pub fn tick_combat_with_fog(
             sub_y,
             type_id,
             cooldown_ticks,
+            animation_sequence,
+            animation_frame,
+            is_prone,
+            is_fully_deployed,
+            has_movement,
+            pending_infantry_fire,
             barrel_facing,
             burst_remaining,
             burst_delay_ticks,
@@ -1309,6 +1400,8 @@ pub fn tick_combat_with_fog(
     let mut burst_updates: Vec<(u64, u8, u8, u16)> = Vec::new(); // (id, burst_rem, burst_delay, rof_cd)
     let mut ammo_deduct: Vec<u64> = Vec::new(); // aircraft that fired this tick
     let mut garrison_advance: Vec<u64> = Vec::new(); // building IDs to advance fire index
+    let mut pending_infantry_updates: Vec<(u64, Option<PendingInfantryFire>)> = Vec::new();
+    let mut animation_switches: Vec<(u64, SequenceKind)> = Vec::new();
 
     for snap in &snapshots {
         // Pre-compute garrison scan range for retargeting (includes +1 buffer).
@@ -1494,6 +1587,27 @@ pub fn tick_combat_with_fog(
             }
         }
 
+        let infantry_fire_sync = snap.category == EntityCategory::Infantry
+            && !is_garrison
+            && snap.animation_frame.is_some();
+        let mut pending_at_fire_frame = false;
+        if infantry_fire_sync {
+            if let Some(pending) = snap.pending_infantry_fire {
+                if snap.has_movement || snap.animation_sequence != Some(pending.sequence) {
+                    pending_infantry_updates.push((snap.stable_id, None));
+                    animation_switches.push((
+                        snap.stable_id,
+                        infantry_idle_sequence(snap.is_prone, snap.is_fully_deployed),
+                    ));
+                    continue;
+                }
+                if snap.animation_frame != Some(pending.fire_frame) {
+                    continue;
+                }
+                pending_at_fire_frame = true;
+            }
+        }
+
         // Range check (lepton-precise, sub-cell aware).
         // Garrison range: (half_foundation + OccupyWeaponRange) cells (no +1 buffer for fire).
         let effective_range = if let Some(ref gs) = snap.garrison {
@@ -1555,11 +1669,25 @@ pub fn tick_combat_with_fog(
             is_within_range_leptons(dist_sq, effective_range)
         };
         if !in_range_for_fire {
+            if pending_at_fire_frame {
+                pending_infantry_updates.push((snap.stable_id, None));
+                animation_switches.push((
+                    snap.stable_id,
+                    infantry_idle_sequence(snap.is_prone, snap.is_fully_deployed),
+                ));
+            }
             continue;
         }
 
         // Burst / cooldown state machine.
         if snap.cooldown_ticks > 0 || snap.burst_delay_ticks > 0 {
+            if pending_at_fire_frame {
+                pending_infantry_updates.push((snap.stable_id, None));
+                animation_switches.push((
+                    snap.stable_id,
+                    infantry_idle_sequence(snap.is_prone, snap.is_fully_deployed),
+                ));
+            }
             continue;
         }
 
@@ -1581,10 +1709,38 @@ pub fn tick_combat_with_fog(
             let aligned =
                 barrel.current(binary_frame) == desired && !barrel.is_rotating(binary_frame);
             if !aligned {
+                if pending_at_fire_frame {
+                    pending_infantry_updates.push((snap.stable_id, None));
+                    animation_switches.push((
+                        snap.stable_id,
+                        infantry_idle_sequence(snap.is_prone, snap.is_fully_deployed),
+                    ));
+                }
                 // FireDecision::Facing — drives gattling spin-up via
                 // drives_gattling_spinup() == true.
                 continue;
             }
+        }
+
+        if infantry_fire_sync && !pending_at_fire_frame {
+            let sequence =
+                infantry_fire_sequence(obj, selected.slot, snap.is_prone, snap.is_fully_deployed);
+            let fire_frame =
+                infantry_fire_frame(obj, selected.slot, snap.is_prone, snap.is_fully_deployed);
+            animation_switches.push((snap.stable_id, sequence));
+            if fire_frame != 0 {
+                pending_infantry_updates.push((
+                    snap.stable_id,
+                    Some(PendingInfantryFire {
+                        sequence,
+                        fire_frame,
+                    }),
+                ));
+                continue;
+            }
+        }
+        if pending_at_fire_frame {
+            pending_infantry_updates.push((snap.stable_id, None));
         }
 
         // Fire one shot!
@@ -1765,6 +1921,21 @@ pub fn tick_combat_with_fog(
         if let Some(entity) = entities.get_mut(attacker_id) {
             if let Some(ref mut attack) = entity.attack_target {
                 attack.target = TargetKind::Entity(new_target_sid);
+                attack.pending_infantry_fire = None;
+            }
+        }
+    }
+    for &(attacker_id, sequence) in &animation_switches {
+        if let Some(entity) = entities.get_mut(attacker_id) {
+            if let Some(ref mut anim) = entity.animation {
+                anim.switch_to(sequence);
+            }
+        }
+    }
+    for &(attacker_id, pending) in &pending_infantry_updates {
+        if let Some(entity) = entities.get_mut(attacker_id) {
+            if let Some(ref mut attack) = entity.attack_target {
+                attack.pending_infantry_fire = pending;
             }
         }
     }

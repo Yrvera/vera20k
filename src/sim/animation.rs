@@ -235,6 +235,20 @@ pub fn animation_is_prone(animation: Option<&Animation>) -> bool {
     animation.is_some_and(|anim| sequence_is_prone(anim.sequence))
 }
 
+/// Whether a sequence is a one-shot infantry fire action.
+pub fn sequence_is_fire_action(sequence: SequenceKind) -> bool {
+    matches!(
+        sequence,
+        SequenceKind::Attack
+            | SequenceKind::FireProne
+            | SequenceKind::DeployedFire
+            | SequenceKind::SecondaryFire
+            | SequenceKind::SecondaryProne
+            | SequenceKind::FireFly
+            | SequenceKind::WetAttack
+    )
+}
+
 /// Collection of sequence definitions for one object type.
 ///
 /// Maps `SequenceKind` → `SequenceDef`. Not all kinds need to be present;
@@ -412,7 +426,12 @@ pub fn tick_animations(
         }
 
         let has_movement: bool = entity.movement_target.is_some();
-        let has_attack: bool = entity.attack_target.is_some();
+        let pending_fire_sequence = entity
+            .attack_target
+            .as_ref()
+            .and_then(|attack| attack.pending_infantry_fire.map(|pending| pending.sequence));
+        let has_fire_action = pending_fire_sequence.is_some();
+        let preserving_fire_action = sequence_is_fire_action(anim.sequence) && !has_fire_action;
 
         // Look up this type's sequence definitions for transition checks.
         let seq_set: Option<&SequenceSet> = sequences.get(interner.resolve(entity.type_ref));
@@ -428,17 +447,9 @@ pub fn tick_animations(
                 anim.switch_to(SequenceKind::Undeploy);
             }
             Some(crate::sim::deploy::DeployPhase::Deployed) => {
-                if has_attack {
-                    if let Some(set) = seq_set {
-                        if set.get(&SequenceKind::DeployedFire).is_some() {
-                            anim.switch_to(SequenceKind::DeployedFire);
-                        } else {
-                            anim.switch_to(SequenceKind::Deployed);
-                        }
-                    } else {
-                        anim.switch_to(SequenceKind::Deployed);
-                    }
-                } else {
+                if let Some(sequence) = pending_fire_sequence {
+                    anim.switch_to(sequence);
+                } else if anim.sequence != SequenceKind::DeployedFire {
                     anim.switch_to(SequenceKind::Deployed);
                 }
             }
@@ -450,17 +461,14 @@ pub fn tick_animations(
                 if !matches!(anim.sequence, SequenceKind::Down | SequenceKind::Up) && runtime_prone
                 {
                     if let Some(set) = seq_set {
-                        if has_attack && !has_movement {
-                            if set.get(&SequenceKind::FireProne).is_some() {
-                                anim.switch_to(SequenceKind::FireProne);
-                            } else if set.get(&SequenceKind::SecondaryProne).is_some() {
-                                anim.switch_to(SequenceKind::SecondaryProne);
-                            }
+                        if let Some(sequence) = pending_fire_sequence {
+                            anim.switch_to(sequence);
                         } else if has_movement {
                             if set.get(&SequenceKind::Crawl).is_some() {
                                 anim.switch_to(SequenceKind::Crawl);
                             }
-                        } else if set.get(&SequenceKind::Prone).is_some() {
+                        } else if !preserving_fire_action && set.get(&SequenceKind::Prone).is_some()
+                        {
                             anim.switch_to(SequenceKind::Prone);
                         }
                     }
@@ -481,25 +489,11 @@ pub fn tick_animations(
                 }
                 if !matches!(anim.sequence, SequenceKind::Down | SequenceKind::Up)
                     && !runtime_prone
-                    && has_attack
+                    && has_fire_action
                     && !has_movement
                 {
-                    if let Some(set) = seq_set {
-                        match anim.sequence {
-                            SequenceKind::Stand if set.get(&SequenceKind::Attack).is_some() => {
-                                anim.switch_to(SequenceKind::Attack);
-                            }
-                            SequenceKind::Prone if set.get(&SequenceKind::FireProne).is_some() => {
-                                anim.switch_to(SequenceKind::FireProne);
-                            }
-                            SequenceKind::Swim if set.get(&SequenceKind::WetAttack).is_some() => {
-                                anim.switch_to(SequenceKind::WetAttack);
-                            }
-                            SequenceKind::Fly if set.get(&SequenceKind::FireFly).is_some() => {
-                                anim.switch_to(SequenceKind::FireFly);
-                            }
-                            _ => {}
-                        }
+                    if let Some(sequence) = pending_fire_sequence {
+                        anim.switch_to(sequence);
                     }
                 }
             }

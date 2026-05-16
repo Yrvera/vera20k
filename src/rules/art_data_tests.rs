@@ -76,7 +76,7 @@ fn test_voxel_asset_names() {
 #[test]
 fn test_from_ini_parses_entries() {
     let ini: IniFile = IniFile::from_str(
-        "[GAPOWR]\nNewTheater=yes\nCameo=GAPICON\n\n[HTNK]\nVoxel=yes\nAltCameo=HTKALT\n\n[NACNST]\nImage=CIVNC\n\n[GI]\nCrawls=yes\n",
+        "[GAPOWR]\nNewTheater=yes\nCameo=GAPICON\n\n[HTNK]\nVoxel=yes\nAltCameo=HTKALT\n\n[NACNST]\nImage=CIVNC\n\n[GI]\nCrawls=yes\nFireUp=2\nSecondaryFire=4\n",
     );
     let reg: ArtRegistry = ArtRegistry::from_ini(&ini);
     assert_eq!(reg.len(), 4);
@@ -97,6 +97,10 @@ fn test_from_ini_parses_entries() {
 
     let gi: &ArtEntry = reg.get("GI").expect("GI exists");
     assert!(gi.crawls);
+    assert_eq!(gi.fire_up, 2);
+    assert_eq!(gi.fire_prone, 2);
+    assert_eq!(gi.secondary_fire, 4);
+    assert_eq!(gi.secondary_prone, 4);
 }
 
 #[test]

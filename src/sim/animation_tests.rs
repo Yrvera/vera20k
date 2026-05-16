@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use crate::map::entities::EntityCategory;
 use crate::sim::animation::*;
-use crate::sim::combat::AttackTarget;
+use crate::sim::combat::{AttackTarget, PendingInfantryFire};
 use crate::sim::components::{Health, MovementTarget};
 use crate::sim::entity_store::EntityStore;
 use crate::sim::game_entity::GameEntity;
@@ -342,6 +342,10 @@ fn test_tick_attack_triggers_fire_animation() {
     let mut store = EntityStore::new();
     let mut e = make_infantry_entity(1, 0, &mut interner);
     e.attack_target = Some(AttackTarget::new(999));
+    e.attack_target.as_mut().unwrap().pending_infantry_fire = Some(PendingInfantryFire {
+        sequence: SequenceKind::Attack,
+        fire_frame: 2,
+    });
     store.insert(e);
 
     // Build sequences that include Attack.
@@ -421,6 +425,10 @@ fn test_runtime_prone_drives_prone_crawl_and_fireprone() {
     let mut firing = make_infantry_entity(3, 0, &mut interner);
     firing.infantry.as_mut().unwrap().is_prone = true;
     firing.attack_target = Some(AttackTarget::new(999));
+    firing.attack_target.as_mut().unwrap().pending_infantry_fire = Some(PendingInfantryFire {
+        sequence: SequenceKind::FireProne,
+        fire_frame: 2,
+    });
     store.insert(firing);
     tick_animations(&mut store, &sequences, 1, &interner);
     assert_eq!(

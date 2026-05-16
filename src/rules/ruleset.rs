@@ -1683,6 +1683,10 @@ impl RuleSet {
                 infantry_checked += 1;
                 if let Some(entry) = entry {
                     obj.crawls = entry.crawls;
+                    obj.fire_up_frame = entry.fire_up;
+                    obj.fire_prone_frame = entry.fire_prone;
+                    obj.secondary_fire_frame = entry.secondary_fire;
+                    obj.secondary_prone_frame = entry.secondary_prone;
                     if entry.crawls {
                         crawls_patched += 1;
                     }
@@ -2886,13 +2890,21 @@ ZAdjust=-10
         );
         let rules_ini = IniFile::from_str(&rules_text);
         let mut rules = RuleSet::from_ini(&rules_ini).expect("rules parse");
-        let art_ini = IniFile::from_str("[GI]\nCrawls=yes\n\n[GAPOWR]\nCrawls=yes\n");
+        let art_ini = IniFile::from_str(
+            "[GI]\nCrawls=yes\nFireUp=2\nFireProne=3\nSecondaryFire=4\nSecondaryProne=5\n\n[GAPOWR]\nCrawls=yes\nFireUp=9\n",
+        );
         let art = crate::rules::art_data::ArtRegistry::from_ini(&art_ini);
         rules.merge_art_data(&art);
 
-        assert!(rules.object("E1").expect("E1").crawls);
+        let infantry = rules.object("E1").expect("E1");
+        assert!(infantry.crawls);
+        assert_eq!(infantry.fire_up_frame, 2);
+        assert_eq!(infantry.fire_prone_frame, 3);
+        assert_eq!(infantry.secondary_fire_frame, 4);
+        assert_eq!(infantry.secondary_prone_frame, 5);
         let building = rules.object("GAPOWR").expect("GAPOWR");
         assert!(!building.crawls);
+        assert_eq!(building.fire_up_frame, 0);
         assert_eq!(building.foundation, "2x2");
     }
 

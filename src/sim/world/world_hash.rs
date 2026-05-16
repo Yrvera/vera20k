@@ -385,6 +385,9 @@ impl Simulation {
                 1u8.hash(hasher);
                 attack.cooldown_ticks.hash(hasher);
                 attack.target.hash(hasher);
+                attack.burst_remaining.hash(hasher);
+                attack.burst_delay_ticks.hash(hasher);
+                attack.pending_infantry_fire.hash(hasher);
             } else {
                 0u8.hash(hasher);
             }
@@ -653,6 +656,8 @@ mod tube_movement_hash_tests {
 mod infantry_hash_tests {
     use super::Simulation;
     use crate::map::entities::EntityCategory;
+    use crate::sim::animation::SequenceKind;
+    use crate::sim::combat::{AttackTarget, PendingInfantryFire};
     use crate::sim::components::Health;
     use crate::sim::game_entity::{GameEntity, InfantryRuntime};
 
@@ -701,6 +706,36 @@ mod infantry_hash_tests {
         sim_a.entities.insert(a);
         sim_b.entities.insert(b);
         assert_ne!(sim_a.state_hash(), sim_b.state_hash());
+    }
+
+    #[test]
+    fn pending_infantry_fire_changes_hash() {
+        let mut sim_a = Simulation::new();
+        let mut sim_b = Simulation::new();
+        let mut a = infantry_entity(&mut sim_a);
+        let mut b = infantry_entity(&mut sim_b);
+        a.attack_target = Some(AttackTarget::new(99));
+        b.attack_target = Some(AttackTarget::new(99));
+        sim_a.entities.insert(a);
+        sim_b.entities.insert(b);
+        assert_eq!(sim_a.state_hash(), sim_b.state_hash());
+
+        sim_a
+            .entities
+            .get_mut(1)
+            .unwrap()
+            .attack_target
+            .as_mut()
+            .unwrap()
+            .pending_infantry_fire = Some(PendingInfantryFire {
+            sequence: SequenceKind::Attack,
+            fire_frame: 2,
+        });
+        assert_ne!(
+            sim_a.state_hash(),
+            sim_b.state_hash(),
+            "pending infantry fire state must affect state hash"
+        );
     }
 }
 
