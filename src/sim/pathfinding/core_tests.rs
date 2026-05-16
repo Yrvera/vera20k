@@ -4,7 +4,8 @@
 
 use super::*;
 use crate::map::map_file::MapCell;
-use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
+use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid, YR_CELL_LAND_TUNNEL};
+use crate::map::tube_facts::TubeId;
 use crate::rules::locomotor_type::SpeedType;
 use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
 use crate::sim::bridge_state::{BridgeDamageEvent, BridgeRuntimeState};
@@ -21,6 +22,8 @@ fn bridge_test_cell(level: u8, structural: bool, transition: bool, slope_type: u
         ground_level: level,
         bridge_deck_level: level.saturating_add(4),
         slope_type,
+        tube_index: None,
+        low_bridge_tube_cell: false,
     }
 }
 
@@ -435,6 +438,8 @@ fn test_cliff_cost_detours_under_uniform_base() {
             ground_level: 0,
             bridge_deck_level: 0,
             slope_type: 0,
+            tube_index: None,
+            low_bridge_tube_cell: false,
         },
         PathCell {
             ground_walkable: true,
@@ -445,6 +450,8 @@ fn test_cliff_cost_detours_under_uniform_base() {
             ground_level: 4,
             bridge_deck_level: 0,
             slope_type: 0,
+            tube_index: None,
+            low_bridge_tube_cell: false,
         },
         PathCell {
             ground_walkable: true,
@@ -455,6 +462,8 @@ fn test_cliff_cost_detours_under_uniform_base() {
             ground_level: 0,
             bridge_deck_level: 0,
             slope_type: 0,
+            tube_index: None,
+            low_bridge_tube_cell: false,
         },
         // Row 1 (y=1): all flat 0
         PathCell {
@@ -466,6 +475,8 @@ fn test_cliff_cost_detours_under_uniform_base() {
             ground_level: 0,
             bridge_deck_level: 0,
             slope_type: 0,
+            tube_index: None,
+            low_bridge_tube_cell: false,
         },
         PathCell {
             ground_walkable: true,
@@ -476,6 +487,8 @@ fn test_cliff_cost_detours_under_uniform_base() {
             ground_level: 0,
             bridge_deck_level: 0,
             slope_type: 0,
+            tube_index: None,
+            low_bridge_tube_cell: false,
         },
         PathCell {
             ground_walkable: true,
@@ -486,6 +499,8 @@ fn test_cliff_cost_detours_under_uniform_base() {
             ground_level: 0,
             bridge_deck_level: 0,
             slope_type: 0,
+            tube_index: None,
+            low_bridge_tube_cell: false,
         },
         // Row 2 (y=2): all flat 0 (filler so 3x3)
         PathCell {
@@ -497,6 +512,8 @@ fn test_cliff_cost_detours_under_uniform_base() {
             ground_level: 0,
             bridge_deck_level: 0,
             slope_type: 0,
+            tube_index: None,
+            low_bridge_tube_cell: false,
         },
         PathCell {
             ground_walkable: true,
@@ -507,6 +524,8 @@ fn test_cliff_cost_detours_under_uniform_base() {
             ground_level: 0,
             bridge_deck_level: 0,
             slope_type: 0,
+            tube_index: None,
+            low_bridge_tube_cell: false,
         },
         PathCell {
             ground_walkable: true,
@@ -517,6 +536,8 @@ fn test_cliff_cost_detours_under_uniform_base() {
             ground_level: 0,
             bridge_deck_level: 0,
             slope_type: 0,
+            tube_index: None,
+            low_bridge_tube_cell: false,
         },
     ];
     let grid = PathGrid::from_cells(cells, 3, 3);
@@ -542,6 +563,8 @@ fn test_layered_path_cell_bridge_helpers() {
         ground_level: 1,
         bridge_deck_level: 4,
         slope_type: 0,
+        tube_index: None,
+        low_bridge_tube_cell: false,
     };
     assert!(bridge_cell.is_bridge_transition_cell());
     assert!(bridge_cell.is_elevated_bridge_cell());
@@ -565,6 +588,8 @@ fn test_layered_path_cell_bridge_helpers() {
         ground_level: 2,
         bridge_deck_level: 2,
         slope_type: 0,
+        tube_index: None,
+        low_bridge_tube_cell: false,
     };
     assert!(!low_bridge.is_bridge_transition_cell());
     assert!(!low_bridge.is_elevated_bridge_cell());
@@ -1100,6 +1125,8 @@ fn test_is_at_bridge_level_no_bridge() {
         ground_level: 0,
         bridge_deck_level: 0,
         slope_type: 0,
+        tube_index: None,
+        low_bridge_tube_cell: false,
     };
     // Non-bridge cell is never "at bridge level"
     assert!(!is_at_bridge_level(0, &cell));
@@ -1117,6 +1144,8 @@ fn test_is_at_bridge_level_ground_near() {
         ground_level: 0,
         bridge_deck_level: 4,
         slope_type: 0,
+        tube_index: None,
+        low_bridge_tube_cell: false,
     };
     // path_height=0, ground=0 -> diff=0 < 2 -> ground list
     assert!(!is_at_bridge_level(0, &cell));
@@ -1135,6 +1164,8 @@ fn test_is_at_bridge_level_bridge_far() {
         ground_level: 0,
         bridge_deck_level: 4,
         slope_type: 0,
+        tube_index: None,
+        low_bridge_tube_cell: false,
     };
     // path_height=4, ground=0 -> diff=4 >= 2 -> bridge list
     assert!(is_at_bridge_level(4, &cell));
@@ -1153,6 +1184,8 @@ fn test_compute_neighbor_height_no_bridge() {
         ground_level: 2,
         bridge_deck_level: 0,
         slope_type: 0,
+        tube_index: None,
+        low_bridge_tube_cell: false,
     };
     let neighbor = PathCell {
         ground_walkable: true,
@@ -1163,6 +1196,8 @@ fn test_compute_neighbor_height_no_bridge() {
         ground_level: 3,
         bridge_deck_level: 0,
         slope_type: 0,
+        tube_index: None,
+        low_bridge_tube_cell: false,
     };
     // Case 1: neighbor not bridge -> ground_level
     assert_eq!(compute_neighbor_height(2, &parent, &neighbor), 3);
@@ -1179,6 +1214,8 @@ fn test_compute_neighbor_height_parent_on_bridge_deck() {
         ground_level: 0,
         bridge_deck_level: 4,
         slope_type: 0,
+        tube_index: None,
+        low_bridge_tube_cell: false,
     };
     let neighbor = PathCell {
         ground_walkable: true,
@@ -1189,6 +1226,8 @@ fn test_compute_neighbor_height_parent_on_bridge_deck() {
         ground_level: 0,
         bridge_deck_level: 4,
         slope_type: 0,
+        tube_index: None,
+        low_bridge_tube_cell: false,
     };
     // Case 2a: parent on bridge at deck level -> stay on bridge
     assert_eq!(compute_neighbor_height(4, &parent, &neighbor), 4);
@@ -1205,6 +1244,8 @@ fn test_compute_neighbor_height_parent_under_bridge() {
         ground_level: 0,
         bridge_deck_level: 4,
         slope_type: 0,
+        tube_index: None,
+        low_bridge_tube_cell: false,
     };
     let neighbor = PathCell {
         ground_walkable: true,
@@ -1215,6 +1256,8 @@ fn test_compute_neighbor_height_parent_under_bridge() {
         ground_level: 0,
         bridge_deck_level: 4,
         slope_type: 0,
+        tube_index: None,
+        low_bridge_tube_cell: false,
     };
     // Case 2b: parent on bridge cell but at ground level -> stay under
     assert_eq!(compute_neighbor_height(0, &parent, &neighbor), 0);
@@ -1231,6 +1274,8 @@ fn test_compute_neighbor_height_ramp_up() {
         ground_level: 4,
         bridge_deck_level: 0,
         slope_type: 0,
+        tube_index: None,
+        low_bridge_tube_cell: false,
     };
     let neighbor = PathCell {
         ground_walkable: true,
@@ -1241,6 +1286,8 @@ fn test_compute_neighbor_height_ramp_up() {
         ground_level: 0,
         bridge_deck_level: 4,
         slope_type: 0,
+        tube_index: None,
+        low_bridge_tube_cell: false,
     };
     // Case 3: parent not bridge, neighbor is bridge,
     // diff = 4 - 0 = 4, in [2,4] -> ramp up to bridge deck
@@ -1258,6 +1305,8 @@ fn test_compute_neighbor_height_pass_under() {
         ground_level: 0,
         bridge_deck_level: 0,
         slope_type: 0,
+        tube_index: None,
+        low_bridge_tube_cell: false,
     };
     let neighbor = PathCell {
         ground_walkable: true,
@@ -1268,6 +1317,8 @@ fn test_compute_neighbor_height_pass_under() {
         ground_level: 0,
         bridge_deck_level: 4,
         slope_type: 0,
+        tube_index: None,
+        low_bridge_tube_cell: false,
     };
     // Case 3: parent not bridge, neighbor is bridge,
     // diff = 0 - 0 = 0, NOT in [2,4] -> pass under
@@ -1285,6 +1336,8 @@ fn test_compute_neighbor_height_extreme_diff_no_ramp() {
         ground_level: 8,
         bridge_deck_level: 0,
         slope_type: 0,
+        tube_index: None,
+        low_bridge_tube_cell: false,
     };
     let neighbor = PathCell {
         ground_walkable: true,
@@ -1295,6 +1348,8 @@ fn test_compute_neighbor_height_extreme_diff_no_ramp() {
         ground_level: 0,
         bridge_deck_level: 4,
         slope_type: 0,
+        tube_index: None,
+        low_bridge_tube_cell: false,
     };
     // Case 3: diff = 8 - 0 = 8, NOT in [2,4] -> stays at ground (no ramp)
     assert_eq!(compute_neighbor_height(8, &parent, &neighbor), 0);
@@ -1337,6 +1392,7 @@ fn make_resolved_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
         filled_clear: false,
         tileset_index: Some(0),
         land_type: 0,
+        yr_cell_land_type: 0,
         slope_type: 0,
         template_height: 0,
         render_offset_x: 0,
@@ -1365,11 +1421,25 @@ fn make_resolved_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
         bridge_deck_level: 0,
         bridge_layer: None,
         bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+        tube_index: None,
         radar_left: [0, 0, 0],
         radar_right: [0, 0, 0],
         has_damaged_data: false,
         bridgehead_anchor_class_at_load: None,
     }
+}
+
+#[test]
+fn path_grid_preserves_low_bridge_tube_metadata() {
+    let mut cell = make_resolved_cell(0, 0);
+    cell.yr_cell_land_type = YR_CELL_LAND_TUNNEL;
+    cell.tube_index = Some(TubeId(7));
+    let terrain = ResolvedTerrainGrid::from_cells(1, 1, vec![cell]);
+
+    let grid = PathGrid::from_resolved_terrain(&terrain);
+    let path_cell = grid.cell(0, 0).expect("path cell");
+    assert_eq!(path_cell.tube_index, Some(TubeId(7)));
+    assert!(path_cell.is_low_bridge_tube_cell());
 }
 
 // ---------------------------------------------------------------------------
@@ -2536,6 +2606,8 @@ fn diff_1_slope_zero_lower_blocks_going_up() {
             ground_level: 0,
             bridge_deck_level: 0,
             slope_type: 0,
+            tube_index: None,
+            low_bridge_tube_cell: false,
         },
         PathCell {
             ground_walkable: true,
@@ -2546,6 +2618,8 @@ fn diff_1_slope_zero_lower_blocks_going_up() {
             ground_level: 1,
             bridge_deck_level: 0,
             slope_type: 0,
+            tube_index: None,
+            low_bridge_tube_cell: false,
         },
         PathCell {
             ground_walkable: true,
@@ -2556,6 +2630,8 @@ fn diff_1_slope_zero_lower_blocks_going_up() {
             ground_level: 0,
             bridge_deck_level: 0,
             slope_type: 0,
+            tube_index: None,
+            low_bridge_tube_cell: false,
         },
     ];
     let grid = PathGrid::from_cells(cells, 3, 1);
@@ -2583,6 +2659,8 @@ fn diff_1_slope_only_on_upper_cell_still_blocks() {
             ground_level: 0,
             bridge_deck_level: 0,
             slope_type: 0,
+            tube_index: None,
+            low_bridge_tube_cell: false,
         },
         PathCell {
             ground_walkable: true,
@@ -2593,6 +2671,8 @@ fn diff_1_slope_only_on_upper_cell_still_blocks() {
             ground_level: 1,
             bridge_deck_level: 0,
             slope_type: 2,
+            tube_index: None,
+            low_bridge_tube_cell: false,
         },
         PathCell {
             ground_walkable: true,
@@ -2603,6 +2683,8 @@ fn diff_1_slope_only_on_upper_cell_still_blocks() {
             ground_level: 0,
             bridge_deck_level: 0,
             slope_type: 0,
+            tube_index: None,
+            low_bridge_tube_cell: false,
         },
     ];
     let grid = PathGrid::from_cells(cells, 3, 1);
@@ -2628,6 +2710,8 @@ fn diff_1_slope_nonzero_lower_permits() {
             ground_level: 0,
             bridge_deck_level: 0,
             slope_type: 2,
+            tube_index: None,
+            low_bridge_tube_cell: false,
         },
         PathCell {
             ground_walkable: true,
@@ -2638,6 +2722,8 @@ fn diff_1_slope_nonzero_lower_permits() {
             ground_level: 1,
             bridge_deck_level: 0,
             slope_type: 0,
+            tube_index: None,
+            low_bridge_tube_cell: false,
         },
         PathCell {
             ground_walkable: true,
@@ -2648,6 +2734,8 @@ fn diff_1_slope_nonzero_lower_permits() {
             ground_level: 0,
             bridge_deck_level: 0,
             slope_type: 2,
+            tube_index: None,
+            low_bridge_tube_cell: false,
         },
     ];
     let grid = PathGrid::from_cells(cells, 3, 1);
@@ -2671,6 +2759,8 @@ fn diff_1_slope_zero_lower_blocks_going_down() {
             ground_level: 1,
             bridge_deck_level: 0,
             slope_type: 0,
+            tube_index: None,
+            low_bridge_tube_cell: false,
         },
         PathCell {
             ground_walkable: true,
@@ -2681,6 +2771,8 @@ fn diff_1_slope_zero_lower_blocks_going_down() {
             ground_level: 0,
             bridge_deck_level: 0,
             slope_type: 0,
+            tube_index: None,
+            low_bridge_tube_cell: false,
         },
     ];
     let grid = PathGrid::from_cells(cells, 2, 1);
@@ -2715,6 +2807,8 @@ fn l6_canary_unit_at_deck_height_stepping_to_non_bridge_produces_nonzero_diff() 
         ground_level: 0,
         bridge_deck_level: 4,
         slope_type: 0,
+        tube_index: None,
+        low_bridge_tube_cell: false,
     };
     let neighbor = PathCell {
         ground_walkable: true,
@@ -2725,6 +2819,8 @@ fn l6_canary_unit_at_deck_height_stepping_to_non_bridge_produces_nonzero_diff() 
         ground_level: 0,
         bridge_deck_level: 0,
         slope_type: 0,
+        tube_index: None,
+        low_bridge_tube_cell: false,
     };
     let h = compute_neighbor_height(4, &parent, &neighbor);
     assert_eq!(h, 0, "Case 1: non-bridge neighbor returns its ground_level");
@@ -2750,6 +2846,8 @@ fn diff_2_blocks_regardless_of_slope() {
             ground_level: 0,
             bridge_deck_level: 0,
             slope_type: 2,
+            tube_index: None,
+            low_bridge_tube_cell: false,
         },
         PathCell {
             ground_walkable: true,
@@ -2760,6 +2858,8 @@ fn diff_2_blocks_regardless_of_slope() {
             ground_level: 2,
             bridge_deck_level: 0,
             slope_type: 2,
+            tube_index: None,
+            low_bridge_tube_cell: false,
         },
     ];
     let grid = PathGrid::from_cells(cells, 2, 1);
@@ -2783,6 +2883,8 @@ fn diff_3_blocks_regardless_of_slope() {
             ground_level: 0,
             bridge_deck_level: 0,
             slope_type: 2,
+            tube_index: None,
+            low_bridge_tube_cell: false,
         },
         PathCell {
             ground_walkable: true,
@@ -2793,6 +2895,8 @@ fn diff_3_blocks_regardless_of_slope() {
             ground_level: 3,
             bridge_deck_level: 0,
             slope_type: 2,
+            tube_index: None,
+            low_bridge_tube_cell: false,
         },
     ];
     let grid = PathGrid::from_cells(cells, 2, 1);
@@ -2812,6 +2916,8 @@ fn diff_5_blocks_regardless_of_slope() {
             ground_level: 0,
             bridge_deck_level: 0,
             slope_type: 2,
+            tube_index: None,
+            low_bridge_tube_cell: false,
         },
         PathCell {
             ground_walkable: true,
@@ -2822,6 +2928,8 @@ fn diff_5_blocks_regardless_of_slope() {
             ground_level: 5,
             bridge_deck_level: 0,
             slope_type: 2,
+            tube_index: None,
+            low_bridge_tube_cell: false,
         },
     ];
     let grid = PathGrid::from_cells(cells, 2, 1);

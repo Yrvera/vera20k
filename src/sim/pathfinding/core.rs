@@ -20,6 +20,7 @@ use crate::map::bridge_facts::BRIDGE_FLAG_ANCHOR_SELF;
 use crate::map::map_file::MapCell;
 use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
 use crate::map::theater::TilesetLookup;
+use crate::map::tube_facts::TubeId;
 use crate::rules::locomotor_type::MovementZone;
 use crate::sim::bridge_state::BridgeRuntimeState;
 use crate::sim::movement::locomotor::MovementLayer;
@@ -327,7 +328,7 @@ pub(crate) fn check_bridge_traversal(
     }
 }
 
-fn can_enter_layer_context(
+pub(crate) fn can_enter_layer_context(
     terrain_layer: MovementLayer,
     object_list_layer: MovementLayer,
     candidate: &PathCell,
@@ -948,6 +949,10 @@ pub struct PathCell {
     /// Sourced from the TMP tile `ramp_type` byte via `ResolvedTerrainCell.slope_type`.
     /// Read by the A* height-diff legality gate for diff-1 transitions.
     pub slope_type: u8,
+    /// CellClass+0x116 equivalent for low bridge/tube cells.
+    pub tube_index: Option<TubeId>,
+    /// True when this cell has a valid tube index and final YR CellClass LandType 10.
+    pub low_bridge_tube_cell: bool,
 }
 
 impl PathCell {
@@ -992,6 +997,10 @@ impl PathCell {
     pub fn can_enter_bridge_layer_from_ground(&self) -> bool {
         self.bridge_walkable && self.is_bridge_transition_cell()
     }
+
+    pub fn is_low_bridge_tube_cell(&self) -> bool {
+        self.low_bridge_tube_cell
+    }
 }
 
 /// Default ground-only cell: walkable, no bridges, level 0.
@@ -1004,6 +1013,8 @@ const DEFAULT_WALKABLE_CELL: PathCell = PathCell {
     ground_level: 0,
     bridge_deck_level: 0,
     slope_type: 0,
+    tube_index: None,
+    low_bridge_tube_cell: false,
 };
 
 /// Default blocked cell: not walkable, no bridges, level 0.
@@ -1016,6 +1027,8 @@ const DEFAULT_BLOCKED_CELL: PathCell = PathCell {
     ground_level: 0,
     bridge_deck_level: 0,
     slope_type: 0,
+    tube_index: None,
+    low_bridge_tube_cell: false,
 };
 
 /// Unified walkability grid for pathfinding.
@@ -1117,6 +1130,15 @@ impl PathGrid {
     pub fn can_enter_bridge_layer_from_ground(&self, x: u16, y: u16) -> bool {
         self.cell(x, y)
             .is_some_and(PathCell::can_enter_bridge_layer_from_ground)
+    }
+
+    pub fn tube_index_at(&self, x: u16, y: u16) -> Option<TubeId> {
+        self.cell(x, y).and_then(|cell| cell.tube_index)
+    }
+
+    pub fn is_low_bridge_tube_cell(&self, x: u16, y: u16) -> bool {
+        self.cell(x, y)
+            .is_some_and(PathCell::is_low_bridge_tube_cell)
     }
 
     /// Find the nearest ground-walkable cell to `(x, y)`, searching in expanding rings.
@@ -1344,6 +1366,8 @@ impl PathGrid {
                         .map(|runtime| runtime.deck_level)
                         .unwrap_or(cell.bridge_deck_level),
                     slope_type: cell.slope_type,
+                    tube_index: cell.tube_index,
+                    low_bridge_tube_cell: cell.is_low_bridge_tube_cell(),
                 }
             })
             .collect();
@@ -1371,6 +1395,8 @@ impl PathGrid {
                 || a.ground_level != b.ground_level
                 || a.bridge_deck_level != b.bridge_deck_level
                 || a.slope_type != b.slope_type
+                || a.tube_index != b.tube_index
+                || a.low_bridge_tube_cell != b.low_bridge_tube_cell
             {
                 changed.push(((idx % w) as u16, (idx / w) as u16));
             }
@@ -1444,6 +1470,8 @@ impl PathGrid {
                 ground_level,
                 bridge_deck_level,
                 slope_type: 0,
+                tube_index: None,
+                low_bridge_tube_cell: false,
             };
         }
     }

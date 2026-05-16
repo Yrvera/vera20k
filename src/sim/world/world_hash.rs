@@ -239,6 +239,14 @@ impl Simulation {
             id.hash(hasher);
             span.hash(hasher);
         }
+        bridge_state.endpoint_records().len().hash(hasher);
+        for record in bridge_state.endpoint_records() {
+            record.endpoint_a.hash(hasher);
+            record.endpoint_b.hash(hasher);
+            record.group_id.hash(hasher);
+            record.active.hash(hasher);
+            record.bridge_kind.hash(hasher);
+        }
     }
 
     fn hash_overlay_grid(&self, hasher: &mut impl Hasher) {
@@ -616,7 +624,8 @@ mod smudge_hash_tests {
 mod bridge_overlay_hash_tests {
     use super::Simulation;
     use crate::sim::bridge_state::{
-        Axis, BridgeCellRole, BridgeRuntimeCell, BridgeRuntimeState, DamageState,
+        Axis, BridgeCellRole, BridgeEndpointRecord, BridgeRecordKind, BridgeRuntimeCell,
+        BridgeRuntimeState, DamageState,
     };
 
     fn make_bridge_state_with_overlay(byte: u8) -> BridgeRuntimeState {
@@ -685,6 +694,34 @@ mod bridge_overlay_hash_tests {
             sim_a.state_hash(),
             sim_b.state_hash(),
             "bridgehead_anchor_class must contribute to state hash",
+        );
+    }
+
+    #[test]
+    fn bridge_endpoint_record_kind_difference_changes_state_hash() {
+        let mut sim_a = Simulation::new();
+        let mut sim_b = Simulation::new();
+
+        let mut state_a = make_bridge_state_with_overlay(0x18);
+        let mut state_b = make_bridge_state_with_overlay(0x18);
+        let mut record = BridgeEndpointRecord {
+            endpoint_a: (1, 1),
+            endpoint_b: (4, 1),
+            group_id: 1,
+            active: true,
+            bridge_kind: BridgeRecordKind::High,
+        };
+        state_a.test_set_endpoint_records(vec![record]);
+        record.bridge_kind = BridgeRecordKind::Low;
+        state_b.test_set_endpoint_records(vec![record]);
+
+        sim_a.bridge_state = Some(state_a);
+        sim_b.bridge_state = Some(state_b);
+
+        assert_ne!(
+            sim_a.state_hash(),
+            sim_b.state_hash(),
+            "bridge endpoint record kind must contribute to state hash",
         );
     }
 }

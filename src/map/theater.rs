@@ -392,6 +392,14 @@ pub struct TheaterData {
     pub bridge_middle_1: Option<u8>,
     /// `[General] BridgeMiddle2=N` — same for EW.
     pub bridge_middle_2: Option<u8>,
+    /// `[General] Tunnels=N` - theater tile set for tunnel/low-bridge tube cells.
+    pub tunnels: Option<u16>,
+    /// `[General] TrackTunnels=N` - track tunnel tile set.
+    pub track_tunnels: Option<u16>,
+    /// `[General] DirtTunnels=N` - dirt tunnel tile set.
+    pub dirt_tunnels: Option<u16>,
+    /// `[General] DirtTrackTunnels=N` - dirt track tunnel tile set.
+    pub dirt_track_tunnels: Option<u16>,
 }
 
 /// Theater-derived 4-NS + 4-EW tile_id table for HIGH bridge anchor variants.
@@ -661,14 +669,22 @@ pub fn load_theater(asset_manager: &mut AssetManager, theater_name: &str) -> Opt
         parse_general_int(&ini_text, "BridgeMiddle1").and_then(|v| u8::try_from(v).ok());
     let bridge_middle_2: Option<u8> =
         parse_general_int(&ini_text, "BridgeMiddle2").and_then(|v| u8::try_from(v).ok());
+    let tunnels = parse_general_int(&ini_text, "Tunnels");
+    let track_tunnels = parse_general_int(&ini_text, "TrackTunnels");
+    let dirt_tunnels = parse_general_int(&ini_text, "DirtTunnels");
+    let dirt_track_tunnels = parse_general_int(&ini_text, "DirtTrackTunnels");
     if bridge_set.is_some() || wood_bridge_set.is_some() {
         log::info!(
-            "Theater {}: BridgeSet={:?}, WoodBridgeSet={:?}, BridgeMiddle1={:?}, BridgeMiddle2={:?}",
+            "Theater {}: BridgeSet={:?}, WoodBridgeSet={:?}, BridgeMiddle1={:?}, BridgeMiddle2={:?}, Tunnels={:?}/{:?}/{:?}/{:?}",
             theater_name,
             bridge_set,
             wood_bridge_set,
             bridge_middle_1,
             bridge_middle_2,
+            tunnels,
+            track_tunnels,
+            dirt_tunnels,
+            dirt_track_tunnels,
         );
     }
     // Diagnostic: bridge anchor variant rendering needs both BridgeSet
@@ -702,6 +718,10 @@ pub fn load_theater(asset_manager: &mut AssetManager, theater_name: &str) -> Opt
         bridge_top_right_2,
         bridge_middle_1,
         bridge_middle_2,
+        tunnels,
+        track_tunnels,
+        dirt_tunnels,
+        dirt_track_tunnels,
     })
 }
 

@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::PathGrid;
 use super::terrain_cost::TerrainCostGrid;
 use super::zone_build::{
-    build_bridge_redirect, compute_zone_info, extract_adjacency, flood_fill,
+    BridgeRecordFilter, build_bridge_redirect, compute_zone_info, extract_adjacency, flood_fill,
     inject_bridge_adjacency, is_passable,
 };
 use super::zone_hierarchy::SuperZoneMap;
@@ -206,7 +206,13 @@ fn update_category(
 
     // Inject bridge adjacency for ground-capable movement zones.
     if mz.can_use_bridges() {
-        inject_bridge_adjacency(&mut new_adj, ground_slice, bridge_records, width);
+        inject_bridge_adjacency(
+            &mut new_adj,
+            ground_slice,
+            bridge_records,
+            width,
+            BridgeRecordFilter::AllActive,
+        );
     }
 
     let new_info = compute_zone_info(ground_slice, width, height, new_zone_count);
@@ -214,7 +220,13 @@ fn update_category(
 
     // Rebuild bridge redirect.
     let bridge_redirect = if mz.can_use_bridges() {
-        build_bridge_redirect(path_grid, bridge_records, width, height)
+        build_bridge_redirect(
+            path_grid,
+            bridge_records,
+            width,
+            height,
+            BridgeRecordFilter::HighActiveOnly,
+        )
     } else {
         None
     };

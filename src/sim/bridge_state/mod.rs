@@ -11,7 +11,7 @@
 
 pub mod walker;
 
-use crate::map::resolved_terrain::ResolvedTerrainGrid;
+use crate::map::resolved_terrain::{BridgeDirection, ResolvedTerrainGrid};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// 8-neighbor direction offsets used by `apply_damaged_variant_flood_fill`.
@@ -462,6 +462,23 @@ pub struct BridgeRuntimeCell {
     pub bridgehead_anchor_class: BridgeheadAnchorClass,
 }
 
+/// Binary bridge record kind (`BridgeRecord+0x0C`).
+///
+/// Verified against `MapClass__ComputeBridgeZones @ 0x0056D6E0`:
+/// high bridges write `0`, low bridges write `1`. `MapClass__FindBridgeRecord`
+/// skips non-zero kinds, so callers must choose high-only vs all-record use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum BridgeRecordKind {
+    High,
+    Low,
+}
+
+impl Default for BridgeRecordKind {
+    fn default() -> Self {
+        Self::High
+    }
+}
+
 /// A bridge's ground-level endpoint pair for zone connectivity.
 /// Each record connects two ground cells on opposite sides of a bridge.
 /// Mirrors gamemd.exe BridgeRecord at MapClass+0x54 (16 bytes each).
@@ -475,6 +492,15 @@ pub struct BridgeEndpointRecord {
     pub group_id: u16,
     /// Whether the bridge is traversable (false = destroyed).
     pub active: bool,
+    /// High vs low bridge record kind.
+    #[serde(default)]
+    pub bridge_kind: BridgeRecordKind,
+}
+
+impl BridgeEndpointRecord {
+    pub fn is_high(&self) -> bool {
+        self.bridge_kind == BridgeRecordKind::High
+    }
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -700,7 +726,8 @@ impl BridgeRuntimeState {
             });
         }
 
-        let endpoint_records = compute_bridge_endpoints(&group_cells, terrain, width, height);
+        let endpoint_records =
+            compute_bridge_endpoints(&group_cells, terrain, width, height, &cells);
 
         Self {
             width,
@@ -882,6 +909,11 @@ impl BridgeRuntimeState {
     #[cfg(test)]
     pub(crate) fn test_seed_anchor_span(&mut self, span: AnchorSpan) {
         self.anchor_spans.insert(span.id, span);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_set_endpoint_records(&mut self, records: Vec<BridgeEndpointRecord>) {
+        self.endpoint_records = records;
     }
 
     pub fn is_bridge_walkable(&self, rx: u16, ry: u16) -> bool {
@@ -1473,10 +1505,14 @@ fn compute_bridge_endpoints(
     terrain: &ResolvedTerrainGrid,
     width: u16,
     height: u16,
+    runtime_cells: &[Option<BridgeRuntimeCell>],
 ) -> Vec<BridgeEndpointRecord> {
     let mut records = Vec::new();
 
     for (&group_id, members) in group_cells {
+        if bridge_record_kind_for_group(members, terrain) == BridgeRecordKind::Low {
+            continue;
+        }
         // Collect ground cells adjacent to this bridge group.
         let mut ground_neighbors: Vec<(u16, u16)> = Vec::new();
         for &(bx, by) in members {
@@ -1522,10 +1558,109 @@ fn compute_bridge_endpoints(
             endpoint_b: best_b,
             group_id,
             active: true,
+            bridge_kind: BridgeRecordKind::High,
         });
     }
 
+    records.extend(compute_low_bridge_tube_endpoints(
+        terrain,
+        width,
+        height,
+        runtime_cells,
+    ));
+
     records
+}
+
+fn compute_low_bridge_tube_endpoints(
+    terrain: &ResolvedTerrainGrid,
+    width: u16,
+    height: u16,
+    runtime_cells: &[Option<BridgeRuntimeCell>],
+) -> Vec<BridgeEndpointRecord> {
+    let mut records = Vec::new();
+    let mut seen = BTreeSet::new();
+    for cell in terrain.iter() {
+        if !cell.is_low_bridge_tube_cell()
+            || !has_opposite_low_bridge_tube_neighbors(terrain, cell.rx, cell.ry)
+        {
+            continue;
+        }
+        let Some(tube) = terrain.tube_at_cell(cell.rx, cell.ry) else {
+            continue;
+        };
+        let Some(idx) = index_of(width, height, cell.rx, cell.ry) else {
+            continue;
+        };
+        let Some(group_id) = runtime_cells
+            .get(idx)
+            .and_then(|runtime| runtime.as_ref())
+            .and_then(|runtime| runtime.bridge_group_id)
+        else {
+            continue;
+        };
+        let endpoint_a = (cell.rx, cell.ry);
+        let endpoint_b = tube.exit;
+        let key = ordered_endpoint_key(endpoint_a, endpoint_b);
+        if !seen.insert(key) {
+            continue;
+        }
+        records.push(BridgeEndpointRecord {
+            endpoint_a,
+            endpoint_b,
+            group_id,
+            active: true,
+            bridge_kind: BridgeRecordKind::Low,
+        });
+    }
+    records
+}
+
+fn has_opposite_low_bridge_tube_neighbors(terrain: &ResolvedTerrainGrid, rx: u16, ry: u16) -> bool {
+    (neighbor_is_low_bridge_tube(terrain, rx, ry, Direction::E)
+        && neighbor_is_low_bridge_tube(terrain, rx, ry, Direction::W))
+        || (neighbor_is_low_bridge_tube(terrain, rx, ry, Direction::S)
+            && neighbor_is_low_bridge_tube(terrain, rx, ry, Direction::N))
+}
+
+fn neighbor_is_low_bridge_tube(
+    terrain: &ResolvedTerrainGrid,
+    rx: u16,
+    ry: u16,
+    direction: Direction,
+) -> bool {
+    let (dx, dy) = direction.offset();
+    let nx = rx as i32 + dx;
+    let ny = ry as i32 + dy;
+    if nx < 0 || ny < 0 || nx >= terrain.width() as i32 || ny >= terrain.height() as i32 {
+        return false;
+    }
+    terrain
+        .cell(nx as u16, ny as u16)
+        .is_some_and(|cell| cell.is_low_bridge_tube_cell())
+}
+
+fn ordered_endpoint_key(a: (u16, u16), b: (u16, u16)) -> ((u16, u16), (u16, u16)) {
+    if a <= b { (a, b) } else { (b, a) }
+}
+
+fn bridge_record_kind_for_group(
+    members: &[(u16, u16)],
+    terrain: &ResolvedTerrainGrid,
+) -> BridgeRecordKind {
+    let has_explicit_low_layer = members.iter().any(|&(rx, ry)| {
+        terrain.cell(rx, ry).is_some_and(|cell| {
+            cell.bridge_layer
+                .as_ref()
+                .is_some_and(|layer| layer.direction == BridgeDirection::Low)
+        })
+    });
+
+    if has_explicit_low_layer {
+        BridgeRecordKind::Low
+    } else {
+        BridgeRecordKind::High
+    }
 }
 
 fn cardinal_neighbors(
@@ -1699,7 +1834,10 @@ fn compute_adjacent_bridges_dirty(rx: u16, ry: u16, axis: Axis) -> Vec<(u16, u16
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
+    use crate::map::resolved_terrain::{
+        BridgeDirection, BridgeLayer, ResolvedTerrainCell, ResolvedTerrainGrid, YR_CELL_LAND_TUNNEL,
+    };
+    use crate::map::tube_facts::{TubeFact, TubeId};
     use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
 
     /// 5x1 grid: ground at (0,0), bridge at (1,0)-(3,0), ground at (4,0).
@@ -1718,6 +1856,7 @@ mod tests {
                 filled_clear: false,
                 tileset_index: Some(0),
                 land_type: 0,
+                yr_cell_land_type: 0,
                 slope_type: 0,
                 template_height: 0,
                 render_offset_x: 0,
@@ -1746,6 +1885,7 @@ mod tests {
                 bridge_deck_level: if on_bridge { 4 } else { 0 },
                 bridge_layer: None,
                 bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+                tube_index: None,
                 radar_left: [0, 0, 0],
                 radar_right: [0, 0, 0],
                 has_damaged_data: false,
@@ -1753,6 +1893,31 @@ mod tests {
             });
         }
         ResolvedTerrainGrid::from_cells(5, 1, cells)
+    }
+
+    fn make_low_bridge_terrain() -> ResolvedTerrainGrid {
+        let mut tubes = Vec::new();
+        let cells = make_bridge_terrain()
+            .iter()
+            .cloned()
+            .map(|mut cell| {
+                if (1..=3).contains(&cell.rx) {
+                    cell.bridge_deck_level = cell.level;
+                    cell.bridge_layer = Some(BridgeLayer {
+                        overlay_id: 0x4a,
+                        overlay_name: "LOBRDG01".to_string(),
+                        deck_level: cell.level,
+                        direction: BridgeDirection::Low,
+                    });
+                    cell.yr_cell_land_type = YR_CELL_LAND_TUNNEL;
+                    let tube_id = TubeId(tubes.len() as u16);
+                    tubes.push(TubeFact::auto_low_bridge((cell.rx, cell.ry), 2));
+                    cell.tube_index = Some(tube_id);
+                }
+                cell
+            })
+            .collect();
+        ResolvedTerrainGrid::from_cells_with_tubes(5, 1, cells, tubes)
     }
 
     /// 5x1 grid: ground(0,0), bridgehead(1,0), body(2,0), bridgehead(3,0),
@@ -1775,6 +1940,7 @@ mod tests {
                 filled_clear: false,
                 tileset_index: Some(0),
                 land_type: 0,
+                yr_cell_land_type: 0,
                 slope_type: 0,
                 template_height: 0,
                 render_offset_x: 0,
@@ -1803,6 +1969,7 @@ mod tests {
                 bridge_deck_level: if is_body || is_head { 4 } else { 0 },
                 bridge_layer: None,
                 bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+                tube_index: None,
                 radar_left: [0, 0, 0],
                 radar_right: [0, 0, 0],
                 has_damaged_data: false,
@@ -1981,6 +2148,7 @@ mod tests {
         let rec = &records[0];
         assert!(rec.active);
         assert_eq!(rec.group_id, 1);
+        assert_eq!(rec.bridge_kind, BridgeRecordKind::High);
         let endpoints = [rec.endpoint_a, rec.endpoint_b];
         assert!(
             endpoints.contains(&(0, 0)),
@@ -1989,6 +2157,30 @@ mod tests {
         assert!(
             endpoints.contains(&(4, 0)),
             "endpoint_a or _b should be (4,0)"
+        );
+    }
+
+    #[test]
+    fn bridge_endpoint_records_mark_low_groups_low() {
+        let state =
+            BridgeRuntimeState::from_resolved_terrain(&make_low_bridge_terrain(), true, 300);
+        let records = state.endpoint_records();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].bridge_kind, BridgeRecordKind::Low);
+        assert!(!records[0].is_high());
+    }
+
+    #[test]
+    fn low_bridge_tube_record_requires_opposite_neighbors() {
+        let mut terrain = make_low_bridge_terrain();
+        let cell = terrain.cell_mut(3, 0).expect("right low bridge cell");
+        cell.tube_index = None;
+        cell.yr_cell_land_type = 0;
+
+        let state = BridgeRuntimeState::from_resolved_terrain(&terrain, true, 300);
+        assert!(
+            state.endpoint_records().is_empty(),
+            "low bridge records require the verified opposite low-neighbor pattern"
         );
     }
 
@@ -2023,6 +2215,7 @@ mod tests {
             !records[0].active,
             "endpoint of destroyed group {group_id} must deactivate"
         );
+        assert_eq!(records[0].bridge_kind, BridgeRecordKind::High);
     }
 
     #[test]
@@ -2167,6 +2360,7 @@ mod tests {
                     filled_clear: false,
                     tileset_index: Some(0),
                     land_type: 0,
+                    yr_cell_land_type: 0,
                     slope_type: 0,
                     template_height: 0,
                     render_offset_x: 0,
@@ -2195,6 +2389,7 @@ mod tests {
                     bridge_deck_level: if structural { 4 } else { 0 },
                     bridge_layer: None,
                     bridge_facts: facts[idx],
+                    tube_index: None,
                     radar_left: [0, 0, 0],
                     radar_right: [0, 0, 0],
                     has_damaged_data: false,
@@ -2685,6 +2880,7 @@ mod tests {
                     filled_clear: false,
                     tileset_index: Some(0),
                     land_type: 0,
+                    yr_cell_land_type: 0,
                     slope_type: 0,
                     template_height,
                     render_offset_x: 0,
@@ -2713,6 +2909,7 @@ mod tests {
                     bridge_deck_level: 0,
                     bridge_layer: None,
                     bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+                    tube_index: None,
                     radar_left: [0, 0, 0],
                     radar_right: [0, 0, 0],
                     has_damaged_data: false,
@@ -2940,6 +3137,7 @@ mod tests {
                     filled_clear: false,
                     tileset_index: Some(0),
                     land_type: 0,
+                    yr_cell_land_type: 0,
                     slope_type: 0,
                     template_height: if rx == 2 && ry == 2 { 0x0C } else { 0 },
                     render_offset_x: 0,
@@ -2968,6 +3166,7 @@ mod tests {
                     bridge_deck_level: 0,
                     bridge_layer: None,
                     bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+                    tube_index: None,
                     radar_left: [0, 0, 0],
                     radar_right: [0, 0, 0],
                     has_damaged_data: false,
@@ -3054,6 +3253,7 @@ mod tests {
                     filled_clear: false,
                     tileset_index: Some(0),
                     land_type: 0,
+                    yr_cell_land_type: 0,
                     slope_type: 0,
                     template_height: 0,
                     render_offset_x: 0,
@@ -3082,6 +3282,7 @@ mod tests {
                     bridge_deck_level: 0,
                     bridge_layer: None,
                     bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+                    tube_index: None,
                     radar_left: [0, 0, 0],
                     radar_right: [0, 0, 0],
                     has_damaged_data: false,
@@ -3304,6 +3505,7 @@ mod tests {
                     filled_clear: false,
                     tileset_index: Some(0),
                     land_type: 0,
+                    yr_cell_land_type: 0,
                     slope_type: 0,
                     template_height: 0,
                     render_offset_x: 0,
@@ -3332,6 +3534,7 @@ mod tests {
                     bridge_deck_level: 0,
                     bridge_layer: None,
                     bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+                    tube_index: None,
                     radar_left: [0, 0, 0],
                     radar_right: [0, 0, 0],
                     has_damaged_data: true,
@@ -3515,6 +3718,7 @@ mod tests {
                     filled_clear: false,
                     tileset_index: None,
                     land_type: 0,
+                    yr_cell_land_type: 0,
                     slope_type: 0,
                     template_height: 0,
                     render_offset_x: 0,
@@ -3543,6 +3747,7 @@ mod tests {
                     bridge_deck_level: 0,
                     bridge_layer: None,
                     bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+                    tube_index: None,
                     radar_left: [0, 0, 0],
                     radar_right: [0, 0, 0],
                     has_damaged_data: false,
@@ -3637,6 +3842,7 @@ mod repair_tests {
                     filled_clear: false,
                     tileset_index: Some(0),
                     land_type: 0,
+                    yr_cell_land_type: 0,
                     slope_type: 0,
                     template_height: 0,
                     render_offset_x: 0,
@@ -3665,6 +3871,7 @@ mod repair_tests {
                     bridge_deck_level: 0,
                     bridge_layer: None,
                     bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+                    tube_index: None,
                     radar_left: [0, 0, 0],
                     radar_right: [0, 0, 0],
                     has_damaged_data: false,

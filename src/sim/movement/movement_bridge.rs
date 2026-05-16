@@ -180,6 +180,8 @@ mod tests {
             ground_level,
             bridge_deck_level,
             slope_type: 0,
+            tube_index: None,
+            low_bridge_tube_cell: false,
         }
     }
 

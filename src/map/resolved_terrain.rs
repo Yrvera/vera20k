@@ -25,8 +25,11 @@ use crate::map::map_file::{MapCell, MapFile};
 use crate::map::overlay::OverlayEntry;
 use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::map::theater::{self, TheaterData, TileKey};
+use crate::map::tube_facts::{TubeFact, TubeId};
 use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass, TerrainRules};
 use std::collections::{BTreeMap, HashMap, HashSet};
+
+pub const YR_CELL_LAND_TUNNEL: u8 = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Canonical ramp direction from TS++ TIBSUN_DEFINES.H (slope types 1-4).
@@ -77,6 +80,10 @@ pub struct ResolvedTerrainCell {
     pub filled_clear: bool,
     pub tileset_index: Option<u16>,
     pub land_type: u8,
+    /// Final CellClass LandType value for binary predicates that need the
+    /// original gamemd.exe value. Do not confuse this with `land_type`, which
+    /// is the compressed passability-matrix column.
+    pub yr_cell_land_type: u8,
     pub slope_type: u8,
     pub template_height: u8,
     pub render_offset_x: i32,
@@ -125,6 +132,8 @@ pub struct ResolvedTerrainCell {
     pub bridge_deck_level: u8,
     pub bridge_layer: Option<BridgeLayer>,
     pub bridge_facts: BridgeCellFacts,
+    /// CellClass+0x116 equivalent: index into `ResolvedTerrainGrid::tube_facts`.
+    pub tube_index: Option<TubeId>,
     /// Per-tile radar minimap color (left half of isometric diamond), from TMP header.
     pub radar_left: [u8; 3],
     /// Per-tile radar minimap color (right half of isometric diamond), from TMP header.
@@ -167,6 +176,10 @@ impl ResolvedTerrainCell {
     pub fn bridge_flags(&self) -> u32 {
         self.bridge_facts.raw_flags
     }
+
+    pub fn is_low_bridge_tube_cell(&self) -> bool {
+        self.tube_index.is_some() && self.yr_cell_land_type == YR_CELL_LAND_TUNNEL
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -174,14 +187,25 @@ pub struct ResolvedTerrainGrid {
     width: u16,
     height: u16,
     pub cells: Vec<ResolvedTerrainCell>,
+    tube_facts: Vec<TubeFact>,
 }
 
 impl ResolvedTerrainGrid {
     pub fn from_cells(width: u16, height: u16, cells: Vec<ResolvedTerrainCell>) -> Self {
+        Self::from_cells_with_tubes(width, height, cells, Vec::new())
+    }
+
+    pub fn from_cells_with_tubes(
+        width: u16,
+        height: u16,
+        cells: Vec<ResolvedTerrainCell>,
+        tube_facts: Vec<TubeFact>,
+    ) -> Self {
         Self {
             width,
             height,
             cells,
+            tube_facts,
         }
     }
 
@@ -215,6 +239,43 @@ impl ResolvedTerrainGrid {
         self.cells.iter()
     }
 
+    pub fn tube_facts(&self) -> &[TubeFact] {
+        &self.tube_facts
+    }
+
+    pub fn tube(&self, tube_id: TubeId) -> Option<&TubeFact> {
+        self.tube_facts.get(tube_id.as_usize())
+    }
+
+    pub fn tube_at_cell(&self, rx: u16, ry: u16) -> Option<&TubeFact> {
+        let tube_id = self.cell(rx, ry)?.tube_index?;
+        self.tube(tube_id)
+    }
+
+    pub fn step_coord_by_direction(&self, coord: (u16, u16), direction: u8) -> Option<(u16, u16)> {
+        if direction == 8 {
+            return Some(
+                self.tube_at_cell(coord.0, coord.1)
+                    .map_or((0, 0), |tube| tube.exit),
+            );
+        }
+        let (dx, dy) = direction_offset(direction)?;
+        let nx = coord.0 as i32 + dx;
+        let ny = coord.1 as i32 + dy;
+        if nx < 0 || ny < 0 || nx >= self.width as i32 || ny >= self.height as i32 {
+            return None;
+        }
+        Some((nx as u16, ny as u16))
+    }
+
+    pub fn walk_directions_from(&self, start: (u16, u16), directions: &[u8]) -> Option<(u16, u16)> {
+        let mut coord = start;
+        for &direction in directions {
+            coord = self.step_coord_by_direction(coord, direction)?;
+        }
+        Some(coord)
+    }
+
     pub fn build(
         map: &MapFile,
         theater_data: Option<&TheaterData>,
@@ -230,6 +291,7 @@ impl ResolvedTerrainGrid {
                 width: 0,
                 height: 0,
                 cells: Vec::new(),
+                tube_facts: Vec::new(),
             };
         }
 
@@ -299,18 +361,9 @@ impl ResolvedTerrainGrid {
                     level,
                 );
                 let canonical_ramp = canonical_ramp_from_slope_type(metadata.slope_type);
-                // Low bridges override underlying terrain to Road (NoUseTileLandType=true,
-                // Land=Road in rulesmd.ini). This makes water cells under low bridges
-                // passable for ground units.
-                if overlay_effects.is_low_bridge {
-                    metadata.is_water = false;
-                    metadata.is_road = true;
-                    metadata.ground_blocked = false;
-                    metadata.is_cliff_like = false;
-                    metadata.terrain_class = TerrainClass::Road;
-                    metadata.land_type =
-                        crate::sim::pathfinding::passability::LandType::Road.as_index();
-                }
+                // Low bridge overlays are visual/damage facts. Movement is
+                // driven by the final YR cell land type plus TubeClass facts,
+                // not by forcing the surface terrain into ordinary road.
                 // Road/pavement overlays override underlying terrain to Road.
                 // Matches original engine: RecalcLandType sets LandType=Road(1)
                 // when overlay.Wall is true.
@@ -319,6 +372,7 @@ impl ResolvedTerrainGrid {
                     metadata.terrain_class = TerrainClass::Road;
                     metadata.land_type =
                         crate::sim::pathfinding::passability::LandType::Road.as_index();
+                    metadata.yr_cell_land_type = metadata.land_type;
                 }
                 // Tiberium/ore overlays change the effective terrain type for passability.
                 // Matches original engine: RecalcLandType sets cell+0xEC when tiberium present.
@@ -327,6 +381,7 @@ impl ResolvedTerrainGrid {
                 if overlay_effects.has_tiberium {
                     metadata.land_type =
                         crate::sim::pathfinding::passability::LandType::Tiberium.as_index();
+                    metadata.yr_cell_land_type = metadata.land_type;
                     metadata.terrain_class = TerrainClass::Tiberium;
                     if let Some(tib_semantics) =
                         terrain_rules.and_then(|tr| tr.semantics_by_name("Tiberium"))
@@ -347,8 +402,6 @@ impl ResolvedTerrainGrid {
                     zone_class::IMPASSABLE
                 } else if overlay_effects.is_gate {
                     zone_class::IMPASSABLE
-                } else if overlay_effects.is_low_bridge {
-                    zone_class::GROUND
                 } else if metadata.is_water {
                     zone_class::WATER
                 } else if metadata.land_type
@@ -370,6 +423,7 @@ impl ResolvedTerrainGrid {
                     || overlay_effects.overlay_blocks
                     || canonical_ramp.is_some();
                 let bridge_walkable = overlay_effects.has_bridge_deck
+                    && !overlay_effects.is_low_bridge
                     && !terrain_object_blocks
                     && !overlay_effects.overlay_blocks;
                 // Smudges (craters, scorches) only place on tiles whose tileset has
@@ -391,7 +445,7 @@ impl ResolvedTerrainGrid {
                 // the A* can switch Bridge→Ground mid-span and units clip
                 // through the bridge.
                 let bridge_transition = false;
-                let build_blocked = base_build_blocked || bridge_walkable;
+                let build_blocked = base_build_blocked || overlay_effects.has_bridge_deck;
                 cells.push(ResolvedTerrainCell {
                     rx,
                     ry,
@@ -403,6 +457,7 @@ impl ResolvedTerrainGrid {
                     filled_clear: raw.is_none(),
                     tileset_index: metadata.tileset_index,
                     land_type: metadata.land_type,
+                    yr_cell_land_type: metadata.yr_cell_land_type,
                     slope_type: metadata.slope_type,
                     template_height: metadata.template_height,
                     render_offset_x: metadata.render_offset_x,
@@ -435,6 +490,7 @@ impl ResolvedTerrainGrid {
                         .unwrap_or(level),
                     bridge_layer: overlay_effects.bridge_layer,
                     bridge_facts: BridgeCellFacts::default(),
+                    tube_index: None,
                     radar_left: metadata.radar_left,
                     radar_right: metadata.radar_right,
                     has_damaged_data: metadata.has_damaged_data,
@@ -731,10 +787,13 @@ impl ResolvedTerrainGrid {
             }
         }
 
+        let tube_facts = build_auto_low_bridge_tubes(&mut cells, width, height, theater_data);
+
         Self {
             width,
             height,
             cells,
+            tube_facts,
         }
     }
 
@@ -769,6 +828,9 @@ struct TileMetadata {
     has_tmp_metadata: bool,
     /// Mapped land type (0-7) for passability matrix lookups.
     land_type: u8,
+    /// Final gamemd CellClass LandType value where Rust needs the binary
+    /// predicate. This is not the TMP terrain_type byte.
+    yr_cell_land_type: u8,
     /// Raw TMP terrain_type byte (0-15) for rules.ini semantic lookups.
     raw_land_type: u8,
     slope_type: u8,
@@ -799,6 +861,7 @@ impl Default for TileMetadata {
             tileset_index: None,
             has_tmp_metadata: false,
             land_type: 0,
+            yr_cell_land_type: 0,
             raw_land_type: 0,
             slope_type: 0,
             template_height: 0,
@@ -862,6 +925,83 @@ fn normalize_tile_id(tile_index: i32) -> u16 {
         0
     } else {
         tile_index as u16
+    }
+}
+
+const AUTO_TUBE_DIRECTIONS: [u8; 4] = [2, 4, 6, 0];
+
+fn build_auto_low_bridge_tubes(
+    cells: &mut [ResolvedTerrainCell],
+    width: u16,
+    height: u16,
+    theater_data: Option<&TheaterData>,
+) -> Vec<TubeFact> {
+    let mut tubes = Vec::new();
+    for cell in cells.iter_mut() {
+        if cell.yr_cell_land_type != YR_CELL_LAND_TUNNEL || cell.tube_index.is_some() {
+            continue;
+        }
+        let Some(direction) = auto_tube_direction_for_tile(cell.final_tile_index, theater_data)
+        else {
+            continue;
+        };
+        let Some(_idx) = (cell.rx < width && cell.ry < height).then_some(()) else {
+            continue;
+        };
+        let Ok(raw_id) = u16::try_from(tubes.len()) else {
+            log::warn!(
+                "ResolvedTerrain: tube registry exceeded u16::MAX; skipping tube at ({}, {})",
+                cell.rx,
+                cell.ry
+            );
+            continue;
+        };
+        let tube_id = TubeId(raw_id);
+        tubes.push(TubeFact::auto_low_bridge((cell.rx, cell.ry), direction));
+        cell.tube_index = Some(tube_id);
+    }
+    tubes
+}
+
+fn auto_tube_direction_for_tile(
+    final_tile_index: i32,
+    theater_data: Option<&TheaterData>,
+) -> Option<u8> {
+    let tile_id = normalize_tile_id(final_tile_index);
+    let td = theater_data?;
+    for tileset_index in [
+        td.tunnels,
+        td.track_tunnels,
+        td.dirt_tunnels,
+        td.dirt_track_tunnels,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let Some(bounds) = td.lookup.bounds().get(tileset_index as usize) else {
+            continue;
+        };
+        let Some(offset) = tile_id.checked_sub(bounds.start) else {
+            continue;
+        };
+        if offset < 4 {
+            return AUTO_TUBE_DIRECTIONS.get(offset as usize).copied();
+        }
+    }
+    None
+}
+
+fn direction_offset(direction: u8) -> Option<(i32, i32)> {
+    match direction & 7 {
+        0 => Some((0, -1)),
+        1 => Some((1, -1)),
+        2 => Some((1, 0)),
+        3 => Some((1, 1)),
+        4 => Some((0, 1)),
+        5 => Some((-1, 1)),
+        6 => Some((-1, 0)),
+        7 => Some((-1, -1)),
+        _ => None,
     }
 }
 
@@ -955,6 +1095,7 @@ fn metadata_from_set_name(set_name: Option<&str>, tileset_index: Option<u16>) ->
     TileMetadata {
         tileset_index,
         land_type,
+        yr_cell_land_type: land_type,
         terrain_class,
         is_water,
         is_cliff_like,
@@ -968,6 +1109,7 @@ fn metadata_from_set_name(set_name: Option<&str>, tileset_index: Option<u16>) ->
 
 fn merge_tmp_metadata(metadata: &mut TileMetadata, tile: &TmpTile) {
     metadata.raw_land_type = tile.terrain_type;
+    metadata.yr_cell_land_type = yr_cell_land_type_from_tmp(tile.terrain_type);
     metadata.land_type =
         crate::sim::pathfinding::passability::tmp_terrain_to_land_type(tile.terrain_type)
             .as_index();
@@ -980,6 +1122,14 @@ fn merge_tmp_metadata(metadata: &mut TileMetadata, tile: &TmpTile) {
     metadata.radar_left = tile.radar_left;
     metadata.radar_right = tile.radar_right;
     metadata.has_damaged_data = tile.has_damaged_data;
+}
+
+fn yr_cell_land_type_from_tmp(tmp_terrain_type: u8) -> u8 {
+    if tmp_terrain_type == 5 {
+        YR_CELL_LAND_TUNNEL
+    } else {
+        crate::sim::pathfinding::passability::tmp_terrain_to_land_type(tmp_terrain_type).as_index()
+    }
 }
 
 /// Maps TMP ramp_type byte to canonical direction.
@@ -1111,6 +1261,7 @@ mod tests {
     use crate::assets::tmp_file::TmpTile;
     use crate::map::overlay::TerrainObject;
     use crate::map::overlay_types::OverlayTypeRegistry;
+    use crate::map::tube_facts::TubeSource;
     use crate::rules::ini_parser::IniFile;
     use crate::rules::terrain_rules::{TerrainClass, TerrainRules};
     use std::collections::HashSet;
@@ -1150,6 +1301,84 @@ mod tests {
             special_flags: crate::map::basic::SpecialFlagsSection::default(),
             ini: IniFile::from_str(""),
         }
+    }
+
+    fn make_test_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
+        ResolvedTerrainCell {
+            rx,
+            ry,
+            source_tile_index: 0,
+            source_sub_tile: 0,
+            final_tile_index: 0,
+            final_sub_tile: 0,
+            level: 0,
+            filled_clear: false,
+            tileset_index: Some(0),
+            land_type: 0,
+            yr_cell_land_type: 0,
+            slope_type: 0,
+            template_height: 0,
+            render_offset_x: 0,
+            render_offset_y: 0,
+            terrain_class: TerrainClass::Clear,
+            speed_costs: SpeedCostProfile::default(),
+            is_water: false,
+            is_cliff_like: false,
+            is_cliff_redraw: false,
+            variant: 0,
+            is_rough: false,
+            is_road: false,
+            accepts_smudge: false,
+            has_ramp: false,
+            canonical_ramp: None,
+            ground_walk_blocked: false,
+            terrain_object_blocks: false,
+            overlay_blocks: false,
+            zone_type: 0,
+            base_ground_walk_blocked: false,
+            base_build_blocked: false,
+            build_blocked: false,
+            has_bridge_deck: false,
+            bridge_walkable: false,
+            bridge_transition: false,
+            bridge_deck_level: 0,
+            bridge_layer: None,
+            bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+            tube_index: None,
+            radar_left: [0, 0, 0],
+            radar_right: [0, 0, 0],
+            has_damaged_data: false,
+            bridgehead_anchor_class_at_load: None,
+        }
+    }
+
+    #[test]
+    fn direction_8_steps_through_cell_tube() {
+        let mut cells = vec![
+            make_test_cell(0, 0),
+            make_test_cell(1, 0),
+            make_test_cell(2, 0),
+        ];
+        cells[1].yr_cell_land_type = YR_CELL_LAND_TUNNEL;
+        cells[1].tube_index = Some(TubeId(0));
+        let tube = TubeFact {
+            entry: (1, 0),
+            exit: (2, 0),
+            direction: 2,
+            path_steps: Vec::new(),
+            source: TubeSource::AutoLowBridge,
+        };
+        let grid = ResolvedTerrainGrid::from_cells_with_tubes(3, 1, cells, vec![tube]);
+
+        assert_eq!(grid.step_coord_by_direction((1, 0), 8), Some((2, 0)));
+        assert_eq!(grid.walk_directions_from((0, 0), &[2, 8]), Some((2, 0)));
+    }
+
+    #[test]
+    fn direction_8_without_valid_tube_returns_zero_coord() {
+        let grid = ResolvedTerrainGrid::from_cells(1, 1, vec![make_test_cell(0, 0)]);
+
+        assert_eq!(grid.step_coord_by_direction((0, 0), 8), Some((0, 0)));
     }
 
     #[test]
@@ -1379,6 +1608,7 @@ mod tests {
                 filled_clear: false,
                 tileset_index: Some(0),
                 land_type: metadata.land_type,
+                yr_cell_land_type: metadata.yr_cell_land_type,
                 slope_type: metadata.slope_type,
                 template_height: 0,
                 render_offset_x: 0,
@@ -1407,6 +1637,7 @@ mod tests {
                 bridge_deck_level: 0,
                 bridge_layer: None,
                 bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+                tube_index: None,
                 radar_left: [0, 0, 0],
                 radar_right: [0, 0, 0],
                 has_damaged_data: false,

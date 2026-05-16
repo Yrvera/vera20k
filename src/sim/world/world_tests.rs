@@ -77,6 +77,7 @@ fn water_terrain_with_land_type(
                 filled_clear: false,
                 tileset_index: Some(0),
                 land_type,
+                yr_cell_land_type: land_type,
                 slope_type: 0,
                 template_height: 0,
                 render_offset_x: 0,
@@ -105,6 +106,7 @@ fn water_terrain_with_land_type(
                 bridge_deck_level: 0,
                 bridge_layer: None,
                 bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+                tube_index: None,
                 radar_left: [0, 0, 0],
                 radar_right: [0, 0, 0],
                 has_damaged_data: false,
@@ -130,6 +132,7 @@ fn single_bridge_cell(rx: u16, ry: u16, deck_level: u8) -> ResolvedTerrainGrid {
                 filled_clear: false,
                 tileset_index: Some(0),
                 land_type: 0,
+                yr_cell_land_type: 0,
                 slope_type: 0,
                 template_height: 0,
                 render_offset_x: 0,
@@ -158,6 +161,7 @@ fn single_bridge_cell(rx: u16, ry: u16, deck_level: u8) -> ResolvedTerrainGrid {
                 bridge_deck_level: if x == rx && y == ry { deck_level } else { 0 },
                 bridge_layer: None,
                 bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+                tube_index: None,
                 radar_left: [0, 0, 0],
                 radar_right: [0, 0, 0],
                 has_damaged_data: false,
@@ -228,6 +232,7 @@ fn ew_high_bridge_strip_for_dispatch(
                 filled_clear: false,
                 tileset_index: Some(0),
                 land_type: 0,
+                yr_cell_land_type: 0,
                 slope_type: 0,
                 template_height: 0,
                 render_offset_x: 0,
@@ -256,6 +261,7 @@ fn ew_high_bridge_strip_for_dispatch(
                 bridge_deck_level: if on_bridge { deck_level } else { 0 },
                 bridge_layer: None,
                 bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+                tube_index: None,
                 radar_left: [0, 0, 0],
                 radar_right: [0, 0, 0],
                 has_damaged_data: false,
@@ -451,6 +457,7 @@ fn test_spawn_from_map_high_without_bridge_falls_back_to_ground() {
                         filled_clear: false,
                         tileset_index: Some(0),
                         land_type: 0,
+                        yr_cell_land_type: 0,
                         slope_type: 0,
                         template_height: 0,
                         render_offset_x: 0,
@@ -479,6 +486,7 @@ fn test_spawn_from_map_high_without_bridge_falls_back_to_ground() {
                         bridge_deck_level: 0,
                         bridge_layer: None,
                         bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+                        tube_index: None,
                         radar_left: [0, 0, 0],
                         radar_right: [0, 0, 0],
                         has_damaged_data: false,
@@ -1386,6 +1394,10 @@ fn test_bridge_snapshot_roundtrip_preserves_state_after_collapse() {
         .zip(restored.endpoint_records())
     {
         assert_eq!(a.active, b.active, "endpoint record active flag round-trip");
+        assert_eq!(
+            a.bridge_kind, b.bridge_kind,
+            "endpoint record kind round-trip"
+        );
     }
 }
 
@@ -2692,6 +2704,7 @@ fn refresh_vision_heights_copies_path_cell_ground_levels() {
                 filled_clear: false,
                 tileset_index: Some(0),
                 land_type: 0,
+                yr_cell_land_type: 0,
                 slope_type: 0,
                 template_height: 0,
                 render_offset_x: 0,
@@ -2720,6 +2733,7 @@ fn refresh_vision_heights_copies_path_cell_ground_levels() {
                 bridge_deck_level: 0,
                 bridge_layer: None,
                 bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+                tube_index: None,
                 radar_left: [0, 0, 0],
                 radar_right: [0, 0, 0],
                 has_damaged_data: false,
@@ -2944,6 +2958,7 @@ fn bridgehead_base_cell(rx: u16, ry: u16) -> crate::map::resolved_terrain::Resol
         filled_clear: false,
         tileset_index: Some(0),
         land_type: 0,
+        yr_cell_land_type: 0,
         slope_type: 0,
         template_height: 0,
         render_offset_x: 0,
@@ -2972,6 +2987,7 @@ fn bridgehead_base_cell(rx: u16, ry: u16) -> crate::map::resolved_terrain::Resol
         bridge_deck_level: 0,
         bridge_layer: None,
         bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+        tube_index: None,
         radar_left: [0, 0, 0],
         radar_right: [0, 0, 0],
         has_damaged_data: false,

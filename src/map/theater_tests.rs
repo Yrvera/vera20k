@@ -151,6 +151,10 @@ fn synthetic_theater_with_bridge_keys(
         bridge_top_right_2: Some(5),
         bridge_middle_1,
         bridge_middle_2,
+        tunnels: None,
+        track_tunnels: None,
+        dirt_tunnels: None,
+        dirt_track_tunnels: None,
     }
 }
 
