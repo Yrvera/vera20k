@@ -38,6 +38,10 @@ path = "src/bin/bik-survey.rs"
 name = "measure-atlas"
 path = "src/bin/measure-atlas.rs"
 
+[[bin]]
+name = "extract-bridge-frames"
+path = "src/bin/extract-bridge-frames.rs"
+
 [dependencies]
 # --- GPU rendering ---
 # wgpu 27 is the latest version compatible with egui-wgpu 0.33 (requires ^27.0.1).
