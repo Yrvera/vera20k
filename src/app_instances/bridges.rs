@@ -317,10 +317,12 @@ pub(crate) fn build_bridge_railing_instances(
         if !cell.deck_present || matches!(cell.damage_state, DamageState::Destroyed) {
             continue;
         }
-        let Some((kind, sub_idx)) = resolve_bridge_kind_and_sub_idx(state, rx, ry, cell) else {
+        let Some((kind, tile_index, caller_sub_tile)) =
+            resolve_bridge_kind_and_sub_idx(state, rx, ry, cell)
+        else {
             continue;
         };
-        let Some(entry) = atlas.entry(kind, sub_idx) else {
+        let Some(entry) = atlas.entry_for_tile(kind, tile_index, caller_sub_tile) else {
             continue;
         };
 
@@ -369,7 +371,7 @@ fn resolve_bridge_kind_and_sub_idx(
     rx: u16,
     ry: u16,
     cell: &BridgeRuntimeCell,
-) -> Option<(BridgeKind, u8)> {
+) -> Option<(BridgeKind, i32, u8)> {
     let name = state
         .overlay_names
         .get(&cell.overlay_byte)?
@@ -384,12 +386,10 @@ fn resolve_bridge_kind_and_sub_idx(
     } else {
         return None;
     };
-    let sub_idx: u8 = state
-        .resolved_terrain
-        .as_ref()?
-        .cell(rx, ry)?
-        .final_sub_tile;
-    Some((kind, sub_idx))
+    let terrain_cell = state.resolved_terrain.as_ref()?.cell(rx, ry)?;
+    let tile_index = terrain_cell.final_tile_index;
+    let caller_sub_tile = terrain_cell.final_sub_tile;
+    Some((kind, tile_index, caller_sub_tile))
 }
 
 #[cfg(test)]

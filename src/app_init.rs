@@ -40,7 +40,7 @@ use crate::map::triggers::TriggerMap;
 use crate::map::waypoints::{self, Waypoint};
 use crate::render::batch::BatchRenderer;
 use crate::render::bridge_atlas::BridgeAtlas;
-use crate::render::bridge_railing_atlas::BridgeRailingAtlas;
+use crate::render::bridge_railing_atlas::{BridgeRailingAtlas, BridgeRailingTileBases};
 use crate::render::cursor_atlas;
 use crate::render::gpu::GpuContext;
 use crate::render::overlay_atlas::OverlayAtlas;
@@ -386,6 +386,16 @@ pub fn load_map(
     let height_map: BTreeMap<(u16, u16), u8> = resolved_terrain.build_height_map();
     let bridge_height_map: BTreeMap<(u16, u16), u8> = resolved_terrain.build_bridge_height_map();
 
+    let bridge_railing_tile_bases = theater_result
+        .as_ref()
+        .and_then(|td| td.bridge_railing_slope_starts())
+        .map(
+            |(slope_set_pieces_start, slope_set_pieces2_start)| BridgeRailingTileBases {
+                slope_set_pieces_start,
+                slope_set_pieces2_start,
+            },
+        );
+
     // Extract theater palettes for entity/overlay rendering.
     // Move palettes out of TheaterData (no longer needed after tile atlas is built).
     let (unit_palette, overlay_iso_palette, overlay_tiberium_palette) = match theater_result {
@@ -585,6 +595,7 @@ pub fn load_map(
         unit_palette.as_ref(),
         overlay_tiberium_palette.as_ref(),
         rules.as_ref().map(|r| &r.smudge_types),
+        bridge_railing_tile_bases,
     );
 
     if let Some(sim) = &mut simulation {

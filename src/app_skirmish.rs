@@ -13,7 +13,7 @@ use crate::map::overlay_types::{OverlayTypeRegistry, resolve_overlay_name_for_re
 use crate::map::waypoints;
 use crate::render::batch::BatchRenderer;
 use crate::render::bridge_atlas::{self, BridgeAtlas};
-use crate::render::bridge_railing_atlas::{self, BridgeRailingAtlas};
+use crate::render::bridge_railing_atlas::{self, BridgeRailingAtlas, BridgeRailingTileBases};
 use crate::render::gpu::GpuContext;
 use crate::render::overlay_atlas::{self, OverlayAtlas};
 use crate::rules::art_data::ArtRegistry;
@@ -279,6 +279,7 @@ pub(crate) fn build_overlay_atlas_from_map(
     theater_unit_palette: Option<&Palette>,
     theater_tiberium_palette: Option<&Palette>,
     smudge_types: Option<&crate::rules::smudge_type::SmudgeTypeRegistry>,
+    bridge_railing_tile_bases: Option<BridgeRailingTileBases>,
 ) -> (
     Option<OverlayAtlas>,
     Option<BridgeAtlas>,
@@ -498,6 +499,7 @@ pub(crate) fn build_overlay_atlas_from_map(
                 asset_manager,
                 theater_pal,
                 theater_ext,
+                bridge_railing_tile_bases,
             )
         });
 

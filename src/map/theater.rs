@@ -378,6 +378,10 @@ pub struct TheaterData {
     pub bridge_set: Option<u16>,
     /// Tileset index for wooden bridgehead tiles (WoodBridgeSet= in theater INI).
     pub wood_bridge_set: Option<u16>,
+    /// `[General] SlopeSetPieces=N` - TileSet section whose first tile becomes DAT_00ABC1F8.
+    pub slope_set_pieces: Option<u16>,
+    /// `[General] SlopeSetPieces2=N` - TileSet section whose first tile becomes DAT_00AA1098.
+    pub slope_set_pieces2: Option<u16>,
     /// `[General] BridgeTopLeft1=N` - BridgeSet-relative high bridge ramp tile key.
     pub bridge_top_left_1: Option<u16>,
     /// `[General] BridgeTopLeft2=N` - BridgeSet-relative high bridge ramp tile key.
@@ -503,6 +507,24 @@ impl BridgeRampTileTable {
             return None;
         }
         self.match_relative_tile(zero_based + 1, height_byte)
+    }
+}
+
+impl TheaterData {
+    /// Return the absolute tile_id starts for the two railing table ranges
+    /// written from SlopeSetPieces and SlopeSetPieces2 by gamemd.exe.
+    pub fn bridge_railing_slope_starts(&self) -> Option<(u16, u16)> {
+        let first = self
+            .lookup
+            .bounds()
+            .get(self.slope_set_pieces? as usize)?
+            .start;
+        let second = self
+            .lookup
+            .bounds()
+            .get(self.slope_set_pieces2? as usize)?
+            .start;
+        Some((first, second))
     }
 }
 
@@ -650,12 +672,13 @@ pub fn load_theater(asset_manager: &mut AssetManager, theater_name: &str) -> Opt
         iso_palette.clone()
     });
 
-    // Parse BridgeSet and WoodBridgeSet from the theater INI global section.
-    // These are at the top of the file before any [TileSet...] section, so
-    // the IniFile parser skips them. Parse directly from the raw text.
+    // Parse theater [General] tile-set keys directly from the raw text; these
+    // keys are not represented by the TileSet parser.
     let ini_text = String::from_utf8_lossy(&ini_data);
     let bridge_set = parse_general_int(&ini_text, "BridgeSet");
     let wood_bridge_set = parse_general_int(&ini_text, "WoodBridgeSet");
+    let slope_set_pieces = parse_general_int(&ini_text, "SlopeSetPieces");
+    let slope_set_pieces2 = parse_general_int(&ini_text, "SlopeSetPieces2");
     let bridge_top_left_1 = parse_general_int(&ini_text, "BridgeTopLeft1");
     let bridge_top_left_2 = parse_general_int(&ini_text, "BridgeTopLeft2");
     let bridge_top_right_1 = parse_general_int(&ini_text, "BridgeTopRight1");
@@ -712,6 +735,8 @@ pub fn load_theater(asset_manager: &mut AssetManager, theater_name: &str) -> Opt
         ini_data,
         bridge_set,
         wood_bridge_set,
+        slope_set_pieces,
+        slope_set_pieces2,
         bridge_top_left_1,
         bridge_top_left_2,
         bridge_top_right_1,

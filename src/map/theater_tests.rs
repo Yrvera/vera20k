@@ -125,6 +125,40 @@ fn parse_general_int_missing_bridge_middle_returns_none() {
     assert_eq!(super::parse_general_int(ini, "BridgeMiddle2"), None);
 }
 
+#[test]
+fn bridge_railing_slope_starts_use_tileset_bounds() {
+    let ini = b"[TileSet0000]\nTilesInSet=2\nFileName=clear\nSetName=Clear\n\n\
+                [TileSet0001]\nTilesInSet=3\nFileName=slopea\nSetName=Slope A\n\n\
+                [TileSet0002]\nTilesInSet=4\nFileName=slopeb\nSetName=Slope B\n";
+    let lookup = super::parse_tileset_ini(ini, "tem").unwrap();
+    let empty_palette = crate::assets::pal_file::Palette::from_bytes(&[0u8; 768])
+        .expect("768-byte zero palette parses");
+    let td = super::TheaterData {
+        lookup,
+        iso_palette: empty_palette.clone(),
+        unit_palette: empty_palette.clone(),
+        tiberium_palette: empty_palette,
+        extension: "tem",
+        ini_data: Vec::new(),
+        bridge_set: None,
+        wood_bridge_set: None,
+        slope_set_pieces: Some(1),
+        slope_set_pieces2: Some(2),
+        bridge_top_left_1: None,
+        bridge_top_left_2: None,
+        bridge_top_right_1: None,
+        bridge_top_right_2: None,
+        bridge_middle_1: None,
+        bridge_middle_2: None,
+        tunnels: None,
+        track_tunnels: None,
+        dirt_tunnels: None,
+        dirt_track_tunnels: None,
+    };
+
+    assert_eq!(td.bridge_railing_slope_starts(), Some((2, 5)));
+}
+
 /// Helper: build a minimal TheaterData for variant-table tests. BridgeSet
 /// at tileset index 0 with 20 tiles starting at tile_id 0. Palettes are
 /// all-zero (tests never read pixels).
@@ -145,6 +179,8 @@ fn synthetic_theater_with_bridge_keys(
         ini_data: Vec::new(),
         bridge_set: Some(0),
         wood_bridge_set: None,
+        slope_set_pieces: None,
+        slope_set_pieces2: None,
         bridge_top_left_1: Some(1),
         bridge_top_left_2: Some(2),
         bridge_top_right_1: Some(4),
