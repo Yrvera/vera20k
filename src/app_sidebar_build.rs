@@ -521,7 +521,10 @@ pub(crate) fn build_sidebar_cameo_instances(
             let ts = ready_text_scale(s);
             let text_w = state.bit_font.text_width(ready_text) as f32 * ts;
             let strip_w = text_w + READY_PAD_X * 2.0 * ts;
-            let strip_h = (state.bit_font.glyph_height() + READY_PAD_Y * 2.0) * ts;
+            // gamemd `ComputeTextRect` uses `cell_height + 2*y_pad` for the
+            // strip height (cell_height includes the 1 px inter-line gap that
+            // gamemd extends below the glyphs).
+            let strip_h = (state.bit_font.cell_height() + READY_PAD_Y * 2.0) * ts;
             let strip_x = if has_queue_badge {
                 slot.x + co[0]
             } else {
@@ -546,9 +549,8 @@ pub(crate) fn build_sidebar_cameo_instances(
             let ts = ready_text_scale(state.ui_scale);
             let count_str = format!("{}", item.queued_count);
             let text_w = state.bit_font.text_width(&count_str) as f32 * ts;
-            let glyph_h = state.bit_font.glyph_height();
             let strip_w = text_w + QUEUE_COUNT_PAD_X * 2.0 * ts;
-            let strip_h = (glyph_h + QUEUE_COUNT_PAD_Y * 2.0) * ts;
+            let strip_h = (state.bit_font.cell_height() + QUEUE_COUNT_PAD_Y * 2.0) * ts;
             // Right-align anchor at cameo right edge; strip extends x_pad past it.
             let strip_x = slot.x + slot.w - text_w - QUEUE_COUNT_PAD_X * ts;
             overlay_instances.push(SpriteInstance {
@@ -584,7 +586,6 @@ pub(crate) fn build_sidebar_text_instances(
     let ts = ready_text_scale(s);
     let co = [state.camera_x, state.camera_y];
     let mut instances = Vec::new();
-    let glyph_h = state.bit_font.glyph_height();
 
     for item in &view.items {
         let slot = item.rect;
@@ -603,13 +604,14 @@ pub(crate) fn build_sidebar_text_instances(
         // overlap (original: x = cameo_x+2, flags 0x42 vs centered cameo_x+30, 0x142).
         if item.is_ready {
             let text_w = state.bit_font.text_width(ready_text) as f32 * ts;
-            let strip_h = (glyph_h + READY_PAD_Y * 2.0) * ts;
             let text_x = if has_queue_badge {
                 slot.x + READY_PAD_X * ts
             } else {
                 slot.x + (slot.w - text_w) * 0.5
             };
-            let text_y = slot.y + (strip_h - glyph_h * ts) * 0.5;
+            // gamemd anchors text at `cameo_y + y_pad`; the strip extends
+            // y_pad above and (cell_height - glyph_height + y_pad) below.
+            let text_y = slot.y + READY_PAD_Y * ts;
             instances.extend(
                 state
                     .bit_font
