@@ -38,6 +38,7 @@ use crate::map::trigger_graph::TriggerGraph;
 use crate::map::triggers::TriggerMap;
 use crate::map::waypoints::Waypoint;
 use crate::render::batch::BatchRenderer;
+use crate::render::bit_font::BitFont;
 use crate::render::bridge_atlas::BridgeAtlas;
 use crate::render::bridge_railing_atlas::BridgeRailingAtlas;
 use crate::render::egui_integration::EguiIntegration;
@@ -47,7 +48,6 @@ use crate::render::overlay_atlas::OverlayAtlas;
 use crate::render::selection_overlay::SelectionOverlay;
 use crate::render::sidebar_cameo_atlas::SidebarCameoAtlas;
 use crate::render::sidebar_chrome::SidebarChromeSet;
-use crate::render::bit_font::BitFont;
 use crate::render::sprite_atlas::SpriteAtlas;
 use crate::render::tile_atlas::TileAtlas;
 use crate::render::unit_atlas::UnitAtlas;
@@ -140,6 +140,14 @@ pub(crate) struct AppState {
     pub(crate) skirmish_shell_chrome:
         Option<crate::render::skirmish_shell_chrome::SkirmishShellChromeAtlas>,
     /// Minimap renderer — created at map load time.
+    pub(crate) main_menu_shell_state: crate::ui::main_menu_shell::MainMenuShellState,
+    pub(crate) main_menu_shell_chrome:
+        Option<crate::render::main_menu_shell_chrome::MainMenuShellChromeAtlas>,
+    pub(crate) main_menu_movie: Option<crate::render::bink_movie::BinkMovieSurface>,
+    pub(crate) main_menu_movie_base: Option<crate::ui::main_menu_shell::MainMenuMovieBase>,
+    pub(crate) main_menu_movie_last_step: Instant,
+    pub(crate) main_menu_shell_failed: bool,
+    pub(crate) main_menu_show_skirmish_setup: bool,
     pub(crate) minimap: Option<MinimapRenderer>,
     /// True while left-dragging on minimap (camera pan mode).
     pub(crate) minimap_dragging: bool,
@@ -378,6 +386,7 @@ impl App {
             .get(state.skirmish_settings.selected_map_idx)
             .map(|m| m.file_name.clone())
             .unwrap_or_else(|| "auto".to_string());
+        state.skirmish_shell_state.pressed_owner_draw_button = None;
         state.screen = GameScreen::Loading { map_name };
         state.zoom_level = 1.0;
         state.zoom_target = 1.0;
@@ -405,6 +414,16 @@ impl App {
             );
     }
 
+    fn build_startup_asset_manager(config: Option<&GameConfig>) -> Option<AssetManager> {
+        config.and_then(|cfg| match AssetManager::new(&cfg.paths.ra2_dir) {
+            Ok(manager) => Some(manager),
+            Err(err) => {
+                log::warn!("Could not load startup shell assets: {err:#}");
+                None
+            }
+        })
+    }
+
     fn draw_skirmish_shell_dev_toggle(ctx: &egui::Context, enabled: &mut bool) -> bool {
         let mut changed = false;
         egui::Window::new("Developer")
@@ -418,6 +437,41 @@ impl App {
                     .changed();
             });
         changed
+    }
+
+    fn render_egui_main_menu_fallback(
+        state: &mut AppState,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        event_loop: &ActiveEventLoop,
+    ) -> Result<()> {
+        app_transitions::clear_screen(encoder, view);
+        state.egui.begin_frame(&state.window);
+        let action = main_menu::draw_main_menu_with_maps(
+            &state.egui.ctx,
+            &state.available_maps,
+            &mut state.skirmish_settings,
+        );
+        let mut dev_shell_enabled = state.dev_skirmish_shell_enabled;
+        let dev_shell_changed =
+            Self::draw_skirmish_shell_dev_toggle(&state.egui.ctx, &mut dev_shell_enabled);
+        if dev_shell_changed {
+            state.dev_skirmish_shell_enabled = dev_shell_enabled;
+            if state.dev_skirmish_shell_enabled {
+                Self::ensure_skirmish_shell_chrome(state);
+            } else {
+                state.skirmish_shell_state.pressed_owner_draw_button = None;
+            }
+        }
+        state.egui.end_frame_and_render(
+            &state.gpu,
+            encoder,
+            view,
+            &state.window,
+            state.use_software_cursor(),
+        );
+        Self::handle_main_menu_action(state, action, event_loop);
+        Ok(())
     }
 
     fn handle_main_menu_action(
@@ -500,6 +554,99 @@ impl App {
         Self::handle_skirmish_shell_action(state, action, event_loop);
     }
 
+    fn handle_main_menu_shell_mouse_down(state: &mut AppState) {
+        let layout = crate::ui::main_menu_shell::compute_responsive_layout(
+            state.gpu.config.width,
+            state.gpu.config.height,
+        );
+        crate::ui::main_menu_shell::mouse_down(
+            &mut state.main_menu_shell_state,
+            &layout,
+            state.cursor_x.round() as i32,
+            state.cursor_y.round() as i32,
+        );
+        if crate::ui::main_menu_shell::hit_test_owner_draw_button(
+            &layout,
+            state.cursor_x.round() as i32,
+            state.cursor_y.round() as i32,
+        )
+        .is_some()
+        {
+            Self::play_main_menu_button_sound(state);
+        }
+    }
+
+    fn handle_main_menu_shell_mouse_up(state: &mut AppState, event_loop: &ActiveEventLoop) {
+        let layout = crate::ui::main_menu_shell::compute_responsive_layout(
+            state.gpu.config.width,
+            state.gpu.config.height,
+        );
+        let action = crate::ui::main_menu_shell::mouse_up(
+            &mut state.main_menu_shell_state,
+            &layout,
+            state.cursor_x.round() as i32,
+            state.cursor_y.round() as i32,
+        );
+        Self::handle_main_menu_shell_action(state, action, event_loop);
+    }
+
+    fn play_main_menu_button_sound(state: &mut AppState) {
+        let Some(sound_id) = state
+            .rules
+            .as_ref()
+            .and_then(|rules| rules.general.gui_main_button_sound.as_deref())
+        else {
+            return;
+        };
+        let (Some(sfx), Some(assets)) = (&mut state.sfx_player, &state.asset_manager) else {
+            return;
+        };
+        sfx.play_sound(
+            sound_id,
+            &state.sound_registry,
+            assets,
+            &state.audio_indices,
+        );
+    }
+
+    fn handle_main_menu_shell_action(
+        state: &mut AppState,
+        action: crate::ui::main_menu_shell::MainMenuShellAction,
+        event_loop: &ActiveEventLoop,
+    ) {
+        use crate::ui::main_menu_shell::MainMenuShellAction;
+
+        match action {
+            MainMenuShellAction::None => {}
+            MainMenuShellAction::ExitGame => event_loop.exit(),
+            MainMenuShellAction::SinglePlayer => {
+                state.main_menu_show_skirmish_setup = true;
+            }
+            MainMenuShellAction::WwOnline
+            | MainMenuShellAction::Network
+            | MainMenuShellAction::MoviesAndCredits
+            | MainMenuShellAction::Options
+            | MainMenuShellAction::YuriWebsite => {
+                log::info!(
+                    "Main-menu shell action {:?} is preserved but downstream dialog is not implemented yet",
+                    action
+                );
+            }
+        }
+    }
+
+    fn invalidate_main_menu_movie_if_base_changed(state: &mut AppState) {
+        let movie_base =
+            crate::ui::main_menu_shell::movie_base_for_screen_width(state.gpu.config.width);
+        if state
+            .main_menu_movie_base
+            .is_some_and(|base| base != movie_base)
+        {
+            state.main_menu_movie = None;
+            state.main_menu_movie_base = None;
+        }
+    }
+
     pub fn new() -> Self {
         Self { state: None }
     }
@@ -555,6 +702,7 @@ impl ApplicationHandler for App {
                         state.sidebar_layout_spec_base.with_scale(new_scale);
                     state.ui_scale = new_scale;
                 }
+                Self::invalidate_main_menu_movie_if_base_changed(state);
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key {
@@ -569,6 +717,7 @@ impl ApplicationHandler for App {
                         && is_escape
                     {
                         state.dev_skirmish_shell_enabled = false;
+                        state.skirmish_shell_state.pressed_owner_draw_button = None;
                     }
 
                     if in_game && (is_escape || !egui_consumed) {
@@ -588,7 +737,10 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 // When upscaling, remap window coordinates to render-target coordinates.
-                let (sx, sy) = if state.upscale_pass.is_some() {
+                let use_render_source_coords = state.upscale_pass.is_some()
+                    && (state.screen == GameScreen::InGame
+                        || state.screen == GameScreen::SpawnPick);
+                let (sx, sy) = if use_render_source_coords {
                     (
                         state.render_width() as f32 / state.gpu.config.width as f32,
                         state.render_height() as f32 / state.gpu.config.height as f32,
@@ -625,6 +777,18 @@ impl ApplicationHandler for App {
                             Self::handle_skirmish_shell_mouse_down(state);
                         } else {
                             Self::handle_skirmish_shell_mouse_up(state, event_loop);
+                        }
+                    }
+                } else if state.screen == GameScreen::MainMenu
+                    && !state.main_menu_shell_failed
+                    && !state.main_menu_show_skirmish_setup
+                    && !egui_consumed
+                {
+                    if button == MouseButton::Left {
+                        if btn_state.is_pressed() {
+                            Self::handle_main_menu_shell_mouse_down(state);
+                        } else {
+                            Self::handle_main_menu_shell_mouse_up(state, event_loop);
                         }
                     }
                 } else if !egui_consumed && state.screen == GameScreen::SpawnPick {
@@ -680,7 +844,7 @@ impl App {
         let gpu: GpuContext = GpuContext::new(window.clone())?;
         let egui: EguiIntegration = EguiIntegration::new(&gpu, &window);
         let batch_renderer: BatchRenderer = BatchRenderer::new(&gpu);
-        let bit_font = BitFont::fallback_5x7(&gpu, &batch_renderer);
+        let mut bit_font = BitFont::fallback_5x7(&gpu, &batch_renderer);
         let depth_view: wgpu::TextureView = gpu.create_depth_texture();
         let game_config = GameConfig::load().ok();
         let input_delay_ticks: u64 = game_config
@@ -720,19 +884,34 @@ impl App {
                 DEV_SKIRMISH_SHELL_ENV
             );
         }
-        let startup_asset_manager = dev_skirmish_shell_enabled
-            .then(|| {
-                game_config
-                    .as_ref()
-                    .and_then(|cfg| match AssetManager::new(&cfg.paths.ra2_dir) {
-                        Ok(manager) => Some(manager),
-                        Err(err) => {
-                            log::warn!("Could not load startup shell assets: {err:#}");
-                            None
-                        }
-                    })
+        let startup_asset_manager = Self::build_startup_asset_manager(game_config.as_ref());
+        let startup_rules = startup_asset_manager
+            .as_ref()
+            .and_then(crate::app_init_helpers::load_rules_ini);
+        let startup_csf = startup_asset_manager
+            .as_ref()
+            .and_then(crate::app_init::load_csf);
+        let startup_sound_registry = startup_asset_manager
+            .as_ref()
+            .map(crate::app_transitions::load_sound_registry)
+            .unwrap_or_default();
+        let startup_audio_indices = startup_asset_manager
+            .as_ref()
+            .map(crate::app_transitions::load_audio_indices)
+            .unwrap_or_default();
+        let startup_eva_registry = startup_asset_manager
+            .as_ref()
+            .map(crate::app_transitions::load_eva_registry)
+            .unwrap_or_default();
+        if let Some(fnt) = startup_asset_manager.as_ref().and_then(|assets| {
+            assets.get_ref("GAME.FNT").and_then(|data| {
+                crate::assets::fnt_file::FntFile::from_bytes(data)
+                    .map_err(|err| log::warn!("Failed to parse startup GAME.FNT: {err}"))
+                    .ok()
             })
-            .flatten();
+        }) {
+            bit_font = BitFont::from_fnt(&gpu, &batch_renderer, &fnt);
+        }
         let skirmish_shell_chrome = if dev_skirmish_shell_enabled {
             startup_asset_manager.as_ref().and_then(|assets| {
                 crate::render::skirmish_shell_chrome::build_skirmish_shell_chrome_atlas(
@@ -744,6 +923,15 @@ impl App {
         } else {
             None
         };
+        let main_menu_shell_chrome = startup_asset_manager.as_ref().and_then(|assets| {
+            crate::render::main_menu_shell_chrome::build_main_menu_shell_chrome_atlas(
+                &gpu,
+                &batch_renderer,
+                assets,
+            )
+        });
+        let main_menu_shell_failed =
+            startup_asset_manager.is_none() || main_menu_shell_chrome.is_none();
 
         Ok(AppState {
             window,
@@ -801,6 +989,13 @@ impl App {
             dev_skirmish_shell_enabled,
             skirmish_shell_state: crate::ui::skirmish_shell::SkirmishShellState::default(),
             skirmish_shell_chrome,
+            main_menu_shell_state: crate::ui::main_menu_shell::MainMenuShellState::default(),
+            main_menu_shell_chrome,
+            main_menu_movie: None,
+            main_menu_movie_base: None,
+            main_menu_movie_last_step: Instant::now(),
+            main_menu_shell_failed,
+            main_menu_show_skirmish_setup: false,
             minimap: None,
             minimap_dragging: false,
             middle_mouse_panning: false,
@@ -819,10 +1014,10 @@ impl App {
             selection_state: SelectionState::new(),
             path_grid: None,
             animation_sequences: BTreeMap::new(),
-            rules: None,
+            rules: startup_rules,
             art_registry: None,
             infantry_sequences: HashMap::new(),
-            csf: None,
+            csf: startup_csf,
             house_color_map: HashMap::new(),
             house_roster: HouseRoster::default(),
             height_map: BTreeMap::new(),
@@ -849,12 +1044,12 @@ impl App {
             sidebar_scroll_rows: 0,
             mission_announcement: None,
             mission_announcement_deadline: None,
-            asset_manager: None,
+            asset_manager: startup_asset_manager,
             music_player: MusicPlayer::new(),
             sfx_player: SfxPlayer::new(),
-            sound_registry: SoundRegistry::default(),
-            audio_indices: Vec::new(),
-            eva_registry: crate::rules::sound_ini::EvaRegistry::default(),
+            sound_registry: startup_sound_registry,
+            audio_indices: startup_audio_indices,
+            eva_registry: startup_eva_registry,
             sound_events: SoundEventQueue::new(),
             pending_fire_effects: Vec::new(),
             garrison_muzzle_flashes: Vec::new(),
@@ -941,33 +1136,33 @@ impl App {
                         &mut encoder,
                         &view,
                     )?;
-                } else {
-                    app_transitions::clear_screen(&mut encoder, &view);
-                    state.egui.begin_frame(&state.window);
-                    let action = main_menu::draw_main_menu_with_maps(
-                        &state.egui.ctx,
-                        &state.available_maps,
-                        &mut state.skirmish_settings,
-                    );
-                    let mut dev_shell_enabled = state.dev_skirmish_shell_enabled;
-                    let dev_shell_changed = Self::draw_skirmish_shell_dev_toggle(
-                        &state.egui.ctx,
-                        &mut dev_shell_enabled,
-                    );
-                    if dev_shell_changed {
-                        state.dev_skirmish_shell_enabled = dev_shell_enabled;
-                        if state.dev_skirmish_shell_enabled {
-                            Self::ensure_skirmish_shell_chrome(state);
-                        }
-                    }
-                    state.egui.end_frame_and_render(
-                        &state.gpu,
+                } else if !state.main_menu_shell_failed && !state.main_menu_show_skirmish_setup {
+                    match crate::app_main_menu_shell_render::render_main_menu_shell(
+                        state,
                         &mut encoder,
                         &view,
-                        &state.window,
-                        state.use_software_cursor(),
-                    );
-                    Self::handle_main_menu_action(state, action, event_loop);
+                    )? {
+                        crate::app_main_menu_shell_render::MainMenuShellRenderResult::Rendered => {
+                            state.egui.begin_frame(&state.window);
+                            state.egui.end_frame_and_render(
+                                &state.gpu,
+                                &mut encoder,
+                                &view,
+                                &state.window,
+                                state.use_software_cursor(),
+                            );
+                        }
+                        crate::app_main_menu_shell_render::MainMenuShellRenderResult::Fallback => {
+                            Self::render_egui_main_menu_fallback(
+                                state,
+                                &mut encoder,
+                                &view,
+                                event_loop,
+                            )?;
+                        }
+                    }
+                } else {
+                    Self::render_egui_main_menu_fallback(state, &mut encoder, &view, event_loop)?;
                 }
             }
             GameScreen::Loading { map_name } => {

@@ -110,11 +110,8 @@ pub(crate) fn transition_to_in_game(state: &mut AppState) {
     state.sidebar_cameo_atlas = result.sidebar_cameo_atlas;
     state.sidebar_chrome = result.sidebar_chrome;
     if let Some(ref fnt) = result.fnt_file {
-        state.bit_font = crate::render::bit_font::BitFont::from_fnt(
-            &state.gpu,
-            &state.batch_renderer,
-            fnt,
-        );
+        state.bit_font =
+            crate::render::bit_font::BitFont::from_fnt(&state.gpu, &state.batch_renderer, fnt);
     }
 
     // Initialize radar animation from the default (Allied) sidebar chrome atlas.
@@ -287,7 +284,7 @@ pub(crate) fn transition_to_in_game(state: &mut AppState) {
 
 /// Load sound.ini / soundmd.ini and build a SoundRegistry.
 /// YR-first: soundmd.ini takes precedence, sound.ini fills gaps.
-fn load_sound_registry(
+pub(crate) fn load_sound_registry(
     assets: &crate::assets::asset_manager::AssetManager,
 ) -> crate::rules::sound_ini::SoundRegistry {
     use crate::rules::ini_parser::IniFile;
@@ -319,7 +316,7 @@ fn load_sound_registry(
 ///
 /// Tries YR (audiomd) first, then base RA2 (audio). Both are loaded if present
 /// so YR sounds take priority but base RA2 sounds are still available.
-fn load_audio_indices(
+pub(crate) fn load_audio_indices(
     assets: &crate::assets::asset_manager::AssetManager,
 ) -> Vec<crate::assets::audio_bag::AudioIndex> {
     use crate::assets::audio_bag::AudioIndex;
@@ -371,7 +368,7 @@ fn load_audio_indices(
 
 /// Load eva.ini / evamd.ini and build an EvaRegistry.
 /// YR-first: evamd.ini takes precedence, eva.ini fills gaps.
-fn load_eva_registry(
+pub(crate) fn load_eva_registry(
     assets: &crate::assets::asset_manager::AssetManager,
 ) -> crate::rules::sound_ini::EvaRegistry {
     use crate::rules::ini_parser::IniFile;

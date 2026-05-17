@@ -15,6 +15,7 @@ pub mod client_theme;
 pub mod game_screen;
 pub mod in_game_hud;
 pub mod main_menu;
+pub mod main_menu_shell;
 pub mod mission_status;
 pub mod pause_menu;
 pub mod skirmish_shell;

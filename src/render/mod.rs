@@ -16,12 +16,14 @@
 //! - render/ does NOT depend on: ui/, sidebar/, audio/, net/
 
 pub mod batch;
+pub mod bink_movie;
 pub mod bit_font;
 pub mod bridge_atlas;
 pub mod bridge_railing_atlas;
 pub mod cursor_atlas;
 pub mod egui_integration;
 pub mod gpu;
+pub mod main_menu_shell_chrome;
 pub mod minimap;
 mod minimap_helpers;
 pub mod overlay_atlas;
@@ -29,9 +31,9 @@ pub mod palette_textures;
 pub mod radar_anim;
 pub mod screenshot;
 pub mod selection_overlay;
+pub mod shell_text;
 pub mod shroud_buffer;
 pub mod sidebar_cameo_atlas;
-pub mod shell_text;
 pub mod sidebar_chrome;
 pub mod sidebar_text;
 pub mod skirmish_shell_chrome;

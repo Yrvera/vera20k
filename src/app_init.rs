@@ -133,7 +133,7 @@ pub struct MapLoadResult {
     pub asset_manager: Option<AssetManager>,
 }
 
-fn load_csf(asset_manager: &AssetManager) -> Option<crate::assets::csf_file::CsfFile> {
+pub(crate) fn load_csf(asset_manager: &AssetManager) -> Option<crate::assets::csf_file::CsfFile> {
     for name in [
         "ra2md.csf",
         "ra2.csf",
