@@ -621,7 +621,7 @@ pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances 
         .unwrap_or("Ready");
     let ready_tint = {
         let theme = crate::app_sidebar_render::current_sidebar_theme(state);
-        crate::app_sidebar_text::ready_color_for_theme(theme)
+        crate::render::sidebar_text::side_highlight_color(theme)
     };
     let (cameo, gclock, cameo_overlay) = view
         .as_ref()
