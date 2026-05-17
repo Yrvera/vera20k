@@ -8,7 +8,7 @@ use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid, YR_
 use crate::map::tube_facts::{TubeFact, TubeId};
 use crate::rules::locomotor_type::SpeedType;
 use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
-use crate::sim::bridge_state::{BridgeDamageEvent, BridgeRuntimeState};
+use crate::sim::bridge_state::BridgeRuntimeState;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
 
@@ -144,6 +144,52 @@ fn bridge_traversal_diff_zero_blocks_when_path_height_disagrees() {
     );
 
     assert!(!result.allowed);
+}
+
+#[test]
+fn bridge_traversal_diff_zero_blocks_forward2_at_deck_height() {
+    let parent = bridge_test_cell(0, true, true, 0);
+    let forward2 = bridge_test_cell(0, true, false, 0);
+    let grid = PathGrid::from_cells(vec![parent, forward2], 2, 1);
+
+    let result = check_bridge_traversal(
+        &grid,
+        BridgeTraversalInput {
+            candidate: grid.cell(1, 0).unwrap(),
+            candidate_coord: (1, 0),
+            direction: 2,
+            path_height: 4,
+            parent: Some((grid.cell(0, 0).unwrap(), (0, 0))),
+        },
+    );
+
+    assert!(
+        !result.allowed,
+        "Forward2-style structural cells lack the transition flag and must not be deck destinations"
+    );
+}
+
+#[test]
+fn bridge_traversal_diff_zero_allows_transition_at_deck_height() {
+    let parent = bridge_test_cell(0, true, true, 0);
+    let transition = bridge_test_cell(0, true, true, 0);
+    let grid = PathGrid::from_cells(vec![parent, transition], 2, 1);
+
+    let result = check_bridge_traversal(
+        &grid,
+        BridgeTraversalInput {
+            candidate: grid.cell(1, 0).unwrap(),
+            candidate_coord: (1, 0),
+            direction: 2,
+            path_height: 4,
+            parent: Some((grid.cell(0, 0).unwrap(), (0, 0))),
+        },
+    );
+
+    assert!(
+        result.allowed,
+        "Stamped transition cells remain valid deck destinations"
+    );
 }
 
 #[test]
@@ -884,6 +930,7 @@ fn test_layered_path_transitions_onto_bridge_and_stays_on_deck() {
                 ground_walk_blocked: true,
                 build_blocked: true,
                 bridge_walkable: true,
+                bridge_transition: true,
                 bridge_deck_level: 4,
                 has_bridge_deck: true,
                 is_water: true,
@@ -978,6 +1025,7 @@ fn test_layered_path_rebuild_blocks_destroyed_bridge_deck() {
                 build_blocked: true,
                 base_build_blocked: true,
                 bridge_walkable: true,
+                bridge_transition: true,
                 bridge_deck_level: 4,
                 has_bridge_deck: true,
                 is_water: true,
@@ -1904,7 +1952,7 @@ fn soft_blocker_cost_uses_selected_bridge_object_list_layer() {
     let mut grid = PathGrid::new(7, 3);
     for y in 0..3 {
         for x in 0..7 {
-            grid.set_cell_for_test(x, y, 0, true, false);
+            grid.set_cell_for_test(x, y, 0, true, true);
         }
     }
 
@@ -2418,6 +2466,7 @@ fn test_height_based_bridge_routing_deck_at_4() {
                 ground_walk_blocked: true,
                 is_water: true,
                 bridge_walkable: true,
+                bridge_transition: true,
                 bridge_deck_level: 4,
                 has_bridge_deck: true,
                 ..make_resolved_cell(2, 0)
@@ -2487,6 +2536,7 @@ fn test_cliff_cost_uses_effective_height_not_ground_level() {
             ResolvedTerrainCell {
                 level: 0,
                 bridge_walkable: true,
+                bridge_transition: true,
                 bridge_deck_level: 4,
                 has_bridge_deck: true,
                 ..make_resolved_cell(1, 0)
@@ -2522,12 +2572,23 @@ fn test_cliff_cost_uses_effective_height_not_ground_level() {
 // ============================================================================
 // Bridge-locomotor A* regression tests (Plan: 2026-05-11 G3/G4 fixes).
 // Pin: diff-2 and diff-3 blocked, diff-4 with bridgehead allowed, diff-4
-// without bridgehead rejected, body-to-body diagonals still allowed.
+// without bridgehead rejected, stamped transition cells remain usable, and
+// Forward2-style non-transition structural deck destinations are rejected.
 // ============================================================================
 
 fn make_grid_for_bridge_test() -> PathGrid {
     // 10x10 grid. Default cells are ground_walkable at height 0.
     PathGrid::new(10, 10)
+}
+
+fn direction6_bridge_row_grid() -> PathGrid {
+    let mut g = make_grid_for_bridge_test();
+    g.set_cell_for_test(0, 1, 0, true, false); // Forward2/min-X stamped edge lane.
+    g.set_cell_for_test(1, 1, 0, true, true); // Forward1.
+    g.set_cell_for_test(2, 1, 0, true, true); // Raw BRIDGE2 anchor.
+    g.set_cell_for_test(3, 1, 0, true, true); // Opposite.
+    g.set_cell_for_test(4, 1, 0, false, false); // ExtraDir6 side marker, not deck.
+    g
 }
 
 #[test]
@@ -2576,7 +2637,7 @@ fn astar_allows_height_diff_4_with_bridgehead() {
     let mut g = make_grid_for_bridge_test();
     g.set_cell_for_test(1, 1, 4, false, false);
     g.set_cell_for_test(2, 1, 0, true, true); // bridgehead
-    g.set_cell_for_test(3, 1, 0, true, false); // body
+    g.set_cell_for_test(3, 1, 0, true, true); // stamped deck
     let result = astar_search(
         &g,
         (1, 1),
@@ -2622,30 +2683,77 @@ fn astar_blocks_height_diff_4_without_bridgehead() {
 }
 
 #[test]
-fn astar_allows_body_to_body_diagonal() {
-    // Two adjacent body cells (bridge_walkable, no transition). Unit already on
-    // bridge can move between them. Regression: G3 fix must NOT over-tighten.
-    let mut g = make_grid_for_bridge_test();
-    g.set_cell_for_test(0, 1, 4, false, false); // ground at h=4
-    g.set_cell_for_test(1, 1, 0, true, true); // bridgehead
-    g.set_cell_for_test(2, 1, 0, true, false); // body
-    g.set_cell_for_test(2, 2, 0, true, false); // body diagonal
-    g.set_cell_for_test(3, 2, 0, true, true); // exit bridgehead
-    g.set_cell_for_test(4, 2, 4, false, false); // ground at h=4
+fn bridge_traversal_predicate_uses_height_for_structural_deck_gate() {
+    let current = bridge_test_cell(0, true, true, 0);
+    let forward2 = bridge_test_cell(0, true, false, 0);
+
+    assert!(
+        needs_bridge_traversal_for_edge(4, &current, &forward2),
+        "Deck-height structural moves must run CheckBridgeTraversal"
+    );
+    assert!(
+        !needs_bridge_traversal_for_edge(0, &current, &forward2),
+        "Ground-height movement under a structural bridge is not the deck-only Forward2 gate"
+    );
+}
+
+#[test]
+fn astar_direction6_uses_non_anchor_transition_cells() {
+    let g = direction6_bridge_row_grid();
+
+    assert!(g.cell(0, 1).unwrap().bridge_walkable);
+    assert!(
+        !g.cell(0, 1).unwrap().transition,
+        "Forward2 is stamped structural but not a transition cell"
+    );
+    assert!(
+        g.cell(1, 1).unwrap().transition,
+        "Forward1 remains a stamped transition cell"
+    );
+    assert!(
+        !g.is_walkable_on_layer(4, 1, MovementLayer::Bridge),
+        "ExtraDir6 side marker must not become a raw-anchor-only bridge lane"
+    );
+
     let result = astar_search(
         &g,
-        (0, 1),
-        MovementLayer::Ground,
-        (4, 2),
+        (3, 1),
+        MovementLayer::Bridge,
+        (1, 1),
         &AStarOptions::default(),
     );
-    assert!(result.is_some(), "A* must find a path across the bridge");
+    let path = result.expect("A* must path across stamped transition cells");
+    let destination = path.last().unwrap();
+    assert_eq!((destination.rx, destination.ry), (1, 1));
+    assert_eq!(destination.layer, MovementLayer::Bridge);
+}
+
+#[test]
+fn astar_direction6_rejects_forward2_bridge_deck_destination() {
+    let g = direction6_bridge_row_grid();
+
+    let result = astar_search(
+        &g,
+        (2, 1),
+        MovementLayer::Bridge,
+        (0, 1),
+        &AStarOptions::default(),
+    );
+
+    if let Some(path) = result {
+        assert!(
+            !path
+                .iter()
+                .any(|step| (step.rx, step.ry) == (0, 1) && step.layer == MovementLayer::Bridge),
+            "A* must not route deck vehicles into Forward2/min-X structural edge lane"
+        );
+    }
 }
 
 #[test]
 fn astar_blocks_structural_body_to_body_bad_height_jump() {
-    let parent = bridge_test_cell(0, true, false, 0);
-    let candidate = bridge_test_cell(4, true, false, 0);
+    let parent = bridge_test_cell(0, true, true, 0);
+    let candidate = bridge_test_cell(2, true, true, 0);
     let grid = PathGrid::from_cells(vec![parent, candidate], 2, 1);
 
     let result = astar_search(
@@ -2658,7 +2766,7 @@ fn astar_blocks_structural_body_to_body_bad_height_jump() {
 
     assert!(
         result.is_none(),
-        "A* must not bypass height legality for structural bridge body cells"
+        "A* must not bypass height legality for structural bridge cells"
     );
 }
 

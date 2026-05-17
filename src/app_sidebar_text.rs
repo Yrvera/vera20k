@@ -16,22 +16,6 @@ const CREDITS_FONT_SIZE: f32 = 9.4;
 const CREDITS_CENTER_Y_FROM_RADAR_1X: f32 = -36.0;
 const CREDITS_TEXT_COLOR: Color32 = Color32::from_rgb(230, 240, 255);
 
-/// Side-dependent text colors for "Ready" labels.
-/// Stored as [f32; 3] tints for sprite rendering.
-const READY_COLOR_ALLIED: [f32; 3] = [164.0 / 255.0, 210.0 / 255.0, 1.0];
-const READY_COLOR_SOVIET: [f32; 3] = [1.0, 1.0, 0.0];
-const READY_COLOR_YURI: [f32; 3] = [1.0, 1.0, 0.0];
-
-/// Return the ready text tint for a given sidebar theme as `[f32; 3]`.
-pub fn ready_color_for_theme(theme: crate::render::sidebar_chrome::SidebarTheme) -> [f32; 3] {
-    use crate::render::sidebar_chrome::SidebarTheme;
-    match theme {
-        SidebarTheme::Allied => READY_COLOR_ALLIED,
-        SidebarTheme::Soviet => READY_COLOR_SOVIET,
-        SidebarTheme::Yuri => READY_COLOR_YURI,
-    }
-}
-
 /// Draw sidebar text overlays via egui (currently credits label only).
 /// "Ready" labels are rendered as sprite instances in app_sidebar_build.rs.
 pub fn draw_sidebar_text_overlay(ctx: &egui::Context, view: &SidebarView, ui_scale: f32) {

@@ -46,8 +46,10 @@ pub enum RampDirection {
     South,
 }
 
-/// Bridge direction determines height offset and rendering behavior.
-/// EW frames 0-3, NS frames 9-12. Low bridges have no height offset.
+/// Bridge direction as expressed by the map overlay class. Do not derive high
+/// bridge SHP body frames directly from these labels; rendering follows the
+/// runtime bridge state-byte family (`Axis::NS => 0..=8`, `Axis::EW => 9..=17`).
+/// Low bridges have no height offset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BridgeDirection {
     /// BRIDGE1, BRIDGEB1 — EW direction. Height offset = CellHeight + 1 = 16px.

@@ -12,8 +12,9 @@ use crate::ui::client_theme;
 const SPEED_PRESETS: &[(u32, &str)] = &[
     (15, "15 tps (RA2 native)"),
     (30, "30 tps"),
-    (45, "45 tps (default)"),
+    (45, "45 tps"),
     (60, "60 tps"),
+    (63, "63 tps (YR default)"),
     (100, "100 tps"),
     (200, "200 tps"),
     (500, "500 tps"),

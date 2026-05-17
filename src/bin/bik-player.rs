@@ -19,6 +19,7 @@ use vera20k::assets::bink_decode::BinkDecoder;
 use vera20k::assets::bink_file::BinkFile;
 use vera20k::assets::mix_hash::{mix_hash, westwood_hash};
 use vera20k::assets::xcc_database::XccDatabase;
+use vera20k::render::bink_movie::frame_to_rgba;
 use vera20k::util::config::GameConfig;
 
 /// One physical `.bik` entry in a loaded MIX archive.
@@ -261,7 +262,7 @@ impl eframe::App for BikPlayerApp {
         ctx.request_repaint();
 
         if let Some(decoder) = &self.decoder {
-            let rgba = bik_player_playback::frame_to_rgba(&decoder.cur);
+            let rgba = frame_to_rgba(&decoder.cur);
             let img = egui::ColorImage::from_rgba_unmultiplied(
                 [decoder.width() as usize, decoder.height() as usize],
                 &rgba,

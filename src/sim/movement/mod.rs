@@ -58,6 +58,7 @@ pub mod drive_track;
 pub mod droppod_movement;
 pub mod facing_class;
 pub mod group_destination;
+pub mod homing_movement;
 pub mod jumpjet_movement;
 pub mod locomotor;
 pub mod parachute_descent;

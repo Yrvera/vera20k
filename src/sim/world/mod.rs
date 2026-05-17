@@ -43,6 +43,7 @@ use crate::sim::intern::InternedId;
 use crate::sim::movement;
 use crate::sim::movement::air_movement;
 use crate::sim::movement::droppod_movement;
+use crate::sim::movement::homing_movement;
 use crate::sim::movement::parachute_descent;
 use crate::sim::movement::rocket_movement;
 use crate::sim::movement::teleport_movement;
@@ -175,22 +176,35 @@ pub enum SimSoundEvent {
     BridgeRepaired { rx: u16, ry: u16, owner: InternedId },
 }
 
-/// A fire event produced during combat — carries data for render-side
-/// muzzle flash positioning and future projectile origin computation.
+/// A fire event produced during combat — carries firing-tick facts for
+/// render-side muzzle flash positioning and future projectile origin computation.
 ///
-/// The sim emits this whenever a weapon fires. The render/app layer
-/// resolves the screen-space muzzle position from the attacker's
-/// ArtEntry FLH + facing.
+/// The sim emits this whenever a weapon fires. Non-garrison fields snapshot
+/// the selected weapon, attacker type/facing/veterancy, and optional report
+/// sound id at the authoritative fire tick. Garrison fields remain
+/// fire-port/occupant-specific so the app layer can keep the existing
+/// `OccupantAnim` path separate.
 #[derive(Debug, Clone)]
 pub struct SimFireEvent {
     /// Stable ID of the entity that fired.
     pub attacker_id: u64,
+    /// Type id of the firing object at the fire tick.
+    pub attacker_type_ref: InternedId,
     /// Which weapon slot was used (Primary or Secondary).
     pub weapon_slot: WeaponSlot,
+    /// Selected weapon section id.
+    pub weapon_id: InternedId,
+    /// Firing object's facing at the fire tick.
+    pub facing: u8,
+    /// Firing object's veterancy at the fire tick.
+    pub veterancy: u16,
     /// What was fired at — entity stable ID or ground cell coord.
     /// For projectile trajectory: Entity → look up entity position; Cell →
     /// use cell center as the destination.
     pub target: crate::sim::combat::TargetKind,
+    /// Non-garrison weapon report sound id. Garrison keeps the existing
+    /// `SimSoundEvent::WeaponFired` path in this pass.
+    pub report_sound_id: Option<InternedId>,
     /// For garrison fire: which muzzle port index fired (for fire port positioning).
     /// None = normal weapon FLH, Some(idx) = garrison fire port index.
     pub garrison_muzzle_index: Option<u8>,
@@ -1084,6 +1098,11 @@ impl Simulation {
         );
         let _rocket_detonations =
             rocket_movement::tick_rocket_movement(&mut self.entities, tick_ms, self.tick);
+        // Homing missile state machine. Runs in the same air/special-movement
+        // phase as rocket_movement; detonation list is currently unused — the
+        // production projectile-spawn dispatch lands in a separate follow-up.
+        let _homing_detonations =
+            homing_movement::tick_homing_movement(&mut self.entities, tick_ms, self.tick);
         droppod_movement::tick_droppod_movement(&mut self.entities, tick_ms, self.tick);
         if let Some(rules) = rules {
             parachute_descent::tick_parachute_descent(
@@ -1147,6 +1166,8 @@ impl Simulation {
                             shp_name: wake_id,
                             rx,
                             ry,
+                            sub_x: crate::util::lepton::CELL_CENTER_LEPTON,
+                            sub_y: crate::util::lepton::CELL_CENTER_LEPTON,
                             z,
                             frame: 0,
                             total_frames: wake_frames,
@@ -1327,6 +1348,8 @@ impl Simulation {
                     shp_name: fx.shp_name,
                     rx: fx.rx,
                     ry: fx.ry,
+                    sub_x: fx.sub_x,
+                    sub_y: fx.sub_y,
                     z: fx.z,
                     frame: 0,
                     total_frames: frames,

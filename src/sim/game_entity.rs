@@ -153,6 +153,12 @@ pub struct GameEntity {
     pub low_bridge_tube_state: Option<LowBridgeTubeMovementState>,
     /// Rocket/missile flight state machine (launch/ascend/terminal/detonate).
     pub rocket_state: Option<RocketState>,
+    /// Homing missile flight state. `Some` while this entity is an in-flight
+    /// homing projectile; `None` otherwise. Distinct from `rocket_state` —
+    /// ballistic-arc rockets keep using `rocket_state`; only `Ranged=yes`
+    /// projectiles attach a `HomingState`.
+    #[serde(default)]
+    pub homing_state: Option<crate::sim::movement::homing_movement::HomingState>,
     /// Drop pod descent state machine (falling/landing).
     pub droppod_state: Option<DropPodState>,
     /// Parachute descent state. `Some` while a paradropped unit is descending
@@ -216,10 +222,14 @@ pub struct GameEntity {
     /// Combined passenger/transport role — replaces separate passenger_cargo,
     /// transport_id, and boarding_state fields. See `PassengerRole` variants.
     pub passenger_role: PassengerRole,
-    /// Active IFV weapon index override. When Some(n), the transport uses
-    /// weapon_list[n] instead of its default Primary weapon. Set when a
-    /// Gunner=yes transport has a passenger with IFVMode=N.
-    pub ifv_weapon_index: Option<u32>,
+    /// Weapon-selection override applied when this entity is acting as a
+    /// transport firing a passenger's weapon. See `WeaponOverride` for the
+    /// semantics of each variant — `IfvSlot` for Gunner=yes transports,
+    /// `OpenTransport` for open-topped non-Gunner transports.
+    ///
+    /// Set by `passenger.rs` when a passenger boards; cleared when the
+    /// transport is empty.
+    pub weapon_override: Option<crate::sim::combat::combat_weapon::WeaponOverride>,
     /// Temporary VXL model override for visual-only state changes.
     /// When Some, the renderer should use this type's VXL model instead of `type_ref`.
     /// Set during refinery unloading (UnloadingClass= from rules.ini).
@@ -336,6 +346,7 @@ impl GameEntity {
             tunnel_state: None,
             low_bridge_tube_state: None,
             rocket_state: None,
+            homing_state: None,
             droppod_state: None,
             parachute_state: None,
             invulnerability: None,
@@ -360,7 +371,7 @@ impl GameEntity {
             blocked_scatter_timer: 0,
             garrison_original_owner: None,
             passenger_role: PassengerRole::None,
-            ifv_weapon_index: None,
+            weapon_override: None,
             display_type_override: None,
             capture_target: None,
             c4_plant: None,

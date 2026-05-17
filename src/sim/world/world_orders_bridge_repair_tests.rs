@@ -178,6 +178,7 @@ fn spawn_cabhut(sim: &mut Simulation, rx: u16, ry: u16) -> u64 {
 }
 
 const BRIDGE_CELLS: &[(u16, u16)] = &[(10, 9), (10, 10), (10, 11), (10, 12), (10, 13)];
+const ENGINEER_REPAIR_STRIP_CELLS: &[(u16, u16)] = &[(10, 9), (10, 10), (10, 11)];
 
 fn seed_destroyed_bridge(sim: &mut Simulation) {
     seed_bridge_with_state(sim, DamageState::Destroyed);
@@ -202,6 +203,13 @@ fn seed_bridge_with_state(sim: &mut Simulation, state: DamageState) {
         bridge_group_id: 1,
     };
     bs.test_seed_anchor_span(span);
+    let overlay_byte = match state {
+        DamageState::Destroyed => 0xE7,
+        DamageState::Damaged | DamageState::PartialCollapseA | DamageState::PartialCollapseB => {
+            0xD1
+        }
+        DamageState::Healthy { .. } => 0,
+    };
     for &(rx, ry) in BRIDGE_CELLS {
         let role = if (rx, ry) == (10, 10) {
             BridgeCellRole::Anchor
@@ -220,7 +228,7 @@ fn seed_bridge_with_state(sim: &mut Simulation, state: DamageState) {
                 axis: Some(Axis::NS),
                 role,
                 anchor_span_id: Some(1),
-                overlay_byte: 0,
+                overlay_byte,
                 damaged_variant: false,
                 bridgehead_anchor_class: crate::sim::bridge_state::BridgeheadAnchorClass::Variant0,
             },
@@ -256,7 +264,7 @@ fn engineer_enters_cabhut_repairs_bridge() {
     );
 
     let bs = sim.bridge_state.as_ref().unwrap();
-    for &(rx, ry) in BRIDGE_CELLS {
+    for &(rx, ry) in ENGINEER_REPAIR_STRIP_CELLS {
         match bs.cell(rx, ry).unwrap().damage_state {
             DamageState::Healthy { variant } => assert!(
                 variant <= 3,
@@ -322,7 +330,7 @@ fn two_engineers_both_repair_same_tick() {
     assert_eq!(repair_events, 2, "both engineers emit a sound event");
 
     let bs = sim.bridge_state.as_ref().unwrap();
-    for &(rx, ry) in BRIDGE_CELLS {
+    for &(rx, ry) in ENGINEER_REPAIR_STRIP_CELLS {
         assert!(matches!(
             bs.cell(rx, ry).unwrap().damage_state,
             DamageState::Healthy { .. }

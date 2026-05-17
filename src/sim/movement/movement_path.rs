@@ -10,11 +10,11 @@ use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::locomotor_type::{LocomotorKind, MovementZone};
 use crate::sim::components::MovementTarget;
 use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
+use crate::sim::pathfinding::LayeredEntityBlockMap;
 use crate::sim::pathfinding::path_smooth;
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
 use crate::sim::pathfinding::zone_search;
-use crate::sim::pathfinding::LayeredEntityBlockMap;
-use crate::sim::pathfinding::{truncate_layered_path, PathGrid, MAX_PATH_SEGMENT_STEPS};
+use crate::sim::pathfinding::{MAX_PATH_SEGMENT_STEPS, PathGrid, truncate_layered_path};
 use crate::sim::rng::SimRng;
 use crate::util::fixed_math::facing_from_delta_int as facing_from_delta;
 

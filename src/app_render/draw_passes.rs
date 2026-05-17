@@ -434,7 +434,7 @@ pub(super) fn dispatch_draw_passes(
         "sidebar_gclock",
     );
     let cameo_overlay_tex = state
-        .sidebar_text
+        .bit_font
         .darken_texture()
         .or_else(|| state.selection_overlay.as_ref().map(|o| o.white_texture()));
     draw_pooled_ui(
@@ -448,7 +448,7 @@ pub(super) fn dispatch_draw_passes(
         &mut pass,
         &state.batch_renderer,
         pool,
-        Some(state.sidebar_text.texture()),
+        Some(state.bit_font.atlas()),
         "sidebar_text",
     );
     draw_pooled_ui(

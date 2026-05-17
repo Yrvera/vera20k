@@ -1,7 +1,7 @@
-//! egui-based menus and dialogs.
+//! Render-agnostic UI models plus egui-backed menus and dialogs.
 //!
-//! Uses egui for screens that DON'T need pixel-perfect RA2 art:
-//! main menu, skirmish setup, settings, confirmation dialogs.
+//! Some screens use egui when they do not need pixel-perfect RA2 art. Pixel
+//! parity shells keep layout and state here, while app/render layers draw them.
 //!
 //! The in-game sidebar is NOT here — it uses custom wgpu rendering
 //! in the sidebar/ module because it needs original RA2 art assets
@@ -15,8 +15,10 @@ pub mod client_theme;
 pub mod game_screen;
 pub mod in_game_hud;
 pub mod main_menu;
+pub mod main_menu_shell;
 pub mod mission_status;
 pub mod pause_menu;
+pub mod skirmish_shell;
 // pub mod skirmish;
 // pub mod dialog;
 // pub mod settings;

@@ -1,11 +1,11 @@
-//! One-off tool to extract frames from `bridge.tem` for visual NS/EW axis
-//! verification. Dumps frames 0 and 9 (the two healthy-bridge body frames
-//! per BRIDGE_RENDERING_GHIDRA_REPORT.md §12) as PNG files into the cwd.
+//! One-off tool to extract frames from `bridge.tem` for visual bridge-axis
+//! inspection. Dumps frames 0 and 9 (the two healthy-bridge body frame
+//! families) as PNG files into the cwd.
 //!
-//! Background: across BRIDGE_RENDERING / BRIDGE_DISPLAY_TABLE / HIGH_BRIDGE
-//! the NS/EW labels for state ranges 0..8 vs 9..17 are inherited from
-//! binary function names that the 2026-05-12 HIGH_BRIDGE audit identified
-//! as inverted. Resolution requires looking at the actual sprite frames.
+//! Background: the physical sprite orientation labels and Rust's runtime
+//! `Axis` labels have been easy to conflate. This tool only shows what the
+//! raw asset frames look like; renderer code must follow the cell damage-state
+//! byte family used by `DamageState::to_state_byte(axis)`.
 //!
 //! Usage: `cargo run --bin extract-bridge-frames`
 
@@ -120,6 +120,6 @@ fn main() {
     }
 
     println!("\nDone. Inspect bridge_frame_00_*.png and bridge_frame_09_*.png.");
-    println!("Per docs: frame 0 = 'EW' body, frame 9 = 'NS' body. Look at the");
-    println!("sprite orientation to settle which physical axis each represents.");
+    println!("These files show raw physical sprite orientation only.");
+    println!("Runtime rendering should follow state bytes: Axis::NS => 0..8, Axis::EW => 9..17.");
 }

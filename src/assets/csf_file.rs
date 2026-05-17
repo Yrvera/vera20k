@@ -17,14 +17,22 @@ use std::collections::HashMap;
 use crate::assets::error::AssetError;
 use crate::util::read_helpers::{read_u16_le, read_u32_le};
 
-/// Magic bytes for the file header: " FSC" (ASCII, little-endian for "CSF ").
-const HEADER_MAGIC: u32 = 0x4643_5320;
-/// Magic bytes for a label entry: " LBL" (ASCII, little-endian for "LBL ").
+/// Magic bytes for the file header: " FSC".
+const HEADER_MAGIC: u32 = 0x4353_4620;
+/// Magic bytes for a label entry: " LBL" in Westwood byte order.
 const LABEL_MAGIC: u32 = 0x4C42_4C20;
-/// Magic bytes for a regular string value: " RTS" (little-endian for "STR ").
-const STRING_MAGIC: u32 = 0x5254_5320;
-/// Magic bytes for a string value with extra data: "WRTS" (little-endian for "STRW").
+/// Alternate label marker spelling found in CSF docs/tools: "LBL ".
+const LABEL_MAGIC_ALT: u32 = 0x204C_424C;
+/// Magic bytes for a regular string value: " RTS" in Westwood byte order.
+const STRING_MAGIC: u32 = 0x5354_5220;
+/// Alternate string marker spelling found in older tools: " STR".
+const STRING_MAGIC_ALT_STR_PREFIX: u32 = 0x5254_5320;
+/// Alternate string marker spelling found in older tools: "STR ".
+const STRING_MAGIC_ALT_STR_SUFFIX: u32 = 0x2052_5453;
+/// Magic bytes for a string value with extra data: "STRW".
 const STRING_EXTRA_MAGIC: u32 = 0x5752_5453;
+/// Alternate extra-string marker spelling: "WRTS".
+const STRING_EXTRA_MAGIC_ALT: u32 = 0x5354_5257;
 /// Minimum file size: 24-byte header.
 const MIN_FILE_SIZE: usize = 24;
 
@@ -137,7 +145,7 @@ fn parse_label_entry(data: &[u8], offset: usize) -> Result<(String, String, usiz
     }
 
     let magic: u32 = read_u32_le(data, offset);
-    if magic != LABEL_MAGIC {
+    if magic != LABEL_MAGIC && magic != LABEL_MAGIC_ALT {
         return Err(());
     }
 
@@ -163,9 +171,14 @@ fn parse_label_entry(data: &[u8], offset: usize) -> Result<(String, String, usiz
         }
 
         let str_magic: u32 = read_u32_le(data, pos);
-        let has_extra: bool = str_magic == STRING_EXTRA_MAGIC;
+        let has_extra: bool = str_magic == STRING_EXTRA_MAGIC || str_magic == STRING_EXTRA_MAGIC_ALT;
 
-        if str_magic != STRING_MAGIC && str_magic != STRING_EXTRA_MAGIC {
+        if str_magic != STRING_MAGIC
+            && str_magic != STRING_MAGIC_ALT_STR_PREFIX
+            && str_magic != STRING_MAGIC_ALT_STR_SUFFIX
+            && str_magic != STRING_EXTRA_MAGIC
+            && str_magic != STRING_EXTRA_MAGIC_ALT
+        {
             return Err(());
         }
 

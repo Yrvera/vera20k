@@ -75,17 +75,23 @@ pub fn find_spawn_cell_for_owner(
     };
     let resolved_terrain = sim.resolved_terrain.as_ref();
     for (_sid, bx, by, structure_id) in bases {
-        if let Some(cell) = find_spawn_cell_near_structure(
-            *bx,
-            *by,
-            structure_id,
-            produced_category,
-            rules,
-            path_grid,
-            &sim.occupancy,
-            resolved_terrain,
-            require_water,
-        ) {
+        let cell = match produced_category {
+            ObjectCategory::Infantry => {
+                find_infantry_spawn_cell_near_structure(rules, *bx, *by, structure_id)
+            }
+            _ => find_spawn_cell_near_structure(
+                *bx,
+                *by,
+                structure_id,
+                produced_category,
+                rules,
+                path_grid,
+                &sim.occupancy,
+                resolved_terrain,
+                require_water,
+            ),
+        };
+        if let Some(cell) = cell {
             return Some(cell);
         }
     }
@@ -161,6 +167,25 @@ fn find_spawn_cell_near_structure(
         resolved_terrain,
         require_water,
     )
+}
+
+/// Infantry-specific spawn cell: the foundation-center cell of the producing
+/// barracks. Matches the original engine's alt-path Unlimbo at the building's
+/// center lepton coord; `ExitCoord` is intentionally ignored, no passability
+/// check is performed, and there is no fallback to a nearby cell.
+///
+/// The infantry then walks out of the foundation via the existing pathfinder
+/// once the rally MoveTo is issued; the foundation cells are passable to
+/// infantry (only vehicles are hard-blocked).
+fn find_infantry_spawn_cell_near_structure(
+    rules: &RuleSet,
+    base_rx: u16,
+    base_ry: u16,
+    structure_id: &str,
+) -> Option<(u16, u16)> {
+    let obj = rules.object(structure_id)?;
+    let (w, h) = super::production_tech::foundation_dimensions(&obj.foundation);
+    Some((base_rx.saturating_add(w / 2), base_ry.saturating_add(h / 2)))
 }
 
 fn nearest_walkable_around(

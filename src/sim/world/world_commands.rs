@@ -506,6 +506,20 @@ impl Simulation {
                 }
                 let deploy_sound = obj.deploy_sound.clone();
                 let undeploy_sound = obj.undeploy_sound.clone();
+                // Per-type animation duration from artmd.ini sequence frame
+                // counts. Fall back to DEPLOY_DEFAULT_TICKS when the art
+                // section or sequence is missing.
+                let art_entry = rules
+                    .art_registry
+                    .resolve_metadata_entry(&type_str, &obj.image);
+                let deploying_ticks = crate::sim::deploy::compute_anim_ticks(
+                    art_entry,
+                    crate::sim::deploy::DeployPhaseKind::Deploying,
+                );
+                let undeploying_ticks = crate::sim::deploy::compute_anim_ticks(
+                    art_entry,
+                    crate::sim::deploy::DeployPhaseKind::Undeploying,
+                );
 
                 let Some(entity) = self.entities.get_mut(*entity_id) else {
                     return false;
@@ -517,13 +531,13 @@ impl Simulation {
                 match entity.deploy_state {
                     None => {
                         new_phase = Some(crate::sim::deploy::DeployPhase::Deploying {
-                            ticks_remaining: crate::sim::deploy::compute_anim_ticks(),
+                            ticks_remaining: deploying_ticks,
                         });
                         emit_deploy_sound = true;
                     }
                     Some(crate::sim::deploy::DeployPhase::Deployed) => {
                         new_phase = Some(crate::sim::deploy::DeployPhase::Undeploying {
-                            ticks_remaining: crate::sim::deploy::compute_anim_ticks(),
+                            ticks_remaining: undeploying_ticks,
                         });
                         emit_undeploy_sound = true;
                         // Belt-and-braces: clear any stale movement target.
@@ -534,8 +548,8 @@ impl Simulation {
                         return false;
                     }
                 }
-                entity.deploy_state = new_phase;
-
+                // Sound plays BEFORE state field write — matches the original's
+                // Do_Action ordering (voc cue precedes the Doing-field mutation).
                 if emit_deploy_sound {
                     if let Some(sound_name) = deploy_sound {
                         let sound_id = self.interner.intern(&sound_name);
@@ -559,6 +573,7 @@ impl Simulation {
                         );
                     }
                 }
+                entity.deploy_state = new_phase;
                 true
             }
             Command::SetRally { owner, rx, ry } => {

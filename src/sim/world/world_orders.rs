@@ -250,7 +250,7 @@ impl Simulation {
     ///
     /// Flow:
     ///   1. Emit `SimSoundEvent::BridgeRepaired` at the building's cell.
-    ///   2. Run `body_cell_repair_state` over the 5×5 scan around the engineer.
+    ///   2. Run overlay-family bridge repair over the 5×5 scan around the engineer.
     ///   3. Despawn the engineer (consumed by repair).
     ///
     /// Returns `true` if any repair mutated bridge state (caller ORs into
@@ -339,7 +339,7 @@ impl Simulation {
             let outcome = if let (Some(bs), Some(terrain)) =
                 (self.bridge_state.as_mut(), self.resolved_terrain.as_ref())
             {
-                bs.body_cell_repair_state(&scan, &mut self.rng, terrain)
+                bs.repair_bridge_from_engineer_scan(&scan, &mut self.rng, terrain)
             } else {
                 crate::sim::bridge_state::RepairOutcome::default()
             };

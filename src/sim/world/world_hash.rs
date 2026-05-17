@@ -466,7 +466,16 @@ impl Simulation {
                     transport_id.hash(hasher);
                 }
             }
-            entity.ifv_weapon_index.hash(hasher);
+            entity.weapon_override.hash(hasher);
+            // Homing missile flight state. `HomingState` has a manual `Hash`
+            // impl that excludes the render-only `pitch: f32` field — see
+            // sim::movement::homing_movement.
+            if let Some(ref h) = entity.homing_state {
+                1u8.hash(hasher);
+                h.hash(hasher);
+            } else {
+                0u8.hash(hasher);
+            }
             // Barrel facing — Hash-derived, all primitive fields contribute.
             if let Some(ref barrel) = entity.barrel_facing {
                 1u8.hash(hasher);
@@ -1042,6 +1051,96 @@ mod c4_hash_tests {
         assert_ne!(
             h_with_plant, h_with_pending,
             "pending_c4_detonation must affect state hash"
+        );
+    }
+}
+
+#[cfg(test)]
+mod homing_state_hash_tests {
+    use super::Simulation;
+    use crate::sim::game_entity::GameEntity;
+    use crate::sim::movement::homing_movement::{HomingPhase, HomingState};
+    use crate::util::fixed_math::{SIM_ONE, SIM_ZERO, SimFixed};
+
+    fn make_homing(yaw_bam: u16) -> HomingState {
+        HomingState {
+            phase: HomingPhase::Cruise,
+            target_id: Some(42),
+            last_known_rx: 25,
+            last_known_ry: 5,
+            yaw_bam,
+            pitch_bam: 0x4000,
+            speed: SimFixed::from_num(30),
+            pos_x_cells: SimFixed::from_num(5),
+            pos_y_cells: SimFixed::from_num(5),
+            altitude: SimFixed::from_num(320),
+            vz: SIM_ZERO,
+            rot_ini: 60,
+            missile_rot_var: SIM_ONE,
+            floater: false,
+            very_high: false,
+            arm_ticks_remaining: 0,
+            frame_counter: 0,
+            stall_counter: 0,
+            stall_ema: SIM_ZERO,
+            last_distance_to_target: SIM_ZERO,
+            pitch: 0.0,
+        }
+    }
+
+    #[test]
+    fn homing_state_presence_changes_hash() {
+        let mut a = Simulation::new();
+        let mut b = Simulation::new();
+        let a_id = a
+            .entities
+            .insert(GameEntity::test_default(1, "AAHeatSeeker2", "Allied", 5, 5));
+        b.entities
+            .insert(GameEntity::test_default(1, "AAHeatSeeker2", "Allied", 5, 5));
+
+        // Hashes match while both bullets lack homing_state.
+        assert_eq!(a.state_hash(), b.state_hash());
+
+        // Attaching homing_state to `a` only — hashes must diverge.
+        a.entities.get_mut(a_id).unwrap().homing_state = Some(make_homing(0));
+        assert_ne!(a.state_hash(), b.state_hash());
+    }
+
+    #[test]
+    fn homing_state_yaw_changes_hash() {
+        let mut a = Simulation::new();
+        let mut b = Simulation::new();
+        let a_id = a
+            .entities
+            .insert(GameEntity::test_default(1, "AAHeatSeeker2", "Allied", 5, 5));
+        let b_id = b
+            .entities
+            .insert(GameEntity::test_default(1, "AAHeatSeeker2", "Allied", 5, 5));
+        a.entities.get_mut(a_id).unwrap().homing_state = Some(make_homing(0));
+        b.entities.get_mut(b_id).unwrap().homing_state = Some(make_homing(0x4000));
+        assert_ne!(a.state_hash(), b.state_hash());
+    }
+
+    #[test]
+    fn homing_state_pitch_excluded_from_hash() {
+        // The manual Hash impl on HomingState skips the render-only `pitch`
+        // field; mutating it must not change the state hash.
+        let mut a = Simulation::new();
+        let mut b = Simulation::new();
+        let a_id = a
+            .entities
+            .insert(GameEntity::test_default(1, "AAHeatSeeker2", "Allied", 5, 5));
+        let b_id = b
+            .entities
+            .insert(GameEntity::test_default(1, "AAHeatSeeker2", "Allied", 5, 5));
+        a.entities.get_mut(a_id).unwrap().homing_state = Some(make_homing(0));
+        let mut h = make_homing(0);
+        h.pitch = 1.234;
+        b.entities.get_mut(b_id).unwrap().homing_state = Some(h);
+        assert_eq!(
+            a.state_hash(),
+            b.state_hash(),
+            "render-only pitch must not affect state hash"
         );
     }
 }

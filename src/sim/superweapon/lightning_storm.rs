@@ -222,6 +222,8 @@ fn spawn_bolt(sim: &mut Simulation, rules: &RuleSet, rx: u16, ry: u16, owner: In
         shp_name: anim_iid,
         rx,
         ry,
+        sub_x: crate::util::lepton::CELL_CENTER_LEPTON,
+        sub_y: crate::util::lepton::CELL_CENTER_LEPTON,
         z: 0,
         frame: 0,
         total_frames: frames,
@@ -244,6 +246,7 @@ fn spawn_bolt(sim: &mut Simulation, rules: &RuleSet, rx: u16, ry: u16, owner: In
             rules,
             &sim.interner,
             &owner_str,
+            crate::sim::combat::combat_aoe::AoELayerContext::default(),
         );
 
         // Apply damage to entities.
@@ -262,6 +265,8 @@ fn spawn_bolt(sim: &mut Simulation, rules: &RuleSet, rx: u16, ry: u16, owner: In
             rules.general.lightning_damage,
             rx,
             ry,
+            crate::util::lepton::CELL_CENTER_LEPTON,
+            crate::util::lepton::CELL_CENTER_LEPTON,
             0,
             &mut sim.interner,
             &mut explosions,
@@ -277,6 +282,8 @@ fn spawn_bolt(sim: &mut Simulation, rules: &RuleSet, rx: u16, ry: u16, owner: In
                 shp_name: fx.shp_name,
                 rx: fx.rx,
                 ry: fx.ry,
+                sub_x: fx.sub_x,
+                sub_y: fx.sub_y,
                 z: fx.z,
                 frame: 0,
                 total_frames: frames,

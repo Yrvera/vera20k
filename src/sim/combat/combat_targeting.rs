@@ -10,11 +10,19 @@
 //! by threat class (armed units > unarmed > buildings) and stable entity ID
 //! (for deterministic replay).
 //!
+//! ## Auto-deploy on target acquisition
+//! Targeting NEVER initiates a deploy transition. A walking GGI that acquires
+//! an air target uses its Secondary weapon in place — it does not auto-deploy.
+//! This matches the original's behavior: deploy is a player-driven command,
+//! never triggered by AI target acquisition. Verified by grepping every writer
+//! of `deploy_state` — only the player command handler and the deploy tick
+//! advance set it.
+//!
 //! ## Dependency rules
 //! - Part of sim/ — depends on rules/ (RuleSet) and sim/components.
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
-use super::combat_weapon::{VersesGate, select_weapon_with_ifv, verses_gate};
+use super::combat_weapon::{VersesGate, select_weapon_with_override, verses_gate};
 use super::{is_within_range_leptons, lepton_distance_sq_raw};
 use crate::map::entities::EntityCategory;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
@@ -56,6 +64,8 @@ pub(crate) struct AttackerSnapshot {
     pub sub_x: SimFixed,
     pub sub_y: SimFixed,
     pub type_id: InternedId,
+    pub facing: u8,
+    pub veterancy: u16,
     pub cooldown_ticks: u16,
     pub animation_sequence: Option<crate::sim::animation::SequenceKind>,
     pub animation_frame: Option<u16>,
@@ -66,8 +76,8 @@ pub(crate) struct AttackerSnapshot {
     pub barrel_facing: Option<crate::sim::movement::FacingClass>,
     pub burst_remaining: u8,
     pub burst_delay_ticks: u8,
-    /// IFV weapon index override (from Gunner=yes transport with passenger).
-    pub ifv_weapon_index: Option<u32>,
+    /// Weapon-selection override (Gunner-IFV slot OR open-topped passenger weapon).
+    pub weapon_override: Option<super::combat_weapon::WeaponOverride>,
     /// Garrison state — present only for garrisoned buildings (IsOccupied).
     pub garrison: Option<GarrisonSnapshot>,
 }
@@ -109,6 +119,8 @@ pub fn acquire_best_target_for_entity(
         sub_x: entity.position.sub_x,
         sub_y: entity.position.sub_y,
         type_id: entity.type_ref,
+        facing: entity.facing,
+        veterancy: entity.veterancy,
         cooldown_ticks: 0,
         animation_sequence: entity.animation.as_ref().map(|a| a.sequence),
         animation_frame: entity.animation.as_ref().map(|a| a.frame_index),
@@ -122,7 +134,7 @@ pub fn acquire_best_target_for_entity(
         barrel_facing: entity.barrel_facing,
         burst_remaining: 0,
         burst_delay_ticks: 0,
-        ifv_weapon_index: entity.ifv_weapon_index,
+        weapon_override: entity.weapon_override,
         garrison: None,
     };
     acquire_best_target(
@@ -197,12 +209,13 @@ pub(crate) fn acquire_best_target(
             .object(interner.resolve(candidate.type_ref))
             .map(|o| o.armor.as_str())
             .unwrap_or("none");
-        let selected = match select_weapon_with_ifv(
+        let selected = match select_weapon_with_override(
             rules,
             attacker_obj,
             target_cat,
             target_armor,
-            attacker.ifv_weapon_index,
+            attacker.veterancy,
+            attacker.weapon_override,
         ) {
             Some(s) => s,
             None => continue, // No weapon can engage this target.
@@ -286,17 +299,18 @@ fn can_retaliate(
         .object(interner.resolve(attacker.type_ref))
         .map(|o| o.armor.as_str())
         .unwrap_or("none");
-    let selected = match select_weapon_with_ifv(
+    let selected = match select_weapon_with_override(
         rules,
         obj,
         target_cat,
         target_armor,
-        entity.ifv_weapon_index,
+        entity.veterancy,
+        entity.weapon_override,
     ) {
         Some(s) => s,
         None => return false,
     };
-    // 0% is already filtered by select_weapon_with_ifv (returns None).
+    // 0% is already filtered by select_weapon_with_override (returns None).
     // 1% (Suppressed) also blocks retaliation.
     verses_gate(selected.verses_pct) != VersesGate::Suppressed
 }

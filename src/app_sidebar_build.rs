@@ -516,12 +516,15 @@ pub(crate) fn build_sidebar_cameo_instances(
 
         // Dark strip overlay behind "Ready" text (alpha 0xAF).
         // When queue badge is also present, the Ready strip shifts left.
-        if item.is_ready && state.sidebar_text.darken_texture().is_some() {
+        if item.is_ready && state.bit_font.darken_texture().is_some() {
             let s = state.ui_scale;
             let ts = ready_text_scale(s);
-            let text_w = state.sidebar_text.text_width(ready_text) * ts;
+            let text_w = state.bit_font.text_width(ready_text) as f32 * ts;
             let strip_w = text_w + READY_PAD_X * 2.0 * ts;
-            let strip_h = (state.sidebar_text.glyph_height() + READY_PAD_Y * 2.0) * ts;
+            // gamemd `ComputeTextRect` uses `cell_height + 2*y_pad` for the
+            // strip height (cell_height includes the 1 px inter-line gap that
+            // gamemd extends below the glyphs).
+            let strip_h = (state.bit_font.cell_height() + READY_PAD_Y * 2.0) * ts;
             let strip_x = if has_queue_badge {
                 slot.x + co[0]
             } else {
@@ -542,13 +545,12 @@ pub(crate) fn build_sidebar_cameo_instances(
         // Dark strip overlay behind queue count badge (top-right, same alpha as Ready strip).
         // Original: ComputeTextRect(cameo_x+60, cameo_y+1, 0x242, x_pad=2, y_pad=1)
         // The dark rect extends x_pad (2px) past the cameo right edge.
-        if has_queue_badge && state.sidebar_text.darken_texture().is_some() {
+        if has_queue_badge && state.bit_font.darken_texture().is_some() {
             let ts = ready_text_scale(state.ui_scale);
             let count_str = format!("{}", item.queued_count);
-            let text_w = state.sidebar_text.text_width(&count_str) * ts;
-            let glyph_h = state.sidebar_text.glyph_height();
+            let text_w = state.bit_font.text_width(&count_str) as f32 * ts;
             let strip_w = text_w + QUEUE_COUNT_PAD_X * 2.0 * ts;
-            let strip_h = (glyph_h + QUEUE_COUNT_PAD_Y * 2.0) * ts;
+            let strip_h = (state.bit_font.cell_height() + QUEUE_COUNT_PAD_Y * 2.0) * ts;
             // Right-align anchor at cameo right edge; strip extends x_pad past it.
             let strip_x = slot.x + slot.w - text_w - QUEUE_COUNT_PAD_X * ts;
             overlay_instances.push(SpriteInstance {
@@ -576,7 +578,7 @@ pub(crate) fn build_sidebar_text_instances(
     ready_text: &str,
     ready_tint: [f32; 3],
 ) -> Vec<SpriteInstance> {
-    if state.sidebar_text.darken_texture().is_none() {
+    if state.bit_font.darken_texture().is_none() {
         // No FNT loaded — text will be rendered by egui fallback.
         return Vec::new();
     }
@@ -584,7 +586,6 @@ pub(crate) fn build_sidebar_text_instances(
     let ts = ready_text_scale(s);
     let co = [state.camera_x, state.camera_y];
     let mut instances = Vec::new();
-    let glyph_h = state.sidebar_text.glyph_height();
 
     for item in &view.items {
         let slot = item.rect;
@@ -602,17 +603,18 @@ pub(crate) fn build_sidebar_text_instances(
         // When a queue badge is also shown, the Ready text shifts left to avoid
         // overlap (original: x = cameo_x+2, flags 0x42 vs centered cameo_x+30, 0x142).
         if item.is_ready {
-            let text_w = state.sidebar_text.text_width(ready_text) * ts;
-            let strip_h = (glyph_h + READY_PAD_Y * 2.0) * ts;
+            let text_w = state.bit_font.text_width(ready_text) as f32 * ts;
             let text_x = if has_queue_badge {
                 slot.x + READY_PAD_X * ts
             } else {
                 slot.x + (slot.w - text_w) * 0.5
             };
-            let text_y = slot.y + (strip_h - glyph_h * ts) * 0.5;
+            // gamemd anchors text at `cameo_y + y_pad`; the strip extends
+            // y_pad above and (cell_height - glyph_height + y_pad) below.
+            let text_y = slot.y + READY_PAD_Y * ts;
             instances.extend(
                 state
-                    .sidebar_text
+                    .bit_font
                     .build_text(ready_text, text_x, text_y, ts, 0.00042, ready_tint, co),
             );
         }
@@ -622,13 +624,13 @@ pub(crate) fn build_sidebar_text_instances(
         // 0x242 = right-align. Uses same side-dependent color as Ready text.
         if has_queue_badge {
             let count_str = format!("{}", item.queued_count);
-            let text_w = state.sidebar_text.text_width(&count_str) * ts;
+            let text_w = state.bit_font.text_width(&count_str) as f32 * ts;
             // Right-align: text right edge at cameo right edge (anchor = cameo_x + 60).
             let text_x = slot.x + slot.w - text_w;
             let text_y = slot.y + QUEUE_COUNT_PAD_Y * ts;
             instances.extend(
                 state
-                    .sidebar_text
+                    .bit_font
                     .build_text(&count_str, text_x, text_y, ts, 0.00042, ready_tint, co),
             );
         }

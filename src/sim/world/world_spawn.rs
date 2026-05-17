@@ -18,7 +18,7 @@ use crate::sim::components::{
     BridgeOccupancy, BuildingDown, BuildingUp, HarvestOverlay, Health, VoxelAnimation,
 };
 use crate::sim::game_entity::GameEntity;
-use crate::sim::miner::{miner_kind_for_object, Miner, MinerConfig};
+use crate::sim::miner::{Miner, MinerConfig, miner_kind_for_object};
 use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
 use crate::sim::occupancy::CellListInsertion;
 use crate::sim::production::{building_footprint_cells, foundation_dimensions};

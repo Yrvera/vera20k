@@ -208,6 +208,13 @@ pub struct ObjectType {
     pub primary: Option<String>,
     /// Secondary weapon ID (e.g., anti-air for dual-purpose units).
     pub secondary: Option<String>,
+    /// `ElitePrimary=` from rules.ini. Replaces `primary` when the unit is at
+    /// Elite tier (veterancy >= 200). Falls back to `primary` if absent.
+    /// Veteran tier (100..199) does NOT swap — only Elite does.
+    pub elite_primary: Option<String>,
+    /// `EliteSecondary=` from rules.ini. Replaces `secondary` when the unit is
+    /// at Elite tier (veterancy >= 200). Falls back to `secondary` if absent.
+    pub elite_secondary: Option<String>,
     /// Art.ini image reference. Defaults to the object's ID if not specified.
     /// Used to look up sprite/voxel filenames in art.ini.
     pub image: String,
@@ -535,6 +542,14 @@ pub struct ObjectType {
     /// a Gunner=yes transport. Parsed from `IFVMode=N` in rules.ini. Default 0.
     pub ifv_mode: u32,
 
+    /// `OpenTransportWeapon=` from rules.ini. Slot selector when this infantry
+    /// is riding inside an open-topped transport that is NOT `Gunner=yes`:
+    /// `0` fires the passenger's Primary, `1` fires the passenger's Secondary,
+    /// `-1` (default) means no override — the transport doesn't fire on the
+    /// passenger's behalf. Distinct from IFVMode, which only applies to Gunner
+    /// transports that swap their own weapon based on the passenger's slot.
+    pub open_transport_weapon: i32,
+
     /// Whether this infantry can toggle into a deploy-fire stance (DeployFire=yes
     /// in rules.ini). Only deploy-fire types respond to `Command::ToggleInfantryDeploy`.
     /// Stock YR sets this on GI (E1), GuardianGI (GGI), and a handful of others.
@@ -811,6 +826,8 @@ impl ObjectType {
                 .unwrap_or(false),
             primary: section.get("Primary").map(|s| s.to_string()),
             secondary: section.get("Secondary").map(|s| s.to_string()),
+            elite_primary: section.get("ElitePrimary").map(|s| s.to_string()),
+            elite_secondary: section.get("EliteSecondary").map(|s| s.to_string()),
             image: section.get("Image").unwrap_or(id).to_string(),
             power: section.get_i32("Power").unwrap_or(0),
             // In the original engine, Foundation= lives in art.ini, not rules.ini.
@@ -973,6 +990,7 @@ impl ObjectType {
             open_topped: section.get_bool("OpenTopped").unwrap_or(false),
             gunner: section.get_bool("Gunner").unwrap_or(false),
             ifv_mode: section.get_i32("IFVMode").unwrap_or(0).max(0) as u32,
+            open_transport_weapon: section.get_i32("OpenTransportWeapon").unwrap_or(-1),
             deploy_fire: section.get_bool("DeployFire").unwrap_or(false),
             deploy_fire_weapon: section.get_i32("DeployFireWeapon"),
             max_number_occupants: section.get_i32("MaxNumberOccupants").unwrap_or(0).max(0) as u32,
@@ -1453,6 +1471,44 @@ mod tests {
         let obj = ObjectType::from_ini_section("GAPOST", section, ObjectCategory::Building);
         assert!(obj.can_be_occupied);
         assert_eq!(obj.max_number_occupants, 10);
+    }
+
+    #[test]
+    fn test_parses_elite_weapon_overrides() {
+        let ini: IniFile = IniFile::from_str(
+            "[GGI]\nPrimary=M60\nSecondary=MissileLauncher\nElitePrimary=M60E\nEliteSecondary=MissileLauncherE\n",
+        );
+        let section: &IniSection = ini.section("GGI").unwrap();
+        let obj = ObjectType::from_ini_section("GGI", section, ObjectCategory::Infantry);
+        assert_eq!(obj.primary.as_deref(), Some("M60"));
+        assert_eq!(obj.secondary.as_deref(), Some("MissileLauncher"));
+        assert_eq!(obj.elite_primary.as_deref(), Some("M60E"));
+        assert_eq!(obj.elite_secondary.as_deref(), Some("MissileLauncherE"));
+    }
+
+    #[test]
+    fn test_elite_weapons_default_to_none() {
+        let ini: IniFile = IniFile::from_str("[E1]\nPrimary=M60\n");
+        let section: &IniSection = ini.section("E1").unwrap();
+        let obj = ObjectType::from_ini_section("E1", section, ObjectCategory::Infantry);
+        assert_eq!(obj.elite_primary, None);
+        assert_eq!(obj.elite_secondary, None);
+    }
+
+    #[test]
+    fn test_parses_open_transport_weapon() {
+        let ini: IniFile = IniFile::from_str("[GGI]\nOpenTransportWeapon=1\n");
+        let section: &IniSection = ini.section("GGI").unwrap();
+        let obj = ObjectType::from_ini_section("GGI", section, ObjectCategory::Infantry);
+        assert_eq!(obj.open_transport_weapon, 1);
+    }
+
+    #[test]
+    fn test_open_transport_weapon_defaults_to_neg_one() {
+        let ini: IniFile = IniFile::from_str("[E1]\nPrimary=M60\n");
+        let section: &IniSection = ini.section("E1").unwrap();
+        let obj = ObjectType::from_ini_section("E1", section, ObjectCategory::Infantry);
+        assert_eq!(obj.open_transport_weapon, -1);
     }
 
     #[test]

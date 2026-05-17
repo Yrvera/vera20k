@@ -215,6 +215,8 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     app_instances::build_world_effect_instances(state, &mut shp_paged);
     // Damage fires Y-sort with buildings (Layer 2).
     app_instances::build_damage_fire_instances(state, &mut shp_paged);
+    // Non-garrison weapon muzzle flashes at FLH fire origins.
+    app_instances::build_weapon_muzzle_flash_instances(state, &mut shp_paged);
     // Garrison muzzle flashes (OccupantAnim) at fire port positions.
     app_instances::build_garrison_muzzle_flash_instances(state, &mut shp_paged);
     // Parachute SHPs above descending paradropped infantry (Layer 2 — sorts
@@ -619,7 +621,7 @@ pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances 
         .unwrap_or("Ready");
     let ready_tint = {
         let theme = crate::app_sidebar_render::current_sidebar_theme(state);
-        crate::app_sidebar_text::ready_color_for_theme(theme)
+        crate::render::sidebar_text::side_highlight_color(theme)
     };
     let (cameo, gclock, cameo_overlay) = view
         .as_ref()

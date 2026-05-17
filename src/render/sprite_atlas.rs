@@ -121,6 +121,43 @@ pub struct SpriteAtlas {
     rendered_cache: Vec<RenderedShpSprite>,
 }
 
+#[cfg(test)]
+fn push_effect_name(effect_names: &mut Vec<String>, name: &str) {
+    if !effect_names.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+        effect_names.push(name.to_string());
+    }
+}
+
+#[cfg(test)]
+fn collect_effect_names(rules: &RuleSet) -> Vec<String> {
+    let mut effect_names: Vec<String> = Vec::new();
+    push_effect_name(&mut effect_names, &rules.general.warp_in.name);
+    push_effect_name(&mut effect_names, &rules.general.warp_out.name);
+    push_effect_name(&mut effect_names, &rules.general.warp_away.name);
+    for fire_ref in &rules.general.damage_fire_types {
+        push_effect_name(&mut effect_names, &fire_ref.name);
+    }
+    for wh in rules.warheads_iter() {
+        for anim_name in &wh.anim_list {
+            push_effect_name(&mut effect_names, anim_name);
+        }
+    }
+    for weapon in rules.weapons_iter() {
+        for anim_name in &weapon.anim {
+            push_effect_name(&mut effect_names, anim_name);
+        }
+        if let Some(ref anim_name) = weapon.occupant_anim {
+            push_effect_name(&mut effect_names, anim_name);
+        }
+    }
+    for pt in rules.particle_types_iter() {
+        if let Some(image) = pt.image.as_deref() {
+            push_effect_name(&mut effect_names, image);
+        }
+    }
+    effect_names
+}
+
 impl SpriteAtlas {
     /// Look up the atlas entry for a given sprite key.
     /// The returned entry includes a `page` field identifying which atlas page
@@ -681,8 +718,16 @@ pub fn build_sprite_atlas(
                     }
                 }
             }
-            // Collect OccupantAnim names from weapons (garrison muzzle flashes).
+            // Collect weapon Anim= and OccupantAnim names from weapons.
             for weapon in r.weapons_iter() {
+                for anim_name in &weapon.anim {
+                    if !effect_names
+                        .iter()
+                        .any(|n| n.eq_ignore_ascii_case(anim_name))
+                    {
+                        effect_names.push(anim_name.clone());
+                    }
+                }
                 if let Some(ref anim_name) = weapon.occupant_anim {
                     if !effect_names
                         .iter()

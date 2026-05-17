@@ -437,6 +437,7 @@ pub(super) fn factory_rules() -> RuleSet {
              Factory=BuildingType\n\
              [GAPILE]\n\
              Factory=InfantryType\n\
+             Foundation=3x2\n\
              [GAWEAP]\n\
              Factory=UnitType\n\
              Foundation=5x3\n\
@@ -452,6 +453,7 @@ pub(super) fn factory_rules() -> RuleSet {
              [MYBARR]\n\
              Factory=InfantryType\n\
              ExitCoord=-64,64,0\n\
+             Foundation=2x2\n\
              [XAIRFLD]\n\
              Factory=AircraftType\n\
              ExitCoord=384,128,0\n",
@@ -685,6 +687,93 @@ fn exit_coord_parsed_and_used_for_spawn() {
         spawn,
         (22, 21),
         "primary exit cell from ExitCoord=512,256,0"
+    );
+}
+
+#[test]
+fn infantry_spawn_uses_foundation_center_cell() {
+    let rules = factory_rules();
+    // GAPILE has Foundation=3x2 in the fixture, no ExitCoord.
+    // Foundation-center cell of a building at (20, 20) is (20 + 3/2, 20 + 2/2)
+    // = (21, 21) — the cell inside the foundation that gamemd's
+    // building->GetCoord() lepton lands in.
+    let mut sim = Simulation::new();
+    spawn_structure(&mut sim, 1, "Americans", "GAPILE", 20, 20);
+    let spawn = find_spawn_cell_for_owner(
+        &mut sim,
+        &rules,
+        "Americans",
+        ObjectCategory::Infantry,
+        None,
+        false,
+    )
+    .expect("infantry spawn from GAPILE should succeed");
+    assert_eq!(
+        spawn,
+        (21, 21),
+        "infantry spawns at foundation-center cell of 3x2 GAPILE at (20, 20)"
+    );
+}
+
+#[test]
+fn infantry_spawn_ignores_exit_coord() {
+    let rules = factory_rules();
+    // MYBARR has ExitCoord=-64,64,0 AND Foundation=2x2.
+    // gamemd's infantry alt path NEVER reads ExitCoord; the unit Unlimbos at
+    // building->GetCoord() = foundation center. For a 2x2 barracks at (10, 10)
+    // that's (10 + 2/2, 10 + 2/2) = (11, 11). The (-64, 64) ExitCoord must
+    // have zero effect.
+    let mut sim = Simulation::new();
+    spawn_structure(&mut sim, 1, "Americans", "MYBARR", 10, 10);
+    let spawn = find_spawn_cell_for_owner(
+        &mut sim,
+        &rules,
+        "Americans",
+        ObjectCategory::Infantry,
+        None,
+        false,
+    )
+    .expect("infantry spawn from MYBARR should succeed");
+    assert_eq!(
+        spawn,
+        (11, 11),
+        "infantry spawn ignores ExitCoord=-64,64,0; uses foundation-center cell"
+    );
+}
+
+#[test]
+fn infantry_spawn_succeeds_when_center_cell_blocked() {
+    let rules = factory_rules();
+    // The producing GAPILE itself occupies (20, 20) via spawn_structure's
+    // single-cell registration. The new foundation-center cell (21, 21) is
+    // inside the building's footprint. gamemd's infantry alt path performs
+    // no passability check at the spawn step — only vehicles are
+    // hard-blocked by building cells. Infantry succeed.
+    let mut sim = Simulation::new();
+    spawn_structure(&mut sim, 1, "Americans", "GAPILE", 20, 20);
+    // Also occupy the foundation-center cell explicitly to make the test
+    // robust against future changes to spawn_structure's occupancy footprint.
+    sim.occupancy.add(
+        21,
+        21,
+        1,
+        crate::sim::movement::locomotor::MovementLayer::Ground,
+        None,
+        crate::sim::occupancy::CellListInsertion::AppendBuilding,
+    );
+    let spawn = find_spawn_cell_for_owner(
+        &mut sim,
+        &rules,
+        "Americans",
+        ObjectCategory::Infantry,
+        None,
+        false,
+    )
+    .expect("infantry spawn should succeed even with building bit on center cell");
+    assert_eq!(
+        spawn,
+        (21, 21),
+        "infantry spawn ignores foundation occupancy and lands at center cell"
     );
 }
 

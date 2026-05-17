@@ -114,6 +114,8 @@ fn spawn_invoke_anim(sim: &mut Simulation, anim_name: &str, rx: u16, ry: u16) {
         shp_name: iid,
         rx,
         ry,
+        sub_x: crate::util::lepton::CELL_CENTER_LEPTON,
+        sub_y: crate::util::lepton::CELL_CENTER_LEPTON,
         z: 5,
         frame: 0,
         total_frames: frames,
