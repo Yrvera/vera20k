@@ -376,12 +376,17 @@ pub(crate) fn pursuit_weapon_range(
             (EntityCategory::Structure, armor)
         }
     };
+    // Task 6 placeholder — full WeaponOverride dispatch lands in Task 8.
+    let ifv_idx = match entity.weapon_override {
+        Some(crate::sim::combat::combat_weapon::WeaponOverride::IfvSlot(i)) => Some(i),
+        _ => None,
+    };
     select_weapon_with_ifv(
         rules,
         attacker_obj,
         target_cat,
         &target_armor,
-        entity.ifv_weapon_index,
+        ifv_idx,
     )
     .map(|sel| sel.weapon.range)
 }
@@ -1341,7 +1346,7 @@ pub fn tick_combat_with_fog(
                 entity.barrel_facing,
                 burst_remaining,
                 burst_delay_ticks,
-                entity.ifv_weapon_index,
+                entity.weapon_override,
             );
             (base, garrison_cargo)
         }; // mutable borrow released
@@ -1368,7 +1373,7 @@ pub fn tick_combat_with_fog(
             barrel_facing,
             burst_remaining,
             burst_delay_ticks,
-            ifv_weapon_index,
+            weapon_override,
         ) = snap_base;
 
         // Resolve garrison snapshot from cargo info (read-only borrow).
@@ -1410,7 +1415,7 @@ pub fn tick_combat_with_fog(
             barrel_facing,
             burst_remaining,
             burst_delay_ticks,
-            ifv_weapon_index,
+            weapon_override,
             garrison,
         });
     }
@@ -1558,12 +1563,17 @@ pub fn tick_combat_with_fog(
                 }
             }
         } else {
+            // Task 6 placeholder — full WeaponOverride dispatch lands in Task 8.
+            let ifv_idx = match snap.weapon_override {
+                Some(crate::sim::combat::combat_weapon::WeaponOverride::IfvSlot(i)) => Some(i),
+                _ => None,
+            };
             match select_weapon_with_ifv(
                 rules,
                 obj,
                 target_cat,
                 &target_armor,
-                snap.ifv_weapon_index,
+                ifv_idx,
             ) {
                 Some(s) => (s, false),
                 None => {

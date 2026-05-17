@@ -466,7 +466,7 @@ impl Simulation {
                     transport_id.hash(hasher);
                 }
             }
-            entity.ifv_weapon_index.hash(hasher);
+            entity.weapon_override.hash(hasher);
             // Barrel facing — Hash-derived, all primitive fields contribute.
             if let Some(ref barrel) = entity.barrel_facing {
                 1u8.hash(hasher);

@@ -76,8 +76,8 @@ pub(crate) struct AttackerSnapshot {
     pub barrel_facing: Option<crate::sim::movement::FacingClass>,
     pub burst_remaining: u8,
     pub burst_delay_ticks: u8,
-    /// IFV weapon index override (from Gunner=yes transport with passenger).
-    pub ifv_weapon_index: Option<u32>,
+    /// Weapon-selection override (Gunner-IFV slot OR open-topped passenger weapon).
+    pub weapon_override: Option<super::combat_weapon::WeaponOverride>,
     /// Garrison state — present only for garrisoned buildings (IsOccupied).
     pub garrison: Option<GarrisonSnapshot>,
 }
@@ -134,7 +134,7 @@ pub fn acquire_best_target_for_entity(
         barrel_facing: entity.barrel_facing,
         burst_remaining: 0,
         burst_delay_ticks: 0,
-        ifv_weapon_index: entity.ifv_weapon_index,
+        weapon_override: entity.weapon_override,
         garrison: None,
     };
     acquire_best_target(
@@ -209,12 +209,17 @@ pub(crate) fn acquire_best_target(
             .object(interner.resolve(candidate.type_ref))
             .map(|o| o.armor.as_str())
             .unwrap_or("none");
+        // Task 6 placeholder — full WeaponOverride dispatch lands in Task 8.
+        let ifv_idx = match attacker.weapon_override {
+            Some(super::combat_weapon::WeaponOverride::IfvSlot(i)) => Some(i),
+            _ => None,
+        };
         let selected = match select_weapon_with_ifv(
             rules,
             attacker_obj,
             target_cat,
             target_armor,
-            attacker.ifv_weapon_index,
+            ifv_idx,
         ) {
             Some(s) => s,
             None => continue, // No weapon can engage this target.
@@ -298,12 +303,17 @@ fn can_retaliate(
         .object(interner.resolve(attacker.type_ref))
         .map(|o| o.armor.as_str())
         .unwrap_or("none");
+    // Task 6 placeholder — full WeaponOverride dispatch lands in Task 8.
+    let ifv_idx = match entity.weapon_override {
+        Some(super::combat_weapon::WeaponOverride::IfvSlot(i)) => Some(i),
+        _ => None,
+    };
     let selected = match select_weapon_with_ifv(
         rules,
         obj,
         target_cat,
         target_armor,
-        entity.ifv_weapon_index,
+        ifv_idx,
     ) {
         Some(s) => s,
         None => return false,

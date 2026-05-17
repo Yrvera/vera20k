@@ -322,15 +322,16 @@ fn tick_boarding(sim: &mut Simulation, rules: &RuleSet) -> bool {
 
             let pax_size = rules.object(&pax_type_str).map(|obj| obj.size).unwrap_or(1);
 
-            let transport_gunner = rules
-                .object(&transport_type_str)
-                .map(|obj| obj.gunner)
-                .unwrap_or(false);
+            let transport_obj = rules.object(&transport_type_str);
+            let transport_gunner = transport_obj.map(|obj| obj.gunner).unwrap_or(false);
+            let transport_open_topped =
+                transport_obj.map(|obj| obj.open_topped).unwrap_or(false);
 
-            let pax_ifv_mode = rules
-                .object(&pax_type_str)
-                .map(|obj| obj.ifv_mode)
-                .unwrap_or(0);
+            let pax_obj = rules.object(&pax_type_str);
+            let pax_ifv_mode = pax_obj.map(|obj| obj.ifv_mode).unwrap_or(0);
+            let pax_open_transport_weapon = pax_obj
+                .map(|obj| obj.open_transport_weapon)
+                .unwrap_or(-1);
 
             // Try to board.
             let boarded = sim
@@ -404,10 +405,26 @@ fn tick_boarding(sim: &mut Simulation, rules: &RuleSet) -> bool {
                     pax.attack_target = None;
                     pax.order_intent = None;
                 }
-                // IFV weapon swap: if transport is Gunner=yes, set weapon index.
-                if transport_gunner {
+                // Transport weapon override: Gunner=yes transports swap their
+                // own weapon to weapon_list[IFVMode]; open-topped non-Gunner
+                // transports fire the passenger's own Primary/Secondary based
+                // on the passenger's OpenTransportWeapon slot.
+                let new_override = if transport_gunner {
+                    Some(crate::sim::combat::combat_weapon::WeaponOverride::IfvSlot(
+                        pax_ifv_mode,
+                    ))
+                } else if transport_open_topped && pax_open_transport_weapon >= 0 {
+                    Some(
+                        crate::sim::combat::combat_weapon::WeaponOverride::OpenTransport(
+                            pax_open_transport_weapon as u32,
+                        ),
+                    )
+                } else {
+                    None
+                };
+                if new_override.is_some() {
                     if let Some(t) = sim.entities.get_mut(transport_id) {
-                        t.ifv_weapon_index = Some(pax_ifv_mode);
+                        t.weapon_override = new_override;
                     }
                 }
             } else {
@@ -562,26 +579,21 @@ fn tick_unloading(sim: &mut Simulation, rules: &RuleSet) -> bool {
             }
         }
 
-        // If transport is Gunner=yes and now empty, revert weapon.
+        // When the transport is empty, clear any passenger-driven weapon override
+        // (covers both Gunner=yes IFV swap and open-topped passenger weapon).
         let transport_type_str = sim
             .entities
             .get(transport_id)
             .map(|e| sim.interner.resolve(e.type_ref).to_string())
             .unwrap_or_default();
-        let transport_gunner = rules
-            .object(&transport_type_str)
-            .map(|obj| obj.gunner)
-            .unwrap_or(false);
-        if transport_gunner {
-            let is_empty = sim
-                .entities
-                .get(transport_id)
-                .and_then(|t| t.passenger_role.cargo())
-                .is_some_and(|c| c.is_empty());
-            if is_empty {
-                if let Some(t) = sim.entities.get_mut(transport_id) {
-                    t.ifv_weapon_index = None;
-                }
+        let is_empty = sim
+            .entities
+            .get(transport_id)
+            .and_then(|t| t.passenger_role.cargo())
+            .is_some_and(|c| c.is_empty());
+        if is_empty {
+            if let Some(t) = sim.entities.get_mut(transport_id) {
+                t.weapon_override = None;
             }
         }
 
