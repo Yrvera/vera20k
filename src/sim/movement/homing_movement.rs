@@ -19,7 +19,7 @@
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
 use crate::sim::entity_store::EntityStore;
-use crate::util::fixed_math::{SIM_ONE, SIM_ZERO, SimFixed};
+use crate::util::fixed_math::{SIM_ONE, SIM_ZERO, SimFixed, dt_from_tick_ms, sim_to_f32};
 
 /// Phase within the homing missile state machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -52,6 +52,14 @@ pub struct HomingState {
     pub yaw_bam: u16,
     pub pitch_bam: u16,
     pub speed: SimFixed,
+    /// Authoritative sub-cell position. `entity.position.rx/ry` is the
+    /// truncation of these for cell-grid queries; this keeps fractional
+    /// precision so the missile moves smoothly between cells.
+    pub pos_x_cells: SimFixed,
+    pub pos_y_cells: SimFixed,
+    /// Altitude in leptons. Independent of `entity.position.z` (which is a
+    /// coarse elevation level u8) — homing missiles fly in their own
+    /// altitude space and decay back toward the cruise band.
     pub altitude: SimFixed,
     pub vz: SimFixed,
 
@@ -152,6 +160,8 @@ impl std::hash::Hash for HomingState {
         self.yaw_bam.hash(state);
         self.pitch_bam.hash(state);
         self.speed.to_bits().hash(state);
+        self.pos_x_cells.to_bits().hash(state);
+        self.pos_y_cells.to_bits().hash(state);
         self.altitude.to_bits().hash(state);
         self.vz.to_bits().hash(state);
         self.rot_ini.hash(state);
@@ -212,6 +222,8 @@ pub fn attach_homing_state(
         yaw_bam: initial_yaw_bam,
         pitch_bam: 0x4000, // 90° BAM = horizontal at start
         speed: weapon_speed.max(SIM_ONE),
+        pos_x_cells: SimFixed::from_num(origin.0 as i32),
+        pos_y_cells: SimFixed::from_num(origin.1 as i32),
         altitude: SIM_ZERO,
         vz: SIM_ZERO,
         rot_ini,
@@ -226,6 +238,146 @@ pub fn attach_homing_state(
         pitch: 0.0,
     });
     true
+}
+
+/// Advance all in-flight homing missile state machines.
+///
+/// Called once per simulation tick from `World::advance_tick` in the
+/// "air + special movement" phase, after `tick_rocket_movement`.
+///
+/// Returns the list of entity IDs that detonated this tick (impact or
+/// stall self-destruct). The caller is responsible for damage dispatch
+/// and despawn.
+pub fn tick_homing_movement(entities: &mut EntityStore, tick_ms: u32, _sim_tick: u64) -> Vec<u64> {
+    let mut detonated: Vec<u64> = Vec::new();
+    if tick_ms == 0 {
+        return detonated;
+    }
+
+    let dt = dt_from_tick_ms(tick_ms);
+    let keys = entities.keys_sorted();
+    for &id in &keys {
+        // Read target position (if target still alive) without holding a
+        // mutable borrow on the bullet.
+        let target_pos_opt: Option<(u16, u16)> = {
+            let Some(bullet) = entities.get(id) else {
+                continue;
+            };
+            let Some(h) = bullet.homing_state.as_ref() else {
+                continue;
+            };
+            h.target_id
+                .and_then(|tid| entities.get(tid))
+                .map(|t| (t.position.rx, t.position.ry))
+        };
+
+        let Some(bullet) = entities.get_mut(id) else {
+            continue;
+        };
+        let Some(h) = bullet.homing_state.as_mut() else {
+            continue;
+        };
+
+        // 1. Refresh last-known target pos if alive, else fly to last-known.
+        if let Some(pos) = target_pos_opt {
+            h.last_known_rx = pos.0;
+            h.last_known_ry = pos.1;
+        } else {
+            h.target_id = None;
+        }
+
+        // 2. Desired yaw from current cell-precision pos -> last-known.
+        let dx_cells = SimFixed::from_num(h.last_known_rx as i32) - h.pos_x_cells;
+        let dy_cells = SimFixed::from_num(h.last_known_ry as i32) - h.pos_y_cells;
+        let desired_yaw = atan2_bam(dy_cells, dx_cells);
+
+        // 3. Sidewinder ROT modulation: 1 + var + cos(2π * frame / 15) * var,
+        //    yielding the [1, 1+2*var] range. The truncation-to-byte step
+        //    matches the original's LowByte(ftol(...)) << 8 shape.
+        let sidewinder = sidewinder_cos(h.frame_counter) * h.missile_rot_var
+            + h.missile_rot_var
+            + SIM_ONE;
+        let delta_far_sf: SimFixed = sidewinder * SimFixed::from_num(h.rot_ini as i32);
+        let delta_far: i32 = delta_far_sf.to_num::<i32>();
+
+        // 4. Close-range branch: when within one cell, use a frame-counter
+        //    driven step instead of the sidewinder magnitude. Avoids
+        //    over-rotating the final approach.
+        let dx_int = dx_cells.to_num::<i32>().abs();
+        let dy_int = dy_cells.to_num::<i32>().abs();
+        let close_range = (dx_int + dy_int) <= 1;
+        let delta_int: i32 = if close_range {
+            ((h.frame_counter % 15) as i32 * 3) / 2
+        } else {
+            delta_far
+        };
+
+        // 5. ROT_BAM per tick = LowByte(delta) << 8 (matches original shift).
+        let delta_byte: u8 = (delta_int as u32 & 0xFF) as u8;
+        let rot_bam_per_tick: u16 = (delta_byte as u16) << 8;
+
+        // 6. Yaw step with inclusive snap.
+        h.yaw_bam = step_toward_bam_inclusive(h.yaw_bam, desired_yaw, rot_bam_per_tick);
+
+        // 7. Horizontal velocity from yaw + speed. Sin/cos via f32 ramp —
+        //    bounded jitter is dwarfed by lepton-scale step sizes and
+        //    cannot flip the `<=` snap comparisons.
+        let v_cells_this_tick = h.speed * dt;
+        // BAM <-> radians: yaw_bam range 0..65536 maps to 0..2π. Inverse of
+        // `atan2_bam`'s `angle * 32768/π` scaling — no offset.
+        let yaw_rad = h.yaw_bam as f32 * (std::f32::consts::PI / 32768.0);
+        let vx_sf = SimFixed::from_num(sim_to_f32(v_cells_this_tick) * yaw_rad.cos());
+        let vy_sf = SimFixed::from_num(sim_to_f32(v_cells_this_tick) * yaw_rad.sin());
+
+        // 8. Integrate sub-cell position, then write truncated cell back to
+        //    the entity's render-visible position.
+        h.pos_x_cells += vx_sf;
+        h.pos_y_cells += vy_sf;
+        let new_rx = h
+            .pos_x_cells
+            .to_num::<i32>()
+            .clamp(0, u16::MAX as i32) as u16;
+        let new_ry = h
+            .pos_y_cells
+            .to_num::<i32>()
+            .clamp(0, u16::MAX as i32) as u16;
+        bullet.position.rx = new_rx;
+        bullet.position.ry = new_ry;
+        bullet.position.refresh_screen_coords();
+
+        // 9. vz damper: non-Floater missiles decay vertical velocity each
+        //    tick toward 0 (`(vz + 3*sgn(vz)) / 4` rounds toward 0 by 1/4).
+        if !h.floater {
+            let signum: i32 = if h.vz > SIM_ZERO {
+                1
+            } else if h.vz < SIM_ZERO {
+                -1
+            } else {
+                0
+            };
+            h.vz = (h.vz + SimFixed::from_num(signum * 3)) / SimFixed::from_num(4);
+        }
+
+        // 10. Arm decrement -> Cruise.
+        if h.arm_ticks_remaining > 0 {
+            h.arm_ticks_remaining -= 1;
+            if h.arm_ticks_remaining == 0 && h.phase == HomingPhase::Arming {
+                h.phase = HomingPhase::Cruise;
+            }
+        }
+
+        // 11. Detonation proximity: cell-grid match with arm complete.
+        let arrived = bullet.position.rx == h.last_known_rx
+            && bullet.position.ry == h.last_known_ry;
+        if arrived && h.arm_ticks_remaining == 0 {
+            h.phase = HomingPhase::Detonation;
+            detonated.push(id);
+        }
+
+        h.frame_counter = h.frame_counter.wrapping_add(1);
+    }
+
+    detonated
 }
 
 #[cfg(test)]
@@ -339,6 +491,42 @@ mod tests {
         let h = entities.get(2).unwrap().homing_state.as_ref().unwrap();
         assert_eq!(h.phase, HomingPhase::Cruise);
         assert_eq!(h.arm_ticks_remaining, 0);
+    }
+
+    #[test]
+    fn homing_missile_reaches_static_target() {
+        use crate::sim::game_entity::GameEntity;
+
+        let mut entities = EntityStore::new();
+        entities.insert(GameEntity::test_default(42, "KIROV", "Soviet", 25, 5));
+        entities.insert(GameEntity::test_default(1, "AAHeatSeeker2", "Allied", 5, 5));
+
+        attach_homing_state(
+            &mut entities,
+            1,
+            (5, 5),
+            42,
+            (25, 5),
+            SimFixed::from_num(30),
+            60,
+            0,
+            false,
+            false,
+            SIM_ONE,
+        );
+
+        let mut detonated = false;
+        for _ in 0..200 {
+            let det = tick_homing_movement(&mut entities, 22, 0);
+            if det.contains(&1) {
+                detonated = true;
+                break;
+            }
+        }
+        assert!(
+            detonated,
+            "homing missile should detonate when reaching static target"
+        );
     }
 
     #[test]
