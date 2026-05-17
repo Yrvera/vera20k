@@ -13,7 +13,9 @@
 
 use std::collections::HashMap;
 
-use crate::render::batch::BatchTexture;
+use crate::assets::fnt_file::{FntFile, FntGlyph};
+use crate::render::batch::{BatchRenderer, BatchTexture};
+use crate::render::gpu::GpuContext;
 
 /// Hardcoded inter-glyph spacing.
 pub const CHAR_SPACING: u32 = 1;
@@ -93,6 +95,144 @@ impl BitFont {
     }
     pub fn cell_height(&self) -> f32 {
         self.cell_height as f32
+    }
+
+    // Real implementation lands in Task 3; from_fnt references it.
+    pub fn fallback_5x7(_gpu: &GpuContext, _batch: &BatchRenderer) -> Self {
+        unimplemented!("fallback_5x7 lands in Task 3")
+    }
+
+    pub fn from_fnt(gpu: &GpuContext, batch: &BatchRenderer, fnt: &FntFile) -> Self {
+        let mut entries: Vec<(u16, &FntGlyph)> = Vec::new();
+        for cp in PACKED_CODEPOINT_RANGE {
+            if let Some(g) = fnt.glyph(cp) {
+                entries.push((cp, g));
+            }
+        }
+
+        // Synthesize the missing-glyph bitmap: inverted '°' (codepoint 0xB0).
+        // Source is white-on-transparent; invert RGB on set pixels so the
+        // fallback is visually distinct against tinted destinations.
+        let missing_owned: Option<FntGlyph> = fnt.glyph(MISSING_GLYPH_CODEPOINT).map(|src| {
+            let mut rgba = src.rgba.clone();
+            let mut i = 0;
+            while i + 3 < rgba.len() {
+                let a = rgba[i + 3];
+                rgba[i] = !rgba[i] & a;
+                rgba[i + 1] = !rgba[i + 1] & a;
+                rgba[i + 2] = !rgba[i + 2] & a;
+                i += 4;
+            }
+            FntGlyph {
+                width: src.width,
+                rgba,
+            }
+        });
+
+        if entries.is_empty() && missing_owned.is_none() {
+            log::warn!("FNT has no glyphs, falling back to hardcoded font");
+            return Self::fallback_5x7(gpu, batch);
+        }
+
+        // Reserve a sentinel codepoint for the missing glyph that won't collide
+        // with the packed range. u16::MAX is well outside 0x20..0x180.
+        const MISSING_SENTINEL: u16 = u16::MAX;
+        let mut all_entries: Vec<(u16, &FntGlyph)> = Vec::with_capacity(entries.len() + 1);
+        for e in &entries {
+            all_entries.push((e.0, e.1));
+        }
+        if let Some(ref g) = missing_owned {
+            all_entries.push((MISSING_SENTINEL, g));
+        }
+
+        let row_h = fnt.bitmap_rows;
+        let pad = 1u32;
+        let max_atlas_w = 512u32;
+
+        struct Placement {
+            x: u32,
+            y: u32,
+        }
+        let mut placements: Vec<Placement> = Vec::with_capacity(all_entries.len());
+        let mut cursor_x = 0u32;
+        let mut cursor_y = 0u32;
+        let mut atlas_w = 0u32;
+
+        for (_cp, g) in &all_entries {
+            let w = g.width + pad * 2;
+            if cursor_x + w > max_atlas_w {
+                cursor_x = 0;
+                cursor_y += row_h + pad * 2;
+            }
+            placements.push(Placement {
+                x: cursor_x + pad,
+                y: cursor_y + pad,
+            });
+            cursor_x += w;
+            if cursor_x > atlas_w {
+                atlas_w = cursor_x;
+            }
+        }
+        let atlas_h = cursor_y + row_h + pad * 2;
+
+        let mut rgba = vec![0u8; (atlas_w * atlas_h * 4) as usize];
+        let mut glyphs = HashMap::new();
+        let mut missing_glyph = None;
+
+        for (idx, (cp, g)) in all_entries.iter().enumerate() {
+            let pl = &placements[idx];
+            for row in 0..row_h {
+                for col in 0..g.width {
+                    let src = ((row * g.width + col) * 4) as usize;
+                    if src + 3 >= g.rgba.len() {
+                        continue;
+                    }
+                    let dst_x = pl.x + col;
+                    let dst_y = pl.y + row;
+                    let dst = ((dst_y * atlas_w + dst_x) * 4) as usize;
+                    rgba[dst..dst + 4].copy_from_slice(&g.rgba[src..src + 4]);
+                }
+            }
+            let entry = GlyphEntry {
+                uv_origin: [pl.x as f32 / atlas_w as f32, pl.y as f32 / atlas_h as f32],
+                uv_size: [
+                    g.width as f32 / atlas_w as f32,
+                    row_h as f32 / atlas_h as f32,
+                ],
+                pixel_width: g.width as f32,
+            };
+            if *cp == MISSING_SENTINEL {
+                missing_glyph = Some(entry);
+            } else {
+                glyphs.insert(*cp, entry);
+            }
+        }
+
+        let space_width = fnt.glyph(0x20).map(|g| g.width).unwrap_or(DEFAULT_SPACE_WIDTH);
+        let atlas_texture = batch.create_texture(gpu, &rgba, atlas_w, atlas_h);
+        let darken_texture = batch.create_texture(gpu, &[0u8, 0, 0, DARKEN_ALPHA], 1, 1);
+
+        log::info!(
+            "BitFont atlas: {}x{} px, {} glyphs (+missing={}), space_width={}",
+            atlas_w,
+            atlas_h,
+            glyphs.len(),
+            missing_glyph.is_some(),
+            space_width
+        );
+
+        Self {
+            atlas_texture: Some(atlas_texture),
+            glyphs,
+            missing_glyph,
+            cell_height: fnt.cell_height,
+            bitmap_rows: fnt.bitmap_rows,
+            space_width,
+            char_spacing: CHAR_SPACING,
+            tab_width: TAB_WIDTH,
+            tab_origin: TAB_ORIGIN,
+            darken_texture: Some(darken_texture),
+        }
     }
 }
 
