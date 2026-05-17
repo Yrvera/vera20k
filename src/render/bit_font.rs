@@ -97,6 +97,138 @@ impl BitFont {
         self.cell_height as f32
     }
 
+    pub fn wrap_layout(&self, text: &str, max_width: u32) -> WrapLayout {
+        if text.is_empty() {
+            return WrapLayout::default();
+        }
+        let mut lines: Vec<LineSpan> = Vec::new();
+        let mut line_start_byte: usize = 0;
+        let mut line_x: u32 = 0;
+        let mut chars_on_line: u32 = 0;
+        let mut max_line_width: u32 = 0;
+        let mut last_space_byte: Option<usize> = None;
+        let mut last_space_byte_after: usize = 0;
+        let mut last_space_x: u32 = 0;
+        let mut prev_char: Option<char> = None;
+        let mut y_lines: u32 = 1;
+
+        let chars: Vec<(usize, char)> = text.char_indices().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            let (byte_off, ch) = chars[i];
+            let next_byte_off = chars.get(i + 1).map(|c| c.0).unwrap_or(text.len());
+
+            match ch {
+                '\t' => {
+                    let advanced = line_x + self.tab_width;
+                    line_x = advanced
+                        - ((advanced.saturating_sub(self.tab_origin)) % self.tab_width);
+                    prev_char = Some('\t');
+                    i += 1;
+                    continue;
+                }
+                '\r' | '\n' => {
+                    if ch == '\n' && prev_char == Some('\r') {
+                        prev_char = Some('\n');
+                        i += 1;
+                        continue;
+                    }
+                    lines.push(LineSpan {
+                        start_byte: line_start_byte,
+                        end_byte: byte_off,
+                        width: line_x,
+                    });
+                    max_line_width = max_line_width.max(line_x);
+                    line_start_byte = next_byte_off;
+                    line_x = 0;
+                    chars_on_line = 0;
+                    last_space_byte = None;
+                    y_lines += 1;
+                    prev_char = Some(ch);
+                    i += 1;
+                    continue;
+                }
+                ' ' => {
+                    last_space_byte = Some(byte_off);
+                    last_space_byte_after = next_byte_off;
+                    last_space_x = line_x;
+                }
+                _ => {}
+            }
+
+            let glyph_w = self.lookup_glyph_width(ch);
+            let Some(glyph_w) = glyph_w else {
+                prev_char = Some(ch);
+                i += 1;
+                continue;
+            };
+            let spacing = if chars_on_line == 0 { 0 } else { self.char_spacing };
+            let next_x = line_x + spacing + glyph_w;
+
+            if max_width == 0 || next_x <= max_width {
+                line_x = next_x;
+                chars_on_line += 1;
+                prev_char = Some(ch);
+                i += 1;
+            } else if chars_on_line == 0 {
+                line_x = next_x;
+                chars_on_line = 1;
+                prev_char = Some(ch);
+                i += 1;
+            } else if let Some(space_b) = last_space_byte {
+                lines.push(LineSpan {
+                    start_byte: line_start_byte,
+                    end_byte: space_b,
+                    width: last_space_x,
+                });
+                max_line_width = max_line_width.max(last_space_x);
+                line_start_byte = last_space_byte_after;
+                line_x = 0;
+                chars_on_line = 0;
+                last_space_byte = None;
+                y_lines += 1;
+                // do not advance i -- retry char on new line
+            } else {
+                lines.push(LineSpan {
+                    start_byte: line_start_byte,
+                    end_byte: byte_off,
+                    width: line_x,
+                });
+                max_line_width = max_line_width.max(line_x);
+                line_start_byte = byte_off;
+                line_x = 0;
+                chars_on_line = 0;
+                y_lines += 1;
+                // do not advance i
+            }
+        }
+        lines.push(LineSpan {
+            start_byte: line_start_byte,
+            end_byte: text.len(),
+            width: line_x,
+        });
+        max_line_width = max_line_width.max(line_x);
+
+        WrapLayout {
+            width: max_line_width,
+            height: self.cell_height * y_lines,
+            lines,
+        }
+    }
+
+    fn lookup_glyph_width(&self, ch: char) -> Option<u32> {
+        if ch == ' ' {
+            return Some(self.space_width);
+        }
+        let cp = ch as u32;
+        if cp <= u16::MAX as u32 {
+            if let Some(g) = self.glyphs.get(&(cp as u16)) {
+                return Some(g.pixel_width as u32);
+            }
+        }
+        self.missing_glyph.as_ref().map(|g| g.pixel_width as u32)
+    }
+
     pub fn text_width(&self, text: &str) -> u32 {
         let mut x: u32 = 0;
         let mut count: u32 = 0;
