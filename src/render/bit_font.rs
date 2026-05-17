@@ -97,6 +97,45 @@ impl BitFont {
         self.cell_height as f32
     }
 
+    pub fn text_width(&self, text: &str) -> u32 {
+        let mut x: u32 = 0;
+        let mut count: u32 = 0;
+        for ch in text.chars() {
+            match ch {
+                '\t' => {
+                    let advanced = x + self.tab_width;
+                    x = advanced
+                        - ((advanced.saturating_sub(self.tab_origin)) % self.tab_width);
+                    continue;
+                }
+                '\r' | '\n' => continue,
+                ' ' => {
+                    x += self.space_width;
+                    count += 1;
+                }
+                other => {
+                    let cp = other as u32;
+                    let w = if cp <= u16::MAX as u32 {
+                        self.glyphs
+                            .get(&(cp as u16))
+                            .map(|g| g.pixel_width as u32)
+                            .or_else(|| self.missing_glyph.as_ref().map(|g| g.pixel_width as u32))
+                    } else {
+                        self.missing_glyph.as_ref().map(|g| g.pixel_width as u32)
+                    };
+                    if let Some(w) = w {
+                        x += w;
+                        count += 1;
+                    }
+                }
+            }
+        }
+        if count > 1 {
+            x += (count - 1) * self.char_spacing;
+        }
+        x
+    }
+
     /// Tint adjustment for missing-glyph fallback rendering -- caller XORs
     /// the input tint to produce the visible "wrong color" effect that
     /// distinguishes missing glyphs at a glance. Faithful 32-bit port of the
