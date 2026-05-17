@@ -211,6 +211,14 @@ pub fn attach_homing_state(
         SimFixed::from_num(target_pos.1 as i32 - origin.1 as i32),
         SimFixed::from_num(target_pos.0 as i32 - origin.0 as i32),
     );
+    // Seed last_distance_to_target with the true starting distance in
+    // leptons so the first tick's `prev - now` delta is ~zero rather than
+    // a huge negative spike (which would poison the stall EMA before any
+    // real motion happens).
+    let initial_dist_sf = int_distance_to_sim(
+        (target_pos.0 as i32 - origin.0 as i32) * 256,
+        (target_pos.1 as i32 - origin.1 as i32) * 256,
+    );
 
     entity.homing_state = Some(HomingState {
         phase: if arm_frames > 0 {
@@ -236,7 +244,7 @@ pub fn attach_homing_state(
         frame_counter: 0,
         stall_counter: 0,
         stall_ema: SIM_ZERO,
-        last_distance_to_target: SIM_ZERO,
+        last_distance_to_target: initial_dist_sf,
         pitch: 0.0,
     });
     true
@@ -296,9 +304,8 @@ pub fn tick_homing_movement(entities: &mut EntityStore, tick_ms: u32, _sim_tick:
         // 3. Sidewinder ROT modulation: 1 + var + cos(2π * frame / 15) * var,
         //    yielding the [1, 1+2*var] range. The truncation-to-byte step
         //    matches the original's LowByte(ftol(...)) << 8 shape.
-        let sidewinder = sidewinder_cos(h.frame_counter) * h.missile_rot_var
-            + h.missile_rot_var
-            + SIM_ONE;
+        let sidewinder =
+            sidewinder_cos(h.frame_counter) * h.missile_rot_var + h.missile_rot_var + SIM_ONE;
         let delta_far_sf: SimFixed = sidewinder * SimFixed::from_num(h.rot_ini as i32);
         let delta_far: i32 = delta_far_sf.to_num::<i32>();
 
@@ -335,14 +342,8 @@ pub fn tick_homing_movement(entities: &mut EntityStore, tick_ms: u32, _sim_tick:
         //    the entity's render-visible position.
         h.pos_x_cells += vx_sf;
         h.pos_y_cells += vy_sf;
-        let new_rx = h
-            .pos_x_cells
-            .to_num::<i32>()
-            .clamp(0, u16::MAX as i32) as u16;
-        let new_ry = h
-            .pos_y_cells
-            .to_num::<i32>()
-            .clamp(0, u16::MAX as i32) as u16;
+        let new_rx = h.pos_x_cells.to_num::<i32>().clamp(0, u16::MAX as i32) as u16;
+        let new_ry = h.pos_y_cells.to_num::<i32>().clamp(0, u16::MAX as i32) as u16;
         bullet.position.rx = new_rx;
         bullet.position.ry = new_ry;
         bullet.position.refresh_screen_coords();
@@ -400,10 +401,24 @@ pub fn tick_homing_movement(entities: &mut EntityStore, tick_ms: u32, _sim_tick:
             }
         }
 
-        // 11. Detonation proximity: cell-grid match with arm complete.
-        let arrived = bullet.position.rx == h.last_known_rx
-            && bullet.position.ry == h.last_known_ry;
-        if arrived && h.arm_ticks_remaining == 0 {
+        // 11. Detonation proximity: sub-cell lepton distance computed from
+        //     the SimFixed position fields, not the truncated bullet.position
+        //     integers. Cell-grid match alone is too strict — the missile's
+        //     sub-cell pos may orbit a target's cell without ever landing on
+        //     an exact (rx, ry).
+        let dx_lep_sf = (SimFixed::from_num(h.last_known_rx as i32) - h.pos_x_cells)
+            * SimFixed::from_num(256);
+        let dy_lep_sf = (SimFixed::from_num(h.last_known_ry as i32) - h.pos_y_cells)
+            * SimFixed::from_num(256);
+        let dist_now_sf: SimFixed = int_distance_to_sim(
+            dx_lep_sf.to_num::<i32>(),
+            dy_lep_sf.to_num::<i32>(),
+        );
+        // 192 leptons = three-quarters of a cell; tight enough that the
+        // missile is visually on top of the target and loose enough to
+        // absorb sub-cell drift from f32 cos/sin in the velocity ramp.
+        let proximity_hit = dist_now_sf <= SimFixed::from_num(192) && h.arm_ticks_remaining == 0;
+        if proximity_hit {
             h.phase = HomingPhase::Detonation;
             detonated.push(id);
         }
@@ -413,11 +428,12 @@ pub fn tick_homing_movement(entities: &mut EntityStore, tick_ms: u32, _sim_tick:
         //     If the smoothed closure rate falls below 0.5 leptons/tick,
         //     the missile is judged unreachable and self-destructs.
         //     Non-Floater only — floater projectiles can hover indefinitely.
+        //
+        //     Distance is measured in leptons (256 leptons per cell), matching
+        //     the original engine's distance scale. A normal closing rate at
+        //     20 cells/sec * 22ms/tick = ~113 leptons/tick, so the 0.5 lepton
+        //     threshold only trips when the missile is truly stalled.
         if h.phase != HomingPhase::Detonation {
-            let dist_now_sf: SimFixed = int_distance_to_sim(
-                h.last_known_rx as i32 - bullet.position.rx as i32,
-                h.last_known_ry as i32 - bullet.position.ry as i32,
-            );
             let delta_dist = h.last_distance_to_target - dist_now_sf;
             h.last_distance_to_target = dist_now_sf;
 
@@ -425,8 +441,8 @@ pub fn tick_homing_movement(entities: &mut EntityStore, tick_ms: u32, _sim_tick:
                 h.stall_counter += 1;
                 h.stall_ema += delta_dist;
             } else {
-                h.stall_ema = h.stall_ema * SimFixed::lit("0.9")
-                    + delta_dist * SimFixed::lit("0.1");
+                h.stall_ema =
+                    h.stall_ema * SimFixed::lit("0.9") + delta_dist * SimFixed::lit("0.1");
                 if h.stall_ema <= SimFixed::lit("0.5") && !h.floater {
                     h.phase = HomingPhase::SelfDestruct;
                     detonated.push(id);
@@ -670,7 +686,10 @@ mod tests {
             .altitude
             .to_num::<i32>();
         let delta = alt_after - (5 * 64 - 30);
-        assert_eq!(delta, 18, "expected snap of 18 leptons up toward cruise band");
+        assert_eq!(
+            delta, 18,
+            "expected snap of 18 leptons up toward cruise band"
+        );
     }
 
     #[test]
@@ -760,6 +779,78 @@ mod tests {
             SIM_ONE,
         );
         assert!(!attached);
+    }
+
+    #[test]
+    fn homing_missile_tracks_moving_target() {
+        use crate::sim::game_entity::GameEntity;
+
+        let mut entities = EntityStore::new();
+        entities.insert(GameEntity::test_default(42, "KIROV", "Soviet", 30, 5));
+        entities.insert(GameEntity::test_default(1, "AAHeatSeeker2", "Allied", 5, 5));
+
+        attach_homing_state(
+            &mut entities,
+            1,
+            (5, 5),
+            42,
+            (30, 5),
+            SimFixed::from_num(20),
+            60,
+            0,
+            false,
+            false,
+            SIM_ONE,
+        );
+
+        // After tick 10, jog the target off-axis so the missile must
+        // re-yaw mid-flight. A non-homing rocket flying a straight line
+        // toward (30, 5) would miss the new (35, 10) target — only the
+        // sidewinder yaw correction can pursue.
+        let mut detonated = false;
+        for tick in 0..400 {
+            if tick == 10 {
+                let t = entities.get_mut(42).unwrap();
+                t.position.rx = 35;
+                t.position.ry = 10;
+            }
+            let det = tick_homing_movement(&mut entities, 22, tick as u64);
+            if det.contains(&1) {
+                detonated = true;
+                break;
+            }
+        }
+        assert!(
+            detonated,
+            "missile should track the moved target and detonate"
+        );
+
+        // After detonation the missile must be at (or very near) the moved
+        // target's sub-cell position, not the original launch trajectory's
+        // endpoint. Cell-grid match is too strict — proximity detonation
+        // fires at sub-cell distance ≤ 192 leptons (~0.75 cell), so the
+        // truncated bullet.position may be one cell short of the target.
+        let bullet = entities.get(1).unwrap();
+        let h = bullet.homing_state.as_ref().unwrap();
+        let dx_sf = h.pos_x_cells - SimFixed::from_num(35);
+        let dy_sf = h.pos_y_cells - SimFixed::from_num(10);
+        let dist_sq = dx_sf * dx_sf + dy_sf * dy_sf;
+        // 0.75 cells -> dist <= 0.5625 cells²; we expect well under that.
+        assert!(
+            dist_sq <= SimFixed::lit("1.0"),
+            "missile should detonate within one cell of moved target (35, 10), \
+             got sub-cell pos ({:?}, {:?})",
+            h.pos_x_cells,
+            h.pos_y_cells
+        );
+        // And the trajectory must have curved south-east, not stayed on the
+        // pure +x flight path toward the original (30, 5) target. ry >= 8
+        // is impossible without re-yawing south after the target moved.
+        assert!(
+            h.pos_y_cells >= SimFixed::from_num(8),
+            "missile y-coord should reflect the southward re-yaw, got {:?}",
+            h.pos_y_cells
+        );
     }
 
     #[test]
