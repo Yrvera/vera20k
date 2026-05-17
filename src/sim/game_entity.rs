@@ -153,6 +153,12 @@ pub struct GameEntity {
     pub low_bridge_tube_state: Option<LowBridgeTubeMovementState>,
     /// Rocket/missile flight state machine (launch/ascend/terminal/detonate).
     pub rocket_state: Option<RocketState>,
+    /// Homing missile flight state. `Some` while this entity is an in-flight
+    /// homing projectile; `None` otherwise. Distinct from `rocket_state` —
+    /// ballistic-arc rockets keep using `rocket_state`; only `Ranged=yes`
+    /// projectiles attach a `HomingState`.
+    #[serde(default)]
+    pub homing_state: Option<crate::sim::movement::homing_movement::HomingState>,
     /// Drop pod descent state machine (falling/landing).
     pub droppod_state: Option<DropPodState>,
     /// Parachute descent state. `Some` while a paradropped unit is descending
@@ -340,6 +346,7 @@ impl GameEntity {
             tunnel_state: None,
             low_bridge_tube_state: None,
             rocket_state: None,
+            homing_state: None,
             droppod_state: None,
             parachute_state: None,
             invulnerability: None,
