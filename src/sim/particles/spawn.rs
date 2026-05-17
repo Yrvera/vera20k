@@ -19,7 +19,8 @@ use crate::rules::ruleset::RuleSet;
 use crate::sim::intern::InternedId;
 use crate::sim::rng::SimRng;
 use crate::sim::world::Simulation;
-use crate::util::fixed_math::SimFixed;
+use crate::util::fixed_math::{SIM_ONE, SIM_ZERO, SimFixed};
+use fixed::types::I48F16;
 use glam::IVec3;
 
 impl Simulation {
@@ -88,6 +89,8 @@ pub(super) fn spawn_particle(
         return false;
     }
     let pt = rules.particle_type(pt_id);
+    let direction = normalized_direction(coords, sys.target_coords);
+    let state_ai_advance = spawn_state_ai_advance(pt, coords, sys.target_coords, direction);
 
     let lifetime_extra = if pt.behaves_like == ParticleBehavesLike::Railgun {
         rng.next_range_u32(10) as i16
@@ -102,11 +105,11 @@ pub(super) fn spawn_particle(
         coords,
         previous_coords: spawn_origin,
         origin: coords,
-        direction: [SimFixed::from_num(0); 3],
+        direction,
         velocity: pt.velocity,
         lifetime_remaining,
         damage_counter: pt.max_dc as i16,
-        state_ai_advance: pt.state_ai_advance,
+        state_ai_advance,
         animation_state: pt.start_state_ai,
         translucency: pt.translucency,
         hit_ground: false,
@@ -121,6 +124,87 @@ pub(super) fn spawn_particle(
         state_advance_counter: 0,
     });
     true
+}
+
+fn normalized_direction(source: IVec3, target: IVec3) -> [SimFixed; 3] {
+    let dx = target.x - source.x;
+    let dy = target.y - source.y;
+    let dz = target.z - source.z;
+    if dx == 0 && dy == 0 && dz == 0 {
+        return [SIM_ZERO; 3];
+    }
+
+    let dx_w = I48F16::from_num(dx);
+    let dy_w = I48F16::from_num(dy);
+    let dz_w = I48F16::from_num(dz);
+    let dist = sqrt_i48(dx_w * dx_w + dy_w * dy_w + dz_w * dz_w);
+    if dist <= I48F16::ZERO {
+        return [SIM_ZERO; 3];
+    }
+
+    [
+        i48_to_sim(dx_w / dist),
+        i48_to_sim(dy_w / dist),
+        i48_to_sim(dz_w / dist),
+    ]
+}
+
+fn spawn_state_ai_advance(
+    pt: &crate::rules::particle_type::ParticleType,
+    source: IVec3,
+    target: IVec3,
+    direction: [SimFixed; 3],
+) -> u8 {
+    if !pt.normalized {
+        return pt.state_ai_advance;
+    }
+
+    let step_x = ftol_chop(direction[0] * pt.velocity).abs();
+    let step_y = ftol_chop(direction[1] * pt.velocity).abs();
+    let mut best_ticks = SimFixed::from_num(9999);
+
+    if step_x > 0 {
+        best_ticks = SimFixed::from_num((source.x - target.x).abs()) / SimFixed::from_num(step_x);
+    }
+    if step_y > 0 {
+        let y_ticks = SimFixed::from_num((source.y - target.y).abs()) / SimFixed::from_num(step_y);
+        if best_ticks >= y_ticks {
+            best_ticks = y_ticks;
+        }
+    }
+
+    let divisor = SimFixed::from_num(u16::from(pt.final_damage_state) + 1);
+    let advance: i32 = ftol_chop(best_ticks / divisor + SIM_ONE);
+    advance as u8
+}
+
+fn ftol_chop(val: SimFixed) -> i32 {
+    let bits = i64::from(val.to_bits());
+    if bits >= 0 {
+        (bits >> 16) as i32
+    } else {
+        -((-bits) >> 16) as i32
+    }
+}
+
+fn sqrt_i48(val: I48F16) -> I48F16 {
+    if val <= I48F16::ZERO {
+        return I48F16::ZERO;
+    }
+    let two = I48F16::from_num(2);
+    let mut guess = if val < two { val } else { val / two };
+    for _ in 0..16 {
+        if guess <= I48F16::ZERO {
+            return I48F16::ZERO;
+        }
+        guess = (guess + val / guess) / two;
+    }
+    guess
+}
+
+fn i48_to_sim(val: I48F16) -> SimFixed {
+    let bits = val.to_bits().clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+    SimFixed::from_bits(bits)
 }
 
 /// Fire-only variant: spawn one particle, then random-shuffle it into the last
@@ -318,5 +402,153 @@ mod tests {
             &mut rng
         ));
         assert!(sys.particles.is_empty());
+    }
+
+    #[test]
+    fn normalized_particle_rewrites_state_ai_advance_from_xy_travel_time() {
+        let ini_text = "[Particles]\n\
+                        1=FireStream\n\
+                        [FireStream]\n\
+                        BehavesLike=Fire\n\
+                        MaxEC=10\n\
+                        Velocity=28.0\n\
+                        StateAIAdvance=6\n\
+                        StartStateAI=1\n\
+                        EndStateAI=19\n\
+                        FinalDamageState=14\n\
+                        Normalized=yes\n\
+                        [ParticleSystems]\n\
+                        1=FireSys\n\
+                        [FireSys]\n\
+                        BehavesLike=Fire\n\
+                        HoldsWhat=FireStream\n\
+                        ParticleCap=5\n";
+        let ini = IniFile::from_str(ini_text);
+        let rules = RuleSet::from_ini(&ini).expect("rules parse");
+        let mut sim = Simulation::new();
+        let sys_id = sim
+            .spawn_particle_system(
+                ParticleSystemTypeId(0),
+                IVec3::new(0, 0, 0),
+                None,
+                None,
+                IVec3::new(420, 0, 0),
+                None,
+                &rules,
+            )
+            .unwrap();
+        let mut rng = SimRng::new(1);
+        let sys = sim.particle_systems.get_mut(sys_id).unwrap();
+
+        assert!(spawn_particle(
+            sys,
+            IVec3::new(0, 0, 0),
+            IVec3::new(0, 0, 0),
+            &rules,
+            &mut rng
+        ));
+
+        let particle = &sys.particles[0];
+        assert_eq!(particle.direction, [SIM_ONE, SIM_ZERO, SIM_ZERO]);
+        // step_x=trunc(1*28)=28; best_ticks=420/28=15;
+        // advance=trunc(15/(FinalDamageState+1) + 1)=trunc(2)=2.
+        assert_eq!(particle.state_ai_advance, 2);
+    }
+
+    #[test]
+    fn normalized_particle_uses_3d_direction_but_only_xy_tick_candidates() {
+        let ini_text = "[Particles]\n\
+                        1=FireStream\n\
+                        [FireStream]\n\
+                        BehavesLike=Fire\n\
+                        MaxEC=10\n\
+                        Velocity=28.0\n\
+                        StateAIAdvance=6\n\
+                        FinalDamageState=14\n\
+                        Normalized=yes\n\
+                        [ParticleSystems]\n\
+                        1=FireSys\n\
+                        [FireSys]\n\
+                        BehavesLike=Fire\n\
+                        HoldsWhat=FireStream\n\
+                        ParticleCap=5\n";
+        let ini = IniFile::from_str(ini_text);
+        let rules = RuleSet::from_ini(&ini).expect("rules parse");
+        let mut sim = Simulation::new();
+        let sys_id = sim
+            .spawn_particle_system(
+                ParticleSystemTypeId(0),
+                IVec3::new(0, 0, 0),
+                None,
+                None,
+                IVec3::new(300, 400, 1200),
+                None,
+                &rules,
+            )
+            .unwrap();
+        let mut rng = SimRng::new(1);
+        let sys = sim.particle_systems.get_mut(sys_id).unwrap();
+
+        assert!(spawn_particle(
+            sys,
+            IVec3::new(0, 0, 0),
+            IVec3::ZERO,
+            &rules,
+            &mut rng
+        ));
+
+        let particle = &sys.particles[0];
+        assert!(particle.direction[2] > SIM_ZERO);
+        // Full 3D normalization makes x/y component steps small:
+        // trunc(300/1300*28)=6, trunc(400/1300*28)=8.
+        // X and Y candidates are both 50 ticks; Z is not considered.
+        // advance=trunc(50/15 + 1)=4, replacing INI StateAIAdvance=6.
+        assert_eq!(particle.state_ai_advance, 4);
+    }
+
+    #[test]
+    fn normalized_particle_stores_low_byte_of_rewritten_advance() {
+        let ini_text = "[Particles]\n\
+                        1=FireStream\n\
+                        [FireStream]\n\
+                        BehavesLike=Fire\n\
+                        MaxEC=10\n\
+                        Velocity=1.0\n\
+                        StateAIAdvance=6\n\
+                        FinalDamageState=0\n\
+                        Normalized=yes\n\
+                        [ParticleSystems]\n\
+                        1=FireSys\n\
+                        [FireSys]\n\
+                        BehavesLike=Fire\n\
+                        HoldsWhat=FireStream\n\
+                        ParticleCap=5\n";
+        let ini = IniFile::from_str(ini_text);
+        let rules = RuleSet::from_ini(&ini).expect("rules parse");
+        let mut sim = Simulation::new();
+        let sys_id = sim
+            .spawn_particle_system(
+                ParticleSystemTypeId(0),
+                IVec3::ZERO,
+                None,
+                None,
+                IVec3::new(300, 0, 0),
+                None,
+                &rules,
+            )
+            .unwrap();
+        let mut rng = SimRng::new(1);
+        let sys = sim.particle_systems.get_mut(sys_id).unwrap();
+
+        assert!(spawn_particle(
+            sys,
+            IVec3::ZERO,
+            IVec3::ZERO,
+            &rules,
+            &mut rng
+        ));
+
+        // advance=trunc(300/1/(0+1)+1)=301; byte store keeps 45.
+        assert_eq!(sys.particles[0].state_ai_advance, 45);
     }
 }
