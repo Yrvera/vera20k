@@ -161,6 +161,11 @@ pub struct GeneralRules {
     /// Underground travel speed for Tunnel locomotor units (TunnelSpeed=).
     /// Default 6.0 cells/second matching RA2 default.
     pub tunnel_speed: SimFixed,
+    /// `MissileROTVar=` from [General]. Amplitude of the sidewinder cosine
+    /// modulation in homing missile flight; the per-tick ROT scales by
+    /// `(1 + var) + cos(2π * frame / 15) * var`. Default 1.0 produces
+    /// oscillation between 1.0 and 3.0 times the projectile's base ROT.
+    pub missile_rot_var: SimFixed,
     /// Default cruise altitude for Fly-locomotor aircraft (FlightLevel= in [General]).
     /// Default 1500 leptons. Per-type override possible but not yet implemented.
     pub flight_level: i32,
@@ -234,6 +239,8 @@ pub struct GeneralRules {
     /// Parsed from [AudioVisual] BuildingGarrisonedSound (typically "BuildingGarrisoned").
     /// None = no sound configured. Resolved at app layer to a sound.ini entry.
     pub building_garrisoned_sound: Option<String>,
+    /// Sound event for shell main-menu buttons from [AudioVisual] GUIMainButtonSound.
+    pub gui_main_button_sound: Option<String>,
     /// Direct rocker force coefficient (DirectRockingCoefficient= in [AudioVisual]).
     /// Multiplies the final DirectRocker impulse force. Default 1.5.
     pub direct_rocking_coefficient: SimFixed,
@@ -507,6 +514,7 @@ impl Default for GeneralRules {
             gap_radius: 10,
             reveal_by_height: true,
             tunnel_speed: sim_from_f32(6.0),
+            missile_rot_var: sim_from_f32(1.0),
             flight_level: 1500,
             parachute_max_fall_rate: -3,
             paradrop_radius: 1024,
@@ -547,6 +555,7 @@ impl Default for GeneralRules {
             condition_red: 0.25,
             condition_red_x1000: 250,
             building_garrisoned_sound: None,
+            gui_main_button_sound: None,
             direct_rocking_coefficient: SimFixed::lit("1.5"),
             fallback_coefficient: SimFixed::lit("0.1"),
             chrono_in_sound: Some("ChronoMinerTeleport".to_string()),
@@ -791,6 +800,10 @@ impl GeneralRules {
                 .get_f32("TunnelSpeed")
                 .map(sim_from_f32)
                 .unwrap_or(sim_from_f32(6.0)),
+            missile_rot_var: general
+                .get_f32("MissileROTVar")
+                .map(sim_from_f32)
+                .unwrap_or(sim_from_f32(1.0)),
             flight_level: general.get_i32("FlightLevel").unwrap_or(1500),
             parachute_max_fall_rate: general.get_i32("ParachuteMaxFallRate").unwrap_or(-3),
             paradrop_radius: general.get_i32("ParadropRadius").unwrap_or(1024),
@@ -844,8 +857,14 @@ impl GeneralRules {
             condition_red_x1000: (condition_red_f32 as f64 * 1000.0) as i64,
             building_garrisoned_sound: audio_visual
                 .and_then(|s| s.get("BuildingGarrisonedSound"))
+                .map(str::trim)
                 .filter(|s| !s.is_empty())
-                .map(|s| s.to_string()),
+                .map(str::to_string),
+            gui_main_button_sound: audio_visual
+                .and_then(|s| s.get("GUIMainButtonSound"))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
             direct_rocking_coefficient: audio_visual
                 .and_then(|s| s.get_f32("DirectRockingCoefficient"))
                 .map(sim_from_f32)
@@ -2495,6 +2514,18 @@ BuildingGarrisonedSound=BuildingGarrisoned
     }
 
     #[test]
+    fn test_gui_main_button_sound_parsed() {
+        let ini_str = "\
+[General]
+[AudioVisual]
+GUIMainButtonSound=MenuClick
+";
+        let ini = IniFile::from_str(ini_str);
+        let general = GeneralRules::from_ini(&ini);
+        assert_eq!(general.gui_main_button_sound.as_deref(), Some("MenuClick"));
+    }
+
+    #[test]
     fn barrel_particle_parsed_from_general() {
         let ini_str = "\
 [General]
@@ -2570,6 +2601,25 @@ ParachuteMaxFallRate=-1
         let ini = IniFile::from_str(ini_str);
         let general = GeneralRules::from_ini(&ini);
         assert_eq!(general.parachute_max_fall_rate, -1);
+    }
+
+    #[test]
+    fn test_missile_rot_var_defaults_to_one() {
+        let ini = IniFile::from_str("[General]\n");
+        let general = GeneralRules::from_ini(&ini);
+        assert_eq!(general.missile_rot_var, sim_from_f32(1.0));
+    }
+
+    #[test]
+    fn test_missile_rot_var_parsed() {
+        let ini = IniFile::from_str("[General]\nMissileROTVar=2.5\n");
+        let general = GeneralRules::from_ini(&ini);
+        let diff = (general.missile_rot_var - sim_from_f32(2.5)).abs();
+        assert!(
+            diff < SimFixed::lit("0.001"),
+            "got {:?}",
+            general.missile_rot_var
+        );
     }
 
     #[test]
