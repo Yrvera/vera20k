@@ -18,7 +18,8 @@
 //! - Part of sim/ — depends on sim/entity_store, sim/game_entity.
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
-use crate::util::fixed_math::SimFixed;
+use crate::sim::entity_store::EntityStore;
+use crate::util::fixed_math::{SIM_ONE, SIM_ZERO, SimFixed};
 
 /// Phase within the homing missile state machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -166,6 +167,67 @@ impl std::hash::Hash for HomingState {
     }
 }
 
+/// Attach a homing missile state to an entity at the given origin, targeting
+/// `target_id`. The entity should already exist in the EntityStore with a
+/// position. Returns `false` if the entity doesn't exist.
+///
+/// Parameters:
+/// - `weapon_speed`: from `WeaponType.Speed`
+/// - `rot_ini`: from `BulletType.ROT` (raw INI int, NOT pre-scaled)
+/// - `arm_frames`: from `BulletType.Arm`
+/// - `floater`, `very_high`: from `BulletType`
+/// - `missile_rot_var`: from `[General].MissileROTVar` (default 1.0)
+#[allow(clippy::too_many_arguments)]
+pub fn attach_homing_state(
+    entities: &mut EntityStore,
+    bullet_id: u64,
+    origin: (u16, u16),
+    target_id: u64,
+    target_pos: (u16, u16),
+    weapon_speed: SimFixed,
+    rot_ini: u16,
+    arm_frames: u16,
+    floater: bool,
+    very_high: bool,
+    missile_rot_var: SimFixed,
+) -> bool {
+    let Some(entity) = entities.get_mut(bullet_id) else {
+        return false;
+    };
+
+    let initial_yaw_bam = atan2_bam(
+        SimFixed::from_num(target_pos.1 as i32 - origin.1 as i32),
+        SimFixed::from_num(target_pos.0 as i32 - origin.0 as i32),
+    );
+
+    entity.homing_state = Some(HomingState {
+        phase: if arm_frames > 0 {
+            HomingPhase::Arming
+        } else {
+            HomingPhase::Cruise
+        },
+        target_id: Some(target_id),
+        last_known_rx: target_pos.0,
+        last_known_ry: target_pos.1,
+        yaw_bam: initial_yaw_bam,
+        pitch_bam: 0x4000, // 90° BAM = horizontal at start
+        speed: weapon_speed.max(SIM_ONE),
+        altitude: SIM_ZERO,
+        vz: SIM_ZERO,
+        rot_ini,
+        missile_rot_var,
+        floater,
+        very_high,
+        arm_ticks_remaining: arm_frames,
+        frame_counter: 0,
+        stall_counter: 0,
+        stall_ema: SIM_ZERO,
+        last_distance_to_target: SIM_ZERO,
+        pitch: 0.0,
+    });
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,6 +281,83 @@ mod tests {
     fn step_toward_bam_wraps_around() {
         // Shortest arc across the wrap (going CCW is closer).
         assert_eq!(step_toward_bam_inclusive(0x0000, 0xFF00, 0x0100), 0xFF00);
+    }
+
+    #[test]
+    fn attach_homing_state_initializes() {
+        use crate::sim::game_entity::GameEntity;
+
+        let mut entities = EntityStore::new();
+        entities.insert(GameEntity::test_default(1, "AAHeatSeeker2", "Allied", 5, 5));
+
+        let attached = attach_homing_state(
+            &mut entities,
+            /* bullet_id */ 1,
+            /* origin */ (5, 5),
+            /* target_id */ 42,
+            /* target_pos */ (15, 5),
+            /* weapon_speed */ SimFixed::from_num(30),
+            /* rot_ini */ 60,
+            /* arm_frames */ 2,
+            /* floater */ false,
+            /* very_high */ false,
+            /* missile_rot_var */ SimFixed::from_num(1),
+        );
+        assert!(attached);
+
+        let h = entities.get(1).unwrap().homing_state.as_ref().unwrap();
+        assert_eq!(h.phase, HomingPhase::Arming);
+        assert_eq!(h.target_id, Some(42));
+        assert_eq!(h.last_known_rx, 15);
+        assert_eq!(h.last_known_ry, 5);
+        assert_eq!(h.arm_ticks_remaining, 2);
+        // Initial yaw ~ +x toward target.
+        assert!(h.yaw_bam < 8 || h.yaw_bam > 0xFFF8);
+        // Speed floor 1.
+        assert!(h.speed >= SIM_ONE);
+    }
+
+    #[test]
+    fn attach_homing_state_zero_arm_starts_in_cruise() {
+        use crate::sim::game_entity::GameEntity;
+
+        let mut entities = EntityStore::new();
+        entities.insert(GameEntity::test_default(2, "PROJ", "Allied", 0, 0));
+        attach_homing_state(
+            &mut entities,
+            2,
+            (0, 0),
+            99,
+            (10, 0),
+            SimFixed::from_num(20),
+            48,
+            0, // arm_frames=0 -> Cruise immediately
+            false,
+            false,
+            SIM_ONE,
+        );
+        let h = entities.get(2).unwrap().homing_state.as_ref().unwrap();
+        assert_eq!(h.phase, HomingPhase::Cruise);
+        assert_eq!(h.arm_ticks_remaining, 0);
+    }
+
+    #[test]
+    fn attach_homing_state_missing_entity_returns_false() {
+        let mut entities = EntityStore::new();
+        let attached = attach_homing_state(
+            &mut entities,
+            999,
+            (0, 0),
+            1,
+            (10, 0),
+            SimFixed::from_num(20),
+            48,
+            0,
+            false,
+            false,
+            SIM_ONE,
+        );
+        assert!(!attached);
     }
 
     #[test]
