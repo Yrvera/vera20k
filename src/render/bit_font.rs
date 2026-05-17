@@ -97,6 +97,25 @@ impl BitFont {
         self.cell_height as f32
     }
 
+    /// Tint adjustment for missing-glyph fallback rendering -- caller XORs
+    /// the input tint to produce the visible "wrong color" effect that
+    /// distinguishes missing glyphs at a glance. Faithful 32-bit port of the
+    /// original RGB565 `color ^= 0x5555`: decomposing 0x5555 into RGB565
+    /// component XOR masks gives R5 ^= 0x0A, G6 ^= 0x2A, B5 ^= 0x15.
+    pub fn missing_color_xor(rgb: [f32; 3]) -> [f32; 3] {
+        fn xor_565(c: f32, bits: u32, mask: u8) -> f32 {
+            let max_val = (1u32 << bits) - 1;
+            let quantized = ((c.clamp(0.0, 1.0) * max_val as f32) as u32) as u8;
+            let flipped = (quantized ^ mask) & (max_val as u8);
+            (flipped as f32) / (max_val as f32)
+        }
+        [
+            xor_565(rgb[0], 5, 0x0A),
+            xor_565(rgb[1], 6, 0x2A),
+            xor_565(rgb[2], 5, 0x15),
+        ]
+    }
+
     pub fn fallback_5x7(gpu: &GpuContext, batch: &BatchRenderer) -> Self {
         const GLYPH_W: u32 = 5;
         const GLYPH_H: u32 = 7;
