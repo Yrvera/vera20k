@@ -122,6 +122,23 @@ pub struct ArtEntry {
     pub add_occupy: Vec<(i16, i16)>,
     /// Cells removed from the rectangular foundation (RemoveOccupy1..N from art.ini).
     pub remove_occupy: Vec<(i16, i16)>,
+    /// Middle integer of `Deploy=<start>,<frames>,<rate>` in the infantry
+    /// sequence section referenced by `sequence`. `None` when the sequence
+    /// is undefined or doesn't have a `Deploy` entry. Drives the per-type
+    /// Deploying-phase duration via `sim::deploy::compute_anim_ticks`.
+    pub deploy_frames: Option<u16>,
+    /// Middle integer of `Undeploy=<start>,<frames>,<rate>` in the sequence.
+    pub undeploy_frames: Option<u16>,
+    /// Middle integer of `DeployedFire=<start>,<frames>,<rate>` in the sequence.
+    pub deployed_fire_frames: Option<u16>,
+}
+
+/// Parse a sequence entry value of the form `<start>,<frames>,<rate>` and
+/// return the middle integer (frame count). Returns `None` on malformed input.
+fn parse_sequence_frames(value: &str) -> Option<u16> {
+    let mut parts = value.split(',').map(str::trim);
+    let _start = parts.next()?;
+    parts.next()?.parse::<u16>().ok()
 }
 
 /// Which category of building animation this is.
@@ -252,6 +269,21 @@ impl ArtRegistry {
                 .get("Sequence")
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_string());
+            // Pull per-phase frame counts from the referenced sequence section
+            // (e.g. GuardianGISequence::Deploy=300,15,0 -> deploy_frames=15).
+            let (deploy_frames, undeploy_frames, deployed_fire_frames) = sequence
+                .as_deref()
+                .and_then(|seq_name| ini.section(seq_name))
+                .map(|seq_section| {
+                    (
+                        seq_section.get("Deploy").and_then(parse_sequence_frames),
+                        seq_section.get("Undeploy").and_then(parse_sequence_frames),
+                        seq_section
+                            .get("DeployedFire")
+                            .and_then(parse_sequence_frames),
+                    )
+                })
+                .unwrap_or((None, None, None));
             let crawls = section.get_bool("Crawls").unwrap_or(false);
             let primary_fire_flh: Flh = parse_flh(section.get("PrimaryFireFLH"));
             let secondary_fire_flh: Flh = parse_flh(section.get("SecondaryFireFLH"));
@@ -433,6 +465,9 @@ impl ArtRegistry {
                     muzzle_flash_positions,
                     add_occupy,
                     remove_occupy,
+                    deploy_frames,
+                    undeploy_frames,
+                    deployed_fire_frames,
                 },
             );
         }

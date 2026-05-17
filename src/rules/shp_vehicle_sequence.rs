@@ -136,6 +136,9 @@ mod tests {
             muzzle_flash_positions: Vec::new(),
             add_occupy: Vec::new(),
             remove_occupy: Vec::new(),
+            deploy_frames: None,
+            undeploy_frames: None,
+            deployed_fire_frames: None,
         }
     }
 

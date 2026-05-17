@@ -366,3 +366,64 @@ fn parse_partial_offsets_collects_what_exists() {
     assert_eq!(entry.pads[0].lepton_offset, (64, 0, 0));
     assert_eq!(entry.pads[1].lepton_offset, (192, 0, 0));
 }
+
+#[test]
+fn test_parses_guardian_gi_sequence_frames() {
+    // GGI's GuardianGISequence has Deploy=300,15,0; Undeploy=180,2,2;
+    // DeployedFire=323,6,6. ArtEntry should pull the middle integer of each.
+    let ini: IniFile = IniFile::from_str(
+        "[GGI]\n\
+         Sequence=GuardianGISequence\n\
+         \n\
+         [GuardianGISequence]\n\
+         Ready=0,1,1\n\
+         Walk=8,6,6\n\
+         Deploy=300,15,0\n\
+         Undeploy=180,2,2\n\
+         Deployed=315,1,1\n\
+         DeployedFire=323,6,6\n",
+    );
+    let reg: ArtRegistry = ArtRegistry::from_ini(&ini);
+    let entry: &ArtEntry = reg.get("GGI").expect("GGI entry");
+    assert_eq!(entry.sequence.as_deref(), Some("GuardianGISequence"));
+    assert_eq!(entry.deploy_frames, Some(15));
+    assert_eq!(entry.undeploy_frames, Some(2));
+    assert_eq!(entry.deployed_fire_frames, Some(6));
+}
+
+#[test]
+fn test_sequence_frames_default_none_when_sequence_missing() {
+    // No Sequence= key -> no lookup -> None for all three.
+    let ini: IniFile = IniFile::from_str("[CIVHOSP]\nCameo=HOSPICON\n");
+    let reg: ArtRegistry = ArtRegistry::from_ini(&ini);
+    let entry: &ArtEntry = reg.get("CIVHOSP").expect("entry");
+    assert_eq!(entry.deploy_frames, None);
+    assert_eq!(entry.undeploy_frames, None);
+    assert_eq!(entry.deployed_fire_frames, None);
+}
+
+#[test]
+fn test_sequence_frames_partial_some_missing() {
+    // Sequence section exists but only defines a subset of the three keys.
+    let ini: IniFile = IniFile::from_str(
+        "[E1]\n\
+         Sequence=GISequence\n\
+         \n\
+         [GISequence]\n\
+         Deploy=100,8,0\n",
+    );
+    let reg: ArtRegistry = ArtRegistry::from_ini(&ini);
+    let entry: &ArtEntry = reg.get("E1").expect("E1 entry");
+    assert_eq!(entry.deploy_frames, Some(8));
+    assert_eq!(entry.undeploy_frames, None);
+    assert_eq!(entry.deployed_fire_frames, None);
+}
+
+#[test]
+fn test_parse_sequence_frames_helper() {
+    assert_eq!(parse_sequence_frames("300,15,0"), Some(15));
+    assert_eq!(parse_sequence_frames(" 8 , 6 , 6 "), Some(6));
+    assert_eq!(parse_sequence_frames("only-one"), None);
+    assert_eq!(parse_sequence_frames("a,b,c"), None);
+    assert_eq!(parse_sequence_frames(""), None);
+}
