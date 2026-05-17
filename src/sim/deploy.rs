@@ -40,12 +40,38 @@ pub enum DeployPhase {
     Undeploying { ticks_remaining: u16 },
 }
 
+/// Which deploy-machine phase to resolve frames for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeployPhaseKind {
+    Deploying,
+    Undeploying,
+}
+
+/// Convert SHP animation frames to sim ticks.
+///
+/// Approximation: the original engine paces the infantry deploy sequence at
+/// roughly 80 ms per SHP frame, while our sim ticks at SIM_TICK_MS=22.
+/// Frames -> ticks = round-down(frames * 80 / 22). Bounded ±1 tick. For
+/// GGI's 15-frame deploy this yields 54 ticks (within the existing 55-tick
+/// fallback by 1, validating the conversion against the stock GI case).
+pub(crate) fn frames_to_ticks(frames: u16) -> u16 {
+    ((frames as u32) * 80 / 22) as u16
+}
+
 /// Resolve the number of sim ticks the deploy or undeploy phase should run.
 ///
-/// B1 returns the constant fallback regardless of input — see the doc on
-/// `DEPLOY_DEFAULT_TICKS` for the rationale and the deferred follow-up.
-pub(crate) fn compute_anim_ticks() -> u16 {
-    DEPLOY_DEFAULT_TICKS
+/// Reads the per-type art-INI sequence frame count when available; falls
+/// back to `DEPLOY_DEFAULT_TICKS` when no art entry exists or the sequence
+/// doesn't define the requested phase.
+pub(crate) fn compute_anim_ticks(
+    art: Option<&crate::rules::art_data::ArtEntry>,
+    phase: DeployPhaseKind,
+) -> u16 {
+    let frames = art.and_then(|a| match phase {
+        DeployPhaseKind::Deploying => a.deploy_frames,
+        DeployPhaseKind::Undeploying => a.undeploy_frames,
+    });
+    frames.map(frames_to_ticks).unwrap_or(DEPLOY_DEFAULT_TICKS)
 }
 
 /// Advance every entity's `deploy_state` by one tick.
@@ -79,5 +105,83 @@ pub fn tick_deploy_state(entities: &mut EntityStore) {
             }
             Some(DeployPhase::Deployed) | None => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frames_to_ticks_ggi_deploy() {
+        // 15-frame deploy -> 54 ticks (15 * 80 / 22, truncating).
+        assert_eq!(frames_to_ticks(15), 54);
+    }
+
+    #[test]
+    fn frames_to_ticks_short_undeploy() {
+        // 2-frame undeploy -> 7 ticks.
+        assert_eq!(frames_to_ticks(2), 7);
+    }
+
+    #[test]
+    fn frames_to_ticks_zero() {
+        assert_eq!(frames_to_ticks(0), 0);
+    }
+
+    #[test]
+    fn compute_anim_ticks_no_art_falls_back() {
+        assert_eq!(
+            compute_anim_ticks(None, DeployPhaseKind::Deploying),
+            DEPLOY_DEFAULT_TICKS
+        );
+        assert_eq!(
+            compute_anim_ticks(None, DeployPhaseKind::Undeploying),
+            DEPLOY_DEFAULT_TICKS
+        );
+    }
+
+    #[test]
+    fn compute_anim_ticks_uses_art_frames() {
+        let ini = crate::rules::ini_parser::IniFile::from_str(
+            "[GGI]\n\
+             Sequence=GuardianGISequence\n\
+             \n\
+             [GuardianGISequence]\n\
+             Deploy=300,15,0\n\
+             Undeploy=180,2,2\n",
+        );
+        let reg = crate::rules::art_data::ArtRegistry::from_ini(&ini);
+        let entry = reg.get("GGI").expect("entry");
+        assert_eq!(
+            compute_anim_ticks(Some(entry), DeployPhaseKind::Deploying),
+            54
+        );
+        assert_eq!(
+            compute_anim_ticks(Some(entry), DeployPhaseKind::Undeploying),
+            7
+        );
+    }
+
+    #[test]
+    fn compute_anim_ticks_missing_phase_falls_back() {
+        let ini = crate::rules::ini_parser::IniFile::from_str(
+            "[E1]\n\
+             Sequence=GISequence\n\
+             \n\
+             [GISequence]\n\
+             Deploy=100,8,0\n",
+        );
+        let reg = crate::rules::art_data::ArtRegistry::from_ini(&ini);
+        let entry = reg.get("E1").expect("entry");
+        // Deploy=8 frames -> 29 ticks; Undeploy missing -> fallback.
+        assert_eq!(
+            compute_anim_ticks(Some(entry), DeployPhaseKind::Deploying),
+            29
+        );
+        assert_eq!(
+            compute_anim_ticks(Some(entry), DeployPhaseKind::Undeploying),
+            DEPLOY_DEFAULT_TICKS
+        );
     }
 }

@@ -10,7 +10,7 @@ use crate::rules::ruleset::RuleSet;
 use crate::sim::combat::AttackTarget;
 use crate::sim::command::{Command, CommandEnvelope};
 use crate::sim::components::Health;
-use crate::sim::deploy::{DeployPhase, compute_anim_ticks};
+use crate::sim::deploy::{DEPLOY_DEFAULT_TICKS, DeployPhase};
 use crate::sim::game_entity::GameEntity;
 use crate::sim::world::{SimSoundEvent, Simulation};
 
@@ -187,7 +187,7 @@ fn deploy_phase_advances_to_deployed() {
         Some(DeployPhase::Deploying { .. })
     ));
 
-    let n = compute_anim_ticks() as u32;
+    let n = DEPLOY_DEFAULT_TICKS as u32;
     tick_n(&mut sim, &rules, n);
     assert_eq!(
         sim.entities.get(gi).unwrap().deploy_state,
@@ -213,7 +213,7 @@ fn undeploy_phase_clears_to_none() {
         Some(DeployPhase::Undeploying { .. })
     ));
 
-    let n = compute_anim_ticks() as u32;
+    let n = DEPLOY_DEFAULT_TICKS as u32;
     tick_n(&mut sim, &rules, n);
     assert_eq!(sim.entities.get(gi).unwrap().deploy_state, None);
 }
@@ -410,7 +410,7 @@ fn move_works_after_undeploy_completes() {
         Some(DeployPhase::Undeploying { .. })
     ));
 
-    let n = compute_anim_ticks() as u32;
+    let n = DEPLOY_DEFAULT_TICKS as u32;
     tick_n(&mut sim, &rules, n);
     assert_eq!(sim.entities.get(gi).unwrap().deploy_state, None);
 
@@ -594,7 +594,7 @@ fn hash_deterministic_through_full_cycle() {
             Command::ToggleInfantryDeploy { entity_id: gi_b },
             &rules,
         );
-        let n = compute_anim_ticks() as u32;
+        let n = DEPLOY_DEFAULT_TICKS as u32;
         for _ in 0..n {
             tick_n(&mut sim_a, &rules, 1);
             tick_n(&mut sim_b, &rules, 1);
