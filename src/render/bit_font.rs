@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 
 use crate::assets::fnt_file::{FntFile, FntGlyph};
-use crate::render::batch::{BatchRenderer, BatchTexture};
+use crate::render::batch::{BatchRenderer, BatchTexture, SpriteInstance};
 use crate::render::gpu::GpuContext;
 
 /// Hardcoded inter-glyph spacing.
@@ -95,6 +95,74 @@ impl BitFont {
     }
     pub fn cell_height(&self) -> f32 {
         self.cell_height as f32
+    }
+
+    pub fn build_text(
+        &self,
+        text: &str,
+        x: f32,
+        y: f32,
+        scale: f32,
+        depth: f32,
+        tint: [f32; 3],
+        camera_offset: [f32; 2],
+    ) -> Vec<SpriteInstance> {
+        let mut instances = Vec::with_capacity(text.len());
+        let mut cursor_x = x;
+        let spacing = self.char_spacing as f32 * scale;
+        let h = self.bitmap_rows as f32 * scale;
+        let missing_tint = Self::missing_color_xor(tint);
+        let mut emitted = 0u32;
+
+        for ch in text.chars() {
+            match ch {
+                '\t' => {
+                    let cell_x = ((cursor_x - x) / scale) as u32;
+                    let advanced = cell_x + self.tab_width;
+                    let next_cell = advanced
+                        - ((advanced.saturating_sub(self.tab_origin)) % self.tab_width);
+                    cursor_x = x + (next_cell as f32) * scale;
+                    continue;
+                }
+                '\r' | '\n' => continue,
+                ' ' => {
+                    if emitted > 0 {
+                        cursor_x += spacing;
+                    }
+                    cursor_x += self.space_width as f32 * scale;
+                    emitted += 1;
+                    continue;
+                }
+                _ => {}
+            }
+            let cp = ch as u32;
+            let (entry, use_missing_tint) = if cp <= u16::MAX as u32 {
+                match self.glyphs.get(&(cp as u16)) {
+                    Some(g) => (Some(*g), false),
+                    None => (self.missing_glyph, true),
+                }
+            } else {
+                (self.missing_glyph, true)
+            };
+            let Some(entry) = entry else { continue };
+            if emitted > 0 {
+                cursor_x += spacing;
+            }
+            let w = entry.pixel_width * scale;
+            instances.push(SpriteInstance {
+                position: [cursor_x + camera_offset[0], y + camera_offset[1]],
+                size: [w, h],
+                uv_origin: entry.uv_origin,
+                uv_size: entry.uv_size,
+                depth,
+                tint: if use_missing_tint { missing_tint } else { tint },
+                alpha: 1.0,
+                ..Default::default()
+            });
+            cursor_x += w;
+            emitted += 1;
+        }
+        instances
     }
 
     pub fn wrap_layout(&self, text: &str, max_width: u32) -> WrapLayout {
