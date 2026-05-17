@@ -97,56 +97,107 @@ pub(crate) fn verses_gate(verses_pct: u8) -> VersesGate {
     }
 }
 
+/// Resolve the primary weapon ID for this unit at the given veterancy.
+///
+/// Elite tier (veterancy >= 200) prefers `elite_primary` with fallback to
+/// `primary`. Veteran tier (100..199) does NOT swap.
+pub(crate) fn primary_for_tier(obj: &ObjectType, veterancy: u16) -> Option<&str> {
+    if veterancy >= 200 {
+        obj.elite_primary.as_deref().or(obj.primary.as_deref())
+    } else {
+        obj.primary.as_deref()
+    }
+}
+
+/// Same as `primary_for_tier` for the secondary slot.
+pub(crate) fn secondary_for_tier(obj: &ObjectType, veterancy: u16) -> Option<&str> {
+    if veterancy >= 200 {
+        obj.elite_secondary.as_deref().or(obj.secondary.as_deref())
+    } else {
+        obj.secondary.as_deref()
+    }
+}
+
 /// Select the best weapon (Primary or Secondary) for an attacker against
 /// a specific target. Returns None if no weapon can engage.
 ///
 /// Selection logic:
-/// 1. If the attacker has an IFV weapon override (`ifv_weapon_index`), use
-///    the corresponding weapon from `weapon_list[]` instead of Primary/Secondary.
-/// 2. Try Primary — check projectile AA/AG flags match target category,
-///    AND warhead Verses > 0% for target armor.
-/// 3. If Primary fails, try Secondary with same checks.
-/// 4. If both fail, return None (unit cannot engage this target).
-#[allow(dead_code)] // Used by tests; non-IFV callers use this simpler API.
+/// 1. If a `WeaponOverride` is set, dispatch on the variant (see
+///    `select_weapon_with_override`).
+/// 2. Try Primary (elite-aware) — check projectile AA/AG flags + Verses > 0%.
+/// 3. If Primary fails, try Secondary (elite-aware) with same checks.
+/// 4. If both fail, return None.
+#[allow(dead_code)] // Used by tests; production callers go through with_override.
 pub(crate) fn select_weapon<'a>(
     rules: &'a RuleSet,
     attacker_obj: &'a ObjectType,
     target_category: EntityCategory,
     target_armor: &str,
+    veterancy: u16,
 ) -> Option<SelectedWeapon<'a>> {
-    select_weapon_with_ifv(rules, attacker_obj, target_category, target_armor, None)
+    select_weapon_with_override(
+        rules,
+        attacker_obj,
+        target_category,
+        target_armor,
+        veterancy,
+        None,
+    )
 }
 
-/// Like `select_weapon` but also considers IFV weapon override index.
-pub(crate) fn select_weapon_with_ifv<'a>(
+/// Veterancy-aware weapon selection with optional transport override.
+///
+/// Replaces the legacy `select_weapon_with_ifv` Option<u32> shape.
+pub(crate) fn select_weapon_with_override<'a>(
     rules: &'a RuleSet,
     attacker_obj: &'a ObjectType,
     target_category: EntityCategory,
     target_armor: &str,
-    ifv_weapon_index: Option<u32>,
+    veterancy: u16,
+    override_: Option<WeaponOverride>,
 ) -> Option<SelectedWeapon<'a>> {
-    // IFV weapon override: Gunner=yes transport with a passenger selects
-    // a specific weapon from weapon_list[] based on the passenger's IFVMode.
-    if let Some(idx) = ifv_weapon_index {
-        if let Some(weapon_id) = attacker_obj.weapon_list.get(idx as usize) {
-            if let Some(result) = try_weapon(
-                rules,
-                weapon_id,
-                target_category,
-                target_armor,
-                WeaponSlot::Primary,
-            ) {
-                return Some(result);
+    match override_ {
+        Some(WeaponOverride::IfvSlot(idx)) => {
+            // Gunner=yes transport: attacker_obj is the TRANSPORT; fire its
+            // weapon_list[idx]. If the slotted weapon can't engage, fall
+            // through to the transport's own Primary/Secondary.
+            if let Some(weapon_id) = attacker_obj.weapon_list.get(idx as usize) {
+                if let Some(result) = try_weapon(
+                    rules,
+                    weapon_id,
+                    target_category,
+                    target_armor,
+                    WeaponSlot::Primary,
+                ) {
+                    return Some(result);
+                }
             }
+            // Fall through to base Primary/Secondary on transport.
         }
-        // Fallback to default Primary/Secondary if IFV weapon fails.
+        Some(WeaponOverride::OpenTransport(slot)) => {
+            // Open-topped non-Gunner transport: attacker_obj is the PASSENGER;
+            // fire its own Primary (slot=0) or Secondary (slot=1). No fallback
+            // — if the chosen slot can't engage, the passenger doesn't fire.
+            let (weapon_id, weapon_slot) = match slot {
+                0 => (primary_for_tier(attacker_obj, veterancy), WeaponSlot::Primary),
+                1 => (
+                    secondary_for_tier(attacker_obj, veterancy),
+                    WeaponSlot::Secondary,
+                ),
+                _ => return None,
+            };
+            return weapon_id.and_then(|wid| {
+                try_weapon(rules, wid, target_category, target_armor, weapon_slot)
+            });
+        }
+        None => {}
     }
 
-    // Try Primary weapon first.
-    if let Some(ref weapon_id) = attacker_obj.primary {
+    // Default Primary -> Secondary, with tier-aware ID lookup.
+    if let Some(wid) = primary_for_tier(attacker_obj, veterancy) {
         if let Some(result) = try_weapon(
             rules,
-            weapon_id,
+            wid,
             target_category,
             target_armor,
             WeaponSlot::Primary,
@@ -154,11 +205,10 @@ pub(crate) fn select_weapon_with_ifv<'a>(
             return Some(result);
         }
     }
-    // Primary failed or doesn't exist — try Secondary.
-    if let Some(ref weapon_id) = attacker_obj.secondary {
+    if let Some(wid) = secondary_for_tier(attacker_obj, veterancy) {
         if let Some(result) = try_weapon(
             rules,
-            weapon_id,
+            wid,
             target_category,
             target_armor,
             WeaponSlot::Secondary,
@@ -348,7 +398,7 @@ Verses=100%,100%,100%,80%,60%,40%,100%,40%,20%,0%,0%
         let rules: RuleSet = make_dual_weapon_rules();
         let ifv = rules.object("IFV").unwrap();
 
-        let result = select_weapon(&rules, ifv, EntityCategory::Unit, "light");
+        let result = select_weapon(&rules, ifv, EntityCategory::Unit, "light", 0);
         assert!(result.is_some());
         let selected = result.unwrap();
         assert_eq!(selected.weapon_id, "Missiles");
@@ -361,7 +411,7 @@ Verses=100%,100%,100%,80%,60%,40%,100%,40%,20%,0%,0%
         let rules: RuleSet = make_dual_weapon_rules();
         let ifv = rules.object("IFV").unwrap();
 
-        let result = select_weapon(&rules, ifv, EntityCategory::Aircraft, "light");
+        let result = select_weapon(&rules, ifv, EntityCategory::Aircraft, "light", 0);
         assert!(result.is_some());
         let selected = result.unwrap();
         assert_eq!(selected.weapon_id, "FlakGun");
@@ -375,7 +425,7 @@ Verses=100%,100%,100%,80%,60%,40%,100%,40%,20%,0%,0%
         let rules: RuleSet = make_dual_weapon_rules();
         let ifv = rules.object("IFV").unwrap();
 
-        let result = select_weapon(&rules, ifv, EntityCategory::Unit, "special_1");
+        let result = select_weapon(&rules, ifv, EntityCategory::Unit, "special_1", 0);
         assert!(result.is_none(), "Both weapons have 0% vs special_1");
     }
 
@@ -407,7 +457,7 @@ Armor=none
         let rules: RuleSet = RuleSet::from_ini(&ini).expect("parse");
         let civ = rules.object("CIV").unwrap();
 
-        let result = select_weapon(&rules, civ, EntityCategory::Unit, "none");
+        let result = select_weapon(&rules, civ, EntityCategory::Unit, "none", 0);
         assert!(result.is_none());
     }
 }

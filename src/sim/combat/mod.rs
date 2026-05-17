@@ -46,7 +46,7 @@ use std::collections::BTreeMap;
 
 use crate::sim::miner::ResourceNode;
 
-use self::combat_weapon::{WeaponSlot, select_weapon_with_ifv};
+use self::combat_weapon::{WeaponSlot, select_weapon_with_override};
 use crate::map::entities::EntityCategory;
 use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::rules::object_type::ObjectType;
@@ -353,7 +353,7 @@ pub(crate) fn pursuit_weapon_range(
     rules: &RuleSet,
     interner: &StringInterner,
 ) -> Option<SimFixed> {
-    use self::combat_weapon::select_weapon_with_ifv;
+    use self::combat_weapon::select_weapon_with_override;
     use crate::map::entities::EntityCategory;
 
     let attacker_obj = rules.object(interner.resolve(entity.type_ref))?;
@@ -376,17 +376,13 @@ pub(crate) fn pursuit_weapon_range(
             (EntityCategory::Structure, armor)
         }
     };
-    // Task 6 placeholder — full WeaponOverride dispatch lands in Task 8.
-    let ifv_idx = match entity.weapon_override {
-        Some(crate::sim::combat::combat_weapon::WeaponOverride::IfvSlot(i)) => Some(i),
-        _ => None,
-    };
-    select_weapon_with_ifv(
+    select_weapon_with_override(
         rules,
         attacker_obj,
         target_cat,
         &target_armor,
-        ifv_idx,
+        entity.veterancy,
+        entity.weapon_override,
     )
     .map(|sel| sel.weapon.range)
 }
@@ -1563,17 +1559,13 @@ pub fn tick_combat_with_fog(
                 }
             }
         } else {
-            // Task 6 placeholder — full WeaponOverride dispatch lands in Task 8.
-            let ifv_idx = match snap.weapon_override {
-                Some(crate::sim::combat::combat_weapon::WeaponOverride::IfvSlot(i)) => Some(i),
-                _ => None,
-            };
-            match select_weapon_with_ifv(
+            match select_weapon_with_override(
                 rules,
                 obj,
                 target_cat,
                 &target_armor,
-                ifv_idx,
+                snap.veterancy,
+                snap.weapon_override,
             ) {
                 Some(s) => (s, false),
                 None => {

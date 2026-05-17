@@ -22,7 +22,7 @@
 //! - Part of sim/ — depends on rules/ (RuleSet) and sim/components.
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
-use super::combat_weapon::{VersesGate, select_weapon_with_ifv, verses_gate};
+use super::combat_weapon::{VersesGate, select_weapon_with_override, verses_gate};
 use super::{is_within_range_leptons, lepton_distance_sq_raw};
 use crate::map::entities::EntityCategory;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
@@ -209,17 +209,13 @@ pub(crate) fn acquire_best_target(
             .object(interner.resolve(candidate.type_ref))
             .map(|o| o.armor.as_str())
             .unwrap_or("none");
-        // Task 6 placeholder — full WeaponOverride dispatch lands in Task 8.
-        let ifv_idx = match attacker.weapon_override {
-            Some(super::combat_weapon::WeaponOverride::IfvSlot(i)) => Some(i),
-            _ => None,
-        };
-        let selected = match select_weapon_with_ifv(
+        let selected = match select_weapon_with_override(
             rules,
             attacker_obj,
             target_cat,
             target_armor,
-            ifv_idx,
+            attacker.veterancy,
+            attacker.weapon_override,
         ) {
             Some(s) => s,
             None => continue, // No weapon can engage this target.
@@ -303,22 +299,18 @@ fn can_retaliate(
         .object(interner.resolve(attacker.type_ref))
         .map(|o| o.armor.as_str())
         .unwrap_or("none");
-    // Task 6 placeholder — full WeaponOverride dispatch lands in Task 8.
-    let ifv_idx = match entity.weapon_override {
-        Some(super::combat_weapon::WeaponOverride::IfvSlot(i)) => Some(i),
-        _ => None,
-    };
-    let selected = match select_weapon_with_ifv(
+    let selected = match select_weapon_with_override(
         rules,
         obj,
         target_cat,
         target_armor,
-        ifv_idx,
+        entity.veterancy,
+        entity.weapon_override,
     ) {
         Some(s) => s,
         None => return false,
     };
-    // 0% is already filtered by select_weapon_with_ifv (returns None).
+    // 0% is already filtered by select_weapon_with_override (returns None).
     // 1% (Suppressed) also blocks retaliation.
     verses_gate(selected.verses_pct) != VersesGate::Suppressed
 }
