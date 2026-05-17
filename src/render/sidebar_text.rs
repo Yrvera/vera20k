@@ -135,3 +135,107 @@ fn lerp_rgb(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
         a[2] + (b[2] - a[2]) * t,
     ]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render::bit_font::tests::make_test_font;
+
+    #[test]
+    fn side_highlight_table_matches_doc() {
+        assert_eq!(side_highlight_color(SidebarTheme::Allied), HIGHLIGHT_ALLIED);
+        assert_eq!(side_highlight_color(SidebarTheme::Soviet), HIGHLIGHT_SOVIET);
+        assert_eq!(side_highlight_color(SidebarTheme::Yuri), HIGHLIGHT_YURI);
+    }
+
+    #[test]
+    fn lerp_endpoints() {
+        let a = [0.0, 0.0, 0.0];
+        let b = [1.0, 1.0, 1.0];
+        assert_eq!(lerp_rgb(a, b, 0.0), a);
+        assert_eq!(lerp_rgb(a, b, 1.0), b);
+        let mid = lerp_rgb(a, b, 0.5);
+        assert!((mid[0] - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn fade_param_zero_equivalent_to_build_text() {
+        let font = make_test_font(
+            &[
+                (b'a' as u16, 6),
+                (b'b' as u16, 6),
+                (b'c' as u16, 6),
+            ],
+            4,
+        );
+        let plain = build_text(&font, "abc", 0.0, 0.0, 1.0, 0.5, [0.0, 0.0, 0.0], [0.0, 0.0]);
+        let faded = build_text_with_fade(
+            &font,
+            "abc",
+            0.0,
+            0.0,
+            1.0,
+            0.5,
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+            0,
+            [0.0, 0.0],
+        );
+        assert_eq!(plain.len(), faded.len());
+        for (p, f) in plain.iter().zip(faded.iter()) {
+            assert_eq!(p.tint, f.tint);
+            assert!((p.position[0] - f.position[0]).abs() < 1e-3);
+        }
+    }
+
+    #[test]
+    fn fade_only_first_8_chars() {
+        let font = make_test_font(
+            &[
+                (b'a' as u16, 6),
+                (b'b' as u16, 6),
+                (b'c' as u16, 6),
+                (b'd' as u16, 6),
+                (b'e' as u16, 6),
+                (b'f' as u16, 6),
+                (b'g' as u16, 6),
+                (b'h' as u16, 6),
+                (b'i' as u16, 6),
+                (b'j' as u16, 6),
+            ],
+            4,
+        );
+        let base = [0.0, 0.0, 0.0];
+        let highlight = [1.0, 1.0, 1.0];
+        let instances = build_text_with_fade(
+            &font,
+            "abcdefghij",
+            0.0,
+            0.0,
+            1.0,
+            0.5,
+            base,
+            highlight,
+            8,
+            [0.0, 0.0],
+        );
+        assert_eq!(instances.len(), 10);
+        // Char 0: fade_param=8 -> initial line_offset = (9-8)*0x1F = 0x1F = 31,
+        // t = 31/255 ~ 0.12, tint ~ lerp(white,black,0.12) ~ (0.88,0.88,0.88).
+        assert!(
+            instances[0].tint[0] > 0.8,
+            "char 0 tint = {:?} should be near highlight",
+            instances[0].tint
+        );
+        // Char 7: line_offset has advanced 7 times => 31 + 7*31 = 248,
+        // t = 248/255 ~ 0.97, tint ~ near base black.
+        assert!(
+            instances[7].tint[0] < 0.2,
+            "char 7 tint = {:?} should be near base",
+            instances[7].tint
+        );
+        // Chars 8/9 are past the fade band -> pure base color.
+        assert_eq!(instances[8].tint, base);
+        assert_eq!(instances[9].tint, base);
+    }
+}
