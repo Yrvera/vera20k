@@ -7,11 +7,12 @@ use std::sync::Once;
 
 use crate::app::AppState;
 use crate::render::batch::SpriteInstance;
+use crate::render::shell_text::{self, ShellAlign, ShellTextDraw, TextRect};
 use crate::render::skirmish_shell_chrome::{SkirmishShellChromeAtlas, SkirmishShellChromeEntry};
 use crate::ui::main_menu::SkirmishCountry;
 use crate::ui::skirmish_shell::{
-    compute_layout, OwnerDrawButton, RectPx, SkirmishShellAction, SkirmishShellLayout,
-    SkirmishShellState,
+    OwnerDrawButton, RectPx, SkirmishShellAction, SkirmishShellLayout, SkirmishShellState,
+    compute_layout,
 };
 
 static PREVIEW_MARKER_WAIT_LOG: Once = Once::new();
@@ -21,6 +22,7 @@ const START_MARKER_OFFSET_X: i32 = -9;
 const START_MARKER_OFFSET_Y: i32 = -6;
 const BUTTON_DISABLED_ALPHA: f32 = 0x80 as f32 / 255.0;
 const SHELL_PARENT_BACKGROUND_DEPTH: f32 = 0.00090;
+const SHELL_LOWER_STRIP_DEPTH: f32 = 0.00077;
 // Live Ghidra recovered button text color 0x00000C05 before the original
 // wrapper converted it to the active 16-bit display format; final RGB parity
 // still needs screenshot comparison against retail YR.
@@ -28,8 +30,14 @@ const SHELL_BUTTON_TEXT_RGB_00000C05: [f32; 3] = [0.0, 12.0 / 255.0, 5.0 / 255.0
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ParentBackgroundRole {
-    Mnscrnl640,
+    Mnscrns640,
     CoopGameSetup800,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LowerStripRole {
+    Lwscrns640,
+    Lwscrnl800,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,13 +55,6 @@ struct ButtonSegment {
     uv_width_ratio: f32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-enum ShellTextAlign {
-    Left,
-    Center,
-    Right,
-}
 
 fn push_entry(
     out: &mut Vec<SpriteInstance>,
@@ -331,7 +332,7 @@ fn flag_entry(atlas: &SkirmishShellChromeAtlas, label: &str) -> Option<SkirmishS
 
 fn parent_background_role(layout: &SkirmishShellLayout) -> Option<ParentBackgroundRole> {
     match layout.screen.w {
-        640 => Some(ParentBackgroundRole::Mnscrnl640),
+        640 => Some(ParentBackgroundRole::Mnscrns640),
         800 => Some(ParentBackgroundRole::CoopGameSetup800),
         _ => None,
     }
@@ -342,9 +343,33 @@ fn parent_background_entry(
     layout: &SkirmishShellLayout,
 ) -> Option<SkirmishShellChromeEntry> {
     match parent_background_role(layout)? {
-        ParentBackgroundRole::Mnscrnl640 => atlas.background_640_mnscrnl,
+        ParentBackgroundRole::Mnscrns640 => atlas.background_640_mnscrns,
         ParentBackgroundRole::CoopGameSetup800 => atlas.background_800_coop_game_setup,
     }
+}
+
+fn lower_strip_role(layout: &SkirmishShellLayout) -> Option<LowerStripRole> {
+    match layout.screen.w {
+        640 => Some(LowerStripRole::Lwscrns640),
+        800 => Some(LowerStripRole::Lwscrnl800),
+        _ => None,
+    }
+}
+
+fn lower_strip_entry(
+    atlas: &SkirmishShellChromeAtlas,
+    layout: &SkirmishShellLayout,
+) -> Option<SkirmishShellChromeEntry> {
+    match lower_strip_role(layout)? {
+        LowerStripRole::Lwscrns640 => atlas.lower_strip_640_lwscrns,
+        LowerStripRole::Lwscrnl800 => atlas.lower_strip_800_lwscrnl,
+    }
+}
+
+fn lower_strip_rect(layout: &SkirmishShellLayout, entry: SkirmishShellChromeEntry) -> RectPx {
+    let w = entry.pixel_size[0].round() as i32;
+    let h = entry.pixel_size[1].round() as i32;
+    RectPx::new(layout.screen.x, layout.screen.y + layout.screen.h - h, w, h)
 }
 
 pub fn build_skirmish_shell_instances(
@@ -382,6 +407,15 @@ pub fn build_skirmish_shell_instances(
 
     if let Some(bottom) = atlas.sd_bottom {
         push_entry(&mut instances, bottom, layout.right_panel.bottom, 0.00078);
+    }
+
+    if let Some(lower_strip) = lower_strip_entry(atlas, layout) {
+        push_entry(
+            &mut instances,
+            lower_strip,
+            lower_strip_rect(layout, lower_strip),
+            SHELL_LOWER_STRIP_DEPTH,
+        );
     }
 
     push_button_30(
@@ -447,97 +481,67 @@ fn localized_label(state: &AppState, key: &str, fallback: &str) -> String {
         .unwrap_or_else(|| fallback.to_string())
 }
 
-fn push_centered_text(
-    out: &mut Vec<SpriteInstance>,
+fn push_button_label_draw(
+    out: &mut Vec<ShellTextDraw>,
     state: &AppState,
     label: &str,
     rect: RectPx,
-    align: ShellTextAlign,
-    vertical_center: bool,
     y_offset: i32,
     depth: f32,
 ) {
-    let scale = 1.0;
-    let text_w = state.sidebar_text.text_width(label) * scale;
-    let text_h = state.sidebar_text.glyph_height() * scale;
-    let (x, y) = shell_text_origin(text_w, text_h, rect, align, vertical_center, y_offset);
-    // The current sprite-font path does not clip individual glyphs. Keep the
-    // button labels inside the known owner-draw rects until the exact shell
-    // bitfont clipping wrapper is ported.
-    if text_w > rect.w as f32 || text_h > rect.h as f32 {
-        return;
-    }
-    out.extend(state.sidebar_text.build_text(
+    let text_rect = TextRect {
+        x: rect.x,
+        y: rect.y + y_offset,
+        w: rect.w.max(0) as u32,
+        h: rect.h.max(0) as u32,
+    };
+    let draw = shell_text::draw_in_rect(
+        &state.bit_font,
         label,
-        x,
-        y,
-        scale,
-        depth,
+        text_rect,
         SHELL_BUTTON_TEXT_RGB_00000C05,
+        ShellAlign::H_CENTER | ShellAlign::V_CENTER,
         [0.0, 0.0],
-    ));
+        depth,
+    );
+    out.push(draw);
 }
 
-fn build_shell_text_instances(
+fn build_shell_text_draws(
     state: &AppState,
     layout: &SkirmishShellLayout,
     shell: &SkirmishShellState,
-) -> Vec<SpriteInstance> {
-    let mut instances = Vec::new();
+) -> (Vec<ShellTextDraw>, Vec<SpriteInstance>) {
+    let mut shell_draws: Vec<ShellTextDraw> = Vec::new();
+    let mut bare_instances: Vec<SpriteInstance> = Vec::new();
+
     let start = localized_label(state, "GUI:StartGame", "Start Game");
     let choose = localized_label(state, "GUI:ChooseMap", "Choose Map");
     let back = localized_label(state, "GUI:Back", "Back");
-    push_centered_text(
-        &mut instances,
-        state,
-        &start,
-        layout.start_button,
-        ShellTextAlign::Center,
-        true,
-        if shell.pressed_owner_draw_button == Some(OwnerDrawButton::StartGame0x617) {
+
+    for (label, rect, button) in [
+        (start.as_str(), layout.start_button, OwnerDrawButton::StartGame0x617),
+        (choose.as_str(), layout.choose_map_button, OwnerDrawButton::ChooseMap0x5aa),
+        (back.as_str(), layout.back_button, OwnerDrawButton::Back0x5c0),
+    ] {
+        let y_off = if shell.pressed_owner_draw_button == Some(button) {
             PRESSED_BUTTON_CONTENT_OFFSET_Y
         } else {
             0
-        },
-        0.00041,
-    );
-    push_centered_text(
-        &mut instances,
-        state,
-        &choose,
-        layout.choose_map_button,
-        ShellTextAlign::Center,
-        true,
-        if shell.pressed_owner_draw_button == Some(OwnerDrawButton::ChooseMap0x5aa) {
-            PRESSED_BUTTON_CONTENT_OFFSET_Y
-        } else {
-            0
-        },
-        0.00041,
-    );
-    push_centered_text(
-        &mut instances,
-        state,
-        &back,
-        layout.back_button,
-        ShellTextAlign::Center,
-        true,
-        if shell.pressed_owner_draw_button == Some(OwnerDrawButton::Back0x5c0) {
-            PRESSED_BUTTON_CONTENT_OFFSET_Y
-        } else {
-            0
-        },
-        0.00041,
-    );
+        };
+        push_button_label_draw(&mut shell_draws, state, label, rect, y_off, 0.00041);
+    }
+
     push_start_marker_labels(
-        &mut instances,
+        &mut bare_instances,
         state,
         layout.map_preview,
         &[],
         false,
         0.00040,
     );
-    instances
+
+    (shell_draws, bare_instances)
 }
 
 fn push_start_marker_labels(
@@ -556,7 +560,7 @@ fn push_start_marker_labels(
             continue;
         }
         let label = (idx + 1).to_string();
-        out.extend(state.sidebar_text.build_text(
+        out.extend(state.bit_font.build_text(
             &label,
             x as f32,
             y as f32,
@@ -566,27 +570,6 @@ fn push_start_marker_labels(
             [0.0, 0.0],
         ));
     }
-}
-
-fn shell_text_origin(
-    text_w: f32,
-    text_h: f32,
-    rect: RectPx,
-    align: ShellTextAlign,
-    vertical_center: bool,
-    y_offset: i32,
-) -> (f32, f32) {
-    let x = match align {
-        ShellTextAlign::Left => rect.x as f32,
-        ShellTextAlign::Center => rect.x as f32 + ((rect.w as f32 - text_w) * 0.5).round(),
-        ShellTextAlign::Right => rect.x as f32 + (rect.w as f32 - text_w).round(),
-    };
-    let y = if vertical_center {
-        rect.y as f32 + ((rect.h as f32 - text_h) * 0.5).round()
-    } else {
-        rect.y as f32
-    };
-    (x, y + y_offset as f32)
 }
 
 pub(crate) fn render_skirmish_shell(
@@ -615,7 +598,8 @@ fn render_skirmish_shell_with_atlas(
     };
 
     let instances = build_skirmish_shell_instances(atlas, &layout, &state.skirmish_shell_state);
-    let text_instances = build_shell_text_instances(state, &layout, &state.skirmish_shell_state);
+    let (shell_draws, bare_text_instances) =
+        build_shell_text_draws(state, &layout, &state.skirmish_shell_state);
     state.batch_renderer.update_camera(
         &state.gpu,
         state.render_width() as f32,
@@ -632,9 +616,17 @@ fn render_skirmish_shell_with_atlas(
         clear_shell_target(state, encoder, target);
         return Ok(action);
     };
-    let text_buffer = state
+    let bare_text_buffer = state
         .batch_renderer
-        .create_instance_buffer(&state.gpu, &text_instances);
+        .create_instance_buffer(&state.gpu, &bare_text_instances);
+    let scissored_text_buffers: Vec<_> = shell_draws
+        .iter()
+        .map(|d| {
+            state
+                .batch_renderer
+                .create_instance_buffer(&state.gpu, &d.instances)
+        })
+        .collect();
 
     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("Skirmish Shell"),
@@ -661,14 +653,26 @@ fn render_skirmish_shell_with_atlas(
     state
         .batch_renderer
         .draw_with_buffer_passthrough(&mut pass, &atlas.texture, &buffer, count);
-    if let Some((buffer, count)) = text_buffer.as_ref() {
+    if let Some((buffer, count)) = bare_text_buffer.as_ref() {
         state.batch_renderer.draw_with_buffer_passthrough(
             &mut pass,
-            state.sidebar_text.texture(),
+            state.bit_font.atlas(),
             buffer,
             *count,
         );
     }
+    for (draw, buf) in shell_draws.iter().zip(scissored_text_buffers.iter()) {
+        let Some((buffer, count)) = buf.as_ref() else { continue };
+        pass.set_scissor_rect(draw.scissor.x, draw.scissor.y, draw.scissor.w, draw.scissor.h);
+        state.batch_renderer.draw_with_buffer_passthrough(
+            &mut pass,
+            state.bit_font.atlas(),
+            buffer,
+            *count,
+        );
+    }
+    // Reset scissor to full render so any subsequent draws / passes aren't clipped.
+    pass.set_scissor_rect(0, 0, state.render_width(), state.render_height());
     drop(pass);
 
     Ok(action)
@@ -784,7 +788,7 @@ mod tests {
     fn parent_background_role_uses_only_verified_widths() {
         assert_eq!(
             parent_background_role(&compute_layout(640, 480)),
-            Some(ParentBackgroundRole::Mnscrnl640)
+            Some(ParentBackgroundRole::Mnscrns640)
         );
         assert_eq!(
             parent_background_role(&compute_layout(800, 600)),
@@ -794,32 +798,39 @@ mod tests {
     }
 
     #[test]
-    fn text_origin_centers_and_applies_pressed_offset() {
-        let rect = RectPx::new(100, 50, 162, 37);
-        let (x, y) = shell_text_origin(80.0, 10.0, rect, ShellTextAlign::Center, true, 0);
-        assert_eq!(x, 141.0);
-        assert_eq!(y, 64.0);
-        let (_, pressed_y) = shell_text_origin(
-            80.0,
-            10.0,
-            rect,
-            ShellTextAlign::Center,
-            true,
-            PRESSED_BUTTON_CONTENT_OFFSET_Y,
+    fn lower_strip_role_uses_only_verified_widths() {
+        assert_eq!(
+            lower_strip_role(&compute_layout(640, 480)),
+            Some(LowerStripRole::Lwscrns640)
         );
-        assert_eq!(pressed_y, y + 2.0);
+        assert_eq!(
+            lower_strip_role(&compute_layout(800, 600)),
+            Some(LowerStripRole::Lwscrnl800)
+        );
+        assert_eq!(lower_strip_role(&compute_layout(1024, 768)), None);
     }
 
     #[test]
-    fn text_origin_supports_left_and_right_alignment_flags() {
-        let rect = RectPx::new(100, 50, 162, 37);
+    fn lower_strip_rect_uses_native_asset_size_at_screen_bottom() {
+        let small = SkirmishShellChromeEntry {
+            uv_origin: [0.0, 0.0],
+            uv_size: [1.0, 1.0],
+            pixel_size: [472.0, 32.0],
+        };
+        let large = SkirmishShellChromeEntry {
+            uv_origin: [0.0, 0.0],
+            uv_size: [1.0, 1.0],
+            pixel_size: [632.0, 32.0],
+        };
+
         assert_eq!(
-            shell_text_origin(80.0, 10.0, rect, ShellTextAlign::Left, false, 0),
-            (100.0, 50.0)
+            lower_strip_rect(&compute_layout(640, 480), small),
+            RectPx::new(0, 448, 472, 32)
         );
         assert_eq!(
-            shell_text_origin(80.0, 10.0, rect, ShellTextAlign::Right, false, 0),
-            (182.0, 50.0)
+            lower_strip_rect(&compute_layout(800, 600), large),
+            RectPx::new(0, 568, 632, 32)
         );
     }
+
 }
