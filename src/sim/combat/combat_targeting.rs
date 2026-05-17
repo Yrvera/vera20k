@@ -10,6 +10,14 @@
 //! by threat class (armed units > unarmed > buildings) and stable entity ID
 //! (for deterministic replay).
 //!
+//! ## Auto-deploy on target acquisition
+//! Targeting NEVER initiates a deploy transition. A walking GGI that acquires
+//! an air target uses its Secondary weapon in place — it does not auto-deploy.
+//! This matches the original's behavior: deploy is a player-driven command,
+//! never triggered by AI target acquisition. Verified by grepping every writer
+//! of `deploy_state` — only the player command handler and the deploy tick
+//! advance set it.
+//!
 //! ## Dependency rules
 //! - Part of sim/ — depends on rules/ (RuleSet) and sim/components.
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
