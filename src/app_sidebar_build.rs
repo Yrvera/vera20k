@@ -610,8 +610,6 @@ pub(crate) fn build_sidebar_text_instances(
                 slot.x + (slot.w - text_w) * 0.5
             };
             let text_y = slot.y + (strip_h - glyph_h * ts) * 0.5;
-            // TODO(shell-text-parity): switch to sidebar_text::build_text_with_fade
-            // once fade_param value is verified -- see Task 22 in the matching plan.
             instances.extend(
                 state
                     .bit_font
