@@ -19,7 +19,9 @@
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
 use crate::sim::entity_store::EntityStore;
-use crate::util::fixed_math::{SIM_ONE, SIM_ZERO, SimFixed, dt_from_tick_ms, sim_to_f32};
+use crate::util::fixed_math::{
+    SIM_ONE, SIM_ZERO, SimFixed, dt_from_tick_ms, int_distance_to_sim, sim_to_f32,
+};
 
 /// Phase within the homing missile state machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -406,6 +408,32 @@ pub fn tick_homing_movement(entities: &mut EntityStore, tick_ms: u32, _sim_tick:
             detonated.push(id);
         }
 
+        // 12. Stall detection failsafe. After 60 frames of warm-up where we
+        //     just accumulate raw delta-distance, switch to EMA smoothing.
+        //     If the smoothed closure rate falls below 0.5 leptons/tick,
+        //     the missile is judged unreachable and self-destructs.
+        //     Non-Floater only — floater projectiles can hover indefinitely.
+        if h.phase != HomingPhase::Detonation {
+            let dist_now_sf: SimFixed = int_distance_to_sim(
+                h.last_known_rx as i32 - bullet.position.rx as i32,
+                h.last_known_ry as i32 - bullet.position.ry as i32,
+            );
+            let delta_dist = h.last_distance_to_target - dist_now_sf;
+            h.last_distance_to_target = dist_now_sf;
+
+            if h.stall_counter < 60 {
+                h.stall_counter += 1;
+                h.stall_ema += delta_dist;
+            } else {
+                h.stall_ema = h.stall_ema * SimFixed::lit("0.9")
+                    + delta_dist * SimFixed::lit("0.1");
+                if h.stall_ema <= SimFixed::lit("0.5") && !h.floater {
+                    h.phase = HomingPhase::SelfDestruct;
+                    detonated.push(id);
+                }
+            }
+        }
+
         h.frame_counter = h.frame_counter.wrapping_add(1);
     }
 
@@ -643,6 +671,76 @@ mod tests {
             .to_num::<i32>();
         let delta = alt_after - (5 * 64 - 30);
         assert_eq!(delta, 18, "expected snap of 18 leptons up toward cruise band");
+    }
+
+    #[test]
+    fn stall_detect_self_destructs_zero_speed_missile() {
+        use crate::sim::game_entity::GameEntity;
+
+        let mut entities = EntityStore::new();
+        entities.insert(GameEntity::test_default(42, "KIROV", "Soviet", 25, 5));
+        entities.insert(GameEntity::test_default(1, "AAHeatSeeker2", "Allied", 5, 5));
+        attach_homing_state(
+            &mut entities,
+            1,
+            (5, 5),
+            42,
+            (25, 5),
+            // speed.max(1) -> floor is SIM_ONE; 1 cell/sec is slow enough that
+            // even after 60+60+ ticks the missile makes no measurable progress
+            // relative to the EMA threshold of 0.5 leptons/tick.
+            SimFixed::lit("0.01"),
+            60,
+            0,
+            false,
+            false,
+            SIM_ONE,
+        );
+
+        let mut self_destructed = false;
+        for tick in 0..400 {
+            let det = tick_homing_movement(&mut entities, 22, tick as u64);
+            if det.contains(&1) {
+                self_destructed = true;
+                break;
+            }
+        }
+        let h = entities.get(1).unwrap().homing_state.as_ref().unwrap();
+        assert!(
+            self_destructed,
+            "stalled missile should self-destruct after the 60-tick warm-up + EMA decay"
+        );
+        assert_eq!(h.phase, HomingPhase::SelfDestruct);
+    }
+
+    #[test]
+    fn stall_detect_does_not_fire_for_floater() {
+        use crate::sim::game_entity::GameEntity;
+
+        let mut entities = EntityStore::new();
+        entities.insert(GameEntity::test_default(42, "KIROV", "Soviet", 25, 5));
+        entities.insert(GameEntity::test_default(1, "AAHeatSeeker2", "Allied", 5, 5));
+        attach_homing_state(
+            &mut entities,
+            1,
+            (5, 5),
+            42,
+            (25, 5),
+            SimFixed::lit("0.01"),
+            60,
+            0,
+            /* floater */ true,
+            false,
+            SIM_ONE,
+        );
+
+        for tick in 0..400 {
+            let det = tick_homing_movement(&mut entities, 22, tick as u64);
+            assert!(
+                !det.contains(&1),
+                "floater missile must never self-destruct from stall"
+            );
+        }
     }
 
     #[test]
