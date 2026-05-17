@@ -23,10 +23,10 @@ use std::collections::{BTreeSet, BinaryHeap};
 use super::LayeredEntityBlockMap;
 
 use super::terrain_cost::TerrainCostGrid;
-use super::zone_map::{ZoneAdjacency, ZoneGrid, ZoneId, ZoneMap, ZONE_INVALID};
+use super::zone_map::{ZONE_INVALID, ZoneAdjacency, ZoneGrid, ZoneId, ZoneMap};
 use super::{
-    find_layered_path, find_path_with_costs, find_path_with_costs_corridor, LayeredPathStep,
-    PathGrid,
+    LayeredPathStep, PathGrid, find_layered_path, find_path_with_costs,
+    find_path_with_costs_corridor,
 };
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::map::tube_facts::TubeSource;

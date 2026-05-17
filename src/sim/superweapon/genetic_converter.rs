@@ -94,6 +94,7 @@ fn apply_mutate_explosion(
         rules,
         &sim.interner,
         &owner_str,
+        crate::sim::combat::combat_aoe::AoELayerContext::default(),
     );
 
     // Emit warhead AnimList anim + smudge for the Mutate detonation,

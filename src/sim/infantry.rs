@@ -7,7 +7,7 @@ use crate::rules::object_type::ObjectType;
 use crate::sim::animation::SequenceKind;
 use crate::sim::deploy::DeployPhase;
 use crate::sim::game_entity::GameEntity;
-use crate::util::fixed_math::{SimFixed, SIM_ZERO};
+use crate::util::fixed_math::{SIM_ZERO, SimFixed};
 
 const MAX_FEAR: u16 = 300;
 const FIRST_HIT_FEAR: u16 = 100;

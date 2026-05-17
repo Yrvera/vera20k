@@ -324,14 +324,12 @@ fn tick_boarding(sim: &mut Simulation, rules: &RuleSet) -> bool {
 
             let transport_obj = rules.object(&transport_type_str);
             let transport_gunner = transport_obj.map(|obj| obj.gunner).unwrap_or(false);
-            let transport_open_topped =
-                transport_obj.map(|obj| obj.open_topped).unwrap_or(false);
+            let transport_open_topped = transport_obj.map(|obj| obj.open_topped).unwrap_or(false);
 
             let pax_obj = rules.object(&pax_type_str);
             let pax_ifv_mode = pax_obj.map(|obj| obj.ifv_mode).unwrap_or(0);
-            let pax_open_transport_weapon = pax_obj
-                .map(|obj| obj.open_transport_weapon)
-                .unwrap_or(-1);
+            let pax_open_transport_weapon =
+                pax_obj.map(|obj| obj.open_transport_weapon).unwrap_or(-1);
 
             // Try to board.
             let boarded = sim

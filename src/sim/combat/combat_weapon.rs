@@ -46,9 +46,7 @@ pub enum WeaponSlot {
 ///   The transport fires the passenger's own Primary (slot=0) or Secondary
 ///   (slot=1) per the passenger's `OpenTransportWeapon=` INI value. The
 ///   attacker passed to `select_weapon_*` is the PASSENGER's ObjectType.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum WeaponOverride {
     /// Transport's weapon_list[idx], used when transport is `Gunner=yes`.
     IfvSlot(u32),
@@ -179,7 +177,10 @@ pub(crate) fn select_weapon_with_override<'a>(
             // fire its own Primary (slot=0) or Secondary (slot=1). No fallback
             // — if the chosen slot can't engage, the passenger doesn't fire.
             let (weapon_id, weapon_slot) = match slot {
-                0 => (primary_for_tier(attacker_obj, veterancy), WeaponSlot::Primary),
+                0 => (
+                    primary_for_tier(attacker_obj, veterancy),
+                    WeaponSlot::Primary,
+                ),
                 1 => (
                     secondary_for_tier(attacker_obj, veterancy),
                     WeaponSlot::Secondary,
@@ -544,10 +545,7 @@ Verses=20%,20%,20%,100%,50%,100%,10%,10%,10%,100%,100%
         let rules = make_ggi_rules();
         let ggi = rules.object("GGI").unwrap();
         let sel = select_weapon(&rules, ggi, EntityCategory::Infantry, "none", 199).unwrap();
-        assert_eq!(
-            sel.weapon_id, "M60",
-            "veteran at v=199 must still fire M60"
-        );
+        assert_eq!(sel.weapon_id, "M60", "veteran at v=199 must still fire M60");
     }
 
     #[test]
@@ -555,10 +553,7 @@ Verses=20%,20%,20%,100%,50%,100%,10%,10%,10%,100%,100%
         let rules = make_ggi_rules();
         let ggi = rules.object("GGI").unwrap();
         let sel = select_weapon(&rules, ggi, EntityCategory::Infantry, "none", 200).unwrap();
-        assert_eq!(
-            sel.weapon_id, "M60E",
-            "elite at v=200 must fire M60E"
-        );
+        assert_eq!(sel.weapon_id, "M60E", "elite at v=200 must fire M60E");
     }
 
     #[test]

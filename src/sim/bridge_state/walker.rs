@@ -1,4 +1,4 @@
-//! Overlay-direct bridge destruction walker.
+//! Overlay-direct bridge destruction and repair walkers.
 //!
 //! Drives full-bridge collapse from a single hit on a cell whose overlay byte
 //! is still in the raw body range (per the verification doc, raw-overlay
@@ -9,10 +9,402 @@
 //! ## Dependency rules
 //! Same as sim/: depends on rules/ + map/; never render / ui / audio / net.
 
-use crate::map::resolved_terrain::ResolvedTerrainGrid;
-use crate::sim::bridge_state::{BridgeRuntimeState, StateOutcome};
+use crate::map::resolved_terrain::{BridgeDirection, ResolvedTerrainCell, ResolvedTerrainGrid};
+use crate::sim::bridge_state::{BridgeRuntimeState, DamageState, RepairOutcome, StateOutcome};
+use crate::sim::rng::SimRng;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RepairFamily {
+    LowNs,
+    LowEw,
+    HighNs,
+    HighEw,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RepairTransition {
+    NoChange,
+    Fixed(u8),
+    RandomHealthy { base: u8 },
+}
 
 impl BridgeRuntimeState {
+    /// Engineer repair entry for a gamemd-style 5x5 scan. The outer dispatch
+    /// chooses LOW if any scanned cell is a low bridge tile/ramp or low bridge
+    /// overlay; otherwise it scans the HIGH overlay family.
+    pub fn repair_bridge_from_engineer_scan(
+        &mut self,
+        scan_cells: &[(u16, u16)],
+        rng: &mut SimRng,
+        terrain: &ResolvedTerrainGrid,
+    ) -> RepairOutcome {
+        let low_candidate = scan_cells.iter().any(|&(rx, ry)| {
+            let overlay = self.cell(rx, ry).map(|c| c.overlay_byte);
+            Self::is_low_repair_outer_candidate(overlay, terrain.cell(rx, ry))
+        });
+
+        if low_candidate {
+            self.repair_bridge_low_from_scan(scan_cells, rng, terrain)
+        } else {
+            self.repair_bridge_high_from_scan(scan_cells, rng, terrain)
+        }
+    }
+
+    fn repair_bridge_low_from_scan(
+        &mut self,
+        scan_cells: &[(u16, u16)],
+        rng: &mut SimRng,
+        terrain: &ResolvedTerrainGrid,
+    ) -> RepairOutcome {
+        for &(rx, ry) in scan_cells {
+            let Some(overlay) = self.cell(rx, ry).map(|c| c.overlay_byte) else {
+                continue;
+            };
+            if Self::is_low_repair_overlay(overlay) {
+                return self.repair_bridge_low(rx, ry, rng, terrain);
+            }
+        }
+        RepairOutcome::default()
+    }
+
+    fn repair_bridge_high_from_scan(
+        &mut self,
+        scan_cells: &[(u16, u16)],
+        rng: &mut SimRng,
+        terrain: &ResolvedTerrainGrid,
+    ) -> RepairOutcome {
+        for &(rx, ry) in scan_cells {
+            let Some(overlay) = self.cell(rx, ry).map(|c| c.overlay_byte) else {
+                continue;
+            };
+            if Self::is_high_repair_overlay(overlay) {
+                return self.repair_bridge_high(rx, ry, rng, terrain);
+            }
+        }
+        RepairOutcome::default()
+    }
+
+    fn repair_bridge_low(
+        &mut self,
+        rx: u16,
+        ry: u16,
+        rng: &mut SimRng,
+        terrain: &ResolvedTerrainGrid,
+    ) -> RepairOutcome {
+        let Some(overlay) = self.cell(rx, ry).map(|c| c.overlay_byte) else {
+            return RepairOutcome::default();
+        };
+        if Self::is_ns_walker_overlay_low(overlay) {
+            let (sx, sy) = self.find_walker_start_low_ns(rx, ry);
+            return self.repair_bridge_walker_ns_low(sx, sy, rng, terrain);
+        }
+        if Self::is_ew_walker_overlay_low(overlay) {
+            let (sx, sy) = self.find_walker_start_low_ew(rx, ry);
+            return self.repair_bridge_walker_ew_low(sx, sy, rng, terrain);
+        }
+        RepairOutcome::default()
+    }
+
+    fn repair_bridge_high(
+        &mut self,
+        rx: u16,
+        ry: u16,
+        rng: &mut SimRng,
+        terrain: &ResolvedTerrainGrid,
+    ) -> RepairOutcome {
+        let Some(overlay) = self.cell(rx, ry).map(|c| c.overlay_byte) else {
+            return RepairOutcome::default();
+        };
+        if Self::is_ns_walker_overlay_high(overlay) {
+            let (sx, sy) = self.find_walker_start_high_ns(rx, ry);
+            return self.repair_bridge_walker_ns_high(sx, sy, rng, terrain);
+        }
+        if Self::is_ew_walker_overlay_high(overlay) {
+            let (sx, sy) = self.find_walker_start_high_ew(rx, ry);
+            return self.repair_bridge_walker_ew_high(sx, sy, rng, terrain);
+        }
+        RepairOutcome::default()
+    }
+
+    fn repair_bridge_walker_ns_low(
+        &mut self,
+        sx: u16,
+        sy: u16,
+        rng: &mut SimRng,
+        terrain: &ResolvedTerrainGrid,
+    ) -> RepairOutcome {
+        let mut outcome = RepairOutcome::default();
+        let mut x = sx;
+        while x > 0
+            && self
+                .cell(x - 1, sy)
+                .map(|c| Self::is_low_repair_overlay(c.overlay_byte))
+                .unwrap_or(false)
+        {
+            x -= 1;
+        }
+        loop {
+            let Some(overlay) = self.cell(x, sy).map(|c| c.overlay_byte) else {
+                break;
+            };
+            if !Self::is_low_repair_overlay(overlay) {
+                break;
+            }
+            self.apply_repair_to_strip_cell(
+                Self::ns_triple(x, sy),
+                RepairFamily::LowNs,
+                rng,
+                terrain,
+                &mut outcome,
+            );
+            let Some(next_x) = x.checked_add(1) else {
+                break;
+            };
+            x = next_x;
+        }
+        outcome
+    }
+
+    fn repair_bridge_walker_ew_low(
+        &mut self,
+        sx: u16,
+        sy: u16,
+        rng: &mut SimRng,
+        terrain: &ResolvedTerrainGrid,
+    ) -> RepairOutcome {
+        let mut outcome = RepairOutcome::default();
+        let mut y = sy;
+        while y > 0
+            && self
+                .cell(sx, y - 1)
+                .map(|c| Self::is_low_repair_overlay(c.overlay_byte))
+                .unwrap_or(false)
+        {
+            y -= 1;
+        }
+        loop {
+            let Some(overlay) = self.cell(sx, y).map(|c| c.overlay_byte) else {
+                break;
+            };
+            if !Self::is_low_repair_overlay(overlay) {
+                break;
+            }
+            self.apply_repair_to_strip_cell(
+                Self::ew_triple(sx, y),
+                RepairFamily::LowEw,
+                rng,
+                terrain,
+                &mut outcome,
+            );
+            let Some(next_y) = y.checked_add(1) else {
+                break;
+            };
+            y = next_y;
+        }
+        outcome
+    }
+
+    fn repair_bridge_walker_ns_high(
+        &mut self,
+        sx: u16,
+        sy: u16,
+        rng: &mut SimRng,
+        terrain: &ResolvedTerrainGrid,
+    ) -> RepairOutcome {
+        let mut outcome = RepairOutcome::default();
+        let mut x = sx;
+        while x > 0
+            && self
+                .cell(x - 1, sy)
+                .map(|c| Self::is_high_repair_overlay(c.overlay_byte))
+                .unwrap_or(false)
+        {
+            x -= 1;
+        }
+        loop {
+            let Some(overlay) = self.cell(x, sy).map(|c| c.overlay_byte) else {
+                break;
+            };
+            if !Self::is_high_repair_overlay(overlay) {
+                break;
+            }
+            self.apply_repair_to_strip_cell(
+                Self::ns_triple(x, sy),
+                RepairFamily::HighNs,
+                rng,
+                terrain,
+                &mut outcome,
+            );
+            let Some(next_x) = x.checked_add(1) else {
+                break;
+            };
+            x = next_x;
+        }
+        outcome
+    }
+
+    fn repair_bridge_walker_ew_high(
+        &mut self,
+        sx: u16,
+        sy: u16,
+        rng: &mut SimRng,
+        terrain: &ResolvedTerrainGrid,
+    ) -> RepairOutcome {
+        let mut outcome = RepairOutcome::default();
+        let mut y = sy;
+        while y > 0
+            && self
+                .cell(sx, y - 1)
+                .map(|c| Self::is_high_repair_overlay(c.overlay_byte))
+                .unwrap_or(false)
+        {
+            y -= 1;
+        }
+        loop {
+            let Some(overlay) = self.cell(sx, y).map(|c| c.overlay_byte) else {
+                break;
+            };
+            if !Self::is_high_repair_overlay(overlay) {
+                break;
+            }
+            self.apply_repair_to_strip_cell(
+                Self::ew_triple(sx, y),
+                RepairFamily::HighEw,
+                rng,
+                terrain,
+                &mut outcome,
+            );
+            let Some(next_y) = y.checked_add(1) else {
+                break;
+            };
+            y = next_y;
+        }
+        outcome
+    }
+
+    fn apply_repair_to_strip_cell(
+        &mut self,
+        triple: [Option<(u16, u16)>; 3],
+        family: RepairFamily,
+        rng: &mut SimRng,
+        terrain: &ResolvedTerrainGrid,
+        outcome: &mut RepairOutcome,
+    ) {
+        let Some((crx, cry)) = triple[0] else {
+            return;
+        };
+        let Some(prior_overlay) = self.cell(crx, cry).map(|c| c.overlay_byte) else {
+            return;
+        };
+
+        let transition = Self::repair_transition(prior_overlay, family);
+        let (new_overlay, new_state) = match transition {
+            RepairTransition::NoChange => return,
+            RepairTransition::Fixed(new_overlay) => {
+                if new_overlay == prior_overlay {
+                    return;
+                }
+                (new_overlay, DamageState::Healthy { variant: 0 })
+            }
+            RepairTransition::RandomHealthy { base } => {
+                let variant = Self::repair_variant_offset(rng);
+                outcome.zones_dirty = true;
+                (base + variant, DamageState::Healthy { variant })
+            }
+        };
+
+        let mut touched = Vec::with_capacity(3);
+        let mut spans = std::collections::BTreeSet::new();
+        for pos in triple.into_iter().flatten() {
+            if let Some(cell) = self.cell_mut(pos.0, pos.1) {
+                let changed = cell.overlay_byte != new_overlay
+                    || cell.damage_state != new_state
+                    || cell.damaged_variant;
+                cell.overlay_byte = new_overlay;
+                cell.damage_state = new_state;
+                if changed {
+                    outcome.repaired_cells += 1;
+                }
+                if let Some(span_id) = cell.anchor_span_id {
+                    spans.insert(span_id);
+                }
+                touched.push(pos);
+            }
+        }
+
+        for &(rx, ry) in &touched {
+            let _ = self.apply_damaged_variant_flood_fill(rx, ry, false, terrain);
+        }
+        if matches!(prior_overlay, 0x64 | 0x65 | 0xE7 | 0xE8) {
+            outcome.radar_cells.extend(touched.iter().copied());
+        }
+        for span_id in spans {
+            self.sync_anchor_span_damage_state(span_id);
+        }
+    }
+
+    fn sync_anchor_span_damage_state(&mut self, span_id: u16) {
+        let anchor_pos = self.anchor_span(span_id).map(|span| span.anchor);
+        if let Some((arx, ary)) = anchor_pos {
+            let anchor_state = self.cell(arx, ary).map(|cell| cell.damage_state);
+            if let (Some(state), Some(span)) = (anchor_state, self.anchor_span_mut(span_id)) {
+                span.damage_state = state;
+            }
+        }
+    }
+
+    fn repair_transition(overlay: u8, family: RepairFamily) -> RepairTransition {
+        match family {
+            RepairFamily::LowNs => match overlay {
+                0x4E..=0x52 | 0x64 => RepairTransition::RandomHealthy { base: 0x4A },
+                0x5C | 0x5D => RepairTransition::Fixed(0x5C),
+                0x5E | 0x5F => RepairTransition::Fixed(0x5E),
+                _ => RepairTransition::NoChange,
+            },
+            RepairFamily::LowEw => match overlay {
+                0x57..=0x5B | 0x65 => RepairTransition::RandomHealthy { base: 0x53 },
+                0x60 | 0x61 => RepairTransition::Fixed(0x60),
+                0x62 | 0x63 => RepairTransition::Fixed(0x62),
+                _ => RepairTransition::NoChange,
+            },
+            RepairFamily::HighNs => match overlay {
+                0xD1..=0xD5 | 0xE7 => RepairTransition::RandomHealthy { base: 0xCD },
+                0xDF | 0xE0 => RepairTransition::Fixed(0xDF),
+                0xE1 | 0xE2 => RepairTransition::Fixed(0xE1),
+                _ => RepairTransition::NoChange,
+            },
+            RepairFamily::HighEw => match overlay {
+                0xDA..=0xDE | 0xE8 => RepairTransition::RandomHealthy { base: 0xD6 },
+                0xE3 | 0xE4 => RepairTransition::Fixed(0xE3),
+                0xE5 | 0xE6 => RepairTransition::Fixed(0xE5),
+                _ => RepairTransition::NoChange,
+            },
+        }
+    }
+
+    fn repair_variant_offset(rng: &mut SimRng) -> u8 {
+        rng.next_range_u32(4) as u8
+    }
+
+    fn is_low_repair_outer_candidate(
+        overlay: Option<u8>,
+        terrain_cell: Option<&ResolvedTerrainCell>,
+    ) -> bool {
+        overlay.map(Self::is_low_repair_overlay).unwrap_or(false)
+            || terrain_cell
+                .and_then(|cell| cell.bridge_layer.as_ref())
+                .map(|layer| layer.direction == BridgeDirection::Low)
+                .unwrap_or(false)
+    }
+
+    fn is_low_repair_overlay(overlay: u8) -> bool {
+        (0x4A..=0x65).contains(&overlay)
+    }
+
+    fn is_high_repair_overlay(overlay: u8) -> bool {
+        (0xCD..=0xE8).contains(&overlay)
+    }
+
     /// Overlay-direct HIGH walker entry. Three responsibilities:
     /// 1. Classify the input cell's overlay byte to pick NS or EW walker.
     /// 2. Pre-walk start-cell shift: read the body-axis neighbors to find
@@ -932,6 +1324,7 @@ mod tests {
     use crate::sim::bridge_state::{
         Axis, BridgeCellRole, BridgeRuntimeCell, BridgeheadAnchorClass, DamageState,
     };
+    use crate::sim::rng::SimRng;
 
     fn empty_terrain() -> ResolvedTerrainGrid {
         ResolvedTerrainGrid::from_cells(0, 0, Vec::new())
@@ -977,6 +1370,105 @@ mod tests {
             state.destroy_bridge_low(0, 0, &terrain),
             StateOutcome::NoChange
         );
+    }
+
+    #[test]
+    fn repair_transition_table_matches_verified_binary_ranges() {
+        assert_eq!(
+            BridgeRuntimeState::repair_transition(0xE7, RepairFamily::HighNs),
+            RepairTransition::RandomHealthy { base: 0xCD }
+        );
+        assert_eq!(
+            BridgeRuntimeState::repair_transition(0xE8, RepairFamily::HighEw),
+            RepairTransition::RandomHealthy { base: 0xD6 }
+        );
+        assert_eq!(
+            BridgeRuntimeState::repair_transition(0x64, RepairFamily::LowNs),
+            RepairTransition::RandomHealthy { base: 0x4A }
+        );
+        assert_eq!(
+            BridgeRuntimeState::repair_transition(0x65, RepairFamily::LowEw),
+            RepairTransition::RandomHealthy { base: 0x53 }
+        );
+        assert_eq!(
+            BridgeRuntimeState::repair_transition(0xE0, RepairFamily::HighNs),
+            RepairTransition::Fixed(0xDF)
+        );
+        assert_eq!(
+            BridgeRuntimeState::repair_transition(0xE3, RepairFamily::HighEw),
+            RepairTransition::Fixed(0xE3)
+        );
+        assert_eq!(
+            BridgeRuntimeState::repair_transition(0x5C, RepairFamily::LowNs),
+            RepairTransition::Fixed(0x5C)
+        );
+        assert_eq!(
+            BridgeRuntimeState::repair_transition(0x60, RepairFamily::LowEw),
+            RepairTransition::Fixed(0x60)
+        );
+    }
+
+    #[test]
+    fn repair_fixed_same_overlay_skips_whole_strip_and_rng() {
+        let mut state = BridgeRuntimeState::default();
+        for y in 1..=3u16 {
+            seed_low_body_cell(&mut state, 2, y, Axis::NS, 0x5D);
+            state.cell_mut(2, y).unwrap().damage_state = DamageState::Destroyed;
+        }
+        state.cell_mut(2, 2).unwrap().overlay_byte = 0x5C;
+
+        let mut rng = SimRng::new(123);
+        let prior_rng = rng.state();
+        let terrain = empty_terrain();
+        let mut outcome = RepairOutcome::default();
+        state.apply_repair_to_strip_cell(
+            BridgeRuntimeState::ns_triple(2, 2),
+            RepairFamily::LowNs,
+            &mut rng,
+            &terrain,
+            &mut outcome,
+        );
+
+        assert_eq!(outcome.repaired_cells, 0);
+        assert!(!outcome.zones_dirty);
+        assert_eq!(rng.state(), prior_rng);
+        for y in 1..=3u16 {
+            assert!(matches!(
+                state.cell(2, y).unwrap().damage_state,
+                DamageState::Destroyed
+            ));
+        }
+    }
+
+    #[test]
+    fn repair_destroyed_high_ns_strip_rewrites_triple_and_radar_cells() {
+        let mut state = BridgeRuntimeState::default();
+        for y in 1..=3u16 {
+            seed_high_body_cell(&mut state, 2, y, 0xE7);
+            state.cell_mut(2, y).unwrap().damage_state = DamageState::Destroyed;
+        }
+
+        let mut rng = SimRng::new(456);
+        let terrain = empty_terrain();
+        let mut outcome = RepairOutcome::default();
+        state.apply_repair_to_strip_cell(
+            BridgeRuntimeState::ns_triple(2, 2),
+            RepairFamily::HighNs,
+            &mut rng,
+            &terrain,
+            &mut outcome,
+        );
+
+        assert!(outcome.zones_dirty);
+        assert_eq!(outcome.repaired_cells, 3);
+        assert_eq!(outcome.radar_cells, vec![(2, 2), (2, 1), (2, 3)]);
+        let center_overlay = state.cell(2, 2).unwrap().overlay_byte;
+        assert!((0xCD..=0xD0).contains(&center_overlay));
+        for y in 1..=3u16 {
+            let cell = state.cell(2, y).unwrap();
+            assert_eq!(cell.overlay_byte, center_overlay);
+            assert!(matches!(cell.damage_state, DamageState::Healthy { .. }));
+        }
     }
 
     #[test]

@@ -747,6 +747,7 @@ fn handle_entity_deaths(
     resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
     overlay_grid: Option<&OverlayGrid>,
     overlay_registry: Option<&OverlayTypeRegistry>,
+    terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
     current_tick: u64,
 ) -> DeathEffects {
     let mut death_sounds: Vec<(InternedId, u16, u16)> = Vec::new();
@@ -978,6 +979,11 @@ fn handle_entity_deaths(
                 rules,
                 interner,
                 interner.resolve(*owner_id),
+                self::combat_aoe::AoELayerContext {
+                    occupancy: Some(&*occupancy),
+                    terrain,
+                    impact_z: *z as i32,
+                },
             );
             for (target_id, aoe_dmg) in aoe_hits {
                 if let Some(target) = entities.get_mut(target_id) {
@@ -1788,6 +1794,7 @@ pub fn tick_combat_with_fog(
         } else {
             weapon.damage
         };
+        let impact_z = attack_impact_z(snap.target, entities);
         if warhead.cell_spread > SIM_ZERO {
             let aoe_hits = self::combat_aoe::apply_aoe_damage(
                 entities,
@@ -1798,6 +1805,11 @@ pub fn tick_combat_with_fog(
                 rules,
                 interner,
                 interner.resolve(snap.owner),
+                self::combat_aoe::AoELayerContext {
+                    occupancy: Some(&*occupancy),
+                    terrain,
+                    impact_z,
+                },
             );
             for (target_id, dmg) in aoe_hits {
                 let wh_iid = interner.intern(&warhead.id);
@@ -1819,7 +1831,7 @@ pub fn tick_combat_with_fog(
                         damage: damage_u16,
                         warhead_ref: wh_iid,
                         is_ion_cannon: wh_iid == rules.ion_cannon_warhead_id(),
-                        impact_z: attack_impact_z(snap.target, entities),
+                        impact_z,
                     });
                 }
             }
@@ -1855,7 +1867,7 @@ pub fn tick_combat_with_fog(
                         damage: damage_u16,
                         warhead_ref: wh_iid,
                         is_ion_cannon: wh_iid == rules.ion_cannon_warhead_id(),
-                        impact_z: attack_impact_z(snap.target, entities),
+                        impact_z,
                     });
                 }
             }
@@ -2068,6 +2080,7 @@ pub fn tick_combat_with_fog(
         resource_nodes,
         overlay_grid,
         overlay_registry,
+        terrain,
         current_tick,
     );
     bridge_damage_events.extend(death.bridge_damage_events);

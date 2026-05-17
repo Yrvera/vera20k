@@ -246,6 +246,7 @@ fn spawn_bolt(sim: &mut Simulation, rules: &RuleSet, rx: u16, ry: u16, owner: In
             rules,
             &sim.interner,
             &owner_str,
+            crate::sim::combat::combat_aoe::AoELayerContext::default(),
         );
 
         // Apply damage to entities.
