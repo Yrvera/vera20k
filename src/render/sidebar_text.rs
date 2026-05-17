@@ -166,15 +166,17 @@ mod tests {
 
     #[test]
     fn fade_param_zero_equivalent_to_build_text() {
-        let font = make_test_font(
-            &[
-                (b'a' as u16, 6),
-                (b'b' as u16, 6),
-                (b'c' as u16, 6),
-            ],
-            4,
+        let font = make_test_font(&[(b'a' as u16, 6), (b'b' as u16, 6), (b'c' as u16, 6)], 4);
+        let plain = build_text(
+            &font,
+            "abc",
+            0.0,
+            0.0,
+            1.0,
+            0.5,
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0],
         );
-        let plain = build_text(&font, "abc", 0.0, 0.0, 1.0, 0.5, [0.0, 0.0, 0.0], [0.0, 0.0]);
         let faded = build_text_with_fade(
             &font,
             "abc",

@@ -25,13 +25,15 @@ pub struct SkirmishShellChromeEntry {
 
 pub struct SkirmishShellChromeAtlas {
     pub texture: BatchTexture,
-    pub sd_top: Option<SkirmishShellChromeEntry>,
-    pub sd_tile: Option<SkirmishShellChromeEntry>,
-    pub sd_bottom: Option<SkirmishShellChromeEntry>,
-    pub sd_button_anim: Option<SkirmishShellChromeEntry>,
+    pub right_panel_top_sdtp: Option<SkirmishShellChromeEntry>,
+    pub right_panel_tile_sdbtnbkgd: Option<SkirmishShellChromeEntry>,
+    pub right_panel_overlay_sdbtnanm_frame10: Option<SkirmishShellChromeEntry>,
+    pub right_panel_bottom_sdbtm: Option<SkirmishShellChromeEntry>,
     pub sd_map_button: Option<SkirmishShellChromeEntry>,
-    pub background_640_mnscrnl: Option<SkirmishShellChromeEntry>,
+    pub background_640_mnscrns: Option<SkirmishShellChromeEntry>,
     pub background_800_coop_game_setup: Option<SkirmishShellChromeEntry>,
+    pub lower_side_640_lwscrns: Option<SkirmishShellChromeEntry>,
+    pub lower_side_large_lwscrnl: Option<SkirmishShellChromeEntry>,
     pub button_up_left_30: Option<SkirmishShellChromeEntry>,
     pub button_up_mid_30: Option<SkirmishShellChromeEntry>,
     pub button_up_right_30: Option<SkirmishShellChromeEntry>,
@@ -68,26 +70,71 @@ pub fn build_skirmish_shell_chrome_atlas(
     batch: &BatchRenderer,
     assets: &AssetManager,
 ) -> Option<SkirmishShellChromeAtlas> {
-    let right_panel_palette = load_unresolved_shell_shp_palette(assets)?;
+    let shell_palette = load_shell_palette(assets)?;
+    let shell2_palette = load_named_palette(assets, "SHELL2.PAL")?;
+    let sdbtnanm_palette = load_named_palette(assets, "SDBTNANM.PAL");
     let parent_background_palette = load_parent_background_palette(assets);
 
     let mut rendered = Vec::new();
-    for name in [
+    rendered.push(mandatory_shp(
+        assets,
         "SDTP.SHP",
+        &shell_palette,
+        0,
+        "SHELL.PAL",
+    )?);
+    rendered.push(mandatory_shp(
+        assets,
         "SDBTNBKGD.SHP",
+        &shell2_palette,
+        0,
+        "SHELL2.PAL",
+    )?);
+    rendered.push(mandatory_shp(
+        assets,
         "SDBTM.SHP",
-        "SDBTNANM.SHP",
-        "SDMPBTN.SHP",
-    ] {
-        let entry = render_shp_entry(assets, name, &right_panel_palette, 0).or_else(|| {
-            log::warn!("Missing mandatory Skirmish shell asset {name}");
-            None
-        })?;
-        rendered.push(entry);
+        &shell_palette,
+        0,
+        "SHELL.PAL",
+    )?);
+    if let Some(sdbtnanm_palette) = sdbtnanm_palette.as_ref() {
+        match render_shp_entry_labeled(
+            assets,
+            "SDBTNANM.SHP",
+            "sdbtnanm.shp#10",
+            sdbtnanm_palette,
+            10,
+        ) {
+            Some(entry) => rendered.push(entry),
+            None => log::warn!(
+                "Missing optional Skirmish shell asset SDBTNANM.SHP frame 10; not substituting frame 0"
+            ),
+        }
     }
+    rendered.push(mandatory_shp(
+        assets,
+        "SDMPBTN.SHP",
+        &shell_palette,
+        0,
+        "SHELL.PAL",
+    )?);
+    rendered.push(mandatory_shp(
+        assets,
+        "LWSCRNS.SHP",
+        &shell_palette,
+        0,
+        "SHELL.PAL",
+    )?);
+    rendered.push(mandatory_shp(
+        assets,
+        "LWSCRNL.SHP",
+        &shell_palette,
+        0,
+        "SHELL.PAL",
+    )?);
 
     if let Some(parent_background_palette) = parent_background_palette.as_ref() {
-        for name in ["MNSCRNL.SHP", "MnScrnLCoopGameSetup.shp"] {
+        for name in ["MNSCRNS.SHP", "MnScrnLCoopGameSetup.shp"] {
             push_optional(
                 &mut rendered,
                 render_shp_entry(assets, name, parent_background_palette, 0),
@@ -103,7 +150,7 @@ pub fn build_skirmish_shell_chrome_atlas(
     for name in ["STARTBUT.SHP", "mmpb.shp"] {
         push_optional(
             &mut rendered,
-            render_shp_entry(assets, name, &right_panel_palette, 0),
+            render_shp_entry(assets, name, &shell_palette, 0),
             name,
         );
     }
@@ -152,13 +199,15 @@ pub fn build_skirmish_shell_chrome_atlas(
 
     Some(SkirmishShellChromeAtlas {
         texture,
-        sd_top: by_label.get("sdtp.shp").copied(),
-        sd_tile: by_label.get("sdbtnbkgd.shp").copied(),
-        sd_bottom: by_label.get("sdbtm.shp").copied(),
-        sd_button_anim: by_label.get("sdbtnanm.shp").copied(),
+        right_panel_top_sdtp: by_label.get("sdtp.shp").copied(),
+        right_panel_tile_sdbtnbkgd: by_label.get("sdbtnbkgd.shp").copied(),
+        right_panel_overlay_sdbtnanm_frame10: by_label.get("sdbtnanm.shp#10").copied(),
+        right_panel_bottom_sdbtm: by_label.get("sdbtm.shp").copied(),
         sd_map_button: by_label.get("sdmpbtn.shp").copied(),
-        background_640_mnscrnl: by_label.get("mnscrnl.shp").copied(),
+        background_640_mnscrns: by_label.get("mnscrns.shp").copied(),
         background_800_coop_game_setup: by_label.get("mnscrnlcoopgamesetup.shp").copied(),
+        lower_side_640_lwscrns: by_label.get("lwscrns.shp").copied(),
+        lower_side_large_lwscrnl: by_label.get("lwscrnl.shp").copied(),
         button_up_left_30: by_label.get("bue_li30.pcx").copied(),
         button_up_mid_30: by_label.get("bue_mi30.pcx").copied(),
         button_up_right_30: by_label.get("bue_ri30.pcx").copied(),
@@ -186,32 +235,38 @@ fn load_parent_background_palette(assets: &AssetManager) -> Option<Palette> {
         .ok()
 }
 
-fn load_unresolved_shell_shp_palette(assets: &AssetManager) -> Option<Palette> {
-    // Exact shell SHP palette binding is still open pending live Ghidra.
-    // PCX owner-draw assets do not use this path; they carry embedded palettes.
-    let palette_bytes = assets
-        .get_ref("SDBTNANM.PAL")
-        .or_else(|| assets.get_ref("SHELL.PAL"))
-        .or_else(|| assets.get_ref("DIALOG.PAL"))?;
-    Palette::from_bytes(palette_bytes).ok()
+fn load_shell_palette(assets: &AssetManager) -> Option<Palette> {
+    load_named_palette(assets, "SHELL.PAL")
+}
+
+fn load_named_palette(assets: &AssetManager, name: &str) -> Option<Palette> {
+    let Some(palette_bytes) = assets.get_ref(name) else {
+        log::warn!("Missing verified Skirmish shell palette {name}");
+        return None;
+    };
+    Palette::from_bytes(palette_bytes)
+        .map_err(|err| {
+            log::warn!("Could not parse verified Skirmish shell palette {name}: {err:#}");
+            err
+        })
+        .ok()
 }
 
 #[cfg(test)]
 fn classify_shell_asset(name: &str) -> ShellAssetRole {
     match name.to_ascii_lowercase().as_str() {
-        "mnscrnl.shp" | "mnscrnlcoopgamesetup.shp" => ShellAssetRole::VerifiedParentBackground,
+        "mnscrns.shp" | "mnscrnlcoopgamesetup.shp" => ShellAssetRole::VerifiedParentBackground,
         "startbut.shp" => ShellAssetRole::VerifiedOfflineStartMarker,
         "mmpb.shp" => ShellAssetRole::AssignedPlayerMarker,
-        "sdtp.shp" | "sdbtnbkgd.shp" | "sdbtm.shp" | "sdbtnanm.shp" | "sdmpbtn.shp" => {
-            ShellAssetRole::RightPanelChrome
-        }
+        "sdtp.shp" | "sdbtnbkgd.shp" | "sdbtm.shp" | "sdbtnanm.shp" | "sdmpbtn.shp"
+        | "lwscrns.shp" | "lwscrnl.shp" => ShellAssetRole::RightPanelChrome,
         "bue_li30.pcx" | "bue_mi30.pcx" | "bue_ri30.pcx" | "bde_li30.pcx" | "bde_mi30.pcx"
         | "bde_ri30.pcx" => ShellAssetRole::VerifiedOwnerDrawButton,
         "usai.pcx" | "japi.pcx" | "frai.pcx" | "geri.pcx" | "gbri.pcx" | "djbi.pcx"
         | "arbi.pcx" | "lati.pcx" | "rusi.pcx" | "yrii.pcx" | "obsi.pcx" | "rani.pcx" => {
             ShellAssetRole::VerifiedFlag
         }
-        "mnscrns.shp"
+        "mnscrnl.shp"
         | "mnscrnlcustomizebattle.shp"
         | "dbak6440.pcx"
         | "dlgsysa.pcx"
@@ -232,9 +287,40 @@ fn push_optional(
     }
 }
 
+fn mandatory_shp(
+    assets: &AssetManager,
+    file_name: &str,
+    palette: &Palette,
+    frame: usize,
+    palette_name: &str,
+) -> Option<RenderedShellEntry> {
+    render_shp_entry(assets, file_name, palette, frame).or_else(|| {
+        log::warn!(
+            "Missing mandatory Skirmish shell asset {file_name} frame {frame} decoded with {palette_name}"
+        );
+        None
+    })
+}
+
 fn render_shp_entry(
     assets: &AssetManager,
     file_name: &str,
+    palette: &Palette,
+    frame: usize,
+) -> Option<RenderedShellEntry> {
+    render_shp_entry_labeled(
+        assets,
+        file_name,
+        &file_name.to_ascii_lowercase(),
+        palette,
+        frame,
+    )
+}
+
+fn render_shp_entry_labeled(
+    assets: &AssetManager,
+    file_name: &str,
+    label: &str,
     palette: &Palette,
     frame: usize,
 ) -> Option<RenderedShellEntry> {
@@ -266,7 +352,7 @@ fn render_shp_entry(
         canvas
     };
     Some(RenderedShellEntry {
-        label: file_name.to_ascii_lowercase(),
+        label: label.to_ascii_lowercase(),
         width: canvas_w,
         height: canvas_h,
         rgba,
@@ -363,14 +449,14 @@ fn pack_entries(
 #[cfg(test)]
 mod tests {
     use super::{
-        AssetManager, ShellAssetRole, classify_shell_asset, load_parent_background_palette,
-        load_unresolved_shell_shp_palette, render_shp_entry,
+        classify_shell_asset, load_named_palette, load_parent_background_palette, render_shp_entry,
+        AssetManager, ShellAssetRole,
     };
 
     #[test]
     fn skirmish_shell_asset_classification_matches_live_render_path() {
         assert_eq!(
-            classify_shell_asset("MNSCRNL.SHP"),
+            classify_shell_asset("MNSCRNS.SHP"),
             ShellAssetRole::VerifiedParentBackground
         );
         assert_eq!(
@@ -393,17 +479,25 @@ mod tests {
             classify_shell_asset("mmpb.shp"),
             ShellAssetRole::VerifiedOfflineStartMarker
         );
-        assert_ne!(
-            classify_shell_asset("mmpb.shp"),
-            ShellAssetRole::VerifiedOfflineStartMarker
-        );
         assert_eq!(
             classify_shell_asset("SDMPBTN.SHP"),
+            ShellAssetRole::RightPanelChrome
+        );
+        assert_eq!(
+            classify_shell_asset("LWSCRNS.SHP"),
+            ShellAssetRole::RightPanelChrome
+        );
+        assert_eq!(
+            classify_shell_asset("LWSCRNL.SHP"),
             ShellAssetRole::RightPanelChrome
         );
         assert_ne!(
             classify_shell_asset("SDMPBTN.SHP"),
             ShellAssetRole::VerifiedOfflineStartMarker
+        );
+        assert_eq!(
+            classify_shell_asset("MNSCRNL.SHP"),
+            ShellAssetRole::ResearchCandidate
         );
         assert_eq!(
             classify_shell_asset("MnScrnLCustomizeBattle.shp"),
@@ -424,9 +518,15 @@ mod tests {
     fn retail_shell_shp_dimensions_match_research() {
         let config = crate::util::config::GameConfig::load().expect("game config");
         let assets = AssetManager::new(&config.paths.ra2_dir).expect("asset manager");
-        let palette = load_unresolved_shell_shp_palette(&assets).expect("shell SHP palette");
-        let sdbtn = render_shp_entry(&assets, "SDBTNANM.SHP", &palette, 0).expect("SDBTNANM");
+        let shell_palette = load_named_palette(&assets, "SHELL.PAL").expect("SHELL.PAL");
+        let anim_palette = load_named_palette(&assets, "SDBTNANM.PAL").expect("SDBTNANM.PAL");
+        let sdbtn = render_shp_entry(&assets, "SDBTNANM.SHP", &anim_palette, 10)
+            .expect("SDBTNANM frame 10");
+        let lwscrns = render_shp_entry(&assets, "LWSCRNS.SHP", &shell_palette, 0).expect("LWSCRNS");
+        let lwscrnl = render_shp_entry(&assets, "LWSCRNL.SHP", &shell_palette, 0).expect("LWSCRNL");
         assert_eq!((sdbtn.width, sdbtn.height), (156, 42));
+        assert_eq!((lwscrns.width, lwscrns.height), (472, 32));
+        assert_eq!((lwscrnl.width, lwscrnl.height), (632, 32));
     }
 
     #[test]
@@ -435,8 +535,10 @@ mod tests {
         let config = crate::util::config::GameConfig::load().expect("game config");
         let assets = AssetManager::new(&config.paths.ra2_dir).expect("asset manager");
         let palette = load_parent_background_palette(&assets).expect("parent palette");
-        render_shp_entry(&assets, "MNSCRNL.SHP", &palette, 0).expect("MNSCRNL");
-        render_shp_entry(&assets, "MnScrnLCoopGameSetup.shp", &palette, 0)
+        let mnscrns = render_shp_entry(&assets, "MNSCRNS.SHP", &palette, 0).expect("MNSCRNS");
+        let coop = render_shp_entry(&assets, "MnScrnLCoopGameSetup.shp", &palette, 0)
             .expect("MnScrnLCoopGameSetup");
+        assert_eq!((mnscrns.width, mnscrns.height), (472, 448));
+        assert_eq!((coop.width, coop.height), (632, 568));
     }
 }

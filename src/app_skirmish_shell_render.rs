@@ -11,11 +11,12 @@ use crate::render::shell_text::{self, ShellAlign, ShellTextDraw, TextRect};
 use crate::render::skirmish_shell_chrome::{SkirmishShellChromeAtlas, SkirmishShellChromeEntry};
 use crate::ui::main_menu::SkirmishCountry;
 use crate::ui::skirmish_shell::{
-    OwnerDrawButton, RectPx, SkirmishShellAction, SkirmishShellLayout, SkirmishShellState,
-    compute_layout,
+    compute_layout, OwnerDrawButton, RectPx, SkirmishShellAction, SkirmishShellLayout,
+    SkirmishShellState,
 };
 
 static PREVIEW_MARKER_WAIT_LOG: Once = Once::new();
+static HIGH_RES_PARENT_BACKGROUND_LOG: Once = Once::new();
 
 const PRESSED_BUTTON_CONTENT_OFFSET_Y: i32 = 2;
 const START_MARKER_OFFSET_X: i32 = -9;
@@ -37,7 +38,7 @@ enum ParentBackgroundRole {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LowerStripRole {
     Lwscrns640,
-    Lwscrnl800,
+    LwscrnlLarge,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +56,22 @@ struct ButtonSegment {
     uv_width_ratio: f32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkirmishShellDrawRole {
+    ParentBackgroundMnscrns640,
+    ParentBackgroundCoopGameSetup800,
+    RightPanelTopSdtp,
+    RightPanelTileSdbtnbkgd,
+    RightPanelOverlaySdbtnanmFrame10,
+    RightPanelBottomSdbtm,
+    LowerSideLwscrns,
+    LowerSideLwscrnl,
+    OwnerDrawButton,
+    Flag,
+    PreviewSurface,
+    StartMarker,
+    StartMarkerLabel,
+}
 
 fn push_entry(
     out: &mut Vec<SpriteInstance>,
@@ -217,6 +234,27 @@ fn build_button_segments(
     segments
 }
 
+#[cfg(test)]
+fn shell_text_origin(
+    rect: RectPx,
+    text_w: u32,
+    text_h: u32,
+    flags: ShellAlign,
+    y_offset: i32,
+) -> (i32, i32) {
+    let mut x = rect.x;
+    if flags.contains(ShellAlign::H_CENTER) && text_w < rect.w as u32 {
+        x += ((rect.w as u32 - text_w) / 2) as i32;
+    } else if flags.contains(ShellAlign::H_RIGHT) && text_w < rect.w as u32 {
+        x += (rect.w as u32 - text_w) as i32;
+    }
+    let mut y = rect.y + y_offset;
+    if flags.contains(ShellAlign::V_CENTER) && text_h < rect.h as u32 {
+        y += ((rect.h as u32 - text_h) / 2) as i32;
+    }
+    (x, y)
+}
+
 fn push_button_30(
     out: &mut Vec<SpriteInstance>,
     atlas: &SkirmishShellChromeAtlas,
@@ -334,7 +372,16 @@ fn parent_background_role(layout: &SkirmishShellLayout) -> Option<ParentBackgrou
     match layout.screen.w {
         640 => Some(ParentBackgroundRole::Mnscrns640),
         800 => Some(ParentBackgroundRole::CoopGameSetup800),
-        _ => None,
+        width => {
+            if width > 800 {
+                HIGH_RES_PARENT_BACKGROUND_LOG.call_once(|| {
+                    log::info!(
+                        "Skirmish shell parent background skipped for {width}px width; Ghidra verifies no fresh >800 parent substitution"
+                    );
+                });
+            }
+            None
+        }
     }
 }
 
@@ -348,11 +395,10 @@ fn parent_background_entry(
     }
 }
 
-fn lower_strip_role(layout: &SkirmishShellLayout) -> Option<LowerStripRole> {
+fn lower_strip_role(layout: &SkirmishShellLayout) -> LowerStripRole {
     match layout.screen.w {
-        640 => Some(LowerStripRole::Lwscrns640),
-        800 => Some(LowerStripRole::Lwscrnl800),
-        _ => None,
+        640 => LowerStripRole::Lwscrns640,
+        _ => LowerStripRole::LwscrnlLarge,
     }
 }
 
@@ -360,16 +406,98 @@ fn lower_strip_entry(
     atlas: &SkirmishShellChromeAtlas,
     layout: &SkirmishShellLayout,
 ) -> Option<SkirmishShellChromeEntry> {
-    match lower_strip_role(layout)? {
-        LowerStripRole::Lwscrns640 => atlas.lower_strip_640_lwscrns,
-        LowerStripRole::Lwscrnl800 => atlas.lower_strip_800_lwscrnl,
+    match lower_strip_role(layout) {
+        LowerStripRole::Lwscrns640 => atlas.lower_side_640_lwscrns,
+        LowerStripRole::LwscrnlLarge => atlas.lower_side_large_lwscrnl,
     }
+}
+
+fn common_shell_origin(layout: &SkirmishShellLayout) -> (i32, i32) {
+    let x = if layout.screen.w > 1023 {
+        (layout.screen.w - 800) / 2
+    } else {
+        0
+    };
+    let y = if layout.screen.h > 767 {
+        (layout.screen.h - 600) / 2
+    } else {
+        0
+    };
+    (x, y)
 }
 
 fn lower_strip_rect(layout: &SkirmishShellLayout, entry: SkirmishShellChromeEntry) -> RectPx {
     let w = entry.pixel_size[0].round() as i32;
     let h = entry.pixel_size[1].round() as i32;
-    RectPx::new(layout.screen.x, layout.screen.y + layout.screen.h - h, w, h)
+    let (origin_x, origin_y) = common_shell_origin(layout);
+    let shell_h = if layout.screen.h > 767 {
+        600
+    } else {
+        layout.screen.h
+    };
+    RectPx::new(origin_x, origin_y + shell_h - h, w, h)
+}
+
+fn right_panel_overlay_rect(
+    layout: &SkirmishShellLayout,
+    row: i32,
+    entry: SkirmishShellChromeEntry,
+) -> RectPx {
+    let w = entry.pixel_size[0].round() as i32;
+    let h = entry.pixel_size[1].round() as i32;
+    let x = layout.right_panel.tile.x + layout.right_panel.tile.w - w;
+    RectPx::new(x, layout.right_panel.tile.y + row * h, w, h)
+}
+
+fn right_panel_frame10_overlay_active(_shell: &SkirmishShellState) -> bool {
+    // The binary branch is verified, but the dialog state byte that toggles it
+    // is still unnamed. Keep the decision isolated for the next Ghidra pass.
+    true
+}
+
+fn real_preview_surface_available() -> bool {
+    false
+}
+
+pub fn skirmish_shell_semantic_draw_order(
+    layout: &SkirmishShellLayout,
+    overlay_frame10_active: bool,
+    real_preview_surface_available: bool,
+    flag_count: usize,
+) -> Vec<SkirmishShellDrawRole> {
+    let mut roles = Vec::new();
+    if let Some(role) = parent_background_role(layout) {
+        roles.push(match role {
+            ParentBackgroundRole::Mnscrns640 => SkirmishShellDrawRole::ParentBackgroundMnscrns640,
+            ParentBackgroundRole::CoopGameSetup800 => {
+                SkirmishShellDrawRole::ParentBackgroundCoopGameSetup800
+            }
+        });
+    }
+    roles.push(SkirmishShellDrawRole::RightPanelTopSdtp);
+    roles.extend(
+        std::iter::repeat(SkirmishShellDrawRole::RightPanelTileSdbtnbkgd)
+            .take(layout.right_panel.tile_count.max(0) as usize),
+    );
+    if overlay_frame10_active {
+        roles.extend(
+            std::iter::repeat(SkirmishShellDrawRole::RightPanelOverlaySdbtnanmFrame10)
+                .take(layout.right_panel.tile_count.max(0) as usize),
+        );
+    }
+    roles.push(SkirmishShellDrawRole::RightPanelBottomSdbtm);
+    roles.push(match lower_strip_role(layout) {
+        LowerStripRole::Lwscrns640 => SkirmishShellDrawRole::LowerSideLwscrns,
+        LowerStripRole::LwscrnlLarge => SkirmishShellDrawRole::LowerSideLwscrnl,
+    });
+    roles.extend(std::iter::repeat(SkirmishShellDrawRole::OwnerDrawButton).take(3));
+    if real_preview_surface_available {
+        roles.push(SkirmishShellDrawRole::PreviewSurface);
+        roles.push(SkirmishShellDrawRole::StartMarker);
+        roles.push(SkirmishShellDrawRole::StartMarkerLabel);
+    }
+    roles.extend(std::iter::repeat(SkirmishShellDrawRole::Flag).take(flag_count));
+    roles
 }
 
 pub fn build_skirmish_shell_instances(
@@ -389,11 +517,11 @@ pub fn build_skirmish_shell_instances(
         );
     }
 
-    if let Some(top) = atlas.sd_top {
+    if let Some(top) = atlas.right_panel_top_sdtp {
         push_entry(&mut instances, top, layout.right_panel.top, 0.00080);
     }
 
-    if let Some(tile) = atlas.sd_tile {
+    if let Some(tile) = atlas.right_panel_tile_sdbtnbkgd {
         for row in 0..layout.right_panel.tile_count {
             let rect = RectPx::new(
                 layout.right_panel.tile.x,
@@ -405,7 +533,20 @@ pub fn build_skirmish_shell_instances(
         }
     }
 
-    if let Some(bottom) = atlas.sd_bottom {
+    if right_panel_frame10_overlay_active(shell) {
+        if let Some(overlay) = atlas.right_panel_overlay_sdbtnanm_frame10 {
+            for row in 0..layout.right_panel.tile_count {
+                push_entry(
+                    &mut instances,
+                    overlay,
+                    right_panel_overlay_rect(layout, row, overlay),
+                    0.000785,
+                );
+            }
+        }
+    }
+
+    if let Some(bottom) = atlas.right_panel_bottom_sdbtm {
         push_entry(&mut instances, bottom, layout.right_panel.bottom, 0.00078);
     }
 
@@ -448,7 +589,7 @@ pub fn build_skirmish_shell_instances(
         atlas,
         layout.map_preview,
         &[],
-        false,
+        real_preview_surface_available(),
         0.00056,
     );
 
@@ -520,9 +661,21 @@ fn build_shell_text_draws(
     let back = localized_label(state, "GUI:Back", "Back");
 
     for (label, rect, button) in [
-        (start.as_str(), layout.start_button, OwnerDrawButton::StartGame0x617),
-        (choose.as_str(), layout.choose_map_button, OwnerDrawButton::ChooseMap0x5aa),
-        (back.as_str(), layout.back_button, OwnerDrawButton::Back0x5c0),
+        (
+            start.as_str(),
+            layout.start_button,
+            OwnerDrawButton::StartGame0x617,
+        ),
+        (
+            choose.as_str(),
+            layout.choose_map_button,
+            OwnerDrawButton::ChooseMap0x5aa,
+        ),
+        (
+            back.as_str(),
+            layout.back_button,
+            OwnerDrawButton::Back0x5c0,
+        ),
     ] {
         let y_off = if shell.pressed_owner_draw_button == Some(button) {
             PRESSED_BUTTON_CONTENT_OFFSET_Y
@@ -537,7 +690,7 @@ fn build_shell_text_draws(
         state,
         layout.map_preview,
         &[],
-        false,
+        real_preview_surface_available(),
         0.00040,
     );
 
@@ -662,8 +815,15 @@ fn render_skirmish_shell_with_atlas(
         );
     }
     for (draw, buf) in shell_draws.iter().zip(scissored_text_buffers.iter()) {
-        let Some((buffer, count)) = buf.as_ref() else { continue };
-        pass.set_scissor_rect(draw.scissor.x, draw.scissor.y, draw.scissor.w, draw.scissor.h);
+        let Some((buffer, count)) = buf.as_ref() else {
+            continue;
+        };
+        pass.set_scissor_rect(
+            draw.scissor.x,
+            draw.scissor.y,
+            draw.scissor.w,
+            draw.scissor.h,
+        );
         state.batch_renderer.draw_with_buffer_passthrough(
             &mut pass,
             state.bit_font.atlas(),
@@ -801,13 +961,16 @@ mod tests {
     fn lower_strip_role_uses_only_verified_widths() {
         assert_eq!(
             lower_strip_role(&compute_layout(640, 480)),
-            Some(LowerStripRole::Lwscrns640)
+            LowerStripRole::Lwscrns640
         );
         assert_eq!(
             lower_strip_role(&compute_layout(800, 600)),
-            Some(LowerStripRole::Lwscrnl800)
+            LowerStripRole::LwscrnlLarge
         );
-        assert_eq!(lower_strip_role(&compute_layout(1024, 768)), None);
+        assert_eq!(
+            lower_strip_role(&compute_layout(1024, 768)),
+            LowerStripRole::LwscrnlLarge
+        );
     }
 
     #[test]
@@ -831,6 +994,87 @@ mod tests {
             lower_strip_rect(&compute_layout(800, 600), large),
             RectPx::new(0, 568, 632, 32)
         );
+        assert_eq!(
+            lower_strip_rect(&compute_layout(1024, 768), large),
+            RectPx::new(112, 652, 632, 32)
+        );
     }
 
+    #[test]
+    fn semantic_draw_order_records_verified_right_panel_sequence() {
+        let layout = compute_layout(800, 600);
+        let order = skirmish_shell_semantic_draw_order(&layout, true, false, 0);
+        assert_eq!(
+            order[0],
+            SkirmishShellDrawRole::ParentBackgroundCoopGameSetup800
+        );
+        assert_eq!(order[1], SkirmishShellDrawRole::RightPanelTopSdtp);
+        assert_eq!(
+            &order[2..11],
+            [SkirmishShellDrawRole::RightPanelTileSdbtnbkgd; 9]
+        );
+        assert_eq!(
+            &order[11..20],
+            [SkirmishShellDrawRole::RightPanelOverlaySdbtnanmFrame10; 9]
+        );
+        assert_eq!(order[20], SkirmishShellDrawRole::RightPanelBottomSdbtm);
+        assert_eq!(order[21], SkirmishShellDrawRole::LowerSideLwscrnl);
+        assert_eq!(&order[22..25], [SkirmishShellDrawRole::OwnerDrawButton; 3]);
+        assert!(!order.contains(&SkirmishShellDrawRole::StartMarker));
+        assert!(!order.contains(&SkirmishShellDrawRole::StartMarkerLabel));
+    }
+
+    #[test]
+    fn semantic_draw_order_keeps_1024_parent_blank_but_large_lower_strip() {
+        let order = skirmish_shell_semantic_draw_order(&compute_layout(1024, 768), false, false, 0);
+        assert_eq!(order[0], SkirmishShellDrawRole::RightPanelTopSdtp);
+        assert!(order.contains(&SkirmishShellDrawRole::LowerSideLwscrnl));
+        assert!(!order.contains(&SkirmishShellDrawRole::ParentBackgroundMnscrns640));
+        assert!(!order.contains(&SkirmishShellDrawRole::ParentBackgroundCoopGameSetup800));
+    }
+
+    #[test]
+    fn preview_markers_require_real_preview_surface() {
+        let order = skirmish_shell_semantic_draw_order(&compute_layout(800, 600), false, false, 0);
+        assert!(!order.contains(&SkirmishShellDrawRole::PreviewSurface));
+        assert!(!order.contains(&SkirmishShellDrawRole::StartMarker));
+        assert!(!order.contains(&SkirmishShellDrawRole::StartMarkerLabel));
+
+        let order = skirmish_shell_semantic_draw_order(&compute_layout(800, 600), false, true, 0);
+        assert!(order.contains(&SkirmishShellDrawRole::PreviewSurface));
+        assert!(order.contains(&SkirmishShellDrawRole::StartMarker));
+        assert!(order.contains(&SkirmishShellDrawRole::StartMarkerLabel));
+    }
+
+    #[test]
+    fn text_origin_centers_and_applies_pressed_offset() {
+        let rect = RectPx::new(10, 20, 100, 30);
+        assert_eq!(
+            shell_text_origin(rect, 40, 10, ShellAlign::H_CENTER | ShellAlign::V_CENTER, 0),
+            (40, 30)
+        );
+        assert_eq!(
+            shell_text_origin(
+                rect,
+                40,
+                10,
+                ShellAlign::H_CENTER | ShellAlign::V_CENTER,
+                PRESSED_BUTTON_CONTENT_OFFSET_Y
+            ),
+            (40, 32)
+        );
+    }
+
+    #[test]
+    fn text_origin_supports_left_and_right_alignment_flags() {
+        let rect = RectPx::new(10, 20, 100, 30);
+        assert_eq!(
+            shell_text_origin(rect, 40, 10, ShellAlign::NONE, 0),
+            (10, 20)
+        );
+        assert_eq!(
+            shell_text_origin(rect, 40, 10, ShellAlign::H_RIGHT, 0),
+            (70, 20)
+        );
+    }
 }
