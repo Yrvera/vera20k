@@ -47,7 +47,7 @@ use crate::render::overlay_atlas::OverlayAtlas;
 use crate::render::selection_overlay::SelectionOverlay;
 use crate::render::sidebar_cameo_atlas::SidebarCameoAtlas;
 use crate::render::sidebar_chrome::SidebarChromeSet;
-use crate::render::sidebar_text::SidebarTextRenderer;
+use crate::render::bit_font::BitFont;
 use crate::render::sprite_atlas::SpriteAtlas;
 use crate::render::tile_atlas::TileAtlas;
 use crate::render::unit_atlas::UnitAtlas;
@@ -173,7 +173,7 @@ pub(crate) struct AppState {
     /// Original side-mix shell art used to skin the custom sidebar.
     pub(crate) sidebar_chrome: Option<SidebarChromeSet>,
     /// Bitmap font atlas used by the custom sidebar text path.
-    pub(crate) sidebar_text: SidebarTextRenderer,
+    pub(crate) bit_font: BitFont,
     /// Asset-backed software cursor shown in-game when available.
     pub(crate) software_cursor: Option<app_render::SoftwareCursor>,
     /// Selection drag state — tracks mouse drag for box-select.
@@ -680,7 +680,7 @@ impl App {
         let gpu: GpuContext = GpuContext::new(window.clone())?;
         let egui: EguiIntegration = EguiIntegration::new(&gpu, &window);
         let batch_renderer: BatchRenderer = BatchRenderer::new(&gpu);
-        let sidebar_text = SidebarTextRenderer::new(&gpu, &batch_renderer);
+        let bit_font = BitFont::fallback_5x7(&gpu, &batch_renderer);
         let depth_view: wgpu::TextureView = gpu.create_depth_texture();
         let game_config = GameConfig::load().ok();
         let input_delay_ticks: u64 = game_config
@@ -814,7 +814,7 @@ impl App {
             shroud_buffer: None,
             sidebar_cameo_atlas: None,
             sidebar_chrome: None,
-            sidebar_text,
+            bit_font,
             software_cursor: None,
             selection_state: SelectionState::new(),
             path_grid: None,

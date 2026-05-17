@@ -110,7 +110,7 @@ pub(crate) fn transition_to_in_game(state: &mut AppState) {
     state.sidebar_cameo_atlas = result.sidebar_cameo_atlas;
     state.sidebar_chrome = result.sidebar_chrome;
     if let Some(ref fnt) = result.fnt_file {
-        state.sidebar_text = crate::render::sidebar_text::SidebarTextRenderer::from_fnt(
+        state.bit_font = crate::render::bit_font::BitFont::from_fnt(
             &state.gpu,
             &state.batch_renderer,
             fnt,
