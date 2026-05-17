@@ -215,7 +215,8 @@ mod tests {
             0.5,
         );
         assert_eq!(draw.instances.len(), 1);
-        let expected_x = ((100 - 6) / 2) as f32;
+        // Single 'x' measured width per gamemd = 6 + 1*char_spacing = 7.
+        let expected_x = ((100 - 7) / 2) as f32;
         assert!(
             (draw.instances[0].position[0] - expected_x).abs() < 0.01,
             "x = {}",
@@ -241,7 +242,7 @@ mod tests {
             0.5,
         );
         assert_eq!(draw.instances.len(), 1);
-        let expected_x = (100 - 6) as f32;
+        let expected_x = (100 - 7) as f32;
         assert!(
             (draw.instances[0].position[0] - expected_x).abs() < 0.01,
             "x = {}",

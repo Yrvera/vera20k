@@ -101,7 +101,11 @@ pub fn build_text_with_fade(
             if emitted > 0 {
                 cursor_x += spacing;
             }
-            cursor_x += font.text_width(" ") as f32 * scale;
+            // Match `BitFont::build_text` glyph-emission cursor advance: just
+            // the bare space width. `text_width(" ")` now includes a trailing
+            // char_spacing (matching gamemd's MeasureText) and would
+            // double-count the spacing we already added above.
+            cursor_x += font.space_width as f32 * scale;
             emitted += 1;
             continue;
         }

@@ -232,12 +232,11 @@ impl BitFont {
                 i += 1;
                 continue;
             };
-            let spacing = if chars_on_line == 0 {
-                0
-            } else {
-                self.char_spacing
-            };
-            let next_x = line_x + spacing + glyph_w;
+            // Every char contributes a trailing `char_spacing` per gamemd's
+            // `BitFont__MeasureText` accumulator (`iVar11 += spacing + width`
+            // for every char). Matches `text_width` and the
+            // wrap-detection threshold used by `FUN_00434CD0`.
+            let next_x = line_x + self.char_spacing + glyph_w;
 
             if max_width == 0 || next_x <= max_width {
                 line_x = next_x;
@@ -303,6 +302,11 @@ impl BitFont {
         self.missing_glyph.as_ref().map(|g| g.pixel_width as u32)
     }
 
+    /// Width per gamemd's `BitFont__MeasureText` (0x00433CF0): every char
+    /// contributes its trailing `char_spacing`, so an N-char string measures
+    /// to `sum(glyph_widths) + N * char_spacing`. Used by callers for
+    /// dark-strip width and h-center anchor; matches the value
+    /// `ComputeTextRect` and `FUN_00434CD0`'s wrap-accumulator use.
     pub fn text_width(&self, text: &str) -> u32 {
         let mut x: u32 = 0;
         let mut count: u32 = 0;
@@ -335,10 +339,7 @@ impl BitFont {
                 }
             }
         }
-        if count > 1 {
-            x += (count - 1) * self.char_spacing;
-        }
-        x
+        x + count * self.char_spacing
     }
 
     /// Tint adjustment for missing-glyph fallback rendering -- caller XORs
@@ -606,23 +607,27 @@ pub(crate) mod tests {
     #[test]
     fn text_width_uses_fnt_space_width() {
         let font = make_test_font(&[(b'a' as u16, 6), (b'b' as u16, 6)], 4);
-        // "a b" = 6 + 4 + 6 + (3-1)*1 = 18
-        assert_eq!(font.text_width("a b"), 18);
+        // gamemd MeasureText: every char adds trailing spacing.
+        // "a b" = 6 + 4 + 6 + 3 * 1 = 19
+        assert_eq!(font.text_width("a b"), 19);
     }
 
     #[test]
     fn text_width_with_tab() {
         let font = make_test_font(&[(b'a' as u16, 6), (b'b' as u16, 6)], 4);
-        // "a\tb": a (6) -> tab from x=6 to next 64 boundary = 64 -> +b (6) + spacing(1)
-        assert_eq!(font.text_width("a\tb"), 64 + 6 + 1);
+        // 'a': x = 6, count = 1.
+        // '\t': x jumps to next 64-boundary = 64.
+        // 'b': x += 6 = 70, count = 2.
+        // End: x + count * char_spacing = 70 + 2 = 72.
+        assert_eq!(font.text_width("a\tb"), 72);
     }
 
     #[test]
     fn text_width_with_missing_glyph() {
         let font = make_test_font(&[(b'a' as u16, 6)], 4);
-        // 'X' not in table -> missing_glyph (width 5)
-        // "aX" = 6 + 5 + (2-1)*1 = 12
-        assert_eq!(font.text_width("aX"), 12);
+        // 'X' not in table -> missing_glyph (width 5).
+        // "aX" = 6 + 5 + 2 * 1 = 13
+        assert_eq!(font.text_width("aX"), 13);
     }
 
     #[test]
@@ -645,7 +650,8 @@ pub(crate) mod tests {
         let font = make_test_font(&[(b'a' as u16, 20)], 4);
         let layout = font.wrap_layout("a", 10);
         assert_eq!(layout.lines.len(), 1);
-        assert_eq!(layout.lines[0].width, 20);
+        // gamemd-parity: char_spacing always trails. Single 'a' width = 20 + 1.
+        assert_eq!(layout.lines[0].width, 21);
     }
 
     #[test]
