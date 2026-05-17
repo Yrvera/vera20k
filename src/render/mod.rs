@@ -16,6 +16,7 @@
 //! - render/ does NOT depend on: ui/, sidebar/, audio/, net/
 
 pub mod batch;
+pub mod bit_font;
 pub mod bridge_atlas;
 pub mod bridge_railing_atlas;
 pub mod cursor_atlas;
@@ -30,6 +31,7 @@ pub mod screenshot;
 pub mod selection_overlay;
 pub mod shroud_buffer;
 pub mod sidebar_cameo_atlas;
+pub mod shell_text;
 pub mod sidebar_chrome;
 pub mod sidebar_text;
 pub mod skirmish_shell_chrome;
