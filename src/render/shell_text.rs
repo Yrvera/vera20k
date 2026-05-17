@@ -4,6 +4,7 @@
 //! data and wrap layout.
 
 use crate::render::batch::SpriteInstance;
+use crate::render::bit_font::BitFont;
 
 /// Alignment flag set for `draw_in_rect`.
 /// 0x01 = h-center, 0x02 = h-right, 0x04 = v-center.
@@ -51,5 +52,62 @@ pub struct TextRect {
     pub y: i32,
     pub w: u32,
     pub h: u32,
+}
+
+pub fn draw_in_rect(
+    font: &BitFont,
+    text: &str,
+    rect: TextRect,
+    color: [f32; 3],
+    flags: ShellAlign,
+    cam_offset: [f32; 2],
+    depth: f32,
+) -> ShellTextDraw {
+    let scissor = ScissorRect {
+        x: rect.x.max(0) as u32,
+        y: rect.y.max(0) as u32,
+        w: rect.w,
+        h: rect.h,
+    };
+    if text.is_empty() {
+        return ShellTextDraw {
+            instances: Vec::new(),
+            scissor,
+        };
+    }
+    let layout = font.wrap_layout(text, rect.w);
+    let base_x = rect.x as f32;
+    let mut line_y = rect.y as f32;
+    if flags.contains(ShellAlign::V_CENTER) && layout.height < rect.h {
+        line_y += ((rect.h - layout.height) / 2) as f32;
+    }
+    let line_advance = font.cell_height();
+
+    let mut instances: Vec<SpriteInstance> = Vec::with_capacity(text.len());
+    for span in &layout.lines {
+        if (line_y + font.glyph_height()) > (rect.y as f32 + rect.h as f32) {
+            break;
+        }
+        let line_x_offset = if flags.contains(ShellAlign::H_CENTER) && span.width < rect.w {
+            ((rect.w - span.width) / 2) as f32
+        } else if flags.contains(ShellAlign::H_RIGHT) && span.width < rect.w {
+            (rect.w - span.width) as f32
+        } else {
+            0.0
+        };
+        let segment = &text[span.start_byte..span.end_byte];
+        let mut line_instances = font.build_text(
+            segment,
+            base_x + line_x_offset,
+            line_y,
+            1.0,
+            depth,
+            color,
+            cam_offset,
+        );
+        instances.append(&mut line_instances);
+        line_y += line_advance;
+    }
+    ShellTextDraw { instances, scissor }
 }
 
