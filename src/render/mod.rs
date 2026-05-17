@@ -32,6 +32,7 @@ pub mod shroud_buffer;
 pub mod sidebar_cameo_atlas;
 pub mod sidebar_chrome;
 pub mod sidebar_text;
+pub mod skirmish_shell_chrome;
 pub mod smudge;
 pub mod sprite_atlas;
 pub mod tile_atlas;

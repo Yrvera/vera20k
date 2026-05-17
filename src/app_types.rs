@@ -24,7 +24,26 @@ pub(crate) const CLEAR_COLOR: wgpu::Color = wgpu::Color {
 /// Fixed deterministic simulation rate — re-exported from util::fixed_math.
 pub(crate) const SIM_TICK_HZ: u32 = crate::util::fixed_math::SIM_TICK_HZ;
 /// Integer tick duration used by deterministic step execution.
-pub(crate) const SIM_TICK_MS: u32 = 1000 / SIM_TICK_HZ; // 66ms
+pub(crate) const SIM_TICK_MS: u32 = 1000 / SIM_TICK_HZ;
+/// Verified retail/YR skirmish fallback from rulesmd.ini
+/// `[MultiplayerDialogSettings] GameSpeed=1`.
+pub(crate) const DEFAULT_YR_SKIRMISH_GAME_SPEED: u32 = 1;
+const GAME_SPEED_BUCKET_MS: u32 = 16;
+
+/// Approximate GameMD's single-player/skirmish throttle for the app-level
+/// fixed-step scheduler. The stored speed byte is inverted relative to the
+/// UI slider: `0=fastest`, `6=slowest`.
+pub(crate) fn tps_for_game_speed(stored_speed: u32) -> u32 {
+    if stored_speed == 0 {
+        return 60;
+    }
+    let bucket_ms = stored_speed.saturating_mul(GAME_SPEED_BUCKET_MS).max(1);
+    ((1000 + bucket_ms / 2) / bucket_ms).max(1)
+}
+
+pub(crate) fn default_yr_skirmish_tps() -> u32 {
+    tps_for_game_speed(DEFAULT_YR_SKIRMISH_GAME_SPEED)
+}
 /// Next right-click order mode selected via hotkey.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OrderMode {
@@ -137,6 +156,24 @@ pub(crate) struct SoftwareCursorSequence {
     pub(crate) frames: Vec<SoftwareCursorFrame>,
     pub(crate) interval_ms: u64,
     pub(crate) hotspot: [f32; 2],
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_skirmish_speed_uses_verified_yr_stored_speed_one() {
+        assert_eq!(DEFAULT_YR_SKIRMISH_GAME_SPEED, 1);
+        assert_eq!(default_yr_skirmish_tps(), 63);
+    }
+
+    #[test]
+    fn game_speed_one_is_not_the_old_speed_two_or_options_three_calibration() {
+        let default = default_yr_skirmish_tps();
+        assert_ne!(default, tps_for_game_speed(2));
+        assert_ne!(default, tps_for_game_speed(3));
+    }
 }
 
 /// Eight compass directions used for edge-scroll cursor selection.

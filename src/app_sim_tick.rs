@@ -27,7 +27,7 @@ use crate::sim::pathfinding::PathGrid;
 use crate::sim::production;
 use crate::sim::replay::{ReplayHeader, ReplayLog};
 use crate::sim::trigger_runtime::TriggerEffect;
-use crate::sim::world::SimSoundEvent;
+use crate::sim::world::{SimFireEvent, SimSoundEvent};
 use crate::ui::game_screen::GameScreen;
 
 /// Prevent runaway catch-up loops after pauses/debugger stops.
@@ -193,6 +193,10 @@ pub(crate) fn advance_in_game_runtime(state: &mut AppState, elapsed_ms: u64) {
             state,
             sim_elapsed.min(MAX_UPDATE_DELTA_MS) as u32,
         );
+        crate::app_fire_effects::tick_weapon_muzzle_flashes(
+            state,
+            sim_elapsed.min(MAX_UPDATE_DELTA_MS) as u32,
+        );
         crate::app_chute_anim::tick_parachute_anims(
             state,
             sim_elapsed.min(MAX_UPDATE_DELTA_MS) as u32,
@@ -259,6 +263,7 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
         state.pending_fire_effects.clear();
         // Cache local owner name before mutable sim borrow (avoids borrow conflict).
         let local_owner_name = crate::app_commands::preferred_local_owner_name(state);
+        let mut drained_fire_events: Vec<SimFireEvent> = Vec::new();
         if let Some(sim) = &mut state.simulation {
             // Clear AI players when disabled — prevents computer houses from acting.
             if state.disable_ai && !sim.ai_players.is_empty() {
@@ -306,7 +311,10 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                 }
             }
             // Drain fire events for render-side muzzle flash / projectile origin.
-            state.pending_fire_effects.extend(sim.fire_events.drain(..));
+            drained_fire_events.extend(sim.fire_events.drain(..));
+            state
+                .pending_fire_effects
+                .extend(drained_fire_events.iter().cloned());
             // Convert sim sound events to app-layer sound events for playback.
             for sim_event in sim.sound_events.drain(..) {
                 let app_event: GameSoundEvent = match sim_event {
@@ -591,6 +599,7 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                 log.record_tick(tick_result.tick, due_commands, tick_result.state_hash);
             }
         }
+        crate::app_fire_effects::spawn_non_garrison_fire_effects(state, &drained_fire_events);
 
         let trigger_effects = if let Some(sim) = &mut state.simulation {
             sim.advance_triggers(

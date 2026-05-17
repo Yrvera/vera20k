@@ -15,6 +15,15 @@ pub struct PreviewSection {
     pub has_packed_preview: bool,
 }
 
+/// Source rectangle inputs needed by the original preview marker projection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreviewSourceBounds {
+    pub origin_x: i32,
+    pub origin_y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
 /// Parse preview metadata from map INI sections.
 pub fn parse_preview_section(ini: &IniFile) -> PreviewSection {
     let size = ini

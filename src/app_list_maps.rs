@@ -11,7 +11,8 @@ use crate::app_init::MapMenuEntry;
 use crate::assets::mix_archive::MixArchive;
 use crate::map::briefing::BriefingSection;
 use crate::map::map_file::{self, MapFile};
-use crate::map::preview::PreviewSection;
+use crate::map::preview::{PreviewSection, PreviewSourceBounds};
+use crate::map::waypoints::{multiplayer_start_waypoints, parse_waypoints};
 use crate::rules::ini_parser::IniFile;
 use crate::util::config::GameConfig;
 
@@ -53,6 +54,8 @@ pub(crate) fn read_map_menu_entry(path: &Path, file_name: &str) -> MapMenuEntry 
         author: None,
         briefing: BriefingSection::default(),
         preview: PreviewSection::default(),
+        multiplayer_start_waypoints: Vec::new(),
+        preview_source_bounds: None,
     };
 
     let ini = match read_map_ini_for_metadata(path) {
@@ -60,7 +63,11 @@ pub(crate) fn read_map_menu_entry(path: &Path, file_name: &str) -> MapMenuEntry 
         None => return fallback(),
     };
 
-    let basic = crate::map::basic::parse_basic_section(&ini);
+    read_map_menu_entry_from_ini(&ini, file_name)
+}
+
+fn read_map_menu_entry_from_ini(ini: &IniFile, file_name: &str) -> MapMenuEntry {
+    let basic = crate::map::basic::parse_basic_section(ini);
     let display_name = basic
         .name
         .clone()
@@ -73,7 +80,17 @@ pub(crate) fn read_map_menu_entry(path: &Path, file_name: &str) -> MapMenuEntry 
         author: basic.author,
         briefing: crate::map::briefing::parse_briefing_section(&ini),
         preview: crate::map::preview::parse_preview_section(&ini),
+        multiplayer_start_waypoints: multiplayer_start_waypoints(&parse_waypoints(ini)),
+        preview_source_bounds: preview_source_bounds_from_verified_source(ini),
     }
+}
+
+fn preview_source_bounds_from_verified_source(_ini: &IniFile) -> Option<PreviewSourceBounds> {
+    // Live Ghidra verifies the four source-bound fields consumed by
+    // DrawStartPositions, but this plan does not yet verify that map
+    // `[Map] LocalSize=` is their exact menu-preview source. Leave empty until
+    // that mapping is checked against retail.
+    None
 }
 
 pub(crate) fn read_map_ini_for_metadata(path: &Path) -> Option<IniFile> {
@@ -146,4 +163,26 @@ pub(crate) fn try_load_mmx(ra2_dir: &Path, names: &[&str]) -> Result<MapFile> {
         "No .mmx map files found in {}",
         ra2_dir.display()
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn menu_entry_exposes_sorted_multiplayer_start_waypoints() {
+        let ini = IniFile::from_str(
+            "[Basic]\nName=Waypoint Test\nNewINIFormat=5\n[Waypoints]\n7=120034\n0=100011\n99=55098\n3=110022\n",
+        );
+        let entry = read_map_menu_entry_from_ini(&ini, "test.map");
+        let indices: Vec<u32> = entry
+            .multiplayer_start_waypoints
+            .iter()
+            .map(|wp| wp.index)
+            .collect();
+        assert_eq!(indices, vec![0, 3, 7]);
+        assert_eq!(entry.multiplayer_start_waypoints[0].rx, 11);
+        assert_eq!(entry.multiplayer_start_waypoints[0].ry, 100);
+        assert_eq!(entry.preview_source_bounds, None);
+    }
 }

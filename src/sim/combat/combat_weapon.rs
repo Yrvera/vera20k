@@ -37,6 +37,8 @@ pub enum WeaponSlot {
 /// Result of weapon selection: the chosen weapon, its warhead, and the
 /// effective Verses percentage against the target's armor.
 pub(crate) struct SelectedWeapon<'a> {
+    /// Section id of the selected weapon.
+    pub weapon_id: &'a str,
     pub weapon: &'a WeaponType,
     pub warhead: &'a WarheadType,
     /// Damage percentage for target armor (0–200). Already looked up from Verses.
@@ -85,7 +87,7 @@ pub(crate) fn verses_gate(verses_pct: u8) -> VersesGate {
 #[allow(dead_code)] // Used by tests; non-IFV callers use this simpler API.
 pub(crate) fn select_weapon<'a>(
     rules: &'a RuleSet,
-    attacker_obj: &ObjectType,
+    attacker_obj: &'a ObjectType,
     target_category: EntityCategory,
     target_armor: &str,
 ) -> Option<SelectedWeapon<'a>> {
@@ -95,7 +97,7 @@ pub(crate) fn select_weapon<'a>(
 /// Like `select_weapon` but also considers IFV weapon override index.
 pub(crate) fn select_weapon_with_ifv<'a>(
     rules: &'a RuleSet,
-    attacker_obj: &ObjectType,
+    attacker_obj: &'a ObjectType,
     target_category: EntityCategory,
     target_armor: &str,
     ifv_weapon_index: Option<u32>,
@@ -200,7 +202,7 @@ pub(crate) fn select_garrison_weapon<'a>(
 /// Try a single weapon against a target. Returns Some if the weapon can engage.
 pub(crate) fn try_weapon<'a>(
     rules: &'a RuleSet,
-    weapon_id: &str,
+    weapon_id: &'a str,
     target_category: EntityCategory,
     target_armor: &str,
     slot: WeaponSlot,
@@ -222,6 +224,7 @@ pub(crate) fn try_weapon<'a>(
     }
 
     Some(SelectedWeapon {
+        weapon_id,
         weapon,
         warhead,
         verses_pct,
@@ -316,6 +319,7 @@ Verses=100%,100%,100%,80%,60%,40%,100%,40%,20%,0%,0%
         let result = select_weapon(&rules, ifv, EntityCategory::Unit, "light");
         assert!(result.is_some());
         let selected = result.unwrap();
+        assert_eq!(selected.weapon_id, "Missiles");
         assert_eq!(selected.weapon.id, "Missiles");
         assert_eq!(selected.slot, WeaponSlot::Primary);
     }
@@ -328,6 +332,7 @@ Verses=100%,100%,100%,80%,60%,40%,100%,40%,20%,0%,0%
         let result = select_weapon(&rules, ifv, EntityCategory::Aircraft, "light");
         assert!(result.is_some());
         let selected = result.unwrap();
+        assert_eq!(selected.weapon_id, "FlakGun");
         assert_eq!(selected.weapon.id, "FlakGun");
         assert_eq!(selected.slot, WeaponSlot::Secondary);
     }

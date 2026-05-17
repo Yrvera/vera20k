@@ -61,8 +61,10 @@ use crate::sim::production::BuildingPlacementPreview;
 use crate::sim::selection::SelectionState;
 use crate::sim::world::Simulation;
 use crate::ui::game_screen::GameScreen;
-use crate::ui::main_menu::{self, MenuAction, SkirmishSettings};
+use crate::ui::main_menu::{self, SkirmishSettings};
 use crate::util::config::GameConfig;
+
+const DEV_SKIRMISH_SHELL_ENV: &str = "RA2_DEV_SKIRMISH_SHELL";
 
 /// All initialized state. Created in `resumed()` when the window is available.
 /// pub(crate) so app_render.rs can access fields.
@@ -132,6 +134,11 @@ pub(crate) struct AppState {
     available_maps: Vec<MapMenuEntry>,
     /// Player-configured skirmish settings (map, country, credits, etc.).
     pub(crate) skirmish_settings: SkirmishSettings,
+    /// Opt-in research shell path. Defaults off so the egui Skirmish setup is visible.
+    pub(crate) dev_skirmish_shell_enabled: bool,
+    pub(crate) skirmish_shell_state: crate::ui::skirmish_shell::SkirmishShellState,
+    pub(crate) skirmish_shell_chrome:
+        Option<crate::render::skirmish_shell_chrome::SkirmishShellChromeAtlas>,
     /// Minimap renderer — created at map load time.
     pub(crate) minimap: Option<MinimapRenderer>,
     /// True while left-dragging on minimap (camera pan mode).
@@ -261,6 +268,9 @@ pub(crate) struct AppState {
     /// Active garrison muzzle flash animations. Short-lived one-shot entries
     /// spawned when a garrisoned building fires. Ticked each frame, removed on completion.
     pub(crate) garrison_muzzle_flashes: Vec<crate::sim::components::GarrisonMuzzleFlash>,
+    /// Active non-garrison weapon muzzle flash animations spawned from weapon `Anim=`.
+    /// App-owned presentation state; combat only emits the fire facts.
+    pub(crate) weapon_muzzle_flashes: Vec<crate::sim::components::WeaponMuzzleFlash>,
     /// Active parachute animations, one per descending paradropped infantry.
     /// Polling-based lifecycle: spawned when an entity gains parachute_state
     /// in the sim, removed on landing or death. Render-only; not snapshotted.
@@ -270,7 +280,7 @@ pub(crate) struct AppState {
     /// When true, advance exactly one sim tick while paused, then clear.
     pub(crate) debug_frame_step_requested: bool,
     /// Effective simulation ticks per second — controls game speed.
-    /// Default is SIM_TICK_HZ (45). Lower = slow-mo, higher = fast-forward.
+    /// Default follows retail/YR skirmish stored game speed 1.
     pub(crate) sim_speed_tps: u32,
     /// Hold the loading splash on screen briefly before showing the client UI.
     pub(crate) startup_splash_until: Option<Instant>,
@@ -349,6 +359,147 @@ impl Default for App {
 }
 
 impl App {
+    fn dev_skirmish_shell_enabled() -> bool {
+        std::env::var(DEV_SKIRMISH_SHELL_ENV)
+            .ok()
+            .is_some_and(|value| {
+                let value = value.trim();
+                !value.is_empty()
+                    && value != "0"
+                    && !value.eq_ignore_ascii_case("false")
+                    && !value.eq_ignore_ascii_case("off")
+                    && !value.eq_ignore_ascii_case("no")
+            })
+    }
+
+    fn start_selected_skirmish(state: &mut AppState) {
+        let map_name = state
+            .available_maps
+            .get(state.skirmish_settings.selected_map_idx)
+            .map(|m| m.file_name.clone())
+            .unwrap_or_else(|| "auto".to_string());
+        state.screen = GameScreen::Loading { map_name };
+        state.zoom_level = 1.0;
+        state.zoom_target = 1.0;
+    }
+
+    fn ensure_skirmish_shell_chrome(state: &mut AppState) {
+        if state.skirmish_shell_chrome.is_some() {
+            return;
+        }
+
+        let Ok(config) = GameConfig::load() else {
+            log::warn!("Could not load game config for development Skirmish shell assets");
+            return;
+        };
+        let Ok(assets) = AssetManager::new(&config.paths.ra2_dir) else {
+            log::warn!("Could not load RA2 assets for development Skirmish shell");
+            return;
+        };
+
+        state.skirmish_shell_chrome =
+            crate::render::skirmish_shell_chrome::build_skirmish_shell_chrome_atlas(
+                &state.gpu,
+                &state.batch_renderer,
+                &assets,
+            );
+    }
+
+    fn draw_skirmish_shell_dev_toggle(ctx: &egui::Context, enabled: &mut bool) -> bool {
+        let mut changed = false;
+        egui::Window::new("Developer")
+            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-18.0, -18.0))
+            .collapsible(true)
+            .resizable(false)
+            .show(ctx, |ui| {
+                changed = ui
+                    .checkbox(enabled, "Experimental Skirmish Shell")
+                    .on_hover_text("Switches the setup screen to the research shell renderer.")
+                    .changed();
+            });
+        changed
+    }
+
+    fn handle_main_menu_action(
+        state: &mut AppState,
+        action: main_menu::MenuAction,
+        event_loop: &ActiveEventLoop,
+    ) {
+        match action {
+            main_menu::MenuAction::StartSelected => Self::start_selected_skirmish(state),
+            main_menu::MenuAction::Exit => event_loop.exit(),
+            main_menu::MenuAction::None => {}
+        }
+    }
+
+    fn handle_skirmish_shell_action(
+        state: &mut AppState,
+        action: crate::ui::skirmish_shell::SkirmishShellAction,
+        event_loop: &ActiveEventLoop,
+    ) {
+        let action = crate::ui::skirmish_shell::apply_action(
+            &mut state.skirmish_shell_state,
+            action,
+            &state.available_maps,
+        );
+
+        match action {
+            crate::ui::skirmish_shell::SkirmishShellAction::StartGame => {
+                let settings =
+                    crate::ui::skirmish_shell::launch_settings(&state.skirmish_shell_state);
+                state.skirmish_settings = settings;
+                Self::start_selected_skirmish(state);
+            }
+            crate::ui::skirmish_shell::SkirmishShellAction::BackOrExit => {
+                event_loop.exit();
+            }
+            crate::ui::skirmish_shell::SkirmishShellAction::None
+            | crate::ui::skirmish_shell::SkirmishShellAction::ChooseMap
+            | crate::ui::skirmish_shell::SkirmishShellAction::SelectColor(_)
+            | crate::ui::skirmish_shell::SkirmishShellAction::SelectMap(_) => {}
+        }
+    }
+
+    fn handle_skirmish_shell_mouse_down(state: &mut AppState) {
+        let layout =
+            crate::ui::skirmish_shell::compute_layout(state.render_width(), state.render_height());
+        state.skirmish_shell_state.pressed_owner_draw_button =
+            crate::ui::skirmish_shell::hit_test_owner_draw_button(
+                &layout,
+                state.cursor_x.round() as i32,
+                state.cursor_y.round() as i32,
+            );
+    }
+
+    fn handle_skirmish_shell_mouse_up(state: &mut AppState, event_loop: &ActiveEventLoop) {
+        let layout =
+            crate::ui::skirmish_shell::compute_layout(state.render_width(), state.render_height());
+        let released_button = crate::ui::skirmish_shell::hit_test_owner_draw_button(
+            &layout,
+            state.cursor_x.round() as i32,
+            state.cursor_y.round() as i32,
+        );
+        let pressed_button = state.skirmish_shell_state.pressed_owner_draw_button.take();
+        if pressed_button.is_some() && pressed_button == released_button {
+            if let Some(button) = released_button {
+                let action = crate::ui::skirmish_shell::action_for_owner_draw_button(button);
+                Self::handle_skirmish_shell_action(state, action, event_loop);
+                return;
+            }
+        }
+
+        if released_button.is_some() {
+            return;
+        }
+
+        let action = crate::ui::skirmish_shell::hit_test(
+            &layout,
+            state.cursor_x.round() as i32,
+            state.cursor_y.round() as i32,
+        );
+        Self::handle_skirmish_shell_action(state, action, event_loop);
+    }
+
     pub fn new() -> Self {
         Self { state: None }
     }
@@ -413,6 +564,13 @@ impl ApplicationHandler for App {
                         code == KeyCode::Escape && event.state.is_pressed() && !event.repeat;
                     let in_game: bool = state.screen == GameScreen::InGame;
 
+                    if state.screen == GameScreen::MainMenu
+                        && state.dev_skirmish_shell_enabled
+                        && is_escape
+                    {
+                        state.dev_skirmish_shell_enabled = false;
+                    }
+
                     if in_game && (is_escape || !egui_consumed) {
                         if event.state.is_pressed() && !event.repeat {
                             app_input::handle_hotkey_pressed(state, code);
@@ -461,7 +619,15 @@ impl ApplicationHandler for App {
                 if state.use_software_cursor() {
                     state.window.set_cursor_visible(false);
                 }
-                if !egui_consumed && state.screen == GameScreen::SpawnPick {
+                if state.screen == GameScreen::MainMenu && state.dev_skirmish_shell_enabled {
+                    if button == MouseButton::Left {
+                        if btn_state.is_pressed() {
+                            Self::handle_skirmish_shell_mouse_down(state);
+                        } else {
+                            Self::handle_skirmish_shell_mouse_up(state, event_loop);
+                        }
+                    }
+                } else if !egui_consumed && state.screen == GameScreen::SpawnPick {
                     if button == MouseButton::Left && btn_state.is_pressed() {
                         crate::app_spawn_pick::handle_spawn_pick_click(state);
                     }
@@ -547,6 +713,37 @@ impl App {
         log::info!("UI scale: {}x ({}x{})", ui_scale, screen_w, screen_h);
         let sidebar_layout_spec = base_sidebar_layout_spec.with_scale(ui_scale);
         let vxl_compute = crate::render::vxl_compute::VxlComputeRenderer::new(&gpu.device);
+        let dev_skirmish_shell_enabled = Self::dev_skirmish_shell_enabled();
+        if dev_skirmish_shell_enabled {
+            log::info!(
+                "Development Skirmish shell enabled via {}",
+                DEV_SKIRMISH_SHELL_ENV
+            );
+        }
+        let startup_asset_manager = dev_skirmish_shell_enabled
+            .then(|| {
+                game_config
+                    .as_ref()
+                    .and_then(|cfg| match AssetManager::new(&cfg.paths.ra2_dir) {
+                        Ok(manager) => Some(manager),
+                        Err(err) => {
+                            log::warn!("Could not load startup shell assets: {err:#}");
+                            None
+                        }
+                    })
+            })
+            .flatten();
+        let skirmish_shell_chrome = if dev_skirmish_shell_enabled {
+            startup_asset_manager.as_ref().and_then(|assets| {
+                crate::render::skirmish_shell_chrome::build_skirmish_shell_chrome_atlas(
+                    &gpu,
+                    &batch_renderer,
+                    assets,
+                )
+            })
+        } else {
+            None
+        };
 
         Ok(AppState {
             window,
@@ -601,6 +798,9 @@ impl App {
                 Vec::new()
             }),
             skirmish_settings: SkirmishSettings::default(),
+            dev_skirmish_shell_enabled,
+            skirmish_shell_state: crate::ui::skirmish_shell::SkirmishShellState::default(),
+            skirmish_shell_chrome,
             minimap: None,
             minimap_dragging: false,
             middle_mouse_panning: false,
@@ -658,10 +858,11 @@ impl App {
             sound_events: SoundEventQueue::new(),
             pending_fire_effects: Vec::new(),
             garrison_muzzle_flashes: Vec::new(),
+            weapon_muzzle_flashes: Vec::new(),
             parachute_anims: Vec::new(),
             paused: false,
             debug_frame_step_requested: false,
-            sim_speed_tps: app_render::SIM_TICK_HZ,
+            sim_speed_tps: crate::app_types::default_yr_skirmish_tps(),
             startup_splash_until: None,
             idle_anim_elapsed_ms: 0,
             debug_show_pathgrid: false,
@@ -734,37 +935,39 @@ impl App {
 
         match &state.screen {
             GameScreen::MainMenu => {
-                app_transitions::clear_screen(&mut encoder, &view);
-                state.egui.begin_frame(&state.window);
-                let action: MenuAction = main_menu::draw_main_menu_with_maps(
-                    &state.egui.ctx,
-                    &state.available_maps,
-                    &mut state.skirmish_settings,
-                );
-                state.egui.end_frame_and_render(
-                    &state.gpu,
-                    &mut encoder,
-                    &view,
-                    &state.window,
-                    state.use_software_cursor(),
-                );
-
-                // Handle menu action after rendering so the frame is visible.
-                match action {
-                    MenuAction::StartSelected => {
-                        let map_name: String = state
-                            .available_maps
-                            .get(state.skirmish_settings.selected_map_idx)
-                            .map(|m| m.file_name.clone())
-                            .unwrap_or_else(|| "auto".to_string());
-                        state.screen = GameScreen::Loading { map_name };
-                        state.zoom_level = 1.0;
-                        state.zoom_target = 1.0;
+                if state.dev_skirmish_shell_enabled {
+                    crate::app_skirmish_shell_render::render_skirmish_shell(
+                        state,
+                        &mut encoder,
+                        &view,
+                    )?;
+                } else {
+                    app_transitions::clear_screen(&mut encoder, &view);
+                    state.egui.begin_frame(&state.window);
+                    let action = main_menu::draw_main_menu_with_maps(
+                        &state.egui.ctx,
+                        &state.available_maps,
+                        &mut state.skirmish_settings,
+                    );
+                    let mut dev_shell_enabled = state.dev_skirmish_shell_enabled;
+                    let dev_shell_changed = Self::draw_skirmish_shell_dev_toggle(
+                        &state.egui.ctx,
+                        &mut dev_shell_enabled,
+                    );
+                    if dev_shell_changed {
+                        state.dev_skirmish_shell_enabled = dev_shell_enabled;
+                        if state.dev_skirmish_shell_enabled {
+                            Self::ensure_skirmish_shell_chrome(state);
+                        }
                     }
-                    MenuAction::Exit => {
-                        event_loop.exit();
-                    }
-                    MenuAction::None => {}
+                    state.egui.end_frame_and_render(
+                        &state.gpu,
+                        &mut encoder,
+                        &view,
+                        &state.window,
+                        state.use_software_cursor(),
+                    );
+                    Self::handle_main_menu_action(state, action, event_loop);
                 }
             }
             GameScreen::Loading { map_name } => {

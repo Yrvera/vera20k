@@ -580,6 +580,11 @@ pub struct ExplosionEffect {
     pub shp_name: InternedId,
     pub rx: u16,
     pub ry: u16,
+    /// Sub-cell impact X in leptons. Preserves the CoordStruct-level impact
+    /// point for warhead AnimList placement.
+    pub sub_x: SimFixed,
+    /// Sub-cell impact Y in leptons.
+    pub sub_y: SimFixed,
     pub z: u8,
 }
 
@@ -623,6 +628,8 @@ pub(crate) fn emit_warhead_detonation_effects(
     base_damage: i32,
     rx: u16,
     ry: u16,
+    sub_x: SimFixed,
+    sub_y: SimFixed,
     z: u8,
     interner: &mut StringInterner,
     explosion_effects: &mut Vec<ExplosionEffect>,
@@ -638,6 +645,8 @@ pub(crate) fn emit_warhead_detonation_effects(
         shp_name: interned_name,
         rx,
         ry,
+        sub_x,
+        sub_y,
         z,
     });
     smudge_spawn_requests.push(SmudgeSpawnRequest::Anim {
@@ -740,8 +749,19 @@ fn handle_entity_deaths(
     current_tick: u64,
 ) -> DeathEffects {
     let mut death_sounds: Vec<(InternedId, u16, u16)> = Vec::new();
-    // (rx, ry, z, dmg, wh_id, owner) — z carries through to BridgeDamageEvent.impact_z.
-    let mut death_aoe: Vec<(u16, u16, u8, i32, InternedId, InternedId)> = Vec::new();
+    // Death-weapon detonations use the destroyed object's game-space position.
+    // The cell and z still drive damage/smudge dispatch; sub-cell leptons keep
+    // AnimList placement aligned with the detonation CoordStruct shape.
+    let mut death_aoe: Vec<(
+        u16,
+        u16,
+        SimFixed,
+        SimFixed,
+        u8,
+        i32,
+        InternedId,
+        InternedId,
+    )> = Vec::new();
     let mut despawned_ids: Vec<u64> = Vec::new();
     let mut spy_sat_reshroud_owners: Vec<InternedId> = Vec::new();
     let mut destroyed_crewed_buildings: Vec<DestroyedCrewedBuilding> = Vec::new();
@@ -760,6 +780,8 @@ fn handle_entity_deaths(
                 e.type_ref,
                 e.position.rx,
                 e.position.ry,
+                e.position.sub_x,
+                e.position.sub_y,
                 e.position.z,
                 e.owner,
                 e.animation.is_some(),
@@ -767,14 +789,15 @@ fn handle_entity_deaths(
             )
         });
 
-        if let Some((type_id, rx, ry, z, owner, has_animation, category)) = dead_info {
+        if let Some((type_id, rx, ry, sub_x, sub_y, z, owner, has_animation, category)) = dead_info
+        {
             let type_id_str = interner.resolve(type_id);
             if let Some(obj) = rules.object(type_id_str) {
                 if let Some(ref die_sound) = obj.die_sound {
                     death_sounds.push((interner.intern(die_sound), rx, ry));
                 }
                 if let Some((dmg, wh_id)) = death_weapon_aoe(rules, obj, interner) {
-                    death_aoe.push((rx, ry, z, dmg, wh_id, owner));
+                    death_aoe.push((rx, ry, sub_x, sub_y, z, dmg, wh_id, owner));
                 }
                 if obj.spy_sat {
                     spy_sat_reshroud_owners.push(owner);
@@ -921,7 +944,7 @@ fn handle_entity_deaths(
     }
 
     // Apply death explosion AoE damage.
-    for (rx, ry, z, dmg, wh_id, owner_id) in &death_aoe {
+    for (rx, ry, sub_x, sub_y, z, dmg, wh_id, owner_id) in &death_aoe {
         if let Some(warhead) = rules.warhead(interner.resolve(*wh_id)) {
             if warhead.wall && *dmg > 0 {
                 // Wall cells produce WallDamageEvent; remaining cells (bridges
@@ -983,6 +1006,8 @@ fn handle_entity_deaths(
                 *dmg,
                 *rx,
                 *ry,
+                *sub_x,
+                *sub_y,
                 *z,
                 interner,
                 &mut explosion_effects,
@@ -1301,6 +1326,8 @@ pub fn tick_combat_with_fog(
                 entity.position.sub_x,
                 entity.position.sub_y,
                 entity.type_ref,
+                entity.facing,
+                entity.veterancy,
                 cooldown_ticks,
                 entity.animation.as_ref().map(|a| a.sequence),
                 entity.animation.as_ref().map(|a| a.frame_index),
@@ -1329,6 +1356,8 @@ pub fn tick_combat_with_fog(
             sub_x,
             sub_y,
             type_id,
+            facing,
+            veterancy,
             cooldown_ticks,
             animation_sequence,
             animation_frame,
@@ -1369,6 +1398,8 @@ pub fn tick_combat_with_fog(
             sub_x,
             sub_y,
             type_id,
+            facing,
+            veterancy,
             cooldown_ticks,
             animation_sequence,
             animation_frame,
@@ -1849,19 +1880,32 @@ pub fn tick_combat_with_fog(
             base_damage,
             target_rx,
             target_ry,
+            target_sub_x,
+            target_sub_y,
             impact_z,
             interner,
             &mut explosion_effects,
             &mut smudge_spawn_requests,
         );
 
-        if let Some(ref report_id) = weapon.report {
-            fire_sounds.push((interner.intern(report_id), snap.pos_rx, snap.pos_ry));
+        let report_sound_id = weapon
+            .report
+            .as_ref()
+            .map(|report_id| interner.intern(report_id));
+        if is_garrison {
+            if let Some(report_id) = report_sound_id {
+                fire_sounds.push((report_id, snap.pos_rx, snap.pos_ry));
+            }
         }
         fire_events.push(SimFireEvent {
             attacker_id: snap.stable_id,
+            attacker_type_ref: snap.type_id,
             weapon_slot: selected.slot,
+            weapon_id: interner.intern(selected.weapon_id),
+            facing: snap.facing,
+            veterancy: snap.veterancy,
             target: snap.target,
+            report_sound_id: if is_garrison { None } else { report_sound_id },
             garrison_muzzle_index: snap.garrison.as_ref().map(|gs| gs.fire_index),
             occupant_anim: if is_garrison {
                 weapon.occupant_anim.as_ref().map(|s| interner.intern(s))

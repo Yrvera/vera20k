@@ -47,6 +47,7 @@ pub mod app_init;
 pub mod app_init_helpers;
 pub mod app_list_maps;
 pub mod app_skirmish;
+pub mod app_skirmish_shell_render;
 
 // Shared type definitions and constants used across app_* modules.
 // Extracted from app_render.rs to decouple type imports from rendering.
@@ -91,6 +92,9 @@ pub mod app_camera;
 // Building animation lifecycle, damage fires, sidebar UI tick, sound playback.
 // Extracted from app_sim_tick.rs.
 pub mod app_building_anim;
+
+// Weapon fire presentation: non-garrison muzzle flashes and FLH-positioned reports.
+pub mod app_fire_effects;
 
 // Parachute SHP animation lifecycle for descending paradropped infantry.
 pub mod app_chute_anim;

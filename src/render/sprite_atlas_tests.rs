@@ -102,3 +102,22 @@ fn test_different_houses_create_separate_keys() {
     set.insert(k2);
     assert_eq!(set.len(), 2);
 }
+
+#[test]
+fn collect_effect_names_includes_weapon_anim_entries() {
+    let ini = crate::rules::ini_parser::IniFile::from_str(
+        "\
+[InfantryTypes]\n0=E1\n\n\
+[VehicleTypes]\n\n\
+[AircraftTypes]\n\n\
+[BuildingTypes]\n\n\
+[E1]\nStrength=125\nArmor=flak\nSpeed=4\nPrimary=TestWeapon\n\n\
+[TestWeapon]\nDamage=1\nWarhead=TestWH\nAnim=MGUN-N,MGUN-NE,MGUN-E,MGUN-SE,MGUN-S,MGUN-SW,MGUN-W,MGUN-NW\nOccupantAnim=UCFLASH\n\n\
+[TestWH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+    );
+    let rules = crate::rules::ruleset::RuleSet::from_ini(&ini).expect("rules parse");
+    let names = collect_effect_names(&rules);
+    assert!(names.iter().any(|name| name == "MGUN-N"));
+    assert!(names.iter().any(|name| name == "MGUN-NW"));
+    assert!(names.iter().any(|name| name == "UCFLASH"));
+}

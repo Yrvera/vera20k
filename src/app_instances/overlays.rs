@@ -16,6 +16,7 @@ use crate::render::bridge_atlas::is_high_bridge_body_name;
 use crate::render::overlay_atlas::OverlaySpriteKey;
 use crate::render::sprite_atlas::ShpSpriteKey;
 use crate::rules::house_colors::HouseColorIndex;
+use crate::sim::components::WeaponMuzzleFlash;
 use crate::sim::miner::ResourceType;
 
 use super::helpers::{compute_sprite_depth, compute_sprite_depth_params, in_view};
@@ -54,8 +55,23 @@ pub(crate) fn build_world_effect_instances(state: &AppState, paged: &mut [Vec<Sp
         if fx.delay_ms > 0 {
             continue;
         }
-        let (sx, sy) = terrain::iso_to_screen(fx.rx, fx.ry, fx.z);
-        if !in_view(sx, sy, TILE_WIDTH, TILE_HEIGHT, cam_x, cam_y, sw, sh, 120.0) {
+        let coords = glam::IVec3::new(
+            fx.rx as i32 * 256 + fx.sub_x.to_num::<i32>(),
+            fx.ry as i32 * 256 + fx.sub_y.to_num::<i32>(),
+            fx.z as i32 * 256,
+        );
+        let (center_x, center_y) = terrain::lepton_to_screen(coords);
+        if !in_view(
+            center_x - TILE_WIDTH / 2.0,
+            center_y - TILE_HEIGHT / 2.0,
+            TILE_WIDTH,
+            TILE_HEIGHT,
+            cam_x,
+            cam_y,
+            sw,
+            sh,
+            120.0,
+        ) {
             continue;
         }
         let key = ShpSpriteKey {
@@ -67,9 +83,7 @@ pub(crate) fn build_world_effect_instances(state: &AppState, paged: &mut [Vec<Sp
         let Some(entry) = atlas.get(&key) else {
             continue;
         };
-        let center_x: f32 = sx + TILE_WIDTH / 2.0;
-        let center_y: f32 = sy + TILE_HEIGHT / 2.0;
-        let depth_y: f32 = sy + TILE_HEIGHT / 2.0 + entry.offset_y + entry.pixel_size[1];
+        let depth_y: f32 = center_y + entry.offset_y + entry.pixel_size[1];
         let depth: f32 = compute_sprite_depth(state, depth_y, fx.z);
         let tint: [f32; 3] = state
             .lighting_grid
@@ -516,6 +530,80 @@ pub(crate) fn build_garrison_muzzle_flash_instances(
     }
 }
 
+fn weapon_muzzle_flash_key(flash: &WeaponMuzzleFlash) -> ShpSpriteKey {
+    ShpSpriteKey {
+        type_id: flash.shp_name.clone(),
+        facing: 0,
+        frame: flash.frame,
+        house_color: HouseColorIndex(0),
+    }
+}
+
+/// Build SpriteInstances for non-garrison weapon muzzle flash animations.
+///
+/// These flashes are spawned at a fixed FLH fire origin when combat emits a
+/// non-garrison fire event with a weapon `Anim=` entry.
+pub(crate) fn build_weapon_muzzle_flash_instances(
+    state: &AppState,
+    paged: &mut [Vec<SpriteInstance>],
+) {
+    let atlas = match &state.sprite_atlas {
+        Some(a) => a,
+        None => return,
+    };
+    let z = state.zoom_level;
+    let (cam_x, cam_y, sw, sh) = (
+        state.camera_x,
+        state.camera_y,
+        state.render_width() as f32 / z,
+        state.render_height() as f32 / z,
+    );
+    let (origin_y, world_height) = state
+        .terrain_grid
+        .as_ref()
+        .map(|g| (g.origin_y, g.world_height))
+        .unwrap_or((0.0, 1.0));
+
+    for flash in &state.weapon_muzzle_flashes {
+        if !in_view(
+            flash.screen_x,
+            flash.screen_y,
+            96.0,
+            96.0,
+            cam_x,
+            cam_y,
+            sw,
+            sh,
+            96.0,
+        ) {
+            continue;
+        }
+        let key = weapon_muzzle_flash_key(flash);
+        let Some(entry) = atlas.get(&key) else {
+            continue;
+        };
+        let tint = state
+            .lighting_grid
+            .get(&(flash.rx, flash.ry))
+            .copied()
+            .unwrap_or(lighting::DEFAULT_TINT);
+        let depth = compute_sprite_depth_params(origin_y, world_height, flash.screen_y, flash.z);
+        paged[entry.page as usize].push(SpriteInstance {
+            position: [
+                flash.screen_x + entry.offset_x,
+                flash.screen_y + entry.offset_y,
+            ],
+            size: entry.pixel_size,
+            uv_origin: entry.uv_origin,
+            uv_size: entry.uv_size,
+            depth,
+            tint,
+            alpha: 1.0,
+            ..Default::default()
+        });
+    }
+}
+
 /// Emit one sprite instance per active parachute anim, anchored at the
 /// descending GI's screen position with the SHP atlas's pre-baked
 /// offset_x/offset_y handling sprite-center anchoring.
@@ -627,7 +715,8 @@ pub(crate) fn build_parachute_instances(state: &AppState, paged: &mut [Vec<Sprit
 
 #[cfg(test)]
 mod tests {
-    use super::{OverlayRenderBucket, classify_overlay_render_bucket};
+    use super::{OverlayRenderBucket, classify_overlay_render_bucket, weapon_muzzle_flash_key};
+    use crate::sim::components::WeaponMuzzleFlash;
 
     #[test]
     fn wall_routes_to_wall_bucket() {
@@ -643,5 +732,26 @@ mod tests {
             classify_overlay_render_bucket(false),
             OverlayRenderBucket::Generic
         );
+    }
+
+    #[test]
+    fn weapon_muzzle_flash_key_uses_shp_name_and_frame() {
+        let flash = WeaponMuzzleFlash {
+            attacker_id: 1,
+            shp_name: "MGUN-N".to_string(),
+            screen_x: 100.0,
+            screen_y: 200.0,
+            rx: 10,
+            ry: 11,
+            z: 0,
+            frame: 3,
+            total_frames: 4,
+            rate_ms: 67,
+            elapsed_ms: 0,
+        };
+        let key = weapon_muzzle_flash_key(&flash);
+        assert_eq!(key.type_id, "MGUN-N");
+        assert_eq!(key.frame, 3);
+        assert_eq!(key.facing, 0);
     }
 }

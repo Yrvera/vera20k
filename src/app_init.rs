@@ -30,7 +30,7 @@ use crate::map::lighting::{self, LightingGrid};
 use crate::map::map_file::MapFile;
 use crate::map::overlay::{OverlayEntry, TerrainObject};
 use crate::map::overlay_types::OverlayTypeRegistry;
-use crate::map::preview::PreviewSection;
+use crate::map::preview::{PreviewSection, PreviewSourceBounds};
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::map::tags::TagMap;
 use crate::map::terrain::{self, LocalBounds, TerrainGrid};
@@ -169,6 +169,10 @@ pub struct MapMenuEntry {
     pub briefing: BriefingSection,
     /// Lightweight preview metadata from `[Preview]` / `[PreviewPack]`.
     pub preview: PreviewSection,
+    /// Multiplayer start waypoints 0..=7, sorted by waypoint index.
+    pub multiplayer_start_waypoints: Vec<Waypoint>,
+    /// Verified source bounds for projecting starts onto the preview surface.
+    pub preview_source_bounds: Option<PreviewSourceBounds>,
 }
 
 /// Load a .mmx map, build terrain + tile atlas, spawn entities + unit atlas.

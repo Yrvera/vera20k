@@ -526,6 +526,34 @@ pub struct GarrisonMuzzleFlash {
     pub elapsed_ms: u32,
 }
 
+/// A one-shot weapon muzzle flash animation at a fixed fire-tick origin.
+///
+/// Spawned by app-layer fire-effect processing for non-garrison weapon
+/// `Anim=` entries. This is presentation state, parallel to
+/// `GarrisonMuzzleFlash`, and is not authoritative gameplay state.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct WeaponMuzzleFlash {
+    /// Stable ID of the firing entity at spawn time.
+    pub attacker_id: u64,
+    /// SHP type id (e.g., "MGUN-N").
+    pub shp_name: String,
+    /// Fixed screen-space fire origin from the firing tick.
+    pub screen_x: f32,
+    pub screen_y: f32,
+    /// Cell/elevation used for lighting and depth.
+    pub rx: u16,
+    pub ry: u16,
+    pub z: u8,
+    /// Current animation frame.
+    pub frame: u16,
+    /// Total frames in the SHP (one-shot: removed when frame >= total_frames).
+    pub total_frames: u16,
+    /// Milliseconds per frame (~67ms = 15fps, standard for RA2 muzzle flashes).
+    pub rate_ms: u32,
+    /// Accumulated ms since last frame advance.
+    pub elapsed_ms: u32,
+}
+
 /// A temporary one-shot SHP animation playing at a fixed world position.
 ///
 /// Used for visual effects not attached to any entity: chrono warp sparkles,
@@ -535,9 +563,13 @@ pub struct GarrisonMuzzleFlash {
 pub struct WorldEffect {
     /// SHP type interned ID (uppercase), e.g., "WARPOUT", "WARPIN", "FBALL1".
     pub shp_name: InternedId,
-    /// World cell where the effect plays.
+    /// World cell containing the effect's game-space anchor.
     pub rx: u16,
     pub ry: u16,
+    /// Sub-cell X anchor in leptons. `128` is the cell center.
+    pub sub_x: SimFixed,
+    /// Sub-cell Y anchor in leptons. `128` is the cell center.
+    pub sub_y: SimFixed,
     /// Height level for depth sorting.
     pub z: u8,
     /// Current frame index.
@@ -809,6 +841,8 @@ mod tests {
             shp_name: test_intern("WARPOUT"),
             rx: 10,
             ry: 10,
+            sub_x: crate::util::lepton::CELL_CENTER_LEPTON,
+            sub_y: crate::util::lepton::CELL_CENTER_LEPTON,
             z: 0,
             frame: 0,
             total_frames: 3,

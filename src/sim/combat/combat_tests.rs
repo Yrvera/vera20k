@@ -46,8 +46,8 @@ fn infantry_fire_frame_rules() -> RuleSet {
 [E1]\nStrength=125\nArmor=flak\nSpeed=4\nImage=GI\nPrimary=M60\nSecondary=Para\n\n\
 [E2]\nStrength=125\nArmor=flak\nSpeed=4\n\n\
 [MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\n\n\
-[M60]\nDamage=25\nROF=20\nRange=5\nWarhead=SA\n\n\
-[Para]\nDamage=40\nROF=15\nRange=5\nWarhead=AP\n\n\
+[M60]\nDamage=25\nROF=20\nRange=5\nWarhead=SA\nReport=GIAttack\nOccupantAnim=UCFLASH\n\n\
+[Para]\nDamage=40\nROF=15\nRange=5\nWarhead=AP\nReport=GIAttackDeployed\nOccupantAnim=UCFLASH\n\n\
 [SA]\nVerses=100%,100%,100%,90%,70%,0%,100%,25%,25%,0%,0%\n\n\
 [AP]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,0%,0%\n",
     );
@@ -481,7 +481,7 @@ fn infantry_standing_fire_waits_for_fire_frame() {
     let mut interner = test_interner();
     issue_attack_command(&mut store, 1, 2, None, &interner);
 
-    tick_combat(
+    let result = tick_combat(
         &mut store,
         &mut OccupancyGrid::new(),
         &rules,
@@ -493,6 +493,7 @@ fn infantry_standing_fire_waits_for_fire_frame() {
     );
 
     assert_eq!(store.get(2).unwrap().health.current, 125);
+    assert!(result.fire_events.is_empty());
     let attack = store.get(1).unwrap().attack_target.as_ref().unwrap();
     assert_eq!(
         attack.pending_infantry_fire.unwrap(),
@@ -507,7 +508,7 @@ fn infantry_standing_fire_waits_for_fire_frame() {
     );
 
     set_anim_frame(&mut store, 1, 1);
-    tick_combat(
+    let result = tick_combat(
         &mut store,
         &mut OccupancyGrid::new(),
         &rules,
@@ -518,9 +519,10 @@ fn infantry_standing_fire_waits_for_fire_frame() {
         0,
     );
     assert_eq!(store.get(2).unwrap().health.current, 125);
+    assert!(result.fire_events.is_empty());
 
     set_anim_frame(&mut store, 1, 2);
-    tick_combat(
+    let result = tick_combat(
         &mut store,
         &mut OccupancyGrid::new(),
         &rules,
@@ -531,6 +533,16 @@ fn infantry_standing_fire_waits_for_fire_frame() {
         0,
     );
     assert_eq!(store.get(2).unwrap().health.current, 100);
+    assert_eq!(result.fire_events.len(), 1);
+    let ev = &result.fire_events[0];
+    assert_eq!(interner.resolve(ev.weapon_id), "M60");
+    assert_eq!(ev.weapon_slot, WeaponSlot::Primary);
+    assert_eq!(
+        ev.report_sound_id.map(|id| interner.resolve(id)),
+        Some("GIAttack")
+    );
+    assert_eq!(ev.garrison_muzzle_index, None);
+    assert_eq!(ev.occupant_anim, None);
     assert!(
         store
             .get(1)
@@ -555,7 +567,7 @@ fn prone_infantry_uses_prone_fire_sequence_and_frame() {
     let mut interner = test_interner();
     issue_attack_command(&mut store, 1, 2, None, &interner);
 
-    tick_combat(
+    let result = tick_combat(
         &mut store,
         &mut OccupancyGrid::new(),
         &rules,
@@ -566,6 +578,7 @@ fn prone_infantry_uses_prone_fire_sequence_and_frame() {
         0,
     );
     let attack = store.get(1).unwrap().attack_target.as_ref().unwrap();
+    assert!(result.fire_events.is_empty());
     assert_eq!(
         attack.pending_infantry_fire.unwrap(),
         PendingInfantryFire {
@@ -576,7 +589,7 @@ fn prone_infantry_uses_prone_fire_sequence_and_frame() {
     assert_eq!(store.get(2).unwrap().health.current, 125);
 
     set_anim_frame(&mut store, 1, 2);
-    tick_combat(
+    let result = tick_combat(
         &mut store,
         &mut OccupancyGrid::new(),
         &rules,
@@ -587,9 +600,10 @@ fn prone_infantry_uses_prone_fire_sequence_and_frame() {
         0,
     );
     assert_eq!(store.get(2).unwrap().health.current, 125);
+    assert!(result.fire_events.is_empty());
 
     set_anim_frame(&mut store, 1, 3);
-    tick_combat(
+    let result = tick_combat(
         &mut store,
         &mut OccupancyGrid::new(),
         &rules,
@@ -600,6 +614,14 @@ fn prone_infantry_uses_prone_fire_sequence_and_frame() {
         0,
     );
     assert_eq!(store.get(2).unwrap().health.current, 100);
+    assert_eq!(result.fire_events.len(), 1);
+    let ev = &result.fire_events[0];
+    assert_eq!(interner.resolve(ev.weapon_id), "M60");
+    assert_eq!(ev.weapon_slot, WeaponSlot::Primary);
+    assert_eq!(
+        ev.report_sound_id.map(|id| interner.resolve(id)),
+        Some("GIAttack")
+    );
 }
 
 #[test]
@@ -614,7 +636,7 @@ fn deployed_gi_uses_deployed_fire_visual_with_target_driven_weapon() {
     let mut interner = test_interner();
     issue_attack_command(&mut store, 1, 2, None, &interner);
 
-    tick_combat(
+    let result = tick_combat(
         &mut store,
         &mut OccupancyGrid::new(),
         &rules,
@@ -625,6 +647,7 @@ fn deployed_gi_uses_deployed_fire_visual_with_target_driven_weapon() {
         0,
     );
     let attack = store.get(1).unwrap().attack_target.as_ref().unwrap();
+    assert!(result.fire_events.is_empty());
     assert_eq!(
         attack.pending_infantry_fire.unwrap(),
         PendingInfantryFire {
@@ -635,7 +658,7 @@ fn deployed_gi_uses_deployed_fire_visual_with_target_driven_weapon() {
     assert_eq!(store.get(2).unwrap().health.current, 300);
 
     set_anim_frame(&mut store, 1, 5);
-    tick_combat(
+    let result = tick_combat(
         &mut store,
         &mut OccupancyGrid::new(),
         &rules,
@@ -650,6 +673,75 @@ fn deployed_gi_uses_deployed_fire_visual_with_target_driven_weapon() {
         260,
         "heavy target should force secondary Para damage while visual uses DeployedFire"
     );
+    assert_eq!(result.fire_events.len(), 1);
+    let ev = &result.fire_events[0];
+    assert_eq!(interner.resolve(ev.weapon_id), "Para");
+    assert_eq!(ev.weapon_slot, WeaponSlot::Secondary);
+    assert_eq!(
+        ev.report_sound_id.map(|id| interner.resolve(id)),
+        Some("GIAttackDeployed")
+    );
+}
+
+#[test]
+fn garrison_fire_keeps_occupant_anim_and_sound_path() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "\
+[InfantryTypes]\n0=E1\n1=E2\n\n\
+[VehicleTypes]\n\n\
+[AircraftTypes]\n\n\
+[BuildingTypes]\n0=CAGAS\n\n\
+[CAGAS]\nStrength=800\nArmor=wood\nCanBeOccupied=yes\nCanOccupyFire=yes\nMaxNumberOccupants=5\n\n\
+[E1]\nStrength=125\nArmor=flak\nSpeed=4\nPrimary=M60\nOccupyWeapon=M60\n\n\
+[E2]\nStrength=125\nArmor=flak\nSpeed=4\n\n\
+[M60]\nDamage=25\nROF=20\nRange=5\nWarhead=SA\nReport=GIAttack\nOccupantAnim=UCFLASH\n\n\
+[SA]\nVerses=100%,100%,100%,90%,70%,25%,100%,25%,25%,0%,0%\n",
+    ))
+    .expect("garrison rules parse");
+    let mut store = EntityStore::new();
+    let mut building = make_entity(10, "CAGAS", 5, 5, 800);
+    building.category = EntityCategory::Structure;
+    let mut cargo = crate::sim::passenger::PassengerCargo::new(5, 1);
+    assert!(cargo.board(1, 1));
+    building.passenger_role = crate::sim::passenger::PassengerRole::Transport { cargo };
+    store.insert(building);
+    let mut occupant = make_infantry_entity(1, "E1", 5, 5, 125);
+    occupant.passenger_role = crate::sim::passenger::PassengerRole::Inside { transport_id: 10 };
+    store.insert(occupant);
+    store.insert(make_infantry_entity(2, "E2", 8, 5, 125));
+
+    let mut interner = test_interner();
+    issue_attack_command(&mut store, 10, 2, None, &interner);
+    let mut sounds = Vec::new();
+    let result = tick_combat_with_fog(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        None,
+        &BTreeMap::<InternedId, PowerState>::new(),
+        Some(&mut sounds),
+        &mut BTreeMap::new(),
+        None,
+        None,
+        None,
+        0,
+        100,
+        0,
+    );
+
+    assert_eq!(result.fire_events.len(), 1);
+    let ev = &result.fire_events[0];
+    assert_eq!(ev.garrison_muzzle_index, Some(0));
+    assert_eq!(
+        ev.occupant_anim.map(|id| interner.resolve(id)),
+        Some("UCFLASH")
+    );
+    assert_eq!(ev.report_sound_id, None);
+    assert!(matches!(
+        sounds.as_slice(),
+        [SimSoundEvent::WeaponFired { .. }]
+    ));
 }
 
 #[test]
@@ -661,7 +753,7 @@ fn delayed_infantry_fire_cancels_when_target_dies_before_fire_frame() {
     let mut interner = test_interner();
     issue_attack_command(&mut store, 1, 2, None, &interner);
 
-    tick_combat(
+    let result = tick_combat(
         &mut store,
         &mut OccupancyGrid::new(),
         &rules,
@@ -686,6 +778,7 @@ fn delayed_infantry_fire_cancels_when_target_dies_before_fire_frame() {
     );
 
     assert_eq!(store.get(2).unwrap().health.current, 0);
+    assert!(result.fire_events.is_empty());
     assert!(
         store.get(1).unwrap().attack_target.is_none(),
         "dead target should cancel delayed shot instead of spawning stale damage"
@@ -1590,6 +1683,8 @@ fn emit_warhead_detonation_effects_empty_animlist_emits_nothing() {
         100,
         5,
         5,
+        crate::util::lepton::CELL_CENTER_LEPTON,
+        crate::util::lepton::CELL_CENTER_LEPTON,
         0,
         &mut interner,
         &mut explosions,
@@ -1610,6 +1705,8 @@ fn emit_warhead_detonation_effects_single_animlist_entry_emits_one_pair() {
         100,
         5,
         5,
+        SimFixed::from_num(160),
+        SimFixed::from_num(96),
         0,
         &mut interner,
         &mut explosions,
@@ -1621,6 +1718,8 @@ fn emit_warhead_detonation_effects_single_animlist_entry_emits_one_pair() {
     assert_eq!(explosions[0].shp_name, expected_id);
     assert_eq!(explosions[0].rx, 5);
     assert_eq!(explosions[0].ry, 5);
+    assert_eq!(explosions[0].sub_x.to_num::<i32>(), 160);
+    assert_eq!(explosions[0].sub_y.to_num::<i32>(), 96);
     assert_eq!(explosions[0].z, 0);
     match &smudges[0] {
         SmudgeSpawnRequest::Anim {
@@ -1651,6 +1750,8 @@ fn emit_warhead_detonation_effects_animlist_index_is_damage_div_25_clamped() {
         0,
         0,
         0,
+        crate::util::lepton::CELL_CENTER_LEPTON,
+        crate::util::lepton::CELL_CENTER_LEPTON,
         0,
         &mut interner,
         &mut explosions,
@@ -1666,6 +1767,8 @@ fn emit_warhead_detonation_effects_animlist_index_is_damage_div_25_clamped() {
         50,
         0,
         0,
+        crate::util::lepton::CELL_CENTER_LEPTON,
+        crate::util::lepton::CELL_CENTER_LEPTON,
         0,
         &mut interner,
         &mut explosions,
@@ -1681,6 +1784,8 @@ fn emit_warhead_detonation_effects_animlist_index_is_damage_div_25_clamped() {
         10000,
         0,
         0,
+        crate::util::lepton::CELL_CENTER_LEPTON,
+        crate::util::lepton::CELL_CENTER_LEPTON,
         0,
         &mut interner,
         &mut explosions,
