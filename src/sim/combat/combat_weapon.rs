@@ -34,6 +34,29 @@ pub enum WeaponSlot {
     Secondary,
 }
 
+/// Weapon-selection override used by transport passengers.
+///
+/// Two transport semantics are distinguished:
+///
+/// - **`IfvSlot(idx)`** — `Gunner=yes` transports (e.g., IFV). The transport
+///   fires its own `weapon_list[idx]` where `idx` is the passenger's IFVMode.
+///   The attacker passed to `select_weapon_*` is the TRANSPORT's ObjectType.
+///
+/// - **`OpenTransport(slot)`** — Open-topped non-Gunner transports (e.g., BFRT).
+///   The transport fires the passenger's own Primary (slot=0) or Secondary
+///   (slot=1) per the passenger's `OpenTransportWeapon=` INI value. The
+///   attacker passed to `select_weapon_*` is the PASSENGER's ObjectType.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub enum WeaponOverride {
+    /// Transport's weapon_list[idx], used when transport is `Gunner=yes`.
+    IfvSlot(u32),
+    /// Passenger's own primary (0) or secondary (1), used for open-topped
+    /// non-Gunner transports with `OpenTransportWeapon != -1`.
+    OpenTransport(u32),
+}
+
 /// Result of weapon selection: the chosen weapon, its warhead, and the
 /// effective Verses percentage against the target's armor.
 pub(crate) struct SelectedWeapon<'a> {
@@ -260,6 +283,15 @@ fn can_projectile_engage(
 mod tests {
     use super::*;
     use crate::rules::ini_parser::IniFile;
+
+    #[test]
+    fn test_weapon_override_variants() {
+        let ifv = WeaponOverride::IfvSlot(16);
+        let open = WeaponOverride::OpenTransport(1);
+        assert_ne!(ifv, open);
+        assert_eq!(ifv, WeaponOverride::IfvSlot(16));
+        assert_eq!(open, WeaponOverride::OpenTransport(1));
+    }
 
     /// Build a test RuleSet with a dual-weapon unit (AG primary, AA secondary).
     fn make_dual_weapon_rules() -> RuleSet {
