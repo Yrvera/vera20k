@@ -534,8 +534,8 @@ impl Simulation {
                         return false;
                     }
                 }
-                entity.deploy_state = new_phase;
-
+                // Sound plays BEFORE state field write — matches the original's
+                // Do_Action ordering (voc cue precedes the Doing-field mutation).
                 if emit_deploy_sound {
                     if let Some(sound_name) = deploy_sound {
                         let sound_id = self.interner.intern(&sound_name);
@@ -559,6 +559,7 @@ impl Simulation {
                         );
                     }
                 }
+                entity.deploy_state = new_phase;
                 true
             }
             Command::SetRally { owner, rx, ry } => {

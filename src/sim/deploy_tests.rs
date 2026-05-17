@@ -449,6 +449,38 @@ fn move_works_after_undeploy_completes() {
 }
 
 #[test]
+fn deploy_sound_emits_alongside_state_write() {
+    // Regression lock for the emit-before-state-write reorder: both effects
+    // (sound buffered + deploy_state = Deploying) must be observable after a
+    // single ToggleInfantryDeploy command.
+    let rules = make_rules_with_deploy();
+    let mut sim = Simulation::new();
+    let gi = spawn_infantry(&mut sim, "E1", "Americans", 25, 30);
+
+    assert!(sim.entities.get(gi).unwrap().deploy_state.is_none());
+    let events_before = sim.sound_events.len();
+
+    let applied = apply(
+        &mut sim,
+        "Americans",
+        &Command::ToggleInfantryDeploy { entity_id: gi },
+        &rules,
+    );
+    assert!(applied);
+
+    let entity = sim.entities.get(gi).unwrap();
+    assert!(matches!(
+        entity.deploy_state,
+        Some(DeployPhase::Deploying { .. })
+    ));
+    assert_eq!(sim.sound_events.len(), events_before + 1);
+    assert!(matches!(
+        sim.sound_events.last().unwrap(),
+        SimSoundEvent::EntityDeployed { .. }
+    ));
+}
+
+#[test]
 fn deploy_sound_emitted_on_phase_entry() {
     let rules = make_rules_with_deploy();
     let mut sim = Simulation::new();
