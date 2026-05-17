@@ -44,6 +44,7 @@ use crate::sim::movement;
 use crate::sim::movement::air_movement;
 use crate::sim::movement::droppod_movement;
 use crate::sim::movement::parachute_descent;
+use crate::sim::movement::homing_movement;
 use crate::sim::movement::rocket_movement;
 use crate::sim::movement::teleport_movement;
 use crate::sim::movement::tunnel_movement;
@@ -1097,6 +1098,11 @@ impl Simulation {
         );
         let _rocket_detonations =
             rocket_movement::tick_rocket_movement(&mut self.entities, tick_ms, self.tick);
+        // Homing missile state machine. Runs in the same air/special-movement
+        // phase as rocket_movement; detonation list is currently unused — the
+        // production projectile-spawn dispatch lands in a separate follow-up.
+        let _homing_detonations =
+            homing_movement::tick_homing_movement(&mut self.entities, tick_ms, self.tick);
         droppod_movement::tick_droppod_movement(&mut self.entities, tick_ms, self.tick);
         if let Some(rules) = rules {
             parachute_descent::tick_parachute_descent(
