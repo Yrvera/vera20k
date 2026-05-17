@@ -358,6 +358,38 @@ pub fn tick_homing_movement(entities: &mut EntityStore, tick_ms: u32, _sim_tick:
             h.vz = (h.vz + SimFixed::from_num(signum * 3)) / SimFixed::from_num(4);
         }
 
+        // 9b. Cruise altitude controller. Drives `altitude` toward the
+        //     band determined by the projectile flags. Floater/VeryHigh
+        //     missiles cruise at ~10 cells of altitude (640 leptons);
+        //     normal homing missiles cruise low at ~1 cell (320 leptons).
+        //     Dead-band ±20 leptons -> no snap. Outside the band, snap by
+        //     18 leptons toward the band. Pitch BAM follows dz sign.
+        let high_alt_branch = h.altitude > SimFixed::from_num(3 * 256) || h.rot_ini > 1;
+        if high_alt_branch {
+            let target_alt_leptons: i32 = if h.floater || h.very_high {
+                10 * 64
+            } else {
+                5 * 64
+            };
+            let self_alt: i32 = h.altitude.to_num::<i32>();
+            let dz: i32 = self_alt - target_alt_leptons;
+
+            if dz.abs() > 20 {
+                let snap: i32 = if dz > 0 { -18 } else { 18 };
+                h.altitude = SimFixed::from_num((self_alt + snap).max(0));
+            }
+
+            let pitch_target: u16 = if dz < -32 {
+                0x2000 // tilt up
+            } else if dz > 32 {
+                0x4800 // tilt down
+            } else {
+                0x4000 // level off
+            };
+            let pitch_step: u16 = rot_bam_per_tick / 2;
+            h.pitch_bam = step_toward_bam_inclusive(h.pitch_bam, pitch_target, pitch_step);
+        }
+
         // 10. Arm decrement -> Cruise.
         if h.arm_ticks_remaining > 0 {
             h.arm_ticks_remaining -= 1;
@@ -527,6 +559,90 @@ mod tests {
             detonated,
             "homing missile should detonate when reaching static target"
         );
+    }
+
+    /// Spawn a missile with a target far enough away that the cruise branch
+    /// activates (rot_ini > 1) and at a controlled initial altitude.
+    fn spawn_test_homing_at_altitude(altitude: SimFixed) -> (EntityStore, u64) {
+        use crate::sim::game_entity::GameEntity;
+        let mut entities = EntityStore::new();
+        entities.insert(GameEntity::test_default(42, "KIROV", "Soviet", 25, 5));
+        entities.insert(GameEntity::test_default(1, "AAHeatSeeker2", "Allied", 5, 5));
+        attach_homing_state(
+            &mut entities,
+            1,
+            (5, 5),
+            42,
+            (25, 5),
+            SimFixed::from_num(30),
+            60,
+            0,
+            false,
+            false,
+            SIM_ONE,
+        );
+        if let Some(h) = entities.get_mut(1).unwrap().homing_state.as_mut() {
+            h.altitude = altitude;
+        }
+        (entities, 1)
+    }
+
+    #[test]
+    fn cruise_dead_band_no_snap() {
+        // Cruise target = 5*64 = 320 leptons. Start at 320 + 10 leptons (|dz|=10).
+        // Inside dead-band -> altitude unchanged by the snap step.
+        let (mut entities, bullet_id) =
+            spawn_test_homing_at_altitude(SimFixed::from_num(5 * 64 + 10));
+        tick_homing_movement(&mut entities, 22, 0);
+        let alt_after = entities
+            .get(bullet_id)
+            .unwrap()
+            .homing_state
+            .as_ref()
+            .unwrap()
+            .altitude
+            .to_num::<i32>();
+        assert!(
+            (alt_after - (5 * 64 + 10)).abs() <= 1,
+            "dead-band should keep altitude near 330, got {}",
+            alt_after
+        );
+    }
+
+    #[test]
+    fn cruise_outside_dead_band_snaps_by_18() {
+        // |dz| = 30 -> outside dead-band -> snap by -18 toward target.
+        let (mut entities, bullet_id) =
+            spawn_test_homing_at_altitude(SimFixed::from_num(5 * 64 + 30));
+        tick_homing_movement(&mut entities, 22, 0);
+        let alt_after = entities
+            .get(bullet_id)
+            .unwrap()
+            .homing_state
+            .as_ref()
+            .unwrap()
+            .altitude
+            .to_num::<i32>();
+        let delta = (5 * 64 + 30) - alt_after;
+        assert_eq!(delta, 18, "expected snap of 18 leptons toward cruise band");
+    }
+
+    #[test]
+    fn cruise_below_dead_band_snaps_up_by_18() {
+        // |dz| = 30 below target -> snap up by 18.
+        let (mut entities, bullet_id) =
+            spawn_test_homing_at_altitude(SimFixed::from_num(5 * 64 - 30));
+        tick_homing_movement(&mut entities, 22, 0);
+        let alt_after = entities
+            .get(bullet_id)
+            .unwrap()
+            .homing_state
+            .as_ref()
+            .unwrap()
+            .altitude
+            .to_num::<i32>();
+        let delta = alt_after - (5 * 64 - 30);
+        assert_eq!(delta, 18, "expected snap of 18 leptons up toward cruise band");
     }
 
     #[test]
