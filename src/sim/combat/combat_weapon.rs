@@ -460,4 +460,177 @@ Armor=none
         let result = select_weapon(&rules, civ, EntityCategory::Unit, "none", 0);
         assert!(result.is_none());
     }
+
+    /// GGI-style fixture: M60 primary (AG), MissileLauncher secondary (AA+AG),
+    /// elite variants for both, plus an OpenTransportWeapon=1 slot selector.
+    fn make_ggi_rules() -> RuleSet {
+        let ini_str: &str = "\
+[InfantryTypes]
+0=GGI
+[VehicleTypes]
+[AircraftTypes]
+[BuildingTypes]
+
+[GGI]
+Name=Guardian GI
+Cost=400
+Strength=100
+Armor=none
+Primary=M60
+Secondary=MissileLauncher
+ElitePrimary=M60E
+EliteSecondary=MissileLauncherE
+OpenTransportWeapon=1
+
+[M60]
+Damage=15
+ROF=20
+Range=4
+Projectile=InvisibleLow
+Warhead=SA
+
+[M60E]
+Damage=25
+ROF=20
+Range=4
+Projectile=InvisibleLow
+Warhead=SA
+
+[MissileLauncher]
+Damage=40
+ROF=40
+Range=8
+Projectile=AAHeatSeeker2
+Warhead=GUARDWH
+
+[MissileLauncherE]
+Damage=50
+ROF=20
+Range=8
+Projectile=AAHeatSeeker2
+Warhead=GUARDWH
+
+[InvisibleLow]
+AG=yes
+AA=no
+
+[AAHeatSeeker2]
+AG=yes
+AA=yes
+ROT=60
+Arm=2
+
+[SA]
+Verses=100%,80%,80%,50%,25%,25%,75%,50%,25%,100%,100%
+
+[GUARDWH]
+Verses=20%,20%,20%,100%,50%,100%,10%,10%,10%,100%,100%
+";
+        let ini: IniFile = IniFile::from_str(ini_str);
+        RuleSet::from_ini(&ini).expect("Should parse GGI test rules")
+    }
+
+    #[test]
+    fn test_rookie_uses_base_primary() {
+        let rules = make_ggi_rules();
+        let ggi = rules.object("GGI").unwrap();
+        let sel = select_weapon(&rules, ggi, EntityCategory::Infantry, "none", 0).unwrap();
+        assert_eq!(sel.weapon_id, "M60");
+    }
+
+    #[test]
+    fn test_veteran_still_uses_base_primary() {
+        // Veteran tier (100..199) does NOT swap weapons — only Elite does.
+        let rules = make_ggi_rules();
+        let ggi = rules.object("GGI").unwrap();
+        let sel = select_weapon(&rules, ggi, EntityCategory::Infantry, "none", 199).unwrap();
+        assert_eq!(
+            sel.weapon_id, "M60",
+            "veteran at v=199 must still fire M60"
+        );
+    }
+
+    #[test]
+    fn test_elite_uses_elite_primary_at_threshold() {
+        let rules = make_ggi_rules();
+        let ggi = rules.object("GGI").unwrap();
+        let sel = select_weapon(&rules, ggi, EntityCategory::Infantry, "none", 200).unwrap();
+        assert_eq!(
+            sel.weapon_id, "M60E",
+            "elite at v=200 must fire M60E"
+        );
+    }
+
+    #[test]
+    fn test_elite_secondary_via_open_transport() {
+        // GGI inside BFRT at elite tier (Secondary slot): MissileLauncherE.
+        let rules = make_ggi_rules();
+        let ggi = rules.object("GGI").unwrap();
+        let sel = select_weapon_with_override(
+            &rules,
+            ggi,
+            EntityCategory::Aircraft,
+            "light",
+            200,
+            Some(WeaponOverride::OpenTransport(1)),
+        )
+        .unwrap();
+        assert_eq!(sel.weapon_id, "MissileLauncherE");
+    }
+
+    #[test]
+    fn test_open_transport_routes_to_passenger_secondary() {
+        // GGI inside BFRT (no Gunner): OpenTransport(1) -> passenger's own
+        // Secondary = MissileLauncher (AA-capable). Without override, GGI's
+        // Primary (M60) wouldn't engage Aircraft (AA=no).
+        let rules = make_ggi_rules();
+        let ggi = rules.object("GGI").unwrap();
+        let sel = select_weapon_with_override(
+            &rules,
+            ggi,
+            EntityCategory::Aircraft,
+            "light",
+            0,
+            Some(WeaponOverride::OpenTransport(1)),
+        )
+        .unwrap();
+        assert_eq!(sel.weapon_id, "MissileLauncher");
+    }
+
+    #[test]
+    fn test_open_transport_primary_fires_passenger_primary() {
+        let rules = make_ggi_rules();
+        let ggi = rules.object("GGI").unwrap();
+        let sel = select_weapon_with_override(
+            &rules,
+            ggi,
+            EntityCategory::Infantry,
+            "none",
+            0,
+            Some(WeaponOverride::OpenTransport(0)),
+        )
+        .unwrap();
+        assert_eq!(sel.weapon_id, "M60");
+    }
+
+    #[test]
+    fn test_open_transport_no_fallback_on_engagement_fail() {
+        // OpenTransport(0) routes to Primary (M60 / AG=yes only) for an
+        // Aircraft target. Engagement check fails; no fallback to Secondary
+        // — unlike IfvSlot, OpenTransport returns None instead.
+        let rules = make_ggi_rules();
+        let ggi = rules.object("GGI").unwrap();
+        let sel = select_weapon_with_override(
+            &rules,
+            ggi,
+            EntityCategory::Aircraft,
+            "light",
+            0,
+            Some(WeaponOverride::OpenTransport(0)),
+        );
+        assert!(
+            sel.is_none(),
+            "OpenTransport must NOT fall back to passenger secondary"
+        );
+    }
 }

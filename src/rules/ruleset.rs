@@ -1849,6 +1849,12 @@ fn collect_weapon_refs(
         if let Some(ref w) = obj.secondary {
             weapon_ids.insert(w.clone());
         }
+        if let Some(ref w) = obj.elite_primary {
+            weapon_ids.insert(w.clone());
+        }
+        if let Some(ref w) = obj.elite_secondary {
+            weapon_ids.insert(w.clone());
+        }
         if let Some(ref w) = obj.occupy_weapon {
             weapon_ids.insert(w.clone());
         }
