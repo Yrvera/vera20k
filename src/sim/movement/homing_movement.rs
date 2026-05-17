@@ -693,7 +693,16 @@ mod tests {
     }
 
     #[test]
-    fn stall_detect_self_destructs_zero_speed_missile() {
+    fn stall_detect_self_destructs_when_ema_falls_below_threshold() {
+        // Unit-test the EMA threshold gate directly: synthesise a homing
+        // state already past warm-up, with EMA at 0 and the missile parked
+        // (zero speed, zero closure). One tick should trip the gate.
+        //
+        // Forcing the scenario via state mutation is necessary because the
+        // production speed floor (SimFixed::ONE) leaves even a zero-INI
+        // missile closing at ~5.6 leptons/tick, well above the 0.5-lepton
+        // EMA threshold — there's no natural way for a single missile to
+        // genuinely stall in the air without world-state interference.
         use crate::sim::game_entity::GameEntity;
 
         let mut entities = EntityStore::new();
@@ -705,30 +714,37 @@ mod tests {
             (5, 5),
             42,
             (25, 5),
-            // speed.max(1) -> floor is SIM_ONE; 1 cell/sec is slow enough that
-            // even after 60+60+ ticks the missile makes no measurable progress
-            // relative to the EMA threshold of 0.5 leptons/tick.
-            SimFixed::lit("0.01"),
+            SimFixed::from_num(20),
             60,
-            0,
+            0, // arm=0 -> phase starts in Cruise, no decrement needed
             false,
             false,
             SIM_ONE,
         );
 
-        let mut self_destructed = false;
-        for tick in 0..400 {
-            let det = tick_homing_movement(&mut entities, 22, tick as u64);
-            if det.contains(&1) {
-                self_destructed = true;
-                break;
-            }
+        // Synthesise a fully-warmed-up, stalled missile parked on the
+        // target. ema=0 and last_distance_to_target=0 mean the next tick's
+        // delta_dist is 0 → ema stays at 0 → threshold trips.
+        if let Some(h) = entities.get_mut(1).unwrap().homing_state.as_mut() {
+            h.phase = HomingPhase::Cruise;
+            h.stall_ema = SIM_ZERO;
+            h.stall_counter = 60;
+            h.speed = SIM_ZERO;
+            h.last_distance_to_target = SIM_ZERO;
+            // Park the bullet beyond proximity range so proximity_hit
+            // doesn't fire first — stall must be what self-destructs it.
+            h.pos_x_cells = SimFixed::from_num(0);
+            h.pos_y_cells = SimFixed::from_num(0);
+            h.last_known_rx = 100;
+            h.last_known_ry = 100;
         }
-        let h = entities.get(1).unwrap().homing_state.as_ref().unwrap();
+
+        let det = tick_homing_movement(&mut entities, 22, 1);
         assert!(
-            self_destructed,
-            "stalled missile should self-destruct after the 60-tick warm-up + EMA decay"
+            det.contains(&1),
+            "missile with EMA<=0.5 and zero closure must self-destruct"
         );
+        let h = entities.get(1).unwrap().homing_state.as_ref().unwrap();
         assert_eq!(h.phase, HomingPhase::SelfDestruct);
     }
 
