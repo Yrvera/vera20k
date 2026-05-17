@@ -682,3 +682,146 @@ fn combat_fires_during_deployed_attack() {
         SequenceKind::DeployedFire
     );
 }
+
+/// Test ruleset with GGI and a merged art entry that defines
+/// GuardianGISequence with Deploy=300,15,0 and Undeploy=180,2,2.
+fn make_rules_with_ggi_art() -> RuleSet {
+    let rules_text = "\
+[InfantryTypes]
+0=GGI
+
+[General]
+BuildSpeed=0.75
+MultipleFactory=0.7
+LowPowerPenaltyModifier=1.25
+MinLowPowerProductionSpeed=0.4
+MaxLowPowerProductionSpeed=0.85
+
+[VehicleTypes]
+
+[AircraftTypes]
+
+[BuildingTypes]
+
+[GGI]
+Name=Guardian GI
+Cost=400
+Strength=100
+Armor=none
+Speed=4
+Primary=M60
+DeployFire=yes
+DeploySound=GuardianDeploy
+
+[M60]
+Damage=15
+ROF=20
+Range=4
+Warhead=SA
+
+[SA]
+Verses=100%,80%,80%,50%,25%,25%,75%,50%,25%,100%,100%
+CellSpread=0
+";
+    let rules_ini = IniFile::from_str(rules_text);
+    let mut rules = RuleSet::from_ini(&rules_ini).expect("rules parse");
+    let art_ini = IniFile::from_str(
+        "[GGI]\n\
+         Sequence=GuardianGISequence\n\
+         \n\
+         [GuardianGISequence]\n\
+         Ready=0,1,1\n\
+         Walk=8,6,6\n\
+         Deploy=300,15,0\n\
+         Undeploy=180,2,2\n\
+         Deployed=315,1,1\n\
+         DeployedFire=323,6,6\n",
+    );
+    let art = crate::rules::art_data::ArtRegistry::from_ini(&art_ini);
+    rules.merge_art_data(&art);
+    rules.art_registry = art;
+    rules
+}
+
+#[test]
+fn ggi_deploy_uses_art_frame_count() {
+    // GGI's GuardianGISequence has Deploy=300,15,0 -> 15 frames.
+    // 15 * 80 / 22 = 54 ticks (vs. the 55-tick fallback for sequence-less
+    // infantry like E1). Uses apply() so we observe the raw command effect
+    // without any deploy-tick decrement.
+    let rules = make_rules_with_ggi_art();
+    let mut sim = Simulation::new();
+    let ggi = spawn_infantry(&mut sim, "GGI", "Americans", 10, 10);
+
+    let applied = apply(
+        &mut sim,
+        "Americans",
+        &Command::ToggleInfantryDeploy { entity_id: ggi },
+        &rules,
+    );
+    assert!(applied);
+
+    let entity = sim.entities.get(ggi).unwrap();
+    match entity.deploy_state {
+        Some(DeployPhase::Deploying { ticks_remaining }) => {
+            assert_eq!(
+                ticks_remaining, 54,
+                "GGI deploy = 15 frames * 80 / 22 = 54 ticks"
+            );
+        }
+        other => panic!("expected Deploying, got {:?}", other),
+    }
+}
+
+#[test]
+fn ggi_undeploy_uses_art_frame_count() {
+    // GuardianGISequence Undeploy=180,2,2 -> 2 frames -> 7 ticks.
+    let rules = make_rules_with_ggi_art();
+    let mut sim = Simulation::new();
+    let ggi = spawn_infantry(&mut sim, "GGI", "Americans", 10, 10);
+    sim.entities.get_mut(ggi).unwrap().deploy_state = Some(DeployPhase::Deployed);
+
+    let applied = apply(
+        &mut sim,
+        "Americans",
+        &Command::ToggleInfantryDeploy { entity_id: ggi },
+        &rules,
+    );
+    assert!(applied);
+
+    let entity = sim.entities.get(ggi).unwrap();
+    match entity.deploy_state {
+        Some(DeployPhase::Undeploying { ticks_remaining }) => {
+            assert_eq!(
+                ticks_remaining, 7,
+                "GGI undeploy = 2 frames * 80 / 22 = 7 ticks"
+            );
+        }
+        other => panic!("expected Undeploying, got {:?}", other),
+    }
+}
+
+#[test]
+fn sequence_less_infantry_falls_back_to_default_ticks() {
+    // E1 has no art Sequence= -> compute_anim_ticks falls back to
+    // DEPLOY_DEFAULT_TICKS=55. Distinguishes the GGI 54-tick path from the
+    // baseline.
+    let rules = make_rules_with_deploy();
+    let mut sim = Simulation::new();
+    let gi = spawn_infantry(&mut sim, "E1", "Americans", 10, 10);
+
+    let applied = apply(
+        &mut sim,
+        "Americans",
+        &Command::ToggleInfantryDeploy { entity_id: gi },
+        &rules,
+    );
+    assert!(applied);
+    let entity = sim.entities.get(gi).unwrap();
+    match entity.deploy_state {
+        Some(DeployPhase::Deploying { ticks_remaining }) => {
+            assert_eq!(ticks_remaining, DEPLOY_DEFAULT_TICKS);
+        }
+        other => panic!("expected Deploying, got {:?}", other),
+    }
+}
