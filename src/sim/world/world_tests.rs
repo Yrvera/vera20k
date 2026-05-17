@@ -2780,7 +2780,7 @@ fn refresh_vision_heights_copies_path_cell_ground_levels() {
 ///
 /// Approach: seed an EW Damaged cell directly via `test_seed_cell`, run
 /// the inner builder against a mock `BridgeAtlasLookup` that only returns
-/// `Some` for the EXPECTED `(name, frame)` pair (`BRIDGE1`, frame 6 — the
+/// `Some` for the EXPECTED `(name, frame)` pair (`BRIDGE1`, frame 15 - the
 /// EW Damaged SHP frame). If the builder queried with anything else, the
 /// mock returns `None`, no `SpriteInstance` is emitted, and the assertion
 /// fires.
@@ -2835,12 +2835,12 @@ fn bridge_body_builder_queries_atlas_with_post_tick_state_byte_frame() {
         },
     );
 
-    // Mock atlas accepts only ("BRIDGE1", frame 6) — the EW Damaged SHP frame.
+    // Mock atlas accepts only ("BRIDGE1", frame 15) - the EW Damaged SHP frame.
     // Per BRIDGE_RENDERING_GHIDRA_REPORT.md §12, EW body is SHP frames 0..=8
     // (axis_base=0); Damaged adds local offset 6.
     let mock = MockAtlas {
         expected_name: "BRIDGE1".to_string(),
-        expected_frame: 6,
+        expected_frame: 15,
         entry: OverlaySpriteEntry {
             uv_origin: [0.0, 0.0],
             uv_size: [1.0, 1.0],
@@ -2887,10 +2887,10 @@ fn bridge_body_builder_queries_atlas_with_post_tick_state_byte_frame() {
     );
     let queried_for_55 = queries
         .iter()
-        .any(|(name, frame)| name == "BRIDGE1" && *frame == 6);
+        .any(|(name, frame)| name == "BRIDGE1" && *frame == 15);
     assert!(
         queried_for_55,
-        "body builder must query atlas with (\"BRIDGE1\", 6) — the EW Damaged SHP frame; \
+        "body builder must query atlas with (\"BRIDGE1\", 15) - the EW Damaged SHP frame; \
          actual queries: {:?}",
         *queries
     );
@@ -2924,6 +2924,7 @@ fn make_realistic_bridgehead_terrain() -> ResolvedTerrainGrid {
             build_blocked: true,
             base_build_blocked: true,
             bridge_walkable: true,
+            bridge_transition: true,
             bridge_deck_level: 4,
             has_bridge_deck: true,
             is_water: true,

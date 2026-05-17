@@ -331,9 +331,13 @@ mod tests {
         );
 
         assert!(facts_at(&cells, width as u16, 4, 5).has_structural_bridge());
+        assert!(facts_at(&cells, width as u16, 4, 5).has_transition_flag());
         assert!(facts_at(&cells, width as u16, 3, 5).has_structural_bridge());
+        assert!(!facts_at(&cells, width as u16, 3, 5).has_transition_flag());
+        assert!(facts_at(&cells, width as u16, 5, 5).has_transition_flag());
         assert!(facts_at(&cells, width as u16, 2, 5).has_flag(BRIDGE_FLAG_FORWARD_SIDE));
         assert!(facts_at(&cells, width as u16, 6, 5).has_structural_bridge());
+        assert!(facts_at(&cells, width as u16, 6, 5).has_transition_flag());
         assert!(facts_at(&cells, width as u16, 7, 5).has_flag(BRIDGE_FLAG_EXTRA_SIDE));
         assert!(!facts_at(&cells, width as u16, 7, 5).has_structural_bridge());
     }

@@ -205,6 +205,24 @@ fn compute_neighbor_height(
     }
 }
 
+fn is_structural_bridge_deck_height(path_height: u8, cell: &PathCell) -> bool {
+    cell.has_structural_bridge() && path_height as i16 == cell.signed_level() + 4
+}
+
+fn needs_bridge_traversal_for_edge(
+    current_height: u8,
+    current_cell: &PathCell,
+    neighbor_cell: &PathCell,
+) -> bool {
+    let structural_deck_to_structural =
+        is_structural_bridge_deck_height(current_height, current_cell)
+            && neighbor_cell.has_structural_bridge();
+    neighbor_cell.has_bridgehead_transition()
+        || !neighbor_cell.has_structural_bridge()
+        || !current_cell.has_structural_bridge()
+        || structural_deck_to_structural
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BridgeTraversalInput<'a> {
     pub candidate: &'a PathCell,
@@ -649,9 +667,8 @@ pub fn astar_search(
             // be a canonical ramp (slope_type != 0); diff ∈ {±2, ±3, ±4, ±5+} is
             // always blocked. Legitimate bridge transitions arrive here as diff-0
             // because `compute_neighbor_height` already shifts unit Z onto/off the deck.
-            let needs_bridge_traversal = neighbor_cell.has_bridgehead_transition()
-                || !neighbor_cell.has_structural_bridge()
-                || !cur_cell.has_structural_bridge();
+            let needs_bridge_traversal =
+                needs_bridge_traversal_for_edge(current.height, cur_cell, neighbor_cell);
             if needs_bridge_traversal {
                 let bridge_traversal = check_bridge_traversal(
                     grid,
@@ -715,11 +732,10 @@ pub fn astar_search(
                 continue;
             }
 
-            // Walkability check on the determined layer.
-            // Ground→Bridge entry requires the bridgehead flag (transition). A unit
-            // already on the bridge can move between any two bridge_walkable cells
-            // (body-to-body diagonals); only the Ground→Bridge transition needs the
-            // bridgehead.
+            // Walkability check on the determined layer. Ground->Bridge entry
+            // still requires the bridgehead flag. Bridge-deck structural moves
+            // have already passed CheckBridgeTraversal above; bridge_walkable
+            // alone is not enough for Forward2-style non-transition cells.
             let neighbor_passable = if neighbor_use_bridge {
                 let prev_on_bridge = is_at_bridge_level(current.height, cur_cell);
                 if prev_on_bridge {
