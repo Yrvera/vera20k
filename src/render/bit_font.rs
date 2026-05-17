@@ -558,6 +558,123 @@ fn write_5x7_glyph_bitmap(
     }
 }
 
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+
+    /// Build a measurement-only BitFont without a GPU context, for pure-logic
+    /// tests. Atlas/darken textures are left as None -- production callers
+    /// always populate both via `from_fnt`/`fallback_5x7`.
+    pub(crate) fn make_test_font(glyph_widths: &[(u16, u32)], space_width: u32) -> BitFont {
+        let mut glyphs = HashMap::new();
+        for (cp, w) in glyph_widths {
+            glyphs.insert(
+                *cp,
+                GlyphEntry {
+                    uv_origin: [0.0, 0.0],
+                    uv_size: [1.0, 1.0],
+                    pixel_width: *w as f32,
+                },
+            );
+        }
+        BitFont {
+            atlas_texture: None,
+            glyphs,
+            missing_glyph: Some(GlyphEntry {
+                uv_origin: [0.0, 0.0],
+                uv_size: [0.0, 0.0],
+                pixel_width: 5.0,
+            }),
+            cell_height: CELL_HEIGHT,
+            bitmap_rows: BITMAP_ROWS,
+            space_width,
+            char_spacing: CHAR_SPACING,
+            tab_width: TAB_WIDTH,
+            tab_origin: TAB_ORIGIN,
+            darken_texture: None,
+        }
+    }
+
+    #[test]
+    fn text_width_uses_fnt_space_width() {
+        let font = make_test_font(&[(b'a' as u16, 6), (b'b' as u16, 6)], 4);
+        // "a b" = 6 + 4 + 6 + (3-1)*1 = 18
+        assert_eq!(font.text_width("a b"), 18);
+    }
+
+    #[test]
+    fn text_width_with_tab() {
+        let font = make_test_font(&[(b'a' as u16, 6), (b'b' as u16, 6)], 4);
+        // "a\tb": a (6) -> tab from x=6 to next 64 boundary = 64 -> +b (6) + spacing(1)
+        assert_eq!(font.text_width("a\tb"), 64 + 6 + 1);
+    }
+
+    #[test]
+    fn text_width_with_missing_glyph() {
+        let font = make_test_font(&[(b'a' as u16, 6)], 4);
+        // 'X' not in table -> missing_glyph (width 5)
+        // "aX" = 6 + 5 + (2-1)*1 = 12
+        assert_eq!(font.text_width("aX"), 12);
+    }
+
+    #[test]
+    fn wrap_layout_breaks_at_last_space() {
+        let font =
+            make_test_font(&[(b'a' as u16, 6), (b'b' as u16, 6), (b'c' as u16, 6)], 4);
+        let layout = font.wrap_layout("ab c", 20);
+        assert_eq!(layout.lines.len(), 2);
+        assert_eq!(layout.height, CELL_HEIGHT * 2);
+    }
+
+    #[test]
+    fn wrap_layout_hard_cuts_no_space() {
+        let font = make_test_font(&[(b'a' as u16, 6)], 4);
+        let layout = font.wrap_layout("aaaa", 14);
+        assert!(layout.lines.len() >= 2);
+    }
+
+    #[test]
+    fn wrap_layout_single_char_overflow_accepted() {
+        let font = make_test_font(&[(b'a' as u16, 20)], 4);
+        let layout = font.wrap_layout("a", 10);
+        assert_eq!(layout.lines.len(), 1);
+        assert_eq!(layout.lines[0].width, 20);
+    }
+
+    #[test]
+    fn wrap_layout_crlf_one_newline() {
+        let font = make_test_font(&[(b'a' as u16, 6), (b'b' as u16, 6)], 4);
+        let layout = font.wrap_layout("a\r\nb", 1000);
+        assert_eq!(layout.lines.len(), 2);
+        assert_eq!(layout.height, CELL_HEIGHT * 2);
+    }
+
+    #[test]
+    fn wrap_layout_bare_cr_advances() {
+        let font = make_test_font(&[(b'a' as u16, 6), (b'b' as u16, 6)], 4);
+        let layout = font.wrap_layout("a\rb", 1000);
+        assert_eq!(layout.lines.len(), 2);
+    }
+
+    #[test]
+    fn missing_color_xor_produces_large_shift_for_white() {
+        // 0xFFFF ^ 0x5555 = 0xAAAA. Per-channel: R5 0x15 (21/31), G6 0x15 (21/63), B5 0x0A (10/31)
+        let xored = BitFont::missing_color_xor([1.0, 1.0, 1.0]);
+        assert!((xored[0] - 21.0 / 31.0).abs() < 0.01, "R = {}", xored[0]);
+        assert!((xored[1] - 21.0 / 63.0).abs() < 0.01, "G = {}", xored[1]);
+        assert!((xored[2] - 10.0 / 31.0).abs() < 0.01, "B = {}", xored[2]);
+    }
+
+    #[test]
+    fn missing_color_xor_produces_large_shift_for_black() {
+        // 0x0000 ^ 0x5555 = 0x5555. R5 0x0A (10/31), G6 0x2A (42/63), B5 0x15 (21/31)
+        let xored = BitFont::missing_color_xor([0.0, 0.0, 0.0]);
+        assert!((xored[0] - 10.0 / 31.0).abs() < 0.01);
+        assert!((xored[1] - 42.0 / 63.0).abs() < 0.01);
+        assert!((xored[2] - 21.0 / 31.0).abs() < 0.01);
+    }
+}
+
 fn fallback_5x7_glyphs() -> Vec<(char, [&'static str; 7])> {
     vec![
         (' ', [".....", ".....", ".....", ".....", ".....", ".....", "....."]),
