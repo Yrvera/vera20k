@@ -111,3 +111,116 @@ pub fn draw_in_rect(
     ShellTextDraw { instances, scissor }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render::bit_font::tests::make_test_font;
+
+    fn test_font() -> BitFont {
+        make_test_font(&[(b'x' as u16, 6), (b'a' as u16, 6), (b'b' as u16, 6)], 4)
+    }
+
+    #[test]
+    fn scissor_equals_rect() {
+        let font = test_font();
+        let draw = draw_in_rect(
+            &font,
+            "x",
+            TextRect { x: 10, y: 20, w: 100, h: 30 },
+            [1.0, 1.0, 1.0],
+            ShellAlign::NONE,
+            [0.0, 0.0],
+            0.5,
+        );
+        assert_eq!(draw.scissor.x, 10);
+        assert_eq!(draw.scissor.y, 20);
+        assert_eq!(draw.scissor.w, 100);
+        assert_eq!(draw.scissor.h, 30);
+    }
+
+    #[test]
+    fn empty_text_returns_empty_instances() {
+        let font = test_font();
+        let draw = draw_in_rect(
+            &font,
+            "",
+            TextRect { x: 0, y: 0, w: 100, h: 30 },
+            [1.0, 1.0, 1.0],
+            ShellAlign::V_CENTER | ShellAlign::H_CENTER,
+            [0.0, 0.0],
+            0.5,
+        );
+        assert!(draw.instances.is_empty());
+    }
+
+    #[test]
+    fn align_combines_with_bitor() {
+        let combined = ShellAlign::H_CENTER | ShellAlign::V_CENTER;
+        assert!(combined.contains(ShellAlign::H_CENTER));
+        assert!(combined.contains(ShellAlign::V_CENTER));
+        assert!(!combined.contains(ShellAlign::H_RIGHT));
+    }
+
+    #[test]
+    fn vcenter_offsets_correctly() {
+        let font = test_font();
+        let draw = draw_in_rect(
+            &font,
+            "x",
+            TextRect { x: 0, y: 0, w: 100, h: 40 },
+            [1.0, 1.0, 1.0],
+            ShellAlign::V_CENTER,
+            [0.0, 0.0],
+            0.5,
+        );
+        assert_eq!(draw.instances.len(), 1);
+        let expected_y = ((40 - 17) / 2) as f32;
+        assert!(
+            (draw.instances[0].position[1] - expected_y).abs() < 0.01,
+            "y = {}",
+            draw.instances[0].position[1]
+        );
+    }
+
+    #[test]
+    fn align_center_single_line() {
+        let font = test_font();
+        let draw = draw_in_rect(
+            &font,
+            "x",
+            TextRect { x: 0, y: 0, w: 100, h: 30 },
+            [1.0, 1.0, 1.0],
+            ShellAlign::H_CENTER,
+            [0.0, 0.0],
+            0.5,
+        );
+        assert_eq!(draw.instances.len(), 1);
+        let expected_x = ((100 - 6) / 2) as f32;
+        assert!(
+            (draw.instances[0].position[0] - expected_x).abs() < 0.01,
+            "x = {}",
+            draw.instances[0].position[0]
+        );
+    }
+
+    #[test]
+    fn align_right_single_line() {
+        let font = test_font();
+        let draw = draw_in_rect(
+            &font,
+            "x",
+            TextRect { x: 0, y: 0, w: 100, h: 30 },
+            [1.0, 1.0, 1.0],
+            ShellAlign::H_RIGHT,
+            [0.0, 0.0],
+            0.5,
+        );
+        assert_eq!(draw.instances.len(), 1);
+        let expected_x = (100 - 6) as f32;
+        assert!(
+            (draw.instances[0].position[0] - expected_x).abs() < 0.01,
+            "x = {}",
+            draw.instances[0].position[0]
+        );
+    }
+}
