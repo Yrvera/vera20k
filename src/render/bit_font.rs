@@ -98,6 +98,7 @@ impl BitFont {
         self.cell_height as f32
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn build_text(
         &self,
         text: &str,
@@ -294,10 +295,10 @@ impl BitFont {
             return Some(self.space_width);
         }
         let cp = ch as u32;
-        if cp <= u16::MAX as u32 {
-            if let Some(g) = self.glyphs.get(&(cp as u16)) {
-                return Some(g.pixel_width as u32);
-            }
+        if cp <= u16::MAX as u32
+            && let Some(g) = self.glyphs.get(&(cp as u16))
+        {
+            return Some(g.pixel_width as u32);
         }
         self.missing_glyph.as_ref().map(|g| g.pixel_width as u32)
     }

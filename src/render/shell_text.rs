@@ -126,7 +126,12 @@ mod tests {
         let draw = draw_in_rect(
             &font,
             "x",
-            TextRect { x: 10, y: 20, w: 100, h: 30 },
+            TextRect {
+                x: 10,
+                y: 20,
+                w: 100,
+                h: 30,
+            },
             [1.0, 1.0, 1.0],
             ShellAlign::NONE,
             [0.0, 0.0],
@@ -144,7 +149,12 @@ mod tests {
         let draw = draw_in_rect(
             &font,
             "",
-            TextRect { x: 0, y: 0, w: 100, h: 30 },
+            TextRect {
+                x: 0,
+                y: 0,
+                w: 100,
+                h: 30,
+            },
             [1.0, 1.0, 1.0],
             ShellAlign::V_CENTER | ShellAlign::H_CENTER,
             [0.0, 0.0],
@@ -167,7 +177,12 @@ mod tests {
         let draw = draw_in_rect(
             &font,
             "x",
-            TextRect { x: 0, y: 0, w: 100, h: 40 },
+            TextRect {
+                x: 0,
+                y: 0,
+                w: 100,
+                h: 40,
+            },
             [1.0, 1.0, 1.0],
             ShellAlign::V_CENTER,
             [0.0, 0.0],
@@ -188,7 +203,12 @@ mod tests {
         let draw = draw_in_rect(
             &font,
             "x",
-            TextRect { x: 0, y: 0, w: 100, h: 30 },
+            TextRect {
+                x: 0,
+                y: 0,
+                w: 100,
+                h: 30,
+            },
             [1.0, 1.0, 1.0],
             ShellAlign::H_CENTER,
             [0.0, 0.0],
@@ -209,7 +229,12 @@ mod tests {
         let draw = draw_in_rect(
             &font,
             "x",
-            TextRect { x: 0, y: 0, w: 100, h: 30 },
+            TextRect {
+                x: 0,
+                y: 0,
+                w: 100,
+                h: 30,
+            },
             [1.0, 1.0, 1.0],
             ShellAlign::H_RIGHT,
             [0.0, 0.0],

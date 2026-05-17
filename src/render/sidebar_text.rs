@@ -41,6 +41,7 @@ pub fn texture(font: &BitFont) -> &BatchTexture {
     font.atlas()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_text(
     font: &BitFont,
     text: &str,
@@ -57,6 +58,7 @@ pub fn build_text(
 /// Selected-unit fade. First `fade_param` characters (capped at 8) tint from
 /// `side_highlight` toward `base_color`; subsequent characters use
 /// `base_color`. `fade_param == 0` => no fade (equivalent to `build_text`).
+#[allow(clippy::too_many_arguments)]
 pub fn build_text_with_fade(
     font: &BitFont,
     text: &str,
