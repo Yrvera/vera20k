@@ -33,7 +33,7 @@ pub fn glyph_height(font: &BitFont) -> f32 {
     font.glyph_height()
 }
 
-pub fn darken_texture(font: &BitFont) -> &BatchTexture {
+pub fn darken_texture(font: &BitFont) -> Option<&BatchTexture> {
     font.darken_texture()
 }
 
