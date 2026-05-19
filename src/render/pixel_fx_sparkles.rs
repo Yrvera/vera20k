@@ -80,6 +80,31 @@ fn coord_key(rx: u16, ry: u16) -> u64 {
     ((rx as u64) << 32) | ((ry as u64) << 16)
 }
 
+/// Ping-pong lerp between base (dim) and peak (bright) colors.
+///
+/// Phase is the position within a cycle, domain [0, 0x2000). The cycle is
+/// symmetric: phase [0, 0x1000) rises from base to peak; phase [0x1000,
+/// 0x2000) falls from peak back to base. (L13, L14, L16)
+///
+/// Per-channel formula (L15):
+///     current = (base * (0x1000 - lerp) + peak * lerp) >> 12
+///
+/// where `lerp = phase & 0xFFF`, optionally flipped if bit 0x1000 is set.
+#[inline]
+fn ping_pong_lerp(phase: u32, base: [u8; 3], peak: [u8; 3]) -> [u8; 3] {
+    let mut lerp = phase & 0xFFF;
+    if (phase & 0x1000) != 0 {
+        lerp = 0x1000 - lerp;
+    }
+    let inv = 0x1000 - lerp;
+    let blend = |b: u8, p: u8| -> u8 {
+        // (base * inv + peak * lerp) >> 12. Use u32 to avoid overflow
+        // (255 * 0x1000 = 1,044,480, fits in u32 easily).
+        (((b as u32) * inv + (p as u32) * lerp) >> 12) as u8
+    };
+    [blend(base[0], peak[0]), blend(base[1], peak[1]), blend(base[2], peak[2])]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,5 +182,57 @@ mod tests {
         assert_ne!(s0, s1);
         assert_ne!(s1, s2);
         assert_ne!(s0, s2);
+    }
+
+    #[test]
+    fn lerp_at_phase_0_is_base() {
+        // L16: phase 0 → base color (sparkle just spawned, dim).
+        // L23: cells START dim each cycle.
+        let result = ping_pong_lerp(0, [40, 40, 80], [158, 158, 224]);
+        assert_eq!(result, [40, 40, 80]);
+    }
+
+    #[test]
+    fn lerp_at_phase_0x1000_is_peak() {
+        // L16: phase 0x1000 → peak color (sparkle at brightest).
+        let result = ping_pong_lerp(0x1000, [40, 40, 80], [158, 158, 224]);
+        assert_eq!(result, [158, 158, 224]);
+    }
+
+    #[test]
+    fn lerp_at_phase_0x1FFF_is_near_base() {
+        // L16: phase 0x1FFF → near base (one step before re-init).
+        // With lerp = 0xFFF flipped via bit 0x1000, the inv weight is 0xFFF
+        // and the lerp weight is 1 — overwhelmingly base.
+        let result = ping_pong_lerp(0x1FFF, [40, 40, 80], [158, 158, 224]);
+        // (40 * 0xFFF + 158 * 1) >> 12 = (163800 + 158) >> 12 = 164158 >> 12 = 40
+        assert_eq!(result, [40, 40, 80]);
+    }
+
+    #[test]
+    fn lerp_ping_pong_symmetry() {
+        // L14: phase (0x1000 - x) and (0x1000 + x) must yield same color
+        // for any x in 1..0x1000. This is the ping-pong invariant.
+        let base = [40, 40, 80];
+        let peak = [158, 158, 224];
+        for x in [1u32, 100, 0x400, 0x800, 0xFFF] {
+            let rising = ping_pong_lerp(0x1000 - x, base, peak);
+            let falling = ping_pong_lerp(0x1000 + x, base, peak);
+            assert_eq!(rising, falling, "asymmetry at x={:#x}", x);
+        }
+    }
+
+    #[test]
+    fn lerp_monotonic_rise_first_half() {
+        // Phase 0 → 0x1000 should produce monotonically rising R channel
+        // (since peak.R > base.R for water). Catches a flipped formula.
+        let base = [40, 40, 80];
+        let peak = [158, 158, 224];
+        let mut prev_r = 0u8;
+        for phase in (0..=0x1000).step_by(0x100) {
+            let rgb = ping_pong_lerp(phase, base, peak);
+            assert!(rgb[0] >= prev_r, "R not monotonic at phase {:#x}: {} < {}", phase, rgb[0], prev_r);
+            prev_r = rgb[0];
+        }
     }
 }
