@@ -59,7 +59,10 @@ fn test_theater_def_lookup() {
     assert!(theater_def("temperate").is_some());
     assert!(theater_def("SNOW").is_some());
     assert!(theater_def("URBAN").is_some());
-    assert!(theater_def("DESERT").is_none());
+    assert!(theater_def("DESERT").is_some());
+    assert!(theater_def("LUNAR").is_some());
+    assert!(theater_def("NEWURBAN").is_some());
+    assert!(theater_def("BOGUS").is_none());
 }
 
 #[test]
