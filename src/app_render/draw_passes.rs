@@ -139,6 +139,24 @@ pub(super) fn dispatch_draw_passes(
         state.palette_set.as_ref(),
     );
 
+    // --- Step 5.5: PixelFX water/ore sparkles ---
+    // Per-frame 1-pixel sparkles over visible water and ore cells. Matches
+    // gamemd's DrawPixelFXSparkles position (between unit pass and UI pass).
+    // Opaque sprite, no blend; passthrough pipeline bypasses depth test.
+    // Empty buffer when graphics.extra_animations is off — draw_with_buffer_passthrough
+    // short-circuits at count == 0.
+    if let (Some(overlay), Some((buf, count))) = (
+        state.selection_overlay.as_ref(),
+        pool.get("cell_sparkles"),
+    ) {
+        state.batch_renderer.draw_with_buffer_passthrough(
+            &mut pass,
+            overlay.white_texture(),
+            buf,
+            count,
+        );
+    }
+
     // --- Step 6: Building turrets ---
     // Drawn AFTER all layer-2 objects (separate turret pass). Building turret
     // VXLs go through the voxel sprite pipeline like regular vehicle voxels.
