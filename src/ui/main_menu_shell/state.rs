@@ -28,6 +28,9 @@ pub enum MainMenuShellAction {
 #[derive(Debug, Clone, Default)]
 pub struct MainMenuShellState {
     pub pressed_owner_draw_button: Option<MainMenuControlId>,
+    /// Control under the cursor right now, if any. Drives the bottom-left
+    /// tooltip status line.
+    pub hovered_owner_draw_button: Option<MainMenuControlId>,
 }
 
 pub fn action_for_control(id: MainMenuControlId) -> MainMenuShellAction {
@@ -67,6 +70,20 @@ pub fn csf_key_for_control(id: MainMenuControlId) -> &'static str {
     }
 }
 
+/// CSF key for the bottom-left hover-tooltip status line, looked up per
+/// control when the cursor is over a main-menu owner-draw button.
+pub fn tooltip_csf_key_for_control(id: MainMenuControlId) -> &'static str {
+    match id {
+        MainMenuControlId::SinglePlayer0x683 => "STT:MainButtonSinglePlayer",
+        MainMenuControlId::WwOnline0x684 => "STT:MainButtonWWOnline",
+        MainMenuControlId::Network0x578 => "STT:MainButtonNetwork",
+        MainMenuControlId::MoviesAndCredits0x686 => "STT:MainButtonMovies",
+        MainMenuControlId::Options0x55c => "STT:MainButtonOptions",
+        MainMenuControlId::ExitGame0x3ee => "STT:MainButtonExitGamemd",
+        MainMenuControlId::YuriWebsite0x71b => "STT:MainButtonYuriWebSite",
+    }
+}
+
 pub fn hit_test_owner_draw_button(
     layout: &MainMenuShellLayout,
     x: i32,
@@ -81,6 +98,11 @@ pub fn hit_test_owner_draw_button(
 
 pub fn mouse_down(state: &mut MainMenuShellState, layout: &MainMenuShellLayout, x: i32, y: i32) {
     state.pressed_owner_draw_button = hit_test_owner_draw_button(layout, x, y);
+}
+
+/// Update the hover tracking from a cursor position. Called per mouse move.
+pub fn mouse_move(state: &mut MainMenuShellState, layout: &MainMenuShellLayout, x: i32, y: i32) {
+    state.hovered_owner_draw_button = hit_test_owner_draw_button(layout, x, y);
 }
 
 pub fn mouse_up(

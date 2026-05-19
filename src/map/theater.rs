@@ -109,6 +109,45 @@ const THEATER_DEFS: &[(&str, TheaterDef)] = &[
             mix_archives: &["isourbnmd.mix", "isourb.mix", "urb.mix", "urban.mix"],
         },
     ),
+    // YR-introduced theaters. No base RA2 INI variants exist for these in
+    // retail (urbann.ini / lunar.ini / desert.ini absent), so only the YR
+    // `md` INI is listed. MIX/palette names follow the same Westwood
+    // convention as TEMPERATE/SNOW/URBAN: 6-char `iso<ext>.pal` iso
+    // palette, `unit<ext>.pal` unit palette, `<name>.pal` for tiberium.
+    (
+        "LUNAR",
+        TheaterDef {
+            ini_names: &["lunarmd.ini"],
+            extension: "lun",
+            palette_names: &["isolun.pal", "lunar.pal"],
+            unit_palette_names: &["unitlun.pal", "unit.pal"],
+            tiberium_palette_names: &["lunar.pal", "isolun.pal"],
+            mix_archives: &["isolunmd.mix", "isolun.mix", "lun.mix", "lunar.mix"],
+        },
+    ),
+    (
+        "DESERT",
+        TheaterDef {
+            ini_names: &["desertmd.ini"],
+            extension: "des",
+            palette_names: &["isodes.pal", "desert.pal"],
+            unit_palette_names: &["unitdes.pal", "unit.pal"],
+            tiberium_palette_names: &["desert.pal", "isodes.pal"],
+            mix_archives: &["isodesmd.mix", "isodes.mix", "des.mix", "desert.mix"],
+        },
+    ),
+    (
+        "NEWURBAN",
+        TheaterDef {
+            // INI key is `urbann` (double-n), the engine theater key is `NEWURBAN`.
+            ini_names: &["urbannmd.ini"],
+            extension: "ubn",
+            palette_names: &["isoubn.pal", "urbann.pal"],
+            unit_palette_names: &["unitubn.pal", "unit.pal"],
+            tiberium_palette_names: &["urbann.pal", "isoubn.pal"],
+            mix_archives: &["isoubnmd.mix", "isoubn.mix", "ubn.mix", "urbann.mix"],
+        },
+    ),
 ];
 
 /// Start tile_id and count for one tileset section (e.g., [TileSet0013]).
@@ -900,6 +939,14 @@ pub fn load_tile_images(
     let mut missing_file_count: u32 = 0;
     let mut empty_cell_count: u32 = 0;
     let mut parse_error_count: u32 = 0;
+    // Diagnostic samples: up to 16 distinct tile_ids per failure bucket.
+    // Lets the load log show which specific tile ranges are unresolved without
+    // flooding output. Each tile_id appears at most once because the outer loop
+    // is keyed on a distinct tile_id.
+    let mut out_of_range_samples: Vec<u16> = Vec::new();
+    let mut blank_slot_samples: Vec<u16> = Vec::new();
+    let mut missing_file_samples: Vec<(u16, String)> = Vec::new();
+    const SAMPLE_CAP: usize = 16;
 
     // Group needed tiles by tile_id to batch-load TMP files.
     let mut by_tile_id: HashMap<u16, Vec<u8>> = HashMap::new();
@@ -916,6 +963,9 @@ pub fn load_tile_images(
         // Distinguish out-of-range from blank slots.
         if tile_id_i32 >= lookup.len() as i32 {
             out_of_range_count += sub_tiles.len() as u32;
+            if out_of_range_samples.len() < SAMPLE_CAP {
+                out_of_range_samples.push(*tile_id);
+            }
             continue;
         }
 
@@ -923,6 +973,9 @@ pub fn load_tile_images(
             Some(f) => f,
             None => {
                 blank_slot_count += sub_tiles.len() as u32;
+                if blank_slot_samples.len() < SAMPLE_CAP {
+                    blank_slot_samples.push(*tile_id);
+                }
                 continue;
             }
         };
@@ -931,6 +984,9 @@ pub fn load_tile_images(
             Some(d) => d,
             None => {
                 missing_file_count += sub_tiles.len() as u32;
+                if missing_file_samples.len() < SAMPLE_CAP {
+                    missing_file_samples.push((*tile_id, filename.to_string()));
+                }
                 log::trace!("TMP not found: {} (tile_id {})", filename, tile_id);
                 continue;
             }
@@ -1051,6 +1107,26 @@ pub fn load_tile_images(
         parse_error_count,
         needed.len()
     );
+    if !out_of_range_samples.is_empty() {
+        log::info!(
+            "  out-of-range tile_id samples (max {}): {:?} (lookup.len={})",
+            SAMPLE_CAP,
+            out_of_range_samples,
+            lookup.len()
+        );
+    }
+    if !blank_slot_samples.is_empty() {
+        log::info!(
+            "  blank-slot tile_id samples (max {}): {:?}",
+            SAMPLE_CAP, blank_slot_samples
+        );
+    }
+    if !missing_file_samples.is_empty() {
+        log::info!(
+            "  missing-file samples (max {}): {:?}",
+            SAMPLE_CAP, missing_file_samples
+        );
+    }
 
     images
 }

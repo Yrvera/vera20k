@@ -10,34 +10,19 @@ use crate::render::batch::SpriteInstance;
 use crate::render::main_menu_shell_chrome::{MainMenuShellChromeAtlas, MainMenuShellChromeEntry};
 use crate::render::shell_text::ShellTextDraw;
 use crate::ui::main_menu_shell::{
-    MainMenuControlId, MainMenuShellLayout, RectPx, compute_responsive_layout, csf_key_for_control,
+    MainMenuControlId, MainMenuShellLayout, RIGHT_PANEL_TILE_H, RIGHT_PANEL_WIDTH, RectPx,
+    compute_responsive_layout, csf_key_for_control, tooltip_csf_key_for_control,
 };
 
 const MOVIE_DEPTH: f32 = 0.00095;
+const CHROME_DEPTH: f32 = 0.00085;
 const BUTTON_DEPTH: f32 = 0.00080;
 const TEXT_DEPTH: f32 = 0.00070;
-const RETAIL_BUTTON_CLIENT_W: f32 = 162.0;
-const RETAIL_BUTTON_CLIENT_H: f32 = 37.0;
 const SHELL_BUTTON_TEXT_RGB_FFFF00: [f32; 3] = [1.0, 1.0, 0.0];
 
 pub(crate) enum MainMenuShellRenderResult {
     Rendered,
     Fallback,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ButtonPiece {
-    Left,
-    Middle,
-    Right,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct ButtonSegment {
-    piece: ButtonPiece,
-    x: f32,
-    width: f32,
-    uv_width_ratio: f32,
 }
 
 fn push_entry_sized(
@@ -60,105 +45,41 @@ fn push_entry_sized(
     });
 }
 
-fn button_entries(
+fn button_frame(
     atlas: &MainMenuShellChromeAtlas,
     pressed: bool,
-) -> (
-    MainMenuShellChromeEntry,
-    MainMenuShellChromeEntry,
-    MainMenuShellChromeEntry,
-) {
+    hovered: bool,
+) -> MainMenuShellChromeEntry {
     if pressed {
-        (
-            atlas.button_down_left_30,
-            atlas.button_down_mid_30,
-            atlas.button_down_right_30,
-        )
+        atlas.button_pressed
+    } else if hovered {
+        atlas.button_hover
     } else {
-        (
-            atlas.button_up_left_30,
-            atlas.button_up_mid_30,
-            atlas.button_up_right_30,
-        )
+        atlas.button_default
     }
 }
 
-fn build_button_segments(
-    rect: RectPx,
-    left_w: f32,
-    mid_w: f32,
-    right_w: f32,
-) -> Vec<ButtonSegment> {
-    if rect.w <= 0 {
-        return Vec::new();
-    }
-    let rect_w = rect.w as f32;
-    let left_w = left_w.round().max(1.0).min(rect_w);
-    let right_w = right_w.round().max(1.0).min((rect_w - left_w).max(0.0));
-    let mid_w = mid_w.round().max(1.0);
-    let mut segments = vec![ButtonSegment {
-        piece: ButtonPiece::Left,
-        x: rect.x as f32,
-        width: left_w,
-        uv_width_ratio: 1.0,
-    }];
-
-    let mut x = rect.x as f32 + left_w;
-    let end = rect.x as f32 + rect_w - right_w;
-    while x < end - f32::EPSILON {
-        let width = (end - x).min(mid_w);
-        segments.push(ButtonSegment {
-            piece: ButtonPiece::Middle,
-            x,
-            width,
-            uv_width_ratio: width / mid_w,
-        });
-        x += width;
-    }
-
-    segments.push(ButtonSegment {
-        piece: ButtonPiece::Right,
-        x: rect.x as f32 + rect_w - right_w,
-        width: right_w,
-        uv_width_ratio: 1.0,
-    });
-    segments
-}
-
-fn button_art_y_and_height(rect: RectPx, source_h: f32) -> (f32, f32) {
-    let scale_y = (rect.h as f32 / RETAIL_BUTTON_CLIENT_H).max(0.0);
-    let art_h = (source_h * scale_y).round().max(1.0);
-    let art_y = rect.y as f32 + ((rect.h as f32 - art_h) / 2.0).trunc();
-    (art_y, art_h)
-}
-
-fn push_button_30(
+fn push_button_shp(
     out: &mut Vec<SpriteInstance>,
     atlas: &MainMenuShellChromeAtlas,
     rect: RectPx,
     pressed: bool,
+    hovered: bool,
     depth: f32,
 ) {
-    let (left, mid, right) = button_entries(atlas, pressed);
-    let scale_x = (rect.w as f32 / RETAIL_BUTTON_CLIENT_W).max(0.0);
-    let (art_y, art_h) = button_art_y_and_height(rect, left.pixel_size[1]);
-    for segment in build_button_segments(
-        rect,
-        left.pixel_size[0] * scale_x,
-        mid.pixel_size[0] * scale_x,
-        right.pixel_size[0] * scale_x,
-    ) {
-        let mut entry = match segment.piece {
-            ButtonPiece::Left => left,
-            ButtonPiece::Middle => mid,
-            ButtonPiece::Right => right,
-        };
-        if segment.piece == ButtonPiece::Middle && segment.uv_width_ratio < 1.0 {
-            entry.uv_size[0] *= segment.uv_width_ratio;
-            entry.pixel_size[0] = segment.width;
-        }
-        push_entry_sized(out, entry, segment.x, art_y, [segment.width, art_h], depth);
-    }
+    let frame = button_frame(atlas, pressed, hovered);
+    // The SHP frame is 156x42 native and the chrome tile is 168x42 — the
+    // 12 px difference is the dark chrome bevel that frames each button.
+    // Preserve that ratio at any responsive scale: take the rect's scale
+    // factor vs the base chrome tile and apply it to the frame's native
+    // pixel size, then center the result inside the rect.
+    let scale_x = rect.w as f32 / RIGHT_PANEL_WIDTH as f32;
+    let scale_y = rect.h as f32 / RIGHT_PANEL_TILE_H as f32;
+    let frame_w = frame.pixel_size[0] * scale_x;
+    let frame_h = frame.pixel_size[1] * scale_y;
+    let x = rect.x as f32 + (rect.w as f32 - frame_w) * 0.5;
+    let y = rect.y as f32 + (rect.h as f32 - frame_h) * 0.5;
+    push_entry_sized(out, frame, x, y, [frame_w, frame_h], depth);
 }
 
 fn resolve_csf<'a>(state: &'a AppState, key: &'static str) -> &'a str {
@@ -169,15 +90,15 @@ fn resolve_csf<'a>(state: &'a AppState, key: &'static str) -> &'a str {
         .unwrap_or(key)
 }
 
-// This wrapper is the only main-menu label path; keep placement fixes here.
-fn push_centered_label(
+fn push_label(
     out: &mut Vec<ShellTextDraw>,
     state: &AppState,
     text: &str,
     rect: RectPx,
     y_offset: i32,
+    align: crate::render::shell_text::ShellAlign,
 ) {
-    use crate::render::shell_text::{ShellAlign, TextRect};
+    use crate::render::shell_text::TextRect;
 
     let text_rect = TextRect {
         x: rect.x,
@@ -190,7 +111,7 @@ fn push_centered_label(
         text,
         text_rect,
         SHELL_BUTTON_TEXT_RGB_FFFF00,
-        ShellAlign::H_CENTER | ShellAlign::V_CENTER,
+        align,
         [0.0, 0.0],
         TEXT_DEPTH,
     ));
@@ -200,16 +121,62 @@ fn build_button_instances(
     atlas: &MainMenuShellChromeAtlas,
     layout: &MainMenuShellLayout,
     pressed_button: Option<MainMenuControlId>,
+    hovered_button: Option<MainMenuControlId>,
 ) -> Vec<SpriteInstance> {
     let mut out = Vec::new();
     for button in &layout.buttons {
-        push_button_30(
-            &mut out,
-            atlas,
-            button.rect,
-            pressed_button == Some(button.id),
-            BUTTON_DEPTH,
-        );
+        let pressed = pressed_button == Some(button.id);
+        let hovered = !pressed && hovered_button == Some(button.id);
+        push_button_shp(&mut out, atlas, button.rect, pressed, hovered, BUTTON_DEPTH);
+    }
+    out
+}
+
+fn push_entry_rect(
+    out: &mut Vec<SpriteInstance>,
+    entry: MainMenuShellChromeEntry,
+    rect: RectPx,
+    depth: f32,
+) {
+    push_entry_sized(
+        out,
+        entry,
+        rect.x as f32,
+        rect.y as f32,
+        [rect.w as f32, rect.h as f32],
+        depth,
+    );
+}
+
+fn build_chrome_instances(
+    atlas: &MainMenuShellChromeAtlas,
+    layout: &MainMenuShellLayout,
+) -> Vec<SpriteInstance> {
+    let mut out = Vec::new();
+    if let Some(top) = atlas.right_panel_top_sdtp {
+        push_entry_rect(&mut out, top, layout.right_panel.top, CHROME_DEPTH);
+    }
+    if let Some(tile) = atlas.right_panel_tile_sdbtnbkgd {
+        for row in 0..layout.right_panel.tile_count {
+            let rect = RectPx::new(
+                layout.right_panel.tile.x,
+                layout.right_panel.tile.y + row * layout.right_panel.tile.h,
+                layout.right_panel.tile.w,
+                layout.right_panel.tile.h,
+            );
+            push_entry_rect(&mut out, tile, rect, CHROME_DEPTH);
+        }
+    }
+    if let Some(bottom) = atlas.right_panel_bottom_sdbtm {
+        push_entry_rect(&mut out, bottom, layout.right_panel.bottom, CHROME_DEPTH);
+    }
+    let lower_strip_entry = if layout.screen.w <= 640 {
+        atlas.lower_side_640_lwscrns
+    } else {
+        atlas.lower_side_large_lwscrnl
+    };
+    if let Some(strip) = lower_strip_entry {
+        push_entry_rect(&mut out, strip, layout.lower_strip, CHROME_DEPTH);
     }
     out
 }
@@ -218,8 +185,12 @@ fn build_text_draws(
     state: &AppState,
     layout: &MainMenuShellLayout,
     pressed_button: Option<MainMenuControlId>,
+    hovered_button: Option<MainMenuControlId>,
 ) -> Vec<ShellTextDraw> {
+    use crate::render::shell_text::ShellAlign;
     let mut out = Vec::new();
+    // Owner-draw buttons render h-centered + v-centered within their client rect.
+    let button_align = ShellAlign::H_CENTER | ShellAlign::V_CENTER;
     for button in &layout.buttons {
         let text = resolve_csf(state, csf_key_for_control(button.id));
         let y_offset = if pressed_button == Some(button.id) {
@@ -227,10 +198,37 @@ fn build_text_draws(
         } else {
             0
         };
-        push_centered_label(&mut out, state, text, button.rect, y_offset);
+        push_label(&mut out, state, text, button.rect, y_offset, button_align);
     }
+    // Static text labels (title heading, version, tooltip) render top-anchored
+    // h-centered within their rect — they are not vertically centered.
     let title = resolve_csf(state, "GUI:MainMenu");
-    push_centered_label(&mut out, state, title, layout.title, 0);
+    push_label(&mut out, state, title, layout.title, 0, ShellAlign::H_CENTER);
+
+    let version_label = resolve_csf(state, "GUI:Version");
+    let version_text = format!("{} {}", version_label, state.version_txt);
+    push_label(
+        &mut out,
+        state,
+        &version_text,
+        layout.version_line,
+        0,
+        ShellAlign::H_CENTER,
+    );
+
+    if let Some(id) = hovered_button {
+        let tip_key = tooltip_csf_key_for_control(id);
+        let tip_text = resolve_csf(state, tip_key);
+        push_label(
+            &mut out,
+            state,
+            tip_text,
+            layout.tooltip_line,
+            0,
+            ShellAlign::H_CENTER,
+        );
+    }
+
     out
 }
 
@@ -335,15 +333,18 @@ pub(crate) fn render_main_menu_shell(
         .expect("movie loaded before render");
 
     let movie_instances = build_movie_instances(&layout);
+    let chrome_instances = build_chrome_instances(chrome, &layout);
     let button_instances = build_button_instances(
         chrome,
         &layout,
         state.main_menu_shell_state.pressed_owner_draw_button,
+        state.main_menu_shell_state.hovered_owner_draw_button,
     );
     let text_draws = build_text_draws(
         state,
         &layout,
         state.main_menu_shell_state.pressed_owner_draw_button,
+        state.main_menu_shell_state.hovered_owner_draw_button,
     );
 
     state.batch_renderer.update_camera(
@@ -357,6 +358,9 @@ pub(crate) fn render_main_menu_shell(
     let movie_buffer = state
         .batch_renderer
         .create_instance_buffer(&state.gpu, &movie_instances);
+    let chrome_buffer = state
+        .batch_renderer
+        .create_instance_buffer(&state.gpu, &chrome_instances);
     let button_buffer = state
         .batch_renderer
         .create_instance_buffer(&state.gpu, &button_instances);
@@ -396,6 +400,14 @@ pub(crate) fn render_main_menu_shell(
             .batch_renderer
             .draw_with_buffer_passthrough(&mut pass, movie_texture, buffer, *count);
     }
+    if let Some((buffer, count)) = chrome_buffer.as_ref() {
+        state.batch_renderer.draw_with_buffer_passthrough(
+            &mut pass,
+            &chrome.texture,
+            buffer,
+            *count,
+        );
+    }
     if let Some((buffer, count)) = button_buffer.as_ref() {
         state.batch_renderer.draw_with_buffer_passthrough(
             &mut pass,
@@ -431,27 +443,6 @@ pub(crate) fn render_main_menu_shell(
 mod tests {
     use super::*;
     use crate::ui::main_menu_shell::compute_layout;
-
-    #[test]
-    fn button_segments_tile_middle_and_keep_caps() {
-        let rect = RectPx::new(638, 203, 162, 37);
-        let segments = build_button_segments(rect, 10.0, 8.0, 10.0);
-        assert_eq!(segments.first().unwrap().piece, ButtonPiece::Left);
-        assert_eq!(segments.last().unwrap().piece, ButtonPiece::Right);
-        let total: f32 = segments.iter().map(|s| s.width).sum();
-        assert_eq!(total.round() as i32, rect.w);
-    }
-
-    #[test]
-    fn button_instances_center_scaled_30px_art_in_client() {
-        let (y, h) = button_art_y_and_height(RectPx::new(638, 203, 162, 37), 30.0);
-        assert_eq!(y, 206.0);
-        assert_eq!(h, 30.0);
-
-        let (y, h) = button_art_y_and_height(RectPx::new(1276, 305, 324, 55), 30.0);
-        assert_eq!(y, 310.0);
-        assert_eq!(h, 45.0);
-    }
 
     #[test]
     fn movie_instance_uses_layout_movie_rect() {

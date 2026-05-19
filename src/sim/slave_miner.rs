@@ -176,7 +176,7 @@ fn process_slave(
 fn handle_slave_search(
     sim: &Simulation,
     rules: &RuleSet,
-    _config: &MinerConfig,
+    config: &MinerConfig,
     snap: &mut SlaveSnapshot,
 ) {
     let scan_radius: u16 = rules.general.slave_miner_slave_scan.max(1) as u16;
@@ -193,6 +193,8 @@ fn handle_slave_search(
         master_pos,
         scan_radius,
         None,
+        config.ore_bale_value,
+        config.gem_bale_value,
     ) {
         snap.harvester.target_cell = Some(cell);
         snap.harvester.state = SlaveHarvestState::MoveToOre;
@@ -332,7 +334,7 @@ fn handle_slave_deposit(
 fn handle_slave_idle(
     sim: &Simulation,
     rules: &RuleSet,
-    _config: &MinerConfig,
+    config: &MinerConfig,
     snap: &mut SlaveSnapshot,
 ) {
     // Try to find ore every few ticks (reuse search logic).
@@ -348,6 +350,8 @@ fn handle_slave_idle(
         master_pos,
         scan_radius,
         None,
+        config.ore_bale_value,
+        config.gem_bale_value,
     ) {
         snap.harvester.target_cell = Some(cell);
         snap.harvester.state = SlaveHarvestState::MoveToOre;
@@ -628,16 +632,30 @@ pub fn check_scan_correction(
 
     let short_scan: u16 = rules.general.slave_miner_short_scan.max(1) as u16;
     let correction: u16 = rules.general.slave_miner_scan_correction.max(0) as u16;
+    let cfg = MinerConfig::from_general_rules(&rules.general);
 
     // Find nearest ore from current position.
-    let current_nearest =
-        search_local_ore(&sim.production.resource_nodes, (mrx, mry), short_scan, None)?;
+    let current_nearest = search_local_ore(
+        &sim.production.resource_nodes,
+        (mrx, mry),
+        short_scan,
+        None,
+        cfg.ore_bale_value,
+        cfg.gem_bale_value,
+    )?;
 
     let current_dist: u16 = manhattan_distance(mrx, mry, current_nearest.0, current_nearest.1);
 
     // Search the broader area (SlaveMinerLongScan) for a better patch.
     let long_scan: u16 = rules.general.slave_miner_long_scan.max(1) as u16;
-    let better_ore = search_local_ore(&sim.production.resource_nodes, (mrx, mry), long_scan, None)?;
+    let better_ore = search_local_ore(
+        &sim.production.resource_nodes,
+        (mrx, mry),
+        long_scan,
+        None,
+        cfg.ore_bale_value,
+        cfg.gem_bale_value,
+    )?;
 
     let better_dist: u16 = manhattan_distance(mrx, mry, better_ore.0, better_ore.1);
 

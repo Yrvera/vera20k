@@ -385,7 +385,9 @@ fn advance_until_c4_claim(
     heights: &BTreeMap<(u16, u16), u8>,
     target_id: u64,
 ) -> u64 {
-    for _ in 0..16 {
+    // SEAL/Tanya at Speed=4 covers ~10 lep/tick (gamemd-faithful), so a
+    // one-cell enter (256 leptons) takes ~26 ticks; 32 leaves headroom.
+    for _ in 0..32 {
         step(sim, rules, heights);
         if let Some(pending) = sim
             .entities

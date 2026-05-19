@@ -169,6 +169,9 @@ fn upload_to_gpu(
         }
     }
     pool.upload(&state.gpu, "building_turret", &world.building_turret);
+    // PixelFX water/ore sparkles — drawn between ground objects (Step 5) and
+    // turrets (Step 6). Empty when graphics.extra_animations is off.
+    pool.upload(&state.gpu, "cell_sparkles", &world.cell_sparkles);
     const PARTICLE_KEYS: [&str; 4] = ["particle_p0", "particle_p1", "particle_p2", "particle_p3"];
     for (i, page_inst) in world.particle_paged.iter().enumerate() {
         if i < PARTICLE_KEYS.len() {

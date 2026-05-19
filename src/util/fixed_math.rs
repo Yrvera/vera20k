@@ -365,7 +365,7 @@ pub fn ra2_speed_to_cells_per_second(raw_speed: i32) -> SimFixed {
     }
     // Uses the same formula as ra2_speed_to_leptons_per_second, then /256.
     let capped: i32 = raw_speed.min(100);
-    let leptons_per_tick: i32 = (capped * 256 / 60).min(255);
+    let leptons_per_tick: i32 = (capped * 256 / 100).min(255);
     SimFixed::from_num(leptons_per_tick * 15) / SimFixed::from_num(256)
 }
 
@@ -382,14 +382,10 @@ pub fn ra2_speed_to_leptons_per_second(raw_speed: i32) -> SimFixed {
     if raw_speed <= 0 {
         return SIM_ZERO;
     }
-    // RA2 Speed= is an abstract value (1–100+). The original engine's internal
-    // speed formula scales it so that Speed=4 (HARV) ≈ 1 cell/sec and
-    // Speed=8 (Grizzly) ≈ 2 cells/sec.
-    //
-    // Conversion: leptons_per_tick = speed * 256 / 60, capped at 255.
-    // leptons_per_second = leptons_per_tick * 15.
+    // Conversion: leptons_per_tick = speed * 256 / 100, capped at 255.
+    // leptons_per_second = leptons_per_tick * 15 (baseline = gamemd Slowest).
     let capped: i32 = raw_speed.min(100);
-    let leptons_per_tick: i32 = (capped * 256 / 60).min(255);
+    let leptons_per_tick: i32 = (capped * 256 / 100).min(255);
     SimFixed::from_num(leptons_per_tick * 15)
 }
 
@@ -701,41 +697,41 @@ mod tests {
 
     #[test]
     fn test_ra2_speed_harvester() {
-        // HARV: Speed=4. leptons/tick = 4*256/60 = 17. cells/sec = 17*15/256 ≈ 0.996
+        // HARV: Speed=4. leptons/tick = 4*256/100 = 10. cells/sec = 10*15/256 ≈ 0.586
         let speed: f32 = ra2_speed_to_cells_per_second(4).to_num();
         assert!(
-            (speed - 0.996).abs() < 0.01,
-            "Speed=4: got {speed}, expected ~0.996"
+            (speed - 0.586).abs() < 0.01,
+            "Speed=4: got {speed}, expected ~0.586"
         );
     }
 
     #[test]
     fn test_ra2_speed_medium_tank() {
-        // MTNK: Speed=6. leptons/tick = 6*256/60 = 25. cells/sec = 25*15/256 ≈ 1.465
+        // MTNK: Speed=6. leptons/tick = 6*256/100 = 15. cells/sec = 15*15/256 ≈ 0.879
         let speed: f32 = ra2_speed_to_cells_per_second(6).to_num();
         assert!(
-            (speed - 1.465).abs() < 0.01,
-            "Speed=6: got {speed}, expected ~1.465"
+            (speed - 0.879).abs() < 0.01,
+            "Speed=6: got {speed}, expected ~0.879"
         );
     }
 
     #[test]
     fn test_ra2_speed_infantry() {
-        // E1: Speed=11. leptons/tick = 11*256/60 = 46. cells/sec = 46*15/256 ≈ 2.695
+        // E1: Speed=11. leptons/tick = 11*256/100 = 28. cells/sec = 28*15/256 ≈ 1.641
         let speed: f32 = ra2_speed_to_cells_per_second(11).to_num();
         assert!(
-            (speed - 2.695).abs() < 0.02,
-            "Speed=11: got {speed}, expected ~2.695"
+            (speed - 1.641).abs() < 0.02,
+            "Speed=11: got {speed}, expected ~1.641"
         );
     }
 
     #[test]
     fn test_ra2_speed_fast_unit() {
-        // Speed=40. leptons/tick = 40*256/60 = 170. cells/sec = 170*15/256 ≈ 9.961
+        // Speed=40. leptons/tick = 40*256/100 = 102. cells/sec = 102*15/256 ≈ 5.977
         let speed: f32 = ra2_speed_to_cells_per_second(40).to_num();
         assert!(
-            (speed - 9.961).abs() < 0.02,
-            "Speed=40: got {speed}, expected ~9.961"
+            (speed - 5.977).abs() < 0.02,
+            "Speed=40: got {speed}, expected ~5.977"
         );
     }
 
@@ -762,11 +758,11 @@ mod tests {
 
     #[test]
     fn test_ra2_speed_one() {
-        // Speed=1. leptons/tick = 1*256/60 = 4. cells/sec = 4*15/256 ≈ 0.234
+        // Speed=1. leptons/tick = 1*256/100 = 2. cells/sec = 2*15/256 ≈ 0.117
         let speed: f32 = ra2_speed_to_cells_per_second(1).to_num();
         assert!(
-            (speed - 0.234).abs() < 0.01,
-            "Speed=1: got {speed}, expected ~0.234"
+            (speed - 0.117).abs() < 0.01,
+            "Speed=1: got {speed}, expected ~0.117"
         );
     }
 
@@ -796,11 +792,11 @@ mod tests {
 
     #[test]
     fn test_lepton_speed_harvester() {
-        // HARV: Speed=4. leptons/tick = 4*256/60 = 17. leptons/sec = 17*15 = 255 ≈ 1 cell/sec.
+        // HARV: Speed=4. leptons/tick = 4*256/100 = 10. leptons/sec = 10*15 = 150.
         let speed: f32 = ra2_speed_to_leptons_per_second(4).to_num();
         assert!(
-            (speed - 255.0).abs() < 1.0,
-            "Speed=4: got {speed}, expected ~255"
+            (speed - 150.0).abs() < 1.0,
+            "Speed=4: got {speed}, expected ~150"
         );
     }
 

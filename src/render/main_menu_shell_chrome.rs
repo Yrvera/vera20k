@@ -1,7 +1,16 @@
-//! Initial main-menu shell chrome atlas for dialog 0xE2 owner-draw buttons.
+//! Initial main-menu shell chrome atlas for dialog 0xE2 owner-draw buttons
+//! and the right-panel + lower-side chrome SHPs drawn underneath them by the
+//! parent WM_PAINT_Handler.
+//!
+//! Buttons are SDBTNANM.SHP frames 2 (default), 3 (hover), and 4 (pressed) —
+//! drawn through CC_Draw_Shape with the SDBTNANM palette, producing the
+//! red / orange / yellow gradient artwork the player sees. The `bue_*30` /
+//! `bde_*30` PCXs that ship in the same archives are greyscale and unused on
+//! this paint path.
 
 use crate::assets::asset_manager::AssetManager;
-use crate::assets::pcx_file::PcxFile;
+use crate::assets::pal_file::Palette;
+use crate::assets::shp_file::ShpFile;
 use crate::render::batch::{BatchRenderer, BatchTexture};
 use crate::render::gpu::GpuContext;
 
@@ -16,22 +25,18 @@ pub struct MainMenuShellChromeEntry {
 
 pub struct MainMenuShellChromeAtlas {
     pub texture: BatchTexture,
-    pub button_up_left_30: MainMenuShellChromeEntry,
-    pub button_up_mid_30: MainMenuShellChromeEntry,
-    pub button_up_right_30: MainMenuShellChromeEntry,
-    pub button_down_left_30: MainMenuShellChromeEntry,
-    pub button_down_mid_30: MainMenuShellChromeEntry,
-    pub button_down_right_30: MainMenuShellChromeEntry,
+    /// SDBTNANM.SHP frame 2 — default (unhovered, unpressed) button art.
+    pub button_default: MainMenuShellChromeEntry,
+    /// SDBTNANM.SHP frame 3 — hover state.
+    pub button_hover: MainMenuShellChromeEntry,
+    /// SDBTNANM.SHP frame 4 — pressed state.
+    pub button_pressed: MainMenuShellChromeEntry,
+    pub right_panel_top_sdtp: Option<MainMenuShellChromeEntry>,
+    pub right_panel_tile_sdbtnbkgd: Option<MainMenuShellChromeEntry>,
+    pub right_panel_bottom_sdbtm: Option<MainMenuShellChromeEntry>,
+    pub lower_side_640_lwscrns: Option<MainMenuShellChromeEntry>,
+    pub lower_side_large_lwscrnl: Option<MainMenuShellChromeEntry>,
 }
-
-const BUTTON_PCX_NAMES: [&str; 6] = [
-    "bue_li30.pcx",
-    "bue_mi30.pcx",
-    "bue_ri30.pcx",
-    "bde_li30.pcx",
-    "bde_mi30.pcx",
-    "bde_ri30.pcx",
-];
 
 struct RenderedChromeEntry {
     label: String,
@@ -46,36 +51,136 @@ pub fn build_main_menu_shell_chrome_atlas(
     assets: &AssetManager,
 ) -> Option<MainMenuShellChromeAtlas> {
     let mut rendered = Vec::new();
-    for name in BUTTON_PCX_NAMES {
-        let entry = render_pcx_entry(assets, name).or_else(|| {
-            log::warn!("Missing mandatory main-menu shell asset {name}");
-            None
-        })?;
-        rendered.push(entry);
+
+    // Button artwork: SDBTNANM frames 2/3/4 rendered with SDBTNANM.PAL.
+    // Fall back to SHELL2.PAL if the dedicated palette isn't shipped (it
+    // still produces a close colorization).
+    let sdbtnanm_palette = load_named_palette(assets, "SDBTNANM.PAL")
+        .or_else(|| load_named_palette(assets, "SHELL2.PAL"))?;
+    let frame_default = render_shp_frame(assets, "SDBTNANM.SHP", &sdbtnanm_palette, 2, "default")?;
+    let frame_hover = render_shp_frame(assets, "SDBTNANM.SHP", &sdbtnanm_palette, 3, "hover")?;
+    let frame_pressed = render_shp_frame(assets, "SDBTNANM.SHP", &sdbtnanm_palette, 4, "pressed")?;
+    rendered.push(frame_default);
+    rendered.push(frame_hover);
+    rendered.push(frame_pressed);
+
+    // Right-panel + lower-side chrome SHPs. These render with SHELL.PAL,
+    // except SDBTNBKGD which uses SHELL2.PAL.
+    let shell_palette = load_named_palette(assets, "SHELL.PAL");
+    let shell2_palette = load_named_palette(assets, "SHELL2.PAL");
+    if let Some(pal) = shell_palette.as_ref() {
+        push_optional_shp(&mut rendered, assets, "SDTP.SHP", pal, 0);
+        push_optional_shp(&mut rendered, assets, "SDBTM.SHP", pal, 0);
+        push_optional_shp(&mut rendered, assets, "LWSCRNS.SHP", pal, 0);
+        push_optional_shp(&mut rendered, assets, "LWSCRNL.SHP", pal, 0);
+    } else {
+        log::warn!("Missing SHELL.PAL; skipping main-menu right-panel chrome SHPs");
     }
+    if let Some(pal) = shell2_palette.as_ref() {
+        push_optional_shp(&mut rendered, assets, "SDBTNBKGD.SHP", pal, 0);
+    } else {
+        log::warn!("Missing SHELL2.PAL; skipping main-menu right-panel tile SHP");
+    }
+
     let (texture, packed) = pack_entries(gpu, batch, &rendered)?;
+    let mut by_label: std::collections::HashMap<String, MainMenuShellChromeEntry> =
+        std::collections::HashMap::new();
+    for (entry, placed) in rendered.iter().zip(packed.iter().copied()) {
+        by_label.insert(entry.label.clone(), placed);
+    }
     log::info!("Main-menu shell chrome atlas loaded");
     Some(MainMenuShellChromeAtlas {
         texture,
-        button_up_left_30: packed[0],
-        button_up_mid_30: packed[1],
-        button_up_right_30: packed[2],
-        button_down_left_30: packed[3],
-        button_down_mid_30: packed[4],
-        button_down_right_30: packed[5],
+        button_default: *by_label
+            .get("sdbtnanm.shp:default")
+            .expect("default button frame mandatory above"),
+        button_hover: *by_label
+            .get("sdbtnanm.shp:hover")
+            .expect("hover button frame mandatory above"),
+        button_pressed: *by_label
+            .get("sdbtnanm.shp:pressed")
+            .expect("pressed button frame mandatory above"),
+        right_panel_top_sdtp: by_label.get("sdtp.shp").copied(),
+        right_panel_tile_sdbtnbkgd: by_label.get("sdbtnbkgd.shp").copied(),
+        right_panel_bottom_sdbtm: by_label.get("sdbtm.shp").copied(),
+        lower_side_640_lwscrns: by_label.get("lwscrns.shp").copied(),
+        lower_side_large_lwscrnl: by_label.get("lwscrnl.shp").copied(),
     })
 }
 
-fn render_pcx_entry(assets: &AssetManager, name: &str) -> Option<RenderedChromeEntry> {
+fn load_named_palette(assets: &AssetManager, name: &str) -> Option<Palette> {
     let bytes = assets.get_ref(name)?;
-    let pcx = PcxFile::from_bytes(bytes)
-        .map_err(|err| log::warn!("Failed to parse {name}: {err}"))
-        .ok()?;
+    Palette::from_bytes(bytes)
+        .map_err(|err| log::warn!("Could not parse palette {name}: {err:#}"))
+        .ok()
+}
+
+fn push_optional_shp(
+    out: &mut Vec<RenderedChromeEntry>,
+    assets: &AssetManager,
+    file_name: &str,
+    palette: &Palette,
+    frame: usize,
+) {
+    match render_shp_entry(assets, file_name, palette, frame, None) {
+        Some(entry) => out.push(entry),
+        None => log::warn!("Missing optional main-menu shell asset {file_name}"),
+    }
+}
+
+fn render_shp_frame(
+    assets: &AssetManager,
+    file_name: &str,
+    palette: &Palette,
+    frame: usize,
+    tag: &str,
+) -> Option<RenderedChromeEntry> {
+    render_shp_entry(assets, file_name, palette, frame, Some(tag))
+}
+
+fn render_shp_entry(
+    assets: &AssetManager,
+    file_name: &str,
+    palette: &Palette,
+    frame: usize,
+    tag: Option<&str>,
+) -> Option<RenderedChromeEntry> {
+    let bytes = assets.get_ref(file_name)?;
+    let shp = ShpFile::from_bytes(bytes).ok()?;
+    if frame >= shp.frames.len() {
+        return None;
+    }
+    let frame_rgba = shp.frame_to_rgba(frame, palette).ok()?;
+    let canvas_w = shp.width as u32;
+    let canvas_h = shp.height as u32;
+    let shp_frame = &shp.frames[frame];
+    let frame_w = shp_frame.frame_width as u32;
+    let frame_h = shp_frame.frame_height as u32;
+    let frame_x = shp_frame.frame_x as u32;
+    let frame_y = shp_frame.frame_y as u32;
+    let rgba = if frame_w == canvas_w && frame_h == canvas_h && frame_x == 0 && frame_y == 0 {
+        frame_rgba
+    } else {
+        let mut canvas = vec![0u8; (canvas_w * canvas_h * 4) as usize];
+        for row in 0..frame_h {
+            let src = (row * frame_w * 4) as usize;
+            let dst = (((frame_y + row) * canvas_w + frame_x) * 4) as usize;
+            let len = (frame_w * 4) as usize;
+            if src + len <= frame_rgba.len() && dst + len <= canvas.len() {
+                canvas[dst..dst + len].copy_from_slice(&frame_rgba[src..src + len]);
+            }
+        }
+        canvas
+    };
+    let label = match tag {
+        Some(t) => format!("{}:{}", file_name.to_ascii_lowercase(), t),
+        None => file_name.to_ascii_lowercase(),
+    };
     Some(RenderedChromeEntry {
-        label: name.to_ascii_lowercase(),
-        width: pcx.width as u32,
-        height: pcx.height as u32,
-        rgba: pcx.to_rgba(Some(0)),
+        label,
+        width: canvas_w,
+        height: canvas_h,
+        rgba,
     })
 }
 
@@ -149,24 +254,4 @@ fn pack_entries(
         })
         .collect();
     Some((texture, atlas_entries))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::BUTTON_PCX_NAMES;
-
-    #[test]
-    fn mandatory_owner_draw_assets_match_dialog_0xe2() {
-        assert_eq!(
-            BUTTON_PCX_NAMES,
-            [
-                "bue_li30.pcx",
-                "bue_mi30.pcx",
-                "bue_ri30.pcx",
-                "bde_li30.pcx",
-                "bde_mi30.pcx",
-                "bde_ri30.pcx",
-            ]
-        );
-    }
 }

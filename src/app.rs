@@ -106,6 +106,11 @@ pub(crate) struct AppState {
     /// Registry of overlay types from rules.ini — needed at runtime to look up
     /// overlay_id by name when a wall is placed via production.
     pub(crate) overlay_registry: Option<OverlayTypeRegistry>,
+    /// Loaded GameConfig — None when config.toml is missing or invalid.
+    /// Read at render time for cosmetic toggles (extra_animations) and other
+    /// per-session user preferences. Set in AppState::new() from the existing
+    /// GameConfig::load() call; not mutated afterwards.
+    pub(crate) game_config: Option<GameConfig>,
     /// GPU depth texture for back-to-front depth ordering. Recreated on window resize.
     pub(crate) depth_view: wgpu::TextureView,
     /// Optional Catmull-Rom bicubic upscale pass (render at lower res, upscale to window).
@@ -147,6 +152,10 @@ pub(crate) struct AppState {
     pub(crate) main_menu_movie_base: Option<crate::ui::main_menu_shell::MainMenuMovieBase>,
     pub(crate) main_menu_movie_last_step: Instant,
     pub(crate) main_menu_shell_failed: bool,
+    /// Contents of `VERSION.TXT` from the retail install, used by the
+    /// bottom-right version line on the main menu. Falls back to the
+    /// numeric `"1.001TUC"` format when the file is missing.
+    pub(crate) version_txt: String,
     pub(crate) main_menu_show_skirmish_setup: bool,
     pub(crate) minimap: Option<MinimapRenderer>,
     /// True while left-dragging on minimap (camera pan mode).
@@ -422,6 +431,24 @@ impl App {
                 None
             }
         })
+    }
+
+    fn load_version_txt(config: Option<&GameConfig>) -> String {
+        const FALLBACK: &str = "1.001TUC";
+        let Some(cfg) = config else {
+            return FALLBACK.to_string();
+        };
+        let path = cfg.paths.ra2_dir.join("VERSION.TXT");
+        match std::fs::read_to_string(&path) {
+            Ok(s) => s.trim_end_matches(['\r', '\n']).to_string(),
+            Err(err) => {
+                log::info!(
+                    "VERSION.TXT not readable at {}: {err}; using fallback",
+                    path.display()
+                );
+                FALLBACK.to_string()
+            }
+        }
     }
 
     fn draw_skirmish_shell_dev_toggle(ctx: &egui::Context, enabled: &mut bool) -> bool {
@@ -759,6 +786,22 @@ impl ApplicationHandler for App {
                 {
                     app_input::handle_cursor_moved_in_game(state);
                 }
+                if !egui_consumed
+                    && state.screen == GameScreen::MainMenu
+                    && !state.main_menu_shell_failed
+                    && !state.main_menu_show_skirmish_setup
+                {
+                    let layout = crate::ui::main_menu_shell::compute_responsive_layout(
+                        state.gpu.config.width,
+                        state.gpu.config.height,
+                    );
+                    crate::ui::main_menu_shell::mouse_move(
+                        &mut state.main_menu_shell_state,
+                        &layout,
+                        state.cursor_x.round() as i32,
+                        state.cursor_y.round() as i32,
+                    );
+                }
             }
             WindowEvent::MouseInput {
                 state: btn_state,
@@ -932,6 +975,7 @@ impl App {
         });
         let main_menu_shell_failed =
             startup_asset_manager.is_none() || main_menu_shell_chrome.is_none();
+        let version_txt = Self::load_version_txt(game_config.as_ref());
 
         Ok(AppState {
             window,
@@ -962,6 +1006,7 @@ impl App {
             overlay_names: BTreeMap::new(),
             tiberium_radar_colors: HashMap::new(),
             overlay_registry: None,
+            game_config,
             depth_view,
             upscale_pass,
             camera_x: 0.0,
@@ -995,6 +1040,7 @@ impl App {
             main_menu_movie_base: None,
             main_menu_movie_last_step: Instant::now(),
             main_menu_shell_failed,
+            version_txt,
             main_menu_show_skirmish_setup: false,
             minimap: None,
             minimap_dragging: false,

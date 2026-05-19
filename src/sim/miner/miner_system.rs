@@ -286,6 +286,8 @@ fn handle_search_ore(
         (snap.rx, snap.ry),
         config.long_scan_radius,
         filter_ref,
+        config.ore_bale_value,
+        config.gem_bale_value,
     ) {
         snap.miner.target_ore_cell = Some(cell);
         snap.miner.state = MinerState::MoveToOre;
@@ -455,6 +457,8 @@ fn handle_harvest(
             (snap.rx, snap.ry),
             config.local_continuation_radius,
             filter_ref,
+            config.ore_bale_value,
+            config.gem_bale_value,
         )
     };
     if let Some(next_cell) = continuation_target {
@@ -480,6 +484,8 @@ fn save_archive_via_short_scan(sim: &Simulation, config: &MinerConfig, snap: &mu
         (snap.rx, snap.ry),
         config.local_continuation_radius,
         filter_ref,
+        config.ore_bale_value,
+        config.gem_bale_value,
     );
 }
 
@@ -1068,48 +1074,92 @@ fn ore_reachable(
 
 /// Search for ore within `radius` cells of `center`. Returns best cell.
 ///
-/// Ranking mirrors `pick_best_resource_node`: gems over ore → highest density
-/// → nearest → deterministic (ry, rx) tie-break.
+/// Mirrors gamemd's `FootClass::Scan_For_Tiberium` (0x4DD0A0): a diamond
+/// ring expansion that returns as soon as any ring contains harvestable ore,
+/// then picks the highest-value cell within that ring. Value = `base × (density+1)`
+/// per tiberium type (Ore base default 25, Gems default 50).
+///
+/// Critical: nearer rings win unconditionally — a closer ore patch always
+/// beats a richer-but-farther gem patch. This is the opposite of "globally
+/// best in radius" and is the reason harvesters pick local ore even when
+/// gems exist elsewhere on the map.
 pub(crate) fn search_local_ore(
     nodes: &std::collections::BTreeMap<(u16, u16), ResourceNode>,
     center: (u16, u16),
     radius: u16,
     filter: Option<&dyn Fn((u16, u16)) -> bool>,
+    ore_base: u16,
+    gem_base: u16,
 ) -> Option<(u16, u16)> {
-    let mut best: Option<((u8, u32, u32, u16, u16), (u16, u16))> = None;
-    let min_x = center.0.saturating_sub(radius);
-    let max_x = center.0.saturating_add(radius);
-    let min_y = center.1.saturating_sub(radius);
-    let max_y = center.1.saturating_add(radius);
-
-    for (&(rx, ry), node) in nodes {
-        if node.remaining == 0 || rx < min_x || rx > max_x || ry < min_y || ry > max_y {
-            continue;
-        }
-        let dx = rx as i64 - center.0 as i64;
-        let dy = ry as i64 - center.1 as i64;
-        let dist_sq = (dx * dx + dy * dy) as u32;
-        if dist_sq > (radius as u32) * (radius as u32) {
-            continue; // circular, not square
-        }
-        if let Some(f) = filter
-            && !f((rx, ry))
-        {
-            continue;
-        }
-        let type_rank: u8 = if node.resource_type == ResourceType::Ore {
-            1
-        } else {
-            0
+    let value_of = |node: &ResourceNode| -> u32 {
+        let base = match node.resource_type {
+            ResourceType::Ore => ore_base as u32,
+            ResourceType::Gem => gem_base as u32,
         };
-        let density_rank: u32 = u32::MAX - node.remaining as u32;
-        let rank = (type_rank, density_rank, dist_sq, ry, rx);
-        match best {
-            Some((ref cur, _)) if rank >= *cur => {}
-            _ => best = Some((rank, (rx, ry))),
+        base * (node.remaining as u32 + 1)
+    };
+
+    // Ring 0 fast path: if the center cell has ore, return immediately.
+    // gamemd checks LandType==Tiberium with no harvestability filter for the
+    // center — a unit standing on ore harvests it without zone/passability tests.
+    if let Some(node) = nodes.get(&center)
+        && node.remaining > 0
+    {
+        return Some(center);
+    }
+
+    // Ring 1..radius expansion (Chebyshev distance, diamond perimeter).
+    // For each ring we walk the four arms and track the highest-value
+    // harvestable cell. As soon as any ring yields a hit, return it —
+    // gamemd's early-exit-per-ring is what makes nearer-always-wins.
+    let radius_i = radius as i32;
+    let cx = center.0 as i32;
+    let cy = center.1 as i32;
+
+    for ring in 1..radius_i {
+        let mut best_in_ring: Option<(u32, (u16, u16))> = None;
+
+        for col in -ring..=ring {
+            // The four diamond arms at Chebyshev distance == ring.
+            // Corner cells (col == ±ring) are visited twice across arms;
+            // gamemd does the same, no dedup needed (same cell re-evaluated).
+            let arms: [(i32, i32); 4] = [
+                (cx + col, cy - ring), // top
+                (cx + col, cy + ring), // bottom
+                (cx - ring, cy + col), // left
+                (cx + ring, cy + col), // right
+            ];
+            for (nx, ny) in arms {
+                if nx < 0 || ny < 0 || nx > u16::MAX as i32 || ny > u16::MAX as i32 {
+                    continue;
+                }
+                let cell = (nx as u16, ny as u16);
+                let Some(node) = nodes.get(&cell) else {
+                    continue;
+                };
+                if node.remaining == 0 {
+                    continue;
+                }
+                if let Some(f) = filter
+                    && !f(cell)
+                {
+                    continue;
+                }
+                let value = value_of(node);
+                // gamemd: strict `if (old < new)` — first-seen wins on ties.
+                match best_in_ring {
+                    Some((cur, _)) if value <= cur => {}
+                    _ => best_in_ring = Some((value, cell)),
+                }
+            }
+        }
+
+        if let Some((_, cell)) = best_in_ring {
+            return Some(cell);
         }
     }
-    best.map(|(_, cell)| cell)
+
+    None
 }
 
 /// Issue a move command only if the entity isn't already pathing to this target.

@@ -415,7 +415,7 @@ fn parse_iso_map_pack(ini: &IniFile) -> Result<Vec<MapCell>, MapError> {
 
         let rx: u16 = u16::from_le_bytes([d[0], d[1]]);
         let ry: u16 = u16::from_le_bytes([d[2], d[3]]);
-        let tile_index: i32 = i32::from_le_bytes([d[4], d[5], d[6], d[7]]);
+        let raw_tile_index: i32 = i32::from_le_bytes([d[4], d[5], d[6], d[7]]);
         let sub_tile: u8 = d[8];
         let z: u8 = d[9];
         // d[10] = ice_growth (TS Snow only, always 0 in RA2)
@@ -425,6 +425,16 @@ fn parse_iso_map_pack(ini: &IniFile) -> Result<Vec<MapCell>, MapError> {
             continue;
         }
 
+        // Normalize "no tile" sentinels to -1. Westwood-saved maps use
+        // -1 (0xFFFFFFFF) but FinalAlert2-saved .yro maps write 0xFFFF
+        // (only the low u16 set), which would otherwise parse as +65535
+        // and be treated as a real tile_id beyond every theater's lookup.
+        let tile_index: i32 = if raw_tile_index == -1 || raw_tile_index == 0xFFFF {
+            -1
+        } else {
+            raw_tile_index
+        };
+
         cells.push(MapCell {
             rx,
             ry,
@@ -433,6 +443,34 @@ fn parse_iso_map_pack(ini: &IniFile) -> Result<Vec<MapCell>, MapError> {
             z,
         });
     }
+
+    // Diagnostic: tile_index distribution. Lets a reader of the load logs see
+    // how high a map's IsoMapPack5 reaches vs. what the theater INI defines.
+    let mut min_pos: i32 = i32::MAX;
+    let mut max_idx: i32 = -1;
+    let mut no_tile: usize = 0;
+    let mut distinct: std::collections::HashSet<i32> = std::collections::HashSet::new();
+    for c in &cells {
+        if c.tile_index < 0 {
+            no_tile += 1;
+        } else {
+            if c.tile_index < min_pos {
+                min_pos = c.tile_index;
+            }
+            if c.tile_index > max_idx {
+                max_idx = c.tile_index;
+            }
+        }
+        distinct.insert(c.tile_index);
+    }
+    log::info!(
+        "IsoMapPack5: {} cells, {} no-tile, tile_index min={}, max={}, distinct={}",
+        cells.len(),
+        no_tile,
+        if min_pos == i32::MAX { -1 } else { min_pos },
+        max_idx,
+        distinct.len()
+    );
 
     Ok(cells)
 }
