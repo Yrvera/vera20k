@@ -60,6 +60,26 @@ const ORE: SparkleParams = SparkleParams {
 const WATER_CYCLE_BUCKET_MS: u64 = 2500;
 const ORE_CYCLE_BUCKET_MS: u64 = 2500;
 
+/// Splitmix64 — Vigna's PRNG, used here as a one-shot 64→64 bit hash.
+/// Three operations: add, xor-shift-multiply (×2). Well-distributed; avalanche
+/// quality is more than enough for "looks random per pixel."
+#[inline]
+fn splitmix64(mut x: u64) -> u64 {
+    x = x.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    x ^ (x >> 31)
+}
+
+/// Pack cell coordinates into a 64-bit key for hashing. Layout puts rx in
+/// the high 16 bits of the upper 32, ry in the high 16 bits of the lower 32,
+/// leaving the low 32 bits as a 0 sentinel that the caller can XOR with
+/// cycle_index when mixing per-cycle entropy.
+#[inline]
+fn coord_key(rx: u16, ry: u16) -> u64 {
+    ((rx as u64) << 32) | ((ry as u64) << 16)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -93,5 +113,49 @@ mod tests {
         // documents that we picked it deliberately.
         assert_eq!(WATER_CYCLE_BUCKET_MS, 2500);
         assert_eq!(ORE_CYCLE_BUCKET_MS, 2500);
+    }
+
+    #[test]
+    fn splitmix64_is_deterministic() {
+        // Same input always yields same output (necessary for replay
+        // determinism). Spot-check a handful of inputs.
+        assert_eq!(splitmix64(0), splitmix64(0));
+        assert_eq!(splitmix64(0xDEAD_BEEF), splitmix64(0xDEAD_BEEF));
+        assert_eq!(splitmix64(u64::MAX), splitmix64(u64::MAX));
+    }
+
+    #[test]
+    fn splitmix64_distributes_low_bits() {
+        // For 1000 consecutive inputs, the low byte of the output should
+        // span at least 200 distinct values out of 256. Catches a hash
+        // that's stuck on a small subset.
+        let mut seen = std::collections::HashSet::new();
+        for i in 0u64..1000 {
+            seen.insert(splitmix64(i) & 0xFF);
+        }
+        assert!(seen.len() >= 200, "splitmix64 low-byte spread too small: {}", seen.len());
+    }
+
+    #[test]
+    fn coord_key_is_injective_for_typical_map() {
+        // Two adjacent cells must produce different keys (else the cell
+        // offset would not break beat-sync per L26).
+        assert_ne!(coord_key(10, 10), coord_key(11, 10));
+        assert_ne!(coord_key(10, 10), coord_key(10, 11));
+        assert_ne!(coord_key(0, 0), coord_key(0, 1));
+    }
+
+    #[test]
+    fn coord_key_with_cycle_xor_breaks_per_cycle() {
+        // Hashing (coord_key XOR cycle_index) — different cycles must yield
+        // different splitmix64 outputs for the same cell (else L24
+        // re-randomization would not happen).
+        let key = coord_key(50, 50);
+        let s0 = splitmix64(key ^ 0);
+        let s1 = splitmix64(key ^ 1);
+        let s2 = splitmix64(key ^ 2);
+        assert_ne!(s0, s1);
+        assert_ne!(s1, s2);
+        assert_ne!(s0, s2);
     }
 }
