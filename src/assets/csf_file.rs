@@ -171,7 +171,8 @@ fn parse_label_entry(data: &[u8], offset: usize) -> Result<(String, String, usiz
         }
 
         let str_magic: u32 = read_u32_le(data, pos);
-        let has_extra: bool = str_magic == STRING_EXTRA_MAGIC || str_magic == STRING_EXTRA_MAGIC_ALT;
+        let has_extra: bool =
+            str_magic == STRING_EXTRA_MAGIC || str_magic == STRING_EXTRA_MAGIC_ALT;
 
         if str_magic != STRING_MAGIC
             && str_magic != STRING_MAGIC_ALT_STR_PREFIX
