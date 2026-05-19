@@ -46,6 +46,9 @@ pub(super) struct WorldInstances {
     /// Per-particle SpriteInstances (Layer 3). Drawn at Step 7.5 — above
     /// all ground objects + cliffs, below debug/shroud/UI.
     pub particle_paged: Vec<Vec<SpriteInstance>>,
+    /// PixelFX water/ore sparkles — 1-pixel cell dots emitted per frame.
+    /// Empty when graphics.extra_animations is false.
+    pub cell_sparkles: Vec<SpriteInstance>,
 }
 
 /// Debug visualization overlays (toggled by hotkeys at runtime).
@@ -237,6 +240,9 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         sort_by_depth_desc(page);
     }
 
+    // PixelFX water/ore sparkles — per-frame 1-pixel cell dots.
+    let cell_sparkles: Vec<SpriteInstance> = build_pixel_fx_sparkle_instances(state, sw, sh);
+
     // One-time first-frame statistics.
     static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
@@ -266,7 +272,55 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         bridge_shp_paged,
         building_turret,
         particle_paged,
+        cell_sparkles,
     }
+}
+
+/// Build PixelFX sparkle instances by calling into the dedicated render module.
+/// Assembles the SparkleInput from AppState and returns the Vec. The module
+/// itself gates on the extra_animations toggle; the wrapper short-circuits
+/// when required sim/render state is missing (no map loaded).
+fn build_pixel_fx_sparkle_instances(state: &AppState, sw: f32, sh: f32) -> Vec<SpriteInstance> {
+    use crate::render::pixel_fx_sparkles::{build_sparkle_instances, SparkleInput};
+
+    let Some(sim) = state.simulation.as_ref() else { return Vec::new(); };
+    let Some(resolved) = state.resolved_terrain.as_ref() else { return Vec::new(); };
+    let Some(overlay_registry) = state.overlay_registry.as_ref() else { return Vec::new(); };
+    let Some(overlays) = sim.overlay_grid.as_ref() else { return Vec::new(); };
+
+    // Cosmetic toggle — default to ON when config failed to load, matching
+    // gamemd's default.
+    let enable_extra_animations = state
+        .game_config
+        .as_ref()
+        .map_or(true, |c| c.graphics.extra_animations);
+
+    let local_owner_name = crate::app_commands::preferred_local_owner_name(state);
+    let local_owner_id = match (state.sandbox_full_visibility, &local_owner_name) {
+        (false, Some(owner)) => sim.interner.get(owner),
+        _ => None,
+    };
+
+    let input = SparkleInput {
+        clock_ms: sim.total_sim_ms,
+        enable_extra_animations,
+        local_owner_id,
+        sandbox_full_visibility: state.sandbox_full_visibility,
+        resolved_terrain: resolved,
+        overlays,
+        overlay_registry,
+        occupancy: &sim.occupancy,
+        fog: &sim.fog,
+        camera_x: state.camera_x,
+        camera_y: state.camera_y,
+        viewport_w: sw,
+        viewport_h: sh,
+        map_w: resolved.width(),
+        map_h: resolved.height(),
+        white_uv_origin: [0.0, 0.0],
+        white_uv_size: [1.0, 1.0],
+    };
+    build_sparkle_instances(&input)
 }
 
 /// Build static smudge decal instances for the current frame.
