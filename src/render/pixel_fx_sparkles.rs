@@ -13,7 +13,26 @@
 //! - Part of render/ — reads sim/ state through immutable references only.
 //!   No writes to sim. No coupling to GPU types beyond SpriteInstance.
 
+use crate::map::resolved_terrain::ResolvedTerrainGrid;
+use crate::map::terrain::iso_to_screen;
 use crate::render::batch::SpriteInstance;
+use crate::sim::intern::InternedId;
+use crate::sim::occupancy::OccupancyGrid;
+use crate::sim::overlay_grid::OverlayGrid;
+use crate::sim::vision::FogState;
+
+/// Sparkle sprites draw through the passthrough sprite pipeline (depth-bypass +
+/// no blend). The depth value is required by SpriteInstance but does not affect
+/// visibility inside this pass; pass-ordering in draw_passes (Step 5.5, between
+/// Step 5 ground objects and Step 6 turrets) does the work. Matches the
+/// constant-depth pattern used by smudge::build_visible_instances.
+const SPARKLE_DEPTH: f32 = 0.5;
+
+/// Tile dimensions used by iso_to_screen — re-declared here so we can shift
+/// from cell NW corner to cell center without pulling in the entire
+/// `map::terrain` constant set.
+const TILE_WIDTH: f32 = 60.0;
+const TILE_HEIGHT: f32 = 30.0;
 
 /// Per-species sparkle parameters mirroring gamemd's
 /// g_PixelFXParams_Water (0x008367C8) and g_PixelFXParams_Ore (0x008367F0)
@@ -177,23 +196,102 @@ fn viewport_cell_bounds(
     map_w: u16,
     map_h: u16,
 ) -> (u16, u16, u16, u16) {
-    const CELL_WIDTH: f32 = 60.0;
-    const CELL_HEIGHT: f32 = 30.0;
     const MARGIN_CELLS: i32 = 2;
 
     // World-pixel viewport rect → approximate cell range. Iso conversion is
     // approximate (we over-include because of the diamond shape) but cheap
     // and correct: the gate inside compute_sparkle_for_cell handles cells
     // outside the actual viewport via the screen position check.
-    let rx_min = (((camera_x / CELL_WIDTH).floor() as i32) - MARGIN_CELLS)
+    let rx_min = (((camera_x / TILE_WIDTH).floor() as i32) - MARGIN_CELLS)
         .clamp(0, map_w as i32 - 1) as u16;
-    let rx_max = ((((camera_x + vsw) / CELL_WIDTH).ceil() as i32) + MARGIN_CELLS)
+    let rx_max = ((((camera_x + vsw) / TILE_WIDTH).ceil() as i32) + MARGIN_CELLS)
         .clamp(0, map_w as i32 - 1) as u16;
-    let ry_min = (((camera_y / CELL_HEIGHT).floor() as i32) - MARGIN_CELLS)
+    let ry_min = (((camera_y / TILE_HEIGHT).floor() as i32) - MARGIN_CELLS)
         .clamp(0, map_h as i32 - 1) as u16;
-    let ry_max = ((((camera_y + vsh) / CELL_HEIGHT).ceil() as i32) + MARGIN_CELLS)
+    let ry_max = ((((camera_y + vsh) / TILE_HEIGHT).ceil() as i32) + MARGIN_CELLS)
         .clamp(0, map_h as i32 - 1) as u16;
     (rx_min, ry_min, rx_max, ry_max)
+}
+
+/// All read-only state the sparkle pass needs. Borrowed for the duration of
+/// the build call; nothing escapes the function.
+pub struct SparkleInput<'a> {
+    /// Authoritative sim-time clock in milliseconds. Caller passes
+    /// `Simulation.total_sim_ms` (pre-computed each tick by the sim).
+    /// Deterministic across clients on the same tick — replays look identical.
+    pub clock_ms: u64,
+    /// From GraphicsConfig.extra_animations. If false, build returns empty Vec. (L22)
+    pub enable_extra_animations: bool,
+    /// Local player's interned house ID for the sight check (L19). None when
+    /// no map is loaded or no owner can be resolved — gate then fails.
+    pub local_owner_id: Option<InternedId>,
+    /// True when sandbox-mode visibility bypass is active; sight gate (L19/L21)
+    /// becomes a no-op when set. Mirrors the existing terrain-pass pattern.
+    pub sandbox_full_visibility: bool,
+    pub resolved_terrain: &'a ResolvedTerrainGrid,
+    pub overlays: &'a OverlayGrid,
+    pub overlay_registry: &'a crate::map::overlay_types::OverlayTypeRegistry,
+    pub occupancy: &'a OccupancyGrid,
+    pub fog: &'a FogState,
+    pub camera_x: f32,
+    pub camera_y: f32,
+    pub viewport_w: f32,
+    pub viewport_h: f32,
+    pub map_w: u16,
+    pub map_h: u16,
+    /// White-texel UV coords; for `SelectionOverlay::white_texture()` which
+    /// is a 1×1 texture, this is the full (0,0) → (1,1) rect.
+    pub white_uv_origin: [f32; 2],
+    pub white_uv_size: [f32; 2],
+}
+
+/// Run the 6-gate check (subset of gamemd's 9-condition gate per report §4).
+/// Skipped conditions (vs gamemd):
+///   - "16-bit RGB565 surface mode" — not applicable to wgpu RGBA8 path.
+///   - "surface lock succeeds" — wgpu doesn't lock surfaces; always succeeds.
+///   - "viewport clip" — handled by depth/scissor, not a per-cell check.
+///
+/// Returns (is_ore, params) when the cell qualifies; None otherwise.
+fn gate_cell(rx: u16, ry: u16, input: &SparkleInput<'_>) -> Option<(bool, &'static SparkleParams)> {
+    let cell = input.resolved_terrain.cell(rx, ry)?;
+    let has_ore = ore_value_nonzero(rx, ry, input);
+    if !cell.is_water && !has_ore {
+        return None; // L17
+    }
+
+    if let Some(occ) = input.occupancy.get(rx, ry) {
+        if !occ.occupants.is_empty() {
+            return None; // L18
+        }
+    }
+
+    if !input.sandbox_full_visibility {
+        let owner_id = input.local_owner_id?; // L19 / L21
+        if !input.fog.is_cell_visible(owner_id, rx, ry) {
+            return None;
+        }
+    }
+
+    if cell.bridge_walkable {
+        return None; // L20: bridge-deck cells skipped
+    }
+
+    let params: &'static SparkleParams = if has_ore { &ORE } else { &WATER };
+    Some((has_ore, params))
+}
+
+/// Lookup the cell's tiberium-ore flag via the overlay grid + registry.
+/// Returns true iff the cell has a non-empty tiberium overlay.
+/// `OverlayCell.overlay_id` is `Option<u8>` (None = no overlay), so we
+/// unwrap-or-skip via `.and_then`.
+#[inline]
+fn ore_value_nonzero(rx: u16, ry: u16, input: &SparkleInput<'_>) -> bool {
+    input
+        .overlays
+        .cell(rx, ry)
+        .overlay_id
+        .and_then(|id| input.overlay_registry.flags(id))
+        .is_some_and(|f| f.tiberium)
 }
 
 #[cfg(test)]
