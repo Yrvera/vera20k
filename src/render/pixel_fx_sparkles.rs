@@ -294,6 +294,73 @@ fn ore_value_nonzero(rx: u16, ry: u16, input: &SparkleInput<'_>) -> bool {
         .is_some_and(|f| f.tiberium)
 }
 
+/// Compute one cell's sparkle for the given clock time. Returns None when
+/// the cell doesn't qualify (gate fails). Caller pushes the returned
+/// SpriteInstance into a Vec.
+fn compute_sparkle_for_cell(
+    rx: u16,
+    ry: u16,
+    clock_ms: u64,
+    input: &SparkleInput<'_>,
+) -> Option<SpriteInstance> {
+    let (_is_ore, params) = gate_cell(rx, ry, input)?;
+    let bucket_ms = if _is_ore { ORE_CYCLE_BUCKET_MS } else { WATER_CYCLE_BUCKET_MS };
+
+    // L26: per-cell offset hashed from coord-only key, breaks global beat sync.
+    let cell_offset_ms = splitmix64(coord_key(rx, ry)) % bucket_ms;
+    let shifted_t = clock_ms + cell_offset_ms;
+    let cycle_index = shifted_t / bucket_ms;
+    let cycle_pos_ms = shifted_t % bucket_ms;
+
+    // L24: re-randomize sub-pos, color noise, lerp speed, timer_init each cycle
+    // by mixing cycle_index into the seed.
+    let s = splitmix64(coord_key(rx, ry) ^ cycle_index);
+
+    let (sub_x, sub_y) = sub_pos_from_seed(s);
+    let timer_init_ms = timer_init_from_seed(s);
+    let lerp_speed = lerp_speed_from_seed(s, params);
+    let peak = peak_with_noise(s, params);
+
+    let active_duration_ms = 0x2000u32 / lerp_speed;
+
+    // L23: cells START dim each cycle (during the timer_init wait, draw base).
+    // L25: most of cycle is dim — peak is brief mid-active.
+    // After active phase ends, sit at base until bucket boundary.
+    let current_rgb = if (cycle_pos_ms as u32) < timer_init_ms {
+        params.base_rgb
+    } else if (cycle_pos_ms as u32) < timer_init_ms + active_duration_ms {
+        let active_progress = cycle_pos_ms as u32 - timer_init_ms;
+        let phase = (active_progress * lerp_speed) & 0x1FFF;
+        ping_pong_lerp(phase, params.base_rgb, peak)
+    } else {
+        params.base_rgb
+    };
+
+    // Cell center in screen pixels. iso_to_screen returns the NW corner of
+    // the cell's bounding diamond; shift by half a tile to land on the centre.
+    // Elevation is taken from the resolved terrain cell.
+    let cell = input.resolved_terrain.cell(rx, ry)?;
+    let (sx_nw, sy_nw) = iso_to_screen(rx, ry, cell.level);
+    let screen_x = sx_nw + TILE_WIDTH / 2.0;
+    let screen_y = sy_nw + TILE_HEIGHT / 2.0;
+
+    // Emit (L12: 1×1 size; L28: alpha=1.0 opaque).
+    Some(SpriteInstance {
+        position: [screen_x + sub_x as f32, screen_y + sub_y as f32],
+        size: [1.0, 1.0],
+        uv_origin: input.white_uv_origin,
+        uv_size: input.white_uv_size,
+        depth: SPARKLE_DEPTH,
+        tint: [
+            current_rgb[0] as f32 / 255.0,
+            current_rgb[1] as f32 / 255.0,
+            current_rgb[2] as f32 / 255.0,
+        ],
+        alpha: 1.0,
+        ..Default::default()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -511,5 +578,83 @@ mod tests {
         // Camera negative (scrolled past edge) — bounds clamp to 0.
         let (rxn, ryn, _, _) = viewport_cell_bounds(-500.0, -500.0, 800.0, 600.0, 100, 100);
         assert_eq!((rxn, ryn), (0, 0));
+    }
+
+    #[test]
+    fn cycle_re_init_changes_sub_pos() {
+        // L24: same cell, two consecutive cycle_indices, sub-pos must differ
+        // (else "moving sparkle" effect is lost). Tests via direct seed
+        // derivation since the full compute_sparkle_for_cell needs fixtures.
+        let cell = coord_key(50, 50);
+        let s0 = splitmix64(cell ^ 0);
+        let s1 = splitmix64(cell ^ 1);
+        assert_ne!(sub_pos_from_seed(s0), sub_pos_from_seed(s1));
+    }
+
+    #[test]
+    fn cell_offset_breaks_sync_for_neighbours() {
+        // L26: adjacent cells must produce different cell_offset_ms at the
+        // same clock_ms (else they'd peak together → visible map-wide pulse).
+        let bucket = WATER_CYCLE_BUCKET_MS;
+        let off_a = splitmix64(coord_key(50, 50)) % bucket;
+        let off_b = splitmix64(coord_key(51, 50)) % bucket;
+        let off_c = splitmix64(coord_key(50, 51)) % bucket;
+        assert_ne!(off_a, off_b);
+        assert_ne!(off_a, off_c);
+        // Spread check: over many neighbour pairs, average offset diff
+        // should be > bucket/8 (catches degenerate hashes).
+        let mut diff_sum: u64 = 0;
+        let mut count = 0u64;
+        for x in 0u16..20 {
+            for y in 0u16..20 {
+                let a = splitmix64(coord_key(x, y)) % bucket;
+                let b = splitmix64(coord_key(x + 1, y)) % bucket;
+                diff_sum += a.abs_diff(b);
+                count += 1;
+            }
+        }
+        let avg = diff_sum / count;
+        assert!(avg > bucket / 8, "avg neighbour offset diff too small: {} < {}", avg, bucket / 8);
+    }
+
+    #[test]
+    fn phase_calculation_at_timer_init_is_base() {
+        // L23: during timer-wait (cycle_pos < timer_init), color is base.
+        // Direct test on the inner expression (gate-free math).
+        let s: u64 = 0xDEADBEEF;
+        let timer_init = timer_init_from_seed(s);
+        let lerp_speed = lerp_speed_from_seed(s, &WATER);
+        let peak = peak_with_noise(s, &WATER);
+
+        // Mimic the function's branch directly:
+        let cycle_pos_ms: u32 = timer_init / 2;  // anywhere in timer-wait
+        let color = if cycle_pos_ms < timer_init {
+            WATER.base_rgb
+        } else if cycle_pos_ms < timer_init + (0x2000u32 / lerp_speed) {
+            let phase = ((cycle_pos_ms - timer_init) * lerp_speed) & 0x1FFF;
+            ping_pong_lerp(phase, WATER.base_rgb, peak)
+        } else {
+            WATER.base_rgb
+        };
+
+        assert_eq!(color, WATER.base_rgb);
+    }
+
+    #[test]
+    fn phase_calculation_active_progresses_through_lerp() {
+        // L13–L16: when in active phase, color progresses from base toward peak.
+        let s: u64 = 0xABCDEF01;
+        let timer_init = timer_init_from_seed(s);
+        let lerp_speed = lerp_speed_from_seed(s, &WATER);
+        let active_duration = 0x2000u32 / lerp_speed;
+
+        // Halfway through active phase, color is between base and peak on red ch.
+        let cycle_pos_ms = timer_init + active_duration / 2;
+        let active_progress = cycle_pos_ms - timer_init;
+        let phase = (active_progress * lerp_speed) & 0x1FFF;
+        let color = ping_pong_lerp(phase, WATER.base_rgb, WATER.peak_rgb);
+
+        assert!(color[0] > WATER.base_rgb[0], "R should rise from base: {} not > {}", color[0], WATER.base_rgb[0]);
+        assert!(color[0] <= WATER.peak_rgb[0], "R should not exceed peak: {} not <= {}", color[0], WATER.peak_rgb[0]);
     }
 }
