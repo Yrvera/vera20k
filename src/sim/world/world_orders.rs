@@ -27,6 +27,9 @@ pub(crate) struct C4DamageOutcome {
     /// The C4 hit a BridgeRepairHut, the hut survived, and the connected
     /// bridge collapsed. The app needs to rebuild PathGrid.
     pub bridge_state_changed: bool,
+    /// The target's pending C4 marker should be cleared even though the
+    /// building entity survived. Used by BridgeRepairHut dispatch.
+    pub consumed_pending_marker: bool,
 }
 
 /// Result of `tick_c4_plants` across all per-tick plants + detonations.
@@ -372,10 +375,11 @@ impl Simulation {
     ///
     /// Phase 2 (detonation): for each building with `pending_c4_detonation`,
     /// if the elapsed tick count >= `rules.c4_delay_ticks`, apply C4Warhead
-    /// damage equal to the building's current HP. The pending state is NOT
-    /// cleared (gamemd parity): if the damage is nullified (IronCurtain),
+    /// damage equal to the building's current HP. For normal buildings the
+    /// pending state is not cleared if damage is nullified by IronCurtain, so
     /// it fires again next tick. When the building dies, the entity despawns
-    /// and the pending state goes with it.
+    /// and the pending state goes with it. BridgeRepairHut dispatch clears
+    /// the pending marker after the bridge path runs because the hut survives.
     ///
     /// Returns the per-tick C4 outcome: `destroyed_structure` is true if any
     /// building died, and `bridge_state_changed` is true if any C4 detonation
@@ -412,33 +416,18 @@ impl Simulation {
                 continue;
             }
 
-            // Adjacent to the target (Chebyshev distance ≤ 1)?
-            //
-            // gamemd has the SEAL walk INTO the building's cell, but our
-            // pathfinder treats building footprints as blocked, so exact-cell
-            // match would never trigger. Engineer-capture has the same
-            // constraint and uses Chebyshev-≤-1 (above); we do the same.
-            // Documented parity drift: SEAL stands one cell next to the
-            // building rather than inside it during the plant animation.
+            // gamemd claims only when the infantry's current cell resolves
+            // to the target building. Normal pathing stops at the blocked
+            // footprint boundary, then we issue the one-cell enter move below.
             let attacker_cell = self
                 .entities
                 .get(attacker_id)
                 .map(|e| (e.position.rx, e.position.ry));
-            let target_cell = self
-                .entities
-                .get(target_id)
-                .map(|b| (b.position.rx, b.position.ry));
-            let adjacent_to_target = match (attacker_cell, target_cell) {
-                (Some((arx, ary)), Some((trx, try_))) => {
-                    let dx = (arx as i32 - trx as i32).abs();
-                    let dy = (ary as i32 - try_ as i32).abs();
-                    dx <= 1 && dy <= 1
-                }
-                _ => false,
+            let target_footprint = self.c4_target_footprint(target_id, rules);
+            let (Some(attacker_cell), Some(target_footprint)) = (attacker_cell, target_footprint)
+            else {
+                continue;
             };
-            if !adjacent_to_target {
-                continue; // walk-up still in progress; movement layer handles it
-            }
 
             // Already claimed by another attacker?
             let already_claimed = self
@@ -448,6 +437,20 @@ impl Simulation {
             if already_claimed {
                 // Second SEAL — hover, no-op. Matches gamemd's marker-set early-return.
                 continue;
+            }
+
+            if !target_footprint.contains(&attacker_cell) {
+                if self.c4_adjacent_to_target_footprint(attacker_cell, &target_footprint)
+                    && !self.c4_attacker_has_active_movement(attacker_id)
+                {
+                    self.issue_c4_enter_target_cell(
+                        attacker_id,
+                        attacker_cell,
+                        &target_footprint,
+                        rules,
+                    );
+                }
+                continue; // walk-up or enter-cell movement still in progress
             }
 
             // Claim the plant.
@@ -460,6 +463,7 @@ impl Simulation {
 
             // Drive the plant animation (FireUp = Attack sequence).
             if let Some(a) = self.entities.get_mut(attacker_id) {
+                a.movement_target = None;
                 if let Some(ref mut anim) = a.animation {
                     anim.switch_to(crate::sim::animation::SequenceKind::Attack);
                 }
@@ -512,7 +516,8 @@ impl Simulation {
             // Timer elapsed — apply C4Warhead damage. Damage value = current_hp
             // for guaranteed one-shot kill (matches gamemd's
             // `&iStack_28 = this->Health` argument to TakeDamage).
-            // Pending state NOT cleared on purpose (gamemd parity).
+            // Normal-building pending state is only cleared by despawn;
+            // BridgeRepairHut returns consumed_pending_marker below.
             let dmg: i32 = self
                 .entities
                 .get(building_id)
@@ -543,12 +548,85 @@ impl Simulation {
                 // c4_plant pointing at this building. Matches gamemd
                 // Mission_Enter post-detonation block.
                 self.queue_c4_post_detonation_scatter(building_id);
+            } else if outcome.consumed_pending_marker {
+                if let Some(building) = self.entities.get_mut(building_id) {
+                    building.pending_c4_detonation = None;
+                }
+                if let Some(attacker) = self.entities.get_mut(pending.attacker_id) {
+                    if attacker
+                        .c4_plant
+                        .is_some_and(|plant| plant.target_building_id == building_id)
+                    {
+                        attacker.c4_plant = None;
+                    }
+                }
             }
         }
 
         C4TickOutcome {
             destroyed_structure,
             bridge_state_changed,
+        }
+    }
+
+    fn c4_target_footprint(&self, target_id: u64, rules: &RuleSet) -> Option<Vec<(u16, u16)>> {
+        let target = self.entities.get(target_id)?;
+        let obj = rules.object(self.interner.resolve(target.type_ref))?;
+        Some(crate::sim::production::building_footprint_cells(
+            target.position.rx,
+            target.position.ry,
+            obj.foundation.as_str(),
+            obj.add_occupy.as_slice(),
+            obj.remove_occupy.as_slice(),
+        ))
+    }
+
+    fn c4_adjacent_to_target_footprint(
+        &self,
+        attacker_cell: (u16, u16),
+        target_footprint: &[(u16, u16)],
+    ) -> bool {
+        target_footprint.iter().any(|&(trx, try_)| {
+            let dx = (attacker_cell.0 as i32 - trx as i32).abs();
+            let dy = (attacker_cell.1 as i32 - try_ as i32).abs();
+            dx <= 1 && dy <= 1
+        })
+    }
+
+    fn c4_attacker_has_active_movement(&self, attacker_id: u64) -> bool {
+        self.entities
+            .get(attacker_id)
+            .is_some_and(|attacker| attacker.movement_target.is_some())
+    }
+
+    fn issue_c4_enter_target_cell(
+        &mut self,
+        attacker_id: u64,
+        attacker_cell: (u16, u16),
+        target_footprint: &[(u16, u16)],
+        rules: &RuleSet,
+    ) {
+        let Some(entry_cell) = target_footprint.iter().copied().min_by_key(|&(rx, ry)| {
+            let dx = (attacker_cell.0 as i32 - rx as i32).abs();
+            let dy = (attacker_cell.1 as i32 - ry as i32).abs();
+            (dx.max(dy), dx + dy, rx, ry)
+        }) else {
+            return;
+        };
+
+        let speed = self
+            .resolve_move_info(attacker_id, Some(rules))
+            .as_ref()
+            .map(|info| info.speed)
+            .unwrap_or(ra2_speed_to_leptons_per_second(4));
+        if movement::issue_direct_move(&mut self.entities, attacker_id, entry_cell, speed) {
+            if let Some(target) = self
+                .entities
+                .get_mut(attacker_id)
+                .and_then(|attacker| attacker.movement_target.as_mut())
+            {
+                target.bypass_grid = true;
+            }
         }
     }
 
@@ -628,9 +706,9 @@ impl Simulation {
 
     /// Apply one C4Warhead damage instance to a building entity. Returns
     /// `C4DamageOutcome` reporting whether the building died and whether a
-    /// connected bridge collapsed (for `BridgeRepairHut` targets). Honors
-    /// IronCurtain via the standard invulnerability check. Used by
-    /// `tick_c4_plants` Phase 2.
+    /// connected bridge collapsed (for `BridgeRepairHut` targets). Non-hut
+    /// targets honor IronCurtain via the standard invulnerability check.
+    /// Used by `tick_c4_plants` Phase 2.
     fn apply_c4_damage_to_building(
         &mut self,
         building_id: u64,
@@ -639,19 +717,6 @@ impl Simulation {
         attacker_id: Option<u64>,
         rules: &RuleSet,
     ) -> C4DamageOutcome {
-        // Check IC — if invulnerable, damage is nullified but pending state
-        // stays, so we try again next tick.
-        let invuln = self
-            .entities
-            .get(building_id)
-            .and_then(|e| e.invulnerability.clone());
-        if crate::sim::superweapon::invulnerability::is_invulnerable(
-            invuln.as_ref(),
-            self.tick as u32,
-        ) {
-            return C4DamageOutcome::default();
-        }
-
         // BridgeRepairHut target: reroute the explosion into the bridge
         // collapse cascade and leave the hut at full HP. The hut never
         // takes C4 / demo-truck damage — destruction is the linked bridge
@@ -683,7 +748,21 @@ impl Simulation {
             return C4DamageOutcome {
                 killed_building: false,
                 bridge_state_changed,
+                consumed_pending_marker: true,
             };
+        }
+
+        // Check IC for normal C4 targets. If invulnerable, damage is
+        // nullified but pending state stays, so we try again next tick.
+        let invuln = self
+            .entities
+            .get(building_id)
+            .and_then(|e| e.invulnerability.clone());
+        if crate::sim::superweapon::invulnerability::is_invulnerable(
+            invuln.as_ref(),
+            self.tick as u32,
+        ) {
+            return C4DamageOutcome::default();
         }
 
         // Resolve warhead, apply Verses, subtract HP.
@@ -717,6 +796,7 @@ impl Simulation {
             C4DamageOutcome {
                 killed_building: true,
                 bridge_state_changed: false,
+                consumed_pending_marker: false,
             }
         } else {
             C4DamageOutcome::default()
