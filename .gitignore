@@ -31,3 +31,6 @@ AGENTS.md
 /todo/
 /logs/
 /saves/
+
+/*.md
+!/README.md

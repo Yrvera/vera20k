@@ -11,8 +11,8 @@ use crate::render::shell_text::{self, ShellAlign, ShellTextDraw, TextRect};
 use crate::render::skirmish_shell_chrome::{SkirmishShellChromeAtlas, SkirmishShellChromeEntry};
 use crate::ui::main_menu::SkirmishCountry;
 use crate::ui::skirmish_shell::{
-    compute_layout, OwnerDrawButton, RectPx, SkirmishShellAction, SkirmishShellLayout,
-    SkirmishShellState,
+    OwnerDrawButton, RectPx, SkirmishShellAction, SkirmishShellLayout, SkirmishShellState,
+    compute_layout,
 };
 
 static PREVIEW_MARKER_WAIT_LOG: Once = Once::new();

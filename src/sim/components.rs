@@ -706,11 +706,11 @@ impl RockingState {
 /// damage every tick after `plant_start_tick + rules.c4_delay_ticks`, using
 /// `damage = current_hp` for guaranteed one-shot kill.
 ///
-/// **Never cleared** in the C4 path — matches gamemd's `+0x6df` marker
-/// semantics. When the building dies, this state is despawned with it.
-/// IronCurtain on the building does NOT clear this; damage attempts get
-/// nullified by `is_invulnerable` each tick until IC expires, at which
-/// point the next damage tick kills the building.
+/// Normal C4 targets keep the marker until the building dies. IronCurtain on
+/// the building does NOT clear this; damage attempts get nullified by
+/// `is_invulnerable` each tick until IC expires, at which point the next
+/// damage tick kills the building. BridgeRepairHut targets clear the marker
+/// after the bridge-collapse dispatcher returns because the hut survives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct PendingC4Detonation {
     pub plant_start_tick: u64,

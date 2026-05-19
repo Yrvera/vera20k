@@ -7,9 +7,7 @@ use anyhow::Result;
 
 use crate::app::AppState;
 use crate::render::batch::SpriteInstance;
-use crate::render::main_menu_shell_chrome::{
-    MainMenuShellChromeAtlas, MainMenuShellChromeEntry,
-};
+use crate::render::main_menu_shell_chrome::{MainMenuShellChromeAtlas, MainMenuShellChromeEntry};
 use crate::render::shell_text::ShellTextDraw;
 use crate::ui::main_menu_shell::{
     MainMenuControlId, MainMenuShellLayout, RectPx, compute_responsive_layout, csf_key_for_control,
@@ -18,7 +16,9 @@ use crate::ui::main_menu_shell::{
 const MOVIE_DEPTH: f32 = 0.00095;
 const BUTTON_DEPTH: f32 = 0.00080;
 const TEXT_DEPTH: f32 = 0.00070;
-const SHELL_BUTTON_TEXT_RGB_00000C05: [f32; 3] = [0.0, 12.0 / 255.0, 5.0 / 255.0];
+const RETAIL_BUTTON_CLIENT_W: f32 = 162.0;
+const RETAIL_BUTTON_CLIENT_H: f32 = 37.0;
+const SHELL_BUTTON_TEXT_RGB_FFFF00: [f32; 3] = [1.0, 1.0, 0.0];
 
 pub(crate) enum MainMenuShellRenderResult {
     Rendered,
@@ -125,6 +125,13 @@ fn build_button_segments(
     segments
 }
 
+fn button_art_y_and_height(rect: RectPx, source_h: f32) -> (f32, f32) {
+    let scale_y = (rect.h as f32 / RETAIL_BUTTON_CLIENT_H).max(0.0);
+    let art_h = (source_h * scale_y).round().max(1.0);
+    let art_y = rect.y as f32 + ((rect.h as f32 - art_h) / 2.0).trunc();
+    (art_y, art_h)
+}
+
 fn push_button_30(
     out: &mut Vec<SpriteInstance>,
     atlas: &MainMenuShellChromeAtlas,
@@ -133,11 +140,13 @@ fn push_button_30(
     depth: f32,
 ) {
     let (left, mid, right) = button_entries(atlas, pressed);
+    let scale_x = (rect.w as f32 / RETAIL_BUTTON_CLIENT_W).max(0.0);
+    let (art_y, art_h) = button_art_y_and_height(rect, left.pixel_size[1]);
     for segment in build_button_segments(
         rect,
-        left.pixel_size[0],
-        mid.pixel_size[0],
-        right.pixel_size[0],
+        left.pixel_size[0] * scale_x,
+        mid.pixel_size[0] * scale_x,
+        right.pixel_size[0] * scale_x,
     ) {
         let mut entry = match segment.piece {
             ButtonPiece::Left => left,
@@ -148,19 +157,16 @@ fn push_button_30(
             entry.uv_size[0] *= segment.uv_width_ratio;
             entry.pixel_size[0] = segment.width;
         }
-        push_entry_sized(
-            out,
-            entry,
-            segment.x,
-            rect.y as f32,
-            [segment.width, rect.h as f32],
-            depth,
-        );
+        push_entry_sized(out, entry, segment.x, art_y, [segment.width, art_h], depth);
     }
 }
 
 fn resolve_csf<'a>(state: &'a AppState, key: &'static str) -> &'a str {
-    state.csf.as_ref().and_then(|csf| csf.get(key)).unwrap_or(key)
+    state
+        .csf
+        .as_ref()
+        .and_then(|csf| csf.get(key))
+        .unwrap_or(key)
 }
 
 // This wrapper is the only main-menu label path; keep placement fixes here.
@@ -183,7 +189,7 @@ fn push_centered_label(
         &state.bit_font,
         text,
         text_rect,
-        SHELL_BUTTON_TEXT_RGB_00000C05,
+        SHELL_BUTTON_TEXT_RGB_FFFF00,
         ShellAlign::H_CENTER | ShellAlign::V_CENTER,
         [0.0, 0.0],
         TEXT_DEPTH,
@@ -221,13 +227,7 @@ fn build_text_draws(
         } else {
             0
         };
-        push_centered_label(
-            &mut out,
-            state,
-            text,
-            button.rect,
-            y_offset,
-        );
+        push_centered_label(&mut out, state, text, button.rect, y_offset);
     }
     let title = resolve_csf(state, "GUI:MainMenu");
     push_centered_label(&mut out, state, title, layout.title, 0);
@@ -267,7 +267,8 @@ pub(crate) fn ensure_movie_for_current_layout(state: &mut AppState) -> Result<()
         state.main_menu_shell_failed = true;
         return Ok(());
     };
-    if asset_name.eq_ignore_ascii_case("ra2ts_l.bik") && !source.eq_ignore_ascii_case("language.mix")
+    if asset_name.eq_ignore_ascii_case("ra2ts_l.bik")
+        && !source.eq_ignore_ascii_case("language.mix")
     {
         log::warn!(
             "ra2ts_l.bik resolved from {source}; retail duplicate priority expected language.mix when both language.mix and langmd.mix contain the file"
@@ -288,7 +289,10 @@ pub(crate) fn ensure_movie_for_current_layout(state: &mut AppState) -> Result<()
             return Ok(());
         }
     };
-    log::info!("Loaded {asset_name} for main menu from {}", movie.source_archive());
+    log::info!(
+        "Loaded {asset_name} for main menu from {}",
+        movie.source_archive()
+    );
     state.main_menu_movie = Some(movie);
     state.main_menu_movie_base = Some(layout.movie_base);
     state.main_menu_movie_last_step = Instant::now();
@@ -404,7 +408,12 @@ pub(crate) fn render_main_menu_shell(
         let Some((buffer, count)) = buffer.as_ref() else {
             continue;
         };
-        pass.set_scissor_rect(draw.scissor.x, draw.scissor.y, draw.scissor.w, draw.scissor.h);
+        pass.set_scissor_rect(
+            draw.scissor.x,
+            draw.scissor.y,
+            draw.scissor.w,
+            draw.scissor.h,
+        );
         state.batch_renderer.draw_with_buffer_passthrough(
             &mut pass,
             state.bit_font.atlas(),
@@ -431,6 +440,17 @@ mod tests {
         assert_eq!(segments.last().unwrap().piece, ButtonPiece::Right);
         let total: f32 = segments.iter().map(|s| s.width).sum();
         assert_eq!(total.round() as i32, rect.w);
+    }
+
+    #[test]
+    fn button_instances_center_scaled_30px_art_in_client() {
+        let (y, h) = button_art_y_and_height(RectPx::new(638, 203, 162, 37), 30.0);
+        assert_eq!(y, 206.0);
+        assert_eq!(h, 30.0);
+
+        let (y, h) = button_art_y_and_height(RectPx::new(1276, 305, 324, 55), 30.0);
+        assert_eq!(y, 310.0);
+        assert_eq!(h, 45.0);
     }
 
     #[test]

@@ -13,7 +13,7 @@ use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
 use crate::sim::bridge_state::{
     AnchorSpan, Axis, BridgeCellRole, BridgeRuntimeCell, BridgeRuntimeState, DamageState, Direction,
 };
-use crate::sim::components::Health;
+use crate::sim::components::{Health, PendingC4Detonation};
 use crate::sim::game_entity::GameEntity;
 use std::collections::BTreeMap;
 
@@ -31,6 +31,7 @@ fn dummy_resolved_terrain() -> ResolvedTerrainGrid {
                 source_sub_tile: 0,
                 final_tile_index: 0,
                 final_sub_tile: 0,
+                is_wood_bridge_repair_tile: false,
                 level: 0,
                 filled_clear: false,
                 tileset_index: Some(0),
@@ -208,7 +209,7 @@ fn seed_bridge_with_state(sim: &mut Simulation, state: DamageState) {
         DamageState::Damaged | DamageState::PartialCollapseA | DamageState::PartialCollapseB => {
             0xD1
         }
-        DamageState::Healthy { .. } => 0,
+        DamageState::Healthy { .. } => 0xCD,
     };
     for &(rx, ry) in BRIDGE_CELLS {
         let role = if (rx, ry) == (10, 10) {
@@ -237,9 +238,164 @@ fn seed_bridge_with_state(sim: &mut Simulation, state: DamageState) {
     sim.bridge_state = Some(bs);
 }
 
+fn seed_low_bridge_with_state(sim: &mut Simulation, state: DamageState) {
+    let mut bs = BridgeRuntimeState::default();
+    let span = AnchorSpan {
+        id: 1,
+        anchor: (10, 10),
+        cells: [
+            Some((10, 10)),
+            Some((10, 11)),
+            Some((10, 12)),
+            Some((10, 13)),
+            Some((10, 9)),
+            None,
+        ],
+        axis: Axis::NS,
+        direction: Direction::S,
+        damage_state: state,
+        bridge_group_id: 1,
+    };
+    bs.test_seed_anchor_span(span);
+    let overlay_byte = match state {
+        DamageState::Destroyed => 0x64,
+        DamageState::Damaged | DamageState::PartialCollapseA | DamageState::PartialCollapseB => {
+            0x50
+        }
+        DamageState::Healthy { .. } => 0x4A,
+    };
+    for &(rx, ry) in BRIDGE_CELLS {
+        let role = if (rx, ry) == (10, 10) {
+            BridgeCellRole::Anchor
+        } else {
+            BridgeCellRole::Body
+        };
+        bs.test_seed_cell(
+            rx,
+            ry,
+            BridgeRuntimeCell {
+                deck_present: true,
+                destroyable: true,
+                deck_level: 0,
+                bridge_group_id: Some(1),
+                damage_state: state,
+                axis: Some(Axis::NS),
+                role,
+                anchor_span_id: Some(1),
+                overlay_byte,
+                damaged_variant: false,
+                bridgehead_anchor_class: crate::sim::bridge_state::BridgeheadAnchorClass::Variant0,
+            },
+        );
+    }
+    sim.bridge_state = Some(bs);
+}
+
+fn seed_hut_fallback_bridgehead_layout(sim: &mut Simulation) {
+    let mut bs = BridgeRuntimeState::default();
+    let span = AnchorSpan {
+        id: 1,
+        anchor: (13, 10),
+        cells: [Some((13, 10)), None, None, None, None, None],
+        axis: Axis::EW,
+        direction: Direction::E,
+        damage_state: DamageState::Damaged,
+        bridge_group_id: 1,
+    };
+    bs.test_seed_anchor_span(span);
+    bs.test_seed_cell(
+        12,
+        10,
+        BridgeRuntimeCell {
+            deck_present: false,
+            destroyable: true,
+            deck_level: 4,
+            bridge_group_id: None,
+            damage_state: DamageState::Healthy { variant: 0 },
+            axis: Some(Axis::EW),
+            role: BridgeCellRole::Bridgehead,
+            anchor_span_id: None,
+            overlay_byte: 0,
+            damaged_variant: false,
+            bridgehead_anchor_class: crate::sim::bridge_state::BridgeheadAnchorClass::Variant0,
+        },
+    );
+    bs.test_seed_cell(
+        13,
+        10,
+        BridgeRuntimeCell {
+            deck_present: true,
+            destroyable: true,
+            deck_level: 4,
+            bridge_group_id: Some(1),
+            damage_state: DamageState::Damaged,
+            axis: Some(Axis::EW),
+            role: BridgeCellRole::Anchor,
+            anchor_span_id: Some(1),
+            overlay_byte: 0,
+            damaged_variant: false,
+            bridgehead_anchor_class: crate::sim::bridge_state::BridgeheadAnchorClass::Variant0,
+        },
+    );
+    sim.bridge_state = Some(bs);
+}
+
+fn seed_terminal_overlay_with_fallback_trap(sim: &mut Simulation, overlay_byte: u8) {
+    seed_hut_fallback_bridgehead_layout(sim);
+    sim.bridge_state.as_mut().unwrap().test_seed_cell(
+        10,
+        10,
+        BridgeRuntimeCell {
+            deck_present: true,
+            destroyable: true,
+            deck_level: 4,
+            bridge_group_id: Some(2),
+            damage_state: DamageState::Destroyed,
+            axis: Some(Axis::EW),
+            role: BridgeCellRole::Body,
+            anchor_span_id: None,
+            overlay_byte,
+            damaged_variant: false,
+            bridgehead_anchor_class: crate::sim::bridge_state::BridgeheadAnchorClass::Variant0,
+        },
+    );
+}
+
 fn step(sim: &mut Simulation, rules: &RuleSet, heights: &BTreeMap<(u16, u16), u8>) -> TickResult {
     let due = sim.take_due_commands();
     sim.advance_tick(&due, Some(rules), heights, None, None, 67)
+}
+
+fn advance_pending_c4_to_detonation(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    heights: &BTreeMap<(u16, u16), u8>,
+) -> bool {
+    let mut bridge_state_changed_seen = false;
+    for _ in 0..(rules.c4_delay_ticks as u64 + 1) {
+        let result = step(sim, rules, heights);
+        bridge_state_changed_seen |= result.bridge_state_changed;
+    }
+    bridge_state_changed_seen
+}
+
+fn advance_until_c4_claim(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    heights: &BTreeMap<(u16, u16), u8>,
+    target_id: u64,
+) -> u64 {
+    for _ in 0..16 {
+        step(sim, rules, heights);
+        if let Some(pending) = sim
+            .entities
+            .get(target_id)
+            .and_then(|b| b.pending_c4_detonation)
+        {
+            return pending.plant_start_tick;
+        }
+    }
+    panic!("C4 plant was not claimed after entering the target building cell");
 }
 
 #[test]
@@ -360,7 +516,8 @@ fn engineer_far_from_bridge_at_cabhut_no_mutation() {
 }
 
 /// SEAL with `c4_plant` set, adjacent to a healthy CABHUT, must:
-///   - claim the plant on its first tick (adjacency-1),
+///   - not claim from the adjacent cell,
+///   - claim after entering the CABHUT cell,
 ///   - leave the hut at full HP across the entire C4Delay window,
 ///   - on timer expiry, route through the BridgeRepairHut branch in
 ///     `apply_c4_damage_to_building` so the bridge collapses while the
@@ -383,22 +540,17 @@ fn c4_on_cabhut_collapses_bridge_and_hut_survives() {
     });
     seed_bridge_with_state(&mut sim, DamageState::Healthy { variant: 0 });
 
-    // First tick: tick_c4_plants Phase 1 sees adjacency and claims.
+    // First tick: adjacency only issues the one-cell enter move. It must not
+    // claim the marker until the SEAL's current cell resolves to the CABHUT.
     step(&mut sim, &rules, &heights);
     assert!(
         sim.entities
             .get(cabhut)
             .and_then(|b| b.pending_c4_detonation)
-            .is_some(),
-        "plant must be claimed once SEAL is adjacent to CABHUT"
+            .is_none(),
+        "adjacent SEAL must not claim C4 before entering CABHUT"
     );
-    let plant_start = sim
-        .entities
-        .get(cabhut)
-        .unwrap()
-        .pending_c4_detonation
-        .unwrap()
-        .plant_start_tick;
+    let plant_start = advance_until_c4_claim(&mut sim, &rules, &heights, cabhut);
 
     // Throughout the C4Delay window: hut HP must stay at max — the
     // BridgeRepairHut branch never damages the hut, even before the timer
@@ -428,12 +580,27 @@ fn c4_on_cabhut_collapses_bridge_and_hut_survives() {
         "hut HP unchanged: BridgeRepairHut branch must skip damage"
     );
     assert!(!hut.dying, "hut must not be marked dying");
+    assert!(
+        hut.pending_c4_detonation.is_none(),
+        "CABHUT pending C4 marker must clear after bridge dispatch"
+    );
 
     // Anchor cell must reach Destroyed via the body_cell_advance_state
     // walker invoked by `dispatch_bridge_collapse_from_hut`. Body cells
     // along the span propagate via the cascade machinery owned by the
     // bridge_orchestrator tests — this test does not re-assert that here.
     let bs = sim.bridge_state.as_ref().unwrap();
+    let destroyed_cells = BRIDGE_CELLS
+        .iter()
+        .filter(|&&(rx, ry)| {
+            bs.cell(rx, ry)
+                .is_some_and(|cell| matches!(cell.damage_state, DamageState::Destroyed))
+        })
+        .count();
+    assert!(
+        destroyed_cells >= 2,
+        "CABHUT direct-overlay sweep must advance along the bridge axis; destroyed_cells={destroyed_cells}"
+    );
     let anchor = bs.cell(10, 10).unwrap();
     assert!(
         matches!(anchor.damage_state, DamageState::Destroyed),
@@ -445,6 +612,190 @@ fn c4_on_cabhut_collapses_bridge_and_hut_survives() {
         bridge_state_changed_seen,
         "TickResult.bridge_state_changed must fire at least once so the app rebuilds PathGrid"
     );
+}
+
+#[test]
+fn c4_on_cabhut_without_bridge_clears_pending_marker() {
+    let (mut sim, rules, heights) = build_sim();
+    let cabhut = spawn_cabhut(&mut sim, 9, 10);
+    let seal = spawn_seal(&mut sim, 10, 10);
+    let cabhut_max_hp = sim.entities.get(cabhut).unwrap().health.current;
+    sim.bridge_state = Some(BridgeRuntimeState::default());
+    sim.entities.get_mut(cabhut).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
+        plant_start_tick: sim.tick,
+        attacker_id: seal,
+    });
+
+    let mut bridge_state_changed_seen = false;
+    for _ in 0..(rules.c4_delay_ticks as u64 + 1) {
+        let result = step(&mut sim, &rules, &heights);
+        bridge_state_changed_seen |= result.bridge_state_changed;
+    }
+
+    let hut = sim.entities.get(cabhut).unwrap();
+    assert_eq!(hut.health.current, cabhut_max_hp);
+    assert!(!hut.dying);
+    assert!(hut.pending_c4_detonation.is_none());
+    assert!(
+        !bridge_state_changed_seen,
+        "no bridge evidence means no bridge-state change"
+    );
+}
+
+#[test]
+fn c4_on_invulnerable_cabhut_still_dispatches_bridge_and_clears_pending() {
+    use crate::sim::superweapon::invulnerability::{InvulnKind, InvulnerabilityState};
+
+    let (mut sim, rules, heights) = build_sim();
+    let cabhut = spawn_cabhut(&mut sim, 9, 10);
+    let seal = spawn_seal(&mut sim, 10, 10);
+    let cabhut_max_hp = sim.entities.get(cabhut).unwrap().health.current;
+    seed_bridge_with_state(&mut sim, DamageState::Healthy { variant: 0 });
+    sim.entities.get_mut(cabhut).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
+        plant_start_tick: sim.tick,
+        attacker_id: seal,
+    });
+    sim.entities.get_mut(cabhut).unwrap().invulnerability = Some(InvulnerabilityState {
+        start_frame: sim.tick as u32,
+        duration_frames: rules.c4_delay_ticks + 20,
+        kind: InvulnKind::IronCurtain,
+    });
+
+    let mut bridge_state_changed_seen = false;
+    for _ in 0..(rules.c4_delay_ticks as u64 + 1) {
+        let result = step(&mut sim, &rules, &heights);
+        bridge_state_changed_seen |= result.bridge_state_changed;
+    }
+
+    let hut = sim.entities.get(cabhut).unwrap();
+    assert_eq!(hut.health.current, cabhut_max_hp);
+    assert!(!hut.dying);
+    assert!(hut.pending_c4_detonation.is_none());
+    assert!(bridge_state_changed_seen);
+    assert!(matches!(
+        sim.bridge_state
+            .as_ref()
+            .unwrap()
+            .cell(10, 10)
+            .unwrap()
+            .damage_state,
+        DamageState::Destroyed
+    ));
+}
+
+#[test]
+fn c4_on_cabhut_bridgehead_fallback_collapses_bridge() {
+    let (mut sim, rules, heights) = build_sim();
+    let cabhut = spawn_cabhut(&mut sim, 9, 10);
+    let seal = spawn_seal(&mut sim, 9, 10);
+    let hut_hp = sim.entities.get(cabhut).unwrap().health.current;
+    seed_hut_fallback_bridgehead_layout(&mut sim);
+    sim.entities.get_mut(cabhut).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
+        plant_start_tick: sim.tick,
+        attacker_id: seal,
+    });
+
+    let bridge_state_changed_seen = advance_pending_c4_to_detonation(&mut sim, &rules, &heights);
+
+    let hut = sim.entities.get(cabhut).unwrap();
+    assert_eq!(hut.health.current, hut_hp);
+    assert!(!hut.dying);
+    assert!(hut.pending_c4_detonation.is_none());
+    assert!(bridge_state_changed_seen);
+    let bs = sim.bridge_state.as_ref().unwrap();
+    assert!(matches!(
+        bs.cell(13, 10).unwrap().damage_state,
+        DamageState::Destroyed
+    ));
+}
+
+#[test]
+fn c4_on_cabhut_low_overlay_collapses_low_bridge() {
+    let (mut sim, rules, heights) = build_sim();
+    let cabhut = spawn_cabhut(&mut sim, 9, 10);
+    let seal = spawn_seal(&mut sim, 10, 10);
+    let hut_hp = sim.entities.get(cabhut).unwrap().health.current;
+    seed_low_bridge_with_state(&mut sim, DamageState::Healthy { variant: 0 });
+    sim.entities.get_mut(cabhut).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
+        plant_start_tick: sim.tick,
+        attacker_id: seal,
+    });
+
+    let bridge_state_changed_seen = advance_pending_c4_to_detonation(&mut sim, &rules, &heights);
+
+    let hut = sim.entities.get(cabhut).unwrap();
+    assert_eq!(hut.health.current, hut_hp);
+    assert!(!hut.dying);
+    assert!(hut.pending_c4_detonation.is_none());
+    assert!(bridge_state_changed_seen);
+    assert!(
+        BRIDGE_CELLS.iter().any(|&(rx, ry)| matches!(
+            sim.bridge_state
+                .as_ref()
+                .unwrap()
+                .cell(rx, ry)
+                .unwrap()
+                .damage_state,
+            DamageState::Destroyed
+        )),
+        "low overlay CABHUT dispatch must destroy at least one seeded bridge cell"
+    );
+}
+
+#[test]
+fn c4_on_cabhut_low_terminal_overlay_0x65_uses_overlay_first_scan() {
+    let (mut sim, rules, heights) = build_sim();
+    let cabhut = spawn_cabhut(&mut sim, 9, 10);
+    let seal = spawn_seal(&mut sim, 10, 10);
+    seed_terminal_overlay_with_fallback_trap(&mut sim, 0x65);
+    sim.entities.get_mut(cabhut).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
+        plant_start_tick: sim.tick,
+        attacker_id: seal,
+    });
+
+    let bridge_state_changed_seen = advance_pending_c4_to_detonation(&mut sim, &rules, &heights);
+
+    assert!(
+        !bridge_state_changed_seen,
+        "terminal overlay scan hit must not fall through to fallback trap"
+    );
+    assert!(matches!(
+        sim.bridge_state
+            .as_ref()
+            .unwrap()
+            .cell(13, 10)
+            .unwrap()
+            .damage_state,
+        DamageState::Damaged
+    ));
+}
+
+#[test]
+fn c4_on_cabhut_high_terminal_overlay_0xe8_uses_overlay_first_scan() {
+    let (mut sim, rules, heights) = build_sim();
+    let cabhut = spawn_cabhut(&mut sim, 9, 10);
+    let seal = spawn_seal(&mut sim, 10, 10);
+    seed_terminal_overlay_with_fallback_trap(&mut sim, 0xE8);
+    sim.entities.get_mut(cabhut).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
+        plant_start_tick: sim.tick,
+        attacker_id: seal,
+    });
+
+    let bridge_state_changed_seen = advance_pending_c4_to_detonation(&mut sim, &rules, &heights);
+
+    assert!(
+        !bridge_state_changed_seen,
+        "terminal overlay scan hit must not fall through to fallback trap"
+    );
+    assert!(matches!(
+        sim.bridge_state
+            .as_ref()
+            .unwrap()
+            .cell(13, 10)
+            .unwrap()
+            .damage_state,
+        DamageState::Damaged
+    ));
 }
 
 // ---- G4 damaged-variant lifecycle integration tests ------------------------
@@ -463,6 +814,7 @@ fn damaged_data_resolved_terrain(tile_id: i32) -> ResolvedTerrainGrid {
                 source_sub_tile: 0,
                 final_tile_index: tile_id,
                 final_sub_tile: 0,
+                is_wood_bridge_repair_tile: false,
                 level: 0,
                 filled_clear: false,
                 tileset_index: Some(0),
@@ -710,6 +1062,7 @@ fn build_ns_bridge_with_bridgehead_for_dispatch() -> (
                 source_sub_tile: 0,
                 final_tile_index: 0,
                 final_sub_tile: 0,
+                is_wood_bridge_repair_tile: false,
                 // level must be >= 4 so the HighStateMachine path matches.
                 // Z-gate accepts impact_z within [level-1, level+1].
                 level: 4,

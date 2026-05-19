@@ -78,6 +78,10 @@ pub struct ResolvedTerrainCell {
     pub source_sub_tile: u8,
     pub final_tile_index: i32,
     pub final_sub_tile: u8,
+    /// True when `final_tile_index` falls in the first 16 tiles of the
+    /// theater's `WoodBridgeSet`. This is the CellClass+0x38 predicate used
+    /// by Engineer CABHUT bridge-repair dispatch.
+    pub is_wood_bridge_repair_tile: bool,
     pub level: u8,
     pub filled_clear: bool,
     pub tileset_index: Option<u16>,
@@ -338,6 +342,8 @@ impl ResolvedTerrainGrid {
                 let (final_tile_index, final_sub_tile, level) = final_cell
                     .map(|cell| (cell.tile_index, cell.sub_tile, cell.z))
                     .unwrap_or((0, 0, 0));
+                let is_wood_bridge_repair_tile =
+                    is_wood_bridge_repair_tile(theater_data, final_tile_index);
                 let tile_key = TileKey {
                     tile_id: normalize_tile_id(final_tile_index),
                     sub_tile: final_sub_tile,
@@ -455,6 +461,7 @@ impl ResolvedTerrainGrid {
                     source_sub_tile: raw.map(|c| c.sub_tile).unwrap_or(0),
                     final_tile_index,
                     final_sub_tile,
+                    is_wood_bridge_repair_tile,
                     level,
                     filled_clear: raw.is_none(),
                     tileset_index: metadata.tileset_index,
@@ -932,6 +939,24 @@ fn normalize_tile_id(tile_index: i32) -> u16 {
     }
 }
 
+fn is_wood_bridge_repair_tile(theater_data: Option<&TheaterData>, final_tile_index: i32) -> bool {
+    if final_tile_index < 0 {
+        return false;
+    }
+    let Some(td) = theater_data else {
+        return false;
+    };
+    let Some(wood_bridge_set) = td.wood_bridge_set else {
+        return false;
+    };
+    let Some(bounds) = td.lookup.bounds().get(wood_bridge_set as usize) else {
+        return false;
+    };
+    let tile_id = normalize_tile_id(final_tile_index) as u32;
+    let start = bounds.start as u32;
+    tile_id >= start && tile_id < start + 16
+}
+
 const AUTO_TUBE_DIRECTIONS: [u8; 4] = [2, 4, 6, 0];
 
 fn build_auto_low_bridge_tubes(
@@ -1340,6 +1365,36 @@ mod tests {
         }
     }
 
+    fn synthetic_theater_with_wood_bridge_set() -> TheaterData {
+        let ini = b"[TileSet0000]\nTilesInSet=10\nFileName=clear\nSetName=Clear\n\n\
+                    [TileSet0001]\nTilesInSet=20\nFileName=wood\nSetName=Wood Bridge\n";
+        let lookup = crate::map::theater::parse_tileset_ini(ini, "tem").unwrap();
+        let empty_palette = crate::assets::pal_file::Palette::from_bytes(&[0u8; 768])
+            .expect("768-byte zero palette parses");
+        TheaterData {
+            lookup,
+            iso_palette: empty_palette.clone(),
+            unit_palette: empty_palette.clone(),
+            tiberium_palette: empty_palette,
+            extension: "tem",
+            ini_data: Vec::new(),
+            bridge_set: None,
+            wood_bridge_set: Some(1),
+            slope_set_pieces: None,
+            slope_set_pieces2: None,
+            bridge_top_left_1: None,
+            bridge_top_left_2: None,
+            bridge_top_right_1: None,
+            bridge_top_right_2: None,
+            bridge_middle_1: None,
+            bridge_middle_2: None,
+            tunnels: None,
+            track_tunnels: None,
+            dirt_tunnels: None,
+            dirt_track_tunnels: None,
+        }
+    }
+
     fn make_test_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
         ResolvedTerrainCell {
             rx,
@@ -1348,6 +1403,7 @@ mod tests {
             source_sub_tile: 0,
             final_tile_index: 0,
             final_sub_tile: 0,
+            is_wood_bridge_repair_tile: false,
             level: 0,
             filled_clear: false,
             tileset_index: Some(0),
@@ -1487,6 +1543,52 @@ mod tests {
         assert!(clear.filled_clear);
         assert_eq!(clear.final_tile_index, 0);
         assert_eq!(clear.level, 0);
+    }
+
+    #[test]
+    fn wood_bridge_repair_tile_uses_first_16_tiles_of_wood_bridge_set() {
+        let theater = synthetic_theater_with_wood_bridge_set();
+        let map = make_map(
+            vec![
+                MapCell {
+                    rx: 0,
+                    ry: 0,
+                    tile_index: 9,
+                    sub_tile: 0,
+                    z: 0,
+                },
+                MapCell {
+                    rx: 1,
+                    ry: 0,
+                    tile_index: 10,
+                    sub_tile: 0,
+                    z: 0,
+                },
+                MapCell {
+                    rx: 2,
+                    ry: 0,
+                    tile_index: 25,
+                    sub_tile: 0,
+                    z: 0,
+                },
+                MapCell {
+                    rx: 3,
+                    ry: 0,
+                    tile_index: 26,
+                    sub_tile: 0,
+                    z: 0,
+                },
+            ],
+            Vec::new(),
+            Vec::new(),
+        );
+
+        let grid = ResolvedTerrainGrid::build(&map, Some(&theater), None, None, None, false, 0);
+
+        assert!(!grid.cell(0, 0).unwrap().is_wood_bridge_repair_tile);
+        assert!(grid.cell(1, 0).unwrap().is_wood_bridge_repair_tile);
+        assert!(grid.cell(2, 0).unwrap().is_wood_bridge_repair_tile);
+        assert!(!grid.cell(3, 0).unwrap().is_wood_bridge_repair_tile);
     }
 
     #[test]
@@ -1681,6 +1783,7 @@ mod tests {
                 source_sub_tile: 0,
                 final_tile_index: 0,
                 final_sub_tile: 0,
+                is_wood_bridge_repair_tile: false,
                 level: 0,
                 filled_clear: false,
                 tileset_index: Some(0),

@@ -406,14 +406,12 @@ pub fn tick_homing_movement(entities: &mut EntityStore, tick_ms: u32, _sim_tick:
         //     integers. Cell-grid match alone is too strict — the missile's
         //     sub-cell pos may orbit a target's cell without ever landing on
         //     an exact (rx, ry).
-        let dx_lep_sf = (SimFixed::from_num(h.last_known_rx as i32) - h.pos_x_cells)
-            * SimFixed::from_num(256);
-        let dy_lep_sf = (SimFixed::from_num(h.last_known_ry as i32) - h.pos_y_cells)
-            * SimFixed::from_num(256);
-        let dist_now_sf: SimFixed = int_distance_to_sim(
-            dx_lep_sf.to_num::<i32>(),
-            dy_lep_sf.to_num::<i32>(),
-        );
+        let dx_lep_sf =
+            (SimFixed::from_num(h.last_known_rx as i32) - h.pos_x_cells) * SimFixed::from_num(256);
+        let dy_lep_sf =
+            (SimFixed::from_num(h.last_known_ry as i32) - h.pos_y_cells) * SimFixed::from_num(256);
+        let dist_now_sf: SimFixed =
+            int_distance_to_sim(dx_lep_sf.to_num::<i32>(), dy_lep_sf.to_num::<i32>());
         // 192 leptons = three-quarters of a cell; tight enough that the
         // missile is visually on top of the target and loose enough to
         // absorb sub-cell drift from f32 cos/sin in the velocity ramp.

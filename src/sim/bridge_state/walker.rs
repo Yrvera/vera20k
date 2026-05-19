@@ -9,8 +9,10 @@
 //! ## Dependency rules
 //! Same as sim/: depends on rules/ + map/; never render / ui / audio / net.
 
-use crate::map::resolved_terrain::{BridgeDirection, ResolvedTerrainCell, ResolvedTerrainGrid};
-use crate::sim::bridge_state::{BridgeRuntimeState, DamageState, RepairOutcome, StateOutcome};
+use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
+use crate::sim::bridge_state::{
+    Axis, BridgeRuntimeState, DamageState, RepairOutcome, StateOutcome,
+};
 use crate::sim::rng::SimRng;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,6 +31,34 @@ enum RepairTransition {
 }
 
 impl BridgeRuntimeState {
+    pub(crate) fn is_low_destroy_overlay(overlay: u8) -> bool {
+        (0x4A..=0x65).contains(&overlay)
+    }
+
+    pub(crate) fn is_high_destroy_overlay(overlay: u8) -> bool {
+        (0xCD..=0xE8).contains(&overlay)
+    }
+
+    pub(crate) fn low_destroy_overlay_axis(overlay: u8) -> Option<Axis> {
+        if Self::is_ns_walker_overlay_low(overlay) {
+            Some(Axis::NS)
+        } else if Self::is_ew_walker_overlay_low(overlay) {
+            Some(Axis::EW)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn high_destroy_overlay_axis(overlay: u8) -> Option<Axis> {
+        if Self::is_ns_walker_overlay_high(overlay) {
+            Some(Axis::NS)
+        } else if Self::is_ew_walker_overlay_high(overlay) {
+            Some(Axis::EW)
+        } else {
+            None
+        }
+    }
+
     /// Engineer repair entry for a gamemd-style 5x5 scan. The outer dispatch
     /// chooses LOW if any scanned cell is a low bridge tile/ramp or low bridge
     /// overlay; otherwise it scans the HIGH overlay family.
@@ -392,8 +422,7 @@ impl BridgeRuntimeState {
     ) -> bool {
         overlay.map(Self::is_low_repair_overlay).unwrap_or(false)
             || terrain_cell
-                .and_then(|cell| cell.bridge_layer.as_ref())
-                .map(|layer| layer.direction == BridgeDirection::Low)
+                .map(|cell| cell.is_wood_bridge_repair_tile)
                 .unwrap_or(false)
     }
 
@@ -425,6 +454,9 @@ impl BridgeRuntimeState {
             return StateOutcome::NoChange;
         };
         let overlay = cell.overlay_byte;
+        if !Self::is_high_destroy_overlay(overlay) {
+            return StateOutcome::NoChange;
+        }
         if Self::is_ns_walker_overlay_high(overlay) {
             let (sx, sy) = self.find_walker_start_high_ns(rx, ry);
             return self.destroy_bridge_walker_ns_high(sx, sy, terrain);
@@ -449,6 +481,9 @@ impl BridgeRuntimeState {
             return StateOutcome::NoChange;
         };
         let overlay = cell.overlay_byte;
+        if !Self::is_low_destroy_overlay(overlay) {
+            return StateOutcome::NoChange;
+        }
         if Self::is_ns_walker_overlay_low(overlay) {
             let (sx, sy) = self.find_walker_start_low_ns(rx, ry);
             return self.destroy_bridge_walker_ns_low(sx, sy, terrain);
@@ -1330,6 +1365,98 @@ mod tests {
         ResolvedTerrainGrid::from_cells(0, 0, Vec::new())
     }
 
+    #[test]
+    fn destroy_overlay_predicates_match_gamemd_ranges() {
+        assert!(!BridgeRuntimeState::is_low_destroy_overlay(0x49));
+        assert!(BridgeRuntimeState::is_low_destroy_overlay(0x4A));
+        assert!(BridgeRuntimeState::is_low_destroy_overlay(0x65));
+        assert!(!BridgeRuntimeState::is_low_destroy_overlay(0x66));
+
+        assert!(!BridgeRuntimeState::is_high_destroy_overlay(0xCC));
+        assert!(BridgeRuntimeState::is_high_destroy_overlay(0xCD));
+        assert!(BridgeRuntimeState::is_high_destroy_overlay(0xE8));
+        assert!(!BridgeRuntimeState::is_high_destroy_overlay(0xE9));
+    }
+
+    #[test]
+    fn destroy_overlay_axis_helpers_match_representative_subranges() {
+        assert_eq!(
+            BridgeRuntimeState::low_destroy_overlay_axis(0x4A),
+            Some(Axis::NS)
+        );
+        assert_eq!(
+            BridgeRuntimeState::low_destroy_overlay_axis(0x53),
+            Some(Axis::EW)
+        );
+        assert_eq!(BridgeRuntimeState::low_destroy_overlay_axis(0x49), None);
+
+        assert_eq!(
+            BridgeRuntimeState::high_destroy_overlay_axis(0xCD),
+            Some(Axis::NS)
+        );
+        assert_eq!(
+            BridgeRuntimeState::high_destroy_overlay_axis(0xD6),
+            Some(Axis::EW)
+        );
+        assert_eq!(BridgeRuntimeState::high_destroy_overlay_axis(0xCC), None);
+    }
+
+    fn terrain_with_wood_repair_tile_at(pos: Option<(u16, u16)>) -> ResolvedTerrainGrid {
+        let mut cells = Vec::with_capacity(25);
+        for cy in 0..5u16 {
+            for cx in 0..5u16 {
+                cells.push(ResolvedTerrainCell {
+                    rx: cx,
+                    ry: cy,
+                    source_tile_index: 0,
+                    source_sub_tile: 0,
+                    final_tile_index: 0,
+                    final_sub_tile: 0,
+                    is_wood_bridge_repair_tile: pos == Some((cx, cy)),
+                    level: 0,
+                    filled_clear: false,
+                    tileset_index: Some(0),
+                    land_type: 0,
+                    yr_cell_land_type: 0,
+                    slope_type: 0,
+                    template_height: 0,
+                    render_offset_x: 0,
+                    render_offset_y: 0,
+                    terrain_class: crate::rules::terrain_rules::TerrainClass::Clear,
+                    speed_costs: crate::rules::terrain_rules::SpeedCostProfile::default(),
+                    is_water: false,
+                    is_cliff_like: false,
+                    is_rough: false,
+                    is_road: false,
+                    accepts_smudge: false,
+                    is_cliff_redraw: false,
+                    variant: 0,
+                    has_ramp: false,
+                    canonical_ramp: None,
+                    ground_walk_blocked: false,
+                    terrain_object_blocks: false,
+                    overlay_blocks: false,
+                    zone_type: 0,
+                    base_ground_walk_blocked: false,
+                    base_build_blocked: false,
+                    build_blocked: false,
+                    has_bridge_deck: false,
+                    bridge_walkable: false,
+                    bridge_transition: false,
+                    bridge_deck_level: 0,
+                    bridge_layer: None,
+                    bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+                    tube_index: None,
+                    radar_left: [0, 0, 0],
+                    radar_right: [0, 0, 0],
+                    has_damaged_data: false,
+                    bridgehead_anchor_class_at_load: None,
+                });
+            }
+        }
+        ResolvedTerrainGrid::from_cells(5, 5, cells)
+    }
+
     fn seed_high_body_cell(state: &mut BridgeRuntimeState, rx: u16, ry: u16, overlay: u8) {
         state.test_seed_cell(
             rx,
@@ -1348,6 +1475,86 @@ mod tests {
                 bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
             },
         );
+    }
+
+    #[test]
+    fn repair_scan_wood_bridge_tile_without_low_overlay_dispatches_low() {
+        let mut state = BridgeRuntimeState::default();
+        for y in 1..=3u16 {
+            seed_high_body_cell(&mut state, 2, y, 0xE7);
+            state.cell_mut(2, y).unwrap().damage_state = DamageState::Destroyed;
+        }
+
+        let terrain = terrain_with_wood_repair_tile_at(Some((0, 0)));
+        let scan = vec![(0, 0), (2, 2)];
+        let mut rng = SimRng::new(789);
+        let prior_rng = rng.state();
+
+        let outcome = state.repair_bridge_from_engineer_scan(&scan, &mut rng, &terrain);
+
+        assert!(!outcome.zones_dirty);
+        assert!(outcome.radar_cells.is_empty());
+        assert_eq!(outcome.repaired_cells, 0);
+        assert_eq!(rng.state(), prior_rng);
+        for y in 1..=3u16 {
+            let cell = state.cell(2, y).unwrap();
+            assert_eq!(cell.overlay_byte, 0xE7);
+            assert_eq!(cell.damage_state, DamageState::Destroyed);
+        }
+    }
+
+    #[test]
+    fn repair_scan_without_low_overlay_or_wood_tile_dispatches_high() {
+        let mut state = BridgeRuntimeState::default();
+        for y in 1..=3u16 {
+            seed_high_body_cell(&mut state, 2, y, 0xE7);
+            state.cell_mut(2, y).unwrap().damage_state = DamageState::Destroyed;
+        }
+
+        let terrain = terrain_with_wood_repair_tile_at(None);
+        let scan = vec![(0, 0), (2, 2)];
+        let mut rng = SimRng::new(790);
+
+        let outcome = state.repair_bridge_from_engineer_scan(&scan, &mut rng, &terrain);
+
+        assert!(outcome.zones_dirty);
+        assert_eq!(outcome.repaired_cells, 3);
+        for y in 1..=3u16 {
+            assert!(matches!(
+                state.cell(2, y).unwrap().damage_state,
+                DamageState::Healthy { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn repair_scan_low_overlay_dispatches_low_when_tile_predicate_false() {
+        let mut state = BridgeRuntimeState::default();
+        for y in 1..=3u16 {
+            seed_high_body_cell(&mut state, 2, y, 0xE7);
+            state.cell_mut(2, y).unwrap().damage_state = DamageState::Destroyed;
+            seed_low_body_cell(&mut state, 1, y, Axis::NS, 0x64);
+            state.cell_mut(1, y).unwrap().damage_state = DamageState::Destroyed;
+        }
+
+        let terrain = terrain_with_wood_repair_tile_at(None);
+        let scan = vec![(2, 2), (1, 2)];
+        let mut rng = SimRng::new(791);
+
+        let outcome = state.repair_bridge_from_engineer_scan(&scan, &mut rng, &terrain);
+
+        assert!(outcome.zones_dirty);
+        assert_eq!(outcome.repaired_cells, 3);
+        for y in 1..=3u16 {
+            assert_eq!(
+                state.cell(2, y).unwrap().damage_state,
+                DamageState::Destroyed
+            );
+            assert!(matches!(
+                state.cell(1, y).unwrap().damage_state,
+                DamageState::Healthy { .. }
+            ));
+        }
     }
 
     #[test]

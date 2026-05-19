@@ -449,8 +449,8 @@ fn pack_entries(
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_shell_asset, load_named_palette, load_parent_background_palette, render_shp_entry,
-        AssetManager, ShellAssetRole,
+        AssetManager, ShellAssetRole, classify_shell_asset, load_named_palette,
+        load_parent_background_palette, render_shp_entry,
     };
 
     #[test]

@@ -40,6 +40,7 @@ fn resolved_clear_grid_with_override(
                 source_sub_tile: 0,
                 final_tile_index: 0,
                 final_sub_tile: 0,
+                is_wood_bridge_repair_tile: false,
                 level: 0,
                 filled_clear: false,
                 tileset_index: Some(0),
