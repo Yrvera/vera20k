@@ -46,6 +46,14 @@ path = "src/bin/extract-bridge-frames.rs"
 name = "inspect-water-tiles"
 path = "src/bin/inspect-water-tiles.rs"
 
+[[bin]]
+name = "inspect-pcx-palette"
+path = "src/bin/inspect-pcx-palette.rs"
+
+[[bin]]
+name = "inspect-yro-render"
+path = "src/bin/inspect-yro-render.rs"
+
 [dependencies]
 # --- GPU rendering ---
 # wgpu 27 is the latest version compatible with egui-wgpu 0.33 (requires ^27.0.1).
