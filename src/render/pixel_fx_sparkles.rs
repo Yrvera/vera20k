@@ -158,6 +158,44 @@ fn peak_with_noise(s: u64, params: &SparkleParams) -> [u8; 3] {
     ]
 }
 
+/// Compute the cell bounds (inclusive) of the visible viewport.
+///
+/// Camera is in world pixels (top-left corner of viewport). vsw and vsh are
+/// the effective viewport width and height in world pixels (already
+/// zoom-corrected by the caller). Returns (rx_min, ry_min, rx_max, ry_max),
+/// clamped to map bounds [0, map_w) and [0, map_h).
+///
+/// Iso cells are 60 wide × 30 tall (CELL_WIDTH × CELL_HEIGHT in render). We
+/// add a 2-cell margin on every side so partially-visible cells at the edges
+/// are included. (L27 — sparkles should appear at viewport edges.)
+#[inline]
+fn viewport_cell_bounds(
+    camera_x: f32,
+    camera_y: f32,
+    vsw: f32,
+    vsh: f32,
+    map_w: u16,
+    map_h: u16,
+) -> (u16, u16, u16, u16) {
+    const CELL_WIDTH: f32 = 60.0;
+    const CELL_HEIGHT: f32 = 30.0;
+    const MARGIN_CELLS: i32 = 2;
+
+    // World-pixel viewport rect → approximate cell range. Iso conversion is
+    // approximate (we over-include because of the diamond shape) but cheap
+    // and correct: the gate inside compute_sparkle_for_cell handles cells
+    // outside the actual viewport via the screen position check.
+    let rx_min = (((camera_x / CELL_WIDTH).floor() as i32) - MARGIN_CELLS)
+        .clamp(0, map_w as i32 - 1) as u16;
+    let rx_max = ((((camera_x + vsw) / CELL_WIDTH).ceil() as i32) + MARGIN_CELLS)
+        .clamp(0, map_w as i32 - 1) as u16;
+    let ry_min = (((camera_y / CELL_HEIGHT).floor() as i32) - MARGIN_CELLS)
+        .clamp(0, map_h as i32 - 1) as u16;
+    let ry_max = ((((camera_y + vsh) / CELL_HEIGHT).ceil() as i32) + MARGIN_CELLS)
+        .clamp(0, map_h as i32 - 1) as u16;
+    (rx_min, ry_min, rx_max, ry_max)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -349,5 +387,31 @@ mod tests {
                     ch, i, noisy[ch], hi);
             }
         }
+    }
+
+    #[test]
+    fn viewport_bounds_clamped_to_map() {
+        // Camera at top-left of map; viewport extends beyond map edge.
+        // Bounds must be clamped to [0, map - 1].
+        let (rxn, ryn, rxx, ryx) = viewport_cell_bounds(0.0, 0.0, 800.0, 600.0, 100, 100);
+        assert_eq!((rxn, ryn), (0, 0));
+        assert!(rxx <= 99 && ryx <= 99);
+    }
+
+    #[test]
+    fn viewport_bounds_camera_in_middle() {
+        // Camera somewhere in the map; bounds reflect viewport position
+        // plus a small margin.
+        let (rxn, ryn, rxx, ryx) = viewport_cell_bounds(3000.0, 1500.0, 800.0, 600.0, 200, 200);
+        assert!(rxn > 0 && ryn > 0, "bounds should be inset from origin");
+        assert!(rxx < 200 && ryx < 200, "bounds should be within map");
+        assert!(rxn < rxx && ryn < ryx, "bounds should be ordered");
+    }
+
+    #[test]
+    fn viewport_bounds_handles_negative_camera() {
+        // Camera negative (scrolled past edge) — bounds clamp to 0.
+        let (rxn, ryn, _, _) = viewport_cell_bounds(-500.0, -500.0, 800.0, 600.0, 100, 100);
+        assert_eq!((rxn, ryn), (0, 0));
     }
 }
