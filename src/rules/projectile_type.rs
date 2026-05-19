@@ -1,7 +1,7 @@
 //! Projectile type definitions parsed from rules.ini.
 //!
 //! Each projectile in RA2 has its own `[ProjectileName]` section in rules.ini,
-//! defining targeting capabilities (AA/AG), flight behavior (speed, arcing,
+//! defining targeting capabilities (AA/AG), flight behavior (arcing,
 //! homing turn rate), and accuracy. Weapons reference projectiles via their
 //! `Projectile=` key.
 //!
@@ -26,7 +26,7 @@ use fixed::types::I8F8;
 /// projectile can't hit the target type, the combat system falls back to
 /// the unit's Secondary weapon.
 ///
-/// All 37 fields are mapped from BulletTypeClass::ReadINI (0x46bee0).
+/// Fields are mapped from the verified BulletTypeClass::ReadINI behavior.
 #[derive(Debug, Clone)]
 pub struct ProjectileType {
     /// Section name in rules.ini (e.g., "InvisibleLow", "MissileAA").
@@ -45,9 +45,6 @@ pub struct ProjectileType {
     pub rot: i32,
     /// Random spread on impact (e.g., rapid-fire infantry weapons).
     pub inaccurate: bool,
-    /// Projectile travel speed in pixels per game frame. 0 = instant hit.
-    /// Binary offset: +0x2F0 (labeled "Arm" in the binary, read via "Speed" key).
-    pub speed: i32,
 
     // --- Bool flags (offsets from BulletTypeClass base) ---
     /// Projectile explodes in the air, releasing sub-munitions. (+0x294)
@@ -74,9 +71,8 @@ pub struct ProjectileType {
     pub proximity: bool,
     /// Has a maximum range (non-homing). (+0x2A0)
     pub ranged: bool,
-    /// Whether the projectile sprite rotates to face travel direction. (+0x2A1)
-    /// NOTE: Inverted in binary! The engine stores `!ReadBool("Rotates")`.
-    /// Default is true (projectiles rotate by default).
+    /// Inverted binary storage for the art `Rotates=` key. (+0x2A1)
+    /// `Rotates=yes` stores false, `Rotates=no` stores true.
     pub rotates: bool,
     /// Scatters like flak — random spread pattern for AA. (+0x2A3)
     pub flak_scatter: bool,
@@ -108,8 +104,7 @@ pub struct ProjectileType {
     pub course_lock_duration: i32,
     /// Delay in frames between spawning sub-projectiles (read from Image section). (+0x2E4)
     pub spawn_delay: i32,
-    /// Arming delay — frames before the projectile can detonate. (+0x2F0)
-    /// This is the same offset as "Speed" in the binary struct.
+    /// Arming delay - frames before the projectile can detonate. (+0x2F0)
     pub arm: i32,
     /// Lowest animation frame index for in-flight animation. (+0x2F4)
     pub anim_low: i32,
@@ -136,7 +131,7 @@ pub struct ProjectileType {
     pub airburst_weapon: Option<String>,
     /// Weapon fired for each shrapnel fragment (weapon type name).
     pub shrapnel_weapon: Option<String>,
-    /// Animation played as a trail behind the projectile (anim type name).
+    /// Animation played as a trail behind the projectile (anim type name, art Image section).
     pub trailer: Option<String>,
 }
 
@@ -144,12 +139,12 @@ impl ProjectileType {
     /// Parse a ProjectileType from a rules.ini section.
     ///
     /// AG defaults to true because most projectiles can hit ground targets.
-    /// Rotates defaults to true (projectiles rotate by default); the binary
-    /// inverts this value when storing it.
-    /// All other flags default to false/0.
+    /// Rotates is read from the optional art Image section and exposed in the
+    /// same inverted form stored by the binary.
     ///
     /// `image_section` is the optional art.ini section resolved via Image= key.
-    /// Some fields (Flat, SpawnDelay) are read from this section when present.
+    /// Art-side fields (Rotates, Trailer, Flat, SpawnDelay, AnimLow/High/Rate,
+    /// AnimPalette) are read from this section when present.
     pub fn from_ini_section(
         id: &str,
         section: &IniSection,
@@ -180,7 +175,6 @@ impl ProjectileType {
             arcing: section.get_bool("Arcing").unwrap_or(false),
             rot: section.get_i32("ROT").unwrap_or(0),
             inaccurate: section.get_bool("Inaccurate").unwrap_or(false),
-            speed: section.get_i32("Speed").unwrap_or(0),
             // Bool flags
             airburst: section.get_bool("Airburst").unwrap_or(false),
             floater: section.get_bool("Floater").unwrap_or(false),
@@ -188,18 +182,23 @@ impl ProjectileType {
             subject_to_elevation: section.get_bool("SubjectToElevation").unwrap_or(false),
             subject_to_walls: section.get_bool("SubjectToWalls").unwrap_or(false),
             very_high: section.get_bool("VeryHigh").unwrap_or(false),
-            shadow: section.get_bool("Shadow").unwrap_or(false),
+            shadow: section.get_bool("Shadow").unwrap_or(true),
             dropping: section.get_bool("Dropping").unwrap_or(false),
             level: section.get_bool("Level").unwrap_or(false),
             inviso: section.get_bool("Inviso").unwrap_or(false),
             proximity: section.get_bool("Proximity").unwrap_or(false),
             ranged: section.get_bool("Ranged").unwrap_or(false),
-            // Binary inverts Rotates: stored = !ReadBool("Rotates"). Default is true.
-            rotates: section.get_bool("Rotates").map(|v| !v).unwrap_or(true),
+            // Binary stores the inverse of the art Rotates key.
+            rotates: image_section
+                .and_then(|s| s.get_bool("Rotates"))
+                .map(|v| !v)
+                .unwrap_or(true),
             flak_scatter: section.get_bool("FlakScatter").unwrap_or(false),
             degenerates: section.get_bool("Degenerates").unwrap_or(false),
             bouncy: section.get_bool("Bouncy").unwrap_or(false),
-            anim_palette: section.get_bool("AnimPalette").unwrap_or(false),
+            anim_palette: image_section
+                .and_then(|s| s.get_bool("AnimPalette"))
+                .unwrap_or(false),
             firers_palette: section.get_bool("FirersPalette").unwrap_or(false),
             scalable: section.get_bool("Scalable").unwrap_or(false),
             vertical: section.get_bool("Vertical").unwrap_or(false),
@@ -208,24 +207,30 @@ impl ProjectileType {
                 .and_then(|s| s.get_bool("Flat"))
                 .unwrap_or(false),
             // Integer fields
-            cluster: section.get_i32("Cluster").unwrap_or(0),
+            cluster: section.get_i32("Cluster").unwrap_or(1),
             shrapnel_count: section.get_i32("ShrapnelCount").unwrap_or(0),
             detonation_altitude: section.get_i32("DetonationAltitude").unwrap_or(0),
-            acceleration: section.get_i32("Acceleration").unwrap_or(0),
+            acceleration: section.get_i32("Acceleration").unwrap_or(3),
             course_lock_duration: section.get_i32("CourseLockDuration").unwrap_or(0),
             // SpawnDelay is read from the Image section in art.ini
             spawn_delay: image_section
                 .and_then(|s| s.get_i32("SpawnDelay"))
-                .unwrap_or(0),
+                .unwrap_or(3),
             arm: section.get_i32("Arm").unwrap_or(0),
-            anim_low: section.get_i32("AnimLow").unwrap_or(0),
-            anim_high: section.get_i32("AnimHigh").unwrap_or(0),
-            anim_rate: section.get_i32("AnimRate").unwrap_or(0),
+            anim_low: image_section
+                .and_then(|s| s.get_i32("AnimLow"))
+                .unwrap_or(0),
+            anim_high: image_section
+                .and_then(|s| s.get_i32("AnimHigh"))
+                .unwrap_or(0),
+            anim_rate: image_section
+                .and_then(|s| s.get_i32("AnimRate"))
+                .unwrap_or(0),
             // Float
             elasticity: section
                 .get("Elasticity")
                 .and_then(|s| s.trim().parse::<f64>().ok())
-                .unwrap_or(0.0),
+                .unwrap_or(0.75),
             // Color
             color,
             // Rocker
@@ -236,7 +241,9 @@ impl ProjectileType {
             // String/reference fields
             airburst_weapon: section.get("AirburstWeapon").map(|s| s.trim().to_string()),
             shrapnel_weapon: section.get("ShrapnelWeapon").map(|s| s.trim().to_string()),
-            trailer: section.get("Trailer").map(|s| s.trim().to_string()),
+            trailer: image_section
+                .and_then(|s| s.get("Trailer"))
+                .map(|s| s.trim().to_string()),
         }
     }
 }
@@ -248,14 +255,13 @@ mod tests {
 
     #[test]
     fn test_parse_aa_projectile() {
-        let ini: IniFile = IniFile::from_str("[MissileAA]\nAA=yes\nAG=no\nSpeed=60\nROT=20\n");
+        let ini: IniFile = IniFile::from_str("[MissileAA]\nAA=yes\nAG=no\nROT=20\n");
         let section: &IniSection = ini.section("MissileAA").unwrap();
         let proj: ProjectileType = ProjectileType::from_ini_section("MissileAA", section, None);
 
         assert_eq!(proj.id, "MissileAA");
         assert!(proj.aa);
         assert!(!proj.ag);
-        assert_eq!(proj.speed, 60);
         assert_eq!(proj.rot, 20);
         assert!(!proj.arcing);
         assert!(!proj.inaccurate);
@@ -271,18 +277,17 @@ mod tests {
 
         assert!(!proj.aa);
         assert!(proj.ag, "AG should default to true");
-        assert_eq!(proj.speed, 0);
         assert!(!proj.arcing);
         assert_eq!(proj.rot, 0);
         assert!(!proj.inaccurate);
-        // All new bool fields default to false
+        // Binary constructor defaults.
         assert!(!proj.airburst);
         assert!(!proj.floater);
         assert!(!proj.subject_to_cliffs);
         assert!(!proj.subject_to_elevation);
         assert!(!proj.subject_to_walls);
         assert!(!proj.very_high);
-        assert!(!proj.shadow);
+        assert!(proj.shadow);
         assert!(!proj.dropping);
         assert!(!proj.level);
         assert!(!proj.inviso);
@@ -297,19 +302,19 @@ mod tests {
         assert!(!proj.scalable);
         assert!(!proj.vertical);
         assert!(!proj.flat);
-        // Int fields default to 0
-        assert_eq!(proj.cluster, 0);
+        // Int fields with verified non-zero constructor defaults.
+        assert_eq!(proj.cluster, 1);
         assert_eq!(proj.shrapnel_count, 0);
         assert_eq!(proj.detonation_altitude, 0);
-        assert_eq!(proj.acceleration, 0);
+        assert_eq!(proj.acceleration, 3);
         assert_eq!(proj.course_lock_duration, 0);
-        assert_eq!(proj.spawn_delay, 0);
+        assert_eq!(proj.spawn_delay, 3);
         assert_eq!(proj.arm, 0);
         assert_eq!(proj.anim_low, 0);
         assert_eq!(proj.anim_high, 0);
         assert_eq!(proj.anim_rate, 0);
         // Float defaults
-        assert_eq!(proj.elasticity, 0.0);
+        assert_eq!(proj.elasticity, 0.75);
         // Color defaults
         assert_eq!(proj.color, [0, 0, 0]);
         // String fields default to None
@@ -321,47 +326,44 @@ mod tests {
     #[test]
     fn test_arcing_projectile() {
         let ini: IniFile =
-            IniFile::from_str("[ArtilleryShell]\nAG=yes\nArcing=yes\nSpeed=30\nInaccurate=yes\n");
+            IniFile::from_str("[ArtilleryShell]\nAG=yes\nArcing=yes\nInaccurate=yes\n");
         let section: &IniSection = ini.section("ArtilleryShell").unwrap();
         let proj: ProjectileType =
             ProjectileType::from_ini_section("ArtilleryShell", section, None);
 
         assert!(proj.ag);
         assert!(proj.arcing);
-        assert_eq!(proj.speed, 30);
         assert!(proj.inaccurate);
     }
 
     #[test]
     fn test_rotates_inversion() {
-        // Rotates=yes in INI → stored as false (binary inverts)
-        // But we expose the *inverted* value, matching the binary's stored form.
-        // So Rotates=yes → rotates=false, Rotates=no → rotates=true.
-        let ini: IniFile =
-            IniFile::from_str("[RotYes]\nRotates=yes\n[RotNo]\nRotates=no\n[NoKey]\n");
-
-        let sec_yes = ini.section("RotYes").unwrap();
-        let proj_yes = ProjectileType::from_ini_section("RotYes", sec_yes, None);
-        // Rotates=yes → binary stores false → our field = false
-        assert!(
-            !proj_yes.rotates,
-            "Rotates=yes should invert to false (matching binary storage)"
+        // Rotates is an art Image key. The binary stores its inverse, and this
+        // field intentionally exposes that stored form.
+        let ini: IniFile = IniFile::from_str(
+            "[Rules]\nRotates=yes\n[RotYesImage]\nRotates=yes\n[RotNoImage]\nRotates=no\n[NoKey]\n",
         );
+        let rules_section = ini.section("Rules").unwrap();
 
-        let sec_no = ini.section("RotNo").unwrap();
-        let proj_no = ProjectileType::from_ini_section("RotNo", sec_no, None);
-        // Rotates=no → binary stores true → our field = true
+        let proj_yes =
+            ProjectileType::from_ini_section("RotYes", rules_section, ini.section("RotYesImage"));
+        assert!(!proj_yes.rotates, "art Rotates=yes should invert to false");
+
+        let proj_no =
+            ProjectileType::from_ini_section("RotNo", rules_section, ini.section("RotNoImage"));
+        assert!(proj_no.rotates, "art Rotates=no should invert to true");
+
+        let proj_rules_key_ignored = ProjectileType::from_ini_section("Rules", rules_section, None);
         assert!(
-            proj_no.rotates,
-            "Rotates=no should invert to true (matching binary storage)"
+            proj_rules_key_ignored.rotates,
+            "rules Rotates key is ignored; missing art key keeps default true"
         );
 
         let sec_none = ini.section("NoKey").unwrap();
         let proj_none = ProjectileType::from_ini_section("NoKey", sec_none, None);
-        // No Rotates key → default true (binary default)
         assert!(
             proj_none.rotates,
-            "Missing Rotates key should default to true"
+            "missing Rotates key should default to true"
         );
     }
 
@@ -377,10 +379,11 @@ mod tests {
     #[test]
     fn test_string_fields() {
         let ini: IniFile = IniFile::from_str(
-            "[V3Rocket]\nAirburstWeapon=V3Warhead\nShrapnelWeapon=ShrapWep\nTrailer=V3TRAIL\n",
+            "[V3Rocket]\nAirburstWeapon=V3Warhead\nShrapnelWeapon=ShrapWep\n[V3RocketImage]\nTrailer=V3TRAIL\n",
         );
         let section = ini.section("V3Rocket").unwrap();
-        let proj = ProjectileType::from_ini_section("V3Rocket", section, None);
+        let image_section = ini.section("V3RocketImage").unwrap();
+        let proj = ProjectileType::from_ini_section("V3Rocket", section, Some(image_section));
 
         assert_eq!(proj.airburst_weapon.as_deref(), Some("V3Warhead"));
         assert_eq!(proj.shrapnel_weapon.as_deref(), Some("ShrapWep"));
@@ -405,12 +408,30 @@ mod tests {
 
     #[test]
     fn test_image_section_fields() {
-        let ini: IniFile = IniFile::from_str("[Proj]\n[ProjImage]\nFlat=yes\nSpawnDelay=10\n");
+        let ini: IniFile = IniFile::from_str(
+            "[Proj]\nFlat=no\nSpawnDelay=99\nAnimLow=1\nAnimHigh=2\nAnimRate=3\nAnimPalette=no\nTrailer=RULES_TRAIL\n[ProjImage]\nFlat=yes\nSpawnDelay=10\nAnimLow=4\nAnimHigh=5\nAnimRate=6\nAnimPalette=yes\nTrailer=ART_TRAIL\n",
+        );
         let proj_section = ini.section("Proj").unwrap();
         let image_section = ini.section("ProjImage").unwrap();
         let proj = ProjectileType::from_ini_section("Proj", proj_section, Some(image_section));
 
         assert!(proj.flat);
         assert_eq!(proj.spawn_delay, 10);
+        assert_eq!(proj.anim_low, 4);
+        assert_eq!(proj.anim_high, 5);
+        assert_eq!(proj.anim_rate, 6);
+        assert!(proj.anim_palette);
+        assert_eq!(proj.trailer.as_deref(), Some("ART_TRAIL"));
+    }
+
+    #[test]
+    fn test_arm_is_projectile_arming_delay_not_speed() {
+        let ini: IniFile = IniFile::from_str("[Proj]\nArm=2\nSpeed=99\n");
+        let section = ini.section("Proj").unwrap();
+        let proj = ProjectileType::from_ini_section("Proj", section, None);
+
+        assert_eq!(proj.arm, 2);
+        assert_eq!(proj.rot, 0);
+        assert_eq!(proj.spawn_delay, 3);
     }
 }
