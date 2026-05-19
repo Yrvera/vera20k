@@ -48,12 +48,9 @@ fn push_entry_sized(
 fn button_frame(
     atlas: &MainMenuShellChromeAtlas,
     pressed: bool,
-    hovered: bool,
 ) -> MainMenuShellChromeEntry {
     if pressed {
         atlas.button_pressed
-    } else if hovered {
-        atlas.button_hover
     } else {
         atlas.button_default
     }
@@ -64,20 +61,16 @@ fn push_button_shp(
     atlas: &MainMenuShellChromeAtlas,
     rect: RectPx,
     pressed: bool,
-    hovered: bool,
     depth: f32,
 ) {
-    let frame = button_frame(atlas, pressed, hovered);
-    // The SHP frame is 156x42 native and the chrome tile is 168x42 — the
-    // 12 px difference is the dark chrome bevel that frames each button.
-    // Preserve that ratio at any responsive scale: take the rect's scale
-    // factor vs the base chrome tile and apply it to the frame's native
-    // pixel size, then center the result inside the rect.
+    let frame = button_frame(atlas, pressed);
+    // The 156x42 SHP frame sits inside the 168x42 chrome tile right-anchored
+    // against the right edge, leaving the 12 px bevel on the left only.
     let scale_x = rect.w as f32 / RIGHT_PANEL_WIDTH as f32;
     let scale_y = rect.h as f32 / RIGHT_PANEL_TILE_H as f32;
     let frame_w = frame.pixel_size[0] * scale_x;
     let frame_h = frame.pixel_size[1] * scale_y;
-    let x = rect.x as f32 + (rect.w as f32 - frame_w) * 0.5;
+    let x = rect.x as f32 + (rect.w as f32 - frame_w);
     let y = rect.y as f32 + (rect.h as f32 - frame_h) * 0.5;
     push_entry_sized(out, frame, x, y, [frame_w, frame_h], depth);
 }
@@ -95,14 +88,13 @@ fn push_label(
     state: &AppState,
     text: &str,
     rect: RectPx,
-    y_offset: i32,
     align: crate::render::shell_text::ShellAlign,
 ) {
     use crate::render::shell_text::TextRect;
 
     let text_rect = TextRect {
         x: rect.x,
-        y: rect.y + y_offset,
+        y: rect.y,
         w: rect.w.max(0) as u32,
         h: rect.h.max(0) as u32,
     };
@@ -121,13 +113,11 @@ fn build_button_instances(
     atlas: &MainMenuShellChromeAtlas,
     layout: &MainMenuShellLayout,
     pressed_button: Option<MainMenuControlId>,
-    hovered_button: Option<MainMenuControlId>,
 ) -> Vec<SpriteInstance> {
     let mut out = Vec::new();
     for button in &layout.buttons {
         let pressed = pressed_button == Some(button.id);
-        let hovered = !pressed && hovered_button == Some(button.id);
-        push_button_shp(&mut out, atlas, button.rect, pressed, hovered, BUTTON_DEPTH);
+        push_button_shp(&mut out, atlas, button.rect, pressed, BUTTON_DEPTH);
     }
     out
 }
@@ -146,6 +136,31 @@ fn push_entry_rect(
         [rect.w as f32, rect.h as f32],
         depth,
     );
+}
+
+/// Draw the top `rect.h` rows of `entry` 1:1, cropping the SHP rather than
+/// stretching the full image to fit. Used for SDBTM where the SHP is 168x65
+/// native but the destination cap region is 23 px tall — gamemd clips, we
+/// must too.
+fn push_clipped_top(
+    out: &mut Vec<SpriteInstance>,
+    entry: MainMenuShellChromeEntry,
+    rect: RectPx,
+    depth: f32,
+) {
+    let native_h = entry.pixel_size[1].max(1.0);
+    let visible_h = (rect.h as f32).min(native_h);
+    let uv_h = entry.uv_size[1] * (visible_h / native_h);
+    out.push(SpriteInstance {
+        position: [rect.x as f32, rect.y as f32],
+        size: [rect.w as f32, visible_h],
+        uv_origin: entry.uv_origin,
+        uv_size: [entry.uv_size[0], uv_h],
+        depth,
+        tint: [1.0, 1.0, 1.0],
+        alpha: 1.0,
+        ..Default::default()
+    });
 }
 
 fn build_chrome_instances(
@@ -168,7 +183,7 @@ fn build_chrome_instances(
         }
     }
     if let Some(bottom) = atlas.right_panel_bottom_sdbtm {
-        push_entry_rect(&mut out, bottom, layout.right_panel.bottom, CHROME_DEPTH);
+        push_clipped_top(&mut out, bottom, layout.right_panel.bottom, CHROME_DEPTH);
     }
     let lower_strip_entry = if layout.screen.w <= 640 {
         atlas.lower_side_640_lwscrns
@@ -189,21 +204,31 @@ fn build_text_draws(
 ) -> Vec<ShellTextDraw> {
     use crate::render::shell_text::ShellAlign;
     let mut out = Vec::new();
-    // Owner-draw buttons render h-centered + v-centered within their client rect.
+    // Owner-draw buttons render h-centered + v-centered within a rect inset
+    // by top+=1 and right-=2 from the full button rect, matching gamemd's
+    // text-rect construction (`SHELL_BUTTON_PAINT_DETAILS_GHIDRA_REPORT §2`).
+    // When pressed the rect's left shifts by +x_offset, producing the net
+    // +1 px right text shift gamemd shows on click.
     let button_align = ShellAlign::H_CENTER | ShellAlign::V_CENTER;
     for button in &layout.buttons {
         let text = resolve_csf(state, csf_key_for_control(button.id));
-        let y_offset = if pressed_button == Some(button.id) {
-            layout.pressed_content_offset_y
+        let x_offset = if pressed_button == Some(button.id) {
+            layout.pressed_content_offset_x
         } else {
             0
         };
-        push_label(&mut out, state, text, button.rect, y_offset, button_align);
+        let text_rect = RectPx::new(
+            button.rect.x + x_offset,
+            button.rect.y + 1,
+            (button.rect.w - 2).max(0),
+            (button.rect.h - 1).max(0),
+        );
+        push_label(&mut out, state, text, text_rect, button_align);
     }
     // Static text labels (title heading, version, tooltip) render top-anchored
     // h-centered within their rect — they are not vertically centered.
     let title = resolve_csf(state, "GUI:MainMenu");
-    push_label(&mut out, state, title, layout.title, 0, ShellAlign::H_CENTER);
+    push_label(&mut out, state, title, layout.title, ShellAlign::H_CENTER);
 
     let version_label = resolve_csf(state, "GUI:Version");
     let version_text = format!("{} {}", version_label, state.version_txt);
@@ -212,7 +237,6 @@ fn build_text_draws(
         state,
         &version_text,
         layout.version_line,
-        0,
         ShellAlign::H_CENTER,
     );
 
@@ -224,7 +248,6 @@ fn build_text_draws(
             state,
             tip_text,
             layout.tooltip_line,
-            0,
             ShellAlign::H_CENTER,
         );
     }
@@ -338,7 +361,6 @@ pub(crate) fn render_main_menu_shell(
         chrome,
         &layout,
         state.main_menu_shell_state.pressed_owner_draw_button,
-        state.main_menu_shell_state.hovered_owner_draw_button,
     );
     let text_draws = build_text_draws(
         state,
