@@ -28,6 +28,7 @@ pub mod minimap;
 mod minimap_helpers;
 pub mod overlay_atlas;
 pub mod palette_textures;
+pub mod pixel_fx_sparkles;
 pub mod radar_anim;
 pub mod screenshot;
 pub mod selection_overlay;
