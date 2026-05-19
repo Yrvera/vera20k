@@ -361,6 +361,38 @@ fn compute_sparkle_for_cell(
     })
 }
 
+/// Build one SpriteInstance per qualifying water/ore cell in the viewport.
+///
+/// Returns an empty Vec if `enable_extra_animations` is off — checked up-front
+/// so the viewport iteration is skipped entirely (zero work). (L22)
+///
+/// Cell iteration uses the module's own viewport-cell bounds computation; we
+/// don't reuse the terrain pass's iteration to keep the sparkle module
+/// self-contained (see design doc §Architectural Decisions).
+pub fn build_sparkle_instances(input: &SparkleInput<'_>) -> Vec<SpriteInstance> {
+    if !input.enable_extra_animations {
+        return Vec::new();
+    }
+    let clock_ms = input.clock_ms;
+    let (rx_min, ry_min, rx_max, ry_max) = viewport_cell_bounds(
+        input.camera_x,
+        input.camera_y,
+        input.viewport_w,
+        input.viewport_h,
+        input.map_w,
+        input.map_h,
+    );
+    let mut out: Vec<SpriteInstance> = Vec::with_capacity(256);
+    for ry in ry_min..=ry_max {
+        for rx in rx_min..=rx_max {
+            if let Some(inst) = compute_sparkle_for_cell(rx, ry, clock_ms, input) {
+                out.push(inst);
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
