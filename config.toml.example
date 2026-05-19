@@ -10,6 +10,7 @@ ra2_dir = "C:/Westwood/RA2"
 width = 1024
 height = 768
 vsync = true
+extra_animations = true   # cosmetic effects: water/ore sparkles (future: laser pulses, particle trails)
 
 
 [gameplay]

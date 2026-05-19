@@ -106,6 +106,11 @@ pub(crate) struct AppState {
     /// Registry of overlay types from rules.ini — needed at runtime to look up
     /// overlay_id by name when a wall is placed via production.
     pub(crate) overlay_registry: Option<OverlayTypeRegistry>,
+    /// Loaded GameConfig — None when config.toml is missing or invalid.
+    /// Read at render time for cosmetic toggles (extra_animations) and other
+    /// per-session user preferences. Set in AppState::new() from the existing
+    /// GameConfig::load() call; not mutated afterwards.
+    pub(crate) game_config: Option<GameConfig>,
     /// GPU depth texture for back-to-front depth ordering. Recreated on window resize.
     pub(crate) depth_view: wgpu::TextureView,
     /// Optional Catmull-Rom bicubic upscale pass (render at lower res, upscale to window).
@@ -962,6 +967,7 @@ impl App {
             overlay_names: BTreeMap::new(),
             tiberium_radar_colors: HashMap::new(),
             overlay_registry: None,
+            game_config,
             depth_view,
             upscale_pass,
             camera_x: 0.0,

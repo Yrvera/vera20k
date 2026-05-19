@@ -55,6 +55,12 @@ pub struct GraphicsConfig {
     /// Enable Catmull-Rom bicubic upscaling (renders at half resolution, upscales to window).
     #[serde(default)]
     pub upscale: bool,
+    /// Enable cosmetic per-frame effects: water/ore sparkles. Also intended to
+    /// gate future cosmetic effects (laser beam pulses, particle systems, line
+    /// trails) per gamemd's "Extra Animations" option. Default ON to match
+    /// gamemd's default.
+    #[serde(default = "default_true")]
+    pub extra_animations: bool,
 }
 
 impl Default for GraphicsConfig {
@@ -64,6 +70,7 @@ impl Default for GraphicsConfig {
             height: default_height(),
             vsync: true,
             upscale: false,
+            extra_animations: true,
         }
     }
 }
