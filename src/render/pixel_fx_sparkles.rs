@@ -105,6 +105,59 @@ fn ping_pong_lerp(phase: u32, base: [u8; 3], peak: [u8; 3]) -> [u8; 3] {
     [blend(base[0], peak[0]), blend(base[1], peak[1]), blend(base[2], peak[2])]
 }
 
+/// Extract a per-cycle sub-pixel offset (sub_x, sub_y) from the seed bits.
+/// Ranges match gamemd's PixelFXClass::Init (report §6.1):
+///   sub_x ∈ [-31, 32] (6 bits → bias by -0x1F)   (L10)
+///   sub_y ∈ [-15, 16] (5 bits → bias by -0x0F)   (L11)
+#[inline]
+fn sub_pos_from_seed(s: u64) -> (i32, i32) {
+    let sub_x = ((s & 0x3F) as i32) - 0x1F;
+    let sub_y = (((s >> 6) & 0x1F) as i32) - 0x0F;
+    (sub_x, sub_y)
+}
+
+/// Extract this cycle's LerpSpeed, biased into the species range.
+/// gamemd uses `rand() % (max - min + 1) + min` — we mirror that. Uses
+/// 4 bits of entropy starting at bit 23, leaving bits 11-22 for timer_init.
+/// (L4 for water, L9 for ore)
+#[inline]
+fn lerp_speed_from_seed(s: u64, params: &SparkleParams) -> u32 {
+    let range_span = params.lerp_speed_max - params.lerp_speed_min + 1;
+    let raw = (s >> 23) & 0xF;
+    params.lerp_speed_min + (raw as u32) % range_span
+}
+
+/// Extract this cycle's timer_init offset (0..4095 ms).
+/// gamemd: `rand() & 0xFFF` — we do the same. Uses 12 bits starting at bit 11.
+/// (L5/L26)
+#[inline]
+fn timer_init_from_seed(s: u64) -> u32 {
+    ((s >> 11) & 0xFFF) as u32
+}
+
+/// Compute this cycle's peak RGB with per-channel noise subtract.
+/// gamemd applies `mask = (1 << color_noise_bits) - 1`, then per channel:
+///   peak[i] -= mask & rand_bits
+///   rand_bits >>= color_noise_bits
+/// We use 5 bits per channel from bit 27 onwards (15 bits total). For ore
+/// (color_noise_bits = 0), no noise is applied. (L3, L8)
+#[inline]
+fn peak_with_noise(s: u64, params: &SparkleParams) -> [u8; 3] {
+    if params.color_noise_bits == 0 {
+        return params.peak_rgb;
+    }
+    let mask = (1u32 << params.color_noise_bits) - 1;
+    let bits = s >> 27;
+    let n0 = (bits as u32) & mask;
+    let n1 = ((bits >> params.color_noise_bits) as u32) & mask;
+    let n2 = ((bits >> (params.color_noise_bits * 2)) as u32) & mask;
+    [
+        params.peak_rgb[0].saturating_sub(n0 as u8),
+        params.peak_rgb[1].saturating_sub(n1 as u8),
+        params.peak_rgb[2].saturating_sub(n2 as u8),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,6 +286,68 @@ mod tests {
             let rgb = ping_pong_lerp(phase, base, peak);
             assert!(rgb[0] >= prev_r, "R not monotonic at phase {:#x}: {} < {}", phase, rgb[0], prev_r);
             prev_r = rgb[0];
+        }
+    }
+
+    #[test]
+    fn sub_pos_ranges_are_correct() {
+        // L10: sub_x ∈ [-31, 32]. L11: sub_y ∈ [-15, 16]. Sample 1000
+        // different seeds and assert every output is in range.
+        for i in 0u64..1000 {
+            let (sx, sy) = sub_pos_from_seed(splitmix64(i));
+            assert!((-31..=32).contains(&sx), "sub_x out of range at i={}: {}", i, sx);
+            assert!((-15..=16).contains(&sy), "sub_y out of range at i={}: {}", i, sy);
+        }
+    }
+
+    #[test]
+    fn lerp_speed_water_in_range() {
+        // L4: water LerpSpeed ∈ [3, 12].
+        for i in 0u64..1000 {
+            let speed = lerp_speed_from_seed(splitmix64(i), &WATER);
+            assert!((3..=12).contains(&speed), "water lerp_speed out of range at i={}: {}", i, speed);
+        }
+    }
+
+    #[test]
+    fn lerp_speed_ore_in_range() {
+        // L9: ore LerpSpeed ∈ [15, 30].
+        for i in 0u64..1000 {
+            let speed = lerp_speed_from_seed(splitmix64(i), &ORE);
+            assert!((15..=30).contains(&speed), "ore lerp_speed out of range at i={}: {}", i, speed);
+        }
+    }
+
+    #[test]
+    fn timer_init_in_range() {
+        // L5/L26: timer_init ∈ [0, 4095].
+        for i in 0u64..1000 {
+            let timer = timer_init_from_seed(splitmix64(i));
+            assert!(timer <= 0xFFF, "timer_init out of range at i={}: {}", i, timer);
+        }
+    }
+
+    #[test]
+    fn ore_has_no_color_noise() {
+        // L8: ore peak is always exact (no noise).
+        for i in 0u64..100 {
+            assert_eq!(peak_with_noise(splitmix64(i), &ORE), ORE.peak_rgb);
+        }
+    }
+
+    #[test]
+    fn water_peak_noise_within_5_bits() {
+        // L3: water peak channels each get 0..31 subtracted. Resulting
+        // values should be in [peak - 31, peak] for each channel.
+        for i in 0u64..1000 {
+            let noisy = peak_with_noise(splitmix64(i), &WATER);
+            for ch in 0..3 {
+                let lo = WATER.peak_rgb[ch].saturating_sub(31);
+                let hi = WATER.peak_rgb[ch];
+                assert!((lo..=hi).contains(&noisy[ch]),
+                    "water peak[{}] out of [-31, 0] noise range at i={}: {} (peak={})",
+                    ch, i, noisy[ch], hi);
+            }
         }
     }
 }
