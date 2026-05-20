@@ -296,6 +296,7 @@ mod tests {
             secondary_prone_frame: 0,
             image: "CMIN".to_string(),
             power: 0,
+            extra_power: 0,
             foundation: "1x1".to_string(),
             pixel_selection_bracket_delta: 0,
             build_cat: None,
