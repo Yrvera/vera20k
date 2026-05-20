@@ -295,6 +295,33 @@ fn apply_sidebar_action(state: &mut AppState, action: SidebarAction) {
     }
 }
 
+/// Toggle the unit-inspector debug overlay.
+///
+/// Beyond flipping `state.debug_unit_inspector`, this allocates per-entity
+/// debug logs on enable and frees them on disable, and sets the sim flag
+/// `debug_event_logging`. Called by both the X hotkey and the dev overlay
+/// checkbox so the two paths cannot drift.
+pub(crate) fn toggle_unit_inspector(state: &mut AppState) {
+    state.debug_unit_inspector = !state.debug_unit_inspector;
+    if let Some(sim) = &mut state.simulation {
+        sim.debug_event_logging = state.debug_unit_inspector;
+        if state.debug_unit_inspector {
+            for entity in sim.entities.values_mut() {
+                if entity.debug_log.is_none() {
+                    entity.debug_log =
+                        Some(crate::sim::debug_event_log::DebugEventLog::new());
+                }
+            }
+            log::info!("Debug unit inspector: ON");
+        } else {
+            for entity in sim.entities.values_mut() {
+                entity.debug_log = None;
+            }
+            log::info!("Debug unit inspector: OFF");
+        }
+    }
+}
+
 /// Handle one-shot gameplay hotkeys (called on key press, not held).
 pub(crate) fn handle_hotkey_pressed(state: &mut AppState, code: winit::keyboard::KeyCode) {
     if let Some(group_idx) = control_group_index(code) {
@@ -450,26 +477,7 @@ pub(crate) fn handle_hotkey_pressed(state: &mut AppState, code: winit::keyboard:
             }
         }
         KeyCode::KeyX => {
-            state.debug_unit_inspector = !state.debug_unit_inspector;
-            if let Some(sim) = &mut state.simulation {
-                sim.debug_event_logging = state.debug_unit_inspector;
-                if state.debug_unit_inspector {
-                    // Allocate logs on all existing entities.
-                    for entity in sim.entities.values_mut() {
-                        if entity.debug_log.is_none() {
-                            entity.debug_log =
-                                Some(crate::sim::debug_event_log::DebugEventLog::new());
-                        }
-                    }
-                    log::info!("Debug unit inspector: ON (X)");
-                } else {
-                    // Drop all logs to free memory.
-                    for entity in sim.entities.values_mut() {
-                        entity.debug_log = None;
-                    }
-                    log::info!("Debug unit inspector: OFF");
-                }
-            }
+            toggle_unit_inspector(state);
         }
         KeyCode::KeyJ => {
             state.paused = !state.paused;
