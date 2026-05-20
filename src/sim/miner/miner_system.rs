@@ -32,6 +32,17 @@ use crate::sim::intern::InternedId;
 
 use crate::sim::production::foundation_dimensions;
 
+/// Hardcoded chrono inbound warp threshold (cells). Overrides rules.ini
+/// `ChronoHarvTooFarDistance` (default 50). The 50-cell INI value is what
+/// gets read from rulesmd.ini and what the binary stores at `rules+0xD7C`,
+/// but in-game observation shows the chrono actually warps when only 1–2
+/// cells away — meaning the 50-cell check in `Mission_Harvest` case 2
+/// (0x0073E5E0) is a code-path selector, NOT the warp trigger. The real
+/// warp gate lives further down in `Set_Destination`'s teleport-vs-drive
+/// branch, which I haven't fully decompiled yet. Until that's traced, the
+/// player-visible behaviour is reproduced with a small hardcoded threshold.
+const CHRONO_INBOUND_WARP_THRESHOLD_CELLS: u32 = 2;
+
 /// Snapshot of one miner entity for two-phase processing.
 pub(super) struct MinerSnapshot {
     pub(super) entity_id: u64,
@@ -101,8 +112,15 @@ pub(crate) fn tick_miners(
         return;
     }
 
-    // Cleanup dead entities from dock reservations.
-    let alive_sids: BTreeSet<u64> = sim.entities.values().map(|e| e.stable_id).collect();
+    // Dying entities are still in `sim.entities` until the death animation
+    // finishes, but their refinery reservation must release immediately so
+    // queued miners can be promoted without waiting through the death anim.
+    let alive_sids: BTreeSet<u64> = sim
+        .entities
+        .values()
+        .filter(|e| !e.dying)
+        .map(|e| e.stable_id)
+        .collect();
     sim.production.dock_reservations.cleanup_dead(&alive_sids);
 
     // Phase 2: Process each miner through its state machine.
@@ -281,6 +299,12 @@ fn handle_search_ore(
     // (TiberiumLongScan). Single scan with no separate short-scan
     // pre-pass — the search expands outward and picks the best cell
     // within radius. Used for both war miners and chrono miners.
+    //
+    // Chrono miners DRIVE to ore, not warp — the original's
+    // Mission_Harvest state 0 forces a DriveLocomotion piggyback before
+    // calling Set_Destination, so the teleport-vs-drive branch in
+    // Set_Destination resolves to drive. Only the inbound trip
+    // (ore → refinery) uses the warp; outbound is a normal drive.
     if let Some(cell) = search_local_ore(
         &sim.production.resource_nodes,
         (snap.rx, snap.ry),
@@ -492,7 +516,7 @@ fn save_archive_via_short_scan(sim: &Simulation, config: &MinerConfig, snap: &mu
 fn handle_return(
     sim: &mut Simulation,
     rules: &RuleSet,
-    config: &MinerConfig,
+    _config: &MinerConfig,
     path_grid: Option<&PathGrid>,
     snap: &mut MinerSnapshot,
 ) {
@@ -517,21 +541,23 @@ fn handle_return(
             snap.miner.reserved_refinery = Some(rsid);
             if snap.miner.kind == MinerKind::Chrono {
                 let center = refinery_center_cell_for_sid(sim, rules, rsid).unwrap_or(dock);
-                let threshold = config.too_far_threshold_chrono as u32;
+                let threshold = CHRONO_INBOUND_WARP_THRESHOLD_CELLS;
                 let far_enough = cell_dist_sq((snap.rx, snap.ry), center) > threshold * threshold;
                 if far_enough {
-                    // Warp to queue cell via the teleport locomotor system.
+                    // Warp directly to the pad cell (gamemd parity — see
+                    // begin_return for the binary reference).
+                    let pad = refinery_pad_for_sid(sim, rules, rsid).unwrap_or(dock);
                     spawn_warp_effects(
                         sim,
                         rules,
                         snap.type_id,
                         (snap.rx, snap.ry, snap.z),
-                        (dock.0, dock.1, snap.z),
+                        (pad.0, pad.1, snap.z),
                     );
                     issue_teleport_command(
                         &mut sim.entities,
                         snap.entity_id,
-                        dock,
+                        pad,
                         &rules.general,
                         true,
                     );
@@ -608,20 +634,23 @@ fn handle_forced_return(
             // Chrono Miners teleport on forced return — but only if far enough.
             if snap.miner.kind == MinerKind::Chrono {
                 let center = refinery_center_cell_for_sid(sim, rules, rsid).unwrap_or(dock);
-                let threshold = config.too_far_threshold_chrono as u32;
+                let threshold = CHRONO_INBOUND_WARP_THRESHOLD_CELLS;
                 let far_enough = cell_dist_sq((snap.rx, snap.ry), center) > threshold * threshold;
                 if far_enough {
+                    // Warp directly to the pad cell (gamemd parity — see
+                    // begin_return).
+                    let pad = refinery_pad_for_sid(sim, rules, rsid).unwrap_or(dock);
                     spawn_warp_effects(
                         sim,
                         rules,
                         snap.type_id,
                         (snap.rx, snap.ry, snap.z),
-                        (dock.0, dock.1, snap.z),
+                        (pad.0, pad.1, snap.z),
                     );
                     issue_teleport_command(
                         &mut sim.entities,
                         snap.entity_id,
-                        dock,
+                        pad,
                         &rules.general,
                         true,
                     );
@@ -753,10 +782,15 @@ pub(crate) fn extract_bales_max(
 
 /// Begin the return-to-refinery sequence.
 ///
-/// Chrono miners warp to the queue cell (outside the building footprint) via
-/// `issue_teleport_command(is_harvester=true)`, which skips the chrono lock
-/// and finishes the teleport in a single tick. `handle_return` then detects
-/// adjacency and enters the normal dock sequence.
+/// Chrono miners warp directly to the pad cell (inside the foundation, on
+/// the dock platform) via `issue_teleport_command(is_harvester=true)`, which
+/// skips the chrono lock and finishes the teleport in a single tick. This
+/// mirrors gamemd's `Mission_Harvest` case 2 RETURN: `Set_Destination(
+/// passable_cell_near_pad)` with TeleportLoco active resolves the warp to
+/// the pad cell itself (the pad has `RemoveOccupy` so it's path-empty, so
+/// the ring-0 hit of `Find_Nearby_Passable_Cell(NW + dock_offset)` is the
+/// pad itself). `handle_return` then detects adjacency and enters the normal
+/// dock sequence.
 fn begin_return(
     sim: &mut Simulation,
     rules: &RuleSet,
@@ -774,30 +808,31 @@ fn begin_return(
         snap.miner.reserved_refinery = Some(rsid);
         if snap.miner.kind == MinerKind::Chrono {
             // Chrono miners teleport when farther from the refinery than
-            // ChronoHarvTooFarDistance (default 50 cells). Distance is
-            // measured from the miner to the refinery's foundation center,
-            // not to the queue cell, so the boundary doesn't shift with
-            // foundation size.
+            // CHRONO_INBOUND_WARP_THRESHOLD_CELLS (hardcoded; see module
+            // top). Distance is measured from the miner to the refinery's
+            // foundation center, not to the queue cell, so the boundary
+            // doesn't shift with foundation size.
             let center = refinery_center_cell_for_sid(sim, rules, rsid).unwrap_or(dock);
-            let threshold = config.too_far_threshold_chrono as u32;
+            let threshold = CHRONO_INBOUND_WARP_THRESHOLD_CELLS;
             let far_enough = cell_dist_sq((snap.rx, snap.ry), center) > threshold * threshold;
 
             if far_enough {
-                // Warp to queue cell (outside building footprint) via the
-                // teleport locomotor system. With is_harvester=true the warp
-                // resolves in one tick; handle_return then detects adjacency
-                // and enters Dock/WaitForDock.
+                // Warp destination is the pad cell, not the queue cell. With
+                // is_harvester=true the warp resolves in one tick; the next
+                // handle_return tick sees the miner adjacent to (in fact on)
+                // the pad and enters Dock/WaitForDock.
+                let pad = refinery_pad_for_sid(sim, rules, rsid).unwrap_or(dock);
                 spawn_warp_effects(
                     sim,
                     rules,
                     snap.type_id,
                     (snap.rx, snap.ry, snap.z),
-                    (dock.0, dock.1, snap.z),
+                    (pad.0, pad.1, snap.z),
                 );
                 issue_teleport_command(
                     &mut sim.entities,
                     snap.entity_id,
-                    dock,
+                    pad,
                     &rules.general,
                     true,
                 );
@@ -968,6 +1003,28 @@ fn refinery_dock_for_sid(sim: &Simulation, rules: &RuleSet, ref_sid: u64) -> Opt
         w,
         h,
         qc,
+    ))
+}
+
+/// Resolve a refinery's pad cell (inside the foundation, on the dock platform)
+/// from its stable_id. This is the cell the chrono miner warps to on its
+/// inbound (ore → refinery) leg — mirroring gamemd's `Mission_Harvest` case 2
+/// RETURN destination at `Find_Nearby_Passable_Cell(NW + BuildingTypeClass+0x1618/0x161c)`
+/// which, on a clean grid, returns the pad cell itself (the foundation cell
+/// marked `RemoveOccupy` so it's path-empty).
+fn refinery_pad_for_sid(sim: &Simulation, rules: &RuleSet, ref_sid: u64) -> Option<(u16, u16)> {
+    let entity = sim.entities.get(ref_sid)?;
+    let obj = rules.object_case_insensitive(sim.interner.resolve(entity.type_ref));
+    let (w, h) = obj
+        .map(|o| foundation_dimensions(&o.foundation))
+        .unwrap_or((1, 1));
+    let dock_off = obj.and_then(|o| o.pads.first().map(|p| p.lepton_offset));
+    Some(super::miner_dock_sequence::refinery_pad_cell(
+        entity.position.rx,
+        entity.position.ry,
+        w,
+        h,
+        dock_off,
     ))
 }
 
