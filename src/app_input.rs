@@ -440,6 +440,21 @@ pub(crate) fn handle_hotkey_pressed(state: &mut AppState, code: winit::keyboard:
                 state.window.set_cursor_visible(false);
             }
         }
+        KeyCode::Backquote => {
+            state.show_dev_overlay = !state.show_dev_overlay;
+            if state.show_dev_overlay {
+                // Force a fresh disk scan so the recent-saves list
+                // reflects saves written outside this process.
+                state.save_list_cache.invalidate();
+                // Show OS cursor for egui interaction with sliders/text.
+                if state.software_cursor.is_some() {
+                    state.window.set_cursor_visible(true);
+                }
+            } else if state.software_cursor.is_some() && !state.paused {
+                // Re-hide OS cursor so the software cursor takes over.
+                state.window.set_cursor_visible(false);
+            }
+        }
         KeyCode::KeyH => {
             jump_camera_to_base(state);
         }
