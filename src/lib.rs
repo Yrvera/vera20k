@@ -133,3 +133,6 @@ pub mod app_debug_overlays;
 pub mod app_debug_panel;
 // Save/load panel — egui overlay for managing save files (F5).
 pub mod app_save_load_panel;
+// Developer overlay — egui panel with runtime knobs, diagnostics,
+// and save/load helpers. Toggled with backtick (`).
+pub mod app_dev_overlay;
