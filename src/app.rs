@@ -169,6 +169,10 @@ pub(crate) struct AppState {
     pub(crate) radar_anim: Option<crate::render::radar_anim::RadarAnimState>,
     /// Animated power bar — segment-by-segment transition matching original PowerClass.
     pub(crate) power_bar_anim: crate::sidebar::PowerBarAnimState,
+    /// Persistent flash + mode state for in-game sidebar gadgets. Ticked from
+    /// `app_sidebar_gadgets::update_sidebar_gadget_state` once per sim tick;
+    /// read each frame by the sidebar view builder to pick SHP frame indices.
+    pub(crate) sidebar_gadget_state: crate::sidebar::gadget_flash::SidebarGadgetState,
     /// Smoothly animated credits display per owner — ticks toward actual balance
     /// each frame (step = |diff| / 8, clamped to [1, 143]).
     pub(crate) displayed_credits: HashMap<String, i32>,
@@ -1062,6 +1066,7 @@ impl App {
             middle_mouse_anchor_y: 0.0,
             radar_anim: None,
             power_bar_anim: crate::sidebar::PowerBarAnimState::new(),
+            sidebar_gadget_state: crate::sidebar::gadget_flash::SidebarGadgetState::new(),
             radar_content_insets: None,
             has_radar: false,
             selection_overlay: None,
