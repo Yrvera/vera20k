@@ -48,9 +48,12 @@ fn push_entry_sized(
 fn button_frame(
     atlas: &MainMenuShellChromeAtlas,
     pressed: bool,
+    hover_highlight: bool,
 ) -> MainMenuShellChromeEntry {
     if pressed {
         atlas.button_pressed
+    } else if hover_highlight {
+        atlas.button_hover
     } else {
         atlas.button_default
     }
@@ -61,9 +64,10 @@ fn push_button_shp(
     atlas: &MainMenuShellChromeAtlas,
     rect: RectPx,
     pressed: bool,
+    hover_highlight: bool,
     depth: f32,
 ) {
-    let frame = button_frame(atlas, pressed);
+    let frame = button_frame(atlas, pressed, hover_highlight);
     // The 156x42 SHP frame sits inside the 168x42 chrome tile right-anchored
     // against the right edge, leaving the 12 px bevel on the left only.
     let scale_x = rect.w as f32 / RIGHT_PANEL_WIDTH as f32;
@@ -113,11 +117,32 @@ fn build_button_instances(
     atlas: &MainMenuShellChromeAtlas,
     layout: &MainMenuShellLayout,
     pressed_button: Option<MainMenuControlId>,
+    hovered_button: Option<MainMenuControlId>,
+    hover_started_at: Option<Instant>,
+    now: Instant,
 ) -> Vec<SpriteInstance> {
     let mut out = Vec::new();
     for button in &layout.buttons {
         let pressed = pressed_button == Some(button.id);
-        push_button_shp(&mut out, atlas, button.rect, pressed, BUTTON_DEPTH);
+        // gamemd arms a 1000 ms WM_TIMER on hover that toggles the +0xC5
+        // flash byte; WM_PAINT picks frame 3 (highlight) when the byte is
+        // non-zero, else frame 2 (default). Mirror that locally by deriving
+        // the toggle phase from elapsed wall-clock time since hover began.
+        let hover_highlight = if !pressed && hovered_button == Some(button.id) {
+            hover_started_at
+                .map(|start| now.duration_since(start).as_millis() / 1000 % 2 == 1)
+                .unwrap_or(false)
+        } else {
+            false
+        };
+        push_button_shp(
+            &mut out,
+            atlas,
+            button.rect,
+            pressed,
+            hover_highlight,
+            BUTTON_DEPTH,
+        );
     }
     out
 }
@@ -361,6 +386,9 @@ pub(crate) fn render_main_menu_shell(
         chrome,
         &layout,
         state.main_menu_shell_state.pressed_owner_draw_button,
+        state.main_menu_shell_state.hovered_owner_draw_button,
+        state.main_menu_shell_state.hover_started_at,
+        Instant::now(),
     );
     let text_draws = build_text_draws(
         state,
