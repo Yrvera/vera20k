@@ -250,6 +250,8 @@ fn apply_sidebar_action(state: &mut AppState, action: SidebarAction) {
         SidebarAction::ArmPlacement(type_id) => {
             state.targeting_mode =
                 Some(crate::app_types::TargetingMode::BuildingPlacement(type_id));
+            state.sidebar_gadget_state.repair_mode_on = false;
+            state.sidebar_gadget_state.sell_mode_on = false;
         }
         SidebarAction::ClearPlacementMode => {
             state.targeting_mode = None;
@@ -257,8 +259,10 @@ fn apply_sidebar_action(state: &mut AppState, action: SidebarAction) {
         }
         SidebarAction::ArmSuperWeapon(section) => {
             state.targeting_mode = Some(crate::app_types::TargetingMode::SuperWeapon(section));
-            // Mutual exclusion: clear any pending building-placement preview.
+            // Mutual exclusion: clear building-placement preview AND repair/sell modes.
             state.building_placement_preview = None;
+            state.sidebar_gadget_state.repair_mode_on = false;
+            state.sidebar_gadget_state.sell_mode_on = false;
             log::info!(
                 "SuperWeapon armed: type={}",
                 state.armed_super_weapon_type().unwrap_or("")
