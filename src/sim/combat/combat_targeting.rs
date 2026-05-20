@@ -23,7 +23,7 @@
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
 use super::combat_weapon::{VersesGate, select_weapon_with_override, verses_gate};
-use super::{is_within_range_leptons, lepton_distance_sq_raw};
+use super::{combat_target_category, is_within_range_leptons, lepton_distance_sq_raw};
 use crate::map::entities::EntityCategory;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::object_type::ObjectCategory;
@@ -204,7 +204,7 @@ pub(crate) fn acquire_best_target(
         }
 
         // Check if any weapon can engage this target (projectile flags + Verses > 0%).
-        let target_cat: EntityCategory = candidate.category;
+        let target_cat: EntityCategory = combat_target_category(candidate, rules, interner);
         let target_armor: &str = rules
             .object(interner.resolve(candidate.type_ref))
             .map(|o| o.armor.as_str())
@@ -294,7 +294,7 @@ fn can_retaliate(
         Some(o) => o,
         None => return false,
     };
-    let target_cat: EntityCategory = attacker.category;
+    let target_cat: EntityCategory = combat_target_category(attacker, rules, interner);
     let target_armor: &str = rules
         .object(interner.resolve(attacker.type_ref))
         .map(|o| o.armor.as_str())

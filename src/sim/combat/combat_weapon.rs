@@ -116,6 +116,8 @@ pub(crate) fn secondary_for_tier(obj: &ObjectType, veterancy: u16) -> Option<&st
     }
 }
 
+const DEFAULT_DEPLOY_FIRE_WEAPON_INDEX: i32 = 1;
+
 /// Select the best weapon (Primary or Secondary) for an attacker against
 /// a specific target. Returns None if no weapon can engage.
 ///
@@ -218,6 +220,53 @@ pub(crate) fn select_weapon_with_override<'a>(
         }
     }
     None
+}
+
+/// Select the fixed weapon slot used while a `DeployFire=yes` infantry is in
+/// its deployed-fire combat state.
+///
+/// `DeployFireWeapon=` defaults to slot 1 (Secondary) in RA2/YR. Unlike the
+/// normal Primary -> Secondary selection path, deployed-fire selection is a
+/// direct slot lookup: if that slot cannot engage, the unit does not fall back.
+pub(crate) fn select_deploy_fire_weapon<'a>(
+    rules: &'a RuleSet,
+    attacker_obj: &'a ObjectType,
+    target_category: EntityCategory,
+    target_armor: &str,
+    veterancy: u16,
+    override_: Option<WeaponOverride>,
+) -> Option<SelectedWeapon<'a>> {
+    if override_.is_some() || !attacker_obj.deploy_fire {
+        return select_weapon_with_override(
+            rules,
+            attacker_obj,
+            target_category,
+            target_armor,
+            veterancy,
+            override_,
+        );
+    }
+
+    let (weapon_id, weapon_slot) = weapon_for_slot_index(
+        attacker_obj,
+        veterancy,
+        attacker_obj
+            .deploy_fire_weapon
+            .unwrap_or(DEFAULT_DEPLOY_FIRE_WEAPON_INDEX),
+    )?;
+    try_weapon(rules, weapon_id, target_category, target_armor, weapon_slot)
+}
+
+fn weapon_for_slot_index(
+    obj: &ObjectType,
+    veterancy: u16,
+    index: i32,
+) -> Option<(&str, WeaponSlot)> {
+    match index {
+        0 => primary_for_tier(obj, veterancy).map(|weapon_id| (weapon_id, WeaponSlot::Primary)),
+        1 => secondary_for_tier(obj, veterancy).map(|weapon_id| (weapon_id, WeaponSlot::Secondary)),
+        _ => None,
+    }
 }
 
 /// Select the weapon used by a garrisoned occupant firing from a building.
@@ -482,6 +531,7 @@ Secondary=MissileLauncher
 ElitePrimary=M60E
 EliteSecondary=MissileLauncherE
 OpenTransportWeapon=1
+DeployFire=yes
 
 [M60]
 Damage=15
@@ -537,6 +587,17 @@ Verses=20%,20%,20%,100%,50%,100%,10%,10%,10%,100%,100%
         let ggi = rules.object("GGI").unwrap();
         let sel = select_weapon(&rules, ggi, EntityCategory::Infantry, "none", 0).unwrap();
         assert_eq!(sel.weapon_id, "M60");
+        assert_eq!(sel.slot, WeaponSlot::Primary);
+    }
+
+    #[test]
+    fn test_deploy_fire_defaults_to_secondary_slot() {
+        let rules = make_ggi_rules();
+        let ggi = rules.object("GGI").unwrap();
+        let sel =
+            select_deploy_fire_weapon(&rules, ggi, EntityCategory::Unit, "heavy", 0, None).unwrap();
+        assert_eq!(sel.weapon_id, "MissileLauncher");
+        assert_eq!(sel.slot, WeaponSlot::Secondary);
     }
 
     #[test]
