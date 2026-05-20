@@ -8,11 +8,14 @@ use crate::app::AppState;
 use crate::audio::events::GameSoundEvent;
 use crate::rules::art_data::{ArtEntry, ArtRegistry};
 use crate::rules::ruleset::RuleSet;
+use crate::sim::combat::TargetKind;
 use crate::sim::combat::combat_weapon::WeaponSlot;
 use crate::sim::components::{Position, WeaponMuzzleFlash};
 use crate::sim::world::{SimFireEvent, Simulation};
 
 const MUZZLE_FLASH_RATE_MS: u32 = 67;
+const MIN_PROJECTILE_VISUAL_MS: u32 = 160;
+const MAX_PROJECTILE_VISUAL_MS: u32 = 900;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct FireOrigin {
@@ -21,6 +24,32 @@ pub(crate) struct FireOrigin {
     pub rx: u16,
     pub ry: u16,
     pub z: u8,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ProjectileVisual {
+    pub shp_name: String,
+    pub start_screen_x: f32,
+    pub start_screen_y: f32,
+    pub end_screen_x: f32,
+    pub end_screen_y: f32,
+    pub start_rx: u16,
+    pub start_ry: u16,
+    pub end_rx: u16,
+    pub end_ry: u16,
+    pub z: u8,
+    pub frame: u16,
+    pub duration_ms: u32,
+    pub elapsed_ms: u32,
+}
+
+impl ProjectileVisual {
+    pub(crate) fn progress(&self) -> f32 {
+        if self.duration_ms == 0 {
+            return 1.0;
+        }
+        (self.elapsed_ms as f32 / self.duration_ms as f32).clamp(0.0, 1.0)
+    }
 }
 
 pub(crate) fn select_weapon_muzzle_anim<'a>(anims: &'a [String], facing: u8) -> Option<&'a str> {
@@ -153,8 +182,118 @@ fn build_non_garrison_fire_effects(
     (flashes, sounds)
 }
 
+fn target_fire_destination(sim: &Simulation, target: TargetKind) -> Option<FireOrigin> {
+    match target {
+        TargetKind::Entity(id) => {
+            let entity = sim.entities.get(id)?;
+            Some(FireOrigin {
+                screen_x: entity.position.screen_x,
+                screen_y: entity.position.screen_y,
+                rx: entity.position.rx,
+                ry: entity.position.ry,
+                z: entity.position.z,
+            })
+        }
+        TargetKind::Cell(rx, ry) => {
+            let (screen_x, screen_y) = crate::util::lepton::lepton_to_screen(
+                rx,
+                ry,
+                crate::util::lepton::CELL_CENTER_LEPTON,
+                crate::util::lepton::CELL_CENTER_LEPTON,
+                0,
+            );
+            Some(FireOrigin {
+                screen_x,
+                screen_y,
+                rx,
+                ry,
+                z: 0,
+            })
+        }
+    }
+}
+
+fn projectile_direction_frame(origin: &FireOrigin, dest: &FireOrigin, frame_count: u16) -> u16 {
+    if frame_count == 0 {
+        return 0;
+    }
+    let dx = dest.rx as i32 - origin.rx as i32;
+    let dy = dest.ry as i32 - origin.ry as i32;
+    let facing = crate::sim::movement::facing_from_delta(dx, dy);
+    (((facing as u32 * frame_count as u32) / 256) as u16).min(frame_count.saturating_sub(1))
+}
+
+fn projectile_duration_ms(origin: &FireOrigin, dest: &FireOrigin, weapon_speed: i32) -> u32 {
+    let dx = dest.rx as f32 - origin.rx as f32;
+    let dy = dest.ry as f32 - origin.ry as f32;
+    let distance_cells = (dx * dx + dy * dy).sqrt().max(1.0);
+    let speed = weapon_speed.max(1) as f32;
+    ((distance_cells / speed) * 1000.0) as u32
+}
+
+fn build_projectile_visuals(
+    sim: &Simulation,
+    rules: &RuleSet,
+    art_reg: &ArtRegistry,
+    events: &[SimFireEvent],
+) -> Vec<ProjectileVisual> {
+    let mut visuals = Vec::new();
+
+    for ev in events {
+        if ev.garrison_muzzle_index.is_some() {
+            continue;
+        }
+        let Some(weapon) = rules.weapon(sim.interner.resolve(ev.weapon_id)) else {
+            continue;
+        };
+        let Some(projectile_id) = weapon.projectile.as_deref() else {
+            continue;
+        };
+        let Some(projectile) = rules.projectile(projectile_id) else {
+            continue;
+        };
+        if projectile.inviso {
+            continue;
+        }
+        let Some(image) = projectile.image.as_deref() else {
+            continue;
+        };
+        let Some(origin) = resolve_non_garrison_fire_origin_from_sim(sim, rules, art_reg, ev)
+        else {
+            continue;
+        };
+        let Some(dest) = target_fire_destination(sim, ev.target) else {
+            continue;
+        };
+        let frame_count = sim
+            .interner
+            .get(image)
+            .and_then(|image_id| sim.effect_frame_counts.get(&image_id).copied())
+            .unwrap_or(32);
+        let duration_ms = projectile_duration_ms(&origin, &dest, weapon.speed)
+            .clamp(MIN_PROJECTILE_VISUAL_MS, MAX_PROJECTILE_VISUAL_MS);
+        visuals.push(ProjectileVisual {
+            shp_name: image.to_string(),
+            start_screen_x: origin.screen_x,
+            start_screen_y: origin.screen_y,
+            end_screen_x: dest.screen_x,
+            end_screen_y: dest.screen_y,
+            start_rx: origin.rx,
+            start_ry: origin.ry,
+            end_rx: dest.rx,
+            end_ry: dest.ry,
+            z: origin.z.max(dest.z),
+            frame: projectile_direction_frame(&origin, &dest, frame_count),
+            duration_ms,
+            elapsed_ms: 0,
+        });
+    }
+
+    visuals
+}
+
 pub(crate) fn spawn_non_garrison_fire_effects(state: &mut AppState, events: &[SimFireEvent]) {
-    let (flashes, sounds) = {
+    let (flashes, sounds, projectiles) = {
         let Some(sim) = state.simulation.as_ref() else {
             return;
         };
@@ -164,10 +303,13 @@ pub(crate) fn spawn_non_garrison_fire_effects(state: &mut AppState, events: &[Si
         let Some(art_reg) = state.art_registry.as_ref() else {
             return;
         };
-        build_non_garrison_fire_effects(sim, rules, art_reg, events)
+        let (flashes, sounds) = build_non_garrison_fire_effects(sim, rules, art_reg, events);
+        let projectiles = build_projectile_visuals(sim, rules, art_reg, events);
+        (flashes, sounds, projectiles)
     };
 
     state.weapon_muzzle_flashes.extend(flashes);
+    state.projectile_visuals.extend(projectiles);
     for sound in sounds {
         state.sound_events.push(sound);
     }
@@ -175,6 +317,7 @@ pub(crate) fn spawn_non_garrison_fire_effects(state: &mut AppState, events: &[Si
 
 pub(crate) fn tick_weapon_muzzle_flashes(state: &mut AppState, dt_ms: u32) {
     tick_weapon_muzzle_flash_list(&mut state.weapon_muzzle_flashes, dt_ms);
+    tick_projectile_visuals(&mut state.projectile_visuals, dt_ms);
 }
 
 fn tick_weapon_muzzle_flash_list(flashes: &mut Vec<WeaponMuzzleFlash>, dt_ms: u32) {
@@ -185,6 +328,13 @@ fn tick_weapon_muzzle_flash_list(flashes: &mut Vec<WeaponMuzzleFlash>, dt_ms: u3
             flash.frame = flash.frame.saturating_add(1);
         }
         flash.frame < flash.total_frames
+    });
+}
+
+fn tick_projectile_visuals(projectiles: &mut Vec<ProjectileVisual>, dt_ms: u32) {
+    projectiles.retain_mut(|projectile| {
+        projectile.elapsed_ms = projectile.elapsed_ms.saturating_add(dt_ms);
+        projectile.elapsed_ms < projectile.duration_ms
     });
 }
 

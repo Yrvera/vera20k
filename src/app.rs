@@ -292,6 +292,8 @@ pub(crate) struct AppState {
     /// Active non-garrison weapon muzzle flash animations spawned from weapon `Anim=`.
     /// App-owned presentation state; combat only emits the fire facts.
     pub(crate) weapon_muzzle_flashes: Vec<crate::sim::components::WeaponMuzzleFlash>,
+    /// Active render-only projectile sprites spawned from non-instant weapon fire.
+    pub(crate) projectile_visuals: Vec<crate::app_fire_effects::ProjectileVisual>,
     /// Active parachute animations, one per descending paradropped infantry.
     /// Polling-based lifecycle: spawned when an entity gains parachute_state
     /// in the sim, removed on landing or death. Render-only; not snapshotted.
@@ -1116,6 +1118,7 @@ impl App {
             pending_fire_effects: Vec::new(),
             garrison_muzzle_flashes: Vec::new(),
             weapon_muzzle_flashes: Vec::new(),
+            projectile_visuals: Vec::new(),
             parachute_anims: Vec::new(),
             paused: false,
             debug_frame_step_requested: false,

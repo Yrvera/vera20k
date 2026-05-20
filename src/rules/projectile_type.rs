@@ -131,6 +131,8 @@ pub struct ProjectileType {
     pub airburst_weapon: Option<String>,
     /// Weapon fired for each shrapnel fragment (weapon type name).
     pub shrapnel_weapon: Option<String>,
+    /// SHP/VXL image used for the in-flight projectile.
+    pub image: Option<String>,
     /// Animation played as a trail behind the projectile (anim type name, art Image section).
     pub trailer: Option<String>,
 }
@@ -241,6 +243,7 @@ impl ProjectileType {
             // String/reference fields
             airburst_weapon: section.get("AirburstWeapon").map(|s| s.trim().to_string()),
             shrapnel_weapon: section.get("ShrapnelWeapon").map(|s| s.trim().to_string()),
+            image: section.get("Image").map(|s| s.trim().to_string()),
             trailer: image_section
                 .and_then(|s| s.get("Trailer"))
                 .map(|s| s.trim().to_string()),
@@ -255,11 +258,12 @@ mod tests {
 
     #[test]
     fn test_parse_aa_projectile() {
-        let ini: IniFile = IniFile::from_str("[MissileAA]\nAA=yes\nAG=no\nROT=20\n");
+        let ini: IniFile = IniFile::from_str("[MissileAA]\nAA=yes\nAG=no\nROT=20\nImage=DRAGON\n");
         let section: &IniSection = ini.section("MissileAA").unwrap();
         let proj: ProjectileType = ProjectileType::from_ini_section("MissileAA", section, None);
 
         assert_eq!(proj.id, "MissileAA");
+        assert_eq!(proj.image.as_deref(), Some("DRAGON"));
         assert!(proj.aa);
         assert!(!proj.ag);
         assert_eq!(proj.rot, 20);

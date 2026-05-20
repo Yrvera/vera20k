@@ -736,6 +736,17 @@ pub fn build_sprite_atlas(
                         effect_names.push(anim_name.clone());
                     }
                 }
+                if let Some(projectile_id) = weapon.projectile.as_deref() {
+                    if let Some(projectile) = r.projectile(projectile_id) {
+                        if !projectile.inviso {
+                            if let Some(image) = projectile.image.as_deref() {
+                                if !effect_names.iter().any(|n| n.eq_ignore_ascii_case(image)) {
+                                    effect_names.push(image.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
             }
             // Particle SHPs: ParticleType.Image= goes through the ObjectTypeClass
             // Image= path → anim.pal palette. Register every distinct name.

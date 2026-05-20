@@ -220,6 +220,8 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     app_instances::build_damage_fire_instances(state, &mut shp_paged);
     // Non-garrison weapon muzzle flashes at FLH fire origins.
     app_instances::build_weapon_muzzle_flash_instances(state, &mut shp_paged);
+    // In-flight projectile sprites (e.g. Guardian GI DRAGON missile).
+    app_instances::build_projectile_visual_instances(state, &mut shp_paged);
     // Garrison muzzle flashes (OccupantAnim) at fire port positions.
     app_instances::build_garrison_muzzle_flash_instances(state, &mut shp_paged);
     // Parachute SHPs above descending paradropped infantry (Layer 2 — sorts
