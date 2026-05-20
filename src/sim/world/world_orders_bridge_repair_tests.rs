@@ -58,6 +58,10 @@ fn dummy_resolved_terrain() -> ResolvedTerrainGrid {
                 zone_type: 0,
                 base_ground_walk_blocked: false,
                 base_build_blocked: false,
+                base_land_type: 0,
+                base_yr_cell_land_type: 0,
+                base_terrain_class: Default::default(),
+                base_speed_costs: Default::default(),
                 build_blocked: false,
                 has_bridge_deck: false,
                 bridge_walkable: false,
@@ -599,9 +603,11 @@ fn c4_on_cabhut_collapses_bridge_and_hut_survives() {
                 .is_some_and(|cell| matches!(cell.damage_state, DamageState::Destroyed))
         })
         .count();
-    assert!(
-        destroyed_cells >= 2,
-        "CABHUT direct-overlay sweep must advance along the bridge axis; destroyed_cells={destroyed_cells}"
+    assert_eq!(
+        destroyed_cells,
+        BRIDGE_CELLS.len(),
+        "CABHUT C4 detonation must collapse the entire bridge span ({} cells), not a partial chunk; destroyed_cells={destroyed_cells}",
+        BRIDGE_CELLS.len()
     );
     let anchor = bs.cell(10, 10).unwrap();
     assert!(
@@ -843,6 +849,10 @@ fn damaged_data_resolved_terrain(tile_id: i32) -> ResolvedTerrainGrid {
                 zone_type: 0,
                 base_ground_walk_blocked: false,
                 base_build_blocked: false,
+                base_land_type: 0,
+                base_yr_cell_land_type: 0,
+                base_terrain_class: Default::default(),
+                base_speed_costs: Default::default(),
                 build_blocked: false,
                 has_bridge_deck: false,
                 bridge_walkable: false,
@@ -1093,6 +1103,10 @@ fn build_ns_bridge_with_bridgehead_for_dispatch() -> (
                 zone_type: 0,
                 base_ground_walk_blocked: false,
                 base_build_blocked: false,
+                base_land_type: 0,
+                base_yr_cell_land_type: 0,
+                base_terrain_class: Default::default(),
+                base_speed_costs: Default::default(),
                 build_blocked: false,
                 has_bridge_deck: true,
                 bridge_walkable: true,
