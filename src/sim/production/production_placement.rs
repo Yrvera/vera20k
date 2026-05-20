@@ -130,7 +130,9 @@ pub fn toggle_pause_for_owner_category(
     };
     front.state = match front.state {
         BuildQueueState::Paused => BuildQueueState::Building,
-        BuildQueueState::Building | BuildQueueState::Queued => BuildQueueState::Paused,
+        BuildQueueState::Building | BuildQueueState::Queued | BuildQueueState::NoFunds => {
+            BuildQueueState::Paused
+        }
         BuildQueueState::Done => BuildQueueState::Done,
     };
     refresh_queue_states(queue);

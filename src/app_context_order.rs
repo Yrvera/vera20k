@@ -100,18 +100,22 @@ pub(crate) fn try_queue_context_order_at_screen_point(
         );
 
         let only_miners_selected = mobile_count > 0 && selected_miner_ids.len() == mobile_count;
-        let clicked_friendly_refinery = !force_fire
-            && hover.as_ref().is_some_and(|target| {
-                if target.kind != HoverTargetKind::FriendlyStructure {
-                    return false;
-                }
-                let Some(rules) = state.rules.as_ref() else {
-                    return false;
-                };
-                sim.entities
-                    .get(target.stable_id)
-                    .is_some_and(|e| rules.is_refinery_type(sim.interner.resolve(e.type_ref)))
-            });
+        let clicked_friendly_refinery_id = (!force_fire)
+            .then(|| {
+                hover.as_ref().and_then(|target| {
+                    if target.kind != HoverTargetKind::FriendlyStructure {
+                        return None;
+                    }
+                    let rules = state.rules.as_ref()?;
+                    sim.entities.get(target.stable_id).and_then(|e| {
+                        rules
+                            .is_refinery_type(sim.interner.resolve(e.type_ref))
+                            .then_some(target.stable_id)
+                    })
+                })
+            })
+            .flatten();
+        let clicked_friendly_refinery = clicked_friendly_refinery_id.is_some();
 
         // Check if the clicked cell has a resource node (ore/gems).
         let clicked_ore = !force_fire
@@ -128,6 +132,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     execute_tick,
                     Command::MinerReturn {
                         entity_id: stable_id,
+                        target_refinery_id: clicked_friendly_refinery_id,
                     },
                 ));
             }

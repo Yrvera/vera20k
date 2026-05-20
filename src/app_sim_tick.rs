@@ -509,6 +509,24 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                             screen_pos: Some((sx, sy)),
                         }
                     }
+                    SimSoundEvent::RefineryExitSfx { rx, ry } => {
+                        // Positional SFX from [AudioVisual] BunkerWallsDownSound.
+                        // Skip when rules don't configure the sound (matches
+                        // gamemd's `RulesClass+0x244 != -1` guard).
+                        let sound_id = match state
+                            .rules
+                            .as_ref()
+                            .and_then(|r| r.general.bunker_walls_down_sound.as_deref())
+                        {
+                            Some(s) if !s.is_empty() => s.to_string(),
+                            _ => continue,
+                        };
+                        let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
+                        GameSoundEvent::RefineryExitSfx {
+                            sound_id,
+                            screen_pos: Some((sx, sy)),
+                        }
+                    }
                     SimSoundEvent::BridgeRepaired { rx, ry, owner } => {
                         // Spatial SFX gated on rules.bridge_rules.repair_sound
                         // being set (the original game gates on

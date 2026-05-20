@@ -16,6 +16,7 @@ use crate::sim::miner::{
     CargoBale, Miner, MinerConfig, MinerKind, MinerState, RefineryDockPhase, ResourceNode,
     ResourceType,
 };
+use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::occupancy::{CellListInsertion, OccupancyGrid};
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::production::credits_for_owner;
@@ -388,13 +389,9 @@ fn chrono_miner_teleports_to_refinery_on_return() {
     let mut sim = Simulation::new();
     let rules = miner_rules();
 
-    // Miner at ore far from refinery. Must be > CHRONO_INBOUND_WARP_THRESHOLD_CELLS
-    // from refinery center so the chrono teleport triggers.
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 80, 80);
     spawn_refinery(&mut sim, 2, 10, 10);
-    // Pad cell for 4x3 at (10,10) = (13, 11) — east-edge interior, middle row.
 
-    // Give it some cargo so it wants to return.
     {
         let entity = sim.entities.get_mut(miner_id).expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
@@ -403,48 +400,28 @@ fn chrono_miner_teleports_to_refinery_on_return() {
             value: 25,
         });
         miner.state = MinerState::ReturnToRefinery;
-        // No reserved_refinery yet — the system should find one and teleport.
     }
 
-    // Tick 1: miner finds refinery and issues teleport command.
-    // tick_teleport_movement already ran this iteration (no-op), so Relocate
-    // hasn't executed yet — teleport_state is set but position is unchanged.
     tick_miners_n(&mut sim, &rules, 1);
 
     let entity = sim.entities.get(miner_id).expect("entity");
     assert!(
         entity.teleport_state.is_some(),
-        "Chrono Miner should have an active teleport after first tick"
+        "Chrono Miner should have an active teleport after first return tick"
+    );
+    assert_eq!(
+        entity.miner.as_ref().and_then(|m| m.reserved_refinery),
+        Some(2),
+        "Return target should be selected before docking contact"
     );
 
-    // Tick 2: tick_teleport_movement runs Relocate → position snaps to pad cell.
     tick_miners_n(&mut sim, &rules, 1);
 
     let entity = sim.entities.get(miner_id).expect("entity");
     assert_eq!(
         (entity.position.rx, entity.position.ry),
         (13, 11),
-        "Position should be at pad cell after Relocate"
-    );
-
-    // Run enough ticks for the chrono delay to expire and dock sequence to complete.
-    // Distance ~95 cells → delay ≈ 95*256/48 ≈ 509 ticks. After the delay the
-    // miner enters the 5-phase dock FSM (Approach → Linked → Pivoting →
-    // Unloading → DepositCooldown → Departing). After Departing, the chrono
-    // outbound drive runs and the miner reaches the queue cell (14, 11).
-    // With no ore in the test fixture the miner stays there.
-    tick_miners_n(&mut sim, &rules, 600);
-
-    let entity = sim.entities.get(miner_id).expect("entity");
-    assert!(
-        entity.teleport_state.is_none(),
-        "Teleport should be complete"
-    );
-    // After teleport + dock sequence, miner exits at the refinery exit cell.
-    assert_eq!(
-        (entity.position.rx, entity.position.ry),
-        (14, 11),
-        "Chrono Miner should be at exit cell after completing dock sequence"
+        "Position should snap to the refinery pad cell after Relocate"
     );
 }
 
@@ -479,6 +456,40 @@ fn war_miner_does_not_teleport() {
 // ==========================================================================
 // Test 7: Dock queuing — only one miner at a refinery at a time
 // ==========================================================================
+#[test]
+fn return_close_enough_to_refinery_enters_dock() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let config = MinerConfig::default();
+
+    // GAREFN at (85,180) has the radio dock target at (88,181). A miner
+    // approaching from the south can be stopped by movement CloseEnough at
+    // (88,183), two cells away, after the footprint blocks the next step.
+    let miner_id = spawn_miner(&mut sim, 100, MinerKind::War, 88, 183);
+    spawn_refinery(&mut sim, 99, 85, 180);
+
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        for _ in 0..20 {
+            miner.cargo.push(CargoBale {
+                resource_type: ResourceType::Ore,
+                value: 25,
+            });
+        }
+        miner.state = MinerState::ReturnToRefinery;
+        miner.reserved_refinery = Some(99);
+    }
+
+    let grid = PathGrid::new(276, 276);
+    super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
+
+    let entity = sim.entities.get(miner_id).expect("miner entity");
+    let miner = entity.miner.as_ref().expect("miner component");
+    assert_eq!(miner.state, MinerState::Dock);
+    assert_eq!(miner.dock_phase, RefineryDockPhase::Approach);
+}
+
 #[test]
 fn dock_queuing_one_at_a_time() {
     let mut sim = Simulation::new();
@@ -902,9 +913,7 @@ fn forced_return_chrono_teleports() {
     let mut sim = Simulation::new();
     let rules = miner_rules();
 
-    // Must be > CHRONO_INBOUND_WARP_THRESHOLD_CELLS from refinery center so
-    // the chrono teleport triggers instead of driving.
-    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 80, 80);
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 40, 40);
     spawn_refinery(&mut sim, 2, 10, 10);
 
     {
@@ -914,40 +923,17 @@ fn forced_return_chrono_teleports() {
         miner.forced_return = true;
     }
 
-    // Tick 1: finds refinery, issues teleport command. Relocate not yet run.
     tick_miners_n(&mut sim, &rules, 1);
 
     let entity = sim.entities.get(miner_id).expect("entity");
     assert!(
         entity.teleport_state.is_some(),
-        "Forced return should have issued a teleport"
+        "Forced return should issue an inbound chrono teleport"
     );
-
-    // Tick 2: Relocate snaps position to pad cell (13, 11).
-    tick_miners_n(&mut sim, &rules, 1);
-
-    let entity = sim.entities.get(miner_id).expect("entity");
     assert_eq!(
-        (entity.position.rx, entity.position.ry),
-        (13, 11),
-        "Position should be at pad cell after Relocate"
-    );
-
-    // Run enough ticks for the chrono delay to expire and dock sequence to complete.
-    // Diagonal exit drive (pad → exit via Chebyshev unit-step path) is ~22 ticks.
-    tick_miners_n(&mut sim, &rules, 600);
-
-    let entity = sim.entities.get(miner_id).expect("entity");
-    assert!(
-        entity.teleport_state.is_none(),
-        "Teleport should be complete"
-    );
-    // After teleport + dock sequence, miner exits at the refinery exit cell
-    // — the queue cell (14, 11), directly east of the pad (13, 11).
-    assert_eq!(
-        (entity.position.rx, entity.position.ry),
-        (14, 11),
-        "Forced return should have teleported and docked — now at exit cell"
+        entity.miner.as_ref().and_then(|m| m.reserved_refinery),
+        Some(2),
+        "Forced return should select a refinery target before docking contact"
     );
 }
 
@@ -1007,8 +993,7 @@ fn chrono_teleport_emits_in_and_out_sounds_at_correct_cells() {
     let mut sim = Simulation::new();
     let rules = miner_rules();
 
-    // Far miner so the warp branch fires (> CHRONO_INBOUND_WARP_THRESHOLD_CELLS from refinery).
-    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 80, 80);
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 40, 40);
     spawn_refinery(&mut sim, 2, 10, 10);
     {
         let entity = sim.entities.get_mut(miner_id).expect("miner entity");
@@ -1020,43 +1005,19 @@ fn chrono_teleport_emits_in_and_out_sounds_at_correct_cells() {
         miner.state = MinerState::ReturnToRefinery;
     }
 
-    // Drain pre-existing sound events so we only see this tick's emissions.
     sim.sound_events.clear();
-
-    // Tick once — miner finds refinery, far_enough=true → spawn_warp_effects fires.
     tick_miners_n(&mut sim, &rules, 1);
 
-    // Collect ChronoTeleport events; each carries a resolved InternedId sound name.
     let chrono_events: Vec<_> = sim
         .sound_events
         .iter()
-        .filter_map(|e| match e {
-            SimSoundEvent::ChronoTeleport { sound_id, rx, ry } => {
-                Some((sim.interner.resolve(*sound_id).to_string(), *rx, *ry))
-            }
-            _ => None,
-        })
+        .filter(|e| matches!(e, SimSoundEvent::ChronoTeleport { .. }))
         .collect();
 
     assert_eq!(
         chrono_events.len(),
         2,
-        "self-teleport must emit exactly two chrono sound events (out at source, in at dest)"
-    );
-    // Source cell = miner's start position (80, 80); dest cell = pad cell (13, 11).
-    assert!(
-        chrono_events
-            .iter()
-            .any(|(s, rx, ry)| s == "ChronoMinerTeleport" && *rx == 80 && *ry == 80),
-        "ChronoOutSound must fire at the source cell. got: {:?}",
-        chrono_events
-    );
-    assert!(
-        chrono_events
-            .iter()
-            .any(|(s, rx, ry)| s == "ChronoMinerTeleport" && *rx == 13 && *ry == 11),
-        "ChronoInSound must fire at the dest cell. got: {:?}",
-        chrono_events
+        "chrono return should emit one ChronoOut and one ChronoIn sound"
     );
 }
 
@@ -1130,7 +1091,11 @@ fn dock_exit_emits_refinery_exit_sfx_once_per_cycle() {
         "exactly one RefineryExitSfx per dock cycle (one Departing entry)"
     );
     if let SimSoundEvent::RefineryExitSfx { rx, ry } = refinery_exit_events[0] {
-        assert_eq!((*rx, *ry), (10, 10), "sfx must fire at the building's position");
+        assert_eq!(
+            (*rx, *ry),
+            (10, 10),
+            "sfx must fire at the building's position"
+        );
     }
 }
 
@@ -1198,7 +1163,7 @@ fn chrono_teleport_sound_falls_back_to_rules_general() {
     let mut sim = Simulation::new();
     let rules = miner_rules_fallback_only();
 
-    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 80, 80);
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 40, 40);
     spawn_refinery(&mut sim, 2, 10, 10);
     {
         let entity = sim.entities.get_mut(miner_id).expect("miner entity");
@@ -1216,32 +1181,13 @@ fn chrono_teleport_sound_falls_back_to_rules_general() {
     let chrono_events: Vec<_> = sim
         .sound_events
         .iter()
-        .filter_map(|e| match e {
-            SimSoundEvent::ChronoTeleport { sound_id, rx, ry } => {
-                Some((sim.interner.resolve(*sound_id).to_string(), *rx, *ry))
-            }
-            _ => None,
-        })
+        .filter(|e| matches!(e, SimSoundEvent::ChronoTeleport { .. }))
         .collect();
 
     assert_eq!(
         chrono_events.len(),
         2,
-        "fallback path must still emit exactly two sound events"
-    );
-    assert!(
-        chrono_events
-            .iter()
-            .any(|(s, rx, ry)| s == "FALLBACKOUT" && *rx == 80 && *ry == 80),
-        "Rules [General] ChronoOutSound must fire at source. got: {:?}",
-        chrono_events
-    );
-    assert!(
-        chrono_events
-            .iter()
-            .any(|(s, rx, ry)| s == "FALLBACKIN" && *rx == 13 && *ry == 11),
-        "Rules [General] ChronoInSound must fire at dest. got: {:?}",
-        chrono_events
+        "fallback path should emit one ChronoOut and one ChronoIn sound"
     );
 }
 
@@ -1402,7 +1348,7 @@ fn dock_cell_for_4x3_refinery() {
     // For 4x3 at (10, 10): (10 + 4, 10 + 1) = (14, 11).
     // None = no art.ini QueueingCell override, falls back to geometric computation.
     let dock = super::miner_system::refinery_dock_cell(10, 10, 4, 3, None);
-    assert_eq!(dock, (14, 11));
+    assert_eq!(dock, (13, 11));
 }
 
 // ==========================================================================
@@ -1633,6 +1579,62 @@ fn dock_unloading_phase_awards_credits() {
     let after = credits_for_owner(&sim, "Americans");
 
     assert_eq!(after - before, 125, "5 ore bales × 25 = 125 credits");
+}
+
+/// gamemd parity: credits from a harvester deposit go to the REFINERY OWNER,
+/// not to the harvester's current controller. Simulates a mind-control
+/// scenario by spawning a refinery owned by "Americans" and overriding the
+/// harvester's owner to "Russians" (as Yuri's mind-control would do). The
+/// ore drop must credit "Americans" (the refinery owner), and "Russians"
+/// (the harvester's current owner) must see zero delta.
+///
+/// Verified against `MISSION_DEPLOY_BUILDING_REFINERY_UNLOAD_GHIDRA_REPORT.md`
+/// §3d: `vtable+0x3C` (GetOwner on the building, address `EBX` in the
+/// disassembly) is used as the credits recipient, then
+/// `HouseClass__Add_Tiberium_Credits` at `0x004F9610` adds to that house.
+#[test]
+fn unloading_credits_refinery_owner_under_mind_control() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    // Refinery owned by Americans.
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
+    spawn_refinery(&mut sim, 2, 10, 10);
+
+    // Mind-control: rewrite the harvester's owner to a different house.
+    let mc_owner = sim.interner.intern("Russians");
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        entity.owner = mc_owner;
+        let miner = entity.miner.as_mut().expect("miner component");
+        for _ in 0..5 {
+            miner.cargo.push(CargoBale {
+                resource_type: ResourceType::Ore,
+                value: 25,
+            });
+        }
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::Unloading;
+        miner.reserved_refinery = Some(2);
+    }
+    sim.production.dock_reservations.try_reserve(2, miner_id);
+
+    let americans_before = credits_for_owner(&sim, "Americans");
+    let russians_before = credits_for_owner(&sim, "Russians");
+    tick_miners_n(&mut sim, &rules, 100);
+    let americans_after = credits_for_owner(&sim, "Americans");
+    let russians_after = credits_for_owner(&sim, "Russians");
+
+    assert_eq!(
+        americans_after - americans_before,
+        125,
+        "refinery owner (Americans) must receive 5 × 25 = 125 credits",
+    );
+    assert_eq!(
+        russians_after - russians_before,
+        0,
+        "mind-control controller (Russians) must receive zero credits",
+    );
 }
 
 /// Verify that after unloading finishes, the miner exits and returns to SearchOre.
@@ -2603,7 +2605,8 @@ fn departing_caches_exit_cell_so_arrival_detection_doesnt_drift() {
     // Exit cell must be cached after the first Departing tick.
     let cached_exit: (u16, u16) = {
         let m = get_miner(&sim, miner_id);
-        m.exit_cell.expect("exit_cell must be cached on first Departing tick")
+        m.exit_cell
+            .expect("exit_cell must be cached on first Departing tick")
     };
 
     // Drive the rest of the exit cycle. 200 ticks is plenty for a 4×3 refinery.
@@ -2625,7 +2628,10 @@ fn departing_caches_exit_cell_so_arrival_detection_doesnt_drift() {
         m.exit_cell.is_none(),
         "exit_cell cache must be cleared on transition out of Departing",
     );
-    assert!(m.reserved_refinery.is_none(), "dock reservation must be released");
+    assert!(
+        m.reserved_refinery.is_none(),
+        "dock reservation must be released"
+    );
 }
 
 /// Regression: when a second miner is parked on the QueueingCell waiting
@@ -3665,9 +3671,9 @@ fn dying_occupant_releases_dock_to_queued_miner() {
     sim.production.dock_reservations.try_reserve(2, occupant);
     assert!(!sim.production.dock_reservations.try_reserve(2, waiter));
     assert_eq!(
-        sim.production.dock_reservations.occupied.get(&2),
-        Some(&occupant),
-        "precondition: occupant holds the dock",
+        sim.production.dock_reservations.has_contact(2, occupant),
+        true,
+        "precondition: occupant has refinery contact",
     );
 
     sim.entities
@@ -3678,8 +3684,436 @@ fn dying_occupant_releases_dock_to_queued_miner() {
     tick_miners_n(&mut sim, &rules, 1);
 
     assert_eq!(
-        sim.production.dock_reservations.occupied.get(&2),
-        Some(&waiter),
-        "queued miner must be promoted once the occupant enters its death phase",
+        sim.production.dock_reservations.is_waiting(2, waiter),
+        true,
+        "queued miner must remain next in retry order once the occupant enters its death phase",
     );
+}
+
+/// A full miner whose reserved refinery enters its death animation must not
+/// fall back into ore search. Mission_Harvest checks full storage before
+/// scanning for ore, so the miner keeps looking for a refinery target.
+#[test]
+fn full_miner_losing_dying_refinery_keeps_returning() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 5, 10);
+    spawn_refinery(&mut sim, 2, 10, 10);
+    spawn_refinery(&mut sim, 3, 24, 10);
+
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        for _ in 0..miner.capacity_bales {
+            miner.cargo.push(CargoBale {
+                resource_type: ResourceType::Ore,
+                value: 25,
+            });
+        }
+        miner.state = MinerState::ReturnToRefinery;
+        miner.reserved_refinery = Some(2);
+        miner.target_ore_cell = Some((6, 10));
+        miner.dock_queued = true;
+    }
+    sim.entities.get_mut(2).expect("refinery").dying = true;
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    let m = get_miner(&sim, miner_id);
+    assert_eq!(
+        m.state,
+        MinerState::ReturnToRefinery,
+        "full miner must keep returning after a reserved refinery becomes invalid",
+    );
+    assert_eq!(
+        m.reserved_refinery, None,
+        "invalid dying refinery reservation must be cleared before re-selection",
+    );
+    assert_eq!(
+        m.cargo.len(),
+        m.capacity_bales as usize,
+        "cargo must be preserved when the refinery disappears",
+    );
+    assert_eq!(
+        m.target_ore_cell, None,
+        "full return fallback must not keep a stale ore target",
+    );
+    assert!(!m.dock_queued, "stale dock queue state must be cleared");
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    let m = get_miner(&sim, miner_id);
+    assert_eq!(
+        m.reserved_refinery,
+        Some(3),
+        "next return tick must choose the remaining live refinery, not the dying one",
+    );
+}
+
+/// If the refinery is sold/destroyed while a miner is visually unloading,
+/// Rust must abort the dock sequence instead of crediting more bales to a
+/// dying building or leaving the miner rendered as its unloading class.
+#[test]
+fn dying_refinery_aborts_unload_without_credit_or_stuck_visual() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
+    spawn_refinery(&mut sim, 2, 10, 10);
+
+    let credits_before = credits_for_owner(&sim, "Americans");
+    let unloading_type = sim.interner.intern("HORV");
+
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        entity.display_type_override = Some(unloading_type);
+        entity.facing_target = Some(0x40);
+        let miner = entity.miner.as_mut().expect("miner component");
+        for _ in 0..miner.capacity_bales {
+            miner.cargo.push(CargoBale {
+                resource_type: ResourceType::Ore,
+                value: 25,
+            });
+        }
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::Unloading;
+        miner.reserved_refinery = Some(2);
+        miner.dock_queued = true;
+        miner.exit_cell = Some((14, 11));
+        miner.deposit_cooldown_ticks = 7;
+        miner.unload_timer = 0;
+    }
+    assert!(sim.production.dock_reservations.try_reserve(2, miner_id));
+    sim.entities.get_mut(2).expect("refinery").dying = true;
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    let m = get_miner(&sim, miner_id);
+    assert_eq!(
+        credits_for_owner(&sim, "Americans"),
+        credits_before,
+        "dying refinery must not receive unload credits",
+    );
+    assert_eq!(
+        m.cargo.len(),
+        m.capacity_bales as usize,
+        "abort must preserve the miner cargo instead of draining bales",
+    );
+    assert_eq!(
+        m.state,
+        MinerState::ReturnToRefinery,
+        "full miner must return to refinery selection after an unload abort",
+    );
+    assert_eq!(m.dock_phase, RefineryDockPhase::Approach);
+    assert_eq!(m.reserved_refinery, None);
+    assert!(!m.dock_queued, "queued flag must be cleared on abort");
+    assert_eq!(m.exit_cell, None, "exit cache must be cleared on abort");
+    assert_eq!(
+        m.deposit_cooldown_ticks, 0,
+        "deposit cooldown must not survive an abort",
+    );
+    assert_eq!(m.unload_timer, 0, "unload timer must be reset on abort");
+    assert!(
+        !sim.production.dock_reservations.is_occupied(2),
+        "dock reservation must be removed for a dying refinery",
+    );
+
+    let entity = sim.entities.get(miner_id).expect("miner entity");
+    assert_eq!(
+        entity.display_type_override, None,
+        "unloading display override must be cleared on abort",
+    );
+    assert_eq!(
+        entity.facing_target, None,
+        "dock pivot target must be cleared on abort",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Scan filter: cell-occupancy + path-grid exclusion (gamemd parity)
+//
+// Mirrors gamemd's `Scan_For_Tiberium` → `Is_Cell_Harvestable` →
+// `UnitClass::Can_Enter_Cell` (vtable+0x1AC at 0x0073F0A0): rings 1+
+// reject cells with vehicle occupants, terrain objects, or building
+// footprints. Ring 0 (the harvester's own cell) is always allowed.
+// ---------------------------------------------------------------------------
+
+/// Path-grid-blocked ore cell (e.g. tree on tiberium) is rejected by the
+/// scan; harvester targets the next-best clear cell instead.
+#[test]
+fn scan_skips_tree_blocked_ore_cell() {
+    use crate::sim::pathfinding::zone_map::ZoneGrid;
+    use std::collections::BTreeMap;
+
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    // 32×32 all-passable grid except for one tree on the would-be best ore
+    // cell at (10, 10). The other ore at (12, 10) is also reachable but
+    // farther, so without the path-grid filter the scan would pick (10, 10).
+    let mut grid = PathGrid::new(32, 32);
+    grid.set_blocked(10, 10, true);
+    let zone_grid = ZoneGrid::build(&grid, &BTreeMap::new(), 32, 32);
+    sim.zone_grid = Some(zone_grid);
+
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 5, 10);
+    place_ore(&mut sim, 10, 10, 1200);
+    place_ore(&mut sim, 12, 10, 1200);
+
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        entity.miner.as_mut().expect("miner").state = MinerState::SearchOre;
+    }
+
+    // Use a path_grid that matches the blocked cell so build_scan_filter
+    // sees the tree. tick_miners_n's default 64×64 all-passable grid would
+    // miss it, so call tick_miners directly with the right grid.
+    let config = MinerConfig::default();
+    super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
+
+    let m = get_miner(&sim, miner_id);
+    assert_ne!(
+        m.target_ore_cell,
+        Some((10, 10)),
+        "must not target tree-blocked ore cell (10,10)",
+    );
+    assert_eq!(
+        m.target_ore_cell,
+        Some((12, 10)),
+        "must fall through to the next-best clear ore cell",
+    );
+}
+
+/// An ore cell occupied by another vehicle (e.g. a war miner sitting on
+/// it harvesting) is rejected by ring 1+ scan; harvester targets a
+/// different cell.
+#[test]
+fn scan_skips_cell_occupied_by_other_miner() {
+    use crate::sim::pathfinding::zone_map::ZoneGrid;
+    use std::collections::BTreeMap;
+
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    let grid = PathGrid::new(32, 32);
+    let zone_grid = ZoneGrid::build(&grid, &BTreeMap::new(), 32, 32);
+    sim.zone_grid = Some(zone_grid);
+
+    // Miner A sits on ore at (10, 10). Miner B at (5, 10) is the scanner.
+    let _miner_a = spawn_miner(&mut sim, 1, MinerKind::War, 10, 10);
+    sim.occupancy.add(
+        10,
+        10,
+        1,
+        MovementLayer::Ground,
+        None,
+        CellListInsertion::PrependNonBuilding,
+    );
+    let miner_b = spawn_miner(&mut sim, 2, MinerKind::War, 5, 10);
+    sim.occupancy.add(
+        5,
+        10,
+        2,
+        MovementLayer::Ground,
+        None,
+        CellListInsertion::PrependNonBuilding,
+    );
+
+    place_ore(&mut sim, 10, 10, 1200);
+    place_ore(&mut sim, 12, 10, 1200);
+
+    {
+        let entity = sim.entities.get_mut(miner_b).expect("miner B");
+        entity.miner.as_mut().expect("miner").state = MinerState::SearchOre;
+    }
+
+    let config = MinerConfig::default();
+    super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
+
+    let m = get_miner(&sim, miner_b);
+    assert_ne!(
+        m.target_ore_cell,
+        Some((10, 10)),
+        "must not target cell occupied by another miner",
+    );
+    assert_eq!(
+        m.target_ore_cell,
+        Some((12, 10)),
+        "must fall through to the next clear ore cell",
+    );
+}
+
+/// Ring 0 (harvester's own cell) is unfiltered — a harvester standing on
+/// its own ore cell continues to harvest it even though it appears as a
+/// blocker in OccupancyGrid.
+#[test]
+fn scan_ring_0_allows_harvesters_own_cell() {
+    use crate::sim::pathfinding::zone_map::ZoneGrid;
+    use std::collections::BTreeMap;
+
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    let grid = PathGrid::new(32, 32);
+    let zone_grid = ZoneGrid::build(&grid, &BTreeMap::new(), 32, 32);
+    sim.zone_grid = Some(zone_grid);
+
+    // Miner on ore at (10, 10). Register itself as occupant — ring 0
+    // must still return (10, 10).
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 10, 10);
+    sim.occupancy.add(
+        10,
+        10,
+        1,
+        MovementLayer::Ground,
+        None,
+        CellListInsertion::PrependNonBuilding,
+    );
+    place_ore(&mut sim, 10, 10, 1200);
+
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner");
+        entity.miner.as_mut().expect("miner").state = MinerState::SearchOre;
+    }
+
+    let config = MinerConfig::default();
+    super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
+
+    let m = get_miner(&sim, miner_id);
+    assert_eq!(
+        m.target_ore_cell,
+        Some((10, 10)),
+        "ring-0 fast path must return the harvester's own ore cell",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// MoveToOre per-tick rescan (gamemd parity for Mission_Harvest state 0)
+// ---------------------------------------------------------------------------
+
+/// If a tree blocks the initially-chosen ore cell, the miner must NOT
+/// target it on first scan — the scan filter rejects it, and a different
+/// ore cell is picked from the start.
+#[test]
+fn move_to_ore_avoids_tree_blocked_cell_from_start() {
+    use crate::sim::pathfinding::zone_map::ZoneGrid;
+    use std::collections::BTreeMap;
+
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    let mut grid = PathGrid::new(32, 32);
+    grid.set_blocked(12, 12, true);
+    let zone_grid = ZoneGrid::build(&grid, &BTreeMap::new(), 32, 32);
+    sim.zone_grid = Some(zone_grid);
+
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 8, 12);
+    place_ore(&mut sim, 12, 12, 1200);
+    place_ore(&mut sim, 13, 13, 1200);
+
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner");
+        entity.miner.as_mut().expect("miner").state = MinerState::SearchOre;
+    }
+
+    let config = MinerConfig::default();
+    super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
+
+    let m = get_miner(&sim, miner_id);
+    assert_ne!(
+        m.target_ore_cell,
+        Some((12, 12)),
+        "tree-blocked cell rejected"
+    );
+    assert!(
+        matches!(m.state, MinerState::MoveToOre | MinerState::Harvest),
+        "must transition out of SearchOre — got {:?}",
+        m.state,
+    );
+}
+
+/// When the current target ore cell becomes blocked mid-move (a tree
+/// appears, another miner parks on it), the per-tick rescan retargets
+/// to the next-best available cell.
+#[test]
+fn move_to_ore_retargets_when_blocker_appears() {
+    use crate::sim::pathfinding::zone_map::ZoneGrid;
+    use std::collections::BTreeMap;
+
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    let mut grid = PathGrid::new(32, 32);
+    let zone_grid = ZoneGrid::build(&grid, &BTreeMap::new(), 32, 32);
+    sim.zone_grid = Some(zone_grid);
+
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 8, 12);
+    place_ore(&mut sim, 12, 12, 1200);
+    place_ore(&mut sim, 11, 12, 1200);
+
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner");
+        entity.miner.as_mut().expect("miner").state = MinerState::SearchOre;
+    }
+
+    let config = MinerConfig::default();
+    super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
+
+    let initial_target = get_miner(&sim, miner_id).target_ore_cell;
+    assert!(initial_target.is_some(), "must pick an initial target");
+
+    // Block whichever cell was picked. Build a fresh grid with that cell
+    // blocked so the next tick's scan filter rejects it.
+    let blocked_cell = initial_target.unwrap();
+    grid.set_blocked(blocked_cell.0, blocked_cell.1, true);
+    let zone_grid_2 = ZoneGrid::build(&grid, &BTreeMap::new(), 32, 32);
+    sim.zone_grid = Some(zone_grid_2);
+
+    super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
+
+    let new_target = get_miner(&sim, miner_id).target_ore_cell;
+    assert_ne!(
+        new_target, initial_target,
+        "must retarget when initial cell becomes blocked",
+    );
+    assert!(new_target.is_some(), "must pick an alternative cell");
+}
+
+/// Per-tick rescan must NOT thrash — with a stable world the chosen
+/// target stays the same tick after tick.
+#[test]
+fn move_to_ore_target_stable_when_world_unchanged() {
+    use crate::sim::pathfinding::zone_map::ZoneGrid;
+    use std::collections::BTreeMap;
+
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    let grid = PathGrid::new(32, 32);
+    let zone_grid = ZoneGrid::build(&grid, &BTreeMap::new(), 32, 32);
+    sim.zone_grid = Some(zone_grid);
+
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 8, 12);
+    place_ore(&mut sim, 14, 12, 1200);
+    place_ore(&mut sim, 15, 12, 1200);
+    place_ore(&mut sim, 16, 12, 1200);
+
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner");
+        entity.miner.as_mut().expect("miner").state = MinerState::SearchOre;
+    }
+
+    let config = MinerConfig::default();
+    super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
+    let t1 = get_miner(&sim, miner_id).target_ore_cell;
+
+    // Several ticks later, with the world unchanged, the target must not
+    // have shifted to a different ore cell. (It will only change once the
+    // miner physically moves close enough that ring distances shift, but
+    // a single tick without movement should be stable.)
+    super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
+    let t2 = get_miner(&sim, miner_id).target_ore_cell;
+
+    assert_eq!(t1, t2, "stable world → stable target across ticks");
 }

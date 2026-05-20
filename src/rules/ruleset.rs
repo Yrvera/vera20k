@@ -108,6 +108,12 @@ impl Default for ProductionRules {
 ///
 /// The name comes from rules.ini `[General]` (e.g., WarpIn=WARPIN).
 /// The rate comes from the anim's own art.ini section (e.g., `[WARPIN]` Rate=120).
+///
+/// Westwood INI treats `;` as a comment marker, so `WarpOut=WARPOUT;WAKE2`
+/// reads as `WARPOUT` — the `;WAKE2` portion is a comment, NOT a secondary
+/// anim. The retail engine behaves the same way. A 2026-05-20 trace claimed
+/// otherwise (a "primary;secondary" delimiter) but the claim was based on a
+/// doc misinterpretation; no Ghidra evidence supports a secondary-anim parser.
 #[derive(Debug, Clone)]
 pub struct AnimRef {
     /// SHP animation name (uppercase), e.g., "WARPIN".
@@ -241,6 +247,12 @@ pub struct GeneralRules {
     pub building_garrisoned_sound: Option<String>,
     /// Sound event for shell main-menu buttons from [AudioVisual] GUIMainButtonSound.
     pub gui_main_button_sound: Option<String>,
+    /// Sound played at refinery exit when a docked harvester departs after
+    /// dumping. Parsed from [AudioVisual] BunkerWallsDownSound (retail value
+    /// "TankBunkerDown"). gamemd's `ReleaseDockedHarvester` (0x4595C0) step 2
+    /// reads `RulesClass+0x244` and calls `VocClass::PlayAt` at the building
+    /// location every ore-delivery cycle. None = no sound configured.
+    pub bunker_walls_down_sound: Option<String>,
     /// Direct rocker force coefficient (DirectRockingCoefficient= in [AudioVisual]).
     /// Multiplies the final DirectRocker impulse force. Default 1.5.
     pub direct_rocking_coefficient: SimFixed,
@@ -556,6 +568,7 @@ impl Default for GeneralRules {
             condition_red_x1000: 250,
             building_garrisoned_sound: None,
             gui_main_button_sound: None,
+            bunker_walls_down_sound: None,
             direct_rocking_coefficient: SimFixed::lit("1.5"),
             fallback_coefficient: SimFixed::lit("0.1"),
             chrono_in_sound: Some("ChronoMinerTeleport".to_string()),
@@ -776,13 +789,17 @@ impl GeneralRules {
         let audio_visual = ini.section("AudioVisual");
         // IronCurtainDuration, MutateWarhead, MutateExplosionWarhead live in [CombatDamage].
         let combat_damage = ini.section("CombatDamage");
-        // WarpIn/WarpOut/WarpAway values may contain semicolons with secondary
-        // anims (e.g., "WARPIN;WAKE2"). We only use the primary anim name.
+        // INI parser already strips everything after `;` (Westwood comment
+        // marker), so values like `WarpOut=WARPOUT;WAKE2` are read as
+        // `WARPOUT` — matching gamemd's behaviour. Rate is filled in later
+        // from art.ini in `resolve_art_rates`.
         let parse_anim_name = |key: &str, default: &str| -> String {
             general
                 .get(key)
-                .map(|v| v.split(';').next().unwrap_or(default).trim().to_string())
-                .unwrap_or_else(|| default.to_string())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(default)
+                .to_string()
         };
         let defaults = Self::default();
         let condition_yellow_f32: f32 = audio_visual
@@ -857,6 +874,11 @@ impl GeneralRules {
             condition_red_x1000: (condition_red_f32 as f64 * 1000.0) as i64,
             building_garrisoned_sound: audio_visual
                 .and_then(|s| s.get("BuildingGarrisonedSound"))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            bunker_walls_down_sound: audio_visual
+                .and_then(|s| s.get("BunkerWallsDownSound"))
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string),

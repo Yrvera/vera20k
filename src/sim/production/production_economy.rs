@@ -20,7 +20,7 @@ pub(super) fn tick_resource_economy(
     super::super::miner::miner_system::tick_miners(sim, rules, config, path_grid);
 
     // Tick Slave Miner subsystems: slave harvest AI + slave regeneration.
-    super::super::slave_miner::tick_slave_harvesters(sim, rules, config);
+    super::super::slave_miner::tick_slave_harvesters(sim, rules, config, path_grid);
     super::super::slave_miner::tick_slave_regen(sim, rules);
 }
 

@@ -169,16 +169,22 @@ impl Simulation {
             spawner.animation_probability_micros.hash(hasher);
         }
         self.production.default_ore_overlay_id.hash(hasher);
-        // Hash dock reservations.
-        for (&ref_sid, &miner_sid) in &self.production.dock_reservations.occupied {
+        // Hash refinery radio/contact state.
+        for (&ref_sid, contacts) in &self.production.dock_reservations.contacts {
             ref_sid.hash(hasher);
-            miner_sid.hash(hasher);
+            for &miner_sid in contacts {
+                miner_sid.hash(hasher);
+            }
         }
-        for (&ref_sid, queue) in &self.production.dock_reservations.queues {
+        for (&ref_sid, queue) in &self.production.dock_reservations.waiting_retry_queue {
             ref_sid.hash(hasher);
             for &miner_sid in queue {
                 miner_sid.hash(hasher);
             }
+        }
+        for (&ref_sid, &miner_sid) in &self.production.dock_reservations.on_pad {
+            ref_sid.hash(hasher);
+            miner_sid.hash(hasher);
         }
     }
 
@@ -190,7 +196,6 @@ impl Simulation {
             state.total_output.hash(hasher);
             state.total_drain.hash(hasher);
             state.power_blackout_remaining.hash(hasher);
-            state.degradation_accum_ms.hash(hasher);
         }
     }
 

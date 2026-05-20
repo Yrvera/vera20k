@@ -26,6 +26,7 @@ use crate::sim::pathfinding::PathGrid;
 use crate::sim::world::{SimSoundEvent, Simulation};
 use crate::util::fixed_math::{SIM_TICK_HZ, SimFixed};
 
+use super::miner_dock::ContactAdmission;
 use super::miner_system::{MinerSnapshot, effective_purifier_count};
 use crate::sim::production::{credits_entry_for_owner, foundation_dimensions};
 
@@ -74,6 +75,14 @@ pub(super) fn refinery_queue_cell(
     } else {
         (rx + width, ry + height / 2)
     }
+}
+
+/// CAN_DOCK queue target sent by `BuildingClass::Receive_Radio` case 0x0E.
+///
+/// Verified in gamemd: this path hardcodes building anchor + (3, 1) and does
+/// not read art.ini `QueueingCell=`.
+pub(super) fn refinery_can_dock_queue_cell(rx: u16, ry: u16) -> (u16, u16) {
+    (rx.saturating_add(3), ry.saturating_add(1))
 }
 
 /// Pad cell — on the refinery platform inside the building footprint.
@@ -303,29 +312,25 @@ fn resolve_refinery_cells(
     rules: &RuleSet,
     ref_sid: u64,
     path_grid: Option<&PathGrid>,
-) -> Option<((u16, u16), (u16, u16), (u16, u16))> {
+) -> Option<((u16, u16), (u16, u16), (u16, u16), usize)> {
     let entity = sim.entities.get(ref_sid)?;
+    if entity.dying || entity.health.current == 0 {
+        return None;
+    }
     let obj = rules.object_case_insensitive(sim.interner.resolve(entity.type_ref));
     let (w, h) = obj
         .map(|o| foundation_dimensions(&o.foundation))
         .unwrap_or((1, 1));
     let qc = obj.and_then(|o| o.queueing_cell);
     let dock_off = obj.and_then(|o| o.pads.first().map(|p| p.lepton_offset));
+    let dock_capacity = obj.map(|o| o.number_of_docks.max(1) as usize).unwrap_or(1);
     let rx = entity.position.rx;
     let ry = entity.position.ry;
     Some((
-        refinery_queue_cell(rx, ry, w, h, qc),
+        refinery_can_dock_queue_cell(rx, ry),
         refinery_pad_cell(rx, ry, w, h, dock_off),
-        refinery_exit_cell(
-            rx,
-            ry,
-            w,
-            h,
-            qc,
-            path_grid,
-            Some(&sim.occupancy),
-            sim.tick,
-        ),
+        refinery_exit_cell(rx, ry, w, h, qc, path_grid, Some(&sim.occupancy), sim.tick),
+        dock_capacity,
     ))
 }
 
@@ -334,6 +339,41 @@ fn unloading_class(rules: &RuleSet, type_id: &str) -> Option<String> {
     rules
         .object_case_insensitive(type_id)
         .and_then(|obj| obj.unloading_class.clone())
+}
+
+fn dock_abort_state(snap: &MinerSnapshot) -> MinerState {
+    if snap.miner.forced_return && !snap.miner.cargo.is_empty() {
+        MinerState::ForcedReturn
+    } else if snap.miner.is_full() {
+        MinerState::ReturnToRefinery
+    } else {
+        MinerState::SearchOre
+    }
+}
+
+fn abort_invalid_refinery(sim: &mut Simulation, snap: &mut MinerSnapshot, ref_sid: Option<u64>) {
+    if let Some(ref_sid) = ref_sid {
+        sim.production
+            .dock_reservations
+            .cancel_miner(ref_sid, snap.entity_id);
+    }
+
+    if let Some(entity) = sim.entities.get_mut(snap.entity_id) {
+        entity.display_type_override = None;
+        entity.facing_target = None;
+        entity.movement_target = None;
+    }
+
+    snap.miner.reserved_refinery = None;
+    snap.miner.dock_queued = false;
+    snap.miner.dock_phase = RefineryDockPhase::Approach;
+    snap.miner.deposit_cooldown_ticks = 0;
+    snap.miner.exit_cell = None;
+    snap.miner.unload_timer = 0;
+    if snap.miner.is_full() {
+        snap.miner.target_ore_cell = None;
+    }
+    snap.miner.state = dock_abort_state(snap);
 }
 
 // ---------------------------------------------------------------------------
@@ -351,20 +391,17 @@ pub(super) fn handle_dock_sequence(
     let phase_before = snap.miner.dock_phase;
 
     let Some(ref_sid) = snap.miner.reserved_refinery else {
-        snap.miner.state = MinerState::SearchOre;
-        snap.miner.dock_phase = RefineryDockPhase::Approach;
-        snap.miner.exit_cell = None;
+        abort_invalid_refinery(sim, snap, None);
         if phase_before != snap.miner.dock_phase {
             record_dock_phase(snap, phase_before, snap.miner.dock_phase);
         }
         return;
     };
 
-    let Some((queue, pad, exit)) = resolve_refinery_cells(sim, rules, ref_sid, path_grid) else {
-        snap.miner.reserved_refinery = None;
-        snap.miner.state = MinerState::SearchOre;
-        snap.miner.dock_phase = RefineryDockPhase::Approach;
-        snap.miner.exit_cell = None;
+    let Some((queue, pad, exit, dock_capacity)) =
+        resolve_refinery_cells(sim, rules, ref_sid, path_grid)
+    else {
+        abort_invalid_refinery(sim, snap, Some(ref_sid));
         if phase_before != snap.miner.dock_phase {
             record_dock_phase(snap, phase_before, snap.miner.dock_phase);
         }
@@ -373,7 +410,7 @@ pub(super) fn handle_dock_sequence(
 
     match snap.miner.dock_phase {
         RefineryDockPhase::Approach => {
-            phase_approach(sim, path_grid, snap, queue, pad, ref_sid);
+            phase_approach(sim, path_grid, snap, queue, pad, ref_sid, dock_capacity);
         }
         RefineryDockPhase::Linked => {
             phase_linked(sim, rules, snap, pad, ref_sid);
@@ -385,10 +422,10 @@ pub(super) fn handle_dock_sequence(
             phase_unloading(sim, rules, config, snap, ref_sid);
         }
         RefineryDockPhase::DepositCooldown => {
-            phase_deposit_cooldown(sim, snap);
+            phase_deposit_cooldown(snap);
         }
         RefineryDockPhase::Departing => {
-            phase_departing(sim, path_grid, snap, exit, ref_sid);
+            phase_departing(sim, path_grid, snap, pad, exit, ref_sid);
         }
     }
 
@@ -408,22 +445,39 @@ fn phase_approach(
     queue: (u16, u16),
     pad: (u16, u16),
     ref_sid: u64,
+    dock_capacity: usize,
 ) {
     // Try to acquire the dock reservation. If granted, immediately re-target
     // the pad cell and transition to Linked. RemoveOccupy in art.ini removes
     // the pad cell from the path/occupancy grid, so the move can proceed
     // without bypass_grid.
-    if sim
-        .production
-        .dock_reservations
-        .try_reserve(ref_sid, snap.entity_id)
-    {
+    let admission =
+        sim.production
+            .dock_reservations
+            .hello_or_wait(ref_sid, snap.entity_id, dock_capacity);
+
+    if admission == ContactAdmission::Accepted {
         snap.miner.dock_queued = false;
-        movement::issue_direct_move(&mut sim.entities, snap.entity_id, pad, snap.speed);
-        snap.miner.dock_phase = RefineryDockPhase::Linked;
+        let moving = sim
+            .entities
+            .get(snap.entity_id)
+            .is_some_and(|e| e.movement_target.is_some());
+        if (snap.rx, snap.ry) == pad && !moving {
+            sim.production
+                .dock_reservations
+                .link_on_pad(ref_sid, snap.entity_id);
+            snap.miner.dock_phase = RefineryDockPhase::Linked;
+        } else if !moving {
+            movement::issue_direct_move(&mut sim.entities, snap.entity_id, pad, snap.speed);
+            snap.miner.dock_phase = RefineryDockPhase::Linked;
+        }
         return;
     }
     snap.miner.dock_queued = true;
+
+    if queue == pad && sim.production.dock_reservations.pad_occupied(ref_sid) {
+        return;
+    }
 
     // Reservation not granted — keep heading toward QueueingCell.
     if !is_adjacent_or_at((snap.rx, snap.ry), queue) {
@@ -450,6 +504,9 @@ fn phase_linked(
 
     snap.rx = pad.0;
     snap.ry = pad.1;
+    sim.production
+        .dock_reservations
+        .link_on_pad(ref_sid, snap.entity_id);
 
     if let Some(entity) = sim.entities.get_mut(snap.entity_id) {
         if let Some(uc) = unloading_class(rules, sim.interner.resolve(snap.type_id)) {
@@ -550,9 +607,21 @@ fn phase_unloading(
             }
         });
 
-        let owner_str = sim.interner.resolve(snap.owner).to_string();
+        // Credits go to the REFINERY OWNER, not the harvester's current
+        // controller. gamemd reads the building's owner via vtable+0x3C
+        // (`GetOwner` on the BuildingClass instance, not on the harvester).
+        // Matters under mind-control: a Yuri unit MC'ing an enemy harvester
+        // still credits the original refinery owner — the "steal" doesn't
+        // work. The single GetOwner result also keys the purifier-count
+        // lookup, so base credits and bonus always share one owner.
+        let refinery_owner: String = sim
+            .entities
+            .get(ref_sid)
+            .map(|b| sim.interner.resolve(b.owner).to_string())
+            .unwrap_or_else(|| sim.interner.resolve(snap.owner).to_string());
+
         {
-            let credits = credits_entry_for_owner(sim, &owner_str);
+            let credits = credits_entry_for_owner(sim, &refinery_owner);
             *credits = credits.saturating_add(slot_value);
         }
 
@@ -560,10 +629,6 @@ fn phase_unloading(
         //   bonus = floor(slot_value × purifier_count × PurifierBonus)
         // Multiplying by the whole slot eliminates the per-bale integer
         // truncation that previously under-paid by ~PurifierBonus% per bale.
-        let refinery_owner_id = sim.entities.get(ref_sid).map(|b| b.owner);
-        let refinery_owner: String = refinery_owner_id
-            .map(|id| sim.interner.resolve(id).to_string())
-            .unwrap_or_else(|| owner_str.clone());
         let purifier_count = effective_purifier_count(sim, rules, &refinery_owner);
         if purifier_count > 0 {
             let bonus_pct: i32 = rules.general.purifier_bonus_pct;
@@ -572,7 +637,7 @@ fn phase_unloading(
                 .saturating_mul(bonus_pct)
                 / 100;
             if bonus > 0 {
-                let credits = credits_entry_for_owner(sim, &owner_str);
+                let credits = credits_entry_for_owner(sim, &refinery_owner);
                 *credits = credits.saturating_add(bonus);
             }
         }
@@ -613,14 +678,19 @@ fn unload_interval_in_ticks(config: &MinerConfig) -> u16 {
 
 /// Hold on the pad until the last deposit animation completes, then
 /// hand off to `Departing`.
-fn phase_deposit_cooldown(sim: &mut Simulation, snap: &mut MinerSnapshot) {
+fn phase_deposit_cooldown(snap: &mut MinerSnapshot) {
     if snap.miner.deposit_cooldown_ticks > 0 {
         snap.miner.deposit_cooldown_ticks -= 1;
         return;
     }
-    if let Some(entity) = sim.entities.get_mut(snap.entity_id) {
-        entity.display_type_override = None;
-    }
+    // NOTE: `display_type_override` is deliberately NOT cleared here. The
+    // unloading sprite (e.g. CMON) has a different VXL/HVA anchor than the
+    // base sprite (CMIN); clearing the override while the miner is still
+    // parked on the pad makes the rendered voxel visually snap by the
+    // anchor delta. Defer the clear to `phase_departing`, fired the first
+    // tick the miner has crossed off the pad cell, so the snap (if any)
+    // happens while the miner is already moving and is masked by the drive
+    // animation.
     snap.miner.dock_phase = RefineryDockPhase::Departing;
 }
 
@@ -628,9 +698,22 @@ fn phase_departing(
     sim: &mut Simulation,
     path_grid: Option<&PathGrid>,
     snap: &mut MinerSnapshot,
+    pad: (u16, u16),
     exit: (u16, u16),
     ref_sid: u64,
 ) {
+    // Clear the unloading-sprite override the first tick after the miner
+    // has physically crossed off the pad cell. Clearing while still parked
+    // on the pad makes the rendered voxel snap by the CMON↔CMIN HVA anchor
+    // delta; clearing once the miner is mid-drive masks the snap inside
+    // the drive animation. Idempotent — safe to call every tick.
+    if (snap.rx, snap.ry) != pad
+        && let Some(entity) = sim.entities.get_mut(snap.entity_id)
+        && entity.display_type_override.is_some()
+    {
+        entity.display_type_override = None;
+    }
+
     // Cache the exit cell on first entry. The exit returned by
     // `resolve_refinery_cells` is recomputed every tick from live occupancy
     // and will shift away from the miner the moment it arrives (the spiral
@@ -646,6 +729,12 @@ fn phase_departing(
     let target = match snap.miner.exit_cell {
         Some(cached) => cached,
         None => {
+            sim.production
+                .dock_reservations
+                .release_on_pad(ref_sid, snap.entity_id);
+            sim.production
+                .dock_reservations
+                .release_contact(ref_sid, snap.entity_id);
             snap.miner.exit_cell = Some(exit);
             if let Some(building) = sim.entities.get(ref_sid) {
                 let (rx, ry) = (building.position.rx, building.position.ry);
@@ -719,19 +808,16 @@ fn phase_departing(
         // a DRIVE-TRACK CURVE INDEX, not a facing byte — pinning facing
         // to 0x47 would make the miner drive backwards (body facing ESE
         // while moving west toward the exit cell).
-        if let Some(entity) = sim.entities.get_mut(snap.entity_id)
-            && let Some(ref mut mt) = entity.movement_target
-        {
-            mt.bypass_grid = true;
-        }
         return;
     }
 
     if !moving && at_exit && !teleporting {
-        // Release the dock here, not at cargo-empty, so the next queued
-        // miner cannot try_reserve onto a pad that the previous miner is
-        // still standing on / driving off.
-        sim.production.dock_reservations.release(ref_sid);
+        sim.production
+            .dock_reservations
+            .release_on_pad(ref_sid, snap.entity_id);
+        sim.production
+            .dock_reservations
+            .release_contact(ref_sid, snap.entity_id);
         snap.miner.reserved_refinery = None;
         snap.miner.dock_queued = false;
         snap.miner.forced_return = false;
@@ -772,6 +858,9 @@ fn issue_move_if_idle(
     target: (u16, u16),
     speed: SimFixed,
 ) {
+    if target.0 >= grid.width() || target.1 >= grid.height() {
+        return;
+    }
     let already = entities
         .get(entity_id)
         .and_then(|e| e.movement_target.as_ref())

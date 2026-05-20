@@ -98,7 +98,12 @@ pub enum Command {
     ToggleRepair { entity_id: u64 },
     /// Force a miner to return to its refinery (right-click on own refinery or 'D' key).
     /// Chrono Miners teleport; War Miners drive back.
-    MinerReturn { entity_id: u64 },
+    MinerReturn {
+        entity_id: u64,
+        /// Explicit refinery clicked by the player. Keyboard/generic forced
+        /// return leaves this empty and lets the miner choose a refinery.
+        target_refinery_id: Option<u64>,
+    },
     /// Send a unit to a repair depot for repairs.
     /// The unit pathfinds to the depot, docks, and auto-repairs until full HP or out of credits.
     RepairAtDepot { entity_id: u64, depot_id: u64 },

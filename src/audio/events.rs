@@ -130,6 +130,16 @@ pub enum GameSoundEvent {
         screen_pos: Option<(f32, f32)>,
     },
 
+    /// Positional SFX played when a docked harvester departs after dumping.
+    /// Resolved from [AudioVisual] BunkerWallsDownSound (retail "TankBunkerDown").
+    /// Fires every refinery dock cycle.
+    RefineryExitSfx {
+        /// sound.ini ID for the SFX.
+        sound_id: String,
+        /// Screen position for spatial audio.
+        screen_pos: Option<(f32, f32)>,
+    },
+
     /// Positional SFX + EVA cue from a bridge repair triggered by an engineer
     /// entering a `BridgeRepairHut`. Plays the spatial `[BridgeRepaired]`
     /// sound (resolved from `rules.bridge_rules.repair_sound`) at the hut's
@@ -174,6 +184,7 @@ impl GameSoundEvent {
             | Self::StructureAbandoned { sound_id }
             | Self::BuildingGarrisonedSfx { sound_id, .. }
             | Self::C4Planted { sound_id, .. }
+            | Self::RefineryExitSfx { sound_id, .. }
             | Self::BridgeRepaired { sound_id, .. } => sound_id,
         }
     }
@@ -189,6 +200,7 @@ impl GameSoundEvent {
             Self::ChronoTeleport { screen_pos, .. } => *screen_pos,
             Self::BuildingGarrisonedSfx { screen_pos, .. } => *screen_pos,
             Self::C4Planted { screen_pos, .. } => *screen_pos,
+            Self::RefineryExitSfx { screen_pos, .. } => *screen_pos,
             Self::BridgeRepaired { screen_pos, .. } => *screen_pos,
             _ => None,
         }

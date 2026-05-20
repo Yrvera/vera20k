@@ -87,9 +87,16 @@ pub enum RefineryDockPhase {
     #[default]
     Approach,
     /// Reservation granted; driving onto the pad cell. On arrival: emit
-    /// DockDeploy sound, set display_type_override, init unload_timer,
-    /// transition to Unloading.
+    /// DockDeploy sound, set display_type_override, kick off the pivot to
+    /// facing East (0x40), transition to Pivoting.
     Linked,
+    /// Smooth in-place rotation to facing 0x40 (East) so the miner's back
+    /// is against the refinery dump spot for the deposit animation.
+    /// Mirrors gamemd's radio 0x16 (FACE_AND_SYNC) RateTimer pivot:
+    /// `DriveLocomotionClass::Do_Turn` sets the PrimaryFacing rate-timer
+    /// target, and the locomotor smoothly rotates each tick. On facing
+    /// convergence: init `unload_timer` and transition to Unloading.
+    Pivoting,
     /// Per-slot deposit pulse. Each timer crossing (HarvesterDumpRate × 900
     /// = 14.4 ticks) drains one StorageClass slot — all bales of one
     /// resource type at once — and emits a single BaleDepositEvent.
@@ -97,15 +104,23 @@ pub enum RefineryDockPhase {
     /// On cargo empty: seed `deposit_cooldown_ticks` from the refinery's
     /// SpecialAnim cycle and transition to DepositCooldown.
     Unloading,
-    /// Park on the pad while the last deposit animation finishes — keeps
-    /// the deposit anim from out-lasting a miner that has already driven
-    /// off. On cooldown expiry: clear the unloading-model override and
-    /// transition to Departing. The dock reservation is still held; the
-    /// next queued miner is released only once this miner clears the
-    /// exit cell.
+    /// Hold on the pad for one more dump-gate interval after the last
+    /// bale drains, matching gamemd's post-last-bale idle: the refinery's
+    /// dump counter keeps ticking, and on the next 14.4-frame gate fire
+    /// `FindFirstNonEmptySlot` returns -1, triggering state 4 →
+    /// `ReleaseDockedHarvester`. On cooldown expiry: clear the
+    /// unloading-model override and transition to Departing. The dock
+    /// reservation is still held; the next queued miner is released only
+    /// once this miner clears the exit cell.
     DepositCooldown,
-    /// Drive to exit cell at building_origin + (-0x80, +0x80) leptons.
-    /// On arrival: snap facing 0x47, release dock reservation, return to
+    /// Drive to the exit cell (cached on first entry to avoid the spiral
+    /// search recomputing every tick from live occupancy). The exit drive
+    /// runs with `bypass_grid=true` on the MovementTarget so the miner
+    /// can push through a queue-cell blocker (common when another miner
+    /// is parked there waiting to dock). Facing tracks the actual path
+    /// direction — no hardcoded 0x47 snap, since that value is gamemd's
+    /// drive-track curve index, not a literal facing byte.
+    /// On arrival: release dock reservation, clear exit cache, return to
     /// SearchOre.
     Departing,
 }
@@ -262,6 +277,15 @@ pub struct Miner {
     /// SpecialAnim cycle length when the last bale pops; decremented each
     /// tick of the cooldown phase.
     pub deposit_cooldown_ticks: u16,
+    /// Cached exit cell for the active `Departing` phase. Computed once on
+    /// transition into `Departing` (mirroring gamemd's one-shot
+    /// `Find_Nearby_Passable_Cell` call inside `ReleaseDockedHarvester`)
+    /// and held fixed until the miner reaches it. Without this cache the
+    /// spiral search recomputes every tick from live occupancy and skips
+    /// the miner's own cell on arrival — producing a ping-pong loop
+    /// between adjacent cells near the exit. Cleared when the miner
+    /// transitions back to `SearchOre`.
+    pub exit_cell: Option<(u16, u16)>,
 }
 
 impl Miner {
@@ -306,6 +330,7 @@ impl Miner {
             last_harvest_cell: None,
             dock_phase: RefineryDockPhase::default(),
             deposit_cooldown_ticks: 0,
+            exit_cell: None,
         }
     }
 
