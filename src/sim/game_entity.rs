@@ -30,7 +30,7 @@ use crate::sim::docking::aircraft_dock::AircraftAmmo;
 use crate::sim::docking::building_dock::DockState;
 use crate::sim::intern::InternedId;
 use crate::sim::miner::Miner;
-use crate::sim::movement::drive_track::DriveTrackState;
+use crate::sim::movement::drive_track::{DriveTrackState, ForcedDriveTrackState};
 use crate::sim::movement::droppod_movement::DropPodState;
 use crate::sim::movement::locomotor::LocomotorState;
 use crate::sim::movement::rocket_movement::RocketState;
@@ -174,6 +174,9 @@ pub struct GameEntity {
     /// Active drive track curve state — present when a Drive vehicle is
     /// following a pre-computed curved path between cells.
     pub drive_track: Option<DriveTrackState>,
+    /// One-shot forced drive track, independent of normal path movement.
+    #[serde(default)]
+    pub forced_drive_track: Option<ForcedDriveTrackState>,
     /// Docking state machine — present when unit is approaching, waiting,
     /// or servicing at a repair depot.
     pub dock_state: Option<DockState>,
@@ -351,6 +354,7 @@ impl GameEntity {
             parachute_state: None,
             invulnerability: None,
             drive_track: None,
+            forced_drive_track: None,
             dock_state: None,
             aircraft_ammo: None,
             aircraft_mission: None,

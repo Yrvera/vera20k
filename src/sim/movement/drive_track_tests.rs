@@ -33,6 +33,28 @@ fn raw_tracks_count_is_16() {
 }
 
 #[test]
+fn turn_track_0x47_selects_raw_track_15_not_facing_0x47() {
+    let turn = turn_track_at(0x47).expect("TurnTrack 0x47 exists");
+    assert_eq!(select_raw_track_index(turn, false), 15);
+    assert_eq!(select_raw_track_index(turn, true), 15);
+    assert_eq!(turn.target_facing, 0xC0);
+    assert_ne!(turn.target_facing, 0x47);
+    assert_eq!(turn.flags & 0x07, 0);
+
+    let meta = raw_track_meta(15).expect("RawTrack 15 exists");
+    assert_eq!(meta.points_count, 16);
+    assert_eq!(meta.entry_index, 0);
+    assert_eq!(meta.chain_index, -1);
+    assert_eq!(meta.cell_cross_index, -1);
+
+    let points = raw_track_points(15);
+    let first = points.first().expect("Track 15 first point");
+    let last = points.last().expect("Track 15 last point");
+    assert_eq!((first.x, first.y, first.facing), (128, -128, 0x80));
+    assert_eq!((last.x, last.y, last.facing), (16, -4, 0xBC));
+}
+
+#[test]
 fn raw_track_0_is_empty() {
     let track = &RAW_TRACKS[0];
     assert_eq!(track.points_count, 0);
@@ -554,6 +576,66 @@ fn advance_drive_track_1_cell_jump_fires_once() {
     );
 }
 
+#[test]
+fn advance_drive_track_strictly_requires_budget_above_step_cost() {
+    let mut state = begin_drive_track(15, 0, 0, 0, 0xC0).unwrap();
+    let dt = SimFixed::from_num(1);
+
+    let exact = advance_drive_track(&mut state, SimFixed::from_num(7), dt);
+    assert_eq!(state.point_index, 0);
+    assert_eq!(state.residual, 7);
+    assert_eq!(exact.facing, 0x80);
+    assert!(!exact.cell_jump);
+
+    let one_over = advance_drive_track(&mut state, SimFixed::from_num(1), dt);
+    assert_eq!(state.point_index, 1);
+    assert_eq!(state.residual, 1);
+    assert_eq!(one_over.facing, 0x84);
+}
+
+#[test]
+fn advance_drive_track_budget_14_consumes_one_point_not_two() {
+    let mut state = begin_drive_track(15, 0, 0, 0, 0xC0).unwrap();
+    let result = advance_drive_track(&mut state, SimFixed::from_num(14), SimFixed::from_num(1));
+
+    assert_eq!(state.point_index, 1);
+    assert_eq!(state.residual, 7);
+    assert_eq!(result.facing, 0x84);
+}
+
+#[test]
+fn raw_track_15_advances_without_cell_jump_or_chain() {
+    let mut state = begin_drive_track(15, 0, 0, 0, 0xC0).unwrap();
+    let mut finished = false;
+    for _ in 0..32 {
+        let result = advance_drive_track(&mut state, SimFixed::from_num(8), SimFixed::from_num(1));
+        assert!(!result.cell_jump, "Track 15 must not cross cells");
+        assert!(!result.chain_ready, "Track 15 must not chain");
+        if result.finished {
+            finished = true;
+            break;
+        }
+    }
+    assert!(finished, "Track 15 should finish within guard");
+}
+
+#[test]
+fn raw_track_15_facing_changes_only_when_point_is_consumed() {
+    let mut state = begin_drive_track(15, 0, 0, 0, 0xC0).unwrap();
+
+    let residual_only =
+        advance_drive_track(&mut state, SimFixed::from_num(6), SimFixed::from_num(1));
+    assert_eq!(state.point_index, 0);
+    assert_eq!(state.residual, 6);
+    assert_eq!(residual_only.facing, 0x80);
+    assert_ne!(residual_only.facing, 0x47);
+
+    let consumed = advance_drive_track(&mut state, SimFixed::from_num(2), SimFixed::from_num(1));
+    assert_eq!(state.point_index, 1);
+    assert_eq!(state.residual, 1);
+    assert_eq!(consumed.facing, 0x84);
+}
+
 // ---------------------------------------------------------------------------
 // interp_sub_step tests
 // ---------------------------------------------------------------------------
@@ -662,7 +744,7 @@ fn interp_sub_step_diagonal_delta() {
 fn interp_sub_step_all_residual_values_monotonic() {
     // For positive delta, sub_x must increase monotonically with residual.
     let mut last = SimFixed::from_num(100);
-    for r in 1..=6 {
+    for r in 1..=7 {
         let result = interp_sub_step(
             SimFixed::from_num(100),
             SimFixed::from_num(100),

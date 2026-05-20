@@ -29,13 +29,14 @@ use crate::util::fixed_math::{SIM_TICK_HZ, SimFixed};
 use super::miner_dock::ContactAdmission;
 use super::miner_system::{MinerSnapshot, effective_purifier_count};
 use crate::sim::production::{credits_entry_for_owner, foundation_dimensions};
+use crate::util::fixed_math::ra2_speed_to_leptons_per_second;
 
 /// Maximum diamond-ring radius for the post-unload exit-cell spiral search.
 /// gamemd's `FootClass::Find_Nearby_Passable_Cell` derives its cap from
 /// `Speed + SightRange` (capped at 32). A miner-class unit lands at ~14.
 /// 16 covers the same footprint with a small safety margin and still
 /// terminates quickly when the area around the refinery is fully blocked.
-const EXIT_SEARCH_MAX_RADIUS: i32 = 16;
+pub(super) const EXIT_SEARCH_MAX_RADIUS: i32 = 16;
 
 /// Target body facing on the refinery dock pad — East (0x40 in 8-bit,
 /// 0x4000 in 16-bit). The miner's back faces the refinery (which sits west
@@ -48,6 +49,9 @@ const DOCK_FACING_EAST: u8 = 0x40;
 /// Sim tick period in milliseconds, derived from the same constant used by
 /// the movement system's rotation step.
 const SIM_TICK_MS: u32 = 1000 / SIM_TICK_HZ;
+const REFINERY_EXIT_FORCE_TRACK: u8 = 0x47;
+const REFINERY_EXIT_FORCE_HEAD_OFFSET_X: i32 = 0;
+const REFINERY_EXIT_FORCE_HEAD_OFFSET_Y: i32 = 256;
 
 /// Helper: record a dock phase transition to the snapshot's debug buffer.
 fn record_dock_phase(snap: &mut MinerSnapshot, old: RefineryDockPhase, new: RefineryDockPhase) {
@@ -351,6 +355,109 @@ fn dock_abort_state(snap: &MinerSnapshot) -> MinerState {
     }
 }
 
+fn dock_abort_state_from_miner(miner: &super::Miner) -> MinerState {
+    if miner.forced_return && !miner.cargo.is_empty() {
+        MinerState::ForcedReturn
+    } else if miner.is_full() {
+        MinerState::ReturnToRefinery
+    } else {
+        MinerState::SearchOre
+    }
+}
+
+fn start_refinery_exit_force_track(
+    entity: &mut crate::sim::game_entity::GameEntity,
+    speed: SimFixed,
+) -> bool {
+    let Some(forced) = movement::drive_track::begin_forced_turn_track(
+        REFINERY_EXIT_FORCE_TRACK,
+        REFINERY_EXIT_FORCE_HEAD_OFFSET_X,
+        REFINERY_EXIT_FORCE_HEAD_OFFSET_Y,
+        speed,
+        false,
+    ) else {
+        return false;
+    };
+    entity.drive_track = None;
+    entity.forced_drive_track = Some(forced);
+    entity.facing_target = None;
+    true
+}
+
+fn entity_full_speed(sim: &Simulation, rules: &RuleSet, entity_id: u64) -> SimFixed {
+    sim.entities
+        .get(entity_id)
+        .and_then(|entity| rules.object_case_insensitive(sim.interner.resolve(entity.type_ref)))
+        .map(|obj| ra2_speed_to_leptons_per_second(obj.speed.max(1)))
+        .unwrap_or_else(|| ra2_speed_to_leptons_per_second(4))
+}
+
+/// Apply gamemd's interrupt `BuildingClass::UndockUnit` shape for miners that
+/// are actually linked to this refinery before the building is removed.
+pub(crate) fn interrupt_refinery_docked_miners(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    ref_sid: u64,
+) -> usize {
+    let candidates: Vec<u64> = sim
+        .entities
+        .keys_sorted()
+        .iter()
+        .copied()
+        .filter(|&entity_id| {
+            let Some(entity) = sim.entities.get(entity_id) else {
+                return false;
+            };
+            let Some(miner) = entity.miner.as_ref() else {
+                return false;
+            };
+            miner.reserved_refinery == Some(ref_sid)
+                && miner.state == MinerState::Dock
+                && (sim
+                    .production
+                    .dock_reservations
+                    .is_on_pad(ref_sid, entity_id)
+                    || sim
+                        .production
+                        .dock_reservations
+                        .has_contact(ref_sid, entity_id))
+        })
+        .collect();
+
+    let mut interrupted = 0;
+    for entity_id in candidates {
+        sim.production
+            .dock_reservations
+            .cancel_miner(ref_sid, entity_id);
+        let speed = entity_full_speed(sim, rules, entity_id);
+        let Some(entity) = sim.entities.get_mut(entity_id) else {
+            continue;
+        };
+        let Some(miner) = entity.miner.as_mut() else {
+            continue;
+        };
+        let next_state = dock_abort_state_from_miner(miner);
+        miner.reserved_refinery = None;
+        miner.dock_queued = false;
+        miner.dock_phase = RefineryDockPhase::Approach;
+        miner.deposit_cooldown_ticks = 0;
+        miner.exit_cell = None;
+        miner.unload_timer = 0;
+        if miner.is_full() {
+            miner.target_ore_cell = None;
+        }
+        miner.state = next_state;
+
+        entity.display_type_override = None;
+        entity.movement_target = None;
+        entity.drive_track = None;
+        if start_refinery_exit_force_track(entity, speed) {
+            interrupted += 1;
+        }
+    }
+    interrupted
+}
+
 fn abort_invalid_refinery(sim: &mut Simulation, snap: &mut MinerSnapshot, ref_sid: Option<u64>) {
     if let Some(ref_sid) = ref_sid {
         sim.production
@@ -362,6 +469,8 @@ fn abort_invalid_refinery(sim: &mut Simulation, snap: &mut MinerSnapshot, ref_si
         entity.display_type_override = None;
         entity.facing_target = None;
         entity.movement_target = None;
+        entity.drive_track = None;
+        entity.forced_drive_track = None;
     }
 
     snap.miner.reserved_refinery = None;
@@ -741,9 +850,20 @@ fn phase_departing(
                 sim.sound_events
                     .push(SimSoundEvent::RefineryExitSfx { rx, ry });
             }
+            if let Some(entity) = sim.entities.get_mut(snap.entity_id) {
+                start_refinery_exit_force_track(entity, snap.speed);
+            }
             exit
         }
     };
+
+    let forcing_track = sim
+        .entities
+        .get(snap.entity_id)
+        .is_some_and(|e| e.forced_drive_track.is_some());
+    if forcing_track {
+        return;
+    }
 
     let moving = sim
         .entities
@@ -762,15 +882,9 @@ fn phase_departing(
         // pathing out of the pad works even though the pad sits inside
         // the building footprint.
         //
-        // TODO(force_track_0x47_bib_step): gamemd inserts a sub-cell
-        // drive-track curve here BEFORE the A* drive — `Force_Track(0x47, ...)`
-        // = `TURN_TRACKS[71]` → `RAW_TRACKS[15]` (16-point ESE arc, no cell
-        // crossing). It's a half-cell visual "ease-off-the-pad" before the
-        // long exit drive. Track 15 already exists in `drive_track.rs`, but
-        // the geometry between Force_Track's destination-as-reference and
-        // our `head_offset_x = head_dx*256 + 128` formula needs Ghidra
-        // verification before wiring it in — otherwise the curve plays in
-        // the wrong direction. See `feedback_force_track_bib_step.md`.
+        // The forced `Force_Track(0x47)` prelude has already completed by
+        // this point; now attach the ordinary destination move toward the
+        // cached exit cell.
         if let Some(grid) = path_grid {
             let _ = movement::issue_move_command(
                 &mut sim.entities,

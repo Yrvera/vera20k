@@ -16,6 +16,7 @@ pub(crate) mod miner_system;
 #[path = "miner_tests.rs"]
 mod miner_tests;
 
+pub(crate) use self::miner_dock_sequence::interrupt_refinery_docked_miners;
 pub(crate) use self::miner_system::{extract_bale, search_local_ore};
 
 use std::collections::BTreeMap;

@@ -169,6 +169,21 @@ pub struct DriveTrackState {
     pub target_facing: u8,
 }
 
+/// One-shot DriveLocomotion `Force_Track` state.
+///
+/// Unlike normal drive tracks, this is not tied to a `MovementTarget` path
+/// step. Building undock/refinery-exit code can force a special TurnTrack
+/// index directly, then ordinary movement resumes after the curve clears.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ForcedDriveTrackState {
+    /// Index into TURN_TRACKS, e.g. `0x47` for refinery exit.
+    pub turn_track_index: u8,
+    /// Runtime RawTrack progress.
+    pub track: DriveTrackState,
+    /// Full movement speed used for the forced curve.
+    pub speed: SimFixed,
+}
+
 // ---------------------------------------------------------------------------
 // Extracted track data — TurnTrack[72]
 // ---------------------------------------------------------------------------
@@ -3612,6 +3627,27 @@ pub fn begin_drive_track(
     head_dy: i32,
     target_facing: u8,
 ) -> Option<DriveTrackState> {
+    begin_drive_track_with_head_offset(
+        raw_track_index,
+        transform_flags,
+        head_dx * 256 + 128,
+        head_dy * 256 + 128,
+        target_facing,
+    )
+}
+
+/// Begin following a drive track with an explicit head-to lepton reference.
+///
+/// This is the lower-level form used by DriveLocomotion `Force_Track`, whose
+/// target coordinate can be sub-cell aligned rather than a neighboring cell
+/// center.
+pub fn begin_drive_track_with_head_offset(
+    raw_track_index: u8,
+    transform_flags: u8,
+    head_offset_x: i32,
+    head_offset_y: i32,
+    target_facing: u8,
+) -> Option<DriveTrackState> {
     let meta = RAW_TRACKS.get(raw_track_index as usize)?;
     let points = raw_track_points(raw_track_index);
     if points.is_empty() {
@@ -3622,11 +3658,39 @@ pub fn begin_drive_track(
         point_index: meta.entry_index,
         residual: 0,
         transform_flags: transform_flags & 0x07, // only lower 3 bits
-        head_offset_x: head_dx * 256 + 128,
-        head_offset_y: head_dy * 256 + 128,
+        head_offset_x,
+        head_offset_y,
         cell_offset_x: 0,
         cell_offset_y: 0,
         target_facing,
+    })
+}
+
+/// Begin a one-shot forced TurnTrack by direct index.
+///
+/// Special TurnTracks such as refinery exit `0x47` are not selected from a
+/// facing-pair formula; gamemd writes the table index directly through
+/// DriveLocomotion::Force_Track.
+pub fn begin_forced_turn_track(
+    turn_track_index: u8,
+    head_offset_x: i32,
+    head_offset_y: i32,
+    speed: SimFixed,
+    use_short: bool,
+) -> Option<ForcedDriveTrackState> {
+    let turn = turn_track_at(turn_track_index as usize)?;
+    let raw_track_index = select_raw_track_index(turn, use_short);
+    let track = begin_drive_track_with_head_offset(
+        raw_track_index,
+        turn.flags,
+        head_offset_x,
+        head_offset_y,
+        turn.target_facing,
+    )?;
+    Some(ForcedDriveTrackState {
+        turn_track_index,
+        track,
+        speed,
     })
 }
 
@@ -3665,7 +3729,7 @@ pub fn advance_drive_track(
     let mut budget: i32 = (speed * dt).to_num::<i32>() + state.residual;
 
     // Consume track points at TRACK_STEP_COST each.
-    while budget >= TRACK_STEP_COST && state.point_index < last_index {
+    while budget > TRACK_STEP_COST && state.point_index < last_index {
         state.point_index += 1;
         budget -= TRACK_STEP_COST;
 
@@ -3762,7 +3826,7 @@ pub fn advance_drive_track(
 // ---------------------------------------------------------------------------
 
 /// Step cost denominator. The original engine consumes 7 budget units per
-/// track point; residual budget after the step loop is in `0..=6` and feeds
+/// track point; residual budget after the step loop is in `0..=7` and feeds
 /// fractional progress into the next-to-consume step.
 const TRACK_STEP_DENOM: i32 = 7;
 
@@ -3791,7 +3855,7 @@ pub(crate) struct InterpSubStepResult {
 /// offsets, so the absolute cell coords are not needed here. The mid-track
 /// normal path guarantees rx/ry are unchanged from tick entry.
 /// `next_delta_x/next_delta_y` are from `DriveTrackAdvance.next_step_delta_*`.
-/// `residual` is `state.residual` (range `0..=6` after a normal step-loop exit).
+/// `residual` is `state.residual` (range `0..=7` after a normal step-loop exit).
 pub(crate) fn interp_sub_step(
     saved_sub_x: SimFixed,
     saved_sub_y: SimFixed,

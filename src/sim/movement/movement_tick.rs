@@ -48,6 +48,73 @@ use super::{
 };
 use crate::sim::occupancy::{CellListInsertion, OccupancyGrid};
 
+fn tick_forced_drive_tracks(
+    entities: &mut EntityStore,
+    dt: SimFixed,
+    stats: &mut MovementTickStats,
+) -> BTreeSet<u64> {
+    let mut processed: BTreeSet<u64> = BTreeSet::new();
+    let keys = entities.keys_sorted();
+    for &entity_id in &keys {
+        let Some(entity) = entities.get_mut(entity_id) else {
+            continue;
+        };
+        if entity.forced_drive_track.is_none() || entity.low_bridge_tube_state.is_some() {
+            continue;
+        }
+        let layer = entity.movement_layer_or_ground();
+        if matches!(layer, MovementLayer::Air | MovementLayer::Underground) {
+            continue;
+        }
+
+        let (advance, residual) = {
+            let forced = entity
+                .forced_drive_track
+                .as_mut()
+                .expect("checked forced_drive_track");
+            let advance =
+                super::drive_track::advance_drive_track(&mut forced.track, forced.speed, dt);
+            let residual = forced.track.residual;
+            (advance, residual)
+        };
+
+        entity.facing = advance.facing;
+        entity.facing_target = None;
+        entity.position.sub_x = advance.sub_x;
+        entity.position.sub_y = advance.sub_y;
+        if !advance.finished
+            && let Some(interp) = super::drive_track::interp_sub_step(
+                advance.sub_x,
+                advance.sub_y,
+                advance.next_step_delta_x,
+                advance.next_step_delta_y,
+                residual,
+                advance.had_next_step,
+            )
+        {
+            entity.position.sub_x = interp.sub_x;
+            entity.position.sub_y = interp.sub_y;
+        }
+        entity.position.refresh_screen_coords();
+        processed.insert(entity_id);
+        stats.movers_total = stats.movers_total.saturating_add(1);
+        stats.moved_steps = stats.moved_steps.saturating_add(1);
+
+        if advance.finished || advance.cell_jump || advance.chain_ready {
+            if advance.cell_jump || advance.chain_ready {
+                log::warn!(
+                    "forced drive track entity={} ended on unsupported event: cell_jump={} chain_ready={}",
+                    entity_id,
+                    advance.cell_jump,
+                    advance.chain_ready
+                );
+            }
+            entity.forced_drive_track = None;
+        }
+    }
+    processed
+}
+
 // Naval diagnostic functions moved to movement_occupancy.rs
 
 /// 2D Euclidean distance in leptons from `pos` to the center of cell `goal`.
@@ -360,6 +427,7 @@ pub fn tick_movement_with_grids(
     if let Some(terrain) = resolved_terrain {
         tube_movement::tick_low_bridge_tube_movement(entities, occupancy, terrain);
     }
+    let forced_drive_processed = tick_forced_drive_tracks(entities, dt, &mut stats);
 
     // Collect movers in deterministic order: ground/bridge entities with a movement_target.
     let keys = entities.keys_sorted();
@@ -367,7 +435,10 @@ pub fn tick_movement_with_grids(
     let mut mover_owners: BTreeSet<crate::sim::intern::InternedId> = BTreeSet::new();
     for &id in &keys {
         if let Some(entity) = entities.get(id) {
-            if entity.movement_target.is_none() || entity.low_bridge_tube_state.is_some() {
+            if forced_drive_processed.contains(&id)
+                || entity.movement_target.is_none()
+                || entity.low_bridge_tube_state.is_some()
+            {
                 continue;
             }
             let layer = entity.movement_layer_or_ground();

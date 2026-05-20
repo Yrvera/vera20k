@@ -382,7 +382,7 @@ fn chrono_miner_full_gem_payout_is_1000() {
 }
 
 // ==========================================================================
-// Test 5: Chrono Miner teleports on return (position snaps to dock)
+// Test 5: Chrono Miner teleports on far return (position snaps to QueueingCell)
 // ==========================================================================
 #[test]
 fn chrono_miner_teleports_to_refinery_on_return() {
@@ -409,19 +409,62 @@ fn chrono_miner_teleports_to_refinery_on_return() {
         entity.teleport_state.is_some(),
         "Chrono Miner should have an active teleport after first return tick"
     );
+    let teleport = entity.teleport_state.as_ref().expect("teleport state");
+    assert_eq!(
+        (teleport.target_rx, teleport.target_ry),
+        (14, 11),
+        "Far return should stage at QueueingCell, not the refinery pad"
+    );
     assert_eq!(
         entity.miner.as_ref().and_then(|m| m.reserved_refinery),
         Some(2),
         "Return target should be selected before docking contact"
     );
 
-    tick_miners_n(&mut sim, &rules, 1);
+    crate::sim::movement::teleport_movement::tick_teleport_movement(
+        &mut sim.entities,
+        &mut OccupancyGrid::new(),
+        67,
+        sim.tick,
+    );
 
     let entity = sim.entities.get(miner_id).expect("entity");
     assert_eq!(
         (entity.position.rx, entity.position.ry),
-        (13, 11),
-        "Position should snap to the refinery pad cell after Relocate"
+        (14, 11),
+        "Position should snap to the QueueingCell staging cell after Relocate"
+    );
+}
+
+#[test]
+fn chrono_far_return_uses_passable_search_from_queueing_cell() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let config = MinerConfig::default();
+    let mut grid = PathGrid::new(64, 64);
+    grid.set_blocked(14, 11, true);
+
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 80, 80);
+    spawn_refinery(&mut sim, 2, 10, 10);
+
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.cargo.push(CargoBale {
+            resource_type: ResourceType::Ore,
+            value: 25,
+        });
+        miner.state = MinerState::ReturnToRefinery;
+    }
+
+    super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
+
+    let entity = sim.entities.get(miner_id).expect("entity");
+    let teleport = entity.teleport_state.as_ref().expect("teleport state");
+    assert_eq!(
+        (teleport.target_rx, teleport.target_ry),
+        (13, 10),
+        "blocked QueueingCell should use passable search, not the refinery pad"
     );
 }
 
@@ -486,6 +529,86 @@ fn return_close_enough_to_refinery_enters_dock() {
 
     let entity = sim.entities.get(miner_id).expect("miner entity");
     let miner = entity.miner.as_ref().expect("miner component");
+    assert_eq!(miner.state, MinerState::Dock);
+    assert_eq!(miner.dock_phase, RefineryDockPhase::Approach);
+}
+
+#[test]
+fn chrono_return_close_enough_does_not_enter_dock() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let config = MinerConfig::default();
+
+    let miner_id = spawn_miner(&mut sim, 100, MinerKind::Chrono, 88, 183);
+    spawn_refinery(&mut sim, 99, 85, 180);
+
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        for _ in 0..20 {
+            miner.cargo.push(CargoBale {
+                resource_type: ResourceType::Ore,
+                value: 25,
+            });
+        }
+        miner.state = MinerState::ReturnToRefinery;
+        miner.reserved_refinery = Some(99);
+    }
+
+    let grid = PathGrid::new(276, 276);
+    sim.sound_events.clear();
+    super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
+
+    let entity = sim.entities.get(miner_id).expect("miner entity");
+    let miner = entity.miner.as_ref().expect("miner component");
+    assert_eq!(
+        miner.state,
+        MinerState::ReturnToRefinery,
+        "Chrono Miner must keep the Mission_Enter/CAN_DOCK flow alive"
+    );
+    assert_ne!(miner.state, MinerState::Dock);
+    assert!(entity.teleport_state.is_none());
+    assert!(
+        entity.movement_target.is_some(),
+        "near Chrono Miner should reissue movement to the exact dock cell"
+    );
+    assert!(
+        !sim.production.dock_reservations.is_occupied(99),
+        "CloseEnough alone must not link the miner to the refinery"
+    );
+    assert!(
+        sim.sound_events.iter().all(|event| !matches!(
+            event,
+            crate::sim::world::SimSoundEvent::ChronoTeleport { .. }
+        )),
+        "near return must not emit chrono teleport sounds"
+    );
+}
+
+#[test]
+fn chrono_return_exact_dock_cell_enters_dock() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let config = MinerConfig::default();
+
+    let miner_id = spawn_miner(&mut sim, 100, MinerKind::Chrono, 88, 181);
+    spawn_refinery(&mut sim, 99, 85, 180);
+
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.cargo.push(CargoBale {
+            resource_type: ResourceType::Ore,
+            value: 25,
+        });
+        miner.state = MinerState::ReturnToRefinery;
+        miner.reserved_refinery = Some(99);
+    }
+
+    let grid = PathGrid::new(276, 276);
+    super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
+
+    let miner = get_miner(&sim, miner_id);
     assert_eq!(miner.state, MinerState::Dock);
     assert_eq!(miner.dock_phase, RefineryDockPhase::Approach);
 }
@@ -913,7 +1036,7 @@ fn forced_return_chrono_teleports() {
     let mut sim = Simulation::new();
     let rules = miner_rules();
 
-    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 40, 40);
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 80, 80);
     spawn_refinery(&mut sim, 2, 10, 10);
 
     {
@@ -930,10 +1053,47 @@ fn forced_return_chrono_teleports() {
         entity.teleport_state.is_some(),
         "Forced return should issue an inbound chrono teleport"
     );
+    let teleport = entity.teleport_state.as_ref().expect("teleport state");
+    assert_eq!((teleport.target_rx, teleport.target_ry), (14, 11));
     assert_eq!(
         entity.miner.as_ref().and_then(|m| m.reserved_refinery),
         Some(2),
         "Forced return should select a refinery target before docking contact"
+    );
+}
+
+#[test]
+fn chrono_return_more_than_two_cells_teleports() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let config = MinerConfig::from_general_rules(&rules.general);
+    let grid = PathGrid::new(64, 64);
+
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 40, 40);
+    spawn_refinery(&mut sim, 2, 10, 10);
+
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.cargo.push(CargoBale {
+            resource_type: ResourceType::Ore,
+            value: 25,
+        });
+        miner.state = MinerState::ReturnToRefinery;
+    }
+
+    super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
+
+    let entity = sim.entities.get(miner_id).expect("entity");
+    assert!(
+        entity.teleport_state.is_some(),
+        "Chrono Miner should teleport when farther than the short final dock handoff"
+    );
+    let teleport = entity.teleport_state.as_ref().expect("teleport state");
+    assert_eq!((teleport.target_rx, teleport.target_ry), (14, 11));
+    assert_eq!(
+        entity.miner.as_ref().and_then(|m| m.reserved_refinery),
+        Some(2)
     );
 }
 
@@ -993,7 +1153,7 @@ fn chrono_teleport_emits_in_and_out_sounds_at_correct_cells() {
     let mut sim = Simulation::new();
     let rules = miner_rules();
 
-    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 40, 40);
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 80, 80);
     spawn_refinery(&mut sim, 2, 10, 10);
     {
         let entity = sim.entities.get_mut(miner_id).expect("miner entity");
@@ -1018,6 +1178,12 @@ fn chrono_teleport_emits_in_and_out_sounds_at_correct_cells() {
         chrono_events.len(),
         2,
         "chrono return should emit one ChronoOut and one ChronoIn sound"
+    );
+    assert!(
+        chrono_events
+            .iter()
+            .any(|event| matches!(event, SimSoundEvent::ChronoTeleport { rx: 14, ry: 11, .. })),
+        "ChronoIn sound should be anchored at the QueueingCell staging cell"
     );
 }
 
@@ -1163,7 +1329,7 @@ fn chrono_teleport_sound_falls_back_to_rules_general() {
     let mut sim = Simulation::new();
     let rules = miner_rules_fallback_only();
 
-    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 40, 40);
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 80, 80);
     spawn_refinery(&mut sim, 2, 10, 10);
     {
         let entity = sim.entities.get_mut(miner_id).expect("miner entity");
@@ -2632,6 +2798,139 @@ fn departing_caches_exit_cell_so_arrival_detection_doesnt_drift() {
         m.reserved_refinery.is_none(),
         "dock reservation must be released"
     );
+}
+
+#[test]
+fn chrono_departing_starts_force_track_0x47_before_exit_move() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let config = MinerConfig::default();
+    let path_grid = PathGrid::new(64, 64);
+
+    spawn_refinery(&mut sim, 100, 10, 10);
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 13, 11);
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::Departing;
+        miner.reserved_refinery = Some(100);
+    }
+    sim.production.dock_reservations.try_reserve(100, miner_id);
+
+    crate::sim::miner::miner_system::tick_miners(&mut sim, &rules, &config, Some(&path_grid));
+
+    let entity = sim.entities.get(miner_id).expect("miner entity");
+    let miner = entity.miner.as_ref().expect("miner component");
+    assert_eq!(miner.exit_cell, Some((14, 11)));
+    assert!(entity.movement_target.is_none());
+    let forced = entity
+        .forced_drive_track
+        .as_ref()
+        .expect("Departing must seed forced Force_Track state");
+    assert_eq!(forced.turn_track_index, 0x47);
+    assert_eq!(forced.track.raw_track_index, 15);
+    assert_eq!(forced.track.target_facing, 0xC0);
+    assert_ne!(entity.facing, 0x47);
+    assert_ne!(entity.facing_target, Some(0x47));
+}
+
+#[test]
+fn chrono_departing_force_track_runs_before_normal_exit_move() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    spawn_refinery(&mut sim, 100, 10, 10);
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 13, 11);
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::Departing;
+        miner.reserved_refinery = Some(100);
+    }
+    sim.production.dock_reservations.try_reserve(100, miner_id);
+
+    tick_miners_n(&mut sim, &rules, 1);
+    let after_first = sim.entities.get(miner_id).expect("miner entity");
+    assert_eq!((after_first.position.rx, after_first.position.ry), (13, 11));
+    assert!(after_first.forced_drive_track.is_some());
+    assert!(after_first.movement_target.is_none());
+
+    tick_miners_n(&mut sim, &rules, 40);
+    let after_curve = sim.entities.get(miner_id).expect("miner entity");
+    assert!(
+        after_curve.forced_drive_track.is_none(),
+        "forced curve should complete before normal exit movement"
+    );
+    assert!(
+        after_curve.movement_target.is_some()
+            || after_curve
+                .miner
+                .as_ref()
+                .is_some_and(|m| matches!(m.state, MinerState::SearchOre | MinerState::WaitNoOre)),
+        "after forced curve the miner should either be taking the normal exit move or have finished it"
+    );
+
+    tick_miners_n(&mut sim, &rules, 220);
+    let entity = sim.entities.get(miner_id).expect("miner entity");
+    let miner = entity.miner.as_ref().expect("miner component");
+    assert_eq!((entity.position.rx, entity.position.ry), (14, 11));
+    assert!(matches!(
+        miner.state,
+        MinerState::SearchOre | MinerState::WaitNoOre
+    ));
+    assert!(miner.reserved_refinery.is_none());
+    assert!(miner.exit_cell.is_none());
+    assert!(entity.forced_drive_track.is_none());
+}
+
+#[test]
+fn sell_refinery_interrupts_docked_miner_with_force_track_0x47() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    spawn_refinery(&mut sim, 100, 10, 10);
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 13, 11);
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        entity.display_type_override = Some(sim.interner.intern("CMON"));
+        let miner = entity.miner.as_mut().expect("miner component");
+        for _ in 0..miner.capacity_bales {
+            miner.cargo.push(CargoBale {
+                resource_type: ResourceType::Ore,
+                value: 25,
+            });
+        }
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::Unloading;
+        miner.reserved_refinery = Some(100);
+        miner.dock_queued = true;
+    }
+    sim.production.dock_reservations.try_reserve(100, miner_id);
+    sim.production.dock_reservations.link_on_pad(100, miner_id);
+
+    assert!(crate::sim::production::sell_building(&mut sim, &rules, 100));
+
+    assert!(sim.entities.get(100).is_none(), "refinery sold");
+    assert!(
+        !sim.production.dock_reservations.is_occupied(100),
+        "sell interrupt must clear dock links"
+    );
+    let entity = sim.entities.get(miner_id).expect("miner entity");
+    let miner = entity.miner.as_ref().expect("miner component");
+    assert_eq!(miner.state, MinerState::ReturnToRefinery);
+    assert_eq!(miner.dock_phase, RefineryDockPhase::Approach);
+    assert_eq!(miner.reserved_refinery, None);
+    assert_eq!(miner.exit_cell, None);
+    assert_eq!(entity.display_type_override, None);
+    assert!(entity.movement_target.is_none());
+    let forced = entity
+        .forced_drive_track
+        .as_ref()
+        .expect("sell interrupt must seed forced undock track");
+    assert_eq!(forced.turn_track_index, 0x47);
+    assert_eq!(forced.track.raw_track_index, 15);
 }
 
 /// Regression: when a second miner is parked on the QueueingCell waiting
