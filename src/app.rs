@@ -319,6 +319,19 @@ pub(crate) struct AppState {
     pub(crate) show_save_load_panel: bool,
     /// Cached save-file listing for the save/load panel (avoids per-frame disk I/O).
     pub(crate) save_list_cache: crate::app_save_load_panel::SaveListCache,
+    /// Developer overlay panel visible. Toggle with backtick (`).
+    pub(crate) show_dev_overlay: bool,
+    /// Text-field buffer for the dev overlay's "Save As" name input.
+    /// Lives in AppState so the field persists across frames while open.
+    pub(crate) dev_overlay_save_name: String,
+    /// Tick number recorded by the most recent save this session.
+    pub(crate) last_save_tick: Option<u32>,
+    /// Wall-clock instant of the most recent save this session.
+    pub(crate) last_save_instant: Option<std::time::Instant>,
+    /// Path of the most recently loaded save (for "Reload last load").
+    pub(crate) last_loaded_save_path: Option<std::path::PathBuf>,
+    /// Rolling FPS / frame-time tracker for the dev overlay readout.
+    pub(crate) frame_timer: crate::app_dev_overlay::FrameTimer,
     // -- Reusable per-frame scratch buffers (avoid allocation each frame) --
     /// Overlay instance scratch vec — cleared and refilled each frame.
     pub(crate) cached_overlay_instances: Vec<crate::render::batch::SpriteInstance>,
@@ -1114,6 +1127,12 @@ impl App {
             debug_unit_inspector: false,
             show_save_load_panel: false,
             save_list_cache: crate::app_save_load_panel::SaveListCache::new(),
+            show_dev_overlay: false,
+            dev_overlay_save_name: String::new(),
+            last_save_tick: None,
+            last_save_instant: None,
+            last_loaded_save_path: None,
+            frame_timer: crate::app_dev_overlay::FrameTimer::new(),
             displayed_credits: HashMap::new(),
             cached_overlay_instances: Vec::new(),
             cached_unit_instances: Vec::new(),
