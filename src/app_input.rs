@@ -322,6 +322,23 @@ pub(crate) fn toggle_unit_inspector(state: &mut AppState) {
     }
 }
 
+/// Toggle the PathGrid / terrain-cost debug overlay.
+///
+/// Beyond flipping `state.debug_show_pathgrid`, this resets the per-overlay
+/// SpeedType override to None when the overlay turns off, so reopening
+/// the overlay defaults back to "auto from selected unit". Called by both
+/// the F9/P hotkey and the dev overlay checkbox.
+pub(crate) fn toggle_pathgrid_overlay(state: &mut AppState) {
+    state.debug_show_pathgrid = !state.debug_show_pathgrid;
+    if !state.debug_show_pathgrid {
+        state.debug_terrain_cost_speed_type = None;
+    }
+    log::info!(
+        "Debug terrain cost overlay: {}",
+        if state.debug_show_pathgrid { "ON" } else { "OFF" }
+    );
+}
+
 /// Handle one-shot gameplay hotkeys (called on key press, not held).
 pub(crate) fn handle_hotkey_pressed(state: &mut AppState, code: winit::keyboard::KeyCode) {
     if let Some(group_idx) = control_group_index(code) {
@@ -423,18 +440,7 @@ pub(crate) fn handle_hotkey_pressed(state: &mut AppState, code: winit::keyboard:
             );
         }
         KeyCode::F9 | KeyCode::KeyP => {
-            state.debug_show_pathgrid = !state.debug_show_pathgrid;
-            if !state.debug_show_pathgrid {
-                state.debug_terrain_cost_speed_type = None;
-            }
-            log::info!(
-                "Debug terrain cost overlay: {}",
-                if state.debug_show_pathgrid {
-                    "ON"
-                } else {
-                    "OFF"
-                }
-            );
+            toggle_pathgrid_overlay(state);
         }
         KeyCode::BracketRight => {
             if state.debug_show_pathgrid {
