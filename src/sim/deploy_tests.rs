@@ -10,7 +10,7 @@ use crate::rules::ruleset::RuleSet;
 use crate::sim::combat::AttackTarget;
 use crate::sim::command::{Command, CommandEnvelope};
 use crate::sim::components::Health;
-use crate::sim::deploy::{DEPLOY_DEFAULT_TICKS, DeployPhase};
+use crate::sim::deploy::{DEPLOY_DEFAULT_TICKS, DeployPhase, frames_to_ticks};
 use crate::sim::game_entity::GameEntity;
 use crate::sim::world::{SimSoundEvent, Simulation};
 
@@ -774,6 +774,40 @@ fn ggi_deploy_uses_art_frame_count() {
 }
 
 #[test]
+fn ggi_deploy_decrements_on_command_tick() {
+    // Full advance_tick path: ToggleInfantryDeploy writes the art-derived
+    // 15-frame countdown, then tick_deploy_state runs later in the same tick.
+    let rules = make_rules_with_ggi_art();
+    let mut sim = Simulation::new();
+    let ggi = spawn_infantry(&mut sim, "GGI", "Americans", 10, 10);
+    let deploy_ticks = frames_to_ticks(15);
+
+    dispatch(
+        &mut sim,
+        "Americans",
+        Command::ToggleInfantryDeploy { entity_id: ggi },
+        &rules,
+    );
+
+    assert_eq!(
+        sim.entities.get(ggi).unwrap().deploy_state,
+        Some(DeployPhase::Deploying {
+            ticks_remaining: deploy_ticks - 1
+        })
+    );
+    tick_n(&mut sim, &rules, (deploy_ticks - 2) as u32);
+    assert_eq!(
+        sim.entities.get(ggi).unwrap().deploy_state,
+        Some(DeployPhase::Deploying { ticks_remaining: 1 })
+    );
+    tick_n(&mut sim, &rules, 1);
+    assert_eq!(
+        sim.entities.get(ggi).unwrap().deploy_state,
+        Some(DeployPhase::Deployed)
+    );
+}
+
+#[test]
 fn ggi_undeploy_uses_art_frame_count() {
     // GuardianGISequence Undeploy=180,2,2 -> 2 frames -> 7 ticks.
     let rules = make_rules_with_ggi_art();
@@ -799,6 +833,38 @@ fn ggi_undeploy_uses_art_frame_count() {
         }
         other => panic!("expected Undeploying, got {:?}", other),
     }
+}
+
+#[test]
+fn ggi_undeploy_decrements_on_command_tick() {
+    // GuardianGISequence Undeploy=180,2,2 -> 2 frames. The current sim-local
+    // countdown decrements once in the same tick that accepts the command.
+    let rules = make_rules_with_ggi_art();
+    let mut sim = Simulation::new();
+    let ggi = spawn_infantry(&mut sim, "GGI", "Americans", 10, 10);
+    sim.entities.get_mut(ggi).unwrap().deploy_state = Some(DeployPhase::Deployed);
+    let undeploy_ticks = frames_to_ticks(2);
+
+    dispatch(
+        &mut sim,
+        "Americans",
+        Command::ToggleInfantryDeploy { entity_id: ggi },
+        &rules,
+    );
+
+    assert_eq!(
+        sim.entities.get(ggi).unwrap().deploy_state,
+        Some(DeployPhase::Undeploying {
+            ticks_remaining: undeploy_ticks - 1
+        })
+    );
+    tick_n(&mut sim, &rules, (undeploy_ticks - 2) as u32);
+    assert_eq!(
+        sim.entities.get(ggi).unwrap().deploy_state,
+        Some(DeployPhase::Undeploying { ticks_remaining: 1 })
+    );
+    tick_n(&mut sim, &rules, 1);
+    assert_eq!(sim.entities.get(ggi).unwrap().deploy_state, None);
 }
 
 #[test]
