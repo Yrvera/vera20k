@@ -131,6 +131,20 @@ pub struct ResolvedTerrainCell {
     /// removal without the conflated `ground_walk_blocked` field.
     pub base_ground_walk_blocked: bool,
     pub base_build_blocked: bool,
+    /// Underlying `land_type` before any overlay override (tiberium / road).
+    /// Used by `recalc_overlay_passability` to restore the pre-overlay value
+    /// when an ore overlay is fully harvested (or any other overlay removed).
+    /// Same pattern as `base_ground_walk_blocked`.
+    pub base_land_type: u8,
+    /// Underlying `yr_cell_land_type` (binary CellClass+0xEC) before overlay
+    /// overrides.
+    pub base_yr_cell_land_type: u8,
+    /// Underlying terrain classification before overlay overrides.
+    pub base_terrain_class: TerrainClass,
+    /// Underlying terrain speed-cost profile before overlay overrides. Restored
+    /// on overlay removal so harvested ore cells revert to the original
+    /// terrain's per-locomotor speed table.
+    pub base_speed_costs: SpeedCostProfile,
     pub build_blocked: bool,
     pub has_bridge_deck: bool,
     pub bridge_walkable: bool,
@@ -194,6 +208,12 @@ pub struct ResolvedTerrainGrid {
     height: u16,
     pub cells: Vec<ResolvedTerrainCell>,
     tube_facts: Vec<TubeFact>,
+    /// `[Tiberium]` `SpeedCostProfile` cached at map load, looked up via
+    /// `TerrainRules::semantics_by_name("Tiberium")`. Used by
+    /// `recalc_overlay_passability` to apply Tiberium-mode speed costs when
+    /// ore appears on a cell at runtime (spread / TIBTRE spawn / growth).
+    /// None when `terrain_rules` was unavailable at build time (test paths).
+    tiberium_speed_costs: Option<SpeedCostProfile>,
 }
 
 impl ResolvedTerrainGrid {
@@ -212,7 +232,24 @@ impl ResolvedTerrainGrid {
             height,
             cells,
             tube_facts,
+            tiberium_speed_costs: None,
         }
+    }
+
+    /// Cached `[Tiberium]` `SpeedCostProfile`. Populated at map load when
+    /// `terrain_rules` is available. Used by `recalc_overlay_passability` to
+    /// apply Tiberium-mode speed costs on runtime overlay placement.
+    pub fn tiberium_speed_costs(&self) -> Option<&SpeedCostProfile> {
+        self.tiberium_speed_costs.as_ref()
+    }
+
+    /// Test-only setter for the cached `[Tiberium]` speed profile. Production
+    /// paths populate this via `build()` from rules; tests that drive
+    /// `recalc_overlay_passability` directly use this to install a non-default
+    /// profile so the round-trip on overlay add/remove can be verified end-to-end.
+    #[cfg(test)]
+    pub fn set_tiberium_speed_costs_for_test(&mut self, costs: SpeedCostProfile) {
+        self.tiberium_speed_costs = Some(costs);
     }
 
     pub fn width(&self) -> u16 {
@@ -298,8 +335,15 @@ impl ResolvedTerrainGrid {
                 height: 0,
                 cells: Vec::new(),
                 tube_facts: Vec::new(),
+                tiberium_speed_costs: None,
             };
         }
+        // Cache the `[Tiberium]` SpeedCostProfile once per map load — used at
+        // runtime by `recalc_overlay_passability` when ore appears on a cell
+        // after spread / TIBTRE spawn / growth.
+        let tiberium_speed_costs = terrain_rules
+            .and_then(|tr| tr.semantics_by_name("Tiberium"))
+            .map(|sem| sem.speed_costs);
 
         let mut final_cells: Vec<MapCell> = map.cells.clone();
         if lat_enabled {
@@ -386,6 +430,15 @@ impl ResolvedTerrainGrid {
                 // Matches original engine: RecalcLandType sets cell+0xEC when tiberium present.
                 // Also update speed_costs from [Tiberium] INI section so the terrain
                 // cost grid uses correct speed modifiers (Foot=90%, Track=70%, etc.).
+                //
+                // Capture the underlying (pre-override) values FIRST so
+                // `recalc_overlay_passability` can restore them when the overlay is
+                // later removed at runtime (ore harvested to zero, wall destroyed,
+                // crate picked up). Same pattern as `base_ground_walk_blocked`.
+                let base_land_type = metadata.land_type;
+                let base_yr_cell_land_type = metadata.yr_cell_land_type;
+                let base_terrain_class = metadata.terrain_class;
+                let base_speed_costs = metadata.speed_costs;
                 if overlay_effects.has_tiberium {
                     metadata.land_type =
                         crate::sim::pathfinding::passability::LandType::Tiberium.as_index();
@@ -488,6 +541,10 @@ impl ResolvedTerrainGrid {
                     zone_type,
                     base_ground_walk_blocked,
                     base_build_blocked,
+                    base_land_type,
+                    base_yr_cell_land_type,
+                    base_terrain_class,
+                    base_speed_costs,
                     build_blocked,
                     has_bridge_deck: overlay_effects.has_bridge_deck,
                     bridge_walkable,
@@ -805,6 +862,7 @@ impl ResolvedTerrainGrid {
             height,
             cells,
             tube_facts,
+            tiberium_speed_costs,
         }
     }
 
@@ -1430,6 +1488,10 @@ mod tests {
             zone_type: 0,
             base_ground_walk_blocked: false,
             base_build_blocked: false,
+            base_land_type: 0,
+            base_yr_cell_land_type: 0,
+            base_terrain_class: Default::default(),
+            base_speed_costs: Default::default(),
             build_blocked: false,
             has_bridge_deck: false,
             bridge_walkable: false,
@@ -1810,6 +1872,10 @@ mod tests {
                 zone_type: 0,
                 base_ground_walk_blocked: false,
                 base_build_blocked: true,
+                base_land_type: 0,
+                base_yr_cell_land_type: 0,
+                base_terrain_class: Default::default(),
+                base_speed_costs: Default::default(),
                 build_blocked: true,
                 has_bridge_deck: false,
                 bridge_walkable: false,
