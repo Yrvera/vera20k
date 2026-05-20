@@ -7,6 +7,7 @@
 //!   radar (168x110) -> side1 (168x69) -> tabs (168x16) -> side2 tiled (168x50)
 //!   -> side3 (168x26). Cameos in 2-column grid within the side2 region.
 
+pub mod gadget_flash;
 mod layout_spec;
 pub mod power_bar_anim;
 mod sidebar_view;
