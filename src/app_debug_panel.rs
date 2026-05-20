@@ -12,7 +12,7 @@ use crate::map::entities::EntityCategory;
 use crate::sim::debug_event_log::DebugEventKind;
 
 /// Light-themed frame for all debug panels — .NET/Windows-style appearance.
-fn debug_panel_frame() -> egui::Frame {
+pub(crate) fn debug_panel_frame() -> egui::Frame {
     egui::Frame {
         fill: egui::Color32::from_rgb(245, 245, 245),
         stroke: egui::Stroke::new(1.0, egui::Color32::from_rgb(180, 180, 180)),
