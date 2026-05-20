@@ -92,6 +92,36 @@ impl GadgetFlash {
     }
 }
 
+/// Pick a SHP frame index for a 5-frame gadget given its three state bits.
+///
+/// Mirrors the SBGadgetClass::Draw conditional at gamemd's `0x0069DEB0`.
+/// Output indices map to the 5-frame SHP convention used by `tab0N.shp`,
+/// `repair.shp`, and `sell.shp`:
+///   0 = idle, 1 = mode-active, 2 = disabled, 3 = pressed-idle, 4 = pressed-active.
+///
+/// Inputs:
+/// - `disabled`: the gadget's disabled gate.
+/// - `mode_active`: the persistent "this mode is on" / "this tab is selected" bit.
+///   For tabs this is the active-tab bit; for Repair/Sell this is the
+///   mode-on toggle.
+/// - `state`: the transient "drawn as pressed" bit (set by mouse-down OR by
+///   the flash AI's tick toggle).
+///
+/// The function assumes the gadget is pressable (the not-pressable / hover-static
+/// branch from the binary is unused for any of our 5-frame gadgets).
+pub fn frame_select(disabled: bool, mode_active: bool, state: u8) -> u8 {
+    if disabled {
+        return 2;
+    }
+    if state != 0 {
+        if mode_active { 4 } else { 3 }
+    } else if mode_active {
+        1
+    } else {
+        0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,5 +218,27 @@ mod tests {
         let mut g = GadgetFlash::default();
         g.disabled = true;
         assert!(!g.tick());
+    }
+
+    #[test]
+    fn frame_select_table() {
+        // (disabled, mode_active, state) → expected frame
+        let cases: &[(bool, bool, u8, u8)] = &[
+            (false, false, 0, 0),  // idle
+            (false, true,  0, 1),  // mode-active
+            (true,  false, 0, 2),  // disabled (mode and state ignored)
+            (true,  true,  0, 2),
+            (true,  false, 1, 2),
+            (true,  true,  1, 2),
+            (false, false, 1, 3),  // pressed-idle
+            (false, true,  1, 4),  // pressed-active
+        ];
+        for &(disabled, mode_active, state, expected) in cases {
+            let got = frame_select(disabled, mode_active, state);
+            assert_eq!(
+                got, expected,
+                "frame_select(disabled={disabled}, mode_active={mode_active}, state={state}) expected {expected}, got {got}"
+            );
+        }
     }
 }
