@@ -143,6 +143,12 @@ pub enum SidebarAction {
     CycleOwner,
     PlaceStarterBase,
     SpawnTestUnits,
+    /// Toggle Repair-mode (cursor stays armed for clicking buildings to repair).
+    /// Mutually exclusive with `ToggleSellMode` and any active `TargetingMode`.
+    ToggleRepairMode,
+    /// Toggle Sell-mode (cursor stays armed for clicking buildings to sell).
+    /// Mutually exclusive with `ToggleRepairMode` and any active `TargetingMode`.
+    ToggleSellMode,
     Deploy,
 }
 
@@ -180,7 +186,23 @@ impl SidebarItem {
 pub struct SidebarTabButton {
     pub tab: SidebarTab,
     pub rect: Rect,
+    /// True when this is the currently-selected tab. Used by hit-test
+    /// disambiguation; the rendered visual is driven by `frame_index`.
     pub active: bool,
+    /// SHP frame index (0..=4) for the per-theme tab SHP atlas. Picked by
+    /// `SidebarGadgetState::tab_frame` each frame.
+    pub frame_index: u8,
+}
+
+/// View entry for an SHP-driven toggle button (Repair, Sell).
+/// Rect for hit-testing, action to dispatch on click, frame index for the
+/// 5-frame SHP state table.
+#[derive(Debug, Clone)]
+pub struct SidebarToggleButton {
+    pub rect: Rect,
+    pub action: SidebarAction,
+    /// SHP frame index (0..=4) for the button's per-theme SHP atlas.
+    pub frame_index: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -218,6 +240,14 @@ pub struct SidebarView {
     pub max_scroll_rows: usize,
     pub tabs: Vec<SidebarTabButton>,
     pub items: Vec<SidebarItem>,
+    /// Repair button (toggle mode). Rendered from the per-theme atlas's
+    /// `repair_frames[frame_index]`. Hit-test routes to
+    /// `SidebarAction::ToggleRepairMode`.
+    pub repair_button: SidebarToggleButton,
+    /// Sell button (toggle mode). Rendered from the per-theme atlas's
+    /// `sell_frames[frame_index]`. Hit-test routes to
+    /// `SidebarAction::ToggleSellMode`.
+    pub sell_button: SidebarToggleButton,
     pub cancel_button: SidebarControlButton,
     pub cycle_owner_button: SidebarControlButton,
     pub starter_base_button: SidebarControlButton,

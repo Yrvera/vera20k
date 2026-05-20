@@ -116,6 +116,9 @@ pub(crate) fn current_sidebar_view(state: &mut AppState) -> Option<SidebarView> 
         state.sidebar_scroll_rows,
         interner,
         &sw_views,
+        &state.sidebar_gadget_state,
+        None,
+        None,
     );
     if state.sidebar_scroll_rows > view.max_scroll_rows {
         state.sidebar_scroll_rows = view.max_scroll_rows;
@@ -136,6 +139,9 @@ pub(crate) fn current_sidebar_view(state: &mut AppState) -> Option<SidebarView> 
             state.sidebar_scroll_rows,
             interner,
             &sw_views,
+            &state.sidebar_gadget_state,
+            None,
+            None,
         );
     }
     if let Some(atlas) = state.sidebar_cameo_atlas.as_ref() {

@@ -289,6 +289,24 @@ fn apply_sidebar_action(state: &mut AppState, action: SidebarAction) {
         SidebarAction::SpawnTestUnits => {
             spawn_test_units_for_local_owner(state);
         }
+        SidebarAction::ToggleRepairMode => {
+            let g = &mut state.sidebar_gadget_state;
+            g.repair_mode_on = !g.repair_mode_on;
+            if g.repair_mode_on {
+                g.sell_mode_on = false;
+                state.targeting_mode = None;
+                state.building_placement_preview = None;
+            }
+        }
+        SidebarAction::ToggleSellMode => {
+            let g = &mut state.sidebar_gadget_state;
+            g.sell_mode_on = !g.sell_mode_on;
+            if g.sell_mode_on {
+                g.repair_mode_on = false;
+                state.targeting_mode = None;
+                state.building_placement_preview = None;
+            }
+        }
         SidebarAction::Deploy => {
             queue_deploy_undeploy_for_selected(state);
         }

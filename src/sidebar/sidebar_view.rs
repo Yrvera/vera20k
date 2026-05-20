@@ -9,9 +9,10 @@ use crate::sim::production::{
 };
 use crate::sim::superweapon::SuperWeaponView;
 
+use super::gadget_flash::SidebarGadgetState;
 use super::{
     CAMEO_COLUMNS, Rect, SidebarAction, SidebarChromeLayoutSpec, SidebarControlButton, SidebarItem,
-    SidebarTab, SidebarTabButton, SidebarView, compute_layout_with_spec,
+    SidebarTab, SidebarTabButton, SidebarToggleButton, SidebarView, compute_layout_with_spec,
 };
 
 pub(crate) fn build_sidebar_view(
@@ -29,6 +30,9 @@ pub(crate) fn build_sidebar_view(
     producer_focus: &[ProducerFocusView],
     scroll_rows: usize,
     interner: Option<&crate::sim::intern::StringInterner>,
+    gadget_state: &SidebarGadgetState,
+    repair_button_size: Option<[f32; 2]>,
+    sell_button_size: Option<[f32; 2]>,
 ) -> SidebarView {
     build_sidebar_view_with_spec(
         SidebarChromeLayoutSpec::stock(),
@@ -47,6 +51,9 @@ pub(crate) fn build_sidebar_view(
         scroll_rows,
         interner,
         &[],
+        gadget_state,
+        repair_button_size,
+        sell_button_size,
     )
 }
 
@@ -67,6 +74,9 @@ pub(crate) fn build_sidebar_view_with_spec(
     scroll_rows: usize,
     interner: Option<&crate::sim::intern::StringInterner>,
     sw_views: &[SuperWeaponView],
+    gadget_state: &SidebarGadgetState,
+    repair_button_size: Option<[f32; 2]>,
+    sell_button_size: Option<[f32; 2]>,
 ) -> SidebarView {
     // Collect items first to know how many rows we need.
     let selected_category = active_tab.category();
@@ -126,9 +136,43 @@ pub(crate) fn build_sidebar_view_with_spec(
                     h: tab_h,
                 },
                 active: tab == active_tab,
+                frame_index: gadget_state.tab_frame(idx, tab == active_tab),
             }
         })
         .collect();
+
+    // Repair / Sell SHP-driven toggle buttons. Position comes from
+    // SidebarChromeLayoutSpec (already-scaled). Dimensions come from the
+    // chrome atlas via repair_button_size / sell_button_size (already × ui_scale
+    // at the call site) — matches the tab_button_size convention so hit-test
+    // and render rects agree at every UI scale. When the atlas is unavailable
+    // (callers passing None), rects collapse to zero size so hit-test never
+    // matches. Frame index comes from SidebarGadgetState.
+    let [repair_w, repair_h] = repair_button_size.unwrap_or([0.0, 0.0]);
+    let [sell_w, sell_h] = sell_button_size.unwrap_or([0.0, 0.0]);
+    let side1_y_local = layout.side1_y;
+    let repair_rect = Rect {
+        x: layout.sidebar_x + layout_spec.repair_x,
+        y: side1_y_local + layout_spec.repair_y,
+        w: repair_w,
+        h: repair_h,
+    };
+    let sell_rect = Rect {
+        x: layout.sidebar_x + layout_spec.sell_x,
+        y: side1_y_local + layout_spec.sell_y,
+        w: sell_w,
+        h: sell_h,
+    };
+    let repair_button = SidebarToggleButton {
+        rect: repair_rect,
+        action: SidebarAction::ToggleRepairMode,
+        frame_index: gadget_state.repair_frame(),
+    };
+    let sell_button = SidebarToggleButton {
+        rect: sell_rect,
+        action: SidebarAction::ToggleSellMode,
+        frame_index: gadget_state.sell_frame(),
+    };
 
     // Cameo grid positioning.
     let grid_top = layout.cameo_grid_top + layout_spec.cameo_inset_y;
@@ -206,6 +250,8 @@ pub(crate) fn build_sidebar_view_with_spec(
         max_scroll_rows,
         tabs,
         items,
+        repair_button,
+        sell_button,
         pause_button: active_queue_exists.then_some(SidebarControlButton {
             rect: Rect {
                 x: btn_x1,
@@ -443,6 +489,7 @@ fn collect_build_entries(
 
 #[cfg(test)]
 mod tests {
+    use super::super::gadget_flash::SidebarGadgetState;
     use super::super::{SidebarAction, SidebarTab};
     use super::build_sidebar_view;
 
@@ -471,6 +518,9 @@ mod tests {
             &[],
             0,
             None,
+            &SidebarGadgetState::new(),
+            None,
+            None,
         );
 
         for tab in &view.tabs {
@@ -494,6 +544,9 @@ mod tests {
             None,
             &[],
             0,
+            None,
+            &SidebarGadgetState::new(),
+            None,
             None,
         );
 
@@ -531,6 +584,9 @@ mod tests {
             None,
             &[],
             0,
+            None,
+            &SidebarGadgetState::new(),
+            None,
             None,
         );
 
