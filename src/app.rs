@@ -1130,7 +1130,7 @@ impl App {
             debug_unit_inspector: false,
             show_save_load_panel: false,
             save_list_cache: crate::app_save_load_panel::SaveListCache::new(),
-            show_dev_overlay: false,
+            show_dev_overlay: true,
             dev_overlay_save_name: String::new(),
             last_save_tick: None,
             last_save_instant: None,
