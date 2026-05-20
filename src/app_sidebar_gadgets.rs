@@ -99,6 +99,118 @@ fn has_charged_sw_for_owner(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sidebar::gadget_flash::SidebarGadgetState;
+
+    /// Helper: simulate one orchestrator pass on a bare SidebarGadgetState
+    /// without going through the AppState / Simulation indirection. Mirrors
+    /// the trigger-driven body of update_sidebar_gadget_state.
+    fn orchestrate(gadgets: &mut SidebarGadgetState, sim_tick: u64, sw_ready: bool) {
+        let frame = sim_tick;
+        let extra_delay: u32 =
+            (FLASH_PERIOD_TICKS - (frame as u32 % FLASH_PERIOD_TICKS)) % FLASH_PERIOD_TICKS;
+        let next_boundary = (extra_delay as u64 + frame) / FLASH_PERIOD_TICKS as u64;
+        let initial_state: u8 = if next_boundary & 1 == 0 { 1 } else { 0 };
+
+        gadgets.tab_flashes[SidebarTab::Building.tab_index()].stop();
+        if sw_ready {
+            gadgets.tab_flashes[SidebarTab::Defense.tab_index()].start(
+                FLASH_PERIOD_TICKS,
+                extra_delay,
+                initial_state,
+            );
+        } else {
+            gadgets.tab_flashes[SidebarTab::Defense.tab_index()].stop();
+        }
+        gadgets.tab_flashes[SidebarTab::Infantry.tab_index()].stop();
+        gadgets.tab_flashes[SidebarTab::Vehicle.tab_index()].stop();
+
+        let last = gadgets.last_sim_tick;
+        let delta = frame.saturating_sub(last);
+        for _ in 0..delta {
+            for f in &mut gadgets.tab_flashes {
+                f.tick();
+            }
+        }
+        gadgets.last_sim_tick = frame;
+    }
+
+    #[test]
+    fn sw_ready_starts_defense_tab_flash() {
+        let mut g = SidebarGadgetState::new();
+        orchestrate(&mut g, 0, true);
+        let def = &g.tab_flashes[SidebarTab::Defense.tab_index()];
+        assert!(def.is_active(), "defense tab should flash on SW ready");
+        assert_eq!(def.period, 10);
+        // At frame 0: extra_delay=0, so first countdown is 10.
+        assert_eq!(def.countdown, 10);
+    }
+
+    #[test]
+    fn other_three_tabs_never_flash() {
+        let mut g = SidebarGadgetState::new();
+        orchestrate(&mut g, 0, true);
+        assert!(!g.tab_flashes[SidebarTab::Building.tab_index()].is_active());
+        assert!(!g.tab_flashes[SidebarTab::Infantry.tab_index()].is_active());
+        assert!(
+            !g.tab_flashes[SidebarTab::Vehicle.tab_index()].is_active(),
+            "Vehicle deferred until aircraft-waiting sim state exists"
+        );
+    }
+
+    #[test]
+    fn auto_stop_on_condition_clear() {
+        let mut g = SidebarGadgetState::new();
+        orchestrate(&mut g, 0, true);
+        assert!(g.tab_flashes[SidebarTab::Defense.tab_index()].is_active());
+        // Advance 15 ticks with SW still ready → flash keeps ticking.
+        orchestrate(&mut g, 15, true);
+        assert!(g.tab_flashes[SidebarTab::Defense.tab_index()].is_active());
+        // Player fires the SW → predicate false → Stop_Flash.
+        orchestrate(&mut g, 16, false);
+        assert!(!g.tab_flashes[SidebarTab::Defense.tab_index()].is_active());
+        assert_eq!(g.tab_flashes[SidebarTab::Defense.tab_index()].period, 0);
+    }
+
+    #[test]
+    fn repeat_start_during_active_does_not_resync_phase() {
+        // Verifies the Start_Flash guard — multiple poll passes during an
+        // active flash must not restart its countdown.
+        let mut g = SidebarGadgetState::new();
+        orchestrate(&mut g, 0, true);
+        let def_after_first = g.tab_flashes[SidebarTab::Defense.tab_index()];
+        // Tick 3 forward. Each call re-fires Start (predicate still true), which
+        // must be a no-op because period != 0.
+        orchestrate(&mut g, 1, true);
+        orchestrate(&mut g, 2, true);
+        orchestrate(&mut g, 3, true);
+        let def_after_three = g.tab_flashes[SidebarTab::Defense.tab_index()];
+        // Countdown should have decremented by 3, not reset.
+        assert_eq!(def_after_three.countdown, def_after_first.countdown - 3);
+        assert_eq!(def_after_three.period, def_after_first.period);
+        assert_eq!(def_after_three.state, def_after_first.state);
+    }
+
+    #[test]
+    fn sim_tick_delta_loop_iterates_correctly_under_catchup() {
+        // Single orchestrator pass that jumps from tick 0 to tick 30 — Flash_AI
+        // should iterate 30 times total and end at the correct phase.
+        let mut g = SidebarGadgetState::new();
+        // Start at frame 0: extra_delay=0, period=10, initial_state=1.
+        // tick() called 0 times during start.
+        orchestrate(&mut g, 0, true);
+        let def = g.tab_flashes[SidebarTab::Defense.tab_index()];
+        assert_eq!(def.state, 1);
+        // Jump 30 ticks. Sequence:
+        //   countdown: 10→1 (10 ticks), toggle, state=0, reset to 10.
+        //   countdown: 10→1 (10 ticks), toggle, state=1, reset to 10.
+        //   countdown: 10→1 (10 ticks), toggle, state=0, reset to 10.
+        // → 30 ticks = 3 toggles → state = 0.
+        orchestrate(&mut g, 30, true);
+        let def = g.tab_flashes[SidebarTab::Defense.tab_index()];
+        assert_eq!(def.state, 0, "after 3 toggles, state is back to 0");
+        assert_eq!(def.countdown, 10, "countdown reset to period");
+        assert!(def.is_active());
+    }
 
     /// Verify the phase math literal-for-literal against gamemd.
     /// From SIDEBAR_TAB_FLASH_SCHEDULER §4.1: at frame F, extra_delay =
