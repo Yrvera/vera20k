@@ -339,6 +339,21 @@ pub(crate) fn toggle_pathgrid_overlay(state: &mut AppState) {
     );
 }
 
+/// Toggle debug pause (J hotkey / dev overlay).
+///
+/// Beyond flipping `state.paused`, this resets `last_update_time` and
+/// `sim_accumulator_ms` on unpause so the sim does not catch up by
+/// hundreds of ticks after a long pause. Called by both the J hotkey
+/// and the dev overlay button.
+pub(crate) fn toggle_debug_pause(state: &mut AppState) {
+    state.paused = !state.paused;
+    if !state.paused {
+        state.last_update_time = std::time::Instant::now();
+        state.sim_accumulator_ms = 0;
+    }
+    log::info!("Debug pause: {}", if state.paused { "ON" } else { "OFF" });
+}
+
 /// Handle one-shot gameplay hotkeys (called on key press, not held).
 pub(crate) fn handle_hotkey_pressed(state: &mut AppState, code: winit::keyboard::KeyCode) {
     if let Some(group_idx) = control_group_index(code) {
@@ -486,13 +501,7 @@ pub(crate) fn handle_hotkey_pressed(state: &mut AppState, code: winit::keyboard:
             toggle_unit_inspector(state);
         }
         KeyCode::KeyJ => {
-            state.paused = !state.paused;
-            if !state.paused {
-                // Reset timing to prevent sim accumulator spike after pause.
-                state.last_update_time = std::time::Instant::now();
-                state.sim_accumulator_ms = 0;
-            }
-            log::info!("Debug pause: {}", if state.paused { "ON" } else { "OFF" });
+            toggle_debug_pause(state);
         }
         KeyCode::Period => {
             if state.paused {
