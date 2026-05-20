@@ -362,6 +362,7 @@ pub(super) fn handle_deferred_occupancy(
                             PATH_STUCK_INIT,
                             mover_is_crusher,
                             is_infantry,
+                            false, // friendly stationary: keep code-2 grace
                         );
                         debug_events.extend(evts);
                     }
@@ -400,6 +401,7 @@ pub(super) fn handle_deferred_occupancy(
                         PATH_STUCK_INIT,
                         mover_is_crusher,
                         is_infantry,
+                        false, // enemy blocker (code-5): keep code-2-style grace
                     );
                     debug_events.extend(evts);
                 }
@@ -463,6 +465,7 @@ pub(super) fn handle_deferred_occupancy(
                                     PATH_STUCK_INIT,
                                     mover_is_crusher,
                                     is_infantry,
+                                    false, // temp block (moving friendly): keep grace
                                 );
                                 debug_events.extend(evts);
                             }
@@ -500,6 +503,7 @@ pub(super) fn handle_deferred_occupancy(
                         PATH_STUCK_INIT,
                         mover_is_crusher,
                         is_infantry,
+                        true, // wall/impassable (code-7): skip grace
                     );
                     debug_events.extend(evts);
                 }

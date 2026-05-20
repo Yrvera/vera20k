@@ -417,7 +417,9 @@ pub(super) fn try_repath_after_block(
         target.blocked_delay = 0;
         target.path_blocked = false;
     }
-    target.movement_delay = mcfg.path_delay_ticks;
+    // Do NOT set movement_delay on successful repath. gamemd chains
+    // Process_Drive_Track(is_retry=1) in the same tick, producing a 0-tick
+    // gap. The new path starts consuming on the next tick.
     let next = target.path[target.next_index];
     let dx = next.0 as i32 - current.0 as i32;
     let dy = next.1 as i32 - current.1 as i32;
@@ -476,6 +478,10 @@ mod tests {
             zone_type: 0,
             base_ground_walk_blocked: false,
             base_build_blocked: false,
+            base_land_type: 0,
+            base_yr_cell_land_type: 0,
+            base_terrain_class: Default::default(),
+            base_speed_costs: Default::default(),
             build_blocked: false,
             has_bridge_deck: false,
             bridge_walkable: false,
