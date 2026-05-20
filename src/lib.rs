@@ -78,6 +78,9 @@ pub mod app_sidebar_render;
 // Extracted from app_sidebar_render.rs to keep files under 400 lines.
 pub mod app_sidebar_build;
 
+// Per-sim-tick orchestrator for sidebar gadget flash + Repair/Sell mode state.
+pub mod app_sidebar_gadgets;
+
 // Build/production commands and owner management.
 // Extracted from app_render.rs.
 pub mod app_commands;
