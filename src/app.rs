@@ -136,7 +136,7 @@ pub(crate) struct AppState {
     /// Which screen is currently active (MainMenu, Loading, InGame).
     pub(crate) screen: GameScreen,
     /// Available maps from the RA2 directory for menu selection.
-    available_maps: Vec<MapMenuEntry>,
+    pub(crate) available_maps: Vec<MapMenuEntry>,
     /// Player-configured skirmish settings (map, country, credits, etc.).
     pub(crate) skirmish_settings: SkirmishSettings,
     /// Opt-in research shell path. Defaults off so the egui Skirmish setup is visible.
@@ -144,6 +144,8 @@ pub(crate) struct AppState {
     pub(crate) skirmish_shell_state: crate::ui::skirmish_shell::SkirmishShellState,
     pub(crate) skirmish_shell_chrome:
         Option<crate::render::skirmish_shell_chrome::SkirmishShellChromeAtlas>,
+    pub(crate) skirmish_preview_texture:
+        Option<crate::app_skirmish_shell_render::SkirmishPreviewTexture>,
     /// Minimap renderer — created at map load time.
     pub(crate) main_menu_shell_state: crate::ui::main_menu_shell::MainMenuShellState,
     pub(crate) main_menu_shell_chrome:
@@ -1051,6 +1053,7 @@ impl App {
             dev_skirmish_shell_enabled,
             skirmish_shell_state: crate::ui::skirmish_shell::SkirmishShellState::default(),
             skirmish_shell_chrome,
+            skirmish_preview_texture: None,
             main_menu_shell_state: crate::ui::main_menu_shell::MainMenuShellState::default(),
             main_menu_shell_chrome,
             main_menu_movie: None,

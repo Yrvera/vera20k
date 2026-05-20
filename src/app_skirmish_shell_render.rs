@@ -6,7 +6,8 @@
 use std::sync::Once;
 
 use crate::app::AppState;
-use crate::render::batch::SpriteInstance;
+use crate::app_init::MapMenuEntry;
+use crate::render::batch::{BatchTexture, SpriteInstance};
 use crate::render::shell_text::{self, ShellAlign, ShellTextDraw, TextRect};
 use crate::render::skirmish_shell_chrome::{SkirmishShellChromeAtlas, SkirmishShellChromeEntry};
 use crate::ui::main_menu::SkirmishCountry;
@@ -24,10 +25,18 @@ const START_MARKER_OFFSET_Y: i32 = -6;
 const BUTTON_DISABLED_ALPHA: f32 = 0x80 as f32 / 255.0;
 const SHELL_PARENT_BACKGROUND_DEPTH: f32 = 0.00090;
 const SHELL_LOWER_STRIP_DEPTH: f32 = 0.00077;
+const SHELL_PREVIEW_SURFACE_DEPTH: f32 = 0.00058;
 // Live Ghidra recovered button text color 0x00000C05 before the original
 // wrapper converted it to the active 16-bit display format; final RGB parity
 // still needs screenshot comparison against retail YR.
 const SHELL_BUTTON_TEXT_RGB_00000C05: [f32; 3] = [0.0, 12.0 / 255.0, 5.0 / 255.0];
+
+pub(crate) struct SkirmishPreviewTexture {
+    pub selected_map_idx: usize,
+    pub texture: BatchTexture,
+    pub width: u32,
+    pub height: u32,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ParentBackgroundRole {
@@ -455,14 +464,11 @@ fn right_panel_frame10_overlay_active(_shell: &SkirmishShellState) -> bool {
     true
 }
 
-fn real_preview_surface_available() -> bool {
-    false
-}
-
 pub fn skirmish_shell_semantic_draw_order(
     layout: &SkirmishShellLayout,
     overlay_frame10_active: bool,
-    real_preview_surface_available: bool,
+    preview_surface_available: bool,
+    start_marker_overlay_available: bool,
     flag_count: usize,
 ) -> Vec<SkirmishShellDrawRole> {
     let mut roles = Vec::new();
@@ -491,8 +497,10 @@ pub fn skirmish_shell_semantic_draw_order(
         LowerStripRole::LwscrnlLarge => SkirmishShellDrawRole::LowerSideLwscrnl,
     });
     roles.extend(std::iter::repeat(SkirmishShellDrawRole::OwnerDrawButton).take(3));
-    if real_preview_surface_available {
+    if preview_surface_available {
         roles.push(SkirmishShellDrawRole::PreviewSurface);
+    }
+    if start_marker_overlay_available {
         roles.push(SkirmishShellDrawRole::StartMarker);
         roles.push(SkirmishShellDrawRole::StartMarkerLabel);
     }
@@ -589,7 +597,7 @@ pub fn build_skirmish_shell_instances(
         atlas,
         layout.map_preview,
         &[],
-        real_preview_surface_available(),
+        false,
         0.00056,
     );
 
@@ -690,7 +698,7 @@ fn build_shell_text_draws(
         state,
         layout.map_preview,
         &[],
-        real_preview_surface_available(),
+        false,
         0.00040,
     );
 
@@ -725,6 +733,105 @@ fn push_start_marker_labels(
     }
 }
 
+fn selected_preview_texture_is_current(state: &AppState, selected_map_idx: usize) -> bool {
+    state
+        .skirmish_preview_texture
+        .as_ref()
+        .is_some_and(|cached| cached.selected_map_idx == selected_map_idx)
+}
+
+fn decode_preview_for_map_entry(
+    entry: &MapMenuEntry,
+) -> Option<crate::map::preview::DecodedPreview> {
+    if let Some(decoded) = entry.preview.decoded.as_ref() {
+        return Some(decoded.clone());
+    }
+
+    let config = crate::util::config::GameConfig::load().ok()?;
+    let ini_path = config.paths.ra2_dir.join(&entry.file_name);
+    let ini = crate::app_list_maps::read_map_ini_for_metadata(&ini_path)?;
+    match crate::map::preview::decode_preview_image_from_ini(&ini) {
+        Ok(preview) => preview,
+        Err(err) => {
+            log::warn!(
+                "Failed to lazily decode map PreviewPack for {}: {err}",
+                entry.file_name
+            );
+            None
+        }
+    }
+}
+
+fn ensure_selected_preview_texture(state: &mut AppState) {
+    let selected_map_idx = state.skirmish_shell_state.selected_map_idx;
+    if selected_preview_texture_is_current(state, selected_map_idx) {
+        return;
+    }
+
+    let decoded = state
+        .available_maps
+        .get(selected_map_idx)
+        .and_then(decode_preview_for_map_entry);
+
+    let Some(decoded) = decoded.as_ref() else {
+        state.skirmish_preview_texture = None;
+        return;
+    };
+
+    let texture = state.batch_renderer.create_texture(
+        &state.gpu,
+        &decoded.rgba,
+        decoded.width,
+        decoded.height,
+    );
+    state.skirmish_preview_texture = Some(SkirmishPreviewTexture {
+        selected_map_idx,
+        texture,
+        width: decoded.width,
+        height: decoded.height,
+    });
+}
+
+fn aspect_fit_rect(dst: RectPx, src_w: u32, src_h: u32) -> RectPx {
+    if dst.w <= 0 || dst.h <= 0 || src_w == 0 || src_h == 0 {
+        return RectPx::new(dst.x, dst.y, 0, 0);
+    }
+
+    let scale_w = dst.w as f32 / src_w as f32;
+    let scale_h = dst.h as f32 / src_h as f32;
+    let scale = scale_w.min(scale_h);
+    let fitted_w = (src_w as f32 * scale).round() as i32;
+    let fitted_h = (src_h as f32 * scale).round() as i32;
+    RectPx::new(
+        dst.x + ((dst.w - fitted_w) / 2),
+        dst.y + ((dst.h - fitted_h) / 2),
+        fitted_w,
+        fitted_h,
+    )
+}
+
+fn build_preview_surface_instance(
+    layout: &SkirmishShellLayout,
+    preview_width: u32,
+    preview_height: u32,
+) -> Option<SpriteInstance> {
+    let fitted = aspect_fit_rect(layout.map_preview, preview_width, preview_height);
+    if fitted.w <= 0 || fitted.h <= 0 {
+        return None;
+    }
+
+    Some(SpriteInstance {
+        position: [fitted.x as f32, fitted.y as f32],
+        size: [fitted.w as f32, fitted.h as f32],
+        uv_origin: [0.0, 0.0],
+        uv_size: [1.0, 1.0],
+        depth: SHELL_PREVIEW_SURFACE_DEPTH,
+        tint: [1.0, 1.0, 1.0],
+        alpha: 1.0,
+        ..Default::default()
+    })
+}
+
 pub(crate) fn render_skirmish_shell(
     state: &mut AppState,
     encoder: &mut wgpu::CommandEncoder,
@@ -749,6 +856,17 @@ fn render_skirmish_shell_with_atlas(
         clear_shell_target(state, encoder, target);
         return Ok(action);
     };
+
+    ensure_selected_preview_texture(state);
+    let preview_instance = state
+        .skirmish_preview_texture
+        .as_ref()
+        .and_then(|preview| build_preview_surface_instance(&layout, preview.width, preview.height));
+    let preview_buffer = preview_instance.as_ref().and_then(|instance| {
+        state
+            .batch_renderer
+            .create_instance_buffer(&state.gpu, &[*instance])
+    });
 
     let instances = build_skirmish_shell_instances(atlas, &layout, &state.skirmish_shell_state);
     let (shell_draws, bare_text_instances) =
@@ -806,6 +924,17 @@ fn render_skirmish_shell_with_atlas(
     state
         .batch_renderer
         .draw_with_buffer_passthrough(&mut pass, &atlas.texture, &buffer, count);
+    if let (Some(preview), Some((buffer, count))) = (
+        state.skirmish_preview_texture.as_ref(),
+        preview_buffer.as_ref(),
+    ) {
+        state.batch_renderer.draw_with_buffer_passthrough(
+            &mut pass,
+            &preview.texture,
+            buffer,
+            *count,
+        );
+    }
     if let Some((buffer, count)) = bare_text_buffer.as_ref() {
         state.batch_renderer.draw_with_buffer_passthrough(
             &mut pass,
@@ -1003,7 +1132,7 @@ mod tests {
     #[test]
     fn semantic_draw_order_records_verified_right_panel_sequence() {
         let layout = compute_layout(800, 600);
-        let order = skirmish_shell_semantic_draw_order(&layout, true, false, 0);
+        let order = skirmish_shell_semantic_draw_order(&layout, true, false, false, 0);
         assert_eq!(
             order[0],
             SkirmishShellDrawRole::ParentBackgroundCoopGameSetup800
@@ -1026,7 +1155,8 @@ mod tests {
 
     #[test]
     fn semantic_draw_order_keeps_1024_parent_blank_but_large_lower_strip() {
-        let order = skirmish_shell_semantic_draw_order(&compute_layout(1024, 768), false, false, 0);
+        let order =
+            skirmish_shell_semantic_draw_order(&compute_layout(1024, 768), false, false, false, 0);
         assert_eq!(order[0], SkirmishShellDrawRole::RightPanelTopSdtp);
         assert!(order.contains(&SkirmishShellDrawRole::LowerSideLwscrnl));
         assert!(!order.contains(&SkirmishShellDrawRole::ParentBackgroundMnscrns640));
@@ -1035,15 +1165,36 @@ mod tests {
 
     #[test]
     fn preview_markers_require_real_preview_surface() {
-        let order = skirmish_shell_semantic_draw_order(&compute_layout(800, 600), false, false, 0);
+        let order =
+            skirmish_shell_semantic_draw_order(&compute_layout(800, 600), false, false, false, 0);
         assert!(!order.contains(&SkirmishShellDrawRole::PreviewSurface));
         assert!(!order.contains(&SkirmishShellDrawRole::StartMarker));
         assert!(!order.contains(&SkirmishShellDrawRole::StartMarkerLabel));
 
-        let order = skirmish_shell_semantic_draw_order(&compute_layout(800, 600), false, true, 0);
+        let order =
+            skirmish_shell_semantic_draw_order(&compute_layout(800, 600), false, true, true, 0);
         assert!(order.contains(&SkirmishShellDrawRole::PreviewSurface));
         assert!(order.contains(&SkirmishShellDrawRole::StartMarker));
         assert!(order.contains(&SkirmishShellDrawRole::StartMarkerLabel));
+    }
+
+    #[test]
+    fn decoded_preview_surface_does_not_imply_start_marker_overlays() {
+        let order =
+            skirmish_shell_semantic_draw_order(&compute_layout(800, 600), false, true, false, 0);
+        assert!(order.contains(&SkirmishShellDrawRole::PreviewSurface));
+        assert!(!order.contains(&SkirmishShellDrawRole::StartMarker));
+        assert!(!order.contains(&SkirmishShellDrawRole::StartMarkerLabel));
+    }
+
+    #[test]
+    fn preview_surface_aspect_fits_dustbowl_thumbnail() {
+        let layout = compute_layout(800, 600);
+        let fitted = aspect_fit_rect(layout.map_preview, 138, 75);
+        assert_eq!(fitted.w, 144);
+        assert_eq!(fitted.h, 78);
+        assert_eq!(fitted.x, layout.map_preview.x);
+        assert_eq!(fitted.y, layout.map_preview.y + 17);
     }
 
     #[test]
