@@ -330,8 +330,7 @@ pub(crate) fn toggle_unit_inspector(state: &mut AppState) {
         if state.debug_unit_inspector {
             for entity in sim.entities.values_mut() {
                 if entity.debug_log.is_none() {
-                    entity.debug_log =
-                        Some(crate::sim::debug_event_log::DebugEventLog::new());
+                    entity.debug_log = Some(crate::sim::debug_event_log::DebugEventLog::new());
                 }
             }
             log::info!("Debug unit inspector: ON");
@@ -357,7 +356,11 @@ pub(crate) fn toggle_pathgrid_overlay(state: &mut AppState) {
     }
     log::info!(
         "Debug terrain cost overlay: {}",
-        if state.debug_show_pathgrid { "ON" } else { "OFF" }
+        if state.debug_show_pathgrid {
+            "ON"
+        } else {
+            "OFF"
+        }
     );
 }
 
@@ -664,10 +667,7 @@ mod save_name_tests {
 
     #[test]
     fn keeps_normal_chars() {
-        assert_eq!(
-            sanitize_save_name("miner stuck repro"),
-            "miner stuck repro"
-        );
+        assert_eq!(sanitize_save_name("miner stuck repro"), "miner stuck repro");
         assert_eq!(sanitize_save_name("dock_fix_a"), "dock_fix_a");
     }
 

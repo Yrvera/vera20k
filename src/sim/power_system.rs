@@ -98,8 +98,8 @@ fn recalculate_power_for_owner(
         if (obj.infantry_absorb || obj.unit_absorb) && obj.extra_power > 0 {
             let occupants = entity.passenger_role.cargo().map_or(0, |c| c.count()) as i32;
             if occupants > 0 {
-                output_contribution = output_contribution
-                    .saturating_add(obj.extra_power.saturating_mul(occupants));
+                output_contribution =
+                    output_contribution.saturating_add(obj.extra_power.saturating_mul(occupants));
             }
         }
         if output_contribution > 0 {
@@ -647,13 +647,7 @@ BuildSpeed=0.02
     }
 
     /// YAPOWR test entity with `n` garrisoned passengers and given hp/max.
-    fn make_yapowr(
-        id: u64,
-        owner: &str,
-        hp: u16,
-        max_hp: u16,
-        passenger_count: u32,
-    ) -> GameEntity {
+    fn make_yapowr(id: u64, owner: &str, hp: u16, max_hp: u16, passenger_count: u32) -> GameEntity {
         let mut e = make_building(id, "YAPOWR", owner, hp, max_hp);
         let mut cargo = crate::sim::passenger::PassengerCargo::new(5, 0);
         for i in 0..passenger_count {
@@ -763,7 +757,10 @@ BuildSpeed=0.02
         let mut state = PowerState::default();
         recalculate_power_for_owner(&mut state, &store, &rules, yuri, &interner);
 
-        assert_eq!(state.total_output, 150, "ExtraPower=0 fails strict > 0 gate");
+        assert_eq!(
+            state.total_output, 150,
+            "ExtraPower=0 fails strict > 0 gate"
+        );
     }
 
     #[test]
@@ -799,7 +796,10 @@ BuildSpeed=0.02
         let mut state = PowerState::default();
         recalculate_power_for_owner(&mut state, &store, &rules, yuri, &interner);
 
-        assert_eq!(state.total_output, 150, "ExtraPower<0 fails strict > 0 gate");
+        assert_eq!(
+            state.total_output, 150,
+            "ExtraPower<0 fails strict > 0 gate"
+        );
     }
 
     #[test]
@@ -838,7 +838,10 @@ BuildSpeed=0.02
         let mut state = PowerState::default();
         recalculate_power_for_owner(&mut state, &store, &rules, yuri, &interner);
 
-        assert_eq!(state.total_output, 260, "100 + 80*2 = 260 via UnitAbsorb gate");
+        assert_eq!(
+            state.total_output, 260,
+            "100 + 80*2 = 260 via UnitAbsorb gate"
+        );
     }
 
     #[test]

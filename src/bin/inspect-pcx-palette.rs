@@ -11,8 +11,8 @@ use vera20k::assets::pcx_file::PcxFile;
 use vera20k::assets::shp_file::ShpFile;
 
 fn save_rgba(path: &Path, rgba: &[u8], w: u32, h: u32) {
-    let img = image::RgbaImage::from_raw(w, h, rgba.to_vec())
-        .expect("rgba buffer length matches w*h*4");
+    let img =
+        image::RgbaImage::from_raw(w, h, rgba.to_vec()).expect("rgba buffer length matches w*h*4");
     img.save(path).expect("save png");
     println!("    wrote {}", path.display());
 }
@@ -88,13 +88,9 @@ fn main() {
     }
 
     println!("\n=== Right-panel chrome SHPs ===");
-    let shell_pal_bytes = assets
-        .get_ref("SHELL.PAL")
-        .expect("SHELL.PAL must exist");
+    let shell_pal_bytes = assets.get_ref("SHELL.PAL").expect("SHELL.PAL must exist");
     let shell_pal = Palette::from_bytes(shell_pal_bytes).expect("SHELL.PAL parse");
-    let shell2_pal_bytes = assets
-        .get_ref("SHELL2.PAL")
-        .expect("SHELL2.PAL must exist");
+    let shell2_pal_bytes = assets.get_ref("SHELL2.PAL").expect("SHELL2.PAL must exist");
     let shell2_pal = Palette::from_bytes(shell2_pal_bytes).expect("SHELL2.PAL parse");
 
     let sdbtnanm_pal = assets

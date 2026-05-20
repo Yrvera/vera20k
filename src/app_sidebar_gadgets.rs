@@ -227,8 +227,8 @@ mod tests {
             (20, 0, 1), // next_boundary = 20/10 = 2 → 1
         ];
         for &(frame, expected_extra, expected_state) in cases {
-            let extra = (FLASH_PERIOD_TICKS - (frame as u32 % FLASH_PERIOD_TICKS))
-                % FLASH_PERIOD_TICKS;
+            let extra =
+                (FLASH_PERIOD_TICKS - (frame as u32 % FLASH_PERIOD_TICKS)) % FLASH_PERIOD_TICKS;
             let nb = (extra as u64 + frame) / FLASH_PERIOD_TICKS as u64;
             let st: u8 = if nb & 1 == 0 { 1 } else { 0 };
             assert_eq!(extra, expected_extra, "extra_delay at frame {frame}");

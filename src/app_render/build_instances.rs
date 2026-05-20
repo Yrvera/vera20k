@@ -281,12 +281,20 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
 /// itself gates on the extra_animations toggle; the wrapper short-circuits
 /// when required sim/render state is missing (no map loaded).
 fn build_pixel_fx_sparkle_instances(state: &AppState, sw: f32, sh: f32) -> Vec<SpriteInstance> {
-    use crate::render::pixel_fx_sparkles::{build_sparkle_instances, SparkleInput};
+    use crate::render::pixel_fx_sparkles::{SparkleInput, build_sparkle_instances};
 
-    let Some(sim) = state.simulation.as_ref() else { return Vec::new(); };
-    let Some(resolved) = state.resolved_terrain.as_ref() else { return Vec::new(); };
-    let Some(overlay_registry) = state.overlay_registry.as_ref() else { return Vec::new(); };
-    let Some(overlays) = sim.overlay_grid.as_ref() else { return Vec::new(); };
+    let Some(sim) = state.simulation.as_ref() else {
+        return Vec::new();
+    };
+    let Some(resolved) = state.resolved_terrain.as_ref() else {
+        return Vec::new();
+    };
+    let Some(overlay_registry) = state.overlay_registry.as_ref() else {
+        return Vec::new();
+    };
+    let Some(overlays) = sim.overlay_grid.as_ref() else {
+        return Vec::new();
+    };
 
     // Cosmetic toggle — default to ON when config failed to load, matching
     // gamemd's default.

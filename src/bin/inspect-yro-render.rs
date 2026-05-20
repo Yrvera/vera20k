@@ -19,11 +19,9 @@ use vera20k::map::theater;
 const RA2_DIR: &str = "C:/Users/enok/Documents/Command and Conquer Red Alert II";
 
 fn main() {
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("warn"),
-    )
-    .target(env_logger::Target::Stderr)
-    .init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
+        .target(env_logger::Target::Stderr)
+        .init();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
 
@@ -82,7 +80,12 @@ fn run_asset_probe() {
     for &name in probes {
         match asset_manager.get_with_source(name) {
             Some((data, source)) => {
-                println!("FOUND   {:<22} {:>8} bytes  from {}", name, data.len(), source);
+                println!(
+                    "FOUND   {:<22} {:>8} bytes  from {}",
+                    name,
+                    data.len(),
+                    source
+                );
             }
             None => {
                 println!("missing {}", name);

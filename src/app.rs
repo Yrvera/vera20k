@@ -359,9 +359,7 @@ impl AppState {
     /// Whether the software cursor (mouse.shp) should be active this frame.
     /// Returns false when an egui interactive panel is open so the OS cursor shows.
     pub(crate) fn use_software_cursor(&self) -> bool {
-        self.software_cursor.is_some()
-            && !self.paused
-            && !self.show_save_load_panel
+        self.software_cursor.is_some() && !self.paused && !self.show_save_load_panel
     }
 
     /// Return the building-placement section name if the targeting mode
@@ -1309,9 +1307,7 @@ impl App {
                     // Dev overlay rides along with the pause menu — push its
                     // own light visuals so the panel chrome matches debug
                     // panels rather than the pause menu's client theme.
-                    let prev = crate::app_debug_panel::push_debug_light_visuals(
-                        &state.egui.ctx,
-                    );
+                    let prev = crate::app_debug_panel::push_debug_light_visuals(&state.egui.ctx);
                     Self::handle_dev_overlay(state);
                     crate::app_debug_panel::pop_debug_light_visuals(&state.egui.ctx, prev);
                 }
@@ -1458,9 +1454,7 @@ impl App {
     /// overlay is hidden — caller checks `show_dev_overlay` before
     /// calling.
     fn handle_dev_overlay(state: &mut AppState) {
-        use crate::app_dev_overlay::{
-            self, DevOverlayAction, DevOverlayInfo, RecentSaveRow,
-        };
+        use crate::app_dev_overlay::{self, DevOverlayAction, DevOverlayInfo, RecentSaveRow};
 
         // Build the recent-saves snapshot from the existing cache.
         state.save_list_cache.refresh_if_dirty();
@@ -1478,9 +1472,7 @@ impl App {
                     .unwrap_or("?")
                     .to_string(),
                 tick: e.header.tick,
-                age_str: crate::app_save_load_panel::format_timestamp(
-                    e.header.save_timestamp,
-                ),
+                age_str: crate::app_save_load_panel::format_timestamp(e.header.save_timestamp),
             })
             .collect();
 
@@ -1528,10 +1520,7 @@ impl App {
             } else {
                 1000.0 / state.sim_speed_tps as f32
             },
-            entity_count: state
-                .simulation
-                .as_ref()
-                .map_or(0, |s| s.entities.len()),
+            entity_count: state.simulation.as_ref().map_or(0, |s| s.entities.len()),
             save_name_buf: &mut save_name,
             last_save_tick: state.last_save_tick,
             last_save_age,
@@ -1589,7 +1578,11 @@ impl App {
                 state.sandbox_full_visibility = !state.sandbox_full_visibility;
                 log::info!(
                     "Reveal map: {}",
-                    if state.sandbox_full_visibility { "ON" } else { "OFF" }
+                    if state.sandbox_full_visibility {
+                        "ON"
+                    } else {
+                        "OFF"
+                    }
                 );
             }
             DevOverlayAction::SaveAs => {

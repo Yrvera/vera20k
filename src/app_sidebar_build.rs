@@ -135,8 +135,7 @@ pub fn build_sidebar_chrome_instances_for_layout(
         let idx = tab_btn.tab.tab_index();
         let frame = tab_btn.frame_index as usize;
         // Fall back to frame 0 if the requested frame is missing in MIX.
-        let entry = atlas.tab_frames[idx][frame]
-            .or(atlas.tab_frames[idx][0]);
+        let entry = atlas.tab_frames[idx][frame].or(atlas.tab_frames[idx][0]);
         if let Some(e) = entry {
             push_chrome(
                 &mut inst,

@@ -121,7 +121,11 @@ fn ping_pong_lerp(phase: u32, base: [u8; 3], peak: [u8; 3]) -> [u8; 3] {
         // (255 * 0x1000 = 1,044,480, fits in u32 easily).
         (((b as u32) * inv + (p as u32) * lerp) >> 12) as u8
     };
-    [blend(base[0], peak[0]), blend(base[1], peak[1]), blend(base[2], peak[2])]
+    [
+        blend(base[0], peak[0]),
+        blend(base[1], peak[1]),
+        blend(base[2], peak[2]),
+    ]
 }
 
 /// Extract a per-cycle sub-pixel offset (sub_x, sub_y) from the seed bits.
@@ -202,8 +206,8 @@ fn viewport_cell_bounds(
     // approximate (we over-include because of the diamond shape) but cheap
     // and correct: the gate inside compute_sparkle_for_cell handles cells
     // outside the actual viewport via the screen position check.
-    let rx_min = (((camera_x / TILE_WIDTH).floor() as i32) - MARGIN_CELLS)
-        .clamp(0, map_w as i32 - 1) as u16;
+    let rx_min =
+        (((camera_x / TILE_WIDTH).floor() as i32) - MARGIN_CELLS).clamp(0, map_w as i32 - 1) as u16;
     let rx_max = ((((camera_x + vsw) / TILE_WIDTH).ceil() as i32) + MARGIN_CELLS)
         .clamp(0, map_w as i32 - 1) as u16;
     let ry_min = (((camera_y / TILE_HEIGHT).floor() as i32) - MARGIN_CELLS)
@@ -304,7 +308,11 @@ fn compute_sparkle_for_cell(
     input: &SparkleInput<'_>,
 ) -> Option<SpriteInstance> {
     let (_is_ore, params) = gate_cell(rx, ry, input)?;
-    let bucket_ms = if _is_ore { ORE_CYCLE_BUCKET_MS } else { WATER_CYCLE_BUCKET_MS };
+    let bucket_ms = if _is_ore {
+        ORE_CYCLE_BUCKET_MS
+    } else {
+        WATER_CYCLE_BUCKET_MS
+    };
 
     // L26: per-cell offset hashed from coord-only key, breaks global beat sync.
     let cell_offset_ms = splitmix64(coord_key(rx, ry)) % bucket_ms;
@@ -446,7 +454,11 @@ mod tests {
         for i in 0u64..1000 {
             seen.insert(splitmix64(i) & 0xFF);
         }
-        assert!(seen.len() >= 200, "splitmix64 low-byte spread too small: {}", seen.len());
+        assert!(
+            seen.len() >= 200,
+            "splitmix64 low-byte spread too small: {}",
+            seen.len()
+        );
     }
 
     #[test]
@@ -519,7 +531,13 @@ mod tests {
         let mut prev_r = 0u8;
         for phase in (0..=0x1000).step_by(0x100) {
             let rgb = ping_pong_lerp(phase, base, peak);
-            assert!(rgb[0] >= prev_r, "R not monotonic at phase {:#x}: {} < {}", phase, rgb[0], prev_r);
+            assert!(
+                rgb[0] >= prev_r,
+                "R not monotonic at phase {:#x}: {} < {}",
+                phase,
+                rgb[0],
+                prev_r
+            );
             prev_r = rgb[0];
         }
     }
@@ -530,8 +548,18 @@ mod tests {
         // different seeds and assert every output is in range.
         for i in 0u64..1000 {
             let (sx, sy) = sub_pos_from_seed(splitmix64(i));
-            assert!((-31..=32).contains(&sx), "sub_x out of range at i={}: {}", i, sx);
-            assert!((-15..=16).contains(&sy), "sub_y out of range at i={}: {}", i, sy);
+            assert!(
+                (-31..=32).contains(&sx),
+                "sub_x out of range at i={}: {}",
+                i,
+                sx
+            );
+            assert!(
+                (-15..=16).contains(&sy),
+                "sub_y out of range at i={}: {}",
+                i,
+                sy
+            );
         }
     }
 
@@ -540,7 +568,12 @@ mod tests {
         // L4: water LerpSpeed ∈ [3, 12].
         for i in 0u64..1000 {
             let speed = lerp_speed_from_seed(splitmix64(i), &WATER);
-            assert!((3..=12).contains(&speed), "water lerp_speed out of range at i={}: {}", i, speed);
+            assert!(
+                (3..=12).contains(&speed),
+                "water lerp_speed out of range at i={}: {}",
+                i,
+                speed
+            );
         }
     }
 
@@ -549,7 +582,12 @@ mod tests {
         // L9: ore LerpSpeed ∈ [15, 30].
         for i in 0u64..1000 {
             let speed = lerp_speed_from_seed(splitmix64(i), &ORE);
-            assert!((15..=30).contains(&speed), "ore lerp_speed out of range at i={}: {}", i, speed);
+            assert!(
+                (15..=30).contains(&speed),
+                "ore lerp_speed out of range at i={}: {}",
+                i,
+                speed
+            );
         }
     }
 
@@ -558,7 +596,12 @@ mod tests {
         // L5/L26: timer_init ∈ [0, 4095].
         for i in 0u64..1000 {
             let timer = timer_init_from_seed(splitmix64(i));
-            assert!(timer <= 0xFFF, "timer_init out of range at i={}: {}", i, timer);
+            assert!(
+                timer <= 0xFFF,
+                "timer_init out of range at i={}: {}",
+                i,
+                timer
+            );
         }
     }
 
@@ -579,9 +622,14 @@ mod tests {
             for ch in 0..3 {
                 let lo = WATER.peak_rgb[ch].saturating_sub(31);
                 let hi = WATER.peak_rgb[ch];
-                assert!((lo..=hi).contains(&noisy[ch]),
+                assert!(
+                    (lo..=hi).contains(&noisy[ch]),
                     "water peak[{}] out of [-31, 0] noise range at i={}: {} (peak={})",
-                    ch, i, noisy[ch], hi);
+                    ch,
+                    i,
+                    noisy[ch],
+                    hi
+                );
             }
         }
     }
@@ -646,7 +694,12 @@ mod tests {
             }
         }
         let avg = diff_sum / count;
-        assert!(avg > bucket / 8, "avg neighbour offset diff too small: {} < {}", avg, bucket / 8);
+        assert!(
+            avg > bucket / 8,
+            "avg neighbour offset diff too small: {} < {}",
+            avg,
+            bucket / 8
+        );
     }
 
     #[test]
@@ -659,7 +712,7 @@ mod tests {
         let peak = peak_with_noise(s, &WATER);
 
         // Mimic the function's branch directly:
-        let cycle_pos_ms: u32 = timer_init / 2;  // anywhere in timer-wait
+        let cycle_pos_ms: u32 = timer_init / 2; // anywhere in timer-wait
         let color = if cycle_pos_ms < timer_init {
             WATER.base_rgb
         } else if cycle_pos_ms < timer_init + (0x2000u32 / lerp_speed) {
@@ -686,7 +739,17 @@ mod tests {
         let phase = (active_progress * lerp_speed) & 0x1FFF;
         let color = ping_pong_lerp(phase, WATER.base_rgb, WATER.peak_rgb);
 
-        assert!(color[0] > WATER.base_rgb[0], "R should rise from base: {} not > {}", color[0], WATER.base_rgb[0]);
-        assert!(color[0] <= WATER.peak_rgb[0], "R should not exceed peak: {} not <= {}", color[0], WATER.peak_rgb[0]);
+        assert!(
+            color[0] > WATER.base_rgb[0],
+            "R should rise from base: {} not > {}",
+            color[0],
+            WATER.base_rgb[0]
+        );
+        assert!(
+            color[0] <= WATER.peak_rgb[0],
+            "R should not exceed peak: {} not <= {}",
+            color[0],
+            WATER.peak_rgb[0]
+        );
     }
 }

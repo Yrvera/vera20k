@@ -1118,13 +1118,15 @@ pub fn load_tile_images(
     if !blank_slot_samples.is_empty() {
         log::info!(
             "  blank-slot tile_id samples (max {}): {:?}",
-            SAMPLE_CAP, blank_slot_samples
+            SAMPLE_CAP,
+            blank_slot_samples
         );
     }
     if !missing_file_samples.is_empty() {
         log::info!(
             "  missing-file samples (max {}): {:?}",
-            SAMPLE_CAP, missing_file_samples
+            SAMPLE_CAP,
+            missing_file_samples
         );
     }
 

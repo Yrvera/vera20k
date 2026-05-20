@@ -1529,9 +1529,8 @@ mod tests {
 
     #[test]
     fn test_parse_extra_power_positive() {
-        let ini: IniFile = IniFile::from_str(
-            "[YAPOWR]\nPower=150\nExtraPower=100\nInfantryAbsorb=yes\n",
-        );
+        let ini: IniFile =
+            IniFile::from_str("[YAPOWR]\nPower=150\nExtraPower=100\nInfantryAbsorb=yes\n");
         let section: &IniSection = ini.section("YAPOWR").unwrap();
         let obj = ObjectType::from_ini_section("YAPOWR", section, ObjectCategory::Building);
         assert_eq!(obj.power, 150);

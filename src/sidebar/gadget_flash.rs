@@ -232,7 +232,10 @@ mod tests {
         }
         assert!(g.tick(), "15th tick toggles");
         assert_eq!(g.state, 1, "state XOR-toggled to 1");
-        assert_eq!(g.countdown, 10, "countdown resets to period, not period+extra");
+        assert_eq!(
+            g.countdown, 10,
+            "countdown resets to period, not period+extra"
+        );
     }
 
     #[test]
@@ -308,14 +311,14 @@ mod tests {
     fn frame_select_table() {
         // (disabled, mode_active, state) → expected frame
         let cases: &[(bool, bool, u8, u8)] = &[
-            (false, false, 0, 0),  // idle
-            (false, true,  0, 1),  // mode-active
-            (true,  false, 0, 2),  // disabled (mode and state ignored)
-            (true,  true,  0, 2),
-            (true,  false, 1, 2),
-            (true,  true,  1, 2),
-            (false, false, 1, 3),  // pressed-idle
-            (false, true,  1, 4),  // pressed-active
+            (false, false, 0, 0), // idle
+            (false, true, 0, 1),  // mode-active
+            (true, false, 0, 2),  // disabled (mode and state ignored)
+            (true, true, 0, 2),
+            (true, false, 1, 2),
+            (true, true, 1, 2),
+            (false, false, 1, 3), // pressed-idle
+            (false, true, 1, 4),  // pressed-active
         ];
         for &(disabled, mode_active, state, expected) in cases {
             let got = frame_select(disabled, mode_active, state);
