@@ -28,7 +28,7 @@ const SPEED_MAX_TPS: u32 = 200;
 pub(crate) struct RecentSaveRow {
     pub path: PathBuf,
     pub display_name: String,
-    pub tick: u32,
+    pub tick: u64,
     pub age_str: String,
 }
 
@@ -50,7 +50,7 @@ pub(crate) struct DevOverlayInfo<'a> {
     pub tick_budget_ms: f32,
     pub entity_count: usize,
     pub save_name_buf: &'a mut String,
-    pub last_save_tick: Option<u32>,
+    pub last_save_tick: Option<u64>,
     pub last_save_age: Option<String>,
     pub last_load_available: bool,
     pub last_load_display: Option<String>,

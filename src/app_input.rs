@@ -543,9 +543,122 @@ fn quicksave(state: &mut AppState) {
     match std::fs::write(&path, &bytes) {
         Ok(()) => {
             log::info!("Quicksave: saved {} bytes to {}", bytes.len(), path);
+            state.last_save_tick = Some(sim.tick);
+            state.last_save_instant = Some(std::time::Instant::now());
             state.save_list_cache.invalidate();
         }
         Err(e) => log::error!("Quicksave: write failed: {e}"),
+    }
+}
+
+/// Save the current sim with a user-supplied name (dev overlay "Save As").
+///
+/// Sanitizes the name (strips path-unsafe chars, trims, length-caps),
+/// then writes to `saves/save_{sanitized}_tick{tick}_{unix_secs}.bin` so
+/// the existing list-panel parser still works and collisions are
+/// impossible. Updates the last-save readout fields. No-ops with a log
+/// warning on empty input.
+pub(crate) fn save_with_name(state: &mut AppState, raw_name: &str) {
+    let sanitized: String = sanitize_save_name(raw_name);
+    if sanitized.is_empty() {
+        log::warn!("Save As: empty or whitespace-only name, ignored");
+        return;
+    }
+    let Some(sim) = &state.simulation else {
+        log::warn!("Save As: no active simulation");
+        return;
+    };
+    let rules_h = state
+        .rules
+        .as_ref()
+        .map(crate::app_sim_tick::rules_hash)
+        .unwrap_or(0);
+    let map_name = &state.theater_name;
+    let bytes = crate::sim::snapshot::GameSnapshot::save(sim, 0, rules_h, map_name);
+    if let Err(e) = std::fs::create_dir_all(SAVES_DIR) {
+        log::error!("Save As: failed to create saves dir: {e}");
+        return;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let filename = format!("save_{sanitized}_tick{}_{}.bin", sim.tick, now);
+    let path = format!("{SAVES_DIR}/{filename}");
+    match std::fs::write(&path, &bytes) {
+        Ok(()) => {
+            log::info!("Save As: saved {} bytes to {}", bytes.len(), path);
+            state.last_save_tick = Some(sim.tick);
+            state.last_save_instant = Some(std::time::Instant::now());
+            state.save_list_cache.invalidate();
+        }
+        Err(e) => log::error!("Save As: write failed: {e}"),
+    }
+}
+
+/// Sanitize a user-typed save name for use in a filename.
+///
+/// Replaces Windows-reserved characters (`/ \ : * ? " < > |`) with `_`,
+/// trims surrounding whitespace, then caps at 64 chars. Returns an empty
+/// string for empty/whitespace-only input.
+fn sanitize_save_name(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let mut out = String::with_capacity(trimmed.len());
+    for ch in trimmed.chars() {
+        match ch {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => out.push('_'),
+            c if c.is_control() => out.push('_'),
+            c => out.push(c),
+        }
+    }
+    out.truncate(64);
+    out
+}
+
+#[cfg(test)]
+mod save_name_tests {
+    use super::sanitize_save_name;
+
+    #[test]
+    fn empty_returns_empty() {
+        assert_eq!(sanitize_save_name(""), "");
+        assert_eq!(sanitize_save_name("   "), "");
+        assert_eq!(sanitize_save_name("\t\n"), "");
+    }
+
+    #[test]
+    fn strips_path_separators() {
+        assert_eq!(sanitize_save_name("../foo"), ".._foo");
+        assert_eq!(sanitize_save_name("a/b\\c"), "a_b_c");
+    }
+
+    #[test]
+    fn strips_windows_reserved_chars() {
+        assert_eq!(sanitize_save_name("a:b*c?d\"e<f>g|h"), "a_b_c_d_e_f_g_h");
+    }
+
+    #[test]
+    fn keeps_normal_chars() {
+        assert_eq!(
+            sanitize_save_name("miner stuck repro"),
+            "miner stuck repro"
+        );
+        assert_eq!(sanitize_save_name("dock_fix_a"), "dock_fix_a");
+    }
+
+    #[test]
+    fn caps_at_64_chars() {
+        let long: String = "x".repeat(100);
+        let out = sanitize_save_name(&long);
+        assert_eq!(out.len(), 64);
+    }
+
+    #[test]
+    fn trims_whitespace() {
+        assert_eq!(sanitize_save_name("  hello  "), "hello");
     }
 }
 
@@ -646,6 +759,7 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
     // Close the save/load panel after loading.
     state.show_save_load_panel = false;
 
+    state.last_loaded_save_path = Some(path.to_path_buf());
     log::info!("Load: restored simulation from {}", path.display());
 }
 

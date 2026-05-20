@@ -325,7 +325,7 @@ pub(crate) struct AppState {
     /// Lives in AppState so the field persists across frames while open.
     pub(crate) dev_overlay_save_name: String,
     /// Tick number recorded by the most recent save this session.
-    pub(crate) last_save_tick: Option<u32>,
+    pub(crate) last_save_tick: Option<u64>,
     /// Wall-clock instant of the most recent save this session.
     pub(crate) last_save_instant: Option<std::time::Instant>,
     /// Path of the most recently loaded save (for "Reload last load").
