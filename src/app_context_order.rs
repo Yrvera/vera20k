@@ -386,7 +386,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     let btype_str = sim.interner.resolve(building.type_ref);
                     let bowner_str = sim.interner.resolve(building.owner);
                     let obj = rules.object(btype_str)?;
-                    if !obj.capturable {
+                    if !obj.capturable && !obj.bridge_repair_hut {
                         return None;
                     }
                     // Don't capture neutral garrisonable buildings — those use garrison entry.

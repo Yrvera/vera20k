@@ -1058,7 +1058,7 @@ impl Simulation {
                         return None;
                     }
                     let obj = rules.object(self.interner.resolve(b.type_ref))?;
-                    if !obj.capturable {
+                    if !obj.capturable && !obj.bridge_repair_hut {
                         return None;
                     }
                     Some((b.position.rx, b.position.ry, b.owner))

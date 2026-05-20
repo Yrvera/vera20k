@@ -10,10 +10,10 @@
 //! Same as sim/: depends on rules/ + map/; never render / ui / audio / net.
 
 use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
-use crate::sim::bridge_state::{
-    Axis, BridgeRuntimeState, DamageState, RepairOutcome, StateOutcome,
-};
+use crate::sim::bridge_state::{Axis, BridgeRuntimeState, RepairOutcome, StateOutcome};
 use crate::sim::rng::SimRng;
+
+const REPAIR_VARIANT_LIMIT_INCLUSIVE: u8 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RepairFamily {
@@ -328,18 +328,18 @@ impl BridgeRuntimeState {
         };
 
         let transition = Self::repair_transition(prior_overlay, family);
-        let (new_overlay, new_state) = match transition {
+        let new_overlay = match transition {
             RepairTransition::NoChange => return,
             RepairTransition::Fixed(new_overlay) => {
                 if new_overlay == prior_overlay {
                     return;
                 }
-                (new_overlay, DamageState::Healthy { variant: 0 })
+                new_overlay
             }
             RepairTransition::RandomHealthy { base } => {
                 let variant = Self::repair_variant_offset(rng);
                 outcome.zones_dirty = true;
-                (base + variant, DamageState::Healthy { variant })
+                base + variant
             }
         };
 
@@ -347,11 +347,8 @@ impl BridgeRuntimeState {
         let mut spans = std::collections::BTreeSet::new();
         for pos in triple.into_iter().flatten() {
             if let Some(cell) = self.cell_mut(pos.0, pos.1) {
-                let changed = cell.overlay_byte != new_overlay
-                    || cell.damage_state != new_state
-                    || cell.damaged_variant;
+                let changed = cell.overlay_byte != new_overlay || cell.damaged_variant;
                 cell.overlay_byte = new_overlay;
-                cell.damage_state = new_state;
                 if changed {
                     outcome.repaired_cells += 1;
                 }
@@ -413,7 +410,18 @@ impl BridgeRuntimeState {
     }
 
     fn repair_variant_offset(rng: &mut SimRng) -> u8 {
-        rng.next_range_u32(4) as u8
+        Self::next_rejection_sampled_u8(rng, REPAIR_VARIANT_LIMIT_INCLUSIVE)
+    }
+
+    fn next_rejection_sampled_u8(rng: &mut SimRng, max_inclusive: u8) -> u8 {
+        let span = u64::from(max_inclusive) + 1;
+        let accepted = (u64::from(u32::MAX) + 1) / span * span;
+        loop {
+            let draw = u64::from(rng.next_u32());
+            if draw < accepted {
+                return (draw % span) as u8;
+            }
+        }
     }
 
     fn is_low_repair_outer_candidate(
@@ -1652,7 +1660,7 @@ mod tests {
     }
 
     #[test]
-    fn repair_destroyed_high_ns_strip_rewrites_triple_and_radar_cells() {
+    fn repair_destroyed_high_ns_strip_rewrites_overlay_retains_stale_damage_and_radar_cells() {
         let mut state = BridgeRuntimeState::default();
         for y in 1..=3u16 {
             seed_high_body_cell(&mut state, 2, y, 0xE7);
@@ -1678,7 +1686,10 @@ mod tests {
         for y in 1..=3u16 {
             let cell = state.cell(2, y).unwrap();
             assert_eq!(cell.overlay_byte, center_overlay);
-            assert!(matches!(cell.damage_state, DamageState::Healthy { .. }));
+            assert!(
+                matches!(cell.damage_state, DamageState::Destroyed),
+                "gamemd leaves the body damage byte stale after bridge repair"
+            );
         }
     }
 

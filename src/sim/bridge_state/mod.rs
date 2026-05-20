@@ -916,10 +916,37 @@ impl BridgeRuntimeState {
         self.endpoint_records = records;
     }
 
+    pub fn effective_render_state(cell: &BridgeRuntimeCell) -> Option<DamageState> {
+        let state_from_overlay = match cell.overlay_byte {
+            0x4A..=0x4D => Some(DamageState::Healthy {
+                variant: cell.overlay_byte - 0x4A,
+            }),
+            0x4E..=0x52 => Some(DamageState::Damaged),
+            0x53..=0x56 => Some(DamageState::Healthy {
+                variant: cell.overlay_byte - 0x53,
+            }),
+            0x57..=0x5B => Some(DamageState::Damaged),
+            0x64 | 0x65 => None,
+            0xCD..=0xD0 => Some(DamageState::Healthy {
+                variant: cell.overlay_byte - 0xCD,
+            }),
+            0xD1..=0xD5 => Some(DamageState::Damaged),
+            0xD6..=0xD9 => Some(DamageState::Healthy {
+                variant: cell.overlay_byte - 0xD6,
+            }),
+            0xDA..=0xDE => Some(DamageState::Damaged),
+            0xE7 | 0xE8 => None,
+            _ => Some(cell.damage_state),
+        };
+        match state_from_overlay {
+            Some(DamageState::Destroyed) | None => None,
+            other => other,
+        }
+    }
+
     pub fn is_bridge_walkable(&self, rx: u16, ry: u16) -> bool {
-        self.cell(rx, ry).is_some_and(|cell| {
-            cell.deck_present && !matches!(cell.damage_state, DamageState::Destroyed)
-        })
+        self.cell(rx, ry)
+            .is_some_and(|cell| cell.deck_present && Self::effective_render_state(cell).is_some())
     }
 
     /// Body-cell state-machine driver. Mirrors the body branch of binary
@@ -2043,6 +2070,34 @@ mod tests {
             DamageState::Healthy { variant: 0 }
         ));
         assert!(!state.is_bridge_walkable(2, 0));
+    }
+
+    #[test]
+    fn repaired_overlay_is_walkable_even_with_stale_destroyed_state() {
+        let mut state = BridgeRuntimeState::default();
+        state.test_seed_cell(
+            2,
+            2,
+            BridgeRuntimeCell {
+                deck_present: true,
+                destroyable: true,
+                deck_level: 4,
+                bridge_group_id: Some(1),
+                damage_state: DamageState::Destroyed,
+                axis: Some(Axis::NS),
+                role: BridgeCellRole::Body,
+                anchor_span_id: Some(1),
+                overlay_byte: 0xCD,
+                damaged_variant: false,
+                bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
+            },
+        );
+
+        assert_eq!(
+            BridgeRuntimeState::effective_render_state(state.cell(2, 2).unwrap()),
+            Some(DamageState::Healthy { variant: 0 })
+        );
+        assert!(state.is_bridge_walkable(2, 2));
     }
 
     #[test]

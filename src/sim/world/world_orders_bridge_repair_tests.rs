@@ -13,6 +13,7 @@ use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
 use crate::sim::bridge_state::{
     AnchorSpan, Axis, BridgeCellRole, BridgeRuntimeCell, BridgeRuntimeState, DamageState, Direction,
 };
+use crate::sim::command::Command;
 use crate::sim::components::{Health, PendingC4Detonation};
 use crate::sim::game_entity::GameEntity;
 use std::collections::BTreeMap;
@@ -427,13 +428,16 @@ fn engineer_enters_cabhut_repairs_bridge() {
 
     let bs = sim.bridge_state.as_ref().unwrap();
     for &(rx, ry) in ENGINEER_REPAIR_STRIP_CELLS {
-        match bs.cell(rx, ry).unwrap().damage_state {
-            DamageState::Healthy { variant } => assert!(
-                variant <= 3,
-                "cell ({rx},{ry}) variant={variant} — must be 0..=3 (healthy)"
-            ),
-            other => panic!("cell ({rx},{ry}) = {other:?} (expected Healthy)"),
-        }
+        let cell = bs.cell(rx, ry).unwrap();
+        assert!(
+            (0xCD..=0xD0).contains(&cell.overlay_byte),
+            "cell ({rx},{ry}) overlay={:#04X} must be repaired high-bridge healthy overlay",
+            cell.overlay_byte
+        );
+        assert!(
+            matches!(cell.damage_state, DamageState::Destroyed),
+            "cell ({rx},{ry}) keeps stale destroyed damage byte like gamemd"
+        );
         assert!(bs.is_bridge_walkable(rx, ry));
     }
     assert!(
@@ -493,11 +497,53 @@ fn two_engineers_both_repair_same_tick() {
 
     let bs = sim.bridge_state.as_ref().unwrap();
     for &(rx, ry) in ENGINEER_REPAIR_STRIP_CELLS {
-        assert!(matches!(
-            bs.cell(rx, ry).unwrap().damage_state,
-            DamageState::Healthy { .. }
-        ));
+        let cell = bs.cell(rx, ry).unwrap();
+        assert!((0xCD..=0xD0).contains(&cell.overlay_byte));
+        assert!(bs.is_bridge_walkable(rx, ry));
     }
+}
+
+#[test]
+fn capture_building_command_accepts_noncapturable_bridge_repair_hut() {
+    let (mut sim, rules, heights) = build_sim();
+    let cabhut = spawn_cabhut(&mut sim, 9, 10);
+    let engineer = spawn_engineer(&mut sim, 10, 10);
+
+    let accepted = sim.apply_command(
+        "Americans",
+        &Command::CaptureBuilding {
+            engineer_id: engineer,
+            target_building_id: cabhut,
+        },
+        Some(&rules),
+        None,
+        &heights,
+    );
+
+    assert!(accepted);
+    assert_eq!(
+        sim.entities.get(engineer).and_then(|e| e.capture_target),
+        Some(cabhut)
+    );
+}
+
+#[test]
+fn engineer_bridge_repair_scan_uses_hut_cell_not_engineer_cell() {
+    let (mut sim, rules, heights) = build_sim();
+    let cabhut = spawn_cabhut(&mut sim, 8, 10);
+    let engineer = spawn_engineer(&mut sim, 7, 10);
+    sim.entities.get_mut(engineer).unwrap().capture_target = Some(cabhut);
+    seed_destroyed_bridge(&mut sim);
+
+    let result = step(&mut sim, &rules, &heights);
+
+    assert!(
+        result.bridge_state_changed,
+        "hut-cell 5x5 scan should reach bridge cells that engineer-cell scan misses"
+    );
+    let bs = sim.bridge_state.as_ref().unwrap();
+    assert!((0xCD..=0xD0).contains(&bs.cell(10, 9).unwrap().overlay_byte));
+    assert!(bs.is_bridge_walkable(10, 9));
 }
 
 #[test]

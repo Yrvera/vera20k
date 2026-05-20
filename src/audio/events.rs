@@ -269,6 +269,24 @@ mod tests {
     }
 
     #[test]
+    fn test_bridge_repaired_carries_spatial_and_eva_sound_ids() {
+        let evt = GameSoundEvent::BridgeRepaired {
+            sound_id: "BridgeRepaired".to_string(),
+            screen_pos: Some((32.0, 64.0)),
+            eva_sound_id: Some("EVA_BridgeRepaired".to_string()),
+        };
+
+        assert_eq!(evt.sound_id(), "BridgeRepaired");
+        assert_eq!(evt.screen_pos(), Some((32.0, 64.0)));
+        match evt {
+            GameSoundEvent::BridgeRepaired { eva_sound_id, .. } => {
+                assert_eq!(eva_sound_id.as_deref(), Some("EVA_BridgeRepaired"));
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
     fn test_queue_drain() {
         let mut queue: SoundEventQueue = SoundEventQueue::new();
         assert!(queue.is_empty());

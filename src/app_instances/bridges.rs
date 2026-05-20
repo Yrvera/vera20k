@@ -114,9 +114,12 @@ pub fn build_bridge_body_instances_inner(
     out: &mut Vec<SpriteInstance>,
 ) {
     for ((rx, ry), cell) in bridge_state.iter_cells() {
-        if !cell.deck_present || matches!(cell.damage_state, DamageState::Destroyed) {
+        if !cell.deck_present {
             continue;
         }
+        let Some(render_state) = BridgeRuntimeState::effective_render_state(cell) else {
+            continue;
+        };
         let Some(axis) = cell.axis else { continue };
         let Some(name) = overlay_names.get(&cell.overlay_byte) else {
             continue;
@@ -125,8 +128,8 @@ pub fn build_bridge_body_instances_inner(
             continue;
         }
 
-        let frame = compute_bridge_body_shp_frame(cell.damage_state, axis, rx, ry);
-        let y_offset = compute_bridge_body_y_offset(cell.damage_state, axis);
+        let frame = compute_bridge_body_shp_frame(render_state, axis, rx, ry);
+        let y_offset = compute_bridge_body_y_offset(render_state, axis);
 
         let z: u8 = height_map
             .get(&(rx, ry))
@@ -230,9 +233,12 @@ pub(crate) fn build_bridge_shadow_instances(
     let (cam_x, cam_y) = (state.camera_x, state.camera_y);
 
     for ((rx, ry), cell) in bridge_state.iter_cells() {
-        if !cell.deck_present || matches!(cell.damage_state, DamageState::Destroyed) {
+        if !cell.deck_present {
             continue;
         }
+        let Some(render_state) = BridgeRuntimeState::effective_render_state(cell) else {
+            continue;
+        };
         let Some(axis) = cell.axis else { continue };
         let Some(name) = state.overlay_names.get(&cell.overlay_byte) else {
             continue;
@@ -241,8 +247,8 @@ pub(crate) fn build_bridge_shadow_instances(
             continue;
         }
 
-        let frame = compute_bridge_body_shp_frame(cell.damage_state, axis, rx, ry);
-        let y_offset = compute_bridge_body_y_offset(cell.damage_state, axis);
+        let frame = compute_bridge_body_shp_frame(render_state, axis, rx, ry);
+        let y_offset = compute_bridge_body_y_offset(render_state, axis);
 
         let z: u8 = state
             .height_map
@@ -314,7 +320,7 @@ pub(crate) fn build_bridge_railing_instances(
     let (cam_x, cam_y) = (state.camera_x, state.camera_y);
 
     for ((rx, ry), cell) in bridge_state.iter_cells() {
-        if !cell.deck_present || matches!(cell.damage_state, DamageState::Destroyed) {
+        if !cell.deck_present || BridgeRuntimeState::effective_render_state(cell).is_none() {
             continue;
         }
         let Some((kind, tile_index, caller_sub_tile)) =
