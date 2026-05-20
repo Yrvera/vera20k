@@ -203,6 +203,12 @@ pub(crate) fn transition_to_in_game(state: &mut AppState) {
         ));
     }
     state.minimap_dragging = false;
+    state.middle_mouse_panning = false;
+    state.keys_held.clear();
+    let tactical_w =
+        (state.render_width() as f32 - state.sidebar_layout_spec.sidebar_width).max(1.0);
+    state.cursor_x = tactical_w * 0.5;
+    state.cursor_y = state.render_height() as f32 * 0.5;
 
     // Create selection overlay for rendering highlights and drag rect.
     // Pass asset_manager so it can load pips.shp for authentic health bar pips.
