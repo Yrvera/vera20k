@@ -102,7 +102,6 @@ pub(crate) fn draw_hotkey_help(ctx: &egui::Context) {
                 ("L", "Cell grid (cyan+yellow)"),
                 ("V / F10", "Toggle fog of war"),
                 ("X", "Unit inspector (event log)"),
-                ("`", "Developer overlay (speed, volumes, saves)"),
             ];
             for (key, desc) in debug_keys {
                 ui.horizontal(|ui| {

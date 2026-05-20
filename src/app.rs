@@ -319,8 +319,6 @@ pub(crate) struct AppState {
     pub(crate) show_save_load_panel: bool,
     /// Cached save-file listing for the save/load panel (avoids per-frame disk I/O).
     pub(crate) save_list_cache: crate::app_save_load_panel::SaveListCache,
-    /// Developer overlay panel visible. Toggle with backtick (`).
-    pub(crate) show_dev_overlay: bool,
     /// Text-field buffer for the dev overlay's "Save As" name input.
     /// Lives in AppState so the field persists across frames while open.
     pub(crate) dev_overlay_save_name: String,
@@ -360,7 +358,6 @@ impl AppState {
         self.software_cursor.is_some()
             && !self.paused
             && !self.show_save_load_panel
-            && !self.show_dev_overlay
     }
 
     /// Return the building-placement section name if the targeting mode
@@ -1130,7 +1127,6 @@ impl App {
             debug_unit_inspector: false,
             show_save_load_panel: false,
             save_list_cache: crate::app_save_load_panel::SaveListCache::new(),
-            show_dev_overlay: true,
             dev_overlay_save_name: String::new(),
             last_save_tick: None,
             last_save_instant: None,
@@ -1282,8 +1278,7 @@ impl App {
                 // before rendering, then restore the original after.
                 let any_debug_panel = state.debug_show_pathgrid
                     || state.debug_unit_inspector
-                    || state.show_hotkey_help
-                    || state.show_dev_overlay;
+                    || state.show_hotkey_help;
                 let prev_visuals = if any_debug_panel {
                     Some(crate::app_debug_panel::push_debug_light_visuals(
                         &state.egui.ctx,
@@ -1298,9 +1293,6 @@ impl App {
                 if state.show_hotkey_help {
                     crate::app_debug_panel::draw_hotkey_help(&state.egui.ctx);
                 }
-                if state.show_dev_overlay {
-                    Self::handle_dev_overlay(state);
-                }
                 if let Some(prev) = prev_visuals {
                     crate::app_debug_panel::pop_debug_light_visuals(&state.egui.ctx, prev);
                 }
@@ -1309,6 +1301,14 @@ impl App {
                 }
                 if state.paused {
                     Self::handle_pause_menu(state);
+                    // Dev overlay rides along with the pause menu — push its
+                    // own light visuals so the panel chrome matches debug
+                    // panels rather than the pause menu's client theme.
+                    let prev = crate::app_debug_panel::push_debug_light_visuals(
+                        &state.egui.ctx,
+                    );
+                    Self::handle_dev_overlay(state);
+                    crate::app_debug_panel::pop_debug_light_visuals(&state.egui.ctx, prev);
                 }
                 state.egui.end_frame_and_render(
                     &state.gpu,
