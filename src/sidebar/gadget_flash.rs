@@ -122,6 +122,65 @@ pub fn frame_select(disabled: bool, mode_active: bool, state: u8) -> u8 {
     }
 }
 
+/// Persistent flash + mode state for the in-game sidebar gadgets.
+///
+/// Lives on `AppState` (one instance per app session). Ticked once per sim
+/// tick by `app_sidebar_gadgets::update_sidebar_gadget_state`. Read by the
+/// per-frame `SidebarView` builder to populate gadget `frame_index` fields.
+#[derive(Debug, Clone, Default)]
+pub struct SidebarGadgetState {
+    /// One flash per tab gadget, indexed by `SidebarTab::tab_index()`.
+    /// Building (0) and Infantry (2) are kept in the array for uniformity
+    /// but the orchestrator unconditionally `stop()`s them — they never
+    /// flash in retail.
+    pub tab_flashes: [GadgetFlash; 4],
+
+    /// Per-tab disabled bit (mirrors gadget +0x1e). v1: always false.
+    /// Kept to keep the gadget tick path identical to gamemd's primitive.
+    pub tab_disabled: [bool; 4],
+
+    /// Mirrors SidebarClass +0x46c. Toggled by clicking the Repair button.
+    /// Mutually exclusive with `sell_mode_on` and `AppState.targeting_mode`.
+    pub repair_mode_on: bool,
+
+    /// Mirrors SidebarClass +0x11B1. Toggled by clicking the Sell button.
+    /// Mutually exclusive with `repair_mode_on` and `AppState.targeting_mode`.
+    pub sell_mode_on: bool,
+
+    /// Per-button disabled bits. v1: always false.
+    pub repair_disabled: bool,
+    pub sell_disabled: bool,
+
+    /// Last sim tick the orchestrator processed; used to advance per
+    /// sim-tick delta (catch-up safe).
+    pub last_sim_tick: u64,
+}
+
+impl SidebarGadgetState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Frame index for a tab gadget. Caller passes whether this tab is the
+    /// currently-active tab (the `+0x2D` mirror in gamemd).
+    pub fn tab_frame(&self, tab_index: usize, is_active_tab: bool) -> u8 {
+        let flash = &self.tab_flashes[tab_index];
+        let disabled = self.tab_disabled[tab_index];
+        frame_select(disabled, is_active_tab, flash.state)
+    }
+
+    /// Frame index for the Repair button. Repair has no flash AI — state is
+    /// always 0; the visible "stays pressed" effect comes from `mode_active`.
+    pub fn repair_frame(&self) -> u8 {
+        frame_select(self.repair_disabled, self.repair_mode_on, 0)
+    }
+
+    /// Frame index for the Sell button. Same logic as `repair_frame`.
+    pub fn sell_frame(&self) -> u8 {
+        frame_select(self.sell_disabled, self.sell_mode_on, 0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,6 +277,31 @@ mod tests {
         let mut g = GadgetFlash::default();
         g.disabled = true;
         assert!(!g.tick());
+    }
+
+    #[test]
+    fn aggregator_frame_accessors() {
+        let mut s = SidebarGadgetState::new();
+        // Idle tab → 0; active tab → 1.
+        assert_eq!(s.tab_frame(0, false), 0);
+        assert_eq!(s.tab_frame(0, true), 1);
+        // Flash mid-pulse on tab 3 (Vehicle).
+        s.tab_flashes[3].state = 1;
+        s.tab_flashes[3].period = 10;
+        assert_eq!(s.tab_frame(3, false), 3, "inactive + pressed-look");
+        assert_eq!(s.tab_frame(3, true), 4, "active + pressed-look");
+        // Disabled overrides everything.
+        s.tab_disabled[3] = true;
+        assert_eq!(s.tab_frame(3, true), 2);
+        // Repair/Sell.
+        assert_eq!(s.repair_frame(), 0);
+        s.repair_mode_on = true;
+        assert_eq!(s.repair_frame(), 1);
+        s.repair_disabled = true;
+        assert_eq!(s.repair_frame(), 2);
+        s.sell_mode_on = true;
+        s.sell_disabled = false;
+        assert_eq!(s.sell_frame(), 1);
     }
 
     #[test]
