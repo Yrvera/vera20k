@@ -357,7 +357,10 @@ impl AppState {
     /// Whether the software cursor (mouse.shp) should be active this frame.
     /// Returns false when an egui interactive panel is open so the OS cursor shows.
     pub(crate) fn use_software_cursor(&self) -> bool {
-        self.software_cursor.is_some() && !self.paused && !self.show_save_load_panel
+        self.software_cursor.is_some()
+            && !self.paused
+            && !self.show_save_load_panel
+            && !self.show_dev_overlay
     }
 
     /// Return the building-placement section name if the targeting mode
@@ -1141,6 +1144,7 @@ impl App {
 
     /// Dispatch rendering based on current GameScreen state.
     fn render_frame(state: &mut AppState, event_loop: &ActiveEventLoop) -> Result<()> {
+        state.frame_timer.sample(Instant::now());
         if let Some(until) = state.startup_splash_until {
             if Instant::now() < until {
                 let output: wgpu::SurfaceTexture = state
