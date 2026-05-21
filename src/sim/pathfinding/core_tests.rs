@@ -729,15 +729,23 @@ fn test_find_path_blocked_goal() {
 }
 
 #[test]
-fn test_find_path_no_diagonal_corner_cutting() {
+fn test_find_path_diagonal_corner_cutting_allowed() {
+    // gamemd parity: AStar_main_loop calls Can_Enter_Cell only on the
+    // diagonal neighbor; it does NOT validate the two flanking cardinal
+    // cells. Units may "clip" between two impassable cells at a corner.
+    // See PATHFINDING_ASTAR_GHIDRA_REPORT.md §4.3 +
+    // PATHFINDING_CELL_ENTRY_VERIFICATION_REPORT.md §6.2.
     let mut grid: PathGrid = PathGrid::new(5, 5);
-    // Block (1,0) and (0,1) — diagonal (1,1) should not be reachable
-    // directly from (0,0) because both adjacent cardinals are blocked.
     grid.set_blocked(1, 0, true);
     grid.set_blocked(0, 1, true);
     let path: Option<Vec<(u16, u16)>> = find_path(&grid, (0, 0), (1, 1));
-    // Path should be None since (0,0) is completely boxed in (corners blocked).
-    assert!(path.is_none(), "Should not cut through diagonal corners");
+    assert!(
+        path.is_some(),
+        "Diagonal (0,0)->(1,1) must be reachable even when both flanking cardinals are blocked"
+    );
+    let path = path.unwrap();
+    assert_eq!(path.first(), Some(&(0, 0)));
+    assert_eq!(path.last(), Some(&(1, 1)));
 }
 
 #[test]
@@ -1024,6 +1032,10 @@ fn test_layered_path_rebuild_blocks_destroyed_bridge_deck() {
                 ground_walk_blocked: true,
                 build_blocked: true,
                 base_build_blocked: true,
+                base_land_type: 0,
+                base_yr_cell_land_type: 0,
+                base_terrain_class: Default::default(),
+                base_speed_costs: Default::default(),
                 bridge_walkable: true,
                 bridge_transition: true,
                 bridge_deck_level: 4,
@@ -1118,6 +1130,10 @@ fn test_pathcell_bridge_walkable_preserved_for_bridgeheads_across_rebuild() {
                 ground_walk_blocked: true,
                 build_blocked: true,
                 base_build_blocked: true,
+                base_land_type: 0,
+                base_yr_cell_land_type: 0,
+                base_terrain_class: Default::default(),
+                base_speed_costs: Default::default(),
                 bridge_walkable: true,
                 bridge_deck_level: 4,
                 has_bridge_deck: true,
@@ -1467,6 +1483,10 @@ fn make_resolved_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
         zone_type: 0,
         base_ground_walk_blocked: false,
         base_build_blocked: false,
+        base_land_type: 0,
+        base_yr_cell_land_type: 0,
+        base_terrain_class: Default::default(),
+        base_speed_costs: Default::default(),
         build_blocked: false,
         has_bridge_deck: false,
         bridge_walkable: false,
@@ -2289,9 +2309,11 @@ fn test_amphibious_unit_crosses_land_water_land() {
 }
 
 #[test]
-fn test_ground_unit_no_diagonal_through_water() {
-    // 4×3 grid with water blocking the direct diagonal from (1,0) to (2,1).
-    // Water at (2,0) and (1,1) — foot unit at (1,0) must not diagonal to (2,1).
+fn test_ground_unit_diagonal_clips_water_corner() {
+    // gamemd parity: AStar_main_loop calls Can_Enter_Cell only on the
+    // diagonal neighbor; flanking cardinals are not consulted. A foot
+    // unit at (1,0) heading to a land cell at (2,1) may cut the diagonal
+    // even though both flanks (2,0) and (1,1) are water.
     //
     // Layout:
     //   (0,0)L  (1,0)L  (2,0)W  (3,0)L
@@ -2348,13 +2370,17 @@ fn test_ground_unit_no_diagonal_through_water() {
         0,
         false,
     );
-    assert!(path.is_some(), "Foot unit should find a path around water");
+    assert!(path.is_some(), "Foot unit should find a path to (2,1)");
     let path: Vec<(u16, u16)> = path.unwrap();
-    // The direct diagonal (1,0)→(2,1) is blocked because both cardinal
-    // neighbors (2,0) and (1,1) are water (cost=0). Path must go around.
-    assert!(
-        !path.windows(2).any(|w| w[0] == (1, 0) && w[1] == (2, 1)),
-        "Foot unit must not diagonal-cut through water cells"
+    assert_eq!(path.first(), Some(&(1, 0)));
+    assert_eq!(path.last(), Some(&(2, 1)));
+    // gamemd parity: the direct diagonal (1,0)->(2,1) is the cheapest
+    // route, so the search picks it even with water flanking. A 1-step
+    // path with no detour is the expected gamemd result.
+    assert_eq!(
+        path.len(),
+        2,
+        "Foot unit should take the direct diagonal (1,0)->(2,1) — flanking water cells do not block"
     );
 }
 

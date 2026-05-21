@@ -634,7 +634,10 @@ impl Simulation {
                 }
                 production::toggle_repair(self, *entity_id)
             }
-            Command::MinerReturn { entity_id } => {
+            Command::MinerReturn {
+                entity_id,
+                target_refinery_id,
+            } => {
                 if !self.entity_owned_by_id(command_owner, *entity_id) {
                     return false;
                 }
@@ -645,6 +648,35 @@ impl Simulation {
                 {
                     return false;
                 }
+                let explicit_refinery = match target_refinery_id {
+                    Some(refinery_id) => {
+                        let Some(rules) = rules else { return false };
+                        if !self.valid_explicit_miner_refinery(
+                            command_owner,
+                            *entity_id,
+                            *refinery_id,
+                            rules,
+                        ) {
+                            return false;
+                        }
+                        Some(*refinery_id)
+                    }
+                    None => None,
+                };
+                let previous_refinery = self
+                    .entities
+                    .get(*entity_id)
+                    .and_then(|e| e.miner.as_ref())
+                    .and_then(|m| m.reserved_refinery);
+                let explicit_refinery_changed = explicit_refinery
+                    .is_some_and(|refinery_id| previous_refinery != Some(refinery_id));
+                if explicit_refinery_changed {
+                    if let Some(old_refinery) = previous_refinery {
+                        self.production
+                            .dock_reservations
+                            .cancel_miner(old_refinery, *entity_id);
+                    }
+                }
                 // Update miner state in EntityStore.
                 let Some(e) = self.entities.get_mut(*entity_id) else {
                     return false;
@@ -652,6 +684,13 @@ impl Simulation {
                 let Some(ref mut miner) = e.miner else {
                     return false;
                 };
+                if let Some(refinery_id) = explicit_refinery {
+                    miner.reserved_refinery = Some(refinery_id);
+                    if explicit_refinery_changed {
+                        miner.dock_queued = false;
+                        miner.dock_phase = crate::sim::miner::RefineryDockPhase::Approach;
+                    }
+                }
                 miner.forced_return = true;
                 miner.state = crate::sim::miner::MinerState::ForcedReturn;
                 // Clear any in-progress movement — the miner system will path to refinery.
@@ -1019,7 +1058,7 @@ impl Simulation {
                         return None;
                     }
                     let obj = rules.object(self.interner.resolve(b.type_ref))?;
-                    if !obj.capturable {
+                    if !obj.capturable && !obj.bridge_repair_hut {
                         return None;
                     }
                     Some((b.position.rx, b.position.ry, b.owner))
@@ -1274,6 +1313,39 @@ impl Simulation {
             .is_some_and(|e| command_owner.eq_ignore_ascii_case(self.interner.resolve(e.owner)))
     }
 
+    /// Validate an explicit refinery selected by a player miner-return order.
+    fn valid_explicit_miner_refinery(
+        &self,
+        command_owner: &str,
+        miner_id: u64,
+        refinery_id: u64,
+        rules: &RuleSet,
+    ) -> bool {
+        let Some(miner) = self.entities.get(miner_id) else {
+            return false;
+        };
+        if miner.miner.is_none() {
+            return false;
+        }
+        let harvester_type = self.interner.resolve(miner.type_ref);
+        let Some(refinery) = self.entities.get(refinery_id) else {
+            return false;
+        };
+        if refinery.category != crate::map::entities::EntityCategory::Structure {
+            return false;
+        }
+        if refinery.health.current == 0 || refinery.dying || refinery.building_up.is_some() {
+            return false;
+        }
+        let refinery_owner = self.interner.resolve(refinery.owner);
+        if !are_houses_friendly(&self.house_alliances, command_owner, refinery_owner) {
+            return false;
+        }
+        let refinery_type = self.interner.resolve(refinery.type_ref);
+        rules.is_refinery_type(refinery_type)
+            && rules.harvester_can_dock_at(harvester_type, refinery_type)
+    }
+
     /// Check whether the attacker can attack the target (i.e. they are not allies).
     /// Uses EntityStore for ownership lookup.
     fn can_attack_target_by_id(&self, attacker_id: u64, target_id: u64) -> bool {
@@ -1344,5 +1416,174 @@ impl Simulation {
                 true
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::map::entities::EntityCategory;
+    use crate::rules::ini_parser::IniFile;
+    use crate::sim::components::Health;
+    use crate::sim::game_entity::GameEntity;
+    use crate::sim::miner::{Miner, MinerConfig, MinerKind, MinerState, RefineryDockPhase};
+
+    fn miner_return_rules() -> RuleSet {
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n\
+             [VehicleTypes]\n\
+             0=HARV\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             0=GAREFN\n\
+             1=OTHERPROC\n\
+             [HARV]\n\
+             Name=War Miner\n\
+             Harvester=yes\n\
+             Dock=GAREFN\n\
+             Speed=4\n\
+             [GAREFN]\n\
+             Name=Ore Refinery\n\
+             Strength=900\n\
+             Foundation=4x3\n\
+             Refinery=yes\n\
+             [OTHERPROC]\n\
+             Name=Other Refinery\n\
+             Strength=900\n\
+             Foundation=4x3\n\
+             Refinery=yes\n",
+        );
+        RuleSet::from_ini(&ini).expect("miner return rules")
+    }
+
+    fn spawn_miner(sim: &mut Simulation, sid: u64) {
+        let owner = sim.interner.intern("Americans");
+        let type_ref = sim.interner.intern("HARV");
+        let mut entity = GameEntity::new(
+            sid,
+            20,
+            20,
+            0,
+            0,
+            owner,
+            Health {
+                current: 600,
+                max: 600,
+            },
+            type_ref,
+            EntityCategory::Unit,
+            0,
+            5,
+            true,
+        );
+        entity.miner = Some(Miner::new(MinerKind::War, &MinerConfig::default(), 0));
+        sim.entities.insert(entity);
+    }
+
+    fn spawn_refinery(sim: &mut Simulation, sid: u64, type_id: &str, rx: u16, ry: u16) {
+        let owner = sim.interner.intern("Americans");
+        let type_ref = sim.interner.intern(type_id);
+        let entity = GameEntity::new(
+            sid,
+            rx,
+            ry,
+            0,
+            0,
+            owner,
+            Health {
+                current: 900,
+                max: 900,
+            },
+            type_ref,
+            EntityCategory::Structure,
+            0,
+            5,
+            false,
+        );
+        sim.entities.insert(entity);
+    }
+
+    #[test]
+    fn miner_return_with_explicit_refinery_seeds_clicked_target() {
+        let rules = miner_return_rules();
+        let mut sim = Simulation::new();
+        spawn_miner(&mut sim, 1);
+        spawn_refinery(&mut sim, 2, "GAREFN", 10, 10);
+        spawn_refinery(&mut sim, 3, "GAREFN", 30, 30);
+        {
+            let miner = sim.entities.get_mut(1).unwrap().miner.as_mut().unwrap();
+            miner.reserved_refinery = Some(2);
+            miner.dock_queued = true;
+            miner.dock_phase = RefineryDockPhase::Unloading;
+        }
+        assert!(sim.production.dock_reservations.try_reserve(2, 1));
+
+        let applied = sim.apply_command(
+            "Americans",
+            &Command::MinerReturn {
+                entity_id: 1,
+                target_refinery_id: Some(3),
+            },
+            Some(&rules),
+            None,
+            &BTreeMap::new(),
+        );
+
+        assert!(applied);
+        let miner = sim.entities.get(1).unwrap().miner.as_ref().unwrap();
+        assert_eq!(miner.reserved_refinery, Some(3));
+        assert!(miner.forced_return);
+        assert_eq!(miner.state, MinerState::ForcedReturn);
+        assert!(!miner.dock_queued);
+        assert_eq!(miner.dock_phase, RefineryDockPhase::Approach);
+        assert!(!sim.production.dock_reservations.is_occupied(2));
+    }
+
+    #[test]
+    fn generic_miner_return_can_reselect_later_without_rules() {
+        let mut sim = Simulation::new();
+        spawn_miner(&mut sim, 1);
+
+        let applied = sim.apply_command(
+            "Americans",
+            &Command::MinerReturn {
+                entity_id: 1,
+                target_refinery_id: None,
+            },
+            None,
+            None,
+            &BTreeMap::new(),
+        );
+
+        assert!(applied);
+        let miner = sim.entities.get(1).unwrap().miner.as_ref().unwrap();
+        assert_eq!(miner.reserved_refinery, None);
+        assert!(miner.forced_return);
+        assert_eq!(miner.state, MinerState::ForcedReturn);
+    }
+
+    #[test]
+    fn explicit_miner_return_rejects_incompatible_refinery() {
+        let rules = miner_return_rules();
+        let mut sim = Simulation::new();
+        spawn_miner(&mut sim, 1);
+        spawn_refinery(&mut sim, 2, "OTHERPROC", 10, 10);
+
+        let applied = sim.apply_command(
+            "Americans",
+            &Command::MinerReturn {
+                entity_id: 1,
+                target_refinery_id: Some(2),
+            },
+            Some(&rules),
+            None,
+            &BTreeMap::new(),
+        );
+
+        assert!(!applied);
+        let miner = sim.entities.get(1).unwrap().miner.as_ref().unwrap();
+        assert_eq!(miner.reserved_refinery, None);
+        assert!(!miner.forced_return);
+        assert_eq!(miner.state, MinerState::SearchOre);
     }
 }

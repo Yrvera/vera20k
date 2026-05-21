@@ -160,6 +160,12 @@ pub enum SimSoundEvent {
     /// First-occupant SFX from rulesmd [AudioVisual] BuildingGarrisonedSound.
     /// Positional cue gated on owner == local human.
     BuildingGarrisonedSfx { owner: InternedId, rx: u16, ry: u16 },
+    /// SFX played when a docked harvester departs after dumping. Resolved
+    /// at the app layer to [AudioVisual] BunkerWallsDownSound (retail value
+    /// "TankBunkerDown"). Positional, audible to all players. Mirrors
+    /// gamemd's `ReleaseDockedHarvester` step 2 (`VocClass::PlayAt` at the
+    /// building location).
+    RefineryExitSfx { rx: u16, ry: u16 },
     /// A paratrooper was dropped from a carrier aircraft.
     /// Played at the drop position; app layer resolves to [General] ChuteSound.
     ChuteSound { rx: u16, ry: u16 },

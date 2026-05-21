@@ -77,7 +77,23 @@ pub(crate) fn current_sidebar_view(state: &mut AppState) -> Option<SidebarView> 
     let (power_produced, power_drained) =
         production::power_balance_for_owner(sim, rules, &owner_name);
     let tab_btn_size = current_sidebar_chrome(state)
-        .and_then(|atlas| atlas.tab_buttons.first())
+        .and_then(|atlas| atlas.tab_frames[0][0].as_ref())
+        .map(|entry| {
+            [
+                entry.pixel_size[0] * state.ui_scale,
+                entry.pixel_size[1] * state.ui_scale,
+            ]
+        });
+    let repair_btn_size = current_sidebar_chrome(state)
+        .and_then(|atlas| atlas.repair_frames[0].as_ref())
+        .map(|entry| {
+            [
+                entry.pixel_size[0] * state.ui_scale,
+                entry.pixel_size[1] * state.ui_scale,
+            ]
+        });
+    let sell_btn_size = current_sidebar_chrome(state)
+        .and_then(|atlas| atlas.sell_frames[0].as_ref())
         .map(|entry| {
             [
                 entry.pixel_size[0] * state.ui_scale,
@@ -116,6 +132,9 @@ pub(crate) fn current_sidebar_view(state: &mut AppState) -> Option<SidebarView> 
         state.sidebar_scroll_rows,
         interner,
         &sw_views,
+        &state.sidebar_gadget_state,
+        repair_btn_size,
+        sell_btn_size,
     );
     if state.sidebar_scroll_rows > view.max_scroll_rows {
         state.sidebar_scroll_rows = view.max_scroll_rows;
@@ -136,6 +155,9 @@ pub(crate) fn current_sidebar_view(state: &mut AppState) -> Option<SidebarView> 
             state.sidebar_scroll_rows,
             interner,
             &sw_views,
+            &state.sidebar_gadget_state,
+            repair_btn_size,
+            sell_btn_size,
         );
     }
     if let Some(atlas) = state.sidebar_cameo_atlas.as_ref() {

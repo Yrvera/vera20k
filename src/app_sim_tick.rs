@@ -205,6 +205,7 @@ pub(crate) fn advance_in_game_runtime(state: &mut AppState, elapsed_ms: u64) {
 
     crate::app_building_anim::update_radar_state(state, SIM_TICK_MS as f32);
     crate::app_building_anim::update_power_bar_anim(state);
+    crate::app_sidebar_gadgets::update_sidebar_gadget_state(state);
     if let (Some(player), Some(assets)) = (&mut state.music_player, &state.asset_manager) {
         player.update(assets);
     }
@@ -505,6 +506,24 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                         let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
                         GameSoundEvent::C4Planted {
                             sound_id: "SealPlaceBomb".to_string(),
+                            screen_pos: Some((sx, sy)),
+                        }
+                    }
+                    SimSoundEvent::RefineryExitSfx { rx, ry } => {
+                        // Positional SFX from [AudioVisual] BunkerWallsDownSound.
+                        // Skip when rules don't configure the sound (matches
+                        // gamemd's `RulesClass+0x244 != -1` guard).
+                        let sound_id = match state
+                            .rules
+                            .as_ref()
+                            .and_then(|r| r.general.bunker_walls_down_sound.as_deref())
+                        {
+                            Some(s) if !s.is_empty() => s.to_string(),
+                            _ => continue,
+                        };
+                        let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
+                        GameSoundEvent::RefineryExitSfx {
+                            sound_id,
                             screen_pos: Some((sx, sy)),
                         }
                     }

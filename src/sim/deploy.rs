@@ -6,6 +6,10 @@
 //! not a sim phase — it's a visual sub-state of `Deployed` driven by
 //! `attack_target.is_some()` (existing tick_animations auto-transition).
 //!
+//! This countdown is a local approximation. Retail completion is driven by the
+//! infantry sequence frame reaching the sequence length; the sim does not yet
+//! let animation frame completion promote the deploy phase directly.
+//!
 //! ## Dependency rules
 //! - Part of sim/ — depends on sim/entity_store, sim/game_entity.
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
@@ -15,13 +19,8 @@ use crate::sim::entity_store::EntityStore;
 /// Default deploy/undeploy duration in sim ticks when the per-type art.ini
 /// frame count cannot be resolved from this scope.
 ///
-/// At SIM_TICK_MS=22, 55 ticks ≈ 1210ms. Sized to roughly match stock GI
-/// Deploy (15 frames × ~80ms/frame ≈ 1200ms), so when the sim phase advances
-/// to Deployed and the animation cascade switches the sequence, the visual
-/// Deploy animation has just about completed. Without this sizing, sim phase
-/// transitions ahead of the art.ini-driven visual and `tick_animations`
-/// truncates the Deploy sequence mid-playback. Per-type precise lookup is
-/// deferred — see plan Open Questions.
+/// Sized to roughly match stock GI/GGI deploy at the current 22 ms sim tick,
+/// but used only when per-type art sequence frame counts are unavailable.
 pub(crate) const DEPLOY_DEFAULT_TICKS: u16 = 55;
 
 /// Sim-authoritative deploy phase for an entity.
@@ -47,13 +46,11 @@ pub enum DeployPhaseKind {
     Undeploying,
 }
 
-/// Convert SHP animation frames to sim ticks.
+/// Convert SHP animation frames to sim countdown ticks.
 ///
-/// Approximation: the original engine paces the infantry deploy sequence at
-/// roughly 80 ms per SHP frame, while our sim ticks at SIM_TICK_MS=22.
-/// Frames -> ticks = round-down(frames * 80 / 22). Bounded ±1 tick. For
-/// GGI's 15-frame deploy this yields 54 ticks (within the existing 55-tick
-/// fallback by 1, validating the conversion against the stock GI case).
+/// This is not exact retail sequencing. It is a coarse bridge from art sequence
+/// length to the current sim-local countdown until deploy completion can be
+/// driven by actual sequence-frame completion.
 pub(crate) fn frames_to_ticks(frames: u16) -> u16 {
     ((frames as u32) * 80 / 22) as u16
 }
@@ -78,6 +75,8 @@ pub(crate) fn compute_anim_ticks(
 ///
 /// `Deploying { N }` → `Deploying { N-1 }` until N == 1, then promotes to
 /// `Deployed`. `Undeploying { N }` follows the same shape, ending at `None`.
+/// Because this runs after command dispatch, a freshly-entered phase decrements
+/// on the same `advance_tick` that accepted the deploy command.
 pub fn tick_deploy_state(entities: &mut EntityStore) {
     let keys = entities.keys_sorted();
     for id in keys {

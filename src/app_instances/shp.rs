@@ -531,14 +531,24 @@ fn emit_building_anims(
                 | crate::rules::art_data::BuildingAnimKind::Production
         ) {
             if anim.loop_count < 0 {
+                // Refinery ore-pile tier display: ActiveAnim/Two/Three/Four map
+                // to slots 3..6 in gamemd, and exactly ONE renders at a time —
+                // picked by `floor(stored * 4 / Storage)` (tier 0..3+). The
+                // Allied/Soviet dump path bypasses the refinery's StorageClass
+                // entirely (credits go straight to the owner), so the building's
+                // own stored amount stays 0 and tier is always 0 → only the
+                // primary slot (ActiveAnim = GAREFNL1) renders. The non-primary
+                // slots (Two/Three/Four) must be suppressed; otherwise all four
+                // ore-pile sprites stack on top of each other every frame.
+                let obj = rules.and_then(|r| r.object(building_type));
+                if obj.map(|o| o.refinery).unwrap_or(false) && !anim.is_primary {
+                    continue;
+                }
                 // Infinite loop ActiveAnim on a capturable tech building
                 // (Oil Derrick, Airport, etc.): the primary slot (ActiveAnim)
                 // only plays after capture. Decorative civilian buildings
                 // (country flags, etc.) always animate.
-                let is_capturable: bool = rules
-                    .and_then(|r| r.object(building_type))
-                    .map(|o| o.capturable)
-                    .unwrap_or(false);
+                let is_capturable: bool = obj.map(|o| o.capturable).unwrap_or(false);
                 if anim.is_primary && is_capturable && !is_player_owned {
                     anim.start_frame
                 } else {

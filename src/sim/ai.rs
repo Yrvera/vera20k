@@ -1080,10 +1080,7 @@ mod tests {
             if sim
                 .production
                 .dock_reservations
-                .occupied
-                .get(&refinery_sid)
-                .copied()
-                == Some(miner_sid)
+                .has_contact(refinery_sid, miner_sid)
             {
                 saw_dock_reservation = true;
             }

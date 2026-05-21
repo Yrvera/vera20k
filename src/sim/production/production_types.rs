@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::rules::object_type::ObjectCategory;
 use crate::sim::intern::InternedId;
 use crate::sim::miner::ResourceNode;
-use crate::sim::miner::miner_dock::DockReservations;
+use crate::sim::miner::miner_dock::{DockReservations, RefineryDockContacts};
 use crate::sim::ore_growth::{OreGrowthConfig, OreGrowthState};
 
 /// Initial credits for the local player.
@@ -145,6 +145,7 @@ pub enum ProductionCategory {
 pub enum BuildQueueState {
     Queued,
     Building,
+    NoFunds,
     Paused,
     Done,
 }
@@ -154,6 +155,7 @@ impl BuildQueueState {
         match self {
             Self::Queued => "Queued",
             Self::Building => "Building",
+            Self::NoFunds => "On Hold",
             Self::Paused => "Paused",
             Self::Done => "Done",
         }
@@ -201,7 +203,7 @@ pub struct ProductionState {
     /// Deterministic map resource stock by cell (ore/gem type + remaining amount).
     pub resource_nodes: BTreeMap<(u16, u16), ResourceNode>,
     /// Refinery dock reservation state — one dock per refinery, FIFO queue.
-    pub dock_reservations: DockReservations,
+    pub dock_reservations: RefineryDockContacts,
     /// Ore growth/spread configuration resolved from merged INI sources.
     pub ore_growth_config: OreGrowthConfig,
     /// Incremental scan state for ore growth/spread system.
@@ -231,7 +233,7 @@ impl Default for ProductionState {
             active_producer_by_owner: BTreeMap::new(),
             next_enqueue_order: 1,
             resource_nodes: BTreeMap::new(),
-            dock_reservations: DockReservations::default(),
+            dock_reservations: RefineryDockContacts::default(),
             ore_growth_config: OreGrowthConfig::disabled(),
             ore_growth_state: OreGrowthState::new(0, 0),
             slave_bindings: BTreeMap::new(),

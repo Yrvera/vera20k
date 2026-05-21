@@ -10,6 +10,21 @@ use std::hash::{Hash, Hasher};
 
 use super::Simulation;
 
+fn hash_drive_track_state(
+    state: &crate::sim::movement::drive_track::DriveTrackState,
+    hasher: &mut impl Hasher,
+) {
+    state.raw_track_index.hash(hasher);
+    state.point_index.hash(hasher);
+    state.residual.hash(hasher);
+    state.transform_flags.hash(hasher);
+    state.head_offset_x.hash(hasher);
+    state.head_offset_y.hash(hasher);
+    state.cell_offset_x.hash(hasher);
+    state.cell_offset_y.hash(hasher);
+    state.target_facing.hash(hasher);
+}
+
 impl Simulation {
     /// Deterministic state hash over canonicalized simulation state.
     ///
@@ -169,16 +184,22 @@ impl Simulation {
             spawner.animation_probability_micros.hash(hasher);
         }
         self.production.default_ore_overlay_id.hash(hasher);
-        // Hash dock reservations.
-        for (&ref_sid, &miner_sid) in &self.production.dock_reservations.occupied {
+        // Hash refinery radio/contact state.
+        for (&ref_sid, contacts) in &self.production.dock_reservations.contacts {
             ref_sid.hash(hasher);
-            miner_sid.hash(hasher);
+            for &miner_sid in contacts {
+                miner_sid.hash(hasher);
+            }
         }
-        for (&ref_sid, queue) in &self.production.dock_reservations.queues {
+        for (&ref_sid, queue) in &self.production.dock_reservations.waiting_retry_queue {
             ref_sid.hash(hasher);
             for &miner_sid in queue {
                 miner_sid.hash(hasher);
             }
+        }
+        for (&ref_sid, &miner_sid) in &self.production.dock_reservations.on_pad {
+            ref_sid.hash(hasher);
+            miner_sid.hash(hasher);
         }
     }
 
@@ -190,7 +211,6 @@ impl Simulation {
             state.total_output.hash(hasher);
             state.total_drain.hash(hasher);
             state.power_blackout_remaining.hash(hasher);
-            state.degradation_accum_ms.hash(hasher);
         }
     }
 
@@ -328,7 +348,10 @@ impl Simulation {
             entity.position.rx.hash(hasher);
             entity.position.ry.hash(hasher);
             entity.position.z.hash(hasher);
+            entity.position.sub_x.hash(hasher);
+            entity.position.sub_y.hash(hasher);
             entity.facing.hash(hasher);
+            entity.facing_target.hash(hasher);
             entity.owner.hash(hasher);
             entity.health.current.hash(hasher);
             entity.health.max.hash(hasher);
@@ -346,6 +369,22 @@ impl Simulation {
                 movement.path_stuck_counter.hash(hasher);
                 movement.path.hash(hasher);
                 movement.path_layers.hash(hasher);
+            } else {
+                0u8.hash(hasher);
+            }
+
+            if let Some(ref drive_track) = entity.drive_track {
+                1u8.hash(hasher);
+                hash_drive_track_state(drive_track, hasher);
+            } else {
+                0u8.hash(hasher);
+            }
+
+            if let Some(ref forced) = entity.forced_drive_track {
+                1u8.hash(hasher);
+                forced.turn_track_index.hash(hasher);
+                forced.speed.hash(hasher);
+                hash_drive_track_state(&forced.track, hasher);
             } else {
                 0u8.hash(hasher);
             }

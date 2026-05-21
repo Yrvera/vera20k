@@ -16,10 +16,15 @@ const SEGMENT_HEIGHT_PX: i32 = 3;
 /// Number of flashes when power values change (original: 10).
 const FLASH_COUNT: i32 = 10;
 
-/// Ticks between animation steps.
-/// Original game: 3 ticks at ~15Hz = ~200ms per step.
-/// Our engine: 9 ticks at 45Hz = ~200ms per step (same wall-clock speed).
-const TICKS_PER_STEP: i32 = 9;
+/// Ticks between flash blink steps.
+/// Original game: 48ms wall-clock per step (16ms timer × 3 units).
+/// Our engine: 2 ticks at 45Hz = ~44ms per step (closest equivalent).
+const FLASH_TICKS_PER_STEP: i32 = 2;
+
+/// Ticks between segment-slide animation steps.
+/// Original game: dynamic wall-clock interval, exact value unverified.
+/// 9 ticks at 45Hz = ~200ms per step; placeholder until verified.
+const SLIDE_TICKS_PER_STEP: i32 = 9;
 
 /// Scale factor for the asymptotic bar fill curve (original: 400.0 at 0x7ED8C8).
 /// When total theoretical power equals this value, the bar is exactly half full.
@@ -64,10 +69,10 @@ pub struct PowerBarAnimState {
 
     /// Remaining flash blinks (starts at FLASH_COUNT on power change).
     flashes_remaining: i32,
-    /// Tick counter for flash timing (counts down from TICKS_PER_STEP).
+    /// Tick counter for flash timing (counts down from FLASH_TICKS_PER_STEP).
     flash_tick_counter: i32,
 
-    /// Tick counter for segment animation (counts down from TICKS_PER_STEP).
+    /// Tick counter for segment animation (counts down from SLIDE_TICKS_PER_STEP).
     anim_tick_counter: i32,
     /// True while current segments differ from targets.
     animating: bool,
@@ -148,11 +153,11 @@ impl PowerBarAnimState {
 
             // Start flash phase.
             self.flashes_remaining = FLASH_COUNT;
-            self.flash_tick_counter = TICKS_PER_STEP;
+            self.flash_tick_counter = FLASH_TICKS_PER_STEP;
 
             // Start animation phase.
             self.animating = true;
-            self.anim_tick_counter = TICKS_PER_STEP;
+            self.anim_tick_counter = SLIDE_TICKS_PER_STEP;
         }
     }
 
@@ -167,7 +172,7 @@ impl PowerBarAnimState {
             self.flash_tick_counter -= 1;
             if self.flash_tick_counter <= 0 {
                 self.flashes_remaining -= 1;
-                self.flash_tick_counter = TICKS_PER_STEP;
+                self.flash_tick_counter = FLASH_TICKS_PER_STEP;
             }
         }
 
@@ -175,7 +180,7 @@ impl PowerBarAnimState {
         if self.animating {
             self.anim_tick_counter -= 1;
             if self.anim_tick_counter <= 0 {
-                self.anim_tick_counter = TICKS_PER_STEP;
+                self.anim_tick_counter = SLIDE_TICKS_PER_STEP;
                 self.step_one_segment();
             }
         }
@@ -265,19 +270,19 @@ impl PowerBarAnimState {
     }
 
     /// Move one segment toward the target.
-    /// Priority: surplus first, then drain, then output (matches original).
+    /// Priority: drain first, then surplus, then output (matches original game order).
     fn step_one_segment(&mut self) {
-        if self.surplus_segments != self.target_surplus {
-            if self.surplus_segments < self.target_surplus {
-                self.surplus_segments += 1;
-            } else {
-                self.surplus_segments -= 1;
-            }
-        } else if self.drain_segments != self.target_drain {
+        if self.drain_segments != self.target_drain {
             if self.drain_segments < self.target_drain {
                 self.drain_segments += 1;
             } else {
                 self.drain_segments -= 1;
+            }
+        } else if self.surplus_segments != self.target_surplus {
+            if self.surplus_segments < self.target_surplus {
+                self.surplus_segments += 1;
+            } else {
+                self.surplus_segments -= 1;
             }
         } else if self.output_segments != self.target_output {
             if self.output_segments < self.target_output {
@@ -423,7 +428,7 @@ mod tests {
 
         anim.update(200, 0, 200); // change
 
-        for _ in 0..(50 * TICKS_PER_STEP + 100) {
+        for _ in 0..(50 * SLIDE_TICKS_PER_STEP + 100) {
             anim.tick();
         }
 
@@ -444,13 +449,13 @@ mod tests {
         assert!(anim.is_flashing(), "even counter should blink");
 
         // Tick through one flash step → counter becomes 9 (odd).
-        for _ in 0..TICKS_PER_STEP {
+        for _ in 0..FLASH_TICKS_PER_STEP {
             anim.tick();
         }
         assert!(!anim.is_flashing(), "odd counter should not blink");
 
         // Another step → counter becomes 8 (even).
-        for _ in 0..TICKS_PER_STEP {
+        for _ in 0..FLASH_TICKS_PER_STEP {
             anim.tick();
         }
         assert!(anim.is_flashing(), "even counter should blink again");
@@ -465,7 +470,7 @@ mod tests {
 
         assert_eq!(anim.flashes_remaining, FLASH_COUNT);
 
-        for _ in 0..(FLASH_COUNT * TICKS_PER_STEP) {
+        for _ in 0..(FLASH_COUNT * FLASH_TICKS_PER_STEP) {
             anim.tick();
         }
 

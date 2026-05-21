@@ -8,6 +8,7 @@
 //! - Part of the app layer — may depend on everything.
 
 use crate::app::AppState;
+use crate::app_fire_effects::ProjectileVisual;
 use crate::map::lighting;
 use crate::map::overlay_types::is_bridge_overlay_index;
 use crate::map::terrain::{self, TILE_HEIGHT, TILE_WIDTH};
@@ -593,6 +594,77 @@ pub(crate) fn build_weapon_muzzle_flash_instances(
                 flash.screen_x + entry.offset_x,
                 flash.screen_y + entry.offset_y,
             ],
+            size: entry.pixel_size,
+            uv_origin: entry.uv_origin,
+            uv_size: entry.uv_size,
+            depth,
+            tint,
+            alpha: 1.0,
+            ..Default::default()
+        });
+    }
+}
+
+fn projectile_visual_key(projectile: &ProjectileVisual) -> ShpSpriteKey {
+    ShpSpriteKey {
+        type_id: projectile.shp_name.clone(),
+        facing: 0,
+        frame: projectile.frame,
+        house_color: HouseColorIndex(0),
+    }
+}
+
+/// Build SpriteInstances for render-only in-flight projectile visuals.
+pub(crate) fn build_projectile_visual_instances(
+    state: &AppState,
+    paged: &mut [Vec<SpriteInstance>],
+) {
+    let atlas = match &state.sprite_atlas {
+        Some(a) => a,
+        None => return,
+    };
+    let z = state.zoom_level;
+    let (cam_x, cam_y, sw, sh) = (
+        state.camera_x,
+        state.camera_y,
+        state.render_width() as f32 / z,
+        state.render_height() as f32 / z,
+    );
+    let (origin_y, world_height) = state
+        .terrain_grid
+        .as_ref()
+        .map(|g| (g.origin_y, g.world_height))
+        .unwrap_or((0.0, 1.0));
+
+    for projectile in &state.projectile_visuals {
+        let t = projectile.progress();
+        let screen_x =
+            projectile.start_screen_x + (projectile.end_screen_x - projectile.start_screen_x) * t;
+        let screen_y =
+            projectile.start_screen_y + (projectile.end_screen_y - projectile.start_screen_y) * t;
+        if !in_view(screen_x, screen_y, 96.0, 96.0, cam_x, cam_y, sw, sh, 96.0) {
+            continue;
+        }
+        let key = projectile_visual_key(projectile);
+        let Some(entry) = atlas.get(&key) else {
+            continue;
+        };
+        let rx = (projectile.start_rx as f32
+            + (projectile.end_rx as f32 - projectile.start_rx as f32) * t)
+            .round()
+            .clamp(0.0, u16::MAX as f32) as u16;
+        let ry = (projectile.start_ry as f32
+            + (projectile.end_ry as f32 - projectile.start_ry as f32) * t)
+            .round()
+            .clamp(0.0, u16::MAX as f32) as u16;
+        let tint = state
+            .lighting_grid
+            .get(&(rx, ry))
+            .copied()
+            .unwrap_or(lighting::DEFAULT_TINT);
+        let depth = compute_sprite_depth_params(origin_y, world_height, screen_y, projectile.z);
+        paged[entry.page as usize].push(SpriteInstance {
+            position: [screen_x + entry.offset_x, screen_y + entry.offset_y],
             size: entry.pixel_size,
             uv_origin: entry.uv_origin,
             uv_size: entry.uv_size,

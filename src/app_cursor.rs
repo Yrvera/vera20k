@@ -263,13 +263,19 @@ fn capability_cursor_for_hover(
             let is_infantry = sel_entity.category == EntityCategory::Infantry;
 
             if sel_obj.engineer {
-                // 3. Engineer on capturable enemy building → capture (Enter cursor).
+                // 3. Engineer on bridge repair hut → repair (Enter cursor).
+                if matches!(hover.kind, HoverTargetKind::EnemyStructure) {
+                    if hovered_obj.map_or(false, |o| o.bridge_repair_hut) {
+                        return CursorFeedbackKind::Enter;
+                    }
+                }
+                // 4. Engineer on capturable enemy building → capture (Enter cursor).
                 if matches!(hover.kind, HoverTargetKind::EnemyStructure) {
                     if hovered_obj.map_or(false, |o| o.capturable) {
                         return CursorFeedbackKind::Enter;
                     }
                 }
-                // 4. Engineer on damaged friendly building → repair.
+                // 5. Engineer on damaged friendly building → repair.
                 if matches!(hover.kind, HoverTargetKind::FriendlyStructure) {
                     if let Some(he) = hovered_entity {
                         if he.health.current < he.health.max {

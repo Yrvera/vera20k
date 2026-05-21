@@ -171,17 +171,19 @@ pub(crate) fn dispatch_bridge_collapse_from_hut(
 
     let scan: Vec<(u16, u16)> = cells_in_5x5_scan(hut_center).collect();
     let family = choose_hut_bridge_family(sim, &scan);
-    let direct_entry = find_hut_overlay_entry(sim, &scan, family);
-    let fallback_cells = if direct_entry.is_none() {
-        find_hut_fallback_cells(sim, hut_center)
-    } else {
-        Vec::new()
-    };
 
-    // Phase 1: run the hut-specific dispatcher. Overlay-first entries use
-    // the direct walker sweep. Fallback entries mirror the binary's
-    // ApplyDamageToCell path without combat BridgeStrength RNG, and keep
-    // walking past bridgehead absorption to a collapsible body/anchor cell.
+    // Precompute the 8-direction fallback cell list outside the bridge_state
+    // mut borrow — find_hut_fallback_cells reads the whole sim.
+    let fallback_cells_lazy: Vec<(u16, u16)> = find_hut_fallback_cells(sim, hut_center);
+
+    // gamemd's hut-death dispatch runs a BOUNDED 4-step walker, NOT a
+    // full-span collapse. Per `BRIDGE_COLLAPSE_CHAIN_MECHANISM_GHIDRA_REPORT.md`
+    // §4: `CollapseBridge_*_*` measures both axial extents from the seed,
+    // shifts the start cell toward the shorter side, then walks at most 4
+    // axial cells in the longer direction calling `DestroyBridge_*` per
+    // cell. Each per-cell call writes a 3-cell axial overlay range plus
+    // perpendicular ApplyBridgeDestruction (3×3 grid). Net cell coverage
+    // ~18 cells for a 3-wide bridge (3 perp × 6 axial after overlap).
     let mut outcomes: Vec<StateOutcome> = Vec::new();
     {
         let Some(terrain) = sim.resolved_terrain.as_ref() else {
@@ -190,13 +192,25 @@ pub(crate) fn dispatch_bridge_collapse_from_hut(
         let Some(bs) = sim.bridge_state.as_mut() else {
             return false;
         };
-        if let Some((entry_rx, entry_ry)) = direct_entry {
-            outcomes.extend(run_hut_destroy_entry(
-                bs, terrain, family, entry_rx, entry_ry,
+
+        // Look for a seed cell whose overlay is already in the destroy-band
+        // (i.e., a body cell). Try the 5×5 scan first, then the 8-direction
+        // fallback walk. If we find one, flood-fill the full bridge span
+        // from that cell.
+        let seed_axis = find_destroy_overlay_seed(bs, &scan, family)
+            .or_else(|| find_destroy_overlay_seed(bs, &fallback_cells_lazy, family));
+
+        if let Some((seed_rx, seed_ry, axis)) = seed_axis {
+            outcomes.extend(run_hut_collapse_bounded(
+                bs, terrain, family, axis, seed_rx, seed_ry,
             ));
         } else {
+            // No direct body-overlay reachable from the hut. Fall back to
+            // the damage-step path that transitions bridgehead / anchor /
+            // tail cells through their state machines until a body cell
+            // ends up with a destroy-overlay. Then flood-fill from there.
             let mut collapsed = false;
-            for (rx, ry) in fallback_cells {
+            for &(rx, ry) in &fallback_cells_lazy {
                 let role = bs.cell(rx, ry).map(|cell| cell.role);
                 for _ in 0..MAX_HUT_ATTEMPTS_PER_STEP {
                     let outcome = apply_hut_damage_to_cell(bs, terrain, rx, ry);
@@ -219,10 +233,51 @@ pub(crate) fn dispatch_bridge_collapse_from_hut(
                     break;
                 }
             }
+
+            // After the damage-step path produces at least one Collapsed,
+            // try to seed the full-span flood from any newly-destroyed cell
+            // that's in the destroy-overlay band.
+            let mut post_seed: Option<(u16, u16, Axis)> = None;
+            for outcome in &outcomes {
+                if let StateOutcome::Collapsed {
+                    destroyed_cells, ..
+                } = outcome
+                {
+                    for &(rx, ry) in destroyed_cells {
+                        if let Some(overlay) = bs.cell(rx, ry).map(|c| c.overlay_byte) {
+                            if let Some(axis) = destroy_overlay_axis(family, overlay) {
+                                post_seed = Some((rx, ry, axis));
+                                break;
+                            }
+                        }
+                    }
+                    if post_seed.is_some() {
+                        break;
+                    }
+                }
+            }
+            if let Some((rx, ry, axis)) = post_seed {
+                outcomes.extend(run_hut_collapse_bounded(bs, terrain, family, axis, rx, ry));
+            }
         }
     }
 
     apply_hut_bridge_outcomes(sim, rules, &outcomes)
+}
+
+/// Find the first cell in `scan` whose overlay maps to a destroy axis
+/// for this bridge family. Returns the cell + the resolved axis so the
+/// caller can drive a full-span flood from there.
+fn find_destroy_overlay_seed(
+    bridge_state: &BridgeRuntimeState,
+    scan: &[(u16, u16)],
+    family: HutBridgeFamily,
+) -> Option<(u16, u16, Axis)> {
+    scan.iter().copied().find_map(|(rx, ry)| {
+        let overlay = bridge_state.cell(rx, ry).map(|c| c.overlay_byte)?;
+        let axis = destroy_overlay_axis(family, overlay)?;
+        Some((rx, ry, axis))
+    })
 }
 
 fn apply_hut_bridge_outcomes(
@@ -294,8 +349,16 @@ const HUT_FALLBACK_DIRS: [(i16, i16); 8] = [
     (-1, -1),
 ];
 const HUT_FALLBACK_TRACE_LIMIT: usize = 12;
+// Hard cap of the bounded walker: gamemd's `CollapseBridge_*_*` uses
+// `local_2c = 4`. See `BRIDGE_COLLAPSE_CHAIN_MECHANISM_GHIDRA_REPORT.md` §4.
 const MAX_HUT_SWEEP_STEPS: usize = 4;
 const MAX_HUT_ATTEMPTS_PER_STEP: usize = 3;
+// Safety cap on the extent-measurement walk (Phase 1 of the bounded
+// walker). gamemd has no explicit cap — the off-bridge band check
+// terminates the walk — but a runaway count would only happen if the
+// overlay band check were buggy. 64 cells is well beyond any realistic
+// YR bridge length.
+const MAX_EXTENT_PROBE: usize = 64;
 
 fn choose_hut_bridge_family(sim: &Simulation, scan: &[(u16, u16)]) -> HutBridgeFamily {
     if scan
@@ -462,93 +525,70 @@ fn step_axis(pos: (u16, u16), axis: Axis, dir: i16) -> Option<(u16, u16)> {
     }
 }
 
-fn count_destroy_band(
-    bridge_state: &BridgeRuntimeState,
-    family: HutBridgeFamily,
-    axis: Axis,
-    start: (u16, u16),
-    dir: i16,
-) -> usize {
-    let mut count = 0;
-    let mut cursor = start;
-    while let Some(next) = step_axis(cursor, axis, dir) {
-        let Some(overlay) = bridge_state.cell(next.0, next.1).map(|c| c.overlay_byte) else {
-            break;
-        };
-        if !matching_destroy_overlay(family, overlay) {
-            break;
-        }
-        count += 1;
-        cursor = next;
-    }
-    count
-}
-
-fn midpoint_biased_start(
-    pos: (u16, u16),
-    axis: Axis,
-    backward_count: usize,
-    forward_count: usize,
-) -> Option<(u16, u16)> {
-    let delta = (backward_count as i16 - forward_count as i16) / 2;
-    let dir = if delta >= 0 { -1 } else { 1 };
-    let mut cursor = pos;
-    for _ in 0..delta.unsigned_abs() {
-        cursor = step_axis(cursor, axis, dir)?;
-    }
-    Some(cursor)
-}
-
-fn run_hut_destroy_entry(
+/// Bounded 4-iteration collapse walker — mirror of gamemd's
+/// `MapClass::CollapseBridge_{NS,EW}_{High,Low}` at
+/// `0x00575BA0` / `0x00575870` / `0x00575540` / `0x00575220`.
+///
+/// Per `BRIDGE_COLLAPSE_CHAIN_MECHANISM_GHIDRA_REPORT.md` §4:
+///
+/// 1. **Extent measurement.** Walk both axial directions from `seed`
+///    counting cells still inside the bridge overlay band
+///    (`[0xCD..=0xE8]` high / `[0x4A..=0x65]` low). Counts → `back` and
+///    `fwd`.
+/// 2. **Direction + start.** Step direction is `-1` if `fwd < back`,
+///    else `+1` (walk toward the longer-extent side). Start cell is
+///    `seed - (back - fwd) / 2` using signed integer division — biases
+///    the starting position toward the shorter side so the 4-step walk
+///    can cover the maximum bridge length.
+/// 3. **4-iteration walker.** For each of `MAX_HUT_SWEEP_STEPS` (= 4)
+///    axial steps, call the per-cell primitive `destroy_bridge_high/low`
+///    up to `MAX_HUT_ATTEMPTS_PER_STEP` (= 3) retries. Each primitive
+///    call writes a 3-cell axial overlay range and triggers
+///    `ApplyBridgeDestruction_*` on the X±1 perpendicular columns,
+///    producing a 3×3 destruction footprint per call. Step `cur` along
+///    the chosen axial direction after each iteration, break early when
+///    the next cell leaves the bridge band.
+///
+/// Net coverage for a 3-wide bridge: ~3 perp × 6 axial = ~18 cells per
+/// invocation (axial 3-cell windows overlap by 2 across iterations).
+/// For the 1-wide bridges in test fixtures, ~4 axial cells.
+fn run_hut_collapse_bounded(
     bridge_state: &mut BridgeRuntimeState,
     terrain: &crate::map::resolved_terrain::ResolvedTerrainGrid,
     family: HutBridgeFamily,
-    rx: u16,
-    ry: u16,
+    axis: Axis,
+    seed_rx: u16,
+    seed_ry: u16,
 ) -> Vec<StateOutcome> {
-    let Some(entry_overlay) = bridge_state.cell(rx, ry).map(|c| c.overlay_byte) else {
-        return Vec::new();
-    };
-    let Some(axis) = destroy_overlay_axis(family, entry_overlay) else {
+    // Phase 1: extent measurement in both axial directions.
+    let seed = (seed_rx, seed_ry);
+    let back = measure_extent(bridge_state, family, seed, axis, -1);
+    let fwd = measure_extent(bridge_state, family, seed, axis, 1);
+
+    // Phase 2: pick step direction + biased start cell. Signed integer
+    // division (round toward zero) matches gamemd's Asm `idiv` semantics.
+    let step: i16 = if fwd < back { -1 } else { 1 };
+    let bias: i32 = (back as i32 - fwd as i32) / 2;
+    // start = seed - bias (gamemd: `uVar9 - (iVar11 - iVar10) / 2`).
+    let Some(mut cur) = step_axis_by(seed, axis, -bias) else {
         return Vec::new();
     };
 
-    let backward_count = count_destroy_band(bridge_state, family, axis, (rx, ry), -1);
-    let forward_count = count_destroy_band(bridge_state, family, axis, (rx, ry), 1);
-    let sweep_dir = if forward_count < backward_count {
-        -1
-    } else {
-        1
-    };
-    let Some(mut current) = midpoint_biased_start((rx, ry), axis, backward_count, forward_count)
-    else {
-        return Vec::new();
-    };
-
-    let mut outcomes = Vec::new();
+    // Phase 3: 4-iteration walker.
+    let mut outcomes: Vec<StateOutcome> = Vec::new();
     for _ in 0..MAX_HUT_SWEEP_STEPS {
-        let Some(current_overlay) = bridge_state
-            .cell(current.0, current.1)
-            .map(|c| c.overlay_byte)
-        else {
-            break;
-        };
-        if !matching_destroy_overlay(family, current_overlay) {
-            break;
-        }
-
+        // Inner retry: a healthy cell takes 2 calls to reach Destroyed
+        // (Healthy → Damaged → Destroyed). gamemd's `iVar10 < 3` retry
+        // loop covers this.
         for _ in 0..MAX_HUT_ATTEMPTS_PER_STEP {
-            let outcome = match family {
-                HutBridgeFamily::Low => {
-                    bridge_state.destroy_bridge_low(current.0, current.1, terrain)
-                }
-                HutBridgeFamily::High => {
-                    bridge_state.destroy_bridge_high(current.0, current.1, terrain)
-                }
-            };
+            let outcome = call_destroy_per_family(bridge_state, terrain, family, cur);
             match outcome {
-                StateOutcome::NoChange => {}
-                StateOutcome::Absorbed => outcomes.push(StateOutcome::Absorbed),
+                StateOutcome::NoChange => break,
+                StateOutcome::Absorbed => {
+                    outcomes.push(StateOutcome::Absorbed);
+                    // Retry: the cell took a state step but is not yet
+                    // collapsed — another call may push it to Destroyed.
+                }
                 collapsed @ StateOutcome::Collapsed { .. } => {
                     outcomes.push(collapsed);
                     break;
@@ -556,12 +596,90 @@ fn run_hut_destroy_entry(
             }
         }
 
-        let Some(next) = step_axis(current, axis, sweep_dir) else {
+        // Step along the chosen axial direction. Break if the step
+        // would leave the map.
+        let Some(next) = step_axis(cur, axis, step) else {
             break;
         };
-        current = next;
+        // Break if the next cell is outside the bridge overlay band.
+        // gamemd's check is identical: `cellclass.overlay < 0xCD ||
+        // cellclass.overlay > 0xE8` for high (and `0x4A`/`0x65` for low).
+        let Some(overlay) = bridge_state.cell(next.0, next.1).map(|c| c.overlay_byte) else {
+            break;
+        };
+        if !in_bridge_band(family, overlay) {
+            break;
+        }
+        cur = next;
     }
+
     outcomes
+}
+
+/// Count cells in the bridge overlay band along `axis` in direction
+/// `dir` from `seed`. Stops at the first off-band cell, off-map step, or
+/// `MAX_EXTENT_PROBE` iterations (safety cap).
+fn measure_extent(
+    bridge_state: &BridgeRuntimeState,
+    family: HutBridgeFamily,
+    seed: (u16, u16),
+    axis: Axis,
+    dir: i16,
+) -> u32 {
+    let mut count: u32 = 0;
+    let mut cur = seed;
+    for _ in 0..MAX_EXTENT_PROBE {
+        let Some(next) = step_axis(cur, axis, dir) else {
+            break;
+        };
+        let Some(overlay) = bridge_state.cell(next.0, next.1).map(|c| c.overlay_byte) else {
+            break;
+        };
+        if !in_bridge_band(family, overlay) {
+            break;
+        }
+        count += 1;
+        cur = next;
+    }
+    count
+}
+
+fn in_bridge_band(family: HutBridgeFamily, overlay: u8) -> bool {
+    match family {
+        HutBridgeFamily::High => (0xCD..=0xE8).contains(&overlay),
+        HutBridgeFamily::Low => (0x4A..=0x65).contains(&overlay),
+    }
+}
+
+fn call_destroy_per_family(
+    bridge_state: &mut BridgeRuntimeState,
+    terrain: &crate::map::resolved_terrain::ResolvedTerrainGrid,
+    family: HutBridgeFamily,
+    cell: (u16, u16),
+) -> StateOutcome {
+    match family {
+        HutBridgeFamily::High => bridge_state.destroy_bridge_high(cell.0, cell.1, terrain),
+        HutBridgeFamily::Low => bridge_state.destroy_bridge_low(cell.0, cell.1, terrain),
+    }
+}
+
+/// Multi-cell axial step. Saturates to u16 bounds — out-of-map → None.
+fn step_axis_by(pos: (u16, u16), axis: Axis, delta: i32) -> Option<(u16, u16)> {
+    let (rx, ry) = pos;
+    match axis {
+        Axis::EW => {
+            let next = rx as i32 + delta;
+            (0..=u16::MAX as i32)
+                .contains(&next)
+                .then_some((next as u16, ry))
+        }
+        Axis::NS => {
+            let next = ry as i32 + delta;
+            (0..=u16::MAX as i32)
+                .contains(&next)
+                .then_some((rx, next as u16))
+        }
+    }
 }
 
 fn apply_hut_damage_to_cell(
@@ -1108,6 +1226,10 @@ mod tests {
                     zone_type: 0,
                     base_ground_walk_blocked: false,
                     base_build_blocked: false,
+                    base_land_type: 0,
+                    base_yr_cell_land_type: 0,
+                    base_terrain_class: Default::default(),
+                    base_speed_costs: Default::default(),
                     build_blocked: is_bridge,
                     has_bridge_deck: is_bridge,
                     bridge_walkable: is_bridge,

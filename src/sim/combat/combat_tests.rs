@@ -43,7 +43,7 @@ fn infantry_fire_frame_rules() -> RuleSet {
 [VehicleTypes]\n0=MTNK\n\n\
 [AircraftTypes]\n\n\
 [BuildingTypes]\n\n\
-[E1]\nStrength=125\nArmor=flak\nSpeed=4\nImage=GI\nPrimary=M60\nSecondary=Para\n\n\
+[E1]\nStrength=125\nArmor=flak\nSpeed=4\nImage=GI\nPrimary=M60\nSecondary=Para\nDeployFire=yes\n\n\
 [E2]\nStrength=125\nArmor=flak\nSpeed=4\n\n\
 [MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\n\n\
 [M60]\nDamage=25\nROF=20\nRange=5\nWarhead=SA\nReport=GIAttack\nOccupantAnim=UCFLASH\n\n\
@@ -58,6 +58,26 @@ fn infantry_fire_frame_rules() -> RuleSet {
     let art = crate::rules::art_data::ArtRegistry::from_ini(&art_ini);
     rules.merge_art_data(&art);
     rules
+}
+
+fn guardian_gi_rules() -> RuleSet {
+    let ini: IniFile = IniFile::from_str(
+        "\
+[InfantryTypes]\n0=GGI\n1=E2\n2=ROCK\n\n\
+[VehicleTypes]\n0=HTNK\n\n\
+[AircraftTypes]\n\n\
+[BuildingTypes]\n\n\
+[GGI]\nStrength=100\nArmor=none\nSpeed=4\nPrimary=M60\nSecondary=MissileLauncher\nDeployFire=yes\n\n\
+[E2]\nStrength=125\nArmor=none\nSpeed=4\n\n\
+[ROCK]\nStrength=125\nArmor=none\nSpeed=8\nConsideredAircraft=yes\n\n\
+[HTNK]\nStrength=400\nArmor=heavy\nSpeed=5\n\n\
+[M60]\nDamage=15\nROF=20\nRange=4\nWarhead=SA\nReport=GGIAttack\n\n\
+[MissileLauncher]\nDamage=40\nROF=40\nRange=8\nProjectile=AAHeatSeeker2\nWarhead=GUARDWH\nReport=GuardianGIDeployedAttack\n\n\
+[AAHeatSeeker2]\nAA=yes\nAG=yes\n\n\
+[SA]\nVerses=100%,80%,80%,50%,25%,25%,75%,50%,25%,100%,100%\n\n\
+[GUARDWH]\nVerses=20%,20%,20%,100%,50%,100%,10%,10%,10%,100%,100%\n",
+    );
+    RuleSet::from_ini(&ini).expect("guardian GI rules should parse")
 }
 
 fn make_entity(id: u64, type_ref: &str, rx: u16, ry: u16, hp: u16) -> GameEntity {
@@ -94,6 +114,63 @@ fn make_infantry_entity(id: u64, type_ref: &str, rx: u16, ry: u16, hp: u16) -> G
     e
 }
 
+fn considered_aircraft_weapon_rules() -> RuleSet {
+    let ini_str: &str = "\
+[InfantryTypes]
+0=ROCK
+1=E1
+[VehicleTypes]
+0=IFV
+[AircraftTypes]
+[BuildingTypes]
+
+[IFV]
+Strength=200
+Armor=light
+Speed=8
+Primary=GroundGun
+Secondary=AirGun
+
+[ROCK]
+Strength=125
+Armor=none
+Speed=8
+ConsideredAircraft=yes
+
+[E1]
+Strength=125
+Armor=none
+Speed=4
+
+[GroundGun]
+Damage=10
+ROF=20
+Range=7
+Projectile=GroundProj
+Warhead=TestWH
+
+[AirGun]
+Damage=10
+ROF=20
+Range=7
+Projectile=AirProj
+Warhead=TestWH
+
+[GroundProj]
+AG=yes
+AA=no
+
+[AirProj]
+AG=no
+AA=yes
+
+[TestWH]
+Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%
+";
+    let ini: IniFile = IniFile::from_str(ini_str);
+    RuleSet::from_ini(&ini).expect("considered-aircraft combat rules should parse")
+}
+
 fn set_anim_frame(store: &mut EntityStore, id: u64, frame: u16) {
     store
         .get_mut(id)
@@ -112,6 +189,89 @@ fn test_armor_index_lookup() {
     assert_eq!(armor_index("wood"), 6);
     assert_eq!(armor_index("concrete"), 8);
     assert_eq!(armor_index("unknown"), 0);
+}
+
+#[test]
+fn considered_aircraft_infantry_is_air_for_projectile_legality() {
+    let rules = considered_aircraft_weapon_rules();
+    let mut sim = crate::sim::world::Simulation::new();
+    let heights = BTreeMap::new();
+    let attacker = sim
+        .spawn_object("IFV", "Americans", 5, 5, 0, &rules, &heights)
+        .expect("IFV should spawn");
+    let target = sim
+        .spawn_object("ROCK", "Soviet", 8, 5, 0, &rules, &heights)
+        .expect("Rocketeer should spawn");
+
+    let target_entity = sim.entities.get(target).expect("target should exist");
+    assert_eq!(target_entity.category, EntityCategory::Infantry);
+    assert!(
+        rules
+            .object(sim.interner.resolve(target_entity.type_ref))
+            .is_some_and(|obj| obj.considered_aircraft)
+    );
+    assert_eq!(
+        combat_target_category(target_entity, &rules, &sim.interner),
+        EntityCategory::Aircraft
+    );
+
+    issue_attack_command(&mut sim.entities, attacker, target, None, &sim.interner);
+    let result = tick_combat(
+        &mut sim.entities,
+        &mut sim.occupancy,
+        &rules,
+        &mut sim.interner,
+        &mut BTreeMap::new(),
+        0,
+        100,
+        0,
+    );
+
+    assert_eq!(result.fire_events.len(), 1);
+    assert_eq!(
+        sim.interner.resolve(result.fire_events[0].weapon_id),
+        "AirGun"
+    );
+    assert_eq!(result.fire_events[0].weapon_slot, WeaponSlot::Secondary);
+}
+
+#[test]
+fn ordinary_infantry_remains_ground_for_projectile_legality() {
+    let rules = considered_aircraft_weapon_rules();
+    let mut sim = crate::sim::world::Simulation::new();
+    let heights = BTreeMap::new();
+    let attacker = sim
+        .spawn_object("IFV", "Americans", 5, 5, 0, &rules, &heights)
+        .expect("IFV should spawn");
+    let target = sim
+        .spawn_object("E1", "Soviet", 8, 5, 0, &rules, &heights)
+        .expect("ordinary infantry should spawn");
+
+    let target_entity = sim.entities.get(target).expect("target should exist");
+    assert_eq!(target_entity.category, EntityCategory::Infantry);
+    assert_eq!(
+        combat_target_category(target_entity, &rules, &sim.interner),
+        EntityCategory::Infantry
+    );
+
+    issue_attack_command(&mut sim.entities, attacker, target, None, &sim.interner);
+    let result = tick_combat(
+        &mut sim.entities,
+        &mut sim.occupancy,
+        &rules,
+        &mut sim.interner,
+        &mut BTreeMap::new(),
+        0,
+        100,
+        0,
+    );
+
+    assert_eq!(result.fire_events.len(), 1);
+    assert_eq!(
+        sim.interner.resolve(result.fire_events[0].weapon_id),
+        "GroundGun"
+    );
+    assert_eq!(result.fire_events[0].weapon_slot, WeaponSlot::Primary);
 }
 
 #[test]
@@ -442,6 +602,92 @@ fn test_tick_combat_out_of_range() {
 }
 
 #[test]
+fn undeployed_guardian_gi_vs_infantry_uses_m60() {
+    let rules = guardian_gi_rules();
+    let mut store = EntityStore::new();
+    store.insert(make_infantry_entity(1, "GGI", 0, 0, 100));
+    store.insert(make_infantry_entity(2, "E2", 3, 0, 125));
+    let mut interner = test_interner();
+    issue_attack_command(&mut store, 1, 2, None, &interner);
+
+    let result = tick_combat(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        0,
+        100,
+        0,
+    );
+
+    assert_eq!(result.fire_events.len(), 1);
+    let ev = &result.fire_events[0];
+    assert_eq!(interner.resolve(ev.weapon_id), "M60");
+    assert_eq!(ev.weapon_slot, WeaponSlot::Primary);
+    assert_eq!(store.get(2).unwrap().health.current, 110);
+}
+
+#[test]
+fn deployed_guardian_gi_vs_rhino_at_six_cells_uses_missilelauncher() {
+    let rules = guardian_gi_rules();
+    let mut store = EntityStore::new();
+    let mut ggi = make_infantry_entity(1, "GGI", 0, 0, 100);
+    ggi.deploy_state = Some(crate::sim::deploy::DeployPhase::Deployed);
+    ggi.animation = Some(Animation::new(SequenceKind::Deployed));
+    store.insert(ggi);
+    store.insert(make_entity(2, "HTNK", 6, 0, 400));
+    let mut interner = test_interner();
+    issue_attack_command(&mut store, 1, 2, None, &interner);
+
+    let result = tick_combat(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        0,
+        100,
+        0,
+    );
+
+    assert_eq!(result.fire_events.len(), 1);
+    let ev = &result.fire_events[0];
+    assert_eq!(interner.resolve(ev.weapon_id), "MissileLauncher");
+    assert_eq!(ev.weapon_slot, WeaponSlot::Secondary);
+    assert_eq!(store.get(2).unwrap().health.current, 360);
+}
+
+#[test]
+fn deployed_guardian_gi_vs_rocketeer_uses_missilelauncher() {
+    let rules = guardian_gi_rules();
+    let mut store = EntityStore::new();
+    let mut ggi = make_infantry_entity(1, "GGI", 0, 0, 100);
+    ggi.deploy_state = Some(crate::sim::deploy::DeployPhase::Deployed);
+    ggi.animation = Some(Animation::new(SequenceKind::Deployed));
+    store.insert(ggi);
+    store.insert(make_infantry_entity(2, "ROCK", 6, 0, 125));
+    let mut interner = test_interner();
+    issue_attack_command(&mut store, 1, 2, None, &interner);
+
+    let result = tick_combat(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        0,
+        100,
+        0,
+    );
+
+    assert_eq!(result.fire_events.len(), 1);
+    let ev = &result.fire_events[0];
+    assert_eq!(interner.resolve(ev.weapon_id), "MissileLauncher");
+    assert_eq!(ev.weapon_slot, WeaponSlot::Secondary);
+}
+
+#[test]
 fn test_infantry_vs_heavy_armor() {
     let rules: RuleSet = test_rules();
     let mut store = EntityStore::new();
@@ -625,7 +871,7 @@ fn prone_infantry_uses_prone_fire_sequence_and_frame() {
 }
 
 #[test]
-fn deployed_gi_uses_deployed_fire_visual_with_target_driven_weapon() {
+fn deployed_gi_uses_deployed_fire_visual_with_deploy_fire_weapon() {
     let rules = infantry_fire_frame_rules();
     let mut store = EntityStore::new();
     let mut attacker = make_infantry_entity(1, "E1", 5, 5, 125);
@@ -671,7 +917,7 @@ fn deployed_gi_uses_deployed_fire_visual_with_target_driven_weapon() {
     assert_eq!(
         store.get(2).unwrap().health.current,
         260,
-        "heavy target should force secondary Para damage while visual uses DeployedFire"
+        "deployed-fire should use the DeployFireWeapon secondary slot"
     );
     assert_eq!(result.fire_events.len(), 1);
     let ev = &result.fire_events[0];

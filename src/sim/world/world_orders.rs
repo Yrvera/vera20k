@@ -249,11 +249,11 @@ impl Simulation {
 
     /// Tick bridge-repair orders: any engineer with `capture_target` pointing
     /// at a `BridgeRepairHut=yes` building, Chebyshev-≤-1 adjacent, triggers
-    /// bridge repair on the cells in a 5×5 scan around the engineer.
+    /// bridge repair on the cells in a 5×5 scan around the hut/building cell.
     ///
     /// Flow:
     ///   1. Emit `SimSoundEvent::BridgeRepaired` at the building's cell.
-    ///   2. Run overlay-family bridge repair over the 5×5 scan around the engineer.
+    ///   2. Run overlay-family bridge repair over the 5×5 scan around the hut.
     ///   3. Despawn the engineer (consumed by repair).
     ///
     /// Returns `true` if any repair mutated bridge state (caller ORs into
@@ -337,8 +337,8 @@ impl Simulation {
                     owner: engineer_owner,
                 });
 
-            // Step B: 5×5 scan from engineer cell + repair dispatch.
-            let scan: Vec<(u16, u16)> = cells_in_5x5_scan((erx, ery)).collect();
+            // Step B: 5×5 scan from hut/building cell + repair dispatch.
+            let scan: Vec<(u16, u16)> = cells_in_5x5_scan((brx, bry)).collect();
             let outcome = if let (Some(bs), Some(terrain)) =
                 (self.bridge_state.as_mut(), self.resolved_terrain.as_ref())
             {

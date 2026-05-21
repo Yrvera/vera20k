@@ -23,6 +23,12 @@ use super::{MovementConfig, MovementTickStats, PathfindingContext};
 /// - `movement_delay` guards against calling Find_Path too often (PathDelay=)
 /// - `blocked_delay` waits for friendlies to clear before escalating (BlockagePathDelay=)
 /// - `path_stuck_counter` limits total retries before giving up (init=10)
+///
+/// `skip_grace_period` distinguishes gamemd's code-7 (terrain / impassable
+/// / hard-block) path from code-2 (moving friendly). Code-7 has no grace
+/// timer in the original — the unit stops and repaths immediately at
+/// urgency=2. Code-2 spends `BlockagePathDelay` ticks at urgency=1 before
+/// escalating.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn handle_blocked_tick(
     target: &mut MovementTarget,
@@ -46,6 +52,7 @@ pub(super) fn handle_blocked_tick(
     path_stuck_init: u8,
     mover_is_crusher: bool,
     is_infantry: bool,
+    skip_grace_period: bool,
 ) -> Vec<(u32, DebugEventKind)> {
     let mut deferred_events: Vec<(u32, DebugEventKind)> = Vec::new();
     stats.blocked_attempts = stats.blocked_attempts.saturating_add(1);
@@ -56,7 +63,11 @@ pub(super) fn handle_blocked_tick(
 
     if !target.path_blocked {
         target.path_blocked = true;
-        target.blocked_delay = mcfg.blockage_path_delay_ticks;
+        target.blocked_delay = if skip_grace_period {
+            0
+        } else {
+            mcfg.blockage_path_delay_ticks
+        };
         if let Some((nx, ny)) = next_cell {
             deferred_events.push((
                 sim_tick as u32,
@@ -66,6 +77,11 @@ pub(super) fn handle_blocked_tick(
                 },
             ));
         }
+    } else if skip_grace_period {
+        // Terrain/impassable block reached while a code-2 grace timer is
+        // still running from a prior entity block. gamemd code-7 path has
+        // no grace — reset so urgency=2 fires this tick.
+        target.blocked_delay = 0;
     }
 
     if mcfg.close_enough > SIM_ZERO {

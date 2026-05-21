@@ -136,7 +136,7 @@ pub(crate) struct AppState {
     /// Which screen is currently active (MainMenu, Loading, InGame).
     pub(crate) screen: GameScreen,
     /// Available maps from the RA2 directory for menu selection.
-    available_maps: Vec<MapMenuEntry>,
+    pub(crate) available_maps: Vec<MapMenuEntry>,
     /// Player-configured skirmish settings (map, country, credits, etc.).
     pub(crate) skirmish_settings: SkirmishSettings,
     /// Opt-in research shell path. Defaults off so the egui Skirmish setup is visible.
@@ -144,6 +144,8 @@ pub(crate) struct AppState {
     pub(crate) skirmish_shell_state: crate::ui::skirmish_shell::SkirmishShellState,
     pub(crate) skirmish_shell_chrome:
         Option<crate::render::skirmish_shell_chrome::SkirmishShellChromeAtlas>,
+    pub(crate) skirmish_preview_texture:
+        Option<crate::app_skirmish_shell_render::SkirmishPreviewTexture>,
     /// Minimap renderer — created at map load time.
     pub(crate) main_menu_shell_state: crate::ui::main_menu_shell::MainMenuShellState,
     pub(crate) main_menu_shell_chrome:
@@ -169,6 +171,10 @@ pub(crate) struct AppState {
     pub(crate) radar_anim: Option<crate::render::radar_anim::RadarAnimState>,
     /// Animated power bar — segment-by-segment transition matching original PowerClass.
     pub(crate) power_bar_anim: crate::sidebar::PowerBarAnimState,
+    /// Persistent flash + mode state for in-game sidebar gadgets. Ticked from
+    /// `app_sidebar_gadgets::update_sidebar_gadget_state` once per sim tick;
+    /// read each frame by the sidebar view builder to pick SHP frame indices.
+    pub(crate) sidebar_gadget_state: crate::sidebar::gadget_flash::SidebarGadgetState,
     /// Smoothly animated credits display per owner — ticks toward actual balance
     /// each frame (step = |diff| / 8, clamped to [1, 143]).
     pub(crate) displayed_credits: HashMap<String, i32>,
@@ -288,6 +294,8 @@ pub(crate) struct AppState {
     /// Active non-garrison weapon muzzle flash animations spawned from weapon `Anim=`.
     /// App-owned presentation state; combat only emits the fire facts.
     pub(crate) weapon_muzzle_flashes: Vec<crate::sim::components::WeaponMuzzleFlash>,
+    /// Active render-only projectile sprites spawned from non-instant weapon fire.
+    pub(crate) projectile_visuals: Vec<crate::app_fire_effects::ProjectileVisual>,
     /// Active parachute animations, one per descending paradropped infantry.
     /// Polling-based lifecycle: spawned when an entity gains parachute_state
     /// in the sim, removed on landing or death. Render-only; not snapshotted.
@@ -319,6 +327,17 @@ pub(crate) struct AppState {
     pub(crate) show_save_load_panel: bool,
     /// Cached save-file listing for the save/load panel (avoids per-frame disk I/O).
     pub(crate) save_list_cache: crate::app_save_load_panel::SaveListCache,
+    /// Text-field buffer for the dev overlay's "Save As" name input.
+    /// Lives in AppState so the field persists across frames while open.
+    pub(crate) dev_overlay_save_name: String,
+    /// Tick number recorded by the most recent save this session.
+    pub(crate) last_save_tick: Option<u64>,
+    /// Wall-clock instant of the most recent save this session.
+    pub(crate) last_save_instant: Option<std::time::Instant>,
+    /// Path of the most recently loaded save (for "Reload last load").
+    pub(crate) last_loaded_save_path: Option<std::path::PathBuf>,
+    /// Rolling FPS / frame-time tracker for the dev overlay readout.
+    pub(crate) frame_timer: crate::app_dev_overlay::FrameTimer,
     // -- Reusable per-frame scratch buffers (avoid allocation each frame) --
     /// Overlay instance scratch vec — cleared and refilled each frame.
     pub(crate) cached_overlay_instances: Vec<crate::render::batch::SpriteInstance>,
@@ -1034,6 +1053,7 @@ impl App {
             dev_skirmish_shell_enabled,
             skirmish_shell_state: crate::ui::skirmish_shell::SkirmishShellState::default(),
             skirmish_shell_chrome,
+            skirmish_preview_texture: None,
             main_menu_shell_state: crate::ui::main_menu_shell::MainMenuShellState::default(),
             main_menu_shell_chrome,
             main_menu_movie: None,
@@ -1049,6 +1069,7 @@ impl App {
             middle_mouse_anchor_y: 0.0,
             radar_anim: None,
             power_bar_anim: crate::sidebar::PowerBarAnimState::new(),
+            sidebar_gadget_state: crate::sidebar::gadget_flash::SidebarGadgetState::new(),
             radar_content_insets: None,
             has_radar: false,
             selection_overlay: None,
@@ -1100,6 +1121,7 @@ impl App {
             pending_fire_effects: Vec::new(),
             garrison_muzzle_flashes: Vec::new(),
             weapon_muzzle_flashes: Vec::new(),
+            projectile_visuals: Vec::new(),
             parachute_anims: Vec::new(),
             paused: false,
             debug_frame_step_requested: false,
@@ -1114,6 +1136,11 @@ impl App {
             debug_unit_inspector: false,
             show_save_load_panel: false,
             save_list_cache: crate::app_save_load_panel::SaveListCache::new(),
+            dev_overlay_save_name: String::new(),
+            last_save_tick: None,
+            last_save_instant: None,
+            last_loaded_save_path: None,
+            frame_timer: crate::app_dev_overlay::FrameTimer::new(),
             displayed_credits: HashMap::new(),
             cached_overlay_instances: Vec::new(),
             cached_unit_instances: Vec::new(),
@@ -1122,6 +1149,7 @@ impl App {
 
     /// Dispatch rendering based on current GameScreen state.
     fn render_frame(state: &mut AppState, event_loop: &ActiveEventLoop) -> Result<()> {
+        state.frame_timer.sample(Instant::now());
         if let Some(until) = state.startup_splash_until {
             if Instant::now() < until {
                 let output: wgpu::SurfaceTexture = state
@@ -1282,6 +1310,12 @@ impl App {
                 }
                 if state.paused {
                     Self::handle_pause_menu(state);
+                    // Dev overlay rides along with the pause menu — push its
+                    // own light visuals so the panel chrome matches debug
+                    // panels rather than the pause menu's client theme.
+                    let prev = crate::app_debug_panel::push_debug_light_visuals(&state.egui.ctx);
+                    Self::handle_dev_overlay(state);
+                    crate::app_debug_panel::pop_debug_light_visuals(&state.egui.ctx, prev);
                 }
                 state.egui.end_frame_and_render(
                     &state.gpu,
@@ -1419,6 +1453,163 @@ impl App {
                 state.show_save_load_panel = false;
             }
             SaveLoadAction::None => {}
+        }
+    }
+
+    /// Draw the dev overlay and dispatch its actions. No-op when the
+    /// overlay is hidden — caller checks `show_dev_overlay` before
+    /// calling.
+    fn handle_dev_overlay(state: &mut AppState) {
+        use crate::app_dev_overlay::{self, DevOverlayAction, DevOverlayInfo, RecentSaveRow};
+
+        // Build the recent-saves snapshot from the existing cache.
+        state.save_list_cache.refresh_if_dirty();
+        let recent_saves: Vec<RecentSaveRow> = state
+            .save_list_cache
+            .entries
+            .iter()
+            .take(5)
+            .map(|e| RecentSaveRow {
+                path: e.path.clone(),
+                display_name: e
+                    .path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("?")
+                    .to_string(),
+                tick: e.header.tick,
+                age_str: crate::app_save_load_panel::format_timestamp(e.header.save_timestamp),
+            })
+            .collect();
+
+        let last_save_age: Option<String> = state.last_save_instant.map(|t| {
+            let secs = t.elapsed().as_secs();
+            if secs < 60 {
+                format!("{secs}s ago")
+            } else if secs < 3600 {
+                format!("{}m ago", secs / 60)
+            } else {
+                format!("{}h {}m ago", secs / 3600, (secs % 3600) / 60)
+            }
+        });
+
+        let last_load_available = state
+            .last_loaded_save_path
+            .as_ref()
+            .map(|p| p.exists())
+            .unwrap_or(false);
+        let last_load_display = state
+            .last_loaded_save_path
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .map(str::to_string);
+
+        // Temporarily move the save-name buffer out so it can be borrowed
+        // mutably by the info struct without conflicting with state.
+        let mut save_name = std::mem::take(&mut state.dev_overlay_save_name);
+
+        let mut info = DevOverlayInfo {
+            sim_speed_tps: state.sim_speed_tps,
+            paused: state.paused,
+            music_volume: state.music_player.as_ref().map_or(0.5, |p| p.volume()),
+            sfx_volume: state.sfx_player.as_ref().map_or(0.7, |p| p.volume()),
+            show_pathgrid: state.debug_show_pathgrid,
+            show_cell_grid: state.debug_show_cell_grid,
+            show_heightmap: state.debug_show_heightmap,
+            show_unit_inspector: state.debug_unit_inspector,
+            reveal_map: state.sandbox_full_visibility,
+            fps: state.frame_timer.fps(),
+            frame_ms: state.frame_timer.frame_ms_mean(),
+            tick_budget_ms: if state.sim_speed_tps == 0 {
+                0.0
+            } else {
+                1000.0 / state.sim_speed_tps as f32
+            },
+            entity_count: state.simulation.as_ref().map_or(0, |s| s.entities.len()),
+            save_name_buf: &mut save_name,
+            last_save_tick: state.last_save_tick,
+            last_save_age,
+            last_load_available,
+            last_load_display,
+            recent_saves,
+        };
+
+        let action = app_dev_overlay::draw_dev_overlay(&state.egui.ctx, &mut info);
+
+        // Restore the (possibly-edited) buffer.
+        state.dev_overlay_save_name = save_name;
+
+        match action {
+            DevOverlayAction::None => {}
+            DevOverlayAction::SetGameSpeed(tps) => {
+                state.sim_speed_tps = tps.max(1);
+                log::info!("Game speed: {} tps", state.sim_speed_tps);
+            }
+            DevOverlayAction::ResetGameSpeed => {
+                state.sim_speed_tps = crate::app_types::default_yr_skirmish_tps();
+                log::info!("Game speed reset to {} tps", state.sim_speed_tps);
+            }
+            DevOverlayAction::SetMusicVolume(v) => {
+                if let Some(p) = &mut state.music_player {
+                    p.set_volume(v);
+                }
+            }
+            DevOverlayAction::SetSfxVolume(v) => {
+                if let Some(p) = &mut state.sfx_player {
+                    p.set_volume(v);
+                }
+            }
+            DevOverlayAction::TogglePause => {
+                app_input::toggle_debug_pause(state);
+            }
+            DevOverlayAction::StepOneTick => {
+                if state.paused {
+                    state.debug_frame_step_requested = true;
+                }
+            }
+            DevOverlayAction::TogglePathGrid => {
+                app_input::toggle_pathgrid_overlay(state);
+            }
+            DevOverlayAction::ToggleCellGrid => {
+                state.debug_show_cell_grid = !state.debug_show_cell_grid;
+            }
+            DevOverlayAction::ToggleHeightmap => {
+                state.debug_show_heightmap = !state.debug_show_heightmap;
+            }
+            DevOverlayAction::ToggleUnitInspector => {
+                app_input::toggle_unit_inspector(state);
+            }
+            DevOverlayAction::ToggleRevealMap => {
+                state.sandbox_full_visibility = !state.sandbox_full_visibility;
+                log::info!(
+                    "Reveal map: {}",
+                    if state.sandbox_full_visibility {
+                        "ON"
+                    } else {
+                        "OFF"
+                    }
+                );
+            }
+            DevOverlayAction::SaveAs => {
+                let name = std::mem::take(&mut state.dev_overlay_save_name);
+                app_input::save_with_name(state, &name);
+            }
+            DevOverlayAction::ReloadLastLoad => {
+                if let Some(path) = state.last_loaded_save_path.clone() {
+                    if path.exists() {
+                        app_input::load_save_file(state, &path);
+                    } else {
+                        log::warn!(
+                            "Reload last load: file no longer exists: {}",
+                            path.display()
+                        );
+                    }
+                }
+            }
+            DevOverlayAction::LoadSave(path) => {
+                app_input::load_save_file(state, &path);
+            }
         }
     }
 }

@@ -250,6 +250,8 @@ fn apply_sidebar_action(state: &mut AppState, action: SidebarAction) {
         SidebarAction::ArmPlacement(type_id) => {
             state.targeting_mode =
                 Some(crate::app_types::TargetingMode::BuildingPlacement(type_id));
+            state.sidebar_gadget_state.repair_mode_on = false;
+            state.sidebar_gadget_state.sell_mode_on = false;
         }
         SidebarAction::ClearPlacementMode => {
             state.targeting_mode = None;
@@ -257,8 +259,10 @@ fn apply_sidebar_action(state: &mut AppState, action: SidebarAction) {
         }
         SidebarAction::ArmSuperWeapon(section) => {
             state.targeting_mode = Some(crate::app_types::TargetingMode::SuperWeapon(section));
-            // Mutual exclusion: clear any pending building-placement preview.
+            // Mutual exclusion: clear building-placement preview AND repair/sell modes.
             state.building_placement_preview = None;
+            state.sidebar_gadget_state.repair_mode_on = false;
+            state.sidebar_gadget_state.sell_mode_on = false;
             log::info!(
                 "SuperWeapon armed: type={}",
                 state.armed_super_weapon_type().unwrap_or("")
@@ -289,10 +293,90 @@ fn apply_sidebar_action(state: &mut AppState, action: SidebarAction) {
         SidebarAction::SpawnTestUnits => {
             spawn_test_units_for_local_owner(state);
         }
+        SidebarAction::ToggleRepairMode => {
+            let g = &mut state.sidebar_gadget_state;
+            g.repair_mode_on = !g.repair_mode_on;
+            if g.repair_mode_on {
+                g.sell_mode_on = false;
+                state.targeting_mode = None;
+                state.building_placement_preview = None;
+            }
+        }
+        SidebarAction::ToggleSellMode => {
+            let g = &mut state.sidebar_gadget_state;
+            g.sell_mode_on = !g.sell_mode_on;
+            if g.sell_mode_on {
+                g.repair_mode_on = false;
+                state.targeting_mode = None;
+                state.building_placement_preview = None;
+            }
+        }
         SidebarAction::Deploy => {
             queue_deploy_undeploy_for_selected(state);
         }
     }
+}
+
+/// Toggle the unit-inspector debug overlay.
+///
+/// Beyond flipping `state.debug_unit_inspector`, this allocates per-entity
+/// debug logs on enable and frees them on disable, and sets the sim flag
+/// `debug_event_logging`. Called by both the X hotkey and the dev overlay
+/// checkbox so the two paths cannot drift.
+pub(crate) fn toggle_unit_inspector(state: &mut AppState) {
+    state.debug_unit_inspector = !state.debug_unit_inspector;
+    if let Some(sim) = &mut state.simulation {
+        sim.debug_event_logging = state.debug_unit_inspector;
+        if state.debug_unit_inspector {
+            for entity in sim.entities.values_mut() {
+                if entity.debug_log.is_none() {
+                    entity.debug_log = Some(crate::sim::debug_event_log::DebugEventLog::new());
+                }
+            }
+            log::info!("Debug unit inspector: ON");
+        } else {
+            for entity in sim.entities.values_mut() {
+                entity.debug_log = None;
+            }
+            log::info!("Debug unit inspector: OFF");
+        }
+    }
+}
+
+/// Toggle the PathGrid / terrain-cost debug overlay.
+///
+/// Beyond flipping `state.debug_show_pathgrid`, this resets the per-overlay
+/// SpeedType override to None when the overlay turns off, so reopening
+/// the overlay defaults back to "auto from selected unit". Called by both
+/// the F9/P hotkey and the dev overlay checkbox.
+pub(crate) fn toggle_pathgrid_overlay(state: &mut AppState) {
+    state.debug_show_pathgrid = !state.debug_show_pathgrid;
+    if !state.debug_show_pathgrid {
+        state.debug_terrain_cost_speed_type = None;
+    }
+    log::info!(
+        "Debug terrain cost overlay: {}",
+        if state.debug_show_pathgrid {
+            "ON"
+        } else {
+            "OFF"
+        }
+    );
+}
+
+/// Toggle debug pause (J hotkey / dev overlay).
+///
+/// Beyond flipping `state.paused`, this resets `last_update_time` and
+/// `sim_accumulator_ms` on unpause so the sim does not catch up by
+/// hundreds of ticks after a long pause. Called by both the J hotkey
+/// and the dev overlay button.
+pub(crate) fn toggle_debug_pause(state: &mut AppState) {
+    state.paused = !state.paused;
+    if !state.paused {
+        state.last_update_time = std::time::Instant::now();
+        state.sim_accumulator_ms = 0;
+    }
+    log::info!("Debug pause: {}", if state.paused { "ON" } else { "OFF" });
 }
 
 /// Handle one-shot gameplay hotkeys (called on key press, not held).
@@ -396,18 +480,7 @@ pub(crate) fn handle_hotkey_pressed(state: &mut AppState, code: winit::keyboard:
             );
         }
         KeyCode::F9 | KeyCode::KeyP => {
-            state.debug_show_pathgrid = !state.debug_show_pathgrid;
-            if !state.debug_show_pathgrid {
-                state.debug_terrain_cost_speed_type = None;
-            }
-            log::info!(
-                "Debug terrain cost overlay: {}",
-                if state.debug_show_pathgrid {
-                    "ON"
-                } else {
-                    "OFF"
-                }
-            );
+            toggle_pathgrid_overlay(state);
         }
         KeyCode::BracketRight => {
             if state.debug_show_pathgrid {
@@ -450,35 +523,10 @@ pub(crate) fn handle_hotkey_pressed(state: &mut AppState, code: winit::keyboard:
             }
         }
         KeyCode::KeyX => {
-            state.debug_unit_inspector = !state.debug_unit_inspector;
-            if let Some(sim) = &mut state.simulation {
-                sim.debug_event_logging = state.debug_unit_inspector;
-                if state.debug_unit_inspector {
-                    // Allocate logs on all existing entities.
-                    for entity in sim.entities.values_mut() {
-                        if entity.debug_log.is_none() {
-                            entity.debug_log =
-                                Some(crate::sim::debug_event_log::DebugEventLog::new());
-                        }
-                    }
-                    log::info!("Debug unit inspector: ON (X)");
-                } else {
-                    // Drop all logs to free memory.
-                    for entity in sim.entities.values_mut() {
-                        entity.debug_log = None;
-                    }
-                    log::info!("Debug unit inspector: OFF");
-                }
-            }
+            toggle_unit_inspector(state);
         }
         KeyCode::KeyJ => {
-            state.paused = !state.paused;
-            if !state.paused {
-                // Reset timing to prevent sim accumulator spike after pause.
-                state.last_update_time = std::time::Instant::now();
-                state.sim_accumulator_ms = 0;
-            }
-            log::info!("Debug pause: {}", if state.paused { "ON" } else { "OFF" });
+            toggle_debug_pause(state);
         }
         KeyCode::Period => {
             if state.paused {
@@ -520,9 +568,119 @@ fn quicksave(state: &mut AppState) {
     match std::fs::write(&path, &bytes) {
         Ok(()) => {
             log::info!("Quicksave: saved {} bytes to {}", bytes.len(), path);
+            state.last_save_tick = Some(sim.tick);
+            state.last_save_instant = Some(std::time::Instant::now());
             state.save_list_cache.invalidate();
         }
         Err(e) => log::error!("Quicksave: write failed: {e}"),
+    }
+}
+
+/// Save the current sim with a user-supplied name (dev overlay "Save As").
+///
+/// Sanitizes the name (strips path-unsafe chars, trims, length-caps),
+/// then writes to `saves/save_{sanitized}_tick{tick}_{unix_secs}.bin` so
+/// the existing list-panel parser still works and collisions are
+/// impossible. Updates the last-save readout fields. No-ops with a log
+/// warning on empty input.
+pub(crate) fn save_with_name(state: &mut AppState, raw_name: &str) {
+    let sanitized: String = sanitize_save_name(raw_name);
+    if sanitized.is_empty() {
+        log::warn!("Save As: empty or whitespace-only name, ignored");
+        return;
+    }
+    let Some(sim) = &state.simulation else {
+        log::warn!("Save As: no active simulation");
+        return;
+    };
+    let rules_h = state
+        .rules
+        .as_ref()
+        .map(crate::app_sim_tick::rules_hash)
+        .unwrap_or(0);
+    let map_name = &state.theater_name;
+    let bytes = crate::sim::snapshot::GameSnapshot::save(sim, 0, rules_h, map_name);
+    if let Err(e) = std::fs::create_dir_all(SAVES_DIR) {
+        log::error!("Save As: failed to create saves dir: {e}");
+        return;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let filename = format!("save_{sanitized}_tick{}_{}.bin", sim.tick, now);
+    let path = format!("{SAVES_DIR}/{filename}");
+    match std::fs::write(&path, &bytes) {
+        Ok(()) => {
+            log::info!("Save As: saved {} bytes to {}", bytes.len(), path);
+            state.last_save_tick = Some(sim.tick);
+            state.last_save_instant = Some(std::time::Instant::now());
+            state.save_list_cache.invalidate();
+        }
+        Err(e) => log::error!("Save As: write failed: {e}"),
+    }
+}
+
+/// Sanitize a user-typed save name for use in a filename.
+///
+/// Replaces Windows-reserved characters (`/ \ : * ? " < > |`) with `_`,
+/// trims surrounding whitespace, then caps at 64 chars. Returns an empty
+/// string for empty/whitespace-only input.
+fn sanitize_save_name(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let mut out = String::with_capacity(trimmed.len());
+    for ch in trimmed.chars() {
+        match ch {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => out.push('_'),
+            c if c.is_control() => out.push('_'),
+            c => out.push(c),
+        }
+    }
+    out.truncate(64);
+    out
+}
+
+#[cfg(test)]
+mod save_name_tests {
+    use super::sanitize_save_name;
+
+    #[test]
+    fn empty_returns_empty() {
+        assert_eq!(sanitize_save_name(""), "");
+        assert_eq!(sanitize_save_name("   "), "");
+        assert_eq!(sanitize_save_name("\t\n"), "");
+    }
+
+    #[test]
+    fn strips_path_separators() {
+        assert_eq!(sanitize_save_name("../foo"), ".._foo");
+        assert_eq!(sanitize_save_name("a/b\\c"), "a_b_c");
+    }
+
+    #[test]
+    fn strips_windows_reserved_chars() {
+        assert_eq!(sanitize_save_name("a:b*c?d\"e<f>g|h"), "a_b_c_d_e_f_g_h");
+    }
+
+    #[test]
+    fn keeps_normal_chars() {
+        assert_eq!(sanitize_save_name("miner stuck repro"), "miner stuck repro");
+        assert_eq!(sanitize_save_name("dock_fix_a"), "dock_fix_a");
+    }
+
+    #[test]
+    fn caps_at_64_chars() {
+        let long: String = "x".repeat(100);
+        let out = sanitize_save_name(&long);
+        assert_eq!(out.len(), 64);
+    }
+
+    #[test]
+    fn trims_whitespace() {
+        assert_eq!(sanitize_save_name("  hello  "), "hello");
     }
 }
 
@@ -623,6 +781,7 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
     // Close the save/load panel after loading.
     state.show_save_load_panel = false;
 
+    state.last_loaded_save_path = Some(path.to_path_buf());
     log::info!("Load: restored simulation from {}", path.display());
 }
 

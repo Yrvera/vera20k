@@ -54,7 +54,7 @@ pub fn build_sidebar_chrome_instances_for_layout(
     atlas: &SidebarChromeAtlas,
     spec: SidebarChromeLayoutSpec,
     layout: &SidebarLayout,
-    _view: &SidebarView,
+    view: &SidebarView,
     tabs: &[SidebarTabButton],
     power_bar_anim: &PowerBarAnimState,
     _screen_size: [f32; 2],
@@ -133,11 +133,9 @@ pub fn build_sidebar_chrome_instances_for_layout(
     let td = d - 0.00001;
     for tab_btn in tabs {
         let idx = tab_btn.tab.tab_index();
-        let entry = if tab_btn.active {
-            atlas.tab_buttons_active.get(idx).copied()
-        } else {
-            atlas.tab_buttons.get(idx).copied()
-        };
+        let frame = tab_btn.frame_index as usize;
+        // Fall back to frame 0 if the requested frame is missing in MIX.
+        let entry = atlas.tab_frames[idx][frame].or(atlas.tab_frames[idx][0]);
         if let Some(e) = entry {
             push_chrome(
                 &mut inst,
@@ -166,31 +164,34 @@ pub fn build_sidebar_chrome_instances_for_layout(
         s,
     );
 
-    // --- Sell / Repair buttons (inside the side1 area) ---
-    // TODO: these use wrong palette (sidebar.pal instead of OBSERVER.PAL) — disabled until fixed
-    let _btn_depth = d - 0.00002;
-    // if let Some(sell) = atlas.sell {
-    //     push_chrome(
-    //         &mut inst,
-    //         sell,
-    //         cx + spec.sell_x,
-    //         layout.side1_y + spec.sell_y,
-    //         _btn_depth,
-    //         camera_offset,
-    //         s,
-    //     );
-    // }
-    // if let Some(repair) = atlas.repair {
-    //     push_chrome(
-    //         &mut inst,
-    //         repair,
-    //         cx + spec.repair_x,
-    //         layout.side1_y + spec.repair_y,
-    //         _btn_depth,
-    //         camera_offset,
-    //         s,
-    //     );
-    // }
+    // --- Sell / Repair buttons (inside the side1 area). ---
+    // The 5-frame state machine matches gamemd's SBGadgetClass::Draw conditional;
+    // the frame index is computed by SidebarGadgetState::repair_frame / sell_frame.
+    let btn_depth = d - 0.00002;
+    let sell_frame = view.sell_button.frame_index as usize;
+    if let Some(sell) = atlas.sell_frames[sell_frame].or(atlas.sell_frames[0]) {
+        push_chrome(
+            &mut inst,
+            sell,
+            view.sell_button.rect.x,
+            view.sell_button.rect.y,
+            btn_depth,
+            camera_offset,
+            s,
+        );
+    }
+    let repair_frame = view.repair_button.frame_index as usize;
+    if let Some(repair) = atlas.repair_frames[repair_frame].or(atlas.repair_frames[0]) {
+        push_chrome(
+            &mut inst,
+            repair,
+            view.repair_button.rect.x,
+            view.repair_button.rect.y,
+            btn_depth,
+            camera_offset,
+            s,
+        );
+    }
 
     // --- Power bar meter (powerp.shp strips stacked from top) ---
     render_power_bar(

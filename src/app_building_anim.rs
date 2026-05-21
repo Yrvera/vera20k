@@ -604,6 +604,41 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
                     &state.audio_indices,
                 );
             }
+            GameSoundEvent::BridgeRepaired {
+                sound_id,
+                screen_pos,
+                eva_sound_id,
+            } => {
+                if !sound_id.is_empty() {
+                    let spatial_vol = if let Some((sx, sy)) = screen_pos {
+                        let (range, min_vol) = state
+                            .sound_registry
+                            .get(sound_id)
+                            .map(|e| (e.range, e.min_volume))
+                            .unwrap_or((crate::audio::sfx::DEFAULT_RANGE_CELLS, 0));
+                        calc_spatial_volume(*sx, *sy, vp_w, vp_h, cam_x, cam_y, range, min_vol)
+                    } else {
+                        1.0
+                    };
+                    if spatial_vol > 0.0 {
+                        sfx.play_sound_with_volume(
+                            sound_id,
+                            spatial_vol,
+                            &state.sound_registry,
+                            assets,
+                            &state.audio_indices,
+                        );
+                    }
+                }
+                if let Some(eva_sound_id) = eva_sound_id.as_deref().filter(|s| !s.is_empty()) {
+                    sfx.play_voice_sound(
+                        eva_sound_id,
+                        &state.sound_registry,
+                        assets,
+                        &state.audio_indices,
+                    );
+                }
+            }
             // Spatial events — apply distance-based volume scaling using
             // per-sound Range and MinVolume from sound.ini.
             _ => {

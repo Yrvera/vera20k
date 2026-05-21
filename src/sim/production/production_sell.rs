@@ -559,6 +559,8 @@ pub fn sell_building(sim: &mut Simulation, rules: &RuleSet, stable_id: u64) -> b
     let ejected = eject_sell_survivors(sim, rules, &owner_name, obj, position, health);
     // Eject garrison occupants alive before removing the building (gamemd SellBuilding).
     let garrison_ejected = eject_garrison_occupants(sim, rules, stable_id);
+    let interrupted_miners =
+        crate::sim::miner::interrupt_refinery_docked_miners(sim, rules, stable_id);
     // Remove from EntityStore.
     sim.entities.remove(stable_id);
     // SpySat sold: fully reshroud the owner so only current LOS remains visible.
@@ -574,12 +576,13 @@ pub fn sell_building(sim: &mut Simulation, rules: &RuleSet, stable_id: u64) -> b
         *credits_entry_for_owner(sim, &owner_name) += refund;
     }
     log::info!(
-        "Building {} sold by {}: refunded {} credits, ejected {} crew + {} garrison",
+        "Building {} sold by {}: refunded {} credits, ejected {} crew + {} garrison, undocked {} miners",
         type_id,
         owner_name,
         refund,
         ejected,
-        garrison_ejected
+        garrison_ejected,
+        interrupted_miners
     );
     true
 }

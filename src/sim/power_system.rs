@@ -31,8 +31,6 @@ pub struct PowerState {
     /// Set by spy infiltration of power plants AND by ForceShield superweapon launch.
     #[serde(rename = "spy_blackout_remaining")]
     pub power_blackout_remaining: u32,
-    /// Milliseconds accumulated toward the next degradation damage tick.
-    pub degradation_accum_ms: u32,
     /// Whether the player was in low-power state on the previous tick.
     /// Used to detect transitions for EVA voice events.
     pub was_low_power: bool,
@@ -56,7 +54,13 @@ pub enum PowerEvent {
 /// Power output scales with building health using integer arithmetic:
 /// `output = Power * current_hp / max_hp` (rounds down, matching RA2).
 /// Drain is always the full rated `|Power|` regardless of health.
-/// If spy blackout is active, output is forced to 0.
+///
+/// `UnitAbsorb`/`InfantryAbsorb` buildings (e.g., Yuri Bio-Reactor) add
+/// `ExtraPower × OccupantCount` to their pre-scaled output when at least
+/// one passenger is garrisoned and `ExtraPower > 0`. The bonus is HP-scaled
+/// alongside the base power.
+///
+/// If spy blackout is active, output is forced to 0 after summation.
 fn recalculate_power_for_owner(
     state: &mut PowerState,
     entities: &EntityStore,
@@ -68,32 +72,48 @@ fn recalculate_power_for_owner(
     let mut drained: i32 = 0;
     // Theoretical total: sum of |Power=| from TypeClass for ALL buildings,
     // including those under construction. Used by the power bar fill curve.
+    // Does NOT include the ExtraPower garrison bonus.
     let mut theoretical: i32 = 0;
 
     for entity in entities.values() {
         if entity.category != EntityCategory::Structure || entity.owner != owner_id {
             continue;
         }
-        let power = rules
-            .object(interner.resolve(entity.type_ref))
-            .map(|obj| obj.power)
-            .unwrap_or(0);
+        let Some(obj) = rules.object(interner.resolve(entity.type_ref)) else {
+            continue;
+        };
 
         // Theoretical total includes ALL buildings regardless of state.
-        theoretical += power.unsigned_abs() as i32;
+        theoretical += obj.power.unsigned_abs() as i32;
 
         // Skip buildings still under construction for operational power calc.
         if entity.building_up.is_some() {
             continue;
         }
-        if power > 0 {
-            // Health-scaled output: integer division rounds down.
+
+        // Producer branch: base = max(Power, 0), plus ExtraPower × occupants
+        // for InfantryAbsorb/UnitAbsorb buildings (gate is strict on all
+        // three conditions, matching gamemd's GetPowerOutput).
+        let mut output_contribution: i32 = obj.power.max(0);
+        if (obj.infantry_absorb || obj.unit_absorb) && obj.extra_power > 0 {
+            let occupants = entity.passenger_role.cargo().map_or(0, |c| c.count()) as i32;
+            if occupants > 0 {
+                output_contribution =
+                    output_contribution.saturating_add(obj.extra_power.saturating_mul(occupants));
+            }
+        }
+        if output_contribution > 0 {
+            // Health-scaled output: integer division rounds toward zero,
+            // equivalent to gamemd's ftol(base × health_ratio) for positive
+            // operands. Bonus is folded into base before scaling.
             let hp = entity.health.current as i32;
             let max_hp = entity.health.max.max(1) as i32;
-            produced += power * hp / max_hp;
-        } else if power < 0 {
-            // Drain is always the full rated value.
-            drained += power.saturating_abs();
+            produced = produced.saturating_add(output_contribution * hp / max_hp);
+        }
+
+        // Drain branch: always full rated value regardless of health.
+        if obj.power < 0 {
+            drained = drained.saturating_add(obj.power.saturating_abs());
         }
     }
 
@@ -111,13 +131,17 @@ fn recalculate_power_for_owner(
 /// Main per-tick power system entry point.
 ///
 /// For each player with structures: recalculates power totals, decrements
-/// spy blackout timer, applies degradation damage during low power, and
-/// returns transition events for EVA voice lines.
+/// spy blackout timer, and returns transition events for EVA voice lines.
+///
+/// gamemd has no HP-degradation effect during low power — `Powered=yes`
+/// buildings simply become inoperational (`is_building_powered` returns false)
+/// without taking damage. The DamageDelay timer fields at HouseClass+0x578C/
+/// +0x5794 are written in the constructor and never read.
 pub fn tick_power_states(
     power_states: &mut BTreeMap<InternedId, PowerState>,
     entities: &mut EntityStore,
     rules: &RuleSet,
-    tick_ms: u32,
+    _tick_ms: u32,
     interner: &crate::sim::intern::StringInterner,
 ) -> Vec<PowerEvent> {
     // Collect unique owners who have structures.
@@ -151,76 +175,9 @@ pub fn tick_power_states(
         } else if !state.is_low_power && state.was_low_power {
             events.push(PowerEvent::PowerRestored { owner: owner_id });
         }
-
-        // Degradation damage: Powered=yes buildings take 1 HP damage periodically
-        // during low power. Reset accumulator when power is restored.
-        if !state.is_low_power {
-            state.degradation_accum_ms = 0;
-        }
-    }
-
-    // Apply degradation damage in a second pass to avoid borrow conflicts.
-    // Convert f32 minutes → integer ms via fixed-point to avoid
-    // platform-dependent float multiplication rounding.
-    let rate_fixed =
-        crate::util::fixed_math::SimFixed::saturating_from_num(rules.general.damage_delay_minutes);
-    let delay_seconds = (rate_fixed * crate::util::fixed_math::SimFixed::from_num(60))
-        .to_num::<i32>()
-        .max(0);
-    let damage_delay_ms = (delay_seconds as u32).saturating_mul(1000).max(1);
-    let owners_needing_damage: Vec<InternedId> = owners
-        .iter()
-        .filter(|owner_id| {
-            let Some(state) = power_states.get_mut(owner_id) else {
-                return false;
-            };
-            if !state.is_low_power {
-                return false;
-            }
-            state.degradation_accum_ms = state.degradation_accum_ms.saturating_add(tick_ms);
-            if state.degradation_accum_ms >= damage_delay_ms {
-                state.degradation_accum_ms -= damage_delay_ms;
-                true
-            } else {
-                false
-            }
-        })
-        .copied()
-        .collect();
-
-    for &owner_id in &owners_needing_damage {
-        apply_degradation_damage(entities, rules, owner_id, interner);
     }
 
     events
-}
-
-/// Apply 1 HP degradation damage to all Powered=yes buildings with Power= <= 0
-/// owned by the given player.
-fn apply_degradation_damage(
-    entities: &mut EntityStore,
-    rules: &RuleSet,
-    owner_id: InternedId,
-    interner: &crate::sim::intern::StringInterner,
-) {
-    let ids: Vec<u64> = entities
-        .values()
-        .filter(|e| {
-            e.category == EntityCategory::Structure
-                && e.owner == owner_id
-                && e.building_up.is_none()
-                && rules
-                    .object(interner.resolve(e.type_ref))
-                    .is_some_and(|obj| obj.powered && obj.power <= 0)
-        })
-        .map(|e| e.stable_id)
-        .collect();
-
-    for id in ids {
-        if let Some(entity) = entities.get_mut(id) {
-            entity.health.current = entity.health.current.saturating_sub(1);
-        }
-    }
 }
 
 /// Check whether a specific building is functionally active (not disabled by low power).
@@ -564,26 +521,28 @@ BuildSpeed=0.02
     }
 
     #[test]
-    fn test_degradation_damage() {
+    fn test_low_power_does_not_damage_buildings() {
+        // gamemd does not apply degradation damage during low power — the
+        // DamageDelay timer fields at HouseClass+0x578C/+0x5794 are written
+        // in the constructor and never read. This test pins the Rust port
+        // to that behavior.
         let rules = test_rules();
         let mut store = EntityStore::new();
-        // Tesla coil (Powered=yes, Power=-75) with no power plant → low power.
+        // Tesla coil (Powered=yes, Power=-75) with no power plant → sustained low power.
         store.insert(make_building(1, "TESLA", "Soviet", 100, 400));
 
         let interner = test_interner();
         let mut states: BTreeMap<InternedId, PowerState> = BTreeMap::new();
 
-        // DamageDelay=1.0 minute = 60_000 ms. Tick at 16ms per tick.
-        // Need 60_000/16 = 3750 ticks to trigger degradation.
+        // Tick well past any prior degradation threshold.
         for _ in 0..3750 {
             tick_power_states(&mut states, &mut store, &rules, 16, &interner);
         }
 
         let entity = store.get(1).expect("entity should exist");
-        assert!(
-            entity.health.current < 100,
-            "degradation should have reduced HP from 100, got {}",
-            entity.health.current
+        assert_eq!(
+            entity.health.current, 100,
+            "low power must not damage buildings (gamemd parity)"
         );
     }
 
@@ -653,6 +612,257 @@ BuildSpeed=0.02
         assert!(
             !has_active_radar(&store, &states, &rules, allies, &interner),
             "radar should be disabled during low power"
+        );
+    }
+
+    // -------- ExtraPower (Yuri Bio-Reactor) bonus tests -----------------
+
+    /// Rules with a YAPOWR-shaped Bio-Reactor: power producer +
+    /// InfantryAbsorb=yes + ExtraPower=100. Mirrors stock YR rulesmd.ini.
+    fn yapowr_rules() -> RuleSet {
+        rules_from_ini(
+            "\
+[BuildingTypes]
+0=YAPOWR
+1=GAPOWR
+
+[YAPOWR]
+Power=150
+Strength=750
+Powered=no
+InfantryAbsorb=yes
+UnitAbsorb=no
+ExtraPower=100
+Passengers=5
+
+[GAPOWR]
+Power=200
+Strength=600
+Powered=no
+
+[General]
+BuildSpeed=0.02
+",
+        )
+    }
+
+    /// YAPOWR test entity with `n` garrisoned passengers and given hp/max.
+    fn make_yapowr(id: u64, owner: &str, hp: u16, max_hp: u16, passenger_count: u32) -> GameEntity {
+        let mut e = make_building(id, "YAPOWR", owner, hp, max_hp);
+        let mut cargo = crate::sim::passenger::PassengerCargo::new(5, 0);
+        for i in 0..passenger_count {
+            cargo.passengers.push(100 + i as u64);
+            cargo.total_size += 1;
+        }
+        e.passenger_role = crate::sim::passenger::PassengerRole::Transport { cargo };
+        e
+    }
+
+    #[test]
+    fn test_yapowr_empty_no_bonus() {
+        let rules = yapowr_rules();
+        let mut store = EntityStore::new();
+        store.insert(make_yapowr(1, "Yuri", 750, 750, 0));
+
+        let yuri = intern::test_intern("Yuri");
+        let interner = test_interner();
+        let mut state = PowerState::default();
+        recalculate_power_for_owner(&mut state, &store, &rules, yuri, &interner);
+
+        assert_eq!(state.total_output, 150, "empty YAPOWR = base Power only");
+        assert_eq!(state.total_drain, 0);
+    }
+
+    #[test]
+    fn test_yapowr_garrisoned_full_hp() {
+        let rules = yapowr_rules();
+        let mut store = EntityStore::new();
+        store.insert(make_yapowr(1, "Yuri", 750, 750, 5));
+
+        let yuri = intern::test_intern("Yuri");
+        let interner = test_interner();
+        let mut state = PowerState::default();
+        recalculate_power_for_owner(&mut state, &store, &rules, yuri, &interner);
+
+        assert_eq!(state.total_output, 650, "150 + 100*5 = 650 at full HP");
+    }
+
+    #[test]
+    fn test_yapowr_garrisoned_half_hp_scales_bonus() {
+        let rules = yapowr_rules();
+        let mut store = EntityStore::new();
+        store.insert(make_yapowr(1, "Yuri", 375, 750, 5));
+
+        let yuri = intern::test_intern("Yuri");
+        let interner = test_interner();
+        let mut state = PowerState::default();
+        recalculate_power_for_owner(&mut state, &store, &rules, yuri, &interner);
+
+        // (150 + 500) * 375 / 750 = 650 * 375 / 750 = 325
+        assert_eq!(state.total_output, 325, "bonus scales with HP");
+    }
+
+    #[test]
+    fn test_no_infantry_absorb_no_bonus() {
+        // GAPOWR has no InfantryAbsorb/UnitAbsorb. A stray passenger
+        // (which the garrison flow would never produce) must NOT grant
+        // a bonus — the gate is on the TypeClass flags.
+        let rules = yapowr_rules();
+        let mut store = EntityStore::new();
+        let mut e = make_building(1, "GAPOWR", "Allies", 600, 600);
+        let mut cargo = crate::sim::passenger::PassengerCargo::new(5, 0);
+        cargo.passengers.push(100);
+        cargo.total_size += 1;
+        e.passenger_role = crate::sim::passenger::PassengerRole::Transport { cargo };
+        store.insert(e);
+
+        let allies = intern::test_intern("Allies");
+        let interner = test_interner();
+        let mut state = PowerState::default();
+        recalculate_power_for_owner(&mut state, &store, &rules, allies, &interner);
+
+        assert_eq!(state.total_output, 200, "no InfantryAbsorb = no bonus");
+    }
+
+    #[test]
+    fn test_extra_power_zero_no_bonus() {
+        let rules = rules_from_ini(
+            "\
+[BuildingTypes]
+0=ZEROEX
+
+[ZEROEX]
+Power=150
+Strength=750
+InfantryAbsorb=yes
+ExtraPower=0
+Passengers=5
+
+[General]
+BuildSpeed=0.02
+",
+        );
+        let mut store = EntityStore::new();
+        let mut e = make_building(1, "ZEROEX", "Yuri", 750, 750);
+        let mut cargo = crate::sim::passenger::PassengerCargo::new(5, 0);
+        for i in 0..5 {
+            cargo.passengers.push(100 + i as u64);
+            cargo.total_size += 1;
+        }
+        e.passenger_role = crate::sim::passenger::PassengerRole::Transport { cargo };
+        store.insert(e);
+
+        let yuri = intern::test_intern("Yuri");
+        let interner = test_interner();
+        let mut state = PowerState::default();
+        recalculate_power_for_owner(&mut state, &store, &rules, yuri, &interner);
+
+        assert_eq!(
+            state.total_output, 150,
+            "ExtraPower=0 fails strict > 0 gate"
+        );
+    }
+
+    #[test]
+    fn test_extra_power_negative_no_bonus() {
+        let rules = rules_from_ini(
+            "\
+[BuildingTypes]
+0=NEGEX
+
+[NEGEX]
+Power=150
+Strength=750
+InfantryAbsorb=yes
+ExtraPower=-50
+Passengers=5
+
+[General]
+BuildSpeed=0.02
+",
+        );
+        let mut store = EntityStore::new();
+        let mut e = make_building(1, "NEGEX", "Yuri", 750, 750);
+        let mut cargo = crate::sim::passenger::PassengerCargo::new(5, 0);
+        for i in 0..3 {
+            cargo.passengers.push(100 + i as u64);
+            cargo.total_size += 1;
+        }
+        e.passenger_role = crate::sim::passenger::PassengerRole::Transport { cargo };
+        store.insert(e);
+
+        let yuri = intern::test_intern("Yuri");
+        let interner = test_interner();
+        let mut state = PowerState::default();
+        recalculate_power_for_owner(&mut state, &store, &rules, yuri, &interner);
+
+        assert_eq!(
+            state.total_output, 150,
+            "ExtraPower<0 fails strict > 0 gate"
+        );
+    }
+
+    #[test]
+    fn test_unit_absorb_path_also_works() {
+        // gamemd gate is (UnitAbsorb || InfantryAbsorb). UnitAbsorb alone
+        // (no InfantryAbsorb) still grants the bonus.
+        let rules = rules_from_ini(
+            "\
+[BuildingTypes]
+0=UABS
+
+[UABS]
+Power=100
+Strength=500
+InfantryAbsorb=no
+UnitAbsorb=yes
+ExtraPower=80
+Passengers=3
+
+[General]
+BuildSpeed=0.02
+",
+        );
+        let mut store = EntityStore::new();
+        let mut e = make_building(1, "UABS", "Yuri", 500, 500);
+        let mut cargo = crate::sim::passenger::PassengerCargo::new(3, 0);
+        for i in 0..2 {
+            cargo.passengers.push(100 + i as u64);
+            cargo.total_size += 1;
+        }
+        e.passenger_role = crate::sim::passenger::PassengerRole::Transport { cargo };
+        store.insert(e);
+
+        let yuri = intern::test_intern("Yuri");
+        let interner = test_interner();
+        let mut state = PowerState::default();
+        recalculate_power_for_owner(&mut state, &store, &rules, yuri, &interner);
+
+        assert_eq!(
+            state.total_output, 260,
+            "100 + 80*2 = 260 via UnitAbsorb gate"
+        );
+    }
+
+    #[test]
+    fn test_yapowr_under_construction_excluded() {
+        let rules = yapowr_rules();
+        let mut store = EntityStore::new();
+        let mut e = make_yapowr(1, "Yuri", 750, 750, 5);
+        e.building_up = Some(crate::sim::components::BuildingUp {
+            elapsed_ticks: 0,
+            total_ticks: 30,
+        });
+        store.insert(e);
+
+        let yuri = intern::test_intern("Yuri");
+        let interner = test_interner();
+        let mut state = PowerState::default();
+        recalculate_power_for_owner(&mut state, &store, &rules, yuri, &interner);
+
+        assert_eq!(
+            state.total_output, 0,
+            "building_up suppresses all output including bonus"
         );
     }
 }

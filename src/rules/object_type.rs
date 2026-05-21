@@ -220,6 +220,12 @@ pub struct ObjectType {
     pub image: String,
     /// Power generation (positive) or consumption (negative). Buildings only.
     pub power: i32,
+    /// Extra power bonus per occupant for `InfantryAbsorb`/`UnitAbsorb`
+    /// buildings. Parsed from `ExtraPower=` (signed i32). Only contributes
+    /// when the building has `InfantryAbsorb=yes` or `UnitAbsorb=yes` and
+    /// at least one passenger is garrisoned. Stock YR: YAPOWR Bio-Reactor
+    /// uses `ExtraPower=100` × up to 5 garrisoned infantry.
+    pub extra_power: i32,
     /// Building foundation footprint (e.g., "3x2", "1x1"). Buildings only.
     pub foundation: String,
     /// Pixel offset for health bar / selection bracket Y position.
@@ -830,6 +836,7 @@ impl ObjectType {
             elite_secondary: section.get("EliteSecondary").map(|s| s.to_string()),
             image: section.get("Image").unwrap_or(id).to_string(),
             power: section.get_i32("Power").unwrap_or(0),
+            extra_power: section.get_i32("ExtraPower").unwrap_or(0),
             // In the original engine, Foundation= lives in art.ini, not rules.ini.
             // Art.ini is authoritative — merge_art_data() overwrites this value.
             // We still parse from rules here as a fallback for tests and edge cases.
@@ -1518,6 +1525,35 @@ mod tests {
         let obj = ObjectType::from_ini_section("YABRCK", section, ObjectCategory::Building);
         assert!(obj.infantry_absorb);
         assert!(!obj.unit_absorb);
+    }
+
+    #[test]
+    fn test_parse_extra_power_positive() {
+        let ini: IniFile =
+            IniFile::from_str("[YAPOWR]\nPower=150\nExtraPower=100\nInfantryAbsorb=yes\n");
+        let section: &IniSection = ini.section("YAPOWR").unwrap();
+        let obj = ObjectType::from_ini_section("YAPOWR", section, ObjectCategory::Building);
+        assert_eq!(obj.power, 150);
+        assert_eq!(obj.extra_power, 100);
+        assert!(obj.infantry_absorb);
+    }
+
+    #[test]
+    fn test_parse_extra_power_negative() {
+        // GAOREP (Allied Ore Processor) in rules.ini has ExtraPower=-9000.
+        // Signed parse; downstream gate will suppress the bonus.
+        let ini: IniFile = IniFile::from_str("[GAOREP]\nExtraPower=-9000\n");
+        let section: &IniSection = ini.section("GAOREP").unwrap();
+        let obj = ObjectType::from_ini_section("GAOREP", section, ObjectCategory::Building);
+        assert_eq!(obj.extra_power, -9000);
+    }
+
+    #[test]
+    fn test_parse_extra_power_default_zero() {
+        let ini: IniFile = IniFile::from_str("[GAPOWR]\nPower=200\n");
+        let section: &IniSection = ini.section("GAPOWR").unwrap();
+        let obj = ObjectType::from_ini_section("GAPOWR", section, ObjectCategory::Building);
+        assert_eq!(obj.extra_power, 0);
     }
 
     #[test]

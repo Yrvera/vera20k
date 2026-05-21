@@ -78,6 +78,9 @@ pub mod app_sidebar_render;
 // Extracted from app_sidebar_render.rs to keep files under 400 lines.
 pub mod app_sidebar_build;
 
+// Per-sim-tick orchestrator for sidebar gadget flash + Repair/Sell mode state.
+pub mod app_sidebar_gadgets;
+
 // Build/production commands and owner management.
 // Extracted from app_render.rs.
 pub mod app_commands;
@@ -133,3 +136,6 @@ pub mod app_debug_overlays;
 pub mod app_debug_panel;
 // Save/load panel — egui overlay for managing save files (F5).
 pub mod app_save_load_panel;
+// Developer overlay — egui panel with runtime knobs, diagnostics,
+// and save/load helpers. Toggled with backtick (`).
+pub mod app_dev_overlay;

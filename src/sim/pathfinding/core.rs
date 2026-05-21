@@ -815,38 +815,17 @@ pub fn astar_search(
                 continue;
             }
 
-            // Diagonal corner-cutting: both cardinal neighbors must be passable on same layer
-            if is_diagonal {
-                if neighbor_use_bridge {
-                    if !grid.is_walkable_on_layer(nx, cy, MovementLayer::Bridge)
-                        || !grid.is_walkable_on_layer(cx, ny, MovementLayer::Bridge)
-                    {
-                        continue;
-                    }
-                } else {
-                    let adj1_ok = is_cell_passable_for_mover(
-                        grid,
-                        nx,
-                        cy,
-                        options.movement_zone,
-                        options.resolved_terrain,
-                    ) && (is_water_mover
-                        || options
-                            .terrain_costs
-                            .map_or(true, |tc| tc.cost_at(nx, cy) > 0));
-                    let adj2_ok = is_cell_passable_for_mover(
-                        grid,
-                        cx,
-                        ny,
-                        options.movement_zone,
-                        options.resolved_terrain,
-                    ) && (is_water_mover
-                        || options
-                            .terrain_costs
-                            .map_or(true, |tc| tc.cost_at(cx, ny) > 0));
-                    if !adj1_ok || !adj2_ok {
-                        continue;
-                    }
+            // Diagonal corner-cutting: gamemd does NOT validate the two
+            // cardinal cells flanking a diagonal neighbor. AStar_main_loop
+            // only calls Can_Enter_Cell on the diagonal cell itself, so
+            // units may "clip" between two impassable cells at a corner.
+            // The flanking-cardinals check is retained only for the Bridge
+            // layer, where geometry makes clipping nonsensical.
+            if is_diagonal && neighbor_use_bridge {
+                if !grid.is_walkable_on_layer(nx, cy, MovementLayer::Bridge)
+                    || !grid.is_walkable_on_layer(cx, ny, MovementLayer::Bridge)
+                {
+                    continue;
                 }
             }
 

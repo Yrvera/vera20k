@@ -567,6 +567,7 @@ pub(super) fn process_cell_crossings(
                 PATH_STUCK_INIT,
                 mover_is_crusher,
                 category == EntityCategory::Infantry,
+                true, // terrain block: skip code-2 grace period
             );
             debug_events.extend(evts);
             break;
@@ -618,6 +619,7 @@ pub(super) fn process_cell_crossings(
                         PATH_STUCK_INIT,
                         mover_is_crusher,
                         category == EntityCategory::Infantry,
+                        true, // cliff block: skip code-2 grace period
                     );
                     debug_events.extend(evts);
                     break;

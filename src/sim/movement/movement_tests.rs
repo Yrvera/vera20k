@@ -472,18 +472,16 @@ fn test_repath_cooldown_prevents_thrashing_on_unrecoverable_block() {
         grid.set_blocked(2, y, true);
     }
 
-    // Under binary-faithful semantics, the blocked entity repaths every tick
-    // while movement_delay is 0: urgency=1 during the blocked_delay grace
-    // period (first 60 ticks), then urgency=2 once blocked_delay hits 0.
-    // path_stuck_counter decrements once per urgency=2 failure. With
-    // path_stuck_init=10 and blocked_delay=60, the entity survives ~60 ticks
-    // before its first urgency=2 attempt, then aborts after ~10 more u2
-    // failures (each separated by another blocked_delay grace period).
+    // Under binary-faithful semantics, a terrain/impassable block (gamemd
+    // code-7) does NOT spend the blocked_delay grace period — the unit
+    // goes straight to urgency=2. path_stuck_counter decrements once per
+    // urgency=2 failure. With path_stuck_init=10 and code-7 skipping
+    // grace, all 10 retries fire on consecutive ticks and the unit
+    // aborts (movement_target removed) within ~10 ticks.
     //
-    // Run 61 ticks (up to and including the first urgency=2 failure). Verify
-    // the entity is still alive and that movement_delay has been set by the
-    // rate-limiter in try_repath_after_block.
-    for _ in 0..61 {
+    // Run 30 ticks — well past the abort window. Verify the movement
+    // target is GONE (thrashing prevented by hard abort, not by waiting).
+    for _ in 0..30 {
         tick_movement_with_grid(
             &mut entities,
             Some(&grid),
@@ -497,22 +495,9 @@ fn test_repath_cooldown_prevents_thrashing_on_unrecoverable_block() {
         );
     }
     let entity = entities.get(1).expect("entity exists");
-    let m1 = entity
-        .movement_target
-        .as_ref()
-        .expect("movement target should still exist after 61 ticks");
     assert!(
-        m1.movement_delay > 0,
-        "movement_delay {} should be > 0 after failed repath",
-        m1.movement_delay,
-    );
-    // path_stuck_counter should have started decrementing once urgency=2
-    // failures began. With init=10 it must still be positive after one
-    // escalated failure (or zero if we've already exhausted it).
-    assert!(
-        m1.path_stuck_counter < 10,
-        "path_stuck_counter {} should have decremented after urgency=2 failure",
-        m1.path_stuck_counter,
+        entity.movement_target.is_none(),
+        "movement target should be aborted after path_stuck_counter exhaustion (unrecoverable code-7 block)",
     );
 }
 

@@ -98,7 +98,7 @@ fn scan_saves() -> Vec<SaveEntry> {
 }
 
 /// Format a unix timestamp as a human-readable relative string.
-fn format_timestamp(unix_secs: u64) -> String {
+pub(crate) fn format_timestamp(unix_secs: u64) -> String {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
     let time = UNIX_EPOCH + Duration::from_secs(unix_secs);
     let now = SystemTime::now();

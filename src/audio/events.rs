@@ -130,6 +130,16 @@ pub enum GameSoundEvent {
         screen_pos: Option<(f32, f32)>,
     },
 
+    /// Positional SFX played when a docked harvester departs after dumping.
+    /// Resolved from [AudioVisual] BunkerWallsDownSound (retail "TankBunkerDown").
+    /// Fires every refinery dock cycle.
+    RefineryExitSfx {
+        /// sound.ini ID for the SFX.
+        sound_id: String,
+        /// Screen position for spatial audio.
+        screen_pos: Option<(f32, f32)>,
+    },
+
     /// Positional SFX + EVA cue from a bridge repair triggered by an engineer
     /// entering a `BridgeRepairHut`. Plays the spatial `[BridgeRepaired]`
     /// sound (resolved from `rules.bridge_rules.repair_sound`) at the hut's
@@ -174,6 +184,7 @@ impl GameSoundEvent {
             | Self::StructureAbandoned { sound_id }
             | Self::BuildingGarrisonedSfx { sound_id, .. }
             | Self::C4Planted { sound_id, .. }
+            | Self::RefineryExitSfx { sound_id, .. }
             | Self::BridgeRepaired { sound_id, .. } => sound_id,
         }
     }
@@ -189,6 +200,7 @@ impl GameSoundEvent {
             Self::ChronoTeleport { screen_pos, .. } => *screen_pos,
             Self::BuildingGarrisonedSfx { screen_pos, .. } => *screen_pos,
             Self::C4Planted { screen_pos, .. } => *screen_pos,
+            Self::RefineryExitSfx { screen_pos, .. } => *screen_pos,
             Self::BridgeRepaired { screen_pos, .. } => *screen_pos,
             _ => None,
         }
@@ -254,6 +266,24 @@ mod tests {
         };
         assert_eq!(evt.sound_id(), "BuildingGarrisoned");
         assert_eq!(evt.screen_pos(), Some((100.0, 200.0)));
+    }
+
+    #[test]
+    fn test_bridge_repaired_carries_spatial_and_eva_sound_ids() {
+        let evt = GameSoundEvent::BridgeRepaired {
+            sound_id: "BridgeRepaired".to_string(),
+            screen_pos: Some((32.0, 64.0)),
+            eva_sound_id: Some("EVA_BridgeRepaired".to_string()),
+        };
+
+        assert_eq!(evt.sound_id(), "BridgeRepaired");
+        assert_eq!(evt.screen_pos(), Some((32.0, 64.0)));
+        match evt {
+            GameSoundEvent::BridgeRepaired { eva_sound_id, .. } => {
+                assert_eq!(eva_sound_id.as_deref(), Some("EVA_BridgeRepaired"));
+            }
+            _ => unreachable!(),
+        }
     }
 
     #[test]

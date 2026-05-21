@@ -145,10 +145,9 @@ pub(super) fn dispatch_draw_passes(
     // Opaque sprite, no blend; passthrough pipeline bypasses depth test.
     // Empty buffer when graphics.extra_animations is off — draw_with_buffer_passthrough
     // short-circuits at count == 0.
-    if let (Some(overlay), Some((buf, count))) = (
-        state.selection_overlay.as_ref(),
-        pool.get("cell_sparkles"),
-    ) {
+    if let (Some(overlay), Some((buf, count))) =
+        (state.selection_overlay.as_ref(), pool.get("cell_sparkles"))
+    {
         state.batch_renderer.draw_with_buffer_passthrough(
             &mut pass,
             overlay.white_texture(),

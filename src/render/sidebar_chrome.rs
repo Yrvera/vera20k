@@ -77,14 +77,17 @@ pub struct SidebarChromeAtlas {
     pub radar: SidebarChromeEntry,
     pub side1: SidebarChromeEntry,
     pub tabs: Option<SidebarChromeEntry>,
-    /// Tab buttons: tab00 through tab03, inactive (frame 0) state.
-    pub tab_buttons: Vec<SidebarChromeEntry>,
-    /// Tab buttons: tab00 through tab03, active/selected (frame 3) state.
-    pub tab_buttons_active: Vec<SidebarChromeEntry>,
+    /// Tab buttons: per-tab × 5-frame SHP state table.
+    /// Outer index: tab number (0..=3). Inner index: SHP frame (0..=4).
+    /// Frame meanings (from SBGadgetClass::Draw, gamemd 0x0069DEB0):
+    ///   0 = idle, 1 = active-tab, 2 = disabled, 3 = pressed-idle, 4 = pressed-active.
+    pub tab_frames: [[Option<SidebarChromeEntry>; 5]; 4],
     pub side2: SidebarChromeEntry,
     pub side3: SidebarChromeEntry,
-    pub repair: Option<SidebarChromeEntry>,
-    pub sell: Option<SidebarChromeEntry>,
+    /// Repair button — 5-frame SHP state table (same convention as `tab_frames`).
+    pub repair_frames: [Option<SidebarChromeEntry>; 5],
+    /// Sell button — 5-frame SHP state table (same convention as `tab_frames`).
+    pub sell_frames: [Option<SidebarChromeEntry>; 5],
     pub power: Option<SidebarChromeEntry>,
     /// powerp.shp frames: 5 colored strip segments for the power bar meter.
     /// [0]=dark/bg, [1]=green, [2]=yellow, [3]=red, [4]=dark/off.
@@ -282,15 +285,47 @@ fn build_theme_atlas(
 
     // Optional pieces — gracefully degrade if missing.
     let tabs = render_entry(asset_manager, &mix, "tabs.shp", &tabs_palette, 0);
-    let tab_entries: Vec<RenderedChromeEntry> = (0..4)
-        .filter_map(|i| render_entry(asset_manager, &mix, &format!("tab0{i}.shp"), &palette, 0))
-        .collect();
-    // Frame 1 is the brighter selected/highlighted tab state in the stock art.
-    let tab_active_entries: Vec<RenderedChromeEntry> = (0..4)
-        .filter_map(|i| render_entry(asset_manager, &mix, &format!("tab0{i}.shp"), &palette, 1))
-        .collect();
-    let repair = render_entry(asset_manager, &mix, "repair.shp", &palette, 0);
-    let sell = render_entry(asset_manager, &mix, "sell.shp", &palette, 0);
+
+    // Tab buttons: 4 tabs × 5 frames each. Missing frames in retail fall
+    // back to None; the renderer skips that frame's draw if not present.
+    // Frame 0 = idle, 1 = active-tab, 2 = disabled, 3 = pressed-idle,
+    // 4 = pressed-active. See SIDEBAR_REPAIR_SELL_BUTTON §5.
+    let mut tab_frame_entries: [[Option<RenderedChromeEntry>; 5]; 4] = Default::default();
+    for tab in 0..4 {
+        for frame in 0..5 {
+            let entry = render_entry(
+                asset_manager,
+                &mix,
+                &format!("tab0{tab}.shp"),
+                &palette,
+                frame,
+            );
+            if entry.is_none() && frame > 0 {
+                log::warn!(
+                    "tab0{tab}.shp frame {frame} missing in MIX — gadget state {frame} will fall back to idle"
+                );
+            }
+            tab_frame_entries[tab][frame] = entry;
+        }
+    }
+
+    let mut repair_frame_entries: [Option<RenderedChromeEntry>; 5] = Default::default();
+    for frame in 0..5 {
+        let entry = render_entry(asset_manager, &mix, "repair.shp", &palette, frame);
+        if entry.is_none() && frame > 0 {
+            log::warn!("repair.shp frame {frame} missing in MIX");
+        }
+        repair_frame_entries[frame] = entry;
+    }
+
+    let mut sell_frame_entries: [Option<RenderedChromeEntry>; 5] = Default::default();
+    for frame in 0..5 {
+        let entry = render_entry(asset_manager, &mix, "sell.shp", &palette, frame);
+        if entry.is_none() && frame > 0 {
+            log::warn!("sell.shp frame {frame} missing in MIX");
+        }
+        sell_frame_entries[frame] = entry;
+    }
     let power = render_entry(asset_manager, &mix, "power.shp", &palette, 0);
     // powerp.shp: strip frames for the power bar meter.
     // Use raw frame pixel data (not the full SHP canvas) to avoid transparent
@@ -372,17 +407,22 @@ fn build_theme_atlas(
     if let Some(ref t) = tabs {
         all_entries.push(t);
     }
-    for tab in &tab_entries {
-        all_entries.push(tab);
+    for tab in 0..4 {
+        for frame in 0..5 {
+            if let Some(ref entry) = tab_frame_entries[tab][frame] {
+                all_entries.push(entry);
+            }
+        }
     }
-    for tab in &tab_active_entries {
-        all_entries.push(tab);
+    for frame in 0..5 {
+        if let Some(ref entry) = repair_frame_entries[frame] {
+            all_entries.push(entry);
+        }
     }
-    if let Some(ref r) = repair {
-        all_entries.push(r);
-    }
-    if let Some(ref s) = sell {
-        all_entries.push(s);
+    for frame in 0..5 {
+        if let Some(ref entry) = sell_frame_entries[frame] {
+            all_entries.push(entry);
+        }
     }
     if let Some(ref p) = power {
         all_entries.push(p);
@@ -453,17 +493,15 @@ fn build_theme_atlas(
         uv
     });
 
-    let mut tab_button_uvs = Vec::new();
-    for tab in &tab_entries {
-        let uv = blit_entry(&mut rgba, atlas_width, atlas_height, y, tab);
-        y += tab.height + CHROME_PADDING;
-        tab_button_uvs.push(uv);
-    }
-    let mut tab_button_active_uvs = Vec::new();
-    for tab in &tab_active_entries {
-        let uv = blit_entry(&mut rgba, atlas_width, atlas_height, y, tab);
-        y += tab.height + CHROME_PADDING;
-        tab_button_active_uvs.push(uv);
+    let mut tab_frames_packed: [[Option<SidebarChromeEntry>; 5]; 4] = Default::default();
+    for tab in 0..4 {
+        for frame in 0..5 {
+            if let Some(ref entry) = tab_frame_entries[tab][frame] {
+                let uv = blit_entry(&mut rgba, atlas_width, atlas_height, y, entry);
+                y += entry.height + CHROME_PADDING;
+                tab_frames_packed[tab][frame] = Some(uv);
+            }
+        }
     }
 
     let side2_uv = blit_entry(&mut rgba, atlas_width, atlas_height, y, &side2);
@@ -471,16 +509,22 @@ fn build_theme_atlas(
     let side3_uv = blit_entry(&mut rgba, atlas_width, atlas_height, y, &side3);
     y += side3.height + CHROME_PADDING;
 
-    let repair_uv = repair.as_ref().map(|r| {
-        let uv = blit_entry(&mut rgba, atlas_width, atlas_height, y, r);
-        y += r.height + CHROME_PADDING;
-        uv
-    });
-    let sell_uv = sell.as_ref().map(|s| {
-        let uv = blit_entry(&mut rgba, atlas_width, atlas_height, y, s);
-        y += s.height + CHROME_PADDING;
-        uv
-    });
+    let mut repair_frames_packed: [Option<SidebarChromeEntry>; 5] = Default::default();
+    for frame in 0..5 {
+        if let Some(ref entry) = repair_frame_entries[frame] {
+            let uv = blit_entry(&mut rgba, atlas_width, atlas_height, y, entry);
+            y += entry.height + CHROME_PADDING;
+            repair_frames_packed[frame] = Some(uv);
+        }
+    }
+    let mut sell_frames_packed: [Option<SidebarChromeEntry>; 5] = Default::default();
+    for frame in 0..5 {
+        if let Some(ref entry) = sell_frame_entries[frame] {
+            let uv = blit_entry(&mut rgba, atlas_width, atlas_height, y, entry);
+            y += entry.height + CHROME_PADDING;
+            sell_frames_packed[frame] = Some(uv);
+        }
+    }
     let power_uv = power.as_ref().map(|p| {
         let uv = blit_entry(&mut rgba, atlas_width, atlas_height, y, p);
         y += p.height + CHROME_PADDING;
@@ -527,11 +571,10 @@ fn build_theme_atlas(
         side3.width,
         side3.height,
     );
-    for (i, tab) in tab_entries.iter().enumerate() {
-        log::info!("  tab0{} (inactive): {}x{}", i, tab.width, tab.height);
-    }
-    for (i, tab) in tab_active_entries.iter().enumerate() {
-        log::info!("  tab0{} (active):   {}x{}", i, tab.width, tab.height);
+    for tab in 0..4 {
+        if let Some(ref entry) = tab_frame_entries[tab][0] {
+            log::info!("  tab0{} (5 frames): {}x{}", tab, entry.width, entry.height);
+        }
     }
 
     let texture = batch.create_texture(gpu, &rgba, atlas_width, atlas_height);
@@ -551,12 +594,11 @@ fn build_theme_atlas(
         radar: radar_uv,
         side1: side1_uv,
         tabs: tabs_uv,
-        tab_buttons: tab_button_uvs,
-        tab_buttons_active: tab_button_active_uvs,
+        tab_frames: tab_frames_packed,
         side2: side2_uv,
         side3: side3_uv,
-        repair: repair_uv,
-        sell: sell_uv,
+        repair_frames: repair_frames_packed,
+        sell_frames: sell_frames_packed,
         power: power_uv,
         powerp_frames: powerp_uvs,
         extra_entries,

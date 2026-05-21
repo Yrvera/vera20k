@@ -46,7 +46,7 @@ use std::collections::BTreeMap;
 
 use crate::sim::miner::ResourceNode;
 
-use self::combat_weapon::{WeaponSlot, select_weapon_with_override};
+use self::combat_weapon::{WeaponSlot, select_deploy_fire_weapon, select_weapon_with_override};
 use crate::map::entities::EntityCategory;
 use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::rules::object_type::ObjectType;
@@ -64,6 +64,7 @@ use crate::sim::world::{SimFireEvent, SimSoundEvent};
 use crate::util::fixed_math::{SIM_ZERO, SimFixed, sim_to_i32};
 
 use super::animation::SequenceKind;
+use super::deploy::DeployPhase;
 use super::game_entity::GameEntity;
 use super::occupancy::OccupancyGrid;
 use super::production::foundation_dimensions;
@@ -107,6 +108,27 @@ const ARMOR_NAMES: &[&str] = &[
 pub fn armor_index(armor: &str) -> usize {
     let lower: String = armor.to_ascii_lowercase();
     ARMOR_NAMES.iter().position(|&a| a == lower).unwrap_or(0)
+}
+
+/// Combat-only target category used for projectile AA/AG legality and weapon
+/// selection.
+///
+/// `ConsideredAircraft=yes` infantry, such as Rocketeers/JumpJets, remain
+/// infantry entities for movement, selection, crush, and animation, but weapon
+/// selection must treat them as air targets.
+pub(crate) fn combat_target_category(
+    entity: &GameEntity,
+    rules: &RuleSet,
+    interner: &StringInterner,
+) -> EntityCategory {
+    if rules
+        .object(interner.resolve(entity.type_ref))
+        .is_some_and(|obj| obj.considered_aircraft)
+    {
+        EntityCategory::Aircraft
+    } else {
+        entity.category
+    }
 }
 
 /// True iff the cell at `(rx, ry)` has an overlay whose type is flagged `Wall=yes`.
@@ -239,6 +261,13 @@ fn infantry_idle_sequence(is_prone: bool, is_fully_deployed: bool) -> SequenceKi
     }
 }
 
+fn uses_deploy_fire_weapon(entity: &GameEntity) -> bool {
+    matches!(
+        entity.deploy_state,
+        Some(DeployPhase::Deploying { .. } | DeployPhase::Deployed)
+    )
+}
+
 impl AttackTarget {
     /// Entity-targeted attack: fire at a specific entity by stable ID.
     pub fn new(target_stable_id: u64) -> Self {
@@ -364,7 +393,10 @@ pub(crate) fn pursuit_weapon_range(
                 .object(interner.resolve(target_entity.type_ref))
                 .map(|o| o.armor.clone())
                 .unwrap_or_else(|| "none".to_string());
-            (target_entity.category, armor)
+            (
+                combat_target_category(target_entity, rules, interner),
+                armor,
+            )
         }
         TargetKind::Cell(_, _) => {
             // Synthetic — must match the combat tick's cell-target synthesis.
@@ -376,15 +408,27 @@ pub(crate) fn pursuit_weapon_range(
             (EntityCategory::Structure, armor)
         }
     };
-    select_weapon_with_override(
-        rules,
-        attacker_obj,
-        target_cat,
-        &target_armor,
-        entity.veterancy,
-        entity.weapon_override,
-    )
-    .map(|sel| sel.weapon.range)
+    let selected = if uses_deploy_fire_weapon(entity) {
+        select_deploy_fire_weapon(
+            rules,
+            attacker_obj,
+            target_cat,
+            &target_armor,
+            entity.veterancy,
+            entity.weapon_override,
+        )
+    } else {
+        select_weapon_with_override(
+            rules,
+            attacker_obj,
+            target_cat,
+            &target_armor,
+            entity.veterancy,
+            entity.weapon_override,
+        )
+    };
+
+    selected.map(|sel| sel.weapon.range)
 }
 
 /// Issue an attack command: make `attacker` fire at `target`.
@@ -1221,7 +1265,7 @@ pub fn tick_combat_with_fog(
                     continue;
                 }
             }
-            let target_cat = candidate.category;
+            let target_cat = combat_target_category(candidate, rules, interner);
             let target_armor = rules
                 .object(interner.resolve(candidate.type_ref))
                 .map(|o| o.armor.as_str())
@@ -1481,7 +1525,7 @@ pub fn tick_combat_with_fog(
                     tsx,
                     tsy,
                     t.health.current,
-                    t.category,
+                    combat_target_category(t, rules, interner),
                     t.type_ref,
                     t.owner,
                     t.category == EntityCategory::Infantry && infantry::is_prone_for_damage(t),
@@ -1565,14 +1609,29 @@ pub fn tick_combat_with_fog(
                 }
             }
         } else {
-            match select_weapon_with_override(
-                rules,
-                obj,
-                target_cat,
-                &target_armor,
-                snap.veterancy,
-                snap.weapon_override,
-            ) {
+            let deploy_fire_weapon_active = entities
+                .get(snap.stable_id)
+                .is_some_and(uses_deploy_fire_weapon);
+            let selected = if deploy_fire_weapon_active {
+                select_deploy_fire_weapon(
+                    rules,
+                    obj,
+                    target_cat,
+                    &target_armor,
+                    snap.veterancy,
+                    snap.weapon_override,
+                )
+            } else {
+                select_weapon_with_override(
+                    rules,
+                    obj,
+                    target_cat,
+                    &target_armor,
+                    snap.veterancy,
+                    snap.weapon_override,
+                )
+            };
+            match selected {
                 Some(s) => (s, false),
                 None => {
                     remove_attack.push(snap.stable_id);

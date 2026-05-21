@@ -19,9 +19,10 @@
 
 use crate::rules::ruleset::RuleSet;
 use crate::sim::intern::InternedId;
-use crate::sim::miner::miner_system::effective_purifier_count;
+use crate::sim::miner::miner_system::{effective_purifier_count, is_cell_path_clear_for_scan};
 use crate::sim::miner::{CargoBale, MinerConfig};
 use crate::sim::miner::{extract_bale, search_local_ore};
+use crate::sim::pathfinding::PathGrid;
 use crate::sim::production::credits_entry_for_owner;
 use crate::sim::world::Simulation;
 
@@ -108,10 +109,29 @@ struct SlaveSnapshot {
     harvester: SlaveHarvester,
 }
 
+/// Slave-side combined scan filter. Mirrors `miner_system::build_scan_filter`'s
+/// occupancy/path-grid check; zone reachability is skipped (slaves anchor to
+/// the master refinery and the slave path planner handles per-step passability).
+fn build_slave_scan_filter<'a>(
+    sim: &'a Simulation,
+    path_grid: Option<&'a PathGrid>,
+    self_id: u64,
+) -> Box<dyn Fn((u16, u16)) -> bool + 'a> {
+    let occupancy = &sim.occupancy;
+    Box::new(move |cell: (u16, u16)| {
+        is_cell_path_clear_for_scan(occupancy, path_grid, cell, self_id)
+    })
+}
+
 /// Tick all slave harvesters. Called once per sim tick from resource economy.
 ///
 /// Uses the two-phase snapshot pattern: snapshot → process → write back.
-pub(super) fn tick_slave_harvesters(sim: &mut Simulation, rules: &RuleSet, config: &MinerConfig) {
+pub(super) fn tick_slave_harvesters(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    config: &MinerConfig,
+    path_grid: Option<&PathGrid>,
+) {
     // Phase 1: Snapshot all slave harvesters.
     let keys = sim.entities.keys_sorted();
     let mut snapshots: Vec<SlaveSnapshot> = Vec::new();
@@ -137,7 +157,7 @@ pub(super) fn tick_slave_harvesters(sim: &mut Simulation, rules: &RuleSet, confi
 
     // Phase 2: Process each slave.
     for snap in &mut snapshots {
-        process_slave(sim, rules, config, snap);
+        process_slave(sim, rules, config, path_grid, snap);
     }
 
     // Phase 3: Write back.
@@ -153,6 +173,7 @@ fn process_slave(
     sim: &mut Simulation,
     rules: &RuleSet,
     config: &MinerConfig,
+    path_grid: Option<&PathGrid>,
     snap: &mut SlaveSnapshot,
 ) {
     // Check master is still alive.
@@ -163,12 +184,12 @@ fn process_slave(
     }
 
     match snap.harvester.state {
-        SlaveHarvestState::SearchOre => handle_slave_search(sim, rules, config, snap),
+        SlaveHarvestState::SearchOre => handle_slave_search(sim, rules, config, path_grid, snap),
         SlaveHarvestState::MoveToOre => handle_slave_move_to_ore(snap),
         SlaveHarvestState::Harvest => handle_slave_harvest(sim, config, snap),
         SlaveHarvestState::ReturnToMaster => handle_slave_return(sim, snap),
         SlaveHarvestState::Deposit => handle_slave_deposit(sim, rules, config, snap),
-        SlaveHarvestState::Idle => handle_slave_idle(sim, rules, config, snap),
+        SlaveHarvestState::Idle => handle_slave_idle(sim, rules, config, path_grid, snap),
     }
 }
 
@@ -177,6 +198,7 @@ fn handle_slave_search(
     sim: &Simulation,
     rules: &RuleSet,
     config: &MinerConfig,
+    path_grid: Option<&PathGrid>,
     snap: &mut SlaveSnapshot,
 ) {
     let scan_radius: u16 = rules.general.slave_miner_slave_scan.max(1) as u16;
@@ -188,11 +210,13 @@ fn handle_slave_search(
         .map(|e| (e.position.rx, e.position.ry))
         .unwrap_or((snap.rx, snap.ry));
 
+    let scan_filter = build_slave_scan_filter(sim, path_grid, snap.entity_id);
+    let filter_ref: Option<&dyn Fn((u16, u16)) -> bool> = Some(&*scan_filter);
     if let Some(cell) = search_local_ore(
         &sim.production.resource_nodes,
         master_pos,
         scan_radius,
-        None,
+        filter_ref,
         config.ore_bale_value,
         config.gem_bale_value,
     ) {
@@ -335,6 +359,7 @@ fn handle_slave_idle(
     sim: &Simulation,
     rules: &RuleSet,
     config: &MinerConfig,
+    path_grid: Option<&PathGrid>,
     snap: &mut SlaveSnapshot,
 ) {
     // Try to find ore every few ticks (reuse search logic).
@@ -345,11 +370,13 @@ fn handle_slave_idle(
         .map(|e| (e.position.rx, e.position.ry))
         .unwrap_or((snap.rx, snap.ry));
 
+    let scan_filter = build_slave_scan_filter(sim, path_grid, snap.entity_id);
+    let filter_ref: Option<&dyn Fn((u16, u16)) -> bool> = Some(&*scan_filter);
     if let Some(cell) = search_local_ore(
         &sim.production.resource_nodes,
         master_pos,
         scan_radius,
-        None,
+        filter_ref,
         config.ore_bale_value,
         config.gem_bale_value,
     ) {
@@ -624,6 +651,7 @@ pub(super) fn tick_slave_regen(sim: &mut Simulation, rules: &RuleSet) {
 pub fn check_scan_correction(
     sim: &Simulation,
     rules: &RuleSet,
+    path_grid: Option<&PathGrid>,
     master_id: u64,
 ) -> Option<(u16, u16)> {
     let master = sim.entities.get(master_id)?;
@@ -634,12 +662,15 @@ pub fn check_scan_correction(
     let correction: u16 = rules.general.slave_miner_scan_correction.max(0) as u16;
     let cfg = MinerConfig::from_general_rules(&rules.general);
 
+    let scan_filter = build_slave_scan_filter(sim, path_grid, master_id);
+    let filter_ref: Option<&dyn Fn((u16, u16)) -> bool> = Some(&*scan_filter);
+
     // Find nearest ore from current position.
     let current_nearest = search_local_ore(
         &sim.production.resource_nodes,
         (mrx, mry),
         short_scan,
-        None,
+        filter_ref,
         cfg.ore_bale_value,
         cfg.gem_bale_value,
     )?;
@@ -652,7 +683,7 @@ pub fn check_scan_correction(
         &sim.production.resource_nodes,
         (mrx, mry),
         long_scan,
-        None,
+        filter_ref,
         cfg.ore_bale_value,
         cfg.gem_bale_value,
     )?;
@@ -711,7 +742,7 @@ mod tests {
         // With no entities, check_scan_correction returns None (master not found).
         let sim = Simulation::new();
         let rules = make_test_rules();
-        assert!(check_scan_correction(&sim, &rules, 999).is_none());
+        assert!(check_scan_correction(&sim, &rules, None, 999).is_none());
     }
 
     /// Minimal rules for slave miner tests.

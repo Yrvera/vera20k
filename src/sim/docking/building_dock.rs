@@ -71,8 +71,16 @@ fn cell_distance(ax: u16, ay: u16, bx: u16, by: u16) -> u32 {
 /// Called once per tick from `advance_tick()`, after `tick_repairs()`.
 /// Uses the two-phase snapshot pattern to avoid borrow conflicts.
 pub fn tick_building_docks(sim: &mut Simulation, rules: &RuleSet) {
-    // Phase 1: Cleanup dead entities from dock reservations.
-    let alive: BTreeSet<u64> = sim.entities.keys_sorted().iter().copied().collect();
+    // Phase 1: Cleanup dead/dying entities from dock reservations. Dying
+    // entities remain in `sim.entities` through the death animation, but
+    // their depot reservation must release immediately so queued units can
+    // be promoted without waiting through the death anim.
+    let alive: BTreeSet<u64> = sim
+        .entities
+        .values()
+        .filter(|e| !e.dying)
+        .map(|e| e.stable_id)
+        .collect();
     sim.production.depot_dock_reservations.cleanup_dead(&alive);
 
     // Phase 2: Snapshot all entities that have a dock state.

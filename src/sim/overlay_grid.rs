@@ -172,13 +172,15 @@ impl OverlayGrid {
     }
 }
 
-/// Recompute overlay_blocks on ResolvedTerrainCell after an overlay mutation.
+/// Recompute overlay-driven fields on ResolvedTerrainCell after an overlay mutation.
 ///
 /// Reads overlay_id from the grid, checks registry flags for wall/tiberium/rock,
-/// computes new overlay_blocks value, writes to resolved_terrain. Returns true if
-/// the passability value changed (caller should trigger zone rebuild).
+/// computes new overlay_blocks / zone_type / land_type / speed_costs values, writes
+/// them to resolved_terrain. Returns true if any passability- or zone-relevant value
+/// changed (caller should trigger zone rebuild).
 ///
-/// Mirrors gamemd.exe RecalcAttributes stage 3a, scoped to overlay->passability.
+/// Mirrors gamemd.exe RecalcAttributes stage 3a, scoped to overlay->passability +
+/// overlay->LandType (+0xEC).
 pub fn recalc_overlay_passability(
     overlay_grid: &OverlayGrid,
     resolved_terrain: &mut ResolvedTerrainGrid,
@@ -187,12 +189,14 @@ pub fn recalc_overlay_passability(
     ry: u16,
 ) -> bool {
     use crate::map::resolved_terrain::zone_class;
+    use crate::rules::terrain_rules::TerrainClass;
 
     let cell = overlay_grid.cell(rx, ry);
-    let (new_blocks, new_zone_type) = match cell.overlay_id {
+    let (new_blocks, new_zone_type, is_tiberium_now) = match cell.overlay_id {
         Some(id) => {
             let flags = registry.flags(id);
             let blocks = flags.is_some_and(|f| f.wall || f.tiberium);
+            let tiberium = flags.is_some_and(|f| f.tiberium);
             // Mirror RecalcZoneType priority for overlay-driven zone classification.
             let zt = match flags {
                 Some(f) if f.crate_type => zone_class::ROAD,
@@ -201,10 +205,14 @@ pub fn recalc_overlay_passability(
                 Some(f) if f.is_gate => zone_class::IMPASSABLE,
                 _ => zone_class::GROUND, // Fallback — refined below from base terrain
             };
-            (blocks, zt)
+            (blocks, zt, tiberium)
         }
-        None => (false, zone_class::GROUND), // No overlay — refined below
+        None => (false, zone_class::GROUND, false), // No overlay — refined below
     };
+
+    // Snapshot the cached Tiberium SpeedCostProfile before borrowing terrain mutably,
+    // since `tiberium_speed_costs()` takes an immutable borrow on the grid.
+    let tib_costs_cached = resolved_terrain.tiberium_speed_costs().copied();
 
     let Some(terrain_cell) = resolved_terrain.cell_mut(rx, ry) else {
         return false;
@@ -221,7 +229,7 @@ pub fn recalc_overlay_passability(
         new_zone_type
     } else if terrain_cell.is_water {
         zone_class::WATER
-    } else if terrain_cell.land_type
+    } else if terrain_cell.base_land_type
         == crate::sim::pathfinding::passability::LandType::Beach.as_index()
     {
         zone_class::BEACH
@@ -236,7 +244,33 @@ pub fn recalc_overlay_passability(
     let old_zone = terrain_cell.zone_type;
     terrain_cell.zone_type = final_zone_type;
 
-    old_blocks != new_blocks || old_zone != final_zone_type
+    // Mirror gamemd's RecalcAttributes: when a tiberium overlay appears on a cell,
+    // CellClass+0xEC LandType is set to Tiberium(5) and the per-tile speed table is
+    // sourced from the [Tiberium] semantics in rules. On overlay removal, the
+    // pre-overlay (base_*) values are restored. Without this, runtime ore-spread /
+    // TIBTRE / harvest-to-zero leave the cell with stale terrain metadata — a real
+    // parity divergence (harvesters cross freshly-spread ore at clear-terrain speed).
+    let old_land_type = terrain_cell.land_type;
+    let old_speed_costs = terrain_cell.speed_costs;
+    if is_tiberium_now {
+        let tib_lt = crate::sim::pathfinding::passability::LandType::Tiberium.as_index();
+        terrain_cell.land_type = tib_lt;
+        terrain_cell.yr_cell_land_type = tib_lt;
+        terrain_cell.terrain_class = TerrainClass::Tiberium;
+        if let Some(costs) = tib_costs_cached {
+            terrain_cell.speed_costs = costs;
+        }
+    } else {
+        terrain_cell.land_type = terrain_cell.base_land_type;
+        terrain_cell.yr_cell_land_type = terrain_cell.base_yr_cell_land_type;
+        terrain_cell.terrain_class = terrain_cell.base_terrain_class;
+        terrain_cell.speed_costs = terrain_cell.base_speed_costs;
+    }
+
+    old_blocks != new_blocks
+        || old_zone != final_zone_type
+        || old_land_type != terrain_cell.land_type
+        || old_speed_costs != terrain_cell.speed_costs
 }
 
 /// A combat-emitted request to damage a wall overlay at a specific cell.
@@ -634,6 +668,126 @@ mod tests {
         grid.place_overlay(0, 0, 2, 0);
         grid.place_overlay(9, 3, 3, 0);
         assert_eq!(grid.take_dirty_cells(), vec![(5, 5), (0, 0), (9, 3)]);
+    }
+
+    /// Round-trip on tiberium overlay add/remove: a fresh-spread or TIBTRE-spawned
+    /// ore cell must inherit Tiberium-mode `land_type` / `terrain_class` /
+    /// `speed_costs`, and a harvested-to-zero ore cell must revert to the
+    /// underlying terrain values. Regression test for the §10 parity bug where
+    /// runtime ore placement bypassed RecalcAttributes-equivalent logic.
+    #[test]
+    fn tiberium_overlay_round_trip_updates_terrain_metadata() {
+        use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid, zone_class};
+        use crate::rules::ini_parser::IniFile;
+        use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
+        use crate::sim::pathfinding::passability::LandType;
+
+        // Registry with overlay id=0 marked Tiberium=yes (mirrors stock TIB01).
+        let ini = IniFile::from_str("[OverlayTypes]\n0=TIB01\n[TIB01]\nTiberium=yes\n");
+        let registry = OverlayTypeRegistry::from_ini(&ini, None);
+
+        // A single Clear-base cell at (5, 5). Underlying values mirror what
+        // `resolved_terrain::build()` would produce on a clear-grass tile.
+        let clear_lt = LandType::Clear.as_index();
+        let base_speed = SpeedCostProfile::default();
+        let mut cells = Vec::with_capacity(100);
+        for ry in 0..10u16 {
+            for rx in 0..10u16 {
+                cells.push(ResolvedTerrainCell {
+                    rx,
+                    ry,
+                    source_tile_index: 0,
+                    source_sub_tile: 0,
+                    final_tile_index: 0,
+                    final_sub_tile: 0,
+                    is_wood_bridge_repair_tile: false,
+                    level: 0,
+                    filled_clear: true,
+                    tileset_index: None,
+                    land_type: clear_lt,
+                    yr_cell_land_type: clear_lt,
+                    slope_type: 0,
+                    template_height: 0,
+                    render_offset_x: 0,
+                    render_offset_y: 0,
+                    terrain_class: TerrainClass::Clear,
+                    speed_costs: base_speed,
+                    is_water: false,
+                    is_cliff_like: false,
+                    is_rough: false,
+                    is_road: false,
+                    accepts_smudge: true,
+                    is_cliff_redraw: false,
+                    variant: 0,
+                    has_ramp: false,
+                    canonical_ramp: None,
+                    ground_walk_blocked: false,
+                    terrain_object_blocks: false,
+                    overlay_blocks: false,
+                    zone_type: zone_class::GROUND,
+                    base_ground_walk_blocked: false,
+                    base_build_blocked: false,
+                    base_land_type: clear_lt,
+                    base_yr_cell_land_type: clear_lt,
+                    base_terrain_class: TerrainClass::Clear,
+                    base_speed_costs: base_speed,
+                    build_blocked: false,
+                    has_bridge_deck: false,
+                    bridge_walkable: false,
+                    bridge_transition: false,
+                    bridge_deck_level: 0,
+                    bridge_layer: None,
+                    bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+                    tube_index: None,
+                    radar_left: [0; 3],
+                    radar_right: [0; 3],
+                    has_damaged_data: false,
+                    bridgehead_anchor_class_at_load: None,
+                });
+            }
+        }
+        let mut terrain = ResolvedTerrainGrid::from_cells(10, 10, cells);
+
+        // Install a distinct Tiberium-mode speed profile so we can prove the
+        // round-trip actually copies it (not the same default).
+        let mut tib_speed = SpeedCostProfile::default();
+        tib_speed.track = Some(70); // [Tiberium] Track=70% per stock rules.ini
+        tib_speed.foot = Some(90); //  [Tiberium] Foot=90%
+        terrain.set_tiberium_speed_costs_for_test(tib_speed);
+
+        let mut overlay_grid = OverlayGrid::new(10, 10);
+        let tib_lt = LandType::Tiberium.as_index();
+
+        // 1. Place ore overlay → recalc must flip cell to Tiberium-mode.
+        overlay_grid.place_overlay(5, 5, 0, 3);
+        let changed = recalc_overlay_passability(&overlay_grid, &mut terrain, &registry, 5, 5);
+        assert!(changed, "tiberium placement must report a change");
+        let idx = 5 * 10 + 5;
+        let cell = &terrain.cells[idx];
+        assert_eq!(cell.land_type, tib_lt, "land_type → Tiberium");
+        assert_eq!(cell.yr_cell_land_type, tib_lt, "yr_cell_land_type → 5");
+        assert_eq!(cell.terrain_class, TerrainClass::Tiberium);
+        assert_eq!(
+            cell.speed_costs, tib_speed,
+            "speed_costs sourced from [Tiberium]"
+        );
+        assert_eq!(cell.zone_type, zone_class::IMPASSABLE);
+        assert!(cell.overlay_blocks);
+
+        // 2. Remove ore overlay (harvested to zero) → recalc must restore base values.
+        overlay_grid.clear_overlay(5, 5);
+        let changed = recalc_overlay_passability(&overlay_grid, &mut terrain, &registry, 5, 5);
+        assert!(changed, "tiberium removal must report a change");
+        let cell = &terrain.cells[idx];
+        assert_eq!(cell.land_type, clear_lt, "land_type → underlying Clear");
+        assert_eq!(cell.yr_cell_land_type, clear_lt);
+        assert_eq!(cell.terrain_class, TerrainClass::Clear);
+        assert_eq!(
+            cell.speed_costs, base_speed,
+            "speed_costs → underlying default"
+        );
+        assert_eq!(cell.zone_type, zone_class::GROUND);
+        assert!(!cell.overlay_blocks);
     }
 }
 
