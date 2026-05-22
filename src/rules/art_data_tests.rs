@@ -104,6 +104,23 @@ fn test_from_ini_parses_entries() {
 }
 
 #[test]
+fn parses_hidden_occupancy_art_fields() {
+    let ini: IniFile = IniFile::from_str(
+        "[GAREFN]\nCanHideThings=no\nOccupyHeight=4\n\n[GAPOWR]\nHeight=3\n\n[NAPOWR]\n",
+    );
+    let reg: ArtRegistry = ArtRegistry::from_ini(&ini);
+
+    assert!(!reg.can_hide_things("GAREFN"));
+    assert_eq!(reg.occupy_height("GAREFN"), 4);
+    assert!(reg.can_hide_things("GAPOWR"));
+    assert_eq!(reg.occupy_height("GAPOWR"), 3);
+    assert!(reg.can_hide_things("NAPOWR"));
+    assert_eq!(reg.occupy_height("NAPOWR"), 0);
+    assert!(reg.can_hide_things("MISSING"));
+    assert_eq!(reg.occupy_height("MISSING"), 2);
+}
+
+#[test]
 fn test_resolve_effective_image_id_chain() {
     let ini: IniFile = IniFile::from_str("[NACNST]\nImage=CIVNC\n\n[E1]\n\n[MTNK]\nImage=MTNK\n");
     let reg: ArtRegistry = ArtRegistry::from_ini(&ini);
@@ -289,13 +306,27 @@ fn add_remove_occupy_empty_when_no_keys() {
 }
 
 #[test]
-fn add_occupy_skips_malformed_entries() {
-    let ini: IniFile = IniFile::from_str("[FOO]\nAddOccupy1=not_a_pair\nAddOccupy2=1,2\n");
+fn add_remove_occupy_scans_sparse_numbered_keys() {
+    let ini: IniFile = IniFile::from_str(
+        "[FOO]\n\
+         AddOccupy1=-1,0\n\
+         AddOccupy3=2,3\n\
+         RemoveOccupy1=4,5\n\
+         RemoveOccupy4=-2,-3\n",
+    );
     let registry: ArtRegistry = ArtRegistry::from_ini(&ini);
     let entry: &ArtEntry = registry.get("FOO").expect("FOO");
-    // Matches damage_fire_offsets pattern: malformed entry is skipped, loop
-    // continues to next index. Loop only breaks on key absence.
-    assert_eq!(entry.add_occupy, vec![(1, 2)]);
+    assert_eq!(entry.add_occupy, vec![(-1, 0), (2, 3)]);
+    assert_eq!(entry.remove_occupy, vec![(4, 5), (-2, -3)]);
+}
+
+#[test]
+fn add_occupy_skips_malformed_entries() {
+    let ini: IniFile =
+        IniFile::from_str("[FOO]\nAddOccupy1=not_a_pair\nAddOccupy2=1,2\nAddOccupy4=3,4\n");
+    let registry: ArtRegistry = ArtRegistry::from_ini(&ini);
+    let entry: &ArtEntry = registry.get("FOO").expect("FOO");
+    assert_eq!(entry.add_occupy, vec![(1, 2), (3, 4)]);
 }
 
 #[test]

@@ -319,20 +319,10 @@ pub(super) fn terrain_brightness_for_theater(theater_name: &str) -> f32 {
     }
 }
 
-/// Parse foundation string "WxH" into (width, height). Defaults to (1, 1).
+/// Resolve a gamemd foundation name into minimap footprint dimensions.
 pub(super) fn parse_foundation_size(foundation: &str) -> (u32, u32) {
-    let mut parts = foundation.split('x');
-    let w = parts
-        .next()
-        .and_then(|v| v.trim().parse::<u32>().ok())
-        .unwrap_or(1)
-        .max(1);
-    let h = parts
-        .next()
-        .and_then(|v| v.trim().parse::<u32>().ok())
-        .unwrap_or(1)
-        .max(1);
-    (w, h)
+    let (w, h) = crate::rules::foundation::foundation_dimensions(foundation);
+    (u32::from(w), u32::from(h))
 }
 
 /// Check if an entity should be visible on the minimap (test helper).

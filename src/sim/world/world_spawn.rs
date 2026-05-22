@@ -21,7 +21,7 @@ use crate::sim::game_entity::GameEntity;
 use crate::sim::miner::{Miner, MinerConfig, miner_kind_for_object};
 use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
 use crate::sim::occupancy::CellListInsertion;
-use crate::sim::production::{building_footprint_cells, foundation_dimensions};
+use crate::sim::production::{building_base_foundation_cells, foundation_dimensions};
 use crate::sim::vision::MAX_SIGHT_RANGE;
 use crate::util::fixed_math::SimFixed;
 
@@ -239,12 +239,10 @@ impl Simulation {
             let spawn_sid = ge.stable_id;
             let spawn_cells: Option<Vec<(u16, u16)>> = if category == EntityCategory::Structure {
                 rules.and_then(|r| r.object(&map_ent.type_id)).map(|obj| {
-                    crate::sim::production::building_footprint_cells(
+                    crate::sim::production::building_base_foundation_cells(
                         spawn_rx,
                         spawn_ry,
                         &obj.foundation,
-                        &obj.add_occupy,
-                        &obj.remove_occupy,
                     )
                 })
             } else {
@@ -427,13 +425,7 @@ impl Simulation {
         // Register in occupancy grid.
         let insertion = CellListInsertion::from_category(spawn_category);
         if spawn_category == EntityCategory::Structure {
-            let cells = building_footprint_cells(
-                spawn_rx,
-                spawn_ry,
-                &obj.foundation,
-                &obj.add_occupy,
-                &obj.remove_occupy,
-            );
+            let cells = building_base_foundation_cells(spawn_rx, spawn_ry, &obj.foundation);
             for (rx, ry) in cells {
                 self.occupancy
                     .add(rx, ry, stable_id, spawn_layer, None, insertion);
@@ -532,9 +524,8 @@ impl Simulation {
 
         // Check that all footprint cells are free before deploying.
         let (fw, fh) = foundation_dimensions(&foundation);
-        let ref_height: u8 = height_map.get(&(rx, ry)).copied().unwrap_or(z);
-        for dy in 0..fw {
-            for dx in 0..fh {
+        for dy in 0..fh {
+            for dx in 0..fw {
                 let cell_x = rx.saturating_add(dx);
                 let cell_y = ry.saturating_add(dy);
                 // Check for existing structures (excluding the MCV itself).
@@ -564,15 +555,6 @@ impl Simulation {
                     .unwrap_or(false)
                 {
                     log::info!("MCV deploy blocked: terrain at ({},{})", cell_x, cell_y,);
-                    return false;
-                }
-                // Check same height (buildings can't span elevation changes).
-                if height_map.get(&(cell_x, cell_y)).copied().unwrap_or(z) != ref_height {
-                    log::info!(
-                        "MCV deploy blocked: height mismatch at ({},{})",
-                        cell_x,
-                        cell_y,
-                    );
                     return false;
                 }
             }
@@ -679,10 +661,11 @@ impl Simulation {
 
 fn deploy_origin_from_center(center_rx: u16, center_ry: u16, foundation: &str) -> (u16, u16) {
     let (width, height) = foundation_dimensions(foundation);
-    (
-        center_rx.saturating_sub(width / 2),
-        center_ry.saturating_sub(height / 2),
-    )
+    if width > 2 || height > 2 {
+        (center_rx.saturating_sub(1), center_ry.saturating_sub(1))
+    } else {
+        (center_rx, center_ry)
+    }
 }
 
 /// Resolve the deploy target for an MCV-like unit via rules.ini `DeploysInto=`.

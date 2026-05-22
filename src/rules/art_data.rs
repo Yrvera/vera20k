@@ -117,10 +117,10 @@ pub struct ArtEntry {
     /// Parsed from `MuzzleFlash0=X,Y` through `MuzzleFlash9=X,Y` in art.ini.
     /// Each entry is a screen-space offset from the building's center.
     pub muzzle_flash_positions: Vec<(i32, i32)>,
-    /// Cells added to the rectangular foundation (AddOccupy1..N from art.ini).
+    /// Valid cells from art.ini AddOccupy1..8, scanned by slot number.
     /// Signed offsets from the building's origin (rx, ry) — negative = west/north.
     pub add_occupy: Vec<(i16, i16)>,
-    /// Cells removed from the rectangular foundation (RemoveOccupy1..N from art.ini).
+    /// Valid cells from art.ini RemoveOccupy1..8, scanned by slot number.
     pub remove_occupy: Vec<(i16, i16)>,
     /// Middle integer of `Deploy=<start>,<frames>,<rate>` in the infantry
     /// sequence section referenced by `sequence`. `None` when the sequence
@@ -210,6 +210,10 @@ pub struct ResolvedObjectArt<'a> {
 pub struct ArtRegistry {
     /// image_id (uppercase) -> ArtEntry.
     entries: HashMap<String, ArtEntry>,
+    /// section ID (uppercase) -> `CanHideThings=`. Missing sections default true.
+    can_hide_things: HashMap<String, bool>,
+    /// section ID (uppercase) -> `OccupyHeight=`, defaulting to art `Height=`.
+    occupy_heights: HashMap<String, i32>,
 }
 
 /// Hardcoded filename prefixes that always receive `NewTheater` treatment
@@ -233,6 +237,8 @@ impl ArtRegistry {
     /// Parse all sections from an art.ini IniFile into the registry.
     pub fn from_ini(ini: &IniFile) -> Self {
         let mut entries: HashMap<String, ArtEntry> = HashMap::new();
+        let mut can_hide_things: HashMap<String, bool> = HashMap::new();
+        let mut occupy_heights: HashMap<String, i32> = HashMap::new();
 
         for section_name in ini.section_names() {
             let section = match ini.section(section_name) {
@@ -367,6 +373,8 @@ impl ArtRegistry {
                 offsets
             };
             let height: i32 = section.get_i32("Height").unwrap_or(0);
+            let can_hide: bool = section.get_bool("CanHideThings").unwrap_or(true);
+            let occupy_height: i32 = section.get_i32("OccupyHeight").unwrap_or(height);
             let muzzle_flash_positions: Vec<(i32, i32)> = {
                 let mut positions = Vec::new();
                 for i in 0..10 {
@@ -385,45 +393,15 @@ impl ArtRegistry {
                 }
                 positions
             };
-            let add_occupy: Vec<(i16, i16)> = {
-                let mut offsets = Vec::new();
-                for i in 1..=8 {
-                    let key = format!("AddOccupy{}", i);
-                    if let Some(val) = section.get(&key) {
-                        let mut parts = val.split(',');
-                        if let (Some(x), Some(y)) = (
-                            parts.next().and_then(|s| s.trim().parse::<i16>().ok()),
-                            parts.next().and_then(|s| s.trim().parse::<i16>().ok()),
-                        ) {
-                            offsets.push((x, y));
-                        }
-                    } else {
-                        break;
-                    }
-                }
-                offsets
-            };
-            let remove_occupy: Vec<(i16, i16)> = {
-                let mut offsets = Vec::new();
-                for i in 1..=8 {
-                    let key = format!("RemoveOccupy{}", i);
-                    if let Some(val) = section.get(&key) {
-                        let mut parts = val.split(',');
-                        if let (Some(x), Some(y)) = (
-                            parts.next().and_then(|s| s.trim().parse::<i16>().ok()),
-                            parts.next().and_then(|s| s.trim().parse::<i16>().ok()),
-                        ) {
-                            offsets.push((x, y));
-                        }
-                    } else {
-                        break;
-                    }
-                }
-                offsets
-            };
+            let add_occupy: Vec<(i16, i16)> = parse_numbered_cell_offsets(section, "AddOccupy");
+            let remove_occupy: Vec<(i16, i16)> =
+                parse_numbered_cell_offsets(section, "RemoveOccupy");
 
+            let section_key = section_name.to_uppercase();
+            can_hide_things.insert(section_key.clone(), can_hide);
+            occupy_heights.insert(section_key.clone(), occupy_height);
             entries.insert(
-                section_name.to_uppercase(),
+                section_key,
                 ArtEntry {
                     image,
                     cameo,
@@ -473,19 +451,44 @@ impl ArtRegistry {
         }
 
         log::info!("ArtRegistry: {} entries loaded from art.ini", entries.len());
-        ArtRegistry { entries }
+        ArtRegistry {
+            entries,
+            can_hide_things,
+            occupy_heights,
+        }
     }
 
     /// Create an empty registry (used when art.ini is unavailable).
     pub fn empty() -> Self {
         ArtRegistry {
             entries: HashMap::new(),
+            can_hide_things: HashMap::new(),
+            occupy_heights: HashMap::new(),
         }
     }
 
     /// Look up art entry for an image ID (case-insensitive).
     pub fn get(&self, image_id: &str) -> Option<&ArtEntry> {
         self.entries.get(&image_id.to_uppercase())
+    }
+
+    /// Hidden-occupancy gate from art.ini `CanHideThings=`.
+    /// The original building type constructor defaults this to true.
+    pub fn can_hide_things(&self, image_id: &str) -> bool {
+        self.can_hide_things
+            .get(&image_id.to_uppercase())
+            .copied()
+            .unwrap_or(true)
+    }
+
+    /// Hidden-occupancy height from art.ini `OccupyHeight=`.
+    /// art.ini comments define the absent-key fallback as the section `Height=`;
+    /// missing sections fall back to 2, the documented building-art default.
+    pub fn occupy_height(&self, image_id: &str) -> i32 {
+        self.occupy_heights
+            .get(&image_id.to_uppercase())
+            .copied()
+            .unwrap_or(2)
     }
 
     /// Number of entries in the registry.
@@ -949,6 +952,24 @@ fn parse_building_anims(section: &IniSection, ini: &IniFile) -> Vec<BuildingAnim
     }
 
     anims
+}
+
+fn parse_numbered_cell_offsets(section: &IniSection, prefix: &str) -> Vec<(i16, i16)> {
+    let mut offsets = Vec::new();
+    for i in 1..=8 {
+        let key = format!("{}{}", prefix, i);
+        let Some(val) = section.get(&key) else {
+            continue;
+        };
+        let mut parts = val.split(',');
+        if let (Some(x), Some(y)) = (
+            parts.next().and_then(|s| s.trim().parse::<i16>().ok()),
+            parts.next().and_then(|s| s.trim().parse::<i16>().ok()),
+        ) {
+            offsets.push((x, y));
+        }
+    }
+    offsets
 }
 
 /// Replace the 2nd character of a filename with the theater-specific letter.

@@ -344,14 +344,6 @@ fn entities_in_rect(
         .collect()
 }
 
-/// Parse a foundation string like "3x2" → (3, 2). Returns (1, 1) for malformed input.
-fn parse_foundation(s: &str) -> (u16, u16) {
-    let mut parts = s.split('x');
-    let w = parts.next().and_then(|p| p.parse().ok()).unwrap_or(1u16);
-    let h = parts.next().and_then(|p| p.parse().ok()).unwrap_or(1u16);
-    (w, h)
-}
-
 /// Check if a world-space click point falls on a building's foundation cells.
 /// The building occupies cells `(rx..rx+fw, ry..ry+fh)`. We convert the click
 /// to cell coords and check containment. This matches the original engine which
@@ -365,7 +357,7 @@ fn click_hits_foundation(
     height_map: &std::collections::BTreeMap<(u16, u16), u8>,
     bridge_height_map: Option<&std::collections::BTreeMap<(u16, u16), u8>>,
 ) -> bool {
-    let (fw, fh) = parse_foundation(foundation);
+    let (fw, fh) = crate::rules::foundation::foundation_dimensions(foundation);
     let (click_rx, click_ry) =
         crate::app_sim_tick::world_point_to_cell(world_x, world_y, height_map, bridge_height_map);
     let crx = click_rx as i32;

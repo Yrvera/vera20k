@@ -572,12 +572,12 @@ impl Simulation {
     fn c4_target_footprint(&self, target_id: u64, rules: &RuleSet) -> Option<Vec<(u16, u16)>> {
         let target = self.entities.get(target_id)?;
         let obj = rules.object(self.interner.resolve(target.type_ref))?;
-        Some(crate::sim::production::building_footprint_cells(
+        // C4 Mission_Enter resolves through normal building cell lookup.
+        // AddOccupy/RemoveOccupy only affect hidden occupancy counters.
+        Some(c4_base_foundation_cells(
             target.position.rx,
             target.position.ry,
             obj.foundation.as_str(),
-            obj.add_occupy.as_slice(),
-            obj.remove_occupy.as_slice(),
         ))
     }
 
@@ -952,4 +952,21 @@ impl Simulation {
             }
         }
     }
+}
+
+fn c4_base_foundation_cells(origin_rx: u16, origin_ry: u16, foundation: &str) -> Vec<(u16, u16)> {
+    let (w, h) = crate::rules::foundation::foundation_dimensions(foundation);
+    let mut cells = Vec::with_capacity(w as usize * h as usize);
+
+    for dx in 0..w {
+        for dy in 0..h {
+            let rx = origin_rx as i32 + dx as i32;
+            let ry = origin_ry as i32 + dy as i32;
+            if rx >= 0 && rx <= u16::MAX as i32 && ry >= 0 && ry <= u16::MAX as i32 {
+                cells.push((rx as u16, ry as u16));
+            }
+        }
+    }
+
+    cells
 }

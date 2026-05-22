@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::map::entities::EntityCategory;
+use crate::rules::art_data::ArtRegistry;
 use crate::rules::ini_parser::IniFile;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::command::{Command, CommandEnvelope};
@@ -18,18 +19,25 @@ fn c4_test_rules() -> RuleSet {
         "[InfantryTypes]\n0=GHOST\n1=TANY\n2=E1\n\n\
          [VehicleTypes]\n\n\
          [AircraftTypes]\n\n\
-         [BuildingTypes]\n0=GAPILE\n1=CAMISC01\n\n\
+         [BuildingTypes]\n0=GAPILE\n1=CAMISC01\n2=GAREFN\n\n\
          [GHOST]\nStrength=125\nArmor=flak\nSpeed=4\nC4=yes\nPrimary=Pistol\n\n\
          [TANY]\nStrength=125\nArmor=flak\nSpeed=4\nC4=yes\nPrimary=Pistol\n\n\
          [E1]\nStrength=125\nArmor=flak\nSpeed=4\nPrimary=M60\n\n\
          [GAPILE]\nStrength=600\nArmor=wood\nFoundation=2x2\n\n\
          [CAMISC01]\nStrength=600\nArmor=concrete\nFoundation=1x1\nCanC4=no\n\n\
+         [GAREFN]\nStrength=1000\nArmor=wood\nFoundation=4x3\n\n\
          [Pistol]\nDamage=25\nROF=20\nRange=5\nWarhead=SA\n\n\
          [M60]\nDamage=25\nROF=20\nRange=5\nWarhead=SA\n\n\
          [CombatDamage]\nC4Warhead=SA\n\n\
          [SA]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
     );
-    RuleSet::from_ini(&ini).expect("c4 test rules should parse")
+    let mut rules = RuleSet::from_ini(&ini).expect("c4 test rules should parse");
+    let art_ini: IniFile = IniFile::from_str(
+        "[GAREFN]\nFoundation=4x3\nAddOccupy1=-1,0\nAddOccupy2=-1,-1\nRemoveOccupy1=3,1\n",
+    );
+    let art = ArtRegistry::from_ini(&art_ini);
+    rules.merge_art_data(&art);
+    rules
 }
 
 fn build_sim_with_c4_rules() -> (Simulation, RuleSet, BTreeMap<(u16, u16), u8>) {
@@ -156,6 +164,63 @@ fn c4_plant_happy_path_kills_building_and_seal_survives() {
     assert!(
         !sim.entities.get(seal).unwrap().dying,
         "SEAL must not be dying"
+    );
+}
+
+#[test]
+fn c4_does_not_claim_from_add_occupy_only_cell() {
+    let (mut sim, rules, heights) = build_sim_with_c4_rules();
+    let seal = spawn_infantry(&mut sim, "GHOST", "Americans", 9, 10);
+    let refinery = spawn_building(&mut sim, "GAREFN", "Soviets", 10, 10);
+
+    sim.entities.get_mut(seal).unwrap().c4_plant = Some(C4PlantState {
+        target_building_id: refinery,
+    });
+
+    step(&mut sim, &rules, &heights);
+
+    assert!(
+        sim.entities
+            .get(refinery)
+            .unwrap()
+            .pending_c4_detonation
+            .is_none(),
+        "C4 must not claim from GAREFN AddOccupy-only cell (origin-1, origin)"
+    );
+    let movement = sim
+        .entities
+        .get(seal)
+        .and_then(|seal| seal.movement_target.as_ref())
+        .expect("SEAL should be ordered into a real foundation cell");
+    assert_eq!(
+        movement.path,
+        vec![(9, 10), (10, 10)],
+        "C4 enter-cell selection must ignore AddOccupy-only cells"
+    );
+}
+
+#[test]
+fn c4_claims_from_remove_occupy_foundation_cell() {
+    let (mut sim, rules, heights) = build_sim_with_c4_rules();
+    let seal = spawn_infantry(&mut sim, "GHOST", "Americans", 13, 11);
+    let refinery = spawn_building(&mut sim, "GAREFN", "Soviets", 10, 10);
+
+    sim.entities.get_mut(seal).unwrap().c4_plant = Some(C4PlantState {
+        target_building_id: refinery,
+    });
+
+    step(&mut sim, &rules, &heights);
+
+    let pending = sim
+        .entities
+        .get(refinery)
+        .unwrap()
+        .pending_c4_detonation
+        .expect("C4 must claim from base foundation cell removed from hidden occupancy");
+    assert_eq!(pending.attacker_id, seal);
+    assert!(
+        sim.entities.get(seal).unwrap().movement_target.is_none(),
+        "SEAL already standing on the base foundation should not get an enter move"
     );
 }
 

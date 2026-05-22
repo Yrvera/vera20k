@@ -169,8 +169,9 @@ pub struct GeneralRules {
     pub tunnel_speed: SimFixed,
     /// `MissileROTVar=` from [General]. Amplitude of the sidewinder cosine
     /// modulation in homing missile flight; the per-tick ROT scales by
-    /// `(1 + var) + cos(2π * frame / 15) * var`. Default 1.0 produces
-    /// oscillation between 1.0 and 3.0 times the projectile's base ROT.
+    /// `(1 + var) + cos(2π * frame / 15) * var`. Stock RA2/YR rules set
+    /// `.25`, yielding roughly 1.0 to 1.5 times the projectile's base ROT.
+    /// The parser fallback for a missing key remains 1.0.
     pub missile_rot_var: SimFixed,
     /// Default cruise altitude for Fly-locomotor aircraft (FlightLevel= in [General]).
     /// Default 1500 leptons. Per-type override possible but not yet implemented.
@@ -247,11 +248,10 @@ pub struct GeneralRules {
     pub building_garrisoned_sound: Option<String>,
     /// Sound event for shell main-menu buttons from [AudioVisual] GUIMainButtonSound.
     pub gui_main_button_sound: Option<String>,
-    /// Sound played at refinery exit when a docked harvester departs after
-    /// dumping. Parsed from [AudioVisual] BunkerWallsDownSound (retail value
-    /// "TankBunkerDown"). gamemd's `ReleaseDockedHarvester` (0x4595C0) step 2
-    /// reads `RulesClass+0x244` and calls `VocClass::PlayAt` at the building
-    /// location every ore-delivery cycle. None = no sound configured.
+    /// Sound used by conditional reciprocal-link harvester release. Parsed
+    /// from [AudioVisual] BunkerWallsDownSound (retail value "TankBunkerDown").
+    /// Stock zero-link refinery unload completion does not play it. None =
+    /// no sound configured.
     pub bunker_walls_down_sound: Option<String>,
     /// Direct rocker force coefficient (DirectRockingCoefficient= in [AudioVisual]).
     /// Multiplies the final DirectRocker impulse force. Default 1.5.
@@ -1710,6 +1710,7 @@ impl RuleSet {
     /// it with the authoritative value from art.ini, resolved via the `Image=` key.
     /// Without this, all buildings would be 1x1 which breaks placement and rendering.
     pub fn merge_art_data(&mut self, art: &crate::rules::art_data::ArtRegistry) {
+        self.art_registry = art.clone();
         let mut patched: u32 = 0;
         let mut dock_patched: u32 = 0;
         let mut buildings_checked: u32 = 0;
@@ -1738,19 +1739,29 @@ impl RuleSet {
                 continue;
             }
             buildings_checked += 1;
+            let rules_foundation_id = crate::rules::foundation::foundation_id(&obj.foundation);
             if let Some(entry) = entry {
                 if let Some(ref foundation) = entry.foundation {
-                    if obj.foundation != *foundation {
+                    let effective_foundation =
+                        if rules_foundation_id != crate::rules::foundation::DEFAULT_FOUNDATION_ID {
+                            crate::rules::foundation::foundation_name(&obj.foundation)
+                        } else {
+                            crate::rules::foundation::foundation_name(foundation)
+                        };
+                    if obj.foundation != effective_foundation {
                         log::trace!(
                             "Foundation patch: {} (image={}) {} → {}",
                             obj.id,
                             art_key,
                             obj.foundation,
-                            foundation,
+                            effective_foundation,
                         );
                     }
-                    obj.foundation = foundation.clone();
+                    obj.foundation = effective_foundation.to_string();
                     patched += 1;
+                } else {
+                    obj.foundation =
+                        crate::rules::foundation::foundation_name(&obj.foundation).to_string();
                 }
                 // Merge QueueingCell from art.ini (TibSun legacy dock system).
                 if entry.queueing_cell.is_some() {
@@ -2626,10 +2637,22 @@ ParachuteMaxFallRate=-1
     }
 
     #[test]
-    fn test_missile_rot_var_defaults_to_one() {
+    fn test_missile_rot_var_missing_key_falls_back_to_one() {
         let ini = IniFile::from_str("[General]\n");
         let general = GeneralRules::from_ini(&ini);
         assert_eq!(general.missile_rot_var, sim_from_f32(1.0));
+    }
+
+    #[test]
+    fn test_missile_rot_var_stock_rules_value_parsed() {
+        let ini = IniFile::from_str("[General]\nMissileROTVar=.25\n");
+        let general = GeneralRules::from_ini(&ini);
+        let diff = (general.missile_rot_var - SimFixed::lit("0.25")).abs();
+        assert!(
+            diff < SimFixed::lit("0.001"),
+            "got {:?}",
+            general.missile_rot_var
+        );
     }
 
     #[test]
@@ -2948,8 +2971,7 @@ ZAdjust=-10
             "{}\n[BuildingTypes]\n0=GAREFN\n[GAREFN]\nName=Refinery\nCost=2000\nFoundation=4x3\n",
             make_test_rules()
         );
-        let art_text =
-            "[GAREFN]\nFoundation=4x3\nAddOccupy1=-1,0\nAddOccupy2=-1,-1\nRemoveOccupy1=3,1\n";
+        let art_text = "[GAREFN]\nFoundation=4x3\nCanHideThings=no\nOccupyHeight=4\nAddOccupy1=-1,0\nAddOccupy2=-1,-1\nRemoveOccupy1=3,1\n";
         let rules_ini: IniFile = IniFile::from_str(&rules_text);
         let mut rules: RuleSet = RuleSet::from_ini(&rules_ini).expect("rules parse");
         let art_ini: IniFile = IniFile::from_str(art_text);
@@ -2958,6 +2980,8 @@ ZAdjust=-10
         let obj = rules.object("GAREFN").expect("GAREFN");
         assert_eq!(obj.add_occupy, vec![(-1, 0), (-1, -1)]);
         assert_eq!(obj.remove_occupy, vec![(3, 1)]);
+        assert!(!rules.art_registry.can_hide_things("GAREFN"));
+        assert_eq!(rules.art_registry.occupy_height("GAREFN"), 4);
     }
 
     #[test]

@@ -1460,32 +1460,41 @@ impl PathGrid {
 
     /// Mark cells occupied by a building footprint as blocked (ground layer).
     /// Buildings only block the ground layer — bridge decks above are unaffected.
-    /// AddOccupy/RemoveOccupy art.ini overrides are honored. When `has_bib` is
-    /// true, the east-edge column of the footprint is left unblocked so units
+    /// AddOccupy/RemoveOccupy art.ini overrides are intentionally ignored here:
+    /// they affect hidden occupancy counters, not the real foundation. When
+    /// `has_bib` is true, the east-edge column of the foundation is left unblocked so units
     /// can drive across the bib strip — matches the original engine's HasBib
     /// relaxation in the per-cell occupant chain check (probes east neighbor;
     /// skips blocking when that neighbor isn't the same building).
+    /// NumberImpassableRows is live `Can_Enter_Cell` state, not static grid data.
+    pub fn block_building_movement_cells(
+        &mut self,
+        cell_rx: u16,
+        cell_ry: u16,
+        foundation: &str,
+        has_bib: bool,
+    ) {
+        let foundation_cells =
+            crate::sim::production::building_base_foundation_cells(cell_rx, cell_ry, foundation);
+        let blocking =
+            crate::sim::production::building_movement_blocking_cells(&foundation_cells, has_bib);
+        for (rx, ry) in blocking {
+            self.set_blocked(rx, ry, true);
+        }
+    }
+
+    /// Compatibility wrapper for older callers. Add/Remove parameters are
+    /// intentionally ignored for movement blocking.
     pub fn block_building_footprint(
         &mut self,
         cell_rx: u16,
         cell_ry: u16,
         foundation: &str,
-        add_occupy: &[(i16, i16)],
-        remove_occupy: &[(i16, i16)],
+        _add_occupy: &[(i16, i16)],
+        _remove_occupy: &[(i16, i16)],
         has_bib: bool,
     ) {
-        let footprint = crate::sim::production::building_footprint_cells(
-            cell_rx,
-            cell_ry,
-            foundation,
-            add_occupy,
-            remove_occupy,
-        );
-        let blocking =
-            crate::sim::production::building_movement_blocking_cells(&footprint, has_bib);
-        for (rx, ry) in blocking {
-            self.set_blocked(rx, ry, true);
-        }
+        self.block_building_movement_cells(cell_rx, cell_ry, foundation, has_bib);
     }
 
     /// Construct from raw cell data (test helper).
@@ -1729,17 +1738,9 @@ pub fn find_path_with_costs_corridor(
     Some(steps.into_iter().map(|s| (s.rx, s.ry)).collect())
 }
 
-/// Parse a foundation string like "2x2" or "3x3" into (width, height).
-/// Returns (1, 1) for malformed or missing input.
+/// Resolve a gamemd foundation name into pathfinding footprint dimensions.
 fn parse_foundation(foundation: &str) -> (u16, u16) {
-    let parts: Vec<&str> = foundation.split('x').collect();
-    if parts.len() == 2 {
-        let w: u16 = parts[0].parse().unwrap_or(1);
-        let h: u16 = parts[1].parse().unwrap_or(1);
-        (w.max(1), h.max(1))
-    } else {
-        (1, 1)
-    }
+    crate::rules::foundation::foundation_dimensions(foundation)
 }
 
 /// Truncate a path to at most `max_steps` movement steps.

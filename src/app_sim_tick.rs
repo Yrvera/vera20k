@@ -809,10 +809,8 @@ pub(crate) fn rebuild_dynamic_path_grid(state: &mut AppState) {
     for (rx, ry, type_id) in &structures {
         let obj = rules.object(type_id);
         let foundation = obj.map(|o| o.foundation.as_str()).unwrap_or("1x1");
-        let add_occupy: &[(i16, i16)] = obj.map(|o| o.add_occupy.as_slice()).unwrap_or(&[]);
-        let remove_occupy: &[(i16, i16)] = obj.map(|o| o.remove_occupy.as_slice()).unwrap_or(&[]);
         let has_bib: bool = obj.map(|o| o.bib).unwrap_or(false);
-        grid.block_building_footprint(*rx, *ry, foundation, add_occupy, remove_occupy, has_bib);
+        grid.block_building_movement_cells(*rx, *ry, foundation, has_bib);
     }
 
     // Block wall overlay cells (auto-filled walls have no entity but still block movement).
@@ -823,7 +821,7 @@ pub(crate) fn rebuild_dynamic_path_grid(state: &mut AppState) {
                 .map(|f| f.wall)
                 .unwrap_or(false);
             if is_wall {
-                grid.block_building_footprint(entry.rx, entry.ry, "1x1", &[], &[], false);
+                grid.block_building_movement_cells(entry.rx, entry.ry, "1x1", false);
             }
         }
     }
