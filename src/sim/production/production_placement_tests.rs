@@ -198,6 +198,100 @@ fn place_ready_building_spawns_and_consumes_ready_item() {
 }
 
 #[test]
+fn place_ready_building_accepts_clear_mixed_height_footprint() {
+    let mut sim = Simulation::new();
+    let rules = placement_radius_rules();
+    let mut height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    let grid = PathGrid::new(64, 64);
+    spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
+
+    for (cell, z) in [((12, 10), 0), ((13, 10), 1), ((12, 11), 2), ((13, 11), 3)] {
+        height_map.insert(cell, z);
+    }
+
+    let americans = sim.interner.intern("Americans");
+    let gapowr = sim.interner.intern("GAPOWR");
+    sim.production
+        .ready_by_owner
+        .insert(americans, VecDeque::from([gapowr]));
+
+    let preview = placement_preview_for_owner(
+        &sim,
+        &rules,
+        "Americans",
+        "GAPOWR",
+        12,
+        10,
+        Some(&grid),
+        &height_map,
+    )
+    .expect("preview should exist");
+    assert!(
+        preview.valid,
+        "mixed clear heights should not reject placement"
+    );
+    assert!(
+        preview.cell_valid.iter().all(|valid| *valid),
+        "all otherwise-clear mixed-height cells should be individually valid"
+    );
+
+    assert!(place_ready_building(
+        &mut sim,
+        &rules,
+        "Americans",
+        "GAPOWR",
+        12,
+        10,
+        Some(&grid),
+        &height_map,
+    ));
+
+    assert!(sim.entities.values().any(|e| {
+        sim.interner
+            .resolve(e.type_ref)
+            .eq_ignore_ascii_case("GAPOWR")
+            && e.position.rx == 12
+            && e.position.ry == 10
+    }));
+}
+
+#[test]
+fn place_ready_building_rejects_blocked_cell_inside_mixed_height_footprint() {
+    let mut sim = Simulation::new();
+    let rules = placement_radius_rules();
+    let mut height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    let mut grid = PathGrid::new(64, 64);
+    grid.set_blocked(13, 11, true);
+    spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
+
+    for (cell, z) in [((12, 10), 0), ((13, 10), 1), ((12, 11), 2), ((13, 11), 3)] {
+        height_map.insert(cell, z);
+    }
+
+    let americans = sim.interner.intern("Americans");
+    let gapowr = sim.interner.intern("GAPOWR");
+    sim.production
+        .ready_by_owner
+        .insert(americans, VecDeque::from([gapowr]));
+
+    assert!(!place_ready_building(
+        &mut sim,
+        &rules,
+        "Americans",
+        "GAPOWR",
+        12,
+        10,
+        Some(&grid),
+        &height_map,
+    ));
+    assert_eq!(
+        ready_buildings_for_owner(&sim, &rules, "Americans").len(),
+        1,
+        "blocked placement must not consume the ready building"
+    );
+}
+
+#[test]
 fn refinery_placement_spawns_one_starter_harvester() {
     let mut sim = Simulation::new();
     let rules = build_catalog_rules();
@@ -836,19 +930,69 @@ fn cycle_active_producer_rotates_matching_factories() {
 }
 
 #[test]
-fn spawn_routing_falls_back_to_next_factory_when_first_exit_is_blocked() {
+fn blocked_active_war_factory_does_not_spawn_from_second_factory() {
     let mut sim = Simulation::new();
     let rules = factory_rules();
     let mut grid = PathGrid::new(64, 64);
 
     spawn_structure(&mut sim, 1, "Americans", "GAWEAP", 10, 10);
     spawn_structure(&mut sim, 2, "Americans", "GAWEAP", 30, 30);
+    let americans = sim.interner.intern("Americans");
+    sim.production.active_producer_by_owner.insert(
+        americans,
+        BTreeMap::from([(ProductionCategory::Vehicle, 1)]),
+    );
 
-    for rx in 0..=22 {
-        for ry in 0..=22 {
-            grid.set_blocked(rx, ry, true);
-        }
-    }
+    grid.set_blocked(12, 11, true);
+
+    let spawn = find_spawn_cell_for_owner(
+        &mut sim,
+        &rules,
+        "Americans",
+        ObjectCategory::Vehicle,
+        Some(&grid),
+        false,
+    );
+
+    assert!(
+        spawn.is_none(),
+        "blocked active war factory must not route the completed vehicle through the second factory, got {:?}",
+        spawn
+    );
+}
+
+#[test]
+fn stock_war_factory_initial_exit_has_no_nearest_cell_fallback() {
+    let mut sim = Simulation::new();
+    let rules = factory_rules();
+    let mut grid = PathGrid::new(64, 64);
+
+    spawn_structure(&mut sim, 1, "Americans", "GAWEAP", 10, 10);
+    grid.set_blocked(12, 11, true);
+
+    let spawn = find_spawn_cell_for_owner(
+        &mut sim,
+        &rules,
+        "Americans",
+        ObjectCategory::Vehicle,
+        Some(&grid),
+        false,
+    );
+
+    assert!(
+        spawn.is_none(),
+        "blocked ExitCoord must fail initial war-factory delivery instead of probing neighboring cells, got {:?}",
+        spawn
+    );
+}
+
+#[test]
+fn stock_war_factory_clear_exitcoord_succeeds() {
+    let mut sim = Simulation::new();
+    let rules = factory_rules();
+    let grid = PathGrid::new(64, 64);
+
+    spawn_structure(&mut sim, 1, "Americans", "GAWEAP", 10, 10);
 
     let spawn = find_spawn_cell_for_owner(
         &mut sim,
@@ -858,12 +1002,12 @@ fn spawn_routing_falls_back_to_next_factory_when_first_exit_is_blocked() {
         Some(&grid),
         false,
     )
-    .expect("second factory should provide a valid exit");
+    .expect("clear ExitCoord should accept the stock war-factory spawn cell");
 
-    assert!(
-        spawn.0 >= 31 && spawn.0 <= 33 && spawn.1 >= 30 && spawn.1 <= 32,
-        "spawn should come from the second war factory, got {:?}",
-        spawn
+    assert_eq!(
+        spawn,
+        (12, 11),
+        "stock land war factory initial spawn uses ExitCoord=512,256,0"
     );
 }
 

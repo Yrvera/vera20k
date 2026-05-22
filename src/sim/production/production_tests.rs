@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 
+use super::production_spawn::{find_spawn_selection_for_owner, mark_war_factory_spawn_contact};
 use super::{
     BuildQueueItem, BuildQueueState, ProductionCategory, STARTING_CREDITS, credits_for_owner,
     find_spawn_cell_for_owner, is_matching_factory, seed_resource_nodes_from_overlays,
@@ -692,6 +693,62 @@ fn exit_coord_parsed_and_used_for_spawn() {
         spawn,
         (22, 21),
         "primary exit cell from ExitCoord=512,256,0"
+    );
+}
+
+#[test]
+fn war_factory_spawn_contact_is_marked_per_produced_mover() {
+    let rules = factory_rules();
+    let mut sim = Simulation::new();
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    spawn_structure(&mut sim, 10, "Americans", "GAWEAP", 20, 20);
+
+    let selection = find_spawn_selection_for_owner(
+        &mut sim,
+        &rules,
+        "Americans",
+        ObjectCategory::Vehicle,
+        None,
+        false,
+    )
+    .expect("war factory should provide a spawn selection");
+    assert_eq!(selection.producer_id, 10);
+    assert_eq!(selection.cell, (22, 21));
+
+    let produced = sim
+        .spawn_object(
+            "MTNK",
+            "Americans",
+            selection.cell.0,
+            selection.cell.1,
+            64,
+            &rules,
+            &height_map,
+        )
+        .expect("produced tank should spawn");
+    let unrelated = sim
+        .spawn_object("MTNK", "Americans", 30, 30, 64, &rules, &height_map)
+        .expect("unrelated tank should spawn");
+
+    assert!(mark_war_factory_spawn_contact(
+        &mut sim,
+        &rules,
+        selection.producer_id,
+        produced,
+    ));
+    assert!(
+        sim.entities
+            .get(produced)
+            .unwrap()
+            .has_live_contact_with(10),
+        "produced vehicle should be contacted with its factory"
+    );
+    assert!(
+        !sim.entities
+            .get(unrelated)
+            .unwrap()
+            .has_live_contact_with(10),
+        "unrelated vehicles must not inherit the war-factory row exception"
     );
 }
 
