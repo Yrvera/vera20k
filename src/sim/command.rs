@@ -60,8 +60,13 @@ pub enum Command {
     /// Undeploy a structure back into its mobile unit (e.g. ConYard → MCV).
     /// Reads UndeploysInto from rules.ini to determine the spawned unit type.
     UndeployBuilding { entity_id: u64 },
-    /// Set production rally point for owner.
-    SetRally { owner: InternedId, rx: u16, ry: u16 },
+    /// Set production rally point for owner and the explicit selected producers.
+    SetRally {
+        owner: InternedId,
+        rx: u16,
+        ry: u16,
+        producer_ids: Vec<u64>,
+    },
     /// Enqueue a production item.
     QueueProduction {
         owner: InternedId,

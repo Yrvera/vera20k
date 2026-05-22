@@ -114,6 +114,7 @@ mod tests {
                     owner: crate::sim::intern::test_intern("Americans"),
                     rx: 10,
                     ry: 11,
+                    producer_ids: vec![1, 2],
                 },
             )],
             999,

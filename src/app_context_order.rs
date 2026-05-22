@@ -216,11 +216,9 @@ pub(crate) fn try_queue_context_order_at_screen_point(
             {
                 // Set rally point for the structures.
                 {
-                    let struct_owner_id = state
-                        .simulation
-                        .as_ref()
-                        .and_then(|s| s.interner.get(&struct_own))
-                        .unwrap_or(owner_id);
+                    let struct_owner_id = sim.interner.get(&struct_own).unwrap_or(owner_id);
+                    let producer_ids =
+                        selected_rally_producer_ids(sim, &selected_ids, struct_owner_id);
                     queued.push(CommandEnvelope::new(
                         struct_owner_id,
                         execute_tick,
@@ -228,6 +226,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                             owner: struct_owner_id,
                             rx: target_rx,
                             ry: target_ry,
+                            producer_ids,
                         },
                     ));
                 }
@@ -736,4 +735,77 @@ pub(crate) fn try_queue_context_order_at_screen_point(
         sim.pending_commands.extend(queued);
     }
     true
+}
+
+fn selected_rally_producer_ids(
+    sim: &crate::sim::world::Simulation,
+    selected_ids: &[u64],
+    owner: InternedId,
+) -> Vec<u64> {
+    let mut producer_ids: Vec<u64> = selected_ids
+        .iter()
+        .copied()
+        .filter(|stable_id| {
+            sim.entities.get(*stable_id).is_some_and(|entity| {
+                entity.category == EntityCategory::Structure && entity.owner == owner
+            })
+        })
+        .collect();
+    producer_ids.sort_unstable();
+    producer_ids.dedup();
+    producer_ids
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sim::components::Health;
+    use crate::sim::game_entity::GameEntity;
+    use crate::sim::world::Simulation;
+
+    #[test]
+    fn right_click_structure_selection_sends_rally_producer_ids() {
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Americans");
+        let factory_type = sim.interner.intern("GAWEAP");
+        let tank_type = sim.interner.intern("MTNK");
+        sim.entities.insert(GameEntity::new(
+            1,
+            10,
+            10,
+            0,
+            0,
+            owner,
+            Health {
+                current: 1000,
+                max: 1000,
+            },
+            factory_type,
+            EntityCategory::Structure,
+            0,
+            5,
+            false,
+        ));
+        sim.entities.insert(GameEntity::new(
+            2,
+            11,
+            10,
+            0,
+            0,
+            owner,
+            Health {
+                current: 300,
+                max: 300,
+            },
+            tank_type,
+            EntityCategory::Unit,
+            0,
+            5,
+            true,
+        ));
+
+        let producer_ids = selected_rally_producer_ids(&sim, &[2, 1], owner);
+
+        assert_eq!(producer_ids, vec![1]);
+    }
 }

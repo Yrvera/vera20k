@@ -479,12 +479,28 @@ impl Simulation {
                 if !self.entity_owned_by_id(command_owner, *entity_id) {
                     return false;
                 }
+                if self.entities.get(*entity_id).is_some_and(|entity| {
+                    rules
+                        .object(self.interner.resolve(entity.type_ref))
+                        .is_some_and(|obj| obj.enslaves.is_some() && obj.deploys_into.is_some())
+                }) {
+                    return crate::sim::slave_miner::deploy_slave_miner(self, *entity_id, rules)
+                        .is_some();
+                }
                 self.deploy_mcv(*entity_id, rules, height_map)
             }
             Command::UndeployBuilding { entity_id } => {
                 let Some(rules) = rules else { return false };
                 if !self.entity_owned_by_id(command_owner, *entity_id) {
                     return false;
+                }
+                if self.entities.get(*entity_id).is_some_and(|entity| {
+                    rules
+                        .object(self.interner.resolve(entity.type_ref))
+                        .is_some_and(|obj| obj.enslaves.is_some() && obj.undeploys_into.is_some())
+                }) {
+                    return crate::sim::slave_miner::undeploy_slave_miner(self, *entity_id, rules)
+                        .is_some();
                 }
                 self.undeploy_building(*entity_id, rules)
             }
@@ -576,9 +592,14 @@ impl Simulation {
                 entity.deploy_state = new_phase;
                 true
             }
-            Command::SetRally { owner, rx, ry } => {
+            Command::SetRally {
+                owner,
+                rx,
+                ry,
+                producer_ids,
+            } => {
                 production::set_rally_point_for_owner(self, owner, *rx, *ry);
-                true
+                self.set_rally_target_for_producers(command_owner, producer_ids, *rx, *ry, rules)
             }
             Command::QueueProduction { owner, type_id, .. } => {
                 let Some(rules) = rules else { return false };
@@ -1226,6 +1247,37 @@ impl Simulation {
         }
     }
 
+    fn set_rally_target_for_producers(
+        &mut self,
+        command_owner: &str,
+        producer_ids: &[u64],
+        rx: u16,
+        ry: u16,
+        rules: Option<&RuleSet>,
+    ) -> bool {
+        let Some(rules) = rules else {
+            return true;
+        };
+        let mut ids = producer_ids.to_vec();
+        ids.sort_unstable();
+        ids.dedup();
+        for stable_id in ids {
+            let eligible = self.entities.get(stable_id).is_some_and(|entity| {
+                entity.category == crate::map::entities::EntityCategory::Structure
+                    && command_owner.eq_ignore_ascii_case(self.interner.resolve(entity.owner))
+                    && rules
+                        .object(self.interner.resolve(entity.type_ref))
+                        .is_some_and(|obj| obj.has_rally_line())
+            });
+            if eligible {
+                if let Some(entity) = self.entities.get_mut(stable_id) {
+                    entity.rally_target = Some((rx, ry));
+                }
+            }
+        }
+        true
+    }
+
     /// Cancel depot dock reservation for an entity. Called before issuing new orders.
     fn cancel_depot_dock(&mut self, entity_id: u64) {
         if let Some(e) = self.entities.get(entity_id) {
@@ -1426,6 +1478,7 @@ mod tests {
     use crate::rules::ini_parser::IniFile;
     use crate::sim::components::Health;
     use crate::sim::game_entity::GameEntity;
+    use crate::sim::house_state::HouseState;
     use crate::sim::miner::{Miner, MinerConfig, MinerKind, MinerState, RefineryDockPhase};
 
     fn miner_return_rules() -> RuleSet {
@@ -1501,6 +1554,87 @@ mod tests {
             false,
         );
         sim.entities.insert(entity);
+    }
+
+    fn rally_rules() -> RuleSet {
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n\
+             [VehicleTypes]\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             0=GAPILE\n\
+             1=GAWEAP\n\
+             2=GAPOWR\n\
+             3=NAWEAP\n\
+             [GAPILE]\nFactory=InfantryType\nStrength=500\n\
+             [GAWEAP]\nFactory=UnitType\nStrength=1000\n\
+             [GAPOWR]\nStrength=750\n\
+             [NAWEAP]\nFactory=UnitType\nStrength=1000\n",
+        );
+        RuleSet::from_ini(&ini).expect("rally rules")
+    }
+
+    fn spawn_structure_for_owner(
+        sim: &mut Simulation,
+        sid: u64,
+        type_id: &str,
+        owner_name: &str,
+        rx: u16,
+        ry: u16,
+    ) {
+        let owner = sim.interner.intern(owner_name);
+        let type_ref = sim.interner.intern(type_id);
+        sim.entities.insert(GameEntity::new(
+            sid,
+            rx,
+            ry,
+            0,
+            0,
+            owner,
+            Health {
+                current: 1000,
+                max: 1000,
+            },
+            type_ref,
+            EntityCategory::Structure,
+            0,
+            5,
+            false,
+        ));
+    }
+
+    #[test]
+    fn set_rally_updates_only_owned_eligible_producers() {
+        let rules = rally_rules();
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Americans");
+        let enemy = sim.interner.intern("Soviet");
+        sim.houses.insert(
+            owner,
+            HouseState::new(owner, 0, Some(owner), true, 10_000, 10),
+        );
+        sim.houses.insert(
+            enemy,
+            HouseState::new(enemy, 1, Some(enemy), false, 10_000, 10),
+        );
+        spawn_structure_for_owner(&mut sim, 2, "GAPILE", "Americans", 10, 10);
+        spawn_structure_for_owner(&mut sim, 3, "GAWEAP", "Americans", 12, 10);
+        spawn_structure_for_owner(&mut sim, 4, "GAPOWR", "Americans", 14, 10);
+        spawn_structure_for_owner(&mut sim, 5, "NAWEAP", "Soviet", 16, 10);
+
+        let command = Command::SetRally {
+            owner,
+            rx: 40,
+            ry: 41,
+            producer_ids: vec![3, 2, 2, 4, 5],
+        };
+
+        assert!(sim.apply_command("Americans", &command, Some(&rules), None, &BTreeMap::new()));
+        assert_eq!(sim.entities.get(2).unwrap().rally_target, Some((40, 41)));
+        assert_eq!(sim.entities.get(3).unwrap().rally_target, Some((40, 41)));
+        assert_eq!(sim.entities.get(4).unwrap().rally_target, None);
+        assert_eq!(sim.entities.get(5).unwrap().rally_target, None);
+        assert_eq!(sim.houses.get(&owner).unwrap().rally_point, Some((40, 41)));
     }
 
     #[test]

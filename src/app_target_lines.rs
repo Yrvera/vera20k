@@ -1,209 +1,304 @@
-//! Target/action lines — colored lines from selected units to command destinations.
+//! Target/action and relationship line overlays.
 //!
-//! 25-tick global timer resets on each command issued, attack target takes priority
-//! over move target, only mobile units (not buildings) draw lines. This is purely
-//! app-layer — sim/ is never touched.
+//! Selected action lines are short-lived app-layer feedback resolved from live
+//! simulation movement/attack state. Factory rally lines are app-layer visuals
+//! over deterministic per-producer rally target state.
 //!
 //! ## Dependency rules
-//! - Part of the app layer — reads sim state but never modifies it.
+//! - Part of the app layer - reads sim state but never mutates it.
 
 use std::collections::BTreeMap;
 
 use crate::map::entities::EntityCategory;
+use crate::map::houses::HouseColorMap;
 use crate::map::terrain;
 use crate::render::batch::SpriteInstance;
+use crate::rules::house_colors::{self, HouseColorIndex};
+use crate::rules::ruleset::RuleSet;
+use crate::sim::combat::{AttackTarget, TargetKind};
 use crate::sim::command::{Command, CommandEnvelope};
+use crate::sim::game_entity::GameEntity;
 use crate::sim::world::Simulation;
 
-/// How long target lines remain visible after a command is issued (sim ticks).
+/// How long selected action lines remain visible after a command is issued.
 const DURATION_TICKS: u64 = 25;
 
-/// Attack target line — bright green (PALETTE.PAL index 8).
+/// Attack target line - bright green (PALETTE.PAL index 8 approximation).
 const ATTACK_COLOR: [f32; 3] = [0.0, 1.0, 0.0];
-/// Move target line — lighter green (PALETTE.PAL index 3).
+/// Move target line - lighter green (PALETTE.PAL index 3 approximation).
 const MOVE_COLOR: [f32; 3] = [0.33, 1.0, 0.33];
 /// Depth: above debug overlays (0.0004), below selection brackets (0.0006).
 const LINE_DEPTH: f32 = 0.0005;
+const ENDPOINT_BOX_RADIUS: i32 = 1;
 
-// ---------------------------------------------------------------------------
-// Data types
-// ---------------------------------------------------------------------------
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ScreenPoint {
+    x: f32,
+    y: f32,
+}
 
-/// Determines line color.
-#[derive(Debug, Clone, Copy)]
-enum LineKind {
+impl From<(f32, f32)> for ScreenPoint {
+    fn from((x, y): (f32, f32)) -> Self {
+        Self { x, y }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelectedLineKind {
     Move,
     Attack,
 }
 
-/// Where the line points to.
-#[derive(Debug, Clone, Copy)]
-enum LineDest {
-    /// A cell on the map (move/attackmove destination).
-    Cell { rx: u16, ry: u16 },
-    /// A living entity (attack target).
-    Entity { target_id: u64 },
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SelectedActionLine {
+    start: ScreenPoint,
+    end: ScreenPoint,
+    kind: SelectedLineKind,
 }
 
-/// One stored target line: source entity → destination.
+/// Global selected action line state stored on `AppState`.
 #[derive(Debug, Clone)]
-struct LineEntry {
-    entity_id: u64,
-    kind: LineKind,
-    dest: LineDest,
-}
-
-/// Global target line state — stored on `AppState`.
-#[derive(Debug, Clone, Default)]
 pub(crate) struct TargetLineState {
-    /// Tick at which the timer was last started (0 = never started).
-    start_tick: u64,
-    /// Per-entity destination records, deduplicated by entity_id.
-    entries: Vec<LineEntry>,
+    start_tick: Option<u64>,
+    unit_action_lines_enabled: bool,
 }
 
-// ---------------------------------------------------------------------------
-// Timer management
-// ---------------------------------------------------------------------------
+impl Default for TargetLineState {
+    fn default() -> Self {
+        Self {
+            start_tick: None,
+            unit_action_lines_enabled: true,
+        }
+    }
+}
 
-/// Extract target line entries from queued commands and reset the global timer.
-///
-/// Called from `app_context_order` right before commands are pushed to
-/// `pending_commands`, so lines appear immediately on click — not after
-/// network/input delay.
+impl TargetLineState {
+    pub(crate) fn is_selected_action_active(&self, current_tick: u64) -> bool {
+        self.unit_action_lines_enabled
+            && self
+                .start_tick
+                .is_some_and(|start| current_tick.saturating_sub(start) < DURATION_TICKS)
+    }
+
+    pub(crate) fn set_unit_action_lines_enabled(&mut self, enabled: bool) {
+        self.unit_action_lines_enabled = enabled;
+    }
+}
+
+/// Reset the selected action-line timer when action-producing commands are queued.
 pub(crate) fn record_command_lines(
     state: &mut TargetLineState,
     commands: &[CommandEnvelope],
     current_tick: u64,
 ) {
-    let mut any = false;
-    for envelope in commands {
-        let entry = match &envelope.payload {
-            Command::Move {
-                entity_id,
-                target_rx,
-                target_ry,
-                ..
-            }
-            | Command::AttackMove {
-                entity_id,
-                target_rx,
-                target_ry,
-                ..
-            } => Some(LineEntry {
-                entity_id: *entity_id,
-                kind: LineKind::Move,
-                dest: LineDest::Cell {
-                    rx: *target_rx,
-                    ry: *target_ry,
-                },
-            }),
-            Command::Attack {
-                attacker_id,
-                target_id,
-            }
-            | Command::ForceAttack {
-                attacker_id,
-                target_id,
-            } => Some(LineEntry {
-                entity_id: *attacker_id,
-                kind: LineKind::Attack,
-                dest: LineDest::Entity {
-                    target_id: *target_id,
-                },
-            }),
-            _ => None,
-        };
-        if let Some(e) = entry {
-            // Deduplicate: one line per entity, latest command wins.
-            state
-                .entries
-                .retain(|existing| existing.entity_id != e.entity_id);
-            state.entries.push(e);
-            any = true;
-        }
-    }
-    if any {
-        state.start_tick = current_tick;
+    if commands.iter().any(|envelope| {
+        matches!(
+            envelope.payload,
+            Command::Move { .. }
+                | Command::AttackMove { .. }
+                | Command::Attack { .. }
+                | Command::ForceAttack { .. }
+                | Command::ForceAttackCell { .. }
+        )
+    }) {
+        state.start_tick = Some(current_tick);
     }
 }
 
-// ---------------------------------------------------------------------------
-// Rendering
-// ---------------------------------------------------------------------------
-
-/// Build `SpriteInstance` quads for all active target lines.
-///
-/// Returns an empty vec if the timer has expired or no simulation is loaded.
+/// Build selected unit action-line instances from live simulation state.
 pub(crate) fn build_target_line_instances(
     line_state: &TargetLineState,
     sim: Option<&Simulation>,
     height_map: &BTreeMap<(u16, u16), u8>,
 ) -> Vec<SpriteInstance> {
-    let sim = match sim {
-        Some(s) => s,
-        None => return Vec::new(),
-    };
-
-    // Check global timer.
-    if line_state.start_tick == 0 {
+    let Some(sim) = sim else {
         return Vec::new();
-    }
-    if sim.tick.saturating_sub(line_state.start_tick) >= DURATION_TICKS {
+    };
+    if !line_state.is_selected_action_active(sim.tick) {
         return Vec::new();
     }
 
     let mut instances = Vec::new();
-
-    for entry in &line_state.entries {
-        // Source entity must still exist, be selected, and not be a building.
-        let source = match sim.entities.get(entry.entity_id) {
-            Some(e) if e.selected && e.category != EntityCategory::Structure => e,
-            _ => continue,
+    for entity in sim.entities.values() {
+        let Some(line) = selected_action_line_for_entity(entity, sim, height_map) else {
+            continue;
         };
-
-        let src_x = source.position.screen_x;
-        let src_y = source.position.screen_y;
-
-        // Resolve destination screen position.
-        let (dst_x, dst_y) = match entry.dest {
-            LineDest::Cell { rx, ry } => {
-                let z = height_map.get(&(rx, ry)).copied().unwrap_or(0);
-                let (sx, sy) = terrain::iso_to_screen(rx, ry, z);
-                // iso_to_screen returns NW corner of cell; shift to cell center.
-                (sx + 30.0, sy + 15.0)
-            }
-            LineDest::Entity { target_id } => {
-                match sim.entities.get(target_id) {
-                    Some(target) => (target.position.screen_x, target.position.screen_y),
-                    None => continue, // Target dead — skip line.
-                }
-            }
+        let tint = match line.kind {
+            SelectedLineKind::Attack => ATTACK_COLOR,
+            SelectedLineKind::Move => MOVE_COLOR,
         };
-
-        let color = match entry.kind {
-            LineKind::Attack => ATTACK_COLOR,
-            LineKind::Move => MOVE_COLOR,
-        };
-
-        emit_colored_line(&mut instances, src_x, src_y, dst_x, dst_y, color);
+        emit_selected_action_line(&mut instances, line.start, line.end, tint);
     }
-
     instances
 }
 
-/// Pixel-stepping line emitter: steps from (ax, ay) to (bx, by) emitting
-/// 1×1 SpriteInstance quads colored with `tint`.
-fn emit_colored_line(
+/// Build selected local factory rally-line instances from per-producer state.
+pub(crate) fn build_factory_rally_line_instances(
+    sim: Option<&Simulation>,
+    rules: Option<&RuleSet>,
+    height_map: &BTreeMap<(u16, u16), u8>,
+    house_color_map: &HouseColorMap,
+    local_owner: Option<&str>,
+) -> Vec<SpriteInstance> {
+    let (Some(sim), Some(rules), Some(local_owner)) = (sim, rules, local_owner) else {
+        return Vec::new();
+    };
+    let mut instances = Vec::new();
+    for entity in sim.entities.values() {
+        if !entity.selected || entity.category != EntityCategory::Structure {
+            continue;
+        }
+        let owner = sim.interner.resolve(entity.owner);
+        if owner != local_owner {
+            continue;
+        }
+        let Some((rx, ry)) = entity.rally_target else {
+            continue;
+        };
+        let Some(obj) = rules.object(sim.interner.resolve(entity.type_ref)) else {
+            continue;
+        };
+        if !obj.has_rally_line() {
+            continue;
+        }
+
+        let start = ScreenPoint {
+            x: entity.position.screen_x,
+            y: entity.position.screen_y,
+        };
+        let end = project_cell_destination(rx, ry, height_map, None, Some(sim)).into();
+        let tint = rally_tint_for_owner(owner, house_color_map);
+        emit_rally_line(&mut instances, start, end, tint, sim.tick);
+    }
+    instances
+}
+
+fn selected_action_line_for_entity(
+    entity: &GameEntity,
+    sim: &Simulation,
+    height_map: &BTreeMap<(u16, u16), u8>,
+) -> Option<SelectedActionLine> {
+    if !entity.selected || entity.category == EntityCategory::Structure {
+        return None;
+    }
+    let start = selected_action_line_source(entity);
+    if let Some(attack) = &entity.attack_target {
+        let end = resolve_attack_target_point(attack, sim, height_map)?;
+        return Some(SelectedActionLine {
+            start,
+            end,
+            kind: SelectedLineKind::Attack,
+        });
+    }
+
+    let movement = entity.movement_target.as_ref()?;
+    let (rx, ry) = movement
+        .final_goal
+        .or_else(|| movement.path.last().copied())?;
+    Some(SelectedActionLine {
+        start,
+        end: project_cell_destination(rx, ry, height_map, None, Some(sim)).into(),
+        kind: SelectedLineKind::Move,
+    })
+}
+
+fn selected_action_line_source(entity: &GameEntity) -> ScreenPoint {
+    ScreenPoint {
+        x: entity.position.screen_x,
+        y: entity.position.screen_y,
+    }
+}
+
+fn resolve_attack_target_point(
+    attack: &AttackTarget,
+    sim: &Simulation,
+    height_map: &BTreeMap<(u16, u16), u8>,
+) -> Option<ScreenPoint> {
+    match attack.target {
+        TargetKind::Entity(target_id) => sim.entities.get(target_id).map(|target| ScreenPoint {
+            x: target.position.screen_x,
+            y: target.position.screen_y,
+        }),
+        TargetKind::Cell(rx, ry) => {
+            Some(project_cell_destination(rx, ry, height_map, None, Some(sim)).into())
+        }
+    }
+}
+
+fn project_cell_destination(
+    rx: u16,
+    ry: u16,
+    height_map: &BTreeMap<(u16, u16), u8>,
+    bridge_height_map: Option<&BTreeMap<(u16, u16), u8>>,
+    sim: Option<&Simulation>,
+) -> (f32, f32) {
+    let z = bridge_deck_height_for_cell(rx, ry, bridge_height_map, sim)
+        .or_else(|| height_map.get(&(rx, ry)).copied())
+        .unwrap_or(0);
+    let (sx, sy) = terrain::iso_to_screen(rx, ry, z);
+    (sx + 30.0, sy + 15.0)
+}
+
+fn bridge_deck_height_for_cell(
+    rx: u16,
+    ry: u16,
+    bridge_height_map: Option<&BTreeMap<(u16, u16), u8>>,
+    sim: Option<&Simulation>,
+) -> Option<u8> {
+    if let Some(deck_z) = bridge_height_map.and_then(|map| map.get(&(rx, ry)).copied()) {
+        return Some(deck_z);
+    }
+
+    let cell = sim?.resolved_terrain.as_ref()?.cell(rx, ry)?;
+    let is_low_bridge = cell
+        .bridge_layer
+        .as_ref()
+        .is_some_and(|layer| layer.direction == crate::map::resolved_terrain::BridgeDirection::Low);
+    (cell.has_bridge_deck && !is_low_bridge).then_some(cell.bridge_deck_level)
+}
+
+fn rally_tint_for_owner(owner: &str, house_color_map: &HouseColorMap) -> [f32; 3] {
+    let index = house_color_map
+        .get(owner)
+        .copied()
+        .unwrap_or(HouseColorIndex(0));
+    let color = house_colors::house_color_ramp(index)[0];
+    [
+        color.r as f32 / 255.0,
+        color.g as f32 / 255.0,
+        color.b as f32 / 255.0,
+    ]
+}
+
+fn push_line_pixel(instances: &mut Vec<SpriteInstance>, x: f32, y: f32, tint: [f32; 3]) {
+    instances.push(SpriteInstance {
+        position: [x.round(), y.round()],
+        size: [1.0, 1.0],
+        uv_origin: [0.0, 0.0],
+        uv_size: [1.0, 1.0],
+        tint,
+        alpha: 1.0,
+        depth: LINE_DEPTH,
+        ..Default::default()
+    });
+}
+
+fn emit_endpoint_box(instances: &mut Vec<SpriteInstance>, point: ScreenPoint, tint: [f32; 3]) {
+    for dy in -ENDPOINT_BOX_RADIUS..=ENDPOINT_BOX_RADIUS {
+        for dx in -ENDPOINT_BOX_RADIUS..=ENDPOINT_BOX_RADIUS {
+            push_line_pixel(instances, point.x + dx as f32, point.y + dy as f32, tint);
+        }
+    }
+}
+
+fn emit_solid_line(
     instances: &mut Vec<SpriteInstance>,
-    ax: f32,
-    ay: f32,
-    bx: f32,
-    by: f32,
+    start: ScreenPoint,
+    end: ScreenPoint,
     tint: [f32; 3],
 ) {
-    let dx = bx - ax;
-    let dy = by - ay;
+    let dx = end.x - start.x;
+    let dy = end.y - start.y;
     let steps = dx.abs().max(dy.abs()).ceil() as i32;
     if steps <= 0 {
         return;
@@ -212,17 +307,236 @@ fn emit_colored_line(
     let step_y = dy / steps as f32;
 
     for i in 0..steps {
-        let px = (ax + step_x * i as f32).round();
-        let py = (ay + step_y * i as f32).round();
-        instances.push(SpriteInstance {
-            position: [px, py],
-            size: [1.0, 1.0],
-            uv_origin: [0.0, 0.0],
-            uv_size: [1.0, 1.0],
+        push_line_pixel(
+            instances,
+            start.x + step_x * i as f32,
+            start.y + step_y * i as f32,
             tint,
-            alpha: 1.0,
-            depth: LINE_DEPTH,
+        );
+    }
+}
+
+fn emit_selected_action_line(
+    instances: &mut Vec<SpriteInstance>,
+    start: ScreenPoint,
+    end: ScreenPoint,
+    tint: [f32; 3],
+) {
+    emit_endpoint_box(instances, start, tint);
+    emit_endpoint_box(instances, end, tint);
+    emit_solid_line(instances, start, end, tint);
+}
+
+fn emit_rally_line(
+    instances: &mut Vec<SpriteInstance>,
+    start: ScreenPoint,
+    end: ScreenPoint,
+    tint: [f32; 3],
+    tick: u64,
+) {
+    let _phase = (0x7fff_ffffu64.saturating_sub(tick)) % 15;
+    emit_solid_line(instances, start, end, tint);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rules::ini_parser::IniFile;
+    use crate::rules::ruleset::RuleSet;
+    use crate::sim::components::MovementTarget;
+    use crate::sim::game_entity::GameEntity;
+
+    fn active_line_state_for_tick(tick: u64) -> TargetLineState {
+        TargetLineState {
+            start_tick: Some(tick),
+            unit_action_lines_enabled: true,
+        }
+    }
+
+    fn rules_with_factory_and_non_factory() -> RuleSet {
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n\
+             [VehicleTypes]\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             0=GAWEAP\n\
+             1=GAPOWR\n\
+             [GAWEAP]\nFactory=UnitType\nStrength=1000\n\
+             [GAPOWR]\nStrength=750\n",
+        );
+        RuleSet::from_ini(&ini).expect("rules")
+    }
+
+    fn sim_with_selected_unit_that_has_attack_and_move() -> Simulation {
+        let mut sim = Simulation::new();
+        let mut unit = GameEntity::test_default(1, "MTNK", "Americans", 10, 10);
+        unit.selected = true;
+        unit.movement_target = Some(MovementTarget {
+            final_goal: Some((25, 25)),
+            path: vec![(10, 10), (25, 25)],
             ..Default::default()
         });
+        unit.attack_target = Some(AttackTarget::new(2));
+        let target = GameEntity::test_default(2, "HTNK", "Soviet", 14, 10);
+        sim.entities.insert(unit);
+        sim.entities.insert(target);
+        sim
+    }
+
+    fn sim_with_selected_factory_and_non_factory() -> Simulation {
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Americans");
+        let factory_type = sim.interner.intern("GAWEAP");
+        let power_type = sim.interner.intern("GAPOWR");
+        let mut factory = GameEntity::new(
+            10,
+            10,
+            10,
+            0,
+            0,
+            owner,
+            crate::sim::components::Health {
+                current: 1000,
+                max: 1000,
+            },
+            factory_type,
+            EntityCategory::Structure,
+            0,
+            5,
+            false,
+        );
+        factory.selected = true;
+        factory.rally_target = Some((16, 10));
+        let mut power = factory.clone();
+        power.stable_id = 11;
+        power.type_ref = power_type;
+        power.position.rx = 12;
+        power.rally_target = Some((16, 10));
+        power.position.refresh_screen_coords();
+        sim.entities.insert(factory);
+        sim.entities.insert(power);
+        sim
+    }
+
+    fn test_house_colors() -> HouseColorMap {
+        let mut colors = HouseColorMap::new();
+        colors.insert("Americans".to_string(), HouseColorIndex(1));
+        colors
+    }
+
+    #[test]
+    fn bridge_height_entry_lifts_cell_destination_endpoint() {
+        let rx = 10;
+        let ry = 5;
+        let deck_z = 4_u8;
+        let height_map = BTreeMap::new();
+        let mut bridge_height_map = BTreeMap::new();
+        bridge_height_map.insert((rx, ry), deck_z);
+
+        let ground = project_cell_destination(rx, ry, &height_map, None, None);
+        let bridge = project_cell_destination(rx, ry, &height_map, Some(&bridge_height_map), None);
+
+        assert_eq!(bridge.0, ground.0);
+        assert!(
+            (ground.1 - bridge.1 - deck_z as f32 * terrain::HEIGHT_STEP).abs() < f32::EPSILON,
+            "bridge endpoint should lift by deck_z * HEIGHT_STEP"
+        );
+    }
+
+    #[test]
+    fn selected_action_timer_expires_at_25_ticks() {
+        let state = active_line_state_for_tick(100);
+        assert!(state.is_selected_action_active(124));
+        assert!(!state.is_selected_action_active(125));
+    }
+
+    #[test]
+    fn unit_action_lines_option_disables_selected_timer() {
+        let mut state = active_line_state_for_tick(100);
+        state.set_unit_action_lines_enabled(false);
+        assert!(!state.is_selected_action_active(101));
+    }
+
+    #[test]
+    fn selected_action_line_emits_endpoint_boxes() {
+        let mut instances = Vec::new();
+        emit_selected_action_line(
+            &mut instances,
+            ScreenPoint { x: 10.0, y: 10.0 },
+            ScreenPoint { x: 20.0, y: 10.0 },
+            MOVE_COLOR,
+        );
+        assert!(instances.len() >= 18);
+    }
+
+    #[test]
+    fn selected_action_attack_target_wins_over_movement() {
+        let sim = sim_with_selected_unit_that_has_attack_and_move();
+        let target = sim.entities.get(2).unwrap();
+        let lines = build_target_line_instances(
+            &active_line_state_for_tick(sim.tick),
+            Some(&sim),
+            &BTreeMap::new(),
+        );
+        assert!(!lines.is_empty());
+        assert!(lines.iter().any(|instance| {
+            instance.position
+                == [
+                    target.position.screen_x.round(),
+                    target.position.screen_y.round(),
+                ]
+        }));
+    }
+
+    #[test]
+    fn factory_rally_builder_emits_only_selected_local_eligible_structures() {
+        let sim = sim_with_selected_factory_and_non_factory();
+        let rules = rules_with_factory_and_non_factory();
+        let lines = build_factory_rally_line_instances(
+            Some(&sim),
+            Some(&rules),
+            &BTreeMap::new(),
+            &test_house_colors(),
+            Some("Americans"),
+        );
+        assert!(!lines.is_empty());
+    }
+
+    #[test]
+    fn disabling_unit_action_lines_does_not_disable_rally_lines() {
+        let mut state = active_line_state_for_tick(0);
+        state.set_unit_action_lines_enabled(false);
+        let sim = sim_with_selected_factory_and_non_factory();
+        let rules = rules_with_factory_and_non_factory();
+
+        assert!(build_target_line_instances(&state, Some(&sim), &BTreeMap::new()).is_empty());
+        assert!(
+            !build_factory_rally_line_instances(
+                Some(&sim),
+                Some(&rules),
+                &BTreeMap::new(),
+                &test_house_colors(),
+                Some("Americans"),
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn line_builders_skip_when_sim_or_rules_missing() {
+        assert!(
+            build_target_line_instances(&TargetLineState::default(), None, &BTreeMap::new())
+                .is_empty()
+        );
+        assert!(
+            build_factory_rally_line_instances(
+                None,
+                None,
+                &BTreeMap::new(),
+                &HouseColorMap::new(),
+                Some("Americans")
+            )
+            .is_empty()
+        );
     }
 }
