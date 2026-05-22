@@ -1452,6 +1452,14 @@ fn make_drive_loco(layer: MovementLayer) -> LocomotorState {
     }
 }
 
+fn make_ship_loco(layer: MovementLayer) -> LocomotorState {
+    let mut loco = make_drive_loco(layer);
+    loco.kind = LocomotorKind::Ship;
+    loco.speed_type = SpeedType::Float;
+    loco.movement_zone = MovementZone::Water;
+    loco
+}
+
 fn tick_bridge(
     entities: &mut EntityStore,
     grid: &PathGrid,
@@ -1473,6 +1481,77 @@ fn tick_bridge(
         0,
         interner,
     );
+}
+
+#[test]
+fn ship_high_bridge_ramp_to_body_relinks_after_on_bridge_update() {
+    let mut grid = PathGrid::new(10, 10);
+    grid.set_cell_for_test(1, 1, 4, true, true);
+    grid.set_cell_for_test(2, 1, 0, true, false);
+
+    let mut entities = EntityStore::new();
+    let mut e = GameEntity::test_default(1, "DEST", "Americans", 1, 1);
+    e.position.z = 4;
+    e.on_bridge = false;
+    e.bridge_occupancy = None;
+    e.locomotor = Some(make_ship_loco(MovementLayer::Bridge));
+    e.movement_target = Some(MovementTarget {
+        path: vec![(1, 1), (2, 1)],
+        path_layers: vec![MovementLayer::Bridge, MovementLayer::Bridge],
+        next_index: 1,
+        speed: SimFixed::from_num(512),
+        move_dir_x: SimFixed::from_num(256),
+        move_dir_y: SIM_ZERO,
+        move_dir_len: SimFixed::from_num(256),
+        ..Default::default()
+    });
+    entities.insert(e);
+
+    let mut occupancy = OccupancyGrid::new();
+    occupancy.add(
+        1,
+        1,
+        1,
+        MovementLayer::Ground,
+        None,
+        CellListInsertion::PrependNonBuilding,
+    );
+    let mut rng = SimRng::new(0);
+    let mut interner = test_interner();
+
+    tick_bridge(
+        &mut entities,
+        &grid,
+        &mut occupancy,
+        &mut rng,
+        &mut interner,
+        500,
+    );
+
+    let entity = entities.get(1).expect("entity exists");
+    assert_eq!((entity.position.rx, entity.position.ry), (2, 1));
+    assert!(entity.on_bridge, "Ship must set OnBridge on Ramp->Body");
+    assert_eq!(
+        entity
+            .bridge_occupancy
+            .as_ref()
+            .expect("BridgeOccupancy set on Ship Enter")
+            .deck_level,
+        4
+    );
+    assert!(
+        occupancy.get(1, 1).is_none_or(|cell| {
+            cell.count_on(MovementLayer::Ground) + cell.count_on(MovementLayer::Bridge) == 0
+        }),
+        "Ship must be removed from the old ground object list before relink"
+    );
+    let body_cell = occupancy.get(2, 1).expect("body occupancy");
+    assert_eq!(
+        body_cell.count_on(MovementLayer::Bridge),
+        1,
+        "Ship must insert into the bridge object list after OnBridge=true"
+    );
+    assert_eq!(body_cell.count_on(MovementLayer::Ground), 0);
 }
 
 #[test]

@@ -1365,7 +1365,8 @@ impl BridgeRuntimeState {
 mod tests {
     use super::*;
     use crate::sim::bridge_state::{
-        Axis, BridgeCellRole, BridgeRuntimeCell, BridgeheadAnchorClass, DamageState,
+        Axis, BridgeCellRole, BridgeEndpointRecord, BridgeRecordKind, BridgeRuntimeCell,
+        BridgeheadAnchorClass, DamageState,
     };
     use crate::sim::rng::SimRng;
 
@@ -2018,6 +2019,72 @@ mod tests {
             assert_eq!(c.overlay_byte, 0x50);
             assert_eq!(c.damage_state, DamageState::Damaged);
         }
+    }
+
+    #[test]
+    fn low_direct_first_hit_damages_without_deactivating_zone_record_then_second_hit_collapses() {
+        let mut state = BridgeRuntimeState::default();
+        for y in 0..3u16 {
+            seed_low_body_cell(&mut state, 2, y, Axis::NS, 0x4A);
+        }
+        state.test_set_endpoint_records(vec![BridgeEndpointRecord {
+            endpoint_a: (2, 0),
+            endpoint_b: (2, 2),
+            group_id: 2,
+            active: true,
+            bridge_kind: BridgeRecordKind::Low,
+        }]);
+        let terrain = empty_terrain();
+
+        let first = state.destroy_bridge_low(2, 1, &terrain);
+        assert!(
+            matches!(first, StateOutcome::Absorbed),
+            "healthy low bridge hit must be an intermediate damage transition"
+        );
+        for y in 0..3 {
+            let cell = state.cell(2, y).unwrap();
+            assert_eq!(cell.overlay_byte, 0x50);
+            assert_eq!(cell.damage_state, DamageState::Damaged);
+            assert!(
+                state.is_bridge_walkable(2, y),
+                "damaged low bridge cell (2, {y}) must remain bridge-walkable"
+            );
+        }
+        state.refresh_endpoint_active_flags();
+        assert!(
+            state.endpoint_records()[0].active,
+            "intermediate damage must not remove low-bridge zone connectivity"
+        );
+
+        let second = state.destroy_bridge_low(2, 1, &terrain);
+        match second {
+            StateOutcome::Collapsed {
+                destroyed_cells,
+                zones_dirty,
+                ..
+            } => {
+                assert!(
+                    zones_dirty,
+                    "destroyed-anchor transition rebuilds bridge zones"
+                );
+                for y in 0..3 {
+                    assert!(destroyed_cells.contains(&(2, y)));
+                    let cell = state.cell(2, y).unwrap();
+                    assert_eq!(cell.overlay_byte, 0x64);
+                    assert_eq!(cell.damage_state, DamageState::Destroyed);
+                    assert!(
+                        !state.is_bridge_walkable(2, y),
+                        "destroyed low bridge cell (2, {y}) must stop being bridge-walkable"
+                    );
+                }
+            }
+            other => panic!("expected final collapse on second hit, got {:?}", other),
+        }
+        state.refresh_endpoint_active_flags();
+        assert!(
+            !state.endpoint_records()[0].active,
+            "destroyed low bridge must remove bridge-zone connectivity"
+        );
     }
 
     #[test]

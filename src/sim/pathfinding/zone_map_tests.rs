@@ -2,9 +2,14 @@
 
 use super::zone_build::build_zone_map;
 use super::zone_map::*;
-use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
+use crate::map::resolved_terrain::{
+    BridgeDirection, BridgeLayer, ResolvedTerrainCell, ResolvedTerrainGrid, YR_CELL_LAND_TUNNEL,
+    zone_class,
+};
+use crate::map::tube_facts::{TubeFact, TubeId, TubeSource};
 use crate::rules::locomotor_type::MovementZone;
 use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
+use crate::sim::bridge_state::{BridgeRecordKind, BridgeRuntimeState};
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::pathfinding::{PathCell, PathGrid};
 use std::collections::BTreeMap;
@@ -167,6 +172,86 @@ fn clear_beach_water_row_terrain() -> ResolvedTerrainGrid {
         })
         .collect();
     ResolvedTerrainGrid::from_cells(3, 1, cells)
+}
+
+fn stock_low_bridge_auto_shell_terrain() -> ResolvedTerrainGrid {
+    let mut cells = Vec::new();
+    let mut tubes = Vec::new();
+    for rx in 0..5u16 {
+        let is_low_bridge = (1..=3).contains(&rx);
+        let tube_index = if is_low_bridge {
+            let tube_id = TubeId(tubes.len() as u16);
+            tubes.push(TubeFact::auto_low_bridge((rx, 0), 2));
+            Some(tube_id)
+        } else {
+            None
+        };
+        cells.push(ResolvedTerrainCell {
+            rx,
+            ry: 0,
+            source_tile_index: 0,
+            source_sub_tile: 0,
+            final_tile_index: 0,
+            final_sub_tile: 0,
+            is_wood_bridge_repair_tile: false,
+            level: 0,
+            filled_clear: false,
+            tileset_index: Some(0),
+            land_type: crate::sim::pathfinding::passability::LandType::Clear.as_index(),
+            yr_cell_land_type: if is_low_bridge {
+                YR_CELL_LAND_TUNNEL
+            } else {
+                0
+            },
+            slope_type: 0,
+            template_height: 0,
+            render_offset_x: 0,
+            render_offset_y: 0,
+            terrain_class: if is_low_bridge {
+                TerrainClass::Tunnel
+            } else {
+                TerrainClass::Clear
+            },
+            speed_costs: SpeedCostProfile::default(),
+            is_water: false,
+            is_cliff_like: false,
+            is_cliff_redraw: false,
+            variant: 0,
+            is_rough: false,
+            is_road: false,
+            accepts_smudge: false,
+            has_ramp: false,
+            canonical_ramp: None,
+            ground_walk_blocked: false,
+            terrain_object_blocks: false,
+            overlay_blocks: false,
+            zone_type: zone_class::GROUND,
+            base_ground_walk_blocked: false,
+            base_build_blocked: false,
+            base_land_type: 0,
+            base_yr_cell_land_type: 0,
+            base_terrain_class: Default::default(),
+            base_speed_costs: Default::default(),
+            build_blocked: false,
+            has_bridge_deck: is_low_bridge,
+            bridge_walkable: false,
+            bridge_transition: false,
+            bridge_deck_level: 0,
+            bridge_layer: is_low_bridge.then(|| BridgeLayer {
+                overlay_id: 0x4a,
+                overlay_name: "LOBRDG01".to_string(),
+                deck_level: 0,
+                direction: BridgeDirection::Low,
+            }),
+            bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+            tube_index,
+            radar_left: [0, 0, 0],
+            radar_right: [0, 0, 0],
+            has_damaged_data: false,
+            bridgehead_anchor_class_at_load: None,
+        });
+    }
+    ResolvedTerrainGrid::from_cells_with_tubes(5, 1, cells, tubes)
 }
 
 #[test]
@@ -431,6 +516,48 @@ fn waterbeach_zone_grid_connects_beach_to_water_with_resolved_terrain() {
         (2, 0),
         MovementLayer::Ground,
     ));
+}
+
+#[test]
+fn stock_low_bridge_auto_shell_zone_grid_uses_low_records_without_explicit_tubes() {
+    let terrain = stock_low_bridge_auto_shell_terrain();
+    assert!(
+        terrain
+            .tube_facts()
+            .iter()
+            .all(|tube| tube.source == TubeSource::AutoLowBridge && tube.path_len() == 0)
+    );
+
+    let bridge_state = BridgeRuntimeState::from_resolved_terrain(&terrain, true, 300);
+    let records = bridge_state.endpoint_records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].bridge_kind, BridgeRecordKind::Low);
+    assert_eq!(records[0].endpoint_a, (0, 0));
+    assert_eq!(records[0].endpoint_b, (4, 0));
+
+    let grid = PathGrid::from_resolved_terrain(&terrain);
+    let zg = ZoneGrid::build_with_terrain(&grid, &BTreeMap::new(), Some(&terrain), records, 5, 1);
+    assert!(zg.can_reach(
+        MovementZone::Normal,
+        (0, 0),
+        MovementLayer::Ground,
+        (4, 0),
+        MovementLayer::Ground,
+    ));
+    assert!(zg.can_reach(
+        MovementZone::Infantry,
+        (0, 0),
+        MovementLayer::Ground,
+        (4, 0),
+        MovementLayer::Ground,
+    ));
+
+    let normal_map = zg.map_for(MovementZone::Normal).expect("normal zone map");
+    assert_eq!(
+        normal_map.zone_at(2, 0, MovementLayer::Bridge),
+        ZONE_INVALID,
+        "low records are all-active zone data, not high-bridge redirect records"
+    );
 }
 
 // ---------------------------------------------------------------------------

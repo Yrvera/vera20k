@@ -850,25 +850,42 @@ fn garefn_footprint_leaves_dock_pad_walkable() {
         })
         .collect();
     let mut grid: PathGrid = PathGrid::from_map_data(&cells, None, 32, 32);
-    grid.block_building_footprint(10, 10, "4x3", &[(-1, 0), (-1, -1)], &[(3, 1)], false);
-    // RemoveOccupy1=3,1 → cell (13, 11) should be walkable (the dock pad)
+    grid.block_building_movement_cells(10, 10, "4x3", false);
     assert!(
-        grid.is_walkable(13, 11),
-        "RemoveOccupy1=3,1 should leave (rx+3,ry+1) walkable"
+        !grid.is_walkable(13, 11),
+        "base foundation should block the dock pad"
     );
-    // AddOccupy1=-1,0 → cell (9, 10) should be blocked
     assert!(
-        !grid.is_walkable(9, 10),
-        "AddOccupy1=-1,0 should block (rx-1, ry+0)"
+        grid.is_walkable(9, 10),
+        "AddOccupy1=-1,0 is hidden occupancy only"
     );
-    // AddOccupy2=-1,-1 → cell (9, 9) should be blocked
     assert!(
-        !grid.is_walkable(9, 9),
-        "AddOccupy2=-1,-1 should block (rx-1, ry-1)"
+        grid.is_walkable(9, 9),
+        "AddOccupy2=-1,-1 is hidden occupancy only"
     );
-    // Standard rectangle cells still blocked.
     assert!(!grid.is_walkable(10, 10));
     assert!(!grid.is_walkable(13, 12));
+}
+
+#[test]
+fn garefn_bib_static_blockers_only_relax_east_edge() {
+    let cells: Vec<MapCell> = (0..32u16)
+        .flat_map(|rx| {
+            (0..32u16).map(move |ry| MapCell {
+                rx,
+                ry,
+                tile_index: 0,
+                sub_tile: 0,
+                z: 0,
+            })
+        })
+        .collect();
+    let mut grid: PathGrid = PathGrid::from_map_data(&cells, None, 32, 32);
+    grid.block_building_movement_cells(10, 10, "4x3", true);
+    assert!(!grid.is_walkable(10, 11));
+    assert!(!grid.is_walkable(12, 11));
+    assert!(grid.is_walkable(13, 11));
+    assert!(grid.is_walkable(9, 10));
 }
 
 #[test]
@@ -1583,6 +1600,38 @@ fn astar_rejects_zero_step_auto_shell_tube_edge() {
         path.is_none(),
         "zero-step auto shell must not create a visible tube route"
     );
+}
+
+#[test]
+fn astar_walks_stock_low_bridge_cells_without_explicit_tubes() {
+    let mut cells: Vec<_> = (0..5).map(|x| make_resolved_cell(x, 0)).collect();
+    let mut tubes = Vec::new();
+    for cell in &mut cells[1..4] {
+        cell.yr_cell_land_type = YR_CELL_LAND_TUNNEL;
+        cell.tube_index = Some(TubeId(tubes.len() as u16));
+        tubes.push(TubeFact::auto_low_bridge((cell.rx, cell.ry), 2));
+    }
+    let terrain = ResolvedTerrainGrid::from_cells_with_tubes(5, 1, cells, tubes);
+    assert!(terrain.tube_facts().iter().all(|tube| tube.source
+        == crate::map::tube_facts::TubeSource::AutoLowBridge
+        && tube.path_len() == 0));
+    let grid = PathGrid::from_resolved_terrain(&terrain);
+
+    let path = find_path_with_costs(
+        &grid,
+        (0, 0),
+        (4, 0),
+        None,
+        None,
+        None,
+        Some(&terrain),
+        None,
+        0,
+        false,
+    )
+    .expect("stock auto low-bridge shell cells should remain normal ground-walkable cells");
+
+    assert_eq!(path, vec![(0, 0), (1, 0), (2, 0), (3, 0), (4, 0)]);
 }
 
 // ---------------------------------------------------------------------------
