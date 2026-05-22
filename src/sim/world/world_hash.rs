@@ -36,7 +36,7 @@ impl Simulation {
         self.tick.hash(&mut hasher);
         self.total_sim_ms.hash(&mut hasher);
         self.binary_frame.hash(&mut hasher);
-        self.rng.state().hash(&mut hasher);
+        self.rng.hash_state(&mut hasher);
         self.next_stable_entity_id.hash(&mut hasher);
 
         self.hash_game_options(&mut hasher);
@@ -196,6 +196,10 @@ impl Simulation {
             for &miner_sid in queue {
                 miner_sid.hash(hasher);
             }
+        }
+        for (&ref_sid, &miner_sid) in &self.production.dock_reservations.contact_entered {
+            ref_sid.hash(hasher);
+            miner_sid.hash(hasher);
         }
         for (&ref_sid, &miner_sid) in &self.production.dock_reservations.on_pad {
             ref_sid.hash(hasher);
@@ -431,9 +435,15 @@ impl Simulation {
                 0u8.hash(hasher);
             }
 
+            (entity.radio_contacts.len() as u32).hash(hasher);
+            for contact_id in &entity.radio_contacts {
+                contact_id.hash(hasher);
+            }
+            entity.rally_target.hash(hasher);
             entity.capture_target.hash(hasher);
             entity.c4_plant.hash(hasher);
             entity.pending_c4_detonation.hash(hasher);
+            entity.bunker_occupant.hash(hasher);
 
             match entity.deploy_state {
                 None => 0u8.hash(hasher),
@@ -474,6 +484,8 @@ impl Simulation {
                 miner.unload_timer.hash(hasher);
                 miner.forced_return.hash(hasher);
                 miner.dock_queued.hash(hasher);
+                miner.dock_phase.hash(hasher);
+                miner.dock_pivot_facing.hash(hasher);
             } else {
                 0u8.hash(hasher);
             }
@@ -539,6 +551,28 @@ impl Simulation {
                 0u8.hash(hasher);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod rally_hash_tests {
+    use super::Simulation;
+    use crate::sim::game_entity::GameEntity;
+
+    #[test]
+    fn entity_rally_target_changes_state_hash() {
+        let mut sim_a = Simulation::new();
+        let mut sim_b = Simulation::new();
+        sim_a
+            .entities
+            .insert(GameEntity::test_default(1, "GAWEAP", "Americans", 10, 10));
+        sim_b
+            .entities
+            .insert(GameEntity::test_default(1, "GAWEAP", "Americans", 10, 10));
+
+        sim_b.entities.get_mut(1).unwrap().rally_target = Some((30, 31));
+
+        assert_ne!(sim_a.state_hash(), sim_b.state_hash());
     }
 }
 
@@ -697,6 +731,57 @@ mod tube_movement_hash_tests {
         sim_b.entities.insert(entity_b);
 
         assert_ne!(sim_a.state_hash(), sim_b.state_hash());
+    }
+}
+
+#[cfg(test)]
+mod radio_contact_hash_tests {
+    use super::Simulation;
+    use crate::map::entities::EntityCategory;
+    use crate::sim::components::Health;
+    use crate::sim::game_entity::GameEntity;
+
+    fn vehicle_entity(sim: &mut Simulation, id: u64) -> GameEntity {
+        GameEntity::new(
+            id,
+            10,
+            10,
+            0,
+            0,
+            sim.interner.intern("Americans"),
+            Health {
+                current: 100,
+                max: 100,
+            },
+            sim.interner.intern("MTNK"),
+            EntityCategory::Unit,
+            0,
+            5,
+            true,
+        )
+    }
+
+    #[test]
+    fn live_radio_contacts_change_state_hash_per_mover() {
+        let mut sim_a = Simulation::new();
+        let mut sim_b = Simulation::new();
+        let mut contacted = vehicle_entity(&mut sim_a, 1);
+        let unrelated = vehicle_entity(&mut sim_a, 2);
+        let contacted_b = vehicle_entity(&mut sim_b, 1);
+        let unrelated_b = vehicle_entity(&mut sim_b, 2);
+
+        contacted.mark_live_contact_with(100);
+        sim_a.entities.insert(contacted);
+        sim_a.entities.insert(unrelated);
+        sim_b.entities.insert(contacted_b);
+        sim_b.entities.insert(unrelated_b);
+
+        assert_ne!(
+            sim_a.state_hash(),
+            sim_b.state_hash(),
+            "per-mover live contacts must affect deterministic state hash",
+        );
+        assert!(!sim_a.entities.get(2).unwrap().has_live_contact_with(100));
     }
 }
 
