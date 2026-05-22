@@ -286,8 +286,14 @@ fn parse_common_fields(fields: &[&str], category: EntityCategory, key: &str) -> 
         sub_cell: 0,
         veterancy,
         high: matches!(category, EntityCategory::Unit)
-            && parse_boolish_field(fields.get(10).copied()),
+            && parse_atoi_bool_field(fields.get(10).copied()),
     })
+}
+
+fn parse_atoi_bool_field(value: Option<&str>) -> bool {
+    value
+        .and_then(|value| value.trim().parse::<i32>().ok())
+        .is_some_and(|value| value != 0)
 }
 
 fn parse_boolish_field(value: Option<&str>) -> bool {
@@ -383,7 +389,7 @@ mod tests {
     fn test_parse_high_for_units_and_infantry() {
         let ini: IniFile = IniFile::from_str(
             "[Units]\n\
-             0=Americans,MTNK,256,30,40,64,Guard,None,0,-1,true,-1,false,false\n\
+             0=Americans,MTNK,256,30,40,64,Guard,None,0,-1,1,-1,false,false\n\
              [Infantry]\n\
              0=Soviet,E1,256,10,20,2,Guard,192,None,200,-1,true,false\n",
         );
@@ -391,6 +397,26 @@ mod tests {
         assert_eq!(entities.len(), 2);
         assert!(entities[0].high);
         assert!(entities[1].high);
+    }
+
+    #[test]
+    fn test_unit_high_uses_atoi_nonzero_semantics() {
+        let ini: IniFile = IniFile::from_str(
+            "[Units]\n\
+             0=Americans,MTNK,256,30,40,64,Guard,None,0,-1,yes,-1,false,false\n\
+             1=Americans,MTNK,256,31,40,64,Guard,None,0,-1,1,-1,false,false\n\
+             2=Americans,MTNK,256,32,40,64,Guard,None,0,-1,-1,-1,false,false\n\
+             3=Americans,MTNK,256,33,40,64,Guard,None,0,-1\n\
+             4=Americans,MTNK,256,34,40,64,Guard,None,0,-1,garbage,-1,false,false\n",
+        );
+        let entities: Vec<MapEntity> = parse_map_entities(&ini);
+        assert_eq!(entities.len(), 5);
+
+        assert!(!entities[0].high, "High=yes parses as atoi 0");
+        assert!(entities[1].high, "High=1 parses as nonzero");
+        assert!(entities[2].high, "High=-1 parses as nonzero");
+        assert!(!entities[3].high, "missing High defaults false");
+        assert!(!entities[4].high, "nonnumeric High parses as atoi 0");
     }
 
     #[test]
