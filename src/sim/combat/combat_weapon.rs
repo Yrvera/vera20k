@@ -521,6 +521,9 @@ Armor=none
 [AircraftTypes]
 [BuildingTypes]
 
+[General]
+MissileROTVar=.25
+
 [GGI]
 Name=Guardian GI
 Cost=400
@@ -551,25 +554,40 @@ Warhead=SA
 Damage=40
 ROF=40
 Range=8
+Burst=1
 Projectile=AAHeatSeeker2
+Speed=30
 Warhead=GUARDWH
+Report=GuardianGIDeployedAttack
+MinimumRange=1
 
 [MissileLauncherE]
 Damage=50
 ROF=20
 Range=8
+Burst=1
 Projectile=AAHeatSeeker2
+Speed=40
 Warhead=GUARDWH
+Report=GuardianGIDeployedAttack
+MinimumRange=1
 
 [InvisibleLow]
 AG=yes
 AA=no
 
 [AAHeatSeeker2]
-AG=yes
-AA=yes
-ROT=60
 Arm=2
+Shadow=no
+Proximity=no
+Ranged=yes
+AA=yes
+AG=yes
+Image=DRAGON
+ROT=60
+SubjectToCliffs=no
+SubjectToElevation=no
+SubjectToWalls=no
 
 [SA]
 Verses=100%,80%,80%,50%,25%,25%,75%,50%,25%,100%,100%

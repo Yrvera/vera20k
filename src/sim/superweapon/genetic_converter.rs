@@ -12,7 +12,7 @@
 
 use crate::map::entities::EntityCategory;
 use crate::rules::ruleset::RuleSet;
-use crate::sim::combat::combat_aoe::apply_aoe_damage;
+use crate::sim::combat::combat_aoe::{AoELayerContext, apply_aoe_damage, bridge_adjusted_impact_z};
 use crate::sim::components::WorldEffect;
 use crate::sim::intern::InternedId;
 use crate::sim::superweapon::cell_grid::iter_cells_3x3;
@@ -85,6 +85,7 @@ fn apply_mutate_explosion(
     };
     let owner_str = sim.interner.resolve(owner).to_string();
     let base_damage: i32 = MUTATE_AOE_DAMAGE;
+    let impact_z = bridge_adjusted_impact_z(sim.resolved_terrain.as_ref(), target_rx, target_ry);
     let hits = apply_aoe_damage(
         &sim.entities,
         target_rx,
@@ -94,7 +95,11 @@ fn apply_mutate_explosion(
         rules,
         &sim.interner,
         &owner_str,
-        crate::sim::combat::combat_aoe::AoELayerContext::default(),
+        AoELayerContext {
+            occupancy: Some(&sim.occupancy),
+            terrain: sim.resolved_terrain.as_ref(),
+            impact_z,
+        },
     );
 
     // Emit warhead AnimList anim + smudge for the Mutate detonation,
@@ -233,4 +238,178 @@ fn spawn_invoke_anim(sim: &mut Simulation, anim_name: &str, rx: u16, ry: u16) {
         translucent: false,
         delay_ms: 0,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::map::bridge_facts::{BRIDGE_FLAG_STRUCTURAL, BridgeCellFacts};
+    use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
+    use crate::rules::ini_parser::IniFile;
+    use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
+    use crate::sim::components::Health;
+    use crate::sim::game_entity::GameEntity;
+    use crate::sim::movement::locomotor::MovementLayer;
+    use crate::sim::occupancy::CellListInsertion;
+
+    #[test]
+    fn mutate_explosion_bridge_target_mutates_only_bridge_layer() {
+        let rules = genetic_test_rules();
+        let mut sim = Simulation::new();
+        add_same_cell_bridge_infantry(&mut sim);
+        let owner = sim.interner.intern("Americans");
+
+        let (killed, count) = apply_mutate_explosion(&mut sim, &rules, 5, 5, owner);
+
+        assert_eq!(count, 1);
+        assert_eq!(killed, vec![(5, 5)]);
+        assert_eq!(
+            sim.entities.get(1).unwrap().health.current,
+            100,
+            "ground infantry under the bridge must not be mutated by a deck impact"
+        );
+        assert_eq!(
+            sim.entities.get(2).unwrap().health.current,
+            0,
+            "bridge-deck infantry must be mutated by a bridge-targeted impact"
+        );
+        assert!(!sim.entities.get(1).unwrap().dying);
+        assert!(sim.entities.get(2).unwrap().dying);
+    }
+
+    fn genetic_test_rules() -> RuleSet {
+        RuleSet::from_ini(&IniFile::from_str(
+            "[InfantryTypes]\n0=E1\n1=BRUTE\n\n\
+             [VehicleTypes]\n\n\
+             [AircraftTypes]\n\n\
+             [BuildingTypes]\n\n\
+             [General]\nMutateExplosion=yes\n\n\
+             [CombatDamage]\nMutateExplosionWarhead=MutateExplosion\n\n\
+             [E1]\nStrength=100\nArmor=none\nSpeed=4\nPrimary=DUMMYW\n\n\
+             [BRUTE]\nStrength=200\nArmor=none\nSpeed=4\n\n\
+             [DUMMYW]\nDamage=1\nROF=1\nRange=1\nWarhead=MutateExplosion\n\n\
+             [MutateExplosion]\nCellSpread=1\nPercentAtMax=1\n\
+             Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+        ))
+        .expect("genetic test rules should parse")
+    }
+
+    fn add_same_cell_bridge_infantry(sim: &mut Simulation) {
+        let owner = sim.interner.intern("Soviet");
+        let type_ref = sim.interner.intern("E1");
+
+        let mut ground = GameEntity::test_default(1, "E1", "Soviet", 5, 5);
+        ground.owner = owner;
+        ground.type_ref = type_ref;
+        ground.category = EntityCategory::Infantry;
+        ground.is_voxel = false;
+        ground.health = Health {
+            current: 100,
+            max: 100,
+        };
+
+        let mut bridge = GameEntity::test_default(2, "E1", "Soviet", 5, 5);
+        bridge.owner = owner;
+        bridge.type_ref = type_ref;
+        bridge.category = EntityCategory::Infantry;
+        bridge.is_voxel = false;
+        bridge.health = Health {
+            current: 100,
+            max: 100,
+        };
+        bridge.on_bridge = true;
+        bridge.position.z = 4;
+
+        sim.entities.insert(ground);
+        sim.entities.insert(bridge);
+        sim.occupancy.add(
+            5,
+            5,
+            1,
+            MovementLayer::Ground,
+            Some(2),
+            CellListInsertion::PrependNonBuilding,
+        );
+        sim.occupancy.add(
+            5,
+            5,
+            2,
+            MovementLayer::Bridge,
+            Some(2),
+            CellListInsertion::PrependNonBuilding,
+        );
+        sim.resolved_terrain = Some(bridge_terrain());
+    }
+
+    fn bridge_terrain() -> ResolvedTerrainGrid {
+        let mut cells = Vec::new();
+        for ry in 0..10 {
+            for rx in 0..10 {
+                cells.push(test_terrain_cell(rx, ry));
+            }
+        }
+        let idx = 5 * 10 + 5;
+        cells[idx].bridge_facts = BridgeCellFacts {
+            raw_flags: BRIDGE_FLAG_STRUCTURAL,
+            ..BridgeCellFacts::default()
+        };
+        cells[idx].has_bridge_deck = true;
+        cells[idx].bridge_walkable = true;
+        cells[idx].bridge_deck_level = 4;
+        ResolvedTerrainGrid::from_cells(10, 10, cells)
+    }
+
+    fn test_terrain_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
+        ResolvedTerrainCell {
+            rx,
+            ry,
+            source_tile_index: 0,
+            source_sub_tile: 0,
+            final_tile_index: 0,
+            final_sub_tile: 0,
+            is_wood_bridge_repair_tile: false,
+            level: 0,
+            filled_clear: false,
+            tileset_index: Some(0),
+            land_type: 0,
+            yr_cell_land_type: 0,
+            slope_type: 0,
+            template_height: 0,
+            render_offset_x: 0,
+            render_offset_y: 0,
+            terrain_class: TerrainClass::Clear,
+            speed_costs: SpeedCostProfile::default(),
+            is_water: false,
+            is_cliff_like: false,
+            is_rough: false,
+            is_road: false,
+            accepts_smudge: false,
+            is_cliff_redraw: false,
+            variant: 0,
+            has_ramp: false,
+            canonical_ramp: None,
+            ground_walk_blocked: false,
+            terrain_object_blocks: false,
+            overlay_blocks: false,
+            zone_type: 0,
+            base_ground_walk_blocked: false,
+            base_build_blocked: false,
+            base_land_type: 0,
+            base_yr_cell_land_type: 0,
+            base_terrain_class: Default::default(),
+            base_speed_costs: Default::default(),
+            build_blocked: false,
+            has_bridge_deck: false,
+            bridge_walkable: false,
+            bridge_transition: false,
+            bridge_deck_level: 0,
+            bridge_layer: None,
+            bridge_facts: BridgeCellFacts::default(),
+            tube_index: None,
+            radar_left: [0, 0, 0],
+            radar_right: [0, 0, 0],
+            has_damaged_data: false,
+            bridgehead_anchor_class_at_load: None,
+        }
+    }
 }

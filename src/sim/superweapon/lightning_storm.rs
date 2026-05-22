@@ -9,6 +9,7 @@
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
 use crate::rules::ruleset::RuleSet;
+use crate::sim::combat::combat_aoe::{AoELayerContext, apply_aoe_damage, bridge_adjusted_impact_z};
 use crate::sim::components::WorldEffect;
 use crate::sim::intern::InternedId;
 use crate::sim::world::{SimSoundEvent, Simulation};
@@ -237,7 +238,8 @@ fn spawn_bolt(sim: &mut Simulation, rules: &RuleSet, rx: u16, ry: u16, owner: In
     let warhead_id = &rules.general.lightning_warhead;
     if let Some(warhead) = rules.warhead(warhead_id) {
         let owner_str = sim.interner.resolve(owner).to_string();
-        let hits = crate::sim::combat::combat_aoe::apply_aoe_damage(
+        let impact_z = bridge_adjusted_impact_z(sim.resolved_terrain.as_ref(), rx, ry);
+        let hits = apply_aoe_damage(
             &sim.entities,
             rx,
             ry,
@@ -246,7 +248,11 @@ fn spawn_bolt(sim: &mut Simulation, rules: &RuleSet, rx: u16, ry: u16, owner: In
             rules,
             &sim.interner,
             &owner_str,
-            crate::sim::combat::combat_aoe::AoELayerContext::default(),
+            AoELayerContext {
+                occupancy: Some(&sim.occupancy),
+                terrain: sim.resolved_terrain.as_ref(),
+                impact_z,
+            },
         );
 
         // Apply damage to entities.
@@ -305,7 +311,14 @@ fn spawn_bolt(sim: &mut Simulation, rules: &RuleSet, rx: u16, ry: u16, owner: In
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::bridge_facts::{BRIDGE_FLAG_STRUCTURAL, BridgeCellFacts};
+    use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
     use crate::rules::ini_parser::IniFile;
+    use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
+    use crate::sim::components::Health;
+    use crate::sim::game_entity::GameEntity;
+    use crate::sim::movement::locomotor::MovementLayer;
+    use crate::sim::occupancy::CellListInsertion;
     use crate::sim::world::Simulation;
 
     fn lightning_test_setup() -> (Simulation, RuleSet) {
@@ -351,5 +364,140 @@ mod tests {
                 .any(|fx| fx.shp_name == explosion_iid && fx.rx == 5 && fx.ry == 5),
             "lightning warhead AnimList anim must be pushed to world_effects"
         );
+    }
+
+    #[test]
+    fn lightning_bridge_strike_damages_only_bridge_layer() {
+        let (mut sim, rules) = lightning_test_setup();
+        add_same_cell_bridge_targets(&mut sim, "DUMMY");
+        let owner = sim.interner.intern("Americans");
+
+        spawn_bolt(&mut sim, &rules, 5, 5, owner);
+
+        assert_eq!(
+            sim.entities.get(1).unwrap().health.current,
+            100,
+            "ground occupant under the bridge must not be hit by a deck strike"
+        );
+        assert_eq!(
+            sim.entities.get(2).unwrap().health.current,
+            0,
+            "bridge-deck occupant must be hit by a bridge-targeted Lightning strike"
+        );
+    }
+
+    fn add_same_cell_bridge_targets(sim: &mut Simulation, type_name: &str) {
+        let owner = sim.interner.intern("Soviet");
+        let type_ref = sim.interner.intern(type_name);
+
+        let mut ground = GameEntity::test_default(1, type_name, "Soviet", 5, 5);
+        ground.owner = owner;
+        ground.type_ref = type_ref;
+        ground.health = Health {
+            current: 100,
+            max: 100,
+        };
+
+        let mut bridge = GameEntity::test_default(2, type_name, "Soviet", 5, 5);
+        bridge.owner = owner;
+        bridge.type_ref = type_ref;
+        bridge.health = Health {
+            current: 100,
+            max: 100,
+        };
+        bridge.on_bridge = true;
+        bridge.position.z = 4;
+
+        sim.entities.insert(ground);
+        sim.entities.insert(bridge);
+        sim.occupancy.add(
+            5,
+            5,
+            1,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        sim.occupancy.add(
+            5,
+            5,
+            2,
+            MovementLayer::Bridge,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        sim.resolved_terrain = Some(bridge_terrain());
+    }
+
+    fn bridge_terrain() -> ResolvedTerrainGrid {
+        let mut cells = Vec::new();
+        for ry in 0..10 {
+            for rx in 0..10 {
+                cells.push(test_terrain_cell(rx, ry));
+            }
+        }
+        let idx = 5 * 10 + 5;
+        cells[idx].bridge_facts = BridgeCellFacts {
+            raw_flags: BRIDGE_FLAG_STRUCTURAL,
+            ..BridgeCellFacts::default()
+        };
+        cells[idx].has_bridge_deck = true;
+        cells[idx].bridge_walkable = true;
+        cells[idx].bridge_deck_level = 4;
+        ResolvedTerrainGrid::from_cells(10, 10, cells)
+    }
+
+    fn test_terrain_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
+        ResolvedTerrainCell {
+            rx,
+            ry,
+            source_tile_index: 0,
+            source_sub_tile: 0,
+            final_tile_index: 0,
+            final_sub_tile: 0,
+            is_wood_bridge_repair_tile: false,
+            level: 0,
+            filled_clear: false,
+            tileset_index: Some(0),
+            land_type: 0,
+            yr_cell_land_type: 0,
+            slope_type: 0,
+            template_height: 0,
+            render_offset_x: 0,
+            render_offset_y: 0,
+            terrain_class: TerrainClass::Clear,
+            speed_costs: SpeedCostProfile::default(),
+            is_water: false,
+            is_cliff_like: false,
+            is_rough: false,
+            is_road: false,
+            accepts_smudge: false,
+            is_cliff_redraw: false,
+            variant: 0,
+            has_ramp: false,
+            canonical_ramp: None,
+            ground_walk_blocked: false,
+            terrain_object_blocks: false,
+            overlay_blocks: false,
+            zone_type: 0,
+            base_ground_walk_blocked: false,
+            base_build_blocked: false,
+            base_land_type: 0,
+            base_yr_cell_land_type: 0,
+            base_terrain_class: Default::default(),
+            base_speed_costs: Default::default(),
+            build_blocked: false,
+            has_bridge_deck: false,
+            bridge_walkable: false,
+            bridge_transition: false,
+            bridge_deck_level: 0,
+            bridge_layer: None,
+            bridge_facts: BridgeCellFacts::default(),
+            tube_index: None,
+            radar_left: [0, 0, 0],
+            radar_right: [0, 0, 0],
+            has_damaged_data: false,
+            bridgehead_anchor_class_at_load: None,
+        }
     }
 }
