@@ -18,7 +18,7 @@ use crate::sim::movement::locomotor::{GroundMovePhase, LocomotorState, MovementL
 use crate::sim::movement::movement_blocked::handle_blocked_tick;
 use crate::sim::movement::movement_bridge::resolve_cell_transition_bridge_state;
 use crate::sim::movement::movement_occupancy::{
-    DeferredCellCheck, detect_deferred_cell_check, naval_terrain_diag,
+    DeferredCellCheck, LiveBuildingEntrySkipMap, detect_deferred_cell_check, naval_terrain_diag,
     resolve_runtime_can_enter_layers,
 };
 use crate::sim::movement::movement_reservation::reserve_destination_after_transition;
@@ -425,6 +425,7 @@ pub(super) fn process_cell_crossings(
     entity_cost_grid: Option<&TerrainCostGrid>,
     mover_entity_blocks: Option<&BTreeSet<(u16, u16)>>,
     mover_entity_block_map: Option<&crate::sim::pathfinding::LayeredEntityBlockMap>,
+    live_building_entry_skips: &LiveBuildingEntrySkipMap,
     occupancy: &mut OccupancyGrid,
     stats: &mut MovementTickStats,
     finished_entities: &mut Vec<u64>,
@@ -651,6 +652,7 @@ pub(super) fn process_cell_crossings(
             (position.rx, position.ry),
             current_object_list_layer,
             occupancy,
+            live_building_entry_skips,
         ) {
             deferred_cell_check = Some(check);
             break;

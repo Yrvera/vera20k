@@ -38,7 +38,9 @@ use super::locomotor::{GroundMovePhase, MovementLayer};
 use super::movement_bridge::{
     BRIDGE_Z_OFFSET, BridgeStateUpdate, apply_pending_bridge_render_state,
 };
-use super::movement_occupancy::{DeferredCellCheck, handle_deferred_occupancy};
+use super::movement_occupancy::{
+    DeferredCellCheck, build_live_vehicle_building_entry_skip_map, handle_deferred_occupancy,
+};
 use super::movement_path::{find_move_path, supports_layered_bridge_pathing};
 use super::movement_step;
 use super::tube_movement::{self, TubePathStepResult};
@@ -492,6 +494,8 @@ pub fn tick_movement_with_grids(
             .get(&snap.owner)
             .map(|(b, m)| (Some(b), Some(m)))
             .unwrap_or((None, None));
+        let live_building_entry_skips =
+            build_live_vehicle_building_entry_skip_map(entities, entity_id, interner, rules);
 
         let aborted_for_stuck: bool;
         let mut active_layer: MovementLayer;
@@ -880,6 +884,7 @@ pub fn tick_movement_with_grids(
                 entity_cost_grid,
                 mover_entity_blocks,
                 mover_entity_block_map,
+                &live_building_entry_skips,
                 occupancy,
                 &mut stats,
                 &mut finished_entities,
