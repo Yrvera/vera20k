@@ -37,8 +37,6 @@ pub fn placement_preview_for_owner(
     let in_build_area = reason.as_ref().map_or(true, |r| {
         !matches!(r, BuildingPlacementError::OutOfBuildArea)
     });
-    // Reference height: use the top-left cell of the foundation.
-    let ref_height: u8 = height_map.get(&(rx, ry)).copied().unwrap_or(0);
     let mut cell_valid: Vec<bool> = Vec::with_capacity((width as usize) * (height as usize));
     for dy in 0..height {
         for dx in 0..width {
@@ -51,8 +49,6 @@ pub fn placement_preview_for_owner(
                 path_grid,
                 cx,
                 cy,
-                ref_height,
-                height_map,
                 obj.water_bound,
             );
             cell_valid.push(in_build_area && ok);
@@ -276,7 +272,7 @@ fn evaluate_building_placement(
     rx: u16,
     ry: u16,
     path_grid: Option<&crate::sim::pathfinding::PathGrid>,
-    height_map: &BTreeMap<(u16, u16), u8>,
+    _height_map: &BTreeMap<(u16, u16), u8>,
 ) -> Result<(), BuildingPlacementError> {
     let Some(obj) = rules.object(type_id) else {
         return Err(BuildingPlacementError::NotBuilding);
@@ -297,8 +293,6 @@ fn evaluate_building_placement(
     if !has_type {
         return Err(BuildingPlacementError::NotReady);
     }
-    // All cells must be at the same height (buildings can't span elevation changes).
-    let ref_height: u8 = height_map.get(&(rx, ry)).copied().unwrap_or(0);
     for dy in 0..height {
         for dx in 0..width {
             let cell_x = rx.saturating_add(dx);
@@ -310,8 +304,6 @@ fn evaluate_building_placement(
                 path_grid,
                 cell_x,
                 cell_y,
-                ref_height,
-                height_map,
                 obj.water_bound,
             ) {
                 // Distinguish overlap from terrain for the error variant.
@@ -373,12 +365,9 @@ fn cell_placeable(
     path_grid: Option<&crate::sim::pathfinding::PathGrid>,
     cx: u16,
     cy: u16,
-    ref_height: u8,
-    height_map: &BTreeMap<(u16, u16), u8>,
     water_bound: bool,
 ) -> bool {
     let no_overlap = !structure_occupies_cell(entities, rules, cx, cy, &sim.interner);
-    let same_height = height_map.get(&(cx, cy)).copied().unwrap_or(0) == ref_height;
 
     if water_bound {
         let cell_ok = if let Some(terrain) = sim.resolved_terrain.as_ref() {
@@ -390,6 +379,7 @@ fn cell_placeable(
                 ship_passable
                     && !cell.overlay_blocks
                     && !cell.terrain_object_blocks
+                    && !cell.has_bridge_deck
                     && !cell.bridge_walkable
             })
         } else {
@@ -403,12 +393,23 @@ fn cell_placeable(
                 )
             })
         };
-        cell_ok && no_overlap && same_height
+        cell_ok && no_overlap
     } else {
-        // Normal building: use existing checks (water cells are blocked).
-        let walkable = path_grid.map_or(true, |g| g.is_walkable(cx, cy));
-        let not_blocked = !sim.effective_build_blocked(cx, cy).unwrap_or(false);
-        walkable && not_blocked && no_overlap && same_height
+        let cell_ok = if let Some(terrain) = sim.resolved_terrain.as_ref() {
+            terrain.cell(cx, cy).is_some_and(|cell| {
+                !cell.build_blocked
+                    && !cell.overlay_blocks
+                    && !cell.terrain_object_blocks
+                    && !cell.has_bridge_deck
+                    && !cell.bridge_walkable
+                    && cell.slope_type == 0
+            })
+        } else {
+            let walkable = path_grid.map_or(true, |g| g.is_walkable(cx, cy));
+            let not_blocked = !sim.effective_build_blocked(cx, cy).unwrap_or(false);
+            walkable && not_blocked
+        };
+        cell_ok && no_overlap
     }
 }
 

@@ -1980,8 +1980,8 @@ fn test_deploy_mcv_replaces_vehicle_with_conyard() {
     assert!(
         sim.entities
             .values()
-            .any(|e| e.type_ref == gacnst_id && e.position.rx == 18 && e.position.ry == 21),
-        "Construction yard should spawn with its foundation origin centered from the former MCV cell"
+            .any(|e| e.type_ref == gacnst_id && e.position.rx == 19 && e.position.ry == 21),
+        "Construction yard should spawn at gamemd's deploy foundation origin"
     );
 }
 
@@ -2695,8 +2695,8 @@ fn test_undeploy_conyard_spawns_mcv() {
         .collect();
     assert_eq!(mcvs.len(), 1, "Exactly one MCV should exist after undeploy");
     let (rx, ry, selected) = &mcvs[0];
-    // Origin was (18, 21) from deploy, foundation 4x3, center = (18+2, 21+1) = (20, 22).
-    assert_eq!(*rx, 20, "MCV should spawn at foundation center X");
+    // Origin was (19, 21) from deploy, foundation 4x3, center = (19+2, 21+1) = (21, 22).
+    assert_eq!(*rx, 21, "MCV should spawn at foundation center X");
     assert_eq!(*ry, 22, "MCV should spawn at foundation center Y");
     assert!(*selected, "MCV should inherit selection from ConYard");
 }
