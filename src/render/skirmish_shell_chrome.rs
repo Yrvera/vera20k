@@ -15,6 +15,13 @@ use crate::render::batch::{BatchRenderer, BatchTexture};
 use crate::render::gpu::GpuContext;
 
 const ATLAS_PADDING: u32 = 2;
+const OWNER_DRAW_FLAG_TRANSPARENT_RGB: [u8; 3] = [255, 0, 255];
+const PRIMITIVE_BEVEL_COLOR_A_RGB: [u8; 3] = [0xC5, 0xBE, 0xA7];
+const PRIMITIVE_BEVEL_COLOR_B_RGB: [u8; 3] = [0x80, 0x7A, 0x68];
+const SKIRMISH_FLAG_PCX_NAMES: [&str; 12] = [
+    "usai.pcx", "japi.pcx", "frai.pcx", "geri.pcx", "gbri.pcx", "djbi.pcx", "arbi.pcx", "lati.pcx",
+    "rusi.pcx", "yrii.pcx", "obsi.pcx", "rani.pcx",
+];
 
 #[derive(Debug, Clone, Copy)]
 pub struct SkirmishShellChromeEntry {
@@ -162,20 +169,12 @@ pub fn build_skirmish_shell_chrome_atlas(
         "bde_li30.pcx",
         "bde_mi30.pcx",
         "bde_ri30.pcx",
-        "usai.pcx",
-        "japi.pcx",
-        "frai.pcx",
-        "geri.pcx",
-        "gbri.pcx",
-        "djbi.pcx",
-        "arbi.pcx",
-        "lati.pcx",
-        "rusi.pcx",
-        "yrii.pcx",
-        "obsi.pcx",
-        "rani.pcx",
     ] {
         push_optional(&mut rendered, render_pcx_entry(assets, name, Some(0)), name);
+    }
+
+    for name in SKIRMISH_FLAG_PCX_NAMES {
+        push_optional(&mut rendered, render_flag_pcx_entry(assets, name), name);
     }
 
     let (texture, packed) = pack_entries(gpu, batch, &rendered)?;
@@ -184,18 +183,15 @@ pub fn build_skirmish_shell_chrome_atlas(
         .map(|entry| entry.label.clone())
         .zip(packed)
         .collect();
-    let flags = [
-        "usai.pcx", "japi.pcx", "frai.pcx", "geri.pcx", "gbri.pcx", "djbi.pcx", "arbi.pcx",
-        "lati.pcx", "rusi.pcx", "yrii.pcx", "obsi.pcx", "rani.pcx",
-    ]
-    .into_iter()
-    .filter_map(|name| {
-        by_label
-            .get(name)
-            .copied()
-            .map(|entry| (name.to_string(), entry))
-    })
-    .collect();
+    let flags = SKIRMISH_FLAG_PCX_NAMES
+        .into_iter()
+        .filter_map(|name| {
+            by_label
+                .get(name)
+                .copied()
+                .map(|entry| (name.to_string(), entry))
+        })
+        .collect();
 
     Some(SkirmishShellChromeAtlas {
         texture,
@@ -374,6 +370,169 @@ fn render_pcx_entry(
     })
 }
 
+fn render_flag_pcx_entry(assets: &AssetManager, file_name: &str) -> Option<RenderedShellEntry> {
+    let bytes = assets.get_ref(file_name)?;
+    let pcx = PcxFile::from_bytes(bytes).ok()?;
+    Some(RenderedShellEntry {
+        label: file_name.to_ascii_lowercase(),
+        width: pcx.width as u32,
+        height: pcx.height as u32,
+        rgba: pcx.to_rgba_with_color_key(OWNER_DRAW_FLAG_TRANSPARENT_RGB),
+    })
+}
+
+#[allow(dead_code)]
+fn render_primitive_bevel_entry(
+    label: &str,
+    width: u32,
+    height: u32,
+    box_xywh: [i32; 4],
+    border: i32,
+) -> RenderedShellEntry {
+    let mut rgba = vec![0u8; (width * height * 4) as usize];
+    if border <= 0 || box_xywh[2] <= 0 || box_xywh[3] <= 0 {
+        return RenderedShellEntry {
+            label: label.to_ascii_lowercase(),
+            width,
+            height,
+            rgba,
+        };
+    }
+
+    let left0 = box_xywh[0] - border;
+    let top0 = box_xywh[1] - border;
+    let right0 = box_xywh[0] + box_xywh[2] + border - 1;
+    let bottom0 = box_xywh[1] + box_xywh[3] + border - 1;
+    let color_a = rgba_color(PRIMITIVE_BEVEL_COLOR_A_RGB);
+    let color_b = rgba_color(PRIMITIVE_BEVEL_COLOR_B_RGB);
+    let mixed = rgba_color(average_rgb(
+        PRIMITIVE_BEVEL_COLOR_A_RGB,
+        PRIMITIVE_BEVEL_COLOR_B_RGB,
+    ));
+
+    for ring in 0..border {
+        let left = left0 + ring;
+        let top = top0 + ring;
+        let right = right0 - ring;
+        let bottom = bottom0 - ring;
+        let (top_left_color, bottom_right_color) = if border == 2 && ring == 1 {
+            (color_b, color_a)
+        } else {
+            (color_a, color_b)
+        };
+
+        draw_axis_line_inclusive_clipped(
+            &mut rgba,
+            width,
+            height,
+            (left, top),
+            (right - 1, top),
+            top_left_color,
+        );
+        draw_axis_line_inclusive_clipped(
+            &mut rgba,
+            width,
+            height,
+            (left, top + 1),
+            (left, bottom),
+            top_left_color,
+        );
+        draw_axis_line_inclusive_clipped(
+            &mut rgba,
+            width,
+            height,
+            (right, bottom),
+            (left, bottom),
+            bottom_right_color,
+        );
+        draw_axis_line_inclusive_clipped(
+            &mut rgba,
+            width,
+            height,
+            (right, bottom - 1),
+            (right, top + 1),
+            bottom_right_color,
+        );
+
+        if border == 2 {
+            put_pixel_clipped(&mut rgba, width, height, right, top, mixed);
+            put_pixel_clipped(&mut rgba, width, height, left, bottom, mixed);
+        }
+    }
+
+    RenderedShellEntry {
+        label: label.to_ascii_lowercase(),
+        width,
+        height,
+        rgba,
+    }
+}
+
+fn draw_axis_line_inclusive_clipped(
+    rgba: &mut [u8],
+    width: u32,
+    height: u32,
+    start: (i32, i32),
+    end: (i32, i32),
+    color: [u8; 4],
+) {
+    if width == 0 || height == 0 {
+        return;
+    }
+
+    let max_x = width.saturating_sub(1) as i32;
+    let max_y = height.saturating_sub(1) as i32;
+    if start.1 == end.1 {
+        let y = start.1;
+        if y < 0 || y > max_y {
+            return;
+        }
+        let from = start.0.min(end.0).max(0);
+        let to = start.0.max(end.0).min(max_x);
+        if from > to {
+            return;
+        }
+        for x in from..=to {
+            put_pixel_clipped(rgba, width, height, x, y, color);
+        }
+    } else if start.0 == end.0 {
+        let x = start.0;
+        if x < 0 || x > max_x {
+            return;
+        }
+        let from = start.1.min(end.1).max(0);
+        let to = start.1.max(end.1).min(max_y);
+        if from > to {
+            return;
+        }
+        for y in from..=to {
+            put_pixel_clipped(rgba, width, height, x, y, color);
+        }
+    }
+}
+
+fn put_pixel_clipped(rgba: &mut [u8], width: u32, height: u32, x: i32, y: i32, color: [u8; 4]) {
+    if x < 0 || y < 0 || x >= width as i32 || y >= height as i32 {
+        return;
+    }
+    let offset = ((y as u32 * width + x as u32) * 4) as usize;
+    if offset + 4 <= rgba.len() {
+        rgba[offset..offset + 4].copy_from_slice(&color);
+    }
+}
+
+fn rgba_color(rgb: [u8; 3]) -> [u8; 4] {
+    [rgb[0], rgb[1], rgb[2], 255]
+}
+
+fn average_rgb(a: [u8; 3], b: [u8; 3]) -> [u8; 3] {
+    [
+        ((u16::from(a[0]) + u16::from(b[0])) / 2) as u8,
+        ((u16::from(a[1]) + u16::from(b[1])) / 2) as u8,
+        ((u16::from(a[2]) + u16::from(b[2])) / 2) as u8,
+    ]
+}
+
 fn pack_entries(
     gpu: &GpuContext,
     batch: &BatchRenderer,
@@ -449,9 +608,21 @@ fn pack_entries(
 #[cfg(test)]
 mod tests {
     use super::{
-        AssetManager, ShellAssetRole, classify_shell_asset, load_named_palette,
-        load_parent_background_palette, render_shp_entry,
+        average_rgb, classify_shell_asset, draw_axis_line_inclusive_clipped, load_named_palette,
+        load_parent_background_palette, render_primitive_bevel_entry, render_shp_entry, rgba_color,
+        AssetManager, RenderedShellEntry, ShellAssetRole, OWNER_DRAW_FLAG_TRANSPARENT_RGB,
+        PRIMITIVE_BEVEL_COLOR_A_RGB, PRIMITIVE_BEVEL_COLOR_B_RGB,
     };
+
+    fn pixel(entry: &RenderedShellEntry, x: u32, y: u32) -> [u8; 4] {
+        let offset = ((y * entry.width + x) * 4) as usize;
+        [
+            entry.rgba[offset],
+            entry.rgba[offset + 1],
+            entry.rgba[offset + 2],
+            entry.rgba[offset + 3],
+        ]
+    }
 
     #[test]
     fn skirmish_shell_asset_classification_matches_live_render_path() {
@@ -511,6 +682,85 @@ mod tests {
             classify_shell_asset("sidebar.pal"),
             ShellAssetRole::VerifiedOwnerDrawButton
         );
+    }
+
+    #[test]
+    fn verified_flag_pcxs_use_magenta_color_key() {
+        assert_eq!(OWNER_DRAW_FLAG_TRANSPARENT_RGB, [255, 0, 255]);
+    }
+
+    #[test]
+    fn primitive_bevel_line_spans_include_both_endpoints() {
+        let color = [1, 2, 3, 255];
+        let mut rgba = vec![0u8; 5 * 3 * 4];
+
+        draw_axis_line_inclusive_clipped(&mut rgba, 5, 3, (1, 1), (3, 1), color);
+        let entry = RenderedShellEntry {
+            label: "line".to_string(),
+            width: 5,
+            height: 3,
+            rgba,
+        };
+
+        assert_eq!(pixel(&entry, 0, 1), [0, 0, 0, 0]);
+        assert_eq!(pixel(&entry, 1, 1), color);
+        assert_eq!(pixel(&entry, 2, 1), color);
+        assert_eq!(pixel(&entry, 3, 1), color);
+        assert_eq!(pixel(&entry, 4, 1), [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn primitive_bevel_line_spans_clip_to_destination_extents() {
+        let color = [4, 5, 6, 255];
+        let mut rgba = vec![0u8; 3 * 3 * 4];
+
+        draw_axis_line_inclusive_clipped(&mut rgba, 3, 3, (-2, 1), (5, 1), color);
+        draw_axis_line_inclusive_clipped(&mut rgba, 3, 3, (2, -3), (2, 8), color);
+        let entry = RenderedShellEntry {
+            label: "clip".to_string(),
+            width: 3,
+            height: 3,
+            rgba,
+        };
+
+        assert_eq!(pixel(&entry, 0, 1), color);
+        assert_eq!(pixel(&entry, 1, 1), color);
+        assert_eq!(pixel(&entry, 2, 1), color);
+        assert_eq!(pixel(&entry, 2, 0), color);
+        assert_eq!(pixel(&entry, 2, 2), color);
+        assert_eq!(pixel(&entry, 0, 0), [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn primitive_bevel_border_two_swaps_outer_and_inner_ring_colors() {
+        let entry = render_primitive_bevel_entry("bevel", 8, 8, [2, 2, 2, 2], 2);
+        let color_a = rgba_color(PRIMITIVE_BEVEL_COLOR_A_RGB);
+        let color_b = rgba_color(PRIMITIVE_BEVEL_COLOR_B_RGB);
+
+        assert_eq!(pixel(&entry, 0, 0), color_a);
+        assert_eq!(pixel(&entry, 0, 1), color_a);
+        assert_eq!(pixel(&entry, 5, 1), color_b);
+        assert_eq!(pixel(&entry, 2, 5), color_b);
+
+        assert_eq!(pixel(&entry, 1, 1), color_b);
+        assert_eq!(pixel(&entry, 1, 2), color_b);
+        assert_eq!(pixel(&entry, 4, 2), color_a);
+        assert_eq!(pixel(&entry, 2, 4), color_a);
+    }
+
+    #[test]
+    fn primitive_bevel_border_two_averages_mixed_corners() {
+        let entry = render_primitive_bevel_entry("bevel", 8, 8, [2, 2, 2, 2], 2);
+        let mixed = rgba_color(average_rgb(
+            PRIMITIVE_BEVEL_COLOR_A_RGB,
+            PRIMITIVE_BEVEL_COLOR_B_RGB,
+        ));
+
+        assert_eq!(mixed, [0xA2, 0x9C, 0x87, 255]);
+        assert_eq!(pixel(&entry, 5, 0), mixed);
+        assert_eq!(pixel(&entry, 0, 5), mixed);
+        assert_eq!(pixel(&entry, 4, 1), mixed);
+        assert_eq!(pixel(&entry, 1, 4), mixed);
     }
 
     #[test]

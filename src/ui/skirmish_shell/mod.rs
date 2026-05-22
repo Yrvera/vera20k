@@ -8,10 +8,11 @@ mod layout;
 mod state;
 
 pub use layout::{
-    ColorComboId, RIGHT_PANEL_WIDTH, RectPx, ShellControlId, SkirmishShellLayout, compute_layout,
+    compute_layout, ColorComboId, RectPx, ShellControlId, SkirmishShellLayout,
+    SkirmishTrackbarRects, RIGHT_PANEL_WIDTH,
 };
 pub use state::{
-    OwnerDrawButton, SkirmishShellAction, SkirmishShellOpponent, SkirmishShellState,
     action_for_owner_draw_button, apply_action, hit_test, hit_test_owner_draw_button,
-    launch_settings,
+    launch_settings, OwnerDrawButton, SkirmishShellAction, SkirmishShellOpponent,
+    SkirmishShellState,
 };

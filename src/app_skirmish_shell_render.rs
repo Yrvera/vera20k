@@ -169,6 +169,38 @@ fn push_entry_fit(
     push_entry_sized(out, entry, x, y, [w, h], depth);
 }
 
+fn push_flag_entry_native_clipped_centered(
+    out: &mut Vec<SpriteInstance>,
+    mut entry: SkirmishShellChromeEntry,
+    rect: RectPx,
+    depth: f32,
+) {
+    let src_w = entry.pixel_size[0].round();
+    let src_h = entry.pixel_size[1].round();
+    if src_w <= 0.0 || src_h <= 0.0 || rect.w <= 0 || rect.h <= 0 {
+        return;
+    }
+
+    let rect_w = rect.w as f32;
+    let rect_h = rect.h as f32;
+    let draw_w = src_w.min(rect_w);
+    let draw_h = src_h.min(rect_h);
+    let x = if src_w < rect_w {
+        rect.x as f32 + ((rect_w - src_w) * 0.5).round()
+    } else {
+        rect.x as f32
+    };
+    let y = if src_h < rect_h {
+        rect.y as f32 + ((rect_h - src_h) * 0.5).round()
+    } else {
+        rect.y as f32
+    };
+
+    entry.uv_size[0] *= draw_w / src_w;
+    entry.uv_size[1] *= draw_h / src_h;
+    push_entry_sized(out, entry, x, y, [draw_w, draw_h], depth);
+}
+
 fn button_entries(
     atlas: &SkirmishShellChromeAtlas,
     pressed: bool,
@@ -459,9 +491,9 @@ fn right_panel_overlay_rect(
 }
 
 fn right_panel_frame10_overlay_active(_shell: &SkirmishShellState) -> bool {
-    // The binary branch is verified, but the dialog state byte that toggles it
-    // is still unnamed. Keep the decision isolated for the next Ghidra pass.
-    true
+    // Verified standard offline Skirmish first paint leaves the dialog gate at
+    // zero, and that gate makes RightPanel__Draw skip the frame-10 overlay.
+    false
 }
 
 pub fn skirmish_shell_semantic_draw_order(
@@ -604,7 +636,7 @@ pub fn build_skirmish_shell_instances(
     if let Some(flag) =
         flag_name_for_country(shell.player_country).and_then(|name| flag_entry(atlas, name))
     {
-        push_entry_fit(&mut instances, flag, layout.flags[0], 0.00057);
+        push_flag_entry_native_clipped_centered(&mut instances, flag, layout.flags[0], 0.00057);
     }
     for idx in 1..layout.flags.len() {
         let entry = shell
@@ -614,7 +646,12 @@ pub fn build_skirmish_shell_instances(
             .and_then(|opponent| flag_name_for_country(opponent.country))
             .and_then(|name| flag_entry(atlas, name));
         if let Some(flag) = entry {
-            push_entry_fit(&mut instances, flag, layout.flags[idx], 0.00057);
+            push_flag_entry_native_clipped_centered(
+                &mut instances,
+                flag,
+                layout.flags[idx],
+                0.00057,
+            );
         }
     }
 
@@ -1037,6 +1074,57 @@ mod tests {
         );
     }
 
+    fn assert_f32_close(left: f32, right: f32) {
+        assert!((left - right).abs() < 0.00001, "{left} != {right}");
+    }
+
+    #[test]
+    fn flag_entry_draws_native_size_centered_when_smaller_than_rect() {
+        let entry = SkirmishShellChromeEntry {
+            uv_origin: [0.25, 0.5],
+            uv_size: [0.5, 0.25],
+            pixel_size: [20.0, 10.0],
+        };
+        let mut out = Vec::new();
+
+        push_flag_entry_native_clipped_centered(
+            &mut out,
+            entry,
+            RectPx::new(100, 50, 30, 16),
+            0.00057,
+        );
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].position, [105.0, 53.0]);
+        assert_eq!(out[0].size, [20.0, 10.0]);
+        assert_eq!(out[0].uv_origin, entry.uv_origin);
+        assert_eq!(out[0].uv_size, entry.uv_size);
+    }
+
+    #[test]
+    fn flag_entry_clips_uvs_without_fit_scaling_when_larger_than_rect() {
+        let entry = SkirmishShellChromeEntry {
+            uv_origin: [0.25, 0.5],
+            uv_size: [0.5, 0.25],
+            pixel_size: [20.0, 10.0],
+        };
+        let mut out = Vec::new();
+
+        push_flag_entry_native_clipped_centered(
+            &mut out,
+            entry,
+            RectPx::new(100, 50, 12, 6),
+            0.00057,
+        );
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].position, [100.0, 50.0]);
+        assert_eq!(out[0].size, [12.0, 6.0]);
+        assert_eq!(out[0].uv_origin, entry.uv_origin);
+        assert_f32_close(out[0].uv_size[0], 0.3);
+        assert_f32_close(out[0].uv_size[1], 0.15);
+    }
+
     #[test]
     fn side_item_data_maps_to_verified_flag_pcxs() {
         assert_eq!(flag_pcx_for_side_item_data(-3), Some("obsi.pcx"));
@@ -1151,6 +1239,23 @@ mod tests {
         assert_eq!(&order[22..25], [SkirmishShellDrawRole::OwnerDrawButton; 3]);
         assert!(!order.contains(&SkirmishShellDrawRole::StartMarker));
         assert!(!order.contains(&SkirmishShellDrawRole::StartMarkerLabel));
+    }
+
+    #[test]
+    fn standard_offline_first_paint_skips_sdbtnanm_frame10_overlay() {
+        let shell = SkirmishShellState::default();
+        let layout = compute_layout(800, 600);
+        let order = skirmish_shell_semantic_draw_order(
+            &layout,
+            right_panel_frame10_overlay_active(&shell),
+            false,
+            false,
+            0,
+        );
+
+        assert!(!right_panel_frame10_overlay_active(&shell));
+        assert!(!order.contains(&SkirmishShellDrawRole::RightPanelOverlaySdbtnanmFrame10));
+        assert!(order.contains(&SkirmishShellDrawRole::RightPanelBottomSdbtm));
     }
 
     #[test]

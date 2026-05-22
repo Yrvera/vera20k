@@ -64,6 +64,13 @@ pub struct RightPanelRects {
     pub bottom: RectPx,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkirmishTrackbarRects {
+    pub game_speed: RectPx,
+    pub credits: RectPx,
+    pub unit_count: RectPx,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkirmishShellLayout {
     pub screen: RectPx,
@@ -75,6 +82,7 @@ pub struct SkirmishShellLayout {
     pub player_name: RectPx,
     pub color_combos: [RectPx; 8],
     pub flags: [RectPx; 8],
+    pub trackbars: SkirmishTrackbarRects,
 }
 
 const BASE_X: i32 = 6;
@@ -111,6 +119,23 @@ fn right_anchor(screen_w: i32, screen_h: i32, original: RectPx) -> RectPx {
         original.y + offset_y,
         original.w,
         original.h,
+    )
+}
+
+fn owner_draw_button_snap(
+    screen_w: i32,
+    screen_h: i32,
+    panel: RightPanelRects,
+    original: RectPx,
+) -> RectPx {
+    let offset_x = center_offset(screen_w, SHELL_BASE_W);
+    let offset_y = center_offset(screen_h, SHELL_BASE_H);
+    let row = ((original.y + offset_y - panel.tile.y) / SDBTNBKGD_H).max(0);
+    RectPx::new(
+        screen_w - offset_x - SDBTNANM_W,
+        panel.tile.y + row * SDBTNBKGD_H,
+        SDBTNANM_W,
+        SDBTNANM_H,
     )
 }
 
@@ -163,6 +188,12 @@ pub fn compute_layout(screen_w: u32, screen_h: u32) -> SkirmishShellLayout {
     let choose_base = dlu_rect(425, 176, 108, 23);
     let preview_base = dlu_rect(429, 23, 96, 69);
     let panel = right_panel_rects(screen_w, screen_h);
+    let mut player_name = dlu_rect(38, 36, 100, 14);
+    player_name.x += 1;
+    player_name.w += 1;
+    let mut unit_count_trackbar = dlu_rect(269, 210, 85, 13);
+    unit_count_trackbar.y -= 1;
+    // Other verified 0x102 one-pixel fixups target controls not represented here yet.
 
     let color_combos = [
         dlu_rect(282, 36, 29, 73),
@@ -188,25 +219,30 @@ pub fn compute_layout(screen_w: u32, screen_h: u32) -> SkirmishShellLayout {
     SkirmishShellLayout {
         screen: RectPx::new(0, 0, screen_w, screen_h),
         right_panel: panel,
-        start_button: right_anchor(screen_w, screen_h, start_base),
-        choose_map_button: right_anchor(screen_w, screen_h, choose_base),
+        start_button: owner_draw_button_snap(screen_w, screen_h, panel, start_base),
+        choose_map_button: owner_draw_button_snap(screen_w, screen_h, panel, choose_base),
         back_button: back_rect(screen_w, panel),
         map_preview: right_anchor(screen_w, screen_h, preview_base),
-        player_name: dlu_rect(38, 36, 100, 14),
+        player_name,
         color_combos,
         flags,
+        trackbars: SkirmishTrackbarRects {
+            game_speed: dlu_rect(269, 176, 85, 13),
+            credits: dlu_rect(269, 193, 85, 13),
+            unit_count: unit_count_trackbar,
+        },
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{RectPx, compute_layout};
+    use super::{compute_layout, RectPx};
 
     #[test]
     fn key_rects_match_800x600() {
         let layout = compute_layout(800, 600);
-        assert_eq!(layout.start_button, RectPx::new(635, 242, 162, 37));
-        assert_eq!(layout.choose_map_button, RectPx::new(635, 286, 162, 37));
+        assert_eq!(layout.start_button, RectPx::new(644, 241, 156, 42));
+        assert_eq!(layout.choose_map_button, RectPx::new(644, 283, 156, 42));
         assert_eq!(layout.map_preview, RectPx::new(644, 37, 144, 112));
         assert_eq!(layout.back_button, RectPx::new(644, 535, 156, 42));
     }
@@ -214,8 +250,8 @@ mod tests {
     #[test]
     fn key_rects_match_1024x768() {
         let layout = compute_layout(1024, 768);
-        assert_eq!(layout.start_button, RectPx::new(747, 326, 162, 37));
-        assert_eq!(layout.choose_map_button, RectPx::new(747, 370, 162, 37));
+        assert_eq!(layout.start_button, RectPx::new(756, 325, 156, 42));
+        assert_eq!(layout.choose_map_button, RectPx::new(756, 367, 156, 42));
         assert_eq!(layout.map_preview, RectPx::new(756, 121, 144, 112));
         assert_eq!(layout.back_button, RectPx::new(756, 619, 156, 42));
     }
@@ -223,10 +259,17 @@ mod tests {
     #[test]
     fn key_rects_match_640x480_formula() {
         let layout = compute_layout(640, 480);
-        assert_eq!(layout.start_button, RectPx::new(475, 242, 162, 37));
-        assert_eq!(layout.choose_map_button, RectPx::new(475, 286, 162, 37));
+        assert_eq!(layout.start_button, RectPx::new(484, 241, 156, 42));
+        assert_eq!(layout.choose_map_button, RectPx::new(484, 283, 156, 42));
         assert_eq!(layout.map_preview, RectPx::new(484, 37, 144, 112));
         assert_eq!(layout.back_button, RectPx::new(484, 409, 156, 42));
+    }
+
+    #[test]
+    fn represented_0102_one_pixel_fixups_are_applied() {
+        let layout = compute_layout(800, 600);
+        assert_eq!(layout.player_name, RectPx::new(58, 59, 151, 23));
+        assert_eq!(layout.trackbars.unit_count, RectPx::new(404, 340, 128, 21));
     }
 
     #[test]
@@ -237,6 +280,21 @@ mod tests {
         assert_eq!(layout_800.flags, layout_1024.flags);
         assert_eq!(layout_800.color_combos[0], RectPx::new(423, 59, 44, 119));
         assert_eq!(layout_800.flags[0], RectPx::new(225, 59, 48, 20));
+    }
+
+    #[test]
+    fn trackbar_rects_match_800x600_final_geometry() {
+        let layout = compute_layout(800, 600);
+        assert_eq!(layout.trackbars.game_speed, RectPx::new(404, 286, 128, 21));
+        assert_eq!(layout.trackbars.credits, RectPx::new(404, 314, 128, 21));
+        assert_eq!(layout.trackbars.unit_count, RectPx::new(404, 340, 128, 21));
+    }
+
+    #[test]
+    fn trackbars_preserve_ordinary_child_rects_at_1024() {
+        let layout_800 = compute_layout(800, 600);
+        let layout_1024 = compute_layout(1024, 768);
+        assert_eq!(layout_1024.trackbars, layout_800.trackbars);
     }
 
     #[test]
@@ -263,8 +321,8 @@ mod tests {
     #[test]
     fn large_screen_offsets_without_scaling() {
         let layout = compute_layout(1280, 960);
-        assert_eq!(layout.start_button.w, 162);
-        assert_eq!(layout.start_button.h, 37);
+        assert_eq!(layout.start_button.w, 156);
+        assert_eq!(layout.start_button.h, 42);
         assert_eq!(layout.map_preview.w, 144);
         assert_eq!(layout.map_preview.h, 112);
     }
