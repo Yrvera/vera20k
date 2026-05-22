@@ -23,12 +23,16 @@ pub enum ContactAdmission {
 ///
 /// `contacts` mirrors the refinery Contacts[] list populated by HELLO.
 /// `waiting_retry_queue` is Rust-side deterministic retry ordering for miners
-/// that received a negative reply. `on_pad` mirrors the live building/unit pad
-/// link set only after the miner physically reaches the dock pad.
+/// that received a negative reply. `contact_entered` mirrors the +0x418-like
+/// radio flag set by the 0x18/0x19 enter/leave handshake, separate from any
+/// conditional +0x2E4 reciprocal building/unit link. `on_pad` is only physical
+/// pad occupancy for stock refinery unload/release bookkeeping.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct RefineryDockContacts {
     pub contacts: BTreeMap<u64, Vec<u64>>,
     pub waiting_retry_queue: BTreeMap<u64, VecDeque<u64>>,
+    #[serde(default)]
+    pub contact_entered: BTreeMap<u64, u64>,
     pub on_pad: BTreeMap<u64, u64>,
 }
 
@@ -89,6 +93,20 @@ impl RefineryDockContacts {
         self.on_pad.insert(refinery_sid, miner_sid);
     }
 
+    pub fn mark_contact_entered(&mut self, refinery_sid: u64, miner_sid: u64) {
+        self.contact_entered.insert(refinery_sid, miner_sid);
+    }
+
+    pub fn clear_contact_entered(&mut self, refinery_sid: u64, miner_sid: u64) {
+        if self.contact_entered.get(&refinery_sid) == Some(&miner_sid) {
+            self.contact_entered.remove(&refinery_sid);
+        }
+    }
+
+    pub fn has_contact_entered(&self, refinery_sid: u64, miner_sid: u64) -> bool {
+        self.contact_entered.get(&refinery_sid) == Some(&miner_sid)
+    }
+
     pub fn release_on_pad(&mut self, refinery_sid: u64, miner_sid: u64) {
         if self.on_pad.get(&refinery_sid) == Some(&miner_sid) {
             self.on_pad.remove(&refinery_sid);
@@ -108,6 +126,7 @@ impl RefineryDockContacts {
             contacts.retain(|&sid| sid != miner_sid);
         }
         self.contacts.retain(|_, contacts| !contacts.is_empty());
+        self.clear_contact_entered(refinery_sid, miner_sid);
         self.remove_waiter(refinery_sid, miner_sid);
     }
 
@@ -131,6 +150,8 @@ impl RefineryDockContacts {
             queue.retain(|sid| alive.contains(sid));
             !queue.is_empty()
         });
+        self.contact_entered
+            .retain(|ref_sid, miner_sid| alive.contains(ref_sid) && alive.contains(miner_sid));
         self.on_pad
             .retain(|ref_sid, miner_sid| alive.contains(ref_sid) && alive.contains(miner_sid));
     }
@@ -165,6 +186,7 @@ impl RefineryDockContacts {
         self.contacts
             .get(&refinery_sid)
             .is_some_and(|contacts| !contacts.is_empty())
+            || self.contact_entered.contains_key(&refinery_sid)
             || self.on_pad.contains_key(&refinery_sid)
     }
 

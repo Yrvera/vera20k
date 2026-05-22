@@ -23,6 +23,7 @@ use std::collections::BTreeMap;
 
 use crate::rules::object_type::ObjectType;
 use crate::rules::ruleset::GeneralRules;
+use crate::sim::movement::facing_class::FacingClass;
 
 /// Which kind of resource a map cell or cargo bale contains.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -78,18 +79,28 @@ pub enum MinerState {
 /// Sub-state machine for the refinery docking visual sequence.
 ///
 /// Active when `MinerState::Dock` is the current top-level state. Mirrors
-/// the four-state FSM used by gamemd's harvester deploy mission.
+/// the stock refinery inbound radio sequence before entering the unload FSM.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
 )]
 pub enum RefineryDockPhase {
-    /// Pathing toward QueueingCell while polling DockReservations each tick.
-    /// On reservation grant: re-target pad cell and transition to Linked.
+    /// Mission_Harvest state 2 sends HELLO(0x02). Accepted miners enter the
+    /// refinery Contacts[] list; busy refineries can deny HELLO without
+    /// evicting the current contact, but the following CAN_DOCK path can
+    /// still defer with a receiver target instead of clearing the miner.
     #[default]
     Approach,
-    /// Reservation granted; driving onto the pad cell. On arrival: emit
-    /// DockDeploy sound, set display_type_override, kick off the pivot to
-    /// facing East (0x40), transition to Pivoting.
+    /// Mission_Enter sends CAN_DOCK(0x0E). Building case 0x0E replies with
+    /// the accepted cell (anchor + (3, 1)); only an already-there reply starts
+    /// the contact-entered/pivot handoff.
+    MissionEnter,
+    /// Moving toward the accepted cell returned by CAN_DOCK. Arrival returns
+    /// to Mission_Enter so the next 0x12 already-there reply can start the
+    /// entered/pivot handshake.
+    AwaitingAcceptedCell,
+    /// 0x15 pad-arrival handoff. Marks the miner physically on the pad, emits
+    /// DockDeploy sound, sets display_type_override, kicks off the pivot to
+    /// facing East (0x40), and transitions to Pivoting.
     Linked,
     /// Smooth in-place rotation to facing 0x40 (East) so the miner's back
     /// is against the refinery dump spot for the deposit animation.
@@ -108,21 +119,15 @@ pub enum RefineryDockPhase {
     /// Hold on the pad for one more dump-gate interval after the last
     /// bale drains, matching gamemd's post-last-bale idle: the refinery's
     /// dump counter keeps ticking, and on the next 14.4-frame gate fire
-    /// `FindFirstNonEmptySlot` returns -1, triggering state 4 →
-    /// `ReleaseDockedHarvester`. On cooldown expiry: clear the
-    /// unloading-model override and transition to Departing. The dock
-    /// reservation is still held; the next queued miner is released only
-    /// once this miner clears the exit cell.
+    /// `FindFirstNonEmptySlot` returns -1, triggering the zero-link state-4
+    /// cleanup. On cooldown expiry: transition to Departing, which performs
+    /// the stock handoff.
     DepositCooldown,
-    /// Drive to the exit cell (cached on first entry to avoid the spiral
-    /// search recomputing every tick from live occupancy). The exit drive
-    /// runs with `bypass_grid=true` on the MovementTarget so the miner
-    /// can push through a queue-cell blocker (common when another miner
-    /// is parked there waiting to dock). Facing tracks the actual path
-    /// direction — no hardcoded 0x47 snap, since that value is gamemd's
-    /// drive-track curve index, not a literal facing byte.
-    /// On arrival: release dock reservation, clear exit cache, return to
-    /// SearchOre.
+    /// Rust's stock zero-link state-4 handoff. Normal stock refinery unload
+    /// completion does not seed `Force_Track(0x47)`, play the conditional
+    /// `ReleaseDockedHarvester` departure sound, or install a cached
+    /// queue-cell destination. This phase clears the dock bookkeeping and
+    /// returns to SearchOre/Harvest scheduling.
     Departing,
 }
 
@@ -274,18 +279,22 @@ pub struct Miner {
     /// Current phase of the refinery docking sequence.
     /// Only meaningful when `state == MinerState::Dock`.
     pub dock_phase: RefineryDockPhase,
+    /// Active 16-bit FacingClass timer for the refinery dock pivot.
+    ///
+    /// gamemd does not rotate the docked miner by manual 8-bit facing steps.
+    /// Radio 0x16 calls the locomotor's `Do_Turn(0x4000)`, which drives the
+    /// unit body through its PrimaryFacing RateTimer until deploy accepts the
+    /// target-facing window.
+    #[serde(default)]
+    pub dock_pivot_facing: Option<FacingClass>,
     /// Sim ticks remaining in `DepositCooldown`. Seeded from the refinery's
     /// SpecialAnim cycle length when the last bale pops; decremented each
     /// tick of the cooldown phase.
     pub deposit_cooldown_ticks: u16,
-    /// Cached exit cell for the active `Departing` phase. Computed once on
-    /// transition into `Departing` (mirroring gamemd's one-shot
-    /// `Find_Nearby_Passable_Cell` call inside `ReleaseDockedHarvester`)
-    /// and held fixed until the miner reaches it. Without this cache the
-    /// spiral search recomputes every tick from live occupancy and skips
-    /// the miner's own cell on arrival — producing a ping-pong loop
-    /// between adjacent cells near the exit. Cleared when the miner
-    /// transitions back to `SearchOre`.
+    /// Legacy/conditional exit cell cache. Stock zero-link refinery unload
+    /// completion does not install a queue-cell destination; this remains
+    /// serialized so old saves and conditional release experiments can be
+    /// cleaned up deterministically.
     pub exit_cell: Option<(u16, u16)>,
 }
 
@@ -330,6 +339,7 @@ impl Miner {
             rescan_cooldown: 0,
             last_harvest_cell: None,
             dock_phase: RefineryDockPhase::default(),
+            dock_pivot_facing: None,
             deposit_cooldown_ticks: 0,
             exit_cell: None,
         }

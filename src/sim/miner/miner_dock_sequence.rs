@@ -3,7 +3,7 @@
 //! Drives the sub-state machine (`RefineryDockPhase`) when the miner is in
 //! `MinerState::Dock`. Mirrors the four-state FSM used by the original
 //! game's harvester deploy mission (cases 0/1/3/4): approach the queue,
-//! link onto the pad, deposit bales, then drive off the exit cell.
+//! link onto the pad, deposit bales, then hand back to harvest scheduling.
 //!
 //! `refinery_pad_cell` is a thin wrapper over
 //! [`crate::sim::docking::pad_geometry::pad_cell_for`] — that helper owns
@@ -19,12 +19,12 @@ use crate::rules::ruleset::RuleSet;
 use crate::sim::components::BaleDepositEvent;
 use crate::sim::miner::{MinerConfig, MinerState, RefineryDockPhase, ResourceType};
 use crate::sim::movement;
+use crate::sim::movement::facing_class::FacingClass;
 use crate::sim::movement::locomotor::MovementLayer;
-use crate::sim::movement::turret;
 use crate::sim::occupancy::OccupancyGrid;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::world::{SimSoundEvent, Simulation};
-use crate::util::fixed_math::{SIM_TICK_HZ, SimFixed};
+use crate::util::fixed_math::SimFixed;
 
 use super::miner_dock::ContactAdmission;
 use super::miner_system::{MinerSnapshot, effective_purifier_count};
@@ -45,10 +45,7 @@ pub(super) const EXIT_SEARCH_MAX_RADIUS: i32 = 16;
 /// reads PrimaryFacing rate-timer, calls locomotor `Do_Turn(0x4000)` to
 /// rotate toward East. Applies to both HARV and CMIN (no Teleporter gate).
 const DOCK_FACING_EAST: u8 = 0x40;
-
-/// Sim tick period in milliseconds, derived from the same constant used by
-/// the movement system's rotation step.
-const SIM_TICK_MS: u32 = 1000 / SIM_TICK_HZ;
+const DOCK_FACING_EAST_DIR: u16 = (DOCK_FACING_EAST as u16) << 8;
 const REFINERY_EXIT_FORCE_TRACK: u8 = 0x47;
 const REFINERY_EXIT_FORCE_HEAD_OFFSET_X: i32 = 0;
 const REFINERY_EXIT_FORCE_HEAD_OFFSET_Y: i32 = 256;
@@ -57,6 +54,25 @@ const REFINERY_EXIT_FORCE_HEAD_OFFSET_Y: i32 = 256;
 fn record_dock_phase(snap: &mut MinerSnapshot, old: RefineryDockPhase, new: RefineryDockPhase) {
     snap.debug_dock_events
         .push((format!("{:?}", old), format!("{:?}", new)));
+}
+
+fn facing8_to_dir16(facing: u8) -> u16 {
+    (facing as u16) << 8
+}
+
+fn dir16_to_facing8(dir: u16) -> u8 {
+    ((((dir as u32) >> 7) + 1) >> 1) as u8
+}
+
+fn dock_pivot_accepts(dir: u16) -> bool {
+    ((((dir as u32) >> 7) + 1) & 0x1FE) == 0x80
+}
+
+fn dock_pivot_rot_byte(sim: &Simulation, rules: &RuleSet, snap: &MinerSnapshot) -> u8 {
+    rules
+        .object_case_insensitive(sim.interner.resolve(snap.type_id))
+        .map(|obj| obj.turret_rot.clamp(0, 0xFF) as u8)
+        .unwrap_or(10)
 }
 
 // ---------------------------------------------------------------------------
@@ -113,26 +129,13 @@ pub(super) fn refinery_pad_cell(
     }
 }
 
-/// Exit cell — where the miner drives after undocking.
+/// Conditional reciprocal-link exit cell.
 ///
-/// Reproduces the observable behaviour of the original engine: the
-/// harvester exits through the queue cell directly outside the dock
-/// pad — the same cell it entered through. For a 4×3 GAREFN at cell
-/// (10, 10) with pad at (13, 11), the queue cell at (14, 11) is the
-/// only passable cell adjacent to the pad, so every exit goes through
-/// it.
-///
-/// Internal mechanism deliberately diverges from the binary. gamemd's
-/// `ReleaseDockedHarvester` (0x4595C0) computes a passable cell
-/// anchored at `Location_cell + (−1, +1)` — west of the foundation —
-/// and calls `Set_Destination(that_cell)`. That destination is
-/// immediately overwritten on the next mission cycle by
-/// `Mission_Harvest` case 0 SCAN which calls `Set_Destination(0)` to
-/// clear and then `Search_For_Tiberium_And_Move` to re-target to ore.
-/// The west-anchored cell never appears as a visible waypoint — the
-/// miner drives from pad through the queue cell on its way to ore.
-/// We collapse those two stages: drive directly to the queue cell,
-/// then `SearchOre` takes over.
+/// Stock zero-link refinery unload completion does not use this helper:
+/// `UnitClass::Mission_Deploy_Building` state 4 queues/continues Harvest
+/// without installing a new passable-cell destination. This remains for
+/// conditional reciprocal-link/interrupt modelling and for legacy tests
+/// that pin the old helper's geometry.
 ///
 /// `find_nearby_passable_cell_with_index` provides a fallback when
 /// the queue cell is blocked (e.g., another miner already waiting
@@ -142,9 +145,7 @@ pub(super) fn refinery_pad_cell(
 /// passable cell exists within [`EXIT_SEARCH_MAX_RADIUS`] or no path
 /// grid is available.
 ///
-/// Applies to both war miners and chrono miners — neither warps on the
-/// outbound trip; only the inbound (ore → refinery) leg uses the
-/// chrono warp.
+#[cfg(test)]
 pub(super) fn refinery_exit_cell(
     rx: u16,
     ry: u16,
@@ -212,7 +213,8 @@ fn is_exit_cell_passable(
 /// Note: gamemd's implementation collects up to 24 candidates from the
 /// first non-empty ring and picks one at random (via `g_CurrentFrameCounter
 /// % count`); see [`find_nearby_passable_cells_first_ring`] for the
-/// candidate-collecting variant used by the refinery exit drive.
+/// candidate-collecting variant used by conditional reciprocal-link release
+/// geometry.
 pub(crate) fn find_nearby_passable_cell(
     ox: i32,
     oy: i32,
@@ -253,10 +255,10 @@ pub(crate) fn find_nearby_passable_cell(
 /// supplies the equivalent index.
 ///
 /// Why this matters: a deterministic "return first walkable" picks the
-/// same cell every time, which is visually fine when the anchor itself
-/// is passable (the common case for the refinery exit cell — queue cell
-/// adjacent to pad) but produces "miner always exits at the same spot"
-/// drift when the anchor is blocked and several ring-1 candidates exist.
+/// same cell every time, which is visually fine when the anchor itself is
+/// passable, but produces "miner always exits at the same spot" drift when
+/// a conditional release anchor is blocked and several ring-1 candidates
+/// exist.
 /// The modulo selection over the ring's candidates spreads exits across
 /// the available cells the way gamemd does.
 ///
@@ -309,13 +311,13 @@ pub(crate) fn find_nearby_passable_cell_with_index(
 // Refinery lookup helpers
 // ---------------------------------------------------------------------------
 
-/// Resolve a refinery entity's foundation and compute queue/pad/exit cells.
-/// Returns `(queue, pad, exit)` or `None` if the refinery is gone.
+/// Resolve a refinery entity's foundation and compute stock dock cells.
+/// Returns `(wait_queue, accepted_cell, pad, dock_capacity)` or `None` if the
+/// refinery is gone.
 fn resolve_refinery_cells(
     sim: &Simulation,
     rules: &RuleSet,
     ref_sid: u64,
-    path_grid: Option<&PathGrid>,
 ) -> Option<((u16, u16), (u16, u16), (u16, u16), usize)> {
     let entity = sim.entities.get(ref_sid)?;
     if entity.dying || entity.health.current == 0 {
@@ -330,10 +332,11 @@ fn resolve_refinery_cells(
     let dock_capacity = obj.map(|o| o.number_of_docks.max(1) as usize).unwrap_or(1);
     let rx = entity.position.rx;
     let ry = entity.position.ry;
+    let wait_queue = refinery_queue_cell(rx, ry, w, h, qc);
     Some((
+        wait_queue,
         refinery_can_dock_queue_cell(rx, ry),
         refinery_pad_cell(rx, ry, w, h, dock_off),
-        refinery_exit_cell(rx, ry, w, h, qc, path_grid, Some(&sim.occupancy), sim.tick),
         dock_capacity,
     ))
 }
@@ -399,33 +402,39 @@ pub(crate) fn interrupt_refinery_docked_miners(
     rules: &RuleSet,
     ref_sid: u64,
 ) -> usize {
-    let candidates: Vec<u64> = sim
+    let candidates: Vec<(u64, bool)> = sim
         .entities
         .keys_sorted()
         .iter()
         .copied()
-        .filter(|&entity_id| {
+        .filter_map(|entity_id| {
             let Some(entity) = sim.entities.get(entity_id) else {
-                return false;
+                return None;
             };
             let Some(miner) = entity.miner.as_ref() else {
-                return false;
+                return None;
             };
-            miner.reserved_refinery == Some(ref_sid)
-                && miner.state == MinerState::Dock
-                && (sim
-                    .production
-                    .dock_reservations
-                    .is_on_pad(ref_sid, entity_id)
-                    || sim
-                        .production
-                        .dock_reservations
-                        .has_contact(ref_sid, entity_id))
+            if miner.reserved_refinery != Some(ref_sid) || miner.state != MinerState::Dock {
+                return None;
+            }
+            let is_on_pad = sim
+                .production
+                .dock_reservations
+                .is_on_pad(ref_sid, entity_id);
+            let has_contact = sim
+                .production
+                .dock_reservations
+                .has_contact(ref_sid, entity_id);
+            if is_on_pad || has_contact {
+                Some((entity_id, is_on_pad))
+            } else {
+                None
+            }
         })
         .collect();
 
     let mut interrupted = 0;
-    for entity_id in candidates {
+    for (entity_id, was_on_pad) in candidates {
         sim.production
             .dock_reservations
             .cancel_miner(ref_sid, entity_id);
@@ -440,6 +449,7 @@ pub(crate) fn interrupt_refinery_docked_miners(
         miner.reserved_refinery = None;
         miner.dock_queued = false;
         miner.dock_phase = RefineryDockPhase::Approach;
+        miner.dock_pivot_facing = None;
         miner.deposit_cooldown_ticks = 0;
         miner.exit_cell = None;
         miner.unload_timer = 0;
@@ -451,7 +461,7 @@ pub(crate) fn interrupt_refinery_docked_miners(
         entity.display_type_override = None;
         entity.movement_target = None;
         entity.drive_track = None;
-        if start_refinery_exit_force_track(entity, speed) {
+        if was_on_pad && start_refinery_exit_force_track(entity, speed) {
             interrupted += 1;
         }
     }
@@ -476,6 +486,7 @@ fn abort_invalid_refinery(sim: &mut Simulation, snap: &mut MinerSnapshot, ref_si
     snap.miner.reserved_refinery = None;
     snap.miner.dock_queued = false;
     snap.miner.dock_phase = RefineryDockPhase::Approach;
+    snap.miner.dock_pivot_facing = None;
     snap.miner.deposit_cooldown_ticks = 0;
     snap.miner.exit_cell = None;
     snap.miner.unload_timer = 0;
@@ -507,8 +518,8 @@ pub(super) fn handle_dock_sequence(
         return;
     };
 
-    let Some((queue, pad, exit, dock_capacity)) =
-        resolve_refinery_cells(sim, rules, ref_sid, path_grid)
+    let Some((wait_queue, accepted_cell, pad, dock_capacity)) =
+        resolve_refinery_cells(sim, rules, ref_sid)
     else {
         abort_invalid_refinery(sim, snap, Some(ref_sid));
         if phase_before != snap.miner.dock_phase {
@@ -519,7 +530,13 @@ pub(super) fn handle_dock_sequence(
 
     match snap.miner.dock_phase {
         RefineryDockPhase::Approach => {
-            phase_approach(sim, path_grid, snap, queue, pad, ref_sid, dock_capacity);
+            phase_approach(sim, path_grid, snap, wait_queue, ref_sid, dock_capacity);
+        }
+        RefineryDockPhase::MissionEnter => {
+            phase_mission_enter(sim, snap, accepted_cell, ref_sid, dock_capacity);
+        }
+        RefineryDockPhase::AwaitingAcceptedCell => {
+            phase_awaiting_accepted_cell(sim, snap);
         }
         RefineryDockPhase::Linked => {
             phase_linked(sim, rules, snap, pad, ref_sid);
@@ -534,7 +551,7 @@ pub(super) fn handle_dock_sequence(
             phase_deposit_cooldown(snap);
         }
         RefineryDockPhase::Departing => {
-            phase_departing(sim, path_grid, snap, pad, exit, ref_sid);
+            phase_departing(sim, snap, ref_sid);
         }
     }
 
@@ -551,49 +568,103 @@ fn phase_approach(
     sim: &mut Simulation,
     path_grid: Option<&PathGrid>,
     snap: &mut MinerSnapshot,
-    queue: (u16, u16),
-    pad: (u16, u16),
+    wait_queue: (u16, u16),
     ref_sid: u64,
     dock_capacity: usize,
 ) {
-    // Try to acquire the dock reservation. If granted, immediately re-target
-    // the pad cell and transition to Linked. RemoveOccupy in art.ini removes
-    // the pad cell from the path/occupancy grid, so the move can proceed
-    // without bypass_grid.
+    // Mission_Harvest state 2 sends only HELLO(0x02). On ROGER it queues
+    // Mission_Enter for the next tick instead of jumping straight to the
+    // accepted-cell move or unload pivot.
     let admission =
         sim.production
             .dock_reservations
             .hello_or_wait(ref_sid, snap.entity_id, dock_capacity);
 
-    if admission == ContactAdmission::Accepted {
-        snap.miner.dock_queued = false;
-        let moving = sim
-            .entities
-            .get(snap.entity_id)
-            .is_some_and(|e| e.movement_target.is_some());
-        if (snap.rx, snap.ry) == pad && !moving {
-            sim.production
-                .dock_reservations
-                .link_on_pad(ref_sid, snap.entity_id);
-            snap.miner.dock_phase = RefineryDockPhase::Linked;
-        } else if !moving {
-            movement::issue_direct_move(&mut sim.entities, snap.entity_id, pad, snap.speed);
-            snap.miner.dock_phase = RefineryDockPhase::Linked;
-        }
-        return;
-    }
-    snap.miner.dock_queued = true;
-
-    if queue == pad && sim.production.dock_reservations.pad_occupied(ref_sid) {
-        return;
-    }
+    snap.miner.dock_queued = admission != ContactAdmission::Accepted;
+    snap.miner.dock_phase = RefineryDockPhase::MissionEnter;
 
     // Reservation not granted — keep heading toward QueueingCell.
-    if !is_adjacent_or_at((snap.rx, snap.ry), queue) {
+    if admission != ContactAdmission::Accepted && !is_adjacent_or_at((snap.rx, snap.ry), wait_queue)
+    {
         if let Some(grid) = path_grid {
-            issue_move_if_idle(&mut sim.entities, grid, snap.entity_id, queue, snap.speed);
+            issue_move_if_idle(
+                &mut sim.entities,
+                grid,
+                snap.entity_id,
+                wait_queue,
+                snap.speed,
+            );
         }
     }
+}
+
+fn phase_mission_enter(
+    sim: &mut Simulation,
+    snap: &mut MinerSnapshot,
+    accepted_cell: (u16, u16),
+    ref_sid: u64,
+    dock_capacity: usize,
+) {
+    let admission =
+        sim.production
+            .dock_reservations
+            .hello_or_wait(ref_sid, snap.entity_id, dock_capacity);
+    let already_entered = sim
+        .production
+        .dock_reservations
+        .has_contact_entered(ref_sid, snap.entity_id);
+    let pad_clear_or_self = !sim.production.dock_reservations.pad_occupied(ref_sid)
+        || sim
+            .production
+            .dock_reservations
+            .is_on_pad(ref_sid, snap.entity_id);
+    let can_start_enter_handshake =
+        (admission == ContactAdmission::Accepted || already_entered) && pad_clear_or_self;
+    snap.miner.dock_queued =
+        (admission != ContactAdmission::Accepted && !already_entered) || !pad_clear_or_self;
+
+    let moving = sim
+        .entities
+        .get(snap.entity_id)
+        .is_some_and(|e| e.movement_target.is_some());
+
+    if (snap.rx, snap.ry) == accepted_cell && !moving {
+        if can_start_enter_handshake {
+            sim.production
+                .dock_reservations
+                .mark_contact_entered(ref_sid, snap.entity_id);
+            snap.miner.dock_phase = RefineryDockPhase::Linked;
+        }
+        return;
+    }
+
+    if !moving {
+        // Building 0x0E sends 0x12 with anchor+(3,1). The accepted cell is
+        // inside the refinery footprint for stock GAREFN/NAREFN, so use the
+        // direct move path already used for refinery pad entry.
+        movement::issue_direct_move(&mut sim.entities, snap.entity_id, accepted_cell, snap.speed);
+    }
+    snap.miner.dock_phase = RefineryDockPhase::AwaitingAcceptedCell;
+}
+
+fn phase_awaiting_accepted_cell(sim: &mut Simulation, snap: &mut MinerSnapshot) {
+    let moving = sim
+        .entities
+        .get(snap.entity_id)
+        .is_some_and(|e| e.movement_target.is_some());
+    if moving {
+        return;
+    }
+
+    if let Some(entity) = sim.entities.get(snap.entity_id) {
+        snap.rx = entity.position.rx;
+        snap.ry = entity.position.ry;
+    }
+
+    // Movement completion is not enough to start the dock pivot. The next
+    // Mission_Enter/CAN_DOCK pass must receive 0x12 as already-there before
+    // the building emits the 0x18/0x16 entered/pivot handshake.
+    snap.miner.dock_phase = RefineryDockPhase::MissionEnter;
 }
 
 fn phase_linked(
@@ -615,15 +686,20 @@ fn phase_linked(
     snap.ry = pad.1;
     sim.production
         .dock_reservations
+        .mark_contact_entered(ref_sid, snap.entity_id);
+    sim.production
+        .dock_reservations
         .link_on_pad(ref_sid, snap.entity_id);
 
+    let rot = dock_pivot_rot_byte(sim, rules, snap);
+    let binary_frame = sim.binary_frame;
     if let Some(entity) = sim.entities.get_mut(snap.entity_id) {
         if let Some(uc) = unloading_class(rules, sim.interner.resolve(snap.type_id)) {
             entity.display_type_override = Some(sim.interner.intern(&uc));
         }
-        // Kick off the pivot to East. The actual rotation runs in
-        // phase_pivoting one tick at a time, mirroring gamemd's
-        // RateTimer-driven smooth turn from radio 0x16.
+        let mut pivot = FacingClass::new(facing8_to_dir16(entity.facing), rot);
+        pivot.set(DOCK_FACING_EAST_DIR, binary_frame);
+        snap.miner.dock_pivot_facing = Some(pivot);
         entity.facing_target = Some(DOCK_FACING_EAST);
     }
 
@@ -634,49 +710,52 @@ fn phase_linked(
     snap.miner.dock_phase = RefineryDockPhase::Pivoting;
 }
 
-/// Smooth in-place rotation toward DOCK_FACING_EAST (0x40). Each tick
-/// advances facing by at most `rot_to_facing_delta` units. When facing
-/// reaches the target, initialise the unload timer and transition to
-/// Unloading — the same handshake gamemd performs via radio 0x15 once
-/// the harvester is stationary and the PrimaryFacing rate-timer has
-/// completed its target rotation.
+/// Smooth in-place rotation toward DOCK_FACING_EAST (0x40). gamemd starts
+/// this via radio 0x16 by calling the locomotor's `Do_Turn(0x4000)`, then
+/// accepts deploy once the 16-bit PrimaryFacing timer enters the same
+/// quantized East-facing window.
 fn phase_pivoting(
     sim: &mut Simulation,
     rules: &RuleSet,
     config: &MinerConfig,
     snap: &mut MinerSnapshot,
 ) {
-    let type_name = sim.interner.resolve(snap.type_id).to_string();
-    let rot: i32 = rules
-        .object_case_insensitive(&type_name)
-        .map(|obj| obj.turret_rot.max(1))
-        .unwrap_or(10);
+    let rot = dock_pivot_rot_byte(sim, rules, snap);
+    let binary_frame = sim.binary_frame;
 
     let Some(entity) = sim.entities.get_mut(snap.entity_id) else {
         return;
     };
 
-    let max_delta: u8 = turret::rot_to_facing_delta(rot, SIM_TICK_MS);
-    let diff: i16 = turret::shortest_rotation(entity.facing, DOCK_FACING_EAST);
+    if snap.miner.dock_pivot_facing.is_none() {
+        let mut pivot = FacingClass::new(facing8_to_dir16(entity.facing), rot);
+        pivot.set(DOCK_FACING_EAST_DIR, binary_frame);
+        snap.miner.dock_pivot_facing = Some(pivot);
+    }
 
-    if diff.unsigned_abs() <= max_delta as u16 {
+    let pivot = snap
+        .miner
+        .dock_pivot_facing
+        .as_mut()
+        .expect("pivot timer initialized");
+    pivot.set_rot(rot);
+    pivot.set(DOCK_FACING_EAST_DIR, binary_frame);
+
+    let current_dir = pivot.current(binary_frame);
+    entity.facing = dir16_to_facing8(current_dir);
+    entity.position.refresh_screen_coords();
+
+    if dock_pivot_accepts(current_dir) {
         // Pivot complete — snap to exact facing, clear target, and start
         // the dump cascade. Timer init mirrors the prior phase_linked
         // behaviour: `interval - 10` lines the first pop up with the
         // 14.4-frame gate after the Linked/Pivoting → Unloading transition.
         entity.facing = DOCK_FACING_EAST;
         entity.facing_target = None;
+        snap.miner.dock_pivot_facing = None;
         snap.miner.unload_timer = (config.unload_tick_interval as i16).saturating_sub(10);
         snap.miner.dock_phase = RefineryDockPhase::Unloading;
     } else {
-        // Still rotating — advance facing toward the target. Refresh the
-        // screen coordinates so the sprite re-renders at the new heading.
-        if diff > 0 {
-            entity.facing = entity.facing.wrapping_add(max_delta);
-        } else {
-            entity.facing = entity.facing.wrapping_sub(max_delta);
-        }
-        entity.position.refresh_screen_coords();
         entity.facing_target = Some(DOCK_FACING_EAST);
     }
 }
@@ -768,9 +847,9 @@ fn phase_unloading(
     // Cargo empty — hold for one more dump-gate interval, matching gamemd's
     // post-last-bale idle: the dump counter keeps ticking after the last
     // bale drains, and on the NEXT 14.4-frame gate fire `FindFirstNonEmptySlot`
-    // returns -1, transitioning the refinery state machine to state 4
-    // (which calls `ReleaseDockedHarvester`). One unload-interval is the
-    // correct hold — not the full SpecialAnim duration. The GAREFNOR pipe
+    // returns -1, transitioning the zero-link refinery state machine to
+    // state 4. One unload-interval is the correct hold — not the full
+    // SpecialAnim duration. The GAREFNOR pipe
     // sprite plays out as a building-side anim and outlasts the miner's
     // departure in gamemd as well.
     snap.miner.home_refinery = Some(ref_sid);
@@ -785,172 +864,62 @@ fn unload_interval_in_ticks(config: &MinerConfig) -> u16 {
     (config.unload_tick_interval).div_ceil(10)
 }
 
-/// Hold on the pad until the last deposit animation completes, then
-/// hand off to `Departing`.
+/// Hold on the pad until the last dump-gate interval completes, then hand
+/// off to Rust's stock state-4 cleanup phase.
 fn phase_deposit_cooldown(snap: &mut MinerSnapshot) {
     if snap.miner.deposit_cooldown_ticks > 0 {
         snap.miner.deposit_cooldown_ticks -= 1;
         return;
     }
-    // NOTE: `display_type_override` is deliberately NOT cleared here. The
-    // unloading sprite (e.g. CMON) has a different VXL/HVA anchor than the
-    // base sprite (CMIN); clearing the override while the miner is still
-    // parked on the pad makes the rendered voxel visually snap by the
-    // anchor delta. Defer the clear to `phase_departing`, fired the first
-    // tick the miner has crossed off the pad cell, so the snap (if any)
-    // happens while the miner is already moving and is masked by the drive
-    // animation.
+    // `phase_departing` owns the stock state-4 cleanup and clears the
+    // unloading sprite override during that handoff.
     snap.miner.dock_phase = RefineryDockPhase::Departing;
 }
 
-fn phase_departing(
-    sim: &mut Simulation,
-    path_grid: Option<&PathGrid>,
-    snap: &mut MinerSnapshot,
-    pad: (u16, u16),
-    exit: (u16, u16),
-    ref_sid: u64,
-) {
-    // Clear the unloading-sprite override the first tick after the miner
-    // has physically crossed off the pad cell. Clearing while still parked
-    // on the pad makes the rendered voxel snap by the CMON↔CMIN HVA anchor
-    // delta; clearing once the miner is mid-drive masks the snap inside
-    // the drive animation. Idempotent — safe to call every tick.
-    if (snap.rx, snap.ry) != pad
-        && let Some(entity) = sim.entities.get_mut(snap.entity_id)
-        && entity.display_type_override.is_some()
-    {
-        entity.display_type_override = None;
-    }
-
-    // Cache the exit cell on first entry. The exit returned by
-    // `resolve_refinery_cells` is recomputed every tick from live occupancy
-    // and will shift away from the miner the moment it arrives (the spiral
-    // search treats the miner's own cell as blocked), causing a ping-pong
-    // loop. gamemd avoids this by computing the destination once inside
-    // `ReleaseDockedHarvester` and never recomputing it.
-    //
-    // The same first-entry boundary fires the dock-exit VOC: gamemd's
-    // `ReleaseDockedHarvester` (0x4595C0) step 2 calls
-    // `VocClass::PlayAt(rules+0x244, building.Location, 0)` at the building
-    // location every ore-delivery cycle. The app layer resolves
-    // `RefineryExitSfx` to [AudioVisual] `BunkerWallsDownSound`.
-    let target = match snap.miner.exit_cell {
-        Some(cached) => cached,
-        None => {
-            sim.production
-                .dock_reservations
-                .release_on_pad(ref_sid, snap.entity_id);
-            sim.production
-                .dock_reservations
-                .release_contact(ref_sid, snap.entity_id);
-            snap.miner.exit_cell = Some(exit);
-            if let Some(building) = sim.entities.get(ref_sid) {
-                let (rx, ry) = (building.position.rx, building.position.ry);
-                sim.sound_events
-                    .push(SimSoundEvent::RefineryExitSfx { rx, ry });
-            }
-            if let Some(entity) = sim.entities.get_mut(snap.entity_id) {
-                start_refinery_exit_force_track(entity, snap.speed);
-            }
-            exit
-        }
-    };
-
-    let forcing_track = sim
-        .entities
-        .get(snap.entity_id)
-        .is_some_and(|e| e.forced_drive_track.is_some());
-    if forcing_track {
-        return;
-    }
-
-    let moving = sim
-        .entities
-        .get(snap.entity_id)
-        .is_some_and(|e| e.movement_target.is_some());
-    let at_exit = (snap.rx, snap.ry) == target;
+fn phase_departing(sim: &mut Simulation, snap: &mut MinerSnapshot, ref_sid: u64) {
     let teleporting = sim
         .entities
         .get(snap.entity_id)
         .is_some_and(|e| e.teleport_state.is_some());
-
-    if !moving && !at_exit {
-        // Pad→exit drive: the exit lands at the queue cell directly
-        // outside the pad (e.g. (14, 11) for GAREFN at (10, 10) with pad
-        // (13, 11)). `astar_search` accepts a blocked start cell, so
-        // pathing out of the pad works even though the pad sits inside
-        // the building footprint.
-        //
-        // The forced `Force_Track(0x47)` prelude has already completed by
-        // this point; now attach the ordinary destination move toward the
-        // cached exit cell.
-        if let Some(grid) = path_grid {
-            let _ = movement::issue_move_command(
-                &mut sim.entities,
-                grid,
-                snap.entity_id,
-                target,
-                snap.speed,
-                false,
-                None,
-                None,
-                None,
-                false,
-            );
-        } else {
-            // No grid (test-only edge case): fall back to single-cell direct
-            // move so the test harness still progresses.
-            movement::issue_direct_move(&mut sim.entities, snap.entity_id, target, snap.speed);
-        }
-        // Mark the exit drive as `bypass_grid` so the per-step occupancy
-        // check is skipped. The pad's ONLY adjacent walkable cell is the
-        // queue cell (rx+4, ry+1); if another miner is queued there (common
-        // with 2+ chrono miners cycling one refinery), the deferred-cell
-        // check in `movement_occupancy::detect_deferred_cell_check` halts
-        // the exit step indefinitely. gamemd handles this via radio-
-        // protocol coordination (the queued miner steps aside as we leave);
-        // `bypass_grid` is the closest minimal equivalent — it lets the
-        // exit drive push through the queue cell, briefly overlapping any
-        // waiting miner. The dock-in path uses the same trick when entering
-        // the foundation.
-        //
-        // Note: facing is intentionally NOT pinned here. `issue_move_command`
-        // already sets `facing_target` from the first path step, so the
-        // movement system rotates the unit toward the actual direction of
-        // travel as it leaves the pad. gamemd's `Force_Track(0x47, ...)` is
-        // a DRIVE-TRACK CURVE INDEX, not a facing byte — pinning facing
-        // to 0x47 would make the miner drive backwards (body facing ESE
-        // while moving west toward the exit cell).
+    if teleporting {
         return;
     }
 
-    if !moving && at_exit && !teleporting {
-        sim.production
-            .dock_reservations
-            .release_on_pad(ref_sid, snap.entity_id);
-        sim.production
-            .dock_reservations
-            .release_contact(ref_sid, snap.entity_id);
-        snap.miner.reserved_refinery = None;
-        snap.miner.dock_queued = false;
-        snap.miner.forced_return = false;
-        // Clear the pending ore target (it has been consumed) and the
-        // cached exit cell (only valid for this Departing run). Preserve
-        // `last_harvest_cell` — the ghost-cell archive must survive the
-        // entire dock cycle so the next `SearchOre` returns directly to
-        // the productive patch saved when this miner became full.
-        snap.miner.target_ore_cell = None;
-        snap.miner.exit_cell = None;
-        snap.miner.dock_phase = RefineryDockPhase::Approach;
-        snap.miner.state = MinerState::SearchOre;
-        return;
-    }
+    // Stock CMIN/HARV -> GAREFN/NAREFN completion is the zero-link
+    // Mission_Deploy_Building state-4 branch: clear the unload-active
+    // bookkeeping and hand directly back to Harvest/SearchOre scheduling.
+    // Do not seed ReleaseDockedHarvester effects here: no Force_Track(0x47),
+    // no BunkerWallsDownSound, and no cached queue-cell destination.
+    sim.production
+        .dock_reservations
+        .release_on_pad(ref_sid, snap.entity_id);
+    sim.production
+        .dock_reservations
+        .release_contact(ref_sid, snap.entity_id);
 
-    if let Some(entity) = sim.entities.get(snap.entity_id) {
+    if let Some(entity) = sim.entities.get_mut(snap.entity_id) {
+        entity.display_type_override = None;
+        entity.movement_target = None;
+        entity.drive_track = None;
+        entity.forced_drive_track = None;
+        entity.facing_target = None;
         snap.rx = entity.position.rx;
         snap.ry = entity.position.ry;
     }
+
+    snap.miner.reserved_refinery = None;
+    snap.miner.dock_queued = false;
+    snap.miner.forced_return = false;
+    snap.miner.dock_pivot_facing = None;
+    snap.miner.deposit_cooldown_ticks = 0;
+    // Clear the pending ore target and stale exit cache. Preserve
+    // `last_harvest_cell`; the ghost-cell archive survives the dock cycle
+    // so the next `SearchOre` can return to the productive patch saved when
+    // this miner became full.
+    snap.miner.target_ore_cell = None;
+    snap.miner.exit_cell = None;
+    snap.miner.dock_phase = RefineryDockPhase::Approach;
+    snap.miner.state = MinerState::SearchOre;
 }
 
 // ---------------------------------------------------------------------------

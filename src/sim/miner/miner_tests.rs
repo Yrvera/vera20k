@@ -223,6 +223,8 @@ fn tick_miners_n(sim: &mut Simulation, rules: &RuleSet, n: usize) {
     let config = MinerConfig::default();
     let grid = PathGrid::new(64, 64);
     for _ in 0..n {
+        sim.total_sim_ms = sim.total_sim_ms.saturating_add(67);
+        sim.binary_frame = ((sim.total_sim_ms * 15) / 1000) as u32;
         crate::sim::movement::teleport_movement::tick_teleport_movement(
             &mut sim.entities,
             &mut OccupancyGrid::new(),
@@ -642,9 +644,10 @@ fn dock_queuing_one_at_a_time() {
     let m1_miner = get_miner(&sim, m1);
     let m2_miner = get_miner(&sim, m2);
 
-    // Miner with lower stable_id (1) processes first, wins the reservation,
-    // and transitions to Linked. m2 fails the reservation poll and stays
-    // in Approach.
+    // Miner with lower stable_id (1) processes first, wins HELLO contact,
+    // and queues Mission_Enter. m2 is denied HELLO/contact but keeps the
+    // receiver-style CAN_DOCK retry path; the refinery contact list is not
+    // evicted/replaced.
     assert_eq!(
         m1_miner.state,
         MinerState::Dock,
@@ -652,8 +655,8 @@ fn dock_queuing_one_at_a_time() {
     );
     assert_eq!(
         m1_miner.dock_phase,
-        RefineryDockPhase::Linked,
-        "First miner should advance to Linked once reservation is granted"
+        RefineryDockPhase::MissionEnter,
+        "First miner should queue Mission_Enter after HELLO/ROGER"
     );
     assert_eq!(
         m2_miner.state,
@@ -662,8 +665,20 @@ fn dock_queuing_one_at_a_time() {
     );
     assert_eq!(
         m2_miner.dock_phase,
-        RefineryDockPhase::Approach,
-        "Second miner should still be in Approach polling for the dock"
+        RefineryDockPhase::MissionEnter,
+        "Second miner should keep MissionEnter/CAN_DOCK retry instead of hard-refusing"
+    );
+    assert!(
+        sim.production.dock_reservations.has_contact(2, m1),
+        "busy refinery must keep the current HELLO contact"
+    );
+    assert!(
+        !sim.production.dock_reservations.has_contact(2, m2),
+        "incoming full HELLO must not evict or replace Contacts[0]"
+    );
+    assert!(
+        sim.production.dock_reservations.is_waiting(2, m2),
+        "busy stock refinery reply should leave the second miner in retry order"
     );
 }
 
@@ -1187,12 +1202,10 @@ fn chrono_teleport_emits_in_and_out_sounds_at_correct_cells() {
     );
 }
 
-/// Regression: a docked harvester's first Departing tick emits exactly one
-/// `RefineryExitSfx` at the building's position. Mirrors gamemd's
-/// `ReleaseDockedHarvester` (0x4595C0) step 2 `VocClass::PlayAt` of
-/// `BunkerWallsDownSound` (RulesClass+0x244). One emission per dock cycle.
+/// Stock zero-link refinery completion does not emit the conditional
+/// `ReleaseDockedHarvester` departure sound.
 #[test]
-fn dock_exit_emits_refinery_exit_sfx_once_per_cycle() {
+fn stock_dock_exit_does_not_emit_refinery_exit_sfx() {
     use crate::sim::world::SimSoundEvent;
 
     let mut sim = Simulation::new();
@@ -1235,13 +1248,13 @@ fn dock_exit_emits_refinery_exit_sfx_once_per_cycle() {
         miner.reserved_refinery = Some(2);
         assert!(
             miner.exit_cell.is_none(),
-            "precondition: exit cell uncached so the first-entry emission gate fires"
+            "precondition: stock handoff starts without a cached exit cell"
         );
     }
     sim.production.dock_reservations.try_reserve(2, miner_id);
     sim.sound_events.clear();
 
-    // Single tick: phase_departing first-entry → cache exit, emit sfx.
+    // Single tick: stock state-4 handoff. No ReleaseDockedHarvester SFX.
     let config = MinerConfig::default();
     let grid = PathGrid::new(64, 64);
     super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
@@ -1251,18 +1264,13 @@ fn dock_exit_emits_refinery_exit_sfx_once_per_cycle() {
         .iter()
         .filter(|e| matches!(e, SimSoundEvent::RefineryExitSfx { .. }))
         .collect();
-    assert_eq!(
-        refinery_exit_events.len(),
-        1,
-        "exactly one RefineryExitSfx per dock cycle (one Departing entry)"
+    assert!(
+        refinery_exit_events.is_empty(),
+        "stock zero-link dock completion must not emit RefineryExitSfx"
     );
-    if let SimSoundEvent::RefineryExitSfx { rx, ry } = refinery_exit_events[0] {
-        assert_eq!(
-            (*rx, *ry),
-            (10, 10),
-            "sfx must fire at the building's position"
-        );
-    }
+    let miner = get_miner(&sim, miner_id);
+    assert_eq!(miner.state, MinerState::SearchOre);
+    assert!(miner.exit_cell.is_none());
 }
 
 /// Variant of `miner_rules()` where CMIN omits the per-unit `ChronoInSound`
@@ -1611,18 +1619,18 @@ fn dock_sequence_progresses_through_phases() {
         miner.reserved_refinery = Some(2);
     }
 
-    // Tick 1: Approach → Linked (dock is free, reservation granted; miner
-    // re-targets the pad cell, which is walkable courtesy of RemoveOccupy).
+    // Tick 1: Approach -> MissionEnter. HELLO has populated Contacts[], but
+    // CAN_DOCK has not yet issued the accepted-cell move.
     tick_miners_n(&mut sim, &rules, 1);
     let m = get_miner(&sim, miner_id);
-    assert_eq!(m.dock_phase, RefineryDockPhase::Linked);
+    assert_eq!(m.dock_phase, RefineryDockPhase::MissionEnter);
 
-    // Tick enough for movement onto pad + per-bale unload + exit drive.
-    // 1 bale * 14.4 ticks/bale ≈ 15 ticks unload, plus pad enter/exit.
+    // Tick enough for movement onto pad + per-bale unload + state-4 handoff.
+    // 1 bale * 14.4 ticks/bale is about 15 ticks unload, plus pad entry.
     tick_miners_n(&mut sim, &rules, 200);
     let m = get_miner(&sim, miner_id);
     // With only 1 bale (unload_tick_interval=14), unloading takes ~15 ticks.
-    // After that, Departing → SearchOre.
+    // After that, Departing -> SearchOre.
     // After docking, miner transitions to SearchOre. Since there's no ore
     // on the map, it immediately goes to WaitNoOre. Both are valid endpoints.
     assert!(
@@ -1633,8 +1641,8 @@ fn dock_sequence_progresses_through_phases() {
     );
 }
 
-/// Verify the Approach phase grants the dock reservation when free and
-/// transitions to Linked immediately.
+/// Verify the Approach phase grants HELLO contact when free and queues
+/// Mission_Enter instead of immediately linking/unloading.
 #[test]
 fn dock_wait_grants_reservation_when_free() {
     let mut sim = Simulation::new();
@@ -1657,24 +1665,33 @@ fn dock_wait_grants_reservation_when_free() {
 
     tick_miners_n(&mut sim, &rules, 1);
 
-    // Dock should be occupied by this miner; phase advances to Linked.
+    // Contacts[] should contain this miner; pad/contact-entered state has not
+    // started yet because CAN_DOCK runs in Mission_Enter.
     assert!(sim.production.dock_reservations.is_occupied(2));
+    assert!(sim.production.dock_reservations.has_contact(2, miner_id));
+    assert!(
+        !sim.production
+            .dock_reservations
+            .has_contact_entered(2, miner_id)
+    );
+    assert!(!sim.production.dock_reservations.is_on_pad(2, miner_id));
     let m = get_miner(&sim, miner_id);
-    assert_eq!(m.dock_phase, RefineryDockPhase::Linked);
+    assert_eq!(m.dock_phase, RefineryDockPhase::MissionEnter);
     assert!(!m.dock_queued);
 }
 
-/// Verify pad cell and exit cell computation for a 4x3 refinery.
+/// Verify stock pad cell and conditional reciprocal-link release cell helpers.
 #[test]
-fn refinery_pad_and_exit_cells() {
-    use super::miner_dock_sequence::{refinery_exit_cell, refinery_pad_cell, refinery_queue_cell};
+fn refinery_pad_and_conditional_release_cells() {
+    use super::miner_dock_sequence::{
+        refinery_can_dock_queue_cell, refinery_exit_cell, refinery_pad_cell, refinery_queue_cell,
+    };
 
     let grid = PathGrid::test_all_passable(64, 64);
 
     // 4×3 foundation at (10, 10), no art.ini overrides:
-    //   queue = (14, 11), pad = (13, 11), exit = queue (14, 11).
-    //   The miner exits through the same cell it entered through —
-    //   the cell directly outside the pad.
+    //   queue = (14, 11), pad = (13, 11), conditional release = queue.
+    // Stock zero-link unload completion does not call this release helper.
     assert_eq!(refinery_queue_cell(10, 10, 4, 3, None), (14, 11));
     assert_eq!(refinery_pad_cell(10, 10, 4, 3, None), (13, 11));
     assert_eq!(
@@ -1683,7 +1700,7 @@ fn refinery_pad_and_exit_cells() {
     );
 
     // 3×3 foundation at (5, 5), no art.ini overrides:
-    //   queue = (8, 6), pad = (7, 6), exit = queue (8, 6).
+    //   queue = (8, 6), pad = (7, 6), conditional release = queue.
     assert_eq!(refinery_queue_cell(5, 5, 3, 3, None), (8, 6));
     assert_eq!(refinery_pad_cell(5, 5, 3, 3, None), (7, 6));
     assert_eq!(
@@ -1691,7 +1708,7 @@ fn refinery_pad_and_exit_cells() {
         (8, 6),
     );
 
-    // 2×2 foundation at (20, 20): queue = (22, 21), exit = (22, 21).
+    // 2×2 foundation at (20, 20): queue/release = (22, 21).
     assert_eq!(
         refinery_exit_cell(20, 20, 2, 2, None, Some(&grid), None, 0),
         (22, 21)
@@ -1700,6 +1717,11 @@ fn refinery_pad_and_exit_cells() {
     // QueueingCell override unchanged:
     assert_eq!(refinery_queue_cell(10, 10, 4, 3, Some((4, 1))), (14, 11));
     assert_eq!(refinery_queue_cell(10, 10, 4, 3, Some((3, 2))), (13, 12));
+    assert_eq!(
+        refinery_can_dock_queue_cell(10, 10),
+        (13, 11),
+        "CAN_DOCK receiver target is hardcoded NW+(3,1), not art QueueingCell=4,1",
+    );
 
     // Fallback: no path grid → return QueueingCell.
     assert_eq!(
@@ -1826,9 +1848,8 @@ fn dock_exit_returns_to_search_ore() {
 
     sim.production.dock_reservations.try_reserve(2, miner_id);
 
-    // Tick enough for unload (1 bale at 14 ticks) + exit movement + margin.
-    // Exit drive goes one cell east from pad (13, 11) to queue (14, 11);
-    // 150 ticks comfortably covers the short exit drive plus search.
+    // Tick enough for unload (1 bale at 14 ticks), state-4 handoff, and
+    // SearchOre/WaitNoOre with margin.
     tick_miners_n(&mut sim, &rules, 150);
 
     let m = get_miner(&sim, miner_id);
@@ -2176,11 +2197,10 @@ fn harvester_on_tiberium_falls_back_to_neighbor_zone() {
     );
 }
 
-/// End-to-end pin for the head-butt-after-unload fix. Exercises the full
-/// chain: phase_exit_pad's bypass_grid drive → arrival → SearchOre → A*
-/// from a blocked-start cell → MoveToOre. Uses a real PathGrid with the
-/// refinery foundation blocked, so the test would FAIL without the
-/// bypass_grid wiring AND the A* start-relaxation.
+/// End-to-end pin for the head-butt-after-unload fix. Exercises stock
+/// state-4 handoff -> SearchOre -> A* from a blocked-start cell -> MoveToOre.
+/// Uses a real PathGrid with the refinery foundation blocked, so the test
+/// would fail without the A* start-relaxation.
 #[test]
 fn harvester_undocks_through_foundation_to_outside_ore() {
     use crate::map::houses::HouseAllianceMap;
@@ -2200,8 +2220,8 @@ fn harvester_undocks_through_foundation_to_outside_ore() {
     place_ore(&mut sim, 11, 14, 1200);
 
     // PathGrid with the foundation footprint blocked. This is the critical
-    // setup that makes the test meaningful — without it, movement_step's
-    // walkability check would succeed regardless of bypass_grid.
+    // setup that makes the test meaningful: SearchOre must be able to path
+    // from the blocked pad start after state-4 handoff.
     let mut path_grid = PathGrid::new(32, 32);
     path_grid.block_building_footprint(10, 10, "4x3", &[], &[], false);
 
@@ -2219,23 +2239,22 @@ fn harvester_undocks_through_foundation_to_outside_ore() {
     sim.production.dock_reservations.try_reserve(100, miner_id);
 
     // Tick the full pipeline: miner state machine + movement with the
-    // blocked-footprint path_grid. Use enough ticks for: drive to exit
-    // (~17 ticks for diagonal-ish (-2, +1) at HARV speed) + arrival +
-    // SearchOre + A* + drive south toward ore.
+    // blocked-footprint path_grid. Use enough ticks for state-4 handoff,
+    // SearchOre, A*, and drive south toward ore.
     let alliances = HouseAllianceMap::new();
     let terrain_costs = BTreeMap::new();
     let mut occupancy = OccupancyGrid::new();
     let mut rng = SimRng::new(0);
 
-    // Phase A: tick until the miner exits the Dock state — this is the
-    // moment phase_departing's arrival branch runs and clears
-    // reserved_refinery. Asserting at that exact tick avoids racing the
+    // Phase A: tick until the miner exits the Dock state. This is when the
+    // stock state-4 handoff clears reserved_refinery. Asserting at that
+    // exact tick avoids racing the
     // subsequent harvest cycle (which legitimately re-reserves the
     // refinery once the cell is drained).
     //
-    // The exit drive is a single-step A* from pad (13, 11) to queue
-    // cell (14, 11); ~200 ticks is the comfortable upper bound to also
-    // cover the subsequent search-ore + drive-toward-ore phase.
+    // The handoff should happen immediately; 200 ticks is a comfortable
+    // upper bound that also covers subsequent search-ore movement if timing
+    // changes.
     let mut departed_at: Option<usize> = None;
     let mut reservation_observed_clear = false;
     for tick in 0..200 {
@@ -2455,15 +2474,13 @@ fn harvester_drives_into_refinery_foundation_without_bumping_it() {
 }
 
 // ===========================================================================
-// New tests for the collapsed FSM: Approach/Linked/Unloading/Departing.
+// Focused pins for the stock refinery inbound radio FSM.
 // ===========================================================================
 
-/// Approach phase polls the dock reservation each tick and transitions to
-/// Linked the moment the reservation is granted, issuing a direct move to the
-/// pad cell. RemoveOccupy keeps the pad cell walkable so no bypass_grid hack
-/// is required.
+/// Approach sends HELLO first. Mission_Enter/CAN_DOCK runs on a later tick
+/// and only then issues movement to the accepted cell.
 #[test]
-fn approach_to_linked_on_reservation_grant() {
+fn hello_before_mission_enter_then_can_dock_move() {
     let mut sim = Simulation::new();
     let rules = miner_rules();
 
@@ -2485,12 +2502,262 @@ fn approach_to_linked_on_reservation_grant() {
     tick_miners_n(&mut sim, &rules, 1);
 
     let m = get_miner(&sim, miner_id);
-    assert_eq!(m.dock_phase, RefineryDockPhase::Linked);
+    assert_eq!(m.dock_phase, RefineryDockPhase::MissionEnter);
+    assert!(
+        sim.production.dock_reservations.has_contact(2, miner_id),
+        "HELLO/ROGER should populate Contacts[]"
+    );
+    assert!(
+        !sim.production
+            .dock_reservations
+            .has_contact_entered(2, miner_id),
+        "0x18/+0x418-style contact-entered flag must not be set by HELLO"
+    );
+    assert!(
+        sim.entities
+            .get(miner_id)
+            .expect("entity")
+            .movement_target
+            .is_none(),
+        "HELLO acceptance must not issue the CAN_DOCK move in the same tick"
+    );
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    let m = get_miner(&sim, miner_id);
+    assert_eq!(m.dock_phase, RefineryDockPhase::AwaitingAcceptedCell);
+    assert!(
+        !sim.production
+            .dock_reservations
+            .has_contact_entered(2, miner_id),
+        "not at accepted cell yet: no 0x18/0x16 admission"
+    );
 
     let entity = sim.entities.get(miner_id).expect("entity");
+    let accepted_cell_move_issued = entity
+        .movement_target
+        .as_ref()
+        .and_then(|target| target.path.last().copied())
+        == Some((13, 11));
     assert!(
-        entity.movement_target.is_some(),
-        "issue_direct_move should have set movement_target on reservation grant"
+        accepted_cell_move_issued || (entity.position.rx, entity.position.ry) == (13, 11),
+        "CAN_DOCK should move toward accepted cell (13,11)"
+    );
+}
+
+/// Reaching the accepted cell only satisfies the move requested by 0x12. The
+/// pivot/link handshake starts on the next Mission_Enter pass, when 0x12
+/// returns already-there.
+#[test]
+fn accepted_cell_arrival_rechecks_can_dock_before_entered_flag() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
+    spawn_refinery(&mut sim, 2, 10, 10);
+
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.cargo.push(CargoBale {
+            resource_type: ResourceType::Ore,
+            value: 25,
+        });
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::AwaitingAcceptedCell;
+        miner.reserved_refinery = Some(2);
+    }
+    assert!(sim.production.dock_reservations.try_reserve(2, miner_id));
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    let m = get_miner(&sim, miner_id);
+    assert_eq!(
+        m.dock_phase,
+        RefineryDockPhase::MissionEnter,
+        "arrival at accepted cell must re-enter CAN_DOCK before pivot/link"
+    );
+    assert!(
+        !sim.production
+            .dock_reservations
+            .has_contact_entered(2, miner_id),
+        "accepted-cell movement alone must not set the entered flag"
+    );
+    assert!(!sim.production.dock_reservations.is_on_pad(2, miner_id));
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    let m = get_miner(&sim, miner_id);
+    assert_eq!(m.dock_phase, RefineryDockPhase::Linked);
+    assert!(
+        sim.production
+            .dock_reservations
+            .has_contact_entered(2, miner_id),
+        "the next already-there 0x12 pass starts the entered handshake"
+    );
+}
+
+#[test]
+fn occupied_can_dock_defers_without_clearing_waiting_miner_target() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    let occupant = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
+    let waiter = spawn_miner(&mut sim, 3, MinerKind::War, 13, 11);
+    spawn_refinery(&mut sim, 2, 10, 10);
+
+    {
+        let entity = sim.entities.get_mut(occupant).expect("occupant entity");
+        let miner = entity.miner.as_mut().expect("occupant miner");
+        miner.cargo.push(CargoBale {
+            resource_type: ResourceType::Ore,
+            value: 25,
+        });
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::Unloading;
+        miner.reserved_refinery = Some(2);
+        miner.unload_timer = 1000;
+    }
+    assert!(sim.production.dock_reservations.try_reserve(2, occupant));
+    sim.production
+        .dock_reservations
+        .mark_contact_entered(2, occupant);
+    sim.production.dock_reservations.link_on_pad(2, occupant);
+
+    {
+        let entity = sim.entities.get_mut(waiter).expect("waiter entity");
+        let miner = entity.miner.as_mut().expect("waiter miner");
+        miner.cargo.push(CargoBale {
+            resource_type: ResourceType::Ore,
+            value: 25,
+        });
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::MissionEnter;
+        miner.reserved_refinery = Some(2);
+    }
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    let miner = get_miner(&sim, waiter);
+    assert_eq!(miner.state, MinerState::Dock);
+    assert_eq!(
+        miner.dock_phase,
+        RefineryDockPhase::MissionEnter,
+        "busy CAN_DOCK should defer in MissionEnter, not clear the target or enter"
+    );
+    assert_eq!(miner.reserved_refinery, Some(2));
+    assert!(miner.dock_queued);
+    assert!(!sim.production.dock_reservations.has_contact(2, waiter));
+    assert!(
+        !sim.production
+            .dock_reservations
+            .has_contact_entered(2, waiter)
+    );
+}
+
+#[test]
+fn queued_miner_enters_after_contact_and_pad_are_released() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    let occupant = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
+    let waiter = spawn_miner(&mut sim, 3, MinerKind::War, 13, 11);
+    spawn_refinery(&mut sim, 2, 10, 10);
+
+    assert!(sim.production.dock_reservations.try_reserve(2, occupant));
+    sim.production
+        .dock_reservations
+        .mark_contact_entered(2, occupant);
+    sim.production.dock_reservations.link_on_pad(2, occupant);
+
+    {
+        let entity = sim.entities.get_mut(waiter).expect("waiter entity");
+        let miner = entity.miner.as_mut().expect("waiter miner");
+        miner.cargo.push(CargoBale {
+            resource_type: ResourceType::Ore,
+            value: 25,
+        });
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::MissionEnter;
+        miner.reserved_refinery = Some(2);
+    }
+
+    tick_miners_n(&mut sim, &rules, 1);
+    assert_eq!(
+        get_miner(&sim, waiter).dock_phase,
+        RefineryDockPhase::MissionEnter,
+        "precondition: occupied pad defers the queued miner"
+    );
+
+    sim.production.dock_reservations.release_on_pad(2, occupant);
+    sim.production
+        .dock_reservations
+        .release_contact(2, occupant);
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    let miner = get_miner(&sim, waiter);
+    assert_eq!(miner.dock_phase, RefineryDockPhase::Linked);
+    assert!(!miner.dock_queued);
+    assert!(sim.production.dock_reservations.has_contact(2, waiter));
+    assert!(
+        sim.production
+            .dock_reservations
+            .has_contact_entered(2, waiter)
+    );
+}
+
+/// Once CAN_DOCK's accepted-cell move is already satisfied, the stock path
+/// uses the 0x18/+0x418-style entered flag and the 0x15 pad-arrival handoff.
+/// It does not require a normal +0x2E4 reciprocal on-pad link before the
+/// unload FSM can start.
+#[test]
+fn accepted_cell_arrival_sets_contact_entered_then_0x15_starts_unload_fsm() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
+    spawn_refinery(&mut sim, 2, 10, 10);
+
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.cargo.push(CargoBale {
+            resource_type: ResourceType::Ore,
+            value: 25,
+        });
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::MissionEnter;
+        miner.reserved_refinery = Some(2);
+    }
+    assert!(sim.production.dock_reservations.try_reserve(2, miner_id));
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    let m = get_miner(&sim, miner_id);
+    assert_eq!(m.dock_phase, RefineryDockPhase::Linked);
+    assert!(
+        sim.production
+            .dock_reservations
+            .has_contact_entered(2, miner_id),
+        "already-there 0x12 reply should set the +0x418-like entered flag"
+    );
+    assert!(
+        !sim.production.dock_reservations.is_on_pad(2, miner_id),
+        "stock path must not depend on an early +0x2E4-style on-pad link"
+    );
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    let m = get_miner(&sim, miner_id);
+    assert_eq!(
+        m.dock_phase,
+        RefineryDockPhase::Pivoting,
+        "0x15 pad-arrival handoff should start the unload FSM/pivot"
+    );
+    assert!(
+        sim.production.dock_reservations.is_on_pad(2, miner_id),
+        "physical pad occupancy is marked only at the 0x15 handoff"
     );
 }
 
@@ -2634,15 +2901,14 @@ fn unloading_applies_per_slot_purifier_bonus() {
     );
 }
 
-/// Exit-cell anchor is the queue cell — directly outside the pad, on the
-/// same axis the miner entered through. For a 4×3 GAREFN at (10, 10) with
-/// pad (13, 11), the queue cell (14, 11) sits east of the foundation and
-/// is the default exit destination on a normal map (where only the
-/// foundation itself is blocked). The spiral only expands to ring 1+ when
-/// the queue cell is also blocked (e.g., by another miner waiting there).
+/// Conditional reciprocal-link release geometry is anchored at the queue cell.
+/// Stock zero-link unload completion does not use it. For a 4x3 GAREFN at
+/// (10, 10), the queue cell (14, 11) sits east of the foundation and is the
+/// release target on a normal map where only the foundation itself is blocked.
+/// The spiral only expands to ring 1+ when the queue cell is also blocked.
 /// `tick % count` picks one of the ring's candidates each cycle.
 #[test]
-fn departing_anchors_at_gamemd_offset() {
+fn conditional_release_anchors_at_queue_cell() {
     use super::miner_dock_sequence::refinery_exit_cell;
 
     // Build a grid with the 4×3 foundation at (10, 10) blocked, simulating
@@ -2735,23 +3001,16 @@ fn departing_anchors_at_gamemd_offset() {
     );
 }
 
-/// Regression: the exit cell must be cached on the first Departing tick,
-/// not recomputed each tick. `refinery_exit_cell` runs a spiral search
-/// against live occupancy; once the miner reaches the chosen exit cell its
-/// own occupancy marks that cell blocked, and the next tick's spiral
-/// returns a different cell. Without caching, the arrival check
-/// `(snap.rx, snap.ry) == exit` never matches and the miner ping-pongs
-/// between adjacent cells near the refinery.
+/// Stock zero-link Departing is a state-4 cleanup/handoff, not a cached
+/// queue-cell exit drive.
 #[test]
-fn departing_caches_exit_cell_so_arrival_detection_doesnt_drift() {
+fn stock_departing_hands_directly_to_search_without_exit_move() {
     let mut sim = Simulation::new();
     let rules = miner_rules();
     let config = MinerConfig::default();
     let path_grid = PathGrid::new(64, 64);
 
     spawn_refinery(&mut sim, 100, 10, 10);
-    // Place miner on the pad cell (13, 11) with Departing phase pre-set.
-    // First tick: phase_departing caches the exit cell, issues a move toward it.
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
     {
         let entity = sim.entities.get_mut(miner_id).expect("miner entity");
@@ -2761,47 +3020,27 @@ fn departing_caches_exit_cell_so_arrival_detection_doesnt_drift() {
         miner.reserved_refinery = Some(100);
         assert!(
             miner.exit_cell.is_none(),
-            "precondition: exit cell starts uncached"
+            "stock path must start without a cached release destination"
         );
     }
     sim.production.dock_reservations.try_reserve(100, miner_id);
+    sim.production.dock_reservations.link_on_pad(100, miner_id);
 
     crate::sim::miner::miner_system::tick_miners(&mut sim, &rules, &config, Some(&path_grid));
 
-    // Exit cell must be cached after the first Departing tick.
-    let cached_exit: (u16, u16) = {
-        let m = get_miner(&sim, miner_id);
-        m.exit_cell
-            .expect("exit_cell must be cached on first Departing tick")
-    };
-
-    // Drive the rest of the exit cycle. 200 ticks is plenty for a 4×3 refinery.
-    // Ping-pong loop, if present, would never resolve and SearchOre never fires.
-    tick_miners_n(&mut sim, &rules, 200);
-
     let entity = sim.entities.get(miner_id).expect("entity");
     let m = entity.miner.as_ref().expect("miner");
-    assert!(
-        matches!(m.state, MinerState::SearchOre | MinerState::WaitNoOre),
-        "miner must escape the Departing phase (SearchOre or WaitNoOre) — \
-         got {:?} (exit cached as {:?}, actual position ({}, {}))",
-        m.state,
-        cached_exit,
-        entity.position.rx,
-        entity.position.ry,
-    );
-    assert!(
-        m.exit_cell.is_none(),
-        "exit_cell cache must be cleared on transition out of Departing",
-    );
-    assert!(
-        m.reserved_refinery.is_none(),
-        "dock reservation must be released"
-    );
+    assert_eq!(m.state, MinerState::SearchOre);
+    assert_eq!((entity.position.rx, entity.position.ry), (13, 11));
+    assert!(entity.movement_target.is_none());
+    assert!(entity.forced_drive_track.is_none());
+    assert!(m.exit_cell.is_none());
+    assert!(m.reserved_refinery.is_none());
+    assert!(!sim.production.dock_reservations.is_occupied(100));
 }
 
 #[test]
-fn chrono_departing_starts_force_track_0x47_before_exit_move() {
+fn stock_departing_does_not_start_force_track_0x47() {
     let mut sim = Simulation::new();
     let rules = miner_rules();
     let config = MinerConfig::default();
@@ -2822,21 +3061,19 @@ fn chrono_departing_starts_force_track_0x47_before_exit_move() {
 
     let entity = sim.entities.get(miner_id).expect("miner entity");
     let miner = entity.miner.as_ref().expect("miner component");
-    assert_eq!(miner.exit_cell, Some((14, 11)));
+    assert_eq!(miner.state, MinerState::SearchOre);
+    assert!(miner.exit_cell.is_none());
     assert!(entity.movement_target.is_none());
-    let forced = entity
-        .forced_drive_track
-        .as_ref()
-        .expect("Departing must seed forced Force_Track state");
-    assert_eq!(forced.turn_track_index, 0x47);
-    assert_eq!(forced.track.raw_track_index, 15);
-    assert_eq!(forced.track.target_facing, 0xC0);
+    assert!(
+        entity.forced_drive_track.is_none(),
+        "stock Departing must not seed Force_Track(0x47)"
+    );
     assert_ne!(entity.facing, 0x47);
     assert_ne!(entity.facing_target, Some(0x47));
 }
 
 #[test]
-fn chrono_departing_force_track_runs_before_normal_exit_move() {
+fn stock_departing_does_not_start_explicit_exit_move() {
     let mut sim = Simulation::new();
     let rules = miner_rules();
 
@@ -2854,35 +3091,20 @@ fn chrono_departing_force_track_runs_before_normal_exit_move() {
     tick_miners_n(&mut sim, &rules, 1);
     let after_first = sim.entities.get(miner_id).expect("miner entity");
     assert_eq!((after_first.position.rx, after_first.position.ry), (13, 11));
-    assert!(after_first.forced_drive_track.is_some());
+    assert!(after_first.forced_drive_track.is_none());
     assert!(after_first.movement_target.is_none());
-
-    tick_miners_n(&mut sim, &rules, 40);
-    let after_curve = sim.entities.get(miner_id).expect("miner entity");
-    assert!(
-        after_curve.forced_drive_track.is_none(),
-        "forced curve should complete before normal exit movement"
-    );
-    assert!(
-        after_curve.movement_target.is_some()
-            || after_curve
-                .miner
-                .as_ref()
-                .is_some_and(|m| matches!(m.state, MinerState::SearchOre | MinerState::WaitNoOre)),
-        "after forced curve the miner should either be taking the normal exit move or have finished it"
-    );
-
-    tick_miners_n(&mut sim, &rules, 220);
-    let entity = sim.entities.get(miner_id).expect("miner entity");
-    let miner = entity.miner.as_ref().expect("miner component");
-    assert_eq!((entity.position.rx, entity.position.ry), (14, 11));
     assert!(matches!(
-        miner.state,
-        MinerState::SearchOre | MinerState::WaitNoOre
+        after_first.miner.as_ref().expect("miner").state,
+        MinerState::SearchOre
     ));
-    assert!(miner.reserved_refinery.is_none());
-    assert!(miner.exit_cell.is_none());
-    assert!(entity.forced_drive_track.is_none());
+    assert!(
+        after_first
+            .miner
+            .as_ref()
+            .expect("miner")
+            .exit_cell
+            .is_none()
+    );
 }
 
 #[test]
@@ -2933,18 +3155,59 @@ fn sell_refinery_interrupts_docked_miner_with_force_track_0x47() {
     assert_eq!(forced.track.raw_track_index, 15);
 }
 
-/// Regression: when a second miner is parked on the QueueingCell waiting
-/// to dock, the departing miner's exit drive must still complete. The
-/// pad's only adjacent walkable cell is the queue cell — without the
-/// `bypass_grid` flag on the exit MovementTarget, the deferred occupancy
-/// check halts the step indefinitely, and the miner is stuck on the pad.
-/// This is the chrono-miner-stuck-on-Allied-refinery-pad bug.
 #[test]
-fn departing_escapes_pad_even_when_queue_cell_blocked() {
+fn sell_refinery_cancels_contact_miner_without_force_track_0x47() {
     let mut sim = Simulation::new();
     let rules = miner_rules();
-    let config = MinerConfig::default();
-    let path_grid = PathGrid::new(64, 64);
+
+    spawn_refinery(&mut sim, 100, 10, 10);
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 14, 11);
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        for _ in 0..miner.capacity_bales {
+            miner.cargo.push(CargoBale {
+                resource_type: ResourceType::Ore,
+                value: 25,
+            });
+        }
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::MissionEnter;
+        miner.reserved_refinery = Some(100);
+        miner.dock_queued = true;
+    }
+    assert!(sim.production.dock_reservations.try_reserve(100, miner_id));
+    assert!(sim.production.dock_reservations.has_contact(100, miner_id));
+    assert!(!sim.production.dock_reservations.is_on_pad(100, miner_id));
+
+    assert!(crate::sim::production::sell_building(&mut sim, &rules, 100));
+
+    assert!(sim.entities.get(100).is_none(), "refinery sold");
+    assert!(
+        !sim.production.dock_reservations.has_contact(100, miner_id),
+        "sell interrupt must clear plain refinery contacts"
+    );
+    assert!(!sim.production.dock_reservations.is_on_pad(100, miner_id));
+    let entity = sim.entities.get(miner_id).expect("miner entity");
+    let miner = entity.miner.as_ref().expect("miner component");
+    assert_eq!(miner.state, MinerState::ReturnToRefinery);
+    assert_eq!(miner.dock_phase, RefineryDockPhase::Approach);
+    assert_eq!(miner.reserved_refinery, None);
+    assert_eq!(miner.exit_cell, None);
+    assert!(entity.movement_target.is_none());
+    assert!(
+        entity.forced_drive_track.is_none(),
+        "plain HELLO/contact miners are not physically docked and must not receive Force_Track(0x47)"
+    );
+}
+
+/// Stock state-4 handoff must not depend on driving through the queue cell.
+/// A waiting miner parked there cannot block cleanup because no explicit
+/// exit movement is issued.
+#[test]
+fn departing_handoff_ignores_blocked_queue_cell() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
 
     spawn_refinery(&mut sim, 100, 10, 10);
     // Miner A on the pad cell, ready to depart.
@@ -2978,57 +3241,33 @@ fn departing_escapes_pad_even_when_queue_cell_blocked() {
         crate::sim::occupancy::CellListInsertion::PrependNonBuilding,
     );
 
-    // Drive the dock cycle. Without bypass_grid the loop never exits.
-    tick_miners_n(&mut sim, &rules, 300);
+    tick_miners_n(&mut sim, &rules, 1);
 
     let entity = sim.entities.get(miner_a).expect("miner A entity");
     let m = entity.miner.as_ref().expect("miner A");
-    assert!(
-        matches!(m.state, MinerState::SearchOre | MinerState::WaitNoOre),
-        "miner A must escape the Departing phase even with queue cell \
-         blocked — got {:?} at ({}, {}), dock_phase {:?}",
-        m.state,
-        entity.position.rx,
-        entity.position.ry,
-        m.dock_phase,
-    );
+    assert_eq!(m.state, MinerState::SearchOre);
     assert!(
         m.reserved_refinery.is_none(),
-        "miner A's dock reservation must be released after exit",
+        "miner A's dock reservation must be released during state-4 handoff",
     );
-    // sanity: miner A must have left the pad cell (13, 11). With the
-    // queue cell (14, 11) blocked, ring 1 picks an adjacent cell —
-    // typically (13, 10) (top of pad/foundation) under the diamond-ring
-    // iteration order.
-    assert_ne!(
+    assert_eq!(
         (entity.position.rx, entity.position.ry),
         (13, 11),
-        "miner A must have left the pad cell",
+        "state-4 handoff must not issue a stock queue-cell exit move",
     );
-
-    // We don't care about config here (just used for hold-time references in
-    // other tests); silence the unused warning.
-    let _ = config;
 }
 
-/// Departing-arrival releases the dock reservation, clears the exit-cell
-/// cache, and transitions back to SearchOre. Facing is left to whatever
-/// direction the movement system produced — it's NOT pinned to 0x47, which
-/// would be a gamemd track-curve index misread as a facing byte (and would
-/// make the miner appear to drive backwards on the exit step).
+/// Departing releases the dock reservation, clears any stale exit-cell cache,
+/// and transitions back to SearchOre without pinning facing to 0x47.
 #[test]
-fn departing_arrival_releases_dock_and_returns_to_search() {
+fn departing_handoff_releases_dock_and_returns_to_search() {
     let mut sim = Simulation::new();
     let rules = miner_rules();
     let config = MinerConfig::default();
     let path_grid = PathGrid::new(64, 64);
 
     spawn_refinery(&mut sim, 100, 10, 10);
-    // Place miner at queue cell (14, 11) and pre-cache that as the exit
-    // cell. This isolates the arrival-contract test from the spiral-search
-    // computation (which is covered separately in
-    // departing_uses_gamemd_exit_cell_formula).
-    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 14, 11);
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
     {
         let entity = sim.entities.get_mut(miner_id).expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
@@ -3038,13 +3277,14 @@ fn departing_arrival_releases_dock_and_returns_to_search() {
         miner.exit_cell = Some((14, 11));
     }
     sim.production.dock_reservations.try_reserve(100, miner_id);
+    sim.production.dock_reservations.link_on_pad(100, miner_id);
 
     crate::sim::miner::miner_system::tick_miners(&mut sim, &rules, &config, Some(&path_grid));
 
     let m = get_miner(&sim, miner_id);
     assert_eq!(m.state, MinerState::SearchOre);
     assert!(m.reserved_refinery.is_none(), "dock reservation released");
-    assert!(m.exit_cell.is_none(), "exit-cell cache cleared on arrival");
+    assert!(m.exit_cell.is_none(), "stale exit-cell cache cleared");
     assert!(
         !sim.production.dock_reservations.is_occupied(100),
         "dock slot freed for next miner",
@@ -3199,16 +3439,32 @@ fn pivoting_phase_smoothly_rotates_to_east() {
     let initial_facing = sim.entities.get(miner_id).expect("entity").facing;
     assert_eq!(initial_facing, 0);
 
-    // One tick must advance facing strictly toward 0x40 without overshooting
-    // and must NOT transition to Unloading (still rotating).
+    // The first direct tick initializes the FacingClass timer and samples its
+    // current 16-bit facing; this is timer-derived motion, not manual 8-bit
+    // facing stepping.
     crate::sim::miner::miner_system::tick_miners(&mut sim, &rules, &config, Some(&path_grid));
     {
         let entity = sim.entities.get(miner_id).expect("entity");
         let m = entity.miner.as_ref().expect("miner");
         assert!(
             entity.facing > 0 && entity.facing < 0x40,
-            "facing must advance toward 0x40 but stay short of target on one \
-             tick — got {:#x}",
+            "facing must advance toward 0x40 but stay short, got {:#x}",
+            entity.facing,
+        );
+        assert_eq!(m.dock_phase, RefineryDockPhase::Pivoting);
+        assert_eq!(m.unload_timer, 0, "timer must not seed mid-pivot");
+        assert_eq!(entity.facing_target, Some(0x40));
+        assert!(m.dock_pivot_facing.is_some());
+    }
+
+    tick_miners_n(&mut sim, &rules, 1);
+    {
+        let entity = sim.entities.get(miner_id).expect("entity");
+        let m = entity.miner.as_ref().expect("miner");
+        assert!(
+            entity.facing > 0 && entity.facing < 0x40,
+            "facing must advance toward 0x40 but stay short of target after \
+             one binary-frame step, got {:#x}",
             entity.facing,
         );
         assert_eq!(m.dock_phase, RefineryDockPhase::Pivoting);
@@ -3246,8 +3502,8 @@ fn pivoting_phase_smoothly_rotates_to_east() {
 }
 
 /// End-to-end dock cycle: war miner forced-returns to a refinery, drives onto
-/// the pad, deposits N bales, drives off the exit cell. Verifies bale event
-/// count, total credits, final position, final facing, dock release.
+/// the pad, deposits N bales, and completes stock state-4 handoff. Verifies
+/// bale event count, total credits, final position, and dock release.
 #[test]
 fn full_dock_cycle_war_miner() {
     let mut sim = Simulation::new();
@@ -3275,8 +3531,8 @@ fn full_dock_cycle_war_miner() {
 
     let credits_before = credits_for_owner(&sim, "Americans");
 
-    // Tick enough for: Approach → Linked (1 tick) + drive onto pad +
-    // 10 bales × ~14 ticks unload + drive to exit cell + arrival snap.
+    // Tick enough for: HELLO, MissionEnter/CAN_DOCK, accepted-cell/pad handoff,
+    // 10 bales x ~14 ticks unload, then stock state-4 handoff.
     tick_miners_n(&mut sim, &rules, 400);
 
     // Bale events: one per slot drain. Pre-loaded with pure ore → 1 slot → 1 event.
@@ -3297,18 +3553,13 @@ fn full_dock_cycle_war_miner() {
         credits_after - credits_before,
     );
 
-    // Final position at the exit cell — queue cell (14, 11), directly
-    // east of the pad. Spiral ring 0 returns it on a clean grid.
     let entity = sim.entities.get(miner_id).expect("entity");
     assert_eq!(
         (entity.position.rx, entity.position.ry),
-        (14, 11),
-        "miner should land at the refinery exit cell"
+        (13, 11),
+        "stock state-4 handoff should not force a queue-cell exit move"
     );
-    // Facing is intentionally NOT asserted — the movement system tracks the
-    // actual direction of motion. gamemd's `Force_Track(0x47)` is a drive-
-    // track curve index, not a facing byte; pinning facing produces the
-    // backwards-driving visual the user reported.
+    assert!(entity.forced_drive_track.is_none());
 
     let m = entity.miner.as_ref().expect("miner");
     // After Departing → SearchOre, with no ore on the map the miner falls
@@ -3622,7 +3873,6 @@ fn dock_first_slot_drain_waits_one_unload_interval() {
     let mut sim = Simulation::new();
     let rules = miner_rules();
     let config = MinerConfig::default();
-    let path_grid = PathGrid::new(64, 64);
 
     spawn_refinery(&mut sim, 2, 10, 10);
     // Place miner at the pad cell facing 0x40 (East) so the dock pivot
@@ -3681,10 +3931,11 @@ fn dock_first_slot_drain_waits_one_unload_interval() {
     );
 }
 
-/// Verify the post-last-bale hold + relocated dock release:
+/// Verify the post-last-bale hold + stock state-4 dock release:
 /// 1. Cargo empties → phase=DepositCooldown, dock still occupied.
-/// 2. After cooldown ticks → phase=Departing, dock STILL occupied.
-/// 3. After exit-cell arrival → dock released.
+/// 2. After cooldown ticks → phase=Departing, dock still occupied until
+///    the Departing handler runs.
+/// 3. On the stock state-4 handoff tick → dock released.
 ///
 /// Sets the miner up in Unloading with empty cargo and `unload_timer = 0`
 /// so the cargo-empty branch fires on the very first tick. The cooldown
@@ -3692,7 +3943,7 @@ fn dock_first_slot_drain_waits_one_unload_interval() {
 /// matching gamemd's "one extra empty-slot fire then state-4 transition"
 /// idle window — independent of any building SpecialAnim duration.
 #[test]
-fn deposit_cooldown_holds_pad_and_defers_dock_release() {
+fn deposit_cooldown_releases_dock_on_stock_state4_handoff() {
     let mut sim = Simulation::new();
     let rules = miner_rules();
     let config = MinerConfig::default();
@@ -3747,22 +3998,21 @@ fn deposit_cooldown_holds_pad_and_defers_dock_release() {
     );
     assert!(
         sim.production.dock_reservations.is_occupied(2),
-        "dock must STILL be occupied while the miner drives off the pad",
+        "dock is still occupied until the Departing handler runs",
     );
 
-    // Let the exit drive complete. 4×3 GAREFN at (10,10) → exit at queue
-    // cell (14, 11), one cell east of pad (13, 11). 200 ticks is plenty.
-    tick_miners_n(&mut sim, &rules, 200);
+    // One more tick runs the stock state-4 handoff.
+    tick_miners_n(&mut sim, &rules, 1);
 
     let m = get_miner(&sim, miner_id);
     assert!(
-        m.state == MinerState::SearchOre || m.state == MinerState::WaitNoOre,
-        "miner should have returned to search after exit, got {:?}",
+        m.state == MinerState::SearchOre,
+        "miner should have returned to search at state-4 handoff, got {:?}",
         m.state,
     );
     assert!(
         !sim.production.dock_reservations.is_occupied(2),
-        "dock must be released once the miner reaches the exit cell",
+        "dock must be released by the stock state-4 handoff",
     );
 }
 
