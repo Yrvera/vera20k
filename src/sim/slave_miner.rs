@@ -461,6 +461,14 @@ pub fn deploy_slave_miner(sim: &mut Simulation, stable_id: u64, rules: &RuleSet)
     let (owner, rx, ry, z, _facing, was_selected, target_type, slave_type, slaves_number) =
         deploy_data;
 
+    // Preserve any existing manager/bindings when this is a redeploy after a
+    // retail-style YAREFN -> SMIN reverse conversion.
+    let existing_slave_ids = sim
+        .production
+        .slave_bindings
+        .remove(&stable_id)
+        .unwrap_or_default();
+
     // Despawn the SMIN vehicle.
     sim.despawn_entity(stable_id);
 
@@ -471,9 +479,21 @@ pub fn deploy_slave_miner(sim: &mut Simulation, stable_id: u64, rules: &RuleSet)
         ge.selected = was_selected;
     }
 
-    // Spawn slave infantry around the building.
+    let slave_capacity: u16 = rules
+        .object_case_insensitive(&slave_type)
+        .map(|obj| obj.storage.max(1) as u16)
+        .unwrap_or(4);
+
     let mut slave_ids: Vec<u64> = Vec::with_capacity(slaves_number as usize);
-    for i in 0..slaves_number {
+    for slave_sid in existing_slave_ids {
+        if let Some(slave_entity) = sim.entities.get_mut(slave_sid) {
+            slave_entity.slave_harvester = Some(SlaveHarvester::new(new_sid, slave_capacity));
+            slave_ids.push(slave_sid);
+        }
+    }
+
+    // Spawn missing slave infantry around the building.
+    for i in slave_ids.len() as i32..slaves_number {
         // Spread slaves around the building.
         let offset_x: i32 = (i % 3) - 1; // -1, 0, 1, -1, 0
         let offset_y: i32 = (i / 3) - 1; // -1, -1, -1, 0, 0
@@ -483,12 +503,6 @@ pub fn deploy_slave_miner(sim: &mut Simulation, stable_id: u64, rules: &RuleSet)
         if let Some(slave_sid) =
             sim.spawn_object_at_height(&slave_type, &owner, sx, sy, 0, z, rules)
         {
-            // Resolve slave capacity from ObjectType.
-            let slave_capacity: u16 = rules
-                .object_case_insensitive(&slave_type)
-                .map(|obj| obj.storage.max(1) as u16)
-                .unwrap_or(4);
-
             if let Some(slave_entity) = sim.entities.get_mut(slave_sid) {
                 slave_entity.slave_harvester = Some(SlaveHarvester::new(new_sid, slave_capacity));
             }
@@ -504,10 +518,10 @@ pub fn deploy_slave_miner(sim: &mut Simulation, stable_id: u64, rules: &RuleSet)
 
 /// Undeploy a Slave Miner refinery (YAREFN) back into vehicle form (SMIN).
 ///
-/// 1. Kill/despawn all bound slaves
+/// 1. Preserve the live slave manager bindings
 /// 2. Despawn the YAREFN building
 /// 3. Spawn the SMIN vehicle at the same cell
-/// 4. Transfer slave bindings to the new SMIN entity
+/// 4. Transfer slave bindings to the new SMIN entity and rewrite slave masters
 ///
 /// Returns the new SMIN stable_id, or None if undeploy failed.
 pub fn undeploy_slave_miner(sim: &mut Simulation, stable_id: u64, rules: &RuleSet) -> Option<u64> {
@@ -531,12 +545,11 @@ pub fn undeploy_slave_miner(sim: &mut Simulation, stable_id: u64, rules: &RuleSe
 
     let (owner, rx, ry, z, was_selected, target_type) = undeploy_data;
 
-    // Despawn all bound slaves.
-    if let Some(slave_ids) = sim.production.slave_bindings.remove(&stable_id) {
-        for slave_id in &slave_ids {
-            sim.despawn_entity(*slave_id);
-        }
-    }
+    let slave_ids = sim
+        .production
+        .slave_bindings
+        .remove(&stable_id)
+        .unwrap_or_default();
 
     // Despawn the YAREFN building.
     sim.despawn_entity(stable_id);
@@ -546,6 +559,21 @@ pub fn undeploy_slave_miner(sim: &mut Simulation, stable_id: u64, rules: &RuleSe
 
     if let Some(ge) = sim.entities.get_mut(new_sid) {
         ge.selected = was_selected;
+    }
+
+    let mut live_slave_ids = Vec::with_capacity(slave_ids.len());
+    for slave_id in slave_ids {
+        if let Some(slave) = sim.entities.get_mut(slave_id) {
+            if let Some(ref mut harvester) = slave.slave_harvester {
+                harvester.master_id = new_sid;
+            }
+            live_slave_ids.push(slave_id);
+        }
+    }
+    if !live_slave_ids.is_empty() {
+        sim.production
+            .slave_bindings
+            .insert(new_sid, live_slave_ids);
     }
 
     Some(new_sid)
@@ -728,6 +756,31 @@ mod tests {
     fn slave_harvester_state_transitions() {
         let sh = SlaveHarvester::new(1, 4);
         assert_eq!(sh.state, SlaveHarvestState::SearchOre);
+    }
+
+    #[test]
+    fn undeploy_transfers_slave_manager_to_new_smin() {
+        let rules = make_test_rules();
+        let mut sim = Simulation::new();
+        let sm_bld = sim
+            .spawn_object_at_height("SMIN", "YuriCountry", 10, 10, 0, 0, &rules)
+            .expect("spawn SMIN");
+        let yarefn = deploy_slave_miner(&mut sim, sm_bld, &rules).expect("deploy to YAREFN");
+        let slave_ids = sim
+            .production
+            .slave_bindings
+            .get(&yarefn)
+            .cloned()
+            .expect("YAREFN should own slave manager");
+        assert!(!slave_ids.is_empty());
+
+        let smin = undeploy_slave_miner(&mut sim, yarefn, &rules).expect("undeploy to SMIN");
+        assert!(sim.production.slave_bindings.get(&yarefn).is_none());
+        assert_eq!(sim.production.slave_bindings.get(&smin), Some(&slave_ids));
+        for slave_id in slave_ids {
+            let slave = sim.entities.get(slave_id).expect("slave remains live");
+            assert_eq!(slave.slave_harvester.as_ref().unwrap().master_id, smin);
+        }
     }
 
     #[test]
