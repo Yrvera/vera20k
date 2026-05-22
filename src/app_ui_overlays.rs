@@ -8,26 +8,12 @@ use crate::app_cursor::{
     current_cursor_feedback_kind, current_software_cursor_frame, cursor_id_for_feedback,
 };
 use crate::app_instances::in_view;
-use crate::app_types::{CursorId, SoftwareCursorSequence};
+use crate::app_types::{CursorId, HoverTargetKind, SoftwareCursorSequence};
 use crate::map::entities::EntityCategory;
 use crate::render::batch::{BatchTexture, SpriteInstance};
+use crate::rules::object_type::ObjectType;
+use crate::rules::ruleset::RuleSet;
 use crate::sim::components::Position;
-/// Parse foundation dimensions from a string like "3x2" → (3, 2).
-fn parse_foundation(foundation: &str) -> (u32, u32) {
-    let mut parts = foundation.split('x');
-    let w: u32 = parts
-        .next()
-        .and_then(|v| v.trim().parse::<u32>().ok())
-        .unwrap_or(1)
-        .max(1);
-    let h: u32 = parts
-        .next()
-        .and_then(|v| v.trim().parse::<u32>().ok())
-        .unwrap_or(1)
-        .max(1);
-    (w, h)
-}
-
 /// Authentic pip counts for unit health bars.
 const UNIT_PIPS_VEHICLE: u32 = 17; // vehicles + aircraft
 const UNIT_PIPS_INFANTRY: u32 = 8;
@@ -58,6 +44,31 @@ fn condition_thresholds(state: &AppState) -> (f32, f32) {
         .unwrap_or((0.5, 0.25))
 }
 
+fn building_health_hover_target(state: &AppState, local_owner: Option<&str>) -> Option<u64> {
+    let sim = state.simulation.as_ref()?;
+    let local_owner = local_owner?;
+    let (world_x, world_y) =
+        crate::app_sim_tick::screen_point_to_world(state, state.cursor_x, state.cursor_y);
+    let hover = crate::app_entity_pick::hover_target_at_point(
+        sim,
+        world_x,
+        world_y,
+        local_owner,
+        state.sandbox_full_visibility,
+        state.rules.as_ref(),
+        &state.height_map,
+        Some(&state.bridge_height_map),
+    )?;
+    match hover.kind {
+        HoverTargetKind::FriendlyStructure | HoverTargetKind::EnemyStructure => {
+            Some(hover.stable_id)
+        }
+        HoverTargetKind::FriendlyUnit
+        | HoverTargetKind::EnemyUnit
+        | HoverTargetKind::HiddenEnemy => None,
+    }
+}
+
 /// Building health: discrete pips from pips.shp along the isometric NW foundation edge.
 ///
 /// Pip positions are computed from Dimension2 (foundation size in leptons) projected
@@ -70,6 +81,8 @@ fn condition_thresholds(state: &AppState) -> (f32, f32) {
 ///
 /// Where loc = entity screen position. lepton_to_screen now returns cell center
 /// (matching the original CoordsToClient), so loc = (screen_x, screen_y).
+/// The draw point is then shifted by the PIPS.SHP canvas/frame offset so the
+/// SpriteInstance position is the final frame-rect top-left, matching flags 0x600.
 pub(crate) fn build_building_status_instances(
     state: &AppState,
     sw: f32,
@@ -83,18 +96,19 @@ pub(crate) fn build_building_status_instances(
     let ignore_visibility = state.sandbox_full_visibility;
     let pip_size: [f32; 2] = overlay.pip_frame_size();
     let pip_uv_size: [f32; 2] = overlay.pip_uv_size();
-    let (_pip_adj_x, _pip_adj_y) = overlay.pip_canvas_adj();
+    let (pip_adj_x, pip_adj_y) = overlay.pip_canvas_adj();
     let has_pips: bool = overlay.pip_texture().is_some();
     let (cond_y, cond_r) = condition_thresholds(state);
+    let hovered_structure_id = building_health_hover_target(state, local_owner.as_deref());
     let mut instances = Vec::new();
     for e in sim.entities.values() {
         if e.category != EntityCategory::Structure {
             continue;
         }
-        let health = &e.health;
-        if !e.selected && health.current >= health.max {
+        if !e.selected && hovered_structure_id != Some(e.stable_id) {
             continue;
         }
+        let health = &e.health;
         let type_str = sim.interner.resolve(e.type_ref);
         if !status_entity_visible_plain(
             local_owner_id,
@@ -110,7 +124,10 @@ pub(crate) fn build_building_status_instances(
         // Height= is an art.ini property, looked up via Image= redirect.
         let obj = state.rules.as_ref().and_then(|r| r.object(type_str));
         let foundation: (u32, u32) = obj
-            .map(|o| parse_foundation(&o.foundation))
+            .map(|o| {
+                let (w, h) = crate::rules::foundation::foundation_dimensions(&o.foundation);
+                (u32::from(w), u32::from(h))
+            })
             .unwrap_or((2, 2));
         // gamemd reads Height from the ART SECTION (Image= redirect target, NOT the
         // type ID itself). If the Image section doesn't define Height, use default 2
@@ -137,22 +154,25 @@ pub(crate) fn build_building_status_instances(
         let depth: f32 = 0.0006;
 
         // Pip count: floor(H * 7.5) — from original (screen1.y - screen2.y) / 2.
-        let num_pips: u32 = ((foundation.1 * 15) / 2).max(1);
+        let num_pips: u32 = (foundation.1 * 15) / 2;
+        if num_pips == 0 {
+            continue;
+        }
 
-        // Building health bar pip positioning derivation.
-        // DrawExtras calls GetCoords (foundation center), then passes that screen
-        // position to DrawHealthBar as pLocation.
-        // Full derivation: pip0.Y = foundCenter.Y + screen1.Y + 4 - numPips*2
-        //   = (sy + 7.5*(fw+fh) - 15) + (7.5*(fh-fw) - H*15) + 4 - 15*fh
-        //   = sy + 7.5*(fw+fh) - 15 + 7.5*fh - 7.5*fw - H*15 + 4 - 15*fh
-        //   = sy - 11 - H*15   (all foundation terms cancel!)
-        // Similarly for X: pip0.X = foundCenter.X + screen1.X + 3 + numPips*4
-        //   = (sx + 15*(fw-fh)) + (-15*(fw+fh)) + 3 + 30*fh = sx + 3
+        // DrawHealthBar computes a PIPS.SHP canvas-center draw point at GetCoords
+        // plus the projected NW upper edge, then CC_Draw_Shape shifts it by the
+        // frame/canvas offset from flags 0x600.
         let n: f32 = num_pips as f32;
-        let start_x: f32 = sx + 3.0;
-        // -11 from derivation; -5 empirical adjustment for building sprite
-        // anchor difference (our sprites use NW cell center, gamemd uses foundation center).
-        let start_y: f32 = sy - 6.0 - art_height * PIP_HEIGHT_FACTOR;
+        let fw = foundation.0 as f32;
+        let fh = foundation.1 as f32;
+        let foundation_center_x = sx + (fw - fh) * 15.0;
+        let foundation_center_y = sy + (fw + fh) * 7.5 - 15.0;
+        let projected_x = -(fw + fh) * 15.0;
+        let projected_y = (fh - fw) * 7.5 - art_height * PIP_HEIGHT_FACTOR;
+        let draw_start_x: f32 = foundation_center_x + projected_x + 3.0 + n * 4.0;
+        let draw_start_y: f32 = foundation_center_y + projected_y + 4.0 - n * 2.0;
+        let start_x: f32 = draw_start_x + pip_adj_x;
+        let start_y: f32 = draw_start_y + pip_adj_y;
 
         if has_pips && foundation.1 > 0 {
             let pip_w: f32 = pip_size[0];
@@ -178,7 +198,11 @@ pub(crate) fn build_building_status_instances(
                 continue;
             }
             // ftol(ratio * numPips), clamped to [1, numPips].
-            let filled: u32 = ((num_pips as f32 * ratio) as u32).max(1).min(num_pips);
+            let filled: u32 = if health.current > 0 {
+                ((num_pips as f32 * ratio) as u32).max(1).min(num_pips)
+            } else {
+                0
+            };
             let health_variant: u32 = health_pip_variant(ratio, cond_y, cond_r);
             for i in 0..num_pips {
                 let px: f32 = start_x + i as f32 * PIP_STEP_X;
@@ -220,7 +244,11 @@ pub(crate) fn build_building_status_instances(
                 continue;
             }
             let fill_color = health_fill_color(ratio, cond_y, cond_r);
-            let filled: u32 = ((num_pips as f32 * ratio) as u32).max(1).min(num_pips);
+            let filled: u32 = if health.current > 0 {
+                ((num_pips as f32 * ratio) as u32).max(1).min(num_pips)
+            } else {
+                0
+            };
             for i in 0..num_pips {
                 let seg_x: f32 = start_x + i as f32 * PIP_STEP_X;
                 let seg_y: f32 = start_y + i as f32 * PIP_STEP_Y;
@@ -771,14 +799,156 @@ pub(crate) fn build_cargo_pip_instances(state: &AppState, sw: f32, sh: f32) -> V
     instances
 }
 
-/// Map health ratio to pip atlas variant index (1=green, 2=yellow, 3=red).
+/// Radius rings for selected sensor/gap buildings. This is Tactical action-visual
+/// rendering, not part of selection brackets or health pips.
+pub(crate) fn build_building_radius_ring_instances(
+    state: &AppState,
+    sw: f32,
+    sh: f32,
+) -> Vec<SpriteInstance> {
+    let (Some(sim), Some(rules)) = (&state.simulation, &state.rules) else {
+        return Vec::new();
+    };
+    let local_owner = preferred_local_owner_name(state);
+    let local_owner_id = local_owner.as_deref().and_then(|n| sim.interner.get(n));
+    let ignore_visibility = state.sandbox_full_visibility;
+    let mut instances = Vec::new();
+
+    for e in sim.entities.values() {
+        if e.category != EntityCategory::Structure || !e.selected {
+            continue;
+        }
+        if !status_entity_visible_plain(
+            local_owner_id,
+            &sim.fog,
+            &e.position,
+            e.owner,
+            ignore_visibility,
+        ) {
+            continue;
+        }
+        let type_str = sim.interner.resolve(e.type_ref);
+        let Some(obj) = rules.object(type_str) else {
+            continue;
+        };
+        let Some(radius_cells) = building_sensor_range_cells(obj, rules) else {
+            continue;
+        };
+        if radius_cells == 0 {
+            continue;
+        }
+
+        let (fw, fh) = crate::rules::foundation::foundation_dimensions(&obj.foundation);
+        let center_x = e.position.screen_x + (fw as f32 - fh as f32) * 15.0;
+        let center_y = e.position.screen_y + (fw as f32 + fh as f32) * 7.5 - 15.0;
+        let radius_x = radius_cells as f32 * 30.0;
+        let radius_y = radius_cells as f32 * 15.0;
+        if !in_view(
+            center_x - radius_x,
+            center_y - radius_y,
+            radius_x * 2.0,
+            radius_y * 2.0,
+            state.camera_x,
+            state.camera_y,
+            sw,
+            sh,
+            16.0,
+        ) {
+            continue;
+        }
+        emit_ellipse_ring(
+            &mut instances,
+            center_x,
+            center_y,
+            radius_x,
+            radius_y,
+            [0.15, 1.0, 0.25],
+        );
+    }
+
+    instances
+}
+
+fn building_sensor_range_cells(obj: &ObjectType, rules: &RuleSet) -> Option<u32> {
+    if obj.psychic_detection_radius > 0 {
+        return Some(u32::from(obj.psychic_detection_radius));
+    }
+    if obj.gap_generator {
+        if obj.super_gap_radius_in_cells > 0 {
+            return Some(u32::from(obj.super_gap_radius_in_cells));
+        }
+        if obj.gap_radius_in_cells > 0 {
+            return Some(u32::from(obj.gap_radius_in_cells));
+        }
+        return Some(rules.general.gap_radius.max(0) as u32);
+    }
+    if (obj.sensor_array || obj.cloak_generator || obj.sensors) && obj.sensors_sight > 0 {
+        return Some(u32::from(obj.sensors_sight));
+    }
+    None
+}
+
+fn emit_ellipse_ring(
+    instances: &mut Vec<SpriteInstance>,
+    cx: f32,
+    cy: f32,
+    rx: f32,
+    ry: f32,
+    tint: [f32; 3],
+) {
+    let segments = ((rx.max(ry) / 2.0).ceil() as usize).clamp(96, 384);
+    let mut prev = ellipse_point(cx, cy, rx, ry, 0.0);
+    for i in 1..=segments {
+        let angle = std::f32::consts::TAU * i as f32 / segments as f32;
+        let next = ellipse_point(cx, cy, rx, ry, angle);
+        emit_colored_line(instances, prev, next, tint);
+        prev = next;
+    }
+}
+
+fn ellipse_point(cx: f32, cy: f32, rx: f32, ry: f32, angle: f32) -> [f32; 2] {
+    [cx + angle.cos() * rx, cy + angle.sin() * ry]
+}
+
+fn emit_colored_line(
+    instances: &mut Vec<SpriteInstance>,
+    a: [f32; 2],
+    b: [f32; 2],
+    tint: [f32; 3],
+) {
+    let dx = b[0] - a[0];
+    let dy = b[1] - a[1];
+    let steps = dx.abs().max(dy.abs()).ceil() as i32;
+    if steps <= 0 {
+        return;
+    }
+    let step_x = dx / steps as f32;
+    let step_y = dy / steps as f32;
+    for i in 0..steps {
+        instances.push(SpriteInstance {
+            position: [
+                (a[0] + step_x * i as f32).round(),
+                (a[1] + step_y * i as f32).round(),
+            ],
+            size: [1.0, 1.0],
+            uv_origin: [0.0, 0.0],
+            uv_size: [1.0, 1.0],
+            tint,
+            alpha: 1.0,
+            depth: 0.00055,
+            ..Default::default()
+        });
+    }
+}
+
+/// Map health ratio to pip atlas variant index (1=green, 2=yellow, 4=red).
 fn health_pip_variant(ratio: f32, condition_yellow: f32, condition_red: f32) -> u32 {
     if ratio > condition_yellow {
         1 // Green.
     } else if ratio > condition_red {
         2 // Yellow.
     } else {
-        3 // Red.
+        4 // Red.
     }
 }
 

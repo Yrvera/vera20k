@@ -109,6 +109,28 @@ pub(super) fn dispatch_draw_passes(
         "smudge",
     );
 
+    // Building selection bracket back/left edges. Drawn before object bodies so
+    // the normal SHP merge naturally occludes the hidden bracket edges.
+    let bracket_tex = state.selection_overlay.as_ref().map(|o| o.white_texture());
+    draw_pooled_passthrough_texture(
+        &mut pass,
+        &state.batch_renderer,
+        pool,
+        bracket_tex,
+        "selection_brackets_back",
+    );
+    // gamemd's first object pass calls DrawExtras before the nonzero +0x104
+    // display call. Re-submit the front/right bracket stubs here; object body
+    // draws can still occlude this first submission, and the later DrawExtras
+    // phase submits them again.
+    draw_pooled_passthrough_texture(
+        &mut pass,
+        &state.batch_renderer,
+        pool,
+        bracket_tex,
+        "selection_brackets_front_first",
+    );
+
     // --- Step 4: Bridge entities (multi-way Y-merge) ---
     merge_passes::draw_merged_bridge_occluded_pass(
         &mut pass,
@@ -274,8 +296,14 @@ pub(super) fn dispatch_draw_passes(
     }
 
     // --- Step 10: UI elements ---
-    // Target/action lines from selected units to command destinations.
-    let bracket_tex = state.selection_overlay.as_ref().map(|o| o.white_texture());
+    // Factory rally and selected action lines are separate line families.
+    draw_pooled_no_depth(
+        &mut pass,
+        &state.batch_renderer,
+        pool,
+        bracket_tex,
+        "factory_rally_first",
+    );
     draw_pooled_no_depth(
         &mut pass,
         &state.batch_renderer,
@@ -283,13 +311,30 @@ pub(super) fn dispatch_draw_passes(
         bracket_tex,
         "target_lines",
     );
+    draw_pooled_no_depth(
+        &mut pass,
+        &state.batch_renderer,
+        pool,
+        bracket_tex,
+        "factory_rally_second",
+    );
     // Isometric selection brackets for buildings: white 1px stub lines at 3 roof corners.
     draw_pooled_no_depth(
         &mut pass,
         &state.batch_renderer,
         pool,
         bracket_tex,
-        "selection_brackets",
+        "building_radius_rings",
+    );
+    // Final selected-building front bracket redraw: gamemd line pixels do not
+    // write Z. The CPU instance builder already samples the tactical ABuffer
+    // for this post-shroud redraw.
+    draw_pooled_passthrough_texture(
+        &mut pass,
+        &state.batch_renderer,
+        pool,
+        bracket_tex,
+        "selection_brackets_front",
     );
     // Building health pips: discrete pips from pips.shp atlas.
     let building_status_tex = state
@@ -555,6 +600,18 @@ fn draw_pooled_passthrough_overlay<'a>(
 ) {
     if let (Some(a), Some((buf, count))) = (atlas, pool.get(key)) {
         batch.draw_with_buffer_passthrough(pass, &a.texture, buf, count);
+    }
+}
+
+fn draw_pooled_passthrough_texture<'a>(
+    pass: &mut wgpu::RenderPass<'a>,
+    batch: &'a BatchRenderer,
+    pool: &'a InstanceBufferPool,
+    tex: Option<&'a BatchTexture>,
+    key: &'static str,
+) {
+    if let (Some(t), Some((buf, count))) = (tex, pool.get(key)) {
+        batch.draw_with_buffer_passthrough(pass, t, buf, count);
     }
 }
 
