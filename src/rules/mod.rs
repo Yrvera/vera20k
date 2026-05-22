@@ -20,6 +20,7 @@ pub mod bridge_warheads;
 pub mod combat_damage;
 pub mod error;
 pub mod flh;
+pub mod foundation;
 pub mod house_colors;
 pub mod infantry_sequence;
 pub mod ini_parser;
