@@ -1,9 +1,10 @@
-//! Map-edge passable cell finder.
+//! Map-edge cell finders.
 //!
 //! Picks a ground-walkable cell along the requested map edge (N/E/S/W),
 //! biased toward a target cell. Used by the paradrop SW launch handler
-//! to choose the carrier aircraft's spawn edge cell and the opposite-edge
-//! exit cell.
+//! for the opposite-edge exit cell. Carrier spawn uses the criterion-4 helper
+//! below, which mirrors gamemd's paradrop spawner path and does not require
+//! ordinary ground passability.
 //!
 //! Modes 0/1/3 (N/E/W) use a simple linear scan + closest-to-target tiebreak.
 //! Mode 2 (South) collects a candidate list of up to 10 valid cells and picks
@@ -55,6 +56,29 @@ pub fn find_passable_at_edge(
     }
 }
 
+/// Find the paradrop carrier spawn cell along a map edge.
+///
+/// This mirrors the `FUN_004AA440(..., criterion=4, ...)` spawner call:
+/// candidate acceptance bypasses ordinary ground passability/object checks.
+/// Returns `None` only for degenerate zero-sized maps.
+pub fn find_paradrop_carrier_edge_cell(
+    map_width: u16,
+    map_height: u16,
+    edge: Edge,
+    target: (u16, u16),
+) -> Option<(u16, u16)> {
+    if map_width == 0 || map_height == 0 {
+        return None;
+    }
+
+    match edge {
+        Edge::North | Edge::East | Edge::West => {
+            scan_linear_unchecked(edge, map_width, map_height, target)
+        }
+        Edge::South => scan_candidates_closest_unchecked(map_width, map_height, target),
+    }
+}
+
 fn scan_linear(
     path_grid: &PathGrid,
     edge: Edge,
@@ -81,6 +105,28 @@ fn scan_linear(
         })
 }
 
+fn scan_linear_unchecked(
+    edge: Edge,
+    map_width: u16,
+    map_height: u16,
+    target: (u16, u16),
+) -> Option<(u16, u16)> {
+    let cells: Vec<(u16, u16)> = match edge {
+        Edge::North => (0..map_width).map(|x| (x, 0)).collect(),
+        Edge::East => (0..map_height)
+            .map(|y| (map_width.saturating_sub(1), y))
+            .collect(),
+        Edge::West => (0..map_height).map(|y| (0, y)).collect(),
+        Edge::South => unreachable!("south uses scan_candidates_closest_unchecked"),
+    };
+
+    cells.into_iter().min_by_key(|&(rx, ry)| {
+        let dx = rx as i32 - target.0 as i32;
+        let dy = ry as i32 - target.1 as i32;
+        dx * dx + dy * dy
+    })
+}
+
 fn scan_candidates_closest(
     path_grid: &PathGrid,
     map_width: u16,
@@ -96,6 +142,26 @@ fn scan_candidates_closest(
         if path_grid.is_walkable(x, south_y) {
             candidates.push((x, south_y));
         }
+    }
+    candidates.into_iter().min_by_key(|&(rx, ry)| {
+        let dx = rx as i32 - target.0 as i32;
+        let dy = ry as i32 - target.1 as i32;
+        dx * dx + dy * dy
+    })
+}
+
+fn scan_candidates_closest_unchecked(
+    map_width: u16,
+    map_height: u16,
+    target: (u16, u16),
+) -> Option<(u16, u16)> {
+    let south_y = map_height.saturating_sub(1);
+    let mut candidates: Vec<(u16, u16)> = Vec::with_capacity(10);
+    for x in 0..map_width {
+        if candidates.len() >= 10 {
+            break;
+        }
+        candidates.push((x, south_y));
     }
     candidates.into_iter().min_by_key(|&(rx, ry)| {
         let dx = rx as i32 - target.0 as i32;
@@ -159,6 +225,27 @@ mod tests {
         assert_eq!(
             find_passable_at_edge(&grid, 100, 100, Edge::South, (50, 50)),
             None
+        );
+    }
+
+    #[test]
+    fn test_paradrop_carrier_edge_ignores_ground_passability() {
+        let grid = PathGrid::test_all_blocked(100, 100);
+        assert_eq!(
+            find_passable_at_edge(&grid, 100, 100, Edge::North, (42, 50)),
+            None
+        );
+        assert_eq!(
+            find_paradrop_carrier_edge_cell(100, 100, Edge::North, (42, 50)),
+            Some((42, 0))
+        );
+    }
+
+    #[test]
+    fn test_paradrop_carrier_south_keeps_first_10_candidate_window() {
+        assert_eq!(
+            find_paradrop_carrier_edge_cell(100, 100, Edge::South, (80, 50)),
+            Some((9, 99))
         );
     }
 

@@ -4,8 +4,9 @@
 //! HouseClass.Side) and 6 (AmerParaDrop, always-American config).
 //!
 //! Per-side branch picks an infantry list from rules; for each (inf_type, num)
-//! entry, spawns one PDPLANE at the house's waypoint edge with `num` infantry
-//! loaded as cargo. The carrier's initial AircraftMission is ParaDropApproach.
+//! entry, spawns one PDPLANE at the house's waypoint edge with `num` limbo
+//! infantry loaded as cargo. The carrier's initial Rust mission is
+//! ParaDropApproach, which models the stock Mission_Open superweapon path.
 //!
 //! ## Dependency rules
 //! - Part of sim/ — depends on rules/, sim/aircraft, sim/movement,
@@ -19,7 +20,7 @@ use crate::sim::movement::air_movement;
 use crate::sim::movement::locomotor::AirMovePhase;
 use crate::sim::passenger::PassengerRole;
 use crate::sim::pathfinding::PathGrid;
-use crate::sim::world::edge_cell::{Edge, find_passable_at_edge};
+use crate::sim::world::edge_cell::{Edge, find_paradrop_carrier_edge_cell};
 use crate::sim::world::{SimSoundEvent, Simulation};
 use crate::util::fixed_math::{SimFixed, ra2_speed_to_leptons_per_second};
 
@@ -39,7 +40,7 @@ pub fn launch(
     target_rx: u16,
     target_ry: u16,
     kind: ParaDropKind,
-    path_grid: Option<&PathGrid>,
+    _path_grid: Option<&PathGrid>,
 ) -> bool {
     // Bridge rejection deferred — map system does not yet expose is_bridge_cell.
     let (target_rx, target_ry) = (target_rx, target_ry);
@@ -71,25 +72,22 @@ pub fn launch(
         Some(e) => e,
         None => {
             log::warn!(
-                "Paradrop launch: invalid waypoint_edge {}",
+                "Paradrop launch: invalid waypoint_edge {}; falling back to north edge",
                 waypoint_edge_idx
             );
-            return false;
+            Edge::North
         }
     };
-    let edge_cell = match path_grid.and_then(|g| {
-        find_passable_at_edge(
-            g,
-            sim.fog.width,
-            sim.fog.height,
-            edge,
-            (target_rx, target_ry),
-        )
-    }) {
+    let edge_cell = match find_paradrop_carrier_edge_cell(
+        sim.fog.width,
+        sim.fog.height,
+        edge,
+        (target_rx, target_ry),
+    ) {
         Some(c) => c,
         None => {
             log::warn!(
-                "Paradrop launch: no passable cell on edge {:?} for target ({},{})",
+                "Paradrop launch: no carrier edge cell on edge {:?} for target ({},{})",
                 edge,
                 target_rx,
                 target_ry,
@@ -177,11 +175,11 @@ fn spawn_pdplane(
         }
     }
 
-    // Load N infantry into cargo as Inside passengers.
+    // Load N limbo-created infantry into cargo as Inside passengers.
     let inf_size = rules.object(inf_type).map(|o| o.size).unwrap_or(1);
     let mut loaded = 0u32;
     for _ in 0..num {
-        let pax_id = match sim.spawn_object_at_height(
+        let pax_id = match sim.spawn_object_limbo_at_height(
             inf_type,
             &owner_str,
             edge_cell.0,
@@ -198,19 +196,17 @@ fn spawn_pdplane(
                 transport_id: pdplane_id,
             };
         }
-        // Spawn registered the passenger in occupancy at the edge cell.
-        // Now that it's Inside the carrier, remove the transient occupancy
-        // so the cell isn't blocked.
-        sim.occupancy.remove(edge_cell.0, edge_cell.1, pax_id);
-
         let boarded = sim
             .entities
             .get_mut(pdplane_id)
             .and_then(|a| a.passenger_role.cargo_mut())
-            .map(|c| c.board(pax_id, inf_size))
+            .map(|c| {
+                c.board_forced(pax_id, inf_size);
+                true
+            })
             .unwrap_or(false);
         if !boarded {
-            // Cargo full or no hold — give up; the partial cargo flies.
+            // No hold - give up; the partial cargo flies.
             break;
         }
         loaded += 1;
@@ -225,7 +221,8 @@ fn spawn_pdplane(
         return false;
     }
 
-    // Set initial mission to ParaDropApproach + issue movement to target.
+    // Set initial mission to the Open-equivalent paradrop state and issue
+    // movement to target.
     if let Some(entity) = sim.entities.get_mut(pdplane_id) {
         entity.aircraft_mission = Some(AircraftMission::ParaDropApproach {
             target_rx,

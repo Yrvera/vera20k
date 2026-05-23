@@ -14,13 +14,18 @@
 //! - Part of sim/ — depends on util/facing_table, util/fixed_math.
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
+use crate::map::entities::EntityCategory;
 use crate::rules::ruleset::RuleSet;
+use crate::sim::movement::bump_crush;
+use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::movement::parachute_descent::begin_parachute_descent;
+use crate::sim::occupancy::CellListInsertion;
 use crate::sim::passenger::PassengerRole;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::world::{SimSoundEvent, Simulation};
 use crate::util::facing_table::facing_to_movement;
 use crate::util::fixed_math::{SIM_ZERO, SimFixed, sim_to_i32};
+use crate::util::lepton;
 
 /// V-pattern lateral radius. From gamemd constant at 0x7E2808 = 128.0 leptons
 /// (= 0.5 cell). Each paratrooper lands half a cell to the left or right of
@@ -28,7 +33,8 @@ use crate::util::fixed_math::{SIM_ZERO, SimFixed, sim_to_i32};
 pub const V_PATTERN_RADIUS_LEPTONS: i32 = 128;
 
 /// Reset value for the LandingState mutex (gamemd `aircraft+0x6D3`).
-/// Decremented per tick; gates back-to-back drops.
+/// Decremented per tick as mirrored aircraft state. Standard in-range
+/// Mission_Rescue cadence is still controlled by the mission's 5-frame return.
 pub const LANDING_STATE_RESET: u8 = 5;
 
 /// Drop interval in sim ticks between consecutive drops.
@@ -64,10 +70,11 @@ pub fn v_offset(facing: u8, payload_count_post_dec: u8) -> (i32, i32) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DropResult {
     /// Passenger placed, parachute descent attached. Caller resets cooldown
-    /// to ROF, sets landing_state=5, decrements payload_count.
+    /// to the Mission_Rescue 5-frame cadence, mirrors landing_state=5, and
+    /// decrements payload_count.
     Success,
     /// Drop cell impassable. Passenger was re-inserted at cargo HEAD; caller
-    /// leaves drop_cooldown unchanged so we retry next tick.
+    /// leaves drop_cooldown unchanged so the mission can retry immediately.
     ImpassableRetry,
     /// begin_parachute_descent returned false (entity missing or attach failed).
     /// Same retry semantics as ImpassableRetry.
@@ -76,11 +83,21 @@ pub enum DropResult {
     NoCargo,
 }
 
+fn restore_passenger_to_cargo_head(sim: &mut Simulation, aircraft_id: u64, passenger_id: u64) {
+    if let Some(cargo) = sim
+        .entities
+        .get_mut(aircraft_id)
+        .and_then(|a| a.passenger_role.cargo_mut())
+    {
+        cargo.passengers.insert(0, passenger_id);
+    }
+}
+
 /// Attempt to drop one passenger from the carrier aircraft's cargo.
 ///
 /// Pre-conditions (caller-enforced):
 ///   - aircraft entity exists and has PassengerRole::Transport with non-empty cargo
-///   - drop_cooldown == 0 && landing_state == 0
+///   - Rescue-equivalent mission cadence is ready for another Drop_Payload call
 ///
 /// `path_grid`: Some when threaded from advance_tick; None in headless tests
 /// (passability defaults to "always passable" in that case).
@@ -127,6 +144,14 @@ pub fn try_drop(
             rules.object(type_str).map(|o| o.size)
         })
         .unwrap_or(1);
+    let passenger_category = match sim.entities.get(passenger_id).map(|p| p.category) {
+        Some(category) => category,
+        None => {
+            sim.clear_radio_contacts_for(passenger_id);
+            restore_passenger_to_cargo_head(sim, aircraft_id, passenger_id);
+            return DropResult::AttachFailedRetry;
+        }
+    };
 
     // 3. Compute V-offset in leptons, then split into (cell, sub-cell).
     // Using `div_euclid`/`rem_euclid` so negative offsets cross cell
@@ -144,49 +169,67 @@ pub fn try_drop(
     // 4. Passability check via threaded path_grid.
     let passable = path_grid.map_or(true, |g| g.is_walkable(drop_rx, drop_ry));
     if !passable {
-        if let Some(cargo) = sim
-            .entities
-            .get_mut(aircraft_id)
-            .and_then(|a| a.passenger_role.cargo_mut())
-        {
-            cargo.passengers.insert(0, passenger_id);
-        }
+        restore_passenger_to_cargo_head(sim, aircraft_id, passenger_id);
         return DropResult::ImpassableRetry;
     }
 
+    let selected_sub_cell = if passenger_category == EntityCategory::Infantry {
+        let occ = sim.occupancy.get(drop_rx, drop_ry);
+        match bump_crush::allocate_sub_cell_with_preference(
+            occ,
+            MovementLayer::Ground,
+            None,
+            drop_sub_x,
+            drop_sub_y,
+            &mut sim.rng,
+        ) {
+            Some(sub_cell) => Some(sub_cell),
+            None => {
+                restore_passenger_to_cargo_head(sim, aircraft_id, passenger_id);
+                return DropResult::ImpassableRetry;
+            }
+        }
+    } else {
+        None
+    };
+    let (final_sub_x, final_sub_y) = selected_sub_cell
+        .map(|sub_cell| lepton::subcell_lepton_offset(Some(sub_cell)))
+        .unwrap_or((drop_sub_x, drop_sub_y));
+
     // 5. Position passenger at drop cell; un-limbo. Do NOT touch
-    // `loco.altitude` here — `begin_parachute_descent` uses `OverrideKind`
-    // to gate the descent and tracks altitude in `ParachuteDescentState`,
-    // and the renderer reads loco.altitude as a visual offset. If we set
-    // loco.altitude=plane_altitude here, it gets snapshotted by
-    // `begin_override` and `end_override` restores it on landing — the
-    // unit then renders ~3 tiles up indefinitely.
+    // `loco.altitude` here: normal paradropped infantry keep their base
+    // locomotor identity, while descent altitude lives in ParachuteDescentState.
     if let Some(passenger) = sim.entities.get_mut(passenger_id) {
         passenger.position.rx = drop_rx;
         passenger.position.ry = drop_ry;
-        passenger.position.sub_x = drop_sub_x;
-        passenger.position.sub_y = drop_sub_y;
+        passenger.position.sub_x = final_sub_x;
+        passenger.position.sub_y = final_sub_y;
+        passenger.sub_cell = selected_sub_cell;
         // Update cached screen coords now so the first frame of descent
         // doesn't briefly render the GI at the carrier's old position.
         passenger.position.refresh_screen_coords();
         passenger.passenger_role = PassengerRole::None;
     }
+    sim.occupancy.add(
+        drop_rx,
+        drop_ry,
+        passenger_id,
+        MovementLayer::Ground,
+        selected_sub_cell,
+        CellListInsertion::from_category(passenger_category),
+    );
 
     // 6. Attach parachute descent.
     if !begin_parachute_descent(&mut sim.entities, passenger_id, altitude) {
         // L17 deviation: revert passenger_role and re-insert at cargo HEAD; retry.
+        sim.occupancy.remove(drop_rx, drop_ry, passenger_id);
+        sim.clear_radio_contacts_for(passenger_id);
         if let Some(passenger) = sim.entities.get_mut(passenger_id) {
             passenger.passenger_role = PassengerRole::Inside {
                 transport_id: aircraft_id,
             };
         }
-        if let Some(cargo) = sim
-            .entities
-            .get_mut(aircraft_id)
-            .and_then(|a| a.passenger_role.cargo_mut())
-        {
-            cargo.passengers.insert(0, passenger_id);
-        }
+        restore_passenger_to_cargo_head(sim, aircraft_id, passenger_id);
         return DropResult::AttachFailedRetry;
     }
 
@@ -211,9 +254,56 @@ pub fn try_drop(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rules::ini_parser::IniFile;
+    use crate::rules::ruleset::RuleSet;
+    use crate::sim::game_entity::GameEntity;
+    use crate::sim::passenger::PassengerCargo;
 
     fn magnitude_sq(dx: i32, dy: i32) -> i64 {
         (dx as i64) * (dx as i64) + (dy as i64) * (dy as i64)
+    }
+
+    fn drop_test_rules() -> RuleSet {
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n\
+             0=E1\n\
+             [VehicleTypes]\n\
+             [AircraftTypes]\n\
+             0=PDPLANE\n\
+             [BuildingTypes]\n\
+             [E1]\n\
+             Name=GI\n\
+             Strength=100\n\
+             Size=1\n\
+             [PDPLANE]\n\
+             Name=Paradrop Plane\n\
+             Strength=400\n",
+        );
+        RuleSet::from_ini(&ini).expect("drop test rules should parse")
+    }
+
+    fn insert_loaded_paradrop_pair(sim: &mut Simulation, aircraft_id: u64, passenger_id: u64) {
+        let mut aircraft = GameEntity::test_default(aircraft_id, "PDPLANE", "Americans", 50, 20);
+        aircraft.owner = sim.interner.intern("Americans");
+        aircraft.type_ref = sim.interner.intern("PDPLANE");
+        aircraft.category = EntityCategory::Aircraft;
+        aircraft.facing = 128;
+        let mut cargo = PassengerCargo::new(8, 0);
+        cargo.passengers.push(passenger_id);
+        cargo.total_size = 1;
+        aircraft.passenger_role = PassengerRole::Transport { cargo };
+        sim.entities.insert(aircraft);
+
+        let mut passenger = GameEntity::test_default(passenger_id, "E1", "Americans", 50, 20);
+        passenger.owner = sim.interner.intern("Americans");
+        passenger.type_ref = sim.interner.intern("E1");
+        passenger.category = EntityCategory::Infantry;
+        passenger.is_voxel = false;
+        passenger.sub_cell = Some(2);
+        passenger.passenger_role = PassengerRole::Inside {
+            transport_id: aircraft_id,
+        };
+        sim.entities.insert(passenger);
     }
 
     #[test]
@@ -309,6 +399,129 @@ mod tests {
             dx_right < -100,
             "South-RIGHT should be -X (West), got {}",
             dx_right
+        );
+    }
+
+    #[test]
+    fn paradrop_infantry_uses_valid_subcell_instead_of_raw_v_coordinate() {
+        let mut sim = Simulation::new();
+        let rules = drop_test_rules();
+        let aircraft_id = 1;
+        let passenger_id = 2;
+        insert_loaded_paradrop_pair(&mut sim, aircraft_id, passenger_id);
+
+        let result = try_drop(&mut sim, &rules, aircraft_id, 4, None);
+
+        assert_eq!(result, DropResult::Success);
+        let passenger = sim.entities.get(passenger_id).expect("passenger exists");
+        assert_eq!((passenger.position.rx, passenger.position.ry), (51, 20));
+        let sub_cell = passenger
+            .sub_cell
+            .expect("placed infantry should have a subcell");
+        assert!(
+            bump_crush::FUNCTIONAL_SUB_CELLS.contains(&sub_cell),
+            "drop should pick a functional infantry subcell, got {}",
+            sub_cell
+        );
+        assert_ne!(
+            (
+                sim_to_i32(passenger.position.sub_x),
+                sim_to_i32(passenger.position.sub_y)
+            ),
+            (0, 128),
+            "raw V-pattern half-cell coordinate must not be the final infantry XY"
+        );
+        assert_eq!(
+            (passenger.position.sub_x, passenger.position.sub_y),
+            lepton::subcell_lepton_offset(Some(sub_cell))
+        );
+        let occupied_subcells: Vec<(u64, u8)> = sim
+            .occupancy
+            .get(51, 20)
+            .expect("drop cell occupied")
+            .infantry(MovementLayer::Ground)
+            .collect();
+        assert_eq!(occupied_subcells, vec![(passenger_id, sub_cell)]);
+    }
+
+    #[test]
+    fn paradrop_full_infantry_subcells_retry_and_restore_cargo_head() {
+        let mut sim = Simulation::new();
+        let rules = drop_test_rules();
+        let aircraft_id = 1;
+        let passenger_id = 2;
+        insert_loaded_paradrop_pair(&mut sim, aircraft_id, passenger_id);
+        for (id, sub_cell) in [(90, 2), (91, 3), (92, 4)] {
+            sim.occupancy.add(
+                51,
+                20,
+                id,
+                MovementLayer::Ground,
+                Some(sub_cell),
+                CellListInsertion::PrependNonBuilding,
+            );
+        }
+
+        let result = try_drop(&mut sim, &rules, aircraft_id, 4, None);
+
+        assert_eq!(result, DropResult::ImpassableRetry);
+        let cargo = sim
+            .entities
+            .get(aircraft_id)
+            .and_then(|a| a.passenger_role.cargo())
+            .expect("aircraft cargo restored");
+        assert_eq!(cargo.passengers, vec![passenger_id]);
+        assert_eq!(cargo.total_size, 1);
+        let passenger = sim.entities.get(passenger_id).expect("passenger exists");
+        assert!(matches!(
+            passenger.passenger_role,
+            PassengerRole::Inside { transport_id } if transport_id == aircraft_id
+        ));
+        assert!(passenger.parachute_state.is_none());
+        assert!(
+            !sim.occupancy.contains_entity(51, 20, passenger_id),
+            "failed placement must not unlimbo the passenger into occupancy"
+        );
+    }
+
+    #[test]
+    fn attach_failed_retry_clears_peer_radio_contact_to_passenger() {
+        let mut sim = Simulation::new();
+        let rules = drop_test_rules();
+        let aircraft_id = 1;
+        let missing_passenger_id = 7;
+        let peer_id = 9;
+
+        let mut aircraft = GameEntity::test_default(aircraft_id, "PDPLANE", "Americans", 10, 10);
+        aircraft.owner = sim.interner.intern("Americans");
+        aircraft.type_ref = sim.interner.intern("PDPLANE");
+        let mut cargo = PassengerCargo::new(8, 0);
+        cargo.passengers.push(missing_passenger_id);
+        cargo.total_size = 1;
+        aircraft.passenger_role = PassengerRole::Transport { cargo };
+        sim.entities.insert(aircraft);
+
+        let mut peer = GameEntity::test_default(peer_id, "E1", "Americans", 11, 10);
+        peer.owner = sim.interner.intern("Americans");
+        peer.type_ref = sim.interner.intern("E1");
+        peer.mark_live_contact_with(missing_passenger_id);
+        sim.entities.insert(peer);
+
+        let result = try_drop(&mut sim, &rules, aircraft_id, 1, None);
+
+        assert_eq!(result, DropResult::AttachFailedRetry);
+        let cargo = sim
+            .entities
+            .get(aircraft_id)
+            .and_then(|a| a.passenger_role.cargo())
+            .expect("aircraft cargo restored");
+        assert_eq!(cargo.passengers, vec![missing_passenger_id]);
+        assert!(
+            !sim.entities
+                .get(peer_id)
+                .unwrap()
+                .has_live_contact_with(missing_passenger_id),
+            "attach-failed retry should clear stale peer radio contacts"
         );
     }
 }

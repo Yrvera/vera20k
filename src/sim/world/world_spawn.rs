@@ -443,6 +443,132 @@ impl Simulation {
         Some(stable_id)
     }
 
+    /// Create an object in limbo: stored in EntityStore and owner counts, but
+    /// not registered in map occupancy. Used by paradrop cargo loading, where
+    /// gamemd creates passengers directly into CargoClass without Unlimbo.
+    pub(crate) fn spawn_object_limbo_at_height(
+        &mut self,
+        type_id: &str,
+        owner: &str,
+        rx: u16,
+        ry: u16,
+        facing: u8,
+        z: u8,
+        rules: &RuleSet,
+    ) -> Option<u64> {
+        let obj = rules.object(type_id)?;
+        let health = Health {
+            current: obj.strength.max(1) as u16,
+            max: obj.strength.max(1) as u16,
+        };
+        let category = match obj.category {
+            ObjectCategory::Infantry => EntityCategory::Infantry,
+            ObjectCategory::Vehicle => EntityCategory::Unit,
+            ObjectCategory::Aircraft => EntityCategory::Aircraft,
+            ObjectCategory::Building => EntityCategory::Structure,
+        };
+        let uses_voxel = matches!(
+            obj.category,
+            ObjectCategory::Vehicle | ObjectCategory::Aircraft
+        );
+        let sight_range = (obj.sight.max(0) as u16).min(MAX_SIGHT_RANGE);
+        let stable_id = self.allocate_stable_id();
+        let owner_iid = self.interner.intern(owner);
+        let type_iid = self.interner.intern(type_id);
+
+        let mut ge = GameEntity::new(
+            stable_id,
+            rx,
+            ry,
+            z,
+            facing,
+            owner_iid,
+            health,
+            type_iid,
+            category,
+            0,
+            sight_range,
+            uses_voxel,
+        );
+
+        if self.debug_event_logging {
+            ge.debug_log = Some(crate::sim::debug_event_log::DebugEventLog::new());
+        }
+
+        if obj.has_turret {
+            let initial = crate::sim::movement::turret::body_facing_to_turret(facing);
+            let rot_byte = obj.turret_rot.clamp(0, 0xFF) as u8;
+            ge.barrel_facing = Some(crate::sim::movement::FacingClass::new(initial, rot_byte));
+        }
+        if uses_voxel {
+            ge.voxel_animation = Some(VoxelAnimation::new(1, 100));
+        }
+        if category == EntityCategory::Infantry {
+            ge.animation = Some(Animation::new(SequenceKind::Stand));
+            ge.sub_cell = Some(self.allocate_infantry_sub_cell(rx, ry));
+            let (lx, ly) = crate::util::lepton::subcell_lepton_offset(ge.sub_cell);
+            ge.position.sub_x = lx;
+            ge.position.sub_y = ly;
+        }
+        if !uses_voxel && (category == EntityCategory::Unit || category == EntityCategory::Aircraft)
+        {
+            ge.animation = Some(Animation::new(SequenceKind::Stand));
+        }
+        ge.crushable = obj.crushable;
+        ge.deployed_crushable = obj.deployed_crushable;
+        ge.omni_crusher = obj.omni_crusher;
+        ge.omni_crush_resistant = obj.omni_crush_resistant;
+        ge.zfudge_bridge = obj.zfudge_bridge;
+        ge.too_big_to_fit_under_bridge = obj.too_big_to_fit_under_bridge;
+        if obj.speed > 0 {
+            let mut loco = LocomotorState::from_object_type(obj, rules.general.flight_level);
+            if matches!(
+                self.interner.resolve(ge.type_ref).to_uppercase().as_str(),
+                "GI" | "CONS" | "E1" | "E2"
+            ) {
+                loco.speed_multiplier = SimFixed::from_num(6);
+            }
+            ge.locomotor = Some(loco);
+        }
+        if obj.ammo >= 0 && category == EntityCategory::Aircraft {
+            ge.aircraft_ammo = Some(crate::sim::docking::aircraft_dock::AircraftAmmo::new(
+                obj.ammo,
+            ));
+        }
+        if ge
+            .locomotor
+            .as_ref()
+            .is_some_and(|l| l.kind == crate::rules::locomotor_type::LocomotorKind::Fly)
+        {
+            ge.aircraft_mission = Some(crate::sim::aircraft::AircraftMission::Idle);
+        }
+        if let Some(kind) = miner_kind_for_object(obj) {
+            let mcfg: MinerConfig = MinerConfig::from_general_rules(&rules.general);
+            let storage = obj.storage.max(0) as u16;
+            ge.miner = Some(Miner::new(kind, &mcfg, storage));
+            ge.harvest_overlay = Some(HarvestOverlay {
+                frame: 0,
+                visible: false,
+                elapsed_ms: 0,
+            });
+        }
+        if obj.passengers > 0 {
+            ge.passenger_role = crate::sim::passenger::PassengerRole::Transport {
+                cargo: crate::sim::passenger::PassengerCargo::new(obj.passengers, obj.size_limit),
+            };
+        } else if obj.can_be_occupied && obj.max_number_occupants > 0 {
+            ge.passenger_role = crate::sim::passenger::PassengerRole::Transport {
+                cargo: crate::sim::passenger::PassengerCargo::new(obj.max_number_occupants, 1),
+            };
+        }
+
+        let spawn_owner_str = self.interner.resolve(ge.owner).to_string();
+        let spawn_category = ge.category;
+        self.entities.insert(ge);
+        self.increment_owned_count(&spawn_owner_str, spawn_category);
+        Some(stable_id)
+    }
+
     /// Update VoxelAnimation frame_counts for all voxel entities from atlas data.
     ///
     /// Called after the unit atlas is built, since frame counts are only known after
