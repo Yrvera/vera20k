@@ -121,6 +121,22 @@ fn parses_hidden_occupancy_art_fields() {
 }
 
 #[test]
+fn parses_anim_start_sound_and_report() {
+    let ini: IniFile = IniFile::from_str(
+        "[TWLT026]\nReport=ExplosionShard\n\n[TWLT036]\nStartSound=ExplosionStart\nReport=Explosion06\n",
+    );
+    let reg: ArtRegistry = ArtRegistry::from_ini(&ini);
+
+    let twlt026 = reg.get("TWLT026").expect("TWLT026 exists");
+    assert_eq!(twlt026.report.as_deref(), Some("ExplosionShard"));
+    assert!(twlt026.start_sound.is_none());
+
+    let twlt036 = reg.get("TWLT036").expect("TWLT036 exists");
+    assert_eq!(twlt036.start_sound.as_deref(), Some("ExplosionStart"));
+    assert_eq!(twlt036.report.as_deref(), Some("Explosion06"));
+}
+
+#[test]
 fn test_resolve_effective_image_id_chain() {
     let ini: IniFile = IniFile::from_str("[NACNST]\nImage=CIVNC\n\n[E1]\n\n[MTNK]\nImage=MTNK\n");
     let reg: ArtRegistry = ArtRegistry::from_ini(&ini);
@@ -225,6 +241,18 @@ fn test_parse_turret_offset() {
     let reg: ArtRegistry = ArtRegistry::from_ini(&ini);
     let entry: &ArtEntry = reg.get("HTK").expect("HTK exists");
     assert_eq!(entry.turret_offset, -80);
+}
+
+#[test]
+fn parses_building_fire_pixel_offsets() {
+    let ini: IniFile = IniFile::from_str(
+        "[ATESLA]\nPrimaryFirePixelOffset=11,-26\nSecondaryFirePixelOffset=-4,9\nPrimaryFireDualOffset=true\n",
+    );
+    let reg: ArtRegistry = ArtRegistry::from_ini(&ini);
+    let entry: &ArtEntry = reg.get("ATESLA").expect("ATESLA exists");
+    assert_eq!(entry.primary_fire_pixel_offset, Some((11, -26)));
+    assert_eq!(entry.secondary_fire_pixel_offset, Some((-4, 9)));
+    assert!(entry.primary_fire_dual_offset);
 }
 
 #[test]

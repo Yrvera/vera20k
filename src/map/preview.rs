@@ -28,13 +28,21 @@ pub struct PreviewSection {
     pub decoded: Option<DecodedPreview>,
 }
 
-/// Source rectangle inputs needed by the original preview marker projection.
+/// Projected start point from `[Header] WaypointN`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreviewStartPoint {
+    pub x: i32,
+    pub y: i32,
+}
+
+/// Source rectangle inputs needed by the original preview marker projection.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreviewSourceBounds {
     pub origin_x: i32,
     pub origin_y: i32,
     pub width: u32,
     pub height: u32,
+    pub start_points: Vec<PreviewStartPoint>,
 }
 
 /// Errors produced while decoding `[PreviewPack]` image data.

@@ -6,16 +6,32 @@
 
 use crate::app::AppState;
 use crate::audio::events::GameSoundEvent;
+use crate::map::entities::EntityCategory;
 use crate::rules::art_data::{ArtEntry, ArtRegistry};
 use crate::rules::ruleset::RuleSet;
 use crate::sim::combat::TargetKind;
 use crate::sim::combat::combat_weapon::WeaponSlot;
 use crate::sim::components::{Position, WeaponMuzzleFlash};
 use crate::sim::world::{SimFireEvent, Simulation};
+use crate::util::fixed_math::SimFixed;
 
 const MUZZLE_FLASH_RATE_MS: u32 = 67;
 const MIN_PROJECTILE_VISUAL_MS: u32 = 160;
 const MAX_PROJECTILE_VISUAL_MS: u32 = 900;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FireOriginBranch {
+    Flh,
+    BuildingPixelOffset,
+    GarrisonPort,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FireOriginError {
+    MissingArt,
+    MissingGarrisonPort,
+    BuildingTurretMetadataMissing,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct FireOrigin {
@@ -23,7 +39,10 @@ pub(crate) struct FireOrigin {
     pub screen_y: f32,
     pub rx: u16,
     pub ry: u16,
+    pub sub_x: SimFixed,
+    pub sub_y: SimFixed,
     pub z: u8,
+    pub branch: FireOriginBranch,
 }
 
 #[derive(Debug, Clone)]
@@ -90,8 +109,148 @@ pub(crate) fn resolve_fire_origin_from_art(
         screen_y: position.screen_y + dy,
         rx: position.rx,
         ry: position.ry,
+        sub_x: position.sub_x,
+        sub_y: position.sub_y,
         z: position.z,
+        branch: FireOriginBranch::Flh,
     }
+}
+
+fn snapshot_abs_leptons(ev: &SimFireEvent) -> (i64, i64) {
+    (
+        ev.origin_snapshot.rx as i64 * 256 + ev.origin_snapshot.sub_x.to_num::<i64>(),
+        ev.origin_snapshot.ry as i64 * 256 + ev.origin_snapshot.sub_y.to_num::<i64>(),
+    )
+}
+
+fn split_abs_leptons(abs_x: i64, abs_y: i64) -> (u16, u16, SimFixed, SimFixed) {
+    let rx = abs_x.div_euclid(256).clamp(0, u16::MAX as i64) as u16;
+    let ry = abs_y.div_euclid(256).clamp(0, u16::MAX as i64) as u16;
+    let sub_x = SimFixed::from_num(abs_x.rem_euclid(256) as i32);
+    let sub_y = SimFixed::from_num(abs_y.rem_euclid(256) as i32);
+    (rx, ry, sub_x, sub_y)
+}
+
+fn fire_origin_from_world_delta(
+    ev: &SimFireEvent,
+    world_dx: f32,
+    world_dy: f32,
+    screen_y_lift: i32,
+    branch: FireOriginBranch,
+) -> FireOrigin {
+    let (base_abs_x, base_abs_y) = snapshot_abs_leptons(ev);
+    let abs_x = base_abs_x + world_dx.round() as i64;
+    let abs_y = base_abs_y + world_dy.round() as i64;
+    let (rx, ry, sub_x, sub_y) = split_abs_leptons(abs_x, abs_y);
+    let (screen_x, screen_y) =
+        crate::util::lepton::lepton_to_screen(rx, ry, sub_x, sub_y, ev.origin_snapshot.z);
+    FireOrigin {
+        screen_x,
+        screen_y: screen_y - screen_y_lift as f32,
+        rx,
+        ry,
+        sub_x,
+        sub_y,
+        z: ev.origin_snapshot.z,
+        branch,
+    }
+}
+
+fn iso_pixel_to_world_delta(pixel_x: i32, pixel_y: i32) -> (f32, f32) {
+    let a = pixel_x as f32 * 256.0 / 30.0;
+    let b = pixel_y as f32 * 256.0 / 15.0;
+    ((a + b) / 2.0, (b - a) / 2.0)
+}
+
+fn resolve_event_art<'a>(
+    sim: &Simulation,
+    rules: &'a RuleSet,
+    art_reg: &'a ArtRegistry,
+    ev: &SimFireEvent,
+) -> Option<(
+    &'a ArtEntry,
+    Option<&'a crate::rules::object_type::ObjectType>,
+)> {
+    let etype_str = sim.interner.resolve(ev.attacker_type_ref);
+    let object = rules.object(etype_str);
+    let rules_image = object
+        .map(|o| o.image.clone())
+        .unwrap_or_else(|| etype_str.to_string());
+    let art = art_reg.resolve_metadata_entry(etype_str, &rules_image)?;
+    Some((art, object))
+}
+
+pub(crate) fn resolve_fire_origin_from_sim(
+    sim: &Simulation,
+    rules: &RuleSet,
+    art_reg: &ArtRegistry,
+    ev: &SimFireEvent,
+) -> Result<FireOrigin, FireOriginError> {
+    let (art, object) =
+        resolve_event_art(sim, rules, art_reg, ev).ok_or(FireOriginError::MissingArt)?;
+
+    if let Some(muzzle_idx) = ev.garrison_muzzle_index {
+        let Some((px, py)) = art.muzzle_flash_positions.get(muzzle_idx as usize).copied() else {
+            return Err(FireOriginError::MissingGarrisonPort);
+        };
+        let (world_dx, world_dy) = iso_pixel_to_world_delta(px, py);
+        return Ok(fire_origin_from_world_delta(
+            ev,
+            world_dx - 128.0,
+            world_dy - 128.0,
+            0,
+            FireOriginBranch::GarrisonPort,
+        ));
+    }
+
+    if ev.origin_snapshot.category == EntityCategory::Structure {
+        let offset = match ev.weapon_slot {
+            WeaponSlot::Primary => art.primary_fire_pixel_offset,
+            WeaponSlot::Secondary => art.secondary_fire_pixel_offset,
+        };
+        if let Some((mut px, py)) = offset {
+            if matches!(ev.weapon_slot, WeaponSlot::Primary)
+                && art.primary_fire_dual_offset
+                && ev.origin_snapshot.burst_index % 2 == 1
+            {
+                px = -px;
+            }
+            let (world_dx, world_dy) = iso_pixel_to_world_delta(px, py);
+            return Ok(fire_origin_from_world_delta(
+                ev,
+                world_dx - 128.0,
+                world_dy - 128.0,
+                0,
+                FireOriginBranch::BuildingPixelOffset,
+            ));
+        }
+        if object.is_some_and(|obj| obj.has_turret && obj.turret_anim_is_voxel) {
+            return Err(FireOriginError::BuildingTurretMetadataMissing);
+        }
+    }
+
+    let flh = crate::rules::flh::resolve_flh(
+        art.primary_fire_flh,
+        art.secondary_fire_flh,
+        art.elite_primary_fire_flh,
+        art.elite_secondary_fire_flh,
+        matches!(ev.weapon_slot, WeaponSlot::Primary),
+        ev.veterancy,
+    );
+    let lateral = if ev.origin_snapshot.burst_index % 2 == 1 {
+        -flh.lateral
+    } else {
+        flh.lateral
+    };
+    let (world_dx, world_dy) =
+        crate::util::flh_transform::flh_to_world_offset_32way(flh.forward, lateral, ev.facing);
+    Ok(fire_origin_from_world_delta(
+        ev,
+        world_dx,
+        world_dy,
+        crate::util::flh_transform::adjust_for_z_leptons(flh.height),
+        FireOriginBranch::Flh,
+    ))
 }
 
 #[allow(dead_code)]
@@ -114,20 +273,7 @@ fn resolve_non_garrison_fire_origin_from_sim(
     if ev.garrison_muzzle_index.is_some() {
         return None;
     }
-    let entity = sim.entities.get(ev.attacker_id)?;
-    let etype_str = sim.interner.resolve(ev.attacker_type_ref);
-    let rules_image = rules
-        .object(etype_str)
-        .map(|o| o.image.clone())
-        .unwrap_or_else(|| etype_str.to_string());
-    let art = art_reg.resolve_metadata_entry(etype_str, &rules_image)?;
-    Some(resolve_fire_origin_from_art(
-        &entity.position,
-        art,
-        ev.weapon_slot,
-        ev.veterancy,
-        ev.facing,
-    ))
+    resolve_fire_origin_from_sim(sim, rules, art_reg, ev).ok()
 }
 
 fn build_non_garrison_fire_effects(
@@ -140,11 +286,7 @@ fn build_non_garrison_fire_effects(
     let mut sounds = Vec::new();
 
     for ev in events {
-        if ev.garrison_muzzle_index.is_some() {
-            continue;
-        }
-        let Some(origin) = resolve_non_garrison_fire_origin_from_sim(sim, rules, art_reg, ev)
-        else {
+        let Ok(origin) = resolve_fire_origin_from_sim(sim, rules, art_reg, ev) else {
             continue;
         };
         if let Some(report_id) = ev.report_sound_id {
@@ -152,6 +294,9 @@ fn build_non_garrison_fire_effects(
                 sound_id: sim.interner.resolve(report_id).to_string(),
                 screen_pos: Some((origin.screen_x, origin.screen_y)),
             });
+        }
+        if ev.garrison_muzzle_index.is_some() {
+            continue;
         }
         let Some(weapon) = rules.weapon(sim.interner.resolve(ev.weapon_id)) else {
             continue;
@@ -191,7 +336,10 @@ fn target_fire_destination(sim: &Simulation, target: TargetKind) -> Option<FireO
                 screen_y: entity.position.screen_y,
                 rx: entity.position.rx,
                 ry: entity.position.ry,
+                sub_x: entity.position.sub_x,
+                sub_y: entity.position.sub_y,
                 z: entity.position.z,
+                branch: FireOriginBranch::Flh,
             })
         }
         TargetKind::Cell(rx, ry) => {
@@ -207,7 +355,10 @@ fn target_fire_destination(sim: &Simulation, target: TargetKind) -> Option<FireO
                 screen_y,
                 rx,
                 ry,
+                sub_x: crate::util::lepton::CELL_CENTER_LEPTON,
+                sub_y: crate::util::lepton::CELL_CENTER_LEPTON,
                 z: 0,
+                branch: FireOriginBranch::Flh,
             })
         }
     }
@@ -217,16 +368,20 @@ fn projectile_direction_frame(origin: &FireOrigin, dest: &FireOrigin, frame_coun
     if frame_count == 0 {
         return 0;
     }
-    let dx = dest.rx as i32 - origin.rx as i32;
-    let dy = dest.ry as i32 - origin.ry as i32;
+    let dx = (dest.rx as i32 * 256 + dest.sub_x.to_num::<i32>())
+        - (origin.rx as i32 * 256 + origin.sub_x.to_num::<i32>());
+    let dy = (dest.ry as i32 * 256 + dest.sub_y.to_num::<i32>())
+        - (origin.ry as i32 * 256 + origin.sub_y.to_num::<i32>());
     let facing = crate::sim::movement::facing_from_delta(dx, dy);
     (((facing as u32 * frame_count as u32) / 256) as u16).min(frame_count.saturating_sub(1))
 }
 
 fn projectile_duration_ms(origin: &FireOrigin, dest: &FireOrigin, weapon_speed: i32) -> u32 {
-    let dx = dest.rx as f32 - origin.rx as f32;
-    let dy = dest.ry as f32 - origin.ry as f32;
-    let distance_cells = (dx * dx + dy * dy).sqrt().max(1.0);
+    let dx = (dest.rx as f32 * 256.0 + dest.sub_x.to_num::<f32>())
+        - (origin.rx as f32 * 256.0 + origin.sub_x.to_num::<f32>());
+    let dy = (dest.ry as f32 * 256.0 + dest.sub_y.to_num::<f32>())
+        - (origin.ry as f32 * 256.0 + origin.sub_y.to_num::<f32>());
+    let distance_cells = ((dx * dx + dy * dy).sqrt() / 256.0).max(1.0);
     let speed = weapon_speed.max(1) as f32;
     ((distance_cells / speed) * 1000.0) as u32
 }
@@ -240,9 +395,6 @@ fn build_projectile_visuals(
     let mut visuals = Vec::new();
 
     for ev in events {
-        if ev.garrison_muzzle_index.is_some() {
-            continue;
-        }
         let Some(weapon) = rules.weapon(sim.interner.resolve(ev.weapon_id)) else {
             continue;
         };
@@ -258,8 +410,7 @@ fn build_projectile_visuals(
         let Some(image) = projectile.image.as_deref() else {
             continue;
         };
-        let Some(origin) = resolve_non_garrison_fire_origin_from_sim(sim, rules, art_reg, ev)
-        else {
+        let Ok(origin) = resolve_fire_origin_from_sim(sim, rules, art_reg, ev) else {
             continue;
         };
         let Some(dest) = target_fire_destination(sim, ev.target) else {
@@ -443,6 +594,16 @@ mod tests {
             weapon_id: weapon,
             facing: 0,
             veterancy: 0,
+            origin_snapshot: crate::sim::world::FireOriginSnapshot {
+                rx: 10,
+                ry: 11,
+                sub_x: crate::util::lepton::CELL_CENTER_LEPTON,
+                sub_y: crate::util::lepton::CELL_CENTER_LEPTON,
+                z: 0,
+                facing: 0,
+                category: EntityCategory::Infantry,
+                burst_index: 0,
+            },
             target: crate::sim::combat::TargetKind::Entity(2),
             report_sound_id: Some(report),
             garrison_muzzle_index: None,
@@ -485,6 +646,93 @@ mod tests {
         let (flashes, sounds) = build_non_garrison_fire_effects(&sim, &rules, &art, &events);
         assert!(flashes.is_empty());
         assert!(sounds.is_empty());
+    }
+
+    #[test]
+    fn burst_index_flips_lateral_flh_side() {
+        let (sim, rules, _art, mut events) = fire_effect_fixture();
+        let e1 = events[0].attacker_type_ref;
+        let art = ArtRegistry::from_ini(&IniFile::from_str("[GI]\nPrimaryFireFLH=80,24,105\n"));
+        events[0].origin_snapshot.burst_index = 0;
+        let first = resolve_fire_origin_from_sim(&sim, &rules, &art, &events[0]).unwrap();
+        events[0].origin_snapshot.burst_index = 1;
+        events[0].attacker_type_ref = e1;
+        let second = resolve_fire_origin_from_sim(&sim, &rules, &art, &events[0]).unwrap();
+
+        assert_eq!(first.branch, FireOriginBranch::Flh);
+        assert_eq!(second.branch, FireOriginBranch::Flh);
+        assert_ne!(first.screen_x, second.screen_x);
+    }
+
+    #[test]
+    fn building_fire_pixel_offset_resolves_world_origin() {
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "\
+[BuildingTypes]\n0=ATESLA\n\n\
+[InfantryTypes]\n\n[VehicleTypes]\n\n[AircraftTypes]\n\n\
+[ATESLA]\nStrength=600\nArmor=steel\nPrimary=TeslaWeapon\n\n\
+[TeslaWeapon]\nDamage=100\nROF=80\nRange=7\nWarhead=TeslaWH\nReport=TeslaAttack\n\n\
+[TeslaWH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+        ))
+        .unwrap();
+        let art = ArtRegistry::from_ini(&IniFile::from_str(
+            "[ATESLA]\nPrimaryFirePixelOffset=11,-26\n",
+        ));
+        let mut sim = Simulation::new();
+        let atesla = sim.interner.intern("ATESLA");
+        let weapon = sim.interner.intern("TeslaWeapon");
+        let ev = SimFireEvent {
+            attacker_id: 7,
+            attacker_type_ref: atesla,
+            weapon_slot: WeaponSlot::Primary,
+            weapon_id: weapon,
+            facing: 0,
+            veterancy: 0,
+            origin_snapshot: crate::sim::world::FireOriginSnapshot {
+                rx: 20,
+                ry: 20,
+                sub_x: crate::util::lepton::CELL_CENTER_LEPTON,
+                sub_y: crate::util::lepton::CELL_CENTER_LEPTON,
+                z: 0,
+                facing: 0,
+                category: EntityCategory::Structure,
+                burst_index: 0,
+            },
+            target: TargetKind::Cell(23, 20),
+            report_sound_id: None,
+            garrison_muzzle_index: None,
+            occupant_anim: None,
+        };
+
+        let origin = resolve_fire_origin_from_sim(&sim, &rules, &art, &ev).unwrap();
+        assert_eq!(origin.branch, FireOriginBranch::BuildingPixelOffset);
+        assert_ne!(
+            (origin.rx, origin.ry, origin.sub_x, origin.sub_y),
+            (
+                ev.origin_snapshot.rx,
+                ev.origin_snapshot.ry,
+                ev.origin_snapshot.sub_x,
+                ev.origin_snapshot.sub_y
+            )
+        );
+    }
+
+    #[test]
+    fn garrison_report_sound_uses_muzzle_port_origin() {
+        let (sim, rules, _art, mut events) = fire_effect_fixture();
+        let art = ArtRegistry::from_ini(&IniFile::from_str("[GI]\nMuzzleFlash0=30,15\n"));
+        events[0].garrison_muzzle_index = Some(0);
+        let (flashes, sounds) = build_non_garrison_fire_effects(&sim, &rules, &art, &events);
+
+        assert!(flashes.is_empty());
+        assert_eq!(sounds.len(), 1);
+        let origin = resolve_fire_origin_from_sim(&sim, &rules, &art, &events[0]).unwrap();
+        match &sounds[0] {
+            GameSoundEvent::WeaponFired { screen_pos, .. } => {
+                assert_eq!(*screen_pos, Some((origin.screen_x, origin.screen_y)));
+            }
+            other => panic!("unexpected sound event: {other:?}"),
+        }
     }
 
     #[test]

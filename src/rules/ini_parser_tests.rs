@@ -84,6 +84,19 @@ fn test_get_f32() {
 }
 
 #[test]
+fn test_get_light_f32_stops_before_comma() {
+    let ini: IniFile =
+        IniFile::from_str("[Light]\nGood=0.25\nCommaDecimal=0,01\nSigned=-0.5\nBad=abc\n");
+
+    let section: &IniSection = ini.section("Light").unwrap();
+    assert!((section.get_light_f32("Good").unwrap() - 0.25).abs() < 0.001);
+    assert_eq!(section.get_light_f32("CommaDecimal"), Some(0.0));
+    assert!((section.get_light_f32("Signed").unwrap() + 0.5).abs() < 0.001);
+    assert_eq!(section.get_light_f32("Bad"), None);
+    assert_eq!(section.get_light_f32("Missing"), None);
+}
+
+#[test]
 fn test_get_bool() {
     let ini: IniFile = IniFile::from_str(
         "[Flags]\nDoubleOwned=yes\nCloakable=no\nActive=true\nDebug=false\nBit=1\nOff=0\n",

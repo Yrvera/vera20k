@@ -73,6 +73,13 @@ pub struct ArtEntry {
     /// Elite-rank override for secondary fire offset (from art.ini `EliteSecondaryFireFLH=`).
     /// None means use `secondary_fire_flh`.
     pub elite_secondary_fire_flh: Option<Flh>,
+    /// Fixed building primary fire screen-pixel offset.
+    /// Used by non-turret buildings before converting the pixel delta to world leptons.
+    pub primary_fire_pixel_offset: Option<(i32, i32)>,
+    /// Fixed building secondary fire screen-pixel offset.
+    pub secondary_fire_pixel_offset: Option<(i32, i32)>,
+    /// Building primary fire alternates the X pixel offset by burst side.
+    pub primary_fire_dual_offset: bool,
     /// SHP vehicle: walk animation frame count per facing (from `WalkFrames=`).
     pub walk_frames: Option<u16>,
     /// SHP vehicle: firing animation frame count per facing (from `FiringFrames=`).
@@ -93,8 +100,13 @@ pub struct ArtEntry {
     /// Infantry secondary prone/deploy discharge frame (`SecondaryProne=`).
     /// Defaults to `SecondaryFire` when absent.
     pub secondary_prone: u8,
-    /// Extra ambient light added to this building's cell (ExtraLight= in art.ini).
-    /// Positive = brighten, negative = darken. Scale: 1000 ≈ 1.0 brightness unit.
+    /// Animation `Report=` sound ID. Used as a fallback when `StartSound=`
+    /// is absent.
+    pub report: Option<String>,
+    /// Animation `StartSound=` sound ID. Takes priority over `Report=`.
+    pub start_sound: Option<String>,
+    /// Signed building body draw-depth/Z adjustment (ExtraLight= in art.ini).
+    /// This is not a map RGB lighting value.
     /// Retail values: GADPSA=350, GAICBM=-100.
     pub extra_light: i32,
     /// Harvester queueing cell offset from building origin (QueueingCell= in art.ini).
@@ -299,6 +311,14 @@ impl ArtRegistry {
             let elite_secondary_fire_flh: Option<Flh> = section
                 .get("EliteSecondaryFireFLH")
                 .map(|v| parse_flh(Some(v)));
+            let primary_fire_pixel_offset = section
+                .get("PrimaryFirePixelOffset")
+                .and_then(parse_i32_pair);
+            let secondary_fire_pixel_offset = section
+                .get("SecondaryFirePixelOffset")
+                .and_then(parse_i32_pair);
+            let primary_fire_dual_offset =
+                section.get_bool("PrimaryFireDualOffset").unwrap_or(false);
 
             // SHP vehicle frame tags (only meaningful when Voxel=no for vehicles).
             let walk_frames: Option<u16> = section.get_i32("WalkFrames").map(|v| v.max(0) as u16);
@@ -326,6 +346,8 @@ impl ArtRegistry {
                 .get_i32("SecondaryProne")
                 .map(|v| v.max(0) as u8)
                 .unwrap_or(secondary_fire);
+            let report = section.get("Report").map(|s| s.to_string());
+            let start_sound = section.get("StartSound").map(|s| s.to_string());
             let extra_light: i32 = section.get_i32("ExtraLight").unwrap_or(0);
             let queueing_cell: Option<(u16, u16)> = section.get("QueueingCell").and_then(|s| {
                 let mut parts = s.split(',');
@@ -427,6 +449,9 @@ impl ArtRegistry {
                     secondary_fire_flh,
                     elite_primary_fire_flh,
                     elite_secondary_fire_flh,
+                    primary_fire_pixel_offset,
+                    secondary_fire_pixel_offset,
+                    primary_fire_dual_offset,
                     walk_frames,
                     firing_frames,
                     standing_frames,
@@ -435,6 +460,8 @@ impl ArtRegistry {
                     fire_prone,
                     secondary_fire,
                     secondary_prone,
+                    report,
+                    start_sound,
                     extra_light,
                     queueing_cell,
                     pads,
@@ -970,6 +997,13 @@ fn parse_numbered_cell_offsets(section: &IniSection, prefix: &str) -> Vec<(i16, 
         }
     }
     offsets
+}
+
+fn parse_i32_pair(value: &str) -> Option<(i32, i32)> {
+    let mut parts = value.split(',');
+    let x = parts.next()?.trim().parse::<i32>().ok()?;
+    let y = parts.next()?.trim().parse::<i32>().ok()?;
+    Some((x, y))
 }
 
 /// Replace the 2nd character of a filename with the theater-specific letter.

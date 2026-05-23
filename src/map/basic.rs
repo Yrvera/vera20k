@@ -6,6 +6,15 @@
 
 use crate::rules::ini_parser::IniFile;
 
+/// Owner of the active `SpecialFlags::DestroyableBridges` bit during load.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeDestroyabilityMode {
+    /// Campaign and map-editor loads let map `[SpecialFlags]` override reset defaults.
+    CampaignOrEditor,
+    /// Skirmish/multiplayer replaces the active flag with session staging state.
+    SkirmishOrMultiplayer { bridge_destruction: bool },
+}
+
 /// Parsed metadata from a map's `[Basic]` section.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BasicSection {
@@ -34,6 +43,18 @@ pub struct SpecialFlagsSection {
     pub tiberium_spreads: Option<bool>,
     /// Map-level override: are bridges destroyable? (DestroyableBridges=)
     pub destroyable_bridges: Option<bool>,
+}
+
+impl SpecialFlagsSection {
+    /// Resolve the active `DestroyableBridges` bit using gamemd's mode ownership.
+    pub fn effective_destroyable_bridges(&self, mode: BridgeDestroyabilityMode) -> bool {
+        match mode {
+            BridgeDestroyabilityMode::CampaignOrEditor => self.destroyable_bridges.unwrap_or(true),
+            BridgeDestroyabilityMode::SkirmishOrMultiplayer { bridge_destruction } => {
+                bridge_destruction
+            }
+        }
+    }
 }
 
 /// Parse the `[Basic]` section from a map INI.
@@ -103,5 +124,41 @@ mod tests {
         assert_eq!(flags.tiberium_grows, Some(true));
         assert_eq!(flags.tiberium_spreads, Some(false));
         assert_eq!(flags.destroyable_bridges, Some(false));
+    }
+
+    #[test]
+    fn specialflags_destroyablebridges_map_override_campaign_only() {
+        let flags = SpecialFlagsSection {
+            destroyable_bridges: Some(false),
+            ..SpecialFlagsSection::default()
+        };
+
+        assert!(!flags.effective_destroyable_bridges(BridgeDestroyabilityMode::CampaignOrEditor));
+        assert!(flags.effective_destroyable_bridges(
+            BridgeDestroyabilityMode::SkirmishOrMultiplayer {
+                bridge_destruction: true,
+            }
+        ));
+    }
+
+    #[test]
+    fn skirmish_bridge_destruction_option_controls_specialflags_bit_8000() {
+        let flags = SpecialFlagsSection {
+            destroyable_bridges: Some(true),
+            ..SpecialFlagsSection::default()
+        };
+
+        assert!(!flags.effective_destroyable_bridges(
+            BridgeDestroyabilityMode::SkirmishOrMultiplayer {
+                bridge_destruction: false,
+            }
+        ));
+        assert!(
+            SpecialFlagsSection::default().effective_destroyable_bridges(
+                BridgeDestroyabilityMode::SkirmishOrMultiplayer {
+                    bridge_destruction: true,
+                }
+            )
+        );
     }
 }

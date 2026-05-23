@@ -238,6 +238,8 @@ pub struct ObjectType {
     pub adjacent: i32,
     /// Whether this structure expands the owner's build area.
     pub base_normal: bool,
+    /// Whether this structure can expand allied build area when BuildOffAlly is enabled.
+    pub eligibile_for_ally_building: bool,
     /// Whether selling/destruction can eject infantry crew from this structure.
     pub crewed: bool,
     /// Sound ID played when this unit is selected (references sound.ini section).
@@ -696,7 +698,7 @@ pub struct ObjectType {
     pub number_impassable_rows: i32,
 
     // -- Point light source fields (from rules.ini, primarily buildings) --
-    /// Light emission range in leptons (LightVisibility= in rules.ini). Default 0 (no light).
+    /// Light emission range in leptons (LightVisibility= in rules.ini). Default 5000.
     /// 256 leptons = 1 cell. Used by lamp posts (GALITE=5000) and other light-emitting buildings.
     pub light_visibility: i32,
     /// Light emission brightness (LightIntensity= in rules.ini). Default 0.0.
@@ -873,8 +875,11 @@ impl ObjectType {
                 .get_i32("PixelSelectionBracketDelta")
                 .unwrap_or(0),
             build_cat: section.get("BuildCat").and_then(BuildCategory::from_ini),
-            adjacent: section.get_i32("Adjacent").unwrap_or(6),
+            adjacent: section.get_i32("Adjacent").unwrap_or(3),
             base_normal: section.get_bool("BaseNormal").unwrap_or(true),
+            eligibile_for_ally_building: section
+                .get_bool("EligibileForAllyBuilding")
+                .unwrap_or(false),
             crewed: section.get_bool("Crewed").unwrap_or(false),
             voice_select: section.get("VoiceSelect").map(|s| s.to_string()),
             voice_move: section.get("VoiceMove").map(|s| s.to_string()),
@@ -1096,11 +1101,11 @@ impl ObjectType {
             number_impassable_rows: section.get_i32("NumberImpassableRows").unwrap_or(-1),
 
             // Point light source fields
-            light_visibility: section.get_i32("LightVisibility").unwrap_or(0),
-            light_intensity: section.get_f32("LightIntensity").unwrap_or(0.0),
-            light_red_tint: section.get_f32("LightRedTint").unwrap_or(1.0),
-            light_green_tint: section.get_f32("LightGreenTint").unwrap_or(1.0),
-            light_blue_tint: section.get_f32("LightBlueTint").unwrap_or(1.0),
+            light_visibility: section.get_i32("LightVisibility").unwrap_or(5000),
+            light_intensity: section.get_light_f32("LightIntensity").unwrap_or(0.0),
+            light_red_tint: section.get_light_f32("LightRedTint").unwrap_or(1.0),
+            light_green_tint: section.get_light_f32("LightGreenTint").unwrap_or(1.0),
+            light_blue_tint: section.get_light_f32("LightBlueTint").unwrap_or(1.0),
 
             // TechnoType particle effects
             natural_particle_system: section
@@ -1257,8 +1262,9 @@ mod tests {
         assert_eq!(obj.secondary, None);
         assert_eq!(obj.image, "MTNK"); // Defaults to ID when Image= absent.
         assert_eq!(obj.build_cat, None);
-        assert_eq!(obj.adjacent, 6);
+        assert_eq!(obj.adjacent, 3);
         assert!(obj.base_normal);
+        assert!(!obj.eligibile_for_ally_building);
         assert!(!obj.crewed);
     }
 
@@ -1276,9 +1282,42 @@ mod tests {
         assert_eq!(obj.foundation, "2x2");
         assert_eq!(obj.armor, "wood");
         assert_eq!(obj.build_cat, Some(BuildCategory::Power));
-        assert_eq!(obj.adjacent, 6);
+        assert_eq!(obj.adjacent, 3);
         assert!(obj.base_normal);
+        assert!(!obj.eligibile_for_ally_building);
         assert!(obj.crewed);
+    }
+
+    #[test]
+    fn test_light_visibility_defaults_to_5000_without_intensity() {
+        let ini: IniFile = IniFile::from_str("[GALITE]\n");
+        let section: &IniSection = ini.section("GALITE").unwrap();
+        let obj: ObjectType =
+            ObjectType::from_ini_section("GALITE", section, ObjectCategory::Building);
+
+        assert_eq!(obj.light_visibility, 5000);
+        assert_eq!(obj.light_intensity, 0.0);
+    }
+
+    #[test]
+    fn test_light_fields_use_light_float_parser() {
+        let ini: IniFile = IniFile::from_str(
+            "[GALITE]\n\
+             LightVisibility=4096\n\
+             LightIntensity=0.75\n\
+             LightRedTint=-0.25\n\
+             LightGreenTint=0,01\n\
+             LightBlueTint=1.5\n",
+        );
+        let section: &IniSection = ini.section("GALITE").unwrap();
+        let obj: ObjectType =
+            ObjectType::from_ini_section("GALITE", section, ObjectCategory::Building);
+
+        assert_eq!(obj.light_visibility, 4096);
+        assert!((obj.light_intensity - 0.75).abs() < 0.001);
+        assert!((obj.light_red_tint + 0.25).abs() < 0.001);
+        assert_eq!(obj.light_green_tint, 0.0);
+        assert!((obj.light_blue_tint - 1.5).abs() < 0.001);
     }
 
     #[test]
@@ -1337,8 +1376,9 @@ mod tests {
         assert_eq!(obj.power, 0);
         assert_eq!(obj.foundation, "1x1");
         assert_eq!(obj.build_cat, None);
-        assert_eq!(obj.adjacent, 6);
+        assert_eq!(obj.adjacent, 3);
         assert!(obj.base_normal);
+        assert!(!obj.eligibile_for_ally_building);
         assert!(!obj.crewed);
     }
 
@@ -1354,14 +1394,16 @@ mod tests {
 
     #[test]
     fn test_parse_building_placement_flags() {
-        let ini: IniFile =
-            IniFile::from_str("[GAGAP]\nFoundation=2x2\nAdjacent=0\nBaseNormal=no\n");
+        let ini: IniFile = IniFile::from_str(
+            "[GAGAP]\nFoundation=2x2\nAdjacent=0\nBaseNormal=no\nEligibileForAllyBuilding=yes\n",
+        );
         let section: &IniSection = ini.section("GAGAP").unwrap();
         let obj: ObjectType =
             ObjectType::from_ini_section("GAGAP", section, ObjectCategory::Building);
 
         assert_eq!(obj.adjacent, 0);
         assert!(!obj.base_normal);
+        assert!(obj.eligibile_for_ally_building);
     }
 
     #[test]

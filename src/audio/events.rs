@@ -157,6 +157,14 @@ pub enum GameSoundEvent {
         eva_sound_id: Option<String>,
     },
 
+    /// Positional sound emitted when a world-effect animation starts.
+    WorldEffectStarted {
+        /// sound.ini ID for the selected animation's StartSound/Report.
+        sound_id: String,
+        /// Screen position for spatial audio.
+        screen_pos: Option<(f32, f32)>,
+    },
+
     /// Generic UI sound (button click, error beep, etc.).
     UiSound {
         /// sound.ini ID for the UI sound.
@@ -185,7 +193,8 @@ impl GameSoundEvent {
             | Self::BuildingGarrisonedSfx { sound_id, .. }
             | Self::C4Planted { sound_id, .. }
             | Self::RefineryExitSfx { sound_id, .. }
-            | Self::BridgeRepaired { sound_id, .. } => sound_id,
+            | Self::BridgeRepaired { sound_id, .. }
+            | Self::WorldEffectStarted { sound_id, .. } => sound_id,
         }
     }
 
@@ -202,6 +211,7 @@ impl GameSoundEvent {
             Self::C4Planted { screen_pos, .. } => *screen_pos,
             Self::RefineryExitSfx { screen_pos, .. } => *screen_pos,
             Self::BridgeRepaired { screen_pos, .. } => *screen_pos,
+            Self::WorldEffectStarted { screen_pos, .. } => *screen_pos,
             _ => None,
         }
     }

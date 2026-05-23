@@ -295,7 +295,7 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                     let ry = entity.position.ry;
                     sim.occupancy.remove(rx, ry, *dead_id);
                 }
-                sim.entities.remove(*dead_id);
+                sim.despawn_entity(*dead_id);
             }
             if !death_finished.is_empty() {
                 refresh_after_tick = true;
@@ -527,7 +527,12 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                             screen_pos: Some((sx, sy)),
                         }
                     }
-                    SimSoundEvent::BridgeRepaired { rx, ry, owner } => {
+                    SimSoundEvent::BridgeRepaired {
+                        rx,
+                        ry,
+                        owner,
+                        eva_allowed,
+                    } => {
                         // Spatial SFX gated on rules.bridge_rules.repair_sound
                         // being set (the original game gates on
                         // `RulesClass+0x248 != -1`).
@@ -546,9 +551,10 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                         // `EVA_BridgeRepaired` from the registry (no faction
                         // fallback needed — bridge repair is faction-agnostic).
                         let owner_str = sim.interner.resolve(owner);
-                        let eva_sound_id = if local_owner_name
-                            .as_deref()
-                            .is_some_and(|l| l.eq_ignore_ascii_case(owner_str))
+                        let eva_sound_id = if eva_allowed
+                            && local_owner_name
+                                .as_deref()
+                                .is_some_and(|l| l.eq_ignore_ascii_case(owner_str))
                         {
                             let faction = crate::app_building_anim::eva_faction_key(
                                 owner_str,
@@ -568,6 +574,21 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                             sound_id,
                             screen_pos,
                             eva_sound_id,
+                        }
+                    }
+                    SimSoundEvent::WorldEffectStarted {
+                        sound_id,
+                        rx,
+                        ry,
+                        sub_x,
+                        sub_y,
+                        z,
+                    } => {
+                        let (sx, sy) =
+                            crate::util::lepton::lepton_to_screen(rx, ry, sub_x, sub_y, z);
+                        GameSoundEvent::WorldEffectStarted {
+                            sound_id: sim.interner.resolve(sound_id).to_string(),
+                            screen_pos: Some((sx, sy)),
                         }
                     }
                 };
@@ -1172,20 +1193,32 @@ pub(crate) fn screen_point_to_world(state: &AppState, screen_x: f32, screen_y: f
 /// Shared owner for world-space point -> map-cell resolution in the app layer.
 ///
 /// Any app code that already has world coordinates should use this instead of
-/// re-calling `screen_to_iso_with_height_and_bridges` inline.
+/// re-calling the tactical inverse inline.
 pub(crate) fn world_point_to_cell(
     world_x: f32,
     world_y: f32,
     height_map: &std::collections::BTreeMap<(u16, u16), u8>,
-    bridge_height_map: Option<&std::collections::BTreeMap<(u16, u16), u8>>,
+    bridge_cells: Option<
+        &std::collections::BTreeMap<(u16, u16), crate::map::terrain::TacticalBridgeCell>,
+    >,
 ) -> (u16, u16) {
-    let (iso_rx, iso_ry) = terrain::screen_to_iso_with_height_and_bridges(
+    let inverse = terrain::screen_to_cell_tactical_inverse(
         world_x,
         world_y,
-        height_map,
-        bridge_height_map,
+        terrain::TacticalInverseContext {
+            height_map,
+            bridge_cells,
+            viewport_offset_x: 0.0,
+            viewport_offset_y: 0.0,
+        },
     );
+    let (iso_rx, iso_ry) = match inverse {
+        terrain::TacticalInverseResult::Cell { rx, ry }
+        | terrain::TacticalInverseResult::Fallback { rx, ry } => (rx, ry),
+    };
     (
+        // Current Rust app callers expect a concrete in-map cell. Keep this
+        // clamp isolated here until off-map sentinel behavior is modeled.
         iso_rx.round().max(0.0) as u16,
         iso_ry.round().max(0.0) as u16,
     )
@@ -1205,7 +1238,7 @@ pub(crate) fn screen_point_to_world_cell(
         world_x,
         world_y,
         &state.height_map,
-        Some(&state.bridge_height_map),
+        Some(&state.tactical_bridge_inverse_map),
     )
 }
 
@@ -1410,25 +1443,34 @@ mod tests {
     }
 
     #[test]
-    fn world_point_to_cell_forwards_bridge_height_map() {
-        let deck_z = 4_u8;
+    fn world_point_to_cell_forwards_tactical_bridge_inverse_map() {
         let (world_x, world_y) = (150.0, 180.0);
         let height_map = BTreeMap::new();
-        let mut bridge_height_map = BTreeMap::new();
-        for bx in 8..=12 {
-            for by in 3..=7 {
-                bridge_height_map.insert((bx, by), deck_z);
-            }
-        }
-        let (expected_rx, expected_ry) = crate::map::terrain::screen_to_iso_with_height_and_bridges(
+        let bridge_cells = BTreeMap::from([(
+            (10, 5),
+            crate::map::terrain::TacticalBridgeCell {
+                deck_z: 4,
+                structural: true,
+                direction_zero: true,
+            },
+        )]);
+        let expected = crate::map::terrain::screen_to_cell_tactical_inverse(
             world_x,
             world_y,
-            &height_map,
-            Some(&bridge_height_map),
+            crate::map::terrain::TacticalInverseContext {
+                height_map: &height_map,
+                bridge_cells: Some(&bridge_cells),
+                viewport_offset_x: 0.0,
+                viewport_offset_y: 0.0,
+            },
         );
+        let (expected_rx, expected_ry) = match expected {
+            crate::map::terrain::TacticalInverseResult::Cell { rx, ry }
+            | crate::map::terrain::TacticalInverseResult::Fallback { rx, ry } => (rx, ry),
+        };
 
         assert_eq!(
-            world_point_to_cell(world_x, world_y, &height_map, Some(&bridge_height_map)),
+            world_point_to_cell(world_x, world_y, &height_map, Some(&bridge_cells)),
             (
                 expected_rx.round().max(0.0) as u16,
                 expected_ry.round().max(0.0) as u16,

@@ -57,7 +57,7 @@ fn building_health_hover_target(state: &AppState, local_owner: Option<&str>) -> 
         state.sandbox_full_visibility,
         state.rules.as_ref(),
         &state.height_map,
-        Some(&state.bridge_height_map),
+        Some(&state.tactical_bridge_inverse_map),
     )?;
     match hover.kind {
         HoverTargetKind::FriendlyStructure | HoverTargetKind::EnemyStructure => {

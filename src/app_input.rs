@@ -105,7 +105,7 @@ pub(crate) fn handle_mouse_input(
                                 shift,
                                 state.rules.as_ref(),
                                 &state.height_map,
-                                Some(&state.bridge_height_map),
+                                Some(&state.tactical_bridge_inverse_map),
                                 Some(&sim.interner),
                             );
                         }
@@ -738,6 +738,7 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
     let terrain_speed_config = current_sim.terrain_speed_config.clone();
     let bridge_explosions = current_sim.bridge_explosions.clone();
     let metallic_debris = current_sim.metallic_debris.clone();
+    let bridge_anim_sounds = current_sim.bridge_anim_sounds.clone();
     let effect_frame_counts = current_sim.effect_frame_counts.clone();
     let terrain_costs = current_sim.terrain_costs.clone();
 
@@ -756,6 +757,7 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
         terrain_speed_config,
         bridge_explosions,
         metallic_debris,
+        bridge_anim_sounds,
         effect_frame_counts,
         terrain_costs,
     );
@@ -773,6 +775,17 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
     // Rebuild sprite/unit atlases so all entity types in the loaded save have
     // atlas entries before the first render frame.
     crate::app_sim_tick::refresh_entity_atlases(state);
+
+    // Rebuild transient lighting from the loaded live entity set so destroyed
+    // light-source buildings do not leave stale point lights behind.
+    if let Some(resolved_terrain) = state.resolved_terrain.as_ref() {
+        state.lighting_grid = crate::app_init::rebuild_lighting_grid_from_sim(
+            resolved_terrain,
+            &state.map_lighting_config,
+            state.simulation.as_ref(),
+            state.rules.as_ref(),
+        );
+    }
 
     // Reset timing to prevent a burst of ticks after the load.
     state.last_update_time = std::time::Instant::now();

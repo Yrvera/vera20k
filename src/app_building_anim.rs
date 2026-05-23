@@ -702,26 +702,21 @@ pub(crate) fn tick_garrison_muzzle_flashes(state: &mut AppState, dt_ms: u32) {
             .pending_fire_effects
             .iter()
             .filter_map(|ev| {
-                let muzzle_idx = ev.garrison_muzzle_index? as usize;
                 let anim_name = ev.occupant_anim.as_ref()?;
-                let entity = sim.entities.get(ev.attacker_id)?;
-                let etype_str = sim.interner.resolve(entity.type_ref);
-                let rules_image = rules
-                    .object(etype_str)
-                    .map(|o| o.image.clone())
-                    .unwrap_or_else(|| etype_str.to_string());
-                let art = art_reg.resolve_metadata_entry(etype_str, &rules_image)?;
-                if art.muzzle_flash_positions.is_empty() {
-                    return None;
-                }
-                let (px, py) =
-                    art.muzzle_flash_positions[muzzle_idx % art.muzzle_flash_positions.len()];
+                let origin =
+                    crate::app_fire_effects::resolve_fire_origin_from_sim(sim, rules, art_reg, ev)
+                        .ok()?;
                 let total_frames = sim.effect_frame_counts.get(anim_name).copied().unwrap_or(1);
                 Some(GarrisonMuzzleFlash {
                     building_id: ev.attacker_id,
                     shp_name: anim_name.clone(),
-                    pixel_x: px,
-                    pixel_y: py,
+                    pixel_x: 0,
+                    pixel_y: 0,
+                    screen_x: origin.screen_x,
+                    screen_y: origin.screen_y,
+                    rx: origin.rx,
+                    ry: origin.ry,
+                    z: origin.z,
                     frame: 0,
                     total_frames,
                     rate_ms: 67, // ~15fps, standard for RA2 muzzle flash anims

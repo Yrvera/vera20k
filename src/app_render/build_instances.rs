@@ -442,6 +442,9 @@ pub(super) fn update_minimap(state: &mut AppState, local_owner: &Option<String>)
             state.rules.as_ref(),
             Some(&sim.radar_events),
             Some(&sim.interner),
+            sim.bridge_state.as_ref(),
+            &sim.radar_terrain_dirty_cells,
+            sim.radar_terrain_dirty_generation,
         );
     }
 }

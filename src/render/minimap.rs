@@ -69,6 +69,7 @@ pub struct MinimapRenderer {
     last_fog_generation: u64,
     /// Last local owner used for fog-aware refresh.
     last_visibility_owner: Option<InternedId>,
+    last_radar_terrain_dirty_generation: u64,
 }
 
 impl MinimapRenderer {
@@ -199,6 +200,7 @@ impl MinimapRenderer {
             last_sim_tick: u64::MAX,
             last_fog_generation: u64::MAX,
             last_visibility_owner: None,
+            last_radar_terrain_dirty_generation: u64::MAX,
         }
     }
 
@@ -219,18 +221,26 @@ impl MinimapRenderer {
         rules: Option<&RuleSet>,
         radar_events: Option<&crate::sim::radar::RadarEventQueue>,
         interner: Option<&crate::sim::intern::StringInterner>,
+        bridge_state: Option<&crate::sim::bridge_state::BridgeRuntimeState>,
+        radar_terrain_dirty_cells: &[(u16, u16)],
+        radar_terrain_dirty_generation: u64,
     ) {
         let fog_generation = visibility.map_or(0, |(_, fog)| fog.generation);
         let visibility_owner = visibility.map(|(owner, _)| owner);
         if sim_tick == self.last_sim_tick
             && fog_generation == self.last_fog_generation
             && visibility_owner == self.last_visibility_owner
+            && radar_terrain_dirty_generation == self.last_radar_terrain_dirty_generation
         {
             return;
+        }
+        if radar_terrain_dirty_generation != self.last_radar_terrain_dirty_generation {
+            self.apply_bridge_terrain_dirty_cells(bridge_state, radar_terrain_dirty_cells);
         }
         self.last_sim_tick = sim_tick;
         self.last_fog_generation = fog_generation;
         self.last_visibility_owner = visibility_owner;
+        self.last_radar_terrain_dirty_generation = radar_terrain_dirty_generation;
 
         let size: u32 = MINIMAP_SIZE;
         let rgba: &mut Vec<u8> = &mut self.rgba_scratch;
@@ -335,6 +345,9 @@ impl MinimapRenderer {
         if let Some(events) = radar_events {
             let config = rules.map(|r| &r.radar_event_config);
             for event in events.iter() {
+                if !event.event_type.draws_on_minimap() {
+                    continue;
+                }
                 let (sx, sy) = crate::map::terrain::iso_to_screen(event.rx, event.ry, 0);
                 let (cx, cy) = world_to_minimap_pixel(
                     sx,
@@ -428,6 +441,69 @@ impl MinimapRenderer {
                 depth_or_array_layers: 1,
             },
         );
+    }
+
+    fn apply_bridge_terrain_dirty_cells(
+        &mut self,
+        bridge_state: Option<&crate::sim::bridge_state::BridgeRuntimeState>,
+        cells: &[(u16, u16)],
+    ) {
+        let bridge_color = OverlayClassification::Bridge
+            .color(0)
+            .map(|c| dim_color(c, 0.5));
+        for &(rx, ry) in cells {
+            let Some(terrain_pixel) = self
+                .terrain_pixels
+                .iter()
+                .find(|pixel| pixel.rx == rx && pixel.ry == ry)
+                .copied()
+            else {
+                continue;
+            };
+            set_pixel(
+                &mut self.base_terrain_rgba,
+                MINIMAP_SIZE,
+                terrain_pixel.px,
+                terrain_pixel.py,
+                terrain_pixel.color,
+            );
+
+            let bridge_visible = bridge_state
+                .and_then(|state| state.cell(rx, ry))
+                .is_some_and(|cell| {
+                    cell.deck_present
+                        && crate::sim::bridge_state::BridgeRuntimeState::effective_render_state(
+                            cell,
+                        )
+                        .is_some()
+                });
+
+            if bridge_visible {
+                let Some(color) = bridge_color else { continue };
+                if let Some(existing) = self
+                    .overlay_pixels
+                    .iter_mut()
+                    .find(|pixel| pixel.rx == rx && pixel.ry == ry)
+                {
+                    existing.px = terrain_pixel.px;
+                    existing.py = terrain_pixel.py;
+                    existing.color = color;
+                    existing.classification = OverlayClassification::Bridge;
+                } else {
+                    self.overlay_pixels.push(OverlayPixel {
+                        rx,
+                        ry,
+                        px: terrain_pixel.px,
+                        py: terrain_pixel.py,
+                        color,
+                        classification: OverlayClassification::Bridge,
+                    });
+                }
+            } else {
+                self.overlay_pixels
+                    .retain(|pixel| !(pixel.rx == rx && pixel.ry == ry));
+            }
+        }
     }
 
     /// Build a SpriteInstance that fills the given screen rect with the minimap.

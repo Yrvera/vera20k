@@ -225,13 +225,15 @@ pub(crate) fn build_shp_instances(
             }
         };
         let depth: f32 = apply_bridge_depth_bias(state, entity, base_depth);
-        let mut tint: [f32; 3] = state
-            .lighting_grid
-            .get(&(pos.rx, pos.ry))
-            .copied()
-            .unwrap_or(lighting::DEFAULT_TINT);
+        let mut tint: [f32; 3] = match entity.category {
+            EntityCategory::Infantry => state.lighting_grid.infantry_tint_at((pos.rx, pos.ry)),
+            EntityCategory::Structure => {
+                state.lighting_grid.building_body_tint_at((pos.rx, pos.ry))
+            }
+            _ => state.lighting_grid.techno_tint_at((pos.rx, pos.ry)),
+        };
         // Entity ambient glow so infantry are visible on dark maps.
-        // Buildings do NOT get entity glow — they use ExtraLight and point lights instead.
+        // Buildings do NOT get entity glow; only non-building technos use the extra-light rules.
         if entity.category == EntityCategory::Infantry {
             if let Some(rules) = &state.rules {
                 let glow = rules.general.extra_infantry_light;

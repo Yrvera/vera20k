@@ -118,7 +118,7 @@ pub struct ResolvedTerrainCell {
     /// Cached zone classification (0-7) matching gamemd.exe RecalcZoneType (0x483C80).
     /// Indexes columns of `MOVEMENT_CLASS_PASSABILITY` in zone_build.rs.
     ///
-    /// 0=Ground, 1=Road(crate), 2=Wall, 3=Beach, 4=Water,
+    /// 0=Ground, 1=Crushable overlay, 2=Wall, 3=Beach, 4=Water,
     /// 5=Building/TerrainObject, 6=Impassable, 7=Outside.
     ///
     /// Does NOT include building footprints (those are entity-based, checked via
@@ -296,13 +296,13 @@ impl ResolvedTerrainGrid {
     }
 
     pub fn step_coord_by_direction(&self, coord: (u16, u16), direction: u8) -> Option<(u16, u16)> {
-        if direction == 8 {
+        if crate::util::direction::is_tube_step_direction(direction) {
             return Some(
                 self.tube_at_cell(coord.0, coord.1)
                     .map_or((0, 0), |tube| tube.exit),
             );
         }
-        let (dx, dy) = direction_offset(direction)?;
+        let (dx, dy) = crate::util::direction::direction_delta(direction)?;
         let nx = coord.0 as i32 + dx;
         let ny = coord.1 as i32 + dy;
         if nx < 0 || ny < 0 || nx >= self.width as i32 || ny >= self.height as i32 {
@@ -455,12 +455,15 @@ impl ResolvedTerrainGrid {
                 // Compute zone_type matching RecalcZoneType (0x483C80) priority chain.
                 // Must be computed BEFORE ground_walk_blocked is OR'd with overlay/terrain
                 // object flags, since we need the base terrain passability.
-                let zone_type = if overlay_effects.is_crate {
+                let zone_type = if overlay_effects.is_crushable {
                     zone_class::ROAD
                 } else if overlay_effects.is_wall {
                     zone_class::WALL
-                } else if overlay_effects.has_tiberium {
+                } else if overlay_effects.overlay_land_wheel_speed_zero || overlay_effects.is_a_rock
+                {
                     zone_class::IMPASSABLE
+                } else if overlay_effects.is_rubble {
+                    zone_class::GROUND
                 } else if overlay_effects.is_gate {
                     zone_class::IMPASSABLE
                 } else if metadata.is_water {
@@ -469,7 +472,9 @@ impl ResolvedTerrainGrid {
                     == crate::sim::pathfinding::passability::LandType::Beach.as_index()
                 {
                     zone_class::BEACH
-                } else if base_ground_walk_blocked {
+                } else if wheel_speed_at_or_below_one_percent(metadata.speed_costs.wheel)
+                    || base_ground_walk_blocked
+                {
                     zone_class::IMPASSABLE
                 } else if terrain_object_blocks {
                     zone_class::BUILDING
@@ -889,6 +894,38 @@ impl ResolvedTerrainGrid {
             .map(|cell| ((cell.rx, cell.ry), cell.bridge_deck_level))
             .collect()
     }
+
+    /// Build bridge metadata for the tactical screen-to-cell inverse.
+    ///
+    /// This keeps the existing deck-height map intact for render/debug users,
+    /// while exposing the structural and direction-zero flags consumed by the
+    /// verified gamemd tactical inverse branch.
+    pub fn build_tactical_bridge_inverse_map(
+        &self,
+    ) -> BTreeMap<(u16, u16), crate::map::terrain::TacticalBridgeCell> {
+        self.cells
+            .iter()
+            .filter(|cell| {
+                cell.has_bridge_deck
+                    && !cell
+                        .bridge_layer
+                        .as_ref()
+                        .is_some_and(|bl| bl.direction == BridgeDirection::Low)
+            })
+            .map(|cell| {
+                (
+                    (cell.rx, cell.ry),
+                    crate::map::terrain::TacticalBridgeCell {
+                        deck_z: cell.bridge_deck_level,
+                        structural: cell.bridge_facts.has_structural_bridge(),
+                        direction_zero: cell
+                            .bridge_facts
+                            .has_flag(crate::map::bridge_facts::BRIDGE_FLAG_DIRECTION_ZERO),
+                    },
+                )
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -955,12 +992,15 @@ impl Default for TileMetadata {
 #[derive(Debug, Clone, Default)]
 struct OverlayEffects {
     overlay_blocks: bool,
-    /// Overlay is a crate (Crate=yes). RecalcZoneType → ZoneType 1 (Road).
-    is_crate: bool,
+    /// Overlay is Crushable=yes. RecalcZoneType -> reduced ZoneType 1.
+    is_crushable: bool,
     /// Overlay is a gate (Gate=yes). RecalcZoneType → ZoneType 6 (Impassable).
     is_gate: bool,
-    /// Overlay is a wall (Wall=yes, NOT Land=Road). RecalcZoneType → ZoneType 2 (Wall).
+    /// Overlay is Wall=yes after Crushable failed. RecalcZoneType -> 2.
     is_wall: bool,
+    overlay_land_wheel_speed_zero: bool,
+    is_a_rock: bool,
+    is_rubble: bool,
     has_bridge_deck: bool,
     bridge_layer: Option<BridgeLayer>,
     /// Low bridges override terrain to Road (NoUseTileLandType=true, Land=Road).
@@ -1108,20 +1148,6 @@ fn auto_tube_direction_for_tile(
         }
     }
     None
-}
-
-fn direction_offset(direction: u8) -> Option<(i32, i32)> {
-    match direction & 7 {
-        0 => Some((0, -1)),
-        1 => Some((1, -1)),
-        2 => Some((1, 0)),
-        3 => Some((1, 1)),
-        4 => Some((0, 1)),
-        5 => Some((-1, 1)),
-        6 => Some((-1, 0)),
-        7 => Some((-1, -1)),
-        _ => None,
-    }
 }
 
 fn load_tile_metadata(
@@ -1319,9 +1345,12 @@ fn classify_overlay_effects(
 
         let flags = overlay_registry.and_then(|reg| reg.flags(overlay.overlay_id));
         let is_wall = flags.map(|f| f.wall).unwrap_or(false);
+        let is_crushable = flags.map(|f| f.crushable).unwrap_or(false);
         let is_tiberium = flags.map(|f| f.tiberium).unwrap_or(false);
-        let is_crate = flags.map(|f| f.crate_type).unwrap_or(false);
         let is_gate = flags.map(|f| f.is_gate).unwrap_or(false);
+        let overlay_land_wheel_speed_zero = flags.map(|f| f.land_wheel_speed_zero).unwrap_or(false);
+        let is_a_rock = flags.map(|f| f.is_a_rock).unwrap_or(false);
+        let is_rubble = flags.map(|f| f.is_rubble).unwrap_or(false);
 
         // Road/pavement overlays have Land=Road in rules.ini. In the original
         // engine, Wall=yes overlays with Land=Road act as road surfaces, not
@@ -1331,20 +1360,30 @@ fn classify_overlay_effects(
             .map(|land| land.eq_ignore_ascii_case("Road"))
             .unwrap_or(false);
 
-        if is_road_overlay {
+        if is_crushable {
+            result.is_crushable = true;
+        } else if is_road_overlay {
             result.is_road = true;
         } else if is_wall {
             result.overlay_blocks = true;
             result.is_wall = true;
+        } else if overlay_land_wheel_speed_zero || is_a_rock {
+            result.overlay_blocks = true;
         }
         if is_tiberium {
             result.has_tiberium = true;
         }
-        if is_crate {
-            result.is_crate = true;
-        }
         if is_gate {
             result.is_gate = true;
+        }
+        if overlay_land_wheel_speed_zero {
+            result.overlay_land_wheel_speed_zero = true;
+        }
+        if is_a_rock {
+            result.is_a_rock = true;
+        }
+        if is_rubble {
+            result.is_rubble = true;
         }
         if is_bridge && result.bridge_layer.is_none() {
             result.has_bridge_deck = true;
@@ -1372,6 +1411,10 @@ fn classify_overlay_effects(
         }
     }
     result
+}
+
+fn wheel_speed_at_or_below_one_percent(wheel: Option<u8>) -> bool {
+    wheel.is_some_and(|speed| speed <= 1)
 }
 
 #[cfg(test)]
@@ -1534,6 +1577,17 @@ mod tests {
         let grid = ResolvedTerrainGrid::from_cells(1, 1, vec![make_test_cell(0, 0)]);
 
         assert_eq!(grid.step_coord_by_direction((0, 0), 8), Some((0, 0)));
+    }
+
+    #[test]
+    fn invalid_non_8_direction_does_not_wrap() {
+        let cells = (0..3)
+            .flat_map(|ry| (0..3).map(move |rx| make_test_cell(rx, ry)))
+            .collect();
+        let grid = ResolvedTerrainGrid::from_cells(3, 3, cells);
+
+        assert_eq!(grid.step_coord_by_direction((1, 1), 9), None);
+        assert_eq!(grid.step_coord_by_direction((1, 1), 255), None);
     }
 
     #[test]
@@ -1729,6 +1783,105 @@ mod tests {
             effects.bridge_layer.as_ref().map(|b| b.direction),
             Some(BridgeDirection::EastWest)
         );
+    }
+
+    #[test]
+    fn overlay_zone_type_priority_matches_recalc_zone_type_on_load() {
+        let ini = IniFile::from_str(
+            "\
+[OverlayTypes]
+0=SANDBAG
+1=HARDWALL
+2=ROCKOVL
+3=RUBBLE
+[Clear]
+Wheel=100%
+[Rock]
+Wheel=0%
+[SANDBAG]
+Crushable=yes
+Wall=yes
+Land=Clear
+[HARDWALL]
+Wall=yes
+Land=Clear
+[ROCKOVL]
+Land=Rock
+[RUBBLE]
+IsRubble=yes
+",
+        );
+        let reg = OverlayTypeRegistry::from_ini(&ini, None);
+        let map = make_map(
+            vec![
+                MapCell {
+                    rx: 0,
+                    ry: 0,
+                    tile_index: 0,
+                    sub_tile: 0,
+                    z: 0,
+                },
+                MapCell {
+                    rx: 1,
+                    ry: 0,
+                    tile_index: 0,
+                    sub_tile: 0,
+                    z: 0,
+                },
+                MapCell {
+                    rx: 2,
+                    ry: 0,
+                    tile_index: 0,
+                    sub_tile: 0,
+                    z: 0,
+                },
+                MapCell {
+                    rx: 3,
+                    ry: 0,
+                    tile_index: 0,
+                    sub_tile: 0,
+                    z: 0,
+                },
+            ],
+            vec![
+                OverlayEntry {
+                    rx: 0,
+                    ry: 0,
+                    overlay_id: 0,
+                    frame: 0,
+                },
+                OverlayEntry {
+                    rx: 1,
+                    ry: 0,
+                    overlay_id: 1,
+                    frame: 0,
+                },
+                OverlayEntry {
+                    rx: 2,
+                    ry: 0,
+                    overlay_id: 2,
+                    frame: 0,
+                },
+                OverlayEntry {
+                    rx: 3,
+                    ry: 0,
+                    overlay_id: 3,
+                    frame: 0,
+                },
+            ],
+            Vec::new(),
+        );
+
+        let grid = ResolvedTerrainGrid::build(&map, None, None, None, Some(&reg), false, 0);
+
+        assert_eq!(grid.cell(0, 0).unwrap().zone_type, zone_class::ROAD);
+        assert!(!grid.cell(0, 0).unwrap().overlay_blocks);
+        assert_eq!(grid.cell(1, 0).unwrap().zone_type, zone_class::WALL);
+        assert!(grid.cell(1, 0).unwrap().overlay_blocks);
+        assert_eq!(grid.cell(2, 0).unwrap().zone_type, zone_class::IMPASSABLE);
+        assert!(grid.cell(2, 0).unwrap().overlay_blocks);
+        assert_eq!(grid.cell(3, 0).unwrap().zone_type, zone_class::GROUND);
+        assert!(!grid.cell(3, 0).unwrap().overlay_blocks);
     }
 
     #[test]

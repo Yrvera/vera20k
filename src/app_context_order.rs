@@ -96,7 +96,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
             state.sandbox_full_visibility,
             state.rules.as_ref(),
             &state.height_map,
-            Some(&state.bridge_height_map),
+            Some(&state.tactical_bridge_inverse_map),
         );
 
         let only_miners_selected = mobile_count > 0 && selected_miner_ids.len() == mobile_count;
@@ -503,7 +503,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     state.sandbox_full_visibility,
                     state.rules.as_ref(),
                     &state.height_map,
-                    Some(&state.bridge_height_map),
+                    Some(&state.tactical_bridge_inverse_map),
                 )
             } else {
                 pick_enemy_target_stable_id(
@@ -514,7 +514,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     state.sandbox_full_visibility,
                     state.rules.as_ref(),
                     &state.height_map,
-                    Some(&state.bridge_height_map),
+                    Some(&state.tactical_bridge_inverse_map),
                 )
             };
             // --- Group destination distribution ---
