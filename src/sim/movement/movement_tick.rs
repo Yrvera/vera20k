@@ -1049,6 +1049,7 @@ pub fn tick_movement_with_grids(
         if let Some(victim) = entities.get_mut(victim_id) {
             victim.health.current = 0;
         }
+        entities.clear_radio_contacts_for(victim_id);
         entities.remove(victim_id);
         stats.crush_kills = stats.crush_kills.saturating_add(1);
     }

@@ -50,6 +50,7 @@ mod movement_path;
 mod movement_reservation;
 mod movement_step;
 mod movement_tick;
+mod path_markers;
 
 // --- Movement-related modules (public API) ---
 pub mod air_movement;

@@ -93,12 +93,12 @@ mod tests {
     fn adj_from_edges(zone_count: u16, edges: &[(ZoneId, ZoneId)]) -> ZoneAdjacency {
         let mut neighbors: Vec<Vec<ZoneId>> = vec![Vec::new(); zone_count as usize + 1];
         for &(a, b) in edges {
-            neighbors[a as usize].push(b);
-            neighbors[b as usize].push(a);
-        }
-        for list in &mut neighbors {
-            list.sort_unstable();
-            list.dedup();
+            if !neighbors[a as usize].contains(&b) {
+                neighbors[a as usize].push(b);
+            }
+            if !neighbors[b as usize].contains(&a) {
+                neighbors[b as usize].push(a);
+            }
         }
         ZoneAdjacency::new(neighbors)
     }

@@ -225,13 +225,18 @@ impl SpeedType {
 /// pathfinding code. Recent RE shows these rows are keyed by derived
 /// `MovementClass8`, not directly by our terrain `LandType` buckets.
 ///
-/// Example: `MovementZone=Subterranean` enables dig-in/dig-out cell search
-/// logic that plain Drive does not have.
+/// Example: `MovementZone=Subterannean` enables dig-in/dig-out cell search
+/// logic that plain Drive does not have. The misspelling is the retail parser
+/// spelling.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
-#[repr(u8)]
+#[repr(i8)]
 pub enum MovementZone {
+    /// Invalid parser result. Retail stores `-1` for unknown strings rather than
+    /// silently falling back to Normal; downstream runtime behavior still needs
+    /// a dedicated trace before it should be used for parity claims.
+    Invalid = -1,
     /// Row 0: only movement class 0 is passable.
     Normal = 0,
     /// Row 1: classes 0 and 1 are passable.
@@ -276,7 +281,7 @@ impl MovementZone {
             "amphibiousdestroyer" => Self::AmphibiousDestroyer,
             "amphibiouscrusher" => Self::AmphibiousCrusher,
             "amphibious" => Self::Amphibious,
-            "subterranean" | "subterrannean" => Self::Subterranean,
+            "subterannean" | "subterranean" | "subterrannean" => Self::Subterranean,
             "infantry" => Self::Infantry,
             "infantrydestroyer" => Self::InfantryDestroyer,
             "fly" => Self::Fly,
@@ -284,9 +289,22 @@ impl MovementZone {
             "waterbeach" => Self::WaterBeach,
             "crusherall" => Self::CrusherAll,
             _ => {
-                log::warn!("Unknown MovementZone '{}', defaulting to Normal", value);
-                Self::Normal
+                log::warn!(
+                    "Unknown MovementZone '{}', preserving binary invalid row -1",
+                    value
+                );
+                Self::Invalid
             }
+        }
+    }
+
+    /// Passability matrix row index. Invalid parser rows have no safe matrix row
+    /// in the current Rust model; callers should treat `None` as non-parity data.
+    pub fn matrix_row(self) -> Option<usize> {
+        if self == Self::Invalid {
+            None
+        } else {
+            Some(self as usize)
         }
     }
 
@@ -298,7 +316,7 @@ impl MovementZone {
     }
 
     /// All MovementZone variants that need computed zone grids.
-    /// Fly is excluded — airborne units trivially reach everywhere.
+    /// gamemd rebuilds every binary movement-zone row, including Fly.
     pub fn all_ground() -> &'static [MovementZone] {
         &[
             MovementZone::Normal,
@@ -310,6 +328,7 @@ impl MovementZone {
             MovementZone::Subterranean,
             MovementZone::Infantry,
             MovementZone::InfantryDestroyer,
+            MovementZone::Fly,
             MovementZone::Water,
             MovementZone::WaterBeach,
             MovementZone::CrusherAll,
@@ -332,6 +351,7 @@ impl MovementZone {
             MovementZone::Water => SpeedType::Float,
             MovementZone::WaterBeach => SpeedType::FloatBeach,
             MovementZone::Fly => SpeedType::Winged,
+            MovementZone::Invalid => SpeedType::Track,
         }
     }
 
@@ -339,7 +359,10 @@ impl MovementZone {
     pub fn can_use_bridges(&self) -> bool {
         !matches!(
             self,
-            MovementZone::Water | MovementZone::WaterBeach | MovementZone::Fly
+            MovementZone::Water
+                | MovementZone::WaterBeach
+                | MovementZone::Fly
+                | MovementZone::Invalid
         )
     }
 }
@@ -482,6 +505,10 @@ mod tests {
             MovementZone::from_ini("Subterranean"),
             MovementZone::Subterranean
         );
+        assert_eq!(
+            MovementZone::from_ini("Subterannean"),
+            MovementZone::Subterranean
+        );
         // Legacy misspelling still works
         assert_eq!(
             MovementZone::from_ini("Subterrannean"),
@@ -503,7 +530,8 @@ mod tests {
     }
 
     #[test]
-    fn test_movement_zone_unknown_defaults_to_normal() {
-        assert_eq!(MovementZone::from_ini("invalid"), MovementZone::Normal);
+    fn test_movement_zone_unknown_preserves_invalid_row() {
+        assert_eq!(MovementZone::from_ini("invalid"), MovementZone::Invalid);
+        assert_eq!(MovementZone::Invalid.matrix_row(), None);
     }
 }

@@ -873,12 +873,12 @@ fn per_movement_zone_grids_are_separate() {
         zg.map_for(MovementZone::Water).is_some(),
         "Water should have a zone map"
     );
-    // Fly should NOT have a zone map (excluded from all_ground).
+    // The binary rebuild loop covers all 13 matrix rows, including Fly.
     assert!(
-        zg.map_for(MovementZone::Fly).is_none(),
-        "Fly should not have a zone map"
+        zg.map_for(MovementZone::Fly).is_some(),
+        "Fly should have a zone map"
     );
-    // All 12 ground movement zones should have maps.
+    // All matrix-backed movement zones should have maps.
     for &mz in MovementZone::all_ground() {
         assert!(
             zg.map_for(mz).is_some(),

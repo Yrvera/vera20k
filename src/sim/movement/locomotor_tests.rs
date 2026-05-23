@@ -50,6 +50,7 @@ fn make_obj(locomotor: LocomotorKind, category: ObjectCategory) -> ObjectType {
         build_cat: None,
         adjacent: 6,
         base_normal: true,
+        eligibile_for_ally_building: false,
         crewed: false,
         voice_select: None,
         voice_move: None,

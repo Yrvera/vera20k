@@ -28,16 +28,7 @@ use crate::sim::movement::locomotor::MovementLayer;
 const DIR_INVALID: u8 = 255;
 
 /// Delta table: direction index → (dx, dy). Same order as pathfinding::NEIGHBORS.
-const DIR_DELTAS: [(i32, i32); 8] = [
-    (0, -1),  // 0 = N
-    (1, -1),  // 1 = NE
-    (1, 0),   // 2 = E
-    (1, 1),   // 3 = SE
-    (0, 1),   // 4 = S
-    (-1, 1),  // 5 = SW
-    (-1, 0),  // 6 = W
-    (-1, -1), // 7 = NW
-];
+const DIR_DELTAS: [(i32, i32); 8] = crate::util::direction::DIRECTION_DELTAS;
 
 /// Returns which of the 8 compass directions connects two adjacent cells,
 /// or `DIR_INVALID` if the cells are not 8-connected neighbors.

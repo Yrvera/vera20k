@@ -146,7 +146,7 @@ impl ZoneMap {
 /// Zone adjacency graph — which zones border each other.
 #[derive(Debug, Clone)]
 pub struct ZoneAdjacency {
-    /// For each zone ID (1-indexed), the sorted list of adjacent zone IDs.
+    /// For each zone ID (1-indexed), adjacent zone IDs in discovery order.
     pub neighbors: Vec<Vec<ZoneId>>,
 }
 
@@ -165,7 +165,7 @@ impl ZoneAdjacency {
         if idx >= self.neighbors.len() {
             return false;
         }
-        self.neighbors[idx].binary_search(&b).is_ok()
+        self.neighbors[idx].contains(&b)
     }
 
     /// Get the neighbors of a zone.
@@ -295,9 +295,6 @@ impl ZoneGrid {
         to: (u16, u16),
         to_layer: MovementLayer,
     ) -> bool {
-        if mz == MovementZone::Fly {
-            return true; // Fly units can reach anywhere
-        }
         let Some(zone_map) = self.maps.get(&mz) else {
             return true; // No zone data — assume reachable (conservative)
         };

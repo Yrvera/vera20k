@@ -3451,8 +3451,6 @@ pub fn raw_track_meta(index: u8) -> Option<&'static RawTrack> {
 
 /// Number of discrete direction indices in RA2's facing system (8 compass points).
 const FACING_DIRECTIONS: usize = 8;
-/// Facing units per direction (256 / 8 = 32).
-const FACING_PER_DIR: u8 = 32;
 
 /// Select the TurnTrack index for a vehicle moving from `current_facing` toward
 /// a neighbor cell that requires `next_facing`.
@@ -3547,7 +3545,7 @@ pub fn build_sharp_turn_fallback(current_facing: u8) -> Option<DriveTrackSelecti
 fn facing_to_dir(facing: u8) -> usize {
     // Add half a direction (16) for rounding, then divide by 32.
     // Wrapping add handles the 255+16 → 15 case correctly.
-    (facing.wrapping_add(FACING_PER_DIR / 2) / FACING_PER_DIR) as usize % FACING_DIRECTIONS
+    crate::util::direction::direction_from_facing(facing) as usize
 }
 
 /// Result of selecting a drive track for a facing change.

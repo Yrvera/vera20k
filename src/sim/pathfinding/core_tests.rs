@@ -2121,6 +2121,137 @@ fn code2_chain_lookup_stays_on_selected_layer() {
 }
 
 // ---------------------------------------------------------------------------
+// Search-scoped 0x40000 marker overlay tests
+// Matches gamemd.exe temporary A* marker cost consumed at 0x00429830.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn search_marker_overlay_uses_xor_parity() {
+    let mut overlay = SearchMarkerOverlay::new();
+    assert!(overlay.is_empty());
+
+    overlay.toggle((3, 1));
+    assert!(overlay.contains((3, 1)));
+    assert!(!overlay.is_empty());
+
+    overlay.toggle((3, 1));
+    assert!(!overlay.contains((3, 1)));
+    assert!(overlay.is_empty());
+}
+
+#[test]
+fn astar_edge_cost_marker_stacks_after_code2_before_tiebreak() {
+    let mut overlay = SearchMarkerOverlay::new();
+    overlay.toggle((3, 1));
+
+    let code2_cost = STEP_COST * CODE2_MULT_JAM;
+    let marked_cost = apply_search_marker_cost(code2_cost, Some(&overlay), (3, 1));
+    assert_eq!(
+        marked_cost,
+        STEP_COST * CODE2_MULT_JAM * SEARCH_MARKER_COST_MULTIPLIER
+    );
+
+    let tentative = marked_cost + DIR_TIEBREAK[2];
+    assert_eq!(
+        tentative,
+        STEP_COST * CODE2_MULT_JAM * SEARCH_MARKER_COST_MULTIPLIER + DIR_TIEBREAK[2],
+        "marker must multiply the code-2 step cost, with direction tiebreak added afterward"
+    );
+}
+
+#[test]
+fn astar_marker_overlay_penalizes_normal_compass_edges() {
+    let grid = PathGrid::new(7, 3);
+    let mut overlay = SearchMarkerOverlay::new();
+    overlay.toggle((3, 1));
+
+    let path = astar_search(
+        &grid,
+        (0, 1),
+        MovementLayer::Ground,
+        (6, 1),
+        &AStarOptions {
+            marker_overlay: Some(&overlay),
+            ..Default::default()
+        },
+    )
+    .expect("marked normal-edge route should still have a detour");
+
+    assert!(
+        !path.iter().any(|step| (step.rx, step.ry) == (3, 1)),
+        "A* should avoid the marked destination cell when a comparable unmarked route exists: {:?}",
+        path
+    );
+}
+
+#[test]
+fn astar_marker_overlay_does_not_apply_to_direction8_tube_edge() {
+    let mut cells = Vec::new();
+    for y in 0..3 {
+        for x in 0..5 {
+            cells.push(make_resolved_cell(x, y));
+        }
+    }
+    let start_idx = 5; // (0, 1)
+    cells[start_idx].yr_cell_land_type = YR_CELL_LAND_TUNNEL;
+    cells[start_idx].tube_index = Some(TubeId(0));
+    let terrain = ResolvedTerrainGrid::from_cells_with_tubes(
+        5,
+        3,
+        cells,
+        vec![TubeFact::explicit((0, 1), (4, 1), 2, vec![2, 2])],
+    );
+    let grid = PathGrid::from_resolved_terrain(&terrain);
+
+    let mut overlay = SearchMarkerOverlay::new();
+    overlay.toggle((4, 1));
+    let path = astar_search(
+        &grid,
+        (0, 1),
+        MovementLayer::Ground,
+        (4, 1),
+        &AStarOptions {
+            resolved_terrain: Some(&terrain),
+            marker_overlay: Some(&overlay),
+            ..Default::default()
+        },
+    )
+    .expect("explicit tube edge should remain usable even when the exit is marked");
+
+    assert_eq!(
+        path.iter()
+            .map(|step| (step.rx, step.ry))
+            .collect::<Vec<_>>(),
+        vec![(0, 1), (4, 1)],
+        "direction-8 tube edge should bypass normal marker cost"
+    );
+}
+
+#[test]
+fn astar_bridge_marker_overlay_is_search_scoped_and_does_not_mutate_pathgrid() {
+    let grid = PathGrid::new(7, 3);
+    let before = grid.clone();
+    let mut overlay = SearchMarkerOverlay::new();
+    overlay.toggle((3, 1));
+
+    let _ = astar_search(
+        &grid,
+        (0, 1),
+        MovementLayer::Ground,
+        (6, 1),
+        &AStarOptions {
+            marker_overlay: Some(&overlay),
+            ..Default::default()
+        },
+    )
+    .expect("search with marker overlay should still find a path");
+
+    assert_eq!(grid.cells, before.cells);
+    assert_eq!(grid.width, before.width);
+    assert_eq!(grid.height, before.height);
+}
+
+// ---------------------------------------------------------------------------
 // Path truncation tests (RA2 24-step segment system)
 // ---------------------------------------------------------------------------
 

@@ -676,6 +676,58 @@ fn test_movement_tick_stats_report_blocked_attempts() {
 }
 
 #[test]
+fn test_crush_removal_clears_live_radio_contacts() {
+    let mut entities = EntityStore::new();
+    let grid: PathGrid = PathGrid::new(8, 8);
+
+    let mut victim = GameEntity::test_default(1, "E1", "Soviets", 2, 2);
+    victim.category = EntityCategory::Infantry;
+    victim.crushable = true;
+    victim.mark_live_contact_with(2);
+    entities.insert(victim);
+
+    let mut mover = GameEntity::test_default(2, "HTNK", "Americans", 1, 2);
+    let mut loco = make_drive_loco_for_test();
+    loco.movement_zone = crate::rules::locomotor_type::MovementZone::Crusher;
+    mover.locomotor = Some(loco);
+    mover.mark_live_contact_with(1);
+    entities.insert(mover);
+
+    assert!(issue_move_command(
+        &mut entities,
+        &grid,
+        2,
+        (3, 2),
+        SimFixed::from_num(1024),
+        false,
+        None,
+        None,
+        None,
+        true,
+    ));
+
+    let mut occupancy = OccupancyGrid::rebuild(&entities);
+    let stats = tick_movement_with_grid(
+        &mut entities,
+        Some(&grid),
+        &Default::default(),
+        &Default::default(),
+        &mut occupancy,
+        &mut SimRng::new(0),
+        250,
+        0,
+        &mut test_interner(),
+    );
+
+    assert_eq!(stats.crush_kills, 1);
+    assert!(entities.get(1).is_none());
+    assert!(
+        !entities.get(2).unwrap().has_live_contact_with(1),
+        "crush removal should clear stale radio contact"
+    );
+}
+
+#[test]
 fn test_friendly_scatter_issues_move_command() {
     // A friendly stationary blocker should receive a scatter movement
     // command — the blocker walks away instead of being teleported.

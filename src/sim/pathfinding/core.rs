@@ -64,6 +64,11 @@ const CODE5_MULT_ENEMY: i32 = 20;
 /// Code-6 (stationary friendly) cost multiplier. Binary DAT_0081870c[6] = 8.0.
 const CODE6_MULT_STATIONARY_ALLY: i32 = 8;
 
+/// Temporary A* marker cost multiplier for `CellClass+0x140 & 0x40000`.
+/// The original toggles this bit around one search; Rust models it as a
+/// search-scoped overlay instead of mutating persistent `PathGrid` cells.
+const SEARCH_MARKER_COST_MULTIPLIER: i32 = 4;
+
 /// Entry in the entity soft-block map for A* cost computation.
 /// Carries the blocker's next cell (for code-2 chain walk) and the
 /// Can_Enter_Cell return code (2/5/6) that selects the cost multiplier.
@@ -119,6 +124,36 @@ impl LayeredEntityBlockMap {
 
     pub fn contains_any(&self, cell: &(u16, u16)) -> bool {
         self.ground.contains_key(cell) || self.bridge.contains_key(cell)
+    }
+}
+
+/// Search-scoped destination-cell cost overlay for the gamemd.exe temporary
+/// `CellClass+0x140 & 0x40000` A* marker.
+///
+/// Marking uses XOR parity: toggling the same cell twice cancels it, matching
+/// the original bitwise lifecycle and peer-path replay behavior.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SearchMarkerOverlay {
+    cells: BTreeSet<(u16, u16)>,
+}
+
+impl SearchMarkerOverlay {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn toggle(&mut self, cell: (u16, u16)) {
+        if !self.cells.insert(cell) {
+            self.cells.remove(&cell);
+        }
+    }
+
+    pub fn contains(&self, cell: (u16, u16)) -> bool {
+        self.cells.contains(&cell)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.cells.is_empty()
     }
 }
 
@@ -407,6 +442,10 @@ pub struct AStarOptions<'a> {
     /// AStar_compute_edge_cost). The map is denormalized so no EntityStore
     /// lookup is required inside A*.
     pub entity_block_map: Option<&'a LayeredEntityBlockMap>,
+    /// Search-scoped temporary marker overlay equivalent to
+    /// `CellClass+0x140 & 0x40000`. Destination hits multiply normal compass
+    /// edge cost, but do not change walkability or persistent pathgrid state.
+    pub marker_overlay: Option<&'a SearchMarkerOverlay>,
     /// Crusher units bypass all entity soft-block costs (codes 1-6).
     /// Buildings (code 7, in entity_blocks BTreeSet) still block.
     pub mover_is_crusher: bool,
@@ -863,6 +902,8 @@ pub fn astar_search(
                     }
                 }
             }
+
+            step_cost = apply_search_marker_cost(step_cost, options.marker_overlay, (nx, ny));
 
             // Direction tie-breaker
             let tentative_g = current.g_cost + step_cost + DIR_TIEBREAK[dir_index];
@@ -1651,6 +1692,18 @@ fn compute_code2_multiplier(
     CODE2_MULT_JAM
 }
 
+fn apply_search_marker_cost(
+    step_cost: i32,
+    marker_overlay: Option<&SearchMarkerOverlay>,
+    destination: (u16, u16),
+) -> i32 {
+    if marker_overlay.is_some_and(|overlay| overlay.contains(destination)) {
+        step_cost * SEARCH_MARKER_COST_MULTIPLIER
+    } else {
+        step_cost
+    }
+}
+
 /// Find a path from start to goal using A* search.
 ///
 /// Returns `Some(path)` where path is a sequence of (rx, ry) cells from
@@ -1684,6 +1737,35 @@ pub fn find_path_with_costs(
     urgency: u8,
     mover_is_crusher: bool,
 ) -> Option<Vec<(u16, u16)>> {
+    find_path_with_costs_marker(
+        grid,
+        start,
+        goal,
+        costs,
+        entity_blocks,
+        movement_zone,
+        resolved_terrain,
+        entity_block_map,
+        None,
+        urgency,
+        mover_is_crusher,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn find_path_with_costs_marker(
+    grid: &PathGrid,
+    start: (u16, u16),
+    goal: (u16, u16),
+    costs: Option<&TerrainCostGrid>,
+    entity_blocks: Option<&BTreeSet<(u16, u16)>>,
+    movement_zone: Option<MovementZone>,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    entity_block_map: Option<&LayeredEntityBlockMap>,
+    marker_overlay: Option<&SearchMarkerOverlay>,
+    urgency: u8,
+    mover_is_crusher: bool,
+) -> Option<Vec<(u16, u16)>> {
     let steps = astar_search(
         grid,
         start,
@@ -1693,6 +1775,7 @@ pub fn find_path_with_costs(
             terrain_costs: costs,
             entity_blocks,
             entity_block_map,
+            marker_overlay,
             urgency,
             mover_is_crusher,
             movement_zone,
@@ -1718,6 +1801,39 @@ pub fn find_path_with_costs_corridor(
     urgency: u8,
     mover_is_crusher: bool,
 ) -> Option<Vec<(u16, u16)>> {
+    find_path_with_costs_corridor_marker(
+        grid,
+        start,
+        goal,
+        costs,
+        entity_blocks,
+        zone_map,
+        allowed_zones,
+        movement_zone,
+        resolved_terrain,
+        entity_block_map,
+        None,
+        urgency,
+        mover_is_crusher,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn find_path_with_costs_corridor_marker(
+    grid: &PathGrid,
+    start: (u16, u16),
+    goal: (u16, u16),
+    costs: Option<&TerrainCostGrid>,
+    entity_blocks: Option<&BTreeSet<(u16, u16)>>,
+    zone_map: &super::zone_map::ZoneMap,
+    allowed_zones: &BTreeSet<super::zone_map::ZoneId>,
+    movement_zone: Option<MovementZone>,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    entity_block_map: Option<&LayeredEntityBlockMap>,
+    marker_overlay: Option<&SearchMarkerOverlay>,
+    urgency: u8,
+    mover_is_crusher: bool,
+) -> Option<Vec<(u16, u16)>> {
     let steps = astar_search(
         grid,
         start,
@@ -1728,6 +1844,7 @@ pub fn find_path_with_costs_corridor(
             entity_blocks,
             corridor: Some((zone_map, allowed_zones)),
             entity_block_map,
+            marker_overlay,
             urgency,
             mover_is_crusher,
             movement_zone,
@@ -1795,6 +1912,37 @@ pub fn find_layered_path(
     urgency: u8,
     mover_is_crusher: bool,
 ) -> Option<Vec<LayeredPathStep>> {
+    find_layered_path_marker(
+        grid,
+        ground_blocks,
+        bridge_blocks,
+        start,
+        start_layer,
+        goal,
+        terrain_costs,
+        resolved_terrain,
+        entity_block_map,
+        None,
+        urgency,
+        mover_is_crusher,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn find_layered_path_marker(
+    grid: &PathGrid,
+    ground_blocks: Option<&BTreeSet<(u16, u16)>>,
+    bridge_blocks: Option<&BTreeSet<(u16, u16)>>,
+    start: (u16, u16),
+    start_layer: MovementLayer,
+    goal: (u16, u16),
+    terrain_costs: Option<&TerrainCostGrid>,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    entity_block_map: Option<&LayeredEntityBlockMap>,
+    marker_overlay: Option<&SearchMarkerOverlay>,
+    urgency: u8,
+    mover_is_crusher: bool,
+) -> Option<Vec<LayeredPathStep>> {
     if !matches!(start_layer, MovementLayer::Ground | MovementLayer::Bridge) {
         return None;
     }
@@ -1809,6 +1957,7 @@ pub fn find_layered_path(
             entity_blocks: ground_blocks,
             bridge_blocks,
             entity_block_map,
+            marker_overlay,
             urgency,
             mover_is_crusher,
             ..Default::default()
