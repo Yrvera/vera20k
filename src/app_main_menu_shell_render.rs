@@ -11,7 +11,7 @@ use crate::render::main_menu_shell_chrome::{MainMenuShellChromeAtlas, MainMenuSh
 use crate::render::shell_text::ShellTextDraw;
 use crate::ui::main_menu_shell::{
     MainMenuControlId, MainMenuShellLayout, RIGHT_PANEL_TILE_H, RIGHT_PANEL_WIDTH, RectPx,
-    compute_responsive_layout, csf_key_for_control, tooltip_csf_key_for_control,
+    compute_layout, csf_key_for_control, tooltip_csf_key_for_control,
 };
 
 const MOVIE_DEPTH: f32 = 0.00095;
@@ -210,7 +210,7 @@ fn build_chrome_instances(
     if let Some(bottom) = atlas.right_panel_bottom_sdbtm {
         push_clipped_top(&mut out, bottom, layout.right_panel.bottom, CHROME_DEPTH);
     }
-    let lower_strip_entry = if layout.screen.w <= 640 {
+    let lower_strip_entry = if layout.screen.w == 640 {
         atlas.lower_side_640_lwscrns
     } else {
         atlas.lower_side_large_lwscrnl
@@ -298,7 +298,7 @@ fn build_movie_instances(layout: &MainMenuShellLayout) -> Vec<SpriteInstance> {
 }
 
 pub(crate) fn ensure_movie_for_current_layout(state: &mut AppState) -> Result<()> {
-    let layout = compute_responsive_layout(state.gpu.config.width, state.gpu.config.height);
+    let layout = compute_layout(state.gpu.config.width, state.gpu.config.height);
     if state.main_menu_movie_base == Some(layout.movie_base) && state.main_menu_movie.is_some() {
         return Ok(());
     }
@@ -369,7 +369,7 @@ pub(crate) fn render_main_menu_shell(
         }
     }
 
-    let layout = compute_responsive_layout(state.gpu.config.width, state.gpu.config.height);
+    let layout = compute_layout(state.gpu.config.width, state.gpu.config.height);
     let chrome = state
         .main_menu_shell_chrome
         .as_ref()

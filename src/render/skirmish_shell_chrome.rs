@@ -47,6 +47,29 @@ pub struct SkirmishShellChromeAtlas {
     pub button_down_left_30: Option<SkirmishShellChromeEntry>,
     pub button_down_mid_30: Option<SkirmishShellChromeEntry>,
     pub button_down_right_30: Option<SkirmishShellChromeEntry>,
+    pub checkbox_unchecked_cue_i: Option<SkirmishShellChromeEntry>,
+    pub checkbox_checked_cce_i: Option<SkirmishShellChromeEntry>,
+    pub trackbar_thumb_trakgrip: Option<SkirmishShellChromeEntry>,
+    pub trackbar_plaque_left_trofl: Option<SkirmishShellChromeEntry>,
+    pub trackbar_plaque_mid_trofm: Option<SkirmishShellChromeEntry>,
+    pub trackbar_plaque_right_trofr: Option<SkirmishShellChromeEntry>,
+    pub combo_arrow_down_released: Option<SkirmishShellChromeEntry>,
+    pub combo_arrow_down_pressed: Option<SkirmishShellChromeEntry>,
+    pub combo_arrow_down_gray_released: Option<SkirmishShellChromeEntry>,
+    pub combo_arrow_down_gray_pressed: Option<SkirmishShellChromeEntry>,
+    pub scrollbar_arrow_up_released: Option<SkirmishShellChromeEntry>,
+    pub scrollbar_arrow_up_pressed: Option<SkirmishShellChromeEntry>,
+    pub scrollbar_arrow_down_released: Option<SkirmishShellChromeEntry>,
+    pub scrollbar_arrow_down_pressed: Option<SkirmishShellChromeEntry>,
+    pub scrollbar_thumb_top: Option<SkirmishShellChromeEntry>,
+    pub scrollbar_thumb_mid: Option<SkirmishShellChromeEntry>,
+    pub scrollbar_thumb_bottom: Option<SkirmishShellChromeEntry>,
+    pub trackbar_rail: Option<SkirmishShellChromeEntry>,
+    pub combo_face_150: Option<SkirmishShellChromeEntry>,
+    pub combo_face_117: Option<SkirmishShellChromeEntry>,
+    pub combo_face_44: Option<SkirmishShellChromeEntry>,
+    pub combo_face_38: Option<SkirmishShellChromeEntry>,
+    pub white_pixel: Option<SkirmishShellChromeEntry>,
     pub start_marker: Option<SkirmishShellChromeEntry>,
     pub assigned_player_marker_mmpb: Option<SkirmishShellChromeEntry>,
     pub flags: Vec<(String, SkirmishShellChromeEntry)>,
@@ -169,9 +192,52 @@ pub fn build_skirmish_shell_chrome_atlas(
         "bde_li30.pcx",
         "bde_mi30.pcx",
         "bde_ri30.pcx",
+        "cue_i.pcx",
+        "cce_i.pcx",
+        "trakgrip.pcx",
+        "trofl.pcx",
+        "trofm.pcx",
+        "trofr.pcx",
+        "dnarrowr.pcx",
+        "dnarrowp.pcx",
+        "gdnarrowr.pcx",
+        "gdnarrowp.pcx",
+        "uparrowr.pcx",
+        "uparrowp.pcx",
+        "sbgript.pcx",
+        "sbgripm.pcx",
+        "sbgripb.pcx",
     ] {
-        push_optional(&mut rendered, render_pcx_entry(assets, name, Some(0)), name);
+        push_optional(&mut rendered, render_pcx_entry(assets, name), name);
     }
+
+    rendered.push(render_primitive_bevel_entry(
+        "skirmish_trackbar_rail",
+        78,
+        21,
+        [2, 8, 63, 3],
+        2,
+    ));
+    for (label, width) in [
+        ("skirmish_combo_face_150", 150),
+        ("skirmish_combo_face_117", 117),
+        ("skirmish_combo_face_44", 44),
+        ("skirmish_combo_face_38", 38),
+    ] {
+        rendered.push(render_primitive_bevel_entry(
+            label,
+            width,
+            24,
+            [2, 2, width as i32 - 4, 20],
+            2,
+        ));
+    }
+    rendered.push(render_solid_entry(
+        "skirmish_white_pixel",
+        1,
+        1,
+        [255, 255, 255, 255],
+    ));
 
     for name in SKIRMISH_FLAG_PCX_NAMES {
         push_optional(&mut rendered, render_flag_pcx_entry(assets, name), name);
@@ -210,6 +276,29 @@ pub fn build_skirmish_shell_chrome_atlas(
         button_down_left_30: by_label.get("bde_li30.pcx").copied(),
         button_down_mid_30: by_label.get("bde_mi30.pcx").copied(),
         button_down_right_30: by_label.get("bde_ri30.pcx").copied(),
+        checkbox_unchecked_cue_i: by_label.get("cue_i.pcx").copied(),
+        checkbox_checked_cce_i: by_label.get("cce_i.pcx").copied(),
+        trackbar_thumb_trakgrip: by_label.get("trakgrip.pcx").copied(),
+        trackbar_plaque_left_trofl: by_label.get("trofl.pcx").copied(),
+        trackbar_plaque_mid_trofm: by_label.get("trofm.pcx").copied(),
+        trackbar_plaque_right_trofr: by_label.get("trofr.pcx").copied(),
+        combo_arrow_down_released: by_label.get("dnarrowr.pcx").copied(),
+        combo_arrow_down_pressed: by_label.get("dnarrowp.pcx").copied(),
+        combo_arrow_down_gray_released: by_label.get("gdnarrowr.pcx").copied(),
+        combo_arrow_down_gray_pressed: by_label.get("gdnarrowp.pcx").copied(),
+        scrollbar_arrow_up_released: by_label.get("uparrowr.pcx").copied(),
+        scrollbar_arrow_up_pressed: by_label.get("uparrowp.pcx").copied(),
+        scrollbar_arrow_down_released: by_label.get("dnarrowr.pcx").copied(),
+        scrollbar_arrow_down_pressed: by_label.get("dnarrowp.pcx").copied(),
+        scrollbar_thumb_top: by_label.get("sbgript.pcx").copied(),
+        scrollbar_thumb_mid: by_label.get("sbgripm.pcx").copied(),
+        scrollbar_thumb_bottom: by_label.get("sbgripb.pcx").copied(),
+        trackbar_rail: by_label.get("skirmish_trackbar_rail").copied(),
+        combo_face_150: by_label.get("skirmish_combo_face_150").copied(),
+        combo_face_117: by_label.get("skirmish_combo_face_117").copied(),
+        combo_face_44: by_label.get("skirmish_combo_face_44").copied(),
+        combo_face_38: by_label.get("skirmish_combo_face_38").copied(),
+        white_pixel: by_label.get("skirmish_white_pixel").copied(),
         start_marker: by_label.get("startbut.shp").copied(),
         assigned_player_marker_mmpb: by_label.get("mmpb.shp").copied(),
         flags,
@@ -257,7 +346,9 @@ fn classify_shell_asset(name: &str) -> ShellAssetRole {
         "sdtp.shp" | "sdbtnbkgd.shp" | "sdbtm.shp" | "sdbtnanm.shp" | "sdmpbtn.shp"
         | "lwscrns.shp" | "lwscrnl.shp" => ShellAssetRole::RightPanelChrome,
         "bue_li30.pcx" | "bue_mi30.pcx" | "bue_ri30.pcx" | "bde_li30.pcx" | "bde_mi30.pcx"
-        | "bde_ri30.pcx" => ShellAssetRole::VerifiedOwnerDrawButton,
+        | "bde_ri30.pcx" | "cue_i.pcx" | "cce_i.pcx" | "trakgrip.pcx" | "trofl.pcx"
+        | "trofm.pcx" | "trofr.pcx" | "dnarrowr.pcx" | "dnarrowp.pcx" | "gdnarrowr.pcx"
+        | "gdnarrowp.pcx" => ShellAssetRole::VerifiedOwnerDrawButton,
         "usai.pcx" | "japi.pcx" | "frai.pcx" | "geri.pcx" | "gbri.pcx" | "djbi.pcx"
         | "arbi.pcx" | "lati.pcx" | "rusi.pcx" | "yrii.pcx" | "obsi.pcx" | "rani.pcx" => {
             ShellAssetRole::VerifiedFlag
@@ -355,18 +446,14 @@ fn render_shp_entry_labeled(
     })
 }
 
-fn render_pcx_entry(
-    assets: &AssetManager,
-    file_name: &str,
-    transparent_index: Option<u8>,
-) -> Option<RenderedShellEntry> {
+fn render_pcx_entry(assets: &AssetManager, file_name: &str) -> Option<RenderedShellEntry> {
     let bytes = assets.get_ref(file_name)?;
     let pcx = PcxFile::from_bytes(bytes).ok()?;
     Some(RenderedShellEntry {
         label: file_name.to_ascii_lowercase(),
         width: pcx.width as u32,
         height: pcx.height as u32,
-        rgba: pcx.to_rgba(transparent_index),
+        rgba: pcx.to_rgba(None),
     })
 }
 
@@ -379,6 +466,19 @@ fn render_flag_pcx_entry(assets: &AssetManager, file_name: &str) -> Option<Rende
         height: pcx.height as u32,
         rgba: pcx.to_rgba_with_color_key(OWNER_DRAW_FLAG_TRANSPARENT_RGB),
     })
+}
+
+fn render_solid_entry(label: &str, width: u32, height: u32, color: [u8; 4]) -> RenderedShellEntry {
+    let mut rgba = vec![0u8; (width * height * 4) as usize];
+    for px in rgba.chunks_exact_mut(4) {
+        px.copy_from_slice(&color);
+    }
+    RenderedShellEntry {
+        label: label.to_ascii_lowercase(),
+        width,
+        height,
+        rgba,
+    }
 }
 
 #[allow(dead_code)]
@@ -608,10 +708,10 @@ fn pack_entries(
 #[cfg(test)]
 mod tests {
     use super::{
-        average_rgb, classify_shell_asset, draw_axis_line_inclusive_clipped, load_named_palette,
+        AssetManager, OWNER_DRAW_FLAG_TRANSPARENT_RGB, PRIMITIVE_BEVEL_COLOR_A_RGB,
+        PRIMITIVE_BEVEL_COLOR_B_RGB, RenderedShellEntry, ShellAssetRole, average_rgb,
+        classify_shell_asset, draw_axis_line_inclusive_clipped, load_named_palette,
         load_parent_background_palette, render_primitive_bevel_entry, render_shp_entry, rgba_color,
-        AssetManager, RenderedShellEntry, ShellAssetRole, OWNER_DRAW_FLAG_TRANSPARENT_RGB,
-        PRIMITIVE_BEVEL_COLOR_A_RGB, PRIMITIVE_BEVEL_COLOR_B_RGB,
     };
 
     fn pixel(entry: &RenderedShellEntry, x: u32, y: u32) -> [u8; 4] {
@@ -640,6 +740,26 @@ mod tests {
         );
         assert_eq!(
             classify_shell_asset("bue_li30.pcx"),
+            ShellAssetRole::VerifiedOwnerDrawButton
+        );
+        assert_eq!(
+            classify_shell_asset("cue_i.pcx"),
+            ShellAssetRole::VerifiedOwnerDrawButton
+        );
+        assert_eq!(
+            classify_shell_asset("cce_i.pcx"),
+            ShellAssetRole::VerifiedOwnerDrawButton
+        );
+        assert_eq!(
+            classify_shell_asset("trakgrip.pcx"),
+            ShellAssetRole::VerifiedOwnerDrawButton
+        );
+        assert_eq!(
+            classify_shell_asset("trofm.pcx"),
+            ShellAssetRole::VerifiedOwnerDrawButton
+        );
+        assert_eq!(
+            classify_shell_asset("dnarrowr.pcx"),
             ShellAssetRole::VerifiedOwnerDrawButton
         );
         assert_eq!(

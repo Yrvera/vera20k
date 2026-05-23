@@ -50,6 +50,11 @@ pub mod app_main_menu_shell_render;
 pub mod app_skirmish;
 pub mod app_skirmish_shell_render;
 
+// App-level skirmish startup contract shared by the menu shell and map loader.
+pub mod skirmish_launch;
+pub mod skirmish_modes;
+pub mod skirmish_scenarios;
+
 // Shared type definitions and constants used across app_* modules.
 // Extracted from app_render.rs to decouple type imports from rendering.
 pub mod app_types;

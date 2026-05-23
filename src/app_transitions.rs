@@ -31,14 +31,18 @@ const CLEAR_COLOR: wgpu::Color = wgpu::Color {
 /// Load map data and transition to InGame state.
 pub(crate) fn transition_to_in_game(state: &mut AppState) {
     log::info!("Loading map...");
-    let requested_map: Option<String> = match &state.screen {
-        GameScreen::Loading { map_name } => Some(map_name.clone()),
-        _ => None,
+    let (requested_map, skirmish_launch_session) = match &state.screen {
+        GameScreen::Loading { map_name } => (
+            Some(map_name.clone()),
+            state.pending_skirmish_launch_session.clone(),
+        ),
+        _ => (None, None),
     };
     let result = app_init::load_map(
         &state.gpu,
         &state.batch_renderer,
         requested_map.as_deref(),
+        skirmish_launch_session.as_ref(),
         &state.skirmish_settings,
         state.vxl_compute.as_mut(),
     )
@@ -76,7 +80,9 @@ pub(crate) fn transition_to_in_game(state: &mut AppState) {
             house_roster: HouseRoster::default(),
             height_map: BTreeMap::new(),
             bridge_height_map: BTreeMap::new(),
-            lighting_grid: HashMap::new(),
+            tactical_bridge_inverse_map: BTreeMap::new(),
+            lighting_grid: crate::map::lighting::CellLightGrid::new(),
+            map_lighting_config: crate::map::lighting::LightingConfig::default(),
             path_grid: None,
             rules: None,
             art_registry: None,
@@ -94,6 +100,7 @@ pub(crate) fn transition_to_in_game(state: &mut AppState) {
         }
     });
     state.tile_atlas = result.tile_atlas;
+    state.pending_skirmish_launch_session = None;
     state.map_basic = result.basic;
     state.terrain_grid = result.terrain_grid;
     state.resolved_terrain = result.resolved_terrain;
@@ -157,7 +164,9 @@ pub(crate) fn transition_to_in_game(state: &mut AppState) {
     state.house_roster = result.house_roster;
     state.height_map = result.height_map;
     state.bridge_height_map = result.bridge_height_map;
+    state.tactical_bridge_inverse_map = result.tactical_bridge_inverse_map;
     state.lighting_grid = result.lighting_grid;
+    state.map_lighting_config = result.map_lighting_config;
     state.path_grid = result.path_grid;
     state.rules = result.rules;
     state.art_registry = result.art_registry;

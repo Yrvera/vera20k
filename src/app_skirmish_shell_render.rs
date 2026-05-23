@@ -7,16 +7,25 @@ use std::sync::Once;
 
 use crate::app::AppState;
 use crate::app_init::MapMenuEntry;
+use crate::map::preview::PreviewSourceBounds;
 use crate::render::batch::{BatchTexture, SpriteInstance};
 use crate::render::shell_text::{self, ShellAlign, ShellTextDraw, TextRect};
 use crate::render::skirmish_shell_chrome::{SkirmishShellChromeAtlas, SkirmishShellChromeEntry};
+use crate::rules::house_colors::{HouseColorIndex, house_color_ramp};
 use crate::ui::main_menu::SkirmishCountry;
 use crate::ui::skirmish_shell::{
-    OwnerDrawButton, RectPx, SkirmishShellAction, SkirmishShellLayout, SkirmishShellState,
-    compute_layout,
+    CHOOSE_MAP_LIST_ROW_H, COMBO_DROPDOWN_ROW_H, COMBO_DROPDOWN_SCROLLBAR_BUTTON_H,
+    ChooseMapModalLayout, DropdownScrollbarPart, OwnerDrawButton, RectPx, SkirmishAiRowType,
+    SkirmishCheckboxId, SkirmishComboId, SkirmishComboItem, SkirmishCountryChoice,
+    SkirmishShellAction, SkirmishShellLayout, SkirmishShellState, SkirmishTrackbarId,
+    checkbox_icon_rect, checkbox_text_rect, combo_arrow_rect, combo_dropdown_content_rect,
+    combo_dropdown_needs_scrollbar, combo_dropdown_rect, combo_dropdown_scroll_thumb_rect,
+    combo_dropdown_scrollbar_rect, combo_dropdown_visible_row_count, combo_face_rect, combo_items,
+    combo_swatch_rect, combo_text_rect, compute_choose_map_modal_layout, compute_layout,
+    selected_combo_item_index, trackbar_pixel_offset, trackbar_plaque_rect, trackbar_thumb_rect,
+    trackbar_value_text_rect, trackbar_visual_value,
 };
 
-static PREVIEW_MARKER_WAIT_LOG: Once = Once::new();
 static HIGH_RES_PARENT_BACKGROUND_LOG: Once = Once::new();
 
 const PRESSED_BUTTON_CONTENT_OFFSET_Y: i32 = 2;
@@ -26,10 +35,20 @@ const BUTTON_DISABLED_ALPHA: f32 = 0x80 as f32 / 255.0;
 const SHELL_PARENT_BACKGROUND_DEPTH: f32 = 0.00090;
 const SHELL_LOWER_STRIP_DEPTH: f32 = 0.00077;
 const SHELL_PREVIEW_SURFACE_DEPTH: f32 = 0.00058;
-// Live Ghidra recovered button text color 0x00000C05 before the original
-// wrapper converted it to the active 16-bit display format; final RGB parity
-// still needs screenshot comparison against retail YR.
-const SHELL_BUTTON_TEXT_RGB_00000C05: [f32; 3] = [0.0, 12.0 / 255.0, 5.0 / 255.0];
+const SHELL_CONTROL_DEPTH: f32 = 0.00055;
+const SHELL_CONTROL_TEXT_DEPTH: f32 = 0.00039;
+const SHELL_SWATCH_DEPTH: f32 = 0.00054;
+const SHELL_DROPDOWN_DEPTH: f32 = 0.00034;
+const SHELL_DROPDOWN_TEXT_DEPTH: f32 = 0.00029;
+// Owner-draw button dark text color 0x00000C05 decoded as RGB.
+const SHELL_BUTTON_TEXT_RGB_00000C05: [f32; 3] = [5.0 / 255.0, 12.0 / 255.0, 0.0];
+const SHELL_LABEL_TEXT_RGB: [f32; 3] = [1.0, 1.0, 0.0];
+const SHELL_DROPDOWN_BG_RGB: [f32; 3] = [0.015, 0.024, 0.018];
+const SHELL_DROPDOWN_BORDER_RGB: [f32; 3] = [0.60, 0.52, 0.24];
+const SHELL_DROPDOWN_SELECTED_RGB: [f32; 3] = [0.16, 0.24, 0.15];
+const SHELL_SCROLLBAR_TRACK_RGB: [f32; 3] = [0.035, 0.042, 0.034];
+const SHELL_MODAL_BG_RGB: [f32; 3] = [0.020, 0.032, 0.025];
+const SHELL_MODAL_PANEL_RGB: [f32; 3] = [0.050, 0.060, 0.044];
 
 pub(crate) struct SkirmishPreviewTexture {
     pub selected_map_idx: usize,
@@ -120,6 +139,32 @@ fn push_entry_sized(
     });
 }
 
+fn push_entry_top_clipped_native(
+    out: &mut Vec<SpriteInstance>,
+    mut entry: SkirmishShellChromeEntry,
+    rect: RectPx,
+    depth: f32,
+) {
+    let src_w = entry.pixel_size[0].round();
+    let src_h = entry.pixel_size[1].round();
+    if src_w <= 0.0 || src_h <= 0.0 || rect.w <= 0 || rect.h <= 0 {
+        return;
+    }
+
+    let draw_w = (rect.w as f32).min(src_w);
+    let draw_h = (rect.h as f32).min(src_h);
+    entry.uv_size[0] *= draw_w / src_w;
+    entry.uv_size[1] *= draw_h / src_h;
+    push_entry_sized(
+        out,
+        entry,
+        rect.x as f32,
+        rect.y as f32,
+        [draw_w, draw_h],
+        depth,
+    );
+}
+
 fn push_entry_native(
     out: &mut Vec<SpriteInstance>,
     entry: SkirmishShellChromeEntry,
@@ -175,23 +220,25 @@ fn push_flag_entry_native_clipped_centered(
     rect: RectPx,
     depth: f32,
 ) {
-    let src_w = entry.pixel_size[0].round();
-    let src_h = entry.pixel_size[1].round();
-    if src_w <= 0.0 || src_h <= 0.0 || rect.w <= 0 || rect.h <= 0 {
+    let src_w_px = entry.pixel_size[0].round() as i32;
+    let src_h_px = entry.pixel_size[1].round() as i32;
+    if src_w_px <= 0 || src_h_px <= 0 || rect.w <= 0 || rect.h <= 0 {
         return;
     }
 
+    let src_w = src_w_px as f32;
+    let src_h = src_h_px as f32;
     let rect_w = rect.w as f32;
     let rect_h = rect.h as f32;
     let draw_w = src_w.min(rect_w);
     let draw_h = src_h.min(rect_h);
-    let x = if src_w < rect_w {
-        rect.x as f32 + ((rect_w - src_w) * 0.5).round()
+    let x = if src_w_px < rect.w {
+        (rect.x + (rect.w - src_w_px) / 2) as f32
     } else {
         rect.x as f32
     };
-    let y = if src_h < rect_h {
-        rect.y as f32 + ((rect_h - src_h) * 0.5).round()
+    let y = if src_h_px < rect.h {
+        (rect.y + (rect.h - src_h_px) / 2) as f32
     } else {
         rect.y as f32
     };
@@ -244,7 +291,7 @@ fn build_button_segments(
     }
     let rect_w = rect.w as f32;
     let left_w = left_w.round().max(1.0).min(rect_w);
-    let right_w = right_w.round().max(1.0).min((rect_w - left_w).max(0.0));
+    let right_w = right_w.round().max(1.0).min(rect_w);
     let mid_w = mid_w.round().max(1.0);
     let mut segments = vec![ButtonSegment {
         piece: ButtonPiece::Left,
@@ -253,17 +300,18 @@ fn build_button_segments(
         uv_width_ratio: 1.0,
     }];
 
-    let mut x = rect.x as f32 + left_w;
-    let end = rect.x as f32 + rect_w - right_w;
-    while x < end - f32::EPSILON {
-        let width = (end - x).min(mid_w);
+    let middle_start = rect.x as f32 + left_w;
+    let middle_dest_w = (rect_w - right_w).max(0.0);
+    let mut covered = 0.0;
+    while covered < middle_dest_w - f32::EPSILON {
+        let width = (middle_dest_w - covered).min(mid_w);
         segments.push(ButtonSegment {
             piece: ButtonPiece::Middle,
-            x,
+            x: middle_start + covered,
             width,
             uv_width_ratio: width / mid_w,
         });
-        x += width;
+        covered += width;
     }
 
     segments.push(ButtonSegment {
@@ -273,6 +321,20 @@ fn build_button_segments(
         uv_width_ratio: 1.0,
     });
     segments
+}
+
+fn button_segment_sprite_size(entry: SkirmishShellChromeEntry, segment: ButtonSegment) -> [f32; 2] {
+    [segment.width, entry.pixel_size[1]]
+}
+
+fn button_art_y(rect: RectPx, art_h: f32, pressed: bool, disabled: bool) -> f32 {
+    let art_h = art_h.round() as i32;
+    let pressed_offset = if pressed && !disabled {
+        PRESSED_BUTTON_CONTENT_OFFSET_Y
+    } else {
+        0
+    };
+    (rect.y + (rect.h - art_h) / 2 + pressed_offset) as f32
 }
 
 #[cfg(test)]
@@ -327,8 +389,8 @@ fn push_button_30(
             out,
             entry,
             segment.x,
-            rect.y as f32,
-            [segment.width, rect.h as f32],
+            button_art_y(rect, entry.pixel_size[1], pressed, disabled),
+            button_segment_sprite_size(entry, segment),
             depth,
             alpha,
         );
@@ -338,30 +400,60 @@ fn push_button_30(
 fn push_start_marker_sprites(
     out: &mut Vec<SpriteInstance>,
     atlas: &SkirmishShellChromeAtlas,
-    preview_rect: RectPx,
     projected_positions: &[(i32, i32)],
-    real_preview_surface_available: bool,
     depth: f32,
 ) {
-    if !real_preview_surface_available {
-        PREVIEW_MARKER_WAIT_LOG.call_once(|| {
-            log::info!(
-                "Skirmish shell STARTBUT.SHP markers skipped until real preview surface decode and verified source bounds are available"
-            );
-        });
-        return;
-    }
     let Some(marker) = atlas.start_marker else {
         return;
     };
     for &(x, y) in projected_positions {
-        let marker_x = x + START_MARKER_OFFSET_X;
-        let marker_y = y + START_MARKER_OFFSET_Y;
-        if !preview_rect.contains(x, y) {
-            continue;
-        }
+        let (marker_x, marker_y) = start_marker_top_left(x, y);
         push_entry_native(out, marker, marker_x, marker_y, depth);
     }
+}
+
+fn start_marker_top_left(anchor_x: i32, anchor_y: i32) -> (i32, i32) {
+    (
+        anchor_x + START_MARKER_OFFSET_X,
+        anchor_y + START_MARKER_OFFSET_Y,
+    )
+}
+
+fn project_preview_start_positions(
+    bounds: &PreviewSourceBounds,
+    fitted_preview_rect: RectPx,
+) -> Vec<(i32, i32)> {
+    if fitted_preview_rect.w <= 0
+        || fitted_preview_rect.h <= 0
+        || bounds.width == 0
+        || bounds.height == 0
+    {
+        return Vec::new();
+    }
+
+    bounds
+        .start_points
+        .iter()
+        .take(8)
+        .map(|point| {
+            let x_per_mille = ((point.x - bounds.origin_x) as i64 * 1000) / bounds.width as i64;
+            let y_per_mille = ((point.y - bounds.origin_y) as i64 * 1000) / bounds.height as i64;
+            let x = fitted_preview_rect.x
+                + ((x_per_mille * fitted_preview_rect.w as i64) / 1000) as i32;
+            let y = fitted_preview_rect.y
+                + ((y_per_mille * fitted_preview_rect.h as i64) / 1000) as i32;
+            (x, y)
+        })
+        .collect()
+}
+
+fn build_start_marker_instances(
+    atlas: &SkirmishShellChromeAtlas,
+    projected_positions: &[(i32, i32)],
+) -> Vec<SpriteInstance> {
+    let mut instances = Vec::new();
+    push_start_marker_sprites(&mut instances, atlas, projected_positions, 0.00056);
+    instances
 }
 
 fn side_item_data_for_country(country: SkirmishCountry) -> i32 {
@@ -401,12 +493,638 @@ fn flag_name_for_country(country: SkirmishCountry) -> Option<&'static str> {
     flag_pcx_for_side_item_data(side_item_data_for_country(country))
 }
 
+fn flag_name_for_country_choice(random: bool, country: SkirmishCountry) -> Option<&'static str> {
+    if random {
+        flag_pcx_for_side_item_data(-2)
+    } else {
+        flag_name_for_country(country)
+    }
+}
+
 fn flag_entry(atlas: &SkirmishShellChromeAtlas, label: &str) -> Option<SkirmishShellChromeEntry> {
     atlas
         .flags
         .iter()
         .find(|(name, _)| name.eq_ignore_ascii_case(label))
         .map(|(_, entry)| *entry)
+}
+
+fn checkbox_entry(
+    atlas: &SkirmishShellChromeAtlas,
+    checked: bool,
+) -> Option<SkirmishShellChromeEntry> {
+    if checked {
+        atlas.checkbox_checked_cce_i
+    } else {
+        atlas.checkbox_unchecked_cue_i
+    }
+}
+
+fn checkbox_checked(shell: &SkirmishShellState, id: SkirmishCheckboxId) -> bool {
+    match id {
+        SkirmishCheckboxId::ShortGame0x54e => shell.short_game,
+        SkirmishCheckboxId::McvRepacks0x693 => shell.mcv_redeploy,
+        SkirmishCheckboxId::CratesAppear0x696 => shell.crates,
+        SkirmishCheckboxId::SuperWeapons0x69a => shell.super_weapons,
+        SkirmishCheckboxId::BuildOffAlly0x69d => shell.build_off_ally,
+    }
+}
+
+fn combo_face_entry(
+    atlas: &SkirmishShellChromeAtlas,
+    rect: RectPx,
+) -> Option<SkirmishShellChromeEntry> {
+    match rect.w {
+        150 => atlas.combo_face_150,
+        117 => atlas.combo_face_117,
+        44 => atlas.combo_face_44,
+        38 => atlas.combo_face_38,
+        _ => None,
+    }
+}
+
+fn push_tinted_entry(
+    out: &mut Vec<SpriteInstance>,
+    entry: SkirmishShellChromeEntry,
+    rect: RectPx,
+    tint: [f32; 3],
+    depth: f32,
+) {
+    out.push(SpriteInstance {
+        position: [rect.x as f32, rect.y as f32],
+        size: [rect.w as f32, rect.h as f32],
+        uv_origin: entry.uv_origin,
+        uv_size: entry.uv_size,
+        depth,
+        tint,
+        alpha: 1.0,
+        ..Default::default()
+    });
+}
+
+fn push_solid_rect(
+    out: &mut Vec<SpriteInstance>,
+    atlas: &SkirmishShellChromeAtlas,
+    rect: RectPx,
+    tint: [f32; 3],
+    depth: f32,
+) {
+    let Some(pixel) = atlas.white_pixel else {
+        return;
+    };
+    push_tinted_entry(out, pixel, rect, tint, depth);
+}
+
+fn push_rect_outline(
+    out: &mut Vec<SpriteInstance>,
+    atlas: &SkirmishShellChromeAtlas,
+    rect: RectPx,
+    tint: [f32; 3],
+    depth: f32,
+) {
+    if rect.w <= 0 || rect.h <= 0 {
+        return;
+    }
+    push_solid_rect(
+        out,
+        atlas,
+        RectPx::new(rect.x, rect.y, rect.w, 1),
+        tint,
+        depth,
+    );
+    push_solid_rect(
+        out,
+        atlas,
+        RectPx::new(rect.x, rect.y + rect.h - 1, rect.w, 1),
+        tint,
+        depth,
+    );
+    push_solid_rect(
+        out,
+        atlas,
+        RectPx::new(rect.x, rect.y, 1, rect.h),
+        tint,
+        depth,
+    );
+    push_solid_rect(
+        out,
+        atlas,
+        RectPx::new(rect.x + rect.w - 1, rect.y, 1, rect.h),
+        tint,
+        depth,
+    );
+}
+
+fn push_scrollbar_thumb(
+    out: &mut Vec<SpriteInstance>,
+    atlas: &SkirmishShellChromeAtlas,
+    rect: RectPx,
+    depth: f32,
+) {
+    let top_h = atlas
+        .scrollbar_thumb_top
+        .map(|entry| entry.pixel_size[1].round() as i32)
+        .unwrap_or(0);
+    let bottom_h = atlas
+        .scrollbar_thumb_bottom
+        .map(|entry| entry.pixel_size[1].round() as i32)
+        .unwrap_or(0);
+    if let Some(top) = atlas.scrollbar_thumb_top {
+        push_entry_native(out, top, rect.x, rect.y, depth);
+    }
+    if let Some(bottom) = atlas.scrollbar_thumb_bottom {
+        push_entry_native(out, bottom, rect.x, rect.y + rect.h - bottom_h, depth);
+    }
+    if let Some(mid) = atlas.scrollbar_thumb_mid {
+        let mid_y = rect.y + top_h;
+        let mid_h = rect.h - top_h - bottom_h;
+        if mid_h > 0 {
+            push_entry(out, mid, RectPx::new(rect.x, mid_y, rect.w, mid_h), depth);
+        }
+    }
+}
+
+fn push_dropdown_scrollbar_instances(
+    out: &mut Vec<SpriteInstance>,
+    atlas: &SkirmishShellChromeAtlas,
+    scrollbar: RectPx,
+    thumb: RectPx,
+    pressed_part: Option<DropdownScrollbarPart>,
+) {
+    push_solid_rect(
+        out,
+        atlas,
+        scrollbar,
+        SHELL_SCROLLBAR_TRACK_RGB,
+        SHELL_DROPDOWN_DEPTH - 0.00004,
+    );
+    let up_entry = scrollbar_arrow_entry(
+        atlas.scrollbar_arrow_up_released,
+        atlas.scrollbar_arrow_up_pressed,
+        pressed_part == Some(DropdownScrollbarPart::UpArrow),
+    );
+    if let Some(up) = up_entry {
+        push_entry_native(
+            out,
+            up,
+            scrollbar.x,
+            scrollbar.y,
+            SHELL_DROPDOWN_DEPTH - 0.00005,
+        );
+    }
+    let down_entry = scrollbar_arrow_entry(
+        atlas.scrollbar_arrow_down_released,
+        atlas.scrollbar_arrow_down_pressed,
+        pressed_part == Some(DropdownScrollbarPart::DownArrow),
+    );
+    if let Some(down) = down_entry {
+        push_entry_native(
+            out,
+            down,
+            scrollbar.x,
+            scrollbar.y + scrollbar.h - COMBO_DROPDOWN_SCROLLBAR_BUTTON_H,
+            SHELL_DROPDOWN_DEPTH - 0.00005,
+        );
+    }
+    push_scrollbar_thumb(out, atlas, thumb, SHELL_DROPDOWN_DEPTH - 0.00006);
+    push_rect_outline(
+        out,
+        atlas,
+        scrollbar,
+        SHELL_DROPDOWN_BORDER_RGB,
+        SHELL_DROPDOWN_DEPTH - 0.00007,
+    );
+}
+
+fn scrollbar_arrow_entry(
+    released: Option<SkirmishShellChromeEntry>,
+    pressed: Option<SkirmishShellChromeEntry>,
+    is_pressed: bool,
+) -> Option<SkirmishShellChromeEntry> {
+    if is_pressed {
+        pressed.or(released)
+    } else {
+        released
+    }
+}
+
+fn house_color_tint(index: usize) -> [f32; 3] {
+    let ramp = house_color_ramp(HouseColorIndex(index.min(7) as u8));
+    let color = ramp[0];
+    [
+        color.r as f32 / 255.0,
+        color.g as f32 / 255.0,
+        color.b as f32 / 255.0,
+    ]
+}
+
+fn push_combo_face(
+    out: &mut Vec<SpriteInstance>,
+    atlas: &SkirmishShellChromeAtlas,
+    rect: RectPx,
+    color_index: Option<usize>,
+    open: bool,
+    disabled: bool,
+    depth: f32,
+) {
+    if let Some(face) = combo_face_entry(atlas, rect) {
+        push_entry(out, face, combo_face_rect(rect), depth);
+    }
+    if let (Some(color_index), Some(white)) = (color_index, atlas.white_pixel) {
+        push_tinted_entry(
+            out,
+            white,
+            combo_swatch_rect(rect),
+            house_color_tint(color_index),
+            SHELL_SWATCH_DEPTH,
+        );
+    }
+    let arrow = match (disabled, open) {
+        (true, true) => atlas.combo_arrow_down_gray_pressed,
+        (true, false) => atlas.combo_arrow_down_gray_released,
+        (false, true) => atlas.combo_arrow_down_pressed,
+        (false, false) => atlas.combo_arrow_down_released,
+    };
+    if let Some(arrow) = arrow {
+        let arrow_rect = combo_arrow_rect(rect);
+        push_entry_native(out, arrow, arrow_rect.x, arrow_rect.y, depth - 0.00001);
+    }
+}
+
+fn push_trackbar_plaque(
+    out: &mut Vec<SpriteInstance>,
+    atlas: &SkirmishShellChromeAtlas,
+    rect: RectPx,
+    depth: f32,
+) {
+    let plaque = trackbar_plaque_rect(rect);
+    if let Some(mid) = atlas.trackbar_plaque_mid_trofm {
+        push_entry(out, mid, plaque, depth);
+    }
+    if let Some(left) = atlas.trackbar_plaque_left_trofl {
+        push_entry_native(out, left, plaque.x, plaque.y, depth - 0.00001);
+    }
+    if let Some(right) = atlas.trackbar_plaque_right_trofr {
+        let w = right.pixel_size[0].round() as i32;
+        push_entry_native(
+            out,
+            right,
+            plaque.x + plaque.w - w,
+            plaque.y,
+            depth - 0.00001,
+        );
+    }
+}
+
+fn trackbar_rect_for_id(layout: &SkirmishShellLayout, id: SkirmishTrackbarId) -> RectPx {
+    match id {
+        SkirmishTrackbarId::GameSpeed0x529 => layout.trackbars.game_speed,
+        SkirmishTrackbarId::Credits0x511 => layout.trackbars.credits,
+        SkirmishTrackbarId::UnitCount0x50c => layout.trackbars.unit_count,
+    }
+}
+
+fn push_checkbox_instances(
+    out: &mut Vec<SpriteInstance>,
+    atlas: &SkirmishShellChromeAtlas,
+    layout: &SkirmishShellLayout,
+    shell: &SkirmishShellState,
+) {
+    for checkbox in layout.checkboxes {
+        let Some(entry) = checkbox_entry(atlas, checkbox_checked(shell, checkbox.id)) else {
+            continue;
+        };
+        push_entry(
+            out,
+            entry,
+            checkbox_icon_rect(checkbox.rect),
+            SHELL_CONTROL_DEPTH,
+        );
+    }
+}
+
+fn push_trackbar_instances(
+    out: &mut Vec<SpriteInstance>,
+    atlas: &SkirmishShellChromeAtlas,
+    layout: &SkirmishShellLayout,
+    shell: &SkirmishShellState,
+) {
+    for id in [
+        SkirmishTrackbarId::GameSpeed0x529,
+        SkirmishTrackbarId::Credits0x511,
+        SkirmishTrackbarId::UnitCount0x50c,
+    ] {
+        let rect = trackbar_rect_for_id(layout, id);
+        if let Some(rail) = atlas.trackbar_rail {
+            push_entry_native(out, rail, rect.x, rect.y, SHELL_CONTROL_DEPTH);
+        }
+        push_trackbar_plaque(out, atlas, rect, SHELL_CONTROL_DEPTH);
+
+        let value = trackbar_visual_value(shell, id);
+        let (min, max, step) = match id {
+            SkirmishTrackbarId::GameSpeed0x529 => (0, 6, 1),
+            SkirmishTrackbarId::Credits0x511 => (5000, 10000, 100),
+            SkirmishTrackbarId::UnitCount0x50c => (0, 10, 1),
+        };
+        let px = trackbar_pixel_offset(value, min, max, step, rect);
+        if let Some(thumb) = atlas.trackbar_thumb_trakgrip {
+            let thumb_rect = trackbar_thumb_rect(rect, px);
+            push_entry(out, thumb, thumb_rect, SHELL_CONTROL_DEPTH - 0.00002);
+        }
+    }
+}
+
+fn push_combo_instances(
+    out: &mut Vec<SpriteInstance>,
+    atlas: &SkirmishShellChromeAtlas,
+    layout: &SkirmishShellLayout,
+    shell: &SkirmishShellState,
+) {
+    let open = shell.open_combo_dropdown.map(|dropdown| dropdown.id);
+    push_combo_face(
+        out,
+        atlas,
+        layout.rows.side_combos[0],
+        None,
+        open == Some(SkirmishComboId::Side(0)),
+        false,
+        SHELL_CONTROL_DEPTH,
+    );
+    push_combo_face(
+        out,
+        atlas,
+        layout.color_combos[0],
+        Some(shell.player_color_index),
+        open == Some(SkirmishComboId::Color(0)),
+        false,
+        SHELL_CONTROL_DEPTH,
+    );
+    push_combo_face(
+        out,
+        atlas,
+        layout.rows.start_combos[0],
+        None,
+        open == Some(SkirmishComboId::Start(0)),
+        false,
+        SHELL_CONTROL_DEPTH,
+    );
+    push_combo_face(
+        out,
+        atlas,
+        layout.rows.team_combos[0],
+        None,
+        open == Some(SkirmishComboId::Team(0)),
+        false,
+        SHELL_CONTROL_DEPTH,
+    );
+
+    for (idx, opponent) in shell.opponents.iter().enumerate() {
+        if idx >= layout.rows.ai_type_combos.len() {
+            break;
+        }
+        let row = idx + 1;
+        push_combo_face(
+            out,
+            atlas,
+            layout.rows.ai_type_combos[idx],
+            None,
+            open == Some(SkirmishComboId::AiType(idx)),
+            false,
+            SHELL_CONTROL_DEPTH,
+        );
+        let sibling_disabled = !opponent.is_active();
+        push_combo_face(
+            out,
+            atlas,
+            layout.rows.side_combos[row],
+            None,
+            open == Some(SkirmishComboId::Side(row)),
+            sibling_disabled,
+            SHELL_CONTROL_DEPTH,
+        );
+        push_combo_face(
+            out,
+            atlas,
+            layout.color_combos[row],
+            (!sibling_disabled).then_some(opponent.color_index),
+            open == Some(SkirmishComboId::Color(row)),
+            sibling_disabled,
+            SHELL_CONTROL_DEPTH,
+        );
+        push_combo_face(
+            out,
+            atlas,
+            layout.rows.start_combos[row],
+            None,
+            open == Some(SkirmishComboId::Start(row)),
+            sibling_disabled,
+            SHELL_CONTROL_DEPTH,
+        );
+        push_combo_face(
+            out,
+            atlas,
+            layout.rows.team_combos[row],
+            None,
+            open == Some(SkirmishComboId::Team(row)),
+            sibling_disabled,
+            SHELL_CONTROL_DEPTH,
+        );
+    }
+}
+
+fn push_dropdown_instances(
+    out: &mut Vec<SpriteInstance>,
+    atlas: &SkirmishShellChromeAtlas,
+    layout: &SkirmishShellLayout,
+    shell: &SkirmishShellState,
+    maps: &[MapMenuEntry],
+) {
+    let Some(open) = shell.open_combo_dropdown else {
+        return;
+    };
+    let Some(dropdown) = combo_dropdown_rect(shell, layout, maps, open.id) else {
+        return;
+    };
+    let content = combo_dropdown_content_rect(shell, layout, maps, open.id).unwrap_or(dropdown);
+    let needs_scrollbar = combo_dropdown_needs_scrollbar(shell, maps, open.id);
+    push_solid_rect(
+        out,
+        atlas,
+        dropdown,
+        SHELL_DROPDOWN_BG_RGB,
+        SHELL_DROPDOWN_DEPTH,
+    );
+    let visible_rows = combo_dropdown_visible_row_count(shell, maps, open.id);
+    if let Some(selected_rect) =
+        dropdown_selected_row_rect(shell, maps, open.id, open.top_index, content)
+    {
+        push_solid_rect(
+            out,
+            atlas,
+            selected_rect,
+            SHELL_DROPDOWN_SELECTED_RGB,
+            SHELL_DROPDOWN_DEPTH - 0.00001,
+        );
+    }
+    for (idx, item) in combo_items(shell, maps, open.id)
+        .into_iter()
+        .skip(open.top_index)
+        .take(visible_rows)
+        .enumerate()
+    {
+        if let SkirmishComboItem::Color(color_index) = item {
+            let row_y = content.y + idx as i32 * COMBO_DROPDOWN_ROW_H;
+            let swatch = RectPx::new(content.x + 2, row_y + 2, content.w - 4, 19);
+            push_solid_rect(
+                out,
+                atlas,
+                swatch,
+                house_color_tint(color_index),
+                SHELL_DROPDOWN_DEPTH - 0.00002,
+            );
+        }
+    }
+    if needs_scrollbar {
+        if let (Some(scrollbar), Some(thumb)) = (
+            combo_dropdown_scrollbar_rect(shell, layout, maps, open.id),
+            combo_dropdown_scroll_thumb_rect(shell, layout, maps, open.id),
+        ) {
+            let pressed_part = shell
+                .dropdown_scroll_press
+                .filter(|pressed| pressed.id == open.id)
+                .map(|pressed| pressed.part);
+            push_dropdown_scrollbar_instances(out, atlas, scrollbar, thumb, pressed_part);
+        }
+    }
+    push_rect_outline(
+        out,
+        atlas,
+        dropdown,
+        SHELL_DROPDOWN_BORDER_RGB,
+        SHELL_DROPDOWN_DEPTH - 0.00003,
+    );
+}
+
+fn push_choose_map_listbox_instances(
+    out: &mut Vec<SpriteInstance>,
+    atlas: &SkirmishShellChromeAtlas,
+    list: RectPx,
+    selected_visible_row: Option<usize>,
+    depth: f32,
+) {
+    push_solid_rect(out, atlas, list, SHELL_DROPDOWN_BG_RGB, depth);
+    if let Some(row) = selected_visible_row {
+        let y = list.y + row as i32 * CHOOSE_MAP_LIST_ROW_H;
+        if y < list.y + list.h {
+            push_solid_rect(
+                out,
+                atlas,
+                RectPx::new(
+                    list.x,
+                    y,
+                    list.w,
+                    CHOOSE_MAP_LIST_ROW_H.min(list.y + list.h - y),
+                ),
+                SHELL_DROPDOWN_SELECTED_RGB,
+                depth - 0.00001,
+            );
+        }
+    }
+    push_rect_outline(out, atlas, list, SHELL_DROPDOWN_BORDER_RGB, depth - 0.00002);
+}
+
+fn push_choose_map_modal_instances(
+    out: &mut Vec<SpriteInstance>,
+    atlas: &SkirmishShellChromeAtlas,
+    layout: &ChooseMapModalLayout,
+    shell: &SkirmishShellState,
+) {
+    let Some(modal) = shell.choose_map_modal.as_ref() else {
+        return;
+    };
+    push_solid_rect(
+        out,
+        atlas,
+        layout.dialog,
+        SHELL_MODAL_BG_RGB,
+        SHELL_DROPDOWN_DEPTH - 0.00008,
+    );
+    push_rect_outline(
+        out,
+        atlas,
+        layout.dialog,
+        SHELL_DROPDOWN_BORDER_RGB,
+        SHELL_DROPDOWN_DEPTH - 0.00009,
+    );
+    push_choose_map_listbox_instances(
+        out,
+        atlas,
+        layout.mode_list,
+        modal
+            .selected_mode_id
+            .checked_sub(1)
+            .map(|idx| idx as usize)
+            .filter(|idx| *idx >= modal.mode_top_index)
+            .map(|idx| idx - modal.mode_top_index),
+        SHELL_DROPDOWN_DEPTH - 0.00010,
+    );
+    push_choose_map_listbox_instances(
+        out,
+        atlas,
+        layout.map_list,
+        modal
+            .highlighted_filtered_index
+            .filter(|idx| *idx >= modal.map_top_index)
+            .map(|idx| idx - modal.map_top_index),
+        SHELL_DROPDOWN_DEPTH - 0.00010,
+    );
+    for button in [
+        layout.use_map_button,
+        layout.cancel_button,
+        layout.create_random_map_button,
+    ] {
+        push_solid_rect(
+            out,
+            atlas,
+            button,
+            SHELL_MODAL_PANEL_RGB,
+            SHELL_DROPDOWN_DEPTH - 0.00011,
+        );
+        push_rect_outline(
+            out,
+            atlas,
+            button,
+            SHELL_DROPDOWN_BORDER_RGB,
+            SHELL_DROPDOWN_DEPTH - 0.00012,
+        );
+    }
+    push_rect_outline(
+        out,
+        atlas,
+        layout.preview,
+        SHELL_DROPDOWN_BORDER_RGB,
+        SHELL_DROPDOWN_DEPTH - 0.00012,
+    );
+}
+
+fn dropdown_selected_row_rect(
+    shell: &SkirmishShellState,
+    maps: &[MapMenuEntry],
+    id: SkirmishComboId,
+    top_index: usize,
+    content: RectPx,
+) -> Option<RectPx> {
+    let visible_rows = combo_dropdown_visible_row_count(shell, maps, id);
+    let selected = selected_combo_item_index(shell, maps, id)?;
+    if selected < top_index || selected >= top_index + visible_rows {
+        return None;
+    }
+    Some(RectPx::new(
+        content.x,
+        content.y + (selected - top_index) as i32 * COMBO_DROPDOWN_ROW_H,
+        content.w,
+        COMBO_DROPDOWN_ROW_H,
+    ))
 }
 
 fn parent_background_role(layout: &SkirmishShellLayout) -> Option<ParentBackgroundRole> {
@@ -504,14 +1222,6 @@ pub fn skirmish_shell_semantic_draw_order(
     flag_count: usize,
 ) -> Vec<SkirmishShellDrawRole> {
     let mut roles = Vec::new();
-    if let Some(role) = parent_background_role(layout) {
-        roles.push(match role {
-            ParentBackgroundRole::Mnscrns640 => SkirmishShellDrawRole::ParentBackgroundMnscrns640,
-            ParentBackgroundRole::CoopGameSetup800 => {
-                SkirmishShellDrawRole::ParentBackgroundCoopGameSetup800
-            }
-        });
-    }
     roles.push(SkirmishShellDrawRole::RightPanelTopSdtp);
     roles.extend(
         std::iter::repeat(SkirmishShellDrawRole::RightPanelTileSdbtnbkgd)
@@ -528,6 +1238,14 @@ pub fn skirmish_shell_semantic_draw_order(
         LowerStripRole::Lwscrns640 => SkirmishShellDrawRole::LowerSideLwscrns,
         LowerStripRole::LwscrnlLarge => SkirmishShellDrawRole::LowerSideLwscrnl,
     });
+    if let Some(role) = parent_background_role(layout) {
+        roles.push(match role {
+            ParentBackgroundRole::Mnscrns640 => SkirmishShellDrawRole::ParentBackgroundMnscrns640,
+            ParentBackgroundRole::CoopGameSetup800 => {
+                SkirmishShellDrawRole::ParentBackgroundCoopGameSetup800
+            }
+        });
+    }
     roles.extend(std::iter::repeat(SkirmishShellDrawRole::OwnerDrawButton).take(3));
     if preview_surface_available {
         roles.push(SkirmishShellDrawRole::PreviewSurface);
@@ -543,19 +1261,11 @@ pub fn skirmish_shell_semantic_draw_order(
 pub fn build_skirmish_shell_instances(
     atlas: &SkirmishShellChromeAtlas,
     layout: &SkirmishShellLayout,
+    choose_map_layout: Option<&ChooseMapModalLayout>,
     shell: &SkirmishShellState,
+    maps: &[MapMenuEntry],
 ) -> Vec<SpriteInstance> {
     let mut instances = Vec::new();
-
-    if let Some(background) = parent_background_entry(atlas, layout) {
-        push_entry_native(
-            &mut instances,
-            background,
-            layout.screen.x,
-            layout.screen.y,
-            SHELL_PARENT_BACKGROUND_DEPTH,
-        );
-    }
 
     if let Some(top) = atlas.right_panel_top_sdtp {
         push_entry(&mut instances, top, layout.right_panel.top, 0.00080);
@@ -587,7 +1297,7 @@ pub fn build_skirmish_shell_instances(
     }
 
     if let Some(bottom) = atlas.right_panel_bottom_sdbtm {
-        push_entry(&mut instances, bottom, layout.right_panel.bottom, 0.00078);
+        push_entry_top_clipped_native(&mut instances, bottom, layout.right_panel.bottom, 0.00078);
     }
 
     if let Some(lower_strip) = lower_strip_entry(atlas, layout) {
@@ -596,6 +1306,16 @@ pub fn build_skirmish_shell_instances(
             lower_strip,
             lower_strip_rect(layout, lower_strip),
             SHELL_LOWER_STRIP_DEPTH,
+        );
+    }
+
+    if let Some(background) = parent_background_entry(atlas, layout) {
+        push_entry_native(
+            &mut instances,
+            background,
+            layout.screen.x,
+            layout.screen.y,
+            SHELL_PARENT_BACKGROUND_DEPTH,
         );
     }
 
@@ -624,17 +1344,13 @@ pub fn build_skirmish_shell_instances(
         0.00059,
     );
 
-    push_start_marker_sprites(
-        &mut instances,
-        atlas,
-        layout.map_preview,
-        &[],
-        false,
-        0.00056,
-    );
+    push_combo_instances(&mut instances, atlas, layout, shell);
+    push_checkbox_instances(&mut instances, atlas, layout, shell);
+    push_trackbar_instances(&mut instances, atlas, layout, shell);
 
     if let Some(flag) =
-        flag_name_for_country(shell.player_country).and_then(|name| flag_entry(atlas, name))
+        flag_name_for_country_choice(shell.player_country_random, shell.player_country)
+            .and_then(|name| flag_entry(atlas, name))
     {
         push_flag_entry_native_clipped_centered(&mut instances, flag, layout.flags[0], 0.00057);
     }
@@ -642,8 +1358,10 @@ pub fn build_skirmish_shell_instances(
         let entry = shell
             .opponents
             .get(idx - 1)
-            .filter(|opponent| opponent.enabled)
-            .and_then(|opponent| flag_name_for_country(opponent.country))
+            .filter(|opponent| opponent.is_active())
+            .and_then(|opponent| {
+                flag_name_for_country_choice(opponent.country_random, opponent.country)
+            })
             .and_then(|name| flag_entry(atlas, name));
         if let Some(flag) = entry {
             push_flag_entry_native_clipped_centered(
@@ -653,6 +1371,11 @@ pub fn build_skirmish_shell_instances(
                 0.00057,
             );
         }
+    }
+
+    push_dropdown_instances(&mut instances, atlas, layout, shell, maps);
+    if let Some(choose_map_layout) = choose_map_layout {
+        push_choose_map_modal_instances(&mut instances, atlas, choose_map_layout, shell);
     }
 
     instances
@@ -667,39 +1390,200 @@ fn localized_label(state: &AppState, key: &str, fallback: &str) -> String {
         .unwrap_or_else(|| fallback.to_string())
 }
 
+fn checkbox_label(id: SkirmishCheckboxId) -> (&'static str, &'static str) {
+    match id {
+        SkirmishCheckboxId::ShortGame0x54e => ("GUI:ShortGame", "Short Game"),
+        SkirmishCheckboxId::McvRepacks0x693 => ("GUI:MCVRepacks", "MCV Repacks"),
+        SkirmishCheckboxId::CratesAppear0x696 => ("GUI:CratesAppear", "Crates Appear"),
+        SkirmishCheckboxId::SuperWeapons0x69a => ("GUI:SuperWeaponsAllowed", "Super Weapons"),
+        SkirmishCheckboxId::BuildOffAlly0x69d => ("GUI:BuildOffAlly", "Build Off Ally"),
+    }
+}
+
+fn start_position_label(pos: crate::ui::main_menu::StartPosition) -> String {
+    match pos {
+        crate::ui::main_menu::StartPosition::Auto => "Random".to_string(),
+        crate::ui::main_menu::StartPosition::Position(idx) => (idx + 1).to_string(),
+    }
+}
+
+fn team_label(team: i32) -> String {
+    match team {
+        0 => "A".to_string(),
+        1 => "B".to_string(),
+        2 => "C".to_string(),
+        3 => "D".to_string(),
+        _ => "None".to_string(),
+    }
+}
+
+fn combo_item_label(state: &AppState, item: SkirmishComboItem) -> String {
+    match item {
+        SkirmishComboItem::AiType(row_type) => {
+            let (key, fallback) = row_type_label(row_type);
+            localized_label(state, key, fallback)
+        }
+        SkirmishComboItem::Country(SkirmishCountryChoice::Random) => {
+            localized_label(state, "GUI:RandomAsSymbols", "Random")
+        }
+        SkirmishComboItem::Country(SkirmishCountryChoice::Country(country)) => {
+            country.label().to_string()
+        }
+        SkirmishComboItem::ColorSentinel(_) => String::new(),
+        SkirmishComboItem::Color(_) => String::new(),
+        SkirmishComboItem::Start(start) => match start {
+            crate::ui::main_menu::StartPosition::Auto => {
+                localized_label(state, "GUI:RandomAsSymbols", "Random")
+            }
+            crate::ui::main_menu::StartPosition::Position(idx) => (idx + 1).to_string(),
+        },
+        SkirmishComboItem::Team(team) => {
+            if team == 0 {
+                localized_label(state, "GUI:None", "None")
+            } else {
+                team_label(team)
+            }
+        }
+    }
+}
+
+fn country_choice_label(state: &AppState, random: bool, country: SkirmishCountry) -> String {
+    if random {
+        localized_label(state, "GUI:RandomAsSymbols", "Random")
+    } else {
+        country.label().to_string()
+    }
+}
+
+fn trackbar_display_value(shell: &SkirmishShellState, id: SkirmishTrackbarId) -> String {
+    match id {
+        SkirmishTrackbarId::GameSpeed0x529 => trackbar_visual_value(shell, id).to_string(),
+        SkirmishTrackbarId::Credits0x511 => shell.starting_credits.to_string(),
+        SkirmishTrackbarId::UnitCount0x50c => shell.unit_count.to_string(),
+    }
+}
+
+fn row_type_label(row_type: SkirmishAiRowType) -> (&'static str, &'static str) {
+    row_type.label()
+}
+
 fn push_button_label_draw(
     out: &mut Vec<ShellTextDraw>,
     state: &AppState,
     label: &str,
     rect: RectPx,
-    y_offset: i32,
+    pressed: bool,
     depth: f32,
 ) {
-    let text_rect = TextRect {
-        x: rect.x,
-        y: rect.y + y_offset,
-        w: rect.w.max(0) as u32,
-        h: rect.h.max(0) as u32,
+    let text_rect = button_text_rect(rect, pressed);
+    push_text_draw(
+        out,
+        state,
+        label,
+        text_rect,
+        SHELL_LABEL_TEXT_RGB,
+        ShellAlign::H_CENTER | ShellAlign::V_CENTER,
+        depth,
+    );
+}
+
+fn button_text_rect(rect: RectPx, pressed: bool) -> TextRect {
+    let mut x = rect.x;
+    let y = if pressed {
+        x += 2;
+        rect.y + 5
+    } else {
+        rect.y + 1
     };
+    TextRect {
+        x,
+        y,
+        w: (rect.x + rect.w - 2 - x).max(0) as u32,
+        h: (rect.y + rect.h - y).max(0) as u32,
+    }
+}
+
+fn push_text_draw(
+    out: &mut Vec<ShellTextDraw>,
+    state: &AppState,
+    label: &str,
+    text_rect: TextRect,
+    color: [f32; 3],
+    align: ShellAlign,
+    depth: f32,
+) {
     let draw = shell_text::draw_in_rect(
         &state.bit_font,
         label,
         text_rect,
-        SHELL_BUTTON_TEXT_RGB_00000C05,
-        ShellAlign::H_CENTER | ShellAlign::V_CENTER,
+        color,
+        align,
         [0.0, 0.0],
         depth,
     );
     out.push(draw);
 }
 
+fn rect_to_text_rect(rect: RectPx) -> TextRect {
+    TextRect {
+        x: rect.x,
+        y: rect.y,
+        w: rect.w.max(0) as u32,
+        h: rect.h.max(0) as u32,
+    }
+}
+
+fn push_label_draw(
+    out: &mut Vec<ShellTextDraw>,
+    state: &AppState,
+    label: &str,
+    rect: RectPx,
+    depth: f32,
+) {
+    let text_rect = TextRect {
+        x: rect.x,
+        y: rect.y,
+        w: rect.w.max(0) as u32,
+        h: rect.h.max(0) as u32,
+    };
+    push_text_draw(
+        out,
+        state,
+        label,
+        text_rect,
+        SHELL_LABEL_TEXT_RGB,
+        ShellAlign::V_CENTER,
+        depth,
+    );
+}
+
+fn push_static_label_draw(
+    out: &mut Vec<ShellTextDraw>,
+    state: &AppState,
+    label: &str,
+    rect: RectPx,
+    align: ShellAlign,
+    depth: f32,
+) {
+    push_text_draw(
+        out,
+        state,
+        label,
+        rect_to_text_rect(rect),
+        SHELL_LABEL_TEXT_RGB,
+        align,
+        depth,
+    );
+}
+
 fn build_shell_text_draws(
     state: &AppState,
     layout: &SkirmishShellLayout,
     shell: &SkirmishShellState,
+    maps: &[MapMenuEntry],
 ) -> (Vec<ShellTextDraw>, Vec<SpriteInstance>) {
     let mut shell_draws: Vec<ShellTextDraw> = Vec::new();
-    let mut bare_instances: Vec<SpriteInstance> = Vec::new();
+    let bare_instances: Vec<SpriteInstance> = Vec::new();
 
     let start = localized_label(state, "GUI:StartGame", "Start Game");
     let choose = localized_label(state, "GUI:ChooseMap", "Choose Map");
@@ -722,52 +1606,341 @@ fn build_shell_text_draws(
             OwnerDrawButton::Back0x5c0,
         ),
     ] {
-        let y_off = if shell.pressed_owner_draw_button == Some(button) {
-            PRESSED_BUTTON_CONTENT_OFFSET_Y
-        } else {
-            0
-        };
-        push_button_label_draw(&mut shell_draws, state, label, rect, y_off, 0.00041);
+        push_button_label_draw(
+            &mut shell_draws,
+            state,
+            label,
+            rect,
+            shell.pressed_owner_draw_button == Some(button),
+            0.00041,
+        );
     }
 
-    push_start_marker_labels(
-        &mut bare_instances,
+    for (key, fallback, rect) in [
+        ("GUI:Players", "Players", layout.column_labels.players),
+        ("GUI:Side", "Side", layout.column_labels.side),
+        ("GUI:Color", "Color", layout.column_labels.color),
+        ("GUI:StartPosition", "Start", layout.column_labels.start),
+        ("GUI:Team", "Team", layout.column_labels.team),
+    ] {
+        let label = localized_label(state, key, fallback);
+        push_label_draw(
+            &mut shell_draws,
+            state,
+            &label,
+            rect,
+            SHELL_CONTROL_TEXT_DEPTH,
+        );
+    }
+
+    let title = localized_label(state, "GUI:SkirmishGame", "Skirmish Game");
+    push_static_label_draw(
+        &mut shell_draws,
         state,
-        layout.map_preview,
-        &[],
-        false,
-        0.00040,
+        &title,
+        layout.right_panel_text.title,
+        ShellAlign::H_CENTER,
+        SHELL_CONTROL_TEXT_DEPTH,
+    );
+    let game_type = state
+        .skirmish_modes
+        .iter()
+        .find(|mode| mode.id == shell.selected_mode_id)
+        .map(|mode| localized_label(state, &mode.ui_name_key, &mode.ui_name_key))
+        .unwrap_or_else(|| localized_label(state, "GUI:Battle", "Battle"));
+    push_static_label_draw(
+        &mut shell_draws,
+        state,
+        &game_type,
+        layout.right_panel_text.game_type,
+        ShellAlign::H_CENTER,
+        SHELL_CONTROL_TEXT_DEPTH,
+    );
+    let map_label = maps
+        .get(shell.selected_map_idx)
+        .map(|map| map.display_name.as_str())
+        .unwrap_or("None");
+    push_static_label_draw(
+        &mut shell_draws,
+        state,
+        map_label,
+        layout.right_panel_text.map_label,
+        ShellAlign::H_CENTER,
+        SHELL_CONTROL_TEXT_DEPTH,
     );
 
+    push_label_draw(
+        &mut shell_draws,
+        state,
+        "Player",
+        layout.player_name,
+        SHELL_CONTROL_TEXT_DEPTH,
+    );
+
+    for checkbox in layout.checkboxes {
+        let (key, fallback) = checkbox_label(checkbox.id);
+        let label = localized_label(state, key, fallback);
+        push_label_draw(
+            &mut shell_draws,
+            state,
+            &label,
+            checkbox_text_rect(checkbox.rect),
+            SHELL_CONTROL_TEXT_DEPTH,
+        );
+    }
+
+    for id in [
+        SkirmishTrackbarId::GameSpeed0x529,
+        SkirmishTrackbarId::Credits0x511,
+        SkirmishTrackbarId::UnitCount0x50c,
+    ] {
+        let value = trackbar_display_value(shell, id);
+        push_text_draw(
+            &mut shell_draws,
+            state,
+            &value,
+            rect_to_text_rect(trackbar_value_text_rect(trackbar_rect_for_id(layout, id))),
+            SHELL_BUTTON_TEXT_RGB_00000C05,
+            ShellAlign::H_CENTER | ShellAlign::V_CENTER,
+            SHELL_CONTROL_TEXT_DEPTH,
+        );
+    }
+
+    push_label_draw(
+        &mut shell_draws,
+        state,
+        &country_choice_label(state, shell.player_country_random, shell.player_country),
+        combo_text_rect(layout.rows.side_combos[0]),
+        SHELL_CONTROL_TEXT_DEPTH,
+    );
+    push_label_draw(
+        &mut shell_draws,
+        state,
+        &start_position_label(shell.player_start_position),
+        combo_text_rect(layout.rows.start_combos[0]),
+        SHELL_CONTROL_TEXT_DEPTH,
+    );
+    push_label_draw(
+        &mut shell_draws,
+        state,
+        &team_label(shell.player_team),
+        combo_text_rect(layout.rows.team_combos[0]),
+        SHELL_CONTROL_TEXT_DEPTH,
+    );
+
+    for (idx, opponent) in shell.opponents.iter().enumerate() {
+        if idx >= layout.rows.ai_type_combos.len() {
+            break;
+        }
+        let row = idx + 1;
+        let (key, fallback) = row_type_label(opponent.row_type);
+        let row_type = localized_label(state, key, fallback);
+        push_label_draw(
+            &mut shell_draws,
+            state,
+            &row_type,
+            combo_text_rect(layout.rows.ai_type_combos[idx]),
+            SHELL_CONTROL_TEXT_DEPTH,
+        );
+        if opponent.is_active() {
+            push_label_draw(
+                &mut shell_draws,
+                state,
+                &country_choice_label(state, opponent.country_random, opponent.country),
+                combo_text_rect(layout.rows.side_combos[row]),
+                SHELL_CONTROL_TEXT_DEPTH,
+            );
+            push_label_draw(
+                &mut shell_draws,
+                state,
+                &start_position_label(opponent.start_position),
+                combo_text_rect(layout.rows.start_combos[row]),
+                SHELL_CONTROL_TEXT_DEPTH,
+            );
+            push_label_draw(
+                &mut shell_draws,
+                state,
+                &team_label(opponent.team),
+                combo_text_rect(layout.rows.team_combos[row]),
+                SHELL_CONTROL_TEXT_DEPTH,
+            );
+        }
+    }
+
+    if let Some(open) = shell.open_combo_dropdown {
+        if let Some(dropdown) = combo_dropdown_rect(shell, layout, maps, open.id) {
+            let content =
+                combo_dropdown_content_rect(shell, layout, maps, open.id).unwrap_or(dropdown);
+            let visible_rows = combo_dropdown_visible_row_count(shell, maps, open.id);
+            let text_w = content.w - 3;
+            for (idx, item) in combo_items(shell, maps, open.id)
+                .into_iter()
+                .skip(open.top_index)
+                .take(visible_rows)
+                .enumerate()
+            {
+                let label = combo_item_label(state, item);
+                if label.is_empty() {
+                    continue;
+                }
+                let rect = RectPx::new(
+                    content.x + 3,
+                    content.y + idx as i32 * COMBO_DROPDOWN_ROW_H,
+                    text_w.max(0),
+                    COMBO_DROPDOWN_ROW_H,
+                );
+                push_text_draw(
+                    &mut shell_draws,
+                    state,
+                    &label,
+                    rect_to_text_rect(rect),
+                    SHELL_LABEL_TEXT_RGB,
+                    ShellAlign::V_CENTER,
+                    SHELL_DROPDOWN_TEXT_DEPTH,
+                );
+            }
+        }
+    }
+
     (shell_draws, bare_instances)
+}
+
+fn push_choose_map_modal_text_draws(
+    out: &mut Vec<ShellTextDraw>,
+    state: &AppState,
+    layout: &ChooseMapModalLayout,
+) {
+    let Some(modal) = state.skirmish_shell_state.choose_map_modal.as_ref() else {
+        return;
+    };
+
+    let title = localized_label(state, "GUI:ChooseMap", "Choose Map");
+    push_text_draw(
+        out,
+        state,
+        &title,
+        rect_to_text_rect(layout.title),
+        SHELL_LABEL_TEXT_RGB,
+        ShellAlign::H_CENTER | ShellAlign::V_CENTER,
+        SHELL_DROPDOWN_TEXT_DEPTH - 0.00008,
+    );
+
+    for (label, rect) in [
+        (
+            localized_label(state, "GUI:UseMap", "Use Map"),
+            layout.use_map_button,
+        ),
+        (
+            localized_label(state, "GUI:Cancel", "Cancel"),
+            layout.cancel_button,
+        ),
+        (
+            localized_label(state, "GUI:CreateRandomMap", "Create Random Map"),
+            layout.create_random_map_button,
+        ),
+    ] {
+        push_text_draw(
+            out,
+            state,
+            &label,
+            rect_to_text_rect(rect),
+            SHELL_LABEL_TEXT_RGB,
+            ShellAlign::H_CENTER | ShellAlign::V_CENTER,
+            SHELL_DROPDOWN_TEXT_DEPTH - 0.00009,
+        );
+    }
+
+    let visible_mode_rows = (layout.mode_list.h / CHOOSE_MAP_LIST_ROW_H).max(0) as usize;
+    for (visible_row, mode) in state
+        .skirmish_modes
+        .iter()
+        .skip(modal.mode_top_index)
+        .take(visible_mode_rows)
+        .enumerate()
+    {
+        let label = localized_label(state, &mode.ui_name_key, &mode.ui_name_key);
+        let rect = RectPx::new(
+            layout.mode_list.x + 2,
+            layout.mode_list.y + visible_row as i32 * CHOOSE_MAP_LIST_ROW_H,
+            layout.mode_list.w - 4,
+            CHOOSE_MAP_LIST_ROW_H,
+        );
+        push_text_draw(
+            out,
+            state,
+            &label,
+            rect_to_text_rect(rect),
+            SHELL_LABEL_TEXT_RGB,
+            ShellAlign::V_CENTER,
+            SHELL_DROPDOWN_TEXT_DEPTH - 0.00009,
+        );
+    }
+
+    let visible_map_rows = (layout.map_list.h / CHOOSE_MAP_LIST_ROW_H).max(0) as usize;
+    for (visible_row, record_idx) in modal
+        .filtered_record_indices
+        .iter()
+        .skip(modal.map_top_index)
+        .take(visible_map_rows)
+        .enumerate()
+    {
+        let Some(record) = state.skirmish_scenario_records.get(*record_idx) else {
+            continue;
+        };
+        let rect = RectPx::new(
+            layout.map_list.x + 2,
+            layout.map_list.y + visible_row as i32 * CHOOSE_MAP_LIST_ROW_H,
+            layout.map_list.w - 4,
+            CHOOSE_MAP_LIST_ROW_H,
+        );
+        push_text_draw(
+            out,
+            state,
+            &record.display_name,
+            rect_to_text_rect(rect),
+            SHELL_LABEL_TEXT_RGB,
+            ShellAlign::V_CENTER,
+            SHELL_DROPDOWN_TEXT_DEPTH - 0.00009,
+        );
+    }
 }
 
 fn push_start_marker_labels(
     out: &mut Vec<SpriteInstance>,
     state: &AppState,
-    preview_rect: RectPx,
     projected_positions: &[(i32, i32)],
-    real_preview_surface_available: bool,
     depth: f32,
 ) {
-    if !real_preview_surface_available {
-        return;
-    }
     for (idx, &(x, y)) in projected_positions.iter().enumerate() {
-        if !preview_rect.contains(x, y) {
-            continue;
-        }
         let label = (idx + 1).to_string();
+        let (label_x, label_y) = start_marker_label_origin(x, y);
         out.extend(state.bit_font.build_text(
             &label,
-            x as f32,
-            y as f32,
+            label_x as f32,
+            label_y as f32,
             1.0,
             depth,
-            SHELL_BUTTON_TEXT_RGB_00000C05,
+            start_marker_label_color(),
             [0.0, 0.0],
         ));
     }
+}
+
+fn start_marker_label_origin(anchor_x: i32, anchor_y: i32) -> (i32, i32) {
+    (anchor_x - 2, anchor_y - 6)
+}
+
+fn start_marker_label_color() -> [f32; 3] {
+    SHELL_LABEL_TEXT_RGB
+}
+
+fn build_start_marker_label_instances(
+    state: &AppState,
+    projected_positions: &[(i32, i32)],
+) -> Vec<SpriteInstance> {
+    let mut instances = Vec::new();
+    push_start_marker_labels(&mut instances, state, projected_positions, 0.00040);
+    instances
 }
 
 fn selected_preview_texture_is_current(state: &AppState, selected_map_idx: usize) -> bool {
@@ -806,7 +1979,7 @@ fn ensure_selected_preview_texture(state: &mut AppState) {
     }
 
     let decoded = state
-        .available_maps
+        .skirmish_shell_maps
         .get(selected_map_idx)
         .and_then(decode_preview_for_map_entry);
 
@@ -834,25 +2007,27 @@ fn aspect_fit_rect(dst: RectPx, src_w: u32, src_h: u32) -> RectPx {
         return RectPx::new(dst.x, dst.y, 0, 0);
     }
 
-    let scale_w = dst.w as f32 / src_w as f32;
-    let scale_h = dst.h as f32 / src_h as f32;
+    let src_w = src_w as i32;
+    let src_h = src_h as i32;
+    let scale_w = dst.w * 1000 / src_w;
+    let scale_h = dst.h * 1000 / src_h;
     let scale = scale_w.min(scale_h);
-    let fitted_w = (src_w as f32 * scale).round() as i32;
-    let fitted_h = (src_h as f32 * scale).round() as i32;
+    let fitted_w = src_w * scale / 1000;
+    let fitted_h = src_h * scale / 1000;
     RectPx::new(
-        dst.x + ((dst.w - fitted_w) / 2),
-        dst.y + ((dst.h - fitted_h) / 2),
+        dst.x + dst.w / 2 - (src_w * scale) / 2000,
+        dst.y + dst.h / 2 - (src_h * scale) / 2000,
         fitted_w,
         fitted_h,
     )
 }
 
 fn build_preview_surface_instance(
-    layout: &SkirmishShellLayout,
+    dst: RectPx,
     preview_width: u32,
     preview_height: u32,
 ) -> Option<SpriteInstance> {
-    let fitted = aspect_fit_rect(layout.map_preview, preview_width, preview_height);
+    let fitted = aspect_fit_rect(dst, preview_width, preview_height);
     if fitted.w <= 0 || fitted.h <= 0 {
         return None;
     }
@@ -867,6 +2042,14 @@ fn build_preview_surface_instance(
         alpha: 1.0,
         ..Default::default()
     })
+}
+
+fn update_owner_draw_button_paint_sound(state: &mut AppState) {
+    let pressed = state.skirmish_shell_state.pressed_owner_draw_button;
+    if pressed.is_some() && state.skirmish_shell_last_painted_pressed_button.is_none() {
+        crate::app::App::play_skirmish_shell_generic_click_sound(state);
+    }
+    state.skirmish_shell_last_painted_pressed_button = pressed;
 }
 
 pub(crate) fn render_skirmish_shell(
@@ -887,6 +2070,11 @@ fn render_skirmish_shell_with_atlas(
     atlas: Option<&SkirmishShellChromeAtlas>,
 ) -> anyhow::Result<SkirmishShellAction> {
     let layout = compute_layout(state.render_width(), state.render_height());
+    let choose_map_layout = state
+        .skirmish_shell_state
+        .choose_map_modal
+        .as_ref()
+        .map(|_| compute_choose_map_modal_layout(state.render_width(), state.render_height()));
     let action = SkirmishShellAction::None;
 
     let Some(atlas) = atlas else {
@@ -894,20 +2082,64 @@ fn render_skirmish_shell_with_atlas(
         return Ok(action);
     };
 
+    update_owner_draw_button_paint_sound(state);
     ensure_selected_preview_texture(state);
-    let preview_instance = state
+    let selected_preview_bounds = state
+        .skirmish_shell_maps
+        .get(state.skirmish_shell_state.selected_map_idx)
+        .and_then(|entry| entry.preview_source_bounds.as_ref());
+    let preview_rect = choose_map_layout
+        .as_ref()
+        .map(|layout| layout.preview)
+        .unwrap_or(layout.map_preview);
+    let fitted_preview_rect = state
         .skirmish_preview_texture
         .as_ref()
-        .and_then(|preview| build_preview_surface_instance(&layout, preview.width, preview.height));
+        .map(|preview| aspect_fit_rect(preview_rect, preview.width, preview.height));
+    let projected_start_positions = selected_preview_bounds
+        .zip(fitted_preview_rect)
+        .map(|(bounds, rect)| project_preview_start_positions(bounds, rect))
+        .unwrap_or_default();
+
+    let preview_instance = state.skirmish_preview_texture.as_ref().and_then(|preview| {
+        build_preview_surface_instance(preview_rect, preview.width, preview.height)
+    });
     let preview_buffer = preview_instance.as_ref().and_then(|instance| {
         state
             .batch_renderer
             .create_instance_buffer(&state.gpu, &[*instance])
     });
+    let marker_instances = fitted_preview_rect
+        .filter(|_| !projected_start_positions.is_empty())
+        .map(|_| build_start_marker_instances(atlas, &projected_start_positions))
+        .unwrap_or_default();
+    let marker_buffer = state
+        .batch_renderer
+        .create_instance_buffer(&state.gpu, &marker_instances);
 
-    let instances = build_skirmish_shell_instances(atlas, &layout, &state.skirmish_shell_state);
-    let (shell_draws, bare_text_instances) =
-        build_shell_text_draws(state, &layout, &state.skirmish_shell_state);
+    let instances = build_skirmish_shell_instances(
+        atlas,
+        &layout,
+        choose_map_layout.as_ref(),
+        &state.skirmish_shell_state,
+        &state.skirmish_shell_maps,
+    );
+    let (mut shell_draws, bare_text_instances) = build_shell_text_draws(
+        state,
+        &layout,
+        &state.skirmish_shell_state,
+        &state.skirmish_shell_maps,
+    );
+    if let Some(choose_map_layout) = choose_map_layout.as_ref() {
+        push_choose_map_modal_text_draws(&mut shell_draws, state, choose_map_layout);
+    }
+    let marker_label_instances = fitted_preview_rect
+        .filter(|_| !projected_start_positions.is_empty())
+        .map(|_| build_start_marker_label_instances(state, &projected_start_positions))
+        .unwrap_or_default();
+    let marker_label_buffer = state
+        .batch_renderer
+        .create_instance_buffer(&state.gpu, &marker_label_instances);
     state.batch_renderer.update_camera(
         &state.gpu,
         state.render_width() as f32,
@@ -968,6 +2200,22 @@ fn render_skirmish_shell_with_atlas(
         state.batch_renderer.draw_with_buffer_passthrough(
             &mut pass,
             &preview.texture,
+            buffer,
+            *count,
+        );
+    }
+    if let Some((buffer, count)) = marker_buffer.as_ref() {
+        state.batch_renderer.draw_with_buffer_passthrough(
+            &mut pass,
+            &atlas.texture,
+            buffer,
+            *count,
+        );
+    }
+    if let Some((buffer, count)) = marker_label_buffer.as_ref() {
+        state.batch_renderer.draw_with_buffer_passthrough(
+            &mut pass,
+            state.bit_font.atlas(),
             buffer,
             *count,
         );
@@ -1037,15 +2285,57 @@ fn clear_shell_target(
 mod tests {
     use super::*;
 
+    fn test_entry(width: f32, height: f32) -> SkirmishShellChromeEntry {
+        SkirmishShellChromeEntry {
+            uv_origin: [0.0, 0.0],
+            uv_size: [1.0, 1.0],
+            pixel_size: [width, height],
+        }
+    }
+
+    #[test]
+    fn scrollbar_arrow_entry_uses_pressed_art_only_while_pressed() {
+        let released = test_entry(20.0, 22.0);
+        let pressed = test_entry(21.0, 23.0);
+
+        assert_eq!(
+            scrollbar_arrow_entry(Some(released), Some(pressed), false)
+                .unwrap()
+                .pixel_size,
+            released.pixel_size
+        );
+        assert_eq!(
+            scrollbar_arrow_entry(Some(released), Some(pressed), true)
+                .unwrap()
+                .pixel_size,
+            pressed.pixel_size
+        );
+        assert_eq!(
+            scrollbar_arrow_entry(Some(released), None, true)
+                .unwrap()
+                .pixel_size,
+            released.pixel_size
+        );
+    }
+
     #[test]
     fn button_segments_tile_middle_and_keep_caps() {
-        let rect = RectPx::new(635, 242, 162, 37);
-        let segments = build_button_segments(rect, 8.0, 64.0, 8.0);
-        assert_eq!(segments.first().unwrap().piece, ButtonPiece::Left);
-        assert_eq!(segments.last().unwrap().piece, ButtonPiece::Right);
-        assert!(segments.iter().any(|s| s.piece == ButtonPiece::Middle));
-        let total_width: f32 = segments.iter().map(|s| s.width).sum();
-        assert_eq!(total_width, 162.0);
+        let rect = RectPx::new(644, 241, 156, 42);
+        let segments = build_button_segments(rect, 7.0, 64.0, 10.0);
+        let expected = [
+            (ButtonPiece::Left, 644.0, 7.0),
+            (ButtonPiece::Middle, 651.0, 64.0),
+            (ButtonPiece::Middle, 715.0, 64.0),
+            (ButtonPiece::Middle, 779.0, 18.0),
+            (ButtonPiece::Right, 790.0, 10.0),
+        ];
+
+        assert_eq!(segments.len(), expected.len());
+        for (segment, (piece, x, width)) in segments.iter().zip(expected) {
+            assert_eq!(segment.piece, piece);
+            assert_eq!(segment.x, x);
+            assert_eq!(segment.width, width);
+        }
     }
 
     #[test]
@@ -1060,6 +2350,32 @@ mod tests {
         let last_middle = middle_segments.last().unwrap();
         assert!(last_middle.width < 60.0);
         assert!(last_middle.uv_width_ratio < 1.0);
+    }
+
+    #[test]
+    fn button_segment_sprites_keep_native_art_height() {
+        let entry = SkirmishShellChromeEntry {
+            uv_origin: [0.0, 0.0],
+            uv_size: [1.0, 1.0],
+            pixel_size: [8.0, 30.0],
+        };
+        let segment = ButtonSegment {
+            piece: ButtonPiece::Left,
+            x: 635.0,
+            width: 8.0,
+            uv_width_ratio: 1.0,
+        };
+
+        assert_eq!(button_segment_sprite_size(entry, segment), [8.0, 30.0]);
+    }
+
+    #[test]
+    fn button_art_y_centers_native_height_and_offsets_pressed_enabled() {
+        let rect = RectPx::new(644, 241, 156, 42);
+
+        assert_eq!(button_art_y(rect, 30.0, false, false), 247.0);
+        assert_eq!(button_art_y(rect, 30.0, true, false), 249.0);
+        assert_eq!(button_art_y(rect, 30.0, true, true), 247.0);
     }
 
     #[test]
@@ -1102,6 +2418,29 @@ mod tests {
     }
 
     #[test]
+    fn flag_entry_centers_odd_delta_with_integer_truncation() {
+        let entry = SkirmishShellChromeEntry {
+            uv_origin: [0.25, 0.5],
+            uv_size: [0.5, 0.25],
+            pixel_size: [47.0, 14.0],
+        };
+        let mut out = Vec::new();
+
+        push_flag_entry_native_clipped_centered(
+            &mut out,
+            entry,
+            RectPx::new(100, 50, 48, 16),
+            0.00057,
+        );
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].position, [100.0, 51.0]);
+        assert_eq!(out[0].size, [47.0, 14.0]);
+        assert_eq!(out[0].uv_origin, entry.uv_origin);
+        assert_eq!(out[0].uv_size, entry.uv_size);
+    }
+
+    #[test]
     fn flag_entry_clips_uvs_without_fit_scaling_when_larger_than_rect() {
         let entry = SkirmishShellChromeEntry {
             uv_origin: [0.25, 0.5],
@@ -1123,6 +2462,25 @@ mod tests {
         assert_eq!(out[0].uv_origin, entry.uv_origin);
         assert_f32_close(out[0].uv_size[0], 0.3);
         assert_f32_close(out[0].uv_size[1], 0.15);
+    }
+
+    #[test]
+    fn sdbtm_bottom_cap_clips_top_source_rows_without_scaling() {
+        let entry = SkirmishShellChromeEntry {
+            uv_origin: [0.0, 0.0],
+            uv_size: [0.84, 0.65],
+            pixel_size: [168.0, 65.0],
+        };
+        let mut out = Vec::new();
+
+        push_entry_top_clipped_native(&mut out, entry, RectPx::new(632, 577, 168, 23), 0.00078);
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].position, [632.0, 577.0]);
+        assert_eq!(out[0].size, [168.0, 23.0]);
+        assert_eq!(out[0].uv_origin, entry.uv_origin);
+        assert_f32_close(out[0].uv_size[0], 0.84);
+        assert_f32_close(out[0].uv_size[1], 0.23);
     }
 
     #[test]
@@ -1221,21 +2579,21 @@ mod tests {
     fn semantic_draw_order_records_verified_right_panel_sequence() {
         let layout = compute_layout(800, 600);
         let order = skirmish_shell_semantic_draw_order(&layout, true, false, false, 0);
+        assert_eq!(order[0], SkirmishShellDrawRole::RightPanelTopSdtp);
         assert_eq!(
-            order[0],
-            SkirmishShellDrawRole::ParentBackgroundCoopGameSetup800
-        );
-        assert_eq!(order[1], SkirmishShellDrawRole::RightPanelTopSdtp);
-        assert_eq!(
-            &order[2..11],
+            &order[1..10],
             [SkirmishShellDrawRole::RightPanelTileSdbtnbkgd; 9]
         );
         assert_eq!(
-            &order[11..20],
+            &order[10..19],
             [SkirmishShellDrawRole::RightPanelOverlaySdbtnanmFrame10; 9]
         );
-        assert_eq!(order[20], SkirmishShellDrawRole::RightPanelBottomSdbtm);
-        assert_eq!(order[21], SkirmishShellDrawRole::LowerSideLwscrnl);
+        assert_eq!(order[19], SkirmishShellDrawRole::RightPanelBottomSdbtm);
+        assert_eq!(order[20], SkirmishShellDrawRole::LowerSideLwscrnl);
+        assert_eq!(
+            order[21],
+            SkirmishShellDrawRole::ParentBackgroundCoopGameSetup800
+        );
         assert_eq!(&order[22..25], [SkirmishShellDrawRole::OwnerDrawButton; 3]);
         assert!(!order.contains(&SkirmishShellDrawRole::StartMarker));
         assert!(!order.contains(&SkirmishShellDrawRole::StartMarkerLabel));
@@ -1293,13 +2651,87 @@ mod tests {
     }
 
     #[test]
-    fn preview_surface_aspect_fits_dustbowl_thumbnail() {
+    fn skirmish_preview_aspect_fit_uses_gamemd_integer_per_mille_truncation() {
         let layout = compute_layout(800, 600);
         let fitted = aspect_fit_rect(layout.map_preview, 138, 75);
-        assert_eq!(fitted.w, 144);
-        assert_eq!(fitted.h, 78);
-        assert_eq!(fitted.x, layout.map_preview.x);
-        assert_eq!(fitted.y, layout.map_preview.y + 17);
+        assert_eq!(fitted, RectPx::new(645, 54, 143, 78));
+    }
+
+    #[test]
+    fn header_preview_points_project_with_integer_per_mille_math() {
+        let bounds = PreviewSourceBounds {
+            origin_x: 10,
+            origin_y: 20,
+            width: 100,
+            height: 80,
+            start_points: vec![
+                crate::map::preview::PreviewStartPoint { x: 10, y: 20 },
+                crate::map::preview::PreviewStartPoint { x: 60, y: 60 },
+                crate::map::preview::PreviewStartPoint { x: 109, y: 99 },
+            ],
+        };
+        let projected = project_preview_start_positions(&bounds, RectPx::new(644, 54, 144, 78));
+        assert_eq!(projected, vec![(644, 54), (716, 93), (786, 130)]);
+    }
+
+    #[test]
+    fn start_marker_instances_apply_verified_shape_offsets() {
+        assert_eq!(start_marker_top_left(120, 70), (111, 64));
+    }
+
+    #[test]
+    fn start_marker_overlays_use_destination_surface_clip_not_preview_rect() {
+        let bounds = PreviewSourceBounds {
+            origin_x: 0,
+            origin_y: 0,
+            width: 100,
+            height: 100,
+            start_points: vec![crate::map::preview::PreviewStartPoint { x: 140, y: 50 }],
+        };
+        let preview = RectPx::new(645, 54, 143, 78);
+
+        let projected = project_preview_start_positions(&bounds, preview);
+
+        assert_eq!(projected, vec![(845, 93)]);
+        assert!(!preview.contains(projected[0].0, projected[0].1));
+        assert_eq!(
+            start_marker_top_left(projected[0].0, projected[0].1),
+            (836, 87)
+        );
+        assert_eq!(
+            start_marker_label_origin(projected[0].0, projected[0].1),
+            (843, 87)
+        );
+    }
+
+    #[test]
+    fn start_marker_labels_use_startbut_overlay_origin_and_yellow_color() {
+        assert_eq!(start_marker_label_origin(120, 70), (118, 64));
+        assert_eq!(start_marker_label_color(), SHELL_LABEL_TEXT_RGB);
+        assert_ne!(start_marker_label_color(), SHELL_BUTTON_TEXT_RGB_00000C05);
+    }
+
+    #[test]
+    fn skirmish_dropdown_selected_row_fill_is_full_row() {
+        let layout = compute_layout(800, 600);
+        let shell = SkirmishShellState::default();
+        let maps: [MapMenuEntry; 0] = [];
+        let content =
+            combo_dropdown_content_rect(&shell, &layout, &maps, SkirmishComboId::Color(0)).unwrap();
+
+        let selected =
+            dropdown_selected_row_rect(&shell, &maps, SkirmishComboId::Color(0), 0, content)
+                .unwrap();
+
+        assert_eq!(
+            selected,
+            RectPx::new(
+                content.x,
+                content.y + COMBO_DROPDOWN_ROW_H,
+                content.w,
+                COMBO_DROPDOWN_ROW_H
+            )
+        );
     }
 
     #[test]
@@ -1319,6 +2751,31 @@ mod tests {
             ),
             (40, 32)
         );
+    }
+
+    #[test]
+    fn button_text_rect_follows_owner_draw_caller_contract() {
+        let rect = RectPx::new(644, 241, 156, 42);
+        let released = button_text_rect(rect, false);
+        let pressed = button_text_rect(rect, true);
+
+        assert_eq!(
+            (released.x, released.y, released.w, released.h),
+            (644, 242, 154, 41)
+        );
+        assert_eq!(
+            (pressed.x, pressed.y, pressed.w, pressed.h),
+            (646, 246, 152, 37)
+        );
+    }
+
+    #[test]
+    fn shell_text_colors_follow_verified_owner_draw_sources() {
+        assert_eq!(
+            SHELL_BUTTON_TEXT_RGB_00000C05,
+            [5.0 / 255.0, 12.0 / 255.0, 0.0]
+        );
+        assert_eq!(SHELL_LABEL_TEXT_RGB, [1.0, 1.0, 0.0]);
     }
 
     #[test]

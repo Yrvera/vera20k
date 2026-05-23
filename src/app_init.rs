@@ -16,17 +16,20 @@ use crate::app_init_helpers::{
     load_rules_ini, log_trigger_graph_diagnostics, parse_debug_spawn_units_env, spawn_entities,
     theater_ext_for,
 };
-use crate::app_list_maps::{load_map_by_name_or_path, try_load_mmx};
-use crate::app_skirmish::{build_overlay_atlas_from_map, seed_skirmish_opening_if_needed};
+use crate::app_list_maps::{load_map_by_name_or_path_with_assets, try_load_mmx};
+use crate::app_skirmish::{
+    apply_skirmish_launch_session, build_overlay_atlas_from_map,
+    house_color_map_for_launch_session, seed_skirmish_opening_if_needed,
+};
 
 use crate::assets::asset_manager::AssetManager;
 use crate::map::actions::ActionMap;
-use crate::map::basic::BasicSection;
+use crate::map::basic::{BasicSection, BridgeDestroyabilityMode};
 use crate::map::briefing::BriefingSection;
 use crate::map::cell_tags::CellTagMap;
 use crate::map::events::EventMap;
 use crate::map::houses::{self, HouseColorMap, HouseRoster};
-use crate::map::lighting::{self, LightingGrid};
+use crate::map::lighting::{self, CellLightGrid, LightingConfig, PointLight};
 use crate::map::map_file::MapFile;
 use crate::map::overlay::{OverlayEntry, TerrainObject};
 use crate::map::overlay_types::OverlayTypeRegistry;
@@ -56,6 +59,7 @@ use crate::sim::pathfinding::PathGrid;
 use crate::sim::production;
 use crate::sim::trigger_runtime::TriggerRuntime;
 use crate::sim::world::Simulation;
+use crate::skirmish_launch::SkirmishLaunchSession;
 use crate::util::config::GameConfig;
 
 /// All data produced by loading a map: terrain, tile atlas, entities, and camera.
@@ -102,6 +106,7 @@ pub struct MapLoadResult {
     pub height_map: BTreeMap<(u16, u16), u8>,
     /// Cell (rx, ry) → bridge deck elevation z. Only bridge cells present.
     pub bridge_height_map: BTreeMap<(u16, u16), u8>,
+    pub tactical_bridge_inverse_map: BTreeMap<(u16, u16), crate::map::terrain::TacticalBridgeCell>,
     /// Pre-built pathfinding grid with water/cliff/building walkability.
     pub path_grid: Option<PathGrid>,
     /// Parsed rules.ini data — kept for combat system weapon/warhead lookups.
@@ -115,7 +120,9 @@ pub struct MapLoadResult {
     /// Parsed GAME.FNT bitmap font for authentic sidebar text rendering.
     pub fnt_file: Option<crate::assets::fnt_file::FntFile>,
     /// Per-cell RGB tint from map [Lighting] section.
-    pub lighting_grid: LightingGrid,
+    pub lighting_grid: CellLightGrid,
+    /// Parsed [Lighting] config used for transient lighting rebuilds.
+    pub map_lighting_config: LightingConfig,
     /// Current map theater name (e.g., "DESERT", "TEMPERATE").
     pub theater_name: String,
     /// Current theater extension (e.g., "des", "tem").
@@ -156,6 +163,56 @@ pub(crate) fn load_csf(asset_manager: &AssetManager) -> Option<crate::assets::cs
     None
 }
 
+/// Rebuild transient app lighting from base map light plus the current live entities.
+pub(crate) fn rebuild_lighting_grid_from_sim(
+    resolved_terrain: &ResolvedTerrainGrid,
+    lighting_config: &LightingConfig,
+    simulation: Option<&Simulation>,
+    rules: Option<&RuleSet>,
+) -> CellLightGrid {
+    let mut lighting_grid = lighting::build_cell_light_grid_from_heights(
+        resolved_terrain
+            .iter()
+            .map(|cell| ((cell.rx, cell.ry), cell.level)),
+        lighting_config,
+    );
+    let point_lights = collect_live_building_lights(simulation, rules);
+    lighting::accumulate_point_lights(&mut lighting_grid, &point_lights);
+    lighting_grid
+}
+
+fn collect_live_building_lights(
+    simulation: Option<&Simulation>,
+    rules: Option<&RuleSet>,
+) -> Vec<PointLight> {
+    let (Some(sim), Some(rules)) = (simulation, rules) else {
+        return Vec::new();
+    };
+    sim.entities
+        .values()
+        .filter(|entity| {
+            entity.category == crate::map::entities::EntityCategory::Structure
+                && !entity.dying
+                && entity.health.current > 0
+        })
+        .filter_map(|entity| {
+            let type_id = sim.interner.resolve(entity.type_ref);
+            let obj = rules.object(type_id)?;
+            lighting::point_light_from_object(
+                entity.position.rx,
+                entity.position.ry,
+                obj.light_visibility,
+                obj.light_intensity,
+                [
+                    obj.light_red_tint,
+                    obj.light_green_tint,
+                    obj.light_blue_tint,
+                ],
+            )
+        })
+        .collect()
+}
+
 /// Lightweight metadata used by the main-menu map selector.
 #[derive(Debug, Clone)]
 pub struct MapMenuEntry {
@@ -180,6 +237,7 @@ pub fn load_map(
     gpu: &GpuContext,
     batch: &BatchRenderer,
     requested_map: Option<&str>,
+    skirmish_launch_session: Option<&SkirmishLaunchSession>,
     skirmish_settings: &crate::ui::main_menu::SkirmishSettings,
     mut vxl_compute: Option<&mut crate::render::vxl_compute::VxlComputeRenderer>,
 ) -> Result<MapLoadResult> {
@@ -196,9 +254,9 @@ pub fn load_map(
 
     let map_data: MapFile =
         if let Some(map_name) = requested_map.filter(|m| !m.eq_ignore_ascii_case("auto")) {
-            load_map_by_name_or_path(&ra2_dir, map_name)?
+            load_map_by_name_or_path_with_assets(&ra2_dir, map_name, &asset_manager)?
         } else if let Some(ref map_name) = quickplay_map {
-            load_map_by_name_or_path(&ra2_dir, map_name)?
+            load_map_by_name_or_path_with_assets(&ra2_dir, map_name, &asset_manager)?
         } else if Path::new("testmap1.map").exists() {
             let bytes: Vec<u8> = std::fs::read("testmap1.map")?;
             log::info!("Loading default map: testmap1.map");
@@ -333,33 +391,6 @@ pub fn load_map(
 
     // Build per-cell lighting tint from map [Lighting] section.
     let lighting_config = lighting::parse_lighting(&map_data.ini);
-    let mut lighting_grid: LightingGrid = resolved_terrain
-        .iter()
-        .map(|cell| {
-            (
-                (cell.rx, cell.ry),
-                lighting::cell_tint(&lighting_config, cell.level),
-            )
-        })
-        .collect();
-
-    // Accumulate point light sources from buildings with LightVisibility > 0.
-    let point_lights = lighting::collect_building_lights(&map_data.entities, rules.as_ref());
-    if !point_lights.is_empty() {
-        lighting::accumulate_point_lights(&mut lighting_grid, &point_lights);
-        log::info!(
-            "Accumulated {} point light sources into lighting grid",
-            point_lights.len()
-        );
-    }
-    // Apply per-building ExtraLight from art.ini (flat cell brightness adjustment).
-    lighting::apply_extra_light(
-        &mut lighting_grid,
-        &map_data.entities,
-        art.as_ref(),
-        rules.as_ref(),
-    );
-
     // Terrain uses a uniform ground-level tint so repeated grass/ground tiles
     // do not reveal the isometric cell grid through per-cell shading changes.
     let terrain_tint: [f32; 3] = lighting::terrain_tint(&lighting_config);
@@ -384,11 +415,16 @@ pub fn load_map(
 
     // Parse house color assignments from map INI ([Houses] + per-house Color=).
     let house_roster: HouseRoster = houses::parse_house_roster(&map_data.ini);
-    let house_color_map: HouseColorMap = house_roster.color_map();
+    let house_color_map: HouseColorMap = skirmish_launch_session.map_or_else(
+        || house_roster.color_map(),
+        |session| house_color_map_for_launch_session(session, &house_roster),
+    );
 
     // Build height lookup for entity/overlay elevation (shared between subsystems).
     let height_map: BTreeMap<(u16, u16), u8> = resolved_terrain.build_height_map();
     let bridge_height_map: BTreeMap<(u16, u16), u8> = resolved_terrain.build_bridge_height_map();
+    let tactical_bridge_inverse_map: BTreeMap<(u16, u16), crate::map::terrain::TacticalBridgeCell> =
+        resolved_terrain.build_tactical_bridge_inverse_map();
 
     let bridge_railing_tile_bases = theater_result
         .as_ref()
@@ -411,6 +447,13 @@ pub fn load_map(
         None => (None, None, None),
     };
 
+    let bridge_destroyability_mode =
+        skirmish_launch_session.map_or(BridgeDestroyabilityMode::CampaignOrEditor, |session| {
+            BridgeDestroyabilityMode::SkirmishOrMultiplayer {
+                bridge_destruction: session.options.bridges_destroyable,
+            }
+        });
+
     let (simulation, mut unit_atlas, mut sprite_atlas, mut palette_set) = spawn_entities(
         &map_data,
         &resolved_terrain,
@@ -426,27 +469,30 @@ pub fn load_map(
         unit_palette.as_ref(),
         &infantry_sequences,
         vxl_compute.as_deref_mut(),
+        bridge_destroyability_mode,
     );
     let mut simulation = simulation;
     if let Some(sim) = &mut simulation {
-        sim.house_alliances = house_roster.alliance_map();
-        // Populate per-player HouseState from the map's house roster.
-        for house in &house_roster.houses {
-            let side_idx = crate::sim::house_state::side_index_from_name(house.side.as_deref());
-            let is_human = house.player_control == Some(true);
-            let name_id = sim.interner.intern(&house.name);
-            let country_id = house.country.as_deref().map(|c| sim.interner.intern(c));
-            sim.houses.insert(
-                name_id,
-                crate::sim::house_state::HouseState::new(
+        if skirmish_launch_session.is_none() {
+            sim.house_alliances = house_roster.alliance_map();
+            // Populate per-player HouseState from the map's house roster.
+            for house in &house_roster.houses {
+                let side_idx = crate::sim::house_state::side_index_from_name(house.side.as_deref());
+                let is_human = house.player_control == Some(true);
+                let name_id = sim.interner.intern(&house.name);
+                let country_id = house.country.as_deref().map(|c| sim.interner.intern(c));
+                sim.houses.insert(
                     name_id,
-                    side_idx,
-                    country_id,
-                    is_human,
-                    sim.game_options.starting_credits,
-                    sim.game_options.tech_level,
-                ),
-            );
+                    crate::sim::house_state::HouseState::new(
+                        name_id,
+                        side_idx,
+                        country_id,
+                        is_human,
+                        sim.game_options.starting_credits,
+                        sim.game_options.tech_level,
+                    ),
+                );
+            }
         }
     }
     // Pre-intern all rule type IDs so that build_option_for_owner can resolve
@@ -469,19 +515,39 @@ pub fn load_map(
     let mut initial_local_owner: Option<String> = None;
     if !spawn_pick_pending {
         if let (Some(sim), Some(ruleset)) = (&mut simulation, rules.as_ref()) {
-            initial_local_owner = seed_skirmish_opening_if_needed(
-                sim,
-                &map_data,
-                &house_roster,
-                ruleset,
-                &height_map,
-                skirmish_settings,
-            );
-            // Set up AI players: all playable houses except the local (first) player.
-            if let Some(ref local_owner) = initial_local_owner {
-                setup_ai_players(sim, &house_roster, local_owner);
-            }
-            if initial_local_owner.is_some() {
+            let should_rebuild_entity_atlases = if let Some(session) = skirmish_launch_session {
+                let result = apply_skirmish_launch_session(
+                    sim,
+                    &map_data,
+                    &house_roster,
+                    ruleset,
+                    &height_map,
+                    session,
+                );
+                if result.unsupported_deficient_starts {
+                    log::warn!(
+                        "Skirmish launch session found fewer usable starts than active slots"
+                    );
+                }
+                initial_local_owner = result.local_owner;
+                result.spawned_mcvs > 0
+            } else {
+                initial_local_owner = seed_skirmish_opening_if_needed(
+                    sim,
+                    &map_data,
+                    &house_roster,
+                    ruleset,
+                    &height_map,
+                    skirmish_settings,
+                );
+                // Set up AI players: all playable houses except the local (first) player.
+                if let Some(ref local_owner) = initial_local_owner {
+                    setup_ai_players(sim, &house_roster, local_owner);
+                }
+                initial_local_owner.is_some()
+            };
+
+            if should_rebuild_entity_atlases {
                 let (new_unit_atlas, new_sprite_atlas, new_palette_set) = build_entity_atlases(
                     sim,
                     &asset_manager,
@@ -784,6 +850,12 @@ pub fn load_map(
         log::warn!("Software cursor NOT loaded (mouse.sha missing?) — using OS cursor");
     }
     let trigger_runtime = TriggerRuntime::from_map(&map_data.triggers, &map_data.local_variables);
+    let lighting_grid = rebuild_lighting_grid_from_sim(
+        &resolved_terrain,
+        &lighting_config,
+        simulation.as_ref(),
+        rules.as_ref(),
+    );
     // Move fields out of map_data (last use) instead of cloning.
     let theater_name = map_data.header.theater;
     Ok(MapLoadResult {
@@ -818,6 +890,7 @@ pub fn load_map(
         house_roster,
         height_map,
         bridge_height_map,
+        tactical_bridge_inverse_map,
         path_grid,
         rules,
         art_registry: art,
@@ -825,6 +898,7 @@ pub fn load_map(
         csf,
         fnt_file,
         lighting_grid,
+        map_lighting_config: lighting_config,
         theater_name,
         theater_ext: theater_ext.to_string(),
         sandbox_full_visibility: false,

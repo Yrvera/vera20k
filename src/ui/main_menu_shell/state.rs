@@ -186,6 +186,16 @@ mod tests {
     }
 
     #[test]
+    fn hit_test_uses_unscaled_large_screen_button_rects() {
+        let layout = compute_layout(1024, 768);
+        assert_eq!(
+            hit_test_owner_draw_button(&layout, 760, 300),
+            Some(MainMenuControlId::SinglePlayer0x683)
+        );
+        assert_eq!(hit_test_owner_draw_button(&layout, 809, 255), None);
+    }
+
+    #[test]
     fn mouse_release_must_match_pressed_button() {
         let layout = compute_layout(800, 600);
         let mut state = MainMenuShellState::default();
