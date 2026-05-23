@@ -73,6 +73,13 @@ pub struct ArtEntry {
     /// Elite-rank override for secondary fire offset (from art.ini `EliteSecondaryFireFLH=`).
     /// None means use `secondary_fire_flh`.
     pub elite_secondary_fire_flh: Option<Flh>,
+    /// Fixed building primary fire screen-pixel offset.
+    /// Used by non-turret buildings before converting the pixel delta to world leptons.
+    pub primary_fire_pixel_offset: Option<(i32, i32)>,
+    /// Fixed building secondary fire screen-pixel offset.
+    pub secondary_fire_pixel_offset: Option<(i32, i32)>,
+    /// Building primary fire alternates the X pixel offset by burst side.
+    pub primary_fire_dual_offset: bool,
     /// SHP vehicle: walk animation frame count per facing (from `WalkFrames=`).
     pub walk_frames: Option<u16>,
     /// SHP vehicle: firing animation frame count per facing (from `FiringFrames=`).
@@ -93,8 +100,13 @@ pub struct ArtEntry {
     /// Infantry secondary prone/deploy discharge frame (`SecondaryProne=`).
     /// Defaults to `SecondaryFire` when absent.
     pub secondary_prone: u8,
-    /// Extra ambient light added to this building's cell (ExtraLight= in art.ini).
-    /// Positive = brighten, negative = darken. Scale: 1000 ≈ 1.0 brightness unit.
+    /// Animation `Report=` sound ID. Used as a fallback when `StartSound=`
+    /// is absent.
+    pub report: Option<String>,
+    /// Animation `StartSound=` sound ID. Takes priority over `Report=`.
+    pub start_sound: Option<String>,
+    /// Signed building body draw-depth/Z adjustment (ExtraLight= in art.ini).
+    /// This is not a map RGB lighting value.
     /// Retail values: GADPSA=350, GAICBM=-100.
     pub extra_light: i32,
     /// Harvester queueing cell offset from building origin (QueueingCell= in art.ini).
@@ -117,10 +129,10 @@ pub struct ArtEntry {
     /// Parsed from `MuzzleFlash0=X,Y` through `MuzzleFlash9=X,Y` in art.ini.
     /// Each entry is a screen-space offset from the building's center.
     pub muzzle_flash_positions: Vec<(i32, i32)>,
-    /// Cells added to the rectangular foundation (AddOccupy1..N from art.ini).
+    /// Valid cells from art.ini AddOccupy1..8, scanned by slot number.
     /// Signed offsets from the building's origin (rx, ry) — negative = west/north.
     pub add_occupy: Vec<(i16, i16)>,
-    /// Cells removed from the rectangular foundation (RemoveOccupy1..N from art.ini).
+    /// Valid cells from art.ini RemoveOccupy1..8, scanned by slot number.
     pub remove_occupy: Vec<(i16, i16)>,
     /// Middle integer of `Deploy=<start>,<frames>,<rate>` in the infantry
     /// sequence section referenced by `sequence`. `None` when the sequence
@@ -210,6 +222,10 @@ pub struct ResolvedObjectArt<'a> {
 pub struct ArtRegistry {
     /// image_id (uppercase) -> ArtEntry.
     entries: HashMap<String, ArtEntry>,
+    /// section ID (uppercase) -> `CanHideThings=`. Missing sections default true.
+    can_hide_things: HashMap<String, bool>,
+    /// section ID (uppercase) -> `OccupyHeight=`, defaulting to art `Height=`.
+    occupy_heights: HashMap<String, i32>,
 }
 
 /// Hardcoded filename prefixes that always receive `NewTheater` treatment
@@ -233,6 +249,8 @@ impl ArtRegistry {
     /// Parse all sections from an art.ini IniFile into the registry.
     pub fn from_ini(ini: &IniFile) -> Self {
         let mut entries: HashMap<String, ArtEntry> = HashMap::new();
+        let mut can_hide_things: HashMap<String, bool> = HashMap::new();
+        let mut occupy_heights: HashMap<String, i32> = HashMap::new();
 
         for section_name in ini.section_names() {
             let section = match ini.section(section_name) {
@@ -293,6 +311,14 @@ impl ArtRegistry {
             let elite_secondary_fire_flh: Option<Flh> = section
                 .get("EliteSecondaryFireFLH")
                 .map(|v| parse_flh(Some(v)));
+            let primary_fire_pixel_offset = section
+                .get("PrimaryFirePixelOffset")
+                .and_then(parse_i32_pair);
+            let secondary_fire_pixel_offset = section
+                .get("SecondaryFirePixelOffset")
+                .and_then(parse_i32_pair);
+            let primary_fire_dual_offset =
+                section.get_bool("PrimaryFireDualOffset").unwrap_or(false);
 
             // SHP vehicle frame tags (only meaningful when Voxel=no for vehicles).
             let walk_frames: Option<u16> = section.get_i32("WalkFrames").map(|v| v.max(0) as u16);
@@ -320,6 +346,8 @@ impl ArtRegistry {
                 .get_i32("SecondaryProne")
                 .map(|v| v.max(0) as u8)
                 .unwrap_or(secondary_fire);
+            let report = section.get("Report").map(|s| s.to_string());
+            let start_sound = section.get("StartSound").map(|s| s.to_string());
             let extra_light: i32 = section.get_i32("ExtraLight").unwrap_or(0);
             let queueing_cell: Option<(u16, u16)> = section.get("QueueingCell").and_then(|s| {
                 let mut parts = s.split(',');
@@ -367,6 +395,8 @@ impl ArtRegistry {
                 offsets
             };
             let height: i32 = section.get_i32("Height").unwrap_or(0);
+            let can_hide: bool = section.get_bool("CanHideThings").unwrap_or(true);
+            let occupy_height: i32 = section.get_i32("OccupyHeight").unwrap_or(height);
             let muzzle_flash_positions: Vec<(i32, i32)> = {
                 let mut positions = Vec::new();
                 for i in 0..10 {
@@ -385,45 +415,15 @@ impl ArtRegistry {
                 }
                 positions
             };
-            let add_occupy: Vec<(i16, i16)> = {
-                let mut offsets = Vec::new();
-                for i in 1..=8 {
-                    let key = format!("AddOccupy{}", i);
-                    if let Some(val) = section.get(&key) {
-                        let mut parts = val.split(',');
-                        if let (Some(x), Some(y)) = (
-                            parts.next().and_then(|s| s.trim().parse::<i16>().ok()),
-                            parts.next().and_then(|s| s.trim().parse::<i16>().ok()),
-                        ) {
-                            offsets.push((x, y));
-                        }
-                    } else {
-                        break;
-                    }
-                }
-                offsets
-            };
-            let remove_occupy: Vec<(i16, i16)> = {
-                let mut offsets = Vec::new();
-                for i in 1..=8 {
-                    let key = format!("RemoveOccupy{}", i);
-                    if let Some(val) = section.get(&key) {
-                        let mut parts = val.split(',');
-                        if let (Some(x), Some(y)) = (
-                            parts.next().and_then(|s| s.trim().parse::<i16>().ok()),
-                            parts.next().and_then(|s| s.trim().parse::<i16>().ok()),
-                        ) {
-                            offsets.push((x, y));
-                        }
-                    } else {
-                        break;
-                    }
-                }
-                offsets
-            };
+            let add_occupy: Vec<(i16, i16)> = parse_numbered_cell_offsets(section, "AddOccupy");
+            let remove_occupy: Vec<(i16, i16)> =
+                parse_numbered_cell_offsets(section, "RemoveOccupy");
 
+            let section_key = section_name.to_uppercase();
+            can_hide_things.insert(section_key.clone(), can_hide);
+            occupy_heights.insert(section_key.clone(), occupy_height);
             entries.insert(
-                section_name.to_uppercase(),
+                section_key,
                 ArtEntry {
                     image,
                     cameo,
@@ -449,6 +449,9 @@ impl ArtRegistry {
                     secondary_fire_flh,
                     elite_primary_fire_flh,
                     elite_secondary_fire_flh,
+                    primary_fire_pixel_offset,
+                    secondary_fire_pixel_offset,
+                    primary_fire_dual_offset,
                     walk_frames,
                     firing_frames,
                     standing_frames,
@@ -457,6 +460,8 @@ impl ArtRegistry {
                     fire_prone,
                     secondary_fire,
                     secondary_prone,
+                    report,
+                    start_sound,
                     extra_light,
                     queueing_cell,
                     pads,
@@ -473,19 +478,44 @@ impl ArtRegistry {
         }
 
         log::info!("ArtRegistry: {} entries loaded from art.ini", entries.len());
-        ArtRegistry { entries }
+        ArtRegistry {
+            entries,
+            can_hide_things,
+            occupy_heights,
+        }
     }
 
     /// Create an empty registry (used when art.ini is unavailable).
     pub fn empty() -> Self {
         ArtRegistry {
             entries: HashMap::new(),
+            can_hide_things: HashMap::new(),
+            occupy_heights: HashMap::new(),
         }
     }
 
     /// Look up art entry for an image ID (case-insensitive).
     pub fn get(&self, image_id: &str) -> Option<&ArtEntry> {
         self.entries.get(&image_id.to_uppercase())
+    }
+
+    /// Hidden-occupancy gate from art.ini `CanHideThings=`.
+    /// The original building type constructor defaults this to true.
+    pub fn can_hide_things(&self, image_id: &str) -> bool {
+        self.can_hide_things
+            .get(&image_id.to_uppercase())
+            .copied()
+            .unwrap_or(true)
+    }
+
+    /// Hidden-occupancy height from art.ini `OccupyHeight=`.
+    /// art.ini comments define the absent-key fallback as the section `Height=`;
+    /// missing sections fall back to 2, the documented building-art default.
+    pub fn occupy_height(&self, image_id: &str) -> i32 {
+        self.occupy_heights
+            .get(&image_id.to_uppercase())
+            .copied()
+            .unwrap_or(2)
     }
 
     /// Number of entries in the registry.
@@ -949,6 +979,31 @@ fn parse_building_anims(section: &IniSection, ini: &IniFile) -> Vec<BuildingAnim
     }
 
     anims
+}
+
+fn parse_numbered_cell_offsets(section: &IniSection, prefix: &str) -> Vec<(i16, i16)> {
+    let mut offsets = Vec::new();
+    for i in 1..=8 {
+        let key = format!("{}{}", prefix, i);
+        let Some(val) = section.get(&key) else {
+            continue;
+        };
+        let mut parts = val.split(',');
+        if let (Some(x), Some(y)) = (
+            parts.next().and_then(|s| s.trim().parse::<i16>().ok()),
+            parts.next().and_then(|s| s.trim().parse::<i16>().ok()),
+        ) {
+            offsets.push((x, y));
+        }
+    }
+    offsets
+}
+
+fn parse_i32_pair(value: &str) -> Option<(i32, i32)> {
+    let mut parts = value.split(',');
+    let x = parts.next()?.trim().parse::<i32>().ok()?;
+    let y = parts.next()?.trim().parse::<i32>().ok()?;
+    Some((x, y))
 }
 
 /// Replace the 2nd character of a filename with the theater-specific letter.

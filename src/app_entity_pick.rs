@@ -19,6 +19,8 @@ use crate::sim::vision::FogState;
 /// `dx*dx + 0.5*dy*dy < 200` with 0.5 Y-weight compensating for isometric projection.
 /// Max horizontal reach: sqrt(200) ≈ 14px, max vertical reach: sqrt(400) = 20px.
 const PICK_DISTANCE_THRESHOLD: f32 = 200.0;
+type TacticalBridgeInverseMap =
+    std::collections::BTreeMap<(u16, u16), crate::map::terrain::TacticalBridgeCell>;
 
 /// Y-axis weight in the elliptical pick distance formula.
 /// Makes the hit zone taller than wide, matching the isometric projection where
@@ -39,7 +41,7 @@ pub(crate) fn pick_enemy_target_stable_id(
     ignore_visibility: bool,
     rules: Option<&RuleSet>,
     height_map: &std::collections::BTreeMap<(u16, u16), u8>,
-    bridge_height_map: Option<&std::collections::BTreeMap<(u16, u16), u8>>,
+    bridge_height_map: Option<&TacticalBridgeInverseMap>,
 ) -> Option<u64> {
     hover_target_at_point(
         sim,
@@ -65,7 +67,7 @@ pub(crate) fn pick_any_target_stable_id(
     ignore_visibility: bool,
     rules: Option<&RuleSet>,
     height_map: &std::collections::BTreeMap<(u16, u16), u8>,
-    bridge_height_map: Option<&std::collections::BTreeMap<(u16, u16), u8>>,
+    bridge_height_map: Option<&TacticalBridgeInverseMap>,
 ) -> Option<u64> {
     // Use empty owner so everything is considered "enemy" in hover logic.
     hover_target_at_point(
@@ -90,7 +92,7 @@ pub(crate) fn hover_target_at_point(
     ignore_visibility: bool,
     rules: Option<&RuleSet>,
     height_map: &std::collections::BTreeMap<(u16, u16), u8>,
-    bridge_height_map: Option<&std::collections::BTreeMap<(u16, u16), u8>>,
+    bridge_height_map: Option<&TacticalBridgeInverseMap>,
 ) -> Option<HoverTargetKindWithId> {
     let local_owner_id: InternedId = sim.interner.get(local_owner).unwrap_or_default();
     let mut best: Option<(u64, f32)> = None;
@@ -203,7 +205,7 @@ pub(crate) fn compute_click_selection_snapshot(
     additive: bool,
     rules: Option<&RuleSet>,
     height_map: &std::collections::BTreeMap<(u16, u16), u8>,
-    bridge_height_map: Option<&std::collections::BTreeMap<(u16, u16), u8>>,
+    bridge_height_map: Option<&TacticalBridgeInverseMap>,
     interner: Option<&crate::sim::intern::StringInterner>,
 ) -> Option<Vec<u64>> {
     let current: Vec<u64> = selected_stable_ids_sorted_from_store(entities);
@@ -344,14 +346,6 @@ fn entities_in_rect(
         .collect()
 }
 
-/// Parse a foundation string like "3x2" → (3, 2). Returns (1, 1) for malformed input.
-fn parse_foundation(s: &str) -> (u16, u16) {
-    let mut parts = s.split('x');
-    let w = parts.next().and_then(|p| p.parse().ok()).unwrap_or(1u16);
-    let h = parts.next().and_then(|p| p.parse().ok()).unwrap_or(1u16);
-    (w, h)
-}
-
 /// Check if a world-space click point falls on a building's foundation cells.
 /// The building occupies cells `(rx..rx+fw, ry..ry+fh)`. We convert the click
 /// to cell coords and check containment. This matches the original engine which
@@ -363,9 +357,9 @@ fn click_hits_foundation(
     entity_ry: u16,
     foundation: &str,
     height_map: &std::collections::BTreeMap<(u16, u16), u8>,
-    bridge_height_map: Option<&std::collections::BTreeMap<(u16, u16), u8>>,
+    bridge_height_map: Option<&TacticalBridgeInverseMap>,
 ) -> bool {
-    let (fw, fh) = parse_foundation(foundation);
+    let (fw, fh) = crate::rules::foundation::foundation_dimensions(foundation);
     let (click_rx, click_ry) =
         crate::app_sim_tick::world_point_to_cell(world_x, world_y, height_map, bridge_height_map);
     let crx = click_rx as i32;
@@ -384,7 +378,7 @@ fn pick_entity_at_point(
     click_radius: f32,
     rules: Option<&RuleSet>,
     height_map: &std::collections::BTreeMap<(u16, u16), u8>,
-    bridge_height_map: Option<&std::collections::BTreeMap<(u16, u16), u8>>,
+    bridge_height_map: Option<&TacticalBridgeInverseMap>,
     interner: Option<&crate::sim::intern::StringInterner>,
 ) -> Option<u64> {
     // Elliptical pick distance: dx² + 0.5*dy² < 200, with the 0.5 Y-weight

@@ -28,9 +28,49 @@ pub const TILE_HEIGHT: f32 = 30.0;
 /// (Note: Tiberian Sun uses 24/2 = 12 — do NOT use TS values here.)
 pub const HEIGHT_STEP: f32 = 15.0;
 
+/// Tactical screen-to-cell inverse scan cap from gamemd.exe `0x006D6590`.
+pub const TACTICAL_INVERSE_MAX_SCAN_ATTEMPTS: usize = 180;
+
+/// Tactical bridge open-edge threshold. The binary uses strict `> 15`.
+pub const TACTICAL_BRIDGE_EDGE_THRESHOLD_PX: f32 = 15.0;
+
+/// Extra high-bridge height adjustment: four height levels at 15 px each.
+pub const TACTICAL_BRIDGE_EXTRA_HEIGHT_PX: f32 = 60.0;
+
+const DIR_NORTH: u8 = 0;
+const DIR_EAST: u8 = 2;
+const DIR_SOUTH: u8 = 4;
+const DIR_WEST: u8 = 6;
+
 /// Margin around viewport for culling (pixels). Tiles just outside the visible
 /// area are still drawn to avoid pop-in during scrolling.
 const CULL_MARGIN: f32 = 120.0;
+
+/// Per-cell high-bridge metadata needed by the tactical inverse.
+///
+/// This deliberately carries structural/orientation facts instead of only deck
+/// height because gamemd's cursor inverse branches on `CellClass+0x140` flags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TacticalBridgeCell {
+    pub deck_z: u8,
+    pub structural: bool,
+    pub direction_zero: bool,
+}
+
+/// Inputs for the YR-shaped tactical screen-to-cell inverse.
+#[derive(Debug, Clone, Copy)]
+pub struct TacticalInverseContext<'a> {
+    pub height_map: &'a BTreeMap<(u16, u16), u8>,
+    pub bridge_cells: Option<&'a BTreeMap<(u16, u16), TacticalBridgeCell>>,
+    pub viewport_offset_x: f32,
+    pub viewport_offset_y: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TacticalInverseResult {
+    Cell { rx: f32, ry: f32 },
+    Fallback { rx: f32, ry: f32 },
+}
 
 /// Playable area bounds from map `[Map] LocalSize`, in our screen pixel space.
 ///
@@ -248,6 +288,180 @@ pub fn screen_to_iso(screen_x: f32, screen_y: f32) -> (f32, f32) {
     let rx: f32 = (col + row) / 2.0;
     let ry: f32 = (row - col) / 2.0;
     (rx, ry)
+}
+
+/// Convert tactical/client pixels to isometric cell coordinates using the
+/// vertical scan shape verified from gamemd.exe `0x006D6590`.
+pub fn screen_to_cell_tactical_inverse(
+    screen_x: f32,
+    screen_y: f32,
+    context: TacticalInverseContext<'_>,
+) -> TacticalInverseResult {
+    let input_x = screen_x - context.viewport_offset_x;
+    let input_y = screen_y - context.viewport_offset_y;
+    let (fallback_rx, fallback_ry) = screen_to_iso(input_x, input_y);
+    let mut scan_y = input_y + TACTICAL_INVERSE_MAX_SCAN_ATTEMPTS as f32;
+
+    for _ in 0..TACTICAL_INVERSE_MAX_SCAN_ATTEMPTS {
+        let (candidate_rx, candidate_ry) = screen_to_iso(input_x, scan_y);
+        let Some((cell_rx, cell_ry)) = rounded_lookup_cell(candidate_rx, candidate_ry) else {
+            scan_y -= 1.0;
+            continue;
+        };
+        let terrain_z = context
+            .height_map
+            .get(&(cell_rx, cell_ry))
+            .copied()
+            .unwrap_or(0);
+        let mut adjusted_scan_y = scan_y - terrain_z as f32 * HEIGHT_STEP;
+
+        if let Some(bridge_result) = apply_tactical_bridge_inverse(
+            input_x,
+            input_y,
+            scan_y,
+            cell_rx,
+            cell_ry,
+            terrain_z,
+            context,
+            &mut adjusted_scan_y,
+        ) {
+            return bridge_result;
+        }
+
+        if adjusted_scan_y <= input_y {
+            return TacticalInverseResult::Cell {
+                rx: candidate_rx,
+                ry: candidate_ry,
+            };
+        }
+        scan_y -= 1.0;
+    }
+
+    TacticalInverseResult::Fallback {
+        rx: fallback_rx,
+        ry: fallback_ry,
+    }
+}
+
+fn rounded_lookup_cell(rx: f32, ry: f32) -> Option<(u16, u16)> {
+    if !rx.is_finite() || !ry.is_finite() || rx < 0.0 || ry < 0.0 {
+        return None;
+    }
+    Some((rx.round() as u16, ry.round() as u16))
+}
+
+fn apply_tactical_bridge_inverse(
+    input_x: f32,
+    input_y: f32,
+    scan_y: f32,
+    cell_rx: u16,
+    cell_ry: u16,
+    terrain_z: u8,
+    context: TacticalInverseContext<'_>,
+    adjusted_scan_y: &mut f32,
+) -> Option<TacticalInverseResult> {
+    let bridge_cells = context.bridge_cells?;
+    let bridge = bridge_cells.get(&(cell_rx, cell_ry)).copied()?;
+    if !bridge.structural {
+        return None;
+    }
+
+    let dir2 = tactical_bridge_neighbor(bridge_cells, cell_rx, cell_ry, DIR_EAST);
+    let dir4 = tactical_bridge_neighbor(bridge_cells, cell_rx, cell_ry, DIR_SOUTH);
+    let dir0 = bridge
+        .direction_zero
+        .then(|| tactical_bridge_neighbor(bridge_cells, cell_rx, cell_ry, DIR_NORTH))
+        .flatten();
+    let dir6 = (!bridge.direction_zero)
+        .then(|| tactical_bridge_neighbor(bridge_cells, cell_rx, cell_ry, DIR_WEST))
+        .flatten();
+
+    let dir2_is_bridge = dir2.is_some_and(|b| b.structural);
+    let dir4_is_bridge = dir4.is_some_and(|b| b.structural);
+    let dir0_open_edge = bridge.direction_zero && !dir0.is_some_and(|b| b.structural);
+    let dir6_open_edge = !bridge.direction_zero && !dir6.is_some_and(|b| b.structural);
+
+    let dir2_height = tactical_neighbor_height(context.height_map, cell_rx, cell_ry, DIR_EAST);
+    let dir4_height = tactical_neighbor_height(context.height_map, cell_rx, cell_ry, DIR_SOUTH);
+    let terrain_z_i16 = terrain_z as i16;
+    let direct_y = if bridge.direction_zero {
+        !dir4_is_bridge
+    } else {
+        !dir4_is_bridge && (terrain_z_i16 - dir4_height as i16).abs() <= 1
+    };
+    let direct_x = if bridge.direction_zero {
+        !dir2_is_bridge && (terrain_z_i16 - dir2_height as i16).abs() <= 1
+    } else {
+        !dir2_is_bridge
+    };
+
+    let (bridge_ref_x, bridge_ref_y) = iso_to_screen(cell_rx, cell_ry, bridge.deck_z);
+    if bridge_ref_y <= input_y {
+        if direct_y {
+            return Some(TacticalInverseResult::Cell {
+                rx: cell_rx as f32,
+                ry: cell_ry.saturating_add(1) as f32,
+            });
+        }
+        if direct_x {
+            return Some(TacticalInverseResult::Cell {
+                rx: cell_rx.saturating_add(1) as f32,
+                ry: cell_ry as f32,
+            });
+        }
+    }
+
+    let input_x_delta = input_x - bridge_ref_x;
+    let input_y_delta = input_y - bridge_ref_y;
+    let apply_extra_bridge_lift = if dir0_open_edge {
+        input_y_delta - input_x_delta / 2.0 > TACTICAL_BRIDGE_EDGE_THRESHOLD_PX
+    } else if dir6_open_edge {
+        input_y_delta + input_x_delta / 2.0 > TACTICAL_BRIDGE_EDGE_THRESHOLD_PX
+    } else {
+        true
+    };
+    if apply_extra_bridge_lift {
+        *adjusted_scan_y =
+            scan_y - terrain_z as f32 * HEIGHT_STEP - TACTICAL_BRIDGE_EXTRA_HEIGHT_PX;
+    }
+    None
+}
+
+fn tactical_bridge_neighbor(
+    bridge_cells: &BTreeMap<(u16, u16), TacticalBridgeCell>,
+    rx: u16,
+    ry: u16,
+    direction: u8,
+) -> Option<TacticalBridgeCell> {
+    let (nx, ny) = tactical_cardinal_neighbor(rx, ry, direction)?;
+    bridge_cells.get(&(nx, ny)).copied()
+}
+
+fn tactical_neighbor_height(
+    height_map: &BTreeMap<(u16, u16), u8>,
+    rx: u16,
+    ry: u16,
+    direction: u8,
+) -> u8 {
+    tactical_cardinal_neighbor(rx, ry, direction)
+        .and_then(|pos| height_map.get(&pos).copied())
+        .unwrap_or(0)
+}
+
+fn tactical_cardinal_neighbor(rx: u16, ry: u16, direction: u8) -> Option<(u16, u16)> {
+    let (dx, dy) = match direction {
+        DIR_NORTH => (0_i32, -1_i32),
+        DIR_EAST => (1, 0),
+        DIR_SOUTH => (0, 1),
+        DIR_WEST => (-1, 0),
+        _ => return None,
+    };
+    let nx = rx as i32 + dx;
+    let ny = ry as i32 + dy;
+    if nx < 0 || ny < 0 || nx > u16::MAX as i32 || ny > u16::MAX as i32 {
+        return None;
+    }
+    Some((nx as u16, ny as u16))
 }
 
 /// Convert screen-space pixel position to isometric cell, accounting for terrain elevation.
@@ -682,6 +896,119 @@ mod tests {
         let (sx, sy): (f32, f32) = iso_to_screen(0, 0, 2);
         assert!((sx - (-30.0)).abs() < f32::EPSILON);
         assert!((sy - (-15.0)).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn screen_to_cell_tactical_inverse_uses_vertical_height_scan() {
+        let mut height_map = BTreeMap::new();
+        height_map.insert((10, 5), 4);
+        let result = screen_to_cell_tactical_inverse(
+            150.0,
+            180.0,
+            TacticalInverseContext {
+                height_map: &height_map,
+                bridge_cells: None,
+                viewport_offset_x: 0.0,
+                viewport_offset_y: 0.0,
+            },
+        );
+
+        assert_eq!(result, TacticalInverseResult::Cell { rx: 9.5, ry: 4.5 });
+    }
+
+    #[test]
+    fn screen_to_cell_tactical_inverse_returns_initial_fallback_on_scan_cap() {
+        let height_map = BTreeMap::new();
+        let result = screen_to_cell_tactical_inverse(
+            -500.0,
+            -500.0,
+            TacticalInverseContext {
+                height_map: &height_map,
+                bridge_cells: None,
+                viewport_offset_x: 0.0,
+                viewport_offset_y: 0.0,
+            },
+        );
+
+        let (rx, ry) = screen_to_iso(-500.0, -500.0);
+        assert_eq!(result, TacticalInverseResult::Fallback { rx, ry });
+    }
+
+    #[test]
+    fn tactical_cardinal_neighbor_rejects_direction_eight() {
+        assert_eq!(tactical_cardinal_neighbor(10, 10, 8), None);
+    }
+
+    #[test]
+    fn tactical_bridge_edge_threshold_is_strict() {
+        let height_map = BTreeMap::from([((0, 0), 0)]);
+        let mut bridge_cells = BTreeMap::new();
+        bridge_cells.insert(
+            (0, 0),
+            TacticalBridgeCell {
+                deck_z: 0,
+                structural: true,
+                direction_zero: true,
+            },
+        );
+        bridge_cells.insert(
+            (1, 0),
+            TacticalBridgeCell {
+                deck_z: 0,
+                structural: true,
+                direction_zero: true,
+            },
+        );
+        bridge_cells.insert(
+            (0, 1),
+            TacticalBridgeCell {
+                deck_z: 0,
+                structural: true,
+                direction_zero: true,
+            },
+        );
+
+        let mut adjusted = 90.0;
+        assert_eq!(
+            apply_tactical_bridge_inverse(
+                -30.0,
+                30.0,
+                90.0,
+                0,
+                0,
+                0,
+                TacticalInverseContext {
+                    height_map: &height_map,
+                    bridge_cells: Some(&bridge_cells),
+                    viewport_offset_x: 0.0,
+                    viewport_offset_y: 0.0,
+                },
+                &mut adjusted,
+            ),
+            None
+        );
+        assert_eq!(adjusted, 90.0);
+
+        let mut adjusted = 90.0;
+        assert_eq!(
+            apply_tactical_bridge_inverse(
+                -30.0,
+                31.0,
+                90.0,
+                0,
+                0,
+                0,
+                TacticalInverseContext {
+                    height_map: &height_map,
+                    bridge_cells: Some(&bridge_cells),
+                    viewport_offset_x: 0.0,
+                    viewport_offset_y: 0.0,
+                },
+                &mut adjusted,
+            ),
+            None
+        );
+        assert_eq!(adjusted, 30.0);
     }
 
     #[test]

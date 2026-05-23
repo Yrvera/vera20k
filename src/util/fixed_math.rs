@@ -328,18 +328,7 @@ pub fn facing_from_delta_int_u16(dx: i32, dy: i32) -> u16 {
 ///   W (192) → (-1,  0)
 ///   NW (224)→ (-1, -1)
 pub fn dir_to_cell_delta(facing: u8) -> (i32, i32) {
-    let dir = (facing.wrapping_add(16) / 32) & 0x07;
-    match dir {
-        0 => (0, -1),
-        1 => (1, -1),
-        2 => (1, 0),
-        3 => (1, 1),
-        4 => (0, 1),
-        5 => (-1, 1),
-        6 => (-1, 0),
-        7 => (-1, -1),
-        _ => unreachable!(),
-    }
+    crate::util::direction::delta_from_facing(facing)
 }
 
 // ---------------------------------------------------------------------------

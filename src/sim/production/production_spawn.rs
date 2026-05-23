@@ -6,7 +6,7 @@
 
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::locomotor_type::MovementZone;
-use crate::rules::object_type::ObjectCategory;
+use crate::rules::object_type::{FactoryType, ObjectCategory};
 use crate::rules::ruleset::RuleSet;
 use crate::sim::world::Simulation;
 
@@ -16,6 +16,12 @@ use crate::sim::movement::bump_crush;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::occupancy::OccupancyGrid;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProductionSpawnSelection {
+    pub producer_id: u64,
+    pub cell: (u16, u16),
+}
+
 pub fn find_spawn_cell_for_owner(
     sim: &mut Simulation,
     rules: &RuleSet,
@@ -24,6 +30,25 @@ pub fn find_spawn_cell_for_owner(
     path_grid: Option<&crate::sim::pathfinding::PathGrid>,
     require_water: bool,
 ) -> Option<(u16, u16)> {
+    find_spawn_selection_for_owner(
+        sim,
+        rules,
+        owner,
+        produced_category,
+        path_grid,
+        require_water,
+    )
+    .map(|selection| selection.cell)
+}
+
+pub fn find_spawn_selection_for_owner(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    owner: &str,
+    produced_category: ObjectCategory,
+    path_grid: Option<&crate::sim::pathfinding::PathGrid>,
+    require_water: bool,
+) -> Option<ProductionSpawnSelection> {
     let Some(queue_category) = producer_queue_category_for_object(produced_category) else {
         return None;
     };
@@ -66,15 +91,36 @@ pub fn find_spawn_cell_for_owner(
             .insert(queue_category, first.0);
     }
 
-    // Use persistent occupancy grid for spawn cell selection.
-
     let bases: &[(u64, u16, u16, String)] = if ordered_bases.is_empty() {
         &fallback_structures
     } else {
         &ordered_bases
     };
     let resolved_terrain = sim.resolved_terrain.as_ref();
-    for (_sid, bx, by, structure_id) in bases {
+
+    if produced_category == ObjectCategory::Vehicle && !require_water {
+        if let Some((producer_id, bx, by, structure_id)) = bases.first() {
+            if exact_land_vehicle_exit_factory(rules, structure_id) {
+                return find_exact_exitcoord_spawn_cell(
+                    *bx,
+                    *by,
+                    structure_id,
+                    produced_category,
+                    rules,
+                    path_grid,
+                    &sim.occupancy,
+                    resolved_terrain,
+                    require_water,
+                )
+                .map(|cell| ProductionSpawnSelection {
+                    producer_id: *producer_id,
+                    cell,
+                });
+            }
+        }
+    }
+
+    for (producer_id, bx, by, structure_id) in bases {
         let cell = match produced_category {
             ObjectCategory::Infantry => {
                 find_infantry_spawn_cell_near_structure(rules, *bx, *by, structure_id)
@@ -92,10 +138,53 @@ pub fn find_spawn_cell_for_owner(
             ),
         };
         if let Some(cell) = cell {
-            return Some(cell);
+            return Some(ProductionSpawnSelection {
+                producer_id: *producer_id,
+                cell,
+            });
         }
     }
     None
+}
+
+/// Mark the produced unit as having the reciprocal RadioClass contact created
+/// by successful stock land war-factory unlimbo.
+///
+/// The caller must invoke this immediately after `spawn_object` returns the
+/// produced unit stable ID. `find_spawn_selection_for_owner` supplies the
+/// `producer_id` without changing the older cell-only API.
+pub fn mark_war_factory_spawn_contact(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    producer_id: u64,
+    produced_id: u64,
+) -> bool {
+    let Some((producer_type, produced_is_vehicle)) = sim.entities.get(producer_id).and_then(|p| {
+        let producer_type = sim.interner.resolve(p.type_ref).to_string();
+        let produced = sim.entities.get(produced_id)?;
+        Some((
+            producer_type,
+            produced.category == crate::map::entities::EntityCategory::Unit,
+        ))
+    }) else {
+        return false;
+    };
+
+    if !produced_is_vehicle || !exact_land_vehicle_exit_factory(rules, &producer_type) {
+        return false;
+    }
+
+    let Some(produced) = sim.entities.get_mut(produced_id) else {
+        return false;
+    };
+    produced.mark_live_contact_with(producer_id);
+    true
+}
+
+fn exact_land_vehicle_exit_factory(rules: &RuleSet, structure_id: &str) -> bool {
+    rules.object(structure_id).is_some_and(|obj| {
+        obj.factory == Some(FactoryType::UnitType) && !obj.naval && obj.exit_coord.is_some()
+    })
 }
 
 fn producer_queue_category_for_object(
@@ -167,6 +256,37 @@ fn find_spawn_cell_near_structure(
         resolved_terrain,
         require_water,
     )
+}
+
+fn find_exact_exitcoord_spawn_cell(
+    base_rx: u16,
+    base_ry: u16,
+    structure_id: &str,
+    produced_category: ObjectCategory,
+    rules: &RuleSet,
+    path_grid: Option<&crate::sim::pathfinding::PathGrid>,
+    occupancy: &OccupancyGrid,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    require_water: bool,
+) -> Option<(u16, u16)> {
+    let (lx, ly, _lz) = rules.object(structure_id)?.exit_coord?;
+    let cand = add_cell_offset(base_rx, base_ry, lepton_to_cell(lx), lepton_to_cell(ly))?;
+    if let Some(grid) = path_grid {
+        if cand.0 >= grid.width()
+            || cand.1 >= grid.height()
+            || !spawn_cell_passable(grid, cand, resolved_terrain, require_water)
+        {
+            return None;
+        }
+    }
+    cell_available_for_spawn(
+        cand,
+        produced_category,
+        occupancy,
+        resolved_terrain,
+        require_water,
+    )
+    .then_some(cand)
 }
 
 /// Infantry-specific spawn cell: the foundation-center cell of the producing

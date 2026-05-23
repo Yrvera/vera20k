@@ -238,6 +238,8 @@ pub struct ObjectType {
     pub adjacent: i32,
     /// Whether this structure expands the owner's build area.
     pub base_normal: bool,
+    /// Whether this structure can expand allied build area when BuildOffAlly is enabled.
+    pub eligibile_for_ally_building: bool,
     /// Whether selling/destruction can eject infantry crew from this structure.
     pub crewed: bool,
     /// Sound ID played when this unit is selected (references sound.ini section).
@@ -474,6 +476,8 @@ pub struct ObjectType {
     /// None for non-factory buildings/units. Data-driven replacement for
     /// hardcoded building-name checks in production queue logic.
     pub factory: Option<FactoryType>,
+    /// Whether this building clones produced infantry (Cloning=yes in rules.ini).
+    pub cloning: bool,
 
     /// Exit coordinate for produced units, in leptons relative to building origin.
     /// Parsed from `ExitCoord=X,Y,Z` in rules.ini. 256 leptons = 1 cell.
@@ -642,6 +646,11 @@ pub struct ObjectType {
     /// Whether this building repairs docked ground units (UnitRepair=yes in rules.ini).
     /// Used by Service Depots (GADEPT, NADEPT, YADEPT).
     pub unit_repair: bool,
+    /// Whether this building is a Tank Bunker (Bunker=yes in rules.ini).
+    /// Stock YR uses this on NATBNK. The live pathing helper treats empty and
+    /// occupied bunkers differently, so this must be data-driven rather than a
+    /// NATBNK string check.
+    pub bunker: bool,
     /// Whether this building reloads ammo for docked aircraft (UnitReload=yes in rules.ini).
     /// Used by Airfields (GAAIRC, NAAIRC).
     pub unit_reload: bool,
@@ -689,7 +698,7 @@ pub struct ObjectType {
     pub number_impassable_rows: i32,
 
     // -- Point light source fields (from rules.ini, primarily buildings) --
-    /// Light emission range in leptons (LightVisibility= in rules.ini). Default 0 (no light).
+    /// Light emission range in leptons (LightVisibility= in rules.ini). Default 5000.
     /// 256 leptons = 1 cell. Used by lamp posts (GALITE=5000) and other light-emitting buildings.
     pub light_visibility: i32,
     /// Light emission brightness (LightIntensity= in rules.ini). Default 0.0.
@@ -739,9 +748,28 @@ pub struct ObjectType {
     /// `SuperGapRadiusInCells=` — oversized gap radius applied during
     /// specific game states.
     pub super_gap_radius_in_cells: u8,
+    /// `PsychicDetectionRadius=` — selected Psychic Sensor ring radius.
+    pub psychic_detection_radius: u8,
+    /// `SensorArray=` — building sensor-array flag used by GetSensorRange.
+    pub sensor_array: bool,
+    /// `Sensors=` — generic cloak-sensor flag.
+    pub sensors: bool,
+    /// `SensorsSight=` — fallback sensor/cloak-generator ring radius.
+    pub sensors_sight: u8,
+    /// `CloakGenerator=` — cloak field provider flag used by GetSensorRange.
+    pub cloak_generator: bool,
 }
 
 impl ObjectType {
+    /// Whether this type participates in selected factory rally-line visuals.
+    pub fn has_rally_line(&self) -> bool {
+        matches!(
+            self.factory,
+            Some(FactoryType::InfantryType | FactoryType::UnitType)
+        ) || self.unit_repair
+            || self.cloning
+    }
+
     /// Parse an ObjectType from a rules.ini section.
     ///
     /// Missing keys get sensible defaults matching RA2's behavior.
@@ -837,16 +865,21 @@ impl ObjectType {
             image: section.get("Image").unwrap_or(id).to_string(),
             power: section.get_i32("Power").unwrap_or(0),
             extra_power: section.get_i32("ExtraPower").unwrap_or(0),
-            // In the original engine, Foundation= lives in art.ini, not rules.ini.
-            // Art.ini is authoritative — merge_art_data() overwrites this value.
-            // We still parse from rules here as a fallback for tests and edge cases.
-            foundation: section.get("Foundation").unwrap_or("1x1").to_string(),
+            // The original resolves Foundation= through a fixed name table.
+            // merge_art_data() applies the art-vs-rules precedence observed in gamemd.
+            foundation: crate::rules::foundation::foundation_name(
+                section.get("Foundation").unwrap_or("1x1"),
+            )
+            .to_string(),
             pixel_selection_bracket_delta: section
                 .get_i32("PixelSelectionBracketDelta")
                 .unwrap_or(0),
             build_cat: section.get("BuildCat").and_then(BuildCategory::from_ini),
-            adjacent: section.get_i32("Adjacent").unwrap_or(6),
+            adjacent: section.get_i32("Adjacent").unwrap_or(3),
             base_normal: section.get_bool("BaseNormal").unwrap_or(true),
+            eligibile_for_ally_building: section
+                .get_bool("EligibileForAllyBuilding")
+                .unwrap_or(false),
             crewed: section.get_bool("Crewed").unwrap_or(false),
             voice_select: section.get("VoiceSelect").map(|s| s.to_string()),
             voice_move: section.get("VoiceMove").map(|s| s.to_string()),
@@ -972,6 +1005,7 @@ impl ObjectType {
             deploys_into: section.get("DeploysInto").map(|s| s.to_string()),
             undeploys_into: section.get("UndeploysInto").map(|s| s.to_string()),
             factory: section.get("Factory").and_then(FactoryType::from_ini),
+            cloning: section.get_bool("Cloning").unwrap_or(false),
             exit_coord: parse_exit_coord(section.get("ExitCoord")),
 
             // Cursor / interaction capability flags
@@ -1040,6 +1074,7 @@ impl ObjectType {
                 .unwrap_or(category == ObjectCategory::Building),
             invisible_in_game: section.get_bool("InvisibleInGame").unwrap_or(false),
             unit_repair: section.get_bool("UnitRepair").unwrap_or(false),
+            bunker: section.get_bool("Bunker").unwrap_or(false),
             unit_reload: section.get_bool("UnitReload").unwrap_or(false),
             helipad: section.get_bool("Helipad").unwrap_or(false),
             number_of_docks: section.get_i32("NumberOfDocks").unwrap_or(1).max(1) as u8,
@@ -1066,11 +1101,11 @@ impl ObjectType {
             number_impassable_rows: section.get_i32("NumberImpassableRows").unwrap_or(-1),
 
             // Point light source fields
-            light_visibility: section.get_i32("LightVisibility").unwrap_or(0),
-            light_intensity: section.get_f32("LightIntensity").unwrap_or(0.0),
-            light_red_tint: section.get_f32("LightRedTint").unwrap_or(1.0),
-            light_green_tint: section.get_f32("LightGreenTint").unwrap_or(1.0),
-            light_blue_tint: section.get_f32("LightBlueTint").unwrap_or(1.0),
+            light_visibility: section.get_i32("LightVisibility").unwrap_or(5000),
+            light_intensity: section.get_light_f32("LightIntensity").unwrap_or(0.0),
+            light_red_tint: section.get_light_f32("LightRedTint").unwrap_or(1.0),
+            light_green_tint: section.get_light_f32("LightGreenTint").unwrap_or(1.0),
+            light_blue_tint: section.get_light_f32("LightBlueTint").unwrap_or(1.0),
 
             // TechnoType particle effects
             natural_particle_system: section
@@ -1124,6 +1159,17 @@ impl ObjectType {
                 .get_i32("SuperGapRadiusInCells")
                 .map(|n| n.clamp(0, u8::MAX as i32) as u8)
                 .unwrap_or(0),
+            psychic_detection_radius: section
+                .get_i32("PsychicDetectionRadius")
+                .map(|n| n.clamp(0, u8::MAX as i32) as u8)
+                .unwrap_or(0),
+            sensor_array: section.get_bool("SensorArray").unwrap_or(false),
+            sensors: section.get_bool("Sensors").unwrap_or(false),
+            sensors_sight: section
+                .get_i32("SensorsSight")
+                .map(|n| n.clamp(0, u8::MAX as i32) as u8)
+                .unwrap_or(0),
+            cloak_generator: section.get_bool("CloakGenerator").unwrap_or(false),
         }
     }
 }
@@ -1216,8 +1262,9 @@ mod tests {
         assert_eq!(obj.secondary, None);
         assert_eq!(obj.image, "MTNK"); // Defaults to ID when Image= absent.
         assert_eq!(obj.build_cat, None);
-        assert_eq!(obj.adjacent, 6);
+        assert_eq!(obj.adjacent, 3);
         assert!(obj.base_normal);
+        assert!(!obj.eligibile_for_ally_building);
         assert!(!obj.crewed);
     }
 
@@ -1235,9 +1282,42 @@ mod tests {
         assert_eq!(obj.foundation, "2x2");
         assert_eq!(obj.armor, "wood");
         assert_eq!(obj.build_cat, Some(BuildCategory::Power));
-        assert_eq!(obj.adjacent, 6);
+        assert_eq!(obj.adjacent, 3);
         assert!(obj.base_normal);
+        assert!(!obj.eligibile_for_ally_building);
         assert!(obj.crewed);
+    }
+
+    #[test]
+    fn test_light_visibility_defaults_to_5000_without_intensity() {
+        let ini: IniFile = IniFile::from_str("[GALITE]\n");
+        let section: &IniSection = ini.section("GALITE").unwrap();
+        let obj: ObjectType =
+            ObjectType::from_ini_section("GALITE", section, ObjectCategory::Building);
+
+        assert_eq!(obj.light_visibility, 5000);
+        assert_eq!(obj.light_intensity, 0.0);
+    }
+
+    #[test]
+    fn test_light_fields_use_light_float_parser() {
+        let ini: IniFile = IniFile::from_str(
+            "[GALITE]\n\
+             LightVisibility=4096\n\
+             LightIntensity=0.75\n\
+             LightRedTint=-0.25\n\
+             LightGreenTint=0,01\n\
+             LightBlueTint=1.5\n",
+        );
+        let section: &IniSection = ini.section("GALITE").unwrap();
+        let obj: ObjectType =
+            ObjectType::from_ini_section("GALITE", section, ObjectCategory::Building);
+
+        assert_eq!(obj.light_visibility, 4096);
+        assert!((obj.light_intensity - 0.75).abs() < 0.001);
+        assert!((obj.light_red_tint + 0.25).abs() < 0.001);
+        assert_eq!(obj.light_green_tint, 0.0);
+        assert!((obj.light_blue_tint - 1.5).abs() < 0.001);
     }
 
     #[test]
@@ -1296,8 +1376,9 @@ mod tests {
         assert_eq!(obj.power, 0);
         assert_eq!(obj.foundation, "1x1");
         assert_eq!(obj.build_cat, None);
-        assert_eq!(obj.adjacent, 6);
+        assert_eq!(obj.adjacent, 3);
         assert!(obj.base_normal);
+        assert!(!obj.eligibile_for_ally_building);
         assert!(!obj.crewed);
     }
 
@@ -1313,14 +1394,16 @@ mod tests {
 
     #[test]
     fn test_parse_building_placement_flags() {
-        let ini: IniFile =
-            IniFile::from_str("[GAGAP]\nFoundation=2x2\nAdjacent=0\nBaseNormal=no\n");
+        let ini: IniFile = IniFile::from_str(
+            "[GAGAP]\nFoundation=2x2\nAdjacent=0\nBaseNormal=no\nEligibileForAllyBuilding=yes\n",
+        );
         let section: &IniSection = ini.section("GAGAP").unwrap();
         let obj: ObjectType =
             ObjectType::from_ini_section("GAGAP", section, ObjectCategory::Building);
 
         assert_eq!(obj.adjacent, 0);
         assert!(!obj.base_normal);
+        assert!(obj.eligibile_for_ally_building);
     }
 
     #[test]
@@ -1430,6 +1513,42 @@ mod tests {
             harvester.dock,
             vec!["MODPROC".to_string(), "NAREFN".to_string()]
         );
+    }
+
+    #[test]
+    fn cloning_key_parses_and_participates_in_rally_lines() {
+        let ini = IniFile::from_str("[YACLON]\nName=Cloning Vats\nStrength=1000\nCloning=yes\n");
+        let section = ini.section("YACLON").unwrap();
+        let obj = ObjectType::from_ini_section("YACLON", section, ObjectCategory::Building);
+        assert!(obj.cloning);
+        assert!(obj.has_rally_line());
+    }
+
+    #[test]
+    fn rally_line_accepts_infantry_vehicle_factories_and_repair() {
+        let ini = IniFile::from_str(
+            "[GAPILE]\nFactory=InfantryType\n\
+             [GAWEAP]\nFactory=UnitType\n\
+             [GADEPT]\nUnitRepair=yes\n",
+        );
+        let barracks = ObjectType::from_ini_section(
+            "GAPILE",
+            ini.section("GAPILE").unwrap(),
+            ObjectCategory::Building,
+        );
+        let factory = ObjectType::from_ini_section(
+            "GAWEAP",
+            ini.section("GAWEAP").unwrap(),
+            ObjectCategory::Building,
+        );
+        let depot = ObjectType::from_ini_section(
+            "GADEPT",
+            ini.section("GADEPT").unwrap(),
+            ObjectCategory::Building,
+        );
+        assert!(barracks.has_rally_line());
+        assert!(factory.has_rally_line());
+        assert!(depot.has_rally_line());
     }
 
     #[test]
@@ -1612,6 +1731,15 @@ mod tests {
     }
 
     #[test]
+    fn bunker_flag_parses_from_ini() {
+        let ini = IniFile::from_str("[NATBNK]\nBunker=yes\nNumberImpassableRows=0\n");
+        let section = ini.section("NATBNK").unwrap();
+        let obj = ObjectType::from_ini_section("NATBNK", section, ObjectCategory::Building);
+        assert!(obj.bunker);
+        assert_eq!(obj.number_impassable_rows, 0);
+    }
+
+    #[test]
     fn invisible_in_game_defaults_to_false() {
         let ini = IniFile::from_str("[GAPILE]\n");
         let section = ini.section("GAPILE").unwrap();
@@ -1711,7 +1839,12 @@ mod tests {
              DamSmkOffScrnRel=yes\n\
              DestroySmokeOffset=0,0,128\n\
              GapRadiusInCells=8\n\
-             SuperGapRadiusInCells=12\n",
+             SuperGapRadiusInCells=12\n\
+             PsychicDetectionRadius=15\n\
+             SensorArray=yes\n\
+             Sensors=yes\n\
+             SensorsSight=14\n\
+             CloakGenerator=yes\n",
         );
         let section = ini.section("GAGAP").unwrap();
         let obj = ObjectType::from_ini_section("GAGAP", section, ObjectCategory::Building);
@@ -1723,6 +1856,11 @@ mod tests {
         assert_eq!(obj.destroy_smoke_offset, IVec3::new(0, 0, 128));
         assert_eq!(obj.gap_radius_in_cells, 8);
         assert_eq!(obj.super_gap_radius_in_cells, 12);
+        assert_eq!(obj.psychic_detection_radius, 15);
+        assert!(obj.sensor_array);
+        assert!(obj.sensors);
+        assert_eq!(obj.sensors_sight, 14);
+        assert!(obj.cloak_generator);
     }
 
     #[test]

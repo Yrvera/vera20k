@@ -11,7 +11,9 @@ use crate::sim::miner::{ResourceNode, ResourceType};
 use crate::sim::world::Simulation;
 
 use super::production_economy::tick_resource_economy;
-use super::production_spawn::{find_helipad_for_aircraft, find_spawn_cell_for_owner};
+use super::production_spawn::{
+    find_helipad_for_aircraft, find_spawn_selection_for_owner, mark_war_factory_spawn_contact,
+};
 use super::production_tech::{
     build_option_for_owner, build_time_base_frames, effective_progress_rate_ppm_for_type,
     effective_time_to_build_frames_for_type, estimated_real_time_ms,
@@ -115,7 +117,7 @@ pub(super) fn next_enqueue_order(sim: &mut Simulation) -> u64 {
 pub(super) fn refresh_queue_states(queue: &mut VecDeque<BuildQueueItem>) {
     for (idx, item) in queue.iter_mut().enumerate() {
         if idx == 0 {
-            if item.state != BuildQueueState::Paused {
+            if !matches!(item.state, BuildQueueState::Paused | BuildQueueState::Done) {
                 item.state = BuildQueueState::Building;
             }
         } else {
@@ -454,7 +456,9 @@ pub fn tick_production(
             let Some(queue) = queue else { continue };
             refresh_queue_states(queue);
             if let Some(front) = queue.front_mut() {
-                if front.state == BuildQueueState::Paused {
+                if front.state == BuildQueueState::Done {
+                    Some(front.clone())
+                } else if front.state == BuildQueueState::Paused {
                     None
                 } else {
                     advance_queue_item(front, tick_ms, progress_rate);
@@ -462,9 +466,7 @@ pub fn tick_production(
                         None
                     } else {
                         front.state = BuildQueueState::Done;
-                        let done = queue.pop_front();
-                        refresh_queue_states(queue);
-                        done
+                        Some(front.clone())
                     }
                 }
             } else {
@@ -484,35 +486,47 @@ pub fn tick_production(
                 .push_back(done.type_id);
             sim.sound_events
                 .push(crate::sim::world::SimSoundEvent::BuildingComplete { owner: done.owner });
+            pop_completed_front(sim, owner_id, queue_category, done.enqueue_order);
             continue;
         }
+        let is_vehicle =
+            produced_category == Some(crate::rules::object_type::ObjectCategory::Vehicle);
         // Aircraft use helipad spawn path; other units use exit cell path.
         let is_aircraft =
             produced_category == Some(crate::rules::object_type::ObjectCategory::Aircraft);
         let spawn_cell: Option<(u16, u16)>;
+        let spawn_producer_id: Option<u64>;
         let helipad_airfield: Option<u64>;
 
         if is_aircraft {
             if let Some((af_id, rx, ry)) = find_helipad_for_aircraft(sim, rules, &owner_str) {
                 spawn_cell = Some((rx, ry));
+                spawn_producer_id = Some(af_id);
                 helipad_airfield = Some(af_id);
             } else {
                 // No free helipad — refund.
                 if let Some(obj) = rules.object(&done_type_str) {
                     *credits_entry_for_owner(sim, &owner_str) += obj.cost.max(0);
                 }
+                pop_completed_front(sim, owner_id, queue_category, done.enqueue_order);
                 continue;
             }
         } else {
             let is_naval: bool = rules.object(&done_type_str).map_or(false, |o| o.naval);
-            spawn_cell = produced_category.and_then(|cat| {
-                find_spawn_cell_for_owner(sim, rules, &owner_str, cat, path_grid, is_naval)
+            let spawn_selection = produced_category.and_then(|cat| {
+                find_spawn_selection_for_owner(sim, rules, &owner_str, cat, path_grid, is_naval)
             });
+            spawn_cell = spawn_selection.map(|selection| selection.cell);
+            spawn_producer_id = spawn_selection.map(|selection| selection.producer_id);
             helipad_airfield = None;
             if spawn_cell.is_none() {
+                if is_vehicle {
+                    continue;
+                }
                 if let Some(obj) = rules.object(&done_type_str) {
                     *credits_entry_for_owner(sim, &owner_str) += obj.cost.max(0);
                 }
+                pop_completed_front(sim, owner_id, queue_category, done.enqueue_order);
                 continue;
             }
         }
@@ -520,6 +534,9 @@ pub fn tick_production(
 
         let spawned = sim.spawn_object(&done_type_str, &owner_str, rx, ry, 64, rules, height_map);
         if let Some(stable_id) = spawned {
+            if let Some(producer_id) = spawn_producer_id {
+                mark_war_factory_spawn_contact(sim, rules, producer_id, stable_id);
+            }
             // Aircraft spawned on helipad: reserve dock slot then set
             // DockedIdle carrying the assigned pad index.
             if let Some(af_id) = helipad_airfield {
@@ -587,10 +604,15 @@ pub fn tick_production(
                 }
             }
             spawned_any = true;
+            pop_completed_front(sim, owner_id, queue_category, done.enqueue_order);
         } else {
+            if is_vehicle {
+                continue;
+            }
             if let Some(obj) = rules.object(&done_type_str) {
                 *credits_entry_for_owner(sim, &owner_str) += obj.cost.max(0);
             }
+            pop_completed_front(sim, owner_id, queue_category, done.enqueue_order);
         }
     }
 
@@ -599,6 +621,29 @@ pub fn tick_production(
         !queues.is_empty()
     });
     spawned_any
+}
+
+fn pop_completed_front(
+    sim: &mut Simulation,
+    owner_id: InternedId,
+    category: ProductionCategory,
+    enqueue_order: u64,
+) {
+    let Some(queue) = sim
+        .production
+        .queues_by_owner
+        .get_mut(&owner_id)
+        .and_then(|queues| queues.get_mut(&category))
+    else {
+        return;
+    };
+    let should_pop = queue.front().is_some_and(|item| {
+        item.state == BuildQueueState::Done && item.enqueue_order == enqueue_order
+    });
+    if should_pop {
+        queue.pop_front();
+        refresh_queue_states(queue);
+    }
 }
 
 /// Build a queue snapshot for one owner, including progress metadata for UI.

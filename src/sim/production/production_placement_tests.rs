@@ -10,12 +10,14 @@ use super::{
     producer_candidates_for_owner_category, ready_buildings_for_owner, sell_building,
     tick_production,
 };
+use crate::map::bridge_facts::BRIDGE_FLAG_DESTROYED_OR_RAMP;
 use crate::map::resolved_terrain::{RampDirection, ResolvedTerrainCell, ResolvedTerrainGrid};
 use crate::rules::ini_parser::IniFile;
 use crate::rules::object_type::ObjectCategory;
 use crate::rules::ruleset::RuleSet;
 use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
 use crate::sim::components::Health;
+use crate::sim::game_entity::GameEntity;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::world::Simulation;
 
@@ -116,6 +118,47 @@ fn naval_yard_placement_rules() -> RuleSet {
     RuleSet::from_ini(&ini).expect("naval yard placement rules should parse")
 }
 
+fn build_off_ally_rules() -> RuleSet {
+    let ini = IniFile::from_str(
+        "[InfantryTypes]\n\
+         [VehicleTypes]\n\
+         [AircraftTypes]\n\
+         [BuildingTypes]\n\
+         0=GACNST\n\
+         1=GAPOWR\n\
+         [GACNST]\n\
+         Strength=1000\n\
+         Armor=wood\n\
+         Foundation=2x2\n\
+         BaseNormal=yes\n\
+         EligibileForAllyBuilding=yes\n\
+         [GAPOWR]\n\
+         Strength=750\n\
+         Armor=wood\n\
+         Foundation=2x2\n\
+         Adjacent=0\n",
+    );
+    RuleSet::from_ini(&ini).expect("BuildOffAlly placement rules should parse")
+}
+
+fn mark_allied(sim: &mut Simulation, a: &str, b: &str) {
+    let a = a.to_ascii_uppercase();
+    let b = b.to_ascii_uppercase();
+    sim.house_alliances
+        .entry(a.clone())
+        .or_default()
+        .insert(b.clone());
+    sim.house_alliances.entry(b).or_default().insert(a);
+}
+
+fn ready_building(sim: &mut Simulation, owner: &str, type_id: &str) {
+    let owner_id = sim.interner.intern(owner);
+    let type_id = sim.interner.intern(type_id);
+    sim.production
+        .ready_by_owner
+        .insert(owner_id, VecDeque::from([type_id]));
+}
+
 #[test]
 fn completed_building_moves_into_ready_placement_pool() {
     let mut sim = Simulation::new();
@@ -195,6 +238,100 @@ fn place_ready_building_spawns_and_consumes_ready_item() {
         })
         .count();
     assert_eq!(structures, 1);
+}
+
+#[test]
+fn place_ready_building_accepts_clear_mixed_height_footprint() {
+    let mut sim = Simulation::new();
+    let rules = placement_radius_rules();
+    let mut height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    let grid = PathGrid::new(64, 64);
+    spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
+
+    for (cell, z) in [((12, 10), 0), ((13, 10), 1), ((12, 11), 2), ((13, 11), 3)] {
+        height_map.insert(cell, z);
+    }
+
+    let americans = sim.interner.intern("Americans");
+    let gapowr = sim.interner.intern("GAPOWR");
+    sim.production
+        .ready_by_owner
+        .insert(americans, VecDeque::from([gapowr]));
+
+    let preview = placement_preview_for_owner(
+        &sim,
+        &rules,
+        "Americans",
+        "GAPOWR",
+        12,
+        10,
+        Some(&grid),
+        &height_map,
+    )
+    .expect("preview should exist");
+    assert!(
+        preview.valid,
+        "mixed clear heights should not reject placement"
+    );
+    assert!(
+        preview.cell_valid.iter().all(|valid| *valid),
+        "all otherwise-clear mixed-height cells should be individually valid"
+    );
+
+    assert!(place_ready_building(
+        &mut sim,
+        &rules,
+        "Americans",
+        "GAPOWR",
+        12,
+        10,
+        Some(&grid),
+        &height_map,
+    ));
+
+    assert!(sim.entities.values().any(|e| {
+        sim.interner
+            .resolve(e.type_ref)
+            .eq_ignore_ascii_case("GAPOWR")
+            && e.position.rx == 12
+            && e.position.ry == 10
+    }));
+}
+
+#[test]
+fn place_ready_building_rejects_blocked_cell_inside_mixed_height_footprint() {
+    let mut sim = Simulation::new();
+    let rules = placement_radius_rules();
+    let mut height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    let mut grid = PathGrid::new(64, 64);
+    grid.set_blocked(13, 11, true);
+    spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
+
+    for (cell, z) in [((12, 10), 0), ((13, 10), 1), ((12, 11), 2), ((13, 11), 3)] {
+        height_map.insert(cell, z);
+    }
+
+    let americans = sim.interner.intern("Americans");
+    let gapowr = sim.interner.intern("GAPOWR");
+    sim.production
+        .ready_by_owner
+        .insert(americans, VecDeque::from([gapowr]));
+
+    assert!(!place_ready_building(
+        &mut sim,
+        &rules,
+        "Americans",
+        "GAPOWR",
+        12,
+        10,
+        Some(&grid),
+        &height_map,
+    ));
+    assert_eq!(
+        ready_buildings_for_owner(&sim, &rules, "Americans").len(),
+        1,
+        "blocked placement must not consume the ready building"
+    );
 }
 
 #[test]
@@ -482,6 +619,99 @@ fn base_normal_false_structures_do_not_extend_build_area() {
 }
 
 #[test]
+fn build_off_ally_enabled_accepts_allied_eligible_provider() {
+    let mut sim = Simulation::new();
+    let rules = build_off_ally_rules();
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    let grid = PathGrid::new(64, 64);
+
+    spawn_structure(&mut sim, 1, "Alliance", "GACNST", 10, 10);
+    mark_allied(&mut sim, "Americans", "Alliance");
+    ready_building(&mut sim, "Americans", "GAPOWR");
+
+    assert!(place_ready_building(
+        &mut sim,
+        &rules,
+        "Americans",
+        "GAPOWR",
+        12,
+        10,
+        Some(&grid),
+        &height_map,
+    ));
+}
+
+#[test]
+fn build_off_ally_disabled_rejects_allied_eligible_provider() {
+    let mut sim = Simulation::new();
+    let rules = build_off_ally_rules();
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    let grid = PathGrid::new(64, 64);
+
+    sim.game_options.build_off_ally = false;
+    spawn_structure(&mut sim, 1, "Alliance", "GACNST", 10, 10);
+    mark_allied(&mut sim, "Americans", "Alliance");
+    ready_building(&mut sim, "Americans", "GAPOWR");
+
+    assert!(!place_ready_building(
+        &mut sim,
+        &rules,
+        "Americans",
+        "GAPOWR",
+        12,
+        10,
+        Some(&grid),
+        &height_map,
+    ));
+}
+
+#[test]
+fn build_off_ally_requires_eligibile_for_ally_building() {
+    let mut sim = Simulation::new();
+    let rules = build_off_ally_rules();
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    let grid = PathGrid::new(64, 64);
+
+    spawn_structure(&mut sim, 1, "Alliance", "GAPOWR", 10, 10);
+    mark_allied(&mut sim, "Americans", "Alliance");
+    ready_building(&mut sim, "Americans", "GAPOWR");
+
+    assert!(!place_ready_building(
+        &mut sim,
+        &rules,
+        "Americans",
+        "GAPOWR",
+        12,
+        10,
+        Some(&grid),
+        &height_map,
+    ));
+}
+
+#[test]
+fn build_off_ally_off_keeps_own_base_provider() {
+    let mut sim = Simulation::new();
+    let rules = build_off_ally_rules();
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    let grid = PathGrid::new(64, 64);
+
+    sim.game_options.build_off_ally = false;
+    spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
+    ready_building(&mut sim, "Americans", "GAPOWR");
+
+    assert!(place_ready_building(
+        &mut sim,
+        &rules,
+        "Americans",
+        "GAPOWR",
+        12,
+        10,
+        Some(&grid),
+        &height_map,
+    ));
+}
+
+#[test]
 fn placement_preview_reports_out_of_build_area() {
     let mut sim = Simulation::new();
     let rules = placement_radius_rules();
@@ -584,6 +814,54 @@ fn place_ready_building_rejects_bridge_deck_cells() {
     )
     .expect("preview should exist");
     assert_eq!(preview.reason, Some(BuildingPlacementError::BlockedTerrain));
+}
+
+#[test]
+fn place_ready_building_rejects_bridge_0x400_marker_cells() {
+    let mut sim = Simulation::new();
+    let rules = placement_radius_rules();
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    let grid = PathGrid::new(64, 64);
+
+    spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
+    let americans = sim.interner.intern("Americans");
+    let gapowr = sim.interner.intern("GAPOWR");
+    sim.production
+        .ready_by_owner
+        .insert(americans, VecDeque::from([gapowr]));
+    sim.resolved_terrain = Some(resolved_clear_grid_with_override(64, 64, |cell| {
+        if cell.rx == 12 && cell.ry == 10 {
+            cell.bridge_facts.raw_flags |= BRIDGE_FLAG_DESTROYED_OR_RAMP;
+        }
+    }));
+
+    assert!(!place_ready_building(
+        &mut sim,
+        &rules,
+        "Americans",
+        "GAPOWR",
+        12,
+        10,
+        Some(&grid),
+        &height_map,
+    ));
+
+    let preview = placement_preview_for_owner(
+        &sim,
+        &rules,
+        "Americans",
+        "GAPOWR",
+        12,
+        10,
+        Some(&grid),
+        &height_map,
+    )
+    .expect("preview should exist");
+    assert_eq!(preview.reason, Some(BuildingPlacementError::BlockedTerrain));
+    assert!(
+        !preview.cell_valid[0],
+        "binary CellClass+0x140 bit 0x400 blocks placement even without live bridge deck flags"
+    );
 }
 
 #[test]
@@ -836,19 +1114,69 @@ fn cycle_active_producer_rotates_matching_factories() {
 }
 
 #[test]
-fn spawn_routing_falls_back_to_next_factory_when_first_exit_is_blocked() {
+fn blocked_active_war_factory_does_not_spawn_from_second_factory() {
     let mut sim = Simulation::new();
     let rules = factory_rules();
     let mut grid = PathGrid::new(64, 64);
 
     spawn_structure(&mut sim, 1, "Americans", "GAWEAP", 10, 10);
     spawn_structure(&mut sim, 2, "Americans", "GAWEAP", 30, 30);
+    let americans = sim.interner.intern("Americans");
+    sim.production.active_producer_by_owner.insert(
+        americans,
+        BTreeMap::from([(ProductionCategory::Vehicle, 1)]),
+    );
 
-    for rx in 0..=22 {
-        for ry in 0..=22 {
-            grid.set_blocked(rx, ry, true);
-        }
-    }
+    grid.set_blocked(12, 11, true);
+
+    let spawn = find_spawn_cell_for_owner(
+        &mut sim,
+        &rules,
+        "Americans",
+        ObjectCategory::Vehicle,
+        Some(&grid),
+        false,
+    );
+
+    assert!(
+        spawn.is_none(),
+        "blocked active war factory must not route the completed vehicle through the second factory, got {:?}",
+        spawn
+    );
+}
+
+#[test]
+fn stock_war_factory_initial_exit_has_no_nearest_cell_fallback() {
+    let mut sim = Simulation::new();
+    let rules = factory_rules();
+    let mut grid = PathGrid::new(64, 64);
+
+    spawn_structure(&mut sim, 1, "Americans", "GAWEAP", 10, 10);
+    grid.set_blocked(12, 11, true);
+
+    let spawn = find_spawn_cell_for_owner(
+        &mut sim,
+        &rules,
+        "Americans",
+        ObjectCategory::Vehicle,
+        Some(&grid),
+        false,
+    );
+
+    assert!(
+        spawn.is_none(),
+        "blocked ExitCoord must fail initial war-factory delivery instead of probing neighboring cells, got {:?}",
+        spawn
+    );
+}
+
+#[test]
+fn stock_war_factory_clear_exitcoord_succeeds() {
+    let mut sim = Simulation::new();
+    let rules = factory_rules();
+    let grid = PathGrid::new(64, 64);
+
+    spawn_structure(&mut sim, 1, "Americans", "GAWEAP", 10, 10);
 
     let spawn = find_spawn_cell_for_owner(
         &mut sim,
@@ -858,12 +1186,12 @@ fn spawn_routing_falls_back_to_next_factory_when_first_exit_is_blocked() {
         Some(&grid),
         false,
     )
-    .expect("second factory should provide a valid exit");
+    .expect("clear ExitCoord should accept the stock war-factory spawn cell");
 
-    assert!(
-        spawn.0 >= 31 && spawn.0 <= 33 && spawn.1 >= 30 && spawn.1 <= 32,
-        "spawn should come from the second war factory, got {:?}",
-        spawn
+    assert_eq!(
+        spawn,
+        (12, 11),
+        "stock land war factory initial spawn uses ExitCoord=512,256,0"
     );
 }
 
@@ -965,7 +1293,13 @@ fn sell_building_refunds_half_current_value_and_ejects_allied_infantry() {
             current: 375,
             max: 750,
         };
+        ge.mark_live_contact_with(99);
     }
+    let mut peer = GameEntity::test_default(99, "MTNK", "Americans", 22, 20);
+    peer.owner = sim.interner.intern("Americans");
+    peer.type_ref = sim.interner.intern("MTNK");
+    peer.mark_live_contact_with(1);
+    sim.entities.insert(peer);
 
     assert!(sell_building(&mut sim, &rules, 1));
     assert_eq!(credits_for_owner(&sim, "Americans"), 1200);
@@ -991,6 +1325,10 @@ fn sell_building_refunds_half_current_value_and_ejects_allied_infantry() {
     assert!(
         !sim.entities.contains(1),
         "sold building should be removed from the store"
+    );
+    assert!(
+        !sim.entities.get(99).unwrap().has_live_contact_with(1),
+        "selling a building should clear peer radio contacts to it"
     );
 }
 

@@ -118,6 +118,58 @@ CellSpread=0
     RuleSet::from_ini(&ini).expect("test ruleset parse")
 }
 
+fn make_mcv_rules() -> RuleSet {
+    let text = "\
+[InfantryTypes]
+
+[VehicleTypes]
+0=AMCV
+1=SMIN
+
+[AircraftTypes]
+
+[BuildingTypes]
+0=GACNST
+1=GAPOWR
+2=YAREFN
+
+[AMCV]
+Name=Allied MCV
+Strength=450
+Armor=heavy
+Speed=5
+DeploysInto=GACNST
+
+[SMIN]
+Name=Slave Miner
+Strength=2000
+Armor=heavy
+Speed=3
+DeploysInto=YAREFN
+
+[GACNST]
+Name=Construction Yard
+Strength=1000
+Armor=wood
+Foundation=4x3
+UndeploysInto=AMCV
+
+[GAPOWR]
+Name=Power Plant
+Strength=750
+Armor=wood
+Foundation=1x1
+
+[YAREFN]
+Name=Slave Miner Refinery
+Strength=1000
+Armor=wood
+Foundation=2x2
+";
+    let ini: IniFile = IniFile::from_str(text);
+    RuleSet::from_ini(&ini).expect("MCV test ruleset parse")
+}
+
 fn spawn_infantry(sim: &mut Simulation, type_str: &str, owner: &str, rx: u16, ry: u16) -> u64 {
     let owner_id = sim.interner.intern(owner);
     let type_id = sim.interner.intern(type_str);
@@ -142,6 +194,108 @@ fn spawn_infantry(sim: &mut Simulation, type_str: &str, owner: &str, rx: u16, ry
     );
     sim.entities.insert(e);
     id
+}
+
+#[test]
+fn deploy_mcv_uses_gamemd_large_foundation_origin_offset() {
+    let rules = make_mcv_rules();
+    let mut sim = Simulation::new();
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+
+    let mcv = sim
+        .spawn_object("AMCV", "Americans", 20, 22, 64, &rules, &height_map)
+        .expect("spawn MCV");
+
+    let applied = sim.apply_command(
+        "Americans",
+        &Command::DeployMcv { entity_id: mcv },
+        Some(&rules),
+        None,
+        &height_map,
+    );
+    assert!(applied, "clear ConYard footprint should deploy");
+    assert!(sim.entities.get(mcv).is_none(), "MCV should be consumed");
+
+    let gacnst_id = sim
+        .interner
+        .get("GACNST")
+        .expect("GACNST should be interned after deploy");
+    assert!(
+        sim.entities
+            .values()
+            .any(|e| { e.type_ref == gacnst_id && e.position.rx == 19 && e.position.ry == 21 })
+    );
+}
+
+#[test]
+fn deploy_mcv_accepts_mixed_height_clear_foundation() {
+    let rules = make_mcv_rules();
+    let mut sim = Simulation::new();
+    let mut height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    height_map.insert((20, 21), 1);
+
+    let mcv = sim
+        .spawn_object("AMCV", "Americans", 20, 22, 64, &rules, &height_map)
+        .expect("spawn MCV");
+
+    let applied = sim.apply_command(
+        "Americans",
+        &Command::DeployMcv { entity_id: mcv },
+        Some(&rules),
+        None,
+        &height_map,
+    );
+    assert!(
+        applied,
+        "clear ConYard footprint should deploy even when foundation cells have mixed heights"
+    );
+    assert!(sim.entities.get(mcv).is_none(), "MCV should be consumed");
+
+    let gacnst_id = sim
+        .interner
+        .get("GACNST")
+        .expect("GACNST should be interned after deploy");
+    assert!(
+        sim.entities
+            .values()
+            .any(|e| { e.type_ref == gacnst_id && e.position.rx == 19 && e.position.ry == 21 }),
+        "Construction Yard should spawn at gamemd's deploy foundation origin"
+    );
+}
+
+#[test]
+fn deploy_mcv_rejects_structure_in_rightmost_foundation_column() {
+    let rules = make_mcv_rules();
+    let mut sim = Simulation::new();
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+
+    let mcv = sim
+        .spawn_object("AMCV", "Americans", 20, 22, 64, &rules, &height_map)
+        .expect("spawn MCV");
+    let blocker = sim
+        .spawn_object("GAPOWR", "Soviets", 21, 22, 0, &rules, &height_map)
+        .expect("spawn blocker");
+
+    let applied = sim.apply_command(
+        "Americans",
+        &Command::DeployMcv { entity_id: mcv },
+        Some(&rules),
+        None,
+        &height_map,
+    );
+    assert!(
+        !applied,
+        "structure in the deployed foundation footprint must block MCV deploy"
+    );
+    assert!(sim.entities.get(mcv).is_some(), "MCV should remain");
+    assert!(sim.entities.get(blocker).is_some(), "blocker should remain");
+
+    if let Some(gacnst_id) = sim.interner.get("GACNST") {
+        assert!(
+            !sim.entities.values().any(|e| e.type_ref == gacnst_id),
+            "blocked deploy must not spawn a Construction Yard"
+        );
+    }
 }
 
 /// Schedule one command for tick N+1 and run a single advance_tick.

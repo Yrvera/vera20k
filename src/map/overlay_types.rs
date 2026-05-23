@@ -72,8 +72,16 @@ pub struct OverlayTypeFlags {
     /// Gate=yes — overlay acts as a gate (impassable for zone classification).
     /// No standard YR overlay uses this; included for binary fidelity with RecalcZoneType.
     pub is_gate: bool,
+    /// Crushable=yes inherited from ObjectTypeClass; RecalcZoneType column 1.
+    pub crushable: bool,
     /// Crate=yes — gets -12px Y offset.
     pub crate_type: bool,
+    /// IsRubble=yes — explicitly returns reduced ZoneType 0 after earlier overlay checks.
+    pub is_rubble: bool,
+    /// IsARock=yes — reduced ZoneType 6.
+    pub is_a_rock: bool,
+    /// True when the overlay Land= section has Wheel speed exactly 0%.
+    pub land_wheel_speed_zero: bool,
     /// Overlay name identifies a bridge deck/high-bridge overlay.
     pub bridge_deck: bool,
     /// Railroad track overlay (TRACKS01..TRACKS16). FA2 renders these +15px lower.
@@ -97,7 +105,11 @@ impl Default for OverlayTypeFlags {
             is_veins: false,
             is_veinhole_monster: false,
             is_gate: false,
+            crushable: false,
             crate_type: false,
+            is_rubble: false,
+            is_a_rock: false,
+            land_wheel_speed_zero: false,
             bridge_deck: false,
             track: false,
             land: None,
@@ -193,6 +205,10 @@ impl OverlayTypeRegistry {
             let track = upper_name.starts_with("TRACKS");
             if let Some(type_section) = ini.section(name) {
                 let land = type_section.get("Land").map(|s| s.to_string());
+                let land_wheel_speed_zero = land
+                    .as_deref()
+                    .and_then(|land| ini.section(land))
+                    .is_some_and(section_wheel_speed_is_exact_zero);
                 // Strength from rules section (e.g., [GAWALL] Strength=300).
                 let strength = type_section
                     .get("Strength")
@@ -212,7 +228,11 @@ impl OverlayTypeRegistry {
                         .get_bool("IsVeinholeMonster")
                         .unwrap_or(false),
                     is_gate: type_section.get_bool("Gate").unwrap_or(false),
+                    crushable: type_section.get_bool("Crushable").unwrap_or(false),
                     crate_type: type_section.get_bool("Crate").unwrap_or(false),
+                    is_rubble: type_section.get_bool("IsRubble").unwrap_or(false),
+                    is_a_rock: type_section.get_bool("IsARock").unwrap_or(false),
+                    land_wheel_speed_zero,
                     bridge_deck,
                     track,
                     land,
@@ -283,6 +303,14 @@ impl OverlayTypeRegistry {
     pub fn is_empty(&self) -> bool {
         self.names.is_empty()
     }
+}
+
+fn section_wheel_speed_is_exact_zero(section: &crate::rules::ini_parser::IniSection) -> bool {
+    section
+        .get("Wheel")
+        .map(|raw| raw.trim().trim_end_matches('%').trim())
+        .and_then(|raw| raw.parse::<f32>().ok())
+        == Some(0.0)
 }
 
 /// Generate candidate SHP filenames for an overlay name.
@@ -428,6 +456,43 @@ mod tests {
         let reg: OverlayTypeRegistry = OverlayTypeRegistry::from_ini(&ini, None);
         assert!(reg.is_empty());
         assert_eq!(reg.name(0), None);
+    }
+
+    #[test]
+    fn test_parse_reduced_zone_overlay_flags() {
+        let text: &str = "\
+[OverlayTypes]
+0=SANDBAG
+1=ROCKOVL
+2=RUBBLE
+[Clear]
+Wheel=100%
+[Rock]
+Wheel=0%
+[SANDBAG]
+Crushable=yes
+Wall=yes
+Land=Clear
+[ROCKOVL]
+Land=Rock
+IsARock=yes
+[RUBBLE]
+IsRubble=yes
+";
+        let ini: IniFile = IniFile::from_str(text);
+        let reg: OverlayTypeRegistry = OverlayTypeRegistry::from_ini(&ini, None);
+
+        let sandbag = reg.flags(0).expect("sandbag flags");
+        assert!(sandbag.crushable);
+        assert!(sandbag.wall);
+        assert!(!sandbag.land_wheel_speed_zero);
+
+        let rock = reg.flags(1).expect("rock flags");
+        assert!(rock.is_a_rock);
+        assert!(rock.land_wheel_speed_zero);
+
+        let rubble = reg.flags(2).expect("rubble flags");
+        assert!(rubble.is_rubble);
     }
 
     #[test]

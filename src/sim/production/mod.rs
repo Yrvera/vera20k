@@ -36,8 +36,10 @@ pub use self::production_sell::{
 };
 pub use self::production_spawn::find_spawn_cell_for_owner;
 pub use self::production_tech::{
-    building_footprint_cells, building_movement_blocking_cells, foundation_dimensions,
-    is_matching_factory, producer_candidates_for_owner_category, structure_satisfies_prerequisite,
+    building_base_foundation_cells, building_footprint_cells, building_hidden_occupancy_cells,
+    building_movement_blocking_cells, building_movement_blocking_cells_for_state,
+    foundation_dimensions, is_matching_factory, producer_candidates_for_owner_category,
+    structure_satisfies_prerequisite,
 };
 pub use self::production_types::*;
 

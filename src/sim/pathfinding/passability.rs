@@ -1,15 +1,16 @@
-//! Cell passability matrix — the 13×8 zone layer × terrain type table.
+//! Cell passability matrix - the 13x8 movement-zone x reduced-ZoneType table.
 //!
 //! Extracted from the original engine (416 bytes = 13 x 8 x 4).
 //! The zone flood-fill and pathfinder use this matrix to determine whether
-//! a cell's terrain type is passable for a given movement profile.
+//! a cell's reduced ZoneType is passable for a given movement profile.
 //!
 //! ## How it works
-//! Each cell has a **land type** (0-7) stored as a `LandType` column index.
-//! Raw TMP `terrain_type` bytes (0-15) are mapped to these 8 columns via
-//! `tmp_terrain_to_land_type()` during terrain resolution.
+//! The binary matrix columns are reduced `ZoneType` values written by
+//! `CellClass::RecalcZoneType`, not raw TMP `LandType` bytes.
+//! Older helpers in this module still expose a local `LandType` compatibility
+//! enum for terrain bytes that have not gone through reduced-zone classification.
 //! Each unit has a **zone layer** derived from its MovementZone/SpeedType.
-//! The matrix lookup `PASSABILITY_MATRIX[zone_layer][land_type]` returns:
+//! The matrix lookup `PASSABILITY_MATRIX[zone_layer][reduced_zone_type]` returns:
 //! - 1 = passable
 //! - 2 = blocked (dynamically, e.g. occupied)
 //! - 3 = impassable (always blocked, e.g. rock)
@@ -26,12 +27,12 @@ pub const PASS_BLOCKED: u8 = 2;
 pub const PASS_IMPASSABLE: u8 = 3;
 
 // ---------------------------------------------------------------------------
-// LandType enum — passability matrix column indices
+// LandType enum - compatibility terrain buckets used by older call sites
 // ---------------------------------------------------------------------------
 
-/// The 8 terrain classification columns used by the passability matrix.
+/// The 8 terrain classification buckets used by compatibility helpers.
 ///
-/// These are the canonical indices into `PASSABILITY_MATRIX[layer][col]`.
+/// These are not the binary reduced ZoneType meanings for every column.
 /// Raw TMP `terrain_type` bytes (0-15) must be mapped to these via
 /// `tmp_terrain_to_land_type()` before any matrix lookup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -74,8 +75,8 @@ impl LandType {
 ///
 /// Road TMP terrain (11-12) maps to Clear, not Road. In the original engine,
 /// RecalcZoneType (0x483C80) classifies road terrain without a road overlay
-/// as ZoneType 0 (Ground). The Road column (1) is reserved for road *overlay*
-/// cells, which are set separately in resolved terrain overlay processing.
+/// as ZoneType 0 (Ground). Reduced column 1 is assigned by overlay
+/// `Crushable=yes`, not by road art or `Crate=yes`.
 pub fn tmp_terrain_to_land_type(tmp_terrain_type: u8) -> LandType {
     match tmp_terrain_type {
         0..=4 | 13 => LandType::Clear,
@@ -94,29 +95,25 @@ pub fn tmp_terrain_to_land_type(tmp_terrain_type: u8) -> LandType {
 /// Number of zone layers (rows) in the matrix.
 pub const ZONE_LAYER_COUNT: usize = 13;
 
-/// Number of terrain types (columns) in the matrix.
+/// Number of reduced ZoneType columns in the binary matrix.
 pub const TERRAIN_TYPE_COUNT: usize = 8;
 
-/// The 13x8 passability matrix, adapted from the original engine (0x82A594).
+/// Compatibility 13x8 passability matrix, adapted from the original engine (0x82A594).
 ///
-/// Rows = MovementZone index (0-12). Columns = our LandType enum (0-7).
+/// Rows = MovementZone index (0-12). Binary columns are reduced ZoneType values
+/// from `CellClass::RecalcZoneType`:
+/// 0=Ground, 1=Crushable, 2=Wall, 3=Beach, 4=Water, 5=Building,
+/// 6=Impassable, 7=Outside.
 /// Values: 1 = passable, 2 = blocked, 3 = impassable (sentinel).
 ///
-/// The original engine uses 8 "ZoneType" columns assigned by RecalcZoneType
-/// (0x483C80). Our LandType columns don't map 1:1 to those ZoneTypes, so the
-/// matrix values are remapped to produce identical passability decisions:
+/// Some older helpers index this table with local `LandType` buckets. Terrain-
+/// aware zone building should prefer `ResolvedTerrainCell.zone_type` and the
+/// reduced-zone matrix in `zone_build.rs`.
 ///
-///   Our col → Original ZoneType used for values
-///   0 Clear    → 0 Ground     (binary col 0)
-///   1 Road     → 1 Road       (binary col 1 — for road-overlay cells)
-///   2 Rough    → 0 Ground     (binary col 0 — Rough terrain = Ground in original)
-///   3 Beach    → 3 Beach      (binary col 3)
-///   4 Water    → 4 Water      (binary col 4)
-///   5 Tiberium → 6 Impassable (binary col 6 — tib overlay = Impassable)
-///   6 Railroad → 0 Ground     (binary col 0 — Railroad terrain = Ground in original)
-///   7 Rock     → 6 Impassable (binary col 6 — Rock terrain = Impassable)
+/// Do not label column 1 as road or crate; the verified writer uses overlay
+/// `Crushable=yes`.
 pub static PASSABILITY_MATRIX: [[u8; TERRAIN_TYPE_COUNT]; ZONE_LAYER_COUNT] = [
-    //                               Clr Rd  Rgh Bch Wtr Tib RR  Rck
+    // Reduced ZoneType:             Gnd Crs Wal Bch Wtr Bld Imp Out
     // Row  0 Normal:
     [1, 2, 1, 2, 2, 2, 1, 2],
     // Row  1 Crusher:
@@ -164,10 +161,9 @@ pub fn zone_layer_for_speed_type(speed_type: SpeedType) -> usize {
 
 /// Map a MovementZone to its zone layer index (row in the passability matrix).
 ///
-/// In the original engine, MovementZone IS the direct row index — each of the
-/// 13 zones has its own unique passability profile.
+/// In the original engine, valid MovementZone values map directly to rows.
 pub fn zone_layer_for_movement_zone(mz: MovementZone) -> usize {
-    mz as usize
+    mz.matrix_row().unwrap_or(0)
 }
 
 /// Check if a terrain land type is passable for a given SpeedType.
@@ -189,7 +185,9 @@ pub fn is_passable_for_zone(land_type: u8, mz: MovementZone) -> bool {
     if land_type as usize >= TERRAIN_TYPE_COUNT {
         return false;
     }
-    let layer = zone_layer_for_movement_zone(mz);
+    let Some(layer) = mz.matrix_row() else {
+        return false;
+    };
     PASSABILITY_MATRIX[layer][land_type as usize] == PASS_OK
 }
 
@@ -243,29 +241,28 @@ mod tests {
         let row = PASSABILITY_MATRIX[10];
         assert_eq!(row[4], PASS_OK);
         assert_eq!(row[0], PASS_BLOCKED); // clear = blocked for ships
-        assert_eq!(row[1], PASS_BLOCKED); // road = blocked
+        assert_eq!(row[1], PASS_BLOCKED); // crushable overlay = blocked for ships
     }
 
     #[test]
     fn amphibious_destroyer_passes_land_and_water() {
-        // Zone 3 (AmphibiousDestroyer) passes clear, road, rough, beach, water.
-        // Tiberium is Impassable in original engine — blocked for AmphibiousDestroyer.
+        // Legacy compatibility buckets; terrain-aware zoning uses reduced ZoneType.
         let row = PASSABILITY_MATRIX[3];
         assert_eq!(row[0], PASS_OK); // clear
-        assert_eq!(row[1], PASS_OK); // road
+        assert_eq!(row[1], PASS_OK); // crushable overlay
         assert_eq!(row[2], PASS_OK); // rough
         assert_eq!(row[3], PASS_OK); // beach
         assert_eq!(row[4], PASS_OK); // water
-        assert_eq!(row[5], PASS_BLOCKED); // tiberium = impassable zone type
+        assert_eq!(row[5], PASS_BLOCKED); // building compatibility bucket
         assert_eq!(row[6], PASS_OK); // railroad = ground terrain
     }
 
     #[test]
     fn wheel_restricted() {
-        // Zone 1 (Crusher/wheel) passes clear, road, rough, railroad — all Ground-type.
+        // Zone 1 (Crusher/wheel) passes clear, crushable overlay, and rough.
         let row = PASSABILITY_MATRIX[1];
         assert_eq!(row[0], PASS_OK); // clear
-        assert_eq!(row[1], PASS_OK); // road
+        assert_eq!(row[1], PASS_OK); // crushable overlay
         assert_eq!(row[2], PASS_OK); // rough = ground
     }
 
@@ -295,7 +292,7 @@ mod tests {
 
     #[test]
     fn movement_zone_is_direct_index() {
-        // MovementZone IS the passability matrix row index
+        // Valid MovementZone values map directly to passability matrix rows.
         assert_eq!(zone_layer_for_movement_zone(MovementZone::Normal), 0);
         assert_eq!(zone_layer_for_movement_zone(MovementZone::Crusher), 1);
         assert_eq!(zone_layer_for_movement_zone(MovementZone::Destroyer), 2);
@@ -316,6 +313,12 @@ mod tests {
         );
         assert_eq!(zone_layer_for_movement_zone(MovementZone::Fly), 9);
         assert_eq!(zone_layer_for_movement_zone(MovementZone::CrusherAll), 12);
+    }
+
+    #[test]
+    fn invalid_movement_zone_is_not_passable() {
+        assert_eq!(MovementZone::Invalid.matrix_row(), None);
+        assert!(!is_passable_for_zone(0, MovementZone::Invalid));
     }
 
     #[test]
@@ -350,8 +353,8 @@ mod tests {
 
     #[test]
     fn tmp_road_variants_map_to_clear() {
-        // Road TMP terrain maps to Clear (Ground) for passability — the Road
-        // column is only for road overlay cells, set by resolved terrain.
+        // Road TMP terrain maps to Clear (Ground); reduced column 1 is
+        // Crushable overlay, not road art.
         assert_eq!(tmp_terrain_to_land_type(11), LandType::Clear);
         assert_eq!(tmp_terrain_to_land_type(12), LandType::Clear);
     }

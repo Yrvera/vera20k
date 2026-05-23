@@ -551,6 +551,151 @@ fn tick_production_advances_multiple_queue_categories_for_same_owner() {
 }
 
 #[test]
+fn blocked_vehicle_delivery_keeps_completed_item_and_holds_next_queue_item() {
+    let mut sim = Simulation::new();
+    let rules = basic_multi_queue_rules();
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    let terrain = water_terrain(32, 32);
+    let grid = PathGrid::from_resolved_terrain(&terrain);
+    sim.resolved_terrain = Some(terrain);
+
+    spawn_structure(&mut sim, 1, "Americans", "GAWEAP", 10, 10);
+    *super::credits_entry_for_owner(&mut sim, "Americans") = 1000;
+
+    let americans_id = sim.interner.intern("Americans");
+    let first = queued_item_via(
+        &mut sim.interner,
+        "Americans",
+        "MTNK",
+        ProductionCategory::Vehicle,
+        100,
+        0,
+    );
+    let mut second = queued_item_via(
+        &mut sim.interner,
+        "Americans",
+        "MTNK",
+        ProductionCategory::Vehicle,
+        100,
+        100,
+    );
+    second.enqueue_order = 2;
+    sim.production.queues_by_owner.insert(
+        americans_id,
+        BTreeMap::from([(ProductionCategory::Vehicle, VecDeque::from([first, second]))]),
+    );
+
+    let spawned = tick_production(&mut sim, &rules, &height_map, Some(&grid), 1);
+    assert!(
+        !spawned,
+        "blocked completed vehicle should not spawn or advance"
+    );
+    assert_eq!(
+        credits_for_owner(&sim, "Americans"),
+        1000,
+        "blocked vehicle delivery is not a failed production refund"
+    );
+
+    let queue = sim
+        .production
+        .queues_by_owner
+        .get(&americans_id)
+        .and_then(|queues| queues.get(&ProductionCategory::Vehicle))
+        .expect("vehicle queue should remain");
+    assert_eq!(queue.len(), 2);
+    assert_eq!(queue[0].state, BuildQueueState::Done);
+    assert_eq!(queue[0].remaining_base_frames, 0);
+    assert_eq!(queue[1].state, BuildQueueState::Queued);
+    assert_eq!(
+        queue[1].remaining_base_frames, 100,
+        "next queued item must not start while completed vehicle is pending"
+    );
+    assert!(
+        sim.entities.values().all(|entity| {
+            !sim.interner
+                .resolve(entity.type_ref)
+                .eq_ignore_ascii_case("MTNK")
+        }),
+        "blocked delivery must not create the vehicle entity"
+    );
+}
+
+#[test]
+fn pending_vehicle_delivery_success_consumes_completed_item_and_starts_next_item() {
+    let mut sim = Simulation::new();
+    let rules = basic_multi_queue_rules();
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    let mut terrain = water_terrain(32, 32);
+    let blocked_grid = PathGrid::from_resolved_terrain(&terrain);
+    sim.resolved_terrain = Some(terrain.clone());
+
+    spawn_structure(&mut sim, 1, "Americans", "GAWEAP", 10, 10);
+
+    let americans_id = sim.interner.intern("Americans");
+    let first = queued_item_via(
+        &mut sim.interner,
+        "Americans",
+        "MTNK",
+        ProductionCategory::Vehicle,
+        100,
+        0,
+    );
+    let mut second = queued_item_via(
+        &mut sim.interner,
+        "Americans",
+        "MTNK",
+        ProductionCategory::Vehicle,
+        100,
+        100,
+    );
+    second.enqueue_order = 2;
+    sim.production.queues_by_owner.insert(
+        americans_id,
+        BTreeMap::from([(ProductionCategory::Vehicle, VecDeque::from([first, second]))]),
+    );
+
+    let blocked = tick_production(&mut sim, &rules, &height_map, Some(&blocked_grid), 1);
+    assert!(!blocked, "first delivery attempt should remain pending");
+
+    for cell in &mut terrain.cells {
+        cell.is_water = false;
+        cell.zone_type = crate::map::resolved_terrain::zone_class::GROUND;
+    }
+    let clear_grid = PathGrid::from_resolved_terrain(&terrain);
+    sim.resolved_terrain = Some(terrain);
+
+    let spawned = tick_production(&mut sim, &rules, &height_map, Some(&clear_grid), 1);
+    assert!(
+        spawned,
+        "later successful delivery should consume the pending completed vehicle"
+    );
+
+    let tanks = sim
+        .entities
+        .values()
+        .filter(|entity| {
+            sim.interner
+                .resolve(entity.type_ref)
+                .eq_ignore_ascii_case("MTNK")
+        })
+        .count();
+    assert_eq!(tanks, 1);
+
+    let queue = sim
+        .production
+        .queues_by_owner
+        .get(&americans_id)
+        .and_then(|queues| queues.get(&ProductionCategory::Vehicle))
+        .expect("next queued item should have started");
+    assert_eq!(queue.len(), 1);
+    assert_eq!(queue[0].state, BuildQueueState::Building);
+    assert_eq!(
+        queue[0].remaining_base_frames, 100,
+        "successful delivery starts the next item without advancing its timer in this tick"
+    );
+}
+
+#[test]
 fn paused_queue_category_does_not_advance_while_other_category_does() {
     let mut sim = Simulation::new();
     let rules = basic_multi_queue_rules();

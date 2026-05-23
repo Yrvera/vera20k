@@ -38,6 +38,26 @@ pub(crate) struct AoELayerContext<'a> {
     pub impact_z: i32,
 }
 
+/// Build the caller-owned impact Z used by bridge-aware AoE call sites.
+///
+/// Generic cell-center helpers stay ground-only; verified superweapon callers
+/// add the structural-bridge deck height before entering Apply_area_damage.
+pub(crate) fn bridge_adjusted_impact_z(
+    terrain: Option<&ResolvedTerrainGrid>,
+    impact_rx: u16,
+    impact_ry: u16,
+) -> i32 {
+    let Some(cell) = terrain.and_then(|terrain| terrain.cell(impact_rx, impact_ry)) else {
+        return 0;
+    };
+
+    let mut impact_z = cell.level as i32;
+    if cell.bridge_facts.has_structural_bridge() {
+        impact_z += bridge_height_for_selector(cell);
+    }
+    impact_z
+}
+
 /// Apply area-of-effect damage from a warhead detonation at a specific cell.
 ///
 /// Returns a list of (stable_id, damage) pairs for all entities within the blast
@@ -196,13 +216,16 @@ fn select_object_damage_layer(
         return MovementLayer::Ground;
     }
 
-    let bridge_height =
-        (cell.bridge_deck_level as i32 - cell.level as i32).max(BRIDGE_AOE_SELECTOR_HEIGHT_LEVELS);
+    let bridge_height = bridge_height_for_selector(cell);
     if impact_z > cell.level as i32 + bridge_height / 2 {
         MovementLayer::Bridge
     } else {
         MovementLayer::Ground
     }
+}
+
+fn bridge_height_for_selector(cell: &crate::map::resolved_terrain::ResolvedTerrainCell) -> i32 {
+    (cell.bridge_deck_level as i32 - cell.level as i32).max(BRIDGE_AOE_SELECTOR_HEIGHT_LEVELS)
 }
 
 fn offset_cell_coord(origin: u16, delta: i16) -> Option<u16> {
@@ -416,6 +439,14 @@ mod tests {
 
         let hit_ids: Vec<u64> = hits.into_iter().map(|(id, _)| id).collect();
         assert_eq!(hit_ids, vec![1]);
+    }
+
+    #[test]
+    fn bridge_adjusted_impact_z_adds_height_only_at_call_site() {
+        let (_, _, terrain, _, _, _) = bridge_layer_test_fixture();
+        assert_eq!(bridge_adjusted_impact_z(Some(&terrain), 4, 4), 0);
+        assert_eq!(bridge_adjusted_impact_z(Some(&terrain), 5, 5), 4);
+        assert_eq!(bridge_adjusted_impact_z(None, 5, 5), 0);
     }
 
     fn bridge_layer_test_fixture() -> (

@@ -112,6 +112,16 @@ pub struct GameEntity {
     pub movement_target: Option<MovementTarget>,
     /// Active attack target — present when entity is firing at something.
     pub attack_target: Option<AttackTarget>,
+    /// RadioClass-style live contacts for this entity, stored as stable IDs.
+    /// Used by runtime building-entry/pathing exceptions such as contacted
+    /// war factory exits and refinery dock entry. Kept per mover; a building
+    /// being contacted does not globally relax passability for unrelated units.
+    #[serde(default)]
+    pub radio_contacts: Vec<u64>,
+    /// Per-producer rally target cell for selected factory rally visuals.
+    /// Owner-level `HouseState.rally_point` remains the production fallback.
+    #[serde(default)]
+    pub rally_target: Option<(u16, u16)>,
     /// Stable ID of the last entity that dealt damage (for retaliation).
     pub last_attacker_id: Option<u64>,
     /// Independent turret/barrel facing — only on entities with Turret=yes in rules.ini.
@@ -257,6 +267,13 @@ pub struct GameEntity {
     /// `None` for non-buildings or buildings not currently being C4'd.
     #[serde(default)]
     pub pending_c4_detonation: Option<PendingC4Detonation>,
+    /// Stable ID of the unit installed in a `Bunker=yes` building.
+    ///
+    /// Mirrors the live `BuildingClass+0x2E4` role for tank bunkers: an empty
+    /// bunker can be skipped by the NumberImpassableRows helper, while an
+    /// occupied bunker remains a normal building blocker.
+    #[serde(default)]
+    pub bunker_occupant: Option<u64>,
     /// Active deploy-fire phase. `None` = upright (default). `Some(Deploying)` /
     /// `Some(Deployed)` / `Some(Undeploying)` for the three machine states.
     /// Hashed for lockstep determinism. Set by `Command::ToggleInfantryDeploy`,
@@ -331,6 +348,8 @@ impl GameEntity {
             locomotor: None,
             movement_target: None,
             attack_target: None,
+            radio_contacts: Vec::new(),
+            rally_target: None,
             last_attacker_id: None,
             barrel_facing: None,
             building_up: None,
@@ -380,6 +399,7 @@ impl GameEntity {
             capture_target: None,
             c4_plant: None,
             pending_c4_detonation: None,
+            bunker_occupant: None,
             deploy_state: None,
             infantry: if category == EntityCategory::Infantry {
                 Some(InfantryRuntime::new())
@@ -396,6 +416,26 @@ impl GameEntity {
         if let Some(log) = &mut self.debug_log {
             log.push(tick, kind);
         }
+    }
+
+    /// Mark a live RadioClass-style contact with another entity.
+    ///
+    /// Contacts are idempotent and keep first-observed order so replay hashing
+    /// stays deterministic.
+    pub fn mark_live_contact_with(&mut self, other_stable_id: u64) {
+        if !self.radio_contacts.contains(&other_stable_id) {
+            self.radio_contacts.push(other_stable_id);
+        }
+    }
+
+    /// Whether this entity has a live RadioClass-style contact with another entity.
+    pub fn has_live_contact_with(&self, other_stable_id: u64) -> bool {
+        self.radio_contacts.contains(&other_stable_id)
+    }
+
+    /// Clear a live RadioClass-style contact with another entity.
+    pub fn clear_live_contact_with(&mut self, other_stable_id: u64) {
+        self.radio_contacts.retain(|&sid| sid != other_stable_id);
     }
 
     /// Runtime movement/path layer with Ground as the fallback.
@@ -509,11 +549,35 @@ mod tests {
         assert!(e.locomotor.is_none());
         assert!(e.movement_target.is_none());
         assert!(e.attack_target.is_none());
+        assert!(e.radio_contacts.is_empty());
+        assert_eq!(e.rally_target, None);
         assert!(e.last_attacker_id.is_none());
         assert!(e.barrel_facing.is_none());
         assert!(e.miner.is_none());
         assert!(e.order_intent.is_none());
         assert!(!e.on_bridge);
+    }
+
+    #[test]
+    fn new_entity_has_no_rally_target() {
+        let e = GameEntity::test_default(1, "GAWEAP", "Americans", 30, 40);
+        assert_eq!(e.rally_target, None);
+    }
+
+    #[test]
+    fn live_contacts_are_per_entity_and_idempotent() {
+        let mut contacted = GameEntity::test_default(1, "MTNK", "Americans", 30, 40);
+        let unrelated = GameEntity::test_default(2, "MTNK", "Americans", 31, 40);
+
+        contacted.mark_live_contact_with(100);
+        contacted.mark_live_contact_with(100);
+
+        assert_eq!(contacted.radio_contacts, vec![100]);
+        assert!(contacted.has_live_contact_with(100));
+        assert!(!unrelated.has_live_contact_with(100));
+
+        contacted.clear_live_contact_with(100);
+        assert!(!contacted.has_live_contact_with(100));
     }
 
     #[test]

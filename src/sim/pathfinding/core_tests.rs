@@ -850,25 +850,42 @@ fn garefn_footprint_leaves_dock_pad_walkable() {
         })
         .collect();
     let mut grid: PathGrid = PathGrid::from_map_data(&cells, None, 32, 32);
-    grid.block_building_footprint(10, 10, "4x3", &[(-1, 0), (-1, -1)], &[(3, 1)], false);
-    // RemoveOccupy1=3,1 → cell (13, 11) should be walkable (the dock pad)
+    grid.block_building_movement_cells(10, 10, "4x3", false);
     assert!(
-        grid.is_walkable(13, 11),
-        "RemoveOccupy1=3,1 should leave (rx+3,ry+1) walkable"
+        !grid.is_walkable(13, 11),
+        "base foundation should block the dock pad"
     );
-    // AddOccupy1=-1,0 → cell (9, 10) should be blocked
     assert!(
-        !grid.is_walkable(9, 10),
-        "AddOccupy1=-1,0 should block (rx-1, ry+0)"
+        grid.is_walkable(9, 10),
+        "AddOccupy1=-1,0 is hidden occupancy only"
     );
-    // AddOccupy2=-1,-1 → cell (9, 9) should be blocked
     assert!(
-        !grid.is_walkable(9, 9),
-        "AddOccupy2=-1,-1 should block (rx-1, ry-1)"
+        grid.is_walkable(9, 9),
+        "AddOccupy2=-1,-1 is hidden occupancy only"
     );
-    // Standard rectangle cells still blocked.
     assert!(!grid.is_walkable(10, 10));
     assert!(!grid.is_walkable(13, 12));
+}
+
+#[test]
+fn garefn_bib_static_blockers_only_relax_east_edge() {
+    let cells: Vec<MapCell> = (0..32u16)
+        .flat_map(|rx| {
+            (0..32u16).map(move |ry| MapCell {
+                rx,
+                ry,
+                tile_index: 0,
+                sub_tile: 0,
+                z: 0,
+            })
+        })
+        .collect();
+    let mut grid: PathGrid = PathGrid::from_map_data(&cells, None, 32, 32);
+    grid.block_building_movement_cells(10, 10, "4x3", true);
+    assert!(!grid.is_walkable(10, 11));
+    assert!(!grid.is_walkable(12, 11));
+    assert!(grid.is_walkable(13, 11));
+    assert!(grid.is_walkable(9, 10));
 }
 
 #[test]
@@ -1585,6 +1602,38 @@ fn astar_rejects_zero_step_auto_shell_tube_edge() {
     );
 }
 
+#[test]
+fn astar_walks_stock_low_bridge_cells_without_explicit_tubes() {
+    let mut cells: Vec<_> = (0..5).map(|x| make_resolved_cell(x, 0)).collect();
+    let mut tubes = Vec::new();
+    for cell in &mut cells[1..4] {
+        cell.yr_cell_land_type = YR_CELL_LAND_TUNNEL;
+        cell.tube_index = Some(TubeId(tubes.len() as u16));
+        tubes.push(TubeFact::auto_low_bridge((cell.rx, cell.ry), 2));
+    }
+    let terrain = ResolvedTerrainGrid::from_cells_with_tubes(5, 1, cells, tubes);
+    assert!(terrain.tube_facts().iter().all(|tube| tube.source
+        == crate::map::tube_facts::TubeSource::AutoLowBridge
+        && tube.path_len() == 0));
+    let grid = PathGrid::from_resolved_terrain(&terrain);
+
+    let path = find_path_with_costs(
+        &grid,
+        (0, 0),
+        (4, 0),
+        None,
+        None,
+        None,
+        Some(&terrain),
+        None,
+        0,
+        false,
+    )
+    .expect("stock auto low-bridge shell cells should remain normal ground-walkable cells");
+
+    assert_eq!(path, vec![(0, 0), (1, 0), (2, 0), (3, 0), (4, 0)]);
+}
+
 // ---------------------------------------------------------------------------
 // Entity-block (friendly-passable) pathfinding tests
 // ---------------------------------------------------------------------------
@@ -2069,6 +2118,137 @@ fn code2_chain_lookup_stays_on_selected_layer() {
         CODE2_MULT_JAM,
         "ground-only chain behavior remains unchanged"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Search-scoped 0x40000 marker overlay tests
+// Matches gamemd.exe temporary A* marker cost consumed at 0x00429830.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn search_marker_overlay_uses_xor_parity() {
+    let mut overlay = SearchMarkerOverlay::new();
+    assert!(overlay.is_empty());
+
+    overlay.toggle((3, 1));
+    assert!(overlay.contains((3, 1)));
+    assert!(!overlay.is_empty());
+
+    overlay.toggle((3, 1));
+    assert!(!overlay.contains((3, 1)));
+    assert!(overlay.is_empty());
+}
+
+#[test]
+fn astar_edge_cost_marker_stacks_after_code2_before_tiebreak() {
+    let mut overlay = SearchMarkerOverlay::new();
+    overlay.toggle((3, 1));
+
+    let code2_cost = STEP_COST * CODE2_MULT_JAM;
+    let marked_cost = apply_search_marker_cost(code2_cost, Some(&overlay), (3, 1));
+    assert_eq!(
+        marked_cost,
+        STEP_COST * CODE2_MULT_JAM * SEARCH_MARKER_COST_MULTIPLIER
+    );
+
+    let tentative = marked_cost + DIR_TIEBREAK[2];
+    assert_eq!(
+        tentative,
+        STEP_COST * CODE2_MULT_JAM * SEARCH_MARKER_COST_MULTIPLIER + DIR_TIEBREAK[2],
+        "marker must multiply the code-2 step cost, with direction tiebreak added afterward"
+    );
+}
+
+#[test]
+fn astar_marker_overlay_penalizes_normal_compass_edges() {
+    let grid = PathGrid::new(7, 3);
+    let mut overlay = SearchMarkerOverlay::new();
+    overlay.toggle((3, 1));
+
+    let path = astar_search(
+        &grid,
+        (0, 1),
+        MovementLayer::Ground,
+        (6, 1),
+        &AStarOptions {
+            marker_overlay: Some(&overlay),
+            ..Default::default()
+        },
+    )
+    .expect("marked normal-edge route should still have a detour");
+
+    assert!(
+        !path.iter().any(|step| (step.rx, step.ry) == (3, 1)),
+        "A* should avoid the marked destination cell when a comparable unmarked route exists: {:?}",
+        path
+    );
+}
+
+#[test]
+fn astar_marker_overlay_does_not_apply_to_direction8_tube_edge() {
+    let mut cells = Vec::new();
+    for y in 0..3 {
+        for x in 0..5 {
+            cells.push(make_resolved_cell(x, y));
+        }
+    }
+    let start_idx = 5; // (0, 1)
+    cells[start_idx].yr_cell_land_type = YR_CELL_LAND_TUNNEL;
+    cells[start_idx].tube_index = Some(TubeId(0));
+    let terrain = ResolvedTerrainGrid::from_cells_with_tubes(
+        5,
+        3,
+        cells,
+        vec![TubeFact::explicit((0, 1), (4, 1), 2, vec![2, 2])],
+    );
+    let grid = PathGrid::from_resolved_terrain(&terrain);
+
+    let mut overlay = SearchMarkerOverlay::new();
+    overlay.toggle((4, 1));
+    let path = astar_search(
+        &grid,
+        (0, 1),
+        MovementLayer::Ground,
+        (4, 1),
+        &AStarOptions {
+            resolved_terrain: Some(&terrain),
+            marker_overlay: Some(&overlay),
+            ..Default::default()
+        },
+    )
+    .expect("explicit tube edge should remain usable even when the exit is marked");
+
+    assert_eq!(
+        path.iter()
+            .map(|step| (step.rx, step.ry))
+            .collect::<Vec<_>>(),
+        vec![(0, 1), (4, 1)],
+        "direction-8 tube edge should bypass normal marker cost"
+    );
+}
+
+#[test]
+fn astar_bridge_marker_overlay_is_search_scoped_and_does_not_mutate_pathgrid() {
+    let grid = PathGrid::new(7, 3);
+    let before = grid.clone();
+    let mut overlay = SearchMarkerOverlay::new();
+    overlay.toggle((3, 1));
+
+    let _ = astar_search(
+        &grid,
+        (0, 1),
+        MovementLayer::Ground,
+        (6, 1),
+        &AStarOptions {
+            marker_overlay: Some(&overlay),
+            ..Default::default()
+        },
+    )
+    .expect("search with marker overlay should still find a path");
+
+    assert_eq!(grid.cells, before.cells);
+    assert_eq!(grid.width, before.width);
+    assert_eq!(grid.height, before.height);
 }
 
 // ---------------------------------------------------------------------------

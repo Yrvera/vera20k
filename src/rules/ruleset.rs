@@ -169,8 +169,9 @@ pub struct GeneralRules {
     pub tunnel_speed: SimFixed,
     /// `MissileROTVar=` from [General]. Amplitude of the sidewinder cosine
     /// modulation in homing missile flight; the per-tick ROT scales by
-    /// `(1 + var) + cos(2π * frame / 15) * var`. Default 1.0 produces
-    /// oscillation between 1.0 and 3.0 times the projectile's base ROT.
+    /// `(1 + var) + cos(2π * frame / 15) * var`. Stock RA2/YR rules set
+    /// `.25`, yielding roughly 1.0 to 1.5 times the projectile's base ROT.
+    /// The parser fallback for a missing key remains 1.0.
     pub missile_rot_var: SimFixed,
     /// Default cruise altitude for Fly-locomotor aircraft (FlightLevel= in [General]).
     /// Default 1500 leptons. Per-type override possible but not yet implemented.
@@ -247,11 +248,18 @@ pub struct GeneralRules {
     pub building_garrisoned_sound: Option<String>,
     /// Sound event for shell main-menu buttons from [AudioVisual] GUIMainButtonSound.
     pub gui_main_button_sound: Option<String>,
-    /// Sound played at refinery exit when a docked harvester departs after
-    /// dumping. Parsed from [AudioVisual] BunkerWallsDownSound (retail value
-    /// "TankBunkerDown"). gamemd's `ReleaseDockedHarvester` (0x4595C0) step 2
-    /// reads `RulesClass+0x244` and calls `VocClass::PlayAt` at the building
-    /// location every ore-delivery cycle. None = no sound configured.
+    /// Generic shell click sound from [AudioVisual] GenericClick.
+    pub generic_click_sound: Option<String>,
+    /// Sound event for shell checkboxes from [AudioVisual] GUICheckboxSound.
+    pub gui_checkbox_sound: Option<String>,
+    /// Sound event for opening shell combo boxes from [AudioVisual] GUIComboOpenSound.
+    pub gui_combo_open_sound: Option<String>,
+    /// Sound event for closing shell combo boxes from [AudioVisual] GUIComboCloseSound.
+    pub gui_combo_close_sound: Option<String>,
+    /// Sound used by conditional reciprocal-link harvester release. Parsed
+    /// from [AudioVisual] BunkerWallsDownSound (retail value "TankBunkerDown").
+    /// Stock zero-link refinery unload completion does not play it. None =
+    /// no sound configured.
     pub bunker_walls_down_sound: Option<String>,
     /// Direct rocker force coefficient (DirectRockingCoefficient= in [AudioVisual]).
     /// Multiplies the final DirectRocker impulse force. Default 1.5.
@@ -568,6 +576,10 @@ impl Default for GeneralRules {
             condition_red_x1000: 250,
             building_garrisoned_sound: None,
             gui_main_button_sound: None,
+            generic_click_sound: None,
+            gui_checkbox_sound: None,
+            gui_combo_open_sound: None,
+            gui_combo_close_sound: None,
             bunker_walls_down_sound: None,
             direct_rocking_coefficient: SimFixed::lit("1.5"),
             fallback_coefficient: SimFixed::lit("0.1"),
@@ -715,7 +727,10 @@ impl GarrisonRules {
 pub struct BridgeRules {
     /// Hit points shared by a destroyable bridge span.
     pub strength: u16,
-    /// Whether bridges are destroyable unless the map overrides it.
+    /// Reset/default value for `SpecialFlags::DestroyableBridges`.
+    ///
+    /// `[CombatDamage] DestroyableBridges=` exists in retail INI text but is
+    /// not read by gamemd as the gameplay gate.
     pub destroyable_by_default: bool,
     /// SHP animation names to spawn when a bridge group is destroyed
     /// (e.g., TWLT026, TWLT036, TWLT050, TWLT070). Picked randomly per cell.
@@ -751,10 +766,7 @@ impl BridgeRules {
             .and_then(|section| section.get_i32("BridgeStrength"))
             .unwrap_or(1500)
             .max(1) as u16;
-        let destroyable_by_default = ini
-            .section("CombatDamage")
-            .and_then(|section| section.get_bool("DestroyableBridges"))
-            .unwrap_or(true);
+        let destroyable_by_default = true;
         let explosions = ini
             .section("General")
             .and_then(|section| section.get_list("BridgeExplosions"))
@@ -884,6 +896,26 @@ impl GeneralRules {
                 .map(str::to_string),
             gui_main_button_sound: audio_visual
                 .and_then(|s| s.get("GUIMainButtonSound"))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            generic_click_sound: audio_visual
+                .and_then(|s| s.get("GenericClick"))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            gui_checkbox_sound: audio_visual
+                .and_then(|s| s.get("GUICheckboxSound"))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            gui_combo_open_sound: audio_visual
+                .and_then(|s| s.get("GUIComboOpenSound"))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            gui_combo_close_sound: audio_visual
+                .and_then(|s| s.get("GUIComboCloseSound"))
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string),
@@ -1710,6 +1742,7 @@ impl RuleSet {
     /// it with the authoritative value from art.ini, resolved via the `Image=` key.
     /// Without this, all buildings would be 1x1 which breaks placement and rendering.
     pub fn merge_art_data(&mut self, art: &crate::rules::art_data::ArtRegistry) {
+        self.art_registry = art.clone();
         let mut patched: u32 = 0;
         let mut dock_patched: u32 = 0;
         let mut buildings_checked: u32 = 0;
@@ -1738,19 +1771,29 @@ impl RuleSet {
                 continue;
             }
             buildings_checked += 1;
+            let rules_foundation_id = crate::rules::foundation::foundation_id(&obj.foundation);
             if let Some(entry) = entry {
                 if let Some(ref foundation) = entry.foundation {
-                    if obj.foundation != *foundation {
+                    let effective_foundation =
+                        if rules_foundation_id != crate::rules::foundation::DEFAULT_FOUNDATION_ID {
+                            crate::rules::foundation::foundation_name(&obj.foundation)
+                        } else {
+                            crate::rules::foundation::foundation_name(foundation)
+                        };
+                    if obj.foundation != effective_foundation {
                         log::trace!(
                             "Foundation patch: {} (image={}) {} → {}",
                             obj.id,
                             art_key,
                             obj.foundation,
-                            foundation,
+                            effective_foundation,
                         );
                     }
-                    obj.foundation = foundation.clone();
+                    obj.foundation = effective_foundation.to_string();
                     patched += 1;
+                } else {
+                    obj.foundation =
+                        crate::rules::foundation::foundation_name(&obj.foundation).to_string();
                 }
                 // Merge QueueingCell from art.ini (TibSun legacy dock system).
                 if entry.queueing_cell.is_some() {
@@ -2481,9 +2524,23 @@ MutateWarhead=MyMutate\n\
         );
         let rules = RuleSet::from_ini(&ini).expect("Should parse");
         assert_eq!(rules.bridge_rules.strength, 900);
-        assert!(!rules.bridge_rules.destroyable_by_default);
+        assert!(rules.bridge_rules.destroyable_by_default);
         assert_eq!(rules.bridge_rules.voxel_max, 5);
         assert_eq!(rules.bridge_rules.repair_sound.as_deref(), Some("FOO"));
+    }
+
+    #[test]
+    fn combatdamage_destroyablebridges_no_does_not_clear_default_bridge_flag() {
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n\
+             [VehicleTypes]\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             [CombatDamage]\n\
+             DestroyableBridges=no\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("Should parse");
+        assert!(rules.bridge_rules.destroyable_by_default);
     }
 
     #[test]
@@ -2504,10 +2561,7 @@ MutateWarhead=MyMutate\n\
 
     #[test]
     fn bridge_rules_destroyable_in_specialflags_is_ignored() {
-        // Regression: gamemd reads DestroyableBridges from [CombatDamage].
-        // The string in [SpecialFlags] is for MP-dialog overrides, not
-        // the rules.ini parser. Putting it under [SpecialFlags] should
-        // be silently ignored and the default (yes) kept.
+        // Map `[SpecialFlags]` is parsed with map data, not rules.ini.
         let ini = IniFile::from_str(
             "[InfantryTypes]\n\
              [VehicleTypes]\n\
@@ -2545,6 +2599,50 @@ GUIMainButtonSound=MenuClick
         let ini = IniFile::from_str(ini_str);
         let general = GeneralRules::from_ini(&ini);
         assert_eq!(general.gui_main_button_sound.as_deref(), Some("MenuClick"));
+    }
+
+    #[test]
+    fn shell_ui_sound_keys_parse_independently() {
+        let ini_str = "\
+[General]
+[AudioVisual]
+GUIMainButtonSound=MainButtonClick
+GenericClick=GenericPress
+GUICheckboxSound=CheckboxTick
+GUIComboOpenSound=ComboOpen
+GUIComboCloseSound=ComboClose
+";
+        let ini = IniFile::from_str(ini_str);
+        let general = GeneralRules::from_ini(&ini);
+        assert_eq!(
+            general.gui_main_button_sound.as_deref(),
+            Some("MainButtonClick")
+        );
+        assert_eq!(general.generic_click_sound.as_deref(), Some("GenericPress"));
+        assert_eq!(general.gui_checkbox_sound.as_deref(), Some("CheckboxTick"));
+        assert_eq!(general.gui_combo_open_sound.as_deref(), Some("ComboOpen"));
+        assert_eq!(general.gui_combo_close_sound.as_deref(), Some("ComboClose"));
+    }
+
+    #[test]
+    fn shell_ui_sound_keys_trim_and_ignore_empty_values() {
+        let ini_str = concat!(
+            "[General]\n",
+            "[AudioVisual]\n",
+            "GenericClick=  MenuClick  \n",
+            "GUICheckboxSound=\n",
+            "GUIComboOpenSound=   \n",
+            "GUIComboCloseSound=MenuACBClose\n",
+        );
+        let ini = IniFile::from_str(ini_str);
+        let general = GeneralRules::from_ini(&ini);
+        assert_eq!(general.generic_click_sound.as_deref(), Some("MenuClick"));
+        assert!(general.gui_checkbox_sound.is_none());
+        assert!(general.gui_combo_open_sound.is_none());
+        assert_eq!(
+            general.gui_combo_close_sound.as_deref(),
+            Some("MenuACBClose")
+        );
     }
 
     #[test]
@@ -2626,10 +2724,22 @@ ParachuteMaxFallRate=-1
     }
 
     #[test]
-    fn test_missile_rot_var_defaults_to_one() {
+    fn test_missile_rot_var_missing_key_falls_back_to_one() {
         let ini = IniFile::from_str("[General]\n");
         let general = GeneralRules::from_ini(&ini);
         assert_eq!(general.missile_rot_var, sim_from_f32(1.0));
+    }
+
+    #[test]
+    fn test_missile_rot_var_stock_rules_value_parsed() {
+        let ini = IniFile::from_str("[General]\nMissileROTVar=.25\n");
+        let general = GeneralRules::from_ini(&ini);
+        let diff = (general.missile_rot_var - SimFixed::lit("0.25")).abs();
+        assert!(
+            diff < SimFixed::lit("0.001"),
+            "got {:?}",
+            general.missile_rot_var
+        );
     }
 
     #[test]
@@ -2948,8 +3058,7 @@ ZAdjust=-10
             "{}\n[BuildingTypes]\n0=GAREFN\n[GAREFN]\nName=Refinery\nCost=2000\nFoundation=4x3\n",
             make_test_rules()
         );
-        let art_text =
-            "[GAREFN]\nFoundation=4x3\nAddOccupy1=-1,0\nAddOccupy2=-1,-1\nRemoveOccupy1=3,1\n";
+        let art_text = "[GAREFN]\nFoundation=4x3\nCanHideThings=no\nOccupyHeight=4\nAddOccupy1=-1,0\nAddOccupy2=-1,-1\nRemoveOccupy1=3,1\n";
         let rules_ini: IniFile = IniFile::from_str(&rules_text);
         let mut rules: RuleSet = RuleSet::from_ini(&rules_ini).expect("rules parse");
         let art_ini: IniFile = IniFile::from_str(art_text);
@@ -2958,6 +3067,8 @@ ZAdjust=-10
         let obj = rules.object("GAREFN").expect("GAREFN");
         assert_eq!(obj.add_occupy, vec![(-1, 0), (-1, -1)]);
         assert_eq!(obj.remove_occupy, vec![(3, 1)]);
+        assert!(!rules.art_registry.can_hide_things("GAREFN"));
+        assert_eq!(rules.art_registry.occupy_height("GAREFN"), 4);
     }
 
     #[test]

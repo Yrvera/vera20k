@@ -110,6 +110,93 @@ impl CanEnterLayerContext {
     }
 }
 
+/// Vehicle-only building entry branch that may reach the live row helper.
+///
+/// InfantryClass::Can_Enter_Cell does not use the radio/contact or
+/// UnitRepair/Bunker NumberImpassableRows branches, so callers must not use this
+/// as a shared infantry rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VehicleBuildingEntryBranch {
+    /// Contact-vector branch. The caller must supply whether this mover has
+    /// RadioClass contact with the checked building.
+    RadioContact { mover_has_contact: bool },
+    /// UnitRepair/Bunker branch. This branch is gated by the checked building's
+    /// type flags, not by RadioClass contact.
+    UnitRepairOrBunker,
+}
+
+/// Decision for a checked building occupant in UnitClass-style cell entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildingOccupantEntryDecision {
+    /// Keep the checked building in the ordinary blocker classification path.
+    KeepBlocker,
+    /// Skip this building occupant and continue scanning later occupants in the
+    /// cell's object list.
+    SkipBlocker,
+}
+
+/// Explicit live facts needed by the UnitClass building row-helper decision.
+///
+/// Caller responsibilities:
+/// - `candidate_building_id` must be the result of a live
+///   Look_up_building_in_cell-style lookup for the candidate cell.
+/// - `checked_building_id` and type/runtime flags must describe the building
+///   occupant currently being inspected.
+/// - `mover_category` must be the mover's semantic category; only UnitClass-style
+///   vehicle movers use these exceptions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveVehicleBuildingEntry {
+    pub mover_category: EntityCategory,
+    pub branch: VehicleBuildingEntryBranch,
+    pub checked_building_id: u64,
+    pub candidate_building_id: Option<u64>,
+    pub candidate_x: u16,
+    pub building_origin_x: u16,
+    pub number_impassable_rows: i32,
+    pub is_unit_repair: bool,
+    pub is_bunker: bool,
+    pub bunker_occupied: bool,
+}
+
+/// Decide whether UnitClass-style movement should skip a building occupant.
+///
+/// This models `FUN_00458A00` at its two UnitClass::Can_Enter_Cell callsites:
+/// radio/contact and UnitRepair/Bunker. A `KeepBlocker` result means the caller
+/// should continue with the existing Can_Enter_Cell return-code classification;
+/// `SkipBlocker` means only this building occupant is ignored.
+pub fn decide_live_vehicle_building_entry(
+    input: LiveVehicleBuildingEntry,
+) -> BuildingOccupantEntryDecision {
+    if input.mover_category != EntityCategory::Unit {
+        return BuildingOccupantEntryDecision::KeepBlocker;
+    }
+
+    let branch_active = match input.branch {
+        VehicleBuildingEntryBranch::RadioContact { mover_has_contact } => mover_has_contact,
+        VehicleBuildingEntryBranch::UnitRepairOrBunker => input.is_unit_repair || input.is_bunker,
+    };
+    if !branch_active {
+        return BuildingOccupantEntryDecision::KeepBlocker;
+    }
+
+    if input.candidate_building_id != Some(input.checked_building_id) {
+        return BuildingOccupantEntryDecision::KeepBlocker;
+    }
+    if input.number_impassable_rows == -1 {
+        return BuildingOccupantEntryDecision::KeepBlocker;
+    }
+    if input.is_bunker && input.bunker_occupied {
+        return BuildingOccupantEntryDecision::KeepBlocker;
+    }
+
+    let first_clear_x = i32::from(input.building_origin_x) + input.number_impassable_rows;
+    if i32::from(input.candidate_x) >= first_clear_x {
+        BuildingOccupantEntryDecision::SkipBlocker
+    } else {
+        BuildingOccupantEntryDecision::KeepBlocker
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Phase 1: terrain + occupancy presence
 // ---------------------------------------------------------------------------
@@ -540,6 +627,124 @@ mod tests {
             6
         );
         assert_eq!(CellEntryResult::Impassable.yr_code(), 7);
+    }
+
+    fn row_entry_input(
+        mover_category: EntityCategory,
+        branch: VehicleBuildingEntryBranch,
+        candidate_x: u16,
+    ) -> LiveVehicleBuildingEntry {
+        LiveVehicleBuildingEntry {
+            mover_category,
+            branch,
+            checked_building_id: 100,
+            candidate_building_id: Some(100),
+            candidate_x,
+            building_origin_x: 10,
+            number_impassable_rows: 1,
+            is_unit_repair: false,
+            is_bunker: false,
+            bunker_occupied: false,
+        }
+    }
+
+    #[test]
+    fn infantry_does_not_use_vehicle_row_contact_skip() {
+        let input = row_entry_input(
+            EntityCategory::Infantry,
+            VehicleBuildingEntryBranch::RadioContact {
+                mover_has_contact: true,
+            },
+            11,
+        );
+
+        assert_eq!(
+            decide_live_vehicle_building_entry(input),
+            BuildingOccupantEntryDecision::KeepBlocker
+        );
+    }
+
+    #[test]
+    fn contacted_vehicle_row_skip_opens_east_columns_but_keeps_west() {
+        let contacted = VehicleBuildingEntryBranch::RadioContact {
+            mover_has_contact: true,
+        };
+        assert_eq!(
+            decide_live_vehicle_building_entry(row_entry_input(
+                EntityCategory::Unit,
+                contacted,
+                10,
+            )),
+            BuildingOccupantEntryDecision::KeepBlocker
+        );
+        assert_eq!(
+            decide_live_vehicle_building_entry(row_entry_input(
+                EntityCategory::Unit,
+                contacted,
+                11,
+            )),
+            BuildingOccupantEntryDecision::SkipBlocker
+        );
+        assert_eq!(
+            decide_live_vehicle_building_entry(row_entry_input(
+                EntityCategory::Unit,
+                VehicleBuildingEntryBranch::RadioContact {
+                    mover_has_contact: false,
+                },
+                11,
+            )),
+            BuildingOccupantEntryDecision::KeepBlocker
+        );
+    }
+
+    #[test]
+    fn empty_vs_occupied_bunker_uses_explicit_runtime_occupant_arg() {
+        let mut empty = row_entry_input(
+            EntityCategory::Unit,
+            VehicleBuildingEntryBranch::UnitRepairOrBunker,
+            10,
+        );
+        empty.number_impassable_rows = 0;
+        empty.is_bunker = true;
+
+        assert_eq!(
+            decide_live_vehicle_building_entry(empty),
+            BuildingOccupantEntryDecision::SkipBlocker
+        );
+
+        let occupied = LiveVehicleBuildingEntry {
+            bunker_occupied: true,
+            ..empty
+        };
+        assert_eq!(
+            decide_live_vehicle_building_entry(occupied),
+            BuildingOccupantEntryDecision::KeepBlocker
+        );
+    }
+
+    #[test]
+    fn row_helper_requires_same_candidate_building_and_rows_value() {
+        let mut other_building = row_entry_input(
+            EntityCategory::Unit,
+            VehicleBuildingEntryBranch::UnitRepairOrBunker,
+            11,
+        );
+        other_building.is_unit_repair = true;
+        other_building.candidate_building_id = Some(200);
+        assert_eq!(
+            decide_live_vehicle_building_entry(other_building),
+            BuildingOccupantEntryDecision::KeepBlocker
+        );
+
+        let no_rows = LiveVehicleBuildingEntry {
+            candidate_building_id: Some(100),
+            number_impassable_rows: -1,
+            ..other_building
+        };
+        assert_eq!(
+            decide_live_vehicle_building_entry(no_rows),
+            BuildingOccupantEntryDecision::KeepBlocker
+        );
     }
 
     #[test]

@@ -52,6 +52,9 @@ pub enum RadarEventType {
     MinerUnderAttack,
     /// Enemy unit/building detected (first sighting).
     EnemyObjectSensed,
+    /// Bridge repair event. In YR this enters the event/ring queue and gates
+    /// `EVA_BridgeRepaired`, but does not draw a minimap diamond.
+    BridgeRepaired,
 }
 
 impl RadarEventType {
@@ -64,7 +67,13 @@ impl RadarEventType {
             Self::BaseUnderAttack => [255, 255, 255], // white
             Self::MinerUnderAttack => [255, 255, 0],  // yellow
             Self::EnemyObjectSensed => [255, 255, 0], // yellow
+            Self::BridgeRepaired => [0, 0, 0],
         }
+    }
+
+    /// Whether this event type draws an animated minimap diamond.
+    pub fn draws_on_minimap(self) -> bool {
+        !matches!(self, Self::BridgeRepaired)
     }
 }
 
@@ -138,7 +147,10 @@ impl RadarEventQueue {
     }
 
     /// Push a new radar event, suppressing duplicates that are too close.
-    pub fn push(&mut self, event_type: RadarEventType, rx: u16, ry: u16, duration_ms: u32) {
+    ///
+    /// Returns `true` when the event was actually enqueued. YR uses this return
+    /// value to gate some EVA calls, including `BridgeRepaired`.
+    pub fn push(&mut self, event_type: RadarEventType, rx: u16, ry: u16, duration_ms: u32) -> bool {
         // Suppress if a recent event of same type is within suppression distance.
         let dominated: bool = self.events.iter().any(|e| {
             e.event_type == event_type
@@ -146,7 +158,7 @@ impl RadarEventQueue {
                 && cell_distance(e.rx, e.ry, rx, ry) < self.suppression_distance
         });
         if dominated {
-            return;
+            return false;
         }
 
         let event = RadarEvent {
@@ -162,6 +174,7 @@ impl RadarEventQueue {
             self.events.pop_front();
         }
         self.events.push_back(event);
+        true
     }
 
     /// Advance all events by `delta_ms` and remove expired ones.
@@ -302,7 +315,7 @@ mod tests {
     #[test]
     fn radar_event_push_and_tick() {
         let mut queue = RadarEventQueue::default();
-        queue.push(RadarEventType::Combat, 10, 20, 4000);
+        assert!(queue.push(RadarEventType::Combat, 10, 20, 4000));
         assert_eq!(queue.len(), 1);
 
         // Tick 2 seconds — event still alive.
@@ -320,12 +333,12 @@ mod tests {
     #[test]
     fn radar_event_suppression() {
         let mut queue = RadarEventQueue::default();
-        queue.push(RadarEventType::Combat, 10, 20, 4000);
+        assert!(queue.push(RadarEventType::Combat, 10, 20, 4000));
         // Same type, close by — suppressed.
-        queue.push(RadarEventType::Combat, 11, 20, 4000);
+        assert!(!queue.push(RadarEventType::Combat, 11, 20, 4000));
         assert_eq!(queue.len(), 1);
         // Different type at same location — NOT suppressed.
-        queue.push(RadarEventType::BaseUnderAttack, 10, 20, 4000);
+        assert!(queue.push(RadarEventType::BaseUnderAttack, 10, 20, 4000));
         assert_eq!(queue.len(), 2);
     }
 
@@ -363,5 +376,16 @@ mod tests {
         queue.tick(2000);
         let event = queue.iter().next().expect("event");
         assert!((event.progress() - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn bridge_repaired_event_suppresses_and_does_not_draw() {
+        let mut queue = RadarEventQueue::default();
+        assert!(queue.push(RadarEventType::BridgeRepaired, 10, 20, 4000));
+        assert!(!queue.push(RadarEventType::BridgeRepaired, 11, 20, 4000));
+        assert_eq!(queue.len(), 1);
+        let event = queue.iter().next().unwrap();
+        assert_eq!(event.event_type, RadarEventType::BridgeRepaired);
+        assert!(!event.event_type.draws_on_minimap());
     }
 }

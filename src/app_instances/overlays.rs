@@ -9,7 +9,6 @@
 
 use crate::app::AppState;
 use crate::app_fire_effects::ProjectileVisual;
-use crate::map::lighting;
 use crate::map::overlay_types::is_bridge_overlay_index;
 use crate::map::terrain::{self, TILE_HEIGHT, TILE_WIDTH};
 use crate::render::batch::SpriteInstance;
@@ -86,11 +85,7 @@ pub(crate) fn build_world_effect_instances(state: &AppState, paged: &mut [Vec<Sp
         };
         let depth_y: f32 = center_y + entry.offset_y + entry.pixel_size[1];
         let depth: f32 = compute_sprite_depth(state, depth_y, fx.z);
-        let tint: [f32; 3] = state
-            .lighting_grid
-            .get(&(fx.rx, fx.ry))
-            .copied()
-            .unwrap_or(lighting::DEFAULT_TINT);
+        let tint: [f32; 3] = state.lighting_grid.anim_tint_at((fx.rx, fx.ry));
         paged[entry.page as usize].push(SpriteInstance {
             position: [center_x + entry.offset_x, center_y + entry.offset_y],
             size: entry.pixel_size,
@@ -130,11 +125,7 @@ pub(crate) fn build_damage_fire_instances(state: &AppState, paged: &mut [Vec<Spr
         if !in_view(bx, by, 200.0, 200.0, cam_x, cam_y, sw, sh, 200.0) {
             continue;
         }
-        let tint: [f32; 3] = state
-            .lighting_grid
-            .get(&(pos.rx, pos.ry))
-            .copied()
-            .unwrap_or(lighting::DEFAULT_TINT);
+        let tint: [f32; 3] = state.lighting_grid.anim_tint_at((pos.rx, pos.ry));
         let center_x: f32 = bx;
         // Damage fires are building anims — use building anim depth bias so walls
         // overwrite them, matching the original's terrain pass step 6 ordering.
@@ -364,11 +355,7 @@ pub(crate) fn build_overlay_instances(
         } else {
             raw_depth
         };
-        let tint: [f32; 3] = state
-            .lighting_grid
-            .get(&(entry.rx, entry.ry))
-            .copied()
-            .unwrap_or(lighting::DEFAULT_TINT);
+        let tint: [f32; 3] = state.lighting_grid.overlay_tint_at((entry.rx, entry.ry));
 
         let target = match bucket {
             OverlayRenderBucket::Wall => &mut *wall_instances,
@@ -443,11 +430,7 @@ pub(crate) fn build_overlay_instances(
         let Some(spr) = atlas.get(&key) else { continue };
 
         let depth: f32 = compute_sprite_depth_params(origin_y, world_height, screen_y, z);
-        let tint: [f32; 3] = state
-            .lighting_grid
-            .get(&(obj.rx, obj.ry))
-            .copied()
-            .unwrap_or(lighting::DEFAULT_TINT);
+        let tint: [f32; 3] = state.lighting_grid.terrain_object_tint_at((obj.rx, obj.ry));
 
         instances.push(SpriteInstance {
             position: [
@@ -492,13 +475,17 @@ pub(crate) fn build_garrison_muzzle_flash_instances(
         .unwrap_or((0.0, 1.0));
 
     for flash in &state.garrison_muzzle_flashes {
-        let entity = match sim.entities.get(flash.building_id) {
-            Some(e) => e,
-            None => continue,
-        };
-        let pos = &entity.position;
-        let (bx, by) = (pos.screen_x, pos.screen_y);
-        if !in_view(bx, by, 200.0, 200.0, cam_x, cam_y, sw, sh, 200.0) {
+        if !in_view(
+            flash.screen_x,
+            flash.screen_y,
+            200.0,
+            200.0,
+            cam_x,
+            cam_y,
+            sw,
+            sh,
+            200.0,
+        ) {
             continue;
         }
         let key = ShpSpriteKey {
@@ -510,14 +497,11 @@ pub(crate) fn build_garrison_muzzle_flash_instances(
         let Some(entry) = atlas.get(&key) else {
             continue;
         };
-        let fx: f32 = bx + flash.pixel_x as f32 + entry.offset_x;
-        let fy: f32 = by + flash.pixel_y as f32 + entry.offset_y;
-        let tint: [f32; 3] = state
-            .lighting_grid
-            .get(&(pos.rx, pos.ry))
-            .copied()
-            .unwrap_or(lighting::DEFAULT_TINT);
-        let depth: f32 = compute_sprite_depth_params(origin_y, world_height, by, pos.z);
+        let fx: f32 = flash.screen_x + entry.offset_x;
+        let fy: f32 = flash.screen_y + entry.offset_y;
+        let tint: [f32; 3] = state.lighting_grid.anim_tint_at((flash.rx, flash.ry));
+        let depth: f32 =
+            compute_sprite_depth_params(origin_y, world_height, flash.screen_y, flash.z);
         paged[entry.page as usize].push(SpriteInstance {
             position: [fx, fy],
             size: entry.pixel_size,
@@ -583,11 +567,7 @@ pub(crate) fn build_weapon_muzzle_flash_instances(
         let Some(entry) = atlas.get(&key) else {
             continue;
         };
-        let tint = state
-            .lighting_grid
-            .get(&(flash.rx, flash.ry))
-            .copied()
-            .unwrap_or(lighting::DEFAULT_TINT);
+        let tint = state.lighting_grid.anim_tint_at((flash.rx, flash.ry));
         let depth = compute_sprite_depth_params(origin_y, world_height, flash.screen_y, flash.z);
         paged[entry.page as usize].push(SpriteInstance {
             position: [
@@ -657,11 +637,7 @@ pub(crate) fn build_projectile_visual_instances(
             + (projectile.end_ry as f32 - projectile.start_ry as f32) * t)
             .round()
             .clamp(0.0, u16::MAX as f32) as u16;
-        let tint = state
-            .lighting_grid
-            .get(&(rx, ry))
-            .copied()
-            .unwrap_or(lighting::DEFAULT_TINT);
+        let tint = state.lighting_grid.anim_tint_at((rx, ry));
         let depth = compute_sprite_depth_params(origin_y, world_height, screen_y, projectile.z);
         paged[entry.page as usize].push(SpriteInstance {
             position: [screen_x + entry.offset_x, screen_y + entry.offset_y],

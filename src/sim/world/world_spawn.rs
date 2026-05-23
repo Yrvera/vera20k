@@ -21,7 +21,7 @@ use crate::sim::game_entity::GameEntity;
 use crate::sim::miner::{Miner, MinerConfig, miner_kind_for_object};
 use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
 use crate::sim::occupancy::CellListInsertion;
-use crate::sim::production::{building_footprint_cells, foundation_dimensions};
+use crate::sim::production::{building_base_foundation_cells, foundation_dimensions};
 use crate::sim::vision::MAX_SIGHT_RANGE;
 use crate::util::fixed_math::SimFixed;
 
@@ -239,12 +239,10 @@ impl Simulation {
             let spawn_sid = ge.stable_id;
             let spawn_cells: Option<Vec<(u16, u16)>> = if category == EntityCategory::Structure {
                 rules.and_then(|r| r.object(&map_ent.type_id)).map(|obj| {
-                    crate::sim::production::building_footprint_cells(
+                    crate::sim::production::building_base_foundation_cells(
                         spawn_rx,
                         spawn_ry,
                         &obj.foundation,
-                        &obj.add_occupy,
-                        &obj.remove_occupy,
                     )
                 })
             } else {
@@ -427,13 +425,7 @@ impl Simulation {
         // Register in occupancy grid.
         let insertion = CellListInsertion::from_category(spawn_category);
         if spawn_category == EntityCategory::Structure {
-            let cells = building_footprint_cells(
-                spawn_rx,
-                spawn_ry,
-                &obj.foundation,
-                &obj.add_occupy,
-                &obj.remove_occupy,
-            );
+            let cells = building_base_foundation_cells(spawn_rx, spawn_ry, &obj.foundation);
             for (rx, ry) in cells {
                 self.occupancy
                     .add(rx, ry, stable_id, spawn_layer, None, insertion);
@@ -448,6 +440,132 @@ impl Simulation {
                 insertion,
             );
         }
+        Some(stable_id)
+    }
+
+    /// Create an object in limbo: stored in EntityStore and owner counts, but
+    /// not registered in map occupancy. Used by paradrop cargo loading, where
+    /// gamemd creates passengers directly into CargoClass without Unlimbo.
+    pub(crate) fn spawn_object_limbo_at_height(
+        &mut self,
+        type_id: &str,
+        owner: &str,
+        rx: u16,
+        ry: u16,
+        facing: u8,
+        z: u8,
+        rules: &RuleSet,
+    ) -> Option<u64> {
+        let obj = rules.object(type_id)?;
+        let health = Health {
+            current: obj.strength.max(1) as u16,
+            max: obj.strength.max(1) as u16,
+        };
+        let category = match obj.category {
+            ObjectCategory::Infantry => EntityCategory::Infantry,
+            ObjectCategory::Vehicle => EntityCategory::Unit,
+            ObjectCategory::Aircraft => EntityCategory::Aircraft,
+            ObjectCategory::Building => EntityCategory::Structure,
+        };
+        let uses_voxel = matches!(
+            obj.category,
+            ObjectCategory::Vehicle | ObjectCategory::Aircraft
+        );
+        let sight_range = (obj.sight.max(0) as u16).min(MAX_SIGHT_RANGE);
+        let stable_id = self.allocate_stable_id();
+        let owner_iid = self.interner.intern(owner);
+        let type_iid = self.interner.intern(type_id);
+
+        let mut ge = GameEntity::new(
+            stable_id,
+            rx,
+            ry,
+            z,
+            facing,
+            owner_iid,
+            health,
+            type_iid,
+            category,
+            0,
+            sight_range,
+            uses_voxel,
+        );
+
+        if self.debug_event_logging {
+            ge.debug_log = Some(crate::sim::debug_event_log::DebugEventLog::new());
+        }
+
+        if obj.has_turret {
+            let initial = crate::sim::movement::turret::body_facing_to_turret(facing);
+            let rot_byte = obj.turret_rot.clamp(0, 0xFF) as u8;
+            ge.barrel_facing = Some(crate::sim::movement::FacingClass::new(initial, rot_byte));
+        }
+        if uses_voxel {
+            ge.voxel_animation = Some(VoxelAnimation::new(1, 100));
+        }
+        if category == EntityCategory::Infantry {
+            ge.animation = Some(Animation::new(SequenceKind::Stand));
+            ge.sub_cell = Some(self.allocate_infantry_sub_cell(rx, ry));
+            let (lx, ly) = crate::util::lepton::subcell_lepton_offset(ge.sub_cell);
+            ge.position.sub_x = lx;
+            ge.position.sub_y = ly;
+        }
+        if !uses_voxel && (category == EntityCategory::Unit || category == EntityCategory::Aircraft)
+        {
+            ge.animation = Some(Animation::new(SequenceKind::Stand));
+        }
+        ge.crushable = obj.crushable;
+        ge.deployed_crushable = obj.deployed_crushable;
+        ge.omni_crusher = obj.omni_crusher;
+        ge.omni_crush_resistant = obj.omni_crush_resistant;
+        ge.zfudge_bridge = obj.zfudge_bridge;
+        ge.too_big_to_fit_under_bridge = obj.too_big_to_fit_under_bridge;
+        if obj.speed > 0 {
+            let mut loco = LocomotorState::from_object_type(obj, rules.general.flight_level);
+            if matches!(
+                self.interner.resolve(ge.type_ref).to_uppercase().as_str(),
+                "GI" | "CONS" | "E1" | "E2"
+            ) {
+                loco.speed_multiplier = SimFixed::from_num(6);
+            }
+            ge.locomotor = Some(loco);
+        }
+        if obj.ammo >= 0 && category == EntityCategory::Aircraft {
+            ge.aircraft_ammo = Some(crate::sim::docking::aircraft_dock::AircraftAmmo::new(
+                obj.ammo,
+            ));
+        }
+        if ge
+            .locomotor
+            .as_ref()
+            .is_some_and(|l| l.kind == crate::rules::locomotor_type::LocomotorKind::Fly)
+        {
+            ge.aircraft_mission = Some(crate::sim::aircraft::AircraftMission::Idle);
+        }
+        if let Some(kind) = miner_kind_for_object(obj) {
+            let mcfg: MinerConfig = MinerConfig::from_general_rules(&rules.general);
+            let storage = obj.storage.max(0) as u16;
+            ge.miner = Some(Miner::new(kind, &mcfg, storage));
+            ge.harvest_overlay = Some(HarvestOverlay {
+                frame: 0,
+                visible: false,
+                elapsed_ms: 0,
+            });
+        }
+        if obj.passengers > 0 {
+            ge.passenger_role = crate::sim::passenger::PassengerRole::Transport {
+                cargo: crate::sim::passenger::PassengerCargo::new(obj.passengers, obj.size_limit),
+            };
+        } else if obj.can_be_occupied && obj.max_number_occupants > 0 {
+            ge.passenger_role = crate::sim::passenger::PassengerRole::Transport {
+                cargo: crate::sim::passenger::PassengerCargo::new(obj.max_number_occupants, 1),
+            };
+        }
+
+        let spawn_owner_str = self.interner.resolve(ge.owner).to_string();
+        let spawn_category = ge.category;
+        self.entities.insert(ge);
+        self.increment_owned_count(&spawn_owner_str, spawn_category);
         Some(stable_id)
     }
 
@@ -532,9 +650,8 @@ impl Simulation {
 
         // Check that all footprint cells are free before deploying.
         let (fw, fh) = foundation_dimensions(&foundation);
-        let ref_height: u8 = height_map.get(&(rx, ry)).copied().unwrap_or(z);
-        for dy in 0..fw {
-            for dx in 0..fh {
+        for dy in 0..fh {
+            for dx in 0..fw {
                 let cell_x = rx.saturating_add(dx);
                 let cell_y = ry.saturating_add(dy);
                 // Check for existing structures (excluding the MCV itself).
@@ -564,15 +681,6 @@ impl Simulation {
                     .unwrap_or(false)
                 {
                     log::info!("MCV deploy blocked: terrain at ({},{})", cell_x, cell_y,);
-                    return false;
-                }
-                // Check same height (buildings can't span elevation changes).
-                if height_map.get(&(cell_x, cell_y)).copied().unwrap_or(z) != ref_height {
-                    log::info!(
-                        "MCV deploy blocked: height mismatch at ({},{})",
-                        cell_x,
-                        cell_y,
-                    );
                     return false;
                 }
             }
@@ -679,10 +787,11 @@ impl Simulation {
 
 fn deploy_origin_from_center(center_rx: u16, center_ry: u16, foundation: &str) -> (u16, u16) {
     let (width, height) = foundation_dimensions(foundation);
-    (
-        center_rx.saturating_sub(width / 2),
-        center_ry.saturating_sub(height / 2),
-    )
+    if width > 2 || height > 2 {
+        (center_rx.saturating_sub(1), center_ry.saturating_sub(1))
+    } else {
+        (center_rx, center_ry)
+    }
 }
 
 /// Resolve the deploy target for an MCV-like unit via rules.ini `DeploysInto=`.

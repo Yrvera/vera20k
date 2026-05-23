@@ -146,11 +146,12 @@ pub(crate) fn build_unit_instances(
             .get(owner_str)
             .copied()
             .unwrap_or_default();
-        let mut tint: [f32; 3] = state
-            .lighting_grid
-            .get(&(pos.rx, pos.ry))
-            .copied()
-            .unwrap_or(lighting::DEFAULT_TINT);
+        let mut tint: [f32; 3] = match entity.category {
+            crate::map::entities::EntityCategory::Aircraft => {
+                state.lighting_grid.aircraft_tint_at((pos.rx, pos.ry))
+            }
+            _ => state.lighting_grid.unit_tint_at((pos.rx, pos.ry)),
+        };
         // Entity ambient glow so VXL units/aircraft are visible on dark maps.
         if let Some(rules) = &state.rules {
             use crate::map::entities::EntityCategory;

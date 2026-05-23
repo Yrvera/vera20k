@@ -5,7 +5,9 @@
 
 use std::collections::BTreeMap;
 
+use crate::map::bridge_facts::BRIDGE_FLAG_DESTROYED_OR_RAMP;
 use crate::map::entities::EntityCategory;
+use crate::map::houses::are_houses_friendly;
 use crate::rules::locomotor_type::MovementZone;
 use crate::rules::object_type::ObjectCategory;
 use crate::rules::ruleset::RuleSet;
@@ -37,8 +39,6 @@ pub fn placement_preview_for_owner(
     let in_build_area = reason.as_ref().map_or(true, |r| {
         !matches!(r, BuildingPlacementError::OutOfBuildArea)
     });
-    // Reference height: use the top-left cell of the foundation.
-    let ref_height: u8 = height_map.get(&(rx, ry)).copied().unwrap_or(0);
     let mut cell_valid: Vec<bool> = Vec::with_capacity((width as usize) * (height as usize));
     for dy in 0..height {
         for dx in 0..width {
@@ -51,8 +51,6 @@ pub fn placement_preview_for_owner(
                 path_grid,
                 cx,
                 cy,
-                ref_height,
-                height_map,
                 obj.water_bound,
             );
             cell_valid.push(in_build_area && ok);
@@ -276,7 +274,7 @@ fn evaluate_building_placement(
     rx: u16,
     ry: u16,
     path_grid: Option<&crate::sim::pathfinding::PathGrid>,
-    height_map: &BTreeMap<(u16, u16), u8>,
+    _height_map: &BTreeMap<(u16, u16), u8>,
 ) -> Result<(), BuildingPlacementError> {
     let Some(obj) = rules.object(type_id) else {
         return Err(BuildingPlacementError::NotBuilding);
@@ -297,8 +295,6 @@ fn evaluate_building_placement(
     if !has_type {
         return Err(BuildingPlacementError::NotReady);
     }
-    // All cells must be at the same height (buildings can't span elevation changes).
-    let ref_height: u8 = height_map.get(&(rx, ry)).copied().unwrap_or(0);
     for dy in 0..height {
         for dx in 0..width {
             let cell_x = rx.saturating_add(dx);
@@ -310,8 +306,6 @@ fn evaluate_building_placement(
                 path_grid,
                 cell_x,
                 cell_y,
-                ref_height,
-                height_map,
                 obj.water_bound,
             ) {
                 // Distinguish overlap from terrain for the error variant.
@@ -373,12 +367,9 @@ fn cell_placeable(
     path_grid: Option<&crate::sim::pathfinding::PathGrid>,
     cx: u16,
     cy: u16,
-    ref_height: u8,
-    height_map: &BTreeMap<(u16, u16), u8>,
     water_bound: bool,
 ) -> bool {
     let no_overlap = !structure_occupies_cell(entities, rules, cx, cy, &sim.interner);
-    let same_height = height_map.get(&(cx, cy)).copied().unwrap_or(0) == ref_height;
 
     if water_bound {
         let cell_ok = if let Some(terrain) = sim.resolved_terrain.as_ref() {
@@ -390,7 +381,9 @@ fn cell_placeable(
                 ship_passable
                     && !cell.overlay_blocks
                     && !cell.terrain_object_blocks
+                    && !cell.has_bridge_deck
                     && !cell.bridge_walkable
+                    && !cell.bridge_facts.has_flag(BRIDGE_FLAG_DESTROYED_OR_RAMP)
             })
         } else {
             path_grid.is_some_and(|grid| {
@@ -403,12 +396,24 @@ fn cell_placeable(
                 )
             })
         };
-        cell_ok && no_overlap && same_height
+        cell_ok && no_overlap
     } else {
-        // Normal building: use existing checks (water cells are blocked).
-        let walkable = path_grid.map_or(true, |g| g.is_walkable(cx, cy));
-        let not_blocked = !sim.effective_build_blocked(cx, cy).unwrap_or(false);
-        walkable && not_blocked && no_overlap && same_height
+        let cell_ok = if let Some(terrain) = sim.resolved_terrain.as_ref() {
+            terrain.cell(cx, cy).is_some_and(|cell| {
+                !cell.build_blocked
+                    && !cell.overlay_blocks
+                    && !cell.terrain_object_blocks
+                    && !cell.has_bridge_deck
+                    && !cell.bridge_walkable
+                    && !cell.bridge_facts.has_flag(BRIDGE_FLAG_DESTROYED_OR_RAMP)
+                    && cell.slope_type == 0
+            })
+        } else {
+            let walkable = path_grid.map_or(true, |g| g.is_walkable(cx, cy));
+            let not_blocked = !sim.effective_build_blocked(cx, cy).unwrap_or(false);
+            walkable && not_blocked
+        };
+        cell_ok && no_overlap
     }
 }
 
@@ -455,30 +460,33 @@ fn is_within_build_area(
         return false;
     }
     for e in sim.entities.values() {
-        if e.category != EntityCategory::Structure
-            || !sim.interner.resolve(e.owner).eq_ignore_ascii_case(owner)
-        {
+        if e.category != EntityCategory::Structure {
             continue;
         }
+        let provider_owner = sim.interner.resolve(e.owner);
         let Some(existing) = rules.object(sim.interner.resolve(e.type_ref)) else {
             continue;
         };
-        if !existing.base_normal {
+        if provider_owner.eq_ignore_ascii_case(owner) {
+            if !existing.base_normal {
+                continue;
+            }
+        } else if !(sim.game_options.build_off_ally
+            && existing.eligibile_for_ally_building
+            && are_houses_friendly(&sim.house_alliances, provider_owner, owner))
+        {
             continue;
         }
-        // RA2 uses the larger of provider's and placed building's Adjacent values.
-        // ConYards have high Adjacent (~12), so they expand the buildable zone.
-        let adjacent = placed_adjacent.max(existing.adjacent);
         let (provider_width, provider_height) = foundation_dimensions(&existing.foundation);
-        if rectangles_within_adjacent_range(
+        if provider_intersects_build_area_ring(
+            (rx, ry, width, height),
             (
                 e.position.rx,
                 e.position.ry,
                 provider_width,
                 provider_height,
             ),
-            (rx, ry, width, height),
-            adjacent,
+            placed_adjacent,
         ) {
             return true;
         }
@@ -486,22 +494,35 @@ fn is_within_build_area(
     false
 }
 
-fn rectangles_within_adjacent_range(
-    provider: (u16, u16, u16, u16),
+fn provider_intersects_build_area_ring(
     placed: (u16, u16, u16, u16),
+    provider: (u16, u16, u16, u16),
     adjacent: i32,
 ) -> bool {
-    let (provider_rx, provider_ry, provider_width, provider_height) = provider;
     let (placed_rx, placed_ry, placed_width, placed_height) = placed;
+    let (provider_rx, provider_ry, provider_width, provider_height) = provider;
     let expansion = adjacent.saturating_add(1);
-    let min_x = i32::from(provider_rx) - expansion;
-    let min_y = i32::from(provider_ry) - expansion;
-    let max_x = i32::from(provider_rx) + i32::from(provider_width) - 1 + expansion;
-    let max_y = i32::from(provider_ry) + i32::from(provider_height) - 1 + expansion;
     let placed_min_x = i32::from(placed_rx);
     let placed_min_y = i32::from(placed_ry);
     let placed_max_x = i32::from(placed_rx) + i32::from(placed_width) - 1;
     let placed_max_y = i32::from(placed_ry) + i32::from(placed_height) - 1;
+    let min_x = placed_min_x - expansion;
+    let min_y = placed_min_y - expansion;
+    let max_x = placed_max_x + expansion;
+    let max_y = placed_max_y + expansion;
+    let provider_min_x = i32::from(provider_rx);
+    let provider_min_y = i32::from(provider_ry);
+    let provider_max_x = i32::from(provider_rx) + i32::from(provider_width) - 1;
+    let provider_max_y = i32::from(provider_ry) + i32::from(provider_height) - 1;
 
-    placed_min_x <= max_x && placed_max_x >= min_x && placed_min_y <= max_y && placed_max_y >= min_y
+    let intersects_expanded = provider_min_x <= max_x
+        && provider_max_x >= min_x
+        && provider_min_y <= max_y
+        && provider_max_y >= min_y;
+    let intersects_foundation = provider_min_x <= placed_max_x
+        && provider_max_x >= placed_min_x
+        && provider_min_y <= placed_max_y
+        && provider_max_y >= placed_min_y;
+
+    intersects_expanded && !intersects_foundation
 }

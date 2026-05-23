@@ -89,17 +89,23 @@ pub enum AircraftMission {
         pad_index: u8,
     },
 
-    /// Paradrop carrier flying in toward the drop target.
-    /// Transitions to ParaDropOverfly when distance ≤ ParadropRadius.
+    /// Standard superweapon paradrop carrier in its Open-equivalent mission.
+    /// Kept under the older Rust name for save compatibility; stock SW PDPLANE
+    /// starts here (gamemd mission 0x1A), not in binary Mission_ParaDropApproach.
+    /// Transitions to the Rescue-equivalent state when distance ≤ ParadropRadius.
     ParaDropApproach {
         target_rx: u16,
         target_ry: u16,
-        /// Latched true after fog-reveal + ChuteSound fire (paradrop P14).
+        /// Save-compatible latch retained from the older Rust approach path.
+        /// Standard Mission_Open does not emit ChuteSound/fog reveal at threshold.
         has_revealed_fog: bool,
     },
 
-    /// Paradrop carrier over the drop zone, dispensing payload at the
-    /// Mission_Rescue cadence (5 game frames = 15 sim ticks per drop).
+    /// Standard superweapon paradrop carrier in its Rescue-equivalent mission.
+    /// Kept under the older Rust name for save compatibility; this is not
+    /// binary Mission_ParaDropOverfly for stock SW launches.
+    /// Dispenses payload at the Mission_Rescue cadence: one Drop_Payload call
+    /// per Rescue execution, then 5 game frames = 15 sim ticks before the next.
     /// Transitions to silent despawn at the opposite edge once cargo is empty.
     ParaDropOverfly {
         /// Opposite-edge cell to fly to once cargo is empty.
@@ -107,7 +113,8 @@ pub enum AircraftMission {
         exit_ry: u16,
         /// Ticks until next drop allowed (Mission_Rescue 5-frame cadence).
         drop_cooldown: u16,
-        /// 5-tick mutex between drops (LandingState mirror, paradrop P23).
+        /// LandingState mirror. Drop_Payload writes 5, but in-range Rescue does
+        /// not use it as an extra throttle beyond the 5-frame mission cadence.
         landing_state: u8,
         /// Decrements per drop; parity drives V-pattern side (paradrop P25).
         payload_count: u8,
@@ -698,7 +705,8 @@ pub fn tick_aircraft_missions(
     }
 
     // Phase 5: Paradrop apply phase.
-    // ChuteSound emission for the approach handler's fog-reveal trigger.
+    // Standard Mission_Open is silent at the threshold; this compatibility path
+    // remains inert for stock SW carriers unless a mission handler requests it.
     let chute_sounds: Vec<(u16, u16)> = mutations
         .iter()
         .filter_map(|m| m.paradrop_chute_sound_at)
@@ -708,8 +716,8 @@ pub fn tick_aircraft_missions(
             .push(crate::sim::world::SimSoundEvent::ChuteSound { rx, ry });
     }
 
-    // try_drop attempts. Drop interval is the hardcoded 5-frame Mission_Rescue
-    // cadence from gamemd; ParaDropWeapon ROF= in rules.ini is unused (dummy weapon).
+    // try_drop attempts. Standard SW cadence is Mission_Rescue returning 5
+    // game frames after one Drop_Payload call; ParaDropWeapon ROF= is not used.
     let drop_attempts: Vec<(u64, u8)> = mutations
         .iter()
         .filter(|m| m.paradrop_try_drop)
@@ -738,8 +746,9 @@ pub fn tick_aircraft_missions(
                     },
                     drop_payload::DropResult::ImpassableRetry
                     | drop_payload::DropResult::AttachFailedRetry => {
-                        // Leave cooldowns at 0 — retry next tick. payload_count
-                        // already restored via cargo head re-insert.
+                        // Leave mission cadence at 0 — retry on the next
+                        // Rescue-equivalent execution. payload_count is already
+                        // restored via cargo head re-insert.
                         AircraftMission::ParaDropOverfly {
                             exit_rx,
                             exit_ry,

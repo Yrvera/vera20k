@@ -75,6 +75,19 @@ pub fn flh_to_screen_offset(forward: i32, lateral: i32, height: i32, facing: u8)
     (screen_x, screen_y)
 }
 
+/// Convert an FLH forward/lateral pair into world-lepton X/Y offsets.
+pub fn flh_to_world_offset(forward: i32, lateral: i32, facing: u8) -> (f32, f32) {
+    if forward == 0 && lateral == 0 {
+        return (0.0, 0.0);
+    }
+
+    let angle: f32 = std::f32::consts::TAU * (facing as f32 / 256.0);
+    let (sin, cos) = angle.sin_cos();
+    let f: f32 = forward as f32;
+    let l: f32 = lateral as f32;
+    (f * sin + l * cos, -f * cos + l * sin)
+}
+
 /// Convert FLH using the 32-way facing quantization used by gamemd's fire-origin path.
 pub fn flh_to_screen_offset_32way(
     forward: i32,
@@ -89,6 +102,18 @@ pub fn flh_to_screen_offset_32way(
     let bucket: i16 = ((((facing_16 >> 10) + 1) >> 1) & 0x1f) as i16 - 8;
     let quantized_facing: u8 = (((bucket + 8) as u16 * 8) & 0xff) as u8;
     flh_to_screen_offset(forward, lateral, height, quantized_facing)
+}
+
+/// Convert FLH world X/Y using the same 32-way facing quantization as the
+/// fire-origin screen transform.
+pub fn flh_to_world_offset_32way(forward: i32, lateral: i32, facing: u8) -> (f32, f32) {
+    if forward == 0 && lateral == 0 {
+        return (0.0, 0.0);
+    }
+    let facing_16: u16 = (facing as u16) << 8;
+    let bucket: i16 = ((((facing_16 >> 10) + 1) >> 1) & 0x1f) as i16 - 8;
+    let quantized_facing: u8 = (((bucket + 8) as u16 * 8) & 0xff) as u8;
+    flh_to_world_offset(forward, lateral, quantized_facing)
 }
 
 #[cfg(test)]

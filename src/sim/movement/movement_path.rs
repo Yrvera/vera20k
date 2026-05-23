@@ -14,7 +14,9 @@ use crate::sim::pathfinding::LayeredEntityBlockMap;
 use crate::sim::pathfinding::path_smooth;
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
 use crate::sim::pathfinding::zone_search;
-use crate::sim::pathfinding::{MAX_PATH_SEGMENT_STEPS, PathGrid, truncate_layered_path};
+use crate::sim::pathfinding::{
+    MAX_PATH_SEGMENT_STEPS, PathGrid, SearchMarkerOverlay, truncate_layered_path,
+};
 use crate::sim::rng::SimRng;
 use crate::util::fixed_math::facing_from_delta_int as facing_from_delta;
 
@@ -156,6 +158,45 @@ pub(super) fn find_move_path(
     urgency: u8,
     mover_is_crusher: bool,
 ) -> Option<(Vec<(u16, u16)>, Vec<MovementLayer>)> {
+    find_move_path_with_marker(
+        ctx,
+        layered_pathing,
+        start,
+        start_layer,
+        goal,
+        terrain_costs,
+        entity_blocks,
+        ground_blocks,
+        bridge_blocks,
+        zone_mz,
+        movement_zone,
+        too_big_to_fit_under_bridge,
+        entity_block_map,
+        None,
+        urgency,
+        mover_is_crusher,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn find_move_path_with_marker(
+    ctx: PathfindingContext<'_>,
+    layered_pathing: bool,
+    start: (u16, u16),
+    start_layer: MovementLayer,
+    goal: (u16, u16),
+    terrain_costs: Option<&TerrainCostGrid>,
+    entity_blocks: Option<&BTreeSet<(u16, u16)>>,
+    ground_blocks: Option<&BTreeSet<(u16, u16)>>,
+    bridge_blocks: Option<&BTreeSet<(u16, u16)>>,
+    zone_mz: MovementZone,
+    movement_zone: Option<MovementZone>,
+    too_big_to_fit_under_bridge: bool,
+    entity_block_map: Option<&LayeredEntityBlockMap>,
+    marker_overlay: Option<&SearchMarkerOverlay>,
+    urgency: u8,
+    mover_is_crusher: bool,
+) -> Option<(Vec<(u16, u16)>, Vec<MovementLayer>)> {
     let grid = ctx.path_grid?;
     let zone_grid = ctx.zone_grid;
     let resolved_terrain = ctx.resolved_terrain;
@@ -167,7 +208,7 @@ pub(super) fn find_move_path(
     );
     let entity_blocks = (!merged_entity_blocks.is_empty()).then_some(&merged_entity_blocks);
     if layered_pathing {
-        let layered_result = zone_search::find_layered_path_zoned(
+        let layered_result = zone_search::find_layered_path_zoned_marker(
             grid,
             ground_blocks,
             bridge_blocks,
@@ -180,6 +221,7 @@ pub(super) fn find_move_path(
             movement_zone,
             resolved_terrain,
             entity_block_map,
+            marker_overlay,
             urgency,
             mover_is_crusher,
         );
@@ -205,6 +247,9 @@ pub(super) fn find_move_path(
                 // shortcuts: A* deliberately routed around them, smoothing
                 // through them would undo the detour.
                 if entity_block_map.is_some_and(|m| m.contains_key(layer, &(x, y))) {
+                    return false;
+                }
+                if marker_overlay.is_some_and(|m| m.contains((x, y)) && (x, y) != goal) {
                     return false;
                 }
                 match layer {
@@ -233,7 +278,7 @@ pub(super) fn find_move_path(
         return None;
     }
 
-    let path = zone_search::find_path_zoned(
+    let path = zone_search::find_path_zoned_marker(
         grid,
         start,
         goal,
@@ -244,6 +289,7 @@ pub(super) fn find_move_path(
         movement_zone,
         resolved_terrain,
         entity_block_map,
+        marker_overlay,
         urgency,
         mover_is_crusher,
     )?;
@@ -272,6 +318,7 @@ pub(super) fn find_move_path(
         terrain_ok
             && !entity_blocks.is_some_and(|eb| eb.contains(&(x, y)))
             && !entity_block_map.is_some_and(|m| m.contains_any(&(x, y)))
+            && !marker_overlay.is_some_and(|m| m.contains((x, y)) && (x, y) != goal)
     };
     let path = path_smooth::smooth_path(path, &smooth_walkable);
     let path = path_smooth::optimize_path(path, &smooth_walkable);
@@ -579,5 +626,49 @@ mod tests {
 
         assert_eq!(path, vec![(0, 0), (4, 0)]);
         assert_eq!(layers, vec![MovementLayer::Ground, MovementLayer::Ground]);
+    }
+
+    #[test]
+    fn move_path_marker_overlay_survives_path_smoothing() {
+        let grid = PathGrid::test_all_passable(5, 3);
+        let mut marker_overlay = SearchMarkerOverlay::new();
+        marker_overlay.toggle((1, 1));
+        marker_overlay.toggle((2, 1));
+        marker_overlay.toggle((3, 1));
+
+        let (path, layers) = find_move_path_with_marker(
+            PathfindingContext {
+                path_grid: Some(&grid),
+                zone_grid: None,
+                resolved_terrain: None,
+            },
+            false,
+            (0, 1),
+            MovementLayer::Ground,
+            (4, 1),
+            None,
+            None,
+            None,
+            None,
+            MovementZone::Normal,
+            Some(MovementZone::Normal),
+            false,
+            None,
+            Some(&marker_overlay),
+            0,
+            false,
+        )
+        .expect("marker overlay should still allow a path");
+
+        assert_eq!(path.first().copied(), Some((0, 1)));
+        assert_eq!(path.last().copied(), Some((4, 1)));
+        assert!(
+            !path
+                .iter()
+                .any(|cell| matches!(cell, (1, 1) | (2, 1) | (3, 1))),
+            "path smoothing must not collapse the marker-avoiding route back through {:?}",
+            path
+        );
+        assert_eq!(path.len(), layers.len());
     }
 }

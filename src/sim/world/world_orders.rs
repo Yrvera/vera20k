@@ -252,32 +252,34 @@ impl Simulation {
     /// bridge repair on the cells in a 5×5 scan around the hut/building cell.
     ///
     /// Flow:
-    ///   1. Emit `SimSoundEvent::BridgeRepaired` at the building's cell.
-    ///   2. Run overlay-family bridge repair over the 5×5 scan around the hut.
-    ///   3. Despawn the engineer (consumed by repair).
+    ///   1. Create a non-drawing `BridgeRepaired` radar event at the hut.
+    ///   2. Emit `SimSoundEvent::BridgeRepaired` at the building's cell.
+    ///   3. Run overlay-family bridge repair over the 5×5 scan around the hut.
+    ///   4. Despawn the engineer (consumed by repair).
     ///
     /// Returns `true` if any repair mutated bridge state (caller ORs into
     /// `TickResult.bridge_state_changed` so the app rebuilds PathGrid).
     pub(crate) fn tick_bridge_repair_orders(&mut self, rules: &RuleSet) -> bool {
         use crate::sim::bridge_state::cells_in_5x5_scan;
 
-        // Snapshot eligible engineers in deterministic order.
-        let candidates: Vec<(u64, u64, InternedId)> = self
-            .entities
-            .keys_sorted()
-            .into_iter()
-            .filter_map(|sid| {
-                let e = self.entities.get(sid)?;
-                if e.dying || e.capture_target.is_none() {
-                    return None;
-                }
-                Some((sid, e.capture_target.unwrap(), e.owner))
-            })
-            .collect();
-
         let mut any_repair = false;
+        let keys = self.entities.keys_sorted();
+        let mut key_idx = 0;
 
-        for (engineer_id, building_id, engineer_owner) in candidates {
+        while key_idx < keys.len() {
+            let engineer_id = keys[key_idx];
+            let Some((building_id, engineer_owner)) =
+                self.entities.get(engineer_id).and_then(|e| {
+                    if e.dying {
+                        return None;
+                    }
+                    Some((e.capture_target?, e.owner))
+                })
+            else {
+                key_idx += 1;
+                continue;
+            };
+
             // Resolve target type; only proceed for BridgeRepairHut=yes.
             let target_bridge_hut = self
                 .entities
@@ -289,6 +291,7 @@ impl Simulation {
                 })
                 .unwrap_or(false);
             if !target_bridge_hut {
+                key_idx += 1;
                 continue;
             }
 
@@ -301,6 +304,7 @@ impl Simulation {
                 if let Some(e) = self.entities.get_mut(engineer_id) {
                     e.capture_target = None;
                 }
+                key_idx += 1;
                 continue;
             }
 
@@ -312,6 +316,7 @@ impl Simulation {
                 .get(engineer_id)
                 .map(|e| (e.position.rx, e.position.ry))
             else {
+                key_idx += 1;
                 continue;
             };
             let Some((brx, bry)) = self
@@ -319,15 +324,26 @@ impl Simulation {
                 .get(building_id)
                 .map(|b| (b.position.rx, b.position.ry))
             else {
+                key_idx += 1;
                 continue;
             };
             let dx = (erx as i32 - brx as i32).abs();
             let dy = (ery as i32 - bry as i32).abs();
             if dx > 1 || dy > 1 {
+                key_idx += 1;
                 continue;
             }
 
             // ---- Trigger fires this tick ----
+
+            // Step A0: create the non-drawing BridgeRepaired radar event before
+            // bridge mutation. Its dedup result gates EVA in the app layer.
+            let eva_allowed = self.radar_events.push(
+                crate::sim::radar::RadarEventType::BridgeRepaired,
+                brx,
+                bry,
+                rules.radar_event_config.event_duration_ms,
+            );
 
             // Step A: emit BridgeRepaired sound event at the BUILDING's cell.
             self.sound_events
@@ -335,6 +351,7 @@ impl Simulation {
                     rx: brx,
                     ry: bry,
                     owner: engineer_owner,
+                    eva_allowed,
                 });
 
             // Step B: 5×5 scan from hut/building cell + repair dispatch.
@@ -351,14 +368,17 @@ impl Simulation {
                 any_repair = true;
             }
 
-            // Step C: radar-dirty propagation. No render-side dirty-cell API
-            // is wired up yet for bridges; the minimap refreshes after the
-            // PathGrid rebuild driven by `bridge_state_changed`. Reserved for
-            // a follow-up once a per-cell radar-dirty channel exists.
-            let _ = &outcome.radar_cells;
+            // Step C: terrain/radar dirty propagation. The walker only emits
+            // cells for destroyed-anchor restoration, matching gamemd's
+            // `MarkTerrainDirty` gate.
+            self.mark_radar_terrain_dirty_cells(outcome.radar_cells.iter().copied());
 
             // Step D: engineer consumed.
             self.despawn_entity(engineer_id);
+            // gamemd iterates a live object vector. Removing the current
+            // engineer compacts the next object into this slot; the scheduler
+            // then advances, so that immediate successor waits until later.
+            key_idx += 2;
         }
 
         any_repair
@@ -572,12 +592,12 @@ impl Simulation {
     fn c4_target_footprint(&self, target_id: u64, rules: &RuleSet) -> Option<Vec<(u16, u16)>> {
         let target = self.entities.get(target_id)?;
         let obj = rules.object(self.interner.resolve(target.type_ref))?;
-        Some(crate::sim::production::building_footprint_cells(
+        // C4 Mission_Enter resolves through normal building cell lookup.
+        // AddOccupy/RemoveOccupy only affect hidden occupancy counters.
+        Some(c4_base_foundation_cells(
             target.position.rx,
             target.position.ry,
             obj.foundation.as_str(),
-            obj.add_occupy.as_slice(),
-            obj.remove_occupy.as_slice(),
         ))
     }
 
@@ -952,4 +972,21 @@ impl Simulation {
             }
         }
     }
+}
+
+fn c4_base_foundation_cells(origin_rx: u16, origin_ry: u16, foundation: &str) -> Vec<(u16, u16)> {
+    let (w, h) = crate::rules::foundation::foundation_dimensions(foundation);
+    let mut cells = Vec::with_capacity(w as usize * h as usize);
+
+    for dx in 0..w {
+        for dy in 0..h {
+            let rx = origin_rx as i32 + dx as i32;
+            let ry = origin_ry as i32 + dy as i32;
+            if rx >= 0 && rx <= u16::MAX as i32 && ry >= 0 && ry <= u16::MAX as i32 {
+                cells.push((rx as u16, ry as u16));
+            }
+        }
+    }
+
+    cells
 }

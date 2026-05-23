@@ -560,21 +560,43 @@ pub fn structure_satisfies_prerequisite(rules: &RuleSet, structure_id: &str, pre
 }
 
 pub fn foundation_dimensions(foundation: &str) -> (u16, u16) {
-    let mut parts = foundation.split('x');
-    let width = parts
-        .next()
-        .and_then(|value| value.trim().parse::<u16>().ok())
-        .unwrap_or(1);
-    let height = parts
-        .next()
-        .and_then(|value| value.trim().parse::<u16>().ok())
-        .unwrap_or(1);
-    (width.max(1), height.max(1))
+    crate::rules::foundation::foundation_dimensions(foundation)
 }
 
-/// Returns the actual occupied cells for a building, applying AddOccupy and
-/// RemoveOccupy to the rectangular foundation. Cells outside [0, u16::MAX]
-/// after offset application are dropped.
+/// Returns the base foundation cells for normal building occupancy.
+///
+/// gamemd keeps these cells separate from `AddOccupy`/`RemoveOccupy`, which only
+/// adjust hidden occupancy counters behind `CanHideThings`.
+pub fn building_base_foundation_cells(
+    origin_rx: u16,
+    origin_ry: u16,
+    foundation: &str,
+) -> Vec<(u16, u16)> {
+    use std::collections::BTreeSet;
+    let (w, h) = foundation_dimensions(foundation);
+    let mut cells: BTreeSet<(u16, u16)> = BTreeSet::new();
+
+    for dx in 0..w {
+        for dy in 0..h {
+            let rx = origin_rx as i32 + dx as i32;
+            let ry = origin_ry as i32 + dy as i32;
+            if rx >= 0 && rx <= u16::MAX as i32 && ry >= 0 && ry <= u16::MAX as i32 {
+                cells.insert((rx as u16, ry as u16));
+            }
+        }
+    }
+
+    cells.into_iter().collect()
+}
+
+/// Returns the hidden-occupancy cells for a building, applying AddOccupy and
+/// RemoveOccupy to the rectangular foundation.
+///
+/// gamemd does not use this set as the building's real foundation footprint.
+/// It is the counter set behind art.ini hidden-object behavior (`CanHideThings`,
+/// `OccupyHeight`, and the BEHIND marker path). Placement, selection, C4, and
+/// ordinary building object-list occupancy use `building_base_foundation_cells`.
+/// Cells outside [0, u16::MAX] after offset application are dropped.
 ///
 /// Order of operations:
 /// 1. Generate rectangle cells (rx..rx+w) × (ry..ry+h)
@@ -582,7 +604,7 @@ pub fn foundation_dimensions(foundation: &str) -> (u16, u16) {
 /// 3. Remove cells listed in remove_occupy (deltas relative to origin)
 ///
 /// Returns sorted, deduplicated cells.
-pub fn building_footprint_cells(
+pub fn building_hidden_occupancy_cells(
     origin_rx: u16,
     origin_ry: u16,
     foundation: &str,
@@ -622,43 +644,75 @@ pub fn building_footprint_cells(
     cells.into_iter().collect()
 }
 
-/// Cells that block unit movement, given the full footprint and whether the
-/// building has a bib (`Bib=yes` in rules.ini).
+/// Compatibility alias for older call sites. This returns hidden occupancy,
+/// not the real building foundation.
+pub fn building_footprint_cells(
+    origin_rx: u16,
+    origin_ry: u16,
+    foundation: &str,
+    add_occupy: &[(i16, i16)],
+    remove_occupy: &[(i16, i16)],
+) -> Vec<(u16, u16)> {
+    building_hidden_occupancy_cells(origin_rx, origin_ry, foundation, add_occupy, remove_occupy)
+}
+
+/// Cells that block static grid movement, given the base foundation and whether
+/// the building has a bib (`Bib=yes` in rules.ini).
 ///
-/// For non-bib buildings, this is just the full footprint. For `Bib=yes`
-/// buildings, the east-edge column of the footprint is excluded — those cells
+/// For non-bib buildings, this is just the base foundation. For `Bib=yes`
+/// buildings, the east-edge column of the foundation is excluded: those cells
 /// are unit-passable in the original engine via the per-occupant-chain bib
 /// relaxation in `Can_Enter_Cell` (probes the east neighbor; if it isn't part
 /// of the same building, the building stops blocking the cell).
 ///
-/// "East edge" = any cell in `footprint` whose east neighbor `(x+1, y)` is
-/// outside the footprint. Works for any foundation shape: rectangles,
-/// AddOccupy/RemoveOccupy-adjusted footprints, and the SW-outlier AddOccupy
-/// rows used by stock refineries.
+/// "East edge" = any cell in `base_foundation` whose east neighbor `(x+1, y)`
+/// is outside the base foundation.
 ///
-/// Placement validation, ownership marking, and selection geometry continue to
-/// use the full footprint (`building_footprint_cells`) — only pathfinding /
-/// occupancy / unit-vs-building blocking should use this filtered set.
+/// `NumberImpassableRows` is deliberately not applied here. That field is a
+/// live `UnitClass::Can_Enter_Cell` object-list skip, not static terrain data.
 pub fn building_movement_blocking_cells(
-    footprint: &[(u16, u16)],
+    base_foundation: &[(u16, u16)],
     has_bib: bool,
 ) -> Vec<(u16, u16)> {
-    if !has_bib {
-        return footprint.to_vec();
-    }
+    building_movement_blocking_cells_for_state(base_foundation, 0, has_bib, -1, false, true, false)
+}
+
+/// Movement-blocking cells for an actual building object-list occupant.
+///
+/// `NumberImpassableRows` is only active in gamemd's live helper after a
+/// radio/contact or the UnitRepair/Bunker branch reaches that helper. Ordinary
+/// buildings outside those branches block their full base foundation, subject
+/// to the bib edge relaxation.
+pub fn building_movement_blocking_cells_for_state(
+    base_foundation: &[(u16, u16)],
+    foundation_origin_rx: u16,
+    has_bib: bool,
+    number_impassable_rows: i32,
+    is_bunker: bool,
+    bunker_occupied: bool,
+    number_rows_active: bool,
+) -> Vec<(u16, u16)> {
     use std::collections::BTreeSet;
-    let set: BTreeSet<(u16, u16)> = footprint.iter().copied().collect();
-    footprint
+    let set: BTreeSet<(u16, u16)> = base_foundation.iter().copied().collect();
+    let apply_number_rows = number_rows_active && (!is_bunker || !bunker_occupied);
+    let impassable_row_limit = if apply_number_rows && number_impassable_rows >= 0 {
+        Some(foundation_origin_rx.saturating_add(number_impassable_rows as u16))
+    } else {
+        None
+    };
+    base_foundation
         .iter()
         .copied()
+        .filter(|&(x, _)| match impassable_row_limit {
+            Some(limit_x) => x < limit_x,
+            None => true,
+        })
         .filter(|&(x, y)| {
-            let east = x.checked_add(1).map(|nx| (nx, y));
-            // East-edge cell = no east neighbor in footprint. Drop it.
-            match east {
-                Some(neighbor) => set.contains(&neighbor),
-                // u16 overflow at world east edge — treat as east-edge (drop).
-                None => false,
+            if !has_bib {
+                return true;
             }
+            let east = x.checked_add(1).map(|nx| (nx, y));
+            east.is_some_and(|neighbor| set.contains(&neighbor))
         })
         .collect()
 }
@@ -723,20 +777,30 @@ mod footprint_tests {
 
     #[test]
     fn rectangle_only_4x3() {
-        let cells = building_footprint_cells(10, 20, "4x3", &[], &[]);
+        let cells = building_base_foundation_cells(10, 20, "4x3");
         assert_eq!(cells.len(), 12);
         assert!(cells.contains(&(10, 20)));
         assert!(cells.contains(&(13, 22)));
     }
 
     #[test]
-    fn garefn_real_footprint() {
+    fn garefn_base_foundation_ignores_hidden_occupy_modifiers() {
         // GAREFN: Foundation=4x3, AddOccupy1=-1,0, AddOccupy2=-1,-1, RemoveOccupy1=3,1
-        let cells = building_footprint_cells(10, 20, "4x3", &[(-1, 0), (-1, -1)], &[(3, 1)]);
-        assert_eq!(cells.len(), 13); // 12 base + 2 added - 1 removed
-        assert!(cells.contains(&(9, 19))); // (-1,-1) added
-        assert!(cells.contains(&(9, 20))); // (-1, 0) added
-        assert!(!cells.contains(&(13, 21))); // (3, 1) removed (the dock pad)
+        let cells = building_base_foundation_cells(10, 20, "4x3");
+        assert_eq!(cells.len(), 12);
+        assert!(cells.contains(&(13, 21)));
+        assert!(!cells.contains(&(9, 19)));
+        assert!(!cells.contains(&(9, 20)));
+    }
+
+    #[test]
+    fn narefn_base_foundation_keeps_dock_pad_despite_remove_occupy() {
+        let cells = building_base_foundation_cells(10, 20, "4x3");
+        assert_eq!(cells.len(), 12);
+        assert!(cells.contains(&(13, 21)));
+        assert!(!cells.contains(&(8, 20)));
+        assert!(!cells.contains(&(8, 19)));
+        assert!(!cells.contains(&(8, 18)));
     }
 
     #[test]
@@ -760,7 +824,7 @@ mod footprint_tests {
 
     #[test]
     fn movement_blocking_no_bib_keeps_full_footprint() {
-        let footprint = building_footprint_cells(10, 20, "4x3", &[], &[]);
+        let footprint = building_base_foundation_cells(10, 20, "4x3");
         let blocking = building_movement_blocking_cells(&footprint, false);
         assert_eq!(blocking.len(), footprint.len());
     }
@@ -768,7 +832,7 @@ mod footprint_tests {
     #[test]
     fn movement_blocking_with_bib_drops_east_edge_rectangle() {
         // Plain 4x3 with bib → east column (x = 13) drops.
-        let footprint = building_footprint_cells(10, 20, "4x3", &[], &[]);
+        let footprint = building_base_foundation_cells(10, 20, "4x3");
         let blocking = building_movement_blocking_cells(&footprint, true);
         // 12 base cells - 3 east-edge column (13, 20), (13, 21), (13, 22) = 9.
         assert_eq!(blocking.len(), 9);
@@ -780,27 +844,24 @@ mod footprint_tests {
     }
 
     #[test]
-    fn movement_blocking_with_bib_garefn_drops_dock_row_too() {
-        // GAREFN-shaped: 4x3 + AddOccupy(-1,0), (-1,-1) - RemoveOccupy(3,1).
-        // Full footprint = 13 cells. East-edge cells with bib relaxation:
-        //   (-1, -1) east (0, -1) outside → drop
-        //   (2,  1) east (3,  1) outside (RemoveOccupy'd) → drop
-        //   (3,  0) east (4,  0) outside → drop
-        //   (3,  2) east (4,  2) outside → drop
-        // 13 - 4 = 9 blocking cells.
-        let footprint = building_footprint_cells(10, 20, "4x3", &[(-1, 0), (-1, -1)], &[(3, 1)]);
-        assert_eq!(footprint.len(), 13);
+    fn movement_blocking_with_bib_garefn_uses_base_foundation_topology() {
+        let footprint = building_base_foundation_cells(10, 20, "4x3");
         let blocking = building_movement_blocking_cells(&footprint, true);
         assert_eq!(blocking.len(), 9);
-        // (9, 19) = AddOccupy SW outlier with no east neighbor in footprint → dropped.
         assert!(!blocking.contains(&(9, 19)));
-        // (12, 21) = west of dock pad, east neighbor (13, 21) is RemoveOccupy'd → dropped.
-        assert!(!blocking.contains(&(12, 21)));
-        // (13, 20) = east edge row 0 → dropped.
+        assert!(!blocking.contains(&(9, 20)));
+        assert!(blocking.contains(&(12, 21)));
         assert!(!blocking.contains(&(13, 20)));
-        // (9, 20) = AddOccupy (-1, 0), east neighbor (10, 20) IS in footprint → kept.
-        assert!(blocking.contains(&(9, 20)));
-        // (10, 20) origin cell, east neighbor (11, 20) IS in footprint → kept.
+        assert!(!blocking.contains(&(13, 21)));
         assert!(blocking.contains(&(10, 20)));
+    }
+
+    #[test]
+    fn static_movement_blocking_keeps_number_rows_out_of_the_grid() {
+        let footprint = building_base_foundation_cells(10, 20, "4x3");
+        let blocking = building_movement_blocking_cells(&footprint, false);
+        assert_eq!(blocking.len(), 12);
+        assert!(blocking.contains(&(12, 21)));
+        assert!(blocking.contains(&(13, 21)));
     }
 }

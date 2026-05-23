@@ -98,6 +98,16 @@ impl PcxFile {
         }
         rgba
     }
+
+    pub fn to_rgba_with_color_key(&self, transparent_rgb: [u8; 3]) -> Vec<u8> {
+        let mut rgba = Vec::with_capacity(self.pixels.len() * 4);
+        for &idx in &self.pixels {
+            let [r, g, b] = self.palette[idx as usize];
+            let a = if [r, g, b] == transparent_rgb { 0 } else { 255 };
+            rgba.extend_from_slice(&[r, g, b, a]);
+        }
+        rgba
+    }
 }
 
 fn pcx_error(detail: &str) -> AssetError {
@@ -134,5 +144,30 @@ mod tests {
         assert_eq!(pcx.pixels, vec![1, 1, 1, 1]);
         assert_eq!(pcx.palette[1], [10, 20, 30]);
         assert_eq!(pcx.to_rgba(None)[0..4], [10, 20, 30, 255]);
+    }
+
+    #[test]
+    fn rgba_color_key_applies_after_embedded_palette_conversion() {
+        let pcx = PcxFile {
+            width: 3,
+            height: 1,
+            pixels: vec![1, 2, 3],
+            palette: {
+                let mut palette = [[0u8; 3]; 256];
+                palette[1] = [255, 0, 255];
+                palette[2] = [0, 0, 0];
+                palette[3] = [255, 0, 255];
+                palette
+            },
+        };
+
+        assert_eq!(
+            pcx.to_rgba_with_color_key([255, 0, 255]),
+            vec![
+                255, 0, 255, 0, //
+                0, 0, 0, 255, //
+                255, 0, 255, 0,
+            ]
+        );
     }
 }

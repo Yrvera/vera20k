@@ -5,7 +5,7 @@
 //! to this module (outside the mutable entity borrow) so that immutable EntityStore lookups
 //! can classify blockers and decide between crush, scatter, attack, or wait.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::map::entities::EntityCategory;
 use crate::map::houses::HouseAllianceMap;
@@ -20,7 +20,10 @@ use crate::sim::movement::drive_track::DriveTrackState;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::movement::movement_blocked::handle_blocked_tick;
 use crate::sim::occupancy::OccupancyGrid;
-use crate::sim::pathfinding::cell_entry::{self, CanEnterLayerContext, CellEntryResult};
+use crate::sim::pathfinding::cell_entry::{
+    self, BuildingOccupantEntryDecision, CanEnterLayerContext, CellEntryResult,
+    LiveVehicleBuildingEntry, VehicleBuildingEntryBranch,
+};
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
 use crate::sim::pathfinding::{BridgeTraversalInput, PathGrid};
 use crate::sim::rng::SimRng;
@@ -28,6 +31,8 @@ use crate::sim::rng::SimRng;
 use super::{
     MovementConfig, MovementTickStats, MoverSnapshot, PATH_STUCK_INIT, PathfindingContext,
 };
+
+pub(super) type LiveBuildingEntrySkipMap = BTreeMap<(u16, u16), BTreeSet<u64>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DeferredCellCheck {
@@ -96,6 +101,7 @@ pub(super) fn detect_deferred_cell_check(
     current_cell: (u16, u16),
     current_object_list_layer: MovementLayer,
     occupancy: &OccupancyGrid,
+    live_building_entry_skips: &LiveBuildingEntrySkipMap,
 ) -> Option<DeferredCellCheck> {
     let object_list_layer = layer_context.object_list_layer;
     let occupancy_bits_layer = layer_context.occupancy_bits_layer;
@@ -129,15 +135,108 @@ pub(super) fn detect_deferred_cell_check(
             return Some(DeferredCellCheck::Infantry(next_cell, layer_context));
         }
     } else if cell_occ.is_some_and(|o| {
-        o.has_blockers_on(object_list_layer)
+        has_unignored_blocker_on(o, object_list_layer, next_cell, live_building_entry_skips)
             || o.infantry(object_list_layer).next().is_some()
-            || o.has_blockers_on(occupancy_bits_layer)
+            || has_unignored_blocker_on(
+                o,
+                occupancy_bits_layer,
+                next_cell,
+                live_building_entry_skips,
+            )
             || o.infantry(occupancy_bits_layer).next().is_some()
     }) {
         return Some(DeferredCellCheck::Vehicle(next_cell, layer_context));
     }
 
     None
+}
+
+fn has_unignored_blocker_on(
+    occ: &crate::sim::occupancy::CellOccupancy,
+    layer: MovementLayer,
+    cell: (u16, u16),
+    live_building_entry_skips: &LiveBuildingEntrySkipMap,
+) -> bool {
+    let ignored = live_building_entry_skips.get(&cell);
+    occ.iter_layer(layer).any(|occupant| {
+        occupant.sub_cell.is_none() && !ignored.is_some_and(|ids| ids.contains(&occupant.entity_id))
+    })
+}
+
+pub(super) fn build_live_vehicle_building_entry_skip_map(
+    entities: &crate::sim::entity_store::EntityStore,
+    mover_id: u64,
+    interner: &crate::sim::intern::StringInterner,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
+) -> LiveBuildingEntrySkipMap {
+    let Some(rules) = rules else {
+        return LiveBuildingEntrySkipMap::new();
+    };
+    let Some(mover) = entities.get(mover_id) else {
+        return LiveBuildingEntrySkipMap::new();
+    };
+    if mover.category != EntityCategory::Unit {
+        return LiveBuildingEntrySkipMap::new();
+    }
+
+    let mut skips = LiveBuildingEntrySkipMap::new();
+    for building in entities.values() {
+        if building.category != EntityCategory::Structure {
+            continue;
+        }
+        let Some(obj) = rules.object(interner.resolve(building.type_ref)) else {
+            continue;
+        };
+        let has_contact = mover.has_live_contact_with(building.stable_id);
+        if !has_contact && !obj.unit_repair && !obj.bunker {
+            continue;
+        }
+        let is_bunker_occupied = obj.bunker
+            && (building.bunker_occupant.is_some()
+                || building
+                    .passenger_role
+                    .cargo()
+                    .is_some_and(|cargo| cargo.count() > 0));
+        let foundation_cells = crate::sim::production::building_base_foundation_cells(
+            building.position.rx,
+            building.position.ry,
+            &obj.foundation,
+        );
+        for (cx, cy) in foundation_cells {
+            let input = LiveVehicleBuildingEntry {
+                mover_category: mover.category,
+                branch: VehicleBuildingEntryBranch::RadioContact {
+                    mover_has_contact: has_contact,
+                },
+                checked_building_id: building.stable_id,
+                candidate_building_id: Some(building.stable_id),
+                candidate_x: cx,
+                building_origin_x: building.position.rx,
+                number_impassable_rows: obj.number_impassable_rows,
+                is_unit_repair: obj.unit_repair,
+                is_bunker: obj.bunker,
+                bunker_occupied: is_bunker_occupied,
+            };
+            let contact_skip = cell_entry::decide_live_vehicle_building_entry(input);
+            let second_callsite_skip =
+                cell_entry::decide_live_vehicle_building_entry(LiveVehicleBuildingEntry {
+                    branch: VehicleBuildingEntryBranch::UnitRepairOrBunker,
+                    ..input
+                });
+            if matches!(contact_skip, BuildingOccupantEntryDecision::SkipBlocker)
+                || matches!(
+                    second_callsite_skip,
+                    BuildingOccupantEntryDecision::SkipBlocker
+                )
+            {
+                skips
+                    .entry((cx, cy))
+                    .or_default()
+                    .insert(building.stable_id);
+            }
+        }
+    }
+    skips
 }
 
 pub(super) fn snap_motion_to_cell_center(
@@ -571,6 +670,7 @@ mod tests {
             (0, 0),
             MovementLayer::Ground,
             &occupancy,
+            &LiveBuildingEntrySkipMap::new(),
         );
 
         assert_eq!(check, Some(DeferredCellCheck::Vehicle((1, 0), layers)));
@@ -601,8 +701,75 @@ mod tests {
             (4, 5),
             MovementLayer::Ground,
             &occupancy,
+            &LiveBuildingEntrySkipMap::new(),
         );
 
         assert_eq!(check, Some(DeferredCellCheck::Vehicle((5, 5), layers)));
+    }
+
+    #[test]
+    fn deferred_detection_ignores_only_live_skipped_building_blocker() {
+        let mut occupancy = OccupancyGrid::new();
+        occupancy.add(
+            3,
+            3,
+            10,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::AppendBuilding,
+        );
+        let layers = CanEnterLayerContext::single(MovementLayer::Ground);
+        let mut skips = LiveBuildingEntrySkipMap::new();
+        skips.entry((3, 3)).or_default().insert(10);
+
+        let check = detect_deferred_cell_check(
+            EntityCategory::Unit,
+            false,
+            layers,
+            (3, 3),
+            (2, 3),
+            MovementLayer::Ground,
+            &occupancy,
+            &skips,
+        );
+
+        assert_eq!(check, None);
+    }
+
+    #[test]
+    fn deferred_detection_keeps_unrelated_blocker_in_live_skipped_cell() {
+        let mut occupancy = OccupancyGrid::new();
+        occupancy.add(
+            3,
+            3,
+            10,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::AppendBuilding,
+        );
+        occupancy.add(
+            3,
+            3,
+            20,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        let layers = CanEnterLayerContext::single(MovementLayer::Ground);
+        let mut skips = LiveBuildingEntrySkipMap::new();
+        skips.entry((3, 3)).or_default().insert(10);
+
+        let check = detect_deferred_cell_check(
+            EntityCategory::Unit,
+            false,
+            layers,
+            (3, 3),
+            (2, 3),
+            MovementLayer::Ground,
+            &occupancy,
+            &skips,
+        );
+
+        assert_eq!(check, Some(DeferredCellCheck::Vehicle((3, 3), layers)));
     }
 }

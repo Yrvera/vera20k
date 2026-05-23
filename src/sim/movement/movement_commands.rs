@@ -19,8 +19,10 @@ use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
 use crate::util::fixed_math::{SIM_ZERO, SimFixed};
 
 use super::movement_path::{
-    find_move_path, merge_path_blocks, resolve_requested_move_goal, supports_layered_bridge_pathing,
+    find_move_path_with_marker, merge_path_blocks, resolve_requested_move_goal,
+    supports_layered_bridge_pathing,
 };
+use super::path_markers::build_peer_search_marker_overlay;
 use super::{PathfindingContext, facing_from_delta};
 use crate::rules::locomotor_type::MovementZone;
 use crate::sim::components::OrderIntent;
@@ -181,6 +183,15 @@ pub fn issue_move_command_with_layered(
         .locomotor
         .as_ref()
         .is_some_and(|loco| supports_layered_bridge_pathing(loco, grid, entity.on_bridge));
+    let marker_request_start = if queue {
+        entity
+            .movement_target
+            .as_ref()
+            .and_then(|movement| movement.path.last().copied())
+            .unwrap_or((start_rx, start_ry))
+    } else {
+        (start_rx, start_ry)
+    };
     let merged_entity_blocks = merge_path_blocks(
         entity_blocks,
         resolved_terrain,
@@ -214,6 +225,10 @@ pub fn issue_move_command_with_layered(
         );
     }
 
+    let marker_overlay =
+        build_peer_search_marker_overlay(entities, entity_id, marker_request_start);
+    let marker_overlay_ref = (!marker_overlay.is_empty()).then_some(&marker_overlay);
+
     if queue {
         // Check if entity already has a movement target to append to.
         let entity_mut = entities.get_mut(entity_id);
@@ -230,7 +245,7 @@ pub fn issue_move_command_with_layered(
                     .copied()
                     .unwrap_or(current_layer);
                 let zone_mz = movement_zone.unwrap_or(MovementZone::Normal);
-                let Some((appended, appended_layers)) = find_move_path(
+                let Some((appended, appended_layers)) = find_move_path_with_marker(
                     PathfindingContext {
                         path_grid: Some(grid),
                         zone_grid: None,
@@ -251,6 +266,7 @@ pub fn issue_move_command_with_layered(
                     movement_zone,
                     too_big_to_fit_under_bridge,
                     entity_block_map,
+                    marker_overlay_ref,
                     0, // urgency=0: initial move command
                     mover_is_crusher,
                 ) else {
@@ -275,7 +291,7 @@ pub fn issue_move_command_with_layered(
         }
     }
     let zone_mz = movement_zone.unwrap_or(MovementZone::Normal);
-    let Some((path, path_layers)) = find_move_path(
+    let Some((path, path_layers)) = find_move_path_with_marker(
         PathfindingContext {
             path_grid: Some(grid),
             zone_grid: None,
@@ -296,6 +312,7 @@ pub fn issue_move_command_with_layered(
         movement_zone,
         too_big_to_fit_under_bridge,
         entity_block_map,
+        marker_overlay_ref,
         0, // urgency=0: initial move command
         mover_is_crusher,
     ) else {

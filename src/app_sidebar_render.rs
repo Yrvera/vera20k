@@ -338,7 +338,7 @@ fn minimap_cursor_to_iso(state: &AppState) -> Option<(u16, u16)> {
         world_x,
         world_y,
         &state.height_map,
-        Some(&state.bridge_height_map),
+        Some(&state.tactical_bridge_inverse_map),
     ))
 }
 

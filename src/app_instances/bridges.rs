@@ -14,7 +14,7 @@
 use std::collections::BTreeMap;
 
 use crate::app::AppState;
-use crate::map::lighting::{self, LightingGrid};
+use crate::map::lighting::{self, CellLightGrid};
 use crate::map::terrain::{self, TILE_HEIGHT, TILE_WIDTH};
 use crate::render::batch::SpriteInstance;
 use crate::render::bridge_atlas::{BridgeAtlasLookup, is_high_bridge_body_name};
@@ -104,7 +104,7 @@ pub fn build_bridge_body_instances_inner(
     atlas: &dyn BridgeAtlasLookup,
     overlay_names: &BTreeMap<u8, String>,
     height_map: &BTreeMap<(u16, u16), u8>,
-    lighting_grid: &LightingGrid,
+    lighting_grid: &CellLightGrid,
     origin_y: f32,
     world_height: f32,
     cam_x: f32,
@@ -148,10 +148,7 @@ pub fn build_bridge_body_instances_inner(
 
         let depth_z = z.saturating_add(BRIDGE_HEIGHT_BONUS);
         let depth = compute_sprite_depth_params(origin_y, world_height, sy, depth_z);
-        let tint: [f32; 3] = lighting_grid
-            .get(&(rx, ry))
-            .copied()
-            .unwrap_or(lighting::DEFAULT_TINT);
+        let tint: [f32; 3] = lighting_grid.bridge_body_tint_at((rx, ry));
         out.push(SpriteInstance {
             position: [
                 sx + TILE_WIDTH / 2.0 + spr.offset_x,

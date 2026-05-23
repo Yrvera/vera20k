@@ -13,23 +13,8 @@ use crate::app_commands::preferred_local_owner_name;
 use crate::app_instances::in_view;
 use crate::map::entities::EntityCategory;
 use crate::render::batch::SpriteInstance;
+use crate::render::shroud_buffer::ShroudBuffer;
 use crate::sim::vision::FogState;
-
-/// Parse foundation dimensions from a string like "3x2" → (3, 2).
-fn parse_foundation(foundation: &str) -> (u32, u32) {
-    let mut parts = foundation.split('x');
-    let w: u32 = parts
-        .next()
-        .and_then(|v| v.trim().parse::<u32>().ok())
-        .unwrap_or(1)
-        .max(1);
-    let h: u32 = parts
-        .next()
-        .and_then(|v| v.trim().parse::<u32>().ok())
-        .unwrap_or(1)
-        .max(1);
-    (w, h)
-}
 
 /// Height= multiplier: 1 art.ini Height unit = 15 screen pixels (HeightFactor * AdjustForZ).
 const HEIGHT_PX: f32 = 15.0;
@@ -39,6 +24,48 @@ const BRACKET_DEPTH: f32 = 0.0006;
 
 /// Bracket line color — solid white, fully opaque.
 const BRACKET_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+const ABUFFER_NEUTRAL: u8 = 0x7F;
+const ABUFFER_BLACK: u8 = 0x00;
+
+struct BracketPixelFilter<'a> {
+    shroud: Option<&'a ShroudBuffer>,
+    camera_x: f32,
+    camera_y: f32,
+    enabled: bool,
+}
+
+impl<'a> BracketPixelFilter<'a> {
+    fn from_state(state: &'a AppState) -> Self {
+        Self {
+            shroud: state.shroud_buffer.as_ref(),
+            camera_x: state.camera_x,
+            camera_y: state.camera_y,
+            enabled: !state.sandbox_full_visibility,
+        }
+    }
+
+    fn tint_for_pixel(&self, x: i32, y: i32) -> Option<[f32; 3]> {
+        if !self.enabled {
+            return Some([BRACKET_COLOR[0], BRACKET_COLOR[1], BRACKET_COLOR[2]]);
+        }
+        let abuf = self
+            .shroud
+            .and_then(|s| s.sample_world(x as f32, y as f32, self.camera_x, self.camera_y))
+            .unwrap_or(ABUFFER_NEUTRAL);
+        match abuf {
+            ABUFFER_BLACK => None,
+            ABUFFER_NEUTRAL => Some([BRACKET_COLOR[0], BRACKET_COLOR[1], BRACKET_COLOR[2]]),
+            value => {
+                let scale = (value as f32 / ABUFFER_NEUTRAL as f32).clamp(0.0, 1.0);
+                Some([
+                    BRACKET_COLOR[0] * scale,
+                    BRACKET_COLOR[1] * scale,
+                    BRACKET_COLOR[2] * scale,
+                ])
+            }
+        }
+    }
+}
 
 /// Check if an entity is visible to the local player for overlay purposes.
 fn is_visible(
@@ -127,41 +154,85 @@ struct ScreenPt {
     y: f32,
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct SelectionBracketInstances {
+    pub back: Vec<SpriteInstance>,
+    pub front_first: Vec<SpriteInstance>,
+    pub front: Vec<SpriteInstance>,
+}
+
 /// Compute the quarter-point 25% from `a` toward `b`: (3a + b) / 4.
 fn quarter_point(a: ScreenPt, b: ScreenPt) -> ScreenPt {
     ScreenPt {
-        x: (a.x * 3.0 + b.x) * 0.25,
-        y: (a.y * 3.0 + b.y) * 0.25,
+        x: ((a.x * 3.0 + b.x) * 0.25).trunc(),
+        y: ((a.y * 3.0 + b.y) * 0.25).trunc(),
     }
+}
+
+fn screen_i32(v: f32) -> i32 {
+    v.trunc() as i32
+}
+
+fn emit_pixel(instances: &mut Vec<SpriteInstance>, x: i32, y: i32, tint: [f32; 3]) {
+    instances.push(SpriteInstance {
+        position: [x as f32, y as f32],
+        size: [1.0, 1.0],
+        uv_origin: [0.0, 0.0],
+        uv_size: [1.0, 1.0],
+        tint,
+        alpha: BRACKET_COLOR[3],
+        depth: BRACKET_DEPTH,
+        ..Default::default()
+    });
 }
 
 /// Emit 1px-wide line segments as pixel-stepping SpriteInstance quads.
 ///
-/// Steps along the line from `a` to `b` using Bresenham-style integer stepping.
-/// Each step emits a 2×1 (for iso diagonals) or 1×1 (for verticals) pixel quad.
+/// Matches the visible part of gamemd's surface-line contract for ordinary
+/// bracket segments: integer endpoints, start pixel included, final endpoint
+/// excluded, Bresenham-style x/y stepping. The optional filter handles the
+/// post-shroud final-front bracket redraw's ABuffer pixel predicate.
 fn emit_line(instances: &mut Vec<SpriteInstance>, a: ScreenPt, b: ScreenPt) {
-    let dx = b.x - a.x;
-    let dy = b.y - a.y;
-    let steps = dx.abs().max(dy.abs()).ceil() as i32;
-    if steps <= 0 {
+    emit_line_with_filter(instances, a, b, None);
+}
+
+fn emit_line_with_filter(
+    instances: &mut Vec<SpriteInstance>,
+    a: ScreenPt,
+    b: ScreenPt,
+    filter: Option<&BracketPixelFilter<'_>>,
+) {
+    let mut x = screen_i32(a.x);
+    let mut y = screen_i32(a.y);
+    let end_x = screen_i32(b.x);
+    let end_y = screen_i32(b.y);
+    if x == end_x && y == end_y {
         return;
     }
-    let step_x = dx / steps as f32;
-    let step_y = dy / steps as f32;
 
-    for i in 0..steps {
-        let px = (a.x + step_x * i as f32).round();
-        let py = (a.y + step_y * i as f32).round();
-        instances.push(SpriteInstance {
-            position: [px, py],
-            size: [1.0, 1.0],
-            uv_origin: [0.0, 0.0],
-            uv_size: [1.0, 1.0],
-            tint: [BRACKET_COLOR[0], BRACKET_COLOR[1], BRACKET_COLOR[2]],
-            alpha: BRACKET_COLOR[3],
-            depth: BRACKET_DEPTH,
-            ..Default::default()
-        });
+    let dx = (end_x - x).abs();
+    let dy = -(end_y - y).abs();
+    let sx = if x < end_x { 1 } else { -1 };
+    let sy = if y < end_y { 1 } else { -1 };
+    let mut err = dx + dy;
+
+    while x != end_x || y != end_y {
+        let tint = match filter {
+            Some(f) => f.tint_for_pixel(x, y),
+            None => Some([BRACKET_COLOR[0], BRACKET_COLOR[1], BRACKET_COLOR[2]]),
+        };
+        if let Some(tint) = tint {
+            emit_pixel(instances, x, y, tint);
+        }
+        let e2 = err * 2;
+        if e2 >= dy {
+            err += dy;
+            x += sx;
+        }
+        if e2 <= dx {
+            err += dx;
+            y += sy;
+        }
     }
 }
 
@@ -171,21 +242,32 @@ fn emit_stub(instances: &mut Vec<SpriteInstance>, a: ScreenPt, b: ScreenPt) {
     emit_line(instances, a, qp);
 }
 
+fn emit_stub_with_filter(
+    instances: &mut Vec<SpriteInstance>,
+    a: ScreenPt,
+    b: ScreenPt,
+    filter: &BracketPixelFilter<'_>,
+) {
+    let qp = quarter_point(a, b);
+    emit_line_with_filter(instances, a, qp, Some(filter));
+}
+
 /// Build bracket instances for all selected buildings.
 pub(crate) fn build_selection_bracket_instances(
     state: &AppState,
     sw: f32,
     sh: f32,
-) -> Vec<SpriteInstance> {
+) -> SelectionBracketInstances {
     let Some(sim) = &state.simulation else {
-        return Vec::new();
+        return SelectionBracketInstances::default();
     };
     let local_owner = preferred_local_owner_name(state);
     let local_owner_id = local_owner.as_deref().and_then(|n| sim.interner.get(n));
     let ignore_visibility = state.sandbox_full_visibility;
     let cam_x = state.camera_x;
     let cam_y = state.camera_y;
-    let mut instances = Vec::new();
+    let final_front_filter = BracketPixelFilter::from_state(state);
+    let mut out = SelectionBracketInstances::default();
 
     for e in sim.entities.values() {
         if e.category != EntityCategory::Structure || !e.selected {
@@ -207,7 +289,7 @@ pub(crate) fn build_selection_bracket_instances(
         // Look up foundation and Height from rules/art.
         let obj = state.rules.as_ref().and_then(|r| r.object(type_str));
         let (fw_u, fh_u) = obj
-            .map(|o| parse_foundation(&o.foundation))
+            .map(|o| crate::rules::foundation::foundation_dimensions(&o.foundation))
             .unwrap_or((2, 2));
         let fw = fw_u as f32;
         let fh = fh_u as f32;
@@ -253,33 +335,77 @@ pub(crate) fn build_selection_bracket_instances(
 
         // DrawBehind edges (5): stubs at both ends, behind sprite (hidden by building art).
         // These are drawn anyway — the building sprite naturally occludes them.
-        emit_stub(&mut instances, g[2], r[2]); // Edge 1: BL ground→BL roof (BL vertical)
-        emit_stub(&mut instances, r[2], g[2]);
-        emit_stub(&mut instances, g[3], g[2]); // Edge 2: BR ground→BL ground (back ground)
-        emit_stub(&mut instances, g[2], g[3]);
-        emit_stub(&mut instances, g[2], g[0]); // Edge 3: BL ground→FL ground (left ground)
-        emit_stub(&mut instances, g[0], g[2]);
-        emit_stub(&mut instances, r[0], r[2]); // Edge 4: FL roof→BL roof (left roof)
-        emit_stub(&mut instances, r[2], r[0]);
-        emit_stub(&mut instances, r[3], r[2]); // Edge 5: BR roof→BL roof (back roof)
-        emit_stub(&mut instances, r[2], r[3]);
+        emit_stub(&mut out.back, g[2], r[2]); // Edge 1: BL ground->BL roof (BL vertical)
+        emit_stub(&mut out.back, r[2], g[2]);
+        emit_stub(&mut out.back, g[3], g[2]); // Edge 2: BR ground->BL ground (back ground)
+        emit_stub(&mut out.back, g[2], g[3]);
+        emit_stub(&mut out.back, g[2], g[0]); // Edge 3: BL ground->FL ground (left ground)
+        emit_stub(&mut out.back, g[0], g[2]);
+        emit_stub(&mut out.back, r[0], r[2]); // Edge 4: FL roof->BL roof (left roof)
+        emit_stub(&mut out.back, r[2], r[0]);
+        emit_stub(&mut out.back, r[3], r[2]); // Edge 5: BR roof->BL roof (back roof)
+        emit_stub(&mut out.back, r[2], r[3]);
 
         // DrawExtras bracket corner edges (4): stubs at both ends, in front of sprite.
-        emit_stub(&mut instances, g[0], g[1]); // Edge 6: FL ground→FR ground (front ground)
-        emit_stub(&mut instances, g[1], g[0]);
-        emit_stub(&mut instances, g[3], g[1]); // Edge 7: BR ground→FR ground (right ground)
-        emit_stub(&mut instances, g[1], g[3]);
-        emit_stub(&mut instances, r[0], g[0]); // Edge 8: FL roof→FL ground (FL vertical)
-        emit_stub(&mut instances, g[0], r[0]);
-        emit_stub(&mut instances, r[3], g[3]); // Edge 9: BR roof→BR ground (BR vertical)
-        emit_stub(&mut instances, g[3], r[3]);
+        emit_stub(&mut out.front_first, g[0], g[1]); // Edge 6: FL ground->FR ground (front ground)
+        emit_stub_with_filter(&mut out.front, g[0], g[1], &final_front_filter);
+        emit_stub(&mut out.front_first, g[1], g[0]);
+        emit_stub_with_filter(&mut out.front, g[1], g[0], &final_front_filter);
+        emit_stub(&mut out.front_first, g[3], g[1]); // Edge 7: BR ground->FR ground (right ground)
+        emit_stub_with_filter(&mut out.front, g[3], g[1], &final_front_filter);
+        emit_stub(&mut out.front_first, g[1], g[3]);
+        emit_stub_with_filter(&mut out.front, g[1], g[3], &final_front_filter);
+        emit_stub(&mut out.front_first, r[0], g[0]); // Edge 8: FL roof->FL ground (FL vertical)
+        emit_stub_with_filter(&mut out.front, r[0], g[0], &final_front_filter);
+        emit_stub(&mut out.front_first, g[0], r[0]);
+        emit_stub_with_filter(&mut out.front, g[0], r[0], &final_front_filter);
+        emit_stub(&mut out.front_first, r[3], g[3]); // Edge 9: BR roof->BR ground (BR vertical)
+        emit_stub_with_filter(&mut out.front, r[3], g[3], &final_front_filter);
+        emit_stub(&mut out.front_first, g[3], r[3]);
+        emit_stub_with_filter(&mut out.front, g[3], r[3], &final_front_filter);
 
         // DrawExtras single-stub edges (3): only stub at the visible end.
         // All converge at hidden FR_roof corner.
-        emit_stub(&mut instances, r[0], r[1]); // Edge 10: FL roof→FR roof (front roof, stub at FL)
-        emit_stub(&mut instances, r[3], r[1]); // Edge 11: BR roof→FR roof (right roof, stub at BR)
-        emit_stub(&mut instances, g[1], r[1]); // Edge 12: FR ground→FR roof (FR vertical, stub at FR ground)
+        emit_stub(&mut out.front_first, r[0], r[1]); // Edge 10: FL roof->FR roof (front roof, stub at FL)
+        emit_stub_with_filter(&mut out.front, r[0], r[1], &final_front_filter);
+        emit_stub(&mut out.front_first, r[3], r[1]); // Edge 11: BR roof->FR roof (right roof, stub at BR)
+        emit_stub_with_filter(&mut out.front, r[3], r[1], &final_front_filter);
+        emit_stub(&mut out.front_first, g[1], r[1]); // Edge 12: FR ground->FR roof (FR vertical, stub at FR ground)
+        emit_stub_with_filter(&mut out.front, g[1], r[1], &final_front_filter);
     }
 
-    instances
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ScreenPt, emit_line};
+    use crate::render::batch::SpriteInstance;
+
+    fn line_positions(a: ScreenPt, b: ScreenPt) -> Vec<(i32, i32)> {
+        let mut instances: Vec<SpriteInstance> = Vec::new();
+        emit_line(&mut instances, a, b);
+        instances
+            .iter()
+            .map(|i| (i.position[0] as i32, i.position[1] as i32))
+            .collect()
+    }
+
+    #[test]
+    fn emit_line_excludes_final_endpoint() {
+        let pts = line_positions(ScreenPt { x: 0.0, y: 0.0 }, ScreenPt { x: 3.0, y: 0.0 });
+        assert_eq!(pts, vec![(0, 0), (1, 0), (2, 0)]);
+    }
+
+    #[test]
+    fn emit_line_handles_reverse_direction() {
+        let pts = line_positions(ScreenPt { x: 3.0, y: 0.0 }, ScreenPt { x: 0.0, y: 0.0 });
+        assert_eq!(pts, vec![(3, 0), (2, 0), (1, 0)]);
+    }
+
+    #[test]
+    fn emit_line_truncates_float_endpoints_toward_zero() {
+        let pts = line_positions(ScreenPt { x: -1.8, y: 0.9 }, ScreenPt { x: 1.8, y: 0.9 });
+        assert_eq!(pts, vec![(-1, 0), (0, 0)]);
+    }
 }

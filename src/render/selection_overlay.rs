@@ -337,9 +337,14 @@ impl SelectionOverlay {
     }
 
     /// UV origin for a given pip variant in the horizontal strip atlas.
-    /// Variants: 0=empty, 1=green, 2=yellow, 3=red.
+    /// Variants use pips.shp frame ids: 0=empty, 1=green, 2=yellow, 4=red.
     pub fn pip_uv_origin(&self, variant: u32) -> [f32; 2] {
-        let u: f32 = variant as f32 / PIP_VARIANT_COUNT as f32;
+        let atlas_slot = match variant {
+            0..=2 => variant,
+            4 => 3,
+            _ => 0,
+        };
+        let u: f32 = atlas_slot as f32 / PIP_VARIANT_COUNT as f32;
         [u, 0.0]
     }
 

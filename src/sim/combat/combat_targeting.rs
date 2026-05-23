@@ -61,6 +61,7 @@ pub(crate) struct AttackerSnapshot {
     pub target: super::TargetKind,
     pub pos_rx: u16,
     pub pos_ry: u16,
+    pub pos_z: u8,
     pub sub_x: SimFixed,
     pub sub_y: SimFixed,
     pub type_id: InternedId,
@@ -116,6 +117,7 @@ pub fn acquire_best_target_for_entity(
         target: super::TargetKind::Entity(0), // Dummy — no current target when acquiring fresh
         pos_rx: entity.position.rx,
         pos_ry: entity.position.ry,
+        pos_z: entity.position.z,
         sub_x: entity.position.sub_x,
         sub_y: entity.position.sub_y,
         type_id: entity.type_ref,

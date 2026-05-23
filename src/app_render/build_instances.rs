@@ -8,6 +8,7 @@
 //! - Internal to app_render — only called from mod.rs.
 
 use crate::app::AppState;
+use crate::app_commands::preferred_local_owner;
 use crate::app_debug_overlays;
 use crate::app_instances;
 use crate::app_sidebar_render::{
@@ -15,9 +16,9 @@ use crate::app_sidebar_render::{
     build_sidebar_instances as sidebar_inst_fn, build_sidebar_text_instances, current_sidebar_view,
 };
 use crate::app_ui_overlays::{
-    build_building_status_instances, build_cargo_pip_instances, build_occupant_pip_instances,
-    build_software_cursor_instances, build_unit_status_bg_instances,
-    build_unit_status_fill_instances,
+    build_building_radius_ring_instances, build_building_status_instances,
+    build_cargo_pip_instances, build_occupant_pip_instances, build_software_cursor_instances,
+    build_unit_status_bg_instances, build_unit_status_fill_instances,
 };
 use crate::map::terrain::{self, TilePlacement};
 use crate::map::theater::TileKey;
@@ -61,7 +62,10 @@ pub(super) struct DebugInstances {
 
 /// In-game UI overlays: selection brackets, health bars, placement preview, cursor.
 pub(super) struct UiInstances {
-    pub bracket: Vec<SpriteInstance>,
+    pub bracket_back: Vec<SpriteInstance>,
+    pub bracket_front_first: Vec<SpriteInstance>,
+    pub bracket_front: Vec<SpriteInstance>,
+    pub radius_ring: Vec<SpriteInstance>,
     pub building_status: Vec<SpriteInstance>,
     pub occupant_pip: Vec<SpriteInstance>,
     pub unit_status_bg: Vec<SpriteInstance>,
@@ -75,6 +79,8 @@ pub(super) struct UiInstances {
     pub ghost_page: u8,
     pub wall_ghost: Vec<SpriteInstance>,
     pub target_line: Vec<SpriteInstance>,
+    pub factory_rally_first: Vec<SpriteInstance>,
+    pub factory_rally_second: Vec<SpriteInstance>,
 }
 
 /// Sidebar chrome, cameos, text, minimap, and radar animation.
@@ -436,6 +442,9 @@ pub(super) fn update_minimap(state: &mut AppState, local_owner: &Option<String>)
             state.rules.as_ref(),
             Some(&sim.radar_events),
             Some(&sim.interner),
+            sim.bridge_state.as_ref(),
+            &sim.radar_terrain_dirty_cells,
+            sim.radar_terrain_dirty_generation,
         );
     }
 }
@@ -443,10 +452,8 @@ pub(super) fn update_minimap(state: &mut AppState, local_owner: &Option<String>)
 /// Build in-game UI overlay instances: selection brackets, health bars,
 /// drag rectangle, building placement preview, and software cursor.
 pub(super) fn build_ui_instances(state: &AppState, sw: f32, sh: f32) -> UiInstances {
-    // TODO: bracket geometry needs more work — uncomment to re-enable.
-    // let bracket: Vec<SpriteInstance> =
-    //     crate::app_selection_brackets::build_selection_bracket_instances(state, sw, sh);
-    let bracket: Vec<SpriteInstance> = Vec::new();
+    let bracket = crate::app_selection_brackets::build_selection_bracket_instances(state, sw, sh);
+    let radius_ring: Vec<SpriteInstance> = build_building_radius_ring_instances(state, sw, sh);
     let building_status: Vec<SpriteInstance> = build_building_status_instances(state, sw, sh);
     let occupant_pip = build_occupant_pip_instances(state, sw, sh);
     let unit_status_bg = build_unit_status_bg_instances(state, sw, sh);
@@ -468,9 +475,19 @@ pub(super) fn build_ui_instances(state: &AppState, sw: f32, sh: f32) -> UiInstan
         state.simulation.as_ref(),
         &state.height_map,
     );
+    let factory_rally = crate::app_target_lines::build_factory_rally_line_instances(
+        state.simulation.as_ref(),
+        state.rules.as_ref(),
+        &state.height_map,
+        &state.house_color_map,
+        preferred_local_owner(state).as_deref(),
+    );
 
     UiInstances {
-        bracket,
+        bracket_back: bracket.back,
+        bracket_front_first: bracket.front_first,
+        bracket_front: bracket.front,
+        radius_ring,
         building_status,
         occupant_pip,
         unit_status_bg,
@@ -484,6 +501,8 @@ pub(super) fn build_ui_instances(state: &AppState, sw: f32, sh: f32) -> UiInstan
         ghost_page,
         wall_ghost,
         target_line,
+        factory_rally_first: factory_rally.clone(),
+        factory_rally_second: factory_rally,
     }
 }
 

@@ -75,6 +75,16 @@ impl PassengerCargo {
         true
     }
 
+    /// Add a passenger without normal transport capacity/size gates.
+    ///
+    /// Standard paradrop superweapon loading uses CargoClass::AddPassenger on
+    /// limbo-created infantry; it is driven by `*ParaDropNum`, not by PDPLANE's
+    /// `Passengers=` or `SizeLimit=`.
+    pub fn board_forced(&mut self, stable_id: u64, passenger_size: u32) {
+        self.passengers.push(stable_id);
+        self.total_size += passenger_size;
+    }
+
     /// Remove a specific passenger. Returns true if found and removed.
     pub fn disembark(&mut self, stable_id: u64, passenger_size: u32) -> bool {
         if let Some(pos) = self.passengers.iter().position(|&id| id == stable_id) {
@@ -397,6 +407,7 @@ fn tick_boarding(sim: &mut Simulation, rules: &RuleSet) -> bool {
                 }
 
                 // Hide the passenger entity.
+                sim.clear_radio_contacts_for(pax_id);
                 if let Some(pax) = sim.entities.get_mut(pax_id) {
                     pax.passenger_role = PassengerRole::Inside { transport_id };
                     pax.movement_target = None;
@@ -844,6 +855,38 @@ ConditionYellow=50%
         }
         assert!(found_eva, "expected StructureGarrisoned event");
         assert!(found_sfx, "expected BuildingGarrisonedSfx event");
+    }
+
+    #[test]
+    fn test_boarding_inside_transition_clears_live_radio_contacts() {
+        let mut sim = Simulation::new();
+        let rules = garrison_test_rules();
+        let bldg = spawn_garrison_building(&mut sim, &rules, "CAGAS01", "Americans", 10, 10);
+        let pax = spawn_boarding_occupier(&mut sim, "E1", "Americans", bldg, 10, 11);
+
+        sim.entities
+            .get_mut(pax)
+            .unwrap()
+            .mark_live_contact_with(bldg);
+        sim.entities
+            .get_mut(bldg)
+            .unwrap()
+            .mark_live_contact_with(pax);
+
+        tick_boarding(&mut sim, &rules);
+
+        assert!(matches!(
+            sim.entities.get(pax).unwrap().passenger_role,
+            PassengerRole::Inside { transport_id } if transport_id == bldg
+        ));
+        assert_eq!(
+            sim.entities.get(pax).unwrap().radio_contacts,
+            Vec::<u64>::new()
+        );
+        assert!(
+            !sim.entities.get(bldg).unwrap().has_live_contact_with(pax),
+            "boarding hide should clear peer radio contacts to the passenger"
+        );
     }
 
     #[test]

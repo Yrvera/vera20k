@@ -108,24 +108,6 @@ fn dlu_rect(x: i32, y: i32, w: i32, h: i32) -> RectPx {
     )
 }
 
-/// Centering offset applied to controls that originate in the 800x600 client
-/// area. Matches the `>= 1024` width / `>= 768` height thresholds gamemd uses
-/// in `RightPanel__ComputeLayoutRects` so the title + Yuri website static
-/// shift with the right-panel chrome at oversized screen sizes.
-fn shell_origin_offset(screen_w: i32, screen_h: i32) -> (i32, i32) {
-    let dx = if screen_w > 1023 {
-        (screen_w - SHELL_BASE_W) / 2
-    } else {
-        0
-    };
-    let dy = if screen_h > 767 {
-        (screen_h - SHELL_BASE_H) / 2
-    } else {
-        0
-    };
-    (dx, dy)
-}
-
 fn movie_origin(screen_w: i32, screen_h: i32) -> (i32, i32) {
     let x = if screen_w <= SHELL_BASE_W {
         0
@@ -257,6 +239,31 @@ fn version_line_rect(screen_w: i32, right_panel: RightPanelRects) -> RectPx {
     RectPx::new(x, y, ctrl_w, ctrl_h)
 }
 
+/// Position a right-panel child control with the same sidebar inset and
+/// oversized-screen horizontal compensation used by the retail right-anchor
+/// helper.
+fn right_anchor_rect(screen_w: i32, right_panel: RightPanelRects, rect: RectPx) -> RectPx {
+    let inset = (RIGHT_PANEL_WIDTH - rect.w) / 2;
+    let delta_x = if screen_w > SHELL_BASE_W {
+        (screen_w - SHELL_BASE_W) / 2
+    } else {
+        0
+    };
+    RectPx::new(
+        screen_w - inset - rect.w - delta_x,
+        right_panel.top.y + rect.y,
+        rect.w,
+        rect.h,
+    )
+}
+
+fn title_rect(screen_w: i32, right_panel: RightPanelRects) -> RectPx {
+    let anchored = right_anchor_rect(screen_w, right_panel, dlu_rect(425, 1, 108, 10));
+    // Retail special-cases the 0x694 heading after the right-anchor pass:
+    // top += 7, height += 1 in FUN_0060B950 for main menu dialog 0xE2.
+    RectPx::new(anchored.x, anchored.y + 7, anchored.w, anchored.h + 1)
+}
+
 /// Snap a DLU-derived button Y to the nearest chrome tile row.
 ///
 /// Each button sits in one SDBTNBKGD tile slot in the right-panel chrome.
@@ -265,7 +272,7 @@ fn version_line_rect(screen_w: i32, right_panel: RightPanelRects) -> RectPx {
 /// This makes the button rect == the chrome tile rect, so the SDBTNANM
 /// button artwork centers exactly inside it.
 fn button_rect_for_dlu_y(dlu_y: i32, right_panel: RightPanelRects) -> RectPx {
-    let raw_y = mul_div_round(dlu_y, BASE_Y, 8);
+    let raw_y = mul_div_round(dlu_y, BASE_Y, 8) + right_panel.top.y;
     let tile_y = right_panel.tile.y;
     let tile_h = right_panel.tile.h.max(1);
     let tile_index = ((raw_y - tile_y + tile_h / 2) / tile_h).max(0);
@@ -286,27 +293,15 @@ pub fn compute_layout(screen_w: u32, screen_h: u32) -> MainMenuShellLayout {
     let lower_strip = lower_strip_rect(screen_w, screen_h);
     let version_line = version_line_rect(screen_w, right_panel);
     let tooltip_line = tooltip_line_rect(screen_w, screen_h);
-    let (offset_x, offset_y) = shell_origin_offset(screen_w, screen_h);
-    let title_base = dlu_rect(425, 1, 108, 10);
     let website_base = dlu_rect(447, 29, 61, 33);
     MainMenuShellLayout {
         screen: RectPx::new(0, 0, screen_w, screen_h),
         movie_base,
         movie: RectPx::new(movie_x, movie_y, movie_w, movie_h),
-        title: RectPx::new(
-            title_base.x + offset_x,
-            title_base.y + offset_y,
-            title_base.w,
-            title_base.h,
-        ),
+        title: title_rect(screen_w, right_panel),
         version_line,
         tooltip_line,
-        website_static: RectPx::new(
-            website_base.x + offset_x,
-            website_base.y + offset_y,
-            website_base.w,
-            website_base.h,
-        ),
+        website_static: right_anchor_rect(screen_w, right_panel, website_base),
         buttons: [
             MainMenuButtonRect {
                 id: MainMenuControlId::SinglePlayer0x683,
@@ -401,9 +396,9 @@ mod tests {
 
     #[test]
     fn title_rect_matches_dlu_at_800x600() {
-        // DLU (425, 1, 108, 10) at 800x600 → pixel (638, 2, 162, 16).
+        // Right-anchor helper then main-menu heading nudge: top += 7, height += 1.
         let layout = compute_layout(800, 600);
-        assert_eq!(layout.title, RectPx::new(638, 2, 162, 16));
+        assert_eq!(layout.title, RectPx::new(635, 9, 162, 17));
     }
 
     #[test]
@@ -436,10 +431,20 @@ mod tests {
         let layout = compute_layout(1024, 768);
         assert_eq!(layout.movie_base, MainMenuMovieBase::Ra2tsL);
         assert_eq!(layout.movie, RectPx::new(112, 84, 632, 570));
-        // Right panel shifts to (744, 84) at 1024x768; first tile row at y=283.
-        assert_eq!(layout.buttons[0].rect, RectPx::new(744, 283, 168, 42));
-        // Title heading at DLU (638, 2) + (112, 84) centering offset = (750, 86).
-        assert_eq!(layout.title, RectPx::new(750, 86, 162, 16));
+        assert_eq!(layout.right_panel.top, RectPx::new(744, 84, 168, 199));
+        assert_eq!(layout.right_panel.tile, RectPx::new(744, 283, 168, 42));
+        assert_eq!(layout.right_panel.bottom, RectPx::new(744, 661, 168, 23));
+        assert_eq!(layout.lower_strip, RectPx::new(112, 652, 632, 32));
+        assert_eq!(layout.title, RectPx::new(747, 93, 162, 17));
+    }
+
+    #[test]
+    fn large_screen_buttons_snap_to_centered_right_panel_tiles() {
+        let layout = compute_layout(1024, 768);
+        let expected_y = [283, 325, 367, 409, 451, 619];
+        for (button, y) in layout.buttons.iter().zip(expected_y) {
+            assert_eq!(button.rect, RectPx::new(744, y, 168, 42));
+        }
     }
 
     #[test]

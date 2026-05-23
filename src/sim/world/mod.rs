@@ -160,11 +160,10 @@ pub enum SimSoundEvent {
     /// First-occupant SFX from rulesmd [AudioVisual] BuildingGarrisonedSound.
     /// Positional cue gated on owner == local human.
     BuildingGarrisonedSfx { owner: InternedId, rx: u16, ry: u16 },
-    /// SFX played when a docked harvester departs after dumping. Resolved
-    /// at the app layer to [AudioVisual] BunkerWallsDownSound (retail value
-    /// "TankBunkerDown"). Positional, audible to all players. Mirrors
-    /// gamemd's `ReleaseDockedHarvester` step 2 (`VocClass::PlayAt` at the
-    /// building location).
+    /// SFX for conditional reciprocal-link harvester release. Resolved at
+    /// the app layer to [AudioVisual] BunkerWallsDownSound (retail value
+    /// "TankBunkerDown"). Stock zero-link refinery unload completion does
+    /// not emit this event.
     RefineryExitSfx { rx: u16, ry: u16 },
     /// A paratrooper was dropped from a carrier aircraft.
     /// Played at the drop position; app layer resolves to [General] ChuteSound.
@@ -178,8 +177,23 @@ pub enum SimSoundEvent {
     /// engineer's house — app layer plays `EVA_BridgeRepaired` only if
     /// `owner` is the local human player. App layer plays the spatial
     /// `[BridgeRepaired]` sound for everyone in range, gated on
-    /// `rules.bridge_rules.repair_sound.is_some()`.
-    BridgeRepaired { rx: u16, ry: u16, owner: InternedId },
+    /// `rules.bridge_rules.repair_sound.is_some()`. `eva_allowed` is the
+    /// result of gamemd's non-drawing radar event creation/dedup gate.
+    BridgeRepaired {
+        rx: u16,
+        ry: u16,
+        owner: InternedId,
+        eva_allowed: bool,
+    },
+    /// A delayed world-effect animation reached its first active frame.
+    WorldEffectStarted {
+        sound_id: InternedId,
+        rx: u16,
+        ry: u16,
+        sub_x: SimFixed,
+        sub_y: SimFixed,
+        z: u8,
+    },
 }
 
 /// A fire event produced during combat — carries firing-tick facts for
@@ -190,6 +204,23 @@ pub enum SimSoundEvent {
 /// sound id at the authoritative fire tick. Garrison fields remain
 /// fire-port/occupant-specific so the app layer can keep the existing
 /// `OccupantAnim` path separate.
+/// Source position facts captured at the authoritative fire tick.
+///
+/// The app layer combines this deterministic snapshot with art/rules metadata
+/// to resolve the visible muzzle, projectile, and report-sound origin.
+#[derive(Debug, Clone)]
+pub struct FireOriginSnapshot {
+    pub rx: u16,
+    pub ry: u16,
+    pub sub_x: SimFixed,
+    pub sub_y: SimFixed,
+    pub z: u8,
+    pub facing: u8,
+    pub category: EntityCategory,
+    /// Pre-shot burst index. First shot in a burst is 0.
+    pub burst_index: u8,
+}
+
 #[derive(Debug, Clone)]
 pub struct SimFireEvent {
     /// Stable ID of the entity that fired.
@@ -204,12 +235,14 @@ pub struct SimFireEvent {
     pub facing: u8,
     /// Firing object's veterancy at the fire tick.
     pub veterancy: u16,
+    /// Source facts from the fire tick, before burst/cooldown updates.
+    pub origin_snapshot: FireOriginSnapshot,
     /// What was fired at — entity stable ID or ground cell coord.
     /// For projectile trajectory: Entity → look up entity position; Cell →
     /// use cell center as the destination.
     pub target: crate::sim::combat::TargetKind,
-    /// Non-garrison weapon report sound id. Garrison keeps the existing
-    /// `SimSoundEvent::WeaponFired` path in this pass.
+    /// Weapon report sound id. The app layer positions this at the resolved
+    /// fire origin for both normal and garrison fire.
     pub report_sound_id: Option<InternedId>,
     /// For garrison fire: which muzzle port index fired (for fire port positioning).
     /// None = normal weapon FLH, Some(idx) = garrison fire port index.
@@ -304,9 +337,19 @@ pub struct Simulation {
     /// runs allocation-free.
     #[serde(skip)]
     pub metallic_debris: Vec<InternedId>,
+    /// Selected start/report sound for bridge animation SHPs, keyed by SHP ID.
+    #[serde(skip)]
+    pub bridge_anim_sounds: BTreeMap<InternedId, InternedId>,
     /// Radar event queue for minimap pings and Spacebar cycling.
     #[serde(skip)]
     pub radar_events: RadarEventQueue,
+    /// Runtime terrain cells whose radar/minimap terrain pixel needs refresh.
+    /// Render reads this generation without mutating sim; the list is small and
+    /// de-duplicated at emission.
+    #[serde(skip)]
+    pub radar_terrain_dirty_cells: Vec<(u16, u16)>,
+    #[serde(skip)]
+    pub radar_terrain_dirty_generation: u64,
     /// Per-player power state (output, drain, low-power flag, spy blackout timer).
     /// Updated each tick by `power_system::tick_power_states()`.
     pub power_states: BTreeMap<InternedId, PowerState>,
@@ -412,7 +455,10 @@ impl Simulation {
             occupancy: OccupancyGrid::new(),
             bridge_explosions: Vec::new(),
             metallic_debris: Vec::new(),
+            bridge_anim_sounds: BTreeMap::new(),
             radar_events: RadarEventQueue::default(),
+            radar_terrain_dirty_cells: Vec::new(),
+            radar_terrain_dirty_generation: 0,
             power_states: BTreeMap::new(),
             super_weapons: BTreeMap::new(),
             lightning_storm: None,
@@ -438,6 +484,23 @@ impl Simulation {
     #[inline]
     pub fn resolve(&self, id: crate::sim::intern::InternedId) -> &str {
         self.interner.resolve(id)
+    }
+
+    pub(crate) fn mark_radar_terrain_dirty_cells<I>(&mut self, cells: I)
+    where
+        I: IntoIterator<Item = (u16, u16)>,
+    {
+        let mut changed = false;
+        for cell in cells {
+            if !self.radar_terrain_dirty_cells.contains(&cell) {
+                self.radar_terrain_dirty_cells.push(cell);
+                changed = true;
+            }
+        }
+        if changed {
+            self.radar_terrain_dirty_generation =
+                self.radar_terrain_dirty_generation.wrapping_add(1);
+        }
     }
 
     /// Intern a string, returning its InternedId.
@@ -552,7 +615,12 @@ impl Simulation {
             // remove_entity_occupancy before calling despawn_entity).
             self.occupancy.remove(rx, ry, stable_id);
         }
+        self.clear_radio_contacts_for(stable_id);
         self.entities.remove(stable_id);
+    }
+
+    pub(crate) fn clear_radio_contacts_for(&mut self, stable_id: u64) {
+        self.entities.clear_radio_contacts_for(stable_id);
     }
 
     /// Check each house for defeat (owned count == 0) and game completion
@@ -631,6 +699,7 @@ impl Simulation {
         terrain_speed_config: terrain_speed::TerrainSpeedConfig,
         bridge_explosions: Vec<InternedId>,
         metallic_debris: Vec<InternedId>,
+        bridge_anim_sounds: BTreeMap<InternedId, InternedId>,
         effect_frame_counts: BTreeMap<InternedId, u16>,
         terrain_costs: BTreeMap<SpeedType, TerrainCostGrid>,
     ) {
@@ -639,6 +708,7 @@ impl Simulation {
         self.terrain_speed_config = terrain_speed_config;
         self.bridge_explosions = bridge_explosions;
         self.metallic_debris = metallic_debris;
+        self.bridge_anim_sounds = bridge_anim_sounds;
         self.effect_frame_counts = effect_frame_counts;
         self.terrain_costs = terrain_costs;
 
@@ -1181,6 +1251,8 @@ impl Simulation {
                             elapsed_ms: 0,
                             translucent: true,
                             delay_ms: 0,
+                            start_sound_id: None,
+                            start_sound_emitted: false,
                         });
                     }
                 }
@@ -1363,6 +1435,8 @@ impl Simulation {
                     elapsed_ms: 0,
                     translucent: true,
                     delay_ms: 0,
+                    start_sound_id: None,
+                    start_sound_emitted: false,
                 });
             }
             // Collect fire events for render-side muzzle flash / projectile origin.
@@ -1520,7 +1594,22 @@ impl Simulation {
         self.radar_events.tick(tick_ms);
 
         // Tick world-effect animations and remove finished ones.
-        self.world_effects.retain_mut(|fx| !fx.tick(tick_ms));
+        let mut started_effect_sounds = Vec::new();
+        self.world_effects.retain_mut(|fx| {
+            let tick = fx.tick_with_start_sound(tick_ms);
+            if let Some(sound_id) = tick.started_sound {
+                started_effect_sounds.push(SimSoundEvent::WorldEffectStarted {
+                    sound_id,
+                    rx: fx.rx,
+                    ry: fx.ry,
+                    sub_x: fx.sub_x,
+                    sub_y: fx.sub_y,
+                    z: fx.z,
+                });
+            }
+            !tick.finished
+        });
+        self.sound_events.extend(started_effect_sounds);
 
         // Debug-mode safety net: rebuild occupancy from scratch and compare
         // with the persistent grid. Catches missed add/remove calls.

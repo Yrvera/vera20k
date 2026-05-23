@@ -516,8 +516,8 @@ pub struct BridgeRuntimeState {
     /// First-class anchor spans (one per anchor cell). Replaces emergent
     /// flag-bit detection.
     anchor_spans: BTreeMap<u16, AnchorSpan>,
-    /// Default per-map override + rules `destroyable_by_default`. Read by
-    /// `apply_area_damage` outer gate (Phase F).
+    /// Active `SpecialFlags::DestroyableBridges` bit. Read by the weapon AoE
+    /// bridge-damage outer gate.
     bridge_destroyable_flag: bool,
 }
 
@@ -1505,9 +1505,9 @@ fn index_of(width: u16, height: u16, rx: u16, ry: u16) -> Option<usize> {
 /// `center`. Yields cell coordinates clamped to non-negative `(u16, u16)`
 /// (cells with negative computed coords are skipped — they're off-map).
 ///
-/// Used by the engineer-repair trigger and the hut-destruction collapse
-/// dispatch. Inclusive bounds `-2..=+2` produce exactly 25 cells when the
-/// center is interior; off-map negative cells are silently dropped.
+/// Used by the engineer-repair trigger. Inclusive bounds `-2..=+2` produce
+/// exactly 25 cells when the center is interior; off-map negative cells are
+/// silently dropped.
 pub fn cells_in_5x5_scan(center: (u16, u16)) -> impl Iterator<Item = (u16, u16)> {
     let (cx, cy) = (center.0 as i32, center.1 as i32);
     (-2..=2i32).flat_map(move |dy| {
@@ -1626,8 +1626,18 @@ fn compute_low_bridge_tube_endpoints(
         else {
             continue;
         };
-        let endpoint_a = (cell.rx, cell.ry);
-        let endpoint_b = tube.exit;
+        let (endpoint_a, endpoint_b) = if tube.source
+            == crate::map::tube_facts::TubeSource::ExplicitMap
+            && tube.path_len() > 0
+            && tube.exit != (cell.rx, cell.ry)
+        {
+            ((cell.rx, cell.ry), tube.exit)
+        } else {
+            let Some(endpoints) = low_bridge_span_endpoints(terrain, cell.rx, cell.ry) else {
+                continue;
+            };
+            endpoints
+        };
         let key = ordered_endpoint_key(endpoint_a, endpoint_b);
         if !seen.insert(key) {
             continue;
@@ -1641,6 +1651,62 @@ fn compute_low_bridge_tube_endpoints(
         });
     }
     records
+}
+
+fn low_bridge_span_endpoints(
+    terrain: &ResolvedTerrainGrid,
+    rx: u16,
+    ry: u16,
+) -> Option<((u16, u16), (u16, u16))> {
+    let axis = if neighbor_is_low_bridge_tube(terrain, rx, ry, Direction::E)
+        && neighbor_is_low_bridge_tube(terrain, rx, ry, Direction::W)
+    {
+        (Direction::W, Direction::E)
+    } else if neighbor_is_low_bridge_tube(terrain, rx, ry, Direction::N)
+        && neighbor_is_low_bridge_tube(terrain, rx, ry, Direction::S)
+    {
+        (Direction::N, Direction::S)
+    } else {
+        return None;
+    };
+
+    let start = walk_low_bridge_span(terrain, (rx, ry), axis.0);
+    let end = walk_low_bridge_span(terrain, (rx, ry), axis.1);
+    let before_start = adjacent_coord(start, axis.0, terrain.width(), terrain.height())?;
+    let after_end = adjacent_coord(end, axis.1, terrain.width(), terrain.height())?;
+
+    Some((before_start, after_end))
+}
+
+fn walk_low_bridge_span(
+    terrain: &ResolvedTerrainGrid,
+    start: (u16, u16),
+    direction: Direction,
+) -> (u16, u16) {
+    let mut cur = start;
+    while let Some(next) = adjacent_coord(cur, direction, terrain.width(), terrain.height()) {
+        let Some(cell) = terrain.cell(next.0, next.1) else {
+            break;
+        };
+        if !cell.is_low_bridge_tube_cell() {
+            break;
+        }
+        cur = next;
+    }
+    cur
+}
+
+fn adjacent_coord(
+    coord: (u16, u16),
+    direction: Direction,
+    width: u16,
+    height: u16,
+) -> Option<(u16, u16)> {
+    let (dx, dy) = direction.offset();
+    let nx = coord.0 as i32 + dx;
+    let ny = coord.1 as i32 + dy;
+    (nx >= 0 && ny >= 0 && (nx as u16) < width && (ny as u16) < height)
+        .then_some((nx as u16, ny as u16))
 }
 
 fn has_opposite_low_bridge_tube_neighbors(terrain: &ResolvedTerrainGrid, rx: u16, ry: u16) -> bool {
@@ -2231,8 +2297,11 @@ mod tests {
             BridgeRuntimeState::from_resolved_terrain(&make_low_bridge_terrain(), true, 300);
         let records = state.endpoint_records();
         assert_eq!(records.len(), 1);
-        assert_eq!(records[0].bridge_kind, BridgeRecordKind::Low);
-        assert!(!records[0].is_high());
+        let record = records[0];
+        assert_eq!(record.bridge_kind, BridgeRecordKind::Low);
+        assert!(!record.is_high());
+        assert_eq!(record.endpoint_a, (0, 0));
+        assert_eq!(record.endpoint_b, (4, 0));
     }
 
     #[test]

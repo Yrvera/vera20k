@@ -491,6 +491,22 @@ impl ShroudBuffer {
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.draw(0..6, 0..1);
     }
+
+    /// Sample the CPU-side ABuffer at a world-space screen pixel.
+    ///
+    /// The shroud buffer is rebuilt in virtual world pixels (`screen / zoom`),
+    /// with camera scroll subtracted before blitting. Callers that build
+    /// world-space overlay pixels can use this to match the later fullscreen
+    /// multiply pass.
+    pub fn sample_world(&self, world_x: f32, world_y: f32, cam_x: f32, cam_y: f32) -> Option<u8> {
+        let vx = (world_x - cam_x.floor()).floor() as i32;
+        let vy = (world_y - cam_y.floor()).floor() as i32;
+        if vx < 0 || vy < 0 || vx >= self.width as i32 || vy >= self.height as i32 {
+            return None;
+        }
+        let idx = vy as usize * self.row_stride as usize + vx as usize;
+        self.pixels.get(idx).copied()
+    }
 }
 
 /// Extract raw brightness pixel data from a loaded SHROUD.SHP file.

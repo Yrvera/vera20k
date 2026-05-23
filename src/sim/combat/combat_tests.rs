@@ -67,13 +67,14 @@ fn guardian_gi_rules() -> RuleSet {
 [VehicleTypes]\n0=HTNK\n\n\
 [AircraftTypes]\n\n\
 [BuildingTypes]\n\n\
+[General]\nMissileROTVar=.25\n\n\
 [GGI]\nStrength=100\nArmor=none\nSpeed=4\nPrimary=M60\nSecondary=MissileLauncher\nDeployFire=yes\n\n\
 [E2]\nStrength=125\nArmor=none\nSpeed=4\n\n\
 [ROCK]\nStrength=125\nArmor=none\nSpeed=8\nConsideredAircraft=yes\n\n\
 [HTNK]\nStrength=400\nArmor=heavy\nSpeed=5\n\n\
 [M60]\nDamage=15\nROF=20\nRange=4\nWarhead=SA\nReport=GGIAttack\n\n\
-[MissileLauncher]\nDamage=40\nROF=40\nRange=8\nProjectile=AAHeatSeeker2\nWarhead=GUARDWH\nReport=GuardianGIDeployedAttack\n\n\
-[AAHeatSeeker2]\nAA=yes\nAG=yes\n\n\
+[MissileLauncher]\nDamage=40\nROF=40\nRange=8\nBurst=1\nProjectile=AAHeatSeeker2\nSpeed=30\nWarhead=GUARDWH\nReport=GuardianGIDeployedAttack\nMinimumRange=1\n\n\
+[AAHeatSeeker2]\nArm=2\nShadow=no\nProximity=no\nRanged=yes\nAA=yes\nAG=yes\nImage=DRAGON\nROT=60\nSubjectToCliffs=no\nSubjectToElevation=no\nSubjectToWalls=no\n\n\
 [SA]\nVerses=100%,80%,80%,50%,25%,25%,75%,50%,25%,100%,100%\n\n\
 [GUARDWH]\nVerses=20%,20%,20%,100%,50%,100%,10%,10%,10%,100%,100%\n",
     );
@@ -189,6 +190,21 @@ fn test_armor_index_lookup() {
     assert_eq!(armor_index("wood"), 6);
     assert_eq!(armor_index("concrete"), 8);
     assert_eq!(armor_index("unknown"), 0);
+}
+
+#[test]
+fn cell_center_coords_remains_ground_z_for_cell_targets() {
+    let (rx, ry, sub_x, sub_y) = cell_center_coords(7, 9);
+    assert_eq!((rx, ry), (7, 9));
+    assert_eq!(sub_x.to_num::<i32>(), 128);
+    assert_eq!(sub_y.to_num::<i32>(), 128);
+
+    let entities = EntityStore::new();
+    assert_eq!(
+        attack_impact_z(TargetKind::Cell(7, 9), &entities),
+        0,
+        "force-fire cell targets must not inherit bridge/elevation Z from generic center coords"
+    );
 }
 
 #[test]
@@ -544,8 +560,12 @@ fn test_tick_combat_respects_cooldown() {
 fn test_tick_combat_kills_target() {
     let rules: RuleSet = test_rules();
     let mut store = EntityStore::new();
-    store.insert(make_entity(1, "MTNK", 5, 5, 300));
-    store.insert(make_entity(2, "MTNK", 8, 5, 10));
+    let mut attacker = make_entity(1, "MTNK", 5, 5, 300);
+    let mut target = make_entity(2, "MTNK", 8, 5, 10);
+    attacker.mark_live_contact_with(2);
+    target.mark_live_contact_with(1);
+    store.insert(attacker);
+    store.insert(target);
     let mut interner = test_interner();
     issue_attack_command(&mut store, 1, 2, None, &interner);
 
@@ -564,6 +584,10 @@ fn test_tick_combat_kills_target() {
     assert!(
         store.get(1).unwrap().attack_target.is_none(),
         "AttackTarget removed after target dies"
+    );
+    assert!(
+        !store.get(1).unwrap().has_live_contact_with(2),
+        "immediate combat removal should clear stale radio contact"
     );
 }
 
@@ -983,11 +1007,11 @@ fn garrison_fire_keeps_occupant_anim_and_sound_path() {
         ev.occupant_anim.map(|id| interner.resolve(id)),
         Some("UCFLASH")
     );
-    assert_eq!(ev.report_sound_id, None);
-    assert!(matches!(
-        sounds.as_slice(),
-        [SimSoundEvent::WeaponFired { .. }]
-    ));
+    assert_eq!(
+        ev.report_sound_id.map(|id| interner.resolve(id)),
+        Some("GIAttack")
+    );
+    assert!(sounds.is_empty());
 }
 
 #[test]

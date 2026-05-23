@@ -1,9 +1,9 @@
 //! Low-bridge TubeClass movement state.
 //!
 //! This is separate from subterranean tunnel locomotion. Low-bridge tubes are
-//! map-owned TubeClass facts; units may begin visible tube movement only when
-//! the tube has a real path buffer. Automatic low-bridge shell tubes are valid
-//! cell facts but have zero steps and are rejected here.
+//! map-owned TubeClass facts. Explicit tubes may have a path buffer, while
+//! automatic low-bridge shell tubes have zero steps and immediately finish at
+//! their same-cell exit.
 
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::map::tube_facts::{TubeFact, TubeId};
@@ -12,6 +12,7 @@ use crate::sim::entity_store::EntityStore;
 use crate::sim::movement::facing_from_delta;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::occupancy::{CellListInsertion, OccupancyGrid};
+use crate::sim::pathfinding::{PathCell, PathGrid};
 use crate::util::lepton::CELL_CENTER_LEPTON;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -44,9 +45,6 @@ pub fn begin_low_bridge_tube_movement(
     tube_id: TubeId,
     tube: &TubeFact,
 ) -> Result<LowBridgeTubeMovementState, TubeBeginError> {
-    if tube.path_len() == 0 {
-        return Err(TubeBeginError::ZeroLengthTube);
-    }
     Ok(LowBridgeTubeMovementState {
         tube_id,
         cursor: 0,
@@ -104,6 +102,14 @@ pub fn tick_low_bridge_tube_movement(
     terrain: &ResolvedTerrainGrid,
 ) {
     let keys = entities.keys_sorted();
+    if !keys.iter().any(|&id| {
+        entities
+            .get(id)
+            .is_some_and(|entity| entity.low_bridge_tube_state.is_some())
+    }) {
+        return;
+    }
+    let path_grid = PathGrid::from_resolved_terrain(terrain);
     for &id in &keys {
         let Some(entity) = entities.get_mut(id) else {
             continue;
@@ -115,12 +121,8 @@ pub fn tick_low_bridge_tube_movement(
             entity.low_bridge_tube_state = None;
             continue;
         };
-        if tube.path_len() == 0 {
-            debug_assert!(
-                false,
-                "zero-length low-bridge tube movement state should never start"
-            );
-            entity.low_bridge_tube_state = None;
+        if state.cursor as usize >= tube.path_len() {
+            finish_tube_movement(entity, occupancy, id, state, &path_grid);
             continue;
         }
 
@@ -135,22 +137,30 @@ pub fn tick_low_bridge_tube_movement(
             continue;
         };
 
-        move_entity_to_cell(entity, occupancy, id, old, next);
+        move_entity_to_cell(entity, occupancy, id, old, next, &path_grid);
         state.cursor = state.cursor.saturating_add(1);
 
         if state.cursor as usize >= tube.path_len() || next == state.exit {
-            let old = (entity.position.rx, entity.position.ry);
-            move_entity_to_cell(entity, occupancy, id, old, state.exit);
-            entity.low_bridge_tube_state = None;
-            if let Some(target) = &mut entity.movement_target {
-                if target.next_index < target.path.len()
-                    && target.path[target.next_index] == state.exit
-                {
-                    target.next_index += 1;
-                }
-            }
+            finish_tube_movement(entity, occupancy, id, state, &path_grid);
         } else {
             entity.low_bridge_tube_state = Some(state);
+        }
+    }
+}
+
+fn finish_tube_movement(
+    entity: &mut crate::sim::game_entity::GameEntity,
+    occupancy: &mut OccupancyGrid,
+    id: u64,
+    state: LowBridgeTubeMovementState,
+    path_grid: &PathGrid,
+) {
+    let old = (entity.position.rx, entity.position.ry);
+    move_entity_to_cell(entity, occupancy, id, old, state.exit, path_grid);
+    entity.low_bridge_tube_state = None;
+    if let Some(target) = &mut entity.movement_target {
+        if target.next_index < target.path.len() && target.path[target.next_index] == state.exit {
+            target.next_index += 1;
         }
     }
 }
@@ -161,40 +171,116 @@ fn move_entity_to_cell(
     id: u64,
     old: (u16, u16),
     next: (u16, u16),
+    path_grid: &PathGrid,
 ) {
-    if old == next {
-        return;
+    if old != next {
+        entity.facing =
+            facing_from_delta(next.0 as i32 - old.0 as i32, next.1 as i32 - old.1 as i32);
     }
-    entity.facing = facing_from_delta(next.0 as i32 - old.0 as i32, next.1 as i32 - old.1 as i32);
-    let layer = entity.movement_layer_or_ground();
-    occupancy.move_entity(
-        old.0,
-        old.1,
-        next.0,
-        next.1,
-        id,
-        layer,
-        entity.sub_cell,
-        CellListInsertion::from_category(entity.category),
-    );
+
+    let old_occupancy_layer = if entity.on_bridge {
+        MovementLayer::Bridge
+    } else {
+        MovementLayer::Ground
+    };
+    let active_layer = infer_tube_landing_layer(entity.on_bridge, path_grid.cell(next.0, next.1));
+    let bridge_update =
+        resolve_tube_landing_bridge_state(entity, old, next, active_layer, path_grid);
+    let new_on_bridge =
+        super::movement_bridge::projected_on_bridge(entity.on_bridge, bridge_update);
+    let new_occupancy_layer = if new_on_bridge {
+        MovementLayer::Bridge
+    } else {
+        MovementLayer::Ground
+    };
+
+    if old != next || old_occupancy_layer != new_occupancy_layer {
+        occupancy.move_entity(
+            old.0,
+            old.1,
+            next.0,
+            next.1,
+            id,
+            new_occupancy_layer,
+            entity.sub_cell,
+            CellListInsertion::from_category(entity.category),
+        );
+    }
     entity.position.rx = next.0;
     entity.position.ry = next.1;
     entity.position.sub_x = CELL_CENTER_LEPTON;
     entity.position.sub_y = CELL_CENTER_LEPTON;
+    super::movement_bridge::apply_pending_bridge_render_state(
+        &mut entity.locomotor,
+        &mut entity.bridge_occupancy,
+        &mut entity.on_bridge,
+        active_layer,
+        bridge_update,
+        id,
+    );
     entity.position.refresh_screen_coords();
-    if let Some(loco) = &mut entity.locomotor {
-        loco.layer = match layer {
-            MovementLayer::Air | MovementLayer::Underground => MovementLayer::Ground,
-            other => other,
-        };
+}
+
+fn infer_tube_landing_layer(on_bridge: bool, dst_cell: Option<&PathCell>) -> MovementLayer {
+    let Some(dst_cell) = dst_cell else {
+        return MovementLayer::Ground;
+    };
+    if dst_cell.bridge_walkable
+        && (on_bridge || dst_cell.has_structural_bridge() || dst_cell.is_low_bridge_tube_cell())
+    {
+        MovementLayer::Bridge
+    } else {
+        MovementLayer::Ground
     }
+}
+
+fn resolve_tube_landing_bridge_state(
+    entity: &mut crate::sim::game_entity::GameEntity,
+    old: (u16, u16),
+    next: (u16, u16),
+    active_layer: MovementLayer,
+    path_grid: &PathGrid,
+) -> super::movement_bridge::BridgeStateUpdate {
+    let bridge_update = super::movement_bridge::resolve_cell_transition_bridge_state(
+        &mut entity.position,
+        Some(path_grid),
+        old,
+        next,
+        active_layer,
+    );
+    if !matches!(
+        bridge_update,
+        super::movement_bridge::BridgeStateUpdate::Unchanged
+    ) {
+        return bridge_update;
+    }
+
+    let Some(dst_cell) = path_grid.cell(next.0, next.1) else {
+        return bridge_update;
+    };
+
+    if dst_cell.bridge_walkable
+        && (dst_cell.has_structural_bridge() || dst_cell.is_low_bridge_tube_cell())
+    {
+        let deck_level = dst_cell
+            .bridge_deck_level_if_any()
+            .unwrap_or(dst_cell.ground_level);
+        entity.position.z = deck_level;
+        return super::movement_bridge::BridgeStateUpdate::Set(deck_level);
+    }
+    if !dst_cell.bridge_walkable {
+        entity.position.z = dst_cell.ground_level;
+        return super::movement_bridge::BridgeStateUpdate::Clear;
+    }
+
+    bridge_update
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::map::resolved_terrain::{
-        ResolvedTerrainCell, ResolvedTerrainGrid, YR_CELL_LAND_TUNNEL,
+        BridgeDirection, BridgeLayer, ResolvedTerrainCell, ResolvedTerrainGrid, YR_CELL_LAND_TUNNEL,
     };
     use crate::map::tube_facts::TubeSource;
     use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
@@ -256,14 +342,37 @@ mod tests {
         }
     }
 
+    fn low_bridge_tube_cell(
+        rx: u16,
+        ry: u16,
+        tube_id: TubeId,
+        deck_level: u8,
+    ) -> ResolvedTerrainCell {
+        let mut c = cell(rx, ry);
+        c.level = 0;
+        c.yr_cell_land_type = YR_CELL_LAND_TUNNEL;
+        c.has_bridge_deck = true;
+        c.bridge_walkable = true;
+        c.bridge_deck_level = deck_level;
+        c.bridge_layer = Some(BridgeLayer {
+            overlay_id: 0x4a,
+            overlay_name: "LOBRDG01".to_string(),
+            deck_level,
+            direction: BridgeDirection::Low,
+        });
+        c.tube_index = Some(tube_id);
+        c
+    }
+
     #[test]
-    fn begin_rejects_zero_length_auto_shell() {
+    fn begin_accepts_zero_length_auto_shell() {
         let tube = TubeFact::auto_low_bridge((2, 2), 2);
 
-        assert_eq!(
-            begin_low_bridge_tube_movement(TubeId(0), &tube),
-            Err(TubeBeginError::ZeroLengthTube)
-        );
+        let state = begin_low_bridge_tube_movement(TubeId(0), &tube).unwrap();
+        assert_eq!(state.tube_id, TubeId(0));
+        assert_eq!(state.entry, (2, 2));
+        assert_eq!(state.exit, (2, 2));
+        assert_eq!(state.cursor, 0);
     }
 
     #[test]
@@ -271,6 +380,9 @@ mod tests {
         let mut cells = vec![cell(0, 0), cell(1, 0), cell(2, 0)];
         cells[0].yr_cell_land_type = YR_CELL_LAND_TUNNEL;
         cells[0].tube_index = Some(TubeId(0));
+        cells[2].has_bridge_deck = true;
+        cells[2].bridge_walkable = true;
+        cells[2].bridge_deck_level = 4;
         let tube = TubeFact {
             entry: (0, 0),
             exit: (2, 0),
@@ -325,10 +437,76 @@ mod tests {
         assert_eq!((entity.position.rx, entity.position.ry), (2, 0));
         assert!(entity.low_bridge_tube_state.is_none());
         assert_eq!(entity.movement_target.as_ref().unwrap().next_index, 2);
+        assert_eq!(entity.position.z, 4);
+        assert!(entity.on_bridge);
+        assert_eq!(entity.bridge_occupancy.unwrap().deck_level, 4);
+        assert_eq!(occupancy.count_on_layer(2, 0, MovementLayer::Bridge), 1);
+        assert_eq!(occupancy.count_on_layer(2, 0, MovementLayer::Ground), 0);
     }
 
     #[test]
-    fn path_tube_step_rejects_zero_step_shell_without_starting_state() {
+    fn zero_step_shell_tick_completes_same_cell_and_projects_low_bridge_state() {
+        let cells = vec![low_bridge_tube_cell(0, 0, TubeId(0), 4)];
+        let terrain = ResolvedTerrainGrid::from_cells_with_tubes(
+            1,
+            1,
+            cells,
+            vec![TubeFact::auto_low_bridge((0, 0), 2)],
+        );
+        let mut entities = EntityStore::new();
+        let mut entity = GameEntity::new(
+            1,
+            0,
+            0,
+            0,
+            0,
+            test_intern("Allies"),
+            Health {
+                current: 100,
+                max: 100,
+            },
+            test_intern("MTNK"),
+            crate::map::entities::EntityCategory::Unit,
+            0,
+            5,
+            true,
+        );
+        entity.low_bridge_tube_state =
+            begin_low_bridge_tube_movement(TubeId(0), terrain.tube(TubeId(0)).unwrap()).ok();
+        entity.movement_target = Some(MovementTarget {
+            path: vec![(0, 0), (0, 0)],
+            path_layers: vec![MovementLayer::Ground, MovementLayer::Ground],
+            next_index: 1,
+            ..MovementTarget::default()
+        });
+        entities.insert(entity);
+        let mut occupancy = OccupancyGrid::new();
+        occupancy.add(
+            0,
+            0,
+            1,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+
+        tick_low_bridge_tube_movement(&mut entities, &mut occupancy, &terrain);
+
+        let entity = entities.get(1).unwrap();
+        assert!(entity.low_bridge_tube_state.is_none());
+        assert_eq!(entity.movement_target.as_ref().unwrap().next_index, 2);
+        assert_eq!(
+            (entity.position.rx, entity.position.ry, entity.position.z),
+            (0, 0, 4)
+        );
+        assert!(entity.on_bridge);
+        assert_eq!(entity.bridge_occupancy.unwrap().deck_level, 4);
+        assert_eq!(occupancy.count_on_layer(0, 0, MovementLayer::Bridge), 1);
+        assert_eq!(occupancy.count_on_layer(0, 0, MovementLayer::Ground), 0);
+    }
+
+    #[test]
+    fn path_tube_step_starts_zero_step_shell_state() {
         let mut cells = vec![cell(0, 0)];
         cells[0].yr_cell_land_type = YR_CELL_LAND_TUNNEL;
         cells[0].tube_index = Some(TubeId(0));
@@ -357,8 +535,8 @@ mod tests {
 
         let result = try_begin_path_tube_step(&mut state, &mut target, &position, Some(&terrain));
 
-        assert_eq!(result, TubePathStepResult::Blocked);
-        assert!(state.is_none());
+        assert_eq!(result, TubePathStepResult::Began);
+        assert_eq!(state.unwrap().tube_id, TubeId(0));
     }
 
     #[test]

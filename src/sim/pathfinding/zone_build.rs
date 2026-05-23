@@ -32,9 +32,10 @@ pub(crate) const NEIGHBORS: [(i32, i32, bool); 8] = [
 
 /// RE-backed MovementClass8 passability rows used by zone/node rebuilding.
 ///
-/// This is distinct from the terrain `LandType` matrix used elsewhere. RA2/YR
-/// connectivity is keyed by a derived per-cell movement class, then filtered by
-/// the mover's `MovementZone` row.
+/// Columns are reduced ZoneType values from `CellClass::RecalcZoneType`, not
+/// raw TMP LandType bytes: 0=Ground, 1=Crushable, 2=Wall, 3=Beach, 4=Water,
+/// 5=Building, 6=Impassable, 7=Outside. RA2/YR connectivity is keyed by this
+/// per-cell movement class, then filtered by the mover's `MovementZone` row.
 const MOVEMENT_CLASS_PASSABILITY: [[u8; 8]; 13] = [
     [1, 2, 2, 2, 2, 2, 2, 3], // Normal
     [1, 1, 2, 2, 2, 2, 2, 3], // Crusher
@@ -358,7 +359,10 @@ fn rebuild_zone_ids_for_movement_zone(
         }
     }
 
-    let row = MOVEMENT_CLASS_PASSABILITY[movement_zone as usize];
+    let Some(row_index) = movement_zone.matrix_row() else {
+        return vec![0u16; node_count as usize + 1];
+    };
+    let row = MOVEMENT_CLASS_PASSABILITY[row_index];
     let mut zone_id_by_node = vec![1u16; node_count as usize + 1];
     for node in 1..=node_count {
         let movement_class = node_movement_classes[node as usize] as usize;
@@ -435,10 +439,10 @@ pub(crate) fn is_passable(
     resolved_terrain: Option<&ResolvedTerrainGrid>,
     _layer: MovementLayer,
 ) -> bool {
-    // Buildings and static obstacles block all ground movement regardless of
-    // land type. PathGrid encodes this (set_blocked for building footprints).
+    // Buildings and static obstacles block ground movement regardless of land
+    // type. Fly uses matrix row 9 and should not inherit ground PathGrid blocks.
     // Water zones skip this check since water cells are typically blocked in PathGrid.
-    if !mz.is_water_mover() && !path_grid.is_walkable(x, y) {
+    if !mz.is_water_mover() && mz != MovementZone::Fly && !path_grid.is_walkable(x, y) {
         return false;
     }
 
@@ -453,8 +457,12 @@ pub(crate) fn is_passable(
             if mz.is_water_mover() {
                 return super::is_water_surface_cell_passable(cell, mz);
             }
-            return passability::is_passable_for_zone(cell.land_type, mz);
+            return passability::is_passable_for_zone(cell.zone_type, mz);
         }
+    }
+
+    if mz == MovementZone::Fly {
+        return true;
     }
 
     // Fallback: TerrainCostGrid-based check (pre-matrix behavior).
@@ -614,11 +622,6 @@ pub(crate) fn extract_adjacency(
         }
     }
 
-    for list in &mut adj_sets {
-        list.sort_unstable();
-        list.dedup();
-    }
-
     ZoneAdjacency::new(adj_sets)
 }
 
@@ -655,11 +658,9 @@ pub(crate) fn inject_bridge_adjacency(
         if za != ZONE_INVALID && zb != ZONE_INVALID && za != zb {
             if !adj.neighbors[za as usize].contains(&zb) {
                 adj.neighbors[za as usize].push(zb);
-                adj.neighbors[za as usize].sort_unstable();
             }
             if !adj.neighbors[zb as usize].contains(&za) {
                 adj.neighbors[zb as usize].push(za);
-                adj.neighbors[zb as usize].sort_unstable();
             }
         }
     }
@@ -723,10 +724,14 @@ pub(crate) fn build_bridge_redirect(
     if any { Some(redirect) } else { None }
 }
 
-/// Add a bidirectional adjacency edge (avoids duplicates via sorted dedup later).
+/// Add a bidirectional adjacency edge, preserving first discovery order.
 pub(crate) fn add_adjacency(adj: &mut [Vec<ZoneId>], a: ZoneId, b: ZoneId) {
-    adj[a as usize].push(b);
-    adj[b as usize].push(a);
+    if !adj[a as usize].contains(&b) {
+        adj[a as usize].push(b);
+    }
+    if !adj[b as usize].contains(&a) {
+        adj[b as usize].push(a);
+    }
 }
 
 #[cfg(test)]

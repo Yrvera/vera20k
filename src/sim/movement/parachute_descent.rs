@@ -6,28 +6,26 @@
 //! - Z integrates as `altitude += rate` per tick (integer leptons)
 //! - first tick has `rate == 0` → no movement (3-tick ramp: 0,-1,-2,-3,-3,...)
 //! - landing on `altitude <= 0` (inclusive bound)
-//! - body sequence set to `Paradrop` on attach, reset to `Stand` on landing
+//! - the infantry keeps its base locomotor and body sequence during descent
 //!
 //! Sibling of `droppod_movement` and follows the same shape: an `Option<State>`
 //! field on `GameEntity`, a `begin_*` entry, a `tick_*` per-tick driver, and
-//! cleanup via the locomotor override stack.
+//! cleanup when the object-level falling state lands.
 //!
 //! ## Dependency rules
 //! - Part of sim/ — depends on sim/game_entity, sim/entity_store, sim/locomotor.
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
-use crate::sim::animation::SequenceKind;
 use crate::sim::debug_event_log::DebugEventKind;
 use crate::sim::entity_store::EntityStore;
-use crate::sim::movement::locomotor::OverrideKind;
 use crate::util::fixed_math::{SIM_ZERO, SimFixed, sim_to_f32};
 
 /// Visual height offset per lepton of altitude (matches DropPod). Render-only f32.
 const ALTITUDE_VISUAL_SCALE: f32 = 0.06;
 
 /// Per-entity parachute descent state. Set by [`begin_parachute_descent`],
-/// cleared on landing. While `Some`, the entity's locomotor is overridden
-/// (`OverrideKind::Parachute`) so it does not occupy ground cells.
+/// cleared on landing. This mirrors gamemd's object-level falling state:
+/// normal paradropped infantry keep their base locomotor and body animation.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ParachuteDescentState {
     /// Descent rate in leptons/tick. Negative = falling.
@@ -39,11 +37,7 @@ pub struct ParachuteDescentState {
 
 /// Begin parachute descent for an entity. Returns `true` on success.
 ///
-/// - Applies `OverrideKind::Parachute` to suppress the base locomotor
-///   (entity does not occupy ground cells while descending).
 /// - Initializes state with `rate = 0` (the 3-tick ramp begins on the first tick).
-/// - Sets the body animation sequence to `Paradrop` (held until landing) — once,
-///   at attach time. Per-tick re-set would freeze the frame counter.
 ///
 /// The entity must already exist in the EntityStore. Caller is responsible
 /// for positioning the entity at the desired horizontal coord; `drop_altitude`
@@ -57,19 +51,10 @@ pub fn begin_parachute_descent(
         return false;
     };
 
-    if let Some(ref mut loco) = entity.locomotor {
-        loco.begin_override(OverrideKind::Parachute);
-    }
-
     entity.parachute_state = Some(ParachuteDescentState {
         rate: 0,
         altitude: drop_altitude,
     });
-
-    // Body sequence trigger: once at attach, never per-tick.
-    if let Some(ref mut anim) = entity.animation {
-        anim.switch_to(SequenceKind::Paradrop);
-    }
 
     entity.push_debug_event(
         0,
@@ -93,9 +78,6 @@ pub fn begin_parachute_descent(
 ///
 /// Cleanup (per landed entity):
 /// - clear `parachute_state`
-/// - `loco.end_override()` (restores base locomotor)
-/// - reset `animation.sequence` to `Stand` ONLY if currently `Paradrop`
-///   (don't overwrite if some other system has already changed it)
 pub fn tick_parachute_descent(
     entities: &mut EntityStore,
     tick_ms: u32,
@@ -150,18 +132,6 @@ pub fn tick_parachute_descent(
     for id in finished {
         if let Some(entity) = entities.get_mut(id) {
             entity.parachute_state = None;
-            if let Some(ref mut loco) = entity.locomotor
-                && loco.is_overridden()
-            {
-                loco.end_override();
-            }
-            // Body sequence reset gated on `== Paradrop` — don't clobber
-            // a death/other sequence that may have taken over mid-descent.
-            if let Some(ref mut anim) = entity.animation
-                && anim.sequence == SequenceKind::Paradrop
-            {
-                anim.switch_to(SequenceKind::Stand);
-            }
             entity.push_debug_event(sim_tick as u32, DebugEventKind::SpecialMovementEnd);
         }
     }
@@ -171,7 +141,7 @@ pub fn tick_parachute_descent(
 mod tests {
     use super::*;
     use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
-    use crate::sim::animation::Animation;
+    use crate::sim::animation::{Animation, SequenceKind};
     use crate::sim::entity_store::EntityStore;
     use crate::sim::game_entity::GameEntity;
     use crate::sim::movement::locomotor::{
@@ -226,7 +196,7 @@ mod tests {
     }
 
     #[test]
-    fn test_begin_attaches_state_and_overrides_locomotor() {
+    fn test_begin_attaches_state_and_keeps_locomotor_identity() {
         let mut entities = EntityStore::new();
         let id = insert_test_infantry(&mut entities, 1);
 
@@ -249,19 +219,19 @@ mod tests {
 
         let loco = entity.locomotor.as_ref().expect("has loco");
         assert!(
-            loco.is_overridden(),
-            "locomotor must be overridden during descent"
+            !loco.is_overridden(),
+            "ordinary paradropped infantry keep their base locomotor"
         );
-        assert_eq!(loco.kind, LocomotorKind::Parachute);
+        assert_eq!(loco.kind, LocomotorKind::Walk);
         assert_eq!(
             loco.layer,
-            MovementLayer::Air,
-            "Air layer means no ground occupancy is marked while descending"
+            MovementLayer::Ground,
+            "object-level falling state must not rewrite locomotor layer"
         );
     }
 
     #[test]
-    fn test_body_sequence_set_on_begin() {
+    fn test_body_sequence_preserved_on_begin() {
         let mut entities = EntityStore::new();
         let id = insert_test_infantry(&mut entities, 1);
 
@@ -273,7 +243,11 @@ mod tests {
             .animation
             .as_ref()
             .expect("has anim");
-        assert_eq!(anim.sequence, SequenceKind::Paradrop);
+        assert_eq!(
+            anim.sequence,
+            SequenceKind::Stand,
+            "normal paradrops render the attached PARACH anim, not body Paradrop frames"
+        );
     }
 
     #[test]
@@ -504,12 +478,12 @@ mod tests {
     }
 
     #[test]
-    fn test_body_sequence_reset_on_landing() {
-        // animation.sequence must reset to Stand when descent ends.
+    fn test_body_sequence_preserved_on_landing() {
+        // Normal paradropped infantry do not switch to the body Paradrop
+        // sequence, so landing should not rewrite the body animation either.
         let mut entities = EntityStore::new();
         let id = setup_parachuting_entity(&mut entities, SimFixed::from_num(6));
 
-        // Confirm Paradrop set on attach.
         assert_eq!(
             entities
                 .get(id)
@@ -518,7 +492,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .sequence,
-            SequenceKind::Paradrop
+            SequenceKind::Stand
         );
 
         for _ in 0..4 {
@@ -529,14 +503,14 @@ mod tests {
         assert_eq!(
             anim.sequence,
             SequenceKind::Stand,
-            "landing must reset animation to Stand"
+            "landing must preserve the unchanged body sequence"
         );
     }
 
     #[test]
     fn test_body_sequence_preserved_if_externally_changed() {
-        // If some other system changed the sequence away from Paradrop during
-        // descent (e.g., a death anim took over), don't overwrite on landing.
+        // If some other system changed the sequence during descent (e.g., a
+        // death anim took over), don't overwrite on landing.
         let mut entities = EntityStore::new();
         let id = setup_parachuting_entity(&mut entities, SimFixed::from_num(6));
 
@@ -566,16 +540,14 @@ mod tests {
     }
 
     #[test]
-    fn test_locomotor_override_restored_on_landing() {
-        // Mirrors test_droppod_full_sequence — base locomotor must be restored.
+    fn test_locomotor_identity_preserved_through_landing() {
         let mut entities = EntityStore::new();
         let id = setup_parachuting_entity(&mut entities, SimFixed::from_num(6));
 
-        // Confirm overridden during descent.
         {
             let loco = entities.get(id).unwrap().locomotor.as_ref().unwrap();
-            assert!(loco.is_overridden());
-            assert_eq!(loco.kind, LocomotorKind::Parachute);
+            assert!(!loco.is_overridden());
+            assert_eq!(loco.kind, LocomotorKind::Walk);
         }
 
         for _ in 0..4 {
@@ -583,11 +555,14 @@ mod tests {
         }
 
         let loco = entities.get(id).unwrap().locomotor.as_ref().unwrap();
-        assert!(!loco.is_overridden(), "override must end on landing");
+        assert!(
+            !loco.is_overridden(),
+            "object-level falling must not leave a locomotor override"
+        );
         assert_eq!(
             loco.kind,
             LocomotorKind::Walk,
-            "must restore base Walk locomotor"
+            "must preserve base Walk locomotor"
         );
     }
 

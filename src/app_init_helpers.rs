@@ -8,6 +8,7 @@ use std::path::Path;
 
 use crate::assets::asset_manager::AssetManager;
 use crate::assets::pal_file::Palette;
+use crate::map::basic::BridgeDestroyabilityMode;
 use crate::map::houses::HouseColorMap;
 use crate::map::map_file::MapFile;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
@@ -349,6 +350,7 @@ pub(crate) fn spawn_entities(
     theater_unit_palette: Option<&Palette>,
     infantry_sequences: &crate::rules::infantry_sequence::InfantrySequenceRegistry,
     vxl_compute: Option<&mut crate::render::vxl_compute::VxlComputeRenderer>,
+    bridge_destroyability_mode: BridgeDestroyabilityMode,
 ) -> (
     Option<Simulation>,
     Option<UnitAtlas>,
@@ -359,12 +361,7 @@ pub(crate) fn spawn_entities(
     sim.resolved_terrain = Some(resolved_terrain.clone());
     let bridge_destroyable = map_data
         .special_flags
-        .destroyable_bridges
-        .unwrap_or_else(|| {
-            rules
-                .map(|rules| rules.bridge_rules.destroyable_by_default)
-                .unwrap_or(true)
-        });
+        .effective_destroyable_bridges(bridge_destroyability_mode);
     let bridge_strength = rules
         .map(|rules| rules.bridge_rules.strength)
         .unwrap_or(1500);
@@ -393,6 +390,25 @@ pub(crate) fn spawn_entities(
                 .collect()
         })
         .unwrap_or_default();
+    if let Some(art) = art {
+        let mut bridge_anim_sounds = BTreeMap::new();
+        for anim_id in sim
+            .bridge_explosions
+            .iter()
+            .chain(sim.metallic_debris.iter())
+            .copied()
+        {
+            let anim_name = sim.interner.resolve(anim_id);
+            if let Some(entry) = art.get(anim_name) {
+                let sound_name = entry.start_sound.as_ref().or(entry.report.as_ref());
+                if let Some(sound_name) = sound_name {
+                    let sound_id = sim.interner.intern(sound_name);
+                    bridge_anim_sounds.insert(anim_id, sound_id);
+                }
+            }
+        }
+        sim.bridge_anim_sounds = bridge_anim_sounds;
+    }
     if !map_data.entities.is_empty() {
         let _count: u32 = sim.spawn_from_map_with_resolved(
             &map_data.entities,

@@ -6,6 +6,28 @@ pub const RIGHT_PANEL_WIDTH: i32 = 168;
 pub const SDBTNANM_W: i32 = 156;
 pub const SDBTNANM_H: i32 = 42;
 pub const SDBTNBKGD_H: i32 = 42;
+pub const SKIRMISH_CHECKBOX_COUNT: usize = 5;
+pub const CHECKBOX_ICON_W: i32 = 18;
+pub const CHECKBOX_ICON_H: i32 = 18;
+pub const CHECKBOX_TEXT_LEFT_OFFSET: i32 = 26;
+pub const TRACKBAR_PLAQUE_W: i32 = 50;
+pub const TRACKBAR_ACTIVE_WIDTH_SUBTRACT: i32 = 13;
+pub const TRACKBAR_THUMB_W: i32 = 12;
+pub const SKIRMISH_ROW_COUNT: usize = 8;
+pub const SKIRMISH_AI_ROW_COUNT: usize = 7;
+pub const COMBO_FACE_H: i32 = 24;
+pub const COMBO_DROPDOWN_ROW_H: i32 = 23;
+pub const COMBO_DROPDOWN_SCROLLBAR_W: i32 = 20;
+pub const COMBO_DROPDOWN_SCROLLBAR_BUTTON_H: i32 = 22;
+pub const COMBO_DROPDOWN_SCROLLBAR_MIN_THUMB_H: i32 = 14;
+pub const COMBO_ARROW_RESERVE_W: i32 = 20;
+pub const COMBO_ARROW_X_FROM_RIGHT: i32 = 19;
+pub const COMBO_ARROW_Y: i32 = 1;
+pub const COMBO_TEXT_LEFT_INSET: i32 = 2;
+pub const COMBO_SWATCH_INSET: i32 = 2;
+pub const CHOOSE_MAP_MODAL_W: i32 = 533;
+pub const CHOOSE_MAP_MODAL_H: i32 = 369;
+pub const CHOOSE_MAP_LIST_ROW_H: i32 = 19;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RectPx {
@@ -57,6 +79,28 @@ pub enum ColorComboId {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkirmishCheckboxId {
+    ShortGame0x54e,
+    McvRepacks0x693,
+    CratesAppear0x696,
+    SuperWeapons0x69a,
+    BuildOffAlly0x69d,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkirmishCheckboxRect {
+    pub id: SkirmishCheckboxId,
+    pub rect: RectPx,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkirmishTrackbarId {
+    GameSpeed0x529,
+    Credits0x511,
+    UnitCount0x50c,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RightPanelRects {
     pub top: RectPx,
     pub tile: RectPx,
@@ -64,17 +108,73 @@ pub struct RightPanelRects {
     pub bottom: RectPx,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkirmishRightPanelTextRects {
+    pub title: RectPx,
+    pub game_type: RectPx,
+    pub map_label: RectPx,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkirmishTrackbarRects {
+    pub game_speed: RectPx,
+    pub credits: RectPx,
+    pub unit_count: RectPx,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkirmishColumnLabelRects {
+    pub players: RectPx,
+    pub side: RectPx,
+    pub color: RectPx,
+    pub start: RectPx,
+    pub team: RectPx,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkirmishRowRects {
+    pub ai_type_combos: [RectPx; SKIRMISH_AI_ROW_COUNT],
+    pub side_combos: [RectPx; SKIRMISH_ROW_COUNT],
+    pub start_combos: [RectPx; SKIRMISH_ROW_COUNT],
+    pub team_combos: [RectPx; SKIRMISH_ROW_COUNT],
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkirmishShellLayout {
     pub screen: RectPx,
     pub right_panel: RightPanelRects,
+    pub right_panel_text: SkirmishRightPanelTextRects,
     pub start_button: RectPx,
     pub choose_map_button: RectPx,
     pub back_button: RectPx,
     pub map_preview: RectPx,
+    pub column_labels: SkirmishColumnLabelRects,
     pub player_name: RectPx,
+    pub rows: SkirmishRowRects,
     pub color_combos: [RectPx; 8],
     pub flags: [RectPx; 8],
+    pub trackbars: SkirmishTrackbarRects,
+    pub checkboxes: [SkirmishCheckboxRect; SKIRMISH_CHECKBOX_COUNT],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChooseMapModalButton {
+    UseMap0x6c5,
+    Cancel0x5c0,
+    CreateRandomMap0x583,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChooseMapModalLayout {
+    pub screen: RectPx,
+    pub dialog: RectPx,
+    pub mode_list: RectPx,
+    pub map_list: RectPx,
+    pub use_map_button: RectPx,
+    pub cancel_button: RectPx,
+    pub create_random_map_button: RectPx,
+    pub title: RectPx,
+    pub preview: RectPx,
 }
 
 const BASE_X: i32 = 6;
@@ -98,8 +198,110 @@ fn dlu_rect(x: i32, y: i32, w: i32, h: i32) -> RectPx {
     )
 }
 
+fn checkbox_dlu_rect(x: i32, y: i32, w: i32, h: i32) -> RectPx {
+    dlu_rect(x, y, w, h)
+}
+
+const fn offset_rect_x(rect: RectPx, dx: i32) -> RectPx {
+    RectPx::new(rect.x + dx, rect.y, rect.w, rect.h)
+}
+
+pub const fn checkbox_icon_rect(rect: RectPx) -> RectPx {
+    RectPx::new(rect.x, rect.y, CHECKBOX_ICON_W, CHECKBOX_ICON_H)
+}
+
+pub const fn checkbox_text_rect(rect: RectPx) -> RectPx {
+    RectPx::new(
+        rect.x + CHECKBOX_TEXT_LEFT_OFFSET,
+        rect.y,
+        rect.w - CHECKBOX_TEXT_LEFT_OFFSET,
+        rect.h,
+    )
+}
+
+pub const fn trackbar_plaque_rect(rect: RectPx) -> RectPx {
+    RectPx::new(
+        rect.x + rect.w - TRACKBAR_PLAQUE_W + 1,
+        rect.y - 1,
+        TRACKBAR_PLAQUE_W,
+        rect.h,
+    )
+}
+
+pub const fn trackbar_value_text_rect(rect: RectPx) -> RectPx {
+    RectPx::new(rect.x + rect.w - 49, rect.y, 49, rect.h)
+}
+
+pub const fn trackbar_active_width(rect: RectPx) -> i32 {
+    rect.w - TRACKBAR_PLAQUE_W - TRACKBAR_ACTIVE_WIDTH_SUBTRACT
+}
+
+pub fn trackbar_pixel_offset(value: i32, min: i32, max: i32, step: i32, rect: RectPx) -> i32 {
+    let active_width = trackbar_active_width(rect).max(0);
+    let span = max.saturating_sub(min);
+    if active_width == 0 || span == 0 {
+        return 0;
+    }
+
+    let step = step.max(1);
+    let clamped = value.clamp(min, max);
+    let quantized = min + ((clamped - min) / step) * step;
+    ((quantized - min) * active_width) / span
+}
+
+pub const fn trackbar_thumb_rect(rect: RectPx, pixel_offset: i32) -> RectPx {
+    RectPx::new(rect.x + 1 + pixel_offset, rect.y, TRACKBAR_THUMB_W, rect.h)
+}
+
+pub const fn combo_face_rect(rect: RectPx) -> RectPx {
+    RectPx::new(rect.x, rect.y, rect.w, COMBO_FACE_H)
+}
+
+pub const fn combo_arrow_rect(rect: RectPx) -> RectPx {
+    RectPx::new(
+        rect.x + rect.w - COMBO_ARROW_X_FROM_RIGHT,
+        rect.y + COMBO_ARROW_Y,
+        0,
+        0,
+    )
+}
+
+pub const fn combo_text_rect(rect: RectPx) -> RectPx {
+    let w = rect.w - COMBO_ARROW_RESERVE_W;
+    RectPx::new(
+        rect.x + COMBO_TEXT_LEFT_INSET,
+        rect.y,
+        if w > 0 { w } else { 0 },
+        COMBO_FACE_H,
+    )
+}
+
+pub const fn combo_swatch_rect(rect: RectPx) -> RectPx {
+    let w = rect.w - COMBO_ARROW_RESERVE_W - COMBO_SWATCH_INSET * 2;
+    let h = COMBO_FACE_H - COMBO_SWATCH_INSET * 2;
+    RectPx::new(
+        rect.x + COMBO_SWATCH_INSET,
+        rect.y + COMBO_SWATCH_INSET,
+        if w > 0 { w } else { 0 },
+        if h > 0 { h } else { 0 },
+    )
+}
+
 fn center_offset(screen: i32, base: i32) -> i32 {
     ((screen - base) / 2).max(0)
+}
+
+fn centered_shell_dialog(screen_w: i32, screen_h: i32, w: i32, h: i32) -> RectPx {
+    RectPx::new(
+        center_offset(screen_w, SHELL_BASE_W) + (SHELL_BASE_W - w) / 2,
+        center_offset(screen_h, SHELL_BASE_H) + (SHELL_BASE_H - h) / 2,
+        w,
+        h,
+    )
+}
+
+fn dialog_child(dialog: RectPx, local: RectPx) -> RectPx {
+    RectPx::new(dialog.x + local.x, dialog.y + local.y, local.w, local.h)
 }
 
 fn right_anchor(screen_w: i32, screen_h: i32, original: RectPx) -> RectPx {
@@ -155,6 +357,24 @@ fn back_rect(screen_w: i32, panel: RightPanelRects) -> RectPx {
     )
 }
 
+fn owner_draw_button_snap_rect(
+    screen_w: i32,
+    screen_h: i32,
+    source: RectPx,
+    panel: RightPanelRects,
+) -> RectPx {
+    let offset_x = center_offset(screen_w, SHELL_BASE_W);
+    let source_y = source.y + center_offset(screen_h, SHELL_BASE_H);
+    let tile_h = panel.tile.h.max(1);
+    let tile_index = ((source_y - panel.tile.y + tile_h / 2) / tile_h).max(0);
+    RectPx::new(
+        screen_w - offset_x - SDBTNANM_W,
+        panel.tile.y + tile_index * tile_h,
+        SDBTNANM_W,
+        SDBTNANM_H,
+    )
+}
+
 pub fn compute_layout(screen_w: u32, screen_h: u32) -> SkirmishShellLayout {
     let screen_w = screen_w as i32;
     let screen_h = screen_h as i32;
@@ -163,6 +383,16 @@ pub fn compute_layout(screen_w: u32, screen_h: u32) -> SkirmishShellLayout {
     let choose_base = dlu_rect(425, 176, 108, 23);
     let preview_base = dlu_rect(429, 23, 96, 69);
     let panel = right_panel_rects(screen_w, screen_h);
+    let right_panel_text = SkirmishRightPanelTextRects {
+        title: RectPx::new(panel.top.x + 3, panel.top.y + 3, 162, 16),
+        game_type: RectPx::new(panel.top.x + 17, panel.top.y + 167, 135, 16),
+        map_label: RectPx::new(panel.top.x + 17, panel.top.y + 189, 135, 33),
+    };
+    let mut player_name = dlu_rect(38, 36, 100, 14);
+    player_name.x += 1;
+    player_name.w += 1;
+    let mut unit_count_trackbar = dlu_rect(269, 210, 85, 13);
+    unit_count_trackbar.y -= 1;
 
     let color_combos = [
         dlu_rect(282, 36, 29, 73),
@@ -184,29 +414,160 @@ pub fn compute_layout(screen_w: u32, screen_h: u32) -> SkirmishShellLayout {
         dlu_rect(150, 132, 32, 12),
         dlu_rect(150, 148, 32, 12),
     ];
+    let rows = SkirmishRowRects {
+        ai_type_combos: [
+            dlu_rect(39, 52, 100, 74),
+            dlu_rect(39, 68, 100, 74),
+            dlu_rect(39, 84, 100, 74),
+            dlu_rect(39, 100, 100, 74),
+            dlu_rect(39, 116, 100, 74),
+            dlu_rect(39, 132, 100, 74),
+            dlu_rect(39, 148, 100, 74),
+        ],
+        side_combos: [
+            dlu_rect(191, 36, 78, 74),
+            dlu_rect(191, 52, 78, 74),
+            dlu_rect(191, 68, 78, 74),
+            dlu_rect(191, 84, 78, 74),
+            dlu_rect(191, 100, 78, 74),
+            dlu_rect(191, 116, 78, 74),
+            dlu_rect(191, 132, 78, 74),
+            dlu_rect(191, 148, 78, 74),
+        ],
+        start_combos: [
+            dlu_rect(324, 36, 25, 73),
+            dlu_rect(324, 52, 25, 73),
+            dlu_rect(324, 68, 25, 73),
+            dlu_rect(324, 84, 25, 73),
+            dlu_rect(324, 100, 25, 73),
+            dlu_rect(324, 116, 25, 73),
+            dlu_rect(324, 132, 25, 73),
+            dlu_rect(324, 148, 25, 73),
+        ],
+        team_combos: [
+            dlu_rect(364, 36, 25, 73),
+            dlu_rect(364, 52, 25, 73),
+            dlu_rect(364, 68, 25, 73),
+            dlu_rect(364, 84, 25, 73),
+            dlu_rect(364, 100, 25, 73),
+            dlu_rect(364, 116, 25, 73),
+            dlu_rect(364, 132, 25, 73),
+            dlu_rect(364, 148, 25, 73),
+        ],
+    };
 
     SkirmishShellLayout {
         screen: RectPx::new(0, 0, screen_w, screen_h),
         right_panel: panel,
-        start_button: right_anchor(screen_w, screen_h, start_base),
-        choose_map_button: right_anchor(screen_w, screen_h, choose_base),
+        right_panel_text,
+        start_button: owner_draw_button_snap_rect(screen_w, screen_h, start_base, panel),
+        choose_map_button: owner_draw_button_snap_rect(screen_w, screen_h, choose_base, panel),
         back_button: back_rect(screen_w, panel),
         map_preview: right_anchor(screen_w, screen_h, preview_base),
-        player_name: dlu_rect(38, 36, 100, 14),
+        column_labels: SkirmishColumnLabelRects {
+            players: dlu_rect(39, 21, 97, 10),
+            side: dlu_rect(191, 21, 73, 10),
+            color: dlu_rect(283, 21, 42, 10),
+            start: dlu_rect(325, 21, 34, 10),
+            team: dlu_rect(363, 21, 34, 10),
+        },
+        player_name,
+        rows,
         color_combos,
         flags,
+        trackbars: SkirmishTrackbarRects {
+            game_speed: dlu_rect(269, 176, 85, 13),
+            credits: dlu_rect(269, 193, 85, 13),
+            unit_count: unit_count_trackbar,
+        },
+        checkboxes: [
+            SkirmishCheckboxRect {
+                id: SkirmishCheckboxId::ShortGame0x54e,
+                rect: offset_rect_x(checkbox_dlu_rect(48, 176, 100, 10), -1),
+            },
+            SkirmishCheckboxRect {
+                id: SkirmishCheckboxId::McvRepacks0x693,
+                rect: offset_rect_x(checkbox_dlu_rect(48, 193, 100, 10), -1),
+            },
+            SkirmishCheckboxRect {
+                id: SkirmishCheckboxId::CratesAppear0x696,
+                rect: offset_rect_x(checkbox_dlu_rect(48, 210, 100, 10), -1),
+            },
+            SkirmishCheckboxRect {
+                id: SkirmishCheckboxId::SuperWeapons0x69a,
+                rect: offset_rect_x(checkbox_dlu_rect(48, 228, 103, 10), -1),
+            },
+            SkirmishCheckboxRect {
+                id: SkirmishCheckboxId::BuildOffAlly0x69d,
+                rect: checkbox_dlu_rect(201, 227, 166, 11),
+            },
+        ],
     }
+}
+
+pub fn compute_choose_map_modal_layout(screen_w: u32, screen_h: u32) -> ChooseMapModalLayout {
+    let screen_w = screen_w as i32;
+    let screen_h = screen_h as i32;
+    let dialog = centered_shell_dialog(screen_w, screen_h, CHOOSE_MAP_MODAL_W, CHOOSE_MAP_MODAL_H);
+
+    ChooseMapModalLayout {
+        screen: RectPx::new(0, 0, screen_w, screen_h),
+        dialog,
+        mode_list: dialog_child(dialog, RectPx::new(77, 78, 130, 211)),
+        map_list: dialog_child(dialog, RectPx::new(225, 78, 130, 211)),
+        use_map_button: dialog_child(dialog, RectPx::new(374, 80, 112, 30)),
+        cancel_button: dialog_child(dialog, RectPx::new(374, 116, 112, 30)),
+        create_random_map_button: dialog_child(dialog, RectPx::new(374, 152, 112, 30)),
+        title: dialog_child(dialog, RectPx::new(0, 20, CHOOSE_MAP_MODAL_W, 24)),
+        preview: dialog_child(dialog, RectPx::new(374, 202, 128, 96)),
+    }
+}
+
+pub fn choose_map_modal_button_at(
+    layout: &ChooseMapModalLayout,
+    x: i32,
+    y: i32,
+) -> Option<ChooseMapModalButton> {
+    if layout.use_map_button.contains(x, y) {
+        return Some(ChooseMapModalButton::UseMap0x6c5);
+    }
+    if layout.cancel_button.contains(x, y) {
+        return Some(ChooseMapModalButton::Cancel0x5c0);
+    }
+    if layout.create_random_map_button.contains(x, y) {
+        return Some(ChooseMapModalButton::CreateRandomMap0x583);
+    }
+    None
+}
+
+pub fn choose_map_modal_list_row_at(list: RectPx, x: i32, y: i32) -> Option<usize> {
+    if !list.contains(x, y) {
+        return None;
+    }
+    Some(((y - list.y) / CHOOSE_MAP_LIST_ROW_H) as usize)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{RectPx, compute_layout};
+    use super::{
+        CHOOSE_MAP_LIST_ROW_H, ChooseMapModalButton, RectPx, SkirmishCheckboxId,
+        checkbox_icon_rect, checkbox_text_rect, choose_map_modal_button_at,
+        choose_map_modal_list_row_at, combo_arrow_rect, combo_face_rect, combo_swatch_rect,
+        combo_text_rect, compute_choose_map_modal_layout, compute_layout, trackbar_active_width,
+        trackbar_pixel_offset, trackbar_plaque_rect, trackbar_thumb_rect, trackbar_value_text_rect,
+    };
+
+    struct ExpectedRect {
+        name: &'static str,
+        actual: RectPx,
+        expected: RectPx,
+    }
 
     #[test]
     fn key_rects_match_800x600() {
         let layout = compute_layout(800, 600);
-        assert_eq!(layout.start_button, RectPx::new(635, 242, 162, 37));
-        assert_eq!(layout.choose_map_button, RectPx::new(635, 286, 162, 37));
+        assert_eq!(layout.start_button, RectPx::new(644, 241, 156, 42));
+        assert_eq!(layout.choose_map_button, RectPx::new(644, 283, 156, 42));
         assert_eq!(layout.map_preview, RectPx::new(644, 37, 144, 112));
         assert_eq!(layout.back_button, RectPx::new(644, 535, 156, 42));
     }
@@ -214,19 +575,63 @@ mod tests {
     #[test]
     fn key_rects_match_1024x768() {
         let layout = compute_layout(1024, 768);
-        assert_eq!(layout.start_button, RectPx::new(747, 326, 162, 37));
-        assert_eq!(layout.choose_map_button, RectPx::new(747, 370, 162, 37));
-        assert_eq!(layout.map_preview, RectPx::new(756, 121, 144, 112));
-        assert_eq!(layout.back_button, RectPx::new(756, 619, 156, 42));
+        let expected = [
+            ExpectedRect {
+                name: "right_panel.top",
+                actual: layout.right_panel.top,
+                expected: RectPx::new(744, 84, 168, 199),
+            },
+            ExpectedRect {
+                name: "right_panel.tile",
+                actual: layout.right_panel.tile,
+                expected: RectPx::new(744, 283, 168, 42),
+            },
+            ExpectedRect {
+                name: "right_panel.bottom",
+                actual: layout.right_panel.bottom,
+                expected: RectPx::new(744, 661, 168, 23),
+            },
+            ExpectedRect {
+                name: "start_button 0x617",
+                actual: layout.start_button,
+                expected: RectPx::new(756, 325, 156, 42),
+            },
+            ExpectedRect {
+                name: "choose_map_button 0x5AA",
+                actual: layout.choose_map_button,
+                expected: RectPx::new(756, 367, 156, 42),
+            },
+            ExpectedRect {
+                name: "map_preview 0x468",
+                actual: layout.map_preview,
+                expected: RectPx::new(756, 121, 144, 112),
+            },
+            ExpectedRect {
+                name: "back_button 0x5C0",
+                actual: layout.back_button,
+                expected: RectPx::new(756, 619, 156, 42),
+            },
+        ];
+
+        for rect in expected {
+            assert_eq!(rect.actual, rect.expected, "{}", rect.name);
+        }
+        assert_eq!(layout.right_panel.tile_count, 9);
     }
 
     #[test]
     fn key_rects_match_640x480_formula() {
         let layout = compute_layout(640, 480);
-        assert_eq!(layout.start_button, RectPx::new(475, 242, 162, 37));
-        assert_eq!(layout.choose_map_button, RectPx::new(475, 286, 162, 37));
+        assert_eq!(layout.start_button, RectPx::new(484, 241, 156, 42));
+        assert_eq!(layout.choose_map_button, RectPx::new(484, 283, 156, 42));
         assert_eq!(layout.map_preview, RectPx::new(484, 37, 144, 112));
         assert_eq!(layout.back_button, RectPx::new(484, 409, 156, 42));
+    }
+
+    #[test]
+    fn represented_0102_player_name_one_pixel_fixup_is_applied() {
+        let layout = compute_layout(800, 600);
+        assert_eq!(layout.player_name, RectPx::new(58, 59, 151, 23));
     }
 
     #[test]
@@ -240,12 +645,155 @@ mod tests {
     }
 
     #[test]
+    fn row_combo_rects_match_800x600_resource_geometry() {
+        let layout = compute_layout(800, 600);
+        assert_eq!(layout.column_labels.players, RectPx::new(59, 34, 146, 16));
+        assert_eq!(layout.rows.ai_type_combos[0], RectPx::new(59, 85, 150, 120));
+        assert_eq!(layout.rows.side_combos[0], RectPx::new(287, 59, 117, 120));
+        assert_eq!(layout.color_combos[0], RectPx::new(423, 59, 44, 119));
+        assert_eq!(layout.rows.start_combos[0], RectPx::new(486, 59, 38, 119));
+        assert_eq!(layout.rows.team_combos[0], RectPx::new(546, 59, 38, 119));
+    }
+
+    #[test]
+    fn collapsed_combo_helpers_follow_owner_draw_constants() {
+        let rect = RectPx::new(423, 59, 44, 119);
+
+        assert_eq!(combo_face_rect(rect), RectPx::new(423, 59, 44, 24));
+        assert_eq!(combo_arrow_rect(rect), RectPx::new(448, 60, 0, 0));
+        assert_eq!(combo_text_rect(rect), RectPx::new(425, 59, 24, 24));
+        assert_eq!(combo_swatch_rect(rect), RectPx::new(425, 61, 20, 20));
+    }
+
+    #[test]
+    fn trackbar_rects_match_800x600_final_geometry() {
+        let layout = compute_layout(800, 600);
+        assert_eq!(layout.trackbars.game_speed, RectPx::new(404, 286, 128, 21));
+        assert_eq!(layout.trackbars.credits, RectPx::new(404, 314, 128, 21));
+        assert_eq!(layout.trackbars.unit_count, RectPx::new(404, 340, 128, 21));
+        assert_eq!(
+            trackbar_plaque_rect(layout.trackbars.game_speed),
+            RectPx::new(483, 285, 50, 21)
+        );
+        assert_eq!(
+            trackbar_plaque_rect(layout.trackbars.credits),
+            RectPx::new(483, 313, 50, 21)
+        );
+        assert_eq!(
+            trackbar_plaque_rect(layout.trackbars.unit_count),
+            RectPx::new(483, 339, 50, 21)
+        );
+    }
+
+    #[test]
+    fn skirmish_unit_count_trackbar_applies_0102_fixup_y_minus_one() {
+        let layout_800 = compute_layout(800, 600);
+        let layout_1024 = compute_layout(1024, 768);
+        assert_eq!(layout_1024.trackbars, layout_800.trackbars);
+        assert_eq!(
+            layout_800.trackbars.unit_count,
+            RectPx::new(404, 340, 128, 21)
+        );
+        assert_eq!(
+            layout_1024.trackbars.unit_count,
+            RectPx::new(404, 340, 128, 21)
+        );
+    }
+
+    #[test]
+    fn checkbox_rects_match_800x600_final_geometry() {
+        let layout = compute_layout(800, 600);
+        assert_eq!(layout.checkboxes.len(), 5);
+        assert_eq!(layout.checkboxes[0].id, SkirmishCheckboxId::ShortGame0x54e);
+        assert_eq!(layout.checkboxes[0].rect, RectPx::new(71, 286, 150, 16));
+        assert_eq!(layout.checkboxes[1].id, SkirmishCheckboxId::McvRepacks0x693);
+        assert_eq!(layout.checkboxes[1].rect, RectPx::new(71, 314, 150, 16));
+        assert_eq!(
+            layout.checkboxes[2].id,
+            SkirmishCheckboxId::CratesAppear0x696
+        );
+        assert_eq!(layout.checkboxes[2].rect, RectPx::new(71, 341, 150, 16));
+        assert_eq!(
+            layout.checkboxes[3].id,
+            SkirmishCheckboxId::SuperWeapons0x69a
+        );
+        assert_eq!(layout.checkboxes[3].rect, RectPx::new(71, 371, 155, 16));
+        assert_eq!(
+            layout.checkboxes[4].id,
+            SkirmishCheckboxId::BuildOffAlly0x69d
+        );
+        assert_eq!(layout.checkboxes[4].rect, RectPx::new(302, 369, 249, 18));
+    }
+
+    #[test]
+    fn checkbox_rects_match_640x480_final_geometry() {
+        let layout = compute_layout(640, 480);
+        assert_eq!(layout.checkboxes[0].rect, RectPx::new(71, 286, 150, 16));
+        assert_eq!(layout.checkboxes[1].rect, RectPx::new(71, 314, 150, 16));
+        assert_eq!(layout.checkboxes[2].rect, RectPx::new(71, 341, 150, 16));
+        assert_eq!(layout.checkboxes[3].rect, RectPx::new(71, 371, 155, 16));
+        assert_eq!(layout.checkboxes[4].rect, RectPx::new(302, 369, 249, 18));
+    }
+
+    #[test]
+    fn skirmish_option_checkboxes_apply_0102_fixup_x_minus_one() {
+        let layout_800 = compute_layout(800, 600);
+        let layout_1024 = compute_layout(1024, 768);
+
+        for layout in [layout_800, layout_1024] {
+            assert_eq!(layout.checkboxes[0].rect.x, 71);
+            assert_eq!(layout.checkboxes[1].rect.x, 71);
+            assert_eq!(layout.checkboxes[2].rect.x, 71);
+            assert_eq!(layout.checkboxes[3].rect.x, 71);
+            assert_eq!(layout.checkboxes[4].rect.x, 302);
+        }
+    }
+
+    #[test]
+    fn checkbox_icon_and_text_rects_follow_owner_draw_constants() {
+        let rect = RectPx::new(71, 286, 150, 16);
+
+        assert_eq!(checkbox_icon_rect(rect), RectPx::new(71, 286, 18, 18));
+        assert_eq!(checkbox_text_rect(rect).x, rect.x + 26);
+    }
+
+    #[test]
+    fn trackbar_geometry_helpers_follow_owner_draw_constants() {
+        let rect = RectPx::new(404, 286, 128, 21);
+
+        assert_eq!(trackbar_active_width(rect), 65);
+        assert_eq!(
+            trackbar_plaque_rect(RectPx::new(0, 0, 128, 21)),
+            RectPx::new(79, -1, 50, 21)
+        );
+        assert_eq!(trackbar_plaque_rect(rect), RectPx::new(483, 285, 50, 21));
+        assert_eq!(
+            trackbar_value_text_rect(rect),
+            RectPx::new(483, 286, 49, 21)
+        );
+        assert_eq!(trackbar_thumb_rect(rect, 0), RectPx::new(405, 286, 12, 21));
+        assert_eq!(trackbar_thumb_rect(rect, 65), RectPx::new(470, 286, 12, 21));
+    }
+
+    #[test]
+    fn trackbar_pixel_offset_uses_integer_endpoints() {
+        let rect = RectPx::new(404, 286, 128, 21);
+
+        assert_eq!(trackbar_pixel_offset(0, 0, 6, 1, rect), 0);
+        assert_eq!(trackbar_pixel_offset(6, 0, 6, 1, rect), 65);
+        assert_eq!(trackbar_pixel_offset(10000, 5000, 10000, 100, rect), 65);
+    }
+
+    #[test]
     fn right_panel_globals_match_research_modes() {
         let a = compute_layout(800, 600);
         assert_eq!(a.right_panel.top, RectPx::new(632, 0, 168, 199));
         assert_eq!(a.right_panel.tile, RectPx::new(632, 199, 168, 42));
         assert_eq!(a.right_panel.tile_count, 9);
         assert_eq!(a.right_panel.bottom, RectPx::new(632, 577, 168, 23));
+        assert_eq!(a.right_panel_text.title, RectPx::new(635, 3, 162, 16));
+        assert_eq!(a.right_panel_text.game_type, RectPx::new(649, 167, 135, 16));
+        assert_eq!(a.right_panel_text.map_label, RectPx::new(649, 189, 135, 33));
 
         let b = compute_layout(1024, 768);
         assert_eq!(b.right_panel.top, RectPx::new(744, 84, 168, 199));
@@ -258,14 +806,88 @@ mod tests {
         assert_eq!(c.right_panel.tile, RectPx::new(472, 199, 168, 42));
         assert_eq!(c.right_panel.tile_count, 6);
         assert_eq!(c.right_panel.bottom, RectPx::new(472, 451, 168, 29));
+        assert_eq!(c.right_panel_text.title, RectPx::new(475, 3, 162, 16));
+        assert_eq!(c.right_panel_text.game_type, RectPx::new(489, 167, 135, 16));
+        assert_eq!(c.right_panel_text.map_label, RectPx::new(489, 189, 135, 33));
     }
 
     #[test]
     fn large_screen_offsets_without_scaling() {
         let layout = compute_layout(1280, 960);
-        assert_eq!(layout.start_button.w, 162);
-        assert_eq!(layout.start_button.h, 37);
+        assert_eq!(layout.start_button.w, 156);
+        assert_eq!(layout.start_button.h, 42);
         assert_eq!(layout.map_preview.w, 144);
         assert_eq!(layout.map_preview.h, 112);
+    }
+
+    #[test]
+    fn choose_map_modal_layout_matches_verified_0x6b_geometry() {
+        let layout = compute_choose_map_modal_layout(800, 600);
+
+        assert_eq!(layout.dialog, RectPx::new(133, 115, 533, 369));
+        assert_eq!(layout.mode_list, RectPx::new(210, 193, 130, 211));
+        assert_eq!(layout.map_list, RectPx::new(358, 193, 130, 211));
+    }
+
+    #[test]
+    fn choose_map_modal_centers_inside_shell_base_without_scaling() {
+        let layout = compute_choose_map_modal_layout(1024, 768);
+
+        assert_eq!(layout.screen, RectPx::new(0, 0, 1024, 768));
+        assert_eq!(layout.dialog, RectPx::new(245, 199, 533, 369));
+        assert_eq!(layout.mode_list, RectPx::new(322, 277, 130, 211));
+        assert_eq!(layout.map_list, RectPx::new(470, 277, 130, 211));
+    }
+
+    #[test]
+    fn choose_map_modal_button_hit_test_uses_control_rects() {
+        let layout = compute_choose_map_modal_layout(800, 600);
+
+        assert_eq!(
+            choose_map_modal_button_at(&layout, layout.use_map_button.x, layout.use_map_button.y),
+            Some(ChooseMapModalButton::UseMap0x6c5)
+        );
+        assert_eq!(
+            choose_map_modal_button_at(&layout, layout.cancel_button.x, layout.cancel_button.y),
+            Some(ChooseMapModalButton::Cancel0x5c0)
+        );
+        assert_eq!(
+            choose_map_modal_button_at(
+                &layout,
+                layout.create_random_map_button.x,
+                layout.create_random_map_button.y
+            ),
+            Some(ChooseMapModalButton::CreateRandomMap0x583)
+        );
+        assert_eq!(
+            choose_map_modal_button_at(&layout, layout.dialog.x, layout.dialog.y),
+            None
+        );
+    }
+
+    #[test]
+    fn choose_map_modal_list_hit_test_uses_verified_owner_draw_row_height() {
+        let layout = compute_choose_map_modal_layout(800, 600);
+
+        assert_eq!(
+            choose_map_modal_list_row_at(layout.map_list, layout.map_list.x, layout.map_list.y),
+            Some(0)
+        );
+        assert_eq!(
+            choose_map_modal_list_row_at(
+                layout.map_list,
+                layout.map_list.x,
+                layout.map_list.y + CHOOSE_MAP_LIST_ROW_H
+            ),
+            Some(1)
+        );
+        assert_eq!(
+            choose_map_modal_list_row_at(
+                layout.map_list,
+                layout.map_list.x,
+                layout.map_list.y + layout.map_list.h
+            ),
+            None
+        );
     }
 }

@@ -1,14 +1,15 @@
 //! In-game rendering and draw-pass orchestration.
 //!
-//! `render_game()` is the per-frame entry point. It runs a 6-phase pipeline:
+//! `render_game()` is the per-frame entry point. It runs a 7-phase pipeline:
 //!
 //! 1. **World instances** — terrain tiles, map overlays, bridges, VXL units,
 //!    SHP buildings/infantry, world effects, damage fires, fog snapshots
 //! 2. **Debug instances** — pathgrid, cell grid, heightmap overlays (toggled by hotkey)
-//! 3. **UI instances** — minimap dots, selection brackets, health bars, placement preview
-//! 4. **Sidebar instances** — chrome, cameos, text, minimap rect, radar animation
-//! 5. **Upload** — all instance vectors uploaded to GPU buffer pool
-//! 6. **Draw** — render pass created, draw calls dispatched in layer order
+//! 3. **Shroud ABuffer** - CPU shroud buffer rebuilt before UI overlays sample it
+//! 4. **UI instances** - minimap dots, selection brackets, health bars, placement preview
+//! 5. **Sidebar instances** - chrome, cameos, text, minimap rect, radar animation
+//! 6. **Upload** - all instance vectors uploaded to GPU buffer pool
+//! 7. **Draw** - render pass created, draw calls dispatched in layer order
 //!
 //! ## Sub-modules
 //! - `build_instances` — phase 1-4 builders: named functions + structs per phase
@@ -37,7 +38,7 @@ use build_instances::{DebugInstances, SidebarInstances, UiInstances, WorldInstan
 
 /// Render one in-game frame: terrain, units, overlays, UI, sidebar.
 ///
-/// Orchestrates the 6-phase pipeline described in the module doc.
+/// Orchestrates the 7-phase pipeline described in the module doc.
 /// Each phase is a named function call — see `build_instances` for details.
 pub(crate) fn render_game(
     state: &mut AppState,
@@ -58,14 +59,8 @@ pub(crate) fn render_game(
     // Phase 2: Build debug overlay instances (pathgrid, cell grid, heightmap).
     let debug = build_instances::build_debug_instances(state, vsw, vsh);
 
-    // Phase 3: Update minimap + build UI instances (selection, health, placement).
-    build_instances::update_minimap(state, &local_owner);
-    let ui = build_instances::build_ui_instances(state, vsw, vsh);
-
-    // Phase 4: Build sidebar instances.
-    let sidebar = build_instances::build_sidebar_instances(state);
-
-    // Phase 4b: Rebuild shroud ABuffer (CPU blit + GPU upload).
+    // Phase 3: Rebuild shroud ABuffer (CPU blit + GPU upload). The final
+    // building-bracket front redraw samples this CPU buffer during UI build.
     let rw = state.render_width();
     let rh = state.render_height();
     if let Some(ref mut shroud_buf) = state.shroud_buffer {
@@ -87,11 +82,18 @@ pub(crate) fn render_game(
         }
     }
 
-    // Phase 5: Upload all instances to GPU buffer pool.
+    // Phase 4: Update minimap + build UI instances (selection, health, placement).
+    build_instances::update_minimap(state, &local_owner);
+    let ui = build_instances::build_ui_instances(state, vsw, vsh);
+
+    // Phase 5: Build sidebar instances.
+    let sidebar = build_instances::build_sidebar_instances(state);
+
+    // Phase 6: Upload all instances to GPU buffer pool.
     upload_to_gpu(state, &world, &debug, &ui, &sidebar);
     state.cached_overlay_instances = world.overlay;
 
-    // Phase 6: Dispatch draw calls in render order.
+    // Phase 7: Dispatch draw calls in render order.
     draw_passes::dispatch_draw_passes(
         state,
         encoder,
@@ -181,7 +183,14 @@ fn upload_to_gpu(
 
     // UI overlays
     pool.upload(&state.gpu, "drag", &ui.drag);
-    pool.upload(&state.gpu, "selection_brackets", &ui.bracket);
+    pool.upload(&state.gpu, "selection_brackets_back", &ui.bracket_back);
+    pool.upload(
+        &state.gpu,
+        "selection_brackets_front_first",
+        &ui.bracket_front_first,
+    );
+    pool.upload(&state.gpu, "selection_brackets_front", &ui.bracket_front);
+    pool.upload(&state.gpu, "building_radius_rings", &ui.radius_ring);
     pool.upload(&state.gpu, "status_building", &ui.building_status);
     pool.upload(&state.gpu, "occupant_pips", &ui.occupant_pip);
     pool.upload(&state.gpu, "status_unit_bg", &ui.unit_status_bg);
@@ -192,7 +201,9 @@ fn upload_to_gpu(
     pool.upload(&state.gpu, "placement_invalid", &ui.placement_invalid);
     pool.upload(&state.gpu, "placement_ghost", &ui.placement_ghost);
     pool.upload(&state.gpu, "placement_wall_ghost", &ui.wall_ghost);
+    pool.upload(&state.gpu, "factory_rally_first", &ui.factory_rally_first);
     pool.upload(&state.gpu, "target_lines", &ui.target_line);
+    pool.upload(&state.gpu, "factory_rally_second", &ui.factory_rally_second);
 
     // Sidebar + minimap
     pool.upload(&state.gpu, "minimap", &sidebar.minimap);

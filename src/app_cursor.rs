@@ -115,7 +115,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
         state.sandbox_full_visibility,
         state.rules.as_ref(),
         &state.height_map,
-        Some(&state.bridge_height_map),
+        Some(&state.tactical_bridge_inverse_map),
     ) {
         let kind = capability_cursor_for_hover(sim, &selected, &hover, state.rules.as_ref());
         return Some(kind);

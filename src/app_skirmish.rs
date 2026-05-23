@@ -2,24 +2,32 @@
 //!
 //! Extracted from app_init_helpers.rs for file-size limits.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::assets::asset_manager::AssetManager;
 use crate::assets::pal_file::Palette;
-use crate::map::houses::HouseRoster;
+use crate::map::entities::EntityCategory;
+use crate::map::houses::{HouseColorMap, HouseRoster};
 use crate::map::map_file::MapFile;
 use crate::map::overlay::OverlayEntry;
 use crate::map::overlay_types::{OverlayTypeRegistry, resolve_overlay_name_for_render};
 use crate::map::waypoints;
+use crate::map::waypoints::Waypoint;
 use crate::render::batch::BatchRenderer;
 use crate::render::bridge_atlas::{self, BridgeAtlas};
 use crate::render::bridge_railing_atlas::{self, BridgeRailingAtlas, BridgeRailingTileBases};
 use crate::render::gpu::GpuContext;
 use crate::render::overlay_atlas::{self, OverlayAtlas};
 use crate::rules::art_data::ArtRegistry;
+use crate::rules::house_colors::HouseColorIndex;
 use crate::rules::ini_parser::IniFile;
 use crate::rules::ruleset::RuleSet;
+use crate::sim::ai::AiPlayerState;
+use crate::sim::house_state::HouseState;
 use crate::sim::world::Simulation;
+use crate::skirmish_launch::{
+    LaunchCountry, LaunchStartPosition, LaunchTeam, SkirmishLaunchSession,
+};
 use crate::ui::main_menu::{SkirmishSettings, StartPosition};
 
 pub(crate) fn seed_skirmish_opening_if_needed(
@@ -115,6 +123,426 @@ pub(crate) fn seed_skirmish_opening_if_needed(
         );
     }
     local_owner
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SkirmishLaunchApplyResult {
+    pub(crate) local_owner: Option<String>,
+    pub(crate) spawned_mcvs: u32,
+    pub(crate) active_slots: usize,
+    pub(crate) unsupported_deficient_starts: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NormalizedSkirmishSlot {
+    owner_name: String,
+    country: LaunchCountry,
+    color_index: u8,
+    start_position: LaunchStartPosition,
+    team: LaunchTeam,
+    is_human: bool,
+}
+
+pub(crate) fn house_color_map_for_launch_session(
+    session: &SkirmishLaunchSession,
+    house_roster: &HouseRoster,
+) -> HouseColorMap {
+    let mut colors = HouseColorMap::new();
+    for house in &house_roster.houses {
+        if !is_playable_faction_name(&house.name) {
+            colors.insert(house.name.clone(), house.color);
+        }
+    }
+    for slot in normalized_launch_slots(session) {
+        colors.insert(slot.owner_name, HouseColorIndex(slot.color_index));
+    }
+    colors
+}
+
+pub(crate) fn apply_skirmish_launch_session(
+    sim: &mut Simulation,
+    map_data: &MapFile,
+    house_roster: &HouseRoster,
+    rules: &RuleSet,
+    height_map: &BTreeMap<(u16, u16), u8>,
+    session: &SkirmishLaunchSession,
+) -> SkirmishLaunchApplyResult {
+    let slots = normalized_launch_slots(session);
+    let ai_difficulty = session
+        .opponents
+        .first()
+        .map(|slot| slot.difficulty)
+        .unwrap_or_default();
+    sim.game_options = session
+        .options
+        .to_game_options(session.opponents.len() as i32, ai_difficulty);
+
+    sim.houses.clear();
+    sim.ai_players.clear();
+    populate_non_player_houses(sim, house_roster);
+    populate_launch_houses(sim, &slots);
+    sim.house_alliances = launch_alliance_map(house_roster, &slots);
+    recount_house_owned_counts(sim);
+
+    let starts = waypoints::multiplayer_start_waypoints(&map_data.waypoints);
+    let (assignments, unsupported_deficient_starts) = assign_launch_starts(&slots, &starts);
+    let mut spawned_mcvs = 0;
+    let mut local_owner = slots.first().map(|slot| slot.owner_name.clone());
+
+    for (slot_idx, waypoint) in assignments {
+        let Some(slot) = slots.get(slot_idx) else {
+            continue;
+        };
+        let mcv_type = launch_mcv_type_for_country(slot.country, rules);
+        if sim
+            .spawn_object(
+                mcv_type,
+                &slot.owner_name,
+                waypoint.rx,
+                waypoint.ry,
+                64,
+                rules,
+                height_map,
+            )
+            .is_some()
+        {
+            spawned_mcvs += 1;
+            if let Some(house) = crate::sim::house_state::house_state_for_owner_mut(
+                &mut sim.houses,
+                &slot.owner_name,
+                &sim.interner,
+            ) {
+                house.base_center = Some((waypoint.rx, waypoint.ry));
+                house.waypoint_edge = crate::sim::house_state::closest_edge_for(
+                    (waypoint.rx, waypoint.ry),
+                    sim.fog.width as u32,
+                    sim.fog.height as u32,
+                );
+            }
+        } else {
+            log::warn!(
+                "Failed to seed session MCV '{}' for {} at waypoint {} ({},{})",
+                mcv_type,
+                slot.owner_name,
+                waypoint.index,
+                waypoint.rx,
+                waypoint.ry
+            );
+            if slot.is_human {
+                local_owner = None;
+            }
+        }
+    }
+
+    if spawned_mcvs > 0 {
+        log::info!(
+            "Seeded {} session skirmish MCV(s) for {} active slot(s)",
+            spawned_mcvs,
+            slots.len()
+        );
+    }
+
+    SkirmishLaunchApplyResult {
+        local_owner,
+        spawned_mcvs,
+        active_slots: slots.len(),
+        unsupported_deficient_starts,
+    }
+}
+
+fn normalized_launch_slots(session: &SkirmishLaunchSession) -> Vec<NormalizedSkirmishSlot> {
+    let mut slots = Vec::with_capacity(1 + session.opponents.len());
+    slots.push(NormalizedSkirmishSlot {
+        owner_name: "Player".to_string(),
+        country: session.local.country,
+        color_index: session.local.color_index,
+        start_position: session.local.start_position,
+        team: session.local.team,
+        is_human: true,
+    });
+    for (idx, opponent) in session.opponents.iter().enumerate() {
+        slots.push(NormalizedSkirmishSlot {
+            owner_name: format!("Computer{}", idx + 1),
+            country: opponent.country,
+            color_index: opponent.color_index,
+            start_position: opponent.start_position,
+            team: opponent.team,
+            is_human: false,
+        });
+    }
+    slots
+}
+
+fn populate_non_player_houses(sim: &mut Simulation, house_roster: &HouseRoster) {
+    for house in &house_roster.houses {
+        if is_playable_faction_name(&house.name) {
+            continue;
+        }
+        let name_id = sim.interner.intern(&house.name);
+        let country_id = house.country.as_deref().map(|c| sim.interner.intern(c));
+        let side_idx = crate::sim::house_state::side_index_from_name(house.side.as_deref());
+        sim.houses.insert(
+            name_id,
+            HouseState::new(
+                name_id,
+                side_idx,
+                country_id,
+                false,
+                sim.game_options.starting_credits,
+                sim.game_options.tech_level,
+            ),
+        );
+    }
+}
+
+fn populate_launch_houses(sim: &mut Simulation, slots: &[NormalizedSkirmishSlot]) {
+    for slot in slots {
+        let name_id = sim.interner.intern(&slot.owner_name);
+        let country_id = sim.interner.intern(slot.country.country_name());
+        sim.houses.insert(
+            name_id,
+            HouseState::new(
+                name_id,
+                slot.country.side_index(),
+                Some(country_id),
+                slot.is_human,
+                sim.game_options.starting_credits,
+                sim.game_options.tech_level,
+            ),
+        );
+        if !slot.is_human {
+            sim.ai_players.push(AiPlayerState::new(name_id));
+            log::info!("AI player registered: {}", slot.owner_name);
+        }
+    }
+}
+
+fn normalize_house_key(name: &str) -> String {
+    name.trim().to_ascii_uppercase()
+}
+
+fn launch_alliance_map(
+    house_roster: &HouseRoster,
+    slots: &[NormalizedSkirmishSlot],
+) -> crate::map::houses::HouseAllianceMap {
+    let mut alliances = house_roster.alliance_map();
+    for slot in slots {
+        alliances
+            .entry(normalize_house_key(&slot.owner_name))
+            .or_default();
+    }
+    for left in slots {
+        let LaunchTeam::Team(team) = left.team else {
+            continue;
+        };
+        for right in slots {
+            if left.owner_name == right.owner_name || right.team != LaunchTeam::Team(team) {
+                continue;
+            }
+            let left_key = normalize_house_key(&left.owner_name);
+            let right_key = normalize_house_key(&right.owner_name);
+            alliances
+                .entry(left_key.clone())
+                .or_default()
+                .insert(right_key.clone());
+            alliances.entry(right_key).or_default().insert(left_key);
+        }
+    }
+    alliances
+}
+
+fn recount_house_owned_counts(sim: &mut Simulation) {
+    for house in sim.houses.values_mut() {
+        house.owned_building_count = 0;
+        house.owned_unit_count = 0;
+    }
+    let counts: Vec<_> = sim
+        .entities
+        .values()
+        .map(|entity| (entity.owner, entity.category))
+        .collect();
+    for (owner, category) in counts {
+        let Some(house) = sim.houses.get_mut(&owner) else {
+            continue;
+        };
+        match category {
+            EntityCategory::Structure => house.owned_building_count += 1,
+            _ => house.owned_unit_count += 1,
+        }
+    }
+}
+
+fn assign_launch_starts(
+    slots: &[NormalizedSkirmishSlot],
+    starts: &[Waypoint],
+) -> (Vec<(usize, Waypoint)>, bool) {
+    let mut assignments: Vec<Option<Waypoint>> = vec![None; slots.len()];
+    let mut used = BTreeSet::new();
+    let mut unsupported = starts.len() < slots.len();
+
+    for (idx, slot) in slots.iter().enumerate() {
+        let LaunchStartPosition::Position(position) = slot.start_position else {
+            continue;
+        };
+        let Some(start) = starts.iter().find(|start| start.index == position as u32) else {
+            unsupported = true;
+            continue;
+        };
+        if used.insert(start.index) {
+            assignments[idx] = Some(*start);
+        } else {
+            unsupported = true;
+        }
+    }
+
+    for (idx, slot) in slots.iter().enumerate() {
+        if assignments[idx].is_some() || slot.start_position != LaunchStartPosition::Auto {
+            continue;
+        }
+        let Some(start) = starts.iter().find(|start| !used.contains(&start.index)) else {
+            unsupported = true;
+            continue;
+        };
+        used.insert(start.index);
+        assignments[idx] = Some(*start);
+    }
+
+    (
+        assignments
+            .into_iter()
+            .enumerate()
+            .filter_map(|(idx, start)| start.map(|start| (idx, start)))
+            .collect(),
+        unsupported,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::map::houses::HouseDefinition;
+    use crate::skirmish_launch::{
+        LaunchStartPosition, LaunchTeam, SkirmishAiSlot, SkirmishLaunchMode, SkirmishLaunchOptions,
+        SkirmishLocalSlot,
+    };
+
+    fn test_session() -> SkirmishLaunchSession {
+        SkirmishLaunchSession {
+            mode: SkirmishLaunchMode::Battle,
+            selected_map_file: Some("test.mmx".to_string()),
+            local: SkirmishLocalSlot {
+                country: LaunchCountry::America,
+                color_index: 1,
+                start_position: LaunchStartPosition::Position(3),
+                team: LaunchTeam::None,
+            },
+            opponents: vec![SkirmishAiSlot {
+                country: LaunchCountry::Russia,
+                color_index: 2,
+                start_position: LaunchStartPosition::Auto,
+                team: LaunchTeam::None,
+                difficulty: Default::default(),
+            }],
+            options: SkirmishLaunchOptions::default(),
+        }
+    }
+
+    fn roster_with_neutral_and_playable() -> HouseRoster {
+        HouseRoster {
+            houses: vec![
+                HouseDefinition {
+                    name: "Neutral".to_string(),
+                    color: HouseColorIndex(8),
+                    country: None,
+                    side: None,
+                    player_control: None,
+                    allies: Vec::new(),
+                },
+                HouseDefinition {
+                    name: "Americans".to_string(),
+                    color: HouseColorIndex(4),
+                    country: Some("Americans".to_string()),
+                    side: Some("Allies".to_string()),
+                    player_control: Some(true),
+                    allies: Vec::new(),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn launch_color_map_keeps_non_players_and_uses_session_slots() {
+        let colors = house_color_map_for_launch_session(
+            &test_session(),
+            &roster_with_neutral_and_playable(),
+        );
+
+        assert_eq!(colors.get("Neutral"), Some(&HouseColorIndex(8)));
+        assert_eq!(colors.get("Player"), Some(&HouseColorIndex(1)));
+        assert_eq!(colors.get("Computer1"), Some(&HouseColorIndex(2)));
+        assert!(!colors.contains_key("Americans"));
+    }
+
+    #[test]
+    fn assign_launch_starts_places_explicit_slots_before_auto_slots() {
+        let mut session = test_session();
+        session.opponents.push(SkirmishAiSlot {
+            country: LaunchCountry::Cuba,
+            color_index: 3,
+            start_position: LaunchStartPosition::Position(0),
+            team: LaunchTeam::None,
+            difficulty: Default::default(),
+        });
+        let slots = normalized_launch_slots(&session);
+        let starts = [
+            Waypoint {
+                index: 0,
+                rx: 10,
+                ry: 10,
+            },
+            Waypoint {
+                index: 3,
+                rx: 30,
+                ry: 30,
+            },
+            Waypoint {
+                index: 5,
+                rx: 50,
+                ry: 50,
+            },
+        ];
+
+        let (assignments, unsupported) = assign_launch_starts(&slots, &starts);
+
+        assert!(!unsupported);
+        assert_eq!(assignments[0], (0, starts[1]));
+        assert_eq!(assignments[1], (1, starts[2]));
+        assert_eq!(assignments[2], (2, starts[0]));
+    }
+
+    #[test]
+    fn assign_launch_starts_marks_deficient_start_pool() {
+        let slots = normalized_launch_slots(&test_session());
+        let starts = [Waypoint {
+            index: 3,
+            rx: 30,
+            ry: 30,
+        }];
+
+        let (assignments, unsupported) = assign_launch_starts(&slots, &starts);
+
+        assert!(unsupported);
+        assert_eq!(assignments, vec![(0, starts[0])]);
+    }
+}
+
+fn launch_mcv_type_for_country(country: LaunchCountry, rules: &RuleSet) -> &'static str {
+    country
+        .opening_mcv_candidates()
+        .iter()
+        .copied()
+        .find(|id| rules.object(id).is_some())
+        .unwrap_or("AMCV")
 }
 
 pub(crate) fn skirmish_house_candidates(

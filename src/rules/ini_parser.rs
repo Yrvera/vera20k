@@ -78,6 +78,21 @@ impl IniSection {
         self.get(key)?.trim().parse::<f32>().ok()
     }
 
+    /// Get a light-related float using the original INI parser shape needed by
+    /// LightIntensity/Light*Tint keys.
+    ///
+    /// Westwood's numeric read stops before comma-separated trailing text, so
+    /// stock values such as `LightGreenTint=0,01` read as `0` for these keys.
+    pub fn get_light_f32(&self, key: &str) -> Option<f32> {
+        let val = self.get(key)?.trim();
+        let number = val.split_once(',').map_or(val, |(head, _)| head).trim();
+        if number.is_empty() {
+            None
+        } else {
+            number.parse::<f32>().ok()
+        }
+    }
+
     /// Get a value parsed as a percentage (0.0–1.0).
     ///
     /// Handles both `"25%"` (divides by 100 → 0.25) and bare floats like `"0.25"`.

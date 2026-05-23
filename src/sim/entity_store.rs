@@ -58,6 +58,18 @@ impl EntityStore {
         self.entities.remove(&stable_id)
     }
 
+    /// Clear all RadioClass-style live contacts involving `stable_id`.
+    ///
+    /// Idempotent. Safe if `stable_id` is absent.
+    pub fn clear_radio_contacts_for(&mut self, stable_id: u64) {
+        for entity in self.entities.values_mut() {
+            entity.clear_live_contact_with(stable_id);
+            if entity.stable_id == stable_id {
+                entity.radio_contacts.clear();
+            }
+        }
+    }
+
     /// Look up an entity by stable_id (immutable).
     pub fn get(&self, stable_id: u64) -> Option<&GameEntity> {
         self.entities.get(&stable_id)
@@ -213,6 +225,64 @@ mod tests {
 
         // Removing non-existent ID returns None.
         assert!(store.remove(99).is_none());
+    }
+
+    #[test]
+    fn clear_radio_contacts_removes_one_sided_peer_contact() {
+        let mut store = EntityStore::new();
+        let mut entity = make_entity(1);
+        entity.mark_live_contact_with(2);
+        store.insert(entity);
+        store.insert(make_entity(2));
+
+        store.clear_radio_contacts_for(2);
+
+        assert_eq!(store.get(1).unwrap().radio_contacts, Vec::<u64>::new());
+        assert_eq!(store.get(2).unwrap().radio_contacts, Vec::<u64>::new());
+    }
+
+    #[test]
+    fn clear_radio_contacts_removes_reciprocal_contacts() {
+        let mut store = EntityStore::new();
+        let mut first = make_entity(1);
+        let mut second = make_entity(2);
+        first.mark_live_contact_with(2);
+        second.mark_live_contact_with(1);
+        store.insert(first);
+        store.insert(second);
+
+        store.clear_radio_contacts_for(1);
+
+        assert_eq!(store.get(1).unwrap().radio_contacts, Vec::<u64>::new());
+        assert_eq!(store.get(2).unwrap().radio_contacts, Vec::<u64>::new());
+    }
+
+    #[test]
+    fn clear_radio_contacts_missing_id_preserves_unrelated_contacts() {
+        let mut store = EntityStore::new();
+        let mut entity = make_entity(1);
+        entity.mark_live_contact_with(2);
+        entity.mark_live_contact_with(3);
+        store.insert(entity);
+
+        store.clear_radio_contacts_for(99);
+
+        assert_eq!(store.get(1).unwrap().radio_contacts, vec![2, 3]);
+    }
+
+    #[test]
+    fn clear_radio_contacts_preserves_remaining_order() {
+        let mut store = EntityStore::new();
+        let mut entity = make_entity(1);
+        entity.mark_live_contact_with(2);
+        entity.mark_live_contact_with(3);
+        entity.mark_live_contact_with(4);
+        store.insert(entity);
+        store.insert(make_entity(3));
+
+        store.clear_radio_contacts_for(3);
+
+        assert_eq!(store.get(1).unwrap().radio_contacts, vec![2, 4]);
     }
 
     #[test]
