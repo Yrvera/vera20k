@@ -516,8 +516,8 @@ pub struct BridgeRuntimeState {
     /// First-class anchor spans (one per anchor cell). Replaces emergent
     /// flag-bit detection.
     anchor_spans: BTreeMap<u16, AnchorSpan>,
-    /// Default per-map override + rules `destroyable_by_default`. Read by
-    /// `apply_area_damage` outer gate (Phase F).
+    /// Active `SpecialFlags::DestroyableBridges` bit. Read by the weapon AoE
+    /// bridge-damage outer gate.
     bridge_destroyable_flag: bool,
 }
 
@@ -1505,9 +1505,9 @@ fn index_of(width: u16, height: u16, rx: u16, ry: u16) -> Option<usize> {
 /// `center`. Yields cell coordinates clamped to non-negative `(u16, u16)`
 /// (cells with negative computed coords are skipped — they're off-map).
 ///
-/// Used by the engineer-repair trigger and the hut-destruction collapse
-/// dispatch. Inclusive bounds `-2..=+2` produce exactly 25 cells when the
-/// center is interior; off-map negative cells are silently dropped.
+/// Used by the engineer-repair trigger. Inclusive bounds `-2..=+2` produce
+/// exactly 25 cells when the center is interior; off-map negative cells are
+/// silently dropped.
 pub fn cells_in_5x5_scan(center: (u16, u16)) -> impl Iterator<Item = (u16, u16)> {
     let (cx, cy) = (center.0 as i32, center.1 as i32);
     (-2..=2i32).flat_map(move |dy| {

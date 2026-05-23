@@ -97,6 +97,9 @@ pub fn stamp_set_bridge_direction(
     direction: u8,
     set: bool,
 ) {
+    if crate::util::direction::direction_delta(direction).is_none() {
+        return;
+    }
     let slots = stamp_slots(anchor, direction);
     for (slot, pos) in slots {
         let Some((rx, ry)) = pos else {
@@ -234,7 +237,8 @@ fn stamp_slots(anchor: (u16, u16), direction: u8) -> [(BridgeStampSlot, Option<(
     let f1 = step(anchor, direction);
     let f2 = f1.and_then(|cell| step(cell, direction));
     let f3 = f2.and_then(|cell| step(cell, direction));
-    let opposite = step(anchor, opposite_direction(direction));
+    let opposite = crate::util::direction::opposite_direction(direction)
+        .and_then(|opposite| step(anchor, opposite));
     let extra = if direction == 6 {
         opposite.and_then(|cell| step(cell, 2))
     } else {
@@ -258,31 +262,13 @@ fn index(width: u16, height: u16, rx: u16, ry: u16) -> Option<usize> {
 }
 
 fn step(cell: (u16, u16), direction: u8) -> Option<(u16, u16)> {
-    let (dx, dy) = direction_offset(direction)?;
+    let (dx, dy) = crate::util::direction::direction_delta(direction)?;
     let rx = cell.0 as i32 + dx;
     let ry = cell.1 as i32 + dy;
     if rx < 0 || ry < 0 || rx > u16::MAX as i32 || ry > u16::MAX as i32 {
         return None;
     }
     Some((rx as u16, ry as u16))
-}
-
-fn opposite_direction(direction: u8) -> u8 {
-    direction.wrapping_sub(4) & 7
-}
-
-fn direction_offset(direction: u8) -> Option<(i32, i32)> {
-    match direction & 7 {
-        0 => Some((0, -1)),
-        1 => Some((1, -1)),
-        2 => Some((1, 0)),
-        3 => Some((1, 1)),
-        4 => Some((0, 1)),
-        5 => Some((-1, 1)),
-        6 => Some((-1, 0)),
-        7 => Some((-1, -1)),
-        _ => None,
-    }
 }
 
 #[cfg(test)]
@@ -340,6 +326,25 @@ mod tests {
         assert!(facts_at(&cells, width as u16, 6, 5).has_transition_flag());
         assert!(facts_at(&cells, width as u16, 7, 5).has_flag(BRIDGE_FLAG_EXTRA_SIDE));
         assert!(!facts_at(&cells, width as u16, 7, 5).has_structural_bridge());
+    }
+
+    #[test]
+    fn invalid_direction_does_not_stamp_any_bridge_cells() {
+        let width = 12;
+        let mut cells = vec![BridgeCellFacts::default(); 12 * 12];
+
+        stamp_set_bridge_direction(
+            &mut cells,
+            width as u16,
+            12,
+            (5, 5),
+            BridgeStampFamily::Nesw,
+            9,
+            true,
+        );
+
+        assert!(!facts_at(&cells, width as u16, 5, 5).has_flag(BRIDGE_FLAG_ANCHOR_SELF));
+        assert!(!cells.iter().any(|cell| cell.raw_flags != 0));
     }
 
     #[test]

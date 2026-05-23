@@ -560,8 +560,12 @@ fn test_tick_combat_respects_cooldown() {
 fn test_tick_combat_kills_target() {
     let rules: RuleSet = test_rules();
     let mut store = EntityStore::new();
-    store.insert(make_entity(1, "MTNK", 5, 5, 300));
-    store.insert(make_entity(2, "MTNK", 8, 5, 10));
+    let mut attacker = make_entity(1, "MTNK", 5, 5, 300);
+    let mut target = make_entity(2, "MTNK", 8, 5, 10);
+    attacker.mark_live_contact_with(2);
+    target.mark_live_contact_with(1);
+    store.insert(attacker);
+    store.insert(target);
     let mut interner = test_interner();
     issue_attack_command(&mut store, 1, 2, None, &interner);
 
@@ -580,6 +584,10 @@ fn test_tick_combat_kills_target() {
     assert!(
         store.get(1).unwrap().attack_target.is_none(),
         "AttackTarget removed after target dies"
+    );
+    assert!(
+        !store.get(1).unwrap().has_live_contact_with(2),
+        "immediate combat removal should clear stale radio contact"
     );
 }
 
@@ -999,11 +1007,11 @@ fn garrison_fire_keeps_occupant_anim_and_sound_path() {
         ev.occupant_anim.map(|id| interner.resolve(id)),
         Some("UCFLASH")
     );
-    assert_eq!(ev.report_sound_id, None);
-    assert!(matches!(
-        sounds.as_slice(),
-        [SimSoundEvent::WeaponFired { .. }]
-    ));
+    assert_eq!(
+        ev.report_sound_id.map(|id| interner.resolve(id)),
+        Some("GIAttack")
+    );
+    assert!(sounds.is_empty());
 }
 
 #[test]

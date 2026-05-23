@@ -783,6 +783,33 @@ mod radio_contact_hash_tests {
         );
         assert!(!sim_a.entities.get(2).unwrap().has_live_contact_with(100));
     }
+
+    #[test]
+    fn despawn_contact_cleanup_hash_matches_never_contacted_state() {
+        let mut with_stale_contact = Simulation::new();
+        let mut never_contacted = Simulation::new();
+
+        let mut removed = vehicle_entity(&mut with_stale_contact, 1);
+        let mut survivor = vehicle_entity(&mut with_stale_contact, 2);
+        removed.mark_live_contact_with(2);
+        survivor.mark_live_contact_with(1);
+        with_stale_contact.entities.insert(removed);
+        with_stale_contact.entities.insert(survivor);
+
+        let removed_b = vehicle_entity(&mut never_contacted, 1);
+        let survivor_b = vehicle_entity(&mut never_contacted, 2);
+        never_contacted.entities.insert(removed_b);
+        never_contacted.entities.insert(survivor_b);
+
+        with_stale_contact.despawn_entity(1);
+        never_contacted.despawn_entity(1);
+
+        assert_eq!(
+            with_stale_contact.state_hash(),
+            never_contacted.state_hash(),
+            "cleanup should leave the same hash as a sim that never carried the stale contact",
+        );
+    }
 }
 
 #[cfg(test)]

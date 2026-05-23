@@ -516,6 +516,13 @@ pub struct GarrisonMuzzleFlash {
     pub pixel_x: i32,
     /// Pixel Y offset from building screen origin (from art.ini MuzzleFlashN).
     pub pixel_y: i32,
+    /// Fixed screen-space fire origin from the firing tick.
+    pub screen_x: f32,
+    pub screen_y: f32,
+    /// Cell/elevation used for lighting and depth.
+    pub rx: u16,
+    pub ry: u16,
+    pub z: u8,
     /// Current animation frame.
     pub frame: u16,
     /// Total frames in the SHP (one-shot: removed when frame >= total_frames).
@@ -585,21 +592,52 @@ pub struct WorldEffect {
     /// Optional start delay in milliseconds. Counts down before animation begins.
     /// Used for staggering multiple explosions on bridge destruction.
     pub delay_ms: u32,
+    /// Optional sound ID to play when the effect starts after its delay.
+    pub start_sound_id: Option<InternedId>,
+    /// One-shot guard for `start_sound_id`.
+    pub start_sound_emitted: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorldEffectTick {
+    pub finished: bool,
+    pub started_sound: Option<InternedId>,
 }
 
 impl WorldEffect {
     /// Advance the animation by `dt_ms` milliseconds. Returns true when finished.
     pub fn tick(&mut self, dt_ms: u32) -> bool {
+        self.tick_with_start_sound(dt_ms).finished
+    }
+
+    /// Advance the animation and report a delayed-start sound edge.
+    pub fn tick_with_start_sound(&mut self, dt_ms: u32) -> WorldEffectTick {
+        let mut started_sound = None;
         if self.delay_ms > 0 {
+            let before = self.delay_ms;
             self.delay_ms = self.delay_ms.saturating_sub(dt_ms);
-            return false;
+            if before > 0 && self.delay_ms == 0 && !self.start_sound_emitted {
+                started_sound = self.start_sound_id;
+                self.start_sound_emitted = true;
+            }
+            return WorldEffectTick {
+                finished: false,
+                started_sound,
+            };
+        }
+        if !self.start_sound_emitted {
+            started_sound = self.start_sound_id;
+            self.start_sound_emitted = true;
         }
         self.elapsed_ms += dt_ms;
         while self.elapsed_ms >= self.rate_ms && self.frame < self.total_frames {
             self.elapsed_ms -= self.rate_ms;
             self.frame += 1;
         }
-        self.frame >= self.total_frames
+        WorldEffectTick {
+            finished: self.frame >= self.total_frames,
+            started_sound,
+        }
     }
 }
 
@@ -850,6 +888,8 @@ mod tests {
             elapsed_ms: 0,
             translucent: true,
             delay_ms: 0,
+            start_sound_id: None,
+            start_sound_emitted: false,
         };
         // Not finished yet.
         assert!(!fx.tick(50));
@@ -860,5 +900,34 @@ mod tests {
         // Two more frames in one big dt.
         assert!(fx.tick(250));
         assert_eq!(fx.frame, 3);
+    }
+
+    #[test]
+    fn bridge_twlt_sound_fires_once_when_delay_elapses() {
+        use crate::sim::intern::test_intern;
+        let sound_id = test_intern("Explosion06");
+        let mut fx = WorldEffect {
+            shp_name: test_intern("TWLT036"),
+            rx: 10,
+            ry: 10,
+            sub_x: crate::util::lepton::CELL_CENTER_LEPTON,
+            sub_y: crate::util::lepton::CELL_CENTER_LEPTON,
+            z: 0,
+            frame: 0,
+            total_frames: 3,
+            rate_ms: 100,
+            elapsed_ms: 0,
+            translucent: true,
+            delay_ms: 67,
+            start_sound_id: Some(sound_id),
+            start_sound_emitted: false,
+        };
+
+        let first = fx.tick_with_start_sound(30);
+        assert_eq!(first.started_sound, None);
+        let second = fx.tick_with_start_sound(37);
+        assert_eq!(second.started_sound, Some(sound_id));
+        let third = fx.tick_with_start_sound(67);
+        assert_eq!(third.started_sound, None);
     }
 }

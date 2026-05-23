@@ -60,7 +60,7 @@ use crate::sim::overlay_grid::{OverlayGrid, WallDamageEvent};
 use crate::sim::passenger::PassengerRole;
 use crate::sim::power_system::PowerState;
 use crate::sim::vision::FogState;
-use crate::sim::world::{SimFireEvent, SimSoundEvent};
+use crate::sim::world::{FireOriginSnapshot, SimFireEvent, SimSoundEvent};
 use crate::util::fixed_math::{SIM_ZERO, SimFixed, sim_to_i32};
 
 use super::animation::SequenceKind;
@@ -982,6 +982,7 @@ fn handle_entity_deaths(
                 if let Some(entity) = entities.get(dead_id) {
                     occupancy.remove(entity.position.rx, entity.position.ry, dead_id);
                 }
+                entities.clear_radio_contacts_for(dead_id);
                 entities.remove(dead_id);
                 despawned_ids.push(dead_id);
                 log::trace!("Entity {} destroyed", dead_id);
@@ -1374,6 +1375,7 @@ pub fn tick_combat_with_fog(
                 attack_target,
                 entity.position.rx,
                 entity.position.ry,
+                entity.position.z,
                 entity.position.sub_x,
                 entity.position.sub_y,
                 entity.type_ref,
@@ -1404,6 +1406,7 @@ pub fn tick_combat_with_fog(
             target,
             pos_rx,
             pos_ry,
+            pos_z,
             sub_x,
             sub_y,
             type_id,
@@ -1446,6 +1449,7 @@ pub fn tick_combat_with_fog(
             target,
             pos_rx,
             pos_ry,
+            pos_z,
             sub_x,
             sub_y,
             type_id,
@@ -1472,7 +1476,6 @@ pub fn tick_combat_with_fog(
     let mut damage_events: Vec<(u64, u16, u64, InternedId)> = Vec::new();
     let mut remove_attack: Vec<u64> = Vec::new();
     let mut retarget_events: Vec<(u64, u64)> = Vec::new(); // (attacker_id, new_target_id)
-    let mut fire_sounds: Vec<(InternedId, u16, u16)> = Vec::new();
     let mut fire_events: Vec<SimFireEvent> = Vec::new();
     let mut reveal_events: Vec<RevealEvent> = Vec::new();
     let mut bridge_damage_events: Vec<BridgeDamageEvent> = Vec::new();
@@ -1965,11 +1968,14 @@ pub fn tick_combat_with_fog(
             .report
             .as_ref()
             .map(|report_id| interner.intern(report_id));
-        if is_garrison {
-            if let Some(report_id) = report_sound_id {
-                fire_sounds.push((report_id, snap.pos_rx, snap.pos_ry));
-            }
-        }
+        let weapon_burst: u8 = weapon.burst.max(1) as u8;
+        let burst_index = if weapon_burst <= 1 || snap.burst_remaining == 0 {
+            0
+        } else {
+            weapon_burst
+                .saturating_sub(snap.burst_remaining)
+                .min(weapon_burst.saturating_sub(1))
+        };
         fire_events.push(SimFireEvent {
             attacker_id: snap.stable_id,
             attacker_type_ref: snap.type_id,
@@ -1977,8 +1983,18 @@ pub fn tick_combat_with_fog(
             weapon_id: interner.intern(selected.weapon_id),
             facing: snap.facing,
             veterancy: snap.veterancy,
+            origin_snapshot: FireOriginSnapshot {
+                rx: snap.pos_rx,
+                ry: snap.pos_ry,
+                z: snap.pos_z,
+                sub_x: snap.sub_x,
+                sub_y: snap.sub_y,
+                facing: snap.facing,
+                category: snap.category,
+                burst_index,
+            },
             target: snap.target,
-            report_sound_id: if is_garrison { None } else { report_sound_id },
+            report_sound_id,
             garrison_muzzle_index: snap.garrison.as_ref().map(|gs| gs.fire_index),
             occupant_anim: if is_garrison {
                 weapon.occupant_anim.as_ref().map(|s| interner.intern(s))
@@ -1995,7 +2011,6 @@ pub fn tick_combat_with_fog(
             });
         }
 
-        let weapon_burst: u8 = weapon.burst.max(1) as u8;
         let current_remaining: u8 = if snap.burst_remaining == 0 {
             weapon_burst.saturating_sub(1)
         } else {
@@ -2149,13 +2164,6 @@ pub fn tick_combat_with_fog(
 
     // Phase 7: push sound events to the sink.
     if let Some(sink) = sound_sink {
-        for (report_id, rx, ry) in fire_sounds {
-            sink.push(SimSoundEvent::WeaponFired {
-                report_sound_id: report_id,
-                rx,
-                ry,
-            });
-        }
         for (die_id, rx, ry) in death.death_sounds {
             sink.push(SimSoundEvent::EntityDied {
                 die_sound_id: die_id,

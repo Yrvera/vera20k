@@ -123,5 +123,7 @@ fn spawn_invoke_anim(sim: &mut Simulation, anim_name: &str, rx: u16, ry: u16) {
         elapsed_ms: 0,
         translucent: false,
         delay_ms: 0,
+        start_sound_id: None,
+        start_sound_emitted: false,
     });
 }

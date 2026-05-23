@@ -232,6 +232,8 @@ fn spawn_bolt(sim: &mut Simulation, rules: &RuleSet, rx: u16, ry: u16, owner: In
         elapsed_ms: 0,
         translucent: true,
         delay_ms: 0,
+        start_sound_id: None,
+        start_sound_emitted: false,
     });
 
     // 2. Apply area damage via lightning warhead.
@@ -297,6 +299,8 @@ fn spawn_bolt(sim: &mut Simulation, rules: &RuleSet, rx: u16, ry: u16, owner: In
                 elapsed_ms: 0,
                 translucent: true,
                 delay_ms: 0,
+                start_sound_id: None,
+                start_sound_emitted: false,
             });
         }
     } else {

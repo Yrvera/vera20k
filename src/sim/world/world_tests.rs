@@ -15,6 +15,7 @@ use crate::sim::bridge_state::{BridgeDamageEvent, BridgeRuntimeState};
 use crate::sim::combat::AttackTarget;
 use crate::sim::command::{Command, CommandEnvelope};
 use crate::sim::components::MovementTarget;
+use crate::sim::game_entity::GameEntity;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::pathfinding::PathGrid;
 use crate::util::fixed_math::{SIM_ZERO, SimFixed};
@@ -50,6 +51,33 @@ fn cmd_envelope(
         .get(owner)
         .unwrap_or_else(|| panic!("owner '{}' not interned", owner));
     CommandEnvelope::new(owner_id, execute_tick, payload)
+}
+
+#[test]
+fn despawn_entity_clears_live_radio_contacts() {
+    let mut sim = Simulation::new();
+    let owner = sim.interner.intern("Americans");
+    let htnk = sim.interner.intern("HTNK");
+    let mtnk = sim.interner.intern("MTNK");
+    let mut despawned = GameEntity::test_default(1, "HTNK", "Americans", 10, 10);
+    let mut survivor = GameEntity::test_default(2, "MTNK", "Americans", 11, 10);
+
+    despawned.owner = owner;
+    despawned.type_ref = htnk;
+    despawned.mark_live_contact_with(2);
+    survivor.owner = owner;
+    survivor.type_ref = mtnk;
+    survivor.mark_live_contact_with(1);
+    sim.entities.insert(despawned);
+    sim.entities.insert(survivor);
+
+    sim.despawn_entity(1);
+
+    assert!(sim.entities.get(1).is_none());
+    assert_eq!(
+        sim.entities.get(2).unwrap().radio_contacts,
+        Vec::<u64>::new()
+    );
 }
 
 /// Create a water terrain grid (all cells are water, land_type=4) for ship tests.
@@ -2812,7 +2840,7 @@ fn refresh_vision_heights_copies_path_cell_ground_levels() {
 #[test]
 fn bridge_body_builder_queries_atlas_with_post_tick_state_byte_frame() {
     use crate::app_instances::bridges::build_bridge_body_instances_inner;
-    use crate::map::lighting::LightingGrid;
+    use crate::map::lighting::CellLightGrid;
     use crate::render::bridge_atlas::BridgeAtlasLookup;
     use crate::render::overlay_atlas::OverlaySpriteEntry;
     use crate::sim::bridge_state::{
@@ -2884,7 +2912,7 @@ fn bridge_body_builder_queries_atlas_with_post_tick_state_byte_frame() {
     }
 
     let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
-    let lighting_grid: LightingGrid = LightingGrid::new();
+    let lighting_grid = CellLightGrid::new();
 
     // Camera centered on cell (5, 5) so view culling doesn't reject it.
     let (cam_target_x, cam_target_y) = crate::map::terrain::iso_to_screen(5, 5, 4);

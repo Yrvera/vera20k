@@ -1533,10 +1533,13 @@ mod tests {
         assert!(outcome.zones_dirty);
         assert_eq!(outcome.repaired_cells, 3);
         for y in 1..=3u16 {
-            assert!(matches!(
-                state.cell(2, y).unwrap().damage_state,
-                DamageState::Healthy { .. }
-            ));
+            assert!(
+                matches!(
+                    state.cell(2, y).unwrap().damage_state,
+                    DamageState::Destroyed
+                ),
+                "gamemd leaves the body damage byte stale after bridge repair"
+            );
         }
     }
 
@@ -1563,10 +1566,13 @@ mod tests {
                 state.cell(2, y).unwrap().damage_state,
                 DamageState::Destroyed
             );
-            assert!(matches!(
-                state.cell(1, y).unwrap().damage_state,
-                DamageState::Healthy { .. }
-            ));
+            assert!(
+                matches!(
+                    state.cell(1, y).unwrap().damage_state,
+                    DamageState::Destroyed
+                ),
+                "gamemd leaves the body damage byte stale after bridge repair"
+            );
         }
     }
 
