@@ -60,7 +60,7 @@ impl Default for GameOptions {
             bases: true,
             bridges_destroyable: true,
             super_weapons: true,
-            build_off_ally: false,
+            build_off_ally: true,
             crates: true,
             mcv_redeploy: true,
             fog_of_war: false,
@@ -76,5 +76,15 @@ impl Default for GameOptions {
             ai_difficulty: 0,
             ai_players: 0,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GameOptions;
+
+    #[test]
+    fn build_off_ally_default_matches_yr_enabled() {
+        assert!(GameOptions::default().build_off_ally);
     }
 }

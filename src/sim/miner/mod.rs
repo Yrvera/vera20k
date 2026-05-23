@@ -113,15 +113,11 @@ pub enum RefineryDockPhase {
     /// = 14.4 ticks) drains one StorageClass slot — all bales of one
     /// resource type at once — and emits a single BaleDepositEvent.
     /// Slot order matches gamemd: Ore (slot 0) first, Gems (slot 1) second.
-    /// On cargo empty: seed `deposit_cooldown_ticks` from the refinery's
-    /// SpecialAnim cycle and transition to DepositCooldown.
+    /// On the first empty-slot gate after the last drain: transition to
+    /// Departing for the stock state-4 cleanup.
     Unloading,
-    /// Hold on the pad for one more dump-gate interval after the last
-    /// bale drains, matching gamemd's post-last-bale idle: the refinery's
-    /// dump counter keeps ticking, and on the next 14.4-frame gate fire
-    /// `FindFirstNonEmptySlot` returns -1, triggering the zero-link state-4
-    /// cleanup. On cooldown expiry: transition to Departing, which performs
-    /// the stock handoff.
+    /// Legacy/pass-through phase for older save states. Stock unload now
+    /// reaches Departing directly from the empty-slot dump gate.
     DepositCooldown,
     /// Rust's stock zero-link state-4 handoff. Normal stock refinery unload
     /// completion does not seed `Force_Track(0x47)`, play the conditional
@@ -205,7 +201,7 @@ impl Default for MinerConfig {
             local_continuation_radius: 6,
             long_scan_radius: 48,
             too_far_threshold_standard: 5,
-            too_far_threshold_chrono: 10,
+            too_far_threshold_chrono: 50,
             // TibSun legacy: 0x69 = 105 frames at 15fps logic rate (~7 seconds).
             // Prevents aggressive re-scanning when no ore exists on the map.
             rescan_cooldown_ticks: 105,
@@ -287,9 +283,9 @@ pub struct Miner {
     /// target-facing window.
     #[serde(default)]
     pub dock_pivot_facing: Option<FacingClass>,
-    /// Sim ticks remaining in `DepositCooldown`. Seeded from the refinery's
-    /// SpecialAnim cycle length when the last bale pops; decremented each
-    /// tick of the cooldown phase.
+    /// Sim ticks remaining in legacy `DepositCooldown` save states.
+    /// Stock unload completion now reaches Departing directly from the
+    /// empty-slot dump gate, so new unloads should leave this at 0.
     pub deposit_cooldown_ticks: u16,
     /// Legacy/conditional exit cell cache. Stock zero-link refinery unload
     /// completion does not install a queue-cell destination; this remains

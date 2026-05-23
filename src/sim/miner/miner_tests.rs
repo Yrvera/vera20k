@@ -536,7 +536,7 @@ fn return_close_enough_to_refinery_enters_dock() {
 }
 
 #[test]
-fn chrono_return_close_enough_does_not_enter_dock() {
+fn chrono_return_close_enough_enters_radio_dock_without_can_dock_move() {
     let mut sim = Simulation::new();
     let rules = miner_rules();
     let config = MinerConfig::default();
@@ -565,18 +565,22 @@ fn chrono_return_close_enough_does_not_enter_dock() {
     let miner = entity.miner.as_ref().expect("miner component");
     assert_eq!(
         miner.state,
-        MinerState::ReturnToRefinery,
-        "Chrono Miner must keep the Mission_Enter/CAN_DOCK flow alive"
+        MinerState::Dock,
+        "close chrono return should enter the radio dock sequence immediately"
     );
-    assert_ne!(miner.state, MinerState::Dock);
+    assert_eq!(
+        miner.dock_phase,
+        RefineryDockPhase::MissionEnter,
+        "accepted close-return HELLO queues Mission_Enter for the next tick"
+    );
     assert!(entity.teleport_state.is_none());
     assert!(
-        entity.movement_target.is_some(),
-        "near Chrono Miner should reissue movement to the exact dock cell"
+        entity.movement_target.is_none(),
+        "HELLO acceptance must not issue the accepted-cell move in the same tick"
     );
     assert!(
-        !sim.production.dock_reservations.is_occupied(99),
-        "CloseEnough alone must not link the miner to the refinery"
+        sim.production.dock_reservations.has_contact(99, miner_id),
+        "close-return HELLO should populate the refinery contact list"
     );
     assert!(
         sim.sound_events.iter().all(|event| !matches!(
@@ -612,7 +616,7 @@ fn chrono_return_exact_dock_cell_enters_dock() {
 
     let miner = get_miner(&sim, miner_id);
     assert_eq!(miner.state, MinerState::Dock);
-    assert_eq!(miner.dock_phase, RefineryDockPhase::Approach);
+    assert_eq!(miner.dock_phase, RefineryDockPhase::MissionEnter);
 }
 
 #[test]
@@ -665,8 +669,8 @@ fn dock_queuing_one_at_a_time() {
     );
     assert_eq!(
         m2_miner.dock_phase,
-        RefineryDockPhase::MissionEnter,
-        "Second miner should keep MissionEnter/CAN_DOCK retry instead of hard-refusing"
+        RefineryDockPhase::Approach,
+        "Second miner should remain in HELLO retry/staging until the refinery contact frees"
     );
     assert!(
         sim.production.dock_reservations.has_contact(2, m1),
@@ -1078,7 +1082,7 @@ fn forced_return_chrono_teleports() {
 }
 
 #[test]
-fn chrono_return_more_than_two_cells_teleports() {
+fn chrono_return_within_too_far_threshold_uses_close_radio_path() {
     let mut sim = Simulation::new();
     let rules = miner_rules();
     let config = MinerConfig::from_general_rules(&rules.general);
@@ -1098,30 +1102,158 @@ fn chrono_return_more_than_two_cells_teleports() {
     }
 
     super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
+    super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
 
     let entity = sim.entities.get(miner_id).expect("entity");
     assert!(
-        entity.teleport_state.is_some(),
-        "Chrono Miner should teleport when farther than the short final dock handoff"
+        entity.teleport_state.is_none(),
+        "Chrono Miner inside ChronoHarvTooFarDistance should not take the far QueueingCell fallback"
     );
-    let teleport = entity.teleport_state.as_ref().expect("teleport state");
-    assert_eq!((teleport.target_rx, teleport.target_ry), (14, 11));
     assert_eq!(
         entity.miner.as_ref().and_then(|m| m.reserved_refinery),
         Some(2)
     );
+    let movement = entity
+        .movement_target
+        .as_ref()
+        .expect("close return should path toward the accepted dock cell");
+    assert_eq!(
+        movement
+            .final_goal
+            .or_else(|| movement.path.last().copied()),
+        Some((13, 11)),
+        "close return should use the refinery CAN_DOCK accepted cell, not QueueingCell"
+    );
 }
 
 // ==========================================================================
-// Test: Chrono miner does NOT warp outbound — only inbound to refinery
+// Chrono close/far return radio threshold pins.
 // ==========================================================================
-/// Regression: chrono miners warp ONLY on the inbound (ore → refinery)
-/// trip. Outbound (refinery → ore) is a normal drive, matching the
+#[test]
+fn chrono_return_at_exact_too_far_threshold_uses_close_radio_path() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let config = MinerConfig::from_general_rules(&rules.general);
+    let grid = PathGrid::new(96, 96);
+
+    spawn_refinery(&mut sim, 2, 10, 10);
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 60, 10);
+
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.cargo.push(CargoBale {
+            resource_type: ResourceType::Ore,
+            value: 25,
+        });
+        miner.state = MinerState::ReturnToRefinery;
+    }
+
+    super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
+
+    let entity = sim.entities.get(miner_id).expect("entity");
+    let miner = entity.miner.as_ref().expect("miner component");
+    assert!(
+        entity.teleport_state.is_none(),
+        "strict > threshold means exactly 50 cells is still the close radio path"
+    );
+    assert_eq!(miner.state, MinerState::Dock);
+    assert_eq!(miner.dock_phase, RefineryDockPhase::MissionEnter);
+    assert!(sim.production.dock_reservations.has_contact(2, miner_id));
+}
+
+#[test]
+fn chrono_return_over_too_far_threshold_uses_queueingcell_teleport() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let config = MinerConfig::from_general_rules(&rules.general);
+    let grid = PathGrid::new(96, 96);
+
+    spawn_refinery(&mut sim, 2, 10, 10);
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 61, 10);
+
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.cargo.push(CargoBale {
+            resource_type: ResourceType::Ore,
+            value: 25,
+        });
+        miner.state = MinerState::ReturnToRefinery;
+    }
+
+    super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
+
+    let entity = sim.entities.get(miner_id).expect("entity");
+    let teleport = entity
+        .teleport_state
+        .as_ref()
+        .expect("over-threshold chrono return should teleport");
+    assert_eq!(
+        (teleport.target_rx, teleport.target_ry),
+        (14, 11),
+        "far return should land at QueueingCell staging"
+    );
+    assert!(!sim.production.dock_reservations.has_contact(2, miner_id));
+}
+
+#[test]
+fn chrono_close_hello_refused_stages_at_queueingcell_without_receiver_eviction() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let config = MinerConfig::from_general_rules(&rules.general);
+    let grid = PathGrid::new(64, 64);
+
+    let occupant = spawn_miner(&mut sim, 1, MinerKind::Chrono, 13, 11);
+    spawn_refinery(&mut sim, 2, 10, 10);
+    let waiter = spawn_miner(&mut sim, 3, MinerKind::Chrono, 20, 10);
+    assert!(sim.production.dock_reservations.try_reserve(2, occupant));
+
+    {
+        let entity = sim.entities.get_mut(waiter).expect("waiter entity");
+        let miner = entity.miner.as_mut().expect("waiter miner");
+        miner.cargo.push(CargoBale {
+            resource_type: ResourceType::Ore,
+            value: 25,
+        });
+        miner.state = MinerState::ReturnToRefinery;
+    }
+
+    super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
+
+    let waiter_entity = sim.entities.get(waiter).expect("waiter entity");
+    let waiter_miner = waiter_entity.miner.as_ref().expect("waiter miner");
+    assert!(sim.production.dock_reservations.has_contact(2, occupant));
+    assert!(
+        !sim.production.dock_reservations.has_contact(2, waiter),
+        "refused HELLO must not evict or replace the receiver-side contact"
+    );
+    assert!(sim.production.dock_reservations.is_waiting(2, waiter));
+    assert_eq!(waiter_miner.state, MinerState::Dock);
+    assert_eq!(waiter_miner.dock_phase, RefineryDockPhase::Approach);
+    assert!(waiter_miner.dock_queued);
+    let movement = waiter_entity
+        .movement_target
+        .as_ref()
+        .expect("refused close-return miner should stage at QueueingCell");
+    assert_eq!(
+        movement
+            .final_goal
+            .or_else(|| movement.path.last().copied()),
+        Some((14, 11)),
+        "QueueingCell staging must stay distinct from accepted cell (13,11)"
+    );
+}
+
+// ==========================================================================
+// Test: Chrono miner does NOT warp outbound -- only inbound to refinery
+// ==========================================================================
+/// Regression: chrono miners warp ONLY on the inbound (ore -> refinery)
+/// trip. Outbound (refinery -> ore) is a normal drive, matching the
 /// original engine's Mission_Harvest state-0 behaviour (which forces a
 /// DriveLocomotion piggyback before Set_Destination so the warp branch
 /// is skipped). Reintroducing an outbound warp would be observable as
-/// a chrono miner vanishing the instant it leaves the pad — the user's
-/// confirmed in-game observation is that this does not happen.
+/// a chrono miner vanishing the instant it leaves the pad.
 #[test]
 fn chrono_miner_does_not_warp_outbound() {
     let mut sim = Simulation::new();
@@ -3931,22 +4063,17 @@ fn dock_first_slot_drain_waits_one_unload_interval() {
     );
 }
 
-/// Verify the post-last-bale hold + stock state-4 dock release:
-/// 1. Cargo empties → phase=DepositCooldown, dock still occupied.
-/// 2. After cooldown ticks → phase=Departing, dock still occupied until
-///    the Departing handler runs.
-/// 3. On the stock state-4 handoff tick → dock released.
+/// Verify the empty-slot gate + stock state-4 dock release:
+/// 1. Cargo is already empty when the dump gate fires.
+/// 2. The same tick advances to Departing, with the dock still occupied.
+/// 3. The next tick runs the stock state-4 handoff and releases the dock.
 ///
 /// Sets the miner up in Unloading with empty cargo and `unload_timer = 0`
-/// so the cargo-empty branch fires on the very first tick. The cooldown
-/// is now one dump-gate interval (= 15 ticks at default HarvesterDumpRate),
-/// matching gamemd's "one extra empty-slot fire then state-4 transition"
-/// idle window — independent of any building SpecialAnim duration.
+/// so the cargo-empty branch fires on the very first tick.
 #[test]
-fn deposit_cooldown_releases_dock_on_stock_state4_handoff() {
+fn empty_unload_gate_releases_dock_on_next_stock_state4_handoff() {
     let mut sim = Simulation::new();
     let rules = miner_rules();
-    let config = MinerConfig::default();
 
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
     spawn_refinery(&mut sim, 2, 10, 10);
@@ -3965,43 +4092,26 @@ fn deposit_cooldown_releases_dock_on_stock_state4_handoff() {
     assert!(sim.production.dock_reservations.try_reserve(2, miner_id));
     assert!(sim.production.dock_reservations.is_occupied(2));
 
-    // First tick: phase_unloading sees empty cargo, seeds the cooldown,
-    // transitions to DepositCooldown.
+    // First tick: phase_unloading sees empty cargo and advances to the
+    // state-4 handoff without seeding another dump-gate cooldown.
     tick_miners_n(&mut sim, &rules, 1);
-
-    let expected_cooldown = (config.unload_tick_interval).div_ceil(10);
-
-    let m = get_miner(&sim, miner_id);
-    assert_eq!(
-        m.dock_phase,
-        RefineryDockPhase::DepositCooldown,
-        "cargo-empty should transition to DepositCooldown, not Departing",
-    );
-    assert_eq!(
-        m.deposit_cooldown_ticks, expected_cooldown,
-        "cooldown should be one dump-gate interval (ceil(unload_tick_interval / 10))",
-    );
-    assert!(
-        sim.production.dock_reservations.is_occupied(2),
-        "dock must stay occupied through the cooldown",
-    );
-
-    // Burn through the cooldown. Each tick decrements by 1; the transition
-    // fires on the tick where the counter is already 0.
-    tick_miners_n(&mut sim, &rules, expected_cooldown as usize + 1);
 
     let m = get_miner(&sim, miner_id);
     assert_eq!(
         m.dock_phase,
         RefineryDockPhase::Departing,
-        "phase should advance to Departing after cooldown completes",
+        "empty-slot gate should transition directly to Departing",
+    );
+    assert_eq!(
+        m.deposit_cooldown_ticks, 0,
+        "empty-slot gate must not seed another unload interval",
     );
     assert!(
         sim.production.dock_reservations.is_occupied(2),
         "dock is still occupied until the Departing handler runs",
     );
 
-    // One more tick runs the stock state-4 handoff.
+    // Next tick runs the stock state-4 handoff.
     tick_miners_n(&mut sim, &rules, 1);
 
     let m = get_miner(&sim, miner_id);
@@ -4016,9 +4126,75 @@ fn deposit_cooldown_releases_dock_on_stock_state4_handoff() {
     );
 }
 
-/// Without a SpecialAnim in art.ini the cooldown is 0 and DepositCooldown
-/// is a one-tick pass-through. Confirms the helper handles missing-anim
-/// gracefully (preserving prior behavior for tests that don't configure art).
+#[test]
+fn queued_miner_takes_over_immediately_after_empty_gate_handoff() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    let occupant = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
+    let waiter = spawn_miner(&mut sim, 3, MinerKind::War, 13, 11);
+    spawn_refinery(&mut sim, 2, 10, 10);
+
+    {
+        let entity = sim.entities.get_mut(occupant).expect("occupant entity");
+        let miner = entity.miner.as_mut().expect("occupant miner");
+        miner.cargo.clear();
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::Unloading;
+        miner.reserved_refinery = Some(2);
+        miner.unload_timer = 0;
+    }
+    assert!(sim.production.dock_reservations.try_reserve(2, occupant));
+    sim.production
+        .dock_reservations
+        .mark_contact_entered(2, occupant);
+    sim.production.dock_reservations.link_on_pad(2, occupant);
+
+    {
+        let entity = sim.entities.get_mut(waiter).expect("waiter entity");
+        let miner = entity.miner.as_mut().expect("waiter miner");
+        miner.cargo.push(CargoBale {
+            resource_type: ResourceType::Ore,
+            value: 25,
+        });
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::MissionEnter;
+        miner.reserved_refinery = Some(2);
+        miner.dock_queued = true;
+    }
+    assert!(!sim.production.dock_reservations.try_reserve(2, waiter));
+
+    tick_miners_n(&mut sim, &rules, 1);
+    assert_eq!(
+        get_miner(&sim, occupant).dock_phase,
+        RefineryDockPhase::Departing,
+        "empty gate should reach state-4 handoff before release",
+    );
+    assert!(
+        sim.production.dock_reservations.is_waiting(2, waiter),
+        "waiter must remain queued until the state-4 release tick",
+    );
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    let occupant_miner = get_miner(&sim, occupant);
+    assert_eq!(occupant_miner.state, MinerState::SearchOre);
+    assert!(!sim.production.dock_reservations.has_contact(2, occupant));
+    let waiter_miner = get_miner(&sim, waiter);
+    assert_eq!(
+        waiter_miner.dock_phase,
+        RefineryDockPhase::Linked,
+        "queued miner should take the freed contact on the immediate next tick",
+    );
+    assert!(!waiter_miner.dock_queued);
+    assert!(sim.production.dock_reservations.has_contact(2, waiter));
+    assert!(
+        sim.production
+            .dock_reservations
+            .has_contact_entered(2, waiter)
+    );
+}
+
 /// Verify the purifier bonus scales linearly with the number of purifiers
 /// owned. Two purifiers must produce 2× the bonus of one (regression for
 /// the old boolean-based formula that capped the bonus at +25% regardless
@@ -4156,16 +4332,12 @@ fn human_player_does_not_get_ai_virtual_bonus() {
     );
 }
 
-/// The post-last-bale cooldown is driven by the [General] HarvesterDumpRate
-/// (one dump-gate fire), not by the building's SpecialAnim duration. Verify
-/// that a refinery with no SpecialAnim still produces a non-zero cooldown
-/// matching the unload-interval — matches gamemd's empty-slot idle window
-/// regardless of which refinery type is involved.
+/// Legacy DepositCooldown save states still count down and pass through to
+/// Departing, even though stock unload no longer enters this phase.
 #[test]
-fn deposit_cooldown_uses_unload_interval_regardless_of_special_anim() {
+fn legacy_deposit_cooldown_passes_through_to_departing() {
     let mut sim = Simulation::new();
-    let rules = miner_rules(); // no art.ini → SpecialAnim absent
-    let config = MinerConfig::default();
+    let rules = miner_rules();
 
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
     spawn_refinery(&mut sim, 2, 10, 10);
@@ -4175,32 +4347,23 @@ fn deposit_cooldown_uses_unload_interval_regardless_of_special_anim() {
         let miner = entity.miner.as_mut().expect("miner component");
         miner.cargo.clear();
         miner.state = MinerState::Dock;
-        miner.dock_phase = RefineryDockPhase::Unloading;
+        miner.dock_phase = RefineryDockPhase::DepositCooldown;
         miner.reserved_refinery = Some(2);
-        miner.unload_timer = 0;
+        miner.deposit_cooldown_ticks = 2;
     }
     sim.production.dock_reservations.try_reserve(2, miner_id);
 
-    let expected_cooldown = (config.unload_tick_interval).div_ceil(10);
-
-    // Tick 1: Unloading sees empty cargo, seeds cooldown to one unload-
-    // interval, transitions to DepositCooldown.
     tick_miners_n(&mut sim, &rules, 1);
     let m = get_miner(&sim, miner_id);
     assert_eq!(m.dock_phase, RefineryDockPhase::DepositCooldown);
-    assert_eq!(
-        m.deposit_cooldown_ticks, expected_cooldown,
-        "cooldown must be one dump-gate interval even without a SpecialAnim",
-    );
+    assert_eq!(m.deposit_cooldown_ticks, 1);
 
-    // Burn through the cooldown — should advance to Departing on the tick
-    // where the counter is already 0.
-    tick_miners_n(&mut sim, &rules, expected_cooldown as usize + 1);
+    tick_miners_n(&mut sim, &rules, 2);
     let m = get_miner(&sim, miner_id);
     assert_eq!(
         m.dock_phase,
         RefineryDockPhase::Departing,
-        "cooldown completion should pass through to Departing",
+        "legacy cooldown completion should pass through to Departing",
     );
 }
 

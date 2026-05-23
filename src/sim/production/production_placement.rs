@@ -5,7 +5,9 @@
 
 use std::collections::BTreeMap;
 
+use crate::map::bridge_facts::BRIDGE_FLAG_DESTROYED_OR_RAMP;
 use crate::map::entities::EntityCategory;
+use crate::map::houses::are_houses_friendly;
 use crate::rules::locomotor_type::MovementZone;
 use crate::rules::object_type::ObjectCategory;
 use crate::rules::ruleset::RuleSet;
@@ -381,6 +383,7 @@ fn cell_placeable(
                     && !cell.terrain_object_blocks
                     && !cell.has_bridge_deck
                     && !cell.bridge_walkable
+                    && !cell.bridge_facts.has_flag(BRIDGE_FLAG_DESTROYED_OR_RAMP)
             })
         } else {
             path_grid.is_some_and(|grid| {
@@ -402,6 +405,7 @@ fn cell_placeable(
                     && !cell.terrain_object_blocks
                     && !cell.has_bridge_deck
                     && !cell.bridge_walkable
+                    && !cell.bridge_facts.has_flag(BRIDGE_FLAG_DESTROYED_OR_RAMP)
                     && cell.slope_type == 0
             })
         } else {
@@ -456,30 +460,33 @@ fn is_within_build_area(
         return false;
     }
     for e in sim.entities.values() {
-        if e.category != EntityCategory::Structure
-            || !sim.interner.resolve(e.owner).eq_ignore_ascii_case(owner)
-        {
+        if e.category != EntityCategory::Structure {
             continue;
         }
+        let provider_owner = sim.interner.resolve(e.owner);
         let Some(existing) = rules.object(sim.interner.resolve(e.type_ref)) else {
             continue;
         };
-        if !existing.base_normal {
+        if provider_owner.eq_ignore_ascii_case(owner) {
+            if !existing.base_normal {
+                continue;
+            }
+        } else if !(sim.game_options.build_off_ally
+            && existing.eligibile_for_ally_building
+            && are_houses_friendly(&sim.house_alliances, provider_owner, owner))
+        {
             continue;
         }
-        // RA2 uses the larger of provider's and placed building's Adjacent values.
-        // ConYards have high Adjacent (~12), so they expand the buildable zone.
-        let adjacent = placed_adjacent.max(existing.adjacent);
         let (provider_width, provider_height) = foundation_dimensions(&existing.foundation);
-        if rectangles_within_adjacent_range(
+        if provider_intersects_build_area_ring(
+            (rx, ry, width, height),
             (
                 e.position.rx,
                 e.position.ry,
                 provider_width,
                 provider_height,
             ),
-            (rx, ry, width, height),
-            adjacent,
+            placed_adjacent,
         ) {
             return true;
         }
@@ -487,22 +494,35 @@ fn is_within_build_area(
     false
 }
 
-fn rectangles_within_adjacent_range(
-    provider: (u16, u16, u16, u16),
+fn provider_intersects_build_area_ring(
     placed: (u16, u16, u16, u16),
+    provider: (u16, u16, u16, u16),
     adjacent: i32,
 ) -> bool {
-    let (provider_rx, provider_ry, provider_width, provider_height) = provider;
     let (placed_rx, placed_ry, placed_width, placed_height) = placed;
+    let (provider_rx, provider_ry, provider_width, provider_height) = provider;
     let expansion = adjacent.saturating_add(1);
-    let min_x = i32::from(provider_rx) - expansion;
-    let min_y = i32::from(provider_ry) - expansion;
-    let max_x = i32::from(provider_rx) + i32::from(provider_width) - 1 + expansion;
-    let max_y = i32::from(provider_ry) + i32::from(provider_height) - 1 + expansion;
     let placed_min_x = i32::from(placed_rx);
     let placed_min_y = i32::from(placed_ry);
     let placed_max_x = i32::from(placed_rx) + i32::from(placed_width) - 1;
     let placed_max_y = i32::from(placed_ry) + i32::from(placed_height) - 1;
+    let min_x = placed_min_x - expansion;
+    let min_y = placed_min_y - expansion;
+    let max_x = placed_max_x + expansion;
+    let max_y = placed_max_y + expansion;
+    let provider_min_x = i32::from(provider_rx);
+    let provider_min_y = i32::from(provider_ry);
+    let provider_max_x = i32::from(provider_rx) + i32::from(provider_width) - 1;
+    let provider_max_y = i32::from(provider_ry) + i32::from(provider_height) - 1;
 
-    placed_min_x <= max_x && placed_max_x >= min_x && placed_min_y <= max_y && placed_max_y >= min_y
+    let intersects_expanded = provider_min_x <= max_x
+        && provider_max_x >= min_x
+        && provider_min_y <= max_y
+        && provider_max_y >= min_y;
+    let intersects_foundation = provider_min_x <= placed_max_x
+        && provider_max_x >= placed_min_x
+        && provider_min_y <= placed_max_y
+        && provider_max_y >= placed_min_y;
+
+    intersects_expanded && !intersects_foundation
 }

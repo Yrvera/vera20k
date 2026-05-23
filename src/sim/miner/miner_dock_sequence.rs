@@ -533,7 +533,15 @@ pub(super) fn handle_dock_sequence(
             phase_approach(sim, path_grid, snap, wait_queue, ref_sid, dock_capacity);
         }
         RefineryDockPhase::MissionEnter => {
-            phase_mission_enter(sim, snap, accepted_cell, ref_sid, dock_capacity);
+            phase_mission_enter(
+                sim,
+                path_grid,
+                snap,
+                wait_queue,
+                accepted_cell,
+                ref_sid,
+                dock_capacity,
+            );
         }
         RefineryDockPhase::AwaitingAcceptedCell => {
             phase_awaiting_accepted_cell(sim, snap);
@@ -581,7 +589,9 @@ fn phase_approach(
             .hello_or_wait(ref_sid, snap.entity_id, dock_capacity);
 
     snap.miner.dock_queued = admission != ContactAdmission::Accepted;
-    snap.miner.dock_phase = RefineryDockPhase::MissionEnter;
+    if admission == ContactAdmission::Accepted {
+        snap.miner.dock_phase = RefineryDockPhase::MissionEnter;
+    }
 
     // Reservation not granted — keep heading toward QueueingCell.
     if admission != ContactAdmission::Accepted && !is_adjacent_or_at((snap.rx, snap.ry), wait_queue)
@@ -600,7 +610,9 @@ fn phase_approach(
 
 fn phase_mission_enter(
     sim: &mut Simulation,
+    path_grid: Option<&PathGrid>,
     snap: &mut MinerSnapshot,
+    wait_queue: (u16, u16),
     accepted_cell: (u16, u16),
     ref_sid: u64,
     dock_capacity: usize,
@@ -618,6 +630,22 @@ fn phase_mission_enter(
             .production
             .dock_reservations
             .is_on_pad(ref_sid, snap.entity_id);
+    if admission != ContactAdmission::Accepted && !already_entered {
+        snap.miner.dock_queued = true;
+        if !is_adjacent_or_at((snap.rx, snap.ry), wait_queue) {
+            if let Some(grid) = path_grid {
+                issue_move_if_idle(
+                    &mut sim.entities,
+                    grid,
+                    snap.entity_id,
+                    wait_queue,
+                    snap.speed,
+                );
+            }
+        }
+        return;
+    }
+
     let can_start_enter_handshake =
         (admission == ContactAdmission::Accepted || already_entered) && pad_clear_or_self;
     snap.miner.dock_queued =
@@ -844,28 +872,19 @@ fn phase_unloading(
         return;
     }
 
-    // Cargo empty — hold for one more dump-gate interval, matching gamemd's
-    // post-last-bale idle: the dump counter keeps ticking after the last
-    // bale drains, and on the NEXT 14.4-frame gate fire `FindFirstNonEmptySlot`
-    // returns -1, transitioning the zero-link refinery state machine to
-    // state 4. One unload-interval is the correct hold — not the full
-    // SpecialAnim duration. The GAREFNOR pipe
-    // sprite plays out as a building-side anim and outlasts the miner's
-    // departure in gamemd as well.
+    // Cargo empty at a dump-gate crossing: `FindFirstNonEmptySlot` has
+    // returned -1, so stock Mission_Deploy_Building state 3 advances to
+    // state 4. Do not seed another dump-gate cooldown here; the interval
+    // between the last real slot drain and this empty-slot fire has already
+    // been paid by `unload_timer`.
     snap.miner.home_refinery = Some(ref_sid);
-    snap.miner.deposit_cooldown_ticks = unload_interval_in_ticks(config);
-    snap.miner.dock_phase = RefineryDockPhase::DepositCooldown;
+    snap.miner.deposit_cooldown_ticks = 0;
+    snap.miner.dock_phase = RefineryDockPhase::Departing;
 }
 
-/// One unload-interval in whole ticks. `unload_tick_interval` is stored in
-/// tenths-of-a-tick (default 144 = 14.4 ticks); rounding UP gives the
-/// gamemd-equivalent post-last-bale hold.
-fn unload_interval_in_ticks(config: &MinerConfig) -> u16 {
-    (config.unload_tick_interval).div_ceil(10)
-}
-
-/// Hold on the pad until the last dump-gate interval completes, then hand
-/// off to Rust's stock state-4 cleanup phase.
+/// Legacy/pass-through phase retained for older save/test states. Stock
+/// unload reaches Departing directly from the empty-slot gate in
+/// `phase_unloading`.
 fn phase_deposit_cooldown(snap: &mut MinerSnapshot) {
     if snap.miner.deposit_cooldown_ticks > 0 {
         snap.miner.deposit_cooldown_ticks -= 1;

@@ -562,6 +562,7 @@ pub fn sell_building(sim: &mut Simulation, rules: &RuleSet, stable_id: u64) -> b
     let interrupted_miners =
         crate::sim::miner::interrupt_refinery_docked_miners(sim, rules, stable_id);
     // Remove from EntityStore.
+    sim.clear_radio_contacts_for(stable_id);
     sim.entities.remove(stable_id);
     // SpySat sold: fully reshroud the owner so only current LOS remains visible.
     let owner_id = sim.interner.intern(&owner_name);

@@ -14,6 +14,7 @@ use std::collections::BTreeSet;
 use crate::map::entities::EntityCategory;
 use crate::rules::locomotor_type::MovementZone;
 use crate::rules::ruleset::RuleSet;
+use crate::sim::miner::miner_dock::ContactAdmission;
 use crate::sim::miner::{
     CargoBale, Miner, MinerConfig, MinerKind, MinerState, RefineryDockPhase, ResourceNode,
     ResourceType,
@@ -32,11 +33,39 @@ use crate::sim::debug_event_log::DebugEventKind;
 use crate::sim::intern::InternedId;
 
 use crate::sim::production::foundation_dimensions;
+use crate::util::lepton::LEPTONS_PER_LEVEL;
 
-/// Chrono miners only drive the final dock handoff. Beyond this distance
-/// from the accepted refinery dock anchor, the inbound return uses the
-/// chrono warp and lands at the queue/passable staging cell.
-const CHRONO_INBOUND_WARP_THRESHOLD_CELLS: u32 = 2;
+/// Chrono far-return compares object-coordinate distance in leptons against
+/// `ChronoHarvTooFarDistance * 256`. The stock branch is strict `>`, so a
+/// miner exactly at the threshold still uses the close radio path.
+fn chrono_return_exceeds_too_far_threshold(
+    sim: &Simulation,
+    miner_sid: u64,
+    refinery_sid: u64,
+    threshold_cells: u16,
+) -> Option<bool> {
+    let miner = sim.entities.get(miner_sid)?;
+    let refinery = sim.entities.get(refinery_sid)?;
+    if refinery.dying || refinery.health.current == 0 {
+        return None;
+    }
+
+    let miner_x = i64::from(miner.position.rx) * 256 + miner.position.sub_x.to_num::<i64>();
+    let miner_y = i64::from(miner.position.ry) * 256 + miner.position.sub_y.to_num::<i64>();
+    let miner_z = i64::from(miner.position.z) * LEPTONS_PER_LEVEL;
+    let refinery_x =
+        i64::from(refinery.position.rx) * 256 + refinery.position.sub_x.to_num::<i64>();
+    let refinery_y =
+        i64::from(refinery.position.ry) * 256 + refinery.position.sub_y.to_num::<i64>();
+    let refinery_z = i64::from(refinery.position.z) * LEPTONS_PER_LEVEL;
+
+    let dx = miner_x - refinery_x;
+    let dy = miner_y - refinery_y;
+    let dz = miner_z - refinery_z;
+    let distance_sq = dx * dx + dy * dy + dz * dz;
+    let threshold = i64::from(threshold_cells.max(1)) * 256;
+    Some(distance_sq > threshold * threshold)
+}
 
 /// Snapshot of one miner entity for two-phase processing.
 pub(super) struct MinerSnapshot {
@@ -587,7 +616,7 @@ fn save_archive_via_short_scan(
 fn handle_return(
     sim: &mut Simulation,
     rules: &RuleSet,
-    _config: &MinerConfig,
+    config: &MinerConfig,
     path_grid: Option<&PathGrid>,
     snap: &mut MinerSnapshot,
 ) {
@@ -600,7 +629,7 @@ fn handle_return(
     }
 
     let Some(ref_sid) = snap.miner.reserved_refinery else {
-        if let Some((rsid, dock)) = find_nearest_refinery(
+        if let Some((rsid, _dock)) = find_nearest_refinery(
             sim,
             rules,
             sim.interner.resolve(snap.owner),
@@ -608,7 +637,10 @@ fn handle_return(
             (snap.rx, snap.ry),
         ) {
             snap.miner.reserved_refinery = Some(rsid);
-            if try_issue_chrono_return_teleport(sim, rules, path_grid, snap, rsid, dock) {
+            if try_issue_chrono_far_return_teleport(sim, rules, config, path_grid, snap, rsid) {
+                return;
+            }
+            if try_begin_chrono_close_return_radio(sim, rules, config, path_grid, snap, rsid) {
                 return;
             }
         } else {
@@ -638,7 +670,11 @@ fn handle_return(
         .entities
         .get(snap.entity_id)
         .is_some_and(|entity| entity.movement_target.is_some());
-    if !moving && try_issue_chrono_return_teleport(sim, rules, path_grid, snap, ref_sid, dock) {
+    if !moving && try_issue_chrono_far_return_teleport(sim, rules, config, path_grid, snap, ref_sid)
+    {
+        return;
+    }
+    if try_begin_chrono_close_return_radio(sim, rules, config, path_grid, snap, ref_sid) {
         return;
     }
 
@@ -688,7 +724,7 @@ fn handle_forced_return(
     }
 
     if snap.miner.reserved_refinery.is_none() {
-        if let Some((rsid, dock)) = find_nearest_refinery(
+        if let Some((rsid, _dock)) = find_nearest_refinery(
             sim,
             rules,
             sim.interner.resolve(snap.owner),
@@ -696,7 +732,7 @@ fn handle_forced_return(
             (snap.rx, snap.ry),
         ) {
             snap.miner.reserved_refinery = Some(rsid);
-            if try_issue_chrono_return_teleport(sim, rules, path_grid, snap, rsid, dock) {
+            if try_issue_chrono_far_return_teleport(sim, rules, config, path_grid, snap, rsid) {
                 return;
             }
         } else {
@@ -821,18 +857,18 @@ pub(crate) fn extract_bales_max(
 
 /// Begin the return-to-refinery sequence.
 ///
-/// Chrono miners warp when they are outside the short final dock handoff;
-/// close returns drive through the normal refinery dock/radio flow. The
-/// far-return destination is the `QueueingCell` passable-cell search result,
-/// not the pad/contact cell.
+/// Chrono miners inside `ChronoHarvTooFarDistance` keep the normal refinery
+/// radio/contact path to the accepted dock cell. Miners beyond that threshold
+/// use the far-return destination: the `QueueingCell` passable-cell search
+/// result, not the pad/contact cell.
 fn begin_return(
     sim: &mut Simulation,
     rules: &RuleSet,
-    _config: &MinerConfig,
+    config: &MinerConfig,
     path_grid: Option<&PathGrid>,
     snap: &mut MinerSnapshot,
 ) {
-    if let Some((rsid, dock)) = find_nearest_refinery(
+    if let Some((rsid, _dock)) = find_nearest_refinery(
         sim,
         rules,
         sim.interner.resolve(snap.owner),
@@ -840,7 +876,10 @@ fn begin_return(
         (snap.rx, snap.ry),
     ) {
         snap.miner.reserved_refinery = Some(rsid);
-        if try_issue_chrono_return_teleport(sim, rules, path_grid, snap, rsid, dock) {
+        if try_issue_chrono_far_return_teleport(sim, rules, config, path_grid, snap, rsid) {
+            return;
+        }
+        if try_begin_chrono_close_return_radio(sim, rules, config, path_grid, snap, rsid) {
             return;
         }
         snap.miner.state = MinerState::ReturnToRefinery;
@@ -849,26 +888,87 @@ fn begin_return(
     }
 }
 
-fn try_issue_chrono_return_teleport(
+fn try_begin_chrono_close_return_radio(
     sim: &mut Simulation,
     rules: &RuleSet,
+    config: &MinerConfig,
+    path_grid: Option<&PathGrid>,
+    snap: &mut MinerSnapshot,
+    ref_sid: u64,
+) -> bool {
+    if snap.miner.kind != MinerKind::Chrono {
+        return false;
+    }
+
+    match chrono_return_exceeds_too_far_threshold(
+        sim,
+        snap.entity_id,
+        ref_sid,
+        config.too_far_threshold_chrono,
+    ) {
+        Some(false) => {}
+        Some(true) | None => return false,
+    }
+
+    let Some(dock_capacity) = refinery_dock_capacity_for_sid(sim, rules, ref_sid) else {
+        return false;
+    };
+
+    let admission =
+        sim.production
+            .dock_reservations
+            .hello_or_wait(ref_sid, snap.entity_id, dock_capacity);
+
+    if let Some(entity) = sim.entities.get_mut(snap.entity_id) {
+        entity.movement_target = None;
+    }
+
+    snap.miner.state = MinerState::Dock;
+    snap.miner.dock_queued = admission != ContactAdmission::Accepted;
+    snap.miner.dock_phase = if admission == ContactAdmission::Accepted {
+        RefineryDockPhase::MissionEnter
+    } else {
+        RefineryDockPhase::Approach
+    };
+
+    if admission != ContactAdmission::Accepted {
+        if let Some(staging) = chrono_return_staging_cell_for_sid(sim, rules, ref_sid, path_grid)
+            && !is_adjacent_or_at((snap.rx, snap.ry), staging)
+            && let Some(grid) = path_grid
+        {
+            issue_move_if_idle(&mut sim.entities, grid, snap.entity_id, staging, snap.speed);
+        }
+    }
+
+    true
+}
+
+fn try_issue_chrono_far_return_teleport(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    config: &MinerConfig,
     path_grid: Option<&PathGrid>,
     snap: &MinerSnapshot,
     ref_sid: u64,
-    dock: (u16, u16),
 ) -> bool {
     if snap.miner.kind != MinerKind::Chrono {
+        return false;
+    }
+
+    if !chrono_return_exceeds_too_far_threshold(
+        sim,
+        snap.entity_id,
+        ref_sid,
+        config.too_far_threshold_chrono,
+    )
+    .unwrap_or(false)
+    {
         return false;
     }
 
     let Some(staging) = chrono_return_staging_cell_for_sid(sim, rules, ref_sid, path_grid) else {
         return false;
     };
-    let threshold = CHRONO_INBOUND_WARP_THRESHOLD_CELLS;
-    let far_enough = cell_dist_sq((snap.rx, snap.ry), dock) > threshold * threshold;
-    if !far_enough {
-        return false;
-    }
 
     let z = sim
         .entities
@@ -926,6 +1026,8 @@ fn spawn_warp_effects(
             elapsed_ms: 0,
             translucent: true,
             delay_ms: 0,
+            start_sound_id: None,
+            start_sound_emitted: false,
         });
     }
 
@@ -1023,6 +1125,21 @@ fn refinery_dock_for_sid(sim: &Simulation, rules: &RuleSet, ref_sid: u64) -> Opt
         h,
         qc,
     ))
+}
+
+fn refinery_dock_capacity_for_sid(
+    sim: &Simulation,
+    rules: &RuleSet,
+    ref_sid: u64,
+) -> Option<usize> {
+    let entity = sim.entities.get(ref_sid)?;
+    if entity.dying || entity.health.current == 0 {
+        return None;
+    }
+    rules
+        .object_case_insensitive(sim.interner.resolve(entity.type_ref))
+        .map(|o| o.number_of_docks.max(1) as usize)
+        .or(Some(1))
 }
 
 /// Chrono far-return staging cell from `QueueingCell`, then the same nearby
@@ -1270,12 +1387,6 @@ fn is_within_close_enough(pos: (u16, u16), target: (u16, u16), close_enough: Sim
     let dx = (pos.0 as i32 - target.0 as i32).abs();
     let dy = (pos.1 as i32 - target.1 as i32).abs();
     SimFixed::from_num((dx + dy) * 256) < close_enough
-}
-
-fn cell_dist_sq(a: (u16, u16), b: (u16, u16)) -> u32 {
-    let dx = a.0 as i32 - b.0 as i32;
-    let dy = a.1 as i32 - b.1 as i32;
-    (dx * dx + dy * dy) as u32
 }
 
 /// Check whether the player owns at least one Ore Purifier building.

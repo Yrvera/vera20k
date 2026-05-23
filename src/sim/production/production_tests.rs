@@ -325,6 +325,7 @@ pub(super) fn placement_radius_rules() -> RuleSet {
     let ini = IniFile::from_str(
         "[InfantryTypes]\n\
              [VehicleTypes]\n\
+             0=MTNK\n\
              [AircraftTypes]\n\
              [BuildingTypes]\n\
              0=GACNST\n\
@@ -430,6 +431,7 @@ pub(super) fn factory_rules() -> RuleSet {
     let ini = IniFile::from_str(
         "[InfantryTypes]\n\
              [VehicleTypes]\n\
+             0=MTNK\n\
              [AircraftTypes]\n\
              [BuildingTypes]\n\
              0=GACNST\n\
@@ -441,6 +443,11 @@ pub(super) fn factory_rules() -> RuleSet {
              6=XAIRFLD\n\
              [GACNST]\n\
              Factory=BuildingType\n\
+             [MTNK]\n\
+             Name=Medium Tank\n\
+             Strength=300\n\
+             Armor=heavy\n\
+             Speed=6\n\
              [GAPILE]\n\
              Factory=InfantryType\n\
              Foundation=3x2\n\
@@ -478,9 +485,10 @@ pub(super) fn prerequisite_group_rules() -> RuleSet {
          PrerequisiteTech=GATECH,NATECH\n\
          PrerequisiteBarracks=GAPILE,NAHAND\n\
          PrerequisiteFactory=GAWEAP,NAWEAP\n\
-         [InfantryTypes]\n\
-         [VehicleTypes]\n\
-         [AircraftTypes]\n\
+             [InfantryTypes]\n\
+             [VehicleTypes]\n\
+             0=MTNK\n\
+             [AircraftTypes]\n\
          [BuildingTypes]\n\
          0=GAPOWR\n\
          1=NAPOWR\n\
