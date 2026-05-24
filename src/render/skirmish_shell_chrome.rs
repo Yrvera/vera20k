@@ -33,20 +33,29 @@ pub struct SkirmishShellChromeEntry {
 pub struct SkirmishShellChromeAtlas {
     pub texture: BatchTexture,
     pub right_panel_top_sdtp: Option<SkirmishShellChromeEntry>,
+    pub right_panel_top_highlight_sdtp_frame1: Option<SkirmishShellChromeEntry>,
     pub right_panel_tile_sdbtnbkgd: Option<SkirmishShellChromeEntry>,
     pub right_panel_overlay_sdbtnanm_frame10: Option<SkirmishShellChromeEntry>,
+    pub right_panel_button_sdbtnanm_frame2: Option<SkirmishShellChromeEntry>,
+    pub right_panel_button_sdbtnanm_frame3: Option<SkirmishShellChromeEntry>,
+    pub right_panel_button_sdbtnanm_frame4: Option<SkirmishShellChromeEntry>,
     pub right_panel_bottom_sdbtm: Option<SkirmishShellChromeEntry>,
     pub sd_map_button: Option<SkirmishShellChromeEntry>,
     pub background_640_mnscrns: Option<SkirmishShellChromeEntry>,
     pub background_800_coop_game_setup: Option<SkirmishShellChromeEntry>,
+    pub choose_map_background_800_customize_battle: Option<SkirmishShellChromeEntry>,
     pub lower_side_640_lwscrns: Option<SkirmishShellChromeEntry>,
     pub lower_side_large_lwscrnl: Option<SkirmishShellChromeEntry>,
+    pub validation_modal_background_pudlgbgn: Option<SkirmishShellChromeEntry>,
     pub button_up_left_30: Option<SkirmishShellChromeEntry>,
     pub button_up_mid_30: Option<SkirmishShellChromeEntry>,
     pub button_up_right_30: Option<SkirmishShellChromeEntry>,
     pub button_down_left_30: Option<SkirmishShellChromeEntry>,
     pub button_down_mid_30: Option<SkirmishShellChromeEntry>,
     pub button_down_right_30: Option<SkirmishShellChromeEntry>,
+    pub modal_button_mnbttn_frame0: Option<SkirmishShellChromeEntry>,
+    pub modal_button_mnbttn_frame1: Option<SkirmishShellChromeEntry>,
+    pub modal_button_mnbttn_frame2: Option<SkirmishShellChromeEntry>,
     pub checkbox_unchecked_cue_i: Option<SkirmishShellChromeEntry>,
     pub checkbox_checked_cce_i: Option<SkirmishShellChromeEntry>,
     pub trackbar_thumb_trakgrip: Option<SkirmishShellChromeEntry>,
@@ -79,9 +88,11 @@ pub struct SkirmishShellChromeAtlas {
 #[cfg(test)]
 enum ShellAssetRole {
     VerifiedParentBackground,
+    VerifiedChooseMapBackground,
     VerifiedOfflineStartMarker,
     AssignedPlayerMarker,
     RightPanelChrome,
+    VerifiedModalDialogBackground,
     VerifiedOwnerDrawButton,
     VerifiedFlag,
     ResearchCandidate,
@@ -103,7 +114,10 @@ pub fn build_skirmish_shell_chrome_atlas(
     let shell_palette = load_shell_palette(assets)?;
     let shell2_palette = load_named_palette(assets, "SHELL2.PAL")?;
     let sdbtnanm_palette = load_named_palette(assets, "SDBTNANM.PAL");
+    let main_button_palette = load_named_palette(assets, "MAINBTTN.PAL");
+    let neutral_dialog_palette = load_named_palette(assets, "DIALOGN.PAL");
     let parent_background_palette = load_parent_background_palette(assets);
+    let choose_map_background_palette = load_choose_map_background_palette(assets);
 
     let mut rendered = Vec::new();
     rendered.push(mandatory_shp(
@@ -112,6 +126,13 @@ pub fn build_skirmish_shell_chrome_atlas(
         &shell_palette,
         0,
         "SHELL.PAL",
+    )?);
+    rendered.push(render_shp_entry_labeled(
+        assets,
+        "SDTP.SHP",
+        "sdtp.shp#1",
+        &shell_palette,
+        1,
     )?);
     rendered.push(mandatory_shp(
         assets,
@@ -128,18 +149,60 @@ pub fn build_skirmish_shell_chrome_atlas(
         "SHELL.PAL",
     )?);
     if let Some(sdbtnanm_palette) = sdbtnanm_palette.as_ref() {
-        match render_shp_entry_labeled(
-            assets,
-            "SDBTNANM.SHP",
-            "sdbtnanm.shp#10",
-            sdbtnanm_palette,
-            10,
-        ) {
-            Some(entry) => rendered.push(entry),
-            None => log::warn!(
-                "Missing optional Skirmish shell asset SDBTNANM.SHP frame 10; not substituting frame 0"
-            ),
+        for frame in [2usize, 3, 4, 10] {
+            match render_shp_entry_labeled(
+                assets,
+                "SDBTNANM.SHP",
+                &format!("sdbtnanm.shp#{frame}"),
+                sdbtnanm_palette,
+                frame,
+            ) {
+                Some(entry) => rendered.push(entry),
+                None => log::warn!(
+                    "Missing optional Skirmish shell asset SDBTNANM.SHP frame {frame}; not substituting frame 0"
+                ),
+            }
         }
+    }
+    if sdbtnanm_palette.is_none() {
+        log::warn!("Missing optional Skirmish shell palette SDBTNANM.PAL");
+    }
+    if let Some(main_button_palette) = main_button_palette.as_ref() {
+        for frame in [0usize, 1, 2] {
+            match render_shp_entry_labeled(
+                assets,
+                "MNBTTN.SHP",
+                &format!("mnbttn.shp#{frame}"),
+                main_button_palette,
+                frame,
+            ) {
+                Some(entry) => rendered.push(entry),
+                None => log::warn!(
+                    "Missing verified modal button asset MNBTTN.SHP frame {frame}; validation modal will fall back to generic button art"
+                ),
+            }
+        }
+    } else {
+        log::warn!(
+            "Skipping verified modal button art MNBTTN.SHP because MAINBTTN.PAL is missing or invalid"
+        );
+    }
+    if let Some(neutral_dialog_palette) = neutral_dialog_palette.as_ref() {
+        push_optional(
+            &mut rendered,
+            render_shp_entry_labeled(
+                assets,
+                "PUDLGBGN.SHP",
+                "pudlgbgn.shp#0",
+                neutral_dialog_palette,
+                0,
+            ),
+            "PUDLGBGN.SHP",
+        );
+    } else {
+        log::warn!(
+            "Skipping native validation modal background PUDLGBGN.SHP because DIALOGN.PAL is missing or invalid"
+        );
     }
     rendered.push(mandatory_shp(
         assets,
@@ -174,6 +237,22 @@ pub fn build_skirmish_shell_chrome_atlas(
     } else {
         log::warn!(
             "Skipping verified Skirmish parent backgrounds because MnScrnLCoopGameSetup.PAL is missing or invalid"
+        );
+    }
+    if let Some(choose_map_background_palette) = choose_map_background_palette.as_ref() {
+        push_optional(
+            &mut rendered,
+            render_shp_entry(
+                assets,
+                "MnScrnLCustomizeBattle.shp",
+                choose_map_background_palette,
+                0,
+            ),
+            "MnScrnLCustomizeBattle.shp",
+        );
+    } else {
+        log::warn!(
+            "Skipping verified Choose Map modal background because MnScrnLCustomizeBattle.PAL is missing or invalid"
         );
     }
 
@@ -262,20 +341,31 @@ pub fn build_skirmish_shell_chrome_atlas(
     Some(SkirmishShellChromeAtlas {
         texture,
         right_panel_top_sdtp: by_label.get("sdtp.shp").copied(),
+        right_panel_top_highlight_sdtp_frame1: by_label.get("sdtp.shp#1").copied(),
         right_panel_tile_sdbtnbkgd: by_label.get("sdbtnbkgd.shp").copied(),
         right_panel_overlay_sdbtnanm_frame10: by_label.get("sdbtnanm.shp#10").copied(),
+        right_panel_button_sdbtnanm_frame2: by_label.get("sdbtnanm.shp#2").copied(),
+        right_panel_button_sdbtnanm_frame3: by_label.get("sdbtnanm.shp#3").copied(),
+        right_panel_button_sdbtnanm_frame4: by_label.get("sdbtnanm.shp#4").copied(),
         right_panel_bottom_sdbtm: by_label.get("sdbtm.shp").copied(),
         sd_map_button: by_label.get("sdmpbtn.shp").copied(),
         background_640_mnscrns: by_label.get("mnscrns.shp").copied(),
         background_800_coop_game_setup: by_label.get("mnscrnlcoopgamesetup.shp").copied(),
+        choose_map_background_800_customize_battle: by_label
+            .get("mnscrnlcustomizebattle.shp")
+            .copied(),
         lower_side_640_lwscrns: by_label.get("lwscrns.shp").copied(),
         lower_side_large_lwscrnl: by_label.get("lwscrnl.shp").copied(),
+        validation_modal_background_pudlgbgn: by_label.get("pudlgbgn.shp#0").copied(),
         button_up_left_30: by_label.get("bue_li30.pcx").copied(),
         button_up_mid_30: by_label.get("bue_mi30.pcx").copied(),
         button_up_right_30: by_label.get("bue_ri30.pcx").copied(),
         button_down_left_30: by_label.get("bde_li30.pcx").copied(),
         button_down_mid_30: by_label.get("bde_mi30.pcx").copied(),
         button_down_right_30: by_label.get("bde_ri30.pcx").copied(),
+        modal_button_mnbttn_frame0: by_label.get("mnbttn.shp#0").copied(),
+        modal_button_mnbttn_frame1: by_label.get("mnbttn.shp#1").copied(),
+        modal_button_mnbttn_frame2: by_label.get("mnbttn.shp#2").copied(),
         checkbox_unchecked_cue_i: by_label.get("cue_i.pcx").copied(),
         checkbox_checked_cce_i: by_label.get("cce_i.pcx").copied(),
         trackbar_thumb_trakgrip: by_label.get("trakgrip.pcx").copied(),
@@ -320,6 +410,21 @@ fn load_parent_background_palette(assets: &AssetManager) -> Option<Palette> {
         .ok()
 }
 
+fn load_choose_map_background_palette(assets: &AssetManager) -> Option<Palette> {
+    let Some(palette_bytes) = assets.get_ref("MnScrnLCustomizeBattle.PAL") else {
+        log::warn!("Missing verified Choose Map modal palette MnScrnLCustomizeBattle.PAL");
+        return None;
+    };
+    Palette::from_bytes(palette_bytes)
+        .map_err(|err| {
+            log::warn!(
+                "Could not parse verified Choose Map modal palette MnScrnLCustomizeBattle.PAL: {err:#}"
+            );
+            err
+        })
+        .ok()
+}
+
 fn load_shell_palette(assets: &AssetManager) -> Option<Palette> {
     load_named_palette(assets, "SHELL.PAL")
 }
@@ -341,6 +446,7 @@ fn load_named_palette(assets: &AssetManager, name: &str) -> Option<Palette> {
 fn classify_shell_asset(name: &str) -> ShellAssetRole {
     match name.to_ascii_lowercase().as_str() {
         "mnscrns.shp" | "mnscrnlcoopgamesetup.shp" => ShellAssetRole::VerifiedParentBackground,
+        "mnscrnlcustomizebattle.shp" => ShellAssetRole::VerifiedChooseMapBackground,
         "startbut.shp" => ShellAssetRole::VerifiedOfflineStartMarker,
         "mmpb.shp" => ShellAssetRole::AssignedPlayerMarker,
         "sdtp.shp" | "sdbtnbkgd.shp" | "sdbtm.shp" | "sdbtnanm.shp" | "sdmpbtn.shp"
@@ -348,16 +454,15 @@ fn classify_shell_asset(name: &str) -> ShellAssetRole {
         "bue_li30.pcx" | "bue_mi30.pcx" | "bue_ri30.pcx" | "bde_li30.pcx" | "bde_mi30.pcx"
         | "bde_ri30.pcx" | "cue_i.pcx" | "cce_i.pcx" | "trakgrip.pcx" | "trofl.pcx"
         | "trofm.pcx" | "trofr.pcx" | "dnarrowr.pcx" | "dnarrowp.pcx" | "gdnarrowr.pcx"
-        | "gdnarrowp.pcx" => ShellAssetRole::VerifiedOwnerDrawButton,
+        | "gdnarrowp.pcx" | "mnbttn.shp" => ShellAssetRole::VerifiedOwnerDrawButton,
+        "pudlgbgn.shp" => ShellAssetRole::VerifiedModalDialogBackground,
         "usai.pcx" | "japi.pcx" | "frai.pcx" | "geri.pcx" | "gbri.pcx" | "djbi.pcx"
         | "arbi.pcx" | "lati.pcx" | "rusi.pcx" | "yrii.pcx" | "obsi.pcx" | "rani.pcx" => {
             ShellAssetRole::VerifiedFlag
         }
-        "mnscrnl.shp"
-        | "mnscrnlcustomizebattle.shp"
-        | "dbak6440.pcx"
-        | "dlgsysa.pcx"
-        | "dlgsysi.pcx" => ShellAssetRole::ResearchCandidate,
+        "mnscrnl.shp" | "dbak6440.pcx" | "dlgsysa.pcx" | "dlgsysi.pcx" => {
+            ShellAssetRole::ResearchCandidate
+        }
         _ => ShellAssetRole::Other,
     }
 }
@@ -763,6 +868,14 @@ mod tests {
             ShellAssetRole::VerifiedOwnerDrawButton
         );
         assert_eq!(
+            classify_shell_asset("MNBTTN.SHP"),
+            ShellAssetRole::VerifiedOwnerDrawButton
+        );
+        assert_eq!(
+            classify_shell_asset("PUDLGBGN.SHP"),
+            ShellAssetRole::VerifiedModalDialogBackground
+        );
+        assert_eq!(
             classify_shell_asset("mmpb.shp"),
             ShellAssetRole::AssignedPlayerMarker
         );
@@ -792,11 +905,11 @@ mod tests {
         );
         assert_eq!(
             classify_shell_asset("MnScrnLCustomizeBattle.shp"),
-            ShellAssetRole::ResearchCandidate
+            ShellAssetRole::VerifiedChooseMapBackground
         );
         assert_ne!(
             classify_shell_asset("MnScrnLCustomizeBattle.shp"),
-            ShellAssetRole::VerifiedOwnerDrawButton
+            ShellAssetRole::VerifiedParentBackground
         );
         assert_ne!(
             classify_shell_asset("sidebar.pal"),
@@ -890,11 +1003,22 @@ mod tests {
         let assets = AssetManager::new(&config.paths.ra2_dir).expect("asset manager");
         let shell_palette = load_named_palette(&assets, "SHELL.PAL").expect("SHELL.PAL");
         let anim_palette = load_named_palette(&assets, "SDBTNANM.PAL").expect("SDBTNANM.PAL");
+        let main_button_palette =
+            load_named_palette(&assets, "MAINBTTN.PAL").expect("MAINBTTN.PAL");
         let sdbtn = render_shp_entry(&assets, "SDBTNANM.SHP", &anim_palette, 10)
             .expect("SDBTNANM frame 10");
+        let mnbttn0 = render_shp_entry(&assets, "MNBTTN.SHP", &main_button_palette, 0)
+            .expect("MNBTTN frame 0");
+        let mnbttn1 = render_shp_entry(&assets, "MNBTTN.SHP", &main_button_palette, 1)
+            .expect("MNBTTN frame 1");
+        let mnbttn2 = render_shp_entry(&assets, "MNBTTN.SHP", &main_button_palette, 2)
+            .expect("MNBTTN frame 2");
         let lwscrns = render_shp_entry(&assets, "LWSCRNS.SHP", &shell_palette, 0).expect("LWSCRNS");
         let lwscrnl = render_shp_entry(&assets, "LWSCRNL.SHP", &shell_palette, 0).expect("LWSCRNL");
         assert_eq!((sdbtn.width, sdbtn.height), (156, 42));
+        assert_eq!((mnbttn0.width, mnbttn0.height), (126, 25));
+        assert_eq!((mnbttn1.width, mnbttn1.height), (126, 25));
+        assert_eq!((mnbttn2.width, mnbttn2.height), (126, 25));
         assert_eq!((lwscrns.width, lwscrns.height), (472, 32));
         assert_eq!((lwscrnl.width, lwscrnl.height), (632, 32));
     }

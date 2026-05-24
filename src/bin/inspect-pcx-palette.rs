@@ -104,6 +104,8 @@ fn main() {
         ("SDBTM.SHP", &shell_pal),
         ("LWSCRNS.SHP", &shell_pal),
         ("LWSCRNL.SHP", &shell_pal),
+        ("SDWRNTMP.SHP", &shell_pal),
+        ("SDMPBTN.SHP", &shell_pal),
         ("SDBTNANM.SHP", &sdbtnanm_pal),
     ];
     for (name, palette) in chrome {
@@ -124,7 +126,10 @@ fn main() {
             shp.height,
             shp.frames.len()
         );
-        let frames_to_dump: Vec<usize> = if *name == "SDBTNANM.SHP" {
+        let frames_to_dump: Vec<usize> = if matches!(
+            *name,
+            "SDTP.SHP" | "SDBTNANM.SHP" | "SDWRNTMP.SHP" | "SDMPBTN.SHP"
+        ) {
             (0..shp.frames.len()).collect()
         } else if shp.frames.len() > 10 {
             vec![0, 10]

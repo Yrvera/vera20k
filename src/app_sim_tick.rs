@@ -497,10 +497,19 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                         }
                     }
                     SimSoundEvent::ChuteSound { rx, ry } => {
-                        // Audio dispatch hookup deferred — paradrop launch design D5.
-                        // Sim still emits the event; this arm just drops it silently for now.
-                        let _ = (rx, ry);
-                        continue;
+                        let sound_id = match state
+                            .rules
+                            .as_ref()
+                            .and_then(|r| r.general.chute_sound.as_deref())
+                        {
+                            Some(s) if !s.is_empty() => s.to_string(),
+                            _ => continue,
+                        };
+                        let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
+                        GameSoundEvent::ChuteSound {
+                            sound_id,
+                            screen_pos: Some((sx, sy)),
+                        }
                     }
                     SimSoundEvent::C4Planted { rx, ry } => {
                         let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);

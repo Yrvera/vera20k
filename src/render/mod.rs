@@ -23,6 +23,7 @@ pub mod bridge_railing_atlas;
 pub mod cursor_atlas;
 pub mod egui_integration;
 pub mod gpu;
+pub mod loading_screen_chrome;
 pub mod main_menu_shell_chrome;
 pub mod minimap;
 mod minimap_helpers;

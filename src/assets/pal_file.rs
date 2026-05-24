@@ -109,6 +109,34 @@ impl Palette {
         Ok(Palette { colors })
     }
 
+    /// Parse a palette using gamemd's UI/loading conversion.
+    ///
+    /// The native UI path shifts 6-bit VGA components left by two bits, so the
+    /// maximum component `63` becomes `252`. This conversion does not assign
+    /// transparency or chroma-key alpha; callers that render SHP frames must apply
+    /// any frame-specific transparency policy separately.
+    pub fn from_bytes_gamemd_ui(data: &[u8]) -> Result<Self, AssetError> {
+        if data.len() != PAL_FILE_SIZE {
+            return Err(AssetError::InvalidPalSize {
+                expected: PAL_FILE_SIZE,
+                actual: data.len(),
+            });
+        }
+
+        let mut colors: [Color; PALETTE_COLOR_COUNT] = [Color::rgb(0, 0, 0); PALETTE_COLOR_COUNT];
+
+        for (i, color) in colors.iter_mut().enumerate() {
+            let base: usize = i * 3;
+            *color = Color::rgb(
+                scale_6bit_gamemd_ui_to_8bit(data[base]),
+                scale_6bit_gamemd_ui_to_8bit(data[base + 1]),
+                scale_6bit_gamemd_ui_to_8bit(data[base + 2]),
+            );
+        }
+
+        Ok(Palette { colors })
+    }
+
     /// Load a palette from a .pal file on disk.
     ///
     /// This is a convenience wrapper around from_bytes() for loading loose files.
@@ -156,6 +184,10 @@ fn scale_6bit_vga_to_8bit(value: u8) -> u8 {
     ((v * 255 + 31) / 63) as u8
 }
 
+fn scale_6bit_gamemd_ui_to_8bit(value: u8) -> u8 {
+    value << 2
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,6 +198,33 @@ mod tests {
         assert_eq!(scale_6bit_vga_to_8bit(0), 0);
         // 63 must map to 255 (full white stays white).
         assert_eq!(scale_6bit_vga_to_8bit(63), 255);
+    }
+
+    #[test]
+    fn pal_file_gamemd_shift_left_two_maps_63_to_252() {
+        let mut data: Vec<u8> = vec![0u8; PAL_FILE_SIZE];
+        data[3] = 63;
+        data[4] = 31;
+        data[5] = 1;
+
+        let pal: Palette = Palette::from_bytes_gamemd_ui(&data).expect("Should parse");
+
+        assert_eq!(pal.colors[1].r, 252);
+        assert_eq!(pal.colors[1].g, 124);
+        assert_eq!(pal.colors[1].b, 4);
+    }
+
+    #[test]
+    fn pal_file_gamemd_ui_does_not_assign_alpha_in_palette_conversion() {
+        let mut data: Vec<u8> = vec![0u8; PAL_FILE_SIZE];
+        data[0] = 63;
+        data[1] = 0;
+        data[2] = 63;
+
+        let pal: Palette = Palette::from_bytes_gamemd_ui(&data).expect("Should parse");
+
+        assert_eq!(pal.colors[0], Color::rgb(252, 0, 252));
+        assert_eq!(pal.colors[0].a, 255);
     }
 
     #[test]

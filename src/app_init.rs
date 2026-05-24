@@ -6,7 +6,7 @@
 //! ## Dependency rules
 //! - Part of the app layer — may depend on everything.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -60,7 +60,6 @@ use crate::sim::production;
 use crate::sim::trigger_runtime::TriggerRuntime;
 use crate::sim::world::Simulation;
 use crate::skirmish_launch::SkirmishLaunchSession;
-use crate::util::config::GameConfig;
 
 /// All data produced by loading a map: terrain, tile atlas, entities, and camera.
 pub struct MapLoadResult {
@@ -140,6 +139,11 @@ pub struct MapLoadResult {
     pub asset_manager: Option<AssetManager>,
 }
 
+pub(crate) struct MapLoadInitial {
+    asset_manager: AssetManager,
+    map_data: MapFile,
+}
+
 pub(crate) fn load_csf(asset_manager: &AssetManager) -> Option<crate::assets::csf_file::CsfFile> {
     for name in [
         "ra2md.csf",
@@ -213,6 +217,78 @@ fn collect_live_building_lights(
         .collect()
 }
 
+fn clear_tiberium_source_cells_for_spawning_terrain(
+    sim: &mut Simulation,
+    resolved_terrain: &mut ResolvedTerrainGrid,
+    terrain_objects: &[TerrainObject],
+    rules: &RuleSet,
+    overlay_registry: &OverlayTypeRegistry,
+) -> BTreeSet<(u16, u16)> {
+    let source_cells: BTreeSet<(u16, u16)> = terrain_objects
+        .iter()
+        .filter(|obj| {
+            rules
+                .terrain_object_type_case_insensitive(&obj.name)
+                .is_some_and(|terrain_type| terrain_type.spawns_tiberium)
+        })
+        .map(|obj| (obj.rx, obj.ry))
+        .collect();
+    if source_cells.is_empty() {
+        return BTreeSet::new();
+    }
+
+    let mut cleared_cells = BTreeSet::new();
+    for &cell in &source_cells {
+        if sim.production.resource_nodes.remove(&cell).is_some() {
+            cleared_cells.insert(cell);
+        }
+    }
+
+    let mut overlay_cleared = Vec::new();
+    if let Some(grid) = sim.overlay_grid.as_mut() {
+        for &(rx, ry) in &source_cells {
+            let cell = *grid.cell(rx, ry);
+            let Some(overlay_id) = cell.overlay_id else {
+                continue;
+            };
+            if !overlay_registry
+                .flags(overlay_id)
+                .is_some_and(|flags| flags.tiberium)
+            {
+                continue;
+            }
+            grid.clear_overlay(rx, ry);
+            overlay_cleared.push((rx, ry));
+            cleared_cells.insert((rx, ry));
+        }
+    }
+
+    if let Some(grid) = sim.overlay_grid.as_ref() {
+        for &(rx, ry) in &overlay_cleared {
+            crate::sim::overlay_grid::recalc_overlay_passability(
+                grid,
+                resolved_terrain,
+                overlay_registry,
+                rx,
+                ry,
+            );
+        }
+        if let Some(sim_terrain) = sim.resolved_terrain.as_mut() {
+            for &(rx, ry) in &overlay_cleared {
+                crate::sim::overlay_grid::recalc_overlay_passability(
+                    grid,
+                    sim_terrain,
+                    overlay_registry,
+                    rx,
+                    ry,
+                );
+            }
+        }
+    }
+
+    cleared_cells
+}
+
 /// Lightweight metadata used by the main-menu map selector.
 #[derive(Debug, Clone)]
 pub struct MapMenuEntry {
@@ -232,19 +308,11 @@ pub struct MapMenuEntry {
     pub preview_source_bounds: Option<PreviewSourceBounds>,
 }
 
-/// Load a .mmx map, build terrain + tile atlas, spawn entities + unit atlas.
-pub fn load_map(
-    gpu: &GpuContext,
-    batch: &BatchRenderer,
+pub(crate) fn load_map_initial_with_assets(
+    ra2_dir: PathBuf,
+    asset_manager: AssetManager,
     requested_map: Option<&str>,
-    skirmish_launch_session: Option<&SkirmishLaunchSession>,
-    skirmish_settings: &crate::ui::main_menu::SkirmishSettings,
-    mut vxl_compute: Option<&mut crate::render::vxl_compute::VxlComputeRenderer>,
-) -> Result<MapLoadResult> {
-    let config: GameConfig = GameConfig::load()?;
-    let ra2_dir: PathBuf = config.paths.ra2_dir.clone();
-    let mut asset_manager: AssetManager = AssetManager::new(&ra2_dir)?;
-
+) -> Result<MapLoadInitial> {
     // Check RA2_QUICKPLAY env var: if it names a .map/.mpr file, load that directly.
     // UI-selected map name/path (requested_map) takes precedence.
     // Default: try testmap1.map in the project directory first, then fall back to .mmx files.
@@ -288,6 +356,25 @@ pub fn load_map(
         map_data.entities.len()
     );
     log_trigger_graph_diagnostics(&map_data);
+
+    Ok(MapLoadInitial {
+        asset_manager,
+        map_data,
+    })
+}
+
+pub(crate) fn load_map_from_initial(
+    gpu: &GpuContext,
+    batch: &BatchRenderer,
+    initial: MapLoadInitial,
+    skirmish_launch_session: Option<&SkirmishLaunchSession>,
+    skirmish_settings: &crate::ui::main_menu::SkirmishSettings,
+    mut vxl_compute: Option<&mut crate::render::vxl_compute::VxlComputeRenderer>,
+) -> Result<MapLoadResult> {
+    let MapLoadInitial {
+        mut asset_manager,
+        map_data,
+    } = initial;
 
     // Load theater INI for tileset lookup, palette, and LAT configuration.
     // Also loads theater-specific MIX archives (e.g., isotemmd.mix) at highest priority.
@@ -371,7 +458,7 @@ pub fn load_map(
         .as_ref()
         .map(|r| r.general.cliff_back_impassability)
         .unwrap_or(2);
-    let resolved_terrain = ResolvedTerrainGrid::build(
+    let mut resolved_terrain = ResolvedTerrainGrid::build(
         &map_data,
         theater_result.as_ref(),
         Some(&asset_manager),
@@ -383,20 +470,14 @@ pub fn load_map(
     let anchor_variant_table = theater_result
         .as_ref()
         .and_then(crate::map::theater::BridgeAnchorVariantTable::from_theater);
-    let mut grid: TerrainGrid = terrain::build_terrain_grid_from_resolved(
+    let grid: TerrainGrid = terrain::build_terrain_grid_from_resolved(
         &resolved_terrain,
         local_bounds,
         anchor_variant_table,
     );
 
-    // Build per-cell lighting tint from map [Lighting] section.
+    // Build per-cell lighting from map [Lighting] section.
     let lighting_config = lighting::parse_lighting(&map_data.ini);
-    // Terrain uses a uniform ground-level tint so repeated grass/ground tiles
-    // do not reveal the isometric cell grid through per-cell shading changes.
-    let terrain_tint: [f32; 3] = lighting::terrain_tint(&lighting_config);
-    for cell in &mut grid.cells {
-        cell.tint = terrain_tint;
-    }
 
     let tile_atlas: Option<TileAtlas> = match &theater_result {
         Some(td) => build_tile_atlas(
@@ -522,13 +603,9 @@ pub fn load_map(
                     &house_roster,
                     ruleset,
                     &height_map,
+                    &resolved_terrain,
                     session,
                 );
-                if result.unsupported_deficient_starts {
-                    log::warn!(
-                        "Skirmish launch session found fewer usable starts than active slots"
-                    );
-                }
                 initial_local_owner = result.local_owner;
                 result.spawned_mcvs > 0
             } else {
@@ -651,7 +728,7 @@ pub fn load_map(
         bridge_atlas,
         bridge_railing_atlas,
         overlay_names,
-        overlays_connected,
+        mut overlays_connected,
         tiberium_radar_colors,
     ) = build_overlay_atlas_from_map(
         &map_data,
@@ -668,6 +745,16 @@ pub fn load_map(
         bridge_railing_tile_bases,
     );
 
+    let mut terrain_frame_counts = BTreeMap::new();
+    if let Some(atlas) = overlay_atlas.as_ref() {
+        for obj in &map_data.terrain_objects {
+            if let Some(frame_count) = atlas.terrain_anim_frame_count(&obj.name) {
+                terrain_frame_counts.insert(obj.name.clone(), u16::from(frame_count));
+                terrain_frame_counts.insert(obj.name.to_ascii_uppercase(), u16::from(frame_count));
+            }
+        }
+    }
+
     if let Some(sim) = &mut simulation {
         let seeded =
             production::seed_resource_nodes_from_overlays(sim, &map_data.overlays, &overlay_names);
@@ -682,6 +769,7 @@ pub fn load_map(
                 &map_data.terrain_objects,
                 rules_for_terrain,
                 &overlay_names,
+                &terrain_frame_counts,
             );
             if seeded_terrain > 0 {
                 log::info!(
@@ -707,6 +795,27 @@ pub fn load_map(
                 grid_height,
                 map_data.overlays.len(),
             );
+        }
+        if let Some(rules_for_terrain) = rules.as_ref() {
+            let cleared_cells = clear_tiberium_source_cells_for_spawning_terrain(
+                sim,
+                &mut resolved_terrain,
+                &map_data.terrain_objects,
+                rules_for_terrain,
+                &overlay_registry,
+            );
+            if !cleared_cells.is_empty() {
+                overlays_connected.retain(|entry| {
+                    !cleared_cells.contains(&(entry.rx, entry.ry))
+                        || !overlay_registry
+                            .flags(entry.overlay_id)
+                            .is_some_and(|flags| flags.tiberium)
+                });
+                log::info!(
+                    "Cleared {} same-cell tiberium overlay/resource source cell(s) for spawning terrain",
+                    cleared_cells.len(),
+                );
+            }
         }
         // Seed smudge grid from map [Smudge] entries. Requires terrain +
         // overlay grids built above so placement gates (slope, overlay,

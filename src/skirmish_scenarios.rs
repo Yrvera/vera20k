@@ -12,6 +12,9 @@ use crate::rules::ini_parser::IniFile;
 use crate::skirmish_modes::SkirmishGameMode;
 
 pub const RANDMAP_SED: &str = "RandMap.Sed";
+pub const RANDOM_MAP_MIN_PLAYERS: u8 = 2;
+pub const RANDOM_MAP_GENERATED_START_QUOTA: u8 = 4;
+pub const RANDOM_MAP_MAX_PLAYERS: u8 = RANDOM_MAP_GENERATED_START_QUOTA;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SkirmishScenarioSource {
@@ -113,9 +116,9 @@ impl SkirmishScenarioRecord {
             multiplayer_start_waypoints: Vec::new(),
             preview_source_bounds: None,
             game_modes: Vec::new(),
-            min_players: None,
-            max_players: None,
-            official: false,
+            min_players: Some(RANDOM_MAP_MIN_PLAYERS),
+            max_players: Some(RANDOM_MAP_MAX_PLAYERS),
+            official: true,
             kind: SkirmishScenarioKind::RandomMapSentinel,
         }
     }
@@ -213,6 +216,14 @@ pub fn upsert_random_map_sentinel(
         .position(|record| record.kind == SkirmishScenarioKind::RandomMapSentinel)
     {
         records[idx].display_name = display_name.into();
+        records[idx].file_name = RANDMAP_SED.to_string();
+        records[idx].source = SkirmishScenarioSource::Synthetic;
+        records[idx].multiplayer_start_waypoints.clear();
+        records[idx].preview_source_bounds = None;
+        records[idx].game_modes.clear();
+        records[idx].min_players = Some(RANDOM_MAP_MIN_PLAYERS);
+        records[idx].max_players = Some(RANDOM_MAP_MAX_PLAYERS);
+        records[idx].official = true;
         return idx;
     }
 
@@ -340,6 +351,22 @@ mod tests {
     }
 
     #[test]
+    fn random_map_sentinel_advertises_shell_capacity_without_concrete_starts() {
+        let rec = SkirmishScenarioRecord::random_map_sentinel(4, "Random Map");
+
+        assert_eq!(rec.file_name, RANDMAP_SED);
+        assert_eq!(rec.kind, SkirmishScenarioKind::RandomMapSentinel);
+        assert_eq!(rec.min_players, Some(RANDOM_MAP_MIN_PLAYERS));
+        assert_eq!(rec.max_players, Some(RANDOM_MAP_MAX_PLAYERS));
+        assert!(rec.official);
+        assert_eq!(RANDOM_MAP_GENERATED_START_QUOTA, 4);
+        assert!(
+            rec.multiplayer_start_waypoints.is_empty(),
+            "the Choose Map sentinel is metadata only; generated maps must provide real waypoints before launch"
+        );
+    }
+
+    #[test]
     fn skirmish_random_map_command_adds_or_updates_single_sentinel_record() {
         let mut records = vec![record(0, "Concrete", "standard")];
         let first = upsert_random_map_sentinel(&mut records, "Random Map");
@@ -349,6 +376,39 @@ mod tests {
         assert_eq!(records.len(), 2);
         assert_eq!(records[1].file_name, RANDMAP_SED);
         assert_eq!(records[1].display_name, "Updated Random Map");
+        assert_eq!(records[1].min_players, Some(RANDOM_MAP_MIN_PLAYERS));
+        assert_eq!(records[1].max_players, Some(RANDOM_MAP_MAX_PLAYERS));
+        assert!(records[1].official);
+        assert!(records[1].multiplayer_start_waypoints.is_empty());
+    }
+
+    #[test]
+    fn random_map_upsert_repairs_stale_sentinel_metadata() {
+        let mut stale = SkirmishScenarioRecord::random_map_sentinel(0, "Old Random Map");
+        stale.file_name = "Wrong.yrm".to_string();
+        stale.source = SkirmishScenarioSource::LooseYrm("Wrong.yrm".to_string());
+        stale.multiplayer_start_waypoints = vec![Waypoint {
+            index: 0,
+            rx: 11,
+            ry: 100,
+        }];
+        stale.min_players = None;
+        stale.max_players = None;
+        stale.official = false;
+
+        let mut records = vec![stale];
+        let idx = upsert_random_map_sentinel(&mut records, "Random Map");
+
+        assert_eq!(idx, 0);
+        assert_eq!(records[0].file_name, RANDMAP_SED);
+        assert_eq!(records[0].source, SkirmishScenarioSource::Synthetic);
+        assert_eq!(records[0].min_players, Some(RANDOM_MAP_MIN_PLAYERS));
+        assert_eq!(records[0].max_players, Some(RANDOM_MAP_MAX_PLAYERS));
+        assert!(records[0].official);
+        assert!(
+            records[0].multiplayer_start_waypoints.is_empty(),
+            "upsert must not preserve fabricated starts on the sentinel"
+        );
     }
 
     #[test]

@@ -28,79 +28,62 @@ const CLEAR_COLOR: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 
-/// Load map data and transition to InGame state.
-pub(crate) fn transition_to_in_game(state: &mut AppState) {
-    log::info!("Loading map...");
-    let (requested_map, skirmish_launch_session) = match &state.screen {
-        GameScreen::Loading { map_name } => (
-            Some(map_name.clone()),
-            state.pending_skirmish_launch_session.clone(),
-        ),
-        _ => (None, None),
-    };
-    let result = app_init::load_map(
-        &state.gpu,
-        &state.batch_renderer,
-        requested_map.as_deref(),
-        skirmish_launch_session.as_ref(),
-        &state.skirmish_settings,
-        state.vxl_compute.as_mut(),
-    )
-    .unwrap_or_else(|err| {
-        log::warn!("Could not load map: {:#}", err);
-        app_init::MapLoadResult {
-            basic: BasicSection::default(),
-            tile_atlas: None,
-            terrain_grid: None,
-            resolved_terrain: None,
-            simulation: None,
-            unit_atlas: None,
-            palette_set: None,
-            sprite_atlas: None,
-            overlay_atlas: None,
-            bridge_atlas: None,
-            bridge_railing_atlas: None,
-            sidebar_cameo_atlas: None,
-            sidebar_chrome: None,
-            software_cursor: None,
-            overlays: Vec::new(),
-            terrain_objects: Vec::new(),
-            waypoints: HashMap::new(),
-            cell_tags: HashMap::new(),
-            tags: HashMap::new(),
-            triggers: HashMap::new(),
-            events: HashMap::new(),
-            actions: HashMap::new(),
-            trigger_graph: TriggerGraph::default(),
-            trigger_runtime: TriggerRuntime::default(),
-            overlay_names: BTreeMap::new(),
-            tiberium_radar_colors: HashMap::new(),
-            overlay_registry: OverlayTypeRegistry::empty(),
-            house_color_map: HashMap::new(),
-            house_roster: HouseRoster::default(),
-            height_map: BTreeMap::new(),
-            bridge_height_map: BTreeMap::new(),
-            tactical_bridge_inverse_map: BTreeMap::new(),
-            lighting_grid: crate::map::lighting::CellLightGrid::new(),
-            map_lighting_config: crate::map::lighting::LightingConfig::default(),
-            path_grid: None,
-            rules: None,
-            art_registry: None,
-            csf: None,
-            fnt_file: None,
-            camera_x: 0.0,
-            camera_y: 0.0,
-            asset_manager: None,
-            theater_name: "TEMPERATE".to_string(),
-            theater_ext: "tem".to_string(),
-            initial_local_owner: None,
-            sandbox_full_visibility: false,
-            spawn_pick_pending: false,
-            infantry_sequences: HashMap::new(),
-        }
-    });
+pub(crate) fn fallback_map_load_result() -> app_init::MapLoadResult {
+    app_init::MapLoadResult {
+        basic: BasicSection::default(),
+        tile_atlas: None,
+        terrain_grid: None,
+        resolved_terrain: None,
+        simulation: None,
+        unit_atlas: None,
+        palette_set: None,
+        sprite_atlas: None,
+        overlay_atlas: None,
+        bridge_atlas: None,
+        bridge_railing_atlas: None,
+        sidebar_cameo_atlas: None,
+        sidebar_chrome: None,
+        software_cursor: None,
+        overlays: Vec::new(),
+        terrain_objects: Vec::new(),
+        waypoints: HashMap::new(),
+        cell_tags: HashMap::new(),
+        tags: HashMap::new(),
+        triggers: HashMap::new(),
+        events: HashMap::new(),
+        actions: HashMap::new(),
+        trigger_graph: TriggerGraph::default(),
+        trigger_runtime: TriggerRuntime::default(),
+        overlay_names: BTreeMap::new(),
+        tiberium_radar_colors: HashMap::new(),
+        overlay_registry: OverlayTypeRegistry::empty(),
+        house_color_map: HashMap::new(),
+        house_roster: HouseRoster::default(),
+        height_map: BTreeMap::new(),
+        bridge_height_map: BTreeMap::new(),
+        tactical_bridge_inverse_map: BTreeMap::new(),
+        lighting_grid: crate::map::lighting::CellLightGrid::new(),
+        map_lighting_config: crate::map::lighting::LightingConfig::default(),
+        path_grid: None,
+        rules: None,
+        art_registry: None,
+        csf: None,
+        fnt_file: None,
+        camera_x: 0.0,
+        camera_y: 0.0,
+        asset_manager: None,
+        theater_name: "TEMPERATE".to_string(),
+        theater_ext: "tem".to_string(),
+        initial_local_owner: None,
+        sandbox_full_visibility: false,
+        spawn_pick_pending: false,
+        infantry_sequences: HashMap::new(),
+    }
+}
+
+pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapLoadResult) {
     state.tile_atlas = result.tile_atlas;
-    state.pending_skirmish_launch_session = None;
+    crate::app_loading::clear_loading_state(state);
     state.map_basic = result.basic;
     state.terrain_grid = result.terrain_grid;
     state.resolved_terrain = result.resolved_terrain;
