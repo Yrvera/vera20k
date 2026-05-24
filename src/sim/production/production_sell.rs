@@ -240,6 +240,109 @@ const NEIGHBORS: [(i16, i16); 8] = [
     (-1, -1),
 ];
 
+fn eject_garrison_passengers_at_edges(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    rx: u16,
+    ry: u16,
+    z: u8,
+    width: u16,
+    height: u16,
+    passenger_ids: &[u64],
+    owner_override: Option<InternedId>,
+) -> usize {
+    if passenger_ids.is_empty() || width == 0 || height == 0 {
+        return 0;
+    }
+
+    let exit_cells = sell_survivor_positions(rx, ry, width, height);
+
+    // Collect currently occupied cells to avoid stacking.
+    let occupied_cells: Vec<(u16, u16)> = sim
+        .entities
+        .values()
+        .filter(|e| !e.passenger_role.is_inside_transport() && !e.dying && e.is_alive())
+        .map(|e| (e.position.rx, e.position.ry))
+        .collect();
+
+    let mut ejected: usize = 0;
+    let mut used_cells: Vec<(u16, u16)> = Vec::new();
+
+    // Iterate in reverse (LIFO); gamemd walks occupants high index to low.
+    for &pax_id in passenger_ids.iter().rev() {
+        let exit = exit_cells.iter().find(|&&(cx, cy)| {
+            !occupied_cells.iter().any(|&(ox, oy)| ox == cx && oy == cy)
+                && !used_cells.iter().any(|&(ux, uy)| ux == cx && uy == cy)
+        });
+        let Some(&(exit_rx, exit_ry)) = exit else {
+            // All cells blocked; no parachute fallback exists in this helper yet.
+            if let Some(pax) = sim.entities.get_mut(pax_id) {
+                pax.health.current = 0;
+                pax.dying = true;
+                pax.passenger_role = PassengerRole::None;
+            }
+            continue;
+        };
+        used_cells.push((exit_rx, exit_ry));
+
+        let Some(pax) = sim.entities.get_mut(pax_id) else {
+            continue;
+        };
+        pax.passenger_role = PassengerRole::None;
+        if let Some(owner) = owner_override {
+            pax.owner = owner;
+        }
+        pax.position.rx = exit_rx;
+        pax.position.ry = exit_ry;
+        pax.position.z = z;
+        let (sub_x, sub_y) = lepton::subcell_lepton_offset(pax.sub_cell);
+        pax.position.sub_x = sub_x;
+        pax.position.sub_y = sub_y;
+        pax.position.refresh_screen_coords();
+        let pax_sub_cell = pax.sub_cell;
+
+        sim.occupancy.add(
+            exit_rx,
+            exit_ry,
+            pax_id,
+            crate::sim::movement::locomotor::MovementLayer::Ground,
+            pax_sub_cell,
+            CellListInsertion::PrependNonBuilding,
+        );
+
+        // Approximate gamemd's queued Scatter mission with the current direct
+        // move helper until the mission queue has a verified Scatter path.
+        let scatter_speed = sim
+            .entities
+            .get(pax_id)
+            .and_then(|e| rules.object(sim.interner.resolve(e.type_ref)))
+            .map(|obj| ra2_speed_to_leptons_per_second(obj.speed))
+            .unwrap_or(ra2_speed_to_leptons_per_second(4));
+        let start_dir = sim.rng.next_u32() as usize % 8;
+        for i in 0..8 {
+            let (dx, dy) = NEIGHBORS[(start_dir + i) % 8];
+            let sx = exit_rx as i32 + dx as i32;
+            let sy = exit_ry as i32 + dy as i32;
+            if sx >= 0 && sy >= 0 {
+                let dest = (sx as u16, sy as u16);
+                let blocked = occupied_cells
+                    .iter()
+                    .any(|&(ox, oy)| ox == dest.0 && oy == dest.1)
+                    || used_cells
+                        .iter()
+                        .any(|&(ux, uy)| ux == dest.0 && uy == dest.1);
+                if !blocked {
+                    movement::issue_direct_move(&mut sim.entities, pax_id, dest, scatter_speed);
+                    break;
+                }
+            }
+        }
+        ejected += 1;
+    }
+
+    ejected
+}
+
 /// Eject garrison occupants from a building being sold, placing each infantry
 /// at an adjacent free cell. Matches gamemd `SellBuilding @ 0x00457DE0` which
 /// iterates occupants in LIFO order and Unlimbos them at foundation edges.
@@ -271,106 +374,25 @@ fn eject_garrison_occupants(sim: &mut Simulation, rules: &RuleSet, building_id: 
         )
     };
 
-    // Compute exit cells around the building foundation perimeter.
-    let exit_cells = sell_survivor_positions(rx, ry, width, height);
+    let ejected = eject_garrison_passengers_at_edges(
+        sim,
+        rules,
+        rx,
+        ry,
+        z,
+        width,
+        height,
+        &passenger_ids,
+        None,
+    );
 
-    // Collect currently occupied cells to avoid stacking.
-    let occupied_cells: Vec<(u16, u16)> = sim
-        .entities
-        .values()
-        .filter(|e| !e.passenger_role.is_inside_transport() && !e.dying && e.is_alive())
-        .map(|e| (e.position.rx, e.position.ry))
-        .collect();
-
-    let mut ejected: usize = 0;
-    let mut used_cells: Vec<(u16, u16)> = Vec::new();
-
-    // Iterate in reverse (LIFO) — matches gamemd which iterates high→low index.
-    for &pax_id in passenger_ids.iter().rev() {
-        // Find first free exit cell not occupied by existing entities or
-        // previously ejected infantry from this batch.
-        let exit = exit_cells.iter().find(|&&(cx, cy)| {
-            !occupied_cells.iter().any(|&(ox, oy)| ox == cx && oy == cy)
-                && !used_cells.iter().any(|&(ux, uy)| ux == cx && uy == cy)
-        });
-        let Some(&(exit_rx, exit_ry)) = exit else {
-            // All cells blocked — infantry cannot be placed (no parachute system yet).
-            // Mark as dead so they don't become orphaned hidden entities.
-            if let Some(pax) = sim.entities.get_mut(pax_id) {
-                pax.health.current = 0;
-                pax.dying = true;
-                pax.passenger_role = PassengerRole::None;
-            }
-            continue;
-        };
-        used_cells.push((exit_rx, exit_ry));
-
-        // Place infantry at the exit cell.
-        let pax_sub_cell;
-        if let Some(pax) = sim.entities.get_mut(pax_id) {
-            pax.passenger_role = PassengerRole::None;
-            pax.position.rx = exit_rx;
-            pax.position.ry = exit_ry;
-            pax.position.z = z;
-            let (sub_x, sub_y) = lepton::subcell_lepton_offset(pax.sub_cell);
-            pax.position.sub_x = sub_x;
-            pax.position.sub_y = sub_y;
-            pax.position.refresh_screen_coords();
-            pax_sub_cell = pax.sub_cell;
-        } else {
-            pax_sub_cell = None;
-        }
-        // Register evacuated passenger in occupancy grid.
-        sim.occupancy.add(
-            exit_rx,
-            exit_ry,
-            pax_id,
-            crate::sim::movement::locomotor::MovementLayer::Ground,
-            pax_sub_cell,
-            CellListInsertion::PrependNonBuilding,
-        );
-
-        // Scatter: issue a short move to a random adjacent cell.
-        let scatter_speed = sim
-            .entities
-            .get(pax_id)
-            .and_then(|e| rules.object(sim.interner.resolve(e.type_ref)))
-            .map(|obj| ra2_speed_to_leptons_per_second(obj.speed))
-            .unwrap_or(ra2_speed_to_leptons_per_second(4));
-        let start_dir = sim.rng.next_u32() as usize % 8;
-        for i in 0..8 {
-            let (dx, dy) = NEIGHBORS[(start_dir + i) % 8];
-            let sx = exit_rx as i32 + dx as i32;
-            let sy = exit_ry as i32 + dy as i32;
-            if sx >= 0 && sy >= 0 {
-                let dest = (sx as u16, sy as u16);
-                let blocked = occupied_cells
-                    .iter()
-                    .any(|&(ox, oy)| ox == dest.0 && oy == dest.1)
-                    || used_cells
-                        .iter()
-                        .any(|&(ux, uy)| ux == dest.0 && uy == dest.1);
-                if !blocked {
-                    movement::issue_direct_move(&mut sim.entities, pax_id, dest, scatter_speed);
-                    break;
-                }
-            }
-        }
-        ejected += 1;
-    }
-
-    // Clear the building's cargo and revert garrison ownership.
-    // `.take()` matches the auto-revert path in `passenger.rs::tick_unloading`
-    // — both consume `garrison_original_owner` so a future garrison capture
-    // resets the field cleanly.
+    // Clear player-sell cargo only. Native SellBuilding is an ejection helper;
+    // empty-garrison ownership reversion belongs to reconciliation/unload.
     if let Some(building) = sim.entities.get_mut(building_id) {
         if let Some(cargo) = building.passenger_role.cargo_mut() {
             cargo.passengers.clear();
             cargo.total_size = 0;
             cargo.garrison_fire_index = 0;
-        }
-        if let Some(orig) = building.garrison_original_owner.take() {
-            building.owner = orig;
         }
     }
 
@@ -379,145 +401,40 @@ fn eject_garrison_occupants(sim: &mut Simulation, rules: &RuleSet, building_id: 
 
 /// Eject garrison occupants from a building destroyed in combat.
 ///
-/// Mirrors the original engine's destruction-eject path:
-/// - Iterates occupants in LIFO order.
-/// - Places each at a random cell within the building's foundation footprint
-///   (interior cells — perimeter is the sell path's strategy).
-/// - Owner = building's current owner at time of death (no revert semantics —
-///   the building is gone).
-/// - Successful placement issues a scatter move to a random adjacent cell.
-/// - Placement failure (no free foundation cell) marks the occupant dying;
-///   no parachute fallback (that's sell-only, and our parachute system isn't
-///   implemented).
-///
-/// **Determinism — RNG draw order:**
-/// 1. Fisher-Yates shuffle of foundation cell offsets (one `next_u32` per swap,
-///    `(w*h - 1)` swaps total).
-/// 2. Per occupant (in LIFO): one `next_u32` for scatter direction.
+/// Verified gamemd evidence routes destroyed `CanBeOccupied` garrisons through
+/// the same SellBuilding helper used by sell/abandon. With current helper
+/// support this means LIFO occupants use the existing foundation-edge scan; no
+/// shuffled interior-foundation placement is performed here. The building has
+/// already been removed, so destruction does not restore `garrison_original_owner`.
 ///
 /// Returns the count of occupants successfully ejected (excludes those killed
-/// by full-foundation fallback).
+/// when no edge cell can be used).
 pub fn eject_destruction_garrison(
     sim: &mut Simulation,
     rules: &RuleSet,
     event: &DestroyedGarrisonBuilding,
 ) -> usize {
-    if event.passenger_ids.is_empty() || event.foundation_w == 0 || event.foundation_h == 0 {
-        return 0;
-    }
-
-    // Build interior-foundation cell list, then Fisher-Yates shuffle it.
-    let mut cells: Vec<(u16, u16)> =
-        Vec::with_capacity(event.foundation_w as usize * event.foundation_h as usize);
-    for dy in 0..event.foundation_h {
-        for dx in 0..event.foundation_w {
-            cells.push((event.rx + dx, event.ry + dy));
-        }
-    }
-    for i in (1..cells.len()).rev() {
-        let j = (sim.rng.next_u32() as usize) % (i + 1);
-        cells.swap(i, j);
-    }
-
-    // Collect currently occupied cells to avoid stacking on top of other entities.
-    let occupied_cells: Vec<(u16, u16)> = sim
-        .entities
-        .values()
-        .filter(|e| !e.passenger_role.is_inside_transport() && !e.dying && e.is_alive())
-        .map(|e| (e.position.rx, e.position.ry))
-        .collect();
-
-    let mut ejected: usize = 0;
-    let mut used_cells: Vec<(u16, u16)> = Vec::new();
-
-    // LIFO: iterate passengers in reverse — matches the original high→low
-    // index iteration on the occupant vector.
-    for &pax_id in event.passenger_ids.iter().rev() {
-        let placement = cells.iter().find(|&&(cx, cy)| {
-            !occupied_cells.iter().any(|&(ox, oy)| ox == cx && oy == cy)
-                && !used_cells.iter().any(|&(ux, uy)| ux == cx && uy == cy)
-        });
-
-        let Some(&(spawn_rx, spawn_ry)) = placement else {
-            // No free cell — kill the occupant. No scatter RNG draw on
-            // failure (matches the destruction eject's no-scatter-on-fail).
-            if let Some(pax) = sim.entities.get_mut(pax_id) {
-                pax.health.current = 0;
-                pax.dying = true;
-                pax.passenger_role = PassengerRole::None;
-                pax.attack_target = None;
-                pax.movement_target = None;
-                pax.selected = false;
-            }
-            continue;
-        };
-        used_cells.push((spawn_rx, spawn_ry));
-
-        // Place infantry on the map.
-        let pax_sub_cell = if let Some(pax) = sim.entities.get_mut(pax_id) {
-            pax.passenger_role = PassengerRole::None;
-            pax.owner = event.owner;
-            pax.position.rx = spawn_rx;
-            pax.position.ry = spawn_ry;
-            pax.position.z = event.z;
-            let (sub_x, sub_y) = lepton::subcell_lepton_offset(pax.sub_cell);
-            pax.position.sub_x = sub_x;
-            pax.position.sub_y = sub_y;
-            pax.position.refresh_screen_coords();
-            pax.sub_cell
-        } else {
-            continue;
-        };
-
-        sim.occupancy.add(
-            spawn_rx,
-            spawn_ry,
-            pax_id,
-            crate::sim::movement::locomotor::MovementLayer::Ground,
-            pax_sub_cell,
-            CellListInsertion::PrependNonBuilding,
-        );
-
-        // Scatter: short move to a random adjacent cell.
-        let scatter_speed = sim
-            .entities
-            .get(pax_id)
-            .and_then(|e| rules.object(sim.interner.resolve(e.type_ref)))
-            .map(|obj| ra2_speed_to_leptons_per_second(obj.speed))
-            .unwrap_or(ra2_speed_to_leptons_per_second(4));
-        let start_dir = sim.rng.next_u32() as usize % 8;
-        for i in 0..8 {
-            let (dx, dy) = NEIGHBORS[(start_dir + i) % 8];
-            let sx = spawn_rx as i32 + dx as i32;
-            let sy = spawn_ry as i32 + dy as i32;
-            if sx >= 0 && sy >= 0 {
-                let dest = (sx as u16, sy as u16);
-                let blocked = occupied_cells
-                    .iter()
-                    .any(|&(ox, oy)| ox == dest.0 && oy == dest.1)
-                    || used_cells
-                        .iter()
-                        .any(|&(ux, uy)| ux == dest.0 && uy == dest.1);
-                if !blocked {
-                    movement::issue_direct_move(&mut sim.entities, pax_id, dest, scatter_speed);
-                    break;
-                }
-            }
-        }
-        ejected += 1;
-    }
-
-    ejected
+    eject_garrison_passengers_at_edges(
+        sim,
+        rules,
+        event.rx,
+        event.ry,
+        event.z,
+        event.foundation_w,
+        event.foundation_h,
+        &event.passenger_ids,
+        Some(event.owner),
+    )
 }
 
 /// Sell a building entity: refund part of its current value, eject crew, and despawn it.
 ///
-/// Captured civilian buildings (those whose ownership transferred via garrisoning,
-/// detected by `garrison_original_owner.is_some()`) take the eject-and-revert
-/// branch instead of demolition: occupants exit alive, the structure reverts to
-/// its pre-garrison owner, no refund is paid, and the building stays on the map.
+/// Captured civilian `CanBeOccupied` garrisons use the same player-sell
+/// transaction once they are owned by the seller: occupants eject through
+/// the SellBuilding-style helper, then the building is removed/refunded.
+/// Revert-to-civilian belongs to empty-garrison reconciliation, not player sell.
 pub fn sell_building(sim: &mut Simulation, rules: &RuleSet, stable_id: u64) -> bool {
-    let (owner_name, type_id, position, health, is_captured, abandoning_owner) = {
+    let (owner_name, type_id, position, health) = {
         let Some(entity) = sim.entities.get(stable_id) else {
             return false;
         };
@@ -529,31 +446,11 @@ pub fn sell_building(sim: &mut Simulation, rules: &RuleSet, stable_id: u64) -> b
             sim.interner.resolve(entity.type_ref).to_string(),
             entity.position.clone(),
             Some(entity.health),
-            entity.garrison_original_owner.is_some(),
-            entity.owner,
         )
     };
     let Some(obj) = rules.object(&type_id) else {
         return false;
     };
-
-    // Captured-civilian branch: eject + revert + KEEP building, no refund.
-    // `eject_garrison_occupants` reverts owner internally because
-    // `garrison_original_owner` is Some on this path.
-    if is_captured {
-        let garrison_ejected = eject_garrison_occupants(sim, rules, stable_id);
-        sim.sound_events
-            .push(crate::sim::world::SimSoundEvent::StructureAbandoned {
-                owner: abandoning_owner,
-            });
-        log::info!(
-            "Building {} evacuated by {}: {} occupants ejected, structure reverted to civilian",
-            type_id,
-            owner_name,
-            garrison_ejected
-        );
-        return true;
-    }
 
     let refund = sell_refund_for_building(obj, health);
     let ejected = eject_sell_survivors(sim, rules, &owner_name, obj, position, health);
@@ -663,6 +560,219 @@ pub fn tick_repairs(sim: &mut Simulation, rules: &RuleSet) {
     for stable_id in stop_repairing {
         if let Some(entity) = sim.entities.get_mut(stable_id) {
             entity.repairing = false;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rules::ini_parser::IniFile;
+    use crate::sim::game_entity::GameEntity;
+
+    fn garrison_edge_rules() -> RuleSet {
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n\
+             0=E1\n\
+             [VehicleTypes]\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             0=CAGAS01\n\
+             [E1]\n\
+             Name=GI\n\
+             Cost=200\n\
+             Strength=100\n\
+             Armor=flak\n\
+             Speed=4\n\
+             Sight=5\n\
+             TechLevel=1\n\
+             Owner=Americans,Neutral\n\
+             Occupier=yes\n\
+             Size=1\n\
+             [CAGAS01]\n\
+             Name=GasStation\n\
+             Cost=400\n\
+             Strength=400\n\
+             Armor=wood\n\
+             Foundation=2x2\n\
+             CanBeOccupied=yes\n\
+             CanOccupyFire=yes\n\
+             MaxNumberOccupants=5\n",
+        );
+        RuleSet::from_ini(&ini).expect("garrison edge rules should parse")
+    }
+
+    fn insert_hidden_passenger(
+        sim: &mut Simulation,
+        stable_id: u64,
+        transport_id: u64,
+        owner: &str,
+    ) -> u64 {
+        let mut pax = GameEntity::test_default(stable_id, "E1", owner, 0, 0);
+        pax.owner = sim.interner.intern(owner);
+        pax.type_ref = sim.interner.intern("E1");
+        pax.passenger_role = PassengerRole::Inside { transport_id };
+        sim.entities.insert(pax);
+        stable_id
+    }
+
+    fn insert_captured_player_owned_garrison(
+        sim: &mut Simulation,
+        building_id: u64,
+        passenger_id: u64,
+    ) {
+        let americans = sim.interner.intern("Americans");
+        let neutral = sim.interner.intern("Neutral");
+
+        let mut building = GameEntity::test_default(building_id, "CAGAS01", "Americans", 10, 10);
+        building.category = EntityCategory::Structure;
+        building.owner = americans;
+        building.type_ref = sim.interner.intern("CAGAS01");
+        building.garrison_original_owner = Some(neutral);
+        building.passenger_role = PassengerRole::Transport {
+            cargo: crate::sim::passenger::PassengerCargo::new(5, 1),
+        };
+        if let Some(cargo) = building.passenger_role.cargo_mut() {
+            assert!(cargo.board(passenger_id, 1));
+        }
+        sim.entities.insert(building);
+
+        insert_hidden_passenger(sim, passenger_id, building_id, "Americans");
+    }
+
+    #[test]
+    fn captured_civilian_garrison_player_sell_removes_building_and_refunds() {
+        let rules = garrison_edge_rules();
+        let mut sim = Simulation::new();
+        let building_id = 10;
+        let passenger_id = 11;
+        insert_captured_player_owned_garrison(&mut sim, building_id, passenger_id);
+
+        let before = credits_for_owner(&sim, "Americans");
+
+        assert!(sell_building(&mut sim, &rules, building_id));
+
+        assert!(sim.entities.get(building_id).is_none());
+        assert_eq!(credits_for_owner(&sim, "Americans") - before, 200);
+
+        let passenger = sim
+            .entities
+            .get(passenger_id)
+            .expect("passenger should survive sell eject");
+        assert!(matches!(passenger.passenger_role, PassengerRole::None));
+        assert!(!passenger.dying);
+        assert!(
+            passenger.position.rx < 10
+                || passenger.position.rx > 11
+                || passenger.position.ry < 10
+                || passenger.position.ry > 11,
+            "passenger should be ejected outside the 2x2 foundation"
+        );
+
+        assert!(
+            !sim.sound_events.iter().any(|event| {
+                matches!(
+                    event,
+                    crate::sim::world::SimSoundEvent::StructureAbandoned { .. }
+                )
+            }),
+            "player sell must not emit StructureAbandoned"
+        );
+    }
+
+    #[test]
+    fn sellbuilding_helper_ejects_without_owner_revert() {
+        let rules = garrison_edge_rules();
+        let mut sim = Simulation::new();
+        let building_id = 20;
+        let passenger_id = 21;
+        insert_captured_player_owned_garrison(&mut sim, building_id, passenger_id);
+
+        let americans = sim.interner.intern("Americans");
+        let neutral = sim.interner.intern("Neutral");
+
+        assert_eq!(eject_garrison_occupants(&mut sim, &rules, building_id), 1);
+
+        let building = sim
+            .entities
+            .get(building_id)
+            .expect("helper should not remove building");
+        assert_eq!(
+            building.owner, americans,
+            "SellBuilding-style helper must not ChangeOwner"
+        );
+        assert_eq!(
+            building.garrison_original_owner,
+            Some(neutral),
+            "helper must not consume reconciliation state during player-sell ejection"
+        );
+        assert!(
+            building
+                .passenger_role
+                .cargo()
+                .is_some_and(|cargo| cargo.is_empty()),
+            "helper should clear building cargo"
+        );
+
+        let passenger = sim
+            .entities
+            .get(passenger_id)
+            .expect("passenger should remain");
+        assert!(matches!(passenger.passenger_role, PassengerRole::None));
+        assert!(!passenger.dying);
+    }
+
+    #[test]
+    fn destroyed_garrison_uses_sell_edge_scan_and_lifo_order() {
+        let rules = garrison_edge_rules();
+        let mut sim = Simulation::new();
+        let building_id = 10;
+        let pax1 = insert_hidden_passenger(&mut sim, 11, building_id, "Neutral");
+        let pax2 = insert_hidden_passenger(&mut sim, 12, building_id, "Neutral");
+        let pax3 = insert_hidden_passenger(&mut sim, 13, building_id, "Neutral");
+        let owner = sim.interner.intern("Americans");
+
+        let event = DestroyedGarrisonBuilding {
+            building_id,
+            type_id: sim.interner.intern("CAGAS01"),
+            owner,
+            rx: 10,
+            ry: 10,
+            z: 0,
+            foundation_w: 2,
+            foundation_h: 2,
+            passenger_ids: vec![pax1, pax2, pax3],
+        };
+
+        assert_eq!(eject_destruction_garrison(&mut sim, &rules, &event), 3);
+
+        let expected = sell_survivor_positions(10, 10, 2, 2);
+        let checks = [
+            (pax3, expected[0]),
+            (pax2, expected[1]),
+            (pax1, expected[2]),
+        ];
+
+        for (pax_id, expected_cell) in checks {
+            let pax = sim.entities.get(pax_id).expect("passenger should remain");
+            assert_eq!(
+                (pax.position.rx, pax.position.ry),
+                expected_cell,
+                "destroyed garrison should use the sell edge scan in LIFO order"
+            );
+            assert!(
+                pax.position.rx < 10
+                    || pax.position.rx > 11
+                    || pax.position.ry < 10
+                    || pax.position.ry > 11,
+                "destroyed garrison should not place passengers inside the foundation"
+            );
+            assert_eq!(
+                pax.owner, owner,
+                "destruction keeps death-time building owner"
+            );
+            assert!(matches!(pax.passenger_role, PassengerRole::None));
+            assert!(!pax.dying);
         }
     }
 }

@@ -469,6 +469,7 @@ fn flat_terrain(width: u16, height: u16) -> ResolvedTerrainGrid {
                 is_rough: false,
                 is_road: false,
                 accepts_smudge: false,
+                allows_tiberium: false,
                 has_ramp: false,
                 canonical_ramp: None,
                 ground_walk_blocked: false,

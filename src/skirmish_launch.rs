@@ -5,14 +5,37 @@
 //! depend on UI, rendering, audio, or networking modules.
 
 use crate::sim::game_options::GameOptions;
+use crate::skirmish_modes::SkirmishGameMode;
 
 pub const SKIRMISH_PLAYER_SLOT_COUNT: usize = 8;
 pub const SKIRMISH_AI_SLOT_COUNT: usize = SKIRMISH_PLAYER_SLOT_COUNT - 1;
 pub const HOUSE_COLOR_COUNT: usize = 8;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SkirmishLaunchMode {
-    Battle,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkirmishLaunchMode {
+    pub id: i32,
+    pub ui_name_key: String,
+    pub tooltip_key: String,
+    pub override_file: String,
+    pub map_filter: String,
+    pub random_maps_allowed: bool,
+    pub allies_allowed: bool,
+    pub must_ally: bool,
+}
+
+impl SkirmishLaunchMode {
+    pub fn from_game_mode(mode: &SkirmishGameMode) -> Self {
+        Self {
+            id: mode.id,
+            ui_name_key: mode.ui_name_key.clone(),
+            tooltip_key: mode.tooltip_key.clone(),
+            override_file: mode.override_file.clone(),
+            map_filter: mode.map_filter.clone(),
+            random_maps_allowed: mode.random_maps_allowed,
+            allies_allowed: mode.allies_allowed,
+            must_ally: mode.must_ally,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,14 +73,6 @@ impl LaunchCountry {
             Self::America | Self::Korea | Self::France | Self::Germany | Self::GreatBritain => 0,
             Self::Libya | Self::Iraq | Self::Cuba | Self::Russia => 1,
             Self::Yuri => 2,
-        }
-    }
-
-    pub const fn opening_mcv_candidates(self) -> &'static [&'static str] {
-        match self.side_index() {
-            2 => &["PCV", "SMCV", "AMCV"],
-            1 => &["SMCV", "AMCV", "PCV"],
-            _ => &["AMCV", "SMCV", "PCV"],
         }
     }
 }
@@ -200,6 +215,7 @@ pub struct SkirmishAiSlot {
 pub struct SkirmishLaunchSession {
     pub mode: SkirmishLaunchMode,
     pub selected_map_file: Option<String>,
+    pub player_name: String,
     pub local: SkirmishLocalSlot,
     pub opponents: Vec<SkirmishAiSlot>,
     pub options: SkirmishLaunchOptions,
@@ -208,6 +224,9 @@ pub struct SkirmishLaunchSession {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LaunchValidationError {
     NoSelectedMap,
+    NoSelectedMode {
+        mode_id: i32,
+    },
     NoEnabledOpponent,
     MapCapacityExceeded {
         capacity: usize,
@@ -215,6 +234,9 @@ pub enum LaunchValidationError {
     },
     SameExplicitTeam {
         team: u8,
+    },
+    RandomSelectionUnverified {
+        slot: usize,
     },
     InvalidColorIndex {
         slot: usize,
@@ -241,14 +263,36 @@ mod tests {
     }
 
     #[test]
-    fn yuri_country_uses_third_side_and_pcv_first() {
+    fn yuri_country_uses_third_side() {
         assert_eq!(LaunchCountry::Yuri.side_index(), 2);
-        assert_eq!(LaunchCountry::Yuri.opening_mcv_candidates()[0], "PCV");
+    }
+
+    #[test]
+    fn launch_mode_carries_selected_mpmode_data() {
+        let mode = SkirmishGameMode {
+            id: 9,
+            ui_name_key: "GUI:TeamGame".to_string(),
+            tooltip_key: "STT:ModeTeamGame".to_string(),
+            override_file: "MPTeamMD.ini".to_string(),
+            map_filter: "teamgame".to_string(),
+            random_maps_allowed: false,
+            allies_allowed: true,
+            must_ally: true,
+        };
+
+        let launch_mode = SkirmishLaunchMode::from_game_mode(&mode);
+
+        assert_eq!(launch_mode.id, 9);
+        assert_eq!(launch_mode.ui_name_key, "GUI:TeamGame");
+        assert_eq!(launch_mode.override_file, "MPTeamMD.ini");
+        assert!(launch_mode.allies_allowed);
+        assert!(launch_mode.must_ally);
     }
 
     #[test]
     fn shell_team_values_use_negative_none_and_zero_based_teams() {
         assert_eq!(LaunchTeam::from_shell_value(-2), LaunchTeam::None);
+        assert_eq!(LaunchTeam::from_shell_value(-1), LaunchTeam::None);
         assert_eq!(LaunchTeam::from_shell_value(0), LaunchTeam::Team(0));
         assert_eq!(LaunchTeam::from_shell_value(3), LaunchTeam::Team(3));
     }

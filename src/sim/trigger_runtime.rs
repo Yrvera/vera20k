@@ -13,7 +13,7 @@
 //! The goal is to turn parsed trigger data into real runtime behavior without
 //! committing to a full mission-script system yet.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::map::actions::{ActionEntry, ActionMap};
 use crate::map::events::{EventCondition, EventMap};
@@ -59,10 +59,12 @@ enum MissionAnnouncementKind {
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TriggerRuntime {
     pub elapsed_scenario_ticks: u64,
-    pub globals_set: HashSet<u32>,
-    pub locals_set: HashSet<u32>,
-    pub disabled_triggers: HashSet<String>,
-    pub fired_one_shot_triggers: HashSet<String>,
+    /// `BTreeSet` (not `HashSet`) so save files have a deterministic iteration
+    /// order — required for replay/lockstep correctness.
+    pub globals_set: BTreeSet<u32>,
+    pub locals_set: BTreeSet<u32>,
+    pub disabled_triggers: BTreeSet<String>,
+    pub fired_one_shot_triggers: BTreeSet<String>,
     last_announcement: Option<MissionAnnouncementKind>,
 }
 
@@ -94,7 +96,7 @@ impl TriggerRuntime {
         self.elapsed_scenario_ticks = self
             .elapsed_scenario_ticks
             .saturating_add(u64::from(tick_count));
-        let linked_by_id: std::collections::HashMap<&str, &LinkedTrigger> = graph
+        let linked_by_id: BTreeMap<&str, &LinkedTrigger> = graph
             .triggers
             .iter()
             .map(|linked| (linked.trigger_id.as_str(), linked))
@@ -106,7 +108,7 @@ impl TriggerRuntime {
             .filter(|linked| self.is_trigger_ready(linked, triggers, events, simulation))
             .map(|linked| linked.trigger_id.clone())
             .collect();
-        let mut queued: HashSet<String> = queue.iter().cloned().collect();
+        let mut queued: BTreeSet<String> = queue.iter().cloned().collect();
         let mut effects: Vec<TriggerEffect> = Vec::new();
 
         while let Some(trigger_id) = queue.pop_front() {
@@ -214,7 +216,7 @@ impl TriggerRuntime {
         action: &ActionEntry,
         effects: &mut Vec<TriggerEffect>,
         queue: &mut VecDeque<String>,
-        queued: &mut HashSet<String>,
+        queued: &mut BTreeSet<String>,
         triggers: &TriggerMap,
     ) {
         match action.kind {
@@ -306,7 +308,7 @@ impl TriggerRuntime {
     }
 }
 
-fn enqueue_trigger(queue: &mut VecDeque<String>, queued: &mut HashSet<String>, trigger_id: String) {
+fn enqueue_trigger(queue: &mut VecDeque<String>, queued: &mut BTreeSet<String>, trigger_id: String) {
     if queued.insert(trigger_id.clone()) {
         queue.push_back(trigger_id);
     }

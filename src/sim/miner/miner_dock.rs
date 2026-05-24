@@ -1,7 +1,7 @@
 //! Refinery dock contact and queue management.
 //!
 //! Only one miner may occupy a refinery dock at a time. Additional miners
-//! queue up and are promoted in FIFO order when the dock is released.
+//! queue up and retry in FIFO order after the dock contact is released.
 //! State lives in `ProductionState.dock_reservations` (shared across entities).
 //!
 //! ## Dependency rules
@@ -360,5 +360,39 @@ mod tests {
         let mut docks = DockReservations::default();
         assert!(docks.try_reserve(100, 1));
         assert!(docks.try_reserve(100, 1)); // already occupying
+    }
+
+    #[test]
+    fn release_contact_does_not_promote_waiter() {
+        let mut contacts = RefineryDockContacts::default();
+        assert_eq!(
+            contacts.hello_or_wait(100, 1, 1),
+            ContactAdmission::Accepted
+        );
+        contacts.mark_contact_entered(100, 1);
+        contacts.link_on_pad(100, 1);
+        assert_eq!(contacts.hello_or_wait(100, 2, 1), ContactAdmission::Waiting);
+
+        contacts.release_contact(100, 1);
+
+        assert!(!contacts.has_contact(100, 1));
+        assert!(!contacts.has_contact_entered(100, 1));
+        assert!(
+            contacts.is_waiting(100, 2),
+            "front waiter must remain queued until its own retry"
+        );
+        assert!(
+            !contacts.has_contact(100, 2),
+            "release_contact must not promote a waiter into Contacts[]"
+        );
+        assert!(
+            contacts.is_on_pad(100, 1),
+            "release_contact does not clear physical pad occupancy"
+        );
+
+        contacts.release_on_pad(100, 1);
+        assert!(!contacts.is_on_pad(100, 1));
+        assert!(contacts.is_waiting(100, 2));
+        assert!(!contacts.has_contact(100, 2));
     }
 }

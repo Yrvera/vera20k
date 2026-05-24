@@ -41,6 +41,8 @@ pub(super) struct WorldInstances {
     pub wall: Vec<SpriteInstance>,
     pub unit: Vec<SpriteInstance>,
     pub bridge_unit: Vec<SpriteInstance>,
+    pub unit_transition_paged: Vec<Vec<SpriteInstance>>,
+    pub bridge_unit_transition_paged: Vec<Vec<SpriteInstance>>,
     pub shp_paged: Vec<Vec<SpriteInstance>>,
     pub bridge_shp_paged: Vec<Vec<SpriteInstance>>,
     pub building_turret: Vec<SpriteInstance>,
@@ -152,6 +154,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
             .and_then(|sim| sim.bridge_state.as_ref());
         terrain::build_visible_instances(
             grid,
+            Some(&state.lighting_grid),
             state.camera_x,
             state.camera_y,
             sw,
@@ -209,9 +212,31 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     let mut unit: Vec<SpriteInstance> = std::mem::take(&mut state.cached_unit_instances);
     unit.clear();
     let mut bridge_unit: Vec<SpriteInstance> = Vec::new();
-    app_instances::build_unit_instances(state, &mut unit, &mut bridge_unit, &mut shp_paged);
+    let transition_page_count = state
+        .vxl_slope_transition_cache
+        .borrow()
+        .page_count()
+        .max(1);
+    let mut unit_transition_paged: Vec<Vec<SpriteInstance>> =
+        vec![Vec::new(); transition_page_count];
+    let mut bridge_unit_transition_paged: Vec<Vec<SpriteInstance>> =
+        vec![Vec::new(); transition_page_count];
+    app_instances::build_unit_instances(
+        state,
+        &mut unit,
+        &mut bridge_unit,
+        &mut unit_transition_paged,
+        &mut bridge_unit_transition_paged,
+        &mut shp_paged,
+    );
     sort_by_depth_desc(&mut unit);
     sort_by_depth_desc(&mut bridge_unit);
+    for page in &mut unit_transition_paged {
+        sort_by_depth_desc(page);
+    }
+    for page in &mut bridge_unit_transition_paged {
+        sort_by_depth_desc(page);
+    }
     // Building turret VXLs use the unit atlas texture but must draw AFTER all
     // layer-2 objects (separate turret pass after layer 2).
     let mut building_turret: Vec<SpriteInstance> = Vec::new();
@@ -276,6 +301,8 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         wall,
         unit,
         bridge_unit,
+        unit_transition_paged,
+        bridge_unit_transition_paged,
         shp_paged,
         bridge_shp_paged,
         building_turret,

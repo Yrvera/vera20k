@@ -189,6 +189,8 @@ pub struct ObjectType {
     /// Countries explicitly forbidden from building this (ForbiddenHouses= in rules.ini).
     /// Inverse of Owner — if the player's country is in this list, they cannot build.
     pub forbidden_houses: Vec<String>,
+    /// Whether this type may appear in multiplayer starting-unit generation.
+    pub allowed_to_start_in_multiplayer: bool,
     /// Building prerequisites required before this can be built.
     pub prerequisite: Vec<String>,
     /// Alternative prerequisite path (PrerequisiteOverride= in rules.ini).
@@ -611,6 +613,11 @@ pub struct ObjectType {
     /// Parsed from `UnitAbsorb=yes` in rules.ini.
     pub unit_absorb: bool,
 
+    /// Whether this techno type can enter a Tank Bunker.
+    /// Parsed from `Bunkerable=` in rules.ini. UnitTypeClass entries default
+    /// true; other object categories default false.
+    pub bunkerable: bool,
+
     /// Indexed weapon list for IFV (Weapon1..Weapon17 in rules.ini).
     /// Only populated when Gunner=yes. Index 0 = Weapon1.
     pub weapon_list: Vec<String>,
@@ -846,6 +853,9 @@ impl ObjectType {
             owner,
             required_houses,
             forbidden_houses,
+            allowed_to_start_in_multiplayer: section
+                .get_bool("AllowedToStartInMultiplayer")
+                .unwrap_or(true),
             prerequisite,
             prerequisite_override,
             build_limit: section.get_i32("BuildLimit").unwrap_or(0),
@@ -1057,6 +1067,9 @@ impl ObjectType {
                 .unwrap_or_default(),
             infantry_absorb: section.get_bool("InfantryAbsorb").unwrap_or(false),
             unit_absorb: section.get_bool("UnitAbsorb").unwrap_or(false),
+            bunkerable: section
+                .get_bool("Bunkerable")
+                .unwrap_or(category == ObjectCategory::Vehicle),
             weapon_list: if section.get_bool("Gunner").unwrap_or(false) {
                 (1..=17)
                     .filter_map(|i| section.get(&format!("Weapon{}", i)).map(|s| s.to_string()))
@@ -1257,6 +1270,7 @@ mod tests {
         assert!((obj.build_time_multiplier - 1.0).abs() < f32::EPSILON);
         assert_eq!(obj.owner, vec!["Americans", "Alliance"]);
         assert_eq!(obj.required_houses, vec!["Americans"]);
+        assert!(obj.allowed_to_start_in_multiplayer);
         assert_eq!(obj.prerequisite, vec!["GAWEAP"]);
         assert_eq!(obj.primary, Some("105mm".to_string()));
         assert_eq!(obj.secondary, None);
@@ -1266,6 +1280,33 @@ mod tests {
         assert!(obj.base_normal);
         assert!(!obj.eligibile_for_ally_building);
         assert!(!obj.crewed);
+    }
+
+    #[test]
+    fn allowed_to_start_in_multiplayer_parses_and_defaults_yes() {
+        let enabled_ini = IniFile::from_str("[MTNK]\nAllowedToStartInMultiplayer=yes\n");
+        let enabled = ObjectType::from_ini_section(
+            "MTNK",
+            enabled_ini.section("MTNK").unwrap(),
+            ObjectCategory::Vehicle,
+        );
+        assert!(enabled.allowed_to_start_in_multiplayer);
+
+        let disabled_ini = IniFile::from_str("[HTNK]\nAllowedToStartInMultiplayer=no\n");
+        let disabled = ObjectType::from_ini_section(
+            "HTNK",
+            disabled_ini.section("HTNK").unwrap(),
+            ObjectCategory::Vehicle,
+        );
+        assert!(!disabled.allowed_to_start_in_multiplayer);
+
+        let default_ini = IniFile::from_str("[E1]\n");
+        let defaulted = ObjectType::from_ini_section(
+            "E1",
+            default_ini.section("E1").unwrap(),
+            ObjectCategory::Infantry,
+        );
+        assert!(defaulted.allowed_to_start_in_multiplayer);
     }
 
     #[test]
@@ -1737,6 +1778,30 @@ mod tests {
         let obj = ObjectType::from_ini_section("NATBNK", section, ObjectCategory::Building);
         assert!(obj.bunker);
         assert_eq!(obj.number_impassable_rows, 0);
+    }
+
+    #[test]
+    fn bunkerable_defaults_true_for_vehicles_only() {
+        let ini = IniFile::from_str("[TEST]\n");
+        let section = ini.section("TEST").unwrap();
+
+        let vehicle = ObjectType::from_ini_section("TEST", section, ObjectCategory::Vehicle);
+        let infantry = ObjectType::from_ini_section("TEST", section, ObjectCategory::Infantry);
+        let aircraft = ObjectType::from_ini_section("TEST", section, ObjectCategory::Aircraft);
+        let building = ObjectType::from_ini_section("TEST", section, ObjectCategory::Building);
+
+        assert!(vehicle.bunkerable);
+        assert!(!infantry.bunkerable);
+        assert!(!aircraft.bunkerable);
+        assert!(!building.bunkerable);
+    }
+
+    #[test]
+    fn bunkerable_ini_overrides_vehicle_default() {
+        let ini = IniFile::from_str("[HTNK]\nBunkerable=no\n");
+        let section = ini.section("HTNK").unwrap();
+        let obj = ObjectType::from_ini_section("HTNK", section, ObjectCategory::Vehicle);
+        assert!(!obj.bunkerable);
     }
 
     #[test]

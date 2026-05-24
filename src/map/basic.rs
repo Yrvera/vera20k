@@ -37,6 +37,8 @@ pub struct BasicSection {
 /// Parsed flags from a map's `[SpecialFlags]` section.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SpecialFlagsSection {
+    /// Parsed `MCVDeploy=` bit (0x0100); startup deployment logic is mode-specific elsewhere.
+    pub mcv_deploy: Option<bool>,
     /// Map-level override: does ore grow denser? (TiberiumGrows=)
     pub tiberium_grows: Option<bool>,
     /// Map-level override: does ore spread to adjacent cells? (TiberiumSpreads=)
@@ -81,6 +83,7 @@ pub fn parse_special_flags_section(ini: &IniFile) -> SpecialFlagsSection {
     };
 
     SpecialFlagsSection {
+        mcv_deploy: section.get_bool("MCVDeploy"),
         tiberium_grows: section.get_bool("TiberiumGrows"),
         tiberium_spreads: section.get_bool("TiberiumSpreads"),
         destroyable_bridges: section.get_bool("DestroyableBridges"),
@@ -118,12 +121,34 @@ mod tests {
     #[test]
     fn parse_special_flags_bridge_override() {
         let ini = IniFile::from_str(
-            "[SpecialFlags]\nTiberiumGrows=yes\nTiberiumSpreads=no\nDestroyableBridges=no\n",
+            "[SpecialFlags]\nMCVDeploy=yes\nTiberiumGrows=yes\nTiberiumSpreads=no\nDestroyableBridges=no\n",
         );
         let flags = parse_special_flags_section(&ini);
+        assert_eq!(flags.mcv_deploy, Some(true));
         assert_eq!(flags.tiberium_grows, Some(true));
         assert_eq!(flags.tiberium_spreads, Some(false));
         assert_eq!(flags.destroyable_bridges, Some(false));
+    }
+
+    #[test]
+    fn parse_special_flags_mcvdeploy_no() {
+        let ini = IniFile::from_str("[SpecialFlags]\nMCVDeploy=no\n");
+        let flags = parse_special_flags_section(&ini);
+        assert_eq!(flags.mcv_deploy, Some(false));
+        assert_eq!(flags.tiberium_grows, None);
+        assert_eq!(flags.tiberium_spreads, None);
+        assert_eq!(flags.destroyable_bridges, None);
+    }
+
+    #[test]
+    fn missing_special_flags_mcvdeploy_defaults_to_none() {
+        let ini = IniFile::from_str("[SpecialFlags]\nDestroyableBridges=yes\n");
+        let flags = parse_special_flags_section(&ini);
+        assert_eq!(flags.mcv_deploy, None);
+        assert_eq!(flags.destroyable_bridges, Some(true));
+
+        let ini = IniFile::from_str("[Basic]\nName=No Special Flags\n");
+        assert_eq!(parse_special_flags_section(&ini).mcv_deploy, None);
     }
 
     #[test]

@@ -272,7 +272,7 @@ fn weapon_for_slot_index(
 /// Select the weapon used by a garrisoned occupant firing from a building.
 ///
 /// Priority chain (matching gamemd `BuildingClass::GetWeapon` 0x004526F0):
-/// 1. Elite occupant → `EliteOccupyWeapon` (fall back to `OccupyWeapon`)
+/// 1. Elite occupant → `EliteOccupyWeapon`
 /// 2. Normal occupant → `OccupyWeapon`
 /// 3. Fallback → occupant's Primary weapon
 ///
@@ -287,12 +287,10 @@ pub(crate) fn select_garrison_weapon<'a>(
     let occupant_obj = rules.object(occupant_type_ref)?;
     let is_elite = occupant_veterancy >= 200;
 
-    // Try elite/normal OccupyWeapon.
+    // Elite missing EliteOccupyWeapon falls directly to Primary; it does not
+    // reuse the normal OccupyWeapon path.
     let occupy_weapon_id = if is_elite {
-        occupant_obj
-            .elite_occupy_weapon
-            .as_deref()
-            .or(occupant_obj.occupy_weapon.as_deref())
+        occupant_obj.elite_occupy_weapon.as_deref()
     } else {
         occupant_obj.occupy_weapon.as_deref()
     };
@@ -509,6 +507,90 @@ Armor=none
 
         let result = select_weapon(&rules, civ, EntityCategory::Unit, "none", 0);
         assert!(result.is_none());
+    }
+
+    fn make_garrison_rules(include_elite_occupy_weapon: bool) -> RuleSet {
+        let elite_occupy_weapon = if include_elite_occupy_weapon {
+            "EliteOccupyWeapon=EliteGarrisonRifle\n"
+        } else {
+            ""
+        };
+        let ini_str = format!(
+            "\
+[InfantryTypes]
+0=E1
+[VehicleTypes]
+[AircraftTypes]
+[BuildingTypes]
+
+[E1]
+Name=GI
+Cost=200
+Strength=125
+Armor=none
+Primary=PrimaryRifle
+OccupyWeapon=GarrisonRifle
+{}
+
+[PrimaryRifle]
+Damage=15
+ROF=20
+Range=4
+Projectile=InvisibleLow
+Warhead=SA
+
+[GarrisonRifle]
+Damage=20
+ROF=20
+Range=5
+Projectile=InvisibleLow
+Warhead=SA
+
+[EliteGarrisonRifle]
+Damage=30
+ROF=20
+Range=6
+Projectile=InvisibleLow
+Warhead=SA
+
+[InvisibleLow]
+AG=yes
+AA=no
+
+[SA]
+Verses=100%,100%,100%,80%,60%,40%,100%,40%,20%,100%,100%
+",
+            elite_occupy_weapon
+        );
+        let ini = IniFile::from_str(&ini_str);
+        RuleSet::from_ini(&ini).expect("Should parse garrison test rules")
+    }
+
+    #[test]
+    fn normal_garrison_uses_occupy_weapon() {
+        let rules = make_garrison_rules(false);
+        let sel =
+            select_garrison_weapon(&rules, "E1", 0, EntityCategory::Infantry, "none").unwrap();
+        assert_eq!(sel.weapon_id, "GarrisonRifle");
+        assert_eq!(sel.slot, WeaponSlot::Primary);
+    }
+
+    #[test]
+    fn elite_garrison_uses_elite_occupy_weapon_when_present() {
+        let rules = make_garrison_rules(true);
+        let sel =
+            select_garrison_weapon(&rules, "E1", 200, EntityCategory::Infantry, "none").unwrap();
+        assert_eq!(sel.weapon_id, "EliteGarrisonRifle");
+        assert_eq!(sel.slot, WeaponSlot::Primary);
+    }
+
+    #[test]
+    fn elite_garrison_missing_elite_occupy_weapon_falls_back_to_primary() {
+        let rules = make_garrison_rules(false);
+        let sel =
+            select_garrison_weapon(&rules, "E1", 200, EntityCategory::Infantry, "none").unwrap();
+        assert_eq!(sel.weapon_id, "PrimaryRifle");
+        assert_eq!(sel.slot, WeaponSlot::Primary);
     }
 
     /// GGI-style fixture: M60 primary (AG), MissileLauncher secondary (AA+AG),

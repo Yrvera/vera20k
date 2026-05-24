@@ -16,7 +16,7 @@ use super::production_spawn::{
 };
 use super::production_tech::{
     build_option_for_owner, build_time_base_frames, effective_progress_rate_ppm_for_type,
-    effective_time_to_build_frames_for_type, estimated_real_time_ms,
+    effective_time_to_build_frames_for_type, estimated_real_time_ms, owner_matches_build_identity,
     production_category_for_object, should_use_relaxed_build_mode, supports_live_production,
 };
 use super::production_types::*;
@@ -304,7 +304,7 @@ pub fn build_options_for_owner(sim: &Simulation, rules: &RuleSet, owner: &str) -
                 )
         })
         .collect();
-    let visible = dedupe_visible_build_options(visible, rules, owner, &sim.interner);
+    let visible = dedupe_visible_build_options(visible, sim, rules, owner, &sim.interner);
     if !visible.is_empty() || !super::production_tech::prototype_fallback_enabled() {
         return visible;
     }
@@ -315,6 +315,7 @@ pub fn build_options_for_owner(sim: &Simulation, rules: &RuleSet, owner: &str) -
             owner,
             BuildMode::PrototypeRelaxed,
         ),
+        sim,
         rules,
         owner,
         &sim.interner,
@@ -323,6 +324,7 @@ pub fn build_options_for_owner(sim: &Simulation, rules: &RuleSet, owner: &str) -
 
 fn dedupe_visible_build_options(
     options: Vec<BuildOption>,
+    sim: &Simulation,
     rules: &RuleSet,
     owner: &str,
     interner: &crate::sim::intern::StringInterner,
@@ -338,7 +340,8 @@ fn dedupe_visible_build_options(
 
         let seen_key = (option.queue_category, key);
         if let Some(existing_idx) = seen.get(&seen_key).copied() {
-            if prefers_sidebar_variant(rules, owner, &option, &deduped[existing_idx], interner) {
+            let existing = &deduped[existing_idx];
+            if prefers_sidebar_variant(sim, rules, owner, &option, existing, interner) {
                 deduped[existing_idx] = option;
             }
             continue;
@@ -367,17 +370,19 @@ fn build_option_sidebar_key(
 }
 
 fn prefers_sidebar_variant(
+    sim: &Simulation,
     rules: &RuleSet,
     owner: &str,
     candidate: &BuildOption,
     existing: &BuildOption,
     interner: &crate::sim::intern::StringInterner,
 ) -> bool {
-    sidebar_variant_rank(rules, owner, candidate, interner)
-        > sidebar_variant_rank(rules, owner, existing, interner)
+    sidebar_variant_rank(sim, rules, owner, candidate, interner)
+        > sidebar_variant_rank(sim, rules, owner, existing, interner)
 }
 
 fn sidebar_variant_rank(
+    sim: &Simulation,
     rules: &RuleSet,
     owner: &str,
     option: &BuildOption,
@@ -391,7 +396,7 @@ fn sidebar_variant_rank(
     let required_house_match = obj
         .required_houses
         .iter()
-        .any(|house| house.eq_ignore_ascii_case(owner));
+        .any(|house| owner_matches_build_identity(sim, owner, house));
     let owner_specificity = u16::MAX.saturating_sub(obj.owner.len() as u16);
     let enabled = option.enabled as u8;
 

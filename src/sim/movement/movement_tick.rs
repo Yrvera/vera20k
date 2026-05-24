@@ -407,10 +407,21 @@ pub fn tick_movement_with_grids(
     if tick_ms == 0 {
         return stats;
     }
+    let blocker_neighbor_counts = path_grid.map(|grid| {
+        bump_crush::build_blocker_neighbor_counts(
+            entities,
+            grid.width(),
+            grid.height(),
+            resolved_terrain,
+            interner,
+            rules,
+        )
+    });
     let ctx = PathfindingContext {
         path_grid,
         zone_grid,
         resolved_terrain,
+        blocker_neighbor_counts: blocker_neighbor_counts.as_ref(),
     };
     let mcfg = MovementConfig {
         close_enough,

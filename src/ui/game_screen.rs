@@ -22,12 +22,9 @@ pub enum GameScreen {
     MainMenu,
 
     /// Transitional state: map is being loaded.
-    /// Displays "Loading..." text via egui while the app loads map data
-    /// on the next frame (synchronous load, deferred from initialize).
-    Loading {
-        /// Name of the map file to load, chosen from the menu.
-        map_name: String,
-    },
+    ///
+    /// The active `LoadingSession` owns the selected map and launch data.
+    Loading,
 
     /// Spawn-pick phase: entire map is loaded and rendered without fog.
     /// Player sees waypoint markers and clicks one to choose their start.

@@ -11,6 +11,8 @@ use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
 use crate::sim::bridge_state::BridgeRuntimeState;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
+use crate::sim::pathfinding::zone_hierarchy::{ZoneLevelGraph, ZoneRecord};
+use crate::sim::pathfinding::zone_map::ZoneId;
 
 fn bridge_test_cell(level: u8, structural: bool, transition: bool, slope_type: u8) -> PathCell {
     PathCell {
@@ -1492,6 +1494,7 @@ fn make_resolved_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
         is_rough: false,
         is_road: false,
         accepts_smudge: false,
+        allows_tiberium: false,
         has_ramp: false,
         canonical_ramp: None,
         ground_walk_blocked: false,
@@ -2160,6 +2163,51 @@ fn astar_edge_cost_marker_stacks_after_code2_before_tiebreak() {
 }
 
 #[test]
+fn bridge_flank_multiplier_matches_binary_structural_cases() {
+    assert_eq!(
+        bridge_flank_multiplier(false, false),
+        BRIDGE_FLANK_MISSING_MULTIPLIER,
+        "first flank missing structural bridge yields 10x regardless of second flank"
+    );
+    assert_eq!(
+        bridge_flank_multiplier(false, true),
+        BRIDGE_FLANK_MISSING_MULTIPLIER,
+        "first flank test dominates the binary branch"
+    );
+    assert_eq!(
+        bridge_flank_multiplier(true, false),
+        BRIDGE_FLANK_ONE_MULTIPLIER,
+        "first structural, second missing yields 1x"
+    );
+    assert_eq!(
+        bridge_flank_multiplier(true, true),
+        BRIDGE_FLANK_BOTH_MULTIPLIER,
+        "both structural flanks yield 2x"
+    );
+}
+
+#[test]
+fn marker_flank_cost_does_not_scale_direction_tiebreak() {
+    let mut overlay = SearchMarkerOverlay::new();
+    overlay.toggle((3, 1));
+
+    let code2_cost = STEP_COST * CODE2_MULT_JAM;
+    let marked_cost = apply_search_marker_cost(code2_cost, Some(&overlay), (3, 1));
+    let flank_cost = apply_bridge_flank_cost(marked_cost, bridge_flank_multiplier(false, false));
+    let tentative = flank_cost + DIR_TIEBREAK[2];
+
+    assert_eq!(
+        tentative,
+        STEP_COST
+            * CODE2_MULT_JAM
+            * SEARCH_MARKER_COST_MULTIPLIER
+            * BRIDGE_FLANK_MISSING_MULTIPLIER
+            + DIR_TIEBREAK[2],
+        "direction tiebreak is final/additive and must not be multiplied by marker or flank costs"
+    );
+}
+
+#[test]
 fn astar_marker_overlay_penalizes_normal_compass_edges() {
     let grid = PathGrid::new(7, 3);
     let mut overlay = SearchMarkerOverlay::new();
@@ -2249,6 +2297,140 @@ fn astar_bridge_marker_overlay_is_search_scoped_and_does_not_mutate_pathgrid() {
     assert_eq!(grid.cells, before.cells);
     assert_eq!(grid.width, before.width);
     assert_eq!(grid.height, before.height);
+}
+
+fn row_level0_graph(zones: &[ZoneId]) -> ZoneLevelGraph {
+    let zone_count = zones.iter().copied().max().unwrap_or(0);
+    let mut graph =
+        ZoneLevelGraph::new(zone_count).with_cell_zone_ids(zones.to_vec(), zones.len() as u16, 1);
+    for zone in 1..=zone_count {
+        graph.set_record(ZoneRecord::new(zone, 0, 0));
+    }
+    graph
+}
+
+#[test]
+fn astar_hierarchy_rejects_unmarked_one_ring_zone_without_blocker_exception() {
+    let grid = PathGrid::new(3, 1);
+    let level0_zones = row_level0_graph(&[1, 2, 3]);
+    let marked_zones = BTreeSet::from([1, 3]);
+    let blocker_counts = BlockerNeighborCounts::new(3, 1);
+
+    let path = astar_search(
+        &grid,
+        (0, 0),
+        MovementLayer::Ground,
+        (2, 0),
+        &AStarOptions {
+            hierarchy_gate: Some(HierarchyGate {
+                level0_zones: &level0_zones,
+                marked_level0: &marked_zones,
+                blocker_neighbor_counts: &blocker_counts,
+            }),
+            ..Default::default()
+        },
+    );
+
+    assert!(
+        path.is_none(),
+        "unmarked zone 2 should be rejected when it has no blocker-neighbor exception"
+    );
+}
+
+#[test]
+fn astar_hierarchy_allows_off_marker_cell_with_blocker_neighbor_count() {
+    let grid = PathGrid::new(3, 1);
+    let level0_zones = row_level0_graph(&[1, 2, 3]);
+    let marked_zones = BTreeSet::from([1, 3]);
+    let mut blocker_counts = BlockerNeighborCounts::new(3, 1);
+    blocker_counts.set_count(1, 0, 1);
+
+    let path = astar_search(
+        &grid,
+        (0, 0),
+        MovementLayer::Ground,
+        (2, 0),
+        &AStarOptions {
+            hierarchy_gate: Some(HierarchyGate {
+                level0_zones: &level0_zones,
+                marked_level0: &marked_zones,
+                blocker_neighbor_counts: &blocker_counts,
+            }),
+            ..Default::default()
+        },
+    )
+    .expect("blocker-neighbor exception should permit the one unmarked middle zone");
+
+    assert_eq!(
+        path.iter()
+            .map(|step| (step.rx, step.ry))
+            .collect::<Vec<_>>(),
+        vec![(0, 0), (1, 0), (2, 0)]
+    );
+}
+
+#[test]
+fn astar_hierarchy_progress_tracks_last_accepted_next_path_zone() {
+    let grid = PathGrid::new(4, 1);
+    let level0_zones = row_level0_graph(&[1, 2, 3, 4]);
+    let marked_zones = BTreeSet::from([1, 2, 3, 4]);
+    let blocker_counts = BlockerNeighborCounts::new(4, 1);
+    let level0_path = vec![1, 2, 3, 4];
+
+    let result = find_path_with_costs_hierarchy_marker_progress(
+        &grid,
+        (0, 0),
+        (3, 0),
+        None,
+        None,
+        &level0_zones,
+        &marked_zones,
+        &blocker_counts,
+        &level0_path,
+        Some(MovementZone::Normal),
+        None,
+        None,
+        None,
+        0,
+        false,
+    )
+    .expect("marked straight path should succeed");
+
+    assert_eq!(result.path, vec![(0, 0), (1, 0), (2, 0), (3, 0)]);
+    assert_eq!(result.progress_index, 3);
+    assert_eq!(result.progress_cell, (3, 0));
+}
+
+#[test]
+fn astar_hierarchy_progress_remains_start_when_no_next_zone_accepted() {
+    let mut grid = PathGrid::new(3, 1);
+    grid.set_blocked(1, 0, true);
+    let level0_zones = row_level0_graph(&[1, 2, 3]);
+    let marked_zones = BTreeSet::from([1, 2, 3]);
+    let blocker_counts = BlockerNeighborCounts::new(3, 1);
+    let level0_path = vec![1, 2, 3];
+    let progress = HierarchyProgressTracker::new((0, 0), &level0_path);
+
+    let path = astar_search(
+        &grid,
+        (0, 0),
+        MovementLayer::Ground,
+        (2, 0),
+        &AStarOptions {
+            hierarchy_gate: Some(HierarchyGate {
+                level0_zones: &level0_zones,
+                marked_level0: &marked_zones,
+                blocker_neighbor_counts: &blocker_counts,
+            }),
+            hierarchy_progress: Some(&progress),
+            movement_zone: Some(MovementZone::Normal),
+            ..Default::default()
+        },
+    );
+
+    assert!(path.is_none());
+    assert_eq!(progress.progress_index(), 0);
+    assert_eq!(progress.progress_cell(), (0, 0));
 }
 
 // ---------------------------------------------------------------------------

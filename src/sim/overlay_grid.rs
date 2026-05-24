@@ -490,11 +490,14 @@ pub fn cleanup_wall_neighbors(
     rx: u16,
     ry: u16,
 ) -> Vec<(u16, u16)> {
-    use std::collections::{HashSet, VecDeque};
+    use std::collections::{BTreeSet, VecDeque};
     const CARDINAL: [(i32, i32); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
 
     let mut destroyed: Vec<(u16, u16)> = Vec::new();
-    let mut visited: HashSet<(u16, u16)> = HashSet::new();
+    // `BTreeSet` (not `HashSet`) per sim convention — membership-only here,
+    // but no reason for the BFS dedup to be the one non-deterministic
+    // collection in the file.
+    let mut visited: BTreeSet<(u16, u16)> = BTreeSet::new();
     let mut worklist: VecDeque<(u16, u16)> = VecDeque::new();
     worklist.push_back((rx, ry));
 
@@ -731,6 +734,7 @@ mod tests {
                 is_rough: false,
                 is_road: false,
                 accepts_smudge: true,
+                allows_tiberium: false,
                 is_cliff_redraw: false,
                 variant: 0,
                 has_ramp: false,
@@ -886,6 +890,7 @@ IsRubble=yes
                     is_rough: false,
                     is_road: false,
                     accepts_smudge: true,
+                    allows_tiberium: false,
                     is_cliff_redraw: false,
                     variant: 0,
                     has_ramp: false,

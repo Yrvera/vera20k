@@ -766,7 +766,7 @@ fn snapshot_round_trip_mid_deploying() {
     sim.entities.get_mut(gi).unwrap().deploy_state =
         Some(DeployPhase::Deploying { ticks_remaining: 5 });
 
-    let bytes = GameSnapshot::save(&sim, 0, 0, "test_map");
+    let bytes = GameSnapshot::save(&sim, 0, 0, "test_map", 0);
     let snap = GameSnapshot::load(&bytes).expect("load");
     assert_eq!(
         snap.sim.entities.get(gi).unwrap().deploy_state,

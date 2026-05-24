@@ -9,6 +9,7 @@ use anyhow::Result;
 
 use crate::app_init::MapMenuEntry;
 use crate::assets::asset_manager::AssetManager;
+use crate::assets::csf_file::CsfFile;
 use crate::assets::mix_archive::MixArchive;
 use crate::map::briefing::BriefingSection;
 use crate::map::map_file::{self, MapFile};
@@ -50,6 +51,12 @@ pub fn list_available_maps() -> Result<Vec<MapMenuEntry>> {
 }
 
 pub fn list_skirmish_scenario_records() -> Result<Vec<SkirmishScenarioRecord>> {
+    list_skirmish_scenario_records_with_csf(None)
+}
+
+pub fn list_skirmish_scenario_records_with_csf(
+    csf: Option<&CsfFile>,
+) -> Result<Vec<SkirmishScenarioRecord>> {
     let config: GameConfig = GameConfig::load()?;
     let ra2_dir: PathBuf = config.paths.ra2_dir;
     let assets = AssetManager::new(&ra2_dir).ok();
@@ -64,6 +71,7 @@ pub fn list_skirmish_scenario_records() -> Result<Vec<SkirmishScenarioRecord>> {
                 &mut records,
                 &pkt,
                 SkirmishScenarioSource::MissionsMdPkt,
+                csf,
                 |file_name| {
                     assets
                         .get_ref(file_name)
@@ -73,8 +81,8 @@ pub fn list_skirmish_scenario_records() -> Result<Vec<SkirmishScenarioRecord>> {
         }
     }
 
-    append_loose_pkt_records(&mut records, &ra2_dir, assets.as_ref())?;
-    append_loose_yro_records(&mut records, &ra2_dir, assets.as_ref())?;
+    append_loose_pkt_records(&mut records, &ra2_dir, assets.as_ref(), csf)?;
+    append_loose_yro_records(&mut records, &ra2_dir, assets.as_ref(), csf)?;
     append_loose_yrm_records(&mut records, &ra2_dir)?;
 
     Ok(records)
@@ -84,7 +92,7 @@ pub fn list_loose_skirmish_scenario_records() -> Result<Vec<SkirmishScenarioReco
     let config: GameConfig = GameConfig::load()?;
     let ra2_dir: PathBuf = config.paths.ra2_dir;
     let mut records = Vec::new();
-    append_loose_yro_records(&mut records, &ra2_dir, None)?;
+    append_loose_yro_records(&mut records, &ra2_dir, None, None)?;
     append_loose_yrm_records(&mut records, &ra2_dir)?;
     Ok(records)
 }
@@ -93,6 +101,7 @@ fn append_loose_pkt_records(
     records: &mut Vec<SkirmishScenarioRecord>,
     ra2_dir: &Path,
     assets: Option<&AssetManager>,
+    csf: Option<&CsfFile>,
 ) -> Result<()> {
     for (path, file_name) in loose_files_with_extension(ra2_dir, "pkt")? {
         let Some(pkt) = read_ini_file(&path) else {
@@ -102,6 +111,7 @@ fn append_loose_pkt_records(
             records,
             &pkt,
             SkirmishScenarioSource::LoosePkt(file_name),
+            csf,
             |map_file| {
                 read_map_ini_for_metadata(&ra2_dir.join(map_file)).or_else(|| {
                     assets
@@ -118,6 +128,7 @@ fn append_loose_yro_records(
     records: &mut Vec<SkirmishScenarioRecord>,
     ra2_dir: &Path,
     assets: Option<&AssetManager>,
+    csf: Option<&CsfFile>,
 ) -> Result<()> {
     for (path, file_name) in loose_files_with_extension(ra2_dir, "yro")? {
         let archive = match MixArchive::load(&path) {
@@ -140,6 +151,7 @@ fn append_loose_yro_records(
             records,
             &pkt,
             SkirmishScenarioSource::LooseYro(file_name),
+            csf,
             |map_file| {
                 archive
                     .get_by_name(map_file)
@@ -210,6 +222,7 @@ fn append_pkt_records<F>(
     records: &mut Vec<SkirmishScenarioRecord>,
     pkt: &IniFile,
     source: SkirmishScenarioSource,
+    csf: Option<&CsfFile>,
     mut map_ini: F,
 ) where
     F: FnMut(&str) -> Option<IniFile>,
@@ -226,7 +239,7 @@ fn append_pkt_records<F>(
         let Some(map_ini) = map_ini(&file_name) else {
             continue;
         };
-        let display_name = pkt_display_name(pkt, map_stem)
+        let display_name = pkt_display_name(pkt, map_stem, csf)
             .unwrap_or_else(|| display_name_from_basic_or_file(&map_ini, &file_name));
         records.push(SkirmishScenarioRecord::pkt_from_ini(
             records.len(),
@@ -238,14 +251,25 @@ fn append_pkt_records<F>(
     }
 }
 
-fn pkt_display_name(pkt: &IniFile, map_stem: &str) -> Option<String> {
+fn pkt_display_name(pkt: &IniFile, map_stem: &str, csf: Option<&CsfFile>) -> Option<String> {
     let section = pkt.section(map_stem)?;
-    section
+    if let Some(value) = section
         .get("DescriptionText")
-        .or_else(|| section.get("Description"))
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(str::to_string)
+    {
+        return Some(value.to_string());
+    }
+
+    section
+        .get("Description")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            csf.and_then(|csf| csf.get(value))
+                .unwrap_or(value)
+                .to_string()
+        })
 }
 
 fn display_name_from_basic_or_file(ini: &IniFile, file_name: &str) -> String {
@@ -401,7 +425,7 @@ pub(crate) fn load_map_by_name_or_path_with_assets(
     }
 }
 
-fn asset_map_candidates(map_name: &str) -> Vec<String> {
+pub(crate) fn asset_map_candidates(map_name: &str) -> Vec<String> {
     let mut names = Vec::new();
     names.push(map_name.to_string());
     let has_extension = Path::new(map_name).extension().is_some();
@@ -493,18 +517,70 @@ mod tests {
     }
 
     #[test]
+    fn asset_map_candidates_adds_retail_map_extensions_for_stems() {
+        assert_eq!(
+            asset_map_candidates("mp01t2"),
+            vec![
+                "mp01t2".to_string(),
+                "mp01t2.mmx".to_string(),
+                "mp01t2.yro".to_string(),
+                "mp01t2.map".to_string(),
+                "mp01t2.mpr".to_string(),
+                "mp01t2.yrm".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn asset_map_candidates_keeps_explicit_map_names_exact() {
+        assert_eq!(asset_map_candidates("MP01T2.MAP"), vec!["MP01T2.MAP"]);
+    }
+
+    fn encode_csf_string(s: &str) -> Vec<u8> {
+        s.encode_utf16()
+            .flat_map(|c| c.to_le_bytes())
+            .map(|b| !b)
+            .collect()
+    }
+
+    fn build_test_csf(entries: &[(&str, &str)]) -> CsfFile {
+        let mut data = Vec::new();
+        data.extend_from_slice(&0x4353_4620u32.to_le_bytes());
+        data.extend_from_slice(&3u32.to_le_bytes());
+        data.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+        data.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+        data.extend_from_slice(&0u16.to_le_bytes());
+        data.extend_from_slice(&[0u8; 6]);
+
+        for (label, value) in entries {
+            let encoded_value = encode_csf_string(value);
+            data.extend_from_slice(&0x4C42_4C20u32.to_le_bytes());
+            data.extend_from_slice(&1u32.to_le_bytes());
+            data.extend_from_slice(&(label.len() as u32).to_le_bytes());
+            data.extend_from_slice(label.as_bytes());
+            data.extend_from_slice(&0x5354_5220u32.to_le_bytes());
+            data.extend_from_slice(&(value.encode_utf16().count() as u32).to_le_bytes());
+            data.extend_from_slice(&encoded_value);
+        }
+
+        CsfFile::from_bytes(&data).expect("test CSF should parse")
+    }
+
+    #[test]
     fn pkt_records_preserve_multimaps_source_order_and_pkt_names() {
         let pkt = IniFile::from_str(
             "[MultiMaps]\n1=Zoo\n2=Alpha\n3=Raw\n\
              [Zoo]\nDescriptionText=Zoo Display\n\
              [Alpha]\nDescription=GUI:AlphaName\n",
         );
+        let csf = build_test_csf(&[("GUI:AlphaName", "Localized Alpha")]);
 
         let mut records = Vec::new();
         append_pkt_records(
             &mut records,
             &pkt,
             SkirmishScenarioSource::MissionsMdPkt,
+            Some(&csf),
             |file_name| match file_name {
                 "Zoo.MAP" => Some(IniFile::from_str(
                     "[Basic]\nName=Basic Zoo\nGameModes=standard\n",
@@ -523,7 +599,7 @@ mod tests {
             .iter()
             .map(|record| record.display_name.as_str())
             .collect();
-        assert_eq!(names, vec!["Zoo Display", "GUI:AlphaName", "Basic Raw"]);
+        assert_eq!(names, vec!["Zoo Display", "Localized Alpha", "Basic Raw"]);
         assert_eq!(records[0].file_name, "Zoo.MAP");
         assert_eq!(records[1].file_name, "Alpha.MAP");
         assert_eq!(records[2].file_name, "Raw.MAP");

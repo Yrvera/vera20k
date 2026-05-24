@@ -245,7 +245,7 @@ pub fn tick_superweapons(sim: &mut Simulation, rules: &RuleSet) {
 /// Call when a building is completed, sold, or destroyed. Activates new grants
 /// and deactivates revoked ones.
 pub fn refresh_super_weapons_for_owner(sim: &mut Simulation, rules: &RuleSet, owner: InternedId) {
-    use std::collections::HashSet;
+    use std::collections::BTreeSet;
 
     let owner_str = sim.interner.resolve(owner).to_string();
 
@@ -276,8 +276,10 @@ pub fn refresh_super_weapons_for_owner(sim: &mut Simulation, rules: &RuleSet, ow
         }
     }
 
-    // Intern all granted SW IDs.
-    let granted: HashSet<InternedId> = granted_strs
+    // Intern all granted SW IDs. `BTreeSet` (not `HashSet`) keeps the
+    // activation-loop iteration order deterministic across machines, and
+    // makes the `log::info!` lines for SW grants reproducible.
+    let granted: BTreeSet<InternedId> = granted_strs
         .iter()
         .map(|s| sim.interner.intern(s))
         .collect();

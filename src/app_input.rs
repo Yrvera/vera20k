@@ -554,15 +554,15 @@ fn quicksave(state: &mut AppState) {
         .map(crate::app_sim_tick::rules_hash)
         .unwrap_or(0);
     let map_name = &state.theater_name;
-    let bytes = crate::sim::snapshot::GameSnapshot::save(sim, 0, rules_h, map_name);
-    if let Err(e) = std::fs::create_dir_all(SAVES_DIR) {
-        log::error!("Quicksave: failed to create saves dir: {e}");
-        return;
-    }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
+    let bytes = crate::sim::snapshot::GameSnapshot::save(sim, 0, rules_h, map_name, now);
+    if let Err(e) = std::fs::create_dir_all(SAVES_DIR) {
+        log::error!("Quicksave: failed to create saves dir: {e}");
+        return;
+    }
     let filename = format!("save_tick{}_{}.bin", sim.tick, now);
     let path = format!("{SAVES_DIR}/{filename}");
     match std::fs::write(&path, &bytes) {
@@ -599,15 +599,15 @@ pub(crate) fn save_with_name(state: &mut AppState, raw_name: &str) {
         .map(crate::app_sim_tick::rules_hash)
         .unwrap_or(0);
     let map_name = &state.theater_name;
-    let bytes = crate::sim::snapshot::GameSnapshot::save(sim, 0, rules_h, map_name);
-    if let Err(e) = std::fs::create_dir_all(SAVES_DIR) {
-        log::error!("Save As: failed to create saves dir: {e}");
-        return;
-    }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
+    let bytes = crate::sim::snapshot::GameSnapshot::save(sim, 0, rules_h, map_name, now);
+    if let Err(e) = std::fs::create_dir_all(SAVES_DIR) {
+        log::error!("Save As: failed to create saves dir: {e}");
+        return;
+    }
     let filename = format!("save_{sanitized}_tick{}_{}.bin", sim.tick, now);
     let path = format!("{SAVES_DIR}/{filename}");
     match std::fs::write(&path, &bytes) {

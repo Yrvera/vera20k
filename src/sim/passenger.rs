@@ -218,6 +218,9 @@ pub fn can_enter_transport(
     }
     // Garrison-specific: only Occupier infantry, and building must not be at red health.
     if transport_obj.can_be_occupied {
+        if transport.building_up.is_some() || transport.building_down.is_some() {
+            return false;
+        }
         if !passenger_obj.occupier {
             return false;
         }
@@ -738,6 +741,32 @@ ConditionYellow=50%
         stable_id
     }
 
+    fn can_enter_garrison_fixture(
+        sim: &Simulation,
+        rules: &RuleSet,
+        passenger_id: u64,
+        building_id: u64,
+    ) -> bool {
+        let passenger = sim.entities.get(passenger_id).expect("passenger exists");
+        let transport = sim.entities.get(building_id).expect("building exists");
+        let passenger_obj = rules
+            .object(sim.interner.resolve(passenger.type_ref))
+            .expect("passenger type exists");
+        let transport_obj = rules
+            .object(sim.interner.resolve(transport.type_ref))
+            .expect("transport type exists");
+        let cargo = transport.passenger_role.cargo().expect("cargo exists");
+        can_enter_transport(
+            passenger,
+            transport,
+            passenger_obj,
+            transport_obj,
+            cargo,
+            rules.general.condition_red_x1000,
+            &sim.interner,
+        )
+    }
+
     #[test]
     fn test_cargo_new() {
         let cargo = PassengerCargo::new(5, 2);
@@ -822,6 +851,148 @@ ConditionYellow=50%
         assert!(cargo.can_accept(1));
         cargo.board(100, 1);
         assert!(!cargo.can_accept(1));
+    }
+
+    #[test]
+    fn test_can_enter_garrison_rejects_red_health_building() {
+        let mut sim = Simulation::new();
+        let rules = garrison_test_rules();
+        let bldg = spawn_garrison_building(&mut sim, &rules, "CAGAS01", "Americans", 10, 10);
+        let pax = spawn_boarding_occupier(&mut sim, "E1", "Americans", bldg, 10, 11);
+
+        {
+            let building = sim.entities.get_mut(bldg).expect("building exists");
+            building.health.max = 400;
+            building.health.current = 100;
+        }
+
+        assert!(
+            !can_enter_garrison_fixture(&sim, &rules, pax, bldg),
+            "CanDock rejects garrison entry at ConditionRed or below"
+        );
+    }
+
+    #[test]
+    fn test_can_enter_garrison_rejects_non_occupier() {
+        let mut sim = Simulation::new();
+        let rules = garrison_test_rules();
+        let bldg = spawn_garrison_building(&mut sim, &rules, "CAGAS01", "Americans", 10, 10);
+        let pax = spawn_boarding_occupier(&mut sim, "E1", "Americans", bldg, 10, 11);
+        let passenger = sim.entities.get(pax).expect("passenger exists");
+        let transport = sim.entities.get(bldg).expect("building exists");
+        let mut passenger_obj = rules.object("E1").expect("E1 exists").clone();
+        let transport_obj = rules.object("CAGAS01").expect("CAGAS01 exists");
+        let cargo = transport.passenger_role.cargo().expect("cargo exists");
+
+        passenger_obj.occupier = false;
+
+        assert!(
+            !can_enter_transport(
+                passenger,
+                transport,
+                &passenger_obj,
+                transport_obj,
+                cargo,
+                rules.general.condition_red_x1000,
+                &sim.interner,
+            ),
+            "CanDock requires Occupier=yes infantry"
+        );
+    }
+
+    #[test]
+    fn test_can_enter_garrison_rejects_full_building_at_capacity() {
+        let mut sim = Simulation::new();
+        let rules = garrison_test_rules();
+        let bldg = spawn_garrison_building(&mut sim, &rules, "CAGAS01", "Americans", 10, 10);
+        let pax = spawn_boarding_occupier(&mut sim, "E1", "Americans", bldg, 10, 11);
+
+        {
+            let building = sim.entities.get_mut(bldg).expect("building exists");
+            let cargo = building.passenger_role.cargo_mut().expect("cargo exists");
+            for occupant_id in 1000..1005 {
+                assert!(cargo.board(occupant_id, 1));
+            }
+            assert_eq!(cargo.count(), cargo.capacity);
+        }
+
+        assert!(
+            !can_enter_garrison_fixture(&sim, &rules, pax, bldg),
+            "CanDock rejects exactly full garrisons"
+        );
+    }
+
+    #[test]
+    fn test_can_enter_garrison_rejects_non_friendly_non_civilian_building() {
+        let mut sim = Simulation::new();
+        let rules = garrison_test_rules();
+        let bldg = spawn_garrison_building(&mut sim, &rules, "CAGAS01", "Russians", 10, 10);
+        let pax = spawn_boarding_occupier(&mut sim, "E1", "Americans", bldg, 10, 11);
+
+        assert!(
+            !can_enter_garrison_fixture(&sim, &rules, pax, bldg),
+            "CanDock rejects non-friendly occupied-owner buildings"
+        );
+    }
+
+    #[test]
+    fn test_can_enter_garrison_allows_neutral_and_special_buildings() {
+        for owner in ["Neutral", "Special"] {
+            let mut sim = Simulation::new();
+            let rules = garrison_test_rules();
+            let bldg = spawn_garrison_building(&mut sim, &rules, "CAGAS01", owner, 10, 10);
+            let pax = spawn_boarding_occupier(&mut sim, "E1", "Americans", bldg, 10, 11);
+
+            assert!(
+                can_enter_garrison_fixture(&sim, &rules, pax, bldg),
+                "CanDock allows {owner} civilian garrison buildings"
+            );
+        }
+    }
+
+    #[test]
+    fn test_can_enter_garrison_rejects_building_up_or_down() {
+        let rules = garrison_test_rules();
+
+        {
+            let mut sim = Simulation::new();
+            let bldg = spawn_garrison_building(&mut sim, &rules, "CAGAS01", "Americans", 10, 10);
+            let pax = spawn_boarding_occupier(&mut sim, "E1", "Americans", bldg, 10, 11);
+            let building = sim.entities.get_mut(bldg).expect("building exists");
+            building.building_up = Some(crate::sim::components::BuildingUp {
+                elapsed_ticks: 0,
+                total_ticks: 30,
+            });
+
+            assert!(
+                !can_enter_garrison_fixture(&sim, &rules, pax, bldg),
+                "CanDock rejects buildings still playing build-up"
+            );
+        }
+
+        {
+            let mut sim = Simulation::new();
+            let bldg = spawn_garrison_building(&mut sim, &rules, "CAGAS01", "Americans", 10, 10);
+            let pax = spawn_boarding_occupier(&mut sim, "E1", "Americans", bldg, 10, 11);
+            let owner = sim.entities.get(bldg).expect("building exists").owner;
+            let spawn_type = sim.interner.intern("AMCV");
+            let building = sim.entities.get_mut(bldg).expect("building exists");
+            building.building_down = Some(crate::sim::components::BuildingDown {
+                elapsed_ticks: 0,
+                total_ticks: 30,
+                spawn_type,
+                spawn_owner: owner,
+                spawn_rx: 10,
+                spawn_ry: 10,
+                spawn_z: 0,
+                was_selected: false,
+            });
+
+            assert!(
+                !can_enter_garrison_fixture(&sim, &rules, pax, bldg),
+                "CanDock rejects buildings in reverse build-down"
+            );
+        }
     }
 
     #[test]
@@ -1129,7 +1300,12 @@ ConditionYellow=50%
             "building despawned"
         );
 
-        for pid in [pax1, pax2, pax3] {
+        let expected_positions = [(12, 10), (11, 12), (12, 11)];
+        for (pid, expected_position) in [
+            (pax1, expected_positions[0]),
+            (pax2, expected_positions[1]),
+            (pax3, expected_positions[2]),
+        ] {
             let pax = sim.entities.get(pid).expect("survivor present");
             assert!(pax.is_alive(), "occupant {pid} should be alive");
             assert!(!pax.dying, "occupant {pid} should not be dying");
@@ -1139,20 +1315,14 @@ ConditionYellow=50%
                 "Allied",
                 "occupant {pid} should retain garrisoning owner"
             );
-            // Position within 2x2 foundation footprint at (10,10).
-            assert!(
-                pax.position.rx == 10 || pax.position.rx == 11,
-                "occupant {pid} rx {} outside foundation",
-                pax.position.rx
-            );
-            assert!(
-                pax.position.ry == 10 || pax.position.ry == 11,
-                "occupant {pid} ry {} outside foundation",
-                pax.position.ry
+            assert_eq!(
+                (pax.position.rx, pax.position.ry),
+                expected_position,
+                "occupant {pid} should use sell-style foundation-edge ejection"
             );
         }
 
-        // Each occupant should be at a unique cell (LIFO + used_cells dedup).
+        // Each occupant should be at a unique edge cell (LIFO + used_cells dedup).
         let mut positions: Vec<(u16, u16)> = [pax1, pax2, pax3]
             .iter()
             .map(|&p| {
@@ -1166,15 +1336,28 @@ ConditionYellow=50%
     }
 
     #[test]
-    fn test_garrison_eject_blocked_foundation_kills_occupants() {
+    fn test_garrison_eject_blocked_edge_cells_kills_occupants() {
         let rules = garrison_test_rules();
         let mut sim = Simulation::new();
         let building_id = spawn_garrison_building(&mut sim, &rules, "CAGAS01", "Allied", 10, 10);
         let pax = place_inside_garrison(&mut sim, &rules, building_id, "E1", "Allied");
 
-        // Block all 4 foundation cells of the 2x2 building with live entities.
+        // Block all sell-style edge ejection cells around the 2x2 building.
         let owner_id = sim.interner.intern("Allied");
-        for (bx, by) in [(10, 10), (11, 10), (10, 11), (11, 11)] {
+        for (bx, by) in [
+            (12, 11),
+            (11, 12),
+            (12, 10),
+            (10, 12),
+            (12, 12),
+            (11, 9),
+            (9, 11),
+            (10, 9),
+            (12, 9),
+            (9, 10),
+            (9, 12),
+            (9, 9),
+        ] {
             let blocker_id = sim.allocate_stable_id();
             let mut blocker = GameEntity::test_default(blocker_id, "E1", "Allied", bx, by);
             blocker.owner = owner_id;

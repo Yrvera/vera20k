@@ -1,6 +1,7 @@
 //! Tests for zone map flood-fill and adjacency extraction.
 
 use super::zone_build::build_zone_map;
+use super::zone_hierarchy::{ZoneEdgeRecord, ZoneHierarchy, ZoneLevelGraph, ZoneRecord};
 use super::zone_map::*;
 use crate::map::resolved_terrain::{
     BridgeDirection, BridgeLayer, ResolvedTerrainCell, ResolvedTerrainGrid, YR_CELL_LAND_TUNNEL,
@@ -41,6 +42,17 @@ fn land_zones(grid: &PathGrid) -> (ZoneMap, ZoneAdjacency) {
     )
 }
 
+fn tiny_hierarchy() -> ZoneHierarchy {
+    let mut level2 = ZoneLevelGraph::new(1);
+    level2.set_record(ZoneRecord::new(1, 0, 0));
+    let mut level1 = ZoneLevelGraph::new(1);
+    level1.set_record(ZoneRecord::new(1, 1, 0));
+    let mut level0 = ZoneLevelGraph::new(1);
+    level0.set_record(ZoneRecord::new(1, 1, 0));
+    level0.push_edge(1, ZoneEdgeRecord::new(1, 0));
+    ZoneHierarchy::new(level0, level1, level2)
+}
+
 fn water_row_terrain(width: u16) -> ResolvedTerrainGrid {
     let cells = (0..width)
         .map(|rx| ResolvedTerrainCell {
@@ -69,6 +81,7 @@ fn water_row_terrain(width: u16) -> ResolvedTerrainGrid {
             is_rough: false,
             is_road: false,
             accepts_smudge: false,
+            allows_tiberium: false,
             has_ramp: false,
             canonical_ramp: None,
             ground_walk_blocked: false,
@@ -141,6 +154,7 @@ fn clear_beach_water_row_terrain() -> ResolvedTerrainGrid {
             is_rough: false,
             is_road: false,
             accepts_smudge: false,
+            allows_tiberium: false,
             has_ramp: false,
             canonical_ramp: None,
             ground_walk_blocked: false,
@@ -220,6 +234,7 @@ fn stock_low_bridge_auto_shell_terrain() -> ResolvedTerrainGrid {
             is_rough: false,
             is_road: false,
             accepts_smudge: false,
+            allows_tiberium: false,
             has_ramp: false,
             canonical_ramp: None,
             ground_walk_blocked: false,
@@ -273,6 +288,31 @@ fn single_open_area_one_zone() {
     }
     // No adjacency (only one zone).
     assert!(adj.neighbors_of(1).is_empty());
+}
+
+#[test]
+fn zone_grid_hierarchy_accessors_clear_on_mutation() {
+    let grid = PathGrid::new(1, 1);
+    let terrain_costs = BTreeMap::new();
+    let mut zg = ZoneGrid::build(&grid, &terrain_costs, 1, 1);
+
+    zg.set_hierarchy(MovementZone::Normal, tiny_hierarchy());
+    assert!(zg.hierarchy_for(MovementZone::Normal).is_some());
+
+    assert!(zg.map_mut(MovementZone::Normal).is_some());
+    assert!(zg.hierarchy_for(MovementZone::Normal).is_none());
+
+    zg.set_hierarchy(MovementZone::Normal, tiny_hierarchy());
+    assert!(zg.adjacency_mut(MovementZone::Normal).is_some());
+    assert!(zg.hierarchy_for(MovementZone::Normal).is_none());
+
+    zg.set_hierarchy(MovementZone::Normal, tiny_hierarchy());
+    let sz = super::zone_hierarchy::SuperZoneMap::from_adjacency(
+        zg.adjacency_for(MovementZone::Normal).unwrap(),
+        zg.map_for(MovementZone::Normal).unwrap().zone_count,
+    );
+    zg.set_super_zone(MovementZone::Normal, sz);
+    assert!(zg.hierarchy_for(MovementZone::Normal).is_none());
 }
 
 #[test]

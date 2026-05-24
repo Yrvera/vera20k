@@ -25,9 +25,15 @@ pub const COMBO_ARROW_X_FROM_RIGHT: i32 = 19;
 pub const COMBO_ARROW_Y: i32 = 1;
 pub const COMBO_TEXT_LEFT_INSET: i32 = 2;
 pub const COMBO_SWATCH_INSET: i32 = 2;
+pub const PLAYER_NAME_EDIT_CLIENT_INSET: i32 = 1;
+pub const PLAYER_NAME_EDIT_TEXT_LEFT_INSET: i32 = 2;
 pub const CHOOSE_MAP_MODAL_W: i32 = 533;
 pub const CHOOSE_MAP_MODAL_H: i32 = 369;
 pub const CHOOSE_MAP_LIST_ROW_H: i32 = 19;
+pub const CHOOSE_MAP_LISTBOX_ROW_H: i32 = CHOOSE_MAP_LIST_ROW_H;
+pub const CHOOSE_MAP_LISTBOX_SCROLLBAR_W: i32 = 20;
+pub const VALIDATION_MODAL_W: i32 = 451;
+pub const VALIDATION_MODAL_H: i32 = 326;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RectPx {
@@ -40,6 +46,15 @@ pub struct RectPx {
 impl RectPx {
     pub const fn new(x: i32, y: i32, w: i32, h: i32) -> Self {
         Self { x, y, w, h }
+    }
+
+    pub const fn translate(self, dx: i32, dy: i32) -> Self {
+        Self {
+            x: self.x + dx,
+            y: self.y + dy,
+            w: self.w,
+            h: self.h,
+        }
     }
 
     pub fn contains(self, x: i32, y: i32) -> bool {
@@ -123,6 +138,13 @@ pub struct SkirmishTrackbarRects {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkirmishTrackbarLabelRects {
+    pub game_speed: RectPx,
+    pub credits: RectPx,
+    pub unit_count: RectPx,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SkirmishColumnLabelRects {
     pub players: RectPx,
     pub side: RectPx,
@@ -154,7 +176,9 @@ pub struct SkirmishShellLayout {
     pub color_combos: [RectPx; 8],
     pub flags: [RectPx; 8],
     pub trackbars: SkirmishTrackbarRects,
+    pub trackbar_labels: SkirmishTrackbarLabelRects,
     pub checkboxes: [SkirmishCheckboxRect; SKIRMISH_CHECKBOX_COUNT],
+    pub status_help: RectPx,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,6 +186,12 @@ pub enum ChooseMapModalButton {
     UseMap0x6c5,
     Cancel0x5c0,
     CreateRandomMap0x583,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChooseMapListboxId {
+    Mode0x6eb,
+    Map0x553,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -174,7 +204,19 @@ pub struct ChooseMapModalLayout {
     pub cancel_button: RectPx,
     pub create_random_map_button: RectPx,
     pub title: RectPx,
+    pub select_engagement: RectPx,
+    pub game_type_heading: RectPx,
+    pub game_map_heading: RectPx,
+    pub status_help: RectPx,
     pub preview: RectPx,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidationModalLayout {
+    pub screen: RectPx,
+    pub dialog: RectPx,
+    pub message: RectPx,
+    pub ok_button: RectPx,
 }
 
 const BASE_X: i32 = 6;
@@ -206,6 +248,78 @@ const fn offset_rect_x(rect: RectPx, dx: i32) -> RectPx {
     RectPx::new(rect.x + dx, rect.y, rect.w, rect.h)
 }
 
+const fn translate_checkbox(rect: SkirmishCheckboxRect, dx: i32, dy: i32) -> SkirmishCheckboxRect {
+    SkirmishCheckboxRect {
+        id: rect.id,
+        rect: rect.rect.translate(dx, dy),
+    }
+}
+
+fn centered_fixed_shell_offset(screen_w: u32, screen_h: u32) -> (i32, i32) {
+    (
+        center_offset(screen_w as i32, SHELL_BASE_W),
+        center_offset(screen_h as i32, SHELL_BASE_H),
+    )
+}
+
+pub fn translate_layout(mut layout: SkirmishShellLayout, dx: i32, dy: i32) -> SkirmishShellLayout {
+    layout.screen = layout.screen.translate(dx, dy);
+    layout.right_panel.top = layout.right_panel.top.translate(dx, dy);
+    layout.right_panel.tile = layout.right_panel.tile.translate(dx, dy);
+    layout.right_panel.bottom = layout.right_panel.bottom.translate(dx, dy);
+    layout.right_panel_text.title = layout.right_panel_text.title.translate(dx, dy);
+    layout.right_panel_text.game_type = layout.right_panel_text.game_type.translate(dx, dy);
+    layout.right_panel_text.map_label = layout.right_panel_text.map_label.translate(dx, dy);
+    layout.start_button = layout.start_button.translate(dx, dy);
+    layout.choose_map_button = layout.choose_map_button.translate(dx, dy);
+    layout.back_button = layout.back_button.translate(dx, dy);
+    layout.map_preview = layout.map_preview.translate(dx, dy);
+    layout.column_labels.players = layout.column_labels.players.translate(dx, dy);
+    layout.column_labels.side = layout.column_labels.side.translate(dx, dy);
+    layout.column_labels.color = layout.column_labels.color.translate(dx, dy);
+    layout.column_labels.start = layout.column_labels.start.translate(dx, dy);
+    layout.column_labels.team = layout.column_labels.team.translate(dx, dy);
+    layout.player_name = layout.player_name.translate(dx, dy);
+    for rect in &mut layout.rows.ai_type_combos {
+        *rect = rect.translate(dx, dy);
+    }
+    for rect in &mut layout.rows.side_combos {
+        *rect = rect.translate(dx, dy);
+    }
+    for rect in &mut layout.rows.start_combos {
+        *rect = rect.translate(dx, dy);
+    }
+    for rect in &mut layout.rows.team_combos {
+        *rect = rect.translate(dx, dy);
+    }
+    for rect in &mut layout.color_combos {
+        *rect = rect.translate(dx, dy);
+    }
+    for rect in &mut layout.flags {
+        *rect = rect.translate(dx, dy);
+    }
+    layout.trackbars.game_speed = layout.trackbars.game_speed.translate(dx, dy);
+    layout.trackbars.credits = layout.trackbars.credits.translate(dx, dy);
+    layout.trackbars.unit_count = layout.trackbars.unit_count.translate(dx, dy);
+    layout.trackbar_labels.game_speed = layout.trackbar_labels.game_speed.translate(dx, dy);
+    layout.trackbar_labels.credits = layout.trackbar_labels.credits.translate(dx, dy);
+    layout.trackbar_labels.unit_count = layout.trackbar_labels.unit_count.translate(dx, dy);
+    for rect in &mut layout.checkboxes {
+        *rect = translate_checkbox(*rect, dx, dy);
+    }
+    layout.status_help = layout.status_help.translate(dx, dy);
+    layout
+}
+
+pub fn compute_fixed_800_layout(screen_w: u32, screen_h: u32) -> SkirmishShellLayout {
+    let (dx, dy) = centered_fixed_shell_offset(screen_w, screen_h);
+    translate_layout(
+        compute_layout(SHELL_BASE_W as u32, SHELL_BASE_H as u32),
+        dx,
+        dy,
+    )
+}
+
 pub const fn checkbox_icon_rect(rect: RectPx) -> RectPx {
     RectPx::new(rect.x, rect.y, CHECKBOX_ICON_W, CHECKBOX_ICON_H)
 }
@@ -216,6 +330,25 @@ pub const fn checkbox_text_rect(rect: RectPx) -> RectPx {
         rect.y,
         rect.w - CHECKBOX_TEXT_LEFT_OFFSET,
         rect.h,
+    )
+}
+
+pub const fn player_name_edit_client_rect(rect: RectPx) -> RectPx {
+    RectPx::new(
+        rect.x + PLAYER_NAME_EDIT_CLIENT_INSET,
+        rect.y + PLAYER_NAME_EDIT_CLIENT_INSET,
+        rect.w - PLAYER_NAME_EDIT_CLIENT_INSET * 2,
+        rect.h - PLAYER_NAME_EDIT_CLIENT_INSET * 2,
+    )
+}
+
+pub const fn player_name_edit_text_rect(rect: RectPx) -> RectPx {
+    let client = player_name_edit_client_rect(rect);
+    RectPx::new(
+        client.x + PLAYER_NAME_EDIT_TEXT_LEFT_INSET,
+        client.y,
+        client.w - PLAYER_NAME_EDIT_TEXT_LEFT_INSET,
+        client.h,
     )
 }
 
@@ -345,6 +478,12 @@ fn right_panel_rects(screen_w: i32, screen_h: i32) -> RightPanelRects {
         tile_count,
         bottom: RectPx::new(top.x, bottom_y, 168, bottom_h.max(0)),
     }
+}
+
+fn status_help_rect(screen_w: i32, screen_h: i32) -> RectPx {
+    let offset_x = center_offset(screen_w, SHELL_BASE_W);
+    let offset_y = center_offset(screen_h, SHELL_BASE_H);
+    RectPx::new(offset_x + 10, screen_h - offset_y - 21, 615, 20)
 }
 
 fn back_rect(screen_w: i32, panel: RightPanelRects) -> RectPx {
@@ -480,6 +619,11 @@ pub fn compute_layout(screen_w: u32, screen_h: u32) -> SkirmishShellLayout {
             credits: dlu_rect(269, 193, 85, 13),
             unit_count: unit_count_trackbar,
         },
+        trackbar_labels: SkirmishTrackbarLabelRects {
+            game_speed: RectPx::new(302, 286, 90, 16),
+            credits: RectPx::new(302, 314, 90, 16),
+            unit_count: RectPx::new(302, 341, 90, 16),
+        },
         checkboxes: [
             SkirmishCheckboxRect {
                 id: SkirmishCheckboxId::ShortGame0x54e,
@@ -502,6 +646,7 @@ pub fn compute_layout(screen_w: u32, screen_h: u32) -> SkirmishShellLayout {
                 rect: checkbox_dlu_rect(201, 227, 166, 11),
             },
         ],
+        status_help: status_help_rect(screen_w, screen_h),
     }
 }
 
@@ -515,12 +660,151 @@ pub fn compute_choose_map_modal_layout(screen_w: u32, screen_h: u32) -> ChooseMa
         dialog,
         mode_list: dialog_child(dialog, RectPx::new(77, 78, 130, 211)),
         map_list: dialog_child(dialog, RectPx::new(225, 78, 130, 211)),
-        use_map_button: dialog_child(dialog, RectPx::new(374, 80, 112, 30)),
-        cancel_button: dialog_child(dialog, RectPx::new(374, 116, 112, 30)),
-        create_random_map_button: dialog_child(dialog, RectPx::new(374, 152, 112, 30)),
-        title: dialog_child(dialog, RectPx::new(0, 20, CHOOSE_MAP_MODAL_W, 24)),
-        preview: dialog_child(dialog, RectPx::new(374, 202, 128, 96)),
+        use_map_button: dialog_child(dialog, RectPx::new(425, 122, 108, 23)),
+        cancel_button: dialog_child(dialog, RectPx::new(425, 346, 108, 23)),
+        create_random_map_button: dialog_child(dialog, RectPx::new(425, 149, 108, 23)),
+        title: dialog_child(dialog, RectPx::new(425, 1, 108, 10)),
+        select_engagement: dialog_child(dialog, RectPx::new(80, 20, 257, 12)),
+        game_type_heading: dialog_child(dialog, RectPx::new(77, 60, 130, 10)),
+        game_map_heading: dialog_child(dialog, RectPx::new(225, 60, 130, 10)),
+        status_help: dialog_child(dialog, RectPx::new(2, 355, 303, 12)),
+        preview: dialog_child(dialog, RectPx::new(428, 23, 96, 69)),
     }
+}
+
+pub fn translate_choose_map_modal_layout(
+    mut layout: ChooseMapModalLayout,
+    dx: i32,
+    dy: i32,
+) -> ChooseMapModalLayout {
+    layout.screen = layout.screen.translate(dx, dy);
+    layout.dialog = layout.dialog.translate(dx, dy);
+    layout.mode_list = layout.mode_list.translate(dx, dy);
+    layout.map_list = layout.map_list.translate(dx, dy);
+    layout.use_map_button = layout.use_map_button.translate(dx, dy);
+    layout.cancel_button = layout.cancel_button.translate(dx, dy);
+    layout.create_random_map_button = layout.create_random_map_button.translate(dx, dy);
+    layout.title = layout.title.translate(dx, dy);
+    layout.select_engagement = layout.select_engagement.translate(dx, dy);
+    layout.game_type_heading = layout.game_type_heading.translate(dx, dy);
+    layout.game_map_heading = layout.game_map_heading.translate(dx, dy);
+    layout.status_help = layout.status_help.translate(dx, dy);
+    layout.preview = layout.preview.translate(dx, dy);
+    layout
+}
+
+pub fn compute_fixed_800_choose_map_modal_layout(
+    screen_w: u32,
+    screen_h: u32,
+) -> ChooseMapModalLayout {
+    let (dx, dy) = centered_fixed_shell_offset(screen_w, screen_h);
+    translate_choose_map_modal_layout(
+        compute_choose_map_modal_layout(SHELL_BASE_W as u32, SHELL_BASE_H as u32),
+        dx,
+        dy,
+    )
+}
+
+pub const fn choose_map_listbox_rect(
+    layout: &ChooseMapModalLayout,
+    id: ChooseMapListboxId,
+) -> RectPx {
+    match id {
+        ChooseMapListboxId::Mode0x6eb => layout.mode_list,
+        ChooseMapListboxId::Map0x553 => layout.map_list,
+    }
+}
+
+pub fn choose_map_listbox_visible_row_count(rect: RectPx) -> usize {
+    (rect.h / CHOOSE_MAP_LISTBOX_ROW_H).max(0) as usize
+}
+
+pub fn choose_map_listbox_needs_scrollbar(row_count: usize, rect: RectPx) -> bool {
+    row_count > choose_map_listbox_visible_row_count(rect)
+}
+
+pub fn choose_map_listbox_scrollbar_rect(row_count: usize, rect: RectPx) -> Option<RectPx> {
+    if !choose_map_listbox_needs_scrollbar(row_count, rect) {
+        return None;
+    }
+    Some(RectPx::new(
+        rect.x + rect.w - CHOOSE_MAP_LISTBOX_SCROLLBAR_W,
+        rect.y,
+        CHOOSE_MAP_LISTBOX_SCROLLBAR_W,
+        rect.h,
+    ))
+}
+
+pub fn choose_map_listbox_content_rect(row_count: usize, rect: RectPx) -> RectPx {
+    let scrollbar_w = if choose_map_listbox_needs_scrollbar(row_count, rect) {
+        CHOOSE_MAP_LISTBOX_SCROLLBAR_W
+    } else {
+        0
+    };
+    RectPx::new(rect.x, rect.y, (rect.w - scrollbar_w).max(0), rect.h)
+}
+
+pub fn choose_map_listbox_row_rect(content: RectPx, visible_row: usize) -> RectPx {
+    let y = content.y + visible_row as i32 * CHOOSE_MAP_LISTBOX_ROW_H;
+    RectPx::new(
+        content.x,
+        y,
+        content.w,
+        CHOOSE_MAP_LISTBOX_ROW_H
+            .min(content.y + content.h - y)
+            .max(0),
+    )
+}
+
+pub fn choose_map_listbox_max_top_index(row_count: usize, rect: RectPx) -> usize {
+    row_count.saturating_sub(choose_map_listbox_visible_row_count(rect))
+}
+
+pub fn choose_map_listbox_scroll_thumb_rect(
+    row_count: usize,
+    top_index: usize,
+    rect: RectPx,
+) -> Option<RectPx> {
+    let scrollbar = choose_map_listbox_scrollbar_rect(row_count, rect)?;
+    let visible_rows = choose_map_listbox_visible_row_count(rect);
+    if row_count == 0 || visible_rows == 0 {
+        return None;
+    }
+    let track_h = (scrollbar.h - COMBO_DROPDOWN_SCROLLBAR_BUTTON_H * 2).max(1);
+    let thumb_h = ((track_h * visible_rows as i32) / row_count as i32)
+        .max(COMBO_DROPDOWN_SCROLLBAR_MIN_THUMB_H)
+        .min(track_h);
+    let max_top = choose_map_listbox_max_top_index(row_count, rect);
+    let track_span = (track_h - thumb_h).max(1);
+    let thumb_y = scrollbar.y
+        + COMBO_DROPDOWN_SCROLLBAR_BUTTON_H
+        + if max_top == 0 {
+            0
+        } else {
+            (track_span * top_index.min(max_top) as i32) / max_top as i32
+        };
+    Some(RectPx::new(scrollbar.x, thumb_y, scrollbar.w, thumb_h))
+}
+
+pub fn choose_map_listbox_top_index_from_track_click(
+    row_count: usize,
+    top_index: usize,
+    rect: RectPx,
+    mouse_y: i32,
+) -> Option<usize> {
+    let scrollbar = choose_map_listbox_scrollbar_rect(row_count, rect)?;
+    let thumb = choose_map_listbox_scroll_thumb_rect(row_count, top_index, rect)?;
+    let max_top = choose_map_listbox_max_top_index(row_count, rect);
+    if max_top == 0 {
+        return Some(0);
+    }
+    let track_span = (scrollbar.h - COMBO_DROPDOWN_SCROLLBAR_BUTTON_H * 2 - thumb.h).max(1);
+    let thumb_top = (mouse_y - thumb.h / 2).clamp(
+        scrollbar.y + COMBO_DROPDOWN_SCROLLBAR_BUTTON_H,
+        scrollbar.y + scrollbar.h - COMBO_DROPDOWN_SCROLLBAR_BUTTON_H - thumb.h,
+    );
+    let local = thumb_top - scrollbar.y - COMBO_DROPDOWN_SCROLLBAR_BUTTON_H;
+    Some(((local * max_top as i32 + track_span / 2) / track_span) as usize)
 }
 
 pub fn choose_map_modal_button_at(
@@ -544,17 +828,51 @@ pub fn choose_map_modal_list_row_at(list: RectPx, x: i32, y: i32) -> Option<usiz
     if !list.contains(x, y) {
         return None;
     }
-    Some(((y - list.y) / CHOOSE_MAP_LIST_ROW_H) as usize)
+    Some(((y - list.y) / CHOOSE_MAP_LISTBOX_ROW_H) as usize)
+}
+
+pub fn choose_map_listbox_row_at(
+    list: RectPx,
+    row_count: usize,
+    top_index: usize,
+    x: i32,
+    y: i32,
+) -> Option<usize> {
+    let content = choose_map_listbox_content_rect(row_count, list);
+    if !content.contains(x, y) {
+        return None;
+    }
+    let idx = top_index + ((y - content.y) / CHOOSE_MAP_LISTBOX_ROW_H) as usize;
+    (idx < row_count).then_some(idx)
+}
+
+pub fn compute_validation_modal_layout(screen_w: u32, screen_h: u32) -> ValidationModalLayout {
+    let screen_w = screen_w as i32;
+    let screen_h = screen_h as i32;
+    let dialog = centered_shell_dialog(screen_w, screen_h, VALIDATION_MODAL_W, VALIDATION_MODAL_H);
+
+    ValidationModalLayout {
+        screen: RectPx::new(0, 0, screen_w, screen_h),
+        dialog,
+        message: dialog_child(dialog, dlu_rect(40, 40, 220, 50)),
+        ok_button: dialog_child(dialog, dlu_rect(207, 175, 83, 15)),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        CHOOSE_MAP_LIST_ROW_H, ChooseMapModalButton, RectPx, SkirmishCheckboxId,
-        checkbox_icon_rect, checkbox_text_rect, choose_map_modal_button_at,
+        CHOOSE_MAP_LIST_ROW_H, COMBO_DROPDOWN_SCROLLBAR_BUTTON_H, ChooseMapModalButton, RectPx,
+        SkirmishCheckboxId, checkbox_icon_rect, checkbox_text_rect,
+        choose_map_listbox_content_rect, choose_map_listbox_row_at,
+        choose_map_listbox_scroll_thumb_rect, choose_map_listbox_scrollbar_rect,
+        choose_map_listbox_top_index_from_track_click, choose_map_modal_button_at,
         choose_map_modal_list_row_at, combo_arrow_rect, combo_face_rect, combo_swatch_rect,
-        combo_text_rect, compute_choose_map_modal_layout, compute_layout, trackbar_active_width,
-        trackbar_pixel_offset, trackbar_plaque_rect, trackbar_thumb_rect, trackbar_value_text_rect,
+        combo_text_rect, compute_choose_map_modal_layout,
+        compute_fixed_800_choose_map_modal_layout, compute_fixed_800_layout, compute_layout,
+        compute_validation_modal_layout, player_name_edit_client_rect, player_name_edit_text_rect,
+        trackbar_active_width, trackbar_pixel_offset, trackbar_plaque_rect, trackbar_thumb_rect,
+        trackbar_value_text_rect,
     };
 
     struct ExpectedRect {
@@ -570,6 +888,32 @@ mod tests {
         assert_eq!(layout.choose_map_button, RectPx::new(644, 283, 156, 42));
         assert_eq!(layout.map_preview, RectPx::new(644, 37, 144, 112));
         assert_eq!(layout.back_button, RectPx::new(644, 535, 156, 42));
+    }
+
+    #[test]
+    fn fixed_800_layout_centers_native_shell_without_rescaling() {
+        let layout = compute_fixed_800_layout(1024, 768);
+
+        assert_eq!(layout.screen, RectPx::new(112, 84, 800, 600));
+        assert_eq!(layout.start_button, RectPx::new(756, 325, 156, 42));
+        assert_eq!(layout.choose_map_button, RectPx::new(756, 367, 156, 42));
+        assert_eq!(layout.map_preview, RectPx::new(756, 121, 144, 112));
+        assert_eq!(layout.back_button, RectPx::new(756, 619, 156, 42));
+        assert_eq!(layout.column_labels.players, RectPx::new(171, 118, 146, 16));
+        assert_eq!(
+            layout.rows.ai_type_combos[0],
+            RectPx::new(171, 169, 150, 120)
+        );
+    }
+
+    #[test]
+    fn fixed_800_choose_map_modal_centers_inside_fixed_shell() {
+        let layout = compute_fixed_800_choose_map_modal_layout(1024, 768);
+
+        assert_eq!(layout.screen, RectPx::new(112, 84, 800, 600));
+        assert_eq!(layout.dialog, RectPx::new(245, 199, 533, 369));
+        assert_eq!(layout.mode_list, RectPx::new(322, 277, 130, 211));
+        assert_eq!(layout.map_list, RectPx::new(470, 277, 130, 211));
     }
 
     #[test]
@@ -635,6 +979,19 @@ mod tests {
     }
 
     #[test]
+    fn player_name_edit_text_rect_uses_verified_client_and_text_insets() {
+        let layout = compute_layout(800, 600);
+        assert_eq!(
+            player_name_edit_client_rect(layout.player_name),
+            RectPx::new(59, 60, 149, 21)
+        );
+        assert_eq!(
+            player_name_edit_text_rect(layout.player_name),
+            RectPx::new(61, 60, 147, 21)
+        );
+    }
+
+    #[test]
     fn color_combos_and_flags_do_not_right_anchor() {
         let layout_800 = compute_layout(800, 600);
         let layout_1024 = compute_layout(1024, 768);
@@ -682,6 +1039,44 @@ mod tests {
         assert_eq!(
             trackbar_plaque_rect(layout.trackbars.unit_count),
             RectPx::new(483, 339, 50, 21)
+        );
+    }
+
+    #[test]
+    fn option_label_static_rects_preserve_resource_positions() {
+        for layout in [
+            compute_layout(640, 480),
+            compute_layout(800, 600),
+            compute_layout(1024, 768),
+        ] {
+            assert_eq!(
+                layout.trackbar_labels.game_speed,
+                RectPx::new(302, 286, 90, 16)
+            );
+            assert_eq!(
+                layout.trackbar_labels.credits,
+                RectPx::new(302, 314, 90, 16)
+            );
+            assert_eq!(
+                layout.trackbar_labels.unit_count,
+                RectPx::new(302, 341, 90, 16)
+            );
+        }
+    }
+
+    #[test]
+    fn status_help_strip_0x695_bottom_left_rects() {
+        assert_eq!(
+            compute_layout(640, 480).status_help,
+            RectPx::new(10, 459, 615, 20)
+        );
+        assert_eq!(
+            compute_layout(800, 600).status_help,
+            RectPx::new(10, 579, 615, 20)
+        );
+        assert_eq!(
+            compute_layout(1024, 768).status_help,
+            RectPx::new(122, 663, 615, 20)
         );
     }
 
@@ -827,6 +1222,18 @@ mod tests {
         assert_eq!(layout.dialog, RectPx::new(133, 115, 533, 369));
         assert_eq!(layout.mode_list, RectPx::new(210, 193, 130, 211));
         assert_eq!(layout.map_list, RectPx::new(358, 193, 130, 211));
+        assert_eq!(layout.use_map_button, RectPx::new(558, 237, 108, 23));
+        assert_eq!(
+            layout.create_random_map_button,
+            RectPx::new(558, 264, 108, 23)
+        );
+        assert_eq!(layout.cancel_button, RectPx::new(558, 461, 108, 23));
+        assert_eq!(layout.title, RectPx::new(558, 116, 108, 10));
+        assert_eq!(layout.select_engagement, RectPx::new(213, 135, 257, 12));
+        assert_eq!(layout.game_type_heading, RectPx::new(210, 175, 130, 10));
+        assert_eq!(layout.game_map_heading, RectPx::new(358, 175, 130, 10));
+        assert_eq!(layout.status_help, RectPx::new(135, 470, 303, 12));
+        assert_eq!(layout.preview, RectPx::new(561, 138, 96, 69));
     }
 
     #[test]
@@ -837,6 +1244,15 @@ mod tests {
         assert_eq!(layout.dialog, RectPx::new(245, 199, 533, 369));
         assert_eq!(layout.mode_list, RectPx::new(322, 277, 130, 211));
         assert_eq!(layout.map_list, RectPx::new(470, 277, 130, 211));
+    }
+
+    #[test]
+    fn validation_modal_layout_centers_ok_button() {
+        let layout = compute_validation_modal_layout(800, 600);
+
+        assert_eq!(layout.dialog, RectPx::new(174, 137, 451, 326));
+        assert_eq!(layout.message, RectPx::new(234, 202, 330, 81));
+        assert_eq!(layout.ok_button, RectPx::new(485, 421, 125, 24));
     }
 
     #[test]
@@ -861,6 +1277,18 @@ mod tests {
         );
         assert_eq!(
             choose_map_modal_button_at(&layout, layout.dialog.x, layout.dialog.y),
+            None
+        );
+        assert_eq!(
+            choose_map_modal_button_at(&layout, layout.dialog.x + 374, layout.dialog.y + 80),
+            None
+        );
+        assert_eq!(
+            choose_map_modal_button_at(&layout, layout.dialog.x + 374, layout.dialog.y + 116),
+            None
+        );
+        assert_eq!(
+            choose_map_modal_button_at(&layout, layout.dialog.x + 374, layout.dialog.y + 152),
             None
         );
     }
@@ -888,6 +1316,55 @@ mod tests {
                 layout.map_list.y + layout.map_list.h
             ),
             None
+        );
+    }
+
+    #[test]
+    fn choose_map_modal_listbox_hit_testing_reserves_scrollbar_width() {
+        let layout = compute_choose_map_modal_layout(800, 600);
+        let rows = 20;
+        let scrollbar = choose_map_listbox_scrollbar_rect(rows, layout.map_list).unwrap();
+        let content = choose_map_listbox_content_rect(rows, layout.map_list);
+
+        assert_eq!(scrollbar, RectPx::new(468, 193, 20, 211));
+        assert_eq!(content, RectPx::new(358, 193, 110, 211));
+        assert_eq!(
+            choose_map_listbox_row_at(layout.map_list, rows, 5, content.x + 2, content.y),
+            Some(5)
+        );
+        assert_eq!(
+            choose_map_listbox_row_at(layout.map_list, rows, 5, scrollbar.x, scrollbar.y),
+            None
+        );
+    }
+
+    #[test]
+    fn choose_map_modal_scrollbar_thumb_and_track_map_to_top_index() {
+        let layout = compute_choose_map_modal_layout(800, 600);
+        let rows = 20;
+        let scrollbar = choose_map_listbox_scrollbar_rect(rows, layout.map_list).unwrap();
+        let thumb = choose_map_listbox_scroll_thumb_rect(rows, 3, layout.map_list).unwrap();
+
+        assert_eq!(thumb.w, scrollbar.w);
+        assert!(thumb.y >= scrollbar.y + COMBO_DROPDOWN_SCROLLBAR_BUTTON_H);
+        assert!(thumb.y + thumb.h <= scrollbar.y + scrollbar.h - COMBO_DROPDOWN_SCROLLBAR_BUTTON_H);
+        assert_eq!(
+            choose_map_listbox_top_index_from_track_click(
+                rows,
+                0,
+                layout.map_list,
+                scrollbar.y + COMBO_DROPDOWN_SCROLLBAR_BUTTON_H
+            ),
+            Some(0)
+        );
+        assert_eq!(
+            choose_map_listbox_top_index_from_track_click(
+                rows,
+                0,
+                layout.map_list,
+                scrollbar.y + scrollbar.h - COMBO_DROPDOWN_SCROLLBAR_BUTTON_H - 1
+            ),
+            Some(9)
         );
     }
 }

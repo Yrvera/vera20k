@@ -56,6 +56,7 @@ fn dummy_resolved_terrain() -> ResolvedTerrainGrid {
                 is_rough: false,
                 is_road: false,
                 accepts_smudge: false,
+                allows_tiberium: false,
                 has_ramp: false,
                 canonical_ramp: None,
                 ground_walk_blocked: false,
@@ -502,10 +503,10 @@ fn advance_until_c4_claim(
 #[test]
 fn engineer_enters_cabhut_repairs_bridge() {
     let (mut sim, rules, heights) = build_sim();
-    // Engineer adjacent (Chebyshev-1) to a CABHUT at (9, 10). Bridge cells
-    // sit at (10, 9..=13) — the engineer's 5×5 scan covers all of them.
+    // Engineer has arrived in the CABHUT cell; the PerCellProcess-style
+    // arrival branch should repair the nearby bridge strip.
     let cabhut = spawn_cabhut(&mut sim, 9, 10);
-    let engineer = spawn_engineer(&mut sim, 10, 10);
+    let engineer = spawn_engineer(&mut sim, 9, 10);
     sim.entities.get_mut(engineer).unwrap().capture_target = Some(cabhut);
     seed_destroyed_bridge(&mut sim);
 
@@ -546,7 +547,7 @@ fn engineer_enters_cabhut_repairs_bridge() {
 fn engineer_at_intact_cabhut_emits_sound_no_mutation() {
     let (mut sim, rules, heights) = build_sim();
     let cabhut = spawn_cabhut(&mut sim, 9, 10);
-    let engineer = spawn_engineer(&mut sim, 10, 10);
+    let engineer = spawn_engineer(&mut sim, 9, 10);
     sim.entities.get_mut(engineer).unwrap().capture_target = Some(cabhut);
     seed_bridge_with_state(&mut sim, DamageState::Healthy { variant: 0 });
 
@@ -572,8 +573,8 @@ fn engineer_at_intact_cabhut_emits_sound_no_mutation() {
 fn consecutive_engineers_second_bridge_repair_waits_for_next_tick() {
     let (mut sim, rules, heights) = build_sim();
     let cabhut = spawn_cabhut(&mut sim, 9, 10);
-    let engineer_a = spawn_engineer(&mut sim, 10, 10);
-    let engineer_b = spawn_engineer(&mut sim, 10, 11);
+    let engineer_a = spawn_engineer(&mut sim, 9, 10);
+    let engineer_b = spawn_engineer(&mut sim, 9, 10);
     sim.entities.get_mut(engineer_a).unwrap().capture_target = Some(cabhut);
     sim.entities.get_mut(engineer_b).unwrap().capture_target = Some(cabhut);
     seed_destroyed_bridge(&mut sim);
@@ -627,9 +628,9 @@ fn consecutive_engineers_second_bridge_repair_waits_for_next_tick() {
 fn nonconsecutive_engineers_both_repair_same_tick_with_radar_eva_gate() {
     let (mut sim, rules, heights) = build_sim();
     let cabhut = spawn_cabhut(&mut sim, 9, 10);
-    let engineer_a = spawn_engineer(&mut sim, 10, 10);
+    let engineer_a = spawn_engineer(&mut sim, 9, 10);
     let blocker = spawn_seal(&mut sim, 8, 8);
-    let engineer_b = spawn_engineer(&mut sim, 10, 11);
+    let engineer_b = spawn_engineer(&mut sim, 9, 10);
     sim.entities.get_mut(engineer_a).unwrap().capture_target = Some(cabhut);
     sim.entities.get_mut(engineer_b).unwrap().capture_target = Some(cabhut);
     seed_destroyed_bridge(&mut sim);
@@ -664,7 +665,7 @@ fn nonconsecutive_engineers_both_repair_same_tick_with_radar_eva_gate() {
 fn capture_building_command_accepts_noncapturable_bridge_repair_hut() {
     let (mut sim, rules, heights) = build_sim();
     let cabhut = spawn_cabhut(&mut sim, 9, 10);
-    let engineer = spawn_engineer(&mut sim, 10, 10);
+    let engineer = spawn_engineer(&mut sim, 9, 10);
 
     let accepted = sim.apply_command(
         "Americans",
@@ -685,7 +686,7 @@ fn capture_building_command_accepts_noncapturable_bridge_repair_hut() {
 }
 
 #[test]
-fn engineer_bridge_repair_scan_uses_hut_cell_not_engineer_cell() {
+fn engineer_adjacent_to_cabhut_enters_before_repairing_and_dirtying_minimap() {
     let (mut sim, rules, heights) = build_sim();
     let cabhut = spawn_cabhut(&mut sim, 8, 10);
     let engineer = spawn_engineer(&mut sim, 7, 10);
@@ -695,9 +696,59 @@ fn engineer_bridge_repair_scan_uses_hut_cell_not_engineer_cell() {
     let result = step(&mut sim, &rules, &heights);
 
     assert!(
-        result.bridge_state_changed,
-        "hut-cell 5x5 scan should reach bridge cells that engineer-cell scan misses"
+        !result.bridge_state_changed,
+        "adjacent engineer must not repair until the enter-cell arrival branch"
     );
+    assert!(sim.entities.get(engineer).is_some());
+    assert!(
+        sim.sound_events
+            .iter()
+            .all(|event| !matches!(event, SimSoundEvent::BridgeRepaired { .. })),
+        "adjacency alone must not emit BridgeRepaired"
+    );
+    assert!(
+        sim.radar_terrain_dirty_cells.is_empty(),
+        "adjacency alone must not dirty minimap terrain"
+    );
+    assert_eq!(sim.radar_terrain_dirty_generation, 0);
+    assert_eq!(
+        sim.entities
+            .get(engineer)
+            .and_then(|e| e.movement_target.as_ref())
+            .map(|m| m.path.clone()),
+        Some(vec![(7, 10), (8, 10)]),
+        "adjacency should issue the scripted one-cell building-entry move"
+    );
+
+    let mut repaired = false;
+    for _ in 0..40 {
+        let result = step(&mut sim, &rules, &heights);
+        repaired |= result.bridge_state_changed;
+        if sim.entities.get(engineer).is_none() {
+            break;
+        }
+    }
+
+    assert!(
+        repaired,
+        "repair must fire after the engineer arrives in CABHUT"
+    );
+    assert!(
+        sim.entities.get(engineer).is_none(),
+        "engineer must be consumed by the arrival branch"
+    );
+    assert!(
+        sim.sound_events
+            .iter()
+            .any(|event| matches!(event, SimSoundEvent::BridgeRepaired { .. })),
+        "arrival repair must emit BridgeRepaired"
+    );
+    assert!(
+        !sim.radar_terrain_dirty_cells.is_empty(),
+        "destroyed-anchor repair must dirty radar/minimap terrain cells"
+    );
+    assert_eq!(sim.radar_terrain_dirty_generation, 1);
+
     let bs = sim.bridge_state.as_ref().unwrap();
     assert!((0xCD..=0xD0).contains(&bs.cell(10, 9).unwrap().overlay_byte));
     assert!(bs.is_bridge_walkable(10, 9));
@@ -707,7 +758,7 @@ fn engineer_bridge_repair_scan_uses_hut_cell_not_engineer_cell() {
 fn engineer_far_from_bridge_at_cabhut_no_mutation() {
     let (mut sim, rules, heights) = build_sim();
     let cabhut = spawn_cabhut(&mut sim, 9, 10);
-    let engineer = spawn_engineer(&mut sim, 10, 10);
+    let engineer = spawn_engineer(&mut sim, 9, 10);
     sim.entities.get_mut(engineer).unwrap().capture_target = Some(cabhut);
     // Empty bridge state — scan finds nothing.
     sim.bridge_state = Some(BridgeRuntimeState::default());
@@ -1173,6 +1224,7 @@ fn damaged_data_resolved_terrain(tile_id: i32) -> ResolvedTerrainGrid {
                 is_rough: false,
                 is_road: false,
                 accepts_smudge: false,
+                allows_tiberium: false,
                 has_ramp: false,
                 canonical_ramp: None,
                 ground_walk_blocked: false,
@@ -1309,7 +1361,7 @@ fn g4_repair_clears_damaged_variant_on_repaired_cells() {
     // actually fire (has_damaged_data=true).
     sim.resolved_terrain = Some(damaged_data_resolved_terrain(42));
     let cabhut = spawn_cabhut(&mut sim, 9, 10);
-    let engineer = spawn_engineer(&mut sim, 10, 10);
+    let engineer = spawn_engineer(&mut sim, 9, 10);
     sim.entities.get_mut(engineer).unwrap().capture_target = Some(cabhut);
     seed_destroyed_bridge(&mut sim);
     // Pre-flag every bridge cell as damaged-variant.
@@ -1336,7 +1388,7 @@ fn g4_repair_flood_fill_propagates_clear_to_same_tile_id_bridge_neighbor() {
     let (mut sim, rules, heights) = build_sim();
     sim.resolved_terrain = Some(damaged_data_resolved_terrain(42));
     let cabhut = spawn_cabhut(&mut sim, 9, 10);
-    let engineer = spawn_engineer(&mut sim, 10, 10);
+    let engineer = spawn_engineer(&mut sim, 9, 10);
     sim.entities.get_mut(engineer).unwrap().capture_target = Some(cabhut);
     seed_destroyed_bridge(&mut sim);
 
@@ -1427,6 +1479,7 @@ fn build_ns_bridge_with_bridgehead_for_dispatch() -> (
                 is_rough: false,
                 is_road: false,
                 accepts_smudge: false,
+                allows_tiberium: false,
                 has_ramp: false,
                 canonical_ramp: None,
                 ground_walk_blocked: false,
@@ -1536,12 +1589,11 @@ fn build_ns_bridge_with_bridgehead_for_dispatch() -> (
     (resolved, bs)
 }
 
-/// Integration test: firing repeated IonCannon damage at a bridgehead
-/// must not collapse the bridge. The orchestrator routes through
-/// `bridgehead_advance_state`, which writes Damaged to the anchor's
-/// tile-class field without touching the bridgehead's own damage_state.
+/// Integration test: IonCannon damage at a high bridgehead retries the
+/// state-machine path while the first call returns false, so the same event
+/// reaches slot `+3` collapse on the second attempt.
 #[test]
-fn ramp_fire_does_not_collapse_high_bridge() {
+fn ramp_fire_collapses_high_bridgehead_on_ion_retry() {
     use crate::sim::bridge_state::{BridgeDamageEvent, BridgeheadAnchorClass};
     let mut sim = Simulation::new();
     let (resolved, bs) = build_ns_bridge_with_bridgehead_for_dispatch();
@@ -1566,10 +1618,10 @@ fn ramp_fire_does_not_collapse_high_bridge() {
                 impact_z: 4,
             }],
         );
-        // No collapse → no path-grid refresh signal.
+        // Slot +3 collapse signals a path-grid refresh.
         assert!(
-            !state_changed,
-            "bridgehead direct damage must not signal state_changed (no collapse)",
+            state_changed,
+            "high bridgehead direct damage must signal state_changed after slot +3 collapse",
         );
     }
 
@@ -1580,19 +1632,21 @@ fn ramp_fire_does_not_collapse_high_bridge() {
         post_bridgehead.damage_state, pre_bridgehead.damage_state,
         "bridgehead damage_state must not change on direct fire",
     );
-    // Anchor's bridgehead_anchor_class = AboutToFall (idempotent across
-    // hits). Matches the reference engine's first-hit anchor-tile write
-    // target — the most-damaged variant, 4th enum slot.
+    // Anchor's bridgehead_anchor_class stays at the most-damaged variant.
     assert_eq!(
         bs.cell(2, 2).unwrap().bridgehead_anchor_class,
         BridgeheadAnchorClass::AboutToFall,
-        "anchor tile-class must transition to AboutToFall on first hit",
+        "anchor tile-class remains the most-damaged bridgehead slot",
     );
-    // Neither bridgehead nor anchor entered Destroyed.
-    for cell in [bs.cell(2, 4).unwrap(), bs.cell(2, 2).unwrap()] {
-        assert!(
-            !matches!(cell.damage_state, DamageState::Destroyed),
-            "no Destroyed cell from sustained bridgehead direct fire",
-        );
-    }
+    assert!(
+        matches!(bs.cell(2, 2).unwrap().damage_state, DamageState::Destroyed),
+        "anchor row receives bridgehead slot +3 BlowUpBridge collapse",
+    );
+    assert!(
+        matches!(
+            bs.cell(2, 4).unwrap().damage_state,
+            DamageState::Healthy { .. }
+        ),
+        "hit bridgehead cell itself is not the collapsed row",
+    );
 }

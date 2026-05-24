@@ -145,7 +145,7 @@ fn smudge_grid_survives_snapshot_roundtrip() {
     advance_n(&mut sim_orig, 25);
 
     let hash_at_save = sim_orig.state_hash();
-    let bytes = GameSnapshot::save(&sim_orig, 0, 0, "smudge_roundtrip_test");
+    let bytes = GameSnapshot::save(&sim_orig, 0, 0, "smudge_roundtrip_test", 0);
     let snap = GameSnapshot::load(&bytes).expect("snapshot load must succeed");
     let mut sim_restored = snap.sim;
 

@@ -15,7 +15,7 @@
 //! - Part of render/ — depends on assets/ (VxlFile, HvaFile, VplFile).
 //! - Uses glam for vector/matrix math.
 
-use glam::{Mat4, Vec3, Vec4};
+use glam::{Mat4, Quat, Vec3, Vec4};
 
 use crate::assets::hva_file::HvaFile;
 use crate::assets::vpl_file::VplFile;
@@ -55,6 +55,18 @@ const EDGE_TILT_RAD: f32 = 0.521_476_7;
 /// diagonal) — that's what distinguishes corner from edge ramps.
 const CORNER_TILT_RAD: f32 = 0.385_882_7;
 
+/// Render-only blend between two gamemd slope matrix table entries.
+///
+/// gamemd's `VXL_InterpolatedFacing` path interpolates slope orientation through
+/// quaternion SLERP and converts the result back to a matrix before composition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VxlSlopeBlend {
+    pub from_slope: u8,
+    pub to_slope: u8,
+    pub phase_num: u8,
+    pub phase_den: u8,
+}
+
 /// Configuration for rendering a single VXL model frame.
 #[derive(Debug, Clone)]
 pub struct VxlRenderParams {
@@ -68,6 +80,9 @@ pub struct VxlRenderParams {
     /// tilt at NW/NE/SE/SW. Slopes 17-20 are unpopulated in gamemd (BSS-zero
     /// matrix); the consumer clamps them to 0 before this field is set.
     pub slope_type: u8,
+    /// Optional 3-frame slope transition. When present, this replaces
+    /// `slope_type` with an interpolated slope orientation.
+    pub slope_blend: Option<VxlSlopeBlend>,
     /// Pixel scale factor. Higher = larger sprite. Default: 1.045.
     /// TS default is CellSizeX=48; RA2 uses CellSizeX=60. Base scale = 60/48
     /// = 1.25, reduced by 16.4% (1.25 * 0.836 = 1.045) to match original RA2
@@ -94,6 +109,7 @@ impl Default for VxlRenderParams {
             frame: 0,
             facing: 0,
             slope_type: 0,
+            slope_blend: None,
             scale: 1.045,
             ambient: 0.6,
             diffuse: 0.4,
@@ -293,6 +309,23 @@ fn compute_slope_rotation(slope_type: u8) -> Mat4 {
         * Mat4::from_rotation_z(-compass_rad)
 }
 
+fn compute_slope_blend_rotation(blend: VxlSlopeBlend) -> Mat4 {
+    let den = blend.phase_den.max(1) as f32;
+    let t = (blend.phase_num as f32 / den).clamp(0.0, 1.0);
+    if t <= 0.0 || blend.from_slope == blend.to_slope {
+        return compute_slope_rotation(blend.from_slope);
+    }
+    if t >= 1.0 {
+        return compute_slope_rotation(blend.to_slope);
+    }
+
+    let from_mat = compute_slope_rotation(blend.from_slope);
+    let to_mat = compute_slope_rotation(blend.to_slope);
+    let from_quat = Quat::from_mat4(&from_mat).normalize();
+    let to_quat = Quat::from_mat4(&to_mat).normalize();
+    Mat4::from_quat(from_quat.slerp(to_quat, t).normalize())
+}
+
 /// Precompute per-limb transforms, voxel grids, lighting pages, and footprints.
 ///
 /// This is Phase 1 of the VXL render pipeline. It builds the combined
@@ -307,9 +340,13 @@ pub fn prepare_limb_data(
     let facing_rad: f32 = (params.facing as f32) / 256.0 * std::f32::consts::TAU;
     let scale: f32 = params.scale;
 
-    // World rotation matching YR: RotZ(45° - facing) then RotX(-60°).
-    let rotate_to_world: Mat4 = Mat4::from_rotation_x(-CAMERA_PITCH_DEG.to_radians())
-        * Mat4::from_rotation_z(WORLD_YAW_OFFSET_DEG.to_radians() - facing_rad);
+    // gamemd's simple DriveLocomotion Draw_Matrix path builds
+    // `slope_matrix * facing_rotation`, then TechnoClass::Render applies the
+    // camera/view matrix outside that result. Keep facing separate so terrain
+    // slope remains world/cell-oriented instead of rotating with the unit body.
+    let camera_view: Mat4 = Mat4::from_rotation_x(-CAMERA_PITCH_DEG.to_radians())
+        * Mat4::from_rotation_z(WORLD_YAW_OFFSET_DEG.to_radians());
+    let body_facing: Mat4 = Mat4::from_rotation_z(-facing_rad);
 
     let mut limb_data: Vec<LimbRenderData> = Vec::new();
     let mut max_footprint: f32 = 1.0;
@@ -351,8 +388,11 @@ pub fn prepare_limb_data(
         };
 
         let section_transform: Mat4 = section_translate * bone_mat * section_scale;
-        let slope_mat: Mat4 = compute_slope_rotation(params.slope_type);
-        let combined: Mat4 = rotate_to_world * slope_mat * section_transform;
+        let slope_mat: Mat4 = params
+            .slope_blend
+            .map(compute_slope_blend_rotation)
+            .unwrap_or_else(|| compute_slope_rotation(params.slope_type));
+        let combined: Mat4 = camera_view * slope_mat * body_facing * section_transform;
 
         let footprint: f32 = compute_voxel_footprint(&combined, scale);
         if footprint > max_footprint {
@@ -812,6 +852,72 @@ mod tests {
         );
     }
 
+    fn assert_mat4_close(actual: Mat4, expected: Mat4, epsilon: f32) {
+        let actual_cols = actual.to_cols_array();
+        let expected_cols = expected.to_cols_array();
+        for (idx, (a, e)) in actual_cols.iter().zip(expected_cols.iter()).enumerate() {
+            assert!(
+                (*a - *e).abs() <= epsilon,
+                "matrix element {} mismatch: got {}, expected {}",
+                idx,
+                a,
+                e
+            );
+        }
+    }
+
+    #[test]
+    fn test_vxl_simple_slope_applies_after_body_facing_before_camera() {
+        let vxl = make_test_vxl();
+        let params = VxlRenderParams {
+            facing: 64,
+            slope_type: 4,
+            ..Default::default()
+        };
+
+        let (limbs, _) = prepare_limb_data(&vxl, None, &params);
+        let combined = limbs[0].combined;
+
+        let facing_rad = params.facing as f32 / 256.0 * std::f32::consts::TAU;
+        let camera_view = Mat4::from_rotation_x(-CAMERA_PITCH_DEG.to_radians())
+            * Mat4::from_rotation_z(WORLD_YAW_OFFSET_DEG.to_radians());
+        let body_facing = Mat4::from_rotation_z(-facing_rad);
+        let section_transform = Mat4::from_translation(Vec3::new(-1.0, -1.0, -1.0));
+        let slope_mat = compute_slope_rotation(params.slope_type);
+        let expected = camera_view * slope_mat * body_facing * section_transform;
+
+        assert_mat4_close(combined, expected, 1e-6);
+
+        let old_body_local_order = camera_view * body_facing * slope_mat * section_transform;
+        let sample = Vec3::new(0.25, 0.75, -0.5);
+        let new_point = combined.transform_point3(sample);
+        let old_point = old_body_local_order.transform_point3(sample);
+        assert!(
+            (new_point - old_point).length() > 0.01,
+            "sloped facing 64 must not use the old body-local slope order"
+        );
+    }
+
+    #[test]
+    fn test_vxl_flat_slope_preserves_existing_facing_composition() {
+        let vxl = make_test_vxl();
+        let params = VxlRenderParams {
+            facing: 64,
+            slope_type: 0,
+            ..Default::default()
+        };
+
+        let (limbs, _) = prepare_limb_data(&vxl, None, &params);
+        let combined = limbs[0].combined;
+
+        let facing_rad = params.facing as f32 / 256.0 * std::f32::consts::TAU;
+        let old_flat_order = Mat4::from_rotation_x(-CAMERA_PITCH_DEG.to_radians())
+            * Mat4::from_rotation_z(WORLD_YAW_OFFSET_DEG.to_radians() - facing_rad)
+            * Mat4::from_translation(Vec3::new(-1.0, -1.0, -1.0));
+
+        assert_mat4_close(combined, old_flat_order, 1e-6);
+    }
+
     #[test]
     fn test_slope_4_geometry_locks_current_direction() {
         // Slope type 4 = "South" per the slope-type table (south corners
@@ -821,11 +927,9 @@ mod tests {
         // in compute_slope_rotation, EDGE_TILT_RAD, or glam's convention
         // will fail this test loudly.
         //
-        // Whether "+Y" or "-Y" corresponds to world-south in the codebase's
-        // VXL model frame is verified separately by visual smoke check
-        // against gamemd.exe (see plan Task 5). If the visual check shows
-        // the unit leans the wrong way, the fix is to negate tilt_rad in
-        // compute_slope_rotation AND update this test's expected signs.
+        // VXL_SLOPE_MATRIX_SIGN_GHIDRA_REPORT.md verifies this sign matches
+        // gamemd; downhill-looking tilt bugs should be fixed in matrix
+        // composition/sampling, not by negating tilt_rad.
         let slope_mat: Mat4 = compute_slope_rotation(4);
 
         let plus_y: Vec3 = slope_mat.transform_point3(Vec3::Y);
@@ -904,5 +1008,80 @@ mod tests {
                 slope
             );
         }
+    }
+
+    #[test]
+    fn test_vxl_slope_blend_phase_zero_matches_previous_slope() {
+        let blend = VxlSlopeBlend {
+            from_slope: 4,
+            to_slope: 8,
+            phase_num: 0,
+            phase_den: 3,
+        };
+        assert_mat4_close(
+            compute_slope_blend_rotation(blend),
+            compute_slope_rotation(4),
+            1e-6,
+        );
+    }
+
+    #[test]
+    fn test_vxl_slope_blend_phase_full_matches_current_slope() {
+        let blend = VxlSlopeBlend {
+            from_slope: 4,
+            to_slope: 8,
+            phase_num: 3,
+            phase_den: 3,
+        };
+        assert_mat4_close(
+            compute_slope_blend_rotation(blend),
+            compute_slope_rotation(8),
+            1e-6,
+        );
+    }
+
+    #[test]
+    fn test_vxl_slope_blend_midphase_differs_from_both_endpoints() {
+        let blend = VxlSlopeBlend {
+            from_slope: 4,
+            to_slope: 8,
+            phase_num: 1,
+            phase_den: 3,
+        };
+        let mid = compute_slope_blend_rotation(blend);
+        let from = compute_slope_rotation(4);
+        let to = compute_slope_rotation(8);
+        let sample = Vec3::new(0.25, 0.75, 1.0);
+        assert!((mid.transform_point3(sample) - from.transform_point3(sample)).length() > 0.001);
+        assert!((mid.transform_point3(sample) - to.transform_point3(sample)).length() > 0.001);
+    }
+
+    #[test]
+    fn test_vxl_slope_blend_preserves_camera_slope_facing_order() {
+        let vxl = make_test_vxl();
+        let params = VxlRenderParams {
+            facing: 64,
+            slope_type: 8,
+            slope_blend: Some(VxlSlopeBlend {
+                from_slope: 4,
+                to_slope: 8,
+                phase_num: 1,
+                phase_den: 3,
+            }),
+            ..Default::default()
+        };
+
+        let (limbs, _) = prepare_limb_data(&vxl, None, &params);
+        let facing_rad = params.facing as f32 / 256.0 * std::f32::consts::TAU;
+        let camera_view = Mat4::from_rotation_x(-CAMERA_PITCH_DEG.to_radians())
+            * Mat4::from_rotation_z(WORLD_YAW_OFFSET_DEG.to_radians());
+        let body_facing = Mat4::from_rotation_z(-facing_rad);
+        let section_transform = Mat4::from_translation(Vec3::new(-1.0, -1.0, -1.0));
+        let expected = camera_view
+            * compute_slope_blend_rotation(params.slope_blend.unwrap())
+            * body_facing
+            * section_transform;
+
+        assert_mat4_close(limbs[0].combined, expected, 1e-6);
     }
 }

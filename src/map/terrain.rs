@@ -12,6 +12,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::map::lighting::CellLightGrid;
 use crate::map::map_file::{MapFile, MapHeader};
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::render::batch::SpriteInstance;
@@ -744,6 +745,7 @@ fn visible_cell_slice(grid: &TerrainGrid, view_top: f32, view_bottom: f32) -> &[
 /// the caller's UV lookup should provide fallbacks if desired.
 pub fn build_visible_instances(
     grid: &TerrainGrid,
+    lighting_grid: Option<&CellLightGrid>,
     camera_x: f32,
     camera_y: f32,
     screen_width: f32,
@@ -835,6 +837,9 @@ pub fn build_visible_instances(
         };
 
         if let Some(p) = placement {
+            let tint = lighting_grid
+                .map(|lights| lights.terrain_tile_tint_at((cell.rx, cell.ry)))
+                .unwrap_or(cell.tint);
             let inst = SpriteInstance {
                 position: [
                     cell.screen_x + p.draw_offset[0],
@@ -844,7 +849,7 @@ pub fn build_visible_instances(
                 uv_origin: p.uv_origin,
                 uv_size: p.uv_size,
                 depth,
-                tint: cell.tint,
+                tint,
                 alpha: 1.0,
                 ..Default::default()
             };
@@ -1060,7 +1065,7 @@ mod tests {
                     tile_id: 0,
                     sub_tile: 0,
                     z: 0,
-                    rx: 0,
+                    rx: 1,
                     ry: 0,
                     is_water: false,
                     is_cliff_redraw: false,
@@ -1097,9 +1102,75 @@ mod tests {
 
         // Camera at origin, 1024x768 viewport — only first cell should be visible.
         let result: TerrainInstances =
-            build_visible_instances(&grid, 0.0, 0.0, 1024.0, 768.0, None, None, None);
+            build_visible_instances(&grid, None, 0.0, 0.0, 1024.0, 768.0, None, None, None);
         assert_eq!(result.normal.len(), 1);
         assert_eq!(result.cliff_redraw.len(), 0);
+    }
+
+    #[test]
+    fn terrain_tile_instances_consume_per_cell_lighting() {
+        let grid: TerrainGrid = TerrainGrid {
+            cells: vec![
+                TerrainCell {
+                    screen_x: 0.0,
+                    screen_y: 0.0,
+                    tile_id: 0,
+                    sub_tile: 0,
+                    z: 0,
+                    rx: 1,
+                    ry: 0,
+                    is_water: false,
+                    is_cliff_redraw: false,
+                    variant: 0,
+                    tint: [1.0, 1.0, 1.0],
+                    radar_left: [0, 0, 0],
+                    radar_right: [0, 0, 0],
+                    has_damaged_data: false,
+                },
+                TerrainCell {
+                    screen_x: 60.0,
+                    screen_y: 0.0,
+                    tile_id: 0,
+                    sub_tile: 0,
+                    z: 4,
+                    rx: 2,
+                    ry: 0,
+                    is_water: false,
+                    is_cliff_redraw: false,
+                    variant: 0,
+                    tint: [1.0, 1.0, 1.0],
+                    radar_left: [0, 0, 0],
+                    radar_right: [0, 0, 0],
+                    has_damaged_data: false,
+                },
+            ],
+            world_width: 120.0,
+            world_height: 30.0,
+            origin_x: 0.0,
+            origin_y: 0.0,
+            local_bounds: None,
+            anchor_variant_table: None,
+        };
+        let lights = crate::map::lighting::build_cell_light_grid_from_heights(
+            [((1, 0), 0), ((2, 0), 4)],
+            &crate::map::lighting::LightingConfig::default(),
+        );
+
+        let result = build_visible_instances(
+            &grid,
+            Some(&lights),
+            0.0,
+            0.0,
+            1024.0,
+            768.0,
+            None,
+            None,
+            None,
+        );
+
+        assert_eq!(result.normal.len(), 2);
+        assert!((result.normal[0].tint[0] - 0.95).abs() < 0.001);
+        assert!((result.normal[1].tint[0] - 0.982).abs() < 0.001);
     }
 
     fn override_test_grid(
@@ -1183,7 +1254,8 @@ mod tests {
         };
         let uv_fn: UvLookupFn = Some(&lookup);
 
-        let _ = build_visible_instances(&grid, 0.0, 0.0, 1024.0, 768.0, uv_fn, None, Some(&bs));
+        let _ =
+            build_visible_instances(&grid, None, 0.0, 0.0, 1024.0, 768.0, uv_fn, None, Some(&bs));
         let (tid, sub, var) = captured.borrow().expect("uv_fn was called");
         // Override fired: tile_id = NS AboutToFall slot = 203.
         assert_eq!(tid, 203);
@@ -1217,7 +1289,8 @@ mod tests {
         };
         let uv_fn: UvLookupFn = Some(&lookup);
 
-        let _ = build_visible_instances(&grid, 0.0, 0.0, 1024.0, 768.0, uv_fn, None, Some(&bs));
+        let _ =
+            build_visible_instances(&grid, None, 0.0, 0.0, 1024.0, 768.0, uv_fn, None, Some(&bs));
         let (tid, _sub, _var) = captured.borrow().expect("uv_fn was called");
         // Override bypassed: native tile_id retained.
         assert_eq!(tid, 100);
@@ -1242,7 +1315,8 @@ mod tests {
         };
         let uv_fn: UvLookupFn = Some(&lookup);
 
-        let _ = build_visible_instances(&grid, 0.0, 0.0, 1024.0, 768.0, uv_fn, None, Some(&bs));
+        let _ =
+            build_visible_instances(&grid, None, 0.0, 0.0, 1024.0, 768.0, uv_fn, None, Some(&bs));
         let (tid, _sub, _var) = captured.borrow().expect("uv_fn was called");
         // Override bypassed (no table): native tile_id retained.
         assert_eq!(tid, 100);

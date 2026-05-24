@@ -100,8 +100,10 @@ pub(crate) fn render_game(
         view,
         &draw_passes::DrawPassData {
             bridge_unit_instances: &world.bridge_unit,
+            bridge_unit_transition_paged: &world.bridge_unit_transition_paged,
             bridge_shp_paged: &world.bridge_shp_paged,
             unit_instances: &world.unit,
+            unit_transition_paged: &world.unit_transition_paged,
             shp_paged: &world.shp_paged,
             wall_instances: &world.wall,
             particle_paged: &world.particle_paged,
@@ -153,6 +155,28 @@ fn upload_to_gpu(
     // Entities (VXL + SHP)
     pool.upload(&state.gpu, "unit", &world.unit);
     pool.upload(&state.gpu, "unit_bridge", &world.bridge_unit);
+    const UNIT_TRANSITION_KEYS: [&str; 4] = [
+        "unit_transition_p0",
+        "unit_transition_p1",
+        "unit_transition_p2",
+        "unit_transition_p3",
+    ];
+    const BRIDGE_UNIT_TRANSITION_KEYS: [&str; 4] = [
+        "unit_bridge_transition_p0",
+        "unit_bridge_transition_p1",
+        "unit_bridge_transition_p2",
+        "unit_bridge_transition_p3",
+    ];
+    for (i, page_inst) in world.unit_transition_paged.iter().enumerate() {
+        if let Some(key) = UNIT_TRANSITION_KEYS.get(i) {
+            pool.upload(&state.gpu, key, page_inst);
+        }
+    }
+    for (i, page_inst) in world.bridge_unit_transition_paged.iter().enumerate() {
+        if let Some(key) = BRIDGE_UNIT_TRANSITION_KEYS.get(i) {
+            pool.upload(&state.gpu, key, page_inst);
+        }
+    }
     const SHP_PAGE_KEYS: [&str; 4] = ["shp_p0", "shp_p1", "shp_p2", "shp_p3"];
     const SHP_BRIDGE_KEYS: [&str; 4] = [
         "shp_bridge_p0",

@@ -251,11 +251,43 @@ impl ShpFile {
 
         Ok(rgba)
     }
+
+    /// Convert a UI/loading frame with palette conversion kept separate from alpha policy.
+    ///
+    /// The gamemd UI/loading PAL path does not bake transparency into the palette.
+    /// For SHP rendering, index 0 is still transparent at frame-conversion time.
+    pub fn frame_to_rgba_ui(
+        &self,
+        frame_index: usize,
+        palette: &Palette,
+    ) -> Result<Vec<u8>, AssetError> {
+        if frame_index >= self.frames.len() {
+            return Err(AssetError::ShpFrameOutOfRange {
+                index: frame_index as u16,
+                count: self.frames.len() as u16,
+            });
+        }
+
+        let frame: &ShpFrame = &self.frames[frame_index];
+        let pixel_count: usize = frame.frame_width as usize * frame.frame_height as usize;
+        let mut rgba: Vec<u8> = Vec::with_capacity(pixel_count * 4);
+
+        for &palette_index in &frame.pixels {
+            let color = palette.colors[palette_index as usize];
+            rgba.push(color.r);
+            rgba.push(color.g);
+            rgba.push(color.b);
+            rgba.push(if palette_index == 0 { 0 } else { color.a });
+        }
+
+        Ok(rgba)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::assets::pal_file::Color;
 
     /// Build a minimal valid SHP file with one uncompressed 2x2 frame.
     fn make_test_shp_raw() -> Vec<u8> {
@@ -323,6 +355,25 @@ mod tests {
         assert_eq!(rgba[3], 255); // A (opaque)
         // Pixel 3 (index 0): transparent
         assert_eq!(rgba[15], 0); // A (transparent)
+    }
+
+    #[test]
+    fn frame_to_rgba_ui_applies_transparent_index_without_palette_alpha() {
+        let data: Vec<u8> = make_test_shp_raw();
+        let shp: ShpFile = ShpFile::from_bytes(&data).expect("Should parse");
+
+        let mut palette = Palette {
+            colors: [Color::rgb(0, 0, 0); 256],
+        };
+        palette.colors[0] = Color::rgb(12, 34, 56);
+        palette.colors[1] = Color::rgb(252, 0, 0);
+        palette.colors[2] = Color::rgb(0, 252, 0);
+        palette.colors[3] = Color::rgb(0, 0, 252);
+
+        let rgba: Vec<u8> = shp.frame_to_rgba_ui(0, &palette).expect("Should convert");
+
+        assert_eq!(&rgba[0..4], &[252, 0, 0, 255]);
+        assert_eq!(&rgba[12..16], &[12, 34, 56, 0]);
     }
 
     #[test]

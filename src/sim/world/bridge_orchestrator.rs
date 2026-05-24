@@ -76,7 +76,7 @@ pub(crate) fn apply_bridge_damage_events(
     // the dispatcher's outcomes. BTreeSet keeps deterministic order for
     // the cascade walk.
     let mut destroyed_set: BTreeSet<(u16, u16)> = BTreeSet::new();
-    let mut blow_up_cells: BTreeSet<(u16, u16)> = BTreeSet::new();
+    let mut blow_up_cells: Vec<(u16, u16)> = Vec::new();
     for outcome in &outcomes {
         if let StateOutcome::Collapsed {
             destroyed_cells,
@@ -87,7 +87,7 @@ pub(crate) fn apply_bridge_damage_events(
             destroyed_set.extend(destroyed_cells.iter().copied());
             for (cell, _slot, action) in &set_bridge_direction.actions {
                 if matches!(action, crate::sim::bridge_specs::CellAction::BlowUpBridge) {
-                    blow_up_cells.insert(*cell);
+                    blow_up_cells.push(*cell);
                     destroyed_set.insert(*cell);
                 }
             }
@@ -298,7 +298,7 @@ fn apply_hut_bridge_execution(
     }
 
     let mut destroyed_set: BTreeSet<(u16, u16)> = BTreeSet::new();
-    let mut blow_up_cells: BTreeSet<(u16, u16)> = BTreeSet::new();
+    let mut blow_up_cells: Vec<(u16, u16)> = Vec::new();
     let mut rim_cells: BTreeSet<(u16, u16)> = BTreeSet::new();
     let mut any_zones_dirty = false;
     for outcome in outcomes {
@@ -307,12 +307,13 @@ fn apply_hut_bridge_execution(
             set_bridge_direction,
             adjacent_bridges_dirty,
             zones_dirty,
+            ..
         } = outcome
         {
             destroyed_set.extend(destroyed_cells.iter().copied());
             for (cell, _slot, action) in &set_bridge_direction.actions {
                 if matches!(action, crate::sim::bridge_specs::CellAction::BlowUpBridge) {
-                    blow_up_cells.insert(*cell);
+                    blow_up_cells.push(*cell);
                     destroyed_set.insert(*cell);
                 }
             }
@@ -645,13 +646,12 @@ fn apply_hut_damage_retries(
     let mut outcomes = Vec::new();
     for _ in 0..MAX_HUT_ATTEMPTS_PER_STEP {
         let outcome = apply_hut_damage_to_cell(bridge_state, terrain, target.0, target.1);
-        match outcome {
-            StateOutcome::NoChange => break,
-            StateOutcome::Absorbed => outcomes.push(StateOutcome::Absorbed),
-            collapsed @ StateOutcome::Collapsed { .. } => {
-                outcomes.push(collapsed);
-                break;
-            }
+        let success = outcome.apply_damage_success();
+        if outcome.has_effect() {
+            outcomes.push(outcome);
+        }
+        if success {
+            break;
         }
     }
     outcomes
@@ -763,15 +763,18 @@ fn run_hut_collapse_bounded(
         for _ in 0..MAX_HUT_ATTEMPTS_PER_STEP {
             let outcome = call_destroy_per_family(bridge_state, terrain, family, cur);
             match outcome {
-                StateOutcome::NoChange => break,
+                StateOutcome::NoChange => {}
                 StateOutcome::Absorbed => {
                     outcomes.push(StateOutcome::Absorbed);
                     // Retry: the cell took a state step but is not yet
                     // collapsed — another call may push it to Destroyed.
                 }
                 collapsed @ StateOutcome::Collapsed { .. } => {
+                    let success = collapsed.apply_damage_success();
                     outcomes.push(collapsed);
-                    break;
+                    if success {
+                        break;
+                    }
                 }
             }
         }
@@ -1454,8 +1457,11 @@ fn run_dispatch_loop(
                         bridge_state.destroy_bridge_low(event.rx, event.ry, terrain)
                     }
                 };
-                if !matches!(outcome, StateOutcome::NoChange) {
+                let success = outcome.apply_damage_success();
+                if outcome.has_effect() {
                     outcomes.push(outcome);
+                }
+                if success {
                     break;
                 }
             }
@@ -1534,6 +1540,7 @@ mod tests {
                     is_rough: false,
                     is_road: false,
                     accepts_smudge: false,
+                    allows_tiberium: false,
                     has_ramp: false,
                     canonical_ramp: None,
                     ground_walk_blocked: is_bridge,

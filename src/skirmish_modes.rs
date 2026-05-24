@@ -4,6 +4,7 @@
 //! because retail mode rows are shell/session setup state, not deterministic
 //! tick logic by themselves.
 
+use crate::assets::asset_manager::AssetManager;
 use crate::rules::ini_parser::IniFile;
 
 const STOCK_MPMODESMD: &str = include_str!("../ini/mpmodesmd.ini");
@@ -30,14 +31,14 @@ pub struct SkirmishGameMode {
 }
 
 impl SkirmishGameMode {
-    fn from_roster_row(id: i32, value: &str) -> Option<Self> {
+    fn from_roster_row_native_defaults(id: i32, value: &str) -> Option<Self> {
         let fields: Vec<&str> = value.split(',').map(str::trim).collect();
         if fields.len() < 5 {
             return None;
         }
 
         let random_maps_allowed = parse_bool(fields[4]).unwrap_or(false);
-        let mut mode = Self {
+        Some(Self {
             id,
             ui_name_key: fields[0].to_string(),
             tooltip_key: fields[1].to_string(),
@@ -46,7 +47,11 @@ impl SkirmishGameMode {
             random_maps_allowed,
             allies_allowed: true,
             must_ally: false,
-        };
+        })
+    }
+
+    fn from_roster_row(id: i32, value: &str) -> Option<Self> {
+        let mut mode = Self::from_roster_row_native_defaults(id, value)?;
         apply_known_stock_dialog_defaults(&mut mode);
         Some(mode)
     }
@@ -80,6 +85,53 @@ fn apply_known_stock_dialog_defaults(mode: &mut SkirmishGameMode) {
     }
 }
 
+fn apply_common_override(mode: &mut SkirmishGameMode, ini: &IniFile) {
+    let Some(section) = ini.section("MultiplayerDialogSettings") else {
+        return;
+    };
+    if let Some(allies_allowed) = section.get_bool("AlliesAllowed") {
+        mode.allies_allowed = allies_allowed;
+    }
+    if let Some(must_ally) = section.get_bool("MustAlly") {
+        mode.must_ally = must_ally;
+    }
+    if !mode.allies_allowed {
+        mode.must_ally = false;
+    }
+}
+
+fn parse_mpmodes_ini_with_overrides<F>(ini: &IniFile, mut override_ini: F) -> Vec<SkirmishGameMode>
+where
+    F: FnMut(&str) -> Option<IniFile>,
+{
+    let mut modes = Vec::new();
+    for category in STOCK_MODE_CATEGORIES {
+        let Some(section) = ini.section(category) else {
+            continue;
+        };
+        for key in section.keys() {
+            let Ok(id) = key.parse::<i32>() else {
+                continue;
+            };
+            let Some(value) = section.get(key) else {
+                continue;
+            };
+            let Some(mut mode) = SkirmishGameMode::from_roster_row_native_defaults(id, value)
+            else {
+                continue;
+            };
+            if let Some(override_ini) = override_ini(&mode.override_file) {
+                apply_common_override(&mut mode, &override_ini);
+            } else {
+                apply_known_stock_dialog_defaults(&mut mode);
+            }
+            modes.push(mode);
+        }
+    }
+    modes.sort_by_key(|mode| mode.id);
+    modes
+}
+
 pub fn parse_mpmodes_ini(ini: &IniFile) -> Vec<SkirmishGameMode> {
     let mut modes = Vec::new();
     for category in STOCK_MODE_CATEGORIES {
@@ -100,6 +152,46 @@ pub fn parse_mpmodes_ini(ini: &IniFile) -> Vec<SkirmishGameMode> {
     }
     modes.sort_by_key(|mode| mode.id);
     modes
+}
+
+pub fn skirmish_modes_from_assets(assets: &AssetManager) -> Vec<SkirmishGameMode> {
+    let roster_ini = assets
+        .get_with_source("MPModesMD.ini")
+        .and_then(|(data, source)| {
+            log::info!(
+                "Loading MPModesMD.ini ({} bytes) from {}",
+                data.len(),
+                source
+            );
+            IniFile::from_bytes(&data)
+                .map_err(|err| log::warn!("Failed to parse MPModesMD.ini from {source}: {err}"))
+                .ok()
+        })
+        .unwrap_or_else(|| IniFile::from_str(STOCK_MPMODESMD));
+
+    let modes = parse_mpmodes_ini_with_overrides(&roster_ini, |name| {
+        assets.get_with_source(name).and_then(|(data, source)| {
+            log::debug!(
+                "Loading Skirmish MPMode override {} ({} bytes) from {}",
+                name,
+                data.len(),
+                source
+            );
+            IniFile::from_bytes(&data)
+                .map_err(|err| {
+                    log::warn!(
+                        "Failed to parse Skirmish MPMode override {name} from {source}: {err}"
+                    )
+                })
+                .ok()
+        })
+    });
+
+    if modes.is_empty() {
+        stock_skirmish_modes()
+    } else {
+        modes
+    }
 }
 
 pub fn stock_skirmish_modes() -> Vec<SkirmishGameMode> {
@@ -170,5 +262,55 @@ mod tests {
         let modes = parse_mpmodes_ini(&ini);
         assert_eq!(modes.len(), 1);
         assert_eq!(modes[0].id, 1);
+    }
+
+    #[test]
+    fn mpmode_missing_override_preserves_known_stock_defaults() {
+        let ini = IniFile::from_str(
+            "[FreeForAll]\n2=GUI:FreeForAll, STT:ModeFreeForAll, MPFreeForAllMD.ini, standard, true\n\
+             [ManBattle]\n9=GUI:TeamGame, STT:ModeTeamGame, MPTeamMD.ini, teamgame, false\n",
+        );
+
+        let modes = parse_mpmodes_ini_with_overrides(&ini, |_| None);
+
+        let ffa = mode_by_id(&modes, 2).expect("free for all");
+        assert!(!ffa.allies_allowed);
+        assert!(!ffa.must_ally);
+
+        let team = mode_by_id(&modes, 9).expect("team game");
+        assert!(team.allies_allowed);
+        assert!(team.must_ally);
+    }
+
+    #[test]
+    fn mpmode_override_clears_must_ally_when_allies_disabled() {
+        let ini = IniFile::from_str(
+            "[Battle]\n1=GUI:Battle, STT:ModeBattle, Custom.ini, standard, true\n",
+        );
+        let override_ini =
+            IniFile::from_str("[MultiplayerDialogSettings]\nAlliesAllowed=no\nMustAlly=yes\n");
+
+        let modes = parse_mpmodes_ini_with_overrides(&ini, |name| {
+            (name == "Custom.ini").then(|| override_ini.clone())
+        });
+
+        assert!(!modes[0].allies_allowed);
+        assert!(!modes[0].must_ally);
+    }
+
+    #[test]
+    fn mpmode_override_ignores_ally_change_allowed_for_common_mode() {
+        let ini = IniFile::from_str(
+            "[Battle]\n1=GUI:Battle, STT:ModeBattle, Custom.ini, standard, true\n",
+        );
+        let override_ini =
+            IniFile::from_str("[MultiplayerDialogSettings]\nAllyChangeAllowed=no\nMustAlly=yes\n");
+
+        let modes = parse_mpmodes_ini_with_overrides(&ini, |name| {
+            (name == "Custom.ini").then(|| override_ini.clone())
+        });
+
+        assert!(modes[0].allies_allowed);
+        assert!(modes[0].must_ally);
     }
 }

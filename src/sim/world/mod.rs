@@ -166,7 +166,7 @@ pub enum SimSoundEvent {
     /// not emit this event.
     RefineryExitSfx { rx: u16, ry: u16 },
     /// A paratrooper was dropped from a carrier aircraft.
-    /// Played at the drop position; app layer resolves to [General] ChuteSound.
+    /// Played at the drop position; app layer resolves to [AudioVisual] ChuteSound.
     ChuteSound { rx: u16, ry: u16 },
     /// A C4-capable infantry claimed a plant on a CanC4 building.
     /// Played at the attacker's position. App resolves to
@@ -623,18 +623,23 @@ impl Simulation {
         self.entities.clear_radio_contacts_for(stable_id);
     }
 
-    /// Check each house for defeat (owned count == 0) and game completion
+    /// Check each house for defeat and game completion
     /// (all remaining houses mutually allied).
-    fn check_defeat(&mut self) {
-        // Mark houses with zero owned objects as defeated.
+    fn check_defeat(&mut self, rules: Option<&RuleSet>) {
+        // Short Game defeats houses with no buildings unless a BaseUnit remains.
+        // Long games wait for all owned objects.
         let owners: Vec<InternedId> = self.houses.keys().copied().collect();
         for &owner in &owners {
             let house = &self.houses[&owner];
             if house.is_defeated {
                 continue;
             }
-            let total = house.owned_building_count + house.owned_unit_count;
-            if total == 0 {
+            let should_defeat = if self.game_options.short_game {
+                house.owned_building_count == 0 && !self.house_has_live_base_unit(owner, rules)
+            } else {
+                house.owned_building_count == 0 && house.owned_unit_count == 0
+            };
+            if should_defeat {
                 if let Some(h) = self.houses.get_mut(&owner) {
                     h.is_defeated = true;
                 }
@@ -680,6 +685,23 @@ impl Simulation {
                 }
             }
         }
+    }
+
+    fn house_has_live_base_unit(&self, owner: InternedId, rules: Option<&RuleSet>) -> bool {
+        let Some(rules) = rules else {
+            return false;
+        };
+
+        self.entities.values().any(|entity| {
+            entity.owner == owner
+                && entity.category == EntityCategory::Unit
+                && !entity.dying
+                && rules.general.base_unit_types.iter().any(|type_id| {
+                    self.interner
+                        .resolve(entity.type_ref)
+                        .eq_ignore_ascii_case(type_id)
+                })
+        })
     }
 
     /// Restore skipped cache fields after snapshot deserialization.
@@ -1531,13 +1553,19 @@ impl Simulation {
             );
             // TIBTRE ore spawning: runs AFTER ore_growth so a spawn this tick
             // can't be grown/spread until next tick.
-            crate::sim::terrain_spawn::tick_terrain_spawners(
-                &self.production.terrain_spawners,
-                &mut self.production.resource_nodes,
-                self.overlay_grid.as_mut(),
-                self.production.default_ore_overlay_id,
-                path_grid,
-                &mut self.rng,
+            crate::sim::terrain_spawn::tick_terrain_spawners_stateful(
+                &mut self.production.terrain_spawners,
+                crate::sim::terrain_spawn::TerrainSpawnContext::new(
+                    &mut self.production.resource_nodes,
+                    self.overlay_grid.as_mut(),
+                    self.production.default_ore_overlay_id,
+                    &mut self.rng,
+                )
+                .with_validation_context(
+                    self.resolved_terrain.as_ref(),
+                    overlay_registry,
+                    path_grid,
+                ),
             );
             if spawned_entities {
                 self.refresh_fog(path_grid, &vision_config, Some(rules));
@@ -1581,7 +1609,7 @@ impl Simulation {
         // DEPENDS ON: combat (deaths processed), production (spawns), AI (commands applied).
         // Runs after all game-state mutations so owned counts are final for this tick.
         if self.tick > 0 {
-            self.check_defeat();
+            self.check_defeat(rules);
         }
 
         // --- Phase 9: Building animations + cleanup ---

@@ -430,7 +430,15 @@ pub(crate) fn build_overlay_instances(
         let Some(spr) = atlas.get(&key) else { continue };
 
         let depth: f32 = compute_sprite_depth_params(origin_y, world_height, screen_y, z);
-        let tint: [f32; 3] = state.lighting_grid.terrain_object_tint_at((obj.rx, obj.ry));
+        let spawns_tiberium = state
+            .rules
+            .as_ref()
+            .and_then(|rules| rules.terrain_object_type_case_insensitive(&obj.name))
+            .map(|terrain_type| terrain_type.spawns_tiberium)
+            .unwrap_or(false);
+        let tint: [f32; 3] = state
+            .lighting_grid
+            .terrain_object_tint_for_type((obj.rx, obj.ry), spawns_tiberium);
 
         instances.push(SpriteInstance {
             position: [
