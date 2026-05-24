@@ -1821,6 +1821,27 @@ fn color_filter_keeps_self_selection_visible_per_row() {
 }
 
 #[test]
+fn launch_session_uses_cached_color_index_when_claim_false() {
+    // After picking the sentinel, color_claimed goes false but color_index
+    // remains as the cached prior selection. launch_session must use that
+    // cached value — gamemd's late-binding random assignment is a separate
+    // concern (deferred follow-up).
+    let mut shell = SkirmishShellState::default();
+    shell.player_color_index = 3;
+    shell.player_color_claimed = false;
+    shell.opponents[0].row_type = SkirmishAiRowType::Easy;
+    shell.opponents[0].color_index = 6;
+    shell.opponents[0].color_claimed = false;
+    let maps = [test_map_entry("map.mmx")];
+    let modes = stock_skirmish_modes();
+
+    let session = launch_session(&shell, &maps, &modes).expect("session");
+
+    assert_eq!(session.local.color_index, 3);
+    assert_eq!(session.opponents[0].color_index, 6);
+}
+
+#[test]
 fn all_colors_claimed_activation_leaves_row_without_claim() {
     // Defensive Ledger #11. Claim all 8 colors across 8 active rows,
     // deactivate one, give its color to another slot, reactivate it.
