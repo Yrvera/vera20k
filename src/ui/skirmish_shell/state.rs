@@ -219,6 +219,7 @@ pub struct SkirmishShellOpponent {
     pub country: SkirmishCountry,
     pub country_random: bool,
     pub color_index: usize,
+    pub color_claimed: bool,
     pub start_position: StartPosition,
     pub team: i32,
     pub difficulty: AiDifficulty,
@@ -244,19 +245,23 @@ fn default_opponents(first_country: SkirmishCountry) -> Vec<SkirmishShellOpponen
     countries
         .into_iter()
         .enumerate()
-        .map(|(idx, country)| SkirmishShellOpponent {
-            enabled: idx == 0,
-            row_type: if idx == 0 {
+        .map(|(idx, country)| {
+            let row_type = if idx == 0 {
                 SkirmishAiRowType::Easy
             } else {
                 SkirmishAiRowType::None
-            },
-            country,
-            country_random: false,
-            color_index: (idx + 1) % HOUSE_COLOR_COUNT,
-            start_position: StartPosition::Auto,
-            team: -2,
-            difficulty: AiDifficulty::Easy,
+            };
+            SkirmishShellOpponent {
+                enabled: idx == 0,
+                row_type,
+                country,
+                country_random: false,
+                color_index: (idx + 1) % HOUSE_COLOR_COUNT,
+                color_claimed: row_type.is_active(),
+                start_position: StartPosition::Auto,
+                team: -2,
+                difficulty: AiDifficulty::Easy,
+            }
         })
         .collect()
 }
