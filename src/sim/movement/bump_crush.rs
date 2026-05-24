@@ -13,9 +13,10 @@
 
 use std::collections::BTreeSet;
 
-use crate::sim::pathfinding::{EntityBlockEntry, LayeredEntityBlockMap};
+use crate::sim::pathfinding::{BlockerNeighborCounts, EntityBlockEntry, LayeredEntityBlockMap};
 
 use crate::map::entities::EntityCategory;
+use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::locomotor_type::MovementZone;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::game_entity::GameEntity;
@@ -223,6 +224,51 @@ pub fn build_entity_block_set(
     let (ground, bridge, entity_block_map) =
         build_entity_block_sets(entities, mover_owner, alliances, interner, rules);
     (ground.union(&bridge).copied().collect(), entity_block_map)
+}
+
+pub(crate) fn build_blocker_neighbor_counts(
+    entities: &EntityStore,
+    width: u16,
+    height: u16,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    interner: &crate::sim::intern::StringInterner,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
+) -> BlockerNeighborCounts {
+    let mut counts = BlockerNeighborCounts::new(width, height);
+
+    if let Some(terrain) = resolved_terrain {
+        for y in 0..height {
+            for x in 0..width {
+                let Some(cell) = terrain.cell(x, y) else {
+                    continue;
+                };
+                if cell.overlay_blocks {
+                    counts.add_single_cell_neighbor_source(x, y);
+                }
+                if cell.terrain_object_blocks {
+                    counts.add_single_cell_neighbor_source(x, y);
+                }
+            }
+        }
+    }
+
+    for entity in entities.values() {
+        if entity.passenger_role.is_inside_transport() || entity.occupancy_list_layer().is_none() {
+            continue;
+        }
+        let pos = (entity.position.rx, entity.position.ry);
+        if entity.category == EntityCategory::Structure {
+            let (width, height) = rules
+                .and_then(|r| r.object(interner.resolve(entity.type_ref)))
+                .map(|obj| crate::sim::production::foundation_dimensions(&obj.foundation))
+                .unwrap_or((1, 1));
+            counts.add_building_expanded_foundation(pos.0, pos.1, width, height);
+        } else {
+            counts.add_single_cell_neighbor_source(pos.0, pos.1);
+        }
+    }
+
+    counts
 }
 
 // ---------------------------------------------------------------------------
@@ -660,6 +706,42 @@ mod tests {
         e.category = EntityCategory::Structure;
         e.crushable = false;
         e
+    }
+
+    #[test]
+    fn blocker_neighbor_counts_include_bridge_layer_occupants_globally() {
+        let mut entities = EntityStore::new();
+        let mut blocker = vehicle(1, 2, 2);
+        blocker.on_bridge = true;
+        entities.insert(blocker);
+        let interner = crate::sim::intern::StringInterner::new();
+
+        let counts = build_blocker_neighbor_counts(&entities, 5, 5, None, &interner, None);
+
+        assert_eq!(counts.count_at(1, 2), 1);
+        assert_eq!(counts.count_at(3, 3), 1);
+        assert_eq!(counts.count_at(2, 2), 0);
+    }
+
+    #[test]
+    fn blocker_neighbor_counts_building_uses_expanded_foundation_rectangle_once() {
+        let mut entities = EntityStore::new();
+        entities.insert(structure(1, 2, 2));
+        let interner = crate::sim::intern::StringInterner::new();
+
+        let counts = build_blocker_neighbor_counts(&entities, 5, 5, None, &interner, None);
+
+        for y in 1..=3 {
+            for x in 1..=3 {
+                assert_eq!(
+                    counts.count_at(x, y),
+                    1,
+                    "1x1 fallback structure should count expanded rectangle cell ({x},{y})"
+                );
+            }
+        }
+        assert_eq!(counts.count_at(0, 2), 0);
+        assert_eq!(counts.count_at(2, 0), 0);
     }
 
     /// Helper: build an OccupancyGrid from a set of entity descriptions.

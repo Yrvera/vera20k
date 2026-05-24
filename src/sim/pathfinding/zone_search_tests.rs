@@ -1,5 +1,6 @@
 //! Tests for zone-aware pathfinding wrappers.
 
+use super::super::zone_hierarchy::{ZoneEdgeRecord, ZoneHierarchy, ZoneLevelGraph, ZoneRecord};
 use super::super::zone_map::{ZoneAdjacency, ZoneGrid, ZoneInfo, ZoneMap};
 use super::*;
 use crate::rules::locomotor_type::MovementZone;
@@ -197,6 +198,168 @@ fn test_zone_map() -> (ZoneMap, ZoneAdjacency) {
     let adjacency =
         ZoneAdjacency::new(vec![vec![], vec![2, 3], vec![1, 3, 4], vec![1, 2], vec![2]]);
     (zone_map, adjacency)
+}
+
+fn equal_cost_zone_map(adjacency_order: Vec<ZoneId>) -> (ZoneMap, ZoneAdjacency) {
+    let zone_map = ZoneMap::new(
+        vec![1, 2, 3, 4, 5],
+        None,
+        5,
+        1,
+        5,
+        vec![
+            ZoneInfo {
+                center: (0, 0),
+                cell_count: 1,
+            },
+            ZoneInfo {
+                center: (1, 0),
+                cell_count: 1,
+            },
+            ZoneInfo {
+                center: (1, 0),
+                cell_count: 1,
+            },
+            ZoneInfo {
+                center: (0, 1),
+                cell_count: 1,
+            },
+            ZoneInfo {
+                center: (2, 0),
+                cell_count: 1,
+            },
+        ],
+    );
+    let adjacency = ZoneAdjacency::new(vec![
+        vec![],
+        adjacency_order,
+        vec![1, 5],
+        vec![1, 5],
+        vec![],
+        vec![2, 3],
+    ]);
+    (zone_map, adjacency)
+}
+
+fn linear_level0_hierarchy(zones: Vec<ZoneId>, edges: &[(ZoneId, ZoneId)]) -> ZoneHierarchy {
+    let zone_count = zones.iter().copied().max().unwrap_or(0);
+    let width = zones.len() as u16;
+    let mut level2 = ZoneLevelGraph::new(1);
+    level2.set_record(ZoneRecord::new(1, 0, 0));
+
+    let mut level1 = ZoneLevelGraph::new(1);
+    level1.set_record(ZoneRecord::new(1, 1, 0));
+
+    let mut level0 = ZoneLevelGraph::new(zone_count).with_cell_zone_ids(zones, width, 1);
+    for zone in 1..=zone_count {
+        level0.set_record(ZoneRecord::new(zone, 1, 0));
+    }
+    for &(a, b) in edges {
+        level0.push_edge(a, ZoneEdgeRecord::new(b, 0));
+        level0.push_edge(b, ZoneEdgeRecord::new(a, 0));
+    }
+
+    ZoneHierarchy::new(level0, level1, level2)
+}
+
+#[test]
+fn zone_precheck_hierarchy_path_bypasses_reduced_superzone_abort() {
+    let astar_grid = PathGrid::new(3, 1);
+    let mut reduced_grid = PathGrid::new(3, 1);
+    reduced_grid.set_blocked(1, 0, true);
+    let mut zg = ZoneGrid::build(&reduced_grid, &BTreeMap::new(), 3, 1);
+    zg.set_hierarchy(
+        MovementZone::Normal,
+        linear_level0_hierarchy(vec![1, 2, 3], &[(1, 2), (2, 3)]),
+    );
+    assert!(
+        !zg.can_reach(
+            MovementZone::Normal,
+            (0, 0),
+            MovementLayer::Ground,
+            (2, 0),
+            MovementLayer::Ground
+        ),
+        "fixture must prove the old reduced SuperZoneMap would abort"
+    );
+
+    let blocker_counts = BlockerNeighborCounts::new(3, 1);
+    let path = find_path_zoned_marker_inner(
+        &astar_grid,
+        (0, 0),
+        (2, 0),
+        None,
+        None,
+        Some(&zg),
+        MovementZone::Normal,
+        Some(MovementZone::Normal),
+        None,
+        None,
+        None,
+        0,
+        false,
+        Some(&blocker_counts),
+    )
+    .expect("eligible hierarchy precheck should not be preempted by reduced reachability");
+
+    assert_eq!(path, vec![(0, 0), (1, 0), (2, 0)]);
+}
+
+#[test]
+fn zone_precheck_failed_hierarchy_keeps_zone_map_same_zone_fallback() {
+    let astar_grid = PathGrid::new(3, 1);
+    let mut zg = ZoneGrid::build(&astar_grid, &BTreeMap::new(), 3, 1);
+    zg.set_hierarchy(
+        MovementZone::Normal,
+        linear_level0_hierarchy(vec![ZONE_INVALID, ZONE_INVALID, ZONE_INVALID], &[]),
+    );
+
+    let blocker_counts = BlockerNeighborCounts::new(3, 1);
+    let path = find_path_zoned_marker_inner(
+        &astar_grid,
+        (0, 0),
+        (2, 0),
+        None,
+        None,
+        Some(&zg),
+        MovementZone::Normal,
+        Some(MovementZone::Normal),
+        None,
+        None,
+        None,
+        0,
+        false,
+        Some(&blocker_counts),
+    )
+    .expect("same-zone ZoneMap fallback should survive incomplete hierarchy cell IDs");
+
+    assert_eq!(path, vec![(0, 0), (1, 0), (2, 0)]);
+}
+
+#[test]
+fn zone_corridor_equal_cost_ties_keep_adjacency_order() {
+    let (zone_map, adjacency) = equal_cost_zone_map(vec![3, 2]);
+    let excluded_edges = BTreeSet::new();
+
+    let corridor = find_zone_corridor(&zone_map, &adjacency, 1, 5, &excluded_edges)
+        .expect("equal-cost corridor should exist");
+
+    assert_eq!(
+        corridor,
+        vec![1, 3, 5],
+        "equal-cost zone ties must keep adjacency discovery order, not lower ZoneId"
+    );
+}
+
+#[test]
+fn zone_corridor_equal_cost_ties_follow_reversed_adjacency_order() {
+    let (zone_map, adjacency) = equal_cost_zone_map(vec![2, 3]);
+    let excluded_edges = BTreeSet::new();
+
+    let corridor = find_zone_corridor(&zone_map, &adjacency, 1, 5, &excluded_edges)
+        .expect("equal-cost corridor should exist");
+
+    assert_eq!(corridor, vec![1, 2, 5]);
 }
 
 #[test]

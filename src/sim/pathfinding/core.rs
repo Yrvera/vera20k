@@ -16,6 +16,8 @@
 use super::cell_entry::CanEnterLayerContext;
 use super::passability;
 use super::terrain_cost::TerrainCostGrid;
+use super::zone_hierarchy::ZoneLevelGraph;
+use super::zone_map::{ZONE_INVALID, ZoneId};
 use crate::map::bridge_facts::BRIDGE_FLAG_ANCHOR_SELF;
 use crate::map::map_file::MapCell;
 use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
@@ -24,8 +26,73 @@ use crate::map::tube_facts::{TubeId, TubeSource};
 use crate::rules::locomotor_type::MovementZone;
 use crate::sim::bridge_state::BridgeRuntimeState;
 use crate::sim::movement::locomotor::MovementLayer;
+use std::cell::Cell;
+use std::cell::RefCell;
 use std::cmp::Reverse;
-use std::collections::{BTreeSet, BinaryHeap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
+
+/// Reusable scratch buffers for `astar_search`. Lives in a thread-local so
+/// repeated repaths share one set of full-map-sized Vecs instead of allocating
+/// six fresh `vec![…; total_cells]` arrays per call (was the dominant heap
+/// pressure source during repath storms — engineer micro, scatter cascades).
+///
+/// `reset(total_cells)` grows each buffer if the map is bigger than the
+/// previous call and refills with the sentinel value; the `BinaryHeap` is
+/// cleared but keeps capacity. Use through `with_workspace` only; the helper
+/// asserts non-reentrancy so a future recursive A* caller fails loudly
+/// instead of silently sharing buffers.
+#[derive(Default)]
+struct PathfindWorkspace {
+    ground_g: Vec<i32>,
+    bridge_g: Vec<i32>,
+    ground_from: Vec<usize>,
+    bridge_from: Vec<usize>,
+    ground_closed: Vec<bool>,
+    bridge_closed: Vec<bool>,
+    open: BinaryHeap<Reverse<AStarNode>>,
+}
+
+impl PathfindWorkspace {
+    fn reset(&mut self, total_cells: usize) {
+        fn refill<T: Copy>(buf: &mut Vec<T>, len: usize, fill: T) {
+            buf.clear();
+            buf.resize(len, fill);
+        }
+        refill(&mut self.ground_g, total_cells, i32::MAX);
+        refill(&mut self.bridge_g, total_cells, i32::MAX);
+        refill(&mut self.ground_from, total_cells, usize::MAX);
+        refill(&mut self.bridge_from, total_cells, usize::MAX);
+        refill(&mut self.ground_closed, total_cells, false);
+        refill(&mut self.bridge_closed, total_cells, false);
+        self.open.clear();
+    }
+}
+
+thread_local! {
+    /// Thread-local reusable A* scratch. Safe because:
+    ///   - pathfinding only runs on the sim thread,
+    ///   - A* never recursively invokes A* (no reentrancy),
+    ///   - the workspace holds zero hashed sim state — pure scratch.
+    /// `try_borrow_mut` panics with a clear message if either invariant is
+    /// ever broken by a future refactor.
+    static PATHFIND_WORKSPACE: RefCell<PathfindWorkspace> =
+        RefCell::new(PathfindWorkspace::default());
+}
+
+/// Run `body` with exclusive mutable access to the thread-local A* workspace,
+/// pre-reset to hold `total_cells` entries.
+fn with_pathfind_workspace<R>(
+    total_cells: usize,
+    body: impl FnOnce(&mut PathfindWorkspace) -> R,
+) -> R {
+    PATHFIND_WORKSPACE.with(|cell| {
+        let mut ws = cell.try_borrow_mut().expect(
+            "PATHFIND_WORKSPACE re-entered — A* is not allowed to call A* recursively",
+        );
+        ws.reset(total_cells);
+        body(&mut ws)
+    })
+}
 
 /// Uniform A* edge cost for all 8 compass directions. The original engine has
 /// no diagonal upcharge — `AStar_compute_edge_cost` takes no direction
@@ -69,6 +136,14 @@ const CODE6_MULT_STATIONARY_ALLY: i32 = 8;
 /// search-scoped overlay instead of mutating persistent `PathGrid` cells.
 const SEARCH_MARKER_COST_MULTIPLIER: i32 = 4;
 
+/// Bridge flank cost multipliers from `AStar_compute_edge_cost`.
+///
+/// Runtime wiring is blocked until `PathfinderClass+0x01` lifecycle is verified;
+/// these helpers pin the binary numeric behavior without applying it globally.
+const BRIDGE_FLANK_MISSING_MULTIPLIER: i32 = 10;
+const BRIDGE_FLANK_ONE_MULTIPLIER: i32 = 1;
+const BRIDGE_FLANK_BOTH_MULTIPLIER: i32 = 2;
+
 /// Entry in the entity soft-block map for A* cost computation.
 /// Carries the blocker's next cell (for code-2 chain walk) and the
 /// Can_Enter_Cell return code (2/5/6) that selects the cost multiplier.
@@ -88,8 +163,11 @@ pub struct EntityBlockEntry {
 /// same-cell ground/bridge occupants instead of collapsing them by coordinate.
 #[derive(Debug, Clone, Default)]
 pub struct LayeredEntityBlockMap {
-    ground: HashMap<(u16, u16), EntityBlockEntry>,
-    bridge: HashMap<(u16, u16), EntityBlockEntry>,
+    /// `BTreeMap` (not `HashMap`) for deterministic iteration if any future
+    /// caller ever iterates these — sim convention since all pathing state
+    /// must be lockstep-reproducible.
+    ground: BTreeMap<(u16, u16), EntityBlockEntry>,
+    bridge: BTreeMap<(u16, u16), EntityBlockEntry>,
 }
 
 impl LayeredEntityBlockMap {
@@ -154,6 +232,132 @@ impl SearchMarkerOverlay {
 
     pub fn is_empty(&self) -> bool {
         self.cells.is_empty()
+    }
+}
+
+/// Per-cell count of adjacent dynamic blockers used by the hierarchy marker gate.
+///
+/// This is deliberately supplied by callers instead of inferred inside A*: a
+/// missing count surface must not be interpreted as "all counts are zero".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BlockerNeighborCounts {
+    width: u16,
+    height: u16,
+    counts: Vec<u8>,
+}
+
+impl BlockerNeighborCounts {
+    #[allow(dead_code)]
+    pub(crate) fn new(width: u16, height: u16) -> Self {
+        Self {
+            width,
+            height,
+            counts: vec![0; width as usize * height as usize],
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_count(&mut self, x: u16, y: u16, count: u8) {
+        if x < self.width && y < self.height {
+            let idx = y as usize * self.width as usize + x as usize;
+            self.counts[idx] = count;
+        }
+    }
+
+    pub(crate) fn add_single_cell_neighbor_source(&mut self, x: u16, y: u16) {
+        for dy in -1i32..=1 {
+            for dx in -1i32..=1 {
+                if dx == 0 && dy == 0 {
+                    continue;
+                }
+                self.increment_i32(x as i32 + dx, y as i32 + dy);
+            }
+        }
+    }
+
+    pub(crate) fn add_building_expanded_foundation(
+        &mut self,
+        origin_x: u16,
+        origin_y: u16,
+        width: u16,
+        height: u16,
+    ) {
+        let min_x = origin_x as i32 - 1;
+        let min_y = origin_y as i32 - 1;
+        let max_x = origin_x as i32 + width as i32;
+        let max_y = origin_y as i32 + height as i32;
+        for y in min_y..=max_y {
+            for x in min_x..=max_x {
+                self.increment_i32(x, y);
+            }
+        }
+    }
+
+    fn increment_i32(&mut self, x: i32, y: i32) {
+        if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
+            return;
+        }
+        let idx = y as usize * self.width as usize + x as usize;
+        self.counts[idx] = self.counts[idx].saturating_add(1);
+    }
+
+    pub(crate) fn count_at(&self, x: u16, y: u16) -> u8 {
+        if x >= self.width || y >= self.height {
+            return 0;
+        }
+        self.counts[y as usize * self.width as usize + x as usize]
+    }
+}
+
+/// Search-local equivalent of gamemd's hierarchy progress cell.
+///
+/// The cell starts at the A* source and advances only when an accepted neighbor
+/// reaches the next selected level-0 `Zone_precheck` path zone.
+#[derive(Debug)]
+pub(crate) struct HierarchyProgressTracker<'a> {
+    level0_path: &'a [ZoneId],
+    progress_index: Cell<usize>,
+    progress_cell: Cell<(u16, u16)>,
+}
+
+impl<'a> HierarchyProgressTracker<'a> {
+    pub(crate) fn new(start: (u16, u16), level0_path: &'a [ZoneId]) -> Self {
+        Self {
+            level0_path,
+            progress_index: Cell::new(0),
+            progress_cell: Cell::new(start),
+        }
+    }
+
+    fn maybe_advance(&self, zone: ZoneId, cell: (u16, u16)) {
+        let next_index = self.progress_index.get().saturating_add(1);
+        if self.level0_path.get(next_index).copied() == Some(zone) {
+            self.progress_index.set(next_index);
+            self.progress_cell.set(cell);
+        }
+    }
+
+    pub(crate) fn progress_index(&self) -> usize {
+        self.progress_index.get()
+    }
+
+    pub(crate) fn progress_cell(&self) -> (u16, u16) {
+        self.progress_cell.get()
+    }
+}
+
+/// A* expansion gate produced by `Zone_precheck`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct HierarchyGate<'a> {
+    pub level0_zones: &'a ZoneLevelGraph,
+    pub marked_level0: &'a BTreeSet<ZoneId>,
+    pub blocker_neighbor_counts: &'a BlockerNeighborCounts,
+}
+
+impl HierarchyGate<'_> {
+    fn allows(&self, x: u16, y: u16) -> bool {
+        let zone = self.level0_zones.zone_at(x, y);
+        self.marked_level0.contains(&zone) || self.blocker_neighbor_counts.count_at(x, y) != 0
     }
 }
 
@@ -457,6 +661,11 @@ pub struct AStarOptions<'a> {
         &'a super::zone_map::ZoneMap,
         &'a BTreeSet<super::zone_map::ZoneId>,
     )>,
+    /// Binary-style hierarchy marker gate. Present only when blocker-neighbor
+    /// counts are also available for the same search.
+    pub(crate) hierarchy_gate: Option<HierarchyGate<'a>>,
+    /// Optional progress-cell sink for the exact failed-hierarchy retry producer.
+    pub(crate) hierarchy_progress: Option<&'a HierarchyProgressTracker<'a>>,
     /// Movement zone for water mover bypass and passability matrix.
     pub movement_zone: Option<MovementZone>,
     /// Resolved terrain for cliff cost and water passability checks.
@@ -597,12 +806,26 @@ pub fn astar_search(
     let h = grid.height() as usize;
     let total_cells = w * h;
 
-    let mut ground_g: Vec<i32> = vec![i32::MAX; total_cells];
-    let mut bridge_g: Vec<i32> = vec![i32::MAX; total_cells];
-    let mut ground_from: Vec<usize> = vec![usize::MAX; total_cells];
-    let mut bridge_from: Vec<usize> = vec![usize::MAX; total_cells];
-    let mut ground_closed: Vec<bool> = vec![false; total_cells];
-    let mut bridge_closed: Vec<bool> = vec![false; total_cells];
+    // Persistent A* scratch buffers reused across calls. Destructured into
+    // local mutable references so the rest of the function reads/writes
+    // `ground_g[..]`, `open.push(..)`, etc. unchanged.
+    with_pathfind_workspace(total_cells, |ws| {
+    // Split-borrow the workspace fields. The g_cost and came_from buffers
+    // get re-borrowed inline in the body's `(&mut bridge_g, &mut bridge_from)`
+    // tuple, which needs the bindings to be `mut`-declared.
+    let PathfindWorkspace {
+        ref mut ground_g,
+        ref mut bridge_g,
+        ref mut ground_from,
+        ref mut bridge_from,
+        ref mut ground_closed,
+        ref mut bridge_closed,
+        ref mut open,
+    } = *ws;
+    let mut ground_g = &mut *ground_g;
+    let mut bridge_g = &mut *bridge_g;
+    let mut ground_from = &mut *ground_from;
+    let mut bridge_from = &mut *bridge_from;
 
     let start_idx = start.1 as usize * w + start.0 as usize;
     let start_on_bridge = is_at_bridge_level(start_height, start_cell);
@@ -612,7 +835,6 @@ pub fn astar_search(
         ground_g[start_idx] = 0;
     }
 
-    let mut open: BinaryHeap<Reverse<AStarNode>> = BinaryHeap::new();
     open.push(Reverse(AStarNode {
         f_cost: euclidean_heuristic(start.0, start.1, goal.0, goal.1),
         g_cost: 0,
@@ -763,6 +985,9 @@ pub fn astar_search(
             }
 
             // Closed check on appropriate list
+            // Binary `1.009` handling is an early closed-neighbor skip/fallback
+            // nuance, not true A* reopen. Do not reinsert selected-layer closed
+            // cells without a dedicated parity fixture for the blocked-goal path.
             if neighbor_use_bridge {
                 if bridge_closed[n_idx] {
                     continue;
@@ -832,10 +1057,19 @@ pub fn astar_search(
                 }
             }
 
+            // Zone_precheck marker gate for normal compass edges. Direction-8
+            // tube jumps are handled below; callers that enable this gate must
+            // defer explicit tube scenarios until their hierarchy semantics are verified.
+            if let Some(gate) = options.hierarchy_gate {
+                if !gate.allows(nx, ny) {
+                    continue;
+                }
+            }
+
             // Zone corridor filter
             if let Some((zone_map, allowed)) = options.corridor {
                 let cell_zone = zone_map.zone_at(nx, ny, MovementLayer::Ground);
-                if cell_zone != super::zone_map::ZONE_INVALID && !allowed.contains(&cell_zone) {
+                if cell_zone != ZONE_INVALID && !allowed.contains(&cell_zone) {
                     continue;
                 }
             }
@@ -926,6 +1160,11 @@ pub fn astar_search(
                     height: neighbor_height,
                     on_bridge: neighbor_use_bridge,
                 }));
+                if let (Some(gate), Some(progress)) =
+                    (options.hierarchy_gate, options.hierarchy_progress)
+                {
+                    progress.maybe_advance(gate.level0_zones.zone_at(nx, ny), (nx, ny));
+                }
             }
         }
 
@@ -941,9 +1180,7 @@ pub fn astar_search(
                     if !ground_closed[n_idx] {
                         if let Some((zone_map, allowed)) = options.corridor {
                             let cell_zone = zone_map.zone_at(nx, ny, MovementLayer::Ground);
-                            if cell_zone != super::zone_map::ZONE_INVALID
-                                && !allowed.contains(&cell_zone)
-                            {
+                            if cell_zone != ZONE_INVALID && !allowed.contains(&cell_zone) {
                                 continue;
                             }
                         }
@@ -974,6 +1211,7 @@ pub fn astar_search(
     }
 
     None
+    })
 }
 
 /// Check if a cell is passable for pathfinding purposes.
@@ -1704,6 +1942,22 @@ fn apply_search_marker_cost(
     }
 }
 
+#[allow(dead_code)]
+fn bridge_flank_multiplier(first_flank_structural: bool, second_flank_structural: bool) -> i32 {
+    if !first_flank_structural {
+        BRIDGE_FLANK_MISSING_MULTIPLIER
+    } else if second_flank_structural {
+        BRIDGE_FLANK_BOTH_MULTIPLIER
+    } else {
+        BRIDGE_FLANK_ONE_MULTIPLIER
+    }
+}
+
+#[allow(dead_code)]
+fn apply_bridge_flank_cost(step_cost: i32, multiplier: i32) -> i32 {
+    step_cost * multiplier
+}
+
 /// Find a path from start to goal using A* search.
 ///
 /// Returns `Some(path)` where path is a sequence of (rx, ry) cells from
@@ -1853,6 +2107,102 @@ pub fn find_path_with_costs_corridor_marker(
         },
     )?;
     Some(steps.into_iter().map(|s| (s.rx, s.ry)).collect())
+}
+
+#[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
+pub(crate) fn find_path_with_costs_hierarchy_marker(
+    grid: &PathGrid,
+    start: (u16, u16),
+    goal: (u16, u16),
+    costs: Option<&TerrainCostGrid>,
+    entity_blocks: Option<&BTreeSet<(u16, u16)>>,
+    level0_zones: &ZoneLevelGraph,
+    marked_level0: &BTreeSet<ZoneId>,
+    blocker_neighbor_counts: &BlockerNeighborCounts,
+    movement_zone: Option<MovementZone>,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    entity_block_map: Option<&LayeredEntityBlockMap>,
+    marker_overlay: Option<&SearchMarkerOverlay>,
+    urgency: u8,
+    mover_is_crusher: bool,
+) -> Option<Vec<(u16, u16)>> {
+    Some(
+        find_path_with_costs_hierarchy_marker_progress(
+            grid,
+            start,
+            goal,
+            costs,
+            entity_blocks,
+            level0_zones,
+            marked_level0,
+            blocker_neighbor_counts,
+            &[],
+            movement_zone,
+            resolved_terrain,
+            entity_block_map,
+            marker_overlay,
+            urgency,
+            mover_is_crusher,
+        )?
+        .path,
+    )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HierarchyMarkerPathResult {
+    pub path: Vec<(u16, u16)>,
+    pub progress_cell: (u16, u16),
+    pub progress_index: usize,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn find_path_with_costs_hierarchy_marker_progress(
+    grid: &PathGrid,
+    start: (u16, u16),
+    goal: (u16, u16),
+    costs: Option<&TerrainCostGrid>,
+    entity_blocks: Option<&BTreeSet<(u16, u16)>>,
+    level0_zones: &ZoneLevelGraph,
+    marked_level0: &BTreeSet<ZoneId>,
+    blocker_neighbor_counts: &BlockerNeighborCounts,
+    level0_path: &[ZoneId],
+    movement_zone: Option<MovementZone>,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    entity_block_map: Option<&LayeredEntityBlockMap>,
+    marker_overlay: Option<&SearchMarkerOverlay>,
+    urgency: u8,
+    mover_is_crusher: bool,
+) -> Option<HierarchyMarkerPathResult> {
+    let progress = HierarchyProgressTracker::new(start, level0_path);
+    let steps = astar_search(
+        grid,
+        start,
+        MovementLayer::Ground,
+        goal,
+        &AStarOptions {
+            terrain_costs: costs,
+            entity_blocks,
+            hierarchy_gate: Some(HierarchyGate {
+                level0_zones,
+                marked_level0,
+                blocker_neighbor_counts,
+            }),
+            hierarchy_progress: Some(&progress),
+            entity_block_map,
+            marker_overlay,
+            urgency,
+            mover_is_crusher,
+            movement_zone,
+            resolved_terrain,
+            ..Default::default()
+        },
+    )?;
+    Some(HierarchyMarkerPathResult {
+        path: steps.into_iter().map(|s| (s.rx, s.ry)).collect(),
+        progress_cell: progress.progress_cell(),
+        progress_index: progress.progress_index(),
+    })
 }
 
 /// Resolve a gamemd foundation name into pathfinding footprint dimensions.

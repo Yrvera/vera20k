@@ -206,6 +206,9 @@ pub struct GeneralRules {
     pub sov_paradrop_list: Vec<(String, u32)>,
     /// Yuri paradrop list. Default `[("INIT", 6)]`.
     pub yuri_paradrop_list: Vec<(String, u32)>,
+    /// Unit types that count as a player's home when no buildings remain.
+    /// Parsed from `[General] BaseUnit=`. Stock YR: AMCV, SMCV, PCV.
+    pub base_unit_types: Vec<String>,
     /// Whether ore cells grow denser over time (TiberiumGrows= in [General]).
     /// Default true. Can be overridden per-map in [SpecialFlags].
     pub tiberium_grows: bool,
@@ -246,6 +249,10 @@ pub struct GeneralRules {
     /// Parsed from [AudioVisual] BuildingGarrisonedSound (typically "BuildingGarrisoned").
     /// None = no sound configured. Resolved at app layer to a sound.ini entry.
     pub building_garrisoned_sound: Option<String>,
+    /// SFX played when a paradropped passenger successfully deploys a parachute.
+    /// Parsed from [AudioVisual] ChuteSound (stock "ParachuteDrop").
+    /// None = no sound configured. Resolved at app layer to a sound.ini entry.
+    pub chute_sound: Option<String>,
     /// Sound event for shell main-menu buttons from [AudioVisual] GUIMainButtonSound.
     pub gui_main_button_sound: Option<String>,
     /// Generic shell click sound from [AudioVisual] GenericClick.
@@ -545,6 +552,7 @@ impl Default for GeneralRules {
             ally_paradrop_list: vec![("E1".to_string(), 6)],
             sov_paradrop_list: vec![("E2".to_string(), 9)],
             yuri_paradrop_list: vec![("INIT".to_string(), 6)],
+            base_unit_types: vec!["AMCV".to_string(), "SMCV".to_string(), "PCV".to_string()],
             tiberium_grows: true,
             tiberium_spreads: true,
             growth_rate_minutes: 5.0,
@@ -575,6 +583,7 @@ impl Default for GeneralRules {
             condition_red: 0.25,
             condition_red_x1000: 250,
             building_garrisoned_sound: None,
+            chute_sound: None,
             gui_main_button_sound: None,
             generic_click_sound: None,
             gui_checkbox_sound: None,
@@ -875,6 +884,16 @@ impl GeneralRules {
                 false,
                 vec![("INIT".to_string(), 6)],
             ),
+            base_unit_types: general
+                .get_list("BaseUnit")
+                .map(|items| {
+                    items
+                        .into_iter()
+                        .map(|s| s.trim().to_ascii_uppercase())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                })
+                .unwrap_or_else(|| defaults.base_unit_types),
             tiberium_grows: general.get_bool("TiberiumGrows").unwrap_or(true),
             tiberium_spreads: general.get_bool("TiberiumSpreads").unwrap_or(true),
             growth_rate_minutes: general.get_f32("GrowthRate").unwrap_or(5.0),
@@ -886,6 +905,11 @@ impl GeneralRules {
             condition_red_x1000: (condition_red_f32 as f64 * 1000.0) as i64,
             building_garrisoned_sound: audio_visual
                 .and_then(|s| s.get("BuildingGarrisonedSound"))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            chute_sound: audio_visual
+                .and_then(|s| s.get("ChuteSound"))
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string),
@@ -2590,6 +2614,30 @@ BuildingGarrisonedSound=BuildingGarrisoned
     }
 
     #[test]
+    fn test_chute_sound_parsed() {
+        let ini_str = "\
+[General]
+[AudioVisual]
+ChuteSound=CustomDrop
+";
+        let ini = IniFile::from_str(ini_str);
+        let general = GeneralRules::from_ini(&ini);
+        assert_eq!(general.chute_sound.as_deref(), Some("CustomDrop"));
+    }
+
+    #[test]
+    fn test_stock_chute_sound_parsed() {
+        let ini_str = "\
+[General]
+[AudioVisual]
+ChuteSound=ParachuteDrop
+";
+        let ini = IniFile::from_str(ini_str);
+        let general = GeneralRules::from_ini(&ini);
+        assert_eq!(general.chute_sound.as_deref(), Some("ParachuteDrop"));
+    }
+
+    #[test]
     fn test_gui_main_button_sound_parsed() {
         let ini_str = "\
 [General]
@@ -2629,6 +2677,7 @@ GUIComboCloseSound=ComboClose
         let ini_str = concat!(
             "[General]\n",
             "[AudioVisual]\n",
+            "ChuteSound=  ParachuteDrop  \n",
             "GenericClick=  MenuClick  \n",
             "GUICheckboxSound=\n",
             "GUIComboOpenSound=   \n",
@@ -2636,6 +2685,7 @@ GUIComboCloseSound=ComboClose
         );
         let ini = IniFile::from_str(ini_str);
         let general = GeneralRules::from_ini(&ini);
+        assert_eq!(general.chute_sound.as_deref(), Some("ParachuteDrop"));
         assert_eq!(general.generic_click_sound.as_deref(), Some("MenuClick"));
         assert!(general.gui_checkbox_sound.is_none());
         assert!(general.gui_combo_open_sound.is_none());
@@ -2687,6 +2737,32 @@ BarrelParticle=SmallGreySSys
         let ini = IniFile::from_str(ini_str);
         let general = GeneralRules::from_ini(&ini);
         assert!(general.building_garrisoned_sound.is_none());
+    }
+
+    #[test]
+    fn test_chute_sound_empty_treated_as_none() {
+        let ini_str = "\
+[General]
+[AudioVisual]
+ChuteSound=
+";
+        let ini = IniFile::from_str(ini_str);
+        let general = GeneralRules::from_ini(&ini);
+        assert!(general.chute_sound.is_none());
+    }
+
+    #[test]
+    fn base_unit_types_parse_from_general() {
+        let ini = IniFile::from_str("[General]\nBaseUnit=AMCV,SMCV,PCV\n");
+        let general = GeneralRules::from_ini(&ini);
+        assert_eq!(general.base_unit_types, vec!["AMCV", "SMCV", "PCV"]);
+    }
+
+    #[test]
+    fn base_unit_types_default_to_stock_yr() {
+        let ini = IniFile::from_str("[General]\n");
+        let general = GeneralRules::from_ini(&ini);
+        assert_eq!(general.base_unit_types, vec!["AMCV", "SMCV", "PCV"]);
     }
 
     #[test]

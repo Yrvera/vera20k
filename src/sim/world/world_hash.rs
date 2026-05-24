@@ -180,8 +180,7 @@ impl Simulation {
         for (&(rx, ry), spawner) in &self.production.terrain_spawners {
             rx.hash(hasher);
             ry.hash(hasher);
-            spawner.type_ref.hash(hasher);
-            spawner.animation_probability_micros.hash(hasher);
+            spawner.hash(hasher);
         }
         self.production.default_ore_overlay_id.hash(hasher);
         // Hash refinery radio/contact state.
@@ -672,18 +671,46 @@ mod particle_hash_tests {
         let mut sim_a = Simulation::new();
         let sim_b = Simulation::new();
         let type_ref = sim_a.interner.intern("TIBTRE01");
-        sim_a.production.terrain_spawners.insert(
-            (10, 10),
-            TerrainSpawnerState {
-                type_ref,
-                animation_probability_micros: 3000,
-            },
-        );
+        sim_a
+            .production
+            .terrain_spawners
+            .insert((10, 10), TerrainSpawnerState::new(type_ref, 3000, 3, 22));
 
         assert_ne!(
             sim_a.state_hash(),
             sim_b.state_hash(),
             "terrain_spawners must affect state hash",
+        );
+    }
+
+    #[test]
+    fn terrain_spawner_active_fields_change_state_hash() {
+        use crate::sim::terrain_spawn::{TerrainSpawnerPhase, TerrainSpawnerState};
+
+        let mut sim_a = Simulation::new();
+        let mut sim_b = Simulation::new();
+        let type_ref = sim_a.interner.intern("TIBTRE01");
+        let state = TerrainSpawnerState::new(type_ref, 3000, 3, 22);
+        sim_a
+            .production
+            .terrain_spawners
+            .insert((10, 10), state.clone());
+        sim_b.production.terrain_spawners.insert((10, 10), state);
+        assert_eq!(sim_a.state_hash(), sim_b.state_hash());
+
+        let spawner_b = sim_b
+            .production
+            .terrain_spawners
+            .get_mut(&(10, 10))
+            .unwrap();
+        spawner_b.phase = TerrainSpawnerPhase::Active {
+            current_frame: 1,
+            ticks_until_next_frame: 2,
+        };
+        assert_ne!(
+            sim_a.state_hash(),
+            sim_b.state_hash(),
+            "all terrain spawner state fields must affect state hash",
         );
     }
 }

@@ -16,16 +16,17 @@
 //! - Part of sim/ — depends on sim/zone_map, sim/pathfinding, sim/locomotor.
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
-use std::cmp::Reverse;
+use std::cmp::Ordering;
 use std::collections::{BTreeSet, BinaryHeap};
 
-use super::{LayeredEntityBlockMap, SearchMarkerOverlay};
+use super::{BlockerNeighborCounts, LayeredEntityBlockMap, SearchMarkerOverlay};
 
 use super::terrain_cost::TerrainCostGrid;
+use super::zone_hierarchy::{ZonePrecheckExclusions, ZonePrecheckOutcome, zone_precheck_flat};
 use super::zone_map::{ZONE_INVALID, ZoneAdjacency, ZoneGrid, ZoneId, ZoneMap};
 use super::{
     LayeredPathStep, PathGrid, find_layered_path_marker, find_path_with_costs_corridor_marker,
-    find_path_with_costs_marker,
+    find_path_with_costs_hierarchy_marker_progress, find_path_with_costs_marker,
 };
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::map::tube_facts::TubeSource;
@@ -119,6 +120,16 @@ fn can_reach_through_explicit_tube(
     })
 }
 
+fn has_explicit_tube_scenario(resolved_terrain: Option<&ResolvedTerrainGrid>) -> bool {
+    let Some(terrain) = resolved_terrain else {
+        return false;
+    };
+    terrain
+        .tube_facts()
+        .iter()
+        .any(|tube| tube.source == TubeSource::ExplicitMap && tube.path_len() > 0)
+}
+
 /// Zone-aware path search for flat (ground-only) paths.
 ///
 /// Uses zone reachability plus a corridor-Dijkstra approximation, then runs A*
@@ -155,13 +166,49 @@ pub fn find_path_zoned(
         resolved_terrain,
         entity_block_map,
         None,
+        None,
         urgency,
         mover_is_crusher,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn find_path_zoned_marker(
+pub(crate) fn find_path_zoned_marker(
+    grid: &PathGrid,
+    start: (u16, u16),
+    goal: (u16, u16),
+    costs: Option<&TerrainCostGrid>,
+    entity_blocks: Option<&BTreeSet<(u16, u16)>>,
+    zone_grid: Option<&ZoneGrid>,
+    mz: MovementZone,
+    movement_zone: Option<MovementZone>,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    entity_block_map: Option<&LayeredEntityBlockMap>,
+    marker_overlay: Option<&SearchMarkerOverlay>,
+    blocker_neighbor_counts: Option<&BlockerNeighborCounts>,
+    urgency: u8,
+    mover_is_crusher: bool,
+) -> Option<Vec<(u16, u16)>> {
+    find_path_zoned_marker_inner(
+        grid,
+        start,
+        goal,
+        costs,
+        entity_blocks,
+        zone_grid,
+        mz,
+        movement_zone,
+        resolved_terrain,
+        entity_block_map,
+        marker_overlay,
+        urgency,
+        mover_is_crusher,
+        blocker_neighbor_counts,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn find_path_zoned_marker_inner(
     grid: &PathGrid,
     start: (u16, u16),
     goal: (u16, u16),
@@ -175,6 +222,7 @@ pub fn find_path_zoned_marker(
     marker_overlay: Option<&SearchMarkerOverlay>,
     urgency: u8,
     mover_is_crusher: bool,
+    blocker_neighbor_counts: Option<&BlockerNeighborCounts>,
 ) -> Option<Vec<(u16, u16)>> {
     if !can_use_reduced_zone_precheck(movement_zone) {
         return find_path_with_costs_marker(
@@ -226,6 +274,62 @@ pub fn find_path_zoned_marker(
     let start_zone = zone_map.zone_at(start.0, start.1, MovementLayer::Ground);
     let goal_zone = zone_map.zone_at(goal.0, goal.1, MovementLayer::Ground);
     let zones_match = start_zone == goal_zone;
+
+    let hierarchy_counts_available = blocker_neighbor_counts.is_some();
+    let explicit_tube_deferred = has_explicit_tube_scenario(resolved_terrain);
+    if hierarchy_counts_available
+        && !explicit_tube_deferred
+        && let Some(hierarchy) = zg.hierarchy_for(mz)
+        && let Some(level0_zones) = hierarchy.level(0)
+    {
+        let hierarchy_start_zone = level0_zones.zone_at(start.0, start.1);
+        let hierarchy_goal_zone = level0_zones.zone_at(goal.0, goal.1);
+        match zone_precheck_flat(
+            hierarchy,
+            hierarchy_start_zone,
+            hierarchy_goal_zone,
+            movement_zone.unwrap_or(mz),
+            &ZonePrecheckExclusions::default(),
+        ) {
+            ZonePrecheckOutcome::Passed(result) => {
+                return find_path_with_costs_hierarchy_marker_progress(
+                    grid,
+                    start,
+                    goal,
+                    costs,
+                    entity_blocks,
+                    level0_zones,
+                    &result.marked[0],
+                    blocker_neighbor_counts.expect("checked above"),
+                    &result.paths[0],
+                    movement_zone,
+                    resolved_terrain,
+                    entity_block_map,
+                    marker_overlay,
+                    urgency,
+                    mover_is_crusher,
+                )
+                .map(|result| result.path);
+            }
+            ZonePrecheckOutcome::Failed if zones_match => {
+                return find_path_with_costs_marker(
+                    grid,
+                    start,
+                    goal,
+                    costs,
+                    entity_blocks,
+                    movement_zone,
+                    resolved_terrain,
+                    entity_block_map,
+                    marker_overlay,
+                    urgency,
+                    mover_is_crusher,
+                );
+            }
+            ZonePrecheckOutcome::Failed => return None,
+        }
+    }
+
     let zone_precheck_passed = zg.can_reach(
         mz,
         start,
@@ -420,6 +524,9 @@ pub fn find_layered_path_zoned_marker(
     urgency: u8,
     mover_is_crusher: bool,
 ) -> Option<Vec<LayeredPathStep>> {
+    // Foundation First deliberately leaves layered bridge routing on the
+    // compatibility path. Flat hierarchy precheck/marker gating here does not
+    // prove high-bridge route parity or retry producer parity.
     if !can_use_reduced_zone_precheck(movement_zone) {
         return find_layered_path_marker(
             grid,
@@ -488,9 +595,34 @@ pub fn find_layered_path_zoned_marker(
 // Hierarchical zone Dijkstra
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+struct ZoneQueueEntry {
+    cost: i32,
+    sequence: u32,
+    zone: ZoneId,
+}
+
+impl Ord for ZoneQueueEntry {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other
+            .cost
+            .cmp(&self.cost)
+            .then_with(|| other.sequence.cmp(&self.sequence))
+    }
+}
+
+impl PartialOrd for ZoneQueueEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 /// Find the cheapest coarse route through the zone adjacency graph.
 /// Returns an ordered sequence of zone IDs from start to goal.
-/// Edge cost = Manhattan distance between zone centers.
+///
+/// Edge cost still uses Rust's centroid Manhattan approximation, but equal-cost
+/// ties follow gamemd.exe `Zone_precheck`: adjacency discovery order wins and
+/// `ZoneId` is not a tie key.
 pub(super) fn find_zone_corridor(
     zone_map: &ZoneMap,
     adjacency: &ZoneAdjacency,
@@ -505,18 +637,21 @@ pub(super) fn find_zone_corridor(
         return Some(vec![start_zone]);
     }
 
-    let goal_center = zone_map.info_for(goal_zone)?.center;
-
-    // A* on zone graph: (f_cost, g_cost, zone_id).
+    // Dijkstra on the zone graph with stable insertion-order ties.
     let zone_count = zone_map.zone_count as usize;
     let mut dist: Vec<i32> = vec![i32::MAX; zone_count + 1]; // 1-indexed
     let mut prev: Vec<ZoneId> = vec![ZONE_INVALID; zone_count + 1];
-    let mut heap: BinaryHeap<Reverse<(i32, i32, ZoneId)>> = BinaryHeap::new();
+    let mut heap: BinaryHeap<ZoneQueueEntry> = BinaryHeap::new();
+    let mut next_sequence: u32 = 1;
 
     dist[start_zone as usize] = 0;
-    heap.push(Reverse((0, 0, start_zone)));
+    heap.push(ZoneQueueEntry {
+        cost: 0,
+        sequence: 0,
+        zone: start_zone,
+    });
 
-    while let Some(Reverse((_f_cost, cost, zone))) = heap.pop() {
+    while let Some(ZoneQueueEntry { cost, zone, .. }) = heap.pop() {
         if zone == goal_zone {
             // Reconstruct path.
             let mut path = Vec::new();
@@ -547,9 +682,12 @@ pub(super) fn find_zone_corridor(
             if new_cost < dist[neighbor as usize] {
                 dist[neighbor as usize] = new_cost;
                 prev[neighbor as usize] = zone;
-                // f = g + h (A* on zone graph for speed)
-                let h = manhattan(n_info.center, goal_center);
-                heap.push(Reverse((new_cost + h, new_cost, neighbor)));
+                heap.push(ZoneQueueEntry {
+                    cost: new_cost,
+                    sequence: next_sequence,
+                    zone: neighbor,
+                });
+                next_sequence = next_sequence.wrapping_add(1);
             }
         }
     }

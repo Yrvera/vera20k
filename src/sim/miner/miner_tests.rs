@@ -1245,6 +1245,161 @@ fn chrono_close_hello_refused_stages_at_queueingcell_without_receiver_eviction()
     );
 }
 
+#[test]
+fn cmin_close_hello_success_defers_can_dock_to_mission_enter() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let config = MinerConfig::from_general_rules(&rules.general);
+    let grid = PathGrid::new(64, 64);
+
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::Chrono, 40, 40);
+    spawn_refinery(&mut sim, 2, 10, 10);
+
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        for _ in 0..miner.capacity_bales {
+            miner.cargo.push(CargoBale {
+                resource_type: ResourceType::Ore,
+                value: 25,
+            });
+        }
+        miner.state = MinerState::ReturnToRefinery;
+    }
+
+    super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
+
+    let entity = sim.entities.get(miner_id).expect("miner entity");
+    let miner = entity.miner.as_ref().expect("miner component");
+    assert_eq!(miner.state, MinerState::Dock);
+    assert_eq!(miner.dock_phase, RefineryDockPhase::MissionEnter);
+    assert!(sim.production.dock_reservations.has_contact(2, miner_id));
+    assert!(
+        !sim.production
+            .dock_reservations
+            .has_contact_entered(2, miner_id),
+        "HELLO success must not set the entered flag"
+    );
+    assert!(
+        entity.movement_target.is_none(),
+        "HELLO success must not issue CAN_DOCK movement in the same tick"
+    );
+
+    super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
+
+    let entity = sim.entities.get(miner_id).expect("miner entity");
+    let movement = entity
+        .movement_target
+        .as_ref()
+        .expect("MissionEnter should now issue CAN_DOCK movement");
+    assert_eq!(
+        movement
+            .final_goal
+            .or_else(|| movement.path.last().copied()),
+        Some((13, 11)),
+        "CAN_DOCK must use accepted cell, not QueueingCell"
+    );
+    assert!(
+        !sim.production
+            .dock_reservations
+            .has_contact_entered(2, miner_id)
+    );
+}
+
+#[test]
+fn cmin_refused_close_return_stages_at_queueingcell_then_can_dock_uses_accepted_cell() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let config = MinerConfig::from_general_rules(&rules.general);
+    let grid = PathGrid::new(64, 64);
+
+    let occupant = spawn_miner(&mut sim, 1, MinerKind::Chrono, 13, 11);
+    spawn_refinery(&mut sim, 2, 10, 10);
+    let waiter = spawn_miner(&mut sim, 3, MinerKind::Chrono, 20, 10);
+    assert!(sim.production.dock_reservations.try_reserve(2, occupant));
+    sim.production
+        .dock_reservations
+        .mark_contact_entered(2, occupant);
+    sim.production.dock_reservations.link_on_pad(2, occupant);
+
+    {
+        let entity = sim.entities.get_mut(waiter).expect("waiter entity");
+        let miner = entity.miner.as_mut().expect("waiter miner");
+        for _ in 0..miner.capacity_bales {
+            miner.cargo.push(CargoBale {
+                resource_type: ResourceType::Ore,
+                value: 25,
+            });
+        }
+        miner.state = MinerState::ReturnToRefinery;
+    }
+
+    super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
+
+    let waiter_entity = sim.entities.get(waiter).expect("waiter entity");
+    let waiter_miner = waiter_entity.miner.as_ref().expect("waiter miner");
+    assert_eq!(waiter_miner.state, MinerState::Dock);
+    assert_eq!(waiter_miner.dock_phase, RefineryDockPhase::Approach);
+    assert!(waiter_miner.dock_queued);
+    assert!(sim.production.dock_reservations.is_waiting(2, waiter));
+    let movement = waiter_entity
+        .movement_target
+        .as_ref()
+        .expect("refused close-return miner should stage at QueueingCell");
+    assert_eq!(
+        movement
+            .final_goal
+            .or_else(|| movement.path.last().copied()),
+        Some((14, 11)),
+        "refused close return stages at QueueingCell"
+    );
+
+    sim.production.dock_reservations.release_on_pad(2, occupant);
+    sim.production
+        .dock_reservations
+        .release_contact(2, occupant);
+    {
+        let entity = sim.entities.get_mut(waiter).expect("waiter entity");
+        entity.position.rx = 14;
+        entity.position.ry = 11;
+        entity.position.refresh_screen_coords();
+        entity.movement_target = None;
+    }
+
+    super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
+    let waiter_miner = get_miner(&sim, waiter);
+    assert_eq!(
+        waiter_miner.dock_phase,
+        RefineryDockPhase::MissionEnter,
+        "Approach after release performs HELLO only"
+    );
+    assert!(sim.production.dock_reservations.has_contact(2, waiter));
+    assert!(
+        !sim.production
+            .dock_reservations
+            .has_contact_entered(2, waiter)
+    );
+
+    super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
+    let waiter_entity = sim.entities.get(waiter).expect("waiter entity");
+    let movement = waiter_entity
+        .movement_target
+        .as_ref()
+        .expect("MissionEnter should move from QueueingCell to accepted cell");
+    assert_eq!(
+        movement
+            .final_goal
+            .or_else(|| movement.path.last().copied()),
+        Some((13, 11)),
+        "accepted CAN_DOCK uses NW+(3,1), not QueueingCell"
+    );
+    assert!(
+        !sim.production
+            .dock_reservations
+            .has_contact_entered(2, waiter)
+    );
+}
+
 // ==========================================================================
 // Test: Chrono miner does NOT warp outbound -- only inbound to refinery
 // ==========================================================================
@@ -2730,6 +2885,84 @@ fn accepted_cell_arrival_rechecks_can_dock_before_entered_flag() {
 }
 
 #[test]
+fn waiter_moves_from_queueingcell_to_accepted_cell_before_entered() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    let waiter = spawn_miner(&mut sim, 1, MinerKind::War, 14, 11);
+    spawn_refinery(&mut sim, 2, 10, 10);
+
+    {
+        let entity = sim.entities.get_mut(waiter).expect("waiter entity");
+        let miner = entity.miner.as_mut().expect("waiter miner");
+        miner.cargo.push(CargoBale {
+            resource_type: ResourceType::Ore,
+            value: 25,
+        });
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::MissionEnter;
+        miner.reserved_refinery = Some(2);
+    }
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    let waiter_miner = get_miner(&sim, waiter);
+    assert_eq!(
+        waiter_miner.dock_phase,
+        RefineryDockPhase::AwaitingAcceptedCell
+    );
+    assert!(sim.production.dock_reservations.has_contact(2, waiter));
+    assert!(
+        !sim.production
+            .dock_reservations
+            .has_contact_entered(2, waiter),
+        "QueueingCell position must not count as entered"
+    );
+    let entity = sim.entities.get(waiter).expect("waiter entity");
+    let accepted_cell_move_issued = entity
+        .movement_target
+        .as_ref()
+        .and_then(|target| target.path.last().copied())
+        == Some((13, 11));
+    assert!(
+        accepted_cell_move_issued || (entity.position.rx, entity.position.ry) == (13, 11),
+        "CAN_DOCK should move from QueueingCell (14,11) to accepted cell (13,11)"
+    );
+
+    {
+        let entity = sim.entities.get_mut(waiter).expect("waiter entity");
+        entity.position.rx = 13;
+        entity.position.ry = 11;
+        entity.position.refresh_screen_coords();
+        entity.movement_target = None;
+    }
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    let waiter_miner = get_miner(&sim, waiter);
+    assert_eq!(
+        waiter_miner.dock_phase,
+        RefineryDockPhase::MissionEnter,
+        "accepted-cell move completion must re-enter CAN_DOCK before linking"
+    );
+    assert!(
+        !sim.production
+            .dock_reservations
+            .has_contact_entered(2, waiter)
+    );
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    let waiter_miner = get_miner(&sim, waiter);
+    assert_eq!(waiter_miner.dock_phase, RefineryDockPhase::Linked);
+    assert!(
+        sim.production
+            .dock_reservations
+            .has_contact_entered(2, waiter)
+    );
+}
+
+#[test]
 fn occupied_can_dock_defers_without_clearing_waiting_miner_target() {
     let mut sim = Simulation::new();
     let rules = miner_rules();
@@ -2831,6 +3064,228 @@ fn queued_miner_enters_after_contact_and_pad_are_released() {
     let miner = get_miner(&sim, waiter);
     assert_eq!(miner.dock_phase, RefineryDockPhase::Linked);
     assert!(!miner.dock_queued);
+    assert!(sim.production.dock_reservations.has_contact(2, waiter));
+    assert!(
+        sim.production
+            .dock_reservations
+            .has_contact_entered(2, waiter)
+    );
+}
+
+#[test]
+fn two_miners_waiter_after_releaser_same_tick_claims_on_own_mission_enter() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    let occupant = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
+    let waiter = spawn_miner(&mut sim, 3, MinerKind::War, 13, 11);
+    spawn_refinery(&mut sim, 2, 10, 10);
+
+    {
+        let entity = sim.entities.get_mut(occupant).expect("occupant entity");
+        let miner = entity.miner.as_mut().expect("occupant miner");
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::Departing;
+        miner.reserved_refinery = Some(2);
+    }
+    assert!(sim.production.dock_reservations.try_reserve(2, occupant));
+    sim.production
+        .dock_reservations
+        .mark_contact_entered(2, occupant);
+    sim.production.dock_reservations.link_on_pad(2, occupant);
+
+    {
+        let entity = sim.entities.get_mut(waiter).expect("waiter entity");
+        let miner = entity.miner.as_mut().expect("waiter miner");
+        miner.cargo.push(CargoBale {
+            resource_type: ResourceType::Ore,
+            value: 25,
+        });
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::MissionEnter;
+        miner.reserved_refinery = Some(2);
+        miner.dock_queued = true;
+    }
+    assert_eq!(
+        sim.production.dock_reservations.hello_or_wait(2, waiter, 1),
+        crate::sim::miner::miner_dock::ContactAdmission::Waiting
+    );
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    let occupant_miner = get_miner(&sim, occupant);
+    assert_eq!(occupant_miner.state, MinerState::SearchOre);
+    assert!(!sim.production.dock_reservations.has_contact(2, occupant));
+    assert!(!sim.production.dock_reservations.is_on_pad(2, occupant));
+
+    let waiter_miner = get_miner(&sim, waiter);
+    assert_eq!(
+        waiter_miner.dock_phase,
+        RefineryDockPhase::Linked,
+        "mission-dispatch-eligible waiter should claim only during its own MissionEnter pass"
+    );
+    assert!(!waiter_miner.dock_queued);
+    assert!(sim.production.dock_reservations.has_contact(2, waiter));
+    assert!(
+        sim.production
+            .dock_reservations
+            .has_contact_entered(2, waiter)
+    );
+    assert!(
+        !sim.production.dock_reservations.is_on_pad(2, waiter),
+        "already-there CAN_DOCK sets entered/contact state before pad-arrival handoff"
+    );
+
+    let occupant_entity = sim.entities.get(occupant).expect("occupant entity");
+    assert!(occupant_entity.forced_drive_track.is_none());
+    assert!(occupant_entity.movement_target.is_none());
+}
+
+#[test]
+fn two_miners_waiter_after_releaser_approach_hello_only() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    let occupant = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
+    let waiter = spawn_miner(&mut sim, 3, MinerKind::War, 14, 11);
+    spawn_refinery(&mut sim, 2, 10, 10);
+
+    {
+        let entity = sim.entities.get_mut(occupant).expect("occupant entity");
+        let miner = entity.miner.as_mut().expect("occupant miner");
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::Departing;
+        miner.reserved_refinery = Some(2);
+    }
+    assert!(sim.production.dock_reservations.try_reserve(2, occupant));
+    sim.production
+        .dock_reservations
+        .mark_contact_entered(2, occupant);
+    sim.production.dock_reservations.link_on_pad(2, occupant);
+
+    {
+        let entity = sim.entities.get_mut(waiter).expect("waiter entity");
+        let miner = entity.miner.as_mut().expect("waiter miner");
+        miner.cargo.push(CargoBale {
+            resource_type: ResourceType::Ore,
+            value: 25,
+        });
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::Approach;
+        miner.reserved_refinery = Some(2);
+        miner.dock_queued = true;
+    }
+    assert_eq!(
+        sim.production.dock_reservations.hello_or_wait(2, waiter, 1),
+        crate::sim::miner::miner_dock::ContactAdmission::Waiting
+    );
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    let waiter_miner = get_miner(&sim, waiter);
+    assert_eq!(
+        waiter_miner.dock_phase,
+        RefineryDockPhase::MissionEnter,
+        "Approach must perform only HELLO, even after an earlier same-tick release"
+    );
+    assert!(!waiter_miner.dock_queued);
+    assert!(sim.production.dock_reservations.has_contact(2, waiter));
+    assert!(
+        !sim.production
+            .dock_reservations
+            .has_contact_entered(2, waiter)
+    );
+    assert!(!sim.production.dock_reservations.is_on_pad(2, waiter));
+    assert!(
+        sim.entities
+            .get(waiter)
+            .expect("waiter entity")
+            .movement_target
+            .is_none(),
+        "HELLO acceptance must not collapse into CAN_DOCK movement"
+    );
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    let waiter_miner = get_miner(&sim, waiter);
+    assert_eq!(
+        waiter_miner.dock_phase,
+        RefineryDockPhase::AwaitingAcceptedCell
+    );
+    assert!(
+        !sim.production
+            .dock_reservations
+            .has_contact_entered(2, waiter)
+    );
+}
+
+#[test]
+fn two_miners_waiter_before_releaser_not_retroactively_promoted() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    let waiter = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
+    spawn_refinery(&mut sim, 2, 10, 10);
+    let occupant = spawn_miner(&mut sim, 3, MinerKind::War, 13, 11);
+
+    {
+        let entity = sim.entities.get_mut(waiter).expect("waiter entity");
+        let miner = entity.miner.as_mut().expect("waiter miner");
+        miner.cargo.push(CargoBale {
+            resource_type: ResourceType::Ore,
+            value: 25,
+        });
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::MissionEnter;
+        miner.reserved_refinery = Some(2);
+        miner.dock_queued = true;
+    }
+
+    {
+        let entity = sim.entities.get_mut(occupant).expect("occupant entity");
+        let miner = entity.miner.as_mut().expect("occupant miner");
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::Departing;
+        miner.reserved_refinery = Some(2);
+    }
+    assert!(sim.production.dock_reservations.try_reserve(2, occupant));
+    sim.production
+        .dock_reservations
+        .mark_contact_entered(2, occupant);
+    sim.production.dock_reservations.link_on_pad(2, occupant);
+    assert_eq!(
+        sim.production.dock_reservations.hello_or_wait(2, waiter, 1),
+        crate::sim::miner::miner_dock::ContactAdmission::Waiting
+    );
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    let waiter_miner = get_miner(&sim, waiter);
+    assert_eq!(
+        waiter_miner.dock_phase,
+        RefineryDockPhase::MissionEnter,
+        "waiter already processed before release; no retroactive promotion"
+    );
+    assert!(waiter_miner.dock_queued);
+    assert!(sim.production.dock_reservations.is_waiting(2, waiter));
+    assert!(!sim.production.dock_reservations.has_contact(2, waiter));
+    assert!(
+        !sim.production
+            .dock_reservations
+            .has_contact_entered(2, waiter)
+    );
+    assert!(!sim.production.dock_reservations.is_on_pad(2, waiter));
+    assert_eq!(get_miner(&sim, occupant).state, MinerState::SearchOre);
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    let waiter_miner = get_miner(&sim, waiter);
+    assert_eq!(
+        waiter_miner.dock_phase,
+        RefineryDockPhase::Linked,
+        "waiter enters only on its next own MissionEnter pass"
+    );
+    assert!(!waiter_miner.dock_queued);
     assert!(sim.production.dock_reservations.has_contact(2, waiter));
     assert!(
         sim.production

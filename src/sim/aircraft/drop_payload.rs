@@ -413,6 +413,14 @@ mod tests {
         let result = try_drop(&mut sim, &rules, aircraft_id, 4, None);
 
         assert_eq!(result, DropResult::Success);
+        assert_eq!(
+            sim.sound_events
+                .iter()
+                .filter(|event| matches!(event, SimSoundEvent::ChuteSound { .. }))
+                .count(),
+            1,
+            "successful passenger drop should emit exactly one ChuteSound"
+        );
         let passenger = sim.entities.get(passenger_id).expect("passenger exists");
         assert_eq!((passenger.position.rx, passenger.position.ry), (51, 20));
         let sub_cell = passenger
@@ -465,6 +473,12 @@ mod tests {
         let result = try_drop(&mut sim, &rules, aircraft_id, 4, None);
 
         assert_eq!(result, DropResult::ImpassableRetry);
+        assert!(
+            sim.sound_events
+                .iter()
+                .all(|event| !matches!(event, SimSoundEvent::ChuteSound { .. })),
+            "failed placement retry must not emit ChuteSound"
+        );
         let cargo = sim
             .entities
             .get(aircraft_id)
@@ -510,6 +524,12 @@ mod tests {
         let result = try_drop(&mut sim, &rules, aircraft_id, 1, None);
 
         assert_eq!(result, DropResult::AttachFailedRetry);
+        assert!(
+            sim.sound_events
+                .iter()
+                .all(|event| !matches!(event, SimSoundEvent::ChuteSound { .. })),
+            "attach-failed retry must not emit ChuteSound"
+        );
         let cargo = sim
             .entities
             .get(aircraft_id)

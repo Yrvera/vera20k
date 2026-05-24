@@ -32,23 +32,17 @@ pub(super) fn build_option_for_owner(
         reason = Some(BuildDisabledReason::UnbuildableTechLevel);
     } else if mode == BuildMode::Strict
         && !obj.owner.is_empty()
-        && !obj.owner.iter().any(|o| o.eq_ignore_ascii_case(owner))
+        && !owner_matches_any_build_identity(sim, owner, &obj.owner)
     {
         reason = Some(BuildDisabledReason::WrongOwner);
     } else if mode == BuildMode::Strict
         && !obj.required_houses.is_empty()
-        && !obj
-            .required_houses
-            .iter()
-            .any(|o| o.eq_ignore_ascii_case(owner))
+        && !owner_matches_any_build_identity(sim, owner, &obj.required_houses)
     {
         reason = Some(BuildDisabledReason::WrongHouse);
     } else if mode == BuildMode::Strict
         && !obj.forbidden_houses.is_empty()
-        && obj
-            .forbidden_houses
-            .iter()
-            .any(|h| h.eq_ignore_ascii_case(owner))
+        && owner_matches_any_build_identity(sim, owner, &obj.forbidden_houses)
     {
         reason = Some(BuildDisabledReason::ForbiddenHouse);
     } else if mode == BuildMode::Strict
@@ -146,6 +140,27 @@ const PROTOTYPE_BUILD_FALLBACK: bool = false;
 
 pub(super) fn prototype_fallback_enabled() -> bool {
     PROTOTYPE_BUILD_FALLBACK
+}
+
+pub(super) fn owner_matches_any_build_identity(
+    sim: &Simulation,
+    owner: &str,
+    candidates: &[String],
+) -> bool {
+    candidates
+        .iter()
+        .any(|candidate| owner_matches_build_identity(sim, owner, candidate))
+}
+
+pub(super) fn owner_matches_build_identity(sim: &Simulation, owner: &str, candidate: &str) -> bool {
+    if candidate.eq_ignore_ascii_case(owner) {
+        return true;
+    }
+    sim.interner
+        .get(owner)
+        .and_then(|owner_id| sim.houses.get(&owner_id))
+        .and_then(|house| house.country)
+        .is_some_and(|country| candidate.eq_ignore_ascii_case(sim.interner.resolve(country)))
 }
 
 /// Check if the owner has ANY completed structure from the PrerequisiteOverride list.
@@ -294,10 +309,10 @@ pub(super) fn is_production_factory(
 }
 
 const RA2_QUEUE_FRAME_MS: u64 = 66;
-#[inline]
-fn trunc_to_i32(value: f64) -> i32 {
-    value.trunc() as i32
-}
+
+/// Lower floor on production speed, matching the original `if speed == 0.0 { 0.01 }`
+/// guard in the f64 chain — expressed in PPM (10_000 = 0.01×).
+const MIN_PRODUCTION_SPEED_PPM: u64 = PRODUCTION_RATE_SCALE / 100;
 
 pub(in crate::sim) fn build_time_base_frames(
     rules: &RuleSet,
@@ -342,7 +357,7 @@ pub(super) fn effective_progress_rate_ppm_for_category(
 ) -> u64 {
     // power_speed and queue_time are both scaled by PRODUCTION_RATE_SCALE (1M).
     // effective_rate = power_speed / queue_time, also at 1M scale.
-    let power_speed: u64 = owner_power_speed_multiplier_ppm(sim, rules, owner);
+    let power_speed: u64 = owner_effective_production_speed_ppm(sim, rules, owner);
     let queue_time: u64 =
         matching_factory_time_multiplier_ppm(&sim.entities, rules, owner, category, &sim.interner);
     // (power_speed / queue_time) * PRODUCTION_RATE_SCALE
@@ -384,65 +399,95 @@ fn effective_time_to_build_frames_for_object(
     obj: &crate::rules::object_type::ObjectType,
     base_frames: u32,
 ) -> u32 {
-    let speed = owner_effective_production_speed(sim, rules, owner);
-    let mut time_to_build = trunc_to_i32(base_frames as f64 / speed.max(0.01));
-    time_to_build = apply_multiple_factory_scaling(
+    // time = base_frames / speed = base_frames * PRODUCTION_RATE_SCALE / speed_ppm.
+    let speed_ppm = owner_effective_production_speed_ppm(sim, rules, owner).max(MIN_PRODUCTION_SPEED_PPM);
+    let mut time_to_build: u64 = ((u128::from(base_frames) * u128::from(PRODUCTION_RATE_SCALE))
+        / u128::from(speed_ppm)) as u64;
+    time_to_build = apply_multiple_factory_scaling_ppm(
         time_to_build,
-        rules.production.multiple_factory,
+        rules.production.multiple_factory_ppm,
         matching_factory_count_for_owner(&sim.entities, rules, owner, obj.category, &sim.interner),
     );
     if obj.category == ObjectCategory::Building && obj.wall {
-        time_to_build = trunc_to_i32(
-            time_to_build as f64 * rules.production.wall_build_speed_coefficient as f64,
-        );
+        // Wall coefficient is f32 in rules and only consumed by this UI-display
+        // helper. The conversion `(f32 as f64 * 1e6) as u64` is bit-exact on
+        // every IEEE-754 platform; sim-hashed state never reads this branch.
+        let coef_ppm = (rules.production.wall_build_speed_coefficient.max(0.0) as f64
+            * PRODUCTION_RATE_SCALE as f64) as u64;
+        time_to_build = (u128::from(time_to_build) * u128::from(coef_ppm)
+            / u128::from(PRODUCTION_RATE_SCALE)) as u64;
     }
-    time_to_build.max(0) as u32
+    time_to_build.min(u32::MAX as u64) as u32
 }
 
-fn apply_multiple_factory_scaling(
-    time_to_build: i32,
-    multiple_factory: f32,
+/// Integer port of the original `MultipleFactory` exponential damp. Each extra
+/// matching factory multiplies the time-to-build by `multiple_factory_ppm /
+/// PRODUCTION_RATE_SCALE`, so for `n` factories the time is scaled by
+/// `mf^(n-1)`. Computed via repeated PPM-domain multiply+divide so the result
+/// is bit-exact across machines.
+fn apply_multiple_factory_scaling_ppm(
+    time_to_build: u64,
+    multiple_factory_ppm: u64,
     queue_factory_count: u32,
-) -> i32 {
-    if multiple_factory <= 0.0 || queue_factory_count <= 1 {
+) -> u64 {
+    if multiple_factory_ppm == 0 || queue_factory_count <= 1 {
         return time_to_build;
     }
     let mut scaled = time_to_build;
     for _ in 1..queue_factory_count {
-        scaled = trunc_to_i32(scaled as f64 * multiple_factory as f64);
+        scaled = (u128::from(scaled) * u128::from(multiple_factory_ppm)
+            / u128::from(PRODUCTION_RATE_SCALE)) as u64;
     }
     scaled
 }
 
-fn owner_effective_production_speed(sim: &Simulation, rules: &RuleSet, owner: &str) -> f64 {
-    let power_pct = owner_power_percentage(sim, owner);
-    let mut speed = 1.0 - (1.0 - power_pct) * rules.production.low_power_penalty_modifier as f64;
-    speed = speed.max(rules.production.min_low_power_production_speed as f64);
-    if power_pct < 1.0 {
-        speed = speed.min(rules.production.max_low_power_production_speed as f64);
+/// Effective production speed as PPM (PRODUCTION_RATE_SCALE = 1.0×). Integer
+/// port of gamemd's LowPowerPenaltyModifier formula:
+///
+/// ```text
+///   speed = 1 - (1 - power_pct) * low_power_penalty_modifier
+///   speed = max(speed, min_low_power_production_speed)
+///   if power_pct < 1.0: speed = min(speed, max_low_power_production_speed)
+///   if speed == 0: speed = 0.01
+/// ```
+///
+/// All inputs are PPM-scaled at INI parse time (`*_ppm` fields on
+/// `ProductionRules`), so the entire chain is deterministic.
+fn owner_effective_production_speed_ppm(sim: &Simulation, rules: &RuleSet, owner: &str) -> u64 {
+    let power_pct_ppm = owner_power_percentage_ppm(sim, owner);
+    let deficit_ppm = PRODUCTION_RATE_SCALE.saturating_sub(power_pct_ppm);
+    let penalty_ppm = ((u128::from(deficit_ppm)
+        * u128::from(rules.production.low_power_penalty_modifier_ppm))
+        / u128::from(PRODUCTION_RATE_SCALE)) as u64;
+    let mut speed_ppm = PRODUCTION_RATE_SCALE.saturating_sub(penalty_ppm);
+    speed_ppm = speed_ppm.max(rules.production.min_low_power_production_speed_ppm);
+    if power_pct_ppm < PRODUCTION_RATE_SCALE {
+        speed_ppm = speed_ppm.min(rules.production.max_low_power_production_speed_ppm);
     }
-    if speed == 0.0 { 0.01 } else { speed }
+    if speed_ppm == 0 {
+        MIN_PRODUCTION_SPEED_PPM
+    } else {
+        speed_ppm
+    }
 }
 
-fn owner_power_percentage(sim: &Simulation, owner: &str) -> f64 {
+/// Owner power ratio as PPM, clamped to `[0, PRODUCTION_RATE_SCALE]`. Returns
+/// `PRODUCTION_RATE_SCALE` (1.0×) when no power is drained (matches the
+/// original `if drained <= 0 { 1.0 }` short-circuit).
+fn owner_power_percentage_ppm(sim: &Simulation, owner: &str) -> u64 {
     let (produced, drained) = sim
         .interner
         .get(owner)
         .and_then(|id| sim.power_states.get(&id))
         .map(|state| (state.total_output, state.total_drain))
         .unwrap_or((0, 0));
-
     if drained <= 0 {
-        return 1.0;
+        return PRODUCTION_RATE_SCALE;
     }
-
-    ((produced.max(0) as f64) / (drained as f64)).clamp(0.0, 1.0)
-}
-
-/// Power-speed multiplier scaled by PRODUCTION_RATE_SCALE (1M = 1.0×).
-fn owner_power_speed_multiplier_ppm(sim: &Simulation, rules: &RuleSet, owner: &str) -> u64 {
-    (owner_effective_production_speed(sim, rules, owner) * PRODUCTION_RATE_SCALE as f64).trunc()
-        as u64
+    let produced_u = u128::from(produced.max(0) as u64);
+    let drained_u = u128::from(drained as u64);
+    let ratio_ppm = (produced_u * u128::from(PRODUCTION_RATE_SCALE)) / drained_u;
+    ratio_ppm.min(u128::from(PRODUCTION_RATE_SCALE)) as u64
 }
 
 /// Factory time multiplier scaled by PRODUCTION_RATE_SCALE (1M = 1.0×).
@@ -715,6 +760,131 @@ pub fn building_movement_blocking_cells_for_state(
             east.is_some_and(|neighbor| set.contains(&neighbor))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod production_speed_ppm_tests {
+    use super::*;
+    use crate::rules::ini_parser::IniFile;
+    use crate::rules::ruleset::RuleSet;
+    use crate::sim::world::Simulation;
+
+    /// f64 reference for the OLD chain. Used by tests to confirm the integer
+    /// PPM port matches the original formula to within 1 PPM (the rounding
+    /// budget of `f64.trunc() as u64` at the 1M scale).
+    fn reference_speed_f64(
+        produced: i32,
+        drained: i32,
+        lppm: f32,
+        min_lp: f32,
+        max_lp: f32,
+    ) -> f64 {
+        let power_pct: f64 = if drained <= 0 {
+            1.0
+        } else {
+            ((produced.max(0) as f64) / (drained as f64)).clamp(0.0, 1.0)
+        };
+        let mut speed = 1.0 - (1.0 - power_pct) * lppm as f64;
+        speed = speed.max(min_lp as f64);
+        if power_pct < 1.0 {
+            speed = speed.min(max_lp as f64);
+        }
+        if speed == 0.0 { 0.01 } else { speed }
+    }
+
+    fn rules_with_power(lppm: &str, min_lp: &str, max_lp: &str) -> RuleSet {
+        let ini = IniFile::from_str(&format!(
+            "[General]\nBuildSpeed=0.05\nLowPowerPenaltyModifier={lppm}\n\
+             MinLowPowerProductionSpeed={min_lp}\nMaxLowPowerProductionSpeed={max_lp}\n\
+             [InfantryTypes]\n[AircraftTypes]\n[BuildingTypes]\n[VehicleTypes]\n"
+        ));
+        RuleSet::from_ini(&ini).expect("should parse")
+    }
+
+    /// Direct unit test of the math: build a power state for the owner, run
+    /// `owner_effective_production_speed_ppm`, compare to the f64 reference.
+    fn assert_ppm_matches_f64(
+        produced: i32,
+        drained: i32,
+        rules: &RuleSet,
+        lppm_f: f32,
+        min_lp_f: f32,
+        max_lp_f: f32,
+    ) {
+        let mut sim = Simulation::new();
+        let owner_id = sim.interner.intern("Americans");
+        sim.power_states.insert(
+            owner_id,
+            crate::sim::power_system::PowerState {
+                total_output: produced,
+                total_drain: drained,
+                ..Default::default()
+            },
+        );
+        let got_ppm = owner_effective_production_speed_ppm(&sim, rules, "Americans");
+        let want_f64 = reference_speed_f64(produced, drained, lppm_f, min_lp_f, max_lp_f);
+        let want_ppm = (want_f64 * PRODUCTION_RATE_SCALE as f64).trunc() as u64;
+        // Integer PPM port can disagree with f64 trunc by at most 1 PPM due
+        // to rounding-vs-truncation order in the intermediate steps.
+        let diff = got_ppm.abs_diff(want_ppm);
+        assert!(
+            diff <= 1,
+            "produced={}, drained={}: got {} ppm, want {} ppm (f64 ref {})",
+            produced,
+            drained,
+            got_ppm,
+            want_ppm,
+            want_f64
+        );
+    }
+
+    #[test]
+    fn full_power_returns_one() {
+        let rules = rules_with_power("1.0", "0.5", "0.9");
+        assert_ppm_matches_f64(100, 100, &rules, 1.0, 0.5, 0.9);
+    }
+
+    #[test]
+    fn no_drain_returns_one() {
+        let rules = rules_with_power("1.0", "0.5", "0.9");
+        assert_ppm_matches_f64(50, 0, &rules, 1.0, 0.5, 0.9);
+    }
+
+    #[test]
+    fn brownout_clamps_to_max_lp() {
+        // 80% power, lppm=1.0, max_lp=0.9 → speed = 1 - 0.2 = 0.8, then min(0.8, 0.9) = 0.8.
+        let rules = rules_with_power("1.0", "0.5", "0.9");
+        assert_ppm_matches_f64(80, 100, &rules, 1.0, 0.5, 0.9);
+    }
+
+    #[test]
+    fn deep_brownout_clamps_to_min_lp() {
+        // 10% power, lppm=1.0 → speed = 1 - 0.9 = 0.1, then max(0.1, 0.5) = 0.5.
+        let rules = rules_with_power("1.0", "0.5", "0.9");
+        assert_ppm_matches_f64(10, 100, &rules, 1.0, 0.5, 0.9);
+    }
+
+    #[test]
+    fn zero_power_clamps_to_min_lp() {
+        let rules = rules_with_power("1.0", "0.5", "0.9");
+        assert_ppm_matches_f64(0, 100, &rules, 1.0, 0.5, 0.9);
+    }
+
+    #[test]
+    fn aggressive_penalty_modifier() {
+        // lppm=1.5 means each percentage-point of power loss costs 1.5pp of speed.
+        let rules = rules_with_power("1.5", "0.25", "1.0");
+        assert_ppm_matches_f64(60, 100, &rules, 1.5, 0.25, 1.0);
+        assert_ppm_matches_f64(33, 100, &rules, 1.5, 0.25, 1.0);
+        assert_ppm_matches_f64(0, 100, &rules, 1.5, 0.25, 1.0);
+    }
+
+    #[test]
+    fn over_powered_clamps_ratio_to_one() {
+        // produced > drained: power_pct must still cap at 1.0.
+        let rules = rules_with_power("1.0", "0.5", "0.9");
+        assert_ppm_matches_f64(200, 100, &rules, 1.0, 0.5, 0.9);
+    }
 }
 
 #[cfg(test)]

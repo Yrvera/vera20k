@@ -140,6 +140,15 @@ pub enum GameSoundEvent {
         screen_pos: Option<(f32, f32)>,
     },
 
+    /// Positional SFX played when a paradropped passenger successfully opens
+    /// a parachute. Resolved from [AudioVisual] ChuteSound.
+    ChuteSound {
+        /// sound.ini ID for the SFX.
+        sound_id: String,
+        /// Screen position for spatial audio.
+        screen_pos: Option<(f32, f32)>,
+    },
+
     /// Positional SFX + EVA cue from a bridge repair triggered by an engineer
     /// entering a `BridgeRepairHut`. Plays the spatial `[BridgeRepaired]`
     /// sound (resolved from `rules.bridge_rules.repair_sound`) at the hut's
@@ -193,6 +202,7 @@ impl GameSoundEvent {
             | Self::BuildingGarrisonedSfx { sound_id, .. }
             | Self::C4Planted { sound_id, .. }
             | Self::RefineryExitSfx { sound_id, .. }
+            | Self::ChuteSound { sound_id, .. }
             | Self::BridgeRepaired { sound_id, .. }
             | Self::WorldEffectStarted { sound_id, .. } => sound_id,
         }
@@ -210,6 +220,7 @@ impl GameSoundEvent {
             Self::BuildingGarrisonedSfx { screen_pos, .. } => *screen_pos,
             Self::C4Planted { screen_pos, .. } => *screen_pos,
             Self::RefineryExitSfx { screen_pos, .. } => *screen_pos,
+            Self::ChuteSound { screen_pos, .. } => *screen_pos,
             Self::BridgeRepaired { screen_pos, .. } => *screen_pos,
             Self::WorldEffectStarted { screen_pos, .. } => *screen_pos,
             _ => None,
@@ -276,6 +287,16 @@ mod tests {
         };
         assert_eq!(evt.sound_id(), "BuildingGarrisoned");
         assert_eq!(evt.screen_pos(), Some((100.0, 200.0)));
+    }
+
+    #[test]
+    fn test_chute_sound_screen_pos_accessor() {
+        let evt = GameSoundEvent::ChuteSound {
+            sound_id: "ParachuteDrop".to_string(),
+            screen_pos: Some((128.0, 256.0)),
+        };
+        assert_eq!(evt.sound_id(), "ParachuteDrop");
+        assert_eq!(evt.screen_pos(), Some((128.0, 256.0)));
     }
 
     #[test]

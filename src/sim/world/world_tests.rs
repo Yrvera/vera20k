@@ -39,6 +39,35 @@ fn empty_heights() -> BTreeMap<(u16, u16), u8> {
     BTreeMap::new()
 }
 
+fn insert_house_with_counts(
+    sim: &mut Simulation,
+    name: &str,
+    buildings: u32,
+    units: u32,
+) -> crate::sim::intern::InternedId {
+    let owner = sim.interner.intern(name);
+    let mut house = crate::sim::house_state::HouseState::new(owner, 0, None, true, 0, 10);
+    house.owned_building_count = buildings;
+    house.owned_unit_count = units;
+    sim.houses.insert(owner, house);
+    owner
+}
+
+fn insert_test_entity_for_owner(
+    sim: &mut Simulation,
+    stable_id: u64,
+    owner: crate::sim::intern::InternedId,
+    type_id: &str,
+    category: EntityCategory,
+) {
+    let owner_name = sim.interner.resolve(owner).to_string();
+    let mut entity = GameEntity::test_default(stable_id, type_id, &owner_name, 10, 10);
+    entity.owner = owner;
+    entity.type_ref = sim.interner.intern(type_id);
+    entity.category = category;
+    sim.entities.insert(entity);
+}
+
 /// Create a CommandEnvelope with a string owner, interning it via the sim's interner.
 fn cmd_envelope(
     sim: &Simulation,
@@ -375,6 +404,23 @@ fn combat_test_rules() -> RuleSet {
     RuleSet::from_ini(&ini).expect("combat test rules should parse")
 }
 
+fn short_game_defeat_test_rules() -> RuleSet {
+    let ini = IniFile::from_str(
+        "[General]\nBaseUnit=AMCV,SMCV,PCV\n\n\
+         [InfantryTypes]\n0=E1\n\n\
+         [VehicleTypes]\n0=MTNK\n1=AMCV\n2=SMCV\n3=PCV\n\n\
+         [AircraftTypes]\n\n\
+         [BuildingTypes]\n0=GACNST\n\n\
+         [E1]\nStrength=125\nArmor=flak\nSpeed=4\n\n\
+         [MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\n\n\
+         [AMCV]\nStrength=450\nArmor=heavy\nSpeed=5\nDeploysInto=GACNST\n\n\
+         [SMCV]\nStrength=450\nArmor=heavy\nSpeed=5\nDeploysInto=GACNST\n\n\
+         [PCV]\nStrength=450\nArmor=heavy\nSpeed=5\nDeploysInto=GACNST\n\n\
+         [GACNST]\nStrength=1000\nArmor=wood\nFoundation=4x3\nUndeploysInto=AMCV\n",
+    );
+    RuleSet::from_ini(&ini).expect("short game defeat test rules should parse")
+}
+
 fn naval_bridge_test_rules() -> RuleSet {
     let ini: IniFile = IniFile::from_str(
         "[InfantryTypes]\n\n\
@@ -409,6 +455,100 @@ fn teleport_command_test_rules() -> RuleSet {
          [GAREFN]\nStrength=900\nArmor=wood\nFoundation=4x3\nRefinery=yes\n",
     );
     RuleSet::from_ini(&ini).expect("teleport command rules should parse")
+}
+
+#[test]
+fn short_game_defeats_house_with_no_buildings_even_if_ordinary_units_remain() {
+    let rules = short_game_defeat_test_rules();
+    let mut sim = Simulation::new();
+    sim.game_options.short_game = true;
+    let owner = insert_house_with_counts(&mut sim, "Americans", 0, 1);
+    insert_test_entity_for_owner(&mut sim, 1, owner, "MTNK", EntityCategory::Unit);
+
+    sim.check_defeat(Some(&rules));
+
+    assert!(sim.houses[&owner].is_defeated);
+}
+
+#[test]
+fn short_game_keeps_house_alive_when_base_unit_remains() {
+    let rules = short_game_defeat_test_rules();
+    let mut sim = Simulation::new();
+    sim.game_options.short_game = true;
+    let owner = insert_house_with_counts(&mut sim, "Americans", 0, 1);
+    insert_test_entity_for_owner(&mut sim, 1, owner, "AMCV", EntityCategory::Unit);
+
+    sim.check_defeat(Some(&rules));
+
+    assert!(!sim.houses[&owner].is_defeated);
+}
+
+#[test]
+fn short_game_defeats_when_only_base_unit_is_dying() {
+    let rules = short_game_defeat_test_rules();
+    let mut sim = Simulation::new();
+    sim.game_options.short_game = true;
+    let owner = insert_house_with_counts(&mut sim, "Americans", 0, 0);
+    insert_test_entity_for_owner(&mut sim, 1, owner, "AMCV", EntityCategory::Unit);
+    sim.entities.get_mut(1).expect("AMCV inserted").dying = true;
+
+    sim.check_defeat(Some(&rules));
+
+    assert!(sim.houses[&owner].is_defeated);
+}
+
+#[test]
+fn long_game_keeps_house_alive_when_units_remain() {
+    let rules = short_game_defeat_test_rules();
+    let mut sim = Simulation::new();
+    sim.game_options.short_game = false;
+    let owner = insert_house_with_counts(&mut sim, "Americans", 0, 1);
+
+    sim.check_defeat(Some(&rules));
+
+    assert!(!sim.houses[&owner].is_defeated);
+}
+
+#[test]
+fn long_game_defeats_when_no_owned_objects_remain() {
+    let rules = short_game_defeat_test_rules();
+    let mut sim = Simulation::new();
+    sim.game_options.short_game = false;
+    let owner = insert_house_with_counts(&mut sim, "Americans", 0, 0);
+
+    sim.check_defeat(Some(&rules));
+
+    assert!(sim.houses[&owner].is_defeated);
+}
+
+#[test]
+fn short_game_victory_resolution_uses_new_defeat_state() {
+    let rules = short_game_defeat_test_rules();
+    let mut sim = Simulation::new();
+    sim.game_options.short_game = true;
+    let defeated = insert_house_with_counts(&mut sim, "Americans", 0, 1);
+    let survivor = insert_house_with_counts(&mut sim, "Russians", 1, 0);
+    insert_test_entity_for_owner(&mut sim, 1, defeated, "MTNK", EntityCategory::Unit);
+
+    sim.check_defeat(Some(&rules));
+
+    assert!(sim.houses[&defeated].is_defeated);
+    assert!(sim.houses[&survivor].has_won);
+}
+
+#[test]
+fn short_game_base_unit_survivor_prevents_enemy_victory() {
+    let rules = short_game_defeat_test_rules();
+    let mut sim = Simulation::new();
+    sim.game_options.short_game = true;
+    let mcv_owner = insert_house_with_counts(&mut sim, "Americans", 0, 1);
+    let enemy = insert_house_with_counts(&mut sim, "Russians", 1, 0);
+    insert_test_entity_for_owner(&mut sim, 1, mcv_owner, "AMCV", EntityCategory::Unit);
+
+    sim.check_defeat(Some(&rules));
+
+    assert!(!sim.houses[&mcv_owner].is_defeated);
+    assert!(!sim.houses[&enemy].has_won);
 }
 
 #[test]

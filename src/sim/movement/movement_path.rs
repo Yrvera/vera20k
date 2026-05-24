@@ -290,6 +290,7 @@ pub(super) fn find_move_path_with_marker(
         resolved_terrain,
         entity_block_map,
         marker_overlay,
+        ctx.blocker_neighbor_counts,
         urgency,
         mover_is_crusher,
     )?;
@@ -607,6 +608,7 @@ mod tests {
                 path_grid: Some(&grid),
                 zone_grid: Some(&zone_grid),
                 resolved_terrain: Some(&terrain),
+                blocker_neighbor_counts: None,
             },
             false,
             (0, 0),
@@ -642,6 +644,7 @@ mod tests {
                 path_grid: Some(&grid),
                 zone_grid: None,
                 resolved_terrain: None,
+                blocker_neighbor_counts: None,
             },
             false,
             (0, 1),

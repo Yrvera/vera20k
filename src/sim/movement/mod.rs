@@ -111,6 +111,7 @@ pub(super) struct PathfindingContext<'a> {
     pub path_grid: Option<&'a PathGrid>,
     pub zone_grid: Option<&'a ZoneGrid>,
     pub resolved_terrain: Option<&'a ResolvedTerrainGrid>,
+    pub blocker_neighbor_counts: Option<&'a crate::sim::pathfinding::BlockerNeighborCounts>,
 }
 
 /// Movement timing/threshold config derived from rules.ini [General] section.

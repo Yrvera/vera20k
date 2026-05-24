@@ -95,6 +95,113 @@ fn build_catalog_exposes_sidebar_categories_and_required_houses() {
 }
 
 #[test]
+fn named_skirmish_owner_uses_country_for_build_permissions() {
+    let mut sim = Simulation::new();
+    let rules = build_catalog_rules();
+    rules.intern_all_ids(&mut sim.interner);
+
+    let owner_id = sim.interner.intern("Commander");
+    let country_id = sim.interner.intern("Americans");
+    sim.houses.insert(
+        owner_id,
+        crate::sim::house_state::HouseState::new(
+            owner_id,
+            0,
+            Some(country_id),
+            true,
+            super::production_types::STARTING_CREDITS,
+            10,
+        ),
+    );
+    spawn_structure(&mut sim, 1, "Commander", "GACNST", 10, 10);
+
+    let options = build_options_for_owner(&sim, &rules, "Commander");
+    let yard = options
+        .iter()
+        .find(|opt| opt.type_id == sim.interner.intern("GACNST"))
+        .expect("country-matched owner should see Allied construction options");
+    assert!(yard.enabled);
+
+    let turret = options
+        .iter()
+        .find(|opt| opt.type_id == sim.interner.intern("GTUR"))
+        .expect("RequiredHouses=Americans should match the house country");
+    assert!(turret.enabled);
+}
+
+#[test]
+fn deployed_mcv_unlocks_building_options_for_named_skirmish_owner() {
+    let mut sim = Simulation::new();
+    let ini = IniFile::from_str(
+        "[InfantryTypes]\n\
+         [VehicleTypes]\n\
+         0=AMCV\n\
+         [AircraftTypes]\n\
+         [BuildingTypes]\n\
+         0=GACNST\n\
+         1=GAPOWR\n\
+         [AMCV]\n\
+         Strength=450\n\
+         Armor=heavy\n\
+         Speed=5\n\
+         TechLevel=1\n\
+         Owner=Americans\n\
+         DeploysInto=GACNST\n\
+         [GACNST]\n\
+         Name=Construction Yard\n\
+         Cost=3000\n\
+         Strength=1000\n\
+         Armor=wood\n\
+         TechLevel=1\n\
+         Owner=Americans\n\
+         Foundation=4x3\n\
+         Factory=BuildingType\n\
+         [GAPOWR]\n\
+         Name=Power Plant\n\
+         Cost=800\n\
+         Strength=750\n\
+         Armor=wood\n\
+         TechLevel=1\n\
+         Owner=Americans\n\
+         Foundation=2x2\n\
+         Prerequisite=GACNST\n",
+    );
+    let rules = RuleSet::from_ini(&ini).expect("rules should parse");
+    rules.intern_all_ids(&mut sim.interner);
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+
+    let owner_id = sim.interner.intern("Commander");
+    let country_id = sim.interner.intern("Americans");
+    sim.houses.insert(
+        owner_id,
+        crate::sim::house_state::HouseState::new(
+            owner_id,
+            0,
+            Some(country_id),
+            true,
+            super::production_types::STARTING_CREDITS,
+            10,
+        ),
+    );
+    let mcv = sim
+        .spawn_object("AMCV", "Commander", 20, 22, 64, &rules, &height_map)
+        .expect("MCV should spawn");
+    assert!(sim.deploy_mcv(mcv, &rules, &height_map));
+
+    for _ in 0..30 {
+        sim.advance_tick(&[], Some(&rules), &height_map, None, None, 33);
+    }
+
+    let options = build_options_for_owner(&sim, &rules, "Commander");
+    let power = options
+        .iter()
+        .find(|opt| opt.type_id == sim.interner.intern("GAPOWR"))
+        .expect("deployed yard should unlock first building");
+    assert!(power.enabled);
+    assert_eq!(power.reason, None);
+}
+
+#[test]
 fn queue_view_uses_owner_power_modifier() {
     let mut sim = Simulation::new();
     let rules = production_modifier_rules();

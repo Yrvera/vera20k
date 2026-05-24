@@ -77,18 +77,23 @@ impl GameSnapshot {
     /// Serialize the current simulation state into a binary save blob.
     ///
     /// The caller provides hashes of the current map and rules, the current
-    /// tick, and the map name for header metadata.
-    pub fn save(sim: &Simulation, map_hash: u64, rules_hash: u64, map_name: &str) -> Vec<u8> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+    /// tick, the map name, and the wall-clock save timestamp (seconds since
+    /// UNIX epoch) for header metadata. The timestamp is taken at the app
+    /// layer — sim/ must not read the system clock so headless/replay builds
+    /// stay clock-independent.
+    pub fn save(
+        sim: &Simulation,
+        map_hash: u64,
+        rules_hash: u64,
+        map_name: &str,
+        save_timestamp: u64,
+    ) -> Vec<u8> {
         let snapshot = GameSnapshotRef {
             version: SNAPSHOT_VERSION,
             map_hash,
             rules_hash,
             tick: sim.tick,
-            save_timestamp: now,
+            save_timestamp,
             map_name: map_name.to_string(),
             sim,
         };
@@ -156,7 +161,7 @@ mod tests {
 
         // Snapshot sim_a at tick 50.
         let hash_at_50 = sim_a.state_hash();
-        let bytes = GameSnapshot::save(&sim_a, 0, 0, "test_map");
+        let bytes = GameSnapshot::save(&sim_a, 0, 0, "test_map", 0);
 
         // Load the snapshot.
         let snapshot = GameSnapshot::load(&bytes).expect("load should succeed");
@@ -196,7 +201,7 @@ mod tests {
     #[test]
     fn version_mismatch_is_rejected() {
         let sim = Simulation::new();
-        let mut bytes = GameSnapshot::save(&sim, 0, 0, "test_map");
+        let mut bytes = GameSnapshot::save(&sim, 0, 0, "test_map", 0);
 
         // Corrupt the version field (first 4 bytes in bincode little-endian).
         bytes[0] = 255;
@@ -217,7 +222,7 @@ mod tests {
         entity.attack_target = Some(AttackTarget::for_cell(50, 50));
         sim.entities.insert(entity);
 
-        let bytes = GameSnapshot::save(&sim, 0, 0, "test_map");
+        let bytes = GameSnapshot::save(&sim, 0, 0, "test_map", 0);
         let loaded = GameSnapshot::load(&bytes).expect("load should succeed");
         let restored = loaded
             .sim
