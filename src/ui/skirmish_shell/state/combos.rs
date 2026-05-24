@@ -540,6 +540,10 @@ fn apply_combo_selection(
                 if let Some(difficulty) = row_type.difficulty() {
                     opponent.difficulty = difficulty;
                 }
+                // Release color claim on deactivate; activation does not auto-claim
+                // even if the row was previously holding a color — another slot may
+                // have grabbed it during the deactivation gap.
+                opponent.color_claimed = row_type.is_active() && opponent.color_claimed;
             }
         }
         (SkirmishComboId::Side(0), SkirmishComboItem::Country(choice)) => match choice {
