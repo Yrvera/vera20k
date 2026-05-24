@@ -279,9 +279,18 @@ pub fn combo_items(
             )
             .map(SkirmishComboItem::Country)
             .collect(),
-        SkirmishComboId::Color(_) => std::iter::once(SkirmishComboItem::ColorSentinel(-2))
-            .chain((0..HOUSE_COLOR_COUNT).map(SkirmishComboItem::Color))
-            .collect(),
+        SkirmishComboId::Color(row) => {
+            let selected = selected_color_claim(state, row);
+            let mut items = vec![SkirmishComboItem::ColorSentinel(-2)];
+            for color in 0..HOUSE_COLOR_COUNT {
+                if selected == Some(color)
+                    || color_claimed_by_other_row(state, row, color).is_none()
+                {
+                    items.push(SkirmishComboItem::Color(color));
+                }
+            }
+            items
+        }
         SkirmishComboId::Start(row) => {
             let capacity = maps
                 .get(state.selected_map_idx)
@@ -409,7 +418,6 @@ fn start_position_taken_by_other_row(
         .any(|(idx, opponent)| idx + 1 != row && opponent.start_position == start)
 }
 
-#[expect(dead_code, reason = "wired into combo_items in the next commit")]
 fn selected_color_claim(state: &SkirmishShellState, row: usize) -> Option<usize> {
     if row == 0 {
         if state.player_color_claimed {
@@ -428,7 +436,6 @@ fn selected_color_claim(state: &SkirmishShellState, row: usize) -> Option<usize>
     }
 }
 
-#[expect(dead_code, reason = "wired into combo_items in the next commit")]
 fn color_claimed_by_other_row(
     state: &SkirmishShellState,
     row: usize,

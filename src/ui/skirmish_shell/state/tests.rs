@@ -1475,6 +1475,12 @@ fn hit_test_ignores_combo_faces_after_owner_draw_buttons() {
 fn combo_arrow_opens_dropdown_and_selects_color_row() {
     let layout = compute_layout(800, 600);
     let mut shell = SkirmishShellState::default();
+    // Deactivate all AI rows so slot 0's filter sees no other claimants and
+    // the dropdown maps row N → color N-1 as the test below assumes.
+    for opponent in &mut shell.opponents {
+        opponent.row_type = SkirmishAiRowType::None;
+        opponent.color_claimed = false;
+    }
     let maps = [test_map_entry("map.mmx")];
     let rect = layout.color_combos[0];
 
@@ -1513,6 +1519,12 @@ fn combo_arrow_opens_dropdown_and_selects_color_row() {
 fn skirmish_color_dropdown_normal_population_omits_initialized_row_8() {
     let mut shell = SkirmishShellState::default();
     shell.player_color_index = 8;
+    // Deactivate all AI rows so the filter sees no other claimants and the
+    // dropdown matches the historical unfiltered set.
+    for opponent in &mut shell.opponents {
+        opponent.row_type = SkirmishAiRowType::None;
+        opponent.color_claimed = false;
+    }
     let maps = [test_map_entry("map.mmx")];
 
     let items = combo_items(&shell, &maps, SkirmishComboId::Color(0));
