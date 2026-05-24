@@ -525,7 +525,7 @@ fn combo_arrow_at(
     })
 }
 
-fn apply_combo_selection(
+pub(super) fn apply_combo_selection(
     state: &mut SkirmishShellState,
     id: SkirmishComboId,
     item: SkirmishComboItem,
