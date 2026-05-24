@@ -460,6 +460,33 @@ fn color_claimed_by_other_row(
     })
 }
 
+/// Release any row other than `row` that currently claims `color`. Called
+/// before writing `row`'s new claim so the derived ownership model never
+/// shows two rows holding the same color simultaneously. The evicted row
+/// keeps its cached `color_index` so the player can see what they had if
+/// they later re-pick from the now-shorter dropdown.
+fn evict_other_color_claimants(
+    state: &mut SkirmishShellState,
+    row: usize,
+    color: usize,
+) {
+    if row != 0
+        && state.player_color_claimed
+        && normal_color_index(state.player_color_index) == color
+    {
+        state.player_color_claimed = false;
+    }
+    for (idx, opponent) in state.opponents.iter_mut().enumerate() {
+        let opponent_row = idx + 1;
+        if opponent_row != row
+            && opponent.color_claimed
+            && normal_color_index(opponent.color_index) == color
+        {
+            opponent.color_claimed = false;
+        }
+    }
+}
+
 fn arrow_hit_rect(rect: RectPx) -> RectPx {
     let face = combo_face_rect(rect);
     RectPx::new(
@@ -538,14 +565,27 @@ fn apply_combo_selection(
             }
         }
         (SkirmishComboId::Color(0), SkirmishComboItem::Color(color)) => {
-            state.player_color_index = color.min(HOUSE_COLOR_COUNT - 1);
+            let color = color.min(HOUSE_COLOR_COUNT - 1);
+            evict_other_color_claimants(state, 0, color);
+            state.player_color_index = color;
+            state.player_color_claimed = true;
         }
         (SkirmishComboId::Color(row), SkirmishComboItem::Color(color)) => {
+            let color = color.min(HOUSE_COLOR_COUNT - 1);
+            evict_other_color_claimants(state, row, color);
             if let Some(opponent) = state.opponents.get_mut(row - 1) {
-                opponent.color_index = color.min(HOUSE_COLOR_COUNT - 1);
+                opponent.color_index = color;
+                opponent.color_claimed = true;
             }
         }
-        (SkirmishComboId::Color(_), SkirmishComboItem::ColorSentinel(_)) => {}
+        (SkirmishComboId::Color(0), SkirmishComboItem::ColorSentinel(_)) => {
+            state.player_color_claimed = false;
+        }
+        (SkirmishComboId::Color(row), SkirmishComboItem::ColorSentinel(_)) => {
+            if let Some(opponent) = state.opponents.get_mut(row - 1) {
+                opponent.color_claimed = false;
+            }
+        }
         (SkirmishComboId::Start(0), SkirmishComboItem::Start(start)) => {
             state.player_start_position = start;
         }
