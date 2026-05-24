@@ -21,7 +21,7 @@ use crate::assets::vxl_file::VxlFile;
 use crate::render::batch::{BatchRenderer, BatchTexture};
 use crate::render::gpu::GpuContext;
 use crate::render::vxl_compute::VxlComputeRenderer;
-use crate::render::vxl_raster::{self, VxlRenderParams, VxlSprite};
+use crate::render::vxl_raster::{self, VxlRenderParams, VxlSlopeBlend, VxlSprite};
 use crate::rules::art_data::{self, ArtRegistry};
 use crate::rules::ruleset::RuleSet;
 
@@ -551,7 +551,19 @@ pub fn build_unit_atlas(
 ///
 /// Uses ArtRegistry to resolve the correct VXL/HVA filenames.
 /// Falls back to direct {TYPE_ID}.VXL if art data is unavailable.
-fn render_unit_sprite(
+pub(crate) fn render_unit_sprite(
+    asset_manager: &AssetManager,
+    key: &UnitSpriteKey,
+    rules: Option<&RuleSet>,
+    art: Option<&ArtRegistry>,
+    vpl: Option<&VplFile>,
+    compute: Option<&mut VxlComputeRenderer>,
+    gpu: &GpuContext,
+) -> Option<(VxlSprite, bool)> {
+    render_unit_sprite_with_slope_blend(asset_manager, key, rules, art, vpl, compute, gpu, None)
+}
+
+pub(crate) fn render_unit_sprite_with_slope_blend(
     asset_manager: &AssetManager,
     key: &UnitSpriteKey,
     rules: Option<&RuleSet>,
@@ -559,6 +571,7 @@ fn render_unit_sprite(
     vpl: Option<&VplFile>,
     mut compute: Option<&mut VxlComputeRenderer>,
     gpu: &GpuContext,
+    slope_blend: Option<VxlSlopeBlend>,
 ) -> Option<(VxlSprite, bool)> {
     // Resolve image name: type_id → rules.ini Image= → art.ini Image= override.
     let rules_image: String = rules
@@ -596,6 +609,7 @@ fn render_unit_sprite(
         frame: key.frame,
         facing: key.facing, // already quantized by atlas key generation
         slope_type: key.slope_type,
+        slope_blend,
         ..VxlRenderParams::default()
     };
 

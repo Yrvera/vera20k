@@ -13,6 +13,7 @@ use crate::render::overlay_atlas::OverlayAtlas;
 use crate::render::palette_textures::PaletteSet;
 use crate::render::sprite_atlas::SpriteAtlas;
 use crate::render::unit_atlas::UnitAtlas;
+use crate::render::unit_slope_transition_cache::VxlSlopeTransitionCache;
 
 /// Which pipeline a `DrawGroup` should dispatch through.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,8 +88,10 @@ pub(super) fn draw_merged_bridge_occluded_pass<'a>(
     batch: &'a BatchRenderer,
     pool: &'a InstanceBufferPool,
     unit_instances: &[SpriteInstance],
+    unit_transition_paged: &[Vec<SpriteInstance>],
     shp_paged: &[Vec<SpriteInstance>],
     unit_atlas: Option<&'a UnitAtlas>,
+    transition_cache: &'a VxlSlopeTransitionCache,
     sprite_atlas: Option<&'a SpriteAtlas>,
     palette_set: Option<&'a PaletteSet>,
 ) {
@@ -101,6 +104,25 @@ pub(super) fn draw_merged_bridge_occluded_pass<'a>(
                 unit_instances,
                 count,
             ));
+        }
+    }
+
+    const UNIT_BRIDGE_TRANSITION_KEYS: [&str; 4] = [
+        "unit_bridge_transition_p0",
+        "unit_bridge_transition_p1",
+        "unit_bridge_transition_p2",
+        "unit_bridge_transition_p3",
+    ];
+    for (i, instances) in unit_transition_paged.iter().enumerate() {
+        if let (Some(texture), Some(key)) = (
+            transition_cache.page_texture(i),
+            UNIT_BRIDGE_TRANSITION_KEYS.get(i),
+        ) {
+            if let Some((buf, count)) = pool.get(key) {
+                if count > 0 {
+                    groups.push(DrawGroup::new_voxel(texture, buf, instances, count));
+                }
+            }
         }
     }
 
@@ -186,9 +208,11 @@ pub(super) fn draw_merged_object_pass<'a>(
     batch: &'a BatchRenderer,
     pool: &'a InstanceBufferPool,
     unit_instances: &[SpriteInstance],
+    unit_transition_paged: &[Vec<SpriteInstance>],
     shp_paged: &[Vec<SpriteInstance>],
     wall_instances: &[SpriteInstance],
     unit_atlas: Option<&'a UnitAtlas>,
+    transition_cache: &'a VxlSlopeTransitionCache,
     sprite_atlas: Option<&'a SpriteAtlas>,
     overlay_atlas: Option<&'a OverlayAtlas>,
     palette_set: Option<&'a PaletteSet>,
@@ -210,6 +234,25 @@ pub(super) fn draw_merged_object_pass<'a>(
                 unit_instances,
                 count,
             ));
+        }
+    }
+
+    const UNIT_TRANSITION_KEYS: [&str; 4] = [
+        "unit_transition_p0",
+        "unit_transition_p1",
+        "unit_transition_p2",
+        "unit_transition_p3",
+    ];
+    for (i, instances) in unit_transition_paged.iter().enumerate() {
+        if let (Some(texture), Some(key)) = (
+            transition_cache.page_texture(i),
+            UNIT_TRANSITION_KEYS.get(i),
+        ) {
+            if let Some((buf, count)) = pool.get(key) {
+                if count > 0 {
+                    groups.push(DrawGroup::new_voxel(texture, buf, instances, count));
+                }
+            }
         }
     }
 

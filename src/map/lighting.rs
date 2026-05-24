@@ -19,22 +19,36 @@ use crate::map::map_file::MapCell;
 use crate::rules::ini_parser::IniFile;
 use crate::rules::ruleset::RuleSet;
 
-/// Maximum combined lighting value per channel.
+/// Maximum combined lighting value per channel in current compatibility tint output.
 pub const TOTAL_AMBIENT_CAP: f32 = 2.0;
 
-/// Binary light unit scale for Ambient/Red/Green/Blue INI values.
-pub const AMBIENT_RGB_UNIT_SCALE: i32 = 100;
+/// Internal light unit scale. `1000 == 1.0`.
+pub const LIGHT_UNIT: i32 = 1000;
+
+/// Minimum stored scalar light value.
+pub const LIGHT_CLAMP_MIN: i32 = 0;
+
+/// Maximum stored scalar/RGB light value.
+pub const LIGHT_CLAMP_MAX: i32 = 2000;
+
+/// Identity 16.16 scale used by the LightConvert normalization path.
+pub const LIGHT_SCALE16_IDENTITY: i32 = 0x10000;
+
+/// Binary light unit scale for Ambient/Red/Green/Blue INI values parsed as Rust ratios.
+pub const AMBIENT_RGB_UNIT_SCALE: i32 = LIGHT_UNIT;
 
 /// Binary light unit scale for Ground/Level INI values.
 pub const GROUND_LEVEL_UNIT_SCALE: i32 = 250;
 
 /// Binary light unit scale for point-light intensity/tint values.
-pub const POINT_LIGHT_UNIT_SCALE: i32 = 1000;
+pub const POINT_LIGHT_UNIT_SCALE: i32 = LIGHT_UNIT;
 
 /// Leptons per cell in RA2's coordinate system.
 pub const LEPTONS_PER_CELL: i32 = 256;
 
 const HALF_CELL_LEPTONS: i32 = LEPTONS_PER_CELL / 2;
+const BOTTOM_LEVEL_OFFSET: i32 = 4;
+const DETAIL_HIGH_RGB_MASK: i32 = !31;
 
 /// Default white tint (no lighting effect).
 pub const DEFAULT_TINT: [f32; 3] = [1.0, 1.0, 1.0];
@@ -107,6 +121,10 @@ impl LightProfileCache {
 
     pub fn profile_id_for_rgb(&mut self, rgb: [f32; 3]) -> LightProfileId {
         let key = rgb_to_key(rgb);
+        self.profile_id_for_key(key)
+    }
+
+    pub fn profile_id_for_key(&mut self, key: LightRgbKey) -> LightProfileId {
         if let Some(id) = self.by_key.get(&key).copied() {
             return id;
         }
@@ -114,7 +132,7 @@ impl LightProfileCache {
         self.profiles.push(LightProfile {
             id,
             rgb_key: key,
-            rgb,
+            rgb: key_to_rgb(key),
         });
         self.by_key.insert(key, id);
         id
@@ -143,21 +161,73 @@ impl Default for LightProfileCache {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CellLight {
     pub profile_id: LightProfileId,
-    pub top_scalar: f32,
-    pub common_scalar: f32,
-    pub bottom_scalar: f32,
+    /// Quantized normalized RGB key used for the profile/cache bridge.
     pub rgb_key: LightRgbKey,
+    /// Raw RGB accumulators before normalization.
+    pub raw_rgb: LightRgbKey,
+    /// 16.16 scale computed by the verified RGB normalization helper.
+    pub scale16: i32,
+    /// Raw additive source intensity before RGB normalization.
+    pub raw_additive_intensity: i32,
+    /// Additive source intensity after RGB normalization.
+    pub additive_intensity: i32,
+    /// Raw top/common scalar before final clamp.
+    pub raw_top_scalar: i32,
+    /// Raw bottom scalar before `scale16` multiplication and final clamp.
+    pub raw_bottom_scalar: i32,
+    pub top_scalar: i32,
+    pub common_scalar: i32,
+    pub bottom_scalar: i32,
 }
 
 impl CellLight {
-    pub fn new(profile_id: LightProfileId, rgb_key: LightRgbKey, common_scalar: f32) -> Self {
+    pub fn new(
+        profile_id: LightProfileId,
+        rgb_key: LightRgbKey,
+        raw_rgb: LightRgbKey,
+        scale16: i32,
+        raw_additive_intensity: i32,
+        additive_intensity: i32,
+        raw_top_scalar: i32,
+        raw_bottom_scalar: i32,
+        top_scalar: i32,
+        common_scalar: i32,
+        bottom_scalar: i32,
+    ) -> Self {
         Self {
             profile_id,
-            top_scalar: common_scalar,
-            common_scalar,
-            bottom_scalar: common_scalar,
             rgb_key,
+            raw_rgb,
+            scale16,
+            raw_additive_intensity,
+            additive_intensity,
+            raw_top_scalar,
+            raw_bottom_scalar,
+            top_scalar,
+            common_scalar,
+            bottom_scalar,
         }
+    }
+
+    pub fn compatibility(
+        profile_id: LightProfileId,
+        rgb_key: LightRgbKey,
+        common_scalar: i32,
+    ) -> Self {
+        let scalar = common_scalar.clamp(LIGHT_CLAMP_MIN, LIGHT_CLAMP_MAX);
+        Self::new(
+            profile_id,
+            rgb_key,
+            rgb_key,
+            LIGHT_SCALE16_IDENTITY,
+            0,
+            0,
+            common_scalar,
+            common_scalar,
+            scalar,
+            scalar,
+            scalar,
+        )
     }
 }
 
@@ -194,7 +264,10 @@ impl CellLightGrid {
     pub fn insert_profiled_light(&mut self, cell: (u16, u16), rgb: [f32; 3], common_scalar: f32) {
         let profile_id = self.profiles.profile_id_for_rgb(rgb);
         let rgb_key = rgb_to_key(rgb);
-        self.insert_light(cell, CellLight::new(profile_id, rgb_key, common_scalar));
+        self.insert_light(
+            cell,
+            CellLight::compatibility(profile_id, rgb_key, light_float_to_units(common_scalar)),
+        );
     }
 
     pub fn set_compat_tint(&mut self, cell: (u16, u16), tint: [f32; 3]) {
@@ -243,7 +316,23 @@ impl CellLightGrid {
     }
 
     pub fn terrain_object_tint_at(&self, cell: (u16, u16)) -> [f32; 3] {
-        self.tint_or_default(cell)
+        self.tint_for_common_scalar_or_default(cell)
+    }
+
+    pub fn terrain_object_tint_for_type(
+        &self,
+        cell: (u16, u16),
+        spawns_tiberium: bool,
+    ) -> [f32; 3] {
+        if spawns_tiberium {
+            self.tint_for_top_scalar_or_default(cell)
+        } else {
+            self.tint_for_common_scalar_or_default(cell)
+        }
+    }
+
+    pub fn terrain_tile_tint_at(&self, cell: (u16, u16)) -> [f32; 3] {
+        self.tint_for_common_scalar_or_default(cell)
     }
 
     pub fn anim_tint_at(&self, cell: (u16, u16)) -> [f32; 3] {
@@ -255,15 +344,34 @@ impl CellLightGrid {
     }
 
     fn tint_for_light(&self, light: &CellLight) -> [f32; 3] {
+        self.tint_for_light_scalar(light, light.common_scalar)
+    }
+
+    fn tint_for_top_scalar_or_default(&self, cell: (u16, u16)) -> [f32; 3] {
+        let Some(light) = self.cells.get(&cell) else {
+            return DEFAULT_TINT;
+        };
+        self.tint_for_light_scalar(light, light.top_scalar)
+    }
+
+    fn tint_for_common_scalar_or_default(&self, cell: (u16, u16)) -> [f32; 3] {
+        let Some(light) = self.cells.get(&cell) else {
+            return DEFAULT_TINT;
+        };
+        self.tint_for_light_scalar(light, light.common_scalar)
+    }
+
+    fn tint_for_light_scalar(&self, light: &CellLight, scalar: i32) -> [f32; 3] {
         let profile = self
             .profiles
             .get(light.profile_id)
             .or_else(|| self.profiles.get(self.profiles.default_profile_id()))
             .expect("default light profile is always present");
+        let scalar = scalar as f32 / LIGHT_UNIT as f32;
         [
-            profile.rgb[0] * light.common_scalar,
-            profile.rgb[1] * light.common_scalar,
-            profile.rgb[2] * light.common_scalar,
+            profile.rgb[0] * scalar,
+            profile.rgb[1] * scalar,
+            profile.rgb[2] * scalar,
         ]
     }
 }
@@ -276,9 +384,17 @@ impl Default for CellLightGrid {
 
 fn rgb_to_key(rgb: [f32; 3]) -> LightRgbKey {
     [
-        (rgb[0] * POINT_LIGHT_UNIT_SCALE as f32).round() as i32,
-        (rgb[1] * POINT_LIGHT_UNIT_SCALE as f32).round() as i32,
-        (rgb[2] * POINT_LIGHT_UNIT_SCALE as f32).round() as i32,
+        (rgb[0] * LIGHT_UNIT as f32).round() as i32,
+        (rgb[1] * LIGHT_UNIT as f32).round() as i32,
+        (rgb[2] * LIGHT_UNIT as f32).round() as i32,
+    ]
+}
+
+fn key_to_rgb(key: LightRgbKey) -> [f32; 3] {
+    [
+        key[0] as f32 / LIGHT_UNIT as f32,
+        key[1] as f32 / LIGHT_UNIT as f32,
+        key[2] as f32 / LIGHT_UNIT as f32,
     ]
 }
 
@@ -305,26 +421,15 @@ pub fn parse_lighting(ini: &IniFile) -> LightingConfig {
 
 /// Compute the RGB tint for a single cell given its elevation.
 pub fn cell_tint(config: &LightingConfig, z: u8) -> [f32; 3] {
-    let cell_ambient: f32 = cell_light_scalar(config, z);
-    let mut r: f32 = config.red * cell_ambient;
-    let mut g: f32 = config.green * cell_ambient;
-    let mut b: f32 = config.blue * cell_ambient;
-
-    // Cap: if any channel exceeds TOTAL_AMBIENT_CAP, scale all down proportionally.
-    let max_val: f32 = r.max(g).max(b);
-    if max_val > TOTAL_AMBIENT_CAP {
-        let scale: f32 = TOTAL_AMBIENT_CAP / max_val;
-        r *= scale;
-        g *= scale;
-        b *= scale;
-    }
-
-    [r, g, b]
+    let grid = build_cell_light_grid_from_heights([((1, 1), z)], config);
+    grid.tint_or_default((1, 1))
 }
 
 /// Compute the shared ambient scalar for a terrain elevation level.
 pub fn cell_light_scalar(config: &LightingConfig, z: u8) -> f32 {
-    config.ambient + config.level * z as f32 - config.ground
+    let units = scenario_units(config);
+    let scalar = units.ambient + units.level * i32::from(z) - units.ground;
+    clamp_light_scalar(scalar) as f32 / LIGHT_UNIT as f32
 }
 
 /// Compute the uniform terrain tint for the map.
@@ -350,9 +455,24 @@ where
     I: IntoIterator<Item = ((u16, u16), u8)>,
 {
     let mut grid = CellLightGrid::new();
-    let rgb = [config.red, config.green, config.blue];
+    let units = scenario_units(config);
     for (cell, z) in heights {
-        grid.insert_profiled_light(cell, rgb, cell_light_scalar(config, z));
+        if cell == (0, 0) {
+            let light = neutral_cell_light(&mut grid.profiles);
+            grid.insert_light(cell, light);
+            continue;
+        }
+        let raw_top = units.ambient + units.level * i32::from(z) - units.ground;
+        let raw_bottom =
+            units.ambient + units.level * (i32::from(z) + BOTTOM_LEVEL_OFFSET) - units.ground;
+        let light = build_cell_light_from_raw(
+            &mut grid.profiles,
+            [units.red, units.green, units.blue],
+            0,
+            raw_top,
+            raw_bottom,
+        );
+        grid.insert_light(cell, light);
     }
     grid
 }
@@ -455,18 +575,17 @@ pub fn accumulate_point_lights(grid: &mut CellLightGrid, lights: &[PointLight]) 
     if lights.is_empty() {
         return;
     }
-    let cells: Vec<((u16, u16), [f32; 3])> = grid
+    let cells: Vec<((u16, u16), CellLight)> = grid
         .cells()
-        .map(|(cell, _)| (cell, grid.tint_or_default(cell)))
+        .map(|(cell, light)| (cell, light.clone()))
         .collect();
-    for (cell, base_tint) in cells {
+    for (cell, base_light) in cells {
         let cell_center_x = i32::from(cell.0) * LEPTONS_PER_CELL + HALF_CELL_LEPTONS;
         let cell_center_y = i32::from(cell.1) * LEPTONS_PER_CELL + HALF_CELL_LEPTONS;
-        let mut sums = [
-            light_float_to_units(base_tint[0]),
-            light_float_to_units(base_tint[1]),
-            light_float_to_units(base_tint[2]),
-        ];
+        let mut raw_rgb = base_light.raw_rgb;
+        let mut raw_additive = base_light.raw_additive_intensity;
+        let mut raw_top = base_light.raw_top_scalar;
+        let mut raw_bottom = base_light.raw_bottom_scalar;
         for light in lights {
             if !light.active || !light.detail || light.radius_leptons <= 0 {
                 continue;
@@ -480,22 +599,23 @@ pub fn accumulate_point_lights(grid: &mut CellLightGrid, lights: &[PointLight]) 
             }
             let distance = integer_sqrt(distance_sq);
             let falloff = radius - distance;
-            for (channel, sum) in sums.iter_mut().enumerate() {
-                let numerator =
-                    falloff * i64::from(light.intensity) * i64::from(light.tint[channel]);
-                let contribution = numerator / radius / i64::from(POINT_LIGHT_UNIT_SCALE);
-                *sum += contribution as i32;
+            let factor = (falloff * i64::from(LIGHT_UNIT)) / radius;
+            let intensity = signed_div_1000(i64::from(light.intensity) * factor);
+            raw_additive += intensity;
+            raw_top += intensity;
+            raw_bottom += intensity;
+            for (channel, raw) in raw_rgb.iter_mut().enumerate() {
+                *raw += signed_div_1000(i64::from(light.tint[channel]) * factor);
             }
         }
-        let cap = light_float_to_units(TOTAL_AMBIENT_CAP);
-        grid.set_compat_tint(
-            cell,
-            [
-                sums[0].clamp(0, cap) as f32 / POINT_LIGHT_UNIT_SCALE as f32,
-                sums[1].clamp(0, cap) as f32 / POINT_LIGHT_UNIT_SCALE as f32,
-                sums[2].clamp(0, cap) as f32 / POINT_LIGHT_UNIT_SCALE as f32,
-            ],
+        let updated = build_cell_light_from_raw(
+            &mut grid.profiles,
+            raw_rgb,
+            raw_additive,
+            raw_top,
+            raw_bottom,
         );
+        grid.insert_light(cell, updated);
     }
 }
 
@@ -505,11 +625,169 @@ pub fn light_value_to_units(value: f32) -> i32 {
 }
 
 fn light_float_to_units(value: f32) -> i32 {
-    (value * POINT_LIGHT_UNIT_SCALE as f32).round() as i32
+    (value * LIGHT_UNIT as f32).round() as i32
 }
 
 fn integer_sqrt(value: i64) -> i64 {
     (value as f64).sqrt() as i64
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ScenarioLightUnits {
+    ambient: i32,
+    red: i32,
+    green: i32,
+    blue: i32,
+    ground: i32,
+    level: i32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NormalizedLight {
+    scale16: i32,
+    additive_intensity: i32,
+    rgb_key: LightRgbKey,
+}
+
+fn scenario_units(config: &LightingConfig) -> ScenarioLightUnits {
+    ScenarioLightUnits {
+        ambient: light_float_to_units(config.ambient),
+        red: light_float_to_units(config.red),
+        green: light_float_to_units(config.green),
+        blue: light_float_to_units(config.blue),
+        ground: light_ground_level_to_units(config.ground),
+        level: light_ground_level_to_units(config.level),
+    }
+}
+
+fn light_ground_level_to_units(value: f32) -> i32 {
+    (value * GROUND_LEVEL_UNIT_SCALE as f32 + 0.1) as i32
+}
+
+fn build_cell_light_from_raw(
+    profiles: &mut LightProfileCache,
+    raw_rgb: LightRgbKey,
+    raw_additive_intensity: i32,
+    raw_top_scalar: i32,
+    raw_bottom_scalar: i32,
+) -> CellLight {
+    let normalized = normalize_light(raw_rgb, raw_additive_intensity);
+    let top_high = raw_top_scalar.min(LIGHT_CLAMP_MAX);
+    let common_high = top_high;
+    let scaled_bottom = ((i64::from(raw_bottom_scalar) * i64::from(normalized.scale16)) >> 16)
+        .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+    let bottom_high = scaled_bottom.min(LIGHT_CLAMP_MAX);
+    let top_scalar = clamp_light_scalar(top_high);
+    let common_scalar = clamp_light_scalar(common_high);
+    let bottom_scalar = clamp_light_scalar(bottom_high);
+    let profile_id = profiles.profile_id_for_key(normalized.rgb_key);
+    CellLight::new(
+        profile_id,
+        normalized.rgb_key,
+        raw_rgb,
+        normalized.scale16,
+        raw_additive_intensity,
+        normalized.additive_intensity,
+        raw_top_scalar,
+        raw_bottom_scalar,
+        top_scalar,
+        common_scalar,
+        bottom_scalar,
+    )
+}
+
+fn neutral_cell_light(profiles: &mut LightProfileCache) -> CellLight {
+    let rgb_key = [LIGHT_UNIT, LIGHT_UNIT, LIGHT_UNIT];
+    let profile_id = profiles.profile_id_for_key(rgb_key);
+    CellLight::new(
+        profile_id,
+        rgb_key,
+        rgb_key,
+        LIGHT_SCALE16_IDENTITY,
+        0,
+        0,
+        LIGHT_UNIT,
+        LIGHT_UNIT,
+        LIGHT_UNIT,
+        LIGHT_UNIT,
+        LIGHT_UNIT,
+    )
+}
+
+fn normalize_light(raw_rgb: LightRgbKey, additive_intensity: i32) -> NormalizedLight {
+    let mut rgb = [
+        raw_rgb[0].clamp(0, LIGHT_CLAMP_MAX),
+        raw_rgb[1].clamp(0, LIGHT_CLAMP_MAX),
+        raw_rgb[2].clamp(0, LIGHT_CLAMP_MAX),
+    ];
+    let mut additive = additive_intensity;
+    let mut scale16 = LIGHT_SCALE16_IDENTITY;
+
+    if rgb != [LIGHT_UNIT, LIGHT_UNIT, LIGHT_UNIT] {
+        let max_channel = rgb[0].max(rgb[1]).max(rgb[2]);
+        scale16 = ((i64::from(max_channel) * i64::from(LIGHT_SCALE16_IDENTITY))
+            / i64::from(LIGHT_UNIT)) as i32;
+        if scale16 < 66 {
+            scale16 = LIGHT_SCALE16_IDENTITY;
+            rgb = [LIGHT_UNIT, LIGHT_UNIT, LIGHT_UNIT];
+            additive = 0;
+        } else {
+            if rgb[0] >= rgb[1] && rgb[0] >= rgb[2] {
+                let max = rgb[0].max(1);
+                rgb[1] = normalize_channel(rgb[1], max);
+                rgb[2] = normalize_channel(rgb[2], max);
+                rgb[0] = LIGHT_UNIT;
+            } else if rgb[1] >= rgb[2] {
+                let scale = scale16.max(1);
+                rgb[0] = normalize_channel_by_scale(rgb[0], scale);
+                rgb[2] = normalize_channel_by_scale(rgb[2], scale);
+                rgb[1] = LIGHT_UNIT;
+            } else {
+                let scale = scale16.max(1);
+                rgb[0] = normalize_channel_by_scale(rgb[0], scale);
+                rgb[1] = normalize_channel_by_scale(rgb[1], scale);
+                rgb[2] = LIGHT_UNIT;
+            }
+            additive = ((i64::from(scale16) * i64::from(additive)) >> 16)
+                .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+        }
+    }
+    if additive > LIGHT_CLAMP_MAX {
+        additive = LIGHT_CLAMP_MAX;
+    }
+
+    NormalizedLight {
+        scale16,
+        additive_intensity: additive,
+        rgb_key: quantize_rgb_key(rgb),
+    }
+}
+
+fn normalize_channel(channel: i32, max_channel: i32) -> i32 {
+    ((i64::from(channel) * i64::from(LIGHT_UNIT)) / i64::from(max_channel)) as i32
+}
+
+fn normalize_channel_by_scale(channel: i32, scale16: i32) -> i32 {
+    ((i64::from(channel) * i64::from(LIGHT_SCALE16_IDENTITY)) / i64::from(scale16)) as i32
+}
+
+fn quantize_rgb_key(rgb: LightRgbKey) -> LightRgbKey {
+    if rgb == [LIGHT_UNIT, LIGHT_UNIT, LIGHT_UNIT] {
+        return rgb;
+    }
+    [
+        (rgb[0].clamp(0, LIGHT_UNIT)) & DETAIL_HIGH_RGB_MASK,
+        (rgb[1].clamp(0, LIGHT_UNIT)) & DETAIL_HIGH_RGB_MASK,
+        (rgb[2].clamp(0, LIGHT_UNIT)) & DETAIL_HIGH_RGB_MASK,
+    ]
+}
+
+fn clamp_light_scalar(value: i32) -> i32 {
+    value.clamp(LIGHT_CLAMP_MIN, LIGHT_CLAMP_MAX)
+}
+
+fn signed_div_1000(value: i64) -> i32 {
+    (value / i64::from(LIGHT_UNIT)) as i32
 }
 
 #[cfg(test)]
@@ -521,9 +799,9 @@ mod tests {
         let config: LightingConfig = LightingConfig::default();
         assert!((config.ground - 0.20).abs() < 0.001);
         let tint: [f32; 3] = cell_tint(&config, 0);
-        assert!((tint[0] - 0.8).abs() < 0.001);
-        assert!((tint[1] - 0.8).abs() < 0.001);
-        assert!((tint[2] - 0.8).abs() < 0.001);
+        assert!((tint[0] - 0.95).abs() < 0.001);
+        assert!((tint[1] - 0.95).abs() < 0.001);
+        assert!((tint[2] - 0.95).abs() < 0.001);
     }
 
     #[test]
@@ -539,13 +817,52 @@ mod tests {
     }
 
     #[test]
+    fn default_flat_no_lamps_ground_scalar_is_950() {
+        let grid = build_cell_light_grid_from_heights([((3, 4), 0)], &LightingConfig::default());
+        let light = grid.cell_light_at((3, 4)).expect("light");
+
+        assert_eq!(light.common_scalar, 950);
+        assert_eq!(light.top_scalar, 950);
+        assert_eq!(light.bottom_scalar, 982);
+        assert_eq!(grid.terrain_tile_tint_at((3, 4)), [0.95, 0.95, 0.95]);
+    }
+
+    #[test]
+    fn sentinel_cell_zero_zero_uses_neutral_light() {
+        let grid = build_cell_light_grid_from_heights([((0, 0), 0)], &LightingConfig::default());
+        let light = grid.cell_light_at((0, 0)).expect("light");
+
+        assert_eq!(light.scale16, LIGHT_SCALE16_IDENTITY);
+        assert_eq!(light.additive_intensity, 0);
+        assert_eq!(light.rgb_key, [LIGHT_UNIT, LIGHT_UNIT, LIGHT_UNIT]);
+        assert_eq!(light.common_scalar, LIGHT_UNIT);
+        assert_eq!(light.top_scalar, LIGHT_UNIT);
+        assert_eq!(light.bottom_scalar, LIGHT_UNIT);
+        assert_eq!(grid.tint_or_default((0, 0)), DEFAULT_TINT);
+    }
+
+    #[test]
+    fn default_raised_no_lamps_common_and_bottom_scalars_match_gamemd() {
+        let grid = build_cell_light_grid_from_heights([((10, 11), 4)], &LightingConfig::default());
+        let light = grid.cell_light_at((10, 11)).expect("light");
+
+        assert_eq!(light.common_scalar, 982);
+        assert_eq!(light.top_scalar, 982);
+        assert_eq!(light.bottom_scalar, 1014);
+    }
+
+    #[test]
     fn test_elevation_boost() {
         let config: LightingConfig = LightingConfig::default();
         let tint_z0: [f32; 3] = cell_tint(&config, 0);
         let tint_z4: [f32; 3] = cell_tint(&config, 4);
-        // 1.0 + Level(0.032) * z(4) - Ground(0.20) = 0.928
+        // Default YR units: 1000 + Level(8) * z(4) - Ground(50) = 982.
         assert!(tint_z4[0] > tint_z0[0]);
-        assert!((tint_z4[0] - 0.928).abs() < 0.01);
+        assert!((tint_z4[0] - 0.982).abs() < 0.01);
+        let grid = build_cell_light_grid_from_heights([((10, 11), 4)], &config);
+        let light = grid.cell_light_at((10, 11)).expect("light");
+        assert_eq!(light.common_scalar, 982);
+        assert_eq!(light.bottom_scalar, 1014);
     }
 
     #[test]
@@ -558,10 +875,10 @@ mod tests {
             ground: 0.0,
             level: 0.0,
         };
-        let tint: [f32; 3] = cell_tint(&config, 0);
-        assert!((tint[0] - 0.5).abs() < 0.001);
-        assert!((tint[1] - 0.4).abs() < 0.001);
-        assert!((tint[2] - 0.3).abs() < 0.001);
+        let grid = build_cell_light_grid_from_heights([((1, 1), 0)], &config);
+        let light = grid.cell_light_at((1, 1)).expect("light");
+        assert_eq!(light.common_scalar, 500);
+        assert_eq!(light.raw_rgb, [1000, 800, 600]);
     }
 
     #[test]
@@ -589,9 +906,10 @@ mod tests {
             ground: 0.5,
             level: 0.0,
         };
-        let tint: [f32; 3] = cell_tint(&config, 0);
-        // ambient - ground = 0.5
-        assert!((tint[0] - 0.5).abs() < 0.001);
+        let grid = build_cell_light_grid_from_heights([((1, 1), 0)], &config);
+        let light = grid.cell_light_at((1, 1)).expect("light");
+        // Ground/Level use the verified 250-unit scale: 0.5 -> 125.
+        assert_eq!(light.common_scalar, 875);
     }
 
     #[test]
@@ -655,6 +973,39 @@ mod tests {
     }
 
     #[test]
+    fn terrain_object_instances_choose_branch_specific_cell_light() {
+        let mut grid = CellLightGrid::new();
+        let profile_id = grid
+            .profiles
+            .profile_id_for_key([LIGHT_UNIT, LIGHT_UNIT, LIGHT_UNIT]);
+        grid.insert_light(
+            (4, 5),
+            CellLight::new(
+                profile_id,
+                [LIGHT_UNIT, LIGHT_UNIT, LIGHT_UNIT],
+                [LIGHT_UNIT, LIGHT_UNIT, LIGHT_UNIT],
+                LIGHT_SCALE16_IDENTITY,
+                0,
+                0,
+                1200,
+                900,
+                1200,
+                900,
+                900,
+            ),
+        );
+
+        assert_eq!(
+            grid.terrain_object_tint_for_type((4, 5), false),
+            [0.9, 0.9, 0.9]
+        );
+        assert_eq!(
+            grid.terrain_object_tint_for_type((4, 5), true),
+            [1.2, 1.2, 1.2]
+        );
+    }
+
+    #[test]
     fn test_building_body_depth_adjustment_keeps_signed_extra_light() {
         assert_eq!(building_body_depth_adjustment(350), 350);
         assert_eq!(building_body_depth_adjustment(-100), -100);
@@ -684,11 +1035,11 @@ mod tests {
     #[test]
     fn test_base_cell_light_grid_reuses_neutral_profile() {
         let config = LightingConfig::default();
-        let grid = build_cell_light_grid_from_heights([((0, 0), 0), ((1, 0), 3)], &config);
+        let grid = build_cell_light_grid_from_heights([((1, 1), 0), ((1, 0), 3)], &config);
 
         assert_eq!(grid.profiles().len(), 1);
         assert_eq!(
-            grid.cell_light_at((0, 0)).map(|light| light.profile_id),
+            grid.cell_light_at((1, 1)).map(|light| light.profile_id),
             Some(LightProfileId(0))
         );
         assert_eq!(
@@ -700,9 +1051,17 @@ mod tests {
     /// Helper: build a small grid with uniform tint for testing point lights.
     fn test_grid(size: u16, base_tint: [f32; 3]) -> CellLightGrid {
         let mut grid = CellLightGrid::with_capacity(usize::from(size) * usize::from(size));
+        let base_scalar = light_float_to_units(base_tint[0]);
         for y in 0..size {
             for x in 0..size {
-                grid.set_compat_tint((x, y), base_tint);
+                let light = build_cell_light_from_raw(
+                    &mut grid.profiles,
+                    [LIGHT_UNIT, LIGHT_UNIT, LIGHT_UNIT],
+                    0,
+                    base_scalar,
+                    base_scalar,
+                );
+                grid.insert_light((x, y), light);
             }
         }
         grid
@@ -811,12 +1170,13 @@ mod tests {
         accumulate_point_lights(&mut grid, &[light]);
 
         let center = grid.tint_or_default((5, 5));
-        // Red: 0.3 + 0.6*1.0 = 0.9
-        assert!((center[0] - 0.9).abs() < 0.01, "r={:.3}", center[0]);
-        // Green: 0.3 + 0.6*0.0 = 0.3 (unchanged)
-        assert!((center[1] - 0.3).abs() < 0.01, "g={:.3}", center[1]);
-        // Blue: 0.3 + 0.6*0.5 = 0.6
-        assert!((center[2] - 0.6).abs() < 0.01, "b={:.3}", center[2]);
+        assert!((center[0] - 0.893).abs() < 0.01, "r={:.3}", center[0]);
+        assert!((center[1] - 0.432).abs() < 0.01, "g={:.3}", center[1]);
+        assert!((center[2] - 0.662).abs() < 0.01, "b={:.3}", center[2]);
+        let light = grid.cell_light_at((5, 5)).expect("light");
+        assert_eq!(light.raw_additive_intensity, 600);
+        assert_eq!(light.raw_rgb, [2000, 1000, 1500]);
+        assert_eq!(light.common_scalar, 900);
     }
 
     #[test]
@@ -836,6 +1196,82 @@ mod tests {
         assert_eq!(light_value_to_units(0.01), 10);
         assert_eq!(light_value_to_units(0.5), 500);
         assert_eq!(light_value_to_units(-0.5), -499);
+    }
+
+    #[test]
+    fn lightconvert_normalization_preserves_scale16_and_rgb_key() {
+        let mut profiles = LightProfileCache::new();
+        let light = build_cell_light_from_raw(&mut profiles, [1050, 1050, 1010], 200, 1150, 1182);
+
+        assert_eq!(light.raw_rgb, [1050, 1050, 1010]);
+        assert_eq!(light.raw_additive_intensity, 200);
+        assert_eq!(light.scale16, 68812);
+        assert_eq!(light.additive_intensity, 209);
+        assert_eq!(light.rgb_key, [992, 992, 960]);
+        assert_eq!(light.common_scalar, 1150);
+        assert_eq!(light.bottom_scalar, 1241);
+    }
+
+    #[test]
+    fn light_normalize_max_one_resets_to_neutral() {
+        let normalized = normalize_light([1, 1, 1], 123);
+
+        assert_eq!(normalized.scale16, LIGHT_SCALE16_IDENTITY);
+        assert_eq!(normalized.additive_intensity, 0);
+        assert_eq!(normalized.rgb_key, [LIGHT_UNIT, LIGHT_UNIT, LIGHT_UNIT]);
+    }
+
+    #[test]
+    fn light_normalize_max_two_does_not_reset_to_neutral() {
+        let normalized = normalize_light([2, 1, 1], 100);
+
+        assert_eq!(normalized.scale16, 131);
+        assert_eq!(normalized.additive_intensity, 0);
+        assert_eq!(normalized.rgb_key, [992, 480, 480]);
+    }
+
+    #[test]
+    fn light_normalize_negative_additive_uses_arithmetic_shift() {
+        let normalized = normalize_light([2, 1, 1], -1);
+
+        assert_eq!(normalized.scale16, 131);
+        assert_eq!(normalized.additive_intensity, -1);
+    }
+
+    #[test]
+    fn light_normalize_green_max_uses_scale_denominator_for_quantization() {
+        let normalized = normalize_light([19, 22, 0], 0);
+
+        assert_eq!(normalized.scale16, 1441);
+        assert_eq!(normalized.rgb_key, [864, 992, 0]);
+    }
+
+    #[test]
+    fn galite_source_fields_match_rulesmd_units() {
+        let light = point_light_from_object(10, 10, 5000, 0.2, [0.05, 0.05, 0.01]).expect("light");
+
+        assert_eq!(light.radius_leptons, 5000);
+        assert_eq!(light.intensity, 200);
+        assert_eq!(light.tint, [50, 50, 10]);
+    }
+
+    #[test]
+    fn galite_point_light_contribution_separates_intensity_and_rgb() {
+        let mut grid =
+            build_cell_light_grid_from_heights([((10, 10), 0)], &LightingConfig::default());
+        let light = point_light_from_object(10, 10, 5000, 0.2, [0.05, 0.05, 0.01]).expect("light");
+        accumulate_point_lights(&mut grid, &[light]);
+
+        let center = grid.cell_light_at((10, 10)).expect("light");
+        assert_eq!(center.raw_additive_intensity, 200);
+        assert_eq!(center.raw_rgb, [1050, 1050, 1010]);
+        assert_eq!(center.common_scalar, 1150);
+        assert_ne!(center.raw_rgb, [10, 10, 2]);
+    }
+
+    #[test]
+    fn light_intensity_zero_allocates_no_static_source() {
+        assert!(point_light_from_object(1, 2, 4096, 0.0, [1.0, 1.0, 1.0]).is_none());
     }
 
     #[test]

@@ -17,7 +17,10 @@ use crate::map::terrain::{TILE_HEIGHT, TILE_WIDTH};
 use crate::render::batch::SpriteInstance;
 use crate::render::sprite_atlas::ShpSpriteKey;
 use crate::render::unit_atlas::{
-    UnitSpriteKey, VxlLayer, canonical_turret_facing, canonical_unit_facing,
+    UnitSpriteEntry, UnitSpriteKey, VxlLayer, canonical_turret_facing, canonical_unit_facing,
+};
+use crate::render::unit_slope_transition_cache::{
+    TransitionUnitSpriteEntry, TransitionUnitSpriteKey,
 };
 use crate::rules::house_colors::{self, HouseColorIndex};
 use crate::sim::components::HarvestOverlay;
@@ -33,6 +36,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// this log surfaces them at runtime so the deferred TMP scan can be
 /// scheduled if it ever fires.
 static WARNED_SLOPE_GE_17: AtomicBool = AtomicBool::new(false);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnitRenderSlopeState {
+    Stable(u8),
+    Transition {
+        from_slope: u8,
+        to_slope: u8,
+        phase_num: u8,
+    },
+}
 
 fn warn_unexpected_slope_once(slope: u8, rx: u16, ry: u16) {
     if WARNED_SLOPE_GE_17.load(Ordering::Relaxed) {
@@ -54,6 +67,67 @@ fn warn_unexpected_slope_once(slope: u8, rx: u16, ry: u16) {
     }
 }
 
+fn clamp_slope_for_render(slope: u8) -> u8 {
+    if slope <= 16 { slope } else { 0 }
+}
+
+fn terrain_slope_for_render(state: &AppState, rx: u16, ry: u16) -> u8 {
+    state
+        .resolved_terrain
+        .as_ref()
+        .and_then(|t| t.cell(rx, ry))
+        .map(|c| {
+            let raw = c.slope_type;
+            if raw <= 16 {
+                raw
+            } else {
+                warn_unexpected_slope_once(raw, rx, ry);
+                0
+            }
+        })
+        .unwrap_or(0)
+}
+
+pub(crate) fn slope_transition_phase_num(remaining: u8) -> Option<u8> {
+    match remaining {
+        1..=3 => Some(3 - remaining),
+        _ => None,
+    }
+}
+
+fn unit_render_slope_state(
+    state: &AppState,
+    entity: &crate::sim::game_entity::GameEntity,
+) -> UnitRenderSlopeState {
+    if entity.category == EntityCategory::Aircraft {
+        return UnitRenderSlopeState::Stable(0);
+    }
+
+    let terrain_slope = terrain_slope_for_render(state, entity.position.rx, entity.position.ry);
+    let Some(rocking) = entity.rocking.as_ref() else {
+        return UnitRenderSlopeState::Stable(terrain_slope);
+    };
+
+    if let Some(phase_num) = slope_transition_phase_num(rocking.transition_ticks_remaining) {
+        let from_slope = clamp_slope_for_render(rocking.prev_slope);
+        let to_slope = clamp_slope_for_render(rocking.curr_slope);
+        if from_slope != to_slope {
+            return UnitRenderSlopeState::Transition {
+                from_slope,
+                to_slope,
+                phase_num,
+            };
+        }
+    }
+
+    let stable_slope = clamp_slope_for_render(rocking.curr_slope);
+    if stable_slope == 0 && terrain_slope != 0 {
+        UnitRenderSlopeState::Stable(terrain_slope)
+    } else {
+        UnitRenderSlopeState::Stable(stable_slope)
+    }
+}
+
 /// Iterate visible voxel units from EntityStore and build SpriteInstances.
 ///
 /// Non-turret units emit a single Composite sprite. Turret units emit up to 3
@@ -63,6 +137,8 @@ pub(crate) fn build_unit_instances(
     state: &AppState,
     instances: &mut Vec<SpriteInstance>,
     bridge_instances: &mut Vec<SpriteInstance>,
+    transition_instances: &mut Vec<Vec<SpriteInstance>>,
+    bridge_transition_instances: &mut Vec<Vec<SpriteInstance>>,
     shp_paged: &mut [Vec<SpriteInstance>],
 ) {
     let (sim, atlas) = match (&state.simulation, &state.unit_atlas) {
@@ -105,29 +181,10 @@ pub(crate) fn build_unit_instances(
         ) {
             continue;
         }
-        // Determine terrain slope under this entity for tilted VXL rendering.
-        // Aircraft fly above terrain and never tilt on slopes. Ground vehicles
-        // accept slopes 0-16 (gamemd's full populated range); bytes 17-20
-        // collapse to flat at this boundary because gamemd has no matrix
-        // populated for them — see VOXEL_SLOPE_TILT_SYSTEM.md addendum.
-        let slope_type: u8 = if entity.category == EntityCategory::Aircraft {
-            0
-        } else {
-            state
-                .resolved_terrain
-                .as_ref()
-                .and_then(|t| t.cell(pos.rx, pos.ry))
-                .map(|c| {
-                    let raw = c.slope_type;
-                    if raw <= 16 {
-                        raw
-                    } else {
-                        warn_unexpected_slope_once(raw, pos.rx, pos.ry);
-                        0
-                    }
-                })
-                .unwrap_or(0)
-        };
+        // Render slope comes from the locomotor's cached previous/current
+        // slope during gamemd's 3-frame transition, then falls back to the
+        // stable terrain slope path.
+        let slope_state = unit_render_slope_state(state, entity);
         // Screen position is computed by the sim layer (lepton_to_screen) every
         // tick with the correct z. No renderer-side interpolation needed.
         // Aircraft altitude: offset screen Y upward so flying units appear above ground.
@@ -189,7 +246,8 @@ pub(crate) fn build_unit_instances(
         // Chrono teleport doesn't tint the unit — the visual effect is the
         // WarpOut animation overlay; the unit itself stays fully opaque.
         let alpha: f32 = 1.0;
-        let target_instances = if is_under_bridge_render_state(state, entity) {
+        let is_bridge_unit = is_under_bridge_render_state(state, entity);
+        let target_instances = if is_bridge_unit {
             &mut *bridge_instances
         } else {
             &mut *instances
@@ -218,7 +276,10 @@ pub(crate) fn build_unit_instances(
                 alpha,
                 anim_frame,
                 dock_depth_y_offset,
-                slope_type,
+                slope_state,
+                transition_instances,
+                bridge_transition_instances,
+                is_bridge_unit,
             );
         } else {
             // Non-turret unit: single composite sprite.
@@ -227,16 +288,18 @@ pub(crate) fn build_unit_instances(
                 facing: canonical_unit_facing(entity.facing),
                 layer: VxlLayer::Composite,
                 frame: anim_frame,
-                slope_type,
+                slope_type: stable_slope_for_key(slope_state),
             };
-            if let Some(entry) = atlas_get_with_frame_fallback(atlas, &key) {
+            if let Some((entry, transition_page)) =
+                unit_entry_for_slope_state(state, atlas, &key, slope_state)
+            {
                 let depth_y: f32 = sy + entry.offset_y + entry.pixel_size[1] + dock_depth_y_offset;
                 let depth: f32 = apply_bridge_depth_bias(
                     state,
                     entity,
                     compute_sprite_depth(state, depth_y, interp_z),
                 );
-                target_instances.push(SpriteInstance {
+                let sprite = SpriteInstance {
                     position: [center_x + entry.offset_x, center_y + entry.offset_y],
                     size: entry.pixel_size,
                     uv_origin: entry.uv_origin,
@@ -246,7 +309,15 @@ pub(crate) fn build_unit_instances(
                     alpha,
                     house_color_idx: house_color_to_remap_row(hc),
                     ..Default::default()
-                });
+                };
+                push_unit_sprite(
+                    target_instances,
+                    transition_instances,
+                    bridge_transition_instances,
+                    is_bridge_unit,
+                    transition_page,
+                    sprite,
+                );
             }
         }
 
@@ -345,6 +416,93 @@ fn atlas_get_with_frame_fallback<'a>(
     })
 }
 
+fn stable_slope_for_key(slope_state: UnitRenderSlopeState) -> u8 {
+    match slope_state {
+        UnitRenderSlopeState::Stable(slope) => slope,
+        UnitRenderSlopeState::Transition { to_slope, .. } => to_slope,
+    }
+}
+
+fn transition_key_for_unit(
+    key: &UnitSpriteKey,
+    slope_state: UnitRenderSlopeState,
+) -> Option<TransitionUnitSpriteKey> {
+    match slope_state {
+        UnitRenderSlopeState::Stable(_) => None,
+        UnitRenderSlopeState::Transition {
+            from_slope,
+            to_slope,
+            phase_num,
+        } => Some(TransitionUnitSpriteKey {
+            type_id: key.type_id.clone(),
+            facing: key.facing,
+            layer: key.layer,
+            frame: key.frame,
+            from_slope,
+            to_slope,
+            phase_num,
+        }),
+    }
+}
+
+fn unit_entry_for_slope_state(
+    state: &AppState,
+    atlas: &crate::render::unit_atlas::UnitAtlas,
+    key: &UnitSpriteKey,
+    slope_state: UnitRenderSlopeState,
+) -> Option<(UnitSpriteEntry, Option<usize>)> {
+    if let Some(transition_key) = transition_key_for_unit(key, slope_state) {
+        if let Some(asset_manager) = state.asset_manager.as_ref() {
+            if let Some(TransitionUnitSpriteEntry { page, entry }) =
+                state.vxl_slope_transition_cache.borrow_mut().get_or_render(
+                    &state.gpu,
+                    &state.batch_renderer,
+                    asset_manager,
+                    state.rules.as_ref(),
+                    state.art_registry.as_ref(),
+                    transition_key,
+                )
+            {
+                return Some((entry, Some(page)));
+            }
+        }
+    }
+
+    atlas_get_with_frame_fallback(atlas, key)
+        .copied()
+        .map(|e| (e, None))
+}
+
+fn push_transition_sprite(
+    transition_instances: &mut Vec<Vec<SpriteInstance>>,
+    page: usize,
+    sprite: SpriteInstance,
+) {
+    if transition_instances.len() <= page {
+        transition_instances.resize_with(page + 1, Vec::new);
+    }
+    transition_instances[page].push(sprite);
+}
+
+fn push_unit_sprite(
+    stable_instances: &mut Vec<SpriteInstance>,
+    transition_instances: &mut Vec<Vec<SpriteInstance>>,
+    bridge_transition_instances: &mut Vec<Vec<SpriteInstance>>,
+    is_bridge_unit: bool,
+    transition_page: Option<usize>,
+    sprite: SpriteInstance,
+) {
+    match transition_page {
+        Some(page) if is_bridge_unit => {
+            push_transition_sprite(bridge_transition_instances, page, sprite);
+        }
+        Some(page) => {
+            push_transition_sprite(transition_instances, page, sprite);
+        }
+        None => stable_instances.push(sprite),
+    }
+}
+
 /// Emit body + turret + barrel sprites for a turret-equipped voxel unit.
 ///
 /// Body is drawn at body facing. Turret + barrel are drawn at turret facing,
@@ -367,8 +525,12 @@ fn emit_turret_unit_sprites(
     alpha: f32,
     anim_frame: u32,
     dock_depth_y_offset: f32,
-    slope_type: u8,
+    slope_state: UnitRenderSlopeState,
+    transition_instances: &mut Vec<Vec<SpriteInstance>>,
+    bridge_transition_instances: &mut Vec<Vec<SpriteInstance>>,
+    is_bridge_unit: bool,
 ) {
+    let slope_type = stable_slope_for_key(slope_state);
     let body_key = UnitSpriteKey {
         type_id: type_id.to_string(),
         facing: canonical_unit_facing(body_facing),
@@ -402,9 +564,9 @@ fn emit_turret_unit_sprites(
     // (body, then turret/barrel) controls visual stacking via stable sort.
     // Per-layer depth derived from each sprite's bounding box caused tie-break
     // collisions where body could sort over turret at certain facings.
-    let body_entry_opt = atlas_get_with_frame_fallback(atlas, &body_key);
+    let body_entry_opt = unit_entry_for_slope_state(state, atlas, &body_key, slope_state);
     let entity_depth_y: f32 = match body_entry_opt {
-        Some(e) => center_y + e.offset_y + e.pixel_size[1] + dock_depth_y_offset,
+        Some((e, _)) => center_y + e.offset_y + e.pixel_size[1] + dock_depth_y_offset,
         None => center_y + dock_depth_y_offset,
     };
     let entity_depth: f32 = apply_bridge_depth_bias(
@@ -414,8 +576,8 @@ fn emit_turret_unit_sprites(
     );
 
     // Emit body first (always). Uses frame fallback for mismatched HVA counts.
-    if let Some(entry) = body_entry_opt {
-        instances.push(SpriteInstance {
+    if let Some((entry, transition_page)) = body_entry_opt {
+        let sprite = SpriteInstance {
             position: [center_x + entry.offset_x, center_y + entry.offset_y],
             size: entry.pixel_size,
             uv_origin: entry.uv_origin,
@@ -425,7 +587,15 @@ fn emit_turret_unit_sprites(
             alpha,
             house_color_idx: house_color_to_remap_row(hc),
             ..Default::default()
-        });
+        };
+        push_unit_sprite(
+            instances,
+            transition_instances,
+            bridge_transition_instances,
+            is_bridge_unit,
+            transition_page,
+            sprite,
+        );
     }
 
     // Draw order for turret+barrel depends on facing direction.
@@ -441,8 +611,10 @@ fn emit_turret_unit_sprites(
     };
 
     for key in [first_key, second_key] {
-        if let Some(entry) = atlas_get_with_frame_fallback(atlas, key) {
-            instances.push(SpriteInstance {
+        if let Some((entry, transition_page)) =
+            unit_entry_for_slope_state(state, atlas, key, slope_state)
+        {
+            let sprite = SpriteInstance {
                 position: [
                     center_x + entry.offset_x + tur_ox,
                     center_y + entry.offset_y + tur_oy,
@@ -455,7 +627,15 @@ fn emit_turret_unit_sprites(
                 alpha,
                 house_color_idx: house_color_to_remap_row(hc),
                 ..Default::default()
-            });
+            };
+            push_unit_sprite(
+                instances,
+                transition_instances,
+                bridge_transition_instances,
+                is_bridge_unit,
+                transition_page,
+                sprite,
+            );
         }
     }
 }
@@ -555,5 +735,24 @@ fn house_color_to_remap_row(hc: HouseColorIndex) -> u32 {
         0
     } else {
         (hc.0 as u32) + 1
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drive_vxl_slope_transition_phase_counts_three_visible_frames() {
+        assert_eq!(slope_transition_phase_num(3), Some(0));
+        assert_eq!(slope_transition_phase_num(2), Some(1));
+        assert_eq!(slope_transition_phase_num(1), Some(2));
+        assert_eq!(slope_transition_phase_num(0), None);
+    }
+
+    #[test]
+    fn drive_vxl_slope_transition_rejects_out_of_range_remaining() {
+        assert_eq!(slope_transition_phase_num(4), None);
+        assert_eq!(slope_transition_phase_num(u8::MAX), None);
     }
 }

@@ -25,8 +25,10 @@ use super::merge_passes;
 /// depth values that match the uploaded GPU buffers.
 pub(super) struct DrawPassData<'a> {
     pub bridge_unit_instances: &'a [SpriteInstance],
+    pub bridge_unit_transition_paged: &'a [Vec<SpriteInstance>],
     pub bridge_shp_paged: &'a [Vec<SpriteInstance>],
     pub unit_instances: &'a [SpriteInstance],
+    pub unit_transition_paged: &'a [Vec<SpriteInstance>],
     pub shp_paged: &'a [Vec<SpriteInstance>],
     pub wall_instances: &'a [SpriteInstance],
     pub particle_paged: &'a [Vec<SpriteInstance>],
@@ -46,6 +48,7 @@ pub(super) fn dispatch_draw_passes(
     data: &DrawPassData<'_>,
 ) {
     let pool: &InstanceBufferPool = &state.instance_pool;
+    let transition_cache = state.vxl_slope_transition_cache.borrow();
     let mut pass = begin_main_pass(encoder, view, &state.depth_view);
 
     // --- Step 1: Terrain (Z-depth pipeline for per-pixel depth from TMP Z-data) ---
@@ -137,8 +140,10 @@ pub(super) fn dispatch_draw_passes(
         &state.batch_renderer,
         pool,
         data.bridge_unit_instances,
+        data.bridge_unit_transition_paged,
         data.bridge_shp_paged,
         state.unit_atlas.as_ref(),
+        &transition_cache,
         state.sprite_atlas.as_ref(),
         state.palette_set.as_ref(),
     );
@@ -153,9 +158,11 @@ pub(super) fn dispatch_draw_passes(
         &state.batch_renderer,
         pool,
         data.unit_instances,
+        data.unit_transition_paged,
         data.shp_paged,
         data.wall_instances,
         state.unit_atlas.as_ref(),
+        &transition_cache,
         state.sprite_atlas.as_ref(),
         state.overlay_atlas.as_ref(),
         state.palette_set.as_ref(),

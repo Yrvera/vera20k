@@ -176,6 +176,9 @@ pub struct TilesetLookup {
     /// Per-tileset Morphable= flag — parsed from `[TileSetNNNN] Morphable=`.
     /// Default `false`. Smudges only place on cells whose tileset is morphable.
     morphable_flags: Vec<bool>,
+    /// Per-tileset AllowTiberium= flag — parsed from `[TileSetNNNN] AllowTiberium=`.
+    /// Default `false`. Tiberium/ore only places on opt-in in-range tile types.
+    allow_tiberium_flags: Vec<bool>,
 }
 
 impl TilesetLookup {
@@ -280,6 +283,19 @@ impl TilesetLookup {
             .copied()
             .unwrap_or(false)
     }
+
+    /// Returns true if a tile_id belongs to a tileset with `AllowTiberium=yes`.
+    /// Absent keys, missing tilesets, and out-of-range tile ids default false.
+    pub fn allows_tiberium(&self, tile_id: u16) -> bool {
+        let idx: u16 = match self.tileset_index(tile_id) {
+            Some(i) => i,
+            None => return false,
+        };
+        self.allow_tiberium_flags
+            .get(idx as usize)
+            .copied()
+            .unwrap_or(false)
+    }
 }
 
 /// Parse a theater INI file into a TilesetLookup.
@@ -296,6 +312,7 @@ pub fn parse_tileset_ini(ini_data: &[u8], extension: &str) -> Result<TilesetLook
     let mut tileset_bounds: Vec<TilesetBounds> = Vec::new();
     let mut set_names: Vec<String> = Vec::new();
     let mut morphable_flags: Vec<bool> = Vec::new();
+    let mut allow_tiberium_flags: Vec<bool> = Vec::new();
 
     // Iterate tileset sections in numerical order: TileSet0000, TileSet0001, ...
     for idx in 0..10000u32 {
@@ -320,6 +337,8 @@ pub fn parse_tileset_ini(ini_data: &[u8], extension: &str) -> Result<TilesetLook
         set_names.push(set_name.to_string());
         let morphable: bool = section.get_bool("Morphable").unwrap_or(false);
         morphable_flags.push(morphable);
+        let allow_tiberium: bool = section.get_bool("AllowTiberium").unwrap_or(false);
+        allow_tiberium_flags.push(allow_tiberium);
 
         // Diagnostic: log ALL tileset raw TilesInSet values for debugging.
         log::debug!(
@@ -388,6 +407,7 @@ pub fn parse_tileset_ini(ini_data: &[u8], extension: &str) -> Result<TilesetLook
         tileset_bounds,
         set_names,
         morphable_flags,
+        allow_tiberium_flags,
     })
 }
 

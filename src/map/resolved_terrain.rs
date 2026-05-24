@@ -103,6 +103,10 @@ pub struct ResolvedTerrainCell {
     /// True when this cell's tileset has `Morphable=yes`. Smudge placement
     /// requires this gate (matches gamemd IsoTileTypeClass+0x2E0).
     pub accepts_smudge: bool,
+    /// True when this cell's final resolved tile has `AllowTiberium=yes`.
+    /// TIBTRE placement validation uses the current tile type, not the source
+    /// map tile, matching gamemd IsoTileTypeClass+0x306.
+    pub allows_tiberium: bool,
     /// FinalAlert2-style cliff redraw flag. When true, this cell's terrain tile
     /// is drawn a second time AFTER entities so cliff faces occlude units behind
     /// them. Computed from height differences with back-left neighbor cells
@@ -503,6 +507,13 @@ impl ResolvedTerrainGrid {
                         .map(|td| td.lookup.is_morphable(tile_key.tile_id))
                         .unwrap_or(false)
                 };
+                let allows_tiberium = if raw.is_none() || final_tile_index < 0 {
+                    false
+                } else {
+                    theater_data
+                        .map(|td| td.lookup.allows_tiberium(tile_key.tile_id))
+                        .unwrap_or(false)
+                };
                 // Allow layer transitions on any bridge deck cell. High bridges over
                 // water have ground_walk_blocked=true, but units still need to transition
                 // from Ground→Bridge at the ramp/entry cells.
@@ -536,6 +547,7 @@ impl ResolvedTerrainGrid {
                     is_rough: metadata.is_rough,
                     is_road: metadata.is_road,
                     accepts_smudge,
+                    allows_tiberium,
                     is_cliff_redraw: false,
                     variant: 0,
                     has_ramp: metadata.has_ramp,
@@ -1496,6 +1508,34 @@ mod tests {
         }
     }
 
+    fn synthetic_theater_from_ini(ini: &[u8]) -> TheaterData {
+        let lookup = crate::map::theater::parse_tileset_ini(ini, "tem").unwrap();
+        let empty_palette = crate::assets::pal_file::Palette::from_bytes(&[0u8; 768])
+            .expect("768-byte zero palette parses");
+        TheaterData {
+            lookup,
+            iso_palette: empty_palette.clone(),
+            unit_palette: empty_palette.clone(),
+            tiberium_palette: empty_palette,
+            extension: "tem",
+            ini_data: ini.to_vec(),
+            bridge_set: None,
+            wood_bridge_set: None,
+            slope_set_pieces: None,
+            slope_set_pieces2: None,
+            bridge_top_left_1: None,
+            bridge_top_left_2: None,
+            bridge_top_right_1: None,
+            bridge_top_right_2: None,
+            bridge_middle_1: None,
+            bridge_middle_2: None,
+            tunnels: None,
+            track_tunnels: None,
+            dirt_tunnels: None,
+            dirt_track_tunnels: None,
+        }
+    }
+
     fn make_test_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
         ResolvedTerrainCell {
             rx,
@@ -1523,6 +1563,7 @@ mod tests {
             is_rough: false,
             is_road: false,
             accepts_smudge: false,
+            allows_tiberium: false,
             has_ramp: false,
             canonical_ramp: None,
             ground_walk_blocked: false,
@@ -1705,6 +1746,78 @@ mod tests {
         assert!(grid.cell(1, 0).unwrap().is_wood_bridge_repair_tile);
         assert!(grid.cell(2, 0).unwrap().is_wood_bridge_repair_tile);
         assert!(!grid.cell(3, 0).unwrap().is_wood_bridge_repair_tile);
+    }
+
+    #[test]
+    fn resolved_terrain_allow_tiberium_uses_final_lat_tile() {
+        let ini = b"[General]\n\
+                    RoughTile=1\n\
+                    ClearToRoughLat=2\n\
+                    \n\
+                    [TileSet0000]\n\
+                    SetName=Clear\n\
+                    FileName=clear\n\
+                    TilesInSet=5\n\
+                    \n\
+                    [TileSet0001]\n\
+                    SetName=Rough\n\
+                    FileName=rough\n\
+                    TilesInSet=5\n\
+                    \n\
+                    [TileSet0002]\n\
+                    SetName=ClearToRough\n\
+                    FileName=crgh\n\
+                    TilesInSet=16\n\
+                    AllowTiberium=true\n";
+        let theater = synthetic_theater_from_ini(ini);
+        let map = make_map(
+            vec![
+                MapCell {
+                    rx: 5,
+                    ry: 5,
+                    tile_index: 5,
+                    sub_tile: 0,
+                    z: 0,
+                },
+                MapCell {
+                    rx: 5,
+                    ry: 4,
+                    tile_index: 0,
+                    sub_tile: 0,
+                    z: 0,
+                },
+                MapCell {
+                    rx: 4,
+                    ry: 5,
+                    tile_index: 6,
+                    sub_tile: 0,
+                    z: 0,
+                },
+                MapCell {
+                    rx: 6,
+                    ry: 5,
+                    tile_index: 1,
+                    sub_tile: 0,
+                    z: 0,
+                },
+                MapCell {
+                    rx: 5,
+                    ry: 6,
+                    tile_index: 7,
+                    sub_tile: 0,
+                    z: 0,
+                },
+            ],
+            Vec::new(),
+            Vec::new(),
+        );
+
+        let grid = ResolvedTerrainGrid::build(&map, Some(&theater), None, None, None, true, 0);
+        let cell = grid.cell(5, 5).expect("center LAT cell");
+
+        assert_eq!(cell.source_tile_index, 5);
+        assert_eq!(cell.final_tile_index, 13);
+        assert!(cell.allows_tiberium);
     }
 
     #[test]
@@ -2015,6 +2128,7 @@ IsRubble=yes
                 is_rough: false,
                 is_road: false,
                 accepts_smudge: false,
+                allows_tiberium: false,
                 is_cliff_redraw: false,
                 variant: 0,
                 has_ramp: true,

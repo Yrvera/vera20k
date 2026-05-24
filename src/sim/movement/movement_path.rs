@@ -515,6 +515,7 @@ mod tests {
             is_rough: false,
             is_road: false,
             accepts_smudge: false,
+            allows_tiberium: false,
             is_cliff_redraw: false,
             variant: 0,
             has_ramp: false,

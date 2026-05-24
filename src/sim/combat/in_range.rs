@@ -528,6 +528,7 @@ mod tests {
             radar_left: [0; 3],
             radar_right: [0; 3],
             accepts_smudge: true,
+            allows_tiberium: false,
             has_damaged_data: false,
             bridgehead_anchor_class_at_load: None,
         }

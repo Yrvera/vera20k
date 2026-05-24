@@ -115,6 +115,34 @@ fn parses_morphable_flag_per_tileset() {
 }
 
 #[test]
+fn theater_parse_allow_tiberium_defaults_false() {
+    let ini = b"[TileSet0000]\n\
+                FileName=clear\n\
+                TilesInSet=2\n\
+                SetName=Clear\n\
+                \n\
+                [TileSet0001]\n\
+                FileName=tiber\n\
+                TilesInSet=2\n\
+                SetName=Tiberium\n\
+                AllowTiberium=true\n\
+                \n\
+                [TileSet0002]\n\
+                FileName=rough\n\
+                TilesInSet=1\n\
+                SetName=Rough\n\
+                AllowTiberium=false\n";
+    let lookup = parse_tileset_ini(ini, "tem").unwrap();
+
+    assert!(!lookup.allows_tiberium(0));
+    assert!(!lookup.allows_tiberium(1));
+    assert!(lookup.allows_tiberium(2));
+    assert!(lookup.allows_tiberium(3));
+    assert!(!lookup.allows_tiberium(4));
+    assert!(!lookup.allows_tiberium(99));
+}
+
+#[test]
 fn parse_general_int_finds_bridge_middle_keys() {
     let ini = "[General]\nBridgeSet=5\nBridgeMiddle1=7\nBridgeMiddle2=12\n\n[TileSet0000]\nTilesInSet=1\nFileName=clear\n";
     assert_eq!(super::parse_general_int(ini, "BridgeMiddle1"), Some(7));
