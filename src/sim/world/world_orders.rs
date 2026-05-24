@@ -248,13 +248,15 @@ impl Simulation {
     }
 
     /// Tick bridge-repair orders: any engineer with `capture_target` pointing
-    /// at a `BridgeRepairHut=yes` building, Chebyshev-≤-1 adjacent, triggers
-    /// bridge repair on the cells in a 5×5 scan around the hut/building cell.
+    /// at a `BridgeRepairHut=yes` building first enters the building footprint.
+    /// Once the engineer's current cell resolves to that building, the
+    /// PerCellProcess-style arrival branch triggers bridge repair on the cells
+    /// in a 5x5 scan around the engineer's arrival cell.
     ///
     /// Flow:
     ///   1. Create a non-drawing `BridgeRepaired` radar event at the hut.
     ///   2. Emit `SimSoundEvent::BridgeRepaired` at the building's cell.
-    ///   3. Run overlay-family bridge repair over the 5×5 scan around the hut.
+    ///   3. Run overlay-family bridge repair over the 5x5 scan around the arrival cell.
     ///   4. Despawn the engineer (consumed by repair).
     ///
     /// Returns `true` if any repair mutated bridge state (caller ORs into
@@ -308,9 +310,8 @@ impl Simulation {
                 continue;
             }
 
-            // Chebyshev-≤-1 adjacency. The engineer stands NEXT to the
-            // building (pathing treats the footprint as blocked, matching
-            // tick_capture_orders).
+            // Adjacency only issues the scripted enter move; repair itself
+            // waits until the engineer has arrived inside the building cell.
             let Some((erx, ery)) = self
                 .entities
                 .get(engineer_id)
@@ -319,6 +320,27 @@ impl Simulation {
                 key_idx += 1;
                 continue;
             };
+            let engineer_cell = (erx, ery);
+            let Some(target_footprint) = self.building_entry_target_footprint(building_id, rules)
+            else {
+                key_idx += 1;
+                continue;
+            };
+            if !target_footprint.contains(&engineer_cell) {
+                if self.adjacent_to_target_footprint(engineer_cell, &target_footprint)
+                    && !self.infantry_has_active_movement(engineer_id)
+                {
+                    self.issue_building_enter_target_cell(
+                        engineer_id,
+                        engineer_cell,
+                        &target_footprint,
+                        rules,
+                    );
+                }
+                key_idx += 1;
+                continue;
+            }
+
             let Some((brx, bry)) = self
                 .entities
                 .get(building_id)
@@ -327,12 +349,6 @@ impl Simulation {
                 key_idx += 1;
                 continue;
             };
-            let dx = (erx as i32 - brx as i32).abs();
-            let dy = (ery as i32 - bry as i32).abs();
-            if dx > 1 || dy > 1 {
-                key_idx += 1;
-                continue;
-            }
 
             // ---- Trigger fires this tick ----
 
@@ -354,8 +370,8 @@ impl Simulation {
                     eva_allowed,
                 });
 
-            // Step B: 5×5 scan from hut/building cell + repair dispatch.
-            let scan: Vec<(u16, u16)> = cells_in_5x5_scan((brx, bry)).collect();
+            // Step B: 5x5 scan from the engineer's arrival cell + repair dispatch.
+            let scan: Vec<(u16, u16)> = cells_in_5x5_scan(engineer_cell).collect();
             let outcome = if let (Some(bs), Some(terrain)) =
                 (self.bridge_state.as_mut(), self.resolved_terrain.as_ref())
             {
@@ -443,7 +459,7 @@ impl Simulation {
                 .entities
                 .get(attacker_id)
                 .map(|e| (e.position.rx, e.position.ry));
-            let target_footprint = self.c4_target_footprint(target_id, rules);
+            let target_footprint = self.building_entry_target_footprint(target_id, rules);
             let (Some(attacker_cell), Some(target_footprint)) = (attacker_cell, target_footprint)
             else {
                 continue;
@@ -460,10 +476,10 @@ impl Simulation {
             }
 
             if !target_footprint.contains(&attacker_cell) {
-                if self.c4_adjacent_to_target_footprint(attacker_cell, &target_footprint)
-                    && !self.c4_attacker_has_active_movement(attacker_id)
+                if self.adjacent_to_target_footprint(attacker_cell, &target_footprint)
+                    && !self.infantry_has_active_movement(attacker_id)
                 {
-                    self.issue_c4_enter_target_cell(
+                    self.issue_building_enter_target_cell(
                         attacker_id,
                         attacker_cell,
                         &target_footprint,
@@ -589,10 +605,14 @@ impl Simulation {
         }
     }
 
-    fn c4_target_footprint(&self, target_id: u64, rules: &RuleSet) -> Option<Vec<(u16, u16)>> {
+    fn building_entry_target_footprint(
+        &self,
+        target_id: u64,
+        rules: &RuleSet,
+    ) -> Option<Vec<(u16, u16)>> {
         let target = self.entities.get(target_id)?;
         let obj = rules.object(self.interner.resolve(target.type_ref))?;
-        // C4 Mission_Enter resolves through normal building cell lookup.
+        // Infantry building-entry resolves through normal building cell lookup.
         // AddOccupy/RemoveOccupy only affect hidden occupancy counters.
         Some(c4_base_foundation_cells(
             target.position.rx,
@@ -601,7 +621,7 @@ impl Simulation {
         ))
     }
 
-    fn c4_adjacent_to_target_footprint(
+    fn adjacent_to_target_footprint(
         &self,
         attacker_cell: (u16, u16),
         target_footprint: &[(u16, u16)],
@@ -613,13 +633,13 @@ impl Simulation {
         })
     }
 
-    fn c4_attacker_has_active_movement(&self, attacker_id: u64) -> bool {
+    fn infantry_has_active_movement(&self, attacker_id: u64) -> bool {
         self.entities
             .get(attacker_id)
             .is_some_and(|attacker| attacker.movement_target.is_some())
     }
 
-    fn issue_c4_enter_target_cell(
+    fn issue_building_enter_target_cell(
         &mut self,
         attacker_id: u64,
         attacker_cell: (u16, u16),

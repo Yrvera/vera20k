@@ -524,4 +524,138 @@ mod tests {
             [0, 1, 2, 3, 3, 2, 1, 0, 2, 3, 0, 1, 1, 0, 3, 2]
         );
     }
+
+    /// Phase D Task 16: render integration regression — the body builder must
+    /// query the bridge atlas with the SHP frame derived from the cell's
+    /// **post-tick** `damage_state` (NOT a stale overlay byte). If a future
+    /// refactor accidentally reads from the wrong source (e.g. legacy
+    /// `OverlayGrid`), bridges would visually stay healthy after they collapse
+    /// — and nothing else would catch it.
+    ///
+    /// Lives here (app_instances/bridges.rs) rather than under `sim/world/`
+    /// because it imports render-layer types (`BridgeAtlasLookup`,
+    /// `OverlaySpriteEntry`, `SpriteInstance`) and sim/ must never depend on
+    /// render/. The bridge state is built directly via `test_seed_cell` to
+    /// avoid pulling in any sim-test fixtures.
+    #[test]
+    fn bridge_body_builder_queries_atlas_with_post_tick_state_byte_frame() {
+        use crate::map::lighting::CellLightGrid;
+        use crate::render::bridge_atlas::BridgeAtlasLookup;
+        use crate::render::overlay_atlas::OverlaySpriteEntry;
+        use crate::sim::bridge_state::{
+            Axis, BridgeCellRole, BridgeRuntimeCell, BridgeRuntimeState, BridgeheadAnchorClass,
+            DamageState,
+        };
+        use std::collections::BTreeMap;
+
+        struct MockAtlas {
+            expected_name: String,
+            expected_frame: u8,
+            entry: OverlaySpriteEntry,
+            queries: std::cell::RefCell<Vec<(String, u8)>>,
+        }
+        impl BridgeAtlasLookup for MockAtlas {
+            fn body_entry(&self, name: &str, frame: u8) -> Option<&OverlaySpriteEntry> {
+                self.queries.borrow_mut().push((name.to_string(), frame));
+                if name == self.expected_name && frame == self.expected_frame {
+                    Some(&self.entry)
+                } else {
+                    None
+                }
+            }
+        }
+
+        // Seed cells (4,5), (5,5), (6,5) directly. (5,5) is forced Damaged —
+        // Task 16 is about the sim → render bridge, not which damage path
+        // produced Damaged. The other two cells stay Healthy{variant:0}.
+        let mut bridge_state = BridgeRuntimeState::default();
+        for x in 4u16..=6 {
+            let damage_state = if x == 5 {
+                DamageState::Damaged
+            } else {
+                DamageState::Healthy { variant: 0 }
+            };
+            bridge_state.test_seed_cell(
+                x,
+                5,
+                BridgeRuntimeCell {
+                    deck_present: true,
+                    destroyable: true,
+                    deck_level: 4,
+                    bridge_group_id: Some(1),
+                    damage_state,
+                    axis: Some(Axis::EW),
+                    role: BridgeCellRole::Body,
+                    anchor_span_id: Some(1),
+                    overlay_byte: 0xDC,
+                    damaged_variant: false,
+                    bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
+                },
+            );
+        }
+
+        // Mock atlas accepts only ("BRIDGE1", frame 15) — the EW Damaged SHP
+        // frame. Per BRIDGE_RENDERING_GHIDRA_REPORT.md §12, EW body is SHP
+        // frames 0..=8 (axis_base = 0); Damaged adds local offset 6.
+        let mock = MockAtlas {
+            expected_name: "BRIDGE1".to_string(),
+            expected_frame: 15,
+            entry: OverlaySpriteEntry {
+                uv_origin: [0.0, 0.0],
+                uv_size: [1.0, 1.0],
+                pixel_size: [60.0, 30.0],
+                offset_x: 0.0,
+                offset_y: 0.0,
+            },
+            queries: std::cell::RefCell::new(Vec::new()),
+        };
+
+        // Map every overlay byte the walker may have written to "BRIDGE1" so
+        // `is_high_bridge_body_name` accepts it.
+        let mut overlay_names: BTreeMap<u8, String> = BTreeMap::new();
+        for byte in 0xCDu8..=0xE8u8 {
+            overlay_names.insert(byte, "BRIDGE1".to_string());
+        }
+
+        let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+        let lighting_grid = CellLightGrid::new();
+
+        // Camera centered on cell (5, 5) so view culling doesn't reject it.
+        let (cam_target_x, cam_target_y) = crate::map::terrain::iso_to_screen(5, 5, 4);
+
+        let mut out: Vec<crate::render::batch::SpriteInstance> = Vec::new();
+        build_bridge_body_instances_inner(
+            &bridge_state,
+            &mock,
+            &overlay_names,
+            &height_map,
+            &lighting_grid,
+            /* origin_y */ 0.0,
+            /* world_height */ 1.0,
+            /* cam_x */ cam_target_x - 400.0,
+            /* cam_y */ cam_target_y - 300.0,
+            /* sw */ 800.0,
+            /* sh */ 600.0,
+            &mut out,
+        );
+
+        let queries = mock.queries.borrow();
+        assert!(
+            !queries.is_empty(),
+            "body builder must query the atlas at least once for the seeded Damaged cell"
+        );
+        let queried_for_55 = queries
+            .iter()
+            .any(|(name, frame)| name == "BRIDGE1" && *frame == 15);
+        assert!(
+            queried_for_55,
+            "body builder must query atlas with (\"BRIDGE1\", 15) — the EW Damaged SHP frame; \
+             actual queries: {:?}",
+            *queries
+        );
+        assert!(
+            !out.is_empty(),
+            "expected at least one SpriteInstance for the Damaged EW bridge cell"
+        );
+    }
 }

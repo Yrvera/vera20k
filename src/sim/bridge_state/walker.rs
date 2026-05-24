@@ -914,6 +914,7 @@ impl BridgeRuntimeState {
 
         let adj = compute_adjacent_bridges_dirty(rx, ry, Axis::NS);
         StateOutcome::Collapsed {
+            binary_success: true,
             destroyed_cells: destroyed,
             set_bridge_direction: SetBridgeDirectionResult { actions },
             adjacent_bridges_dirty: adj,
@@ -1002,6 +1003,7 @@ impl BridgeRuntimeState {
 
         let adj = compute_adjacent_bridges_dirty(rx, ry, Axis::EW);
         StateOutcome::Collapsed {
+            binary_success: true,
             destroyed_cells: destroyed,
             set_bridge_direction: SetBridgeDirectionResult { actions },
             adjacent_bridges_dirty: adj,
@@ -1265,6 +1267,7 @@ impl BridgeRuntimeState {
 
         let adj = compute_adjacent_bridges_dirty(rx, ry, Axis::NS);
         StateOutcome::Collapsed {
+            binary_success: true,
             destroyed_cells: destroyed,
             set_bridge_direction: SetBridgeDirectionResult { actions },
             adjacent_bridges_dirty: adj,
@@ -1353,6 +1356,7 @@ impl BridgeRuntimeState {
 
         let adj = compute_adjacent_bridges_dirty(rx, ry, Axis::EW);
         StateOutcome::Collapsed {
+            binary_success: true,
             destroyed_cells: destroyed,
             set_bridge_direction: SetBridgeDirectionResult { actions },
             adjacent_bridges_dirty: adj,
