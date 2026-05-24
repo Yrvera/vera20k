@@ -409,6 +409,50 @@ fn start_position_taken_by_other_row(
         .any(|(idx, opponent)| idx + 1 != row && opponent.start_position == start)
 }
 
+#[expect(dead_code, reason = "wired into combo_items in the next commit")]
+fn selected_color_claim(state: &SkirmishShellState, row: usize) -> Option<usize> {
+    if row == 0 {
+        if state.player_color_claimed {
+            Some(normal_color_index(state.player_color_index))
+        } else {
+            None
+        }
+    } else {
+        state.opponents.get(row - 1).and_then(|opponent| {
+            if opponent.color_claimed {
+                Some(normal_color_index(opponent.color_index))
+            } else {
+                None
+            }
+        })
+    }
+}
+
+#[expect(dead_code, reason = "wired into combo_items in the next commit")]
+fn color_claimed_by_other_row(
+    state: &SkirmishShellState,
+    row: usize,
+    color: usize,
+) -> Option<usize> {
+    if row != 0
+        && state.player_color_claimed
+        && normal_color_index(state.player_color_index) == color
+    {
+        return Some(0);
+    }
+    state.opponents.iter().enumerate().find_map(|(idx, opponent)| {
+        let opponent_row = idx + 1;
+        if opponent_row != row
+            && opponent.color_claimed
+            && normal_color_index(opponent.color_index) == color
+        {
+            Some(opponent_row)
+        } else {
+            None
+        }
+    })
+}
+
 fn arrow_hit_rect(rect: RectPx) -> RectPx {
     let face = combo_face_rect(rect);
     RectPx::new(
