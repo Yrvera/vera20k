@@ -279,9 +279,18 @@ pub fn combo_items(
             )
             .map(SkirmishComboItem::Country)
             .collect(),
-        SkirmishComboId::Color(_) => std::iter::once(SkirmishComboItem::ColorSentinel(-2))
-            .chain((0..HOUSE_COLOR_COUNT).map(SkirmishComboItem::Color))
-            .collect(),
+        SkirmishComboId::Color(row) => {
+            let selected = selected_color_claim(state, row);
+            let mut items = vec![SkirmishComboItem::ColorSentinel(-2)];
+            for color in 0..HOUSE_COLOR_COUNT {
+                if selected == Some(color)
+                    || color_claimed_by_other_row(state, row, color).is_none()
+                {
+                    items.push(SkirmishComboItem::Color(color));
+                }
+            }
+            items
+        }
         SkirmishComboId::Start(row) => {
             let capacity = maps
                 .get(state.selected_map_idx)
@@ -409,6 +418,75 @@ fn start_position_taken_by_other_row(
         .any(|(idx, opponent)| idx + 1 != row && opponent.start_position == start)
 }
 
+fn selected_color_claim(state: &SkirmishShellState, row: usize) -> Option<usize> {
+    if row == 0 {
+        if state.player_color_claimed {
+            Some(normal_color_index(state.player_color_index))
+        } else {
+            None
+        }
+    } else {
+        state.opponents.get(row - 1).and_then(|opponent| {
+            if opponent.color_claimed {
+                Some(normal_color_index(opponent.color_index))
+            } else {
+                None
+            }
+        })
+    }
+}
+
+fn color_claimed_by_other_row(
+    state: &SkirmishShellState,
+    row: usize,
+    color: usize,
+) -> Option<usize> {
+    if row != 0
+        && state.player_color_claimed
+        && normal_color_index(state.player_color_index) == color
+    {
+        return Some(0);
+    }
+    state.opponents.iter().enumerate().find_map(|(idx, opponent)| {
+        let opponent_row = idx + 1;
+        if opponent_row != row
+            && opponent.color_claimed
+            && normal_color_index(opponent.color_index) == color
+        {
+            Some(opponent_row)
+        } else {
+            None
+        }
+    })
+}
+
+/// Release any row other than `row` that currently claims `color`. Called
+/// before writing `row`'s new claim so the derived ownership model never
+/// shows two rows holding the same color simultaneously. The evicted row
+/// keeps its cached `color_index` so the player can see what they had if
+/// they later re-pick from the now-shorter dropdown.
+fn evict_other_color_claimants(
+    state: &mut SkirmishShellState,
+    row: usize,
+    color: usize,
+) {
+    if row != 0
+        && state.player_color_claimed
+        && normal_color_index(state.player_color_index) == color
+    {
+        state.player_color_claimed = false;
+    }
+    for (idx, opponent) in state.opponents.iter_mut().enumerate() {
+        let opponent_row = idx + 1;
+        if opponent_row != row
+            && opponent.color_claimed
+            && normal_color_index(opponent.color_index) == color
+        {
+            opponent.color_claimed = false;
+        }
+    }
+}
+
 fn arrow_hit_rect(rect: RectPx) -> RectPx {
     let face = combo_face_rect(rect);
     RectPx::new(
@@ -447,7 +525,7 @@ fn combo_arrow_at(
     })
 }
 
-fn apply_combo_selection(
+pub(super) fn apply_combo_selection(
     state: &mut SkirmishShellState,
     id: SkirmishComboId,
     item: SkirmishComboItem,
@@ -462,6 +540,10 @@ fn apply_combo_selection(
                 if let Some(difficulty) = row_type.difficulty() {
                     opponent.difficulty = difficulty;
                 }
+                // Release color claim on deactivate; activation does not auto-claim
+                // even if the row was previously holding a color — another slot may
+                // have grabbed it during the deactivation gap.
+                opponent.color_claimed = row_type.is_active() && opponent.color_claimed;
             }
         }
         (SkirmishComboId::Side(0), SkirmishComboItem::Country(choice)) => match choice {
@@ -487,14 +569,27 @@ fn apply_combo_selection(
             }
         }
         (SkirmishComboId::Color(0), SkirmishComboItem::Color(color)) => {
-            state.player_color_index = color.min(HOUSE_COLOR_COUNT - 1);
+            let color = color.min(HOUSE_COLOR_COUNT - 1);
+            evict_other_color_claimants(state, 0, color);
+            state.player_color_index = color;
+            state.player_color_claimed = true;
         }
         (SkirmishComboId::Color(row), SkirmishComboItem::Color(color)) => {
+            let color = color.min(HOUSE_COLOR_COUNT - 1);
+            evict_other_color_claimants(state, row, color);
             if let Some(opponent) = state.opponents.get_mut(row - 1) {
-                opponent.color_index = color.min(HOUSE_COLOR_COUNT - 1);
+                opponent.color_index = color;
+                opponent.color_claimed = true;
             }
         }
-        (SkirmishComboId::Color(_), SkirmishComboItem::ColorSentinel(_)) => {}
+        (SkirmishComboId::Color(0), SkirmishComboItem::ColorSentinel(_)) => {
+            state.player_color_claimed = false;
+        }
+        (SkirmishComboId::Color(row), SkirmishComboItem::ColorSentinel(_)) => {
+            if let Some(opponent) = state.opponents.get_mut(row - 1) {
+                opponent.color_claimed = false;
+            }
+        }
         (SkirmishComboId::Start(0), SkirmishComboItem::Start(start)) => {
             state.player_start_position = start;
         }

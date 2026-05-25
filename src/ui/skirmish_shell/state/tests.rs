@@ -1,6 +1,7 @@
 //! Unit tests for the skirmish shell state modules.
 
 use super::*;
+use super::combos::apply_combo_selection as apply_combo_selection_for_test;
 use crate::app_init::MapMenuEntry;
 use crate::map::briefing::BriefingSection;
 use crate::map::preview::PreviewSection;
@@ -1475,6 +1476,12 @@ fn hit_test_ignores_combo_faces_after_owner_draw_buttons() {
 fn combo_arrow_opens_dropdown_and_selects_color_row() {
     let layout = compute_layout(800, 600);
     let mut shell = SkirmishShellState::default();
+    // Deactivate all AI rows so slot 0's filter sees no other claimants and
+    // the dropdown maps row N → color N-1 as the test below assumes.
+    for opponent in &mut shell.opponents {
+        opponent.row_type = SkirmishAiRowType::None;
+        opponent.color_claimed = false;
+    }
     let maps = [test_map_entry("map.mmx")];
     let rect = layout.color_combos[0];
 
@@ -1513,6 +1520,12 @@ fn combo_arrow_opens_dropdown_and_selects_color_row() {
 fn skirmish_color_dropdown_normal_population_omits_initialized_row_8() {
     let mut shell = SkirmishShellState::default();
     shell.player_color_index = 8;
+    // Deactivate all AI rows so the filter sees no other claimants and the
+    // dropdown matches the historical unfiltered set.
+    for opponent in &mut shell.opponents {
+        opponent.row_type = SkirmishAiRowType::None;
+        opponent.color_claimed = false;
+    }
     let maps = [test_map_entry("map.mmx")];
 
     let items = combo_items(&shell, &maps, SkirmishComboId::Color(0));
@@ -1620,4 +1633,254 @@ fn inactive_ai_sibling_combo_does_not_open() {
     handle_option_mouse_down(&mut shell, &layout, &maps, rect.x + rect.w - 1, rect.y + 1);
 
     assert_eq!(shell.open_combo_dropdown, None);
+}
+
+#[test]
+fn color_default_state_each_row_excludes_other_claimed_colors() {
+    // Default state: every active row's filter excludes the other 7 default
+    // colors and includes its own + sentinel.
+    let mut shell = SkirmishShellState::default();
+    // Activate every AI row so all 8 slots hold claims.
+    for opponent in &mut shell.opponents {
+        opponent.row_type = SkirmishAiRowType::Easy;
+        opponent.color_claimed = true;
+    }
+    let maps = [test_map_entry("map.mmx")];
+
+    for row in 0..SKIRMISH_AI_SLOT_COUNT + 1 {
+        let items = combo_items(&shell, &maps, SkirmishComboId::Color(row));
+        // Sentinel + exactly one color visible: this row's own.
+        assert_eq!(items.len(), 2, "row {row} should see sentinel + self only");
+        assert_eq!(items[0], SkirmishComboItem::ColorSentinel(-2));
+        let expected_color = if row == 0 {
+            shell.player_color_index
+        } else {
+            shell.opponents[row - 1].color_index
+        };
+        assert_eq!(items[1], SkirmishComboItem::Color(expected_color));
+    }
+}
+
+#[test]
+fn color_claim_excludes_color_from_other_rows_dropdown() {
+    // Player claims color 4; AI row 1's filter loses color 4.
+    let mut shell = SkirmishShellState::default();
+    shell.player_color_index = 4;
+    shell.player_color_claimed = true;
+    // Deactivate AI row 1 so its own default claim doesn't confound the
+    // assertion.
+    shell.opponents[0].row_type = SkirmishAiRowType::None;
+    shell.opponents[0].color_claimed = false;
+    let maps = [test_map_entry("map.mmx")];
+
+    let items = combo_items(&shell, &maps, SkirmishComboId::Color(1));
+
+    assert!(items.contains(&SkirmishComboItem::ColorSentinel(-2)));
+    assert!(!items.contains(&SkirmishComboItem::Color(4)));
+    // Spot-check that other colors are still present.
+    assert!(items.contains(&SkirmishComboItem::Color(0)));
+    assert!(items.contains(&SkirmishComboItem::Color(7)));
+}
+
+#[test]
+fn color_selection_evicts_prior_claimant() {
+    // Player picks color 5 while AI row 1 already claimed color 5. After
+    // the selection, AI row 1 must no longer claim 5, even though its
+    // cached color_index can remain. The dropdown filter HIDES color 5
+    // from slot 0 (since slot 1 owns it), so the test drives
+    // apply_combo_selection directly — same entry point the mouse handler
+    // uses, just bypassing the row-index lookup.
+    let mut shell = SkirmishShellState::default();
+    shell.player_color_index = 0;
+    shell.player_color_claimed = true;
+    shell.opponents[0].row_type = SkirmishAiRowType::Easy;
+    shell.opponents[0].color_index = 5;
+    shell.opponents[0].color_claimed = true;
+
+    apply_combo_selection_for_test(
+        &mut shell,
+        SkirmishComboId::Color(0),
+        SkirmishComboItem::Color(5),
+    );
+
+    assert_eq!(shell.player_color_index, 5);
+    assert!(shell.player_color_claimed);
+    assert!(
+        !shell.opponents[0].color_claimed,
+        "AI row 1 must have its claim evicted when the player takes its color"
+    );
+    // Cached color_index stays — the evicted row keeps its prior color in
+    // case the user later re-picks from the dropdown.
+    assert_eq!(shell.opponents[0].color_index, 5);
+}
+
+#[test]
+fn sentinel_release_makes_color_available_to_other_rows() {
+    // AI row 1 claims color 3; AI row 1 selects sentinel; AI row 2 can now
+    // see color 3 in its dropdown.
+    let mut shell = SkirmishShellState::default();
+    shell.player_color_index = 0;
+    shell.player_color_claimed = true;
+    shell.opponents[0].row_type = SkirmishAiRowType::Easy;
+    shell.opponents[0].color_index = 3;
+    shell.opponents[0].color_claimed = true;
+    shell.opponents[1].row_type = SkirmishAiRowType::Easy;
+    shell.opponents[1].color_index = 6;
+    shell.opponents[1].color_claimed = true;
+    let maps = [test_map_entry("map.mmx")];
+
+    let before = combo_items(&shell, &maps, SkirmishComboId::Color(2));
+    assert!(!before.contains(&SkirmishComboItem::Color(3)));
+
+    apply_combo_selection_for_test(
+        &mut shell,
+        SkirmishComboId::Color(1),
+        SkirmishComboItem::ColorSentinel(-2),
+    );
+
+    assert!(!shell.opponents[0].color_claimed);
+    assert_eq!(shell.opponents[0].color_index, 3, "cached color preserved");
+    let after = combo_items(&shell, &maps, SkirmishComboId::Color(2));
+    assert!(after.contains(&SkirmishComboItem::Color(3)));
+}
+
+#[test]
+fn ai_type_none_releases_color() {
+    // AI row 1 (Easy, color 4) → None. color_claimed clears and AI row 2's
+    // filter regains color 4.
+    let mut shell = SkirmishShellState::default();
+    shell.player_color_index = 0;
+    shell.player_color_claimed = true;
+    shell.opponents[0].row_type = SkirmishAiRowType::Easy;
+    shell.opponents[0].color_index = 4;
+    shell.opponents[0].color_claimed = true;
+    shell.opponents[1].row_type = SkirmishAiRowType::Easy;
+    shell.opponents[1].color_index = 7;
+    shell.opponents[1].color_claimed = true;
+    let maps = [test_map_entry("map.mmx")];
+
+    let before = combo_items(&shell, &maps, SkirmishComboId::Color(2));
+    assert!(!before.contains(&SkirmishComboItem::Color(4)));
+
+    apply_combo_selection_for_test(
+        &mut shell,
+        SkirmishComboId::AiType(0),
+        SkirmishComboItem::AiType(SkirmishAiRowType::None),
+    );
+
+    assert!(!shell.opponents[0].color_claimed);
+    let after = combo_items(&shell, &maps, SkirmishComboId::Color(2));
+    assert!(after.contains(&SkirmishComboItem::Color(4)));
+}
+
+#[test]
+fn ai_type_reactivate_does_not_auto_claim() {
+    // AI row 1 starts None+color_claimed=false; switching to Easy must NOT
+    // silently set color_claimed to true. Another row may have taken its
+    // prior color during the deactivation gap.
+    let mut shell = SkirmishShellState::default();
+    shell.opponents[0].row_type = SkirmishAiRowType::None;
+    shell.opponents[0].color_index = 4;
+    shell.opponents[0].color_claimed = false;
+
+    apply_combo_selection_for_test(
+        &mut shell,
+        SkirmishComboId::AiType(0),
+        SkirmishComboItem::AiType(SkirmishAiRowType::Easy),
+    );
+
+    assert_eq!(shell.opponents[0].row_type, SkirmishAiRowType::Easy);
+    assert!(shell.opponents[0].enabled);
+    assert!(
+        !shell.opponents[0].color_claimed,
+        "AI row 1 reactivation must NOT auto-claim its cached color"
+    );
+    // Cached color_index preserved — user can re-pick if still available.
+    assert_eq!(shell.opponents[0].color_index, 4);
+}
+
+#[test]
+fn color_filter_keeps_self_selection_visible_per_row() {
+    // Every active row sees its own claimed color in its own dropdown,
+    // even though every other row's filter would exclude it.
+    let mut shell = SkirmishShellState::default();
+    shell.player_color_index = 2;
+    shell.player_color_claimed = true;
+    shell.opponents[0].row_type = SkirmishAiRowType::Easy;
+    shell.opponents[0].color_index = 5;
+    shell.opponents[0].color_claimed = true;
+    let maps = [test_map_entry("map.mmx")];
+
+    let player_items = combo_items(&shell, &maps, SkirmishComboId::Color(0));
+    assert!(player_items.contains(&SkirmishComboItem::Color(2)));
+    assert!(!player_items.contains(&SkirmishComboItem::Color(5)));
+
+    let ai_items = combo_items(&shell, &maps, SkirmishComboId::Color(1));
+    assert!(ai_items.contains(&SkirmishComboItem::Color(5)));
+    assert!(!ai_items.contains(&SkirmishComboItem::Color(2)));
+}
+
+#[test]
+fn launch_session_uses_cached_color_index_when_claim_false() {
+    // After picking the sentinel, color_claimed goes false but color_index
+    // remains as the cached prior selection. launch_session must use that
+    // cached value — gamemd's late-binding random assignment is a separate
+    // concern (deferred follow-up).
+    let mut shell = SkirmishShellState::default();
+    shell.player_color_index = 3;
+    shell.player_color_claimed = false;
+    shell.opponents[0].row_type = SkirmishAiRowType::Easy;
+    shell.opponents[0].color_index = 6;
+    shell.opponents[0].color_claimed = false;
+    let maps = [test_map_entry("map.mmx")];
+    let modes = stock_skirmish_modes();
+
+    let session = launch_session(&shell, &maps, &modes).expect("session");
+
+    assert_eq!(session.local.color_index, 3);
+    assert_eq!(session.opponents[0].color_index, 6);
+}
+
+#[test]
+fn all_colors_claimed_activation_leaves_row_without_claim() {
+    // Defensive Ledger #11. Claim all 8 colors across 8 active rows,
+    // deactivate one, give its color to another slot, reactivate it.
+    // Activating must NOT re-grab a color or steal another row's.
+    let mut shell = SkirmishShellState::default();
+    shell.player_color_index = 0;
+    shell.player_color_claimed = true;
+    for (idx, opponent) in shell.opponents.iter_mut().enumerate() {
+        opponent.row_type = SkirmishAiRowType::Easy;
+        opponent.color_index = idx + 1; // colors 1..7
+        opponent.color_claimed = true;
+    }
+
+    // Deactivate AI row 1 (slot index 0) — its color 1 is released.
+    apply_combo_selection_for_test(
+        &mut shell,
+        SkirmishComboId::AiType(0),
+        SkirmishComboItem::AiType(SkirmishAiRowType::None),
+    );
+    // Another slot grabs color 1 before AI row 1 reactivates.
+    apply_combo_selection_for_test(
+        &mut shell,
+        SkirmishComboId::Color(2),
+        SkirmishComboItem::Color(1),
+    );
+    // Reactivate AI row 1.
+    apply_combo_selection_for_test(
+        &mut shell,
+        SkirmishComboId::AiType(0),
+        SkirmishComboItem::AiType(SkirmishAiRowType::Easy),
+    );
+
+    assert_eq!(shell.opponents[0].row_type, SkirmishAiRowType::Easy);
+    assert!(
+        !shell.opponents[0].color_claimed,
+        "reactivation must not silently re-grab a color another row took"
+    );
+    assert!(
+        shell.opponents[1].color_claimed && shell.opponents[1].color_index == 1,
+        "the other row's claim on color 1 must be preserved"
+    );
 }
