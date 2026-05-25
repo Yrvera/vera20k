@@ -14,6 +14,8 @@ use crate::rules::ini_parser::IniFile;
 use std::borrow::Cow;
 use std::sync::OnceLock;
 
+const STOCK_FLAT_RIPARIUS_VARIANT_COUNT: usize = 12;
+
 /// Check if an overlay index is a bridge overlay. The original engine identifies
 /// bridges by hardcoded index position in `[OverlayTypes]`, not by INI flags.
 /// These indices must not be reordered without breaking bridge logic.
@@ -294,6 +296,34 @@ impl OverlayTypeRegistry {
             .and_then(|i| u8::try_from(i).ok())
     }
 
+    /// Stock flat Riparius overlay variants (`TIB01..TIB12`) in registry order.
+    ///
+    /// gamemd's no-overlay TIBTRE placement picks one of these 12 entries using
+    /// the Riparius image index plus `RandomRanged(0, 0xB)`. The returned IDs
+    /// come from the parsed registry positions and require `Tiberium=yes`, so no
+    /// internal overlay IDs are baked into Rust.
+    pub fn stock_flat_riparius_variant_ids(&self) -> Option<[u8; 12]> {
+        let mut ids: Vec<u8> = Vec::with_capacity(STOCK_FLAT_RIPARIUS_VARIANT_COUNT);
+        let mut found = [false; STOCK_FLAT_RIPARIUS_VARIANT_COUNT];
+
+        for (idx, name) in self.names.iter().enumerate() {
+            let Some(variant) = stock_flat_riparius_variant_index(name) else {
+                continue;
+            };
+            if found[variant] || !self.flags.get(idx).is_some_and(|flags| flags.tiberium) {
+                return None;
+            }
+            found[variant] = true;
+            ids.push(u8::try_from(idx).ok()?);
+        }
+
+        if !found.iter().all(|present| *present) {
+            return None;
+        }
+
+        ids.try_into().ok()
+    }
+
     /// Total number of registered overlay types.
     pub fn len(&self) -> usize {
         self.names.len()
@@ -303,6 +333,21 @@ impl OverlayTypeRegistry {
     pub fn is_empty(&self) -> bool {
         self.names.is_empty()
     }
+}
+
+fn stock_flat_riparius_variant_index(name: &str) -> Option<usize> {
+    let prefix = name.get(..3)?;
+    if !prefix.eq_ignore_ascii_case("TIB") {
+        return None;
+    }
+    let suffix = name.get(3..)?;
+    if suffix.len() != 2 {
+        return None;
+    }
+    let variant = suffix.parse::<usize>().ok()?;
+    (1..=STOCK_FLAT_RIPARIUS_VARIANT_COUNT)
+        .contains(&variant)
+        .then_some(variant - 1)
 }
 
 fn section_wheel_speed_is_exact_zero(section: &crate::rules::ini_parser::IniSection) -> bool {
@@ -541,5 +586,53 @@ IsRubble=yes
         assert_eq!(reg.name(1), Some("GEM01"));
         assert_eq!(reg.name(2), Some("BRIDGE"));
         assert_eq!(reg.name(3), Some("BIGFENCE"));
+    }
+
+    #[test]
+    fn stock_flat_riparius_variant_ids_use_registry_order() {
+        let text = "\
+[OverlayTypes]
+1=GASAND
+2=TIB01
+3=TIB02
+4=TIB03
+5=TIB04
+6=TIB05
+7=TIB06
+8=TIB07
+9=TIB08
+10=TIB09
+11=TIB10
+12=TIB11
+13=TIB12
+";
+        let mut sections = String::from(text);
+        for i in 1..=12 {
+            sections.push_str(&format!("[TIB{:02}]\nTiberium=yes\n", i));
+        }
+        let ini = IniFile::from_str(&sections);
+        let reg = OverlayTypeRegistry::from_ini(&ini, None);
+
+        assert_eq!(
+            reg.stock_flat_riparius_variant_ids(),
+            Some([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+        );
+    }
+
+    #[test]
+    fn stock_flat_riparius_variant_ids_require_tiberium_flag() {
+        let mut text = String::from("[OverlayTypes]\n");
+        for i in 1..=12 {
+            text.push_str(&format!("{}=TIB{:02}\n", i, i));
+        }
+        for i in 1..=11 {
+            text.push_str(&format!("[TIB{:02}]\nTiberium=yes\n", i));
+        }
+        text.push_str("[TIB12]\nTiberium=no\n");
+
+        let ini = IniFile::from_str(&text);
+        let reg = OverlayTypeRegistry::from_ini(&ini, None);
+
+        assert_eq!(reg.stock_flat_riparius_variant_ids(), None);
     }
 }

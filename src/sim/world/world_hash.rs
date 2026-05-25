@@ -176,11 +176,16 @@ impl Simulation {
             (node.resource_type as u8).hash(hasher);
             node.remaining.hash(hasher);
         }
+        self.production.ore_growth_state.hash_state(hasher);
         // Hash terrain spawners (TIBTRE-style ore generators).
         for (&(rx, ry), spawner) in &self.production.terrain_spawners {
             rx.hash(hasher);
             ry.hash(hasher);
             spawner.hash(hasher);
+        }
+        for &(rx, ry) in &self.production.tiberium_spawning_terrain_cells {
+            rx.hash(hasher);
+            ry.hash(hasher);
         }
         self.production.default_ore_overlay_id.hash(hasher);
         // Hash refinery radio/contact state.
