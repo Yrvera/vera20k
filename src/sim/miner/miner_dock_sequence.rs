@@ -46,6 +46,8 @@ pub(super) const EXIT_SEARCH_MAX_RADIUS: i32 = 16;
 /// rotate toward East. Applies to both HARV and CMIN (no Teleporter gate).
 const DOCK_FACING_EAST: u8 = 0x40;
 const DOCK_FACING_EAST_DIR: u16 = (DOCK_FACING_EAST as u16) << 8;
+const ENTER_RETRY_BASE_FRAMES: u8 = 14;
+const ENTER_RETRY_JITTER_MAX_FRAMES: u32 = 2;
 const REFINERY_EXIT_FORCE_TRACK: u8 = 0x47;
 const REFINERY_EXIT_FORCE_HEAD_OFFSET_X: i32 = 0;
 const REFINERY_EXIT_FORCE_HEAD_OFFSET_Y: i32 = 256;
@@ -73,6 +75,29 @@ fn dock_pivot_rot_byte(sim: &Simulation, rules: &RuleSet, snap: &MinerSnapshot) 
         .object_case_insensitive(sim.interner.resolve(snap.type_id))
         .map(|obj| obj.turret_rot.clamp(0, 0xFF) as u8)
         .unwrap_or(10)
+}
+
+fn schedule_enter_retry(sim: &mut Simulation, snap: &mut MinerSnapshot) {
+    let jitter = sim
+        .rng
+        .next_range_u32_inclusive(0, ENTER_RETRY_JITTER_MAX_FRAMES) as u8;
+    snap.miner.dock_enter_retry_start_frame = Some(sim.binary_frame);
+    snap.miner.dock_enter_retry_duration = ENTER_RETRY_BASE_FRAMES.saturating_add(jitter);
+}
+
+fn enter_retry_due(sim: &Simulation, snap: &MinerSnapshot) -> bool {
+    match snap.miner.dock_enter_retry_start_frame {
+        Some(start) => {
+            let elapsed = sim.binary_frame.saturating_sub(start);
+            elapsed >= u32::from(snap.miner.dock_enter_retry_duration)
+        }
+        None => true,
+    }
+}
+
+fn clear_enter_retry(snap: &mut MinerSnapshot) {
+    snap.miner.dock_enter_retry_start_frame = None;
+    snap.miner.dock_enter_retry_duration = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -110,8 +135,9 @@ pub(super) fn refinery_can_dock_queue_cell(rx: u16, ry: u16) -> (u16, u16) {
 /// When art.ini declares a `DockingOffset0` (passed through as `docking_offset`),
 /// delegates to [`crate::sim::docking::pad_geometry::pad_cell_for`] for the
 /// shared building-center-relative lepton→cell conversion. Otherwise falls back
-/// to the rightmost foundation column, vertically centred (used by retail
-/// refineries which have no `DockingOffset0` in art).
+/// to the hardcoded retail refinery offset of `(+2 cells, +1 cell)` from the NW
+/// corner. The retail engine hardcodes this offset and does not scale with
+/// foundation dimensions; we match that for exact parity.
 pub(super) fn refinery_pad_cell(
     rx: u16,
     ry: u16,
@@ -125,7 +151,8 @@ pub(super) fn refinery_pad_cell(
         };
         crate::sim::docking::pad_geometry::pad_cell_for((rx, ry), (width, height), &pad)
     } else {
-        (rx + width.saturating_sub(1), ry + height / 2)
+        let _ = (width, height);
+        (rx.saturating_add(2), ry.saturating_add(1))
     }
 }
 
@@ -450,6 +477,8 @@ pub(crate) fn interrupt_refinery_docked_miners(
         miner.dock_queued = false;
         miner.dock_phase = RefineryDockPhase::Approach;
         miner.dock_pivot_facing = None;
+        miner.dock_enter_retry_start_frame = None;
+        miner.dock_enter_retry_duration = 0;
         miner.deposit_cooldown_ticks = 0;
         miner.exit_cell = None;
         miner.unload_timer = 0;
@@ -487,6 +516,7 @@ fn abort_invalid_refinery(sim: &mut Simulation, snap: &mut MinerSnapshot, ref_si
     snap.miner.dock_queued = false;
     snap.miner.dock_phase = RefineryDockPhase::Approach;
     snap.miner.dock_pivot_facing = None;
+    clear_enter_retry(snap);
     snap.miner.deposit_cooldown_ticks = 0;
     snap.miner.exit_cell = None;
     snap.miner.unload_timer = 0;
@@ -518,7 +548,7 @@ pub(super) fn handle_dock_sequence(
         return;
     };
 
-    let Some((wait_queue, accepted_cell, pad, dock_capacity)) =
+    let Some((wait_queue, accepted_cell, _pad, dock_capacity)) =
         resolve_refinery_cells(sim, rules, ref_sid)
     else {
         abort_invalid_refinery(sim, snap, Some(ref_sid));
@@ -535,6 +565,7 @@ pub(super) fn handle_dock_sequence(
         RefineryDockPhase::MissionEnter => {
             phase_mission_enter(
                 sim,
+                rules,
                 path_grid,
                 snap,
                 wait_queue,
@@ -546,11 +577,14 @@ pub(super) fn handle_dock_sequence(
         RefineryDockPhase::AwaitingAcceptedCell => {
             phase_awaiting_accepted_cell(sim, snap);
         }
-        RefineryDockPhase::Linked => {
-            phase_linked(sim, rules, snap, pad, ref_sid);
+        RefineryDockPhase::FaceSync => {
+            phase_face_sync(sim, rules, snap, ref_sid);
+        }
+        RefineryDockPhase::MissionQueued => {
+            phase_mission_queued(snap);
         }
         RefineryDockPhase::Pivoting => {
-            phase_pivoting(sim, rules, config, snap);
+            phase_pivoting(sim, rules, config, snap, ref_sid);
         }
         RefineryDockPhase::Unloading => {
             phase_unloading(sim, rules, config, snap, ref_sid);
@@ -610,6 +644,7 @@ fn phase_approach(
 
 fn phase_mission_enter(
     sim: &mut Simulation,
+    rules: &RuleSet,
     path_grid: Option<&PathGrid>,
     snap: &mut MinerSnapshot,
     wait_queue: (u16, u16),
@@ -617,6 +652,10 @@ fn phase_mission_enter(
     ref_sid: u64,
     dock_capacity: usize,
 ) {
+    if !enter_retry_due(sim, snap) {
+        return;
+    }
+
     let admission =
         sim.production
             .dock_reservations
@@ -643,6 +682,7 @@ fn phase_mission_enter(
                 );
             }
         }
+        schedule_enter_retry(sim, snap);
         return;
     }
 
@@ -661,8 +701,10 @@ fn phase_mission_enter(
             sim.production
                 .dock_reservations
                 .mark_contact_entered(ref_sid, snap.entity_id);
-            snap.miner.dock_phase = RefineryDockPhase::Linked;
+            sync_dock_facing(sim, rules, snap);
+            snap.miner.dock_phase = RefineryDockPhase::FaceSync;
         }
+        schedule_enter_retry(sim, snap);
         return;
     }
 
@@ -672,6 +714,7 @@ fn phase_mission_enter(
         // direct move path already used for refinery pad entry.
         movement::issue_direct_move(&mut sim.entities, snap.entity_id, accepted_cell, snap.speed);
     }
+    schedule_enter_retry(sim, snap);
     snap.miner.dock_phase = RefineryDockPhase::AwaitingAcceptedCell;
 }
 
@@ -695,13 +738,7 @@ fn phase_awaiting_accepted_cell(sim: &mut Simulation, snap: &mut MinerSnapshot) 
     snap.miner.dock_phase = RefineryDockPhase::MissionEnter;
 }
 
-fn phase_linked(
-    sim: &mut Simulation,
-    rules: &RuleSet,
-    snap: &mut MinerSnapshot,
-    pad: (u16, u16),
-    ref_sid: u64,
-) {
+fn phase_face_sync(sim: &mut Simulation, rules: &RuleSet, snap: &mut MinerSnapshot, ref_sid: u64) {
     let arrived = sim
         .entities
         .get(snap.entity_id)
@@ -710,49 +747,37 @@ fn phase_linked(
         return;
     }
 
-    snap.rx = pad.0;
-    snap.ry = pad.1;
+    if let Some(entity) = sim.entities.get(snap.entity_id) {
+        snap.rx = entity.position.rx;
+        snap.ry = entity.position.ry;
+    }
+
     sim.production
         .dock_reservations
         .mark_contact_entered(ref_sid, snap.entity_id);
-    sim.production
-        .dock_reservations
-        .link_on_pad(ref_sid, snap.entity_id);
 
-    let rot = dock_pivot_rot_byte(sim, rules, snap);
-    let binary_frame = sim.binary_frame;
-    if let Some(entity) = sim.entities.get_mut(snap.entity_id) {
-        if let Some(uc) = unloading_class(rules, sim.interner.resolve(snap.type_id)) {
-            entity.display_type_override = Some(sim.interner.intern(&uc));
-        }
-        let mut pivot = FacingClass::new(facing8_to_dir16(entity.facing), rot);
-        pivot.set(DOCK_FACING_EAST_DIR, binary_frame);
-        snap.miner.dock_pivot_facing = Some(pivot);
-        entity.facing_target = Some(DOCK_FACING_EAST);
+    let accepted = sync_dock_facing(sim, rules, snap);
+    if !enter_retry_due(sim, snap) {
+        return;
     }
 
-    sim.sound_events.push(SimSoundEvent::DockDeploy {
-        building_id: ref_sid,
-    });
+    if accepted {
+        clear_enter_retry(snap);
+        snap.miner.dock_phase = RefineryDockPhase::MissionQueued;
+    } else {
+        schedule_enter_retry(sim, snap);
+    }
+}
 
+fn phase_mission_queued(snap: &mut MinerSnapshot) {
     snap.miner.dock_phase = RefineryDockPhase::Pivoting;
 }
 
-/// Smooth in-place rotation toward DOCK_FACING_EAST (0x40). gamemd starts
-/// this via radio 0x16 by calling the locomotor's `Do_Turn(0x4000)`, then
-/// accepts deploy once the 16-bit PrimaryFacing timer enters the same
-/// quantized East-facing window.
-fn phase_pivoting(
-    sim: &mut Simulation,
-    rules: &RuleSet,
-    config: &MinerConfig,
-    snap: &mut MinerSnapshot,
-) {
+fn sync_dock_facing(sim: &mut Simulation, rules: &RuleSet, snap: &mut MinerSnapshot) -> bool {
     let rot = dock_pivot_rot_byte(sim, rules, snap);
     let binary_frame = sim.binary_frame;
-
     let Some(entity) = sim.entities.get_mut(snap.entity_id) else {
-        return;
+        return false;
     };
 
     if snap.miner.dock_pivot_facing.is_none() {
@@ -772,19 +797,57 @@ fn phase_pivoting(
     let current_dir = pivot.current(binary_frame);
     entity.facing = dir16_to_facing8(current_dir);
     entity.position.refresh_screen_coords();
+    entity.facing_target = Some(DOCK_FACING_EAST);
 
-    if dock_pivot_accepts(current_dir) {
-        // Pivot complete — snap to exact facing, clear target, and start
-        // the dump cascade. Timer init mirrors the prior phase_linked
-        // behaviour: `interval - 10` lines the first pop up with the
-        // 14.4-frame gate after the Linked/Pivoting → Unloading transition.
+    dock_pivot_accepts(current_dir)
+}
+
+fn start_unload_deploy(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    config: &MinerConfig,
+    snap: &mut MinerSnapshot,
+    ref_sid: u64,
+) {
+    sim.production
+        .dock_reservations
+        .link_on_pad(ref_sid, snap.entity_id);
+
+    if let Some(entity) = sim.entities.get_mut(snap.entity_id) {
+        if let Some(uc) = unloading_class(rules, sim.interner.resolve(snap.type_id)) {
+            entity.display_type_override = Some(sim.interner.intern(&uc));
+        }
         entity.facing = DOCK_FACING_EAST;
+        entity.position.refresh_screen_coords();
         entity.facing_target = None;
+    }
+
+    sim.sound_events.push(SimSoundEvent::DockDeploy {
+        building_id: ref_sid,
+    });
+
+    snap.miner.unload_timer = (config.unload_tick_interval as i16).saturating_sub(10);
+    snap.miner.dock_phase = RefineryDockPhase::Unloading;
+}
+
+/// Smooth in-place rotation toward DOCK_FACING_EAST (0x40). gamemd starts
+/// this via radio 0x16 by calling the locomotor's `Do_Turn(0x4000)`, then
+/// accepts deploy once the 16-bit PrimaryFacing timer enters the same
+/// quantized East-facing window.
+fn phase_pivoting(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    config: &MinerConfig,
+    snap: &mut MinerSnapshot,
+    ref_sid: u64,
+) {
+    if sync_dock_facing(sim, rules, snap) {
+        // Mission 0x10 has reached its facing gate. Radio 0x15 only queued
+        // that mission; unload-active effects begin here.
         snap.miner.dock_pivot_facing = None;
-        snap.miner.unload_timer = (config.unload_tick_interval as i16).saturating_sub(10);
-        snap.miner.dock_phase = RefineryDockPhase::Unloading;
+        start_unload_deploy(sim, rules, config, snap, ref_sid);
     } else {
-        entity.facing_target = Some(DOCK_FACING_EAST);
+        snap.miner.dock_phase = RefineryDockPhase::Pivoting;
     }
 }
 
@@ -930,6 +993,7 @@ fn phase_departing(sim: &mut Simulation, snap: &mut MinerSnapshot, ref_sid: u64)
     snap.miner.dock_queued = false;
     snap.miner.forced_return = false;
     snap.miner.dock_pivot_facing = None;
+    clear_enter_retry(snap);
     snap.miner.deposit_cooldown_ticks = 0;
     // Clear the pending ore target and stale exit cache. Preserve
     // `last_harvest_cell`; the ghost-cell archive survives the dock cycle

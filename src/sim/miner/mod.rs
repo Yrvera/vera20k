@@ -76,10 +76,11 @@ pub enum MinerState {
     ForcedReturn,
 }
 
-/// Sub-state machine for the refinery docking visual sequence.
+/// Sub-state machine for the refinery docking sequence.
 ///
 /// Active when `MinerState::Dock` is the current top-level state. Mirrors
-/// the stock refinery inbound radio sequence before entering the unload FSM.
+/// the stock refinery inbound radio sequence, then the unit deploy mission
+/// that starts the unload FSM.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
 )]
@@ -92,22 +93,26 @@ pub enum RefineryDockPhase {
     Approach,
     /// Mission_Enter sends CAN_DOCK(0x0E). Building case 0x0E replies with
     /// the accepted cell (anchor + (3, 1)); only an already-there reply starts
-    /// the contact-entered/pivot handoff.
+    /// the contact-entered/facing-sync handoff. Each dispatch schedules the
+    /// stock Enter retry delay.
     MissionEnter,
     /// Moving toward the accepted cell returned by CAN_DOCK. Arrival returns
-    /// to Mission_Enter so the next 0x12 already-there reply can start the
-    /// entered/pivot handshake.
+    /// to Mission_Enter; accepted-cell arrival does not bypass the Enter
+    /// retry timer.
     AwaitingAcceptedCell,
-    /// 0x15 pad-arrival handoff. Marks the miner physically on the pad, emits
-    /// DockDeploy sound, sets display_type_override, kicks off the pivot to
-    /// facing East (0x40), and transitions to Pivoting.
-    Linked,
-    /// Smooth in-place rotation to facing 0x40 (East) so the miner's back
-    /// is against the refinery dump spot for the deposit animation.
-    /// Mirrors gamemd's radio 0x16 (FACE_AND_SYNC) RateTimer pivot:
-    /// `DriveLocomotionClass::Do_Turn` sets the PrimaryFacing rate-timer
-    /// target, and the locomotor smoothly rotates each tick. On facing
-    /// convergence: init `unload_timer` and transition to Unloading.
+    /// Contact flag is set and ordinary radio 0x16 has synchronized the
+    /// locomotor/facing rate timer. This is not radio 0x15 and has no unload,
+    /// sound, pad-snap, or on-pad side effects.
+    #[serde(alias = "Linked")]
+    FaceSync,
+    /// Building radio 0x15 has queued sender mission 0x10 with queued flag 0.
+    /// No position snap, pad occupancy, cargo drain, deploy sound, or unload
+    /// animation starts in this phase.
+    MissionQueued,
+    /// Unit mission 0x10 (`Mission_Deploy_Building`) runs the path/facing gate
+    /// before starting the unload substate. The same facing timer initiated by
+    /// radio 0x16 is sampled here; only once the gate accepts do unload-active
+    /// effects start.
     Pivoting,
     /// Per-slot deposit pulse. Each timer crossing (HarvesterDumpRate × 900
     /// = 14.4 ticks) drains one StorageClass slot — all bales of one
@@ -283,6 +288,13 @@ pub struct Miner {
     /// target-facing window.
     #[serde(default)]
     pub dock_pivot_facing: Option<FacingClass>,
+    /// Stock Mission_Enter retry timer start frame (`MissionClass +0xC8`).
+    /// Used after CAN_DOCK dispatches; accepted-cell arrival does not bypass it.
+    #[serde(default)]
+    pub dock_enter_retry_start_frame: Option<u32>,
+    /// Stock Mission_Enter retry duration (`MissionClass +0xD0`), in frames.
+    #[serde(default)]
+    pub dock_enter_retry_duration: u8,
     /// Sim ticks remaining in legacy `DepositCooldown` save states.
     /// Stock unload completion now reaches Departing directly from the
     /// empty-slot dump gate, so new unloads should leave this at 0.
@@ -336,6 +348,8 @@ impl Miner {
             last_harvest_cell: None,
             dock_phase: RefineryDockPhase::default(),
             dock_pivot_facing: None,
+            dock_enter_retry_start_frame: None,
+            dock_enter_retry_duration: 0,
             deposit_cooldown_ticks: 0,
             exit_cell: None,
         }

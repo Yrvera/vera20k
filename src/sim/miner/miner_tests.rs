@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 
 use crate::map::entities::EntityCategory;
 use crate::rules::ini_parser::IniFile;
+use crate::rules::locomotor_type::LocomotorKind;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::components::Health;
 use crate::sim::game_entity::GameEntity;
@@ -16,7 +17,7 @@ use crate::sim::miner::{
     CargoBale, Miner, MinerConfig, MinerKind, MinerState, RefineryDockPhase, ResourceNode,
     ResourceType,
 };
-use crate::sim::movement::locomotor::MovementLayer;
+use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
 use crate::sim::occupancy::{CellListInsertion, OccupancyGrid};
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::production::credits_for_owner;
@@ -129,6 +130,9 @@ fn spawn_miner(sim: &mut Simulation, sid: u64, kind: MinerKind, rx: u16, ry: u16
         5,
         true,
     );
+    if kind == MinerKind::Chrono {
+        ge.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Teleport));
+    }
     ge.miner = Some(Miner::new(kind, &MinerConfig::default(), 0));
     sim.entities.insert(ge);
     // Update next_stable_entity_id if needed so allocate_stable_entity_id doesn't collide.
@@ -422,6 +426,11 @@ fn chrono_miner_teleports_to_refinery_on_return() {
         Some(2),
         "Return target should be selected before docking contact"
     );
+    let loco = entity.locomotor.as_ref().expect("locomotor");
+    assert_eq!(loco.active_kind(), LocomotorKind::Teleport);
+    assert_eq!(loco.primary_kind(), LocomotorKind::Teleport);
+    assert!(loco.piggyback.is_none());
+    assert!(!loco.is_overridden());
 
     crate::sim::movement::teleport_movement::tick_teleport_movement(
         &mut sim.entities,
@@ -436,6 +445,15 @@ fn chrono_miner_teleports_to_refinery_on_return() {
         (14, 11),
         "Position should snap to the QueueingCell staging cell after Relocate"
     );
+    assert!(
+        entity.teleport_state.is_none(),
+        "Harvester teleport cleanup should clear TeleportState in the relocate tick"
+    );
+    let loco = entity.locomotor.as_ref().expect("locomotor");
+    assert_eq!(loco.active_kind(), LocomotorKind::Teleport);
+    assert_eq!(loco.primary_kind(), LocomotorKind::Teleport);
+    assert!(loco.piggyback.is_none());
+    assert!(!loco.is_overridden());
 }
 
 #[test]
@@ -1977,10 +1995,10 @@ fn refinery_pad_and_conditional_release_cells() {
     let grid = PathGrid::test_all_passable(64, 64);
 
     // 4×3 foundation at (10, 10), no art.ini overrides:
-    //   queue = (14, 11), pad = (13, 11), conditional release = queue.
+    //   queue = (14, 11), pad = (12, 11), conditional release = queue.
     // Stock zero-link unload completion does not call this release helper.
     assert_eq!(refinery_queue_cell(10, 10, 4, 3, None), (14, 11));
-    assert_eq!(refinery_pad_cell(10, 10, 4, 3, None), (13, 11));
+    assert_eq!(refinery_pad_cell(10, 10, 4, 3, None), (12, 11));
     assert_eq!(
         refinery_exit_cell(10, 10, 4, 3, None, Some(&grid), None, 0),
         (14, 11),
@@ -2875,7 +2893,7 @@ fn accepted_cell_arrival_rechecks_can_dock_before_entered_flag() {
     tick_miners_n(&mut sim, &rules, 1);
 
     let m = get_miner(&sim, miner_id);
-    assert_eq!(m.dock_phase, RefineryDockPhase::Linked);
+    assert_eq!(m.dock_phase, RefineryDockPhase::FaceSync);
     assert!(
         sim.production
             .dock_reservations
@@ -2951,10 +2969,10 @@ fn waiter_moves_from_queueingcell_to_accepted_cell_before_entered() {
             .has_contact_entered(2, waiter)
     );
 
-    tick_miners_n(&mut sim, &rules, 1);
+    tick_miners_n(&mut sim, &rules, 16);
 
     let waiter_miner = get_miner(&sim, waiter);
-    assert_eq!(waiter_miner.dock_phase, RefineryDockPhase::Linked);
+    assert_eq!(waiter_miner.dock_phase, RefineryDockPhase::FaceSync);
     assert!(
         sim.production
             .dock_reservations
@@ -3059,10 +3077,10 @@ fn queued_miner_enters_after_contact_and_pad_are_released() {
         .dock_reservations
         .release_contact(2, occupant);
 
-    tick_miners_n(&mut sim, &rules, 1);
+    tick_miners_n(&mut sim, &rules, 16);
 
     let miner = get_miner(&sim, waiter);
-    assert_eq!(miner.dock_phase, RefineryDockPhase::Linked);
+    assert_eq!(miner.dock_phase, RefineryDockPhase::FaceSync);
     assert!(!miner.dock_queued);
     assert!(sim.production.dock_reservations.has_contact(2, waiter));
     assert!(
@@ -3121,7 +3139,7 @@ fn two_miners_waiter_after_releaser_same_tick_claims_on_own_mission_enter() {
     let waiter_miner = get_miner(&sim, waiter);
     assert_eq!(
         waiter_miner.dock_phase,
-        RefineryDockPhase::Linked,
+        RefineryDockPhase::FaceSync,
         "mission-dispatch-eligible waiter should claim only during its own MissionEnter pass"
     );
     assert!(!waiter_miner.dock_queued);
@@ -3180,7 +3198,7 @@ fn two_miners_waiter_after_releaser_approach_hello_only() {
         crate::sim::miner::miner_dock::ContactAdmission::Waiting
     );
 
-    tick_miners_n(&mut sim, &rules, 1);
+    tick_miners_n(&mut sim, &rules, 16);
 
     let waiter_miner = get_miner(&sim, waiter);
     assert_eq!(
@@ -3208,12 +3226,9 @@ fn two_miners_waiter_after_releaser_approach_hello_only() {
     tick_miners_n(&mut sim, &rules, 1);
 
     let waiter_miner = get_miner(&sim, waiter);
-    assert_eq!(
-        waiter_miner.dock_phase,
-        RefineryDockPhase::AwaitingAcceptedCell
-    );
+    assert_eq!(waiter_miner.dock_phase, RefineryDockPhase::FaceSync);
     assert!(
-        !sim.production
+        sim.production
             .dock_reservations
             .has_contact_entered(2, waiter)
     );
@@ -3277,12 +3292,12 @@ fn two_miners_waiter_before_releaser_not_retroactively_promoted() {
     assert!(!sim.production.dock_reservations.is_on_pad(2, waiter));
     assert_eq!(get_miner(&sim, occupant).state, MinerState::SearchOre);
 
-    tick_miners_n(&mut sim, &rules, 1);
+    tick_miners_n(&mut sim, &rules, 16);
 
     let waiter_miner = get_miner(&sim, waiter);
     assert_eq!(
         waiter_miner.dock_phase,
-        RefineryDockPhase::Linked,
+        RefineryDockPhase::FaceSync,
         "waiter enters only on its next own MissionEnter pass"
     );
     assert!(!waiter_miner.dock_queued);
@@ -3295,9 +3310,9 @@ fn two_miners_waiter_before_releaser_not_retroactively_promoted() {
 }
 
 /// Once CAN_DOCK's accepted-cell move is already satisfied, the stock path
-/// uses the 0x18/+0x418-style entered flag and the 0x15 pad-arrival handoff.
-/// It does not require a normal +0x2E4 reciprocal on-pad link before the
-/// unload FSM can start.
+/// sets the 0x18/+0x418-style entered flag and runs ordinary 0x16 facing
+/// sync. It does not turn that first handshake into radio 0x15 or unload
+/// startup side effects.
 #[test]
 fn accepted_cell_arrival_sets_contact_entered_then_0x15_starts_unload_fsm() {
     let mut sim = Simulation::new();
@@ -3322,7 +3337,7 @@ fn accepted_cell_arrival_sets_contact_entered_then_0x15_starts_unload_fsm() {
     tick_miners_n(&mut sim, &rules, 1);
 
     let m = get_miner(&sim, miner_id);
-    assert_eq!(m.dock_phase, RefineryDockPhase::Linked);
+    assert_eq!(m.dock_phase, RefineryDockPhase::FaceSync);
     assert!(
         sim.production
             .dock_reservations
@@ -3339,12 +3354,12 @@ fn accepted_cell_arrival_sets_contact_entered_then_0x15_starts_unload_fsm() {
     let m = get_miner(&sim, miner_id);
     assert_eq!(
         m.dock_phase,
-        RefineryDockPhase::Pivoting,
-        "0x15 pad-arrival handoff should start the unload FSM/pivot"
+        RefineryDockPhase::FaceSync,
+        "the first ordinary 0x16 only syncs facing; it must not queue deploy"
     );
     assert!(
-        sim.production.dock_reservations.is_on_pad(2, miner_id),
-        "physical pad occupancy is marked only at the 0x15 handoff"
+        !sim.production.dock_reservations.is_on_pad(2, miner_id),
+        "radio 0x15 has not run, so unload-active pad bookkeeping must remain clear"
     );
 }
 
@@ -3921,13 +3936,13 @@ fn linked_to_pivoting_then_unloading_on_pad_arrival() {
             value: 25,
         });
         miner.state = MinerState::Dock;
-        miner.dock_phase = RefineryDockPhase::Linked;
+        miner.dock_phase = RefineryDockPhase::MissionQueued;
         miner.reserved_refinery = Some(2);
     }
     sim.production.dock_reservations.try_reserve(2, miner_id);
 
-    // Tick 1: phase_linked sets the override, emits the sound, kicks off
-    // the pivot (facing_target = 0x40), and transitions to Pivoting.
+    // Tick 1: radio 0x15 has only queued mission 0x10, so this advances to
+    // the deploy mission without unload presentation side effects.
     crate::sim::miner::miner_system::tick_miners(&mut sim, &rules, &config, Some(&path_grid));
 
     {
@@ -3939,25 +3954,13 @@ fn linked_to_pivoting_then_unloading_on_pad_arrival() {
         );
 
         let entity = sim.entities.get(miner_id).expect("entity");
-        assert_eq!(
-            entity.facing_target,
-            Some(0x40),
-            "pivot to East (0x40) must be kicked off on Linked arrival",
-        );
-
-        let override_id = entity
-            .display_type_override
-            .expect("UnloadingClass override should be set");
-        assert_eq!(sim.interner.resolve(override_id), "HORV");
-
-        let dock_deploy_count = sim
-            .sound_events
-            .iter()
-            .filter(|e| matches!(e, SimSoundEvent::DockDeploy { building_id: 2 }))
-            .count();
-        assert_eq!(
-            dock_deploy_count, 1,
-            "Linked must emit one DockDeploy sound for refinery 2"
+        assert_eq!(entity.facing_target, None);
+        assert_eq!(entity.display_type_override, None);
+        assert!(
+            sim.sound_events
+                .iter()
+                .all(|e| !matches!(e, SimSoundEvent::DockDeploy { building_id: 2 })),
+            "0x15 must not emit DockDeploy before mission 0x10 starts unload"
         );
     }
 
@@ -3991,6 +3994,16 @@ fn linked_to_pivoting_then_unloading_on_pad_arrival() {
             entity.facing_target.is_none(),
             "facing_target must be cleared once the pivot completes",
         );
+        let override_id = entity
+            .display_type_override
+            .expect("UnloadingClass override should be set when unload starts");
+        assert_eq!(sim.interner.resolve(override_id), "HORV");
+        let dock_deploy_count = sim
+            .sound_events
+            .iter()
+            .filter(|e| matches!(e, SimSoundEvent::DockDeploy { building_id: 2 }))
+            .count();
+        assert_eq!(dock_deploy_count, 1);
     }
 }
 
@@ -4059,9 +4072,8 @@ fn pivoting_phase_smoothly_rotates_to_east() {
         assert_eq!(entity.facing_target, Some(0x40));
     }
 
-    // Tick until the pivot resolves. Cap is generous; 64 units / 1 unit per
-    // tick (worst case for low ROT) = 64 ticks. With Harvester=yes ROT=10
-    // override and 22ms ticks the real value is ~2/tick, so ~32 ticks.
+    // Tick until the pivot resolves. Cap is generous; stock harvester ROT=
+    // remains the parsed INI value, so low-ROT cases can take up to 64 ticks.
     let mut ticks_until_done = 0;
     for _ in 0..128 {
         tick_miners_n(&mut sim, &rules, 1);
@@ -4478,7 +4490,7 @@ fn dock_first_slot_drain_waits_one_unload_interval() {
             });
         }
         miner.state = MinerState::Dock;
-        miner.dock_phase = RefineryDockPhase::Linked;
+        miner.dock_phase = RefineryDockPhase::MissionQueued;
         miner.reserved_refinery = Some(2);
     }
     sim.production.dock_reservations.try_reserve(2, miner_id);
@@ -4638,8 +4650,15 @@ fn queued_miner_takes_over_immediately_after_empty_gate_handoff() {
     let waiter_miner = get_miner(&sim, waiter);
     assert_eq!(
         waiter_miner.dock_phase,
-        RefineryDockPhase::Linked,
-        "queued miner should take the freed contact on the immediate next tick",
+        RefineryDockPhase::MissionEnter,
+        "queued miner waits for the stock Enter retry after the freed contact tick",
+    );
+    tick_miners_n(&mut sim, &rules, 16);
+    let waiter_miner = get_miner(&sim, waiter);
+    assert_eq!(
+        waiter_miner.dock_phase,
+        RefineryDockPhase::FaceSync,
+        "queued miner takes the freed contact on its next due MissionEnter pass",
     );
     assert!(!waiter_miner.dock_queued);
     assert!(sim.production.dock_reservations.has_contact(2, waiter));
