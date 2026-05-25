@@ -1222,6 +1222,8 @@ fn make_drive_loco_for_test() -> crate::sim::movement::locomotor::LocomotorState
     use crate::util::fixed_math::SIM_ONE;
     LocomotorState {
         kind: LocomotorKind::Drive,
+        primary_kind: Some(LocomotorKind::Drive),
+        piggyback: None,
         layer: MovementLayer::Ground,
         phase: GroundMovePhase::Idle,
         air_phase: AirMovePhase::Landed,
@@ -1476,6 +1478,8 @@ use std::collections::BTreeMap;
 fn make_drive_loco(layer: MovementLayer) -> LocomotorState {
     LocomotorState {
         kind: LocomotorKind::Drive,
+        primary_kind: Some(LocomotorKind::Drive),
+        piggyback: None,
         layer,
         phase: GroundMovePhase::Idle,
         air_phase: AirMovePhase::Landed,
@@ -1507,6 +1511,7 @@ fn make_drive_loco(layer: MovementLayer) -> LocomotorState {
 fn make_ship_loco(layer: MovementLayer) -> LocomotorState {
     let mut loco = make_drive_loco(layer);
     loco.kind = LocomotorKind::Ship;
+    loco.primary_kind = Some(LocomotorKind::Ship);
     loco.speed_type = SpeedType::Float;
     loco.movement_zone = MovementZone::Water;
     loco

@@ -317,6 +317,8 @@ mod tests {
     fn make_tunnel_loco() -> LocomotorState {
         LocomotorState {
             kind: LocomotorKind::Tunnel,
+            primary_kind: Some(LocomotorKind::Tunnel),
+            piggyback: None,
             layer: MovementLayer::Ground,
             phase: GroundMovePhase::Idle,
             air_phase: crate::sim::movement::locomotor::AirMovePhase::Landed,

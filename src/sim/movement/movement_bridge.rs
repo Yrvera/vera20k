@@ -437,6 +437,8 @@ mod tests {
     fn make_loco(layer: MovementLayer) -> Option<LocomotorState> {
         Some(LocomotorState {
             kind: LocomotorKind::Drive,
+            primary_kind: Some(LocomotorKind::Drive),
+            piggyback: None,
             layer,
             phase: GroundMovePhase::Idle,
             air_phase: AirMovePhase::Landed,

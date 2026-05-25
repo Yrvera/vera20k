@@ -9,18 +9,25 @@
 //! `AnimationRate` ticks -> reset to idle at midpoint -> forced tiberium spread.
 //!
 //! ## Dependency rules
-//! - Part of sim/ - depends on sim/overlay_grid, sim/pathfinding, sim/rng, and
-//!   sim/miner (ResourceNode/ResourceType).
-//! - The tick function does NOT depend on rules/ - config is baked into
-//!   TerrainSpawnerState at seed time (mirrors OreGrowthConfig pattern).
+//! - Part of sim/ - depends on rules data, sim/overlay_grid, sim/pathfinding,
+//!   sim/rng, and sim/miner (ResourceNode/ResourceType).
+//! - Per-spawner animation config is baked into TerrainSpawnerState at seed time
+//!   (mirrors OreGrowthConfig pattern); live placement gates still read entity
+//!   and rules state for building exceptions.
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::map::bridge_facts::{BRIDGE_FLAG_DESTROYED_OR_RAMP, BRIDGE_FLAG_STRUCTURAL};
+use crate::map::entities::EntityCategory;
+use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
-use crate::sim::intern::InternedId;
+use crate::rules::ruleset::RuleSet;
+use crate::sim::entity_store::EntityStore;
+use crate::sim::intern::{InternedId, StringInterner};
 use crate::sim::miner::{ResourceNode, ResourceType};
+use crate::sim::occupancy::OccupancyGrid;
+use crate::sim::ore_growth::OreGrowthState;
 use crate::sim::overlay_grid::OverlayGrid;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::rng::SimRng;
@@ -206,8 +213,15 @@ pub struct TerrainSpawnContext<'a> {
     pub overlay_grid: Option<&'a mut OverlayGrid>,
     pub default_ore_overlay_id: Option<u8>,
     pub resolved_terrain: Option<&'a ResolvedTerrainGrid>,
-    pub overlay_registry: Option<&'a crate::map::overlay_types::OverlayTypeRegistry>,
+    pub overlay_registry: Option<&'a OverlayTypeRegistry>,
     pub path_grid: Option<&'a PathGrid>,
+    pub ore_growth_state: Option<&'a mut OreGrowthState>,
+    pub binary_frame: u32,
+    pub spawning_terrain_cells: Option<&'a BTreeSet<(u16, u16)>>,
+    pub entities: Option<&'a EntityStore>,
+    pub occupancy: Option<&'a OccupancyGrid>,
+    pub rules: Option<&'a RuleSet>,
+    pub interner: Option<&'a StringInterner>,
     pub rng: &'a mut SimRng,
 }
 
@@ -225,6 +239,13 @@ impl<'a> TerrainSpawnContext<'a> {
             resolved_terrain: None,
             overlay_registry: None,
             path_grid: None,
+            ore_growth_state: None,
+            binary_frame: 0,
+            spawning_terrain_cells: None,
+            entities: None,
+            occupancy: None,
+            rules: None,
+            interner: None,
             rng,
         }
     }
@@ -232,7 +253,7 @@ impl<'a> TerrainSpawnContext<'a> {
     pub fn with_validation_context(
         mut self,
         resolved_terrain: Option<&'a ResolvedTerrainGrid>,
-        overlay_registry: Option<&'a crate::map::overlay_types::OverlayTypeRegistry>,
+        overlay_registry: Option<&'a OverlayTypeRegistry>,
         path_grid: Option<&'a PathGrid>,
     ) -> Self {
         self.resolved_terrain = resolved_terrain;
@@ -240,6 +261,43 @@ impl<'a> TerrainSpawnContext<'a> {
         self.path_grid = path_grid;
         self
     }
+
+    pub fn with_growth_queue(
+        mut self,
+        ore_growth_state: &'a mut OreGrowthState,
+        binary_frame: u32,
+    ) -> Self {
+        self.ore_growth_state = Some(ore_growth_state);
+        self.binary_frame = binary_frame;
+        self
+    }
+
+    pub fn with_spawning_terrain_cells(mut self, cells: &'a BTreeSet<(u16, u16)>) -> Self {
+        self.spawning_terrain_cells = Some(cells);
+        self
+    }
+
+    pub fn with_live_object_context(
+        mut self,
+        entities: &'a EntityStore,
+        occupancy: &'a OccupancyGrid,
+        rules: &'a RuleSet,
+        interner: &'a StringInterner,
+    ) -> Self {
+        self.entities = Some(entities);
+        self.occupancy = Some(occupancy);
+        self.rules = Some(rules);
+        self.interner = Some(interner);
+        self
+    }
+}
+
+#[derive(Clone, Copy)]
+struct LiveObjectContext<'a> {
+    entities: &'a EntityStore,
+    occupancy: &'a OccupancyGrid,
+    rules: &'a RuleSet,
+    interner: &'a StringInterner,
 }
 
 /// Tick all terrain spawners using the verified delayed animation state machine.
@@ -274,7 +332,12 @@ pub fn tick_terrain_spawners_stateful(
             ctx.default_ore_overlay_id,
             &spawner_cells,
             ctx.resolved_terrain,
+            ctx.overlay_registry,
             ctx.path_grid,
+            ctx.ore_growth_state.as_deref_mut(),
+            ctx.binary_frame,
+            ctx.spawning_terrain_cells,
+            live_object_context(ctx.entities, ctx.occupancy, ctx.rules, ctx.interner),
             ctx.rng,
         );
     }
@@ -305,10 +368,16 @@ fn try_spawn_ore(
     default_ore_overlay_id: Option<u8>,
     spawner_cells: &BTreeSet<(u16, u16)>,
     resolved_terrain: Option<&ResolvedTerrainGrid>,
+    overlay_registry: Option<&OverlayTypeRegistry>,
     path_grid: Option<&PathGrid>,
+    ore_growth_state: Option<&mut OreGrowthState>,
+    binary_frame: u32,
+    spawning_terrain_cells: Option<&BTreeSet<(u16, u16)>>,
+    live_context: Option<LiveObjectContext<'_>>,
     rng: &mut SimRng,
 ) {
     let start_dir = rng.next_range_u32(8) as usize;
+    let mut ore_growth_state = ore_growth_state;
 
     for i in 0..8 {
         let dir = (start_dir + i) % 8;
@@ -327,17 +396,25 @@ fn try_spawn_ore(
             spawner_cells,
             resolved_terrain,
             path_grid,
+            spawning_terrain_cells,
+            live_context,
         ) {
             continue;
         }
 
-        place_tiberium_empty(
+        let placed = place_tiberium_empty(
             cell,
             resource_nodes,
             overlay_grid.as_deref_mut(),
             default_ore_overlay_id,
+            overlay_registry,
+            ore_growth_state.as_deref_mut(),
+            binary_frame,
+            rng,
         );
-        return;
+        if placed {
+            return;
+        }
     }
 }
 
@@ -354,8 +431,12 @@ fn can_accept_tiberium(
     spawner_cells: &BTreeSet<(u16, u16)>,
     resolved_terrain: Option<&ResolvedTerrainGrid>,
     path_grid: Option<&PathGrid>,
+    spawning_terrain_cells: Option<&BTreeSet<(u16, u16)>>,
+    live_context: Option<LiveObjectContext<'_>>,
 ) -> bool {
-    if spawner_cells.contains(&cell) {
+    if spawning_terrain_cells.is_some_and(|cells| cells.contains(&cell))
+        || spawner_cells.contains(&cell)
+    {
         return false;
     }
     if resource_nodes.contains_key(&cell) {
@@ -378,6 +459,9 @@ fn can_accept_tiberium(
             return false;
         }
     }
+    if live_context.is_some_and(|context| live_cell_rejects_tiberium(cell, context)) {
+        return false;
+    }
     true
 }
 
@@ -394,6 +478,43 @@ fn resolved_cell_accepts_tiberium(cell: &ResolvedTerrainCell) -> bool {
     cell.bridge_flags() & (BRIDGE_FLAG_STRUCTURAL | BRIDGE_FLAG_DESTROYED_OR_RAMP) == 0
 }
 
+fn live_object_context<'a>(
+    entities: Option<&'a EntityStore>,
+    occupancy: Option<&'a OccupancyGrid>,
+    rules: Option<&'a RuleSet>,
+    interner: Option<&'a StringInterner>,
+) -> Option<LiveObjectContext<'a>> {
+    Some(LiveObjectContext {
+        entities: entities?,
+        occupancy: occupancy?,
+        rules: rules?,
+        interner: interner?,
+    })
+}
+
+fn live_cell_rejects_tiberium(cell: (u16, u16), context: LiveObjectContext<'_>) -> bool {
+    let Some(occupancy) = context.occupancy.get(cell.0, cell.1) else {
+        return false;
+    };
+    for occupant in &occupancy.occupants {
+        let Some(entity) = context.entities.get(occupant.entity_id) else {
+            continue;
+        };
+        if entity.category != EntityCategory::Structure || !entity.is_alive() {
+            continue;
+        }
+        let type_name = context.interner.resolve(entity.type_ref);
+        let invisible_exception = context
+            .rules
+            .object(type_name)
+            .is_some_and(|obj| obj.invisible || obj.invisible_in_game);
+        if !invisible_exception {
+            return true;
+        }
+    }
+    false
+}
+
 /// Place ore at `cell` with density `SPAWN_DENSITY_LEVELS`.
 ///
 /// Caller must have already checked `can_accept_tiberium`, which guarantees the
@@ -403,10 +524,19 @@ fn place_tiberium_empty(
     resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
     overlay_grid: Option<&mut OverlayGrid>,
     default_ore_overlay_id: Option<u8>,
-) {
-    if overlay_grid.is_some() && default_ore_overlay_id.is_none() {
-        return;
-    }
+    overlay_registry: Option<&OverlayTypeRegistry>,
+    ore_growth_state: Option<&mut OreGrowthState>,
+    binary_frame: u32,
+    rng: &mut SimRng,
+) -> bool {
+    let overlay_id = if overlay_grid.is_some() {
+        match tiberium_overlay_id_for_new_cell(default_ore_overlay_id, overlay_registry, rng) {
+            Some(id) => Some(id),
+            None => return false,
+        }
+    } else {
+        None
+    };
 
     resource_nodes.insert(
         cell,
@@ -417,10 +547,28 @@ fn place_tiberium_empty(
     );
 
     if let Some(grid) = overlay_grid {
-        if let Some(id) = default_ore_overlay_id {
+        if let Some(id) = overlay_id {
             grid.place_overlay(cell.0, cell.1, id, SPAWN_DENSITY_LEVELS as u8);
         }
     }
+    if let Some(state) = ore_growth_state {
+        state.enqueue_growth_queue_cell(cell.0, cell.1, binary_frame, rng);
+    }
+    true
+}
+
+fn tiberium_overlay_id_for_new_cell(
+    default_ore_overlay_id: Option<u8>,
+    overlay_registry: Option<&OverlayTypeRegistry>,
+    rng: &mut SimRng,
+) -> Option<u8> {
+    if let Some(ids) =
+        overlay_registry.and_then(OverlayTypeRegistry::stock_flat_riparius_variant_ids)
+    {
+        let index = rng.next_range_u32(ids.len() as u32) as usize;
+        return Some(ids[index]);
+    }
+    default_ore_overlay_id
 }
 
 /// Populate `production.terrain_spawners` from the map's terrain objects.
@@ -440,12 +588,20 @@ pub fn seed_terrain_spawners(
         .find(|(_id, name)| name.to_ascii_uppercase().starts_with("TIB"))
         .map(|(id, _)| *id);
 
+    sim.production.tiberium_spawning_terrain_cells.clear();
+
     let mut seeded = 0usize;
     for obj in terrain_objects {
         let Some(t) = rules.terrain_object_type_case_insensitive(&obj.name) else {
             continue;
         };
-        if !t.spawns_tiberium || !t.is_animated {
+        if !t.spawns_tiberium {
+            continue;
+        }
+        sim.production
+            .tiberium_spawning_terrain_cells
+            .insert((obj.rx, obj.ry));
+        if !t.is_animated {
             continue;
         }
         let frame_count = terrain_frame_counts
@@ -471,9 +627,17 @@ pub fn seed_terrain_spawners(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::overlay_types::OverlayTypeRegistry;
     use crate::map::resolved_terrain::ResolvedTerrainCell;
+    use crate::rules::ini_parser::IniFile;
+    use crate::rules::ruleset::RuleSet;
     use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
+    use crate::sim::entity_store::EntityStore;
+    use crate::sim::game_entity::GameEntity;
     use crate::sim::intern::StringInterner;
+    use crate::sim::movement::locomotor::MovementLayer;
+    use crate::sim::occupancy::{CellListInsertion, OccupancyGrid};
+    use crate::sim::ore_growth::OreGrowthState;
 
     const STOCK_FRAME_COUNT: u16 = 22;
     const STOCK_RATE: u16 = 3;
@@ -551,6 +715,28 @@ mod tests {
             spawners,
             TerrainSpawnContext::new(resource_nodes, None, None, rng),
         );
+    }
+
+    fn registry_with_tib_variants() -> OverlayTypeRegistry {
+        let mut ini_text = String::from("[OverlayTypes]\n");
+        for i in 1..=12 {
+            ini_text.push_str(&format!("{}=TIB{:02}\n", i - 1, i));
+        }
+        for i in 1..=12 {
+            ini_text.push_str(&format!("[TIB{:02}]\nTiberium=yes\n", i));
+        }
+        let ini = IniFile::from_str(&ini_text);
+        OverlayTypeRegistry::from_ini(&ini, None)
+    }
+
+    fn signed_abs_mod_50(raw: u32) -> u32 {
+        let signed = raw as i32;
+        let abs = if signed < 0 {
+            signed.wrapping_neg() as u32
+        } else {
+            signed as u32
+        };
+        abs % 50
     }
 
     #[test]
@@ -802,6 +988,165 @@ mod tests {
     }
 
     #[test]
+    fn new_cell_overlay_id_uses_random_flat_tib_variant() {
+        let registry = registry_with_tib_variants();
+        let mut resource_nodes = BTreeMap::new();
+        let mut overlay_grid = OverlayGrid::new(32, 32);
+        let spawner_cells = BTreeSet::new();
+        let mut rng = SimRng::new(3);
+        let mut expected_rng = rng.clone();
+        let start_dir = expected_rng.next_range_u32(8) as usize;
+        let variant = expected_rng.next_range_u32(12) as u8;
+        let (dx, dy) = ADJACENT_OFFSETS[start_dir];
+        let expected_cell = ((10 + dx) as u16, (10 + dy) as u16);
+
+        try_spawn_ore(
+            (10, 10),
+            &mut resource_nodes,
+            Some(&mut overlay_grid),
+            Some(99),
+            &spawner_cells,
+            None,
+            Some(&registry),
+            None,
+            None,
+            0,
+            None,
+            None,
+            &mut rng,
+        );
+
+        assert!(resource_nodes.contains_key(&expected_cell));
+        let overlay = overlay_grid.cell(expected_cell.0, expected_cell.1);
+        assert_eq!(overlay.overlay_id, Some(variant));
+        assert_eq!(overlay.overlay_data, 3);
+    }
+
+    #[test]
+    fn new_cell_enqueues_native_growth_priority() {
+        let mut resource_nodes = BTreeMap::new();
+        let spawner_cells = BTreeSet::new();
+        let mut growth_state = OreGrowthState::new(32, 32);
+        let mut rng = SimRng::new(4);
+        let mut expected_rng = rng.clone();
+        let start_dir = expected_rng.next_range_u32(8) as usize;
+        let queue_raw = expected_rng.next_u32();
+        let (dx, dy) = ADJACENT_OFFSETS[start_dir];
+        let expected_cell = ((10 + dx) as u16, (10 + dy) as u16);
+
+        try_spawn_ore(
+            (10, 10),
+            &mut resource_nodes,
+            None,
+            None,
+            &spawner_cells,
+            None,
+            None,
+            None,
+            Some(&mut growth_state),
+            77,
+            None,
+            None,
+            &mut rng,
+        );
+
+        assert!(resource_nodes.contains_key(&expected_cell));
+        let entries = growth_state.growth_queue_entries();
+        assert_eq!(entries.len(), 1);
+        let entry = entries[0];
+        assert_eq!((entry.rx, entry.ry), expected_cell);
+        assert_eq!(entry.priority, (77 + signed_abs_mod_50(queue_raw)) as f32);
+    }
+
+    #[test]
+    fn live_building_gate_rejects_visible_and_allows_invisible_exceptions() {
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n\
+             [BuildingTypes]\n0=GAPOWR\n1=BRIDGEA\n2=BRIDGEB\n\
+             [GAPOWR]\nStrength=100\n\
+             [BRIDGEA]\nStrength=100\nInvisible=yes\n\
+             [BRIDGEB]\nStrength=100\nInvisibleInGame=yes\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("rules");
+        let resource_nodes = BTreeMap::new();
+        let spawner_cells = BTreeSet::new();
+
+        fn context_for<'a>(
+            type_name: &str,
+            rules: &'a RuleSet,
+            interner: &'a mut StringInterner,
+            entities: &'a mut EntityStore,
+            occupancy: &'a mut OccupancyGrid,
+        ) -> LiveObjectContext<'a> {
+            let mut entity = GameEntity::test_default(1, type_name, "Neutral", 11, 10);
+            entity.category = EntityCategory::Structure;
+            entity.type_ref = interner.intern(type_name);
+            entities.insert(entity);
+            occupancy.add(
+                11,
+                10,
+                1,
+                MovementLayer::Ground,
+                None,
+                CellListInsertion::AppendBuilding,
+            );
+            LiveObjectContext {
+                entities,
+                occupancy,
+                rules,
+                interner,
+            }
+        }
+
+        for (type_name, expected) in [("GAPOWR", false), ("BRIDGEA", true), ("BRIDGEB", true)] {
+            let mut interner = StringInterner::default();
+            let mut entities = EntityStore::new();
+            let mut occupancy = OccupancyGrid::new();
+            let context = context_for(
+                type_name,
+                &rules,
+                &mut interner,
+                &mut entities,
+                &mut occupancy,
+            );
+
+            assert_eq!(
+                can_accept_tiberium(
+                    (11, 10),
+                    &resource_nodes,
+                    None,
+                    &spawner_cells,
+                    None,
+                    None,
+                    None,
+                    Some(context),
+                ),
+                expected,
+                "{type_name}"
+            );
+        }
+    }
+
+    #[test]
+    fn spawning_terrain_cells_reject_tiberium_even_when_not_animated() {
+        let resource_nodes = BTreeMap::new();
+        let spawner_cells = BTreeSet::new();
+        let mut spawning_terrain_cells = BTreeSet::new();
+        spawning_terrain_cells.insert((12, 10));
+
+        assert!(!can_accept_tiberium(
+            (12, 10),
+            &resource_nodes,
+            None,
+            &spawner_cells,
+            None,
+            None,
+            Some(&spawning_terrain_cells),
+            None,
+        ));
+    }
+
+    #[test]
     fn deterministic_same_seed_same_pattern() {
         let mut interner = StringInterner::default();
         let mut spawners = BTreeMap::new();
@@ -837,10 +1182,11 @@ mod tests {
              [VehicleTypes]\n\
              [AircraftTypes]\n\
              [BuildingTypes]\n\
-             [TerrainTypes]\n1=TIBTRE01\n2=TREE01\n\
+             [TerrainTypes]\n1=TIBTRE01\n2=TREE01\n3=TREE02\n\
              [TIBTRE01]\nSpawnsTiberium=yes\nIsAnimated=yes\n\
              AnimationRate=3\nAnimationProbability=.003\n\
-             [TREE01]\nSpawnsTiberium=no\nIsAnimated=yes\n",
+             [TREE01]\nSpawnsTiberium=no\nIsAnimated=yes\n\
+             [TREE02]\nSpawnsTiberium=yes\nIsAnimated=no\n",
         );
         let rules = RuleSet::from_ini(&ini).expect("rules");
         let mut sim = Simulation::new();
@@ -864,6 +1210,11 @@ mod tests {
             TerrainObject {
                 rx: 1,
                 ry: 2,
+                name: "TREE02".to_string(),
+            },
+            TerrainObject {
+                rx: 3,
+                ry: 4,
                 name: "UNKNOWN".to_string(),
             },
         ];
@@ -888,6 +1239,10 @@ mod tests {
         assert_eq!(placed.animation_rate_ticks, 3);
         assert_eq!(placed.frame_count, STOCK_FRAME_COUNT);
         assert_eq!(placed.midpoint_frame, STOCK_FRAME_COUNT / 2);
+        assert_eq!(
+            sim.production.tiberium_spawning_terrain_cells,
+            BTreeSet::from([(5, 6), (1, 2)])
+        );
         assert_eq!(sim.production.default_ore_overlay_id, Some(2));
     }
 }

@@ -114,8 +114,21 @@ const HOVER_SPEED_MULTIPLIER: SimFixed = SimFixed::lit("0.65");
 /// to decide how to process the entity's `MovementTarget` each tick.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LocomotorState {
-    /// Which locomotor class this unit uses.
+    /// Which locomotor class is currently active.
     pub kind: LocomotorKind,
+    /// Primary locomotor class for this unit.
+    ///
+    /// `None` represents old serialized states and resolves to `kind`. New
+    /// entities set this explicitly. CMIN keeps Teleport here while Drive can
+    /// become the active piggyback locomotor.
+    #[serde(default)]
+    pub primary_kind: Option<LocomotorKind>,
+    /// Active piggybacked locomotor storage.
+    ///
+    /// For CMIN drive phases, `kind` becomes Drive and this stores the primary
+    /// Teleport locomotor until the active Drive locomotor is ok to end.
+    #[serde(default)]
+    pub piggyback: Option<PiggybackLocomotor>,
     /// Which spatial layer the unit currently occupies.
     pub layer: MovementLayer,
     /// Current movement phase (for ground movers).
@@ -237,6 +250,8 @@ impl LocomotorState {
 
         Self {
             kind,
+            primary_kind: Some(kind),
+            piggyback: None,
             layer,
             phase: GroundMovePhase::Idle,
             air_phase: AirMovePhase::Landed,
@@ -292,6 +307,50 @@ impl LocomotorState {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn for_test_kind(kind: LocomotorKind) -> Self {
+        let (layer, speed_multiplier) = match kind {
+            LocomotorKind::Fly
+            | LocomotorKind::Jumpjet
+            | LocomotorKind::Rocket
+            | LocomotorKind::DropPod
+            | LocomotorKind::Parachute => (MovementLayer::Air, SimFixed::from_num(1)),
+            LocomotorKind::Hover => (MovementLayer::Ground, HOVER_SPEED_MULTIPLIER),
+            _ => (MovementLayer::Ground, SimFixed::from_num(1)),
+        };
+
+        Self {
+            kind,
+            primary_kind: Some(kind),
+            piggyback: None,
+            layer,
+            phase: GroundMovePhase::Idle,
+            air_phase: AirMovePhase::Landed,
+            speed_multiplier,
+            speed_fraction: SimFixed::from_num(1),
+            fly_current_speed: SIM_ZERO,
+            altitude: SIM_ZERO,
+            target_altitude: SIM_ZERO,
+            climb_rate: SIM_ZERO,
+            jumpjet_speed: SIM_ZERO,
+            jumpjet_wobbles: 0.0,
+            jumpjet_accel: SIM_ZERO,
+            jumpjet_current_speed: SIM_ZERO,
+            jumpjet_deviation: 0,
+            jumpjet_crash_speed: SIM_ZERO,
+            jumpjet_turn_rate: 4,
+            balloon_hover: false,
+            hover_attack: false,
+            speed_type: SpeedType::Track,
+            movement_zone: MovementZone::Normal,
+            rot: 5,
+            override_state: None,
+            air_progress: SIM_ZERO,
+            infantry_wobble_phase: 0.0,
+            subcell_dest: None,
+        }
+    }
+
     /// Whether this locomotor is in the ground family (Drive/Walk/Hover/Mech/Ship).
     pub fn is_ground_mover(&self) -> bool {
         matches!(
@@ -320,6 +379,74 @@ impl LocomotorState {
     /// Whether this locomotor currently has a temporary override active.
     pub fn is_overridden(&self) -> bool {
         self.override_state.is_some()
+    }
+
+    /// Current active locomotor class.
+    pub fn active_kind(&self) -> LocomotorKind {
+        self.kind
+    }
+
+    /// Primary locomotor class. Old saves without `primary_kind` fall back to
+    /// the active kind they were serialized with.
+    pub fn primary_kind(&self) -> LocomotorKind {
+        self.primary_kind.unwrap_or(self.kind)
+    }
+
+    /// Whether the primary locomotor is currently active and no piggyback is stored.
+    pub fn is_primary_active(&self) -> bool {
+        self.kind == self.primary_kind() && self.piggyback.is_none()
+    }
+
+    /// Activate Drive while storing a primary Teleport locomotor underneath it.
+    ///
+    /// This mirrors the CMIN bridge model: Teleport remains the primary owner,
+    /// Drive temporarily becomes active for destinations that require ground
+    /// movement.
+    pub fn begin_drive_piggyback_for_teleporter(&mut self) -> bool {
+        if self.primary_kind() != LocomotorKind::Teleport {
+            return false;
+        }
+        if self.kind == LocomotorKind::Drive {
+            if self.piggyback.is_none() {
+                self.piggyback = Some(PiggybackLocomotor {
+                    kind: LocomotorKind::Teleport,
+                    layer: MovementLayer::Ground,
+                });
+            }
+            return true;
+        }
+        if self.piggyback.is_none() {
+            self.piggyback = Some(PiggybackLocomotor {
+                kind: LocomotorKind::Teleport,
+                layer: MovementLayer::Ground,
+            });
+        }
+        self.kind = LocomotorKind::Drive;
+        self.layer = MovementLayer::Ground;
+        self.phase = GroundMovePhase::Idle;
+        true
+    }
+
+    /// Return from an active piggyback locomotor to the stored primary locomotor.
+    pub fn restore_primary_from_piggyback(&mut self) -> bool {
+        let Some(stored) = self.piggyback.take() else {
+            return false;
+        };
+        self.kind = stored.kind;
+        self.primary_kind = Some(stored.kind);
+        self.layer = stored.layer;
+        self.phase = GroundMovePhase::Idle;
+        true
+    }
+
+    /// Whether the active piggyback can safely restore to the primary locomotor.
+    pub fn can_restore_primary_from_piggyback(
+        &self,
+        owner_moving: bool,
+        owner_teleporting: bool,
+        owner_deploying: bool,
+    ) -> bool {
+        self.piggyback.is_some() && !owner_moving && !owner_teleporting && !owner_deploying
     }
 
     /// Begin a temporary locomotor override (e.g., Teleport or DropPod).
@@ -403,6 +530,13 @@ pub struct OverrideLocomotor {
     pub saved: Box<LocomotorState>,
     /// What kind of override is active.
     pub override_kind: OverrideKind,
+}
+
+/// Stored primary locomotor while another locomotor is active.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PiggybackLocomotor {
+    pub kind: LocomotorKind,
+    pub layer: MovementLayer,
 }
 
 #[cfg(test)]

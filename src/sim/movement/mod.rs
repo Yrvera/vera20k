@@ -75,6 +75,7 @@ pub use facing_class::FacingClass;
 // Re-export command functions so callers can use `movement::issue_move_command` etc.
 pub use movement_commands::{
     issue_direct_move, issue_move_command, issue_move_command_with_layered,
+    set_destination_for_teleporter_entity,
 };
 // Re-export the tick function so callers can use `movement::tick_movement_with_grids`.
 pub use movement_tick::tick_movement_with_grids;
@@ -182,6 +183,37 @@ pub struct MoveCommand {
 /// 0=north on screen (iso -x,-y), 64=east, 128=south, 192=west.
 pub fn facing_from_delta(dx: i32, dy: i32) -> u8 {
     facing_from_delta_int(dx, dy)
+}
+
+/// Restore active piggyback locomotors whose owner is no longer moving,
+/// teleporting, or deploying.
+///
+/// This bridge mirrors FootClass::AI's per-tick "ok to end piggyback" check
+/// without changing existing movement ownership for non-migrated special flows.
+pub fn tick_locomotor_piggyback_restore(entities: &mut EntityStore) -> usize {
+    let mut restored = 0usize;
+    let keys = entities.keys_sorted();
+    for id in keys {
+        let Some(entity) = entities.get_mut(id) else {
+            continue;
+        };
+        let owner_moving = entity.movement_target.is_some() || entity.forced_drive_track.is_some();
+        let owner_teleporting = entity.teleport_state.is_some();
+        let owner_deploying = entity.building_up.is_some()
+            || entity.building_down.is_some()
+            || entity.deploy_state.is_some();
+        if let Some(ref mut loco) = entity.locomotor
+            && loco.can_restore_primary_from_piggyback(
+                owner_moving,
+                owner_teleporting,
+                owner_deploying,
+            )
+            && loco.restore_primary_from_piggyback()
+        {
+            restored = restored.saturating_add(1);
+        }
+    }
+    restored
 }
 
 // ---------------------------------------------------------------------------

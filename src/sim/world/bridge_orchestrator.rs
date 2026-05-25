@@ -1575,6 +1575,8 @@ mod tests {
     fn drive_loco_on_bridge() -> LocomotorState {
         LocomotorState {
             kind: LocomotorKind::Drive,
+            primary_kind: Some(LocomotorKind::Drive),
+            piggyback: None,
             layer: MovementLayer::Bridge,
             phase: GroundMovePhase::Cruising,
             air_phase: AirMovePhase::Landed,

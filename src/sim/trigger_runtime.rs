@@ -308,7 +308,11 @@ impl TriggerRuntime {
     }
 }
 
-fn enqueue_trigger(queue: &mut VecDeque<String>, queued: &mut BTreeSet<String>, trigger_id: String) {
+fn enqueue_trigger(
+    queue: &mut VecDeque<String>,
+    queued: &mut BTreeSet<String>,
+    trigger_id: String,
+) {
     if queued.insert(trigger_id.clone()) {
         queue.push_back(trigger_id);
     }

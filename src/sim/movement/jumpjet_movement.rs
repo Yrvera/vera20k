@@ -283,6 +283,8 @@ mod tests {
         use crate::sim::movement::locomotor::{GroundMovePhase, MovementLayer};
         LocomotorState {
             kind: LocomotorKind::Jumpjet,
+            primary_kind: Some(LocomotorKind::Jumpjet),
+            piggyback: None,
             layer: MovementLayer::Air,
             phase: GroundMovePhase::Idle,
             air_phase: AirMovePhase::Landed,

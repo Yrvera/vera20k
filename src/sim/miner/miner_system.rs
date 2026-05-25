@@ -21,7 +21,6 @@ use crate::sim::miner::{
 };
 use crate::sim::movement;
 use crate::sim::movement::locomotor::MovementLayer;
-use crate::sim::movement::teleport_movement::issue_teleport_command;
 use crate::sim::occupancy::OccupancyGrid;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::zone_map::{ZONE_INVALID, ZoneGrid};
@@ -35,10 +34,11 @@ use crate::sim::intern::InternedId;
 use crate::sim::production::foundation_dimensions;
 use crate::util::lepton::LEPTONS_PER_LEVEL;
 
-/// Chrono far-return compares object-coordinate distance in leptons against
-/// `ChronoHarvTooFarDistance * 256`. The stock branch is strict `>`, so a
-/// miner exactly at the threshold still uses the close radio path.
-fn chrono_return_exceeds_too_far_threshold(
+/// Compare object-coordinate distance in leptons against `threshold_cells * 256`.
+/// Strict `>` — a miner exactly at the threshold still uses the close radio path.
+/// Used by both CMIN (`ChronoHarvTooFarDistance=50`) and HARV
+/// (`HarvesterTooFarDistance=5`); caller picks the kind-appropriate threshold.
+fn return_exceeds_too_far_threshold(
     sim: &Simulation,
     miner_sid: u64,
     refinery_sid: u64,
@@ -640,7 +640,10 @@ fn handle_return(
             if try_issue_chrono_far_return_teleport(sim, rules, config, path_grid, snap, rsid) {
                 return;
             }
-            if try_begin_chrono_close_return_radio(sim, rules, config, path_grid, snap, rsid) {
+            if try_begin_close_return_radio(sim, rules, config, path_grid, snap, rsid) {
+                return;
+            }
+            if try_issue_standard_far_return_drive(sim, rules, config, path_grid, snap, rsid) {
                 return;
             }
         } else {
@@ -656,6 +659,8 @@ fn handle_return(
         snap.miner.reserved_refinery = None;
         snap.miner.dock_queued = false;
         snap.miner.dock_phase = RefineryDockPhase::Approach;
+        snap.miner.dock_enter_retry_start_frame = None;
+        snap.miner.dock_enter_retry_duration = 0;
         snap.miner.exit_cell = None;
         if snap.miner.is_full() {
             snap.miner.target_ore_cell = None;
@@ -674,7 +679,11 @@ fn handle_return(
     {
         return;
     }
-    if try_begin_chrono_close_return_radio(sim, rules, config, path_grid, snap, ref_sid) {
+    if try_begin_close_return_radio(sim, rules, config, path_grid, snap, ref_sid) {
+        return;
+    }
+    if !moving && try_issue_standard_far_return_drive(sim, rules, config, path_grid, snap, ref_sid)
+    {
         return;
     }
 
@@ -692,6 +701,8 @@ fn handle_return(
     if contact {
         snap.miner.state = MinerState::Dock;
         snap.miner.dock_phase = RefineryDockPhase::Approach;
+        snap.miner.dock_enter_retry_start_frame = None;
+        snap.miner.dock_enter_retry_duration = 0;
         return;
     }
 
@@ -857,10 +868,12 @@ pub(crate) fn extract_bales_max(
 
 /// Begin the return-to-refinery sequence.
 ///
-/// Chrono miners inside `ChronoHarvTooFarDistance` keep the normal refinery
-/// radio/contact path to the accepted dock cell. Miners beyond that threshold
-/// use the far-return destination: the `QueueingCell` passable-cell search
-/// result, not the pad/contact cell.
+/// Miners inside their kind's "too far" threshold (CMIN:
+/// `ChronoHarvTooFarDistance=50`, HARV: `HarvesterTooFarDistance=5`) keep the
+/// normal refinery radio/contact path to the accepted dock cell. Miners beyond
+/// that threshold use the far-return destination: the `QueueingCell` passable-cell
+/// search result, not the pad/contact cell. CMIN warps to the staging cell;
+/// HARV drives to it.
 fn begin_return(
     sim: &mut Simulation,
     rules: &RuleSet,
@@ -879,7 +892,10 @@ fn begin_return(
         if try_issue_chrono_far_return_teleport(sim, rules, config, path_grid, snap, rsid) {
             return;
         }
-        if try_begin_chrono_close_return_radio(sim, rules, config, path_grid, snap, rsid) {
+        if try_begin_close_return_radio(sim, rules, config, path_grid, snap, rsid) {
+            return;
+        }
+        if try_issue_standard_far_return_drive(sim, rules, config, path_grid, snap, rsid) {
             return;
         }
         snap.miner.state = MinerState::ReturnToRefinery;
@@ -888,7 +904,7 @@ fn begin_return(
     }
 }
 
-fn try_begin_chrono_close_return_radio(
+fn try_begin_close_return_radio(
     sim: &mut Simulation,
     rules: &RuleSet,
     config: &MinerConfig,
@@ -896,11 +912,17 @@ fn try_begin_chrono_close_return_radio(
     snap: &mut MinerSnapshot,
     ref_sid: u64,
 ) -> bool {
+    // Close-radio HELLO + state=Dock fast-path is currently chrono-only.
+    // HARV close path uses the existing adjacency-based contact check in
+    // `handle_return`. The binary sends HELLO at HarvesterTooFarDistance
+    // (5 cells) for HARV too, but generalizing the close-radio path here
+    // surfaced a phase_mission_enter direct-move limitation that needs a
+    // deeper fix; see 2026-05-24 audit follow-up.
     if snap.miner.kind != MinerKind::Chrono {
         return false;
     }
 
-    match chrono_return_exceeds_too_far_threshold(
+    match return_exceeds_too_far_threshold(
         sim,
         snap.entity_id,
         ref_sid,
@@ -925,6 +947,8 @@ fn try_begin_chrono_close_return_radio(
 
     snap.miner.state = MinerState::Dock;
     snap.miner.dock_queued = admission != ContactAdmission::Accepted;
+    snap.miner.dock_enter_retry_start_frame = None;
+    snap.miner.dock_enter_retry_duration = 0;
     snap.miner.dock_phase = if admission == ContactAdmission::Accepted {
         RefineryDockPhase::MissionEnter
     } else {
@@ -955,7 +979,7 @@ fn try_issue_chrono_far_return_teleport(
         return false;
     }
 
-    if !chrono_return_exceeds_too_far_threshold(
+    if !return_exceeds_too_far_threshold(
         sim,
         snap.entity_id,
         ref_sid,
@@ -975,20 +999,75 @@ fn try_issue_chrono_far_return_teleport(
         .get(snap.entity_id)
         .map(|entity| entity.position.z)
         .unwrap_or(0);
-    spawn_warp_effects(
-        sim,
-        rules,
-        snap.type_id,
-        (snap.rx, snap.ry, z),
-        (staging.0, staging.1, z),
-    );
-    issue_teleport_command(
+    let issued = movement::set_destination_for_teleporter_entity(
         &mut sim.entities,
+        path_grid,
         snap.entity_id,
         staging,
+        snap.speed,
+        false,
+        None,
+        None,
+        None,
+        None,
+        false,
         &rules.general,
         true,
+        true,
+        false,
+    );
+    if issued {
+        spawn_warp_effects(
+            sim,
+            rules,
+            snap.type_id,
+            (snap.rx, snap.ry, z),
+            (staging.0, staging.1, z),
+        );
+    }
+    issued
+}
+
+/// HARV far-return: mirror of the chrono teleport but drives to the staging cell.
+/// Triggered when a standard (War) miner is beyond `HarvesterTooFarDistance` from
+/// its reserved refinery. Same QueueingCell + `Find_Nearby_Passable_Cell` staging
+/// the chrono path uses; CMIN warps, HARV drives. Transitions the miner to
+/// `ReturnToRefinery` so the outer state machine treats the next tick as
+/// delivering (matches the binary's Mission_Harvest case-2 fallback path, which
+/// stays in case-2 after issuing the destination).
+fn try_issue_standard_far_return_drive(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    config: &MinerConfig,
+    path_grid: Option<&PathGrid>,
+    snap: &mut MinerSnapshot,
+    ref_sid: u64,
+) -> bool {
+    if snap.miner.kind != MinerKind::War {
+        return false;
+    }
+
+    if !return_exceeds_too_far_threshold(
+        sim,
+        snap.entity_id,
+        ref_sid,
+        config.too_far_threshold_standard,
     )
+    .unwrap_or(false)
+    {
+        return false;
+    }
+
+    let Some(staging) = chrono_return_staging_cell_for_sid(sim, rules, ref_sid, path_grid) else {
+        return false;
+    };
+    let Some(grid) = path_grid else {
+        return false;
+    };
+
+    issue_move_if_idle(&mut sim.entities, grid, snap.entity_id, staging, snap.speed);
+    snap.miner.state = MinerState::ReturnToRefinery;
+    true
 }
 
 fn spawn_warp_effects(

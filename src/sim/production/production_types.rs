@@ -3,7 +3,7 @@
 //! Shared types used across production sub-modules: queue items, build options,
 //! placement previews, and the central `ProductionState` struct.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
@@ -215,9 +215,14 @@ pub struct ProductionState {
     /// Populated at map load from `app.terrain_objects` filtered by
     /// `SpawnsTiberium=yes` on the matching TerrainObjectType.
     pub terrain_spawners: BTreeMap<(u16, u16), crate::sim::terrain_spawn::TerrainSpawnerState>,
-    /// Default overlay_id used for new ore cells spawned by terrain_spawners.
-    /// Resolved at map load by scanning the overlay_names registry for the
-    /// first "TIB"-prefixed entry. None if no ore overlay is registered.
+    /// Cells occupied by terrain objects whose type has `SpawnsTiberium=yes`.
+    ///
+    /// This is broader than `terrain_spawners`: non-animated legacy spawners do
+    /// not tick, but still reject new Tiberium placement in the native gate.
+    pub tiberium_spawning_terrain_cells: BTreeSet<(u16, u16)>,
+    /// Fallback overlay_id used for new ore cells when no overlay registry is
+    /// available. Runtime placement prefers the data-driven `TIB01..TIB12`
+    /// registry set and uses this only for headless/fallback contexts.
     pub default_ore_overlay_id: Option<u8>,
     /// Repair depot dock reservation state — one dock per depot, FIFO queue.
     pub depot_dock_reservations: DockReservations,
@@ -238,6 +243,7 @@ impl Default for ProductionState {
             ore_growth_state: OreGrowthState::new(0, 0),
             slave_bindings: BTreeMap::new(),
             terrain_spawners: BTreeMap::new(),
+            tiberium_spawning_terrain_cells: BTreeSet::new(),
             default_ore_overlay_id: None,
             depot_dock_reservations: DockReservations::default(),
             airfield_docks: crate::sim::docking::aircraft_dock::AirfieldDocks::default(),

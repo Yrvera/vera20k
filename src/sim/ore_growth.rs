@@ -19,6 +19,7 @@
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
 use std::collections::BTreeMap;
+use std::hash::{Hash, Hasher};
 
 use crate::map::basic::{BasicSection, SpecialFlagsSection};
 use crate::rules::ruleset::GeneralRules;
@@ -37,6 +38,8 @@ const MAX_ORE_REMAINING: u16 = ORE_BASE_PER_LEVEL * MAX_ORE_LEVELS;
 const SPREAD_THRESHOLD: u16 = ORE_BASE_PER_LEVEL * 6;
 /// Max candidates collected per scan cycle (bounded like RA1's fixed-size arrays).
 const MAX_CANDIDATES: usize = 50;
+/// Native AddToGrowthQueue priority jitter span.
+const GROWTH_QUEUE_PRIORITY_WINDOW: u32 = 50;
 
 /// 8 adjacent directions for spread: N, NE, E, SE, S, SW, W, NW.
 const ADJACENT_OFFSETS: [(i32, i32); 8] = [
@@ -111,6 +114,17 @@ impl OreGrowthConfig {
     }
 }
 
+/// Queued ore growth cell inserted by native-style AddToGrowthQueue callers.
+///
+/// Native stores queue priority as a float. This keeps the same observable
+/// priority shape while leaving execution to an explicit future queue processor.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct OreGrowthQueueEntry {
+    pub rx: u16,
+    pub ry: u16,
+    pub priority: f32,
+}
+
 /// Persistent state for the incremental map scanner.
 ///
 /// Lives in ProductionState. The scanner processes a fraction of the map each
@@ -132,6 +146,9 @@ pub struct OreGrowthState {
     growth_seen: usize,
     /// Reservoir sampling counter for spread (total candidates seen).
     spread_seen: usize,
+    /// Native AddToGrowthQueue-style entries inserted by explicit placement paths.
+    #[serde(default)]
+    growth_queue: Vec<OreGrowthQueueEntry>,
 }
 
 impl OreGrowthState {
@@ -145,6 +162,45 @@ impl OreGrowthState {
             spread_candidates: Vec::with_capacity(MAX_CANDIDATES),
             growth_seen: 0,
             spread_seen: 0,
+            growth_queue: Vec::new(),
+        }
+    }
+
+    /// Enqueue a newly placed ore cell with native AddToGrowthQueue priority.
+    ///
+    /// Verified TIBTRE placement consumes one raw Random::Next word and stores
+    /// priority as `currentFrame + (signed_abs(raw) % 50)`.
+    pub fn enqueue_growth_queue_cell(
+        &mut self,
+        rx: u16,
+        ry: u16,
+        binary_frame: u32,
+        rng: &mut SimRng,
+    ) -> OreGrowthQueueEntry {
+        let priority = growth_queue_priority(binary_frame, rng.next_u32());
+        let entry = OreGrowthQueueEntry { rx, ry, priority };
+        self.growth_queue.push(entry);
+        entry
+    }
+
+    /// Native-style growth queue entries waiting for an explicit processor.
+    pub fn growth_queue_entries(&self) -> &[OreGrowthQueueEntry] {
+        &self.growth_queue
+    }
+
+    /// Hash persistent ore-growth scheduler state for replay/desync checks.
+    pub fn hash_state(&self, hasher: &mut impl Hasher) {
+        self.scan_cursor.hash(hasher);
+        self.total_cells.hash(hasher);
+        self.map_width.hash(hasher);
+        self.growth_candidates.hash(hasher);
+        self.spread_candidates.hash(hasher);
+        self.growth_seen.hash(hasher);
+        self.spread_seen.hash(hasher);
+        for entry in &self.growth_queue {
+            entry.rx.hash(hasher);
+            entry.ry.hash(hasher);
+            entry.priority.to_bits().hash(hasher);
         }
     }
 }
@@ -287,6 +343,21 @@ fn reservoir_sample(
             candidates[r] = cell;
         }
     }
+}
+
+/// Native-shaped AddToGrowthQueue priority from one raw RNG word.
+fn growth_queue_priority(binary_frame: u32, raw: u32) -> f32 {
+    binary_frame.wrapping_add(growth_queue_priority_delay(raw)) as f32
+}
+
+fn growth_queue_priority_delay(raw: u32) -> u32 {
+    let signed = raw as i32;
+    let abs = if signed < 0 {
+        signed.wrapping_neg() as u32
+    } else {
+        signed as u32
+    };
+    abs % GROWTH_QUEUE_PRIORITY_WINDOW
 }
 
 /// Try to spread ore from (rx, ry) to a random adjacent cell.
@@ -539,6 +610,33 @@ mod tests {
             candidates.len() <= MAX_CANDIDATES,
             "Candidates should not exceed MAX_CANDIDATES"
         );
+    }
+
+    #[test]
+    fn growth_queue_priority_uses_signed_abs_raw_modulo() {
+        assert_eq!(growth_queue_priority_delay(0), 0);
+        assert_eq!(growth_queue_priority_delay(0xFFFF_FFFF), 1);
+        assert_eq!(growth_queue_priority_delay(51), 1);
+        assert_eq!(growth_queue_priority_delay(0x8000_0000), 48);
+    }
+
+    #[test]
+    fn enqueue_growth_queue_cell_consumes_one_raw_draw_and_stores_priority() {
+        let mut state = make_state(20, 20);
+        let mut rng = SimRng::new(1);
+        let before = rng.state();
+
+        let entry = state.enqueue_growth_queue_cell(4, 7, 1234, &mut rng);
+
+        assert_ne!(rng.state(), before, "queue insertion consumes one raw draw");
+        assert_eq!(entry.rx, 4);
+        assert_eq!(entry.ry, 7);
+        assert_eq!(
+            entry.priority,
+            growth_queue_priority(1234, 0x78B7_6ED5),
+            "first raw draw for seed 1 should set native-style priority"
+        );
+        assert_eq!(state.growth_queue_entries(), &[entry]);
     }
 
     #[test]

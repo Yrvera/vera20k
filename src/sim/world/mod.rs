@@ -1210,6 +1210,7 @@ impl Simulation {
                 self.tick,
             );
         }
+        movement::tick_locomotor_piggyback_restore(&mut self.entities);
 
         // --- Phase 2.5: Body rocking + slope-transition advance ---
         // DEPENDS ON: all movement above (slope_type lookups must see the
@@ -1553,14 +1554,18 @@ impl Simulation {
             );
             // TIBTRE ore spawning: runs AFTER ore_growth so a spawn this tick
             // can't be grown/spread until next tick.
+            let production = &mut self.production;
             crate::sim::terrain_spawn::tick_terrain_spawners_stateful(
-                &mut self.production.terrain_spawners,
+                &mut production.terrain_spawners,
                 crate::sim::terrain_spawn::TerrainSpawnContext::new(
-                    &mut self.production.resource_nodes,
+                    &mut production.resource_nodes,
                     self.overlay_grid.as_mut(),
-                    self.production.default_ore_overlay_id,
+                    production.default_ore_overlay_id,
                     &mut self.rng,
                 )
+                .with_growth_queue(&mut production.ore_growth_state, self.binary_frame)
+                .with_spawning_terrain_cells(&production.tiberium_spawning_terrain_cells)
+                .with_live_object_context(&self.entities, &self.occupancy, rules, &self.interner)
                 .with_validation_context(
                     self.resolved_terrain.as_ref(),
                     overlay_registry,
