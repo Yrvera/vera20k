@@ -645,9 +645,12 @@ pub struct ObjectType {
     /// AMMOCRAT (Ammo Crate).
     pub can_c4: bool,
 
+    /// `Invisible=yes` on BuildingType. Live building rejection checks this
+    /// plain invisible byte separately from `InvisibleInGame`.
+    pub invisible: bool,
+
     /// `InvisibleInGame=yes` on BuildingType. Logical-only buildings (e.g., bridge
-    /// anchors) that should not receive C4 or other interaction cursors. No stock
-    /// targetable building sets this.
+    /// anchors) that should not receive C4 or other interaction cursors.
     pub invisible_in_game: bool,
 
     /// Whether this building repairs docked ground units (UnitRepair=yes in rules.ini).
@@ -904,15 +907,9 @@ impl ObjectType {
             chrono_in_sound: section.get("ChronoInSound").map(|s| s.to_string()),
             chrono_out_sound: section.get("ChronoOutSound").map(|s| s.to_string()),
             has_turret: section.get_bool("Turret").unwrap_or(false),
-            // gamemd forces ROT=10 on any UnitType with Harvester=yes (or Weeder=yes,
-            // not yet parsed) at INI parse time, overriding whatever rules.ini specifies.
-            // Verified at UnitTypeClass::ReadINI (0x747620): writes 10 to TypeClass+0x398
-            // after the standard ReadInt. Affects all body rotation, not just docking.
-            turret_rot: if section.get_bool("Harvester").unwrap_or(false) {
-                10
-            } else {
-                section.get_i32("ROT").unwrap_or(0)
-            },
+            // gamemd writes a separate UnitType +0x398=10 for Harvester/Weeder,
+            // but ROT= remains the parsed TechnoType +0x71C facing-rate field.
+            turret_rot: section.get_i32("ROT").unwrap_or(0),
             turret_anim: section
                 .get("TurretAnim")
                 .filter(|s| !s.is_empty())
@@ -1085,6 +1082,7 @@ impl ObjectType {
             can_c4: section
                 .get_bool("CanC4")
                 .unwrap_or(category == ObjectCategory::Building),
+            invisible: section.get_bool("Invisible").unwrap_or(false),
             invisible_in_game: section.get_bool("InvisibleInGame").unwrap_or(false),
             unit_repair: section.get_bool("UnitRepair").unwrap_or(false),
             bunker: section.get_bool("Bunker").unwrap_or(false),
@@ -1557,6 +1555,17 @@ mod tests {
     }
 
     #[test]
+    fn stock_cmin_rot_remains_5_after_harvester_parse() {
+        let ini: IniFile = IniFile::from_str("[CMIN]\nHarvester=yes\nROT=5\n");
+        let section: &IniSection = ini.section("CMIN").unwrap();
+        let obj: ObjectType =
+            ObjectType::from_ini_section("CMIN", section, ObjectCategory::Vehicle);
+
+        assert!(obj.harvester);
+        assert_eq!(obj.turret_rot, 5);
+    }
+
+    #[test]
     fn cloning_key_parses_and_participates_in_rally_lines() {
         let ini = IniFile::from_str("[YACLON]\nName=Cloning Vats\nStrength=1000\nCloning=yes\n");
         let section = ini.section("YACLON").unwrap();
@@ -1809,7 +1818,32 @@ mod tests {
         let ini = IniFile::from_str("[GAPILE]\n");
         let section = ini.section("GAPILE").unwrap();
         let obj = ObjectType::from_ini_section("GAPILE", section, ObjectCategory::Building);
+        assert!(!obj.invisible);
         assert!(!obj.invisible_in_game);
+    }
+
+    #[test]
+    fn invisible_and_invisible_in_game_parse_independently() {
+        let ini = IniFile::from_str(
+            "[BRIDGEA]\nInvisible=yes\nInvisibleInGame=no\n\
+             [BRIDGEB]\nInvisible=no\nInvisibleInGame=yes\n",
+        );
+
+        let plain = ObjectType::from_ini_section(
+            "BRIDGEA",
+            ini.section("BRIDGEA").unwrap(),
+            ObjectCategory::Building,
+        );
+        let in_game = ObjectType::from_ini_section(
+            "BRIDGEB",
+            ini.section("BRIDGEB").unwrap(),
+            ObjectCategory::Building,
+        );
+
+        assert!(plain.invisible);
+        assert!(!plain.invisible_in_game);
+        assert!(!in_game.invisible);
+        assert!(in_game.invisible_in_game);
     }
 
     #[test]
