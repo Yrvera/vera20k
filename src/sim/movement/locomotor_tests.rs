@@ -173,6 +173,7 @@ fn make_obj(locomotor: LocomotorKind, category: ObjectCategory) -> ObjectType {
         sabotage_cursor: false,
         c4: false,
         can_c4: false,
+        invisible: false,
         invisible_in_game: false,
         unit_repair: false,
         bunker: false,
@@ -311,6 +312,21 @@ fn test_ship_is_ground_mover() {
 }
 
 #[test]
+fn cmin_locomotor_initializes_primary_and_active_teleport() {
+    let mut obj = make_obj(LocomotorKind::Teleport, ObjectCategory::Vehicle);
+    obj.harvester = true;
+    obj.teleporter = true;
+    obj.turret_rot = 5;
+
+    let state = LocomotorState::from_object_type(&obj, 1500);
+
+    assert_eq!(state.active_kind(), LocomotorKind::Teleport);
+    assert_eq!(state.primary_kind(), LocomotorKind::Teleport);
+    assert!(state.is_primary_active());
+    assert_eq!(state.rot, 5);
+}
+
+#[test]
 fn test_is_airborne() {
     let obj = make_obj(LocomotorKind::Fly, ObjectCategory::Aircraft);
     let mut state = LocomotorState::from_object_type(&obj, 1500);
@@ -385,4 +401,23 @@ fn test_override_preserves_speed_type() {
     // SpeedType should still reflect the original during override.
     state.end_override();
     assert_eq!(state.speed_type, SpeedType::Wheel);
+}
+
+#[test]
+fn drive_piggyback_restores_primary_teleport_only_after_not_moving() {
+    let obj = make_obj(LocomotorKind::Teleport, ObjectCategory::Vehicle);
+    let mut state = LocomotorState::from_object_type(&obj, 1500);
+
+    assert!(state.begin_drive_piggyback_for_teleporter());
+    assert_eq!(state.active_kind(), LocomotorKind::Drive);
+    assert_eq!(state.primary_kind(), LocomotorKind::Teleport);
+    assert!(!state.can_restore_primary_from_piggyback(true, false, false));
+    assert!(!state.can_restore_primary_from_piggyback(false, true, false));
+    assert!(!state.can_restore_primary_from_piggyback(false, false, true));
+    assert!(state.can_restore_primary_from_piggyback(false, false, false));
+
+    assert!(state.restore_primary_from_piggyback());
+    assert_eq!(state.active_kind(), LocomotorKind::Teleport);
+    assert_eq!(state.primary_kind(), LocomotorKind::Teleport);
+    assert!(state.is_primary_active());
 }

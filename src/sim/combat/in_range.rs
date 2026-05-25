@@ -394,6 +394,8 @@ mod tests {
         e.category = EntityCategory::Aircraft;
         e.locomotor = Some(LocomotorState {
             kind: LocomotorKind::Fly,
+            primary_kind: Some(LocomotorKind::Fly),
+            piggyback: None,
             layer: MovementLayer::Air,
             phase: GroundMovePhase::Idle,
             air_phase: AirMovePhase::Cruising,

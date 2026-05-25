@@ -1210,6 +1210,7 @@ impl Simulation {
                 self.tick,
             );
         }
+        movement::tick_locomotor_piggyback_restore(&mut self.entities);
 
         // --- Phase 2.5: Body rocking + slope-transition advance ---
         // DEPENDS ON: all movement above (slope_type lookups must see the

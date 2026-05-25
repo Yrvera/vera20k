@@ -11,6 +11,8 @@ use std::collections::BTreeSet;
 
 use crate::map::entities::EntityCategory;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
+use crate::rules::locomotor_type::LocomotorKind;
+use crate::rules::ruleset::GeneralRules;
 use crate::sim::components::MovementTarget;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::pathfinding::LayeredEntityBlockMap;
@@ -29,6 +31,7 @@ use crate::sim::components::OrderIntent;
 use crate::sim::game_entity::GameEntity;
 
 use super::droppod_movement::DropPodPhase;
+use super::teleport_movement;
 
 /// Check if an entity can accept a new movement destination.
 ///
@@ -84,6 +87,102 @@ pub fn issue_move_command(
         None, // resolved_terrain — per-tick repath has it
         entity_block_map,
         mover_is_crusher,
+    )
+}
+
+/// Gamemd-shaped Set_Destination bridge for Teleporter units.
+///
+/// `LocomotorState.kind` remains the active locomotor. If the target cell is a
+/// building cell, a Teleport-primary unit activates Drive piggyback and receives
+/// a normal ground movement target. If the target cell is empty and active
+/// Teleport is available, Teleport receives Head_To_Coord and starts the warp.
+#[allow(clippy::too_many_arguments)]
+pub fn set_destination_for_teleporter_entity(
+    entities: &mut EntityStore,
+    grid: Option<&PathGrid>,
+    entity_id: u64,
+    target: (u16, u16),
+    speed: SimFixed,
+    queue: bool,
+    terrain_costs: Option<&TerrainCostGrid>,
+    entity_blocks: Option<&BTreeSet<(u16, u16)>>,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    entity_block_map: Option<&LayeredEntityBlockMap>,
+    mover_is_crusher: bool,
+    rules: &GeneralRules,
+    is_harvester: bool,
+    is_teleporter: bool,
+    destination_has_building: bool,
+) -> bool {
+    let Some(entity) = entities.get(entity_id) else {
+        return false;
+    };
+    if !can_accept_destination(entity) {
+        return false;
+    }
+    let has_teleport_locomotor = entity.locomotor.as_ref().is_some_and(|loco| {
+        loco.primary_kind() == LocomotorKind::Teleport
+            || loco.active_kind() == LocomotorKind::Teleport
+    });
+    if !is_teleporter || !has_teleport_locomotor {
+        let Some(grid) = grid else {
+            return false;
+        };
+        return issue_move_command_with_layered(
+            entities,
+            grid,
+            entity_id,
+            target,
+            speed,
+            queue,
+            terrain_costs,
+            entity_blocks,
+            resolved_terrain,
+            entity_block_map,
+            mover_is_crusher,
+        );
+    }
+
+    if destination_has_building {
+        let Some(grid) = grid else {
+            return false;
+        };
+        if let Some(entity) = entities.get_mut(entity_id)
+            && let Some(ref mut loco) = entity.locomotor
+        {
+            loco.begin_drive_piggyback_for_teleporter();
+        }
+        return issue_move_command_with_layered(
+            entities,
+            grid,
+            entity_id,
+            target,
+            speed,
+            queue,
+            terrain_costs,
+            entity_blocks,
+            resolved_terrain,
+            entity_block_map,
+            mover_is_crusher,
+        );
+    }
+
+    if let Some(entity) = entities.get_mut(entity_id) {
+        let should_restore = entity.locomotor.as_ref().is_some_and(|loco| {
+            loco.primary_kind() == LocomotorKind::Teleport
+                && loco.active_kind() != LocomotorKind::Teleport
+        });
+        if should_restore && let Some(ref mut loco) = entity.locomotor {
+            loco.restore_primary_from_piggyback();
+        }
+    }
+
+    teleport_movement::issue_active_teleport_head_to_coord(
+        entities,
+        entity_id,
+        target,
+        rules,
+        is_harvester,
     )
 }
 

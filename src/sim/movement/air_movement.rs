@@ -667,6 +667,8 @@ mod tests {
     fn make_fly_loco() -> LocomotorState {
         LocomotorState {
             kind: crate::rules::locomotor_type::LocomotorKind::Fly,
+            primary_kind: Some(crate::rules::locomotor_type::LocomotorKind::Fly),
+            piggyback: None,
             layer: MovementLayer::Air,
             phase: crate::sim::movement::locomotor::GroundMovePhase::Idle,
             air_phase: AirMovePhase::Landed,
@@ -698,6 +700,8 @@ mod tests {
     fn make_jumpjet_loco() -> LocomotorState {
         LocomotorState {
             kind: crate::rules::locomotor_type::LocomotorKind::Jumpjet,
+            primary_kind: Some(crate::rules::locomotor_type::LocomotorKind::Jumpjet),
+            piggyback: None,
             layer: MovementLayer::Air,
             phase: crate::sim::movement::locomotor::GroundMovePhase::Idle,
             air_phase: AirMovePhase::Landed,
