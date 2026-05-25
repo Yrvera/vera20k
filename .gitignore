@@ -20,6 +20,7 @@ Thumbs.db
 /infodocs/
 
 /docs/*
+/docs/research/
 !/docs/_config.yml
 !/docs/index.md
 !/docs/assets/
@@ -34,6 +35,9 @@ AGENTS.md
 /todo/
 /logs/
 /saves/
+
+tools/vendor-eval/
+tools/research_index/
 
 /*.md
 !/README.md

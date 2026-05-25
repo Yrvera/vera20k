@@ -447,17 +447,21 @@ fn color_claimed_by_other_row(
     {
         return Some(0);
     }
-    state.opponents.iter().enumerate().find_map(|(idx, opponent)| {
-        let opponent_row = idx + 1;
-        if opponent_row != row
-            && opponent.color_claimed
-            && normal_color_index(opponent.color_index) == color
-        {
-            Some(opponent_row)
-        } else {
-            None
-        }
-    })
+    state
+        .opponents
+        .iter()
+        .enumerate()
+        .find_map(|(idx, opponent)| {
+            let opponent_row = idx + 1;
+            if opponent_row != row
+                && opponent.color_claimed
+                && normal_color_index(opponent.color_index) == color
+            {
+                Some(opponent_row)
+            } else {
+                None
+            }
+        })
 }
 
 /// Release any row other than `row` that currently claims `color`. Called
@@ -465,11 +469,7 @@ fn color_claimed_by_other_row(
 /// shows two rows holding the same color simultaneously. The evicted row
 /// keeps its cached `color_index` so the player can see what they had if
 /// they later re-pick from the now-shorter dropdown.
-fn evict_other_color_claimants(
-    state: &mut SkirmishShellState,
-    row: usize,
-    color: usize,
-) {
+fn evict_other_color_claimants(state: &mut SkirmishShellState, row: usize, color: usize) {
     if row != 0
         && state.player_color_claimed
         && normal_color_index(state.player_color_index) == color

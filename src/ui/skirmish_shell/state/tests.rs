@@ -1,7 +1,7 @@
 //! Unit tests for the skirmish shell state modules.
 
-use super::*;
 use super::combos::apply_combo_selection as apply_combo_selection_for_test;
+use super::*;
 use crate::app_init::MapMenuEntry;
 use crate::map::briefing::BriefingSection;
 use crate::map::preview::PreviewSection;

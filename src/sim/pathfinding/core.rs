@@ -86,9 +86,9 @@ fn with_pathfind_workspace<R>(
     body: impl FnOnce(&mut PathfindWorkspace) -> R,
 ) -> R {
     PATHFIND_WORKSPACE.with(|cell| {
-        let mut ws = cell.try_borrow_mut().expect(
-            "PATHFIND_WORKSPACE re-entered — A* is not allowed to call A* recursively",
-        );
+        let mut ws = cell
+            .try_borrow_mut()
+            .expect("PATHFIND_WORKSPACE re-entered — A* is not allowed to call A* recursively");
         ws.reset(total_cells);
         body(&mut ws)
     })
@@ -810,407 +810,412 @@ pub fn astar_search(
     // local mutable references so the rest of the function reads/writes
     // `ground_g[..]`, `open.push(..)`, etc. unchanged.
     with_pathfind_workspace(total_cells, |ws| {
-    // Split-borrow the workspace fields. The g_cost and came_from buffers
-    // get re-borrowed inline in the body's `(&mut bridge_g, &mut bridge_from)`
-    // tuple, which needs the bindings to be `mut`-declared.
-    let PathfindWorkspace {
-        ref mut ground_g,
-        ref mut bridge_g,
-        ref mut ground_from,
-        ref mut bridge_from,
-        ref mut ground_closed,
-        ref mut bridge_closed,
-        ref mut open,
-    } = *ws;
-    let mut ground_g = &mut *ground_g;
-    let mut bridge_g = &mut *bridge_g;
-    let mut ground_from = &mut *ground_from;
-    let mut bridge_from = &mut *bridge_from;
+        // Split-borrow the workspace fields. The g_cost and came_from buffers
+        // get re-borrowed inline in the body's `(&mut bridge_g, &mut bridge_from)`
+        // tuple, which needs the bindings to be `mut`-declared.
+        let PathfindWorkspace {
+            ref mut ground_g,
+            ref mut bridge_g,
+            ref mut ground_from,
+            ref mut bridge_from,
+            ref mut ground_closed,
+            ref mut bridge_closed,
+            ref mut open,
+        } = *ws;
+        let mut ground_g = &mut *ground_g;
+        let mut bridge_g = &mut *bridge_g;
+        let mut ground_from = &mut *ground_from;
+        let mut bridge_from = &mut *bridge_from;
 
-    let start_idx = start.1 as usize * w + start.0 as usize;
-    let start_on_bridge = is_at_bridge_level(start_height, start_cell);
-    if start_on_bridge {
-        bridge_g[start_idx] = 0;
-    } else {
-        ground_g[start_idx] = 0;
-    }
-
-    open.push(Reverse(AStarNode {
-        f_cost: euclidean_heuristic(start.0, start.1, goal.0, goal.1),
-        g_cost: 0,
-        x: start.0,
-        y: start.1,
-        height: start_height,
-        on_bridge: start_on_bridge,
-    }));
-
-    let mut nodes_evaluated: u32 = 0;
-
-    // --- Main loop ---
-    while let Some(Reverse(current)) = open.pop() {
-        let cx = current.x;
-        let cy = current.y;
-        let c_idx = cy as usize * w + cx as usize;
-        let cur_cell = grid.cell(cx, cy).unwrap_or(&DEFAULT_BLOCKED_CELL);
-        // Use the push-time layer flag carried on the node, matching gamemd.exe:
-        // the layer is decided once at push-time from predecessor.height vs this
-        // cell, never re-derived from the node's own height at pop. Re-derivation
-        // diverged at bridgehead transition cells when compute_neighbor_height
-        // collapsed to ground_level but the predecessor was still high enough to
-        // select the bridge arrays — causing reconstruct_path_dual to read
-        // usize::MAX from the wrong came_from array.
-        let on_bridge = current.on_bridge;
-
-        // Skip if already closed on this list
-        if on_bridge {
-            if bridge_closed[c_idx] {
-                continue;
-            }
-            bridge_closed[c_idx] = true;
+        let start_idx = start.1 as usize * w + start.0 as usize;
+        let start_on_bridge = is_at_bridge_level(start_height, start_cell);
+        if start_on_bridge {
+            bridge_g[start_idx] = 0;
         } else {
-            if ground_closed[c_idx] {
-                continue;
-            }
-            ground_closed[c_idx] = true;
+            ground_g[start_idx] = 0;
         }
 
-        // Goal check: cell AND height must match
-        if (cx, cy) == goal && current.height == goal_height {
-            // Use the node's push-time layer flag (same value came_from was keyed on).
-            return Some(reconstruct_path_dual(
-                &ground_from,
-                &bridge_from,
-                start_idx,
-                start_on_bridge,
-                c_idx,
-                on_bridge,
-                w,
-            ));
-        }
+        open.push(Reverse(AStarNode {
+            f_cost: euclidean_heuristic(start.0, start.1, goal.0, goal.1),
+            g_cost: 0,
+            x: start.0,
+            y: start.1,
+            height: start_height,
+            on_bridge: start_on_bridge,
+        }));
 
-        nodes_evaluated += 1;
-        if nodes_evaluated >= MAX_SEARCH_NODES {
-            log::warn!(
-                "A* search exhausted {} nodes without finding path from ({},{}) to ({},{})",
-                MAX_SEARCH_NODES,
-                start.0,
-                start.1,
-                goal.0,
-                goal.1,
-            );
-            return None;
-        }
+        let mut nodes_evaluated: u32 = 0;
 
-        // --- Neighbor expansion ---
-        for (dir_index, &(dx, dy, is_diagonal)) in NEIGHBORS.iter().enumerate() {
-            let nx_i = cx as i32 + dx;
-            let ny_i = cy as i32 + dy;
-            if nx_i < 0 || ny_i < 0 || nx_i >= grid.width() as i32 || ny_i >= grid.height() as i32 {
-                continue;
-            }
-            let nx = nx_i as u16;
-            let ny = ny_i as u16;
-            let n_idx = ny as usize * w + nx as usize;
-            let neighbor_cell = grid.cell(nx, ny).unwrap_or(&DEFAULT_BLOCKED_CELL);
+        // --- Main loop ---
+        while let Some(Reverse(current)) = open.pop() {
+            let cx = current.x;
+            let cy = current.y;
+            let c_idx = cy as usize * w + cx as usize;
+            let cur_cell = grid.cell(cx, cy).unwrap_or(&DEFAULT_BLOCKED_CELL);
+            // Use the push-time layer flag carried on the node, matching gamemd.exe:
+            // the layer is decided once at push-time from predecessor.height vs this
+            // cell, never re-derived from the node's own height at pop. Re-derivation
+            // diverged at bridgehead transition cells when compute_neighbor_height
+            // collapsed to ground_level but the predecessor was still high enough to
+            // select the bridge arrays — causing reconstruct_path_dual to read
+            // usize::MAX from the wrong came_from array.
+            let on_bridge = current.on_bridge;
 
-            // Closed-list selection: uses CURRENT node's height vs neighbor ground_level
-            let mut neighbor_use_bridge = is_at_bridge_level(current.height, neighbor_cell);
-            let mut layer_context = CanEnterLayerContext::single(if neighbor_use_bridge {
-                MovementLayer::Bridge
-            } else {
-                MovementLayer::Ground
-            });
-
-            // Compute what height the NEW node carries forward (separate computation)
-            let neighbor_height = compute_neighbor_height(current.height, cur_cell, neighbor_cell);
-
-            // Height-diff legality gate. Diff-1 transitions require the LOWER cell to
-            // be a canonical ramp (slope_type != 0); diff ∈ {±2, ±3, ±4, ±5+} is
-            // always blocked. Legitimate bridge transitions arrive here as diff-0
-            // because `compute_neighbor_height` already shifts unit Z onto/off the deck.
-            let needs_bridge_traversal =
-                needs_bridge_traversal_for_edge(current.height, cur_cell, neighbor_cell);
-            if needs_bridge_traversal {
-                let bridge_traversal = check_bridge_traversal(
-                    grid,
-                    BridgeTraversalInput {
-                        candidate: neighbor_cell,
-                        candidate_coord: (nx, ny),
-                        direction: dir_index as i8,
-                        path_height: current.height as i16,
-                        parent: Some((cur_cell, (cx, cy))),
-                    },
-                );
-                if !bridge_traversal.allowed {
+            // Skip if already closed on this list
+            if on_bridge {
+                if bridge_closed[c_idx] {
                     continue;
                 }
-                if bridge_traversal.force_bridge_list {
-                    neighbor_use_bridge = true;
-                }
-                layer_context = can_enter_layer_context(
-                    if neighbor_use_bridge {
-                        MovementLayer::Bridge
-                    } else {
-                        MovementLayer::Ground
-                    },
-                    if bridge_traversal.force_bridge_list {
-                        MovementLayer::Bridge
-                    } else {
-                        layer_context.object_list_layer
-                    },
-                    neighbor_cell,
-                    bridge_traversal.path_height,
-                );
+                bridge_closed[c_idx] = true;
             } else {
-                let layer = if neighbor_use_bridge {
+                if ground_closed[c_idx] {
+                    continue;
+                }
+                ground_closed[c_idx] = true;
+            }
+
+            // Goal check: cell AND height must match
+            if (cx, cy) == goal && current.height == goal_height {
+                // Use the node's push-time layer flag (same value came_from was keyed on).
+                return Some(reconstruct_path_dual(
+                    &ground_from,
+                    &bridge_from,
+                    start_idx,
+                    start_on_bridge,
+                    c_idx,
+                    on_bridge,
+                    w,
+                ));
+            }
+
+            nodes_evaluated += 1;
+            if nodes_evaluated >= MAX_SEARCH_NODES {
+                log::warn!(
+                    "A* search exhausted {} nodes without finding path from ({},{}) to ({},{})",
+                    MAX_SEARCH_NODES,
+                    start.0,
+                    start.1,
+                    goal.0,
+                    goal.1,
+                );
+                return None;
+            }
+
+            // --- Neighbor expansion ---
+            for (dir_index, &(dx, dy, is_diagonal)) in NEIGHBORS.iter().enumerate() {
+                let nx_i = cx as i32 + dx;
+                let ny_i = cy as i32 + dy;
+                if nx_i < 0
+                    || ny_i < 0
+                    || nx_i >= grid.width() as i32
+                    || ny_i >= grid.height() as i32
+                {
+                    continue;
+                }
+                let nx = nx_i as u16;
+                let ny = ny_i as u16;
+                let n_idx = ny as usize * w + nx as usize;
+                let neighbor_cell = grid.cell(nx, ny).unwrap_or(&DEFAULT_BLOCKED_CELL);
+
+                // Closed-list selection: uses CURRENT node's height vs neighbor ground_level
+                let mut neighbor_use_bridge = is_at_bridge_level(current.height, neighbor_cell);
+                let mut layer_context = CanEnterLayerContext::single(if neighbor_use_bridge {
                     MovementLayer::Bridge
                 } else {
                     MovementLayer::Ground
-                };
-                layer_context = CanEnterLayerContext::single(layer);
-                let diff = neighbor_height as i16 - current.height as i16;
-                let lower_slope = if diff < 0 {
-                    neighbor_cell.slope_type
+                });
+
+                // Compute what height the NEW node carries forward (separate computation)
+                let neighbor_height =
+                    compute_neighbor_height(current.height, cur_cell, neighbor_cell);
+
+                // Height-diff legality gate. Diff-1 transitions require the LOWER cell to
+                // be a canonical ramp (slope_type != 0); diff ∈ {±2, ±3, ±4, ±5+} is
+                // always blocked. Legitimate bridge transitions arrive here as diff-0
+                // because `compute_neighbor_height` already shifts unit Z onto/off the deck.
+                let needs_bridge_traversal =
+                    needs_bridge_traversal_for_edge(current.height, cur_cell, neighbor_cell);
+                if needs_bridge_traversal {
+                    let bridge_traversal = check_bridge_traversal(
+                        grid,
+                        BridgeTraversalInput {
+                            candidate: neighbor_cell,
+                            candidate_coord: (nx, ny),
+                            direction: dir_index as i8,
+                            path_height: current.height as i16,
+                            parent: Some((cur_cell, (cx, cy))),
+                        },
+                    );
+                    if !bridge_traversal.allowed {
+                        continue;
+                    }
+                    if bridge_traversal.force_bridge_list {
+                        neighbor_use_bridge = true;
+                    }
+                    layer_context = can_enter_layer_context(
+                        if neighbor_use_bridge {
+                            MovementLayer::Bridge
+                        } else {
+                            MovementLayer::Ground
+                        },
+                        if bridge_traversal.force_bridge_list {
+                            MovementLayer::Bridge
+                        } else {
+                            layer_context.object_list_layer
+                        },
+                        neighbor_cell,
+                        bridge_traversal.path_height,
+                    );
                 } else {
-                    cur_cell.slope_type
-                };
-                let legal = match diff.abs() {
-                    0 => true,
-                    1 => lower_slope != 0,
-                    _ => false,
-                };
-                if !legal {
+                    let layer = if neighbor_use_bridge {
+                        MovementLayer::Bridge
+                    } else {
+                        MovementLayer::Ground
+                    };
+                    layer_context = CanEnterLayerContext::single(layer);
+                    let diff = neighbor_height as i16 - current.height as i16;
+                    let lower_slope = if diff < 0 {
+                        neighbor_cell.slope_type
+                    } else {
+                        cur_cell.slope_type
+                    };
+                    let legal = match diff.abs() {
+                        0 => true,
+                        1 => lower_slope != 0,
+                        _ => false,
+                    };
+                    if !legal {
+                        continue;
+                    }
+                }
+
+                // Closed check on appropriate list
+                // Binary `1.009` handling is an early closed-neighbor skip/fallback
+                // nuance, not true A* reopen. Do not reinsert selected-layer closed
+                // cells without a dedicated parity fixture for the blocked-goal path.
+                if neighbor_use_bridge {
+                    if bridge_closed[n_idx] {
+                        continue;
+                    }
+                } else if ground_closed[n_idx] {
                     continue;
                 }
-            }
 
-            // Closed check on appropriate list
-            // Binary `1.009` handling is an early closed-neighbor skip/fallback
-            // nuance, not true A* reopen. Do not reinsert selected-layer closed
-            // cells without a dedicated parity fixture for the blocked-goal path.
-            if neighbor_use_bridge {
-                if bridge_closed[n_idx] {
-                    continue;
-                }
-            } else if ground_closed[n_idx] {
-                continue;
-            }
-
-            // Walkability check on the determined layer. Ground->Bridge entry
-            // still requires the bridgehead flag. Bridge-deck structural moves
-            // have already passed CheckBridgeTraversal above; bridge_walkable
-            // alone is not enough for Forward2-style non-transition cells.
-            let neighbor_passable = if neighbor_use_bridge {
-                let prev_on_bridge = is_at_bridge_level(current.height, cur_cell);
-                if prev_on_bridge {
-                    grid.is_walkable_on_layer(nx, ny, MovementLayer::Bridge)
+                // Walkability check on the determined layer. Ground->Bridge entry
+                // still requires the bridgehead flag. Bridge-deck structural moves
+                // have already passed CheckBridgeTraversal above; bridge_walkable
+                // alone is not enough for Forward2-style non-transition cells.
+                let neighbor_passable = if neighbor_use_bridge {
+                    let prev_on_bridge = is_at_bridge_level(current.height, cur_cell);
+                    if prev_on_bridge {
+                        grid.is_walkable_on_layer(nx, ny, MovementLayer::Bridge)
+                    } else {
+                        grid.is_walkable_on_layer(nx, ny, MovementLayer::Bridge)
+                            && neighbor_cell.transition
+                    }
                 } else {
-                    grid.is_walkable_on_layer(nx, ny, MovementLayer::Bridge)
-                        && neighbor_cell.transition
-                }
-            } else {
-                is_cell_passable_for_mover(
-                    grid,
-                    nx,
-                    ny,
-                    options.movement_zone,
-                    options.resolved_terrain,
-                )
-            };
-            if !neighbor_passable {
-                // Near-miss goal fallback (0x0042a17d): if the impassable neighbor
-                // IS the goal cell and start/goal heights are close, accept the
-                // path ending at the current node. This lets units route to the
-                // nearest passable cell when the goal itself is blocked.
-                if (nx, ny) == goal && start_height.abs_diff(goal_height) <= 1 {
-                    // Use the current node's push-time layer flag (same value
-                    // came_from was keyed on when the node was pushed).
-                    return Some(reconstruct_path_dual(
-                        &ground_from,
-                        &bridge_from,
-                        start_idx,
-                        start_on_bridge,
-                        c_idx,
-                        on_bridge,
-                        w,
-                    ));
-                }
-                continue;
-            }
-
-            // Entity blocks (layer-separated). Goal exempt.
-            if (nx, ny) != goal {
-                let blocks_for_layer = |layer| match layer {
-                    MovementLayer::Bridge => options.bridge_blocks,
-                    MovementLayer::Ground => options.entity_blocks,
-                    MovementLayer::Air | MovementLayer::Underground => None,
+                    is_cell_passable_for_mover(
+                        grid,
+                        nx,
+                        ny,
+                        options.movement_zone,
+                        options.resolved_terrain,
+                    )
                 };
-                let blocked_by_selected_layers = [
-                    blocks_for_layer(layer_context.object_list_layer),
-                    blocks_for_layer(layer_context.occupancy_bits_layer),
-                ]
-                .into_iter()
-                .flatten()
-                .any(|blocks| blocks.contains(&(nx, ny)));
-                if blocked_by_selected_layers {
+                if !neighbor_passable {
+                    // Near-miss goal fallback (0x0042a17d): if the impassable neighbor
+                    // IS the goal cell and start/goal heights are close, accept the
+                    // path ending at the current node. This lets units route to the
+                    // nearest passable cell when the goal itself is blocked.
+                    if (nx, ny) == goal && start_height.abs_diff(goal_height) <= 1 {
+                        // Use the current node's push-time layer flag (same value
+                        // came_from was keyed on when the node was pushed).
+                        return Some(reconstruct_path_dual(
+                            &ground_from,
+                            &bridge_from,
+                            start_idx,
+                            start_on_bridge,
+                            c_idx,
+                            on_bridge,
+                            w,
+                        ));
+                    }
                     continue;
                 }
-            }
 
-            // Zone_precheck marker gate for normal compass edges. Direction-8
-            // tube jumps are handled below; callers that enable this gate must
-            // defer explicit tube scenarios until their hierarchy semantics are verified.
-            if let Some(gate) = options.hierarchy_gate {
-                if !gate.allows(nx, ny) {
+                // Entity blocks (layer-separated). Goal exempt.
+                if (nx, ny) != goal {
+                    let blocks_for_layer = |layer| match layer {
+                        MovementLayer::Bridge => options.bridge_blocks,
+                        MovementLayer::Ground => options.entity_blocks,
+                        MovementLayer::Air | MovementLayer::Underground => None,
+                    };
+                    let blocked_by_selected_layers = [
+                        blocks_for_layer(layer_context.object_list_layer),
+                        blocks_for_layer(layer_context.occupancy_bits_layer),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .any(|blocks| blocks.contains(&(nx, ny)));
+                    if blocked_by_selected_layers {
+                        continue;
+                    }
+                }
+
+                // Zone_precheck marker gate for normal compass edges. Direction-8
+                // tube jumps are handled below; callers that enable this gate must
+                // defer explicit tube scenarios until their hierarchy semantics are verified.
+                if let Some(gate) = options.hierarchy_gate {
+                    if !gate.allows(nx, ny) {
+                        continue;
+                    }
+                }
+
+                // Zone corridor filter
+                if let Some((zone_map, allowed)) = options.corridor {
+                    let cell_zone = zone_map.zone_at(nx, ny, MovementLayer::Ground);
+                    if cell_zone != ZONE_INVALID && !allowed.contains(&cell_zone) {
+                        continue;
+                    }
+                }
+
+                // Terrain cost
+                let terrain_cost: u8 = if neighbor_use_bridge {
+                    100 // bridge layer: no terrain cost modifiers
+                } else if is_water_mover {
+                    100
+                } else if let Some(cost_grid) = options.terrain_costs {
+                    cost_grid.cost_at(nx, ny)
+                } else {
+                    100 // no cost grid: uniform cost
+                };
+                if terrain_cost == 0 {
                     continue;
                 }
-            }
 
-            // Zone corridor filter
-            if let Some((zone_map, allowed)) = options.corridor {
-                let cell_zone = zone_map.zone_at(nx, ny, MovementLayer::Ground);
-                if cell_zone != ZONE_INVALID && !allowed.contains(&cell_zone) {
-                    continue;
+                // Diagonal corner-cutting: gamemd does NOT validate the two
+                // cardinal cells flanking a diagonal neighbor. AStar_main_loop
+                // only calls Can_Enter_Cell on the diagonal cell itself, so
+                // units may "clip" between two impassable cells at a corner.
+                // The flanking-cardinals check is retained only for the Bridge
+                // layer, where geometry makes clipping nonsensical.
+                if is_diagonal && neighbor_use_bridge {
+                    if !grid.is_walkable_on_layer(nx, cy, MovementLayer::Bridge)
+                        || !grid.is_walkable_on_layer(cx, ny, MovementLayer::Bridge)
+                    {
+                        continue;
+                    }
                 }
-            }
 
-            // Terrain cost
-            let terrain_cost: u8 = if neighbor_use_bridge {
-                100 // bridge layer: no terrain cost modifiers
-            } else if is_water_mover {
-                100
-            } else if let Some(cost_grid) = options.terrain_costs {
-                cost_grid.cost_at(nx, ny)
-            } else {
-                100 // no cost grid: uniform cost
-            };
-            if terrain_cost == 0 {
-                continue;
-            }
+                // Step cost — uniform across all 8 compass directions.
+                // The is_diagonal flag is still consumed by the corner-cutting
+                // check above; only the cost is unified.
+                let base_cost = STEP_COST;
+                let mut step_cost = if terrain_cost == 100 {
+                    base_cost
+                } else {
+                    base_cost * 100 / terrain_cost as i32
+                };
 
-            // Diagonal corner-cutting: gamemd does NOT validate the two
-            // cardinal cells flanking a diagonal neighbor. AStar_main_loop
-            // only calls Can_Enter_Cell on the diagonal cell itself, so
-            // units may "clip" between two impassable cells at a corner.
-            // The flanking-cardinals check is retained only for the Bridge
-            // layer, where geometry makes clipping nonsensical.
-            if is_diagonal && neighbor_use_bridge {
-                if !grid.is_walkable_on_layer(nx, cy, MovementLayer::Bridge)
-                    || !grid.is_walkable_on_layer(cx, ny, MovementLayer::Bridge)
-                {
-                    continue;
+                // Cliff cost: uses effective path heights, NOT raw ground_levels
+                if current.height != neighbor_height {
+                    step_cost *= CLIFF_COST_MULTIPLIER;
                 }
-            }
 
-            // Step cost — uniform across all 8 compass directions.
-            // The is_diagonal flag is still consumed by the corner-cutting
-            // check above; only the cost is unified.
-            let base_cost = STEP_COST;
-            let mut step_cost = if terrain_cost == 100 {
-                base_cost
-            } else {
-                base_cost * 100 / terrain_cost as i32
-            };
+                // Entity soft-block cost (codes 2/5/6). Goal exempt. Crusher exempt.
+                if (nx, ny) != goal && !options.mover_is_crusher {
+                    if let Some(map) = options.entity_block_map {
+                        if let Some(entry) = map.get(layer_context.object_list_layer, &(nx, ny)) {
+                            let mult = match entry.cost_code {
+                                2 => compute_code2_multiplier(
+                                    options.urgency,
+                                    (nx, ny),
+                                    layer_context.object_list_layer,
+                                    map,
+                                ),
+                                5 => CODE5_MULT_ENEMY,
+                                6 => CODE6_MULT_STATIONARY_ALLY,
+                                _ => 1,
+                            };
+                            step_cost *= mult;
+                        }
+                    }
+                }
 
-            // Cliff cost: uses effective path heights, NOT raw ground_levels
-            if current.height != neighbor_height {
-                step_cost *= CLIFF_COST_MULTIPLIER;
-            }
+                step_cost = apply_search_marker_cost(step_cost, options.marker_overlay, (nx, ny));
 
-            // Entity soft-block cost (codes 2/5/6). Goal exempt. Crusher exempt.
-            if (nx, ny) != goal && !options.mover_is_crusher {
-                if let Some(map) = options.entity_block_map {
-                    if let Some(entry) = map.get(layer_context.object_list_layer, &(nx, ny)) {
-                        let mult = match entry.cost_code {
-                            2 => compute_code2_multiplier(
-                                options.urgency,
-                                (nx, ny),
-                                layer_context.object_list_layer,
-                                map,
-                            ),
-                            5 => CODE5_MULT_ENEMY,
-                            6 => CODE6_MULT_STATIONARY_ALLY,
-                            _ => 1,
-                        };
-                        step_cost *= mult;
+                // Direction tie-breaker
+                let tentative_g = current.g_cost + step_cost + DIR_TIEBREAK[dir_index];
+
+                // Update appropriate g-cost array
+                let (g_array, from_array) = if neighbor_use_bridge {
+                    (&mut bridge_g, &mut bridge_from)
+                } else {
+                    (&mut ground_g, &mut ground_from)
+                };
+                if tentative_g < g_array[n_idx] {
+                    g_array[n_idx] = tentative_g;
+                    from_array[n_idx] = encode_from(c_idx, on_bridge);
+                    let h = euclidean_heuristic(nx, ny, goal.0, goal.1);
+                    open.push(Reverse(AStarNode {
+                        f_cost: tentative_g + h,
+                        g_cost: tentative_g,
+                        x: nx,
+                        y: ny,
+                        height: neighbor_height,
+                        on_bridge: neighbor_use_bridge,
+                    }));
+                    if let (Some(gate), Some(progress)) =
+                        (options.hierarchy_gate, options.hierarchy_progress)
+                    {
+                        progress.maybe_advance(gate.level0_zones.zone_at(nx, ny), (nx, ny));
                     }
                 }
             }
 
-            step_cost = apply_search_marker_cost(step_cost, options.marker_overlay, (nx, ny));
-
-            // Direction tie-breaker
-            let tentative_g = current.g_cost + step_cost + DIR_TIEBREAK[dir_index];
-
-            // Update appropriate g-cost array
-            let (g_array, from_array) = if neighbor_use_bridge {
-                (&mut bridge_g, &mut bridge_from)
-            } else {
-                (&mut ground_g, &mut ground_from)
-            };
-            if tentative_g < g_array[n_idx] {
-                g_array[n_idx] = tentative_g;
-                from_array[n_idx] = encode_from(c_idx, on_bridge);
-                let h = euclidean_heuristic(nx, ny, goal.0, goal.1);
-                open.push(Reverse(AStarNode {
-                    f_cost: tentative_g + h,
-                    g_cost: tentative_g,
-                    x: nx,
-                    y: ny,
-                    height: neighbor_height,
-                    on_bridge: neighbor_use_bridge,
-                }));
-                if let (Some(gate), Some(progress)) =
-                    (options.hierarchy_gate, options.hierarchy_progress)
+            // Direction 8 is a TubeClass jump. It is not an adjacent neighbor and
+            // must not use the normal terrain/height/corner-cut predicates. Auto
+            // low-bridge shells have path_len=0 and remain predicate-only.
+            if !on_bridge {
+                if let Some(((nx, ny), path_len)) =
+                    explicit_tube_edge(options.resolved_terrain, (cx, cy))
                 {
-                    progress.maybe_advance(gate.level0_zones.zone_at(nx, ny), (nx, ny));
-                }
-            }
-        }
+                    if nx < grid.width() && ny < grid.height() {
+                        let n_idx = ny as usize * w + nx as usize;
+                        if !ground_closed[n_idx] {
+                            if let Some((zone_map, allowed)) = options.corridor {
+                                let cell_zone = zone_map.zone_at(nx, ny, MovementLayer::Ground);
+                                if cell_zone != ZONE_INVALID && !allowed.contains(&cell_zone) {
+                                    continue;
+                                }
+                            }
 
-        // Direction 8 is a TubeClass jump. It is not an adjacent neighbor and
-        // must not use the normal terrain/height/corner-cut predicates. Auto
-        // low-bridge shells have path_len=0 and remain predicate-only.
-        if !on_bridge {
-            if let Some(((nx, ny), path_len)) =
-                explicit_tube_edge(options.resolved_terrain, (cx, cy))
-            {
-                if nx < grid.width() && ny < grid.height() {
-                    let n_idx = ny as usize * w + nx as usize;
-                    if !ground_closed[n_idx] {
-                        if let Some((zone_map, allowed)) = options.corridor {
-                            let cell_zone = zone_map.zone_at(nx, ny, MovementLayer::Ground);
-                            if cell_zone != ZONE_INVALID && !allowed.contains(&cell_zone) {
-                                continue;
+                            let neighbor_cell = grid.cell(nx, ny).unwrap_or(&DEFAULT_BLOCKED_CELL);
+                            let neighbor_height = neighbor_cell.ground_level;
+                            let tube_steps = i32::try_from(path_len).unwrap_or(1).max(1);
+                            let tentative_g =
+                                current.g_cost + STEP_COST * tube_steps + TUBE_DIR_TIEBREAK;
+
+                            if tentative_g < ground_g[n_idx] {
+                                ground_g[n_idx] = tentative_g;
+                                ground_from[n_idx] = encode_from(c_idx, on_bridge);
+                                let h = euclidean_heuristic(nx, ny, goal.0, goal.1);
+                                open.push(Reverse(AStarNode {
+                                    f_cost: tentative_g + h,
+                                    g_cost: tentative_g,
+                                    x: nx,
+                                    y: ny,
+                                    height: neighbor_height,
+                                    on_bridge: false,
+                                }));
                             }
                         }
-
-                        let neighbor_cell = grid.cell(nx, ny).unwrap_or(&DEFAULT_BLOCKED_CELL);
-                        let neighbor_height = neighbor_cell.ground_level;
-                        let tube_steps = i32::try_from(path_len).unwrap_or(1).max(1);
-                        let tentative_g =
-                            current.g_cost + STEP_COST * tube_steps + TUBE_DIR_TIEBREAK;
-
-                        if tentative_g < ground_g[n_idx] {
-                            ground_g[n_idx] = tentative_g;
-                            ground_from[n_idx] = encode_from(c_idx, on_bridge);
-                            let h = euclidean_heuristic(nx, ny, goal.0, goal.1);
-                            open.push(Reverse(AStarNode {
-                                f_cost: tentative_g + h,
-                                g_cost: tentative_g,
-                                x: nx,
-                                y: ny,
-                                height: neighbor_height,
-                                on_bridge: false,
-                            }));
-                        }
                     }
                 }
             }
         }
-    }
 
-    None
+        None
     })
 }
 

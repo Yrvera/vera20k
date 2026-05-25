@@ -400,7 +400,8 @@ fn effective_time_to_build_frames_for_object(
     base_frames: u32,
 ) -> u32 {
     // time = base_frames / speed = base_frames * PRODUCTION_RATE_SCALE / speed_ppm.
-    let speed_ppm = owner_effective_production_speed_ppm(sim, rules, owner).max(MIN_PRODUCTION_SPEED_PPM);
+    let speed_ppm =
+        owner_effective_production_speed_ppm(sim, rules, owner).max(MIN_PRODUCTION_SPEED_PPM);
     let mut time_to_build: u64 = ((u128::from(base_frames) * u128::from(PRODUCTION_RATE_SCALE))
         / u128::from(speed_ppm)) as u64;
     time_to_build = apply_multiple_factory_scaling_ppm(
