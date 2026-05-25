@@ -19,9 +19,11 @@ Thumbs.db
 
 /infodocs/
 
-/docs/
+/docs/*
 !/docs/_config.yml
 !/docs/index.md
+!/docs/assets/
+!/docs/assets/vera20k-conscript.png
 
 CLAUDE.md
 AGENTS.md
