@@ -1,4 +1,6 @@
-![VERA20k conscript key art](docs/assets/vera20k-conscript.png)
+<p align="center">
+  <img src="docs/assets/vera20k-conscript.png" alt="VERA20k conscript key art" width="900">
+</p>
 
 # VERA20k
 
