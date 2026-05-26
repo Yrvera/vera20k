@@ -10,7 +10,7 @@ Red Alert 2: Yuri's Revenge — rebuilt from scratch in Rust for large multiplay
 
 This project stands on the shoulders of giants. Thanks to OpenRA, XCC mixer, ModEnc website, PPM website, EA for open source RA1, World Altering Editor, Final Alert,YRpp, Ares, Phobos and much more.
 
-VERA20K operates after contributor-owned cooperative principles. Contributors earn equity shares through verified contributions. Those shares give income rights and governance weight. Join discord to learn more.
+VERA20K operates after contributor-owned cooperative principles. Contributors earn equity shares through contributions or donations. Those shares give automatically income rights and governance weight.
 
 ---
 
