@@ -1,5 +1,5 @@
 
-# VERA20k
+# VERA20K
 
 [![Discord](https://img.shields.io/badge/Discord-Join%20Server-5865F2?logo=discord&logoColor=white)](https://discord.gg/kmjRUn5m5F)![PRs Welcome](https://img.shields.io/badge/PRs-welcome-blue.svg)[![Docs](https://img.shields.io/badge/Docs-GitHub%20Pages-blue)](https://yrvera.github.io/vera20k/)
 
