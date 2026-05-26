@@ -1173,24 +1173,29 @@ fn load_tile_metadata(
         return TileMetadata::default();
     };
     let Some(asset_manager) = asset_manager else {
-        return metadata_from_set_name(
+        let mut metadata = metadata_from_set_name(
             td.lookup
                 .tileset_index(key.tile_id)
                 .and_then(|idx| td.lookup.set_name(idx)),
             td.lookup.tileset_index(key.tile_id),
         );
+        apply_theater_cliff_ranges(&mut metadata, td, key.tile_id);
+        return metadata;
     };
     let tileset_index = td.lookup.tileset_index(key.tile_id);
     let set_name = tileset_index.and_then(|idx| td.lookup.set_name(idx));
     let mut metadata = metadata_from_set_name(set_name, tileset_index);
 
     let Some(filename) = td.lookup.filename(key.tile_id as i32) else {
+        apply_theater_cliff_ranges(&mut metadata, td, key.tile_id);
         return metadata;
     };
     let Some(bytes) = asset_manager.get(filename) else {
+        apply_theater_cliff_ranges(&mut metadata, td, key.tile_id);
         return metadata;
     };
     let Ok(tmp) = TmpFile::from_bytes(&bytes) else {
+        apply_theater_cliff_ranges(&mut metadata, td, key.tile_id);
         return metadata;
     };
     let Some(tile) = tmp
@@ -1199,6 +1204,7 @@ fn load_tile_metadata(
         .and_then(|t| t.as_ref())
     else {
         apply_land_type_semantics(&mut metadata, terrain_rules, warned_unknown_land_types);
+        apply_theater_cliff_ranges(&mut metadata, td, key.tile_id);
         return metadata;
     };
     // Remember tileset-name road detection before TMP byte overrides it.
@@ -1212,14 +1218,14 @@ fn load_tile_metadata(
         metadata.is_road = true;
         metadata.terrain_class = TerrainClass::Road;
     }
+    apply_theater_cliff_ranges(&mut metadata, td, key.tile_id);
     metadata
 }
 
 fn metadata_from_set_name(set_name: Option<&str>, tileset_index: Option<u16>) -> TileMetadata {
     let lower = set_name.unwrap_or("").to_ascii_lowercase();
     let is_water = lower.contains("water");
-    let is_cliff_like =
-        lower.contains("cliff") || lower.contains("rock") || lower.contains("shore");
+    let is_cliff_like = lower.contains("cliff") || lower.contains("rock");
     let is_rough = lower.contains("rough");
     let is_road = lower.contains("road") || lower.contains("pavement") || lower.contains("pave");
     let land_type = if is_water {
@@ -1261,6 +1267,26 @@ fn metadata_from_set_name(set_name: Option<&str>, tileset_index: Option<u16>) ->
         ground_blocked: is_water || is_cliff_like,
         build_blocked: is_water || is_cliff_like,
         ..TileMetadata::default()
+    }
+}
+
+fn apply_theater_cliff_ranges(
+    metadata: &mut TileMetadata,
+    theater_data: &TheaterData,
+    tile_id: u16,
+) {
+    if !theater_data.is_cliff_or_impassable_tile(tile_id, metadata.slope_type) {
+        return;
+    }
+    metadata.is_cliff_like = true;
+    metadata.ground_blocked = true;
+    metadata.build_blocked = true;
+    if !metadata.is_water && !metadata.has_tmp_metadata {
+        metadata.terrain_class = TerrainClass::Cliff;
+        metadata.land_type = crate::sim::pathfinding::passability::LandType::Rock.as_index();
+        metadata.yr_cell_land_type = metadata.land_type;
+    } else if !metadata.is_water {
+        metadata.terrain_class = TerrainClass::Cliff;
     }
 }
 
@@ -1505,6 +1531,7 @@ mod tests {
             track_tunnels: None,
             dirt_tunnels: None,
             dirt_track_tunnels: None,
+            cliff_ranges: crate::map::theater::TheaterCliffRanges::default(),
         }
     }
 
@@ -1533,6 +1560,7 @@ mod tests {
             track_tunnels: None,
             dirt_tunnels: None,
             dirt_track_tunnels: None,
+            cliff_ranges: crate::map::theater::TheaterCliffRanges::default(),
         }
     }
 
@@ -1746,6 +1774,85 @@ mod tests {
         assert!(grid.cell(1, 0).unwrap().is_wood_bridge_repair_tile);
         assert!(grid.cell(2, 0).unwrap().is_wood_bridge_repair_tile);
         assert!(!grid.cell(3, 0).unwrap().is_wood_bridge_repair_tile);
+    }
+
+    #[test]
+    fn theater_numeric_cliff_range_blocks_plain_named_tiles() {
+        let ini = b"[TileSet0000]\nTilesInSet=10\nFileName=clear\nSetName=Clear\n\n\
+                    [TileSet0001]\nTilesInSet=10\nFileName=plain\nSetName=Plain Terrain\n";
+        let mut theater = synthetic_theater_from_ini(ini);
+        theater.cliff_ranges.cliff_set = Some(10);
+        let map = make_map(
+            vec![MapCell {
+                rx: 0,
+                ry: 0,
+                tile_index: 10,
+                sub_tile: 0,
+                z: 0,
+            }],
+            Vec::new(),
+            Vec::new(),
+        );
+
+        let grid = ResolvedTerrainGrid::build(&map, Some(&theater), None, None, None, false, 0);
+        let cell = grid.cell(0, 0).expect("numeric cliff cell");
+
+        assert!(cell.is_cliff_like);
+        assert!(cell.base_ground_walk_blocked);
+        assert!(cell.ground_walk_blocked);
+        assert!(cell.build_blocked);
+        assert_eq!(cell.terrain_class, TerrainClass::Cliff);
+    }
+
+    #[test]
+    fn shore_set_name_alone_does_not_block_ground() {
+        let ini = b"[TileSet0000]\nTilesInSet=10\nFileName=shore\nSetName=Shore Pieces\n";
+        let theater = synthetic_theater_from_ini(ini);
+        let map = make_map(
+            vec![MapCell {
+                rx: 0,
+                ry: 0,
+                tile_index: 0,
+                sub_tile: 0,
+                z: 0,
+            }],
+            Vec::new(),
+            Vec::new(),
+        );
+
+        let grid = ResolvedTerrainGrid::build(&map, Some(&theater), None, None, None, false, 0);
+        let cell = grid.cell(0, 0).expect("shore cell");
+
+        assert!(!cell.is_cliff_like);
+        assert!(!cell.base_ground_walk_blocked);
+        assert!(!cell.ground_walk_blocked);
+        assert_eq!(cell.terrain_class, TerrainClass::Clear);
+    }
+
+    #[test]
+    fn numeric_cliff_range_preserves_tmp_land_bytes() {
+        let ini = b"[TileSet0000]\nTilesInSet=10\nFileName=clear\nSetName=Clear\n";
+        let mut theater = synthetic_theater_from_ini(ini);
+        theater.cliff_ranges.cliff_set = Some(0);
+        let mut metadata = TileMetadata {
+            has_tmp_metadata: true,
+            land_type: crate::sim::pathfinding::passability::LandType::Road.as_index(),
+            yr_cell_land_type: 11,
+            raw_land_type: 11,
+            ..TileMetadata::default()
+        };
+
+        apply_theater_cliff_ranges(&mut metadata, &theater, 0);
+
+        assert!(metadata.is_cliff_like);
+        assert!(metadata.ground_blocked);
+        assert!(metadata.build_blocked);
+        assert_eq!(
+            metadata.land_type,
+            crate::sim::pathfinding::passability::LandType::Road.as_index()
+        );
+        assert_eq!(metadata.yr_cell_land_type, 11);
+        assert_eq!(metadata.terrain_class, TerrainClass::Cliff);
     }
 
     #[test]

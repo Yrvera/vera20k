@@ -1559,7 +1559,11 @@ impl PathGrid {
         None
     }
 
-    /// Build a walkability grid from map cell data and tileset classification.
+    /// Build a walkability grid from raw map cell data and tileset names.
+    ///
+    /// This is a legacy test/diagnostic fallback. Runtime pathing should use
+    /// `from_resolved_terrain`, because resolved terrain carries TMP bytes,
+    /// theater numeric cliff/ramp ranges, bridge overlays, and terrain objects.
     ///
     /// Strategy: start with all cells **blocked**, then mark cells that have
     /// valid terrain data (non-water, non-cliff) as walkable. This ensures

@@ -14,9 +14,7 @@
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
 use super::passability;
-use crate::map::map_file::MapCell;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
-use crate::map::theater::TilesetLookup;
 use crate::rules::locomotor_type::SpeedType;
 
 /// Normal terrain speed — no bonus, no penalty.
@@ -39,58 +37,6 @@ pub struct TerrainCostGrid {
 }
 
 impl TerrainCostGrid {
-    /// Build a terrain cost grid from map cell data for a given SpeedType.
-    ///
-    /// Uses the theater's `TilesetLookup` to classify tiles by their SetName.
-    /// Cells outside the map or with no tile data get `COST_BLOCKED`.
-    pub fn build(
-        cells: &[MapCell],
-        lookup: Option<&TilesetLookup>,
-        speed_type: SpeedType,
-        map_width: u16,
-        map_height: u16,
-    ) -> Self {
-        let size: usize = map_width as usize * map_height as usize;
-        let mut costs: Vec<u8> = vec![COST_BLOCKED; size];
-
-        for cell in cells {
-            if cell.tile_index < 0 {
-                continue;
-            }
-            if cell.rx >= map_width || cell.ry >= map_height {
-                continue;
-            }
-            let tile_id: u16 = if cell.tile_index == 0xFFFF {
-                0
-            } else {
-                cell.tile_index as u16
-            };
-
-            let is_water: bool = lookup.map_or(false, |l| l.is_water(tile_id));
-            let is_cliff: bool = lookup.map_or(false, |l| l.is_cliff(tile_id));
-            let set_name: Option<&str> = lookup.and_then(|l| l.set_name(tile_id));
-            let is_rough: bool = set_name
-                .map(|n| n.to_ascii_lowercase().contains("rough"))
-                .unwrap_or(false);
-            let is_road: bool = set_name
-                .map(|n| {
-                    let lower = n.to_ascii_lowercase();
-                    lower.contains("road") || lower.contains("pavement")
-                })
-                .unwrap_or(false);
-
-            let cost: u8 = classify_terrain_cost(speed_type, is_water, is_cliff, is_rough, is_road);
-            let idx: usize = cell.ry as usize * map_width as usize + cell.rx as usize;
-            costs[idx] = cost;
-        }
-
-        Self {
-            costs,
-            width: map_width,
-            height: map_height,
-        }
-    }
-
     /// Build a terrain cost grid from resolved terrain metadata.
     ///
     /// Uses INI speed costs as the primary terrain check (from rules.ini land-type
@@ -108,14 +54,18 @@ impl TerrainCostGrid {
             if idx >= costs.len() {
                 continue;
             }
-            let hard_blocked =
-                cell.is_cliff_like || cell.overlay_blocks || cell.terrain_object_blocks;
+            let ramp_passable = cell.canonical_ramp.is_some();
+            let hard_blocked = (cell.is_cliff_like && !ramp_passable)
+                || cell.overlay_blocks
+                || cell.terrain_object_blocks;
             // Bridge deck overrides underlying terrain (water/cliff) for ground units.
             // Units walk on the bridge surface, not the terrain below.
             let cost = if cell.has_bridge_deck && !cell.overlay_blocks {
                 COST_NORMAL
             } else if hard_blocked {
                 COST_BLOCKED
+            } else if ramp_passable {
+                COST_NORMAL
             } else if let Some(resolved) = cell.speed_costs.cost_for_speed_type(speed_type) {
                 // INI speed costs are the primary source — they come from rules.ini
                 // [Clear], [Rough], [Tiberium], etc. sections and encode the actual
@@ -334,6 +284,27 @@ mod tests {
         assert_eq!(track.cost_at(0, 1), COST_BLOCKED);
         assert_eq!(hover.cost_at(0, 1), COST_NORMAL);
         assert_eq!(hover.cost_at(1, 1), COST_BLOCKED);
+    }
+
+    #[test]
+    fn test_canonical_ramp_is_not_blocked_by_cliff_like_rock_land() {
+        use crate::map::resolved_terrain::RampDirection;
+        use crate::sim::pathfinding::passability::LandType;
+        let terrain = ResolvedTerrainGrid::from_cells(
+            1,
+            1,
+            vec![ResolvedTerrainCell {
+                is_cliff_like: true,
+                land_type: LandType::Rock.as_index(),
+                canonical_ramp: Some(RampDirection::North),
+                ground_walk_blocked: false,
+                build_blocked: true,
+                ..make_resolved_cell(0, 0)
+            }],
+        );
+        let track = TerrainCostGrid::from_resolved_terrain(&terrain, SpeedType::Track);
+
+        assert_eq!(track.cost_at(0, 0), COST_NORMAL);
     }
 
     fn make_resolved_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
