@@ -29,7 +29,7 @@ Offer known old and new rts feautures never seen before to enhance the cnc ra2 e
 
 ## Current Status
  
-**Early development** — Work is focused on the core engine. Approximately 20% complete.
+**Early development** — Work is focused on the core engine. Approximately 27% complete.
 
 
 ## Requirements
