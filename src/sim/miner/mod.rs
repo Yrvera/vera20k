@@ -295,6 +295,36 @@ pub struct Miner {
     /// Stock Mission_Enter retry duration (`MissionClass +0xD0`), in frames.
     #[serde(default)]
     pub dock_enter_retry_duration: u8,
+    /// MissionClass +0xC8 for queued mission 0x10 (`Unload`).
+    #[serde(default)]
+    pub mission_deploy_start_frame: Option<u32>,
+    /// MissionClass +0xD0 for queued mission 0x10 (`Unload`).
+    #[serde(default)]
+    pub mission_deploy_duration: u8,
+    /// Unit+0x6D1 unload-active latch.
+    #[serde(default)]
+    pub unload_active: bool,
+    /// Unit+0xF8 dump accumulator.
+    #[serde(default)]
+    pub unload_accumulator: i32,
+    /// Unit+0xFC timer-fired marker.
+    #[serde(default)]
+    pub unload_timer_fired: bool,
+    /// Unit+0x100 timer-cluster start frame.
+    #[serde(default)]
+    pub unload_cluster_start_frame: Option<u32>,
+    /// Unit+0x104 opaque timer-cluster scratch.
+    #[serde(default)]
+    pub unload_cluster_scratch: i32,
+    /// Unit+0x108 timer-cluster duration.
+    #[serde(default)]
+    pub unload_cluster_duration: u32,
+    /// Unit+0x10C timer-cluster repeat interval / active flag.
+    #[serde(default)]
+    pub unload_cluster_repeat: u32,
+    /// Unit+0x110 accumulator increment step. Constructor default is 1.
+    #[serde(default = "default_unload_accumulator_step")]
+    pub unload_accumulator_step: i32,
     /// Sim ticks remaining in legacy `DepositCooldown` save states.
     /// Stock unload completion now reaches Departing directly from the
     /// empty-slot dump gate, so new unloads should leave this at 0.
@@ -350,6 +380,16 @@ impl Miner {
             dock_pivot_facing: None,
             dock_enter_retry_start_frame: None,
             dock_enter_retry_duration: 0,
+            mission_deploy_start_frame: None,
+            mission_deploy_duration: 0,
+            unload_active: false,
+            unload_accumulator: 0,
+            unload_timer_fired: false,
+            unload_cluster_start_frame: None,
+            unload_cluster_scratch: 0,
+            unload_cluster_duration: 0,
+            unload_cluster_repeat: 0,
+            unload_accumulator_step: default_unload_accumulator_step(),
             deposit_cooldown_ticks: 0,
             exit_cell: None,
         }
@@ -374,6 +414,10 @@ impl Miner {
     pub fn cargo_value(&self) -> u32 {
         self.cargo.iter().map(|b| b.value as u32).sum()
     }
+}
+
+fn default_unload_accumulator_step() -> i32 {
+    1
 }
 
 /// Determine the miner chassis from parsed rules data.

@@ -164,13 +164,25 @@ fn spawn_refinery(sim: &mut Simulation, sid: u64, rx: u16, ry: u16) {
         false,
     );
     sim.entities.insert(ge);
+    occupy_structure_cells(sim, sid, rx, ry, 4, 3);
     if sim.next_stable_entity_id <= sid {
         sim.next_stable_entity_id = sid + 1;
     }
 }
 
 fn spawn_structure(sim: &mut Simulation, sid: u64, type_id: &str, rx: u16, ry: u16) {
-    let owner_id = sim.interner.intern("Americans");
+    spawn_structure_owned(sim, sid, type_id, "Americans", rx, ry);
+}
+
+fn spawn_structure_owned(
+    sim: &mut Simulation,
+    sid: u64,
+    type_id: &str,
+    owner: &str,
+    rx: u16,
+    ry: u16,
+) {
+    let owner_id = sim.interner.intern(owner);
     let type_id_interned = sim.interner.intern(type_id);
     let ge = GameEntity::new(
         sid,
@@ -190,8 +202,31 @@ fn spawn_structure(sim: &mut Simulation, sid: u64, type_id: &str, rx: u16, ry: u
         false,
     );
     sim.entities.insert(ge);
+    occupy_structure_cells(sim, sid, rx, ry, 1, 1);
     if sim.next_stable_entity_id <= sid {
         sim.next_stable_entity_id = sid + 1;
+    }
+}
+
+fn occupy_structure_cells(
+    sim: &mut Simulation,
+    sid: u64,
+    rx: u16,
+    ry: u16,
+    width: u16,
+    height: u16,
+) {
+    for y in ry..ry.saturating_add(height) {
+        for x in rx..rx.saturating_add(width) {
+            sim.occupancy.add(
+                x,
+                y,
+                sid,
+                MovementLayer::Ground,
+                None,
+                CellListInsertion::AppendBuilding,
+            );
+        }
     }
 }
 
@@ -3976,19 +4011,23 @@ fn linked_to_pivoting_then_unloading_on_pad_arrival() {
             RefineryDockPhase::Unloading,
             "Pivoting must transition to Unloading once facing reaches 0x40",
         );
-        assert_eq!(
-            m.unload_timer,
-            (config.unload_tick_interval as i16) - 10,
-            "unload_timer should be seeded one decrement step below the full \
-             interval so the first slot drain fires exactly 15 ticks after \
-             Pivoting → Unloading (matches gamemd dump-tick gate at \
-             HarvesterDumpRate × 900 = 14.4 frames)",
+        assert_eq!(m.unload_timer, 0, "Plan C does not preload unload_timer");
+        assert!(m.unload_active, "unload-active latch should be set");
+        assert_eq!(m.unload_accumulator, 0);
+        assert_eq!(m.unload_cluster_start_frame, Some(sim.binary_frame));
+        assert_eq!(m.unload_cluster_duration, 1);
+        assert_eq!(m.unload_cluster_repeat, 1);
+        assert_eq!(m.unload_accumulator_step, 1);
+        assert!(
+            (14..=16).contains(&m.mission_deploy_duration),
+            "accepted unload-start should schedule stock 14..16 frames, got {}",
+            m.mission_deploy_duration
         );
 
         let entity = sim.entities.get(miner_id).expect("entity");
         assert_eq!(
             entity.facing, 0x40,
-            "facing must snap exactly to 0x40 once the pivot completes",
+            "pre-aligned facing should remain unchanged; unload-start must not snap it",
         );
         assert!(
             entity.facing_target.is_none(),
@@ -4003,7 +4042,14 @@ fn linked_to_pivoting_then_unloading_on_pad_arrival() {
             .iter()
             .filter(|e| matches!(e, SimSoundEvent::DockDeploy { building_id: 2 }))
             .count();
-        assert_eq!(dock_deploy_count, 1);
+        assert_eq!(
+            dock_deploy_count, 0,
+            "stock unload-start emits no DockDeploy"
+        );
+        assert!(
+            !sim.production.dock_reservations.is_on_pad(2, miner_id),
+            "stock zero-link unload must not set physical on_pad"
+        );
     }
 }
 
@@ -4037,6 +4083,7 @@ fn pivoting_phase_smoothly_rotates_to_east() {
     sim.production.dock_reservations.try_reserve(2, miner_id);
 
     let initial_facing = sim.entities.get(miner_id).expect("entity").facing;
+    let rng_before = sim.rng.state();
     assert_eq!(initial_facing, 0);
 
     // The first direct tick initializes the FacingClass timer and samples its
@@ -4046,26 +4093,26 @@ fn pivoting_phase_smoothly_rotates_to_east() {
     {
         let entity = sim.entities.get(miner_id).expect("entity");
         let m = entity.miner.as_ref().expect("miner");
-        assert!(
-            entity.facing > 0 && entity.facing < 0x40,
-            "facing must advance toward 0x40 but stay short, got {:#x}",
-            entity.facing,
+        assert_eq!(
+            entity.facing, initial_facing,
+            "dock facing timer must not write visible body facing"
         );
         assert_eq!(m.dock_phase, RefineryDockPhase::Pivoting);
         assert_eq!(m.unload_timer, 0, "timer must not seed mid-pivot");
         assert_eq!(entity.facing_target, Some(0x40));
         assert!(m.dock_pivot_facing.is_some());
+        assert_eq!(m.mission_deploy_duration, 5);
+        assert_eq!(m.mission_deploy_start_frame, Some(sim.binary_frame));
+        assert_eq!(sim.rng.state(), rng_before, "facing wait consumes no RNG");
     }
 
     tick_miners_n(&mut sim, &rules, 1);
     {
         let entity = sim.entities.get(miner_id).expect("entity");
         let m = entity.miner.as_ref().expect("miner");
-        assert!(
-            entity.facing > 0 && entity.facing < 0x40,
-            "facing must advance toward 0x40 but stay short of target after \
-             one binary-frame step, got {:#x}",
-            entity.facing,
+        assert_eq!(
+            entity.facing, initial_facing,
+            "passive mission delay must not advance visible facing"
         );
         assert_eq!(m.dock_phase, RefineryDockPhase::Pivoting);
         assert_eq!(m.unload_timer, 0, "timer must not seed mid-pivot");
@@ -4091,13 +4138,13 @@ fn pivoting_phase_smoothly_rotates_to_east() {
         "pivot must reach Unloading within 128 ticks (took {})",
         ticks_until_done,
     );
-    assert_eq!(entity.facing, 0x40, "facing must snap exactly to 0x40");
-    assert!(entity.facing_target.is_none());
     assert_eq!(
-        m.unload_timer,
-        (config.unload_tick_interval as i16) - 10,
-        "unload_timer must be seeded on the same tick the pivot completes",
+        entity.facing, initial_facing,
+        "dock mission must not force the visible body facing to East"
     );
+    assert!(entity.facing_target.is_none());
+    assert_eq!(m.unload_timer, 0);
+    assert!(m.unload_active);
 }
 
 /// End-to-end dock cycle: war miner forced-returns to a refinery, drives onto
@@ -4511,23 +4558,27 @@ fn dock_first_slot_drain_waits_one_unload_interval() {
     // Ticks 3..16 (14 unloading ticks): timer decrements past zero, no drain
     // yet (decrement-then-check returns before drain on the tick the
     // timer crosses ≤ 0).
-    let pre_drop_ticks = 14usize;
-    tick_miners_n(&mut sim, &rules, pre_drop_ticks);
-    assert_eq!(
-        get_miner(&sim, miner_id).cargo.len(),
-        initial_cargo,
-        "no drain should fire in the first {} unloading ticks",
-        pre_drop_ticks,
-    );
+    let mut drain_tick = None;
+    for elapsed in 1..=20 {
+        tick_miners_n(&mut sim, &rules, 1);
+        if get_miner(&sim, miner_id).cargo.is_empty() {
+            drain_tick = Some(elapsed);
+            break;
+        }
+        assert_eq!(
+            get_miner(&sim, miner_id).cargo.len(),
+            initial_cargo,
+            "no partial drain should fire before the slot dump gate"
+        );
+    }
 
-    // Next tick (the 15th unloading tick after the pivot completed): the
-    // entire ore slot drains in one shot.
-    tick_miners_n(&mut sim, &rules, 1);
-    assert_eq!(
-        get_miner(&sim, miner_id).cargo.len(),
-        0,
-        "entire ore slot drains on the 15th unloading tick after the pivot",
+    let drain_tick = drain_tick.expect("slot should drain within Plan C timing window");
+    assert!(
+        (15..=16).contains(&drain_tick),
+        "Plan C first slot drain should be gated by accepted mission delay plus accumulator threshold, got tick {}",
+        drain_tick
     );
+    assert_eq!(get_miner(&sim, miner_id).cargo.len(), 0);
 }
 
 /// Verify the empty-slot gate + stock state-4 dock release:
@@ -4544,9 +4595,11 @@ fn empty_unload_gate_releases_dock_on_next_stock_state4_handoff() {
 
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
     spawn_refinery(&mut sim, 2, 10, 10);
+    let unloading_type = sim.interner.intern("HORV");
 
     {
         let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        entity.display_type_override = Some(unloading_type);
         let miner = entity.miner.as_mut().expect("miner component");
         // Empty cargo + zero timer → first tick hits the cargo-empty branch.
         miner.cargo.clear();
@@ -4591,6 +4644,216 @@ fn empty_unload_gate_releases_dock_on_next_stock_state4_handoff() {
         !sim.production.dock_reservations.is_occupied(2),
         "dock must be released by the stock state-4 handoff",
     );
+    assert!(
+        !m.unload_active,
+        "state-4 handoff must clear the Unit+0x6D1 unload-active latch",
+    );
+    let entity = sim.entities.get(miner_id).expect("miner entity");
+    assert_eq!(
+        entity.display_type_override, None,
+        "state-4 handoff must clear the unloading display override",
+    );
+}
+
+#[test]
+fn unload_state3_uses_west_cell_building_not_reserved_refinery() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
+    spawn_refinery(&mut sim, 2, 30, 30);
+    spawn_structure_owned(&mut sim, 3, "GAREFN", "Germans", 12, 11);
+
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.cargo.push(CargoBale {
+            resource_type: ResourceType::Ore,
+            value: 100,
+        });
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::Unloading;
+        miner.reserved_refinery = Some(2);
+        miner.unload_timer = 0;
+    }
+    assert!(sim.production.dock_reservations.try_reserve(2, miner_id));
+
+    let americans_before = credits_for_owner(&sim, "Americans");
+    let germans_before = credits_for_owner(&sim, "Germans");
+    tick_miners_n(&mut sim, &rules, 1);
+
+    assert_eq!(credits_for_owner(&sim, "Americans"), americans_before);
+    assert_eq!(credits_for_owner(&sim, "Germans") - germans_before, 100);
+    assert_eq!(sim.bale_events.len(), 1);
+    assert_eq!(sim.bale_events[0].building_id, 3);
+}
+
+#[test]
+fn missing_west_cell_building_does_not_credit_or_emit_deposit_event() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
+    spawn_refinery(&mut sim, 2, 30, 30);
+
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.cargo.push(CargoBale {
+            resource_type: ResourceType::Ore,
+            value: 100,
+        });
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::Unloading;
+        miner.reserved_refinery = Some(2);
+        miner.unload_timer = 0;
+    }
+    assert!(sim.production.dock_reservations.try_reserve(2, miner_id));
+
+    let credits_before = credits_for_owner(&sim, "Americans");
+    tick_miners_n(&mut sim, &rules, 1);
+
+    let miner = get_miner(&sim, miner_id);
+    assert_eq!(miner.cargo.len(), 1);
+    assert_eq!(credits_for_owner(&sim, "Americans"), credits_before);
+    assert!(sim.bale_events.is_empty());
+}
+
+#[test]
+fn state3_null_lookup_preserves_full_cargo_and_returns_to_refinery_selection() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
+    spawn_refinery(&mut sim, 2, 30, 30);
+
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        for _ in 0..miner.capacity_bales {
+            miner.cargo.push(CargoBale {
+                resource_type: ResourceType::Ore,
+                value: 25,
+            });
+        }
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::Unloading;
+        miner.reserved_refinery = Some(2);
+        miner.unload_timer = 0;
+    }
+    assert!(sim.production.dock_reservations.try_reserve(2, miner_id));
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    let miner = get_miner(&sim, miner_id);
+    assert_eq!(miner.cargo.len(), miner.capacity_bales as usize);
+    assert_eq!(miner.state, MinerState::ReturnToRefinery);
+    assert_eq!(miner.dock_phase, RefineryDockPhase::Approach);
+    assert_eq!(miner.reserved_refinery, None);
+}
+
+#[test]
+fn state3_null_lookup_does_not_clear_unload_display_latch() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
+    spawn_refinery(&mut sim, 2, 30, 30);
+    let unloading_type = sim.interner.intern("HORV");
+
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        entity.display_type_override = Some(unloading_type);
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.cargo.push(CargoBale {
+            resource_type: ResourceType::Ore,
+            value: 100,
+        });
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::Unloading;
+        miner.reserved_refinery = Some(2);
+        miner.unload_timer = 0;
+    }
+    assert!(sim.production.dock_reservations.try_reserve(2, miner_id));
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    let entity = sim.entities.get(miner_id).expect("miner entity");
+    let miner = entity.miner.as_ref().expect("miner component");
+    assert!(
+        miner.unload_active,
+        "state-3 null lookup must preserve the Unit+0x6D1 unload-active latch",
+    );
+    assert_eq!(entity.display_type_override, Some(unloading_type));
+}
+
+#[test]
+fn reserved_refinery_released_but_not_used_for_unload_credit_identity() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
+    spawn_refinery(&mut sim, 2, 30, 30);
+    spawn_structure_owned(&mut sim, 3, "GAREFN", "Germans", 12, 11);
+
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.cargo.push(CargoBale {
+            resource_type: ResourceType::Ore,
+            value: 100,
+        });
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::Unloading;
+        miner.reserved_refinery = Some(2);
+        miner.unload_timer = 0;
+    }
+    assert!(sim.production.dock_reservations.try_reserve(2, miner_id));
+    sim.production
+        .dock_reservations
+        .mark_contact_entered(2, miner_id);
+    sim.production.dock_reservations.link_on_pad(2, miner_id);
+
+    let germans_before = credits_for_owner(&sim, "Germans");
+    tick_miners_n(&mut sim, &rules, 18);
+
+    assert_eq!(credits_for_owner(&sim, "Germans") - germans_before, 100);
+    assert_eq!(sim.bale_events[0].building_id, 3);
+    assert!(!sim.production.dock_reservations.has_contact(2, miner_id));
+    assert!(!sim.production.dock_reservations.is_on_pad(2, miner_id));
+    assert_eq!(get_miner(&sim, miner_id).reserved_refinery, None);
+}
+
+#[test]
+fn state4_refinery_yes_guard_is_caller_owned() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
+    spawn_refinery(&mut sim, 2, 30, 30);
+    spawn_structure(&mut sim, 3, "GAPOWR", 12, 11);
+
+    {
+        let entity = sim.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.cargo.clear();
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::Departing;
+        miner.reserved_refinery = Some(2);
+    }
+    assert!(sim.production.dock_reservations.try_reserve(2, miner_id));
+    sim.production
+        .dock_reservations
+        .mark_contact_entered(2, miner_id);
+    sim.production.dock_reservations.link_on_pad(2, miner_id);
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    let miner = get_miner(&sim, miner_id);
+    assert_eq!(miner.state, MinerState::SearchOre);
+    assert_eq!(miner.reserved_refinery, None);
+    assert!(!sim.production.dock_reservations.has_contact(2, miner_id));
+    assert!(!sim.production.dock_reservations.is_on_pad(2, miner_id));
 }
 
 #[test]
@@ -5007,8 +5270,9 @@ fn dying_refinery_aborts_unload_without_credit_or_stuck_visual() {
 
     let entity = sim.entities.get(miner_id).expect("miner entity");
     assert_eq!(
-        entity.display_type_override, None,
-        "unloading display override must be cleared on abort",
+        entity.display_type_override,
+        Some(unloading_type),
+        "state-3 missing-building cleanup preserves the unload display latch until state-4/abort cleanup owns it",
     );
     assert_eq!(
         entity.facing_target, None,
