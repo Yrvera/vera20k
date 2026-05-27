@@ -110,6 +110,65 @@ impl CanEnterLayerContext {
     }
 }
 
+/// Read-only cell-entry oracle row preserving gamemd's split layer decisions.
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+pub struct CellEntryOracleRow {
+    pub target: (u16, u16),
+    pub terrain_layer: MovementLayer,
+    pub object_list_layer: MovementLayer,
+    pub occupancy_bits_layer: MovementLayer,
+    pub terrain_result: String,
+    pub yr_code: Option<u8>,
+    pub occupancy_ground_present: bool,
+    pub occupancy_bridge_present: bool,
+}
+
+impl CellEntryOracleRow {
+    pub fn from_terrain_result(
+        target: (u16, u16),
+        layers: CanEnterLayerContext,
+        result: TerrainCheckResult,
+        occupancy: &OccupancyGrid,
+    ) -> Self {
+        let occ = occupancy.get(target.0, target.1);
+        Self {
+            target,
+            terrain_layer: layers.terrain_layer,
+            object_list_layer: layers.object_list_layer,
+            occupancy_bits_layer: layers.occupancy_bits_layer,
+            terrain_result: format!("{:?}", result),
+            yr_code: match result {
+                TerrainCheckResult::Clear => Some(CellEntryResult::Clear.yr_code()),
+                TerrainCheckResult::Impassable => Some(CellEntryResult::Impassable.yr_code()),
+                TerrainCheckResult::NeedsBlockerCheck => None,
+            },
+            occupancy_ground_present: occ.is_some_and(|o| !o.is_empty_on(MovementLayer::Ground)),
+            occupancy_bridge_present: occ.is_some_and(|o| !o.is_empty_on(MovementLayer::Bridge)),
+        }
+    }
+}
+
+/// Opt-in diagnostic wrapper for Phase-1 cell entry checks.
+pub fn check_terrain_with_layers_oracle(
+    target: (u16, u16),
+    layers: CanEnterLayerContext,
+    mover_category: EntityCategory,
+    path_grid: Option<&PathGrid>,
+    cost_grid: Option<&TerrainCostGrid>,
+    occupancy: &OccupancyGrid,
+) -> (TerrainCheckResult, CellEntryOracleRow) {
+    let result = check_terrain_with_layers(
+        target,
+        layers,
+        mover_category,
+        path_grid,
+        cost_grid,
+        occupancy,
+    );
+    let row = CellEntryOracleRow::from_terrain_result(target, layers, result, occupancy);
+    (result, row)
+}
+
 /// Vehicle-only building entry branch that may reach the live row helper.
 ///
 /// InfantryClass::Can_Enter_Cell does not use the radio/contact or
@@ -865,6 +924,33 @@ mod tests {
         );
 
         assert_eq!(result, TerrainCheckResult::NeedsBlockerCheck);
+    }
+
+    #[test]
+    fn oracle_wrapper_preserves_split_layers_and_yr_code() {
+        use crate::sim::pathfinding::PathGrid;
+
+        let mut grid = PathGrid::new(10, 10);
+        grid.set_cell_for_test(5, 5, 0, true, true);
+        let layers = CanEnterLayerContext {
+            terrain_layer: MovementLayer::Bridge,
+            object_list_layer: MovementLayer::Bridge,
+            occupancy_bits_layer: MovementLayer::Ground,
+        };
+        let (result, row) = check_terrain_with_layers_oracle(
+            (5, 5),
+            layers,
+            EntityCategory::Unit,
+            Some(&grid),
+            None,
+            &empty_occ(),
+        );
+
+        assert_eq!(result, TerrainCheckResult::Clear);
+        assert_eq!(row.terrain_layer, MovementLayer::Bridge);
+        assert_eq!(row.object_list_layer, MovementLayer::Bridge);
+        assert_eq!(row.occupancy_bits_layer, MovementLayer::Ground);
+        assert_eq!(row.yr_code, Some(0));
     }
 
     #[test]

@@ -56,6 +56,33 @@ fn test_path_grid_set_blocked() {
 }
 
 #[test]
+fn astar_trace_sink_records_rejected_and_accepted_candidates() {
+    let mut grid = PathGrid::test_all_passable(3, 1);
+    grid.set_blocked(1, 0, true);
+    let collector = AStarTraceCollector::new();
+    let path = astar_search(
+        &grid,
+        (0, 0),
+        MovementLayer::Ground,
+        (2, 0),
+        &AStarOptions {
+            trace_sink: Some(&collector),
+            trace_search_id: 42,
+            ..Default::default()
+        },
+    );
+
+    assert!(path.is_none());
+    let steps = collector.steps();
+    assert!(steps.iter().any(|step| step.search_id == 42));
+    assert!(
+        steps
+            .iter()
+            .any(|step| step.rejected_reason == Some("walkability_blocked"))
+    );
+}
+
+#[test]
 fn test_euclidean_heuristic_cardinal() {
     // Pure cardinal: sqrt(25) * 1000 = 5000.
     let h: i32 = euclidean_heuristic(0, 0, 5, 0);

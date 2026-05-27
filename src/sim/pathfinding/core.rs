@@ -610,6 +610,60 @@ pub(crate) fn can_enter_layer_context(
     }
 }
 
+/// Read-only A* candidate row emitted by the bridge oracle diagnostics.
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+pub struct BridgeOracleAStarStep {
+    pub search_id: u64,
+    pub expansion_index: u64,
+    pub current_cell: (u16, u16),
+    pub candidate_cell: (u16, u16),
+    pub direction: u8,
+    pub incoming_path_height: u8,
+    pub current_layer: MovementLayer,
+    pub initial_candidate_closed_list_layer: MovementLayer,
+    pub computed_neighbor_height: u8,
+    pub bridge_traversal_ran: bool,
+    pub bridge_traversal_allowed: Option<bool>,
+    pub bridge_traversal_path_height: Option<i16>,
+    pub bridge_traversal_force_bridge_list: Option<bool>,
+    pub final_candidate_layer: MovementLayer,
+    pub terrain_layer: MovementLayer,
+    pub object_list_layer: MovementLayer,
+    pub occupancy_bits_layer: MovementLayer,
+    pub walkable: Option<bool>,
+    pub terrain_cost: Option<u8>,
+    pub edge_cost: Option<i32>,
+    pub carried_height: u8,
+    pub rejected_reason: Option<&'static str>,
+}
+
+/// Sink for opt-in A* oracle rows. Normal pathfinding passes no sink.
+pub trait AStarTraceSink {
+    fn emit_astar_step(&self, step: BridgeOracleAStarStep);
+}
+
+/// In-memory trace collector for tests and one-shot diagnostics.
+#[derive(Debug, Default)]
+pub struct AStarTraceCollector {
+    steps: RefCell<Vec<BridgeOracleAStarStep>>,
+}
+
+impl AStarTraceCollector {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn steps(&self) -> Vec<BridgeOracleAStarStep> {
+        self.steps.borrow().clone()
+    }
+}
+
+impl AStarTraceSink for AStarTraceCollector {
+    fn emit_astar_step(&self, step: BridgeOracleAStarStep) {
+        self.steps.borrow_mut().push(step);
+    }
+}
+
 fn encode_from(cell_idx: usize, on_bridge: bool) -> usize {
     cell_idx | if on_bridge { CAME_FROM_BRIDGE } else { 0 }
 }
@@ -672,6 +726,24 @@ pub struct AStarOptions<'a> {
     pub resolved_terrain: Option<&'a ResolvedTerrainGrid>,
     /// Infantry units always target ground level at bridge destinations.
     pub is_infantry: bool,
+    /// Optional bridge-oracle A* row sink. Inert unless explicitly supplied.
+    pub trace_sink: Option<&'a dyn AStarTraceSink>,
+    /// Search id copied into trace rows so comparator matching never guesses.
+    pub trace_search_id: u64,
+    /// Optional route/window filter for trace rows.
+    pub trace_window: Option<&'a BTreeSet<(u16, u16)>>,
+}
+
+fn emit_astar_trace(options: &AStarOptions<'_>, step: BridgeOracleAStarStep) {
+    let Some(sink) = options.trace_sink else {
+        return;
+    };
+    if let Some(window) = options.trace_window {
+        if !window.contains(&step.current_cell) && !window.contains(&step.candidate_cell) {
+            return;
+        }
+    }
+    sink.emit_astar_step(step);
 }
 
 /// Reconstruct a layered path from dual came_from arrays.
@@ -845,6 +917,7 @@ pub fn astar_search(
         }));
 
         let mut nodes_evaluated: u32 = 0;
+        let mut expansion_index: u64 = 0;
 
         // --- Main loop ---
         while let Some(Reverse(current)) = open.pop() {
@@ -914,6 +987,8 @@ pub fn astar_search(
                 }
                 let nx = nx_i as u16;
                 let ny = ny_i as u16;
+                let this_expansion_index = expansion_index;
+                expansion_index = expansion_index.saturating_add(1);
                 let n_idx = ny as usize * w + nx as usize;
                 let neighbor_cell = grid.cell(nx, ny).unwrap_or(&DEFAULT_BLOCKED_CELL);
 
@@ -924,10 +999,39 @@ pub fn astar_search(
                 } else {
                     MovementLayer::Ground
                 });
+                let initial_candidate_layer = layer_context.terrain_layer;
 
                 // Compute what height the NEW node carries forward (separate computation)
                 let neighbor_height =
                     compute_neighbor_height(current.height, cur_cell, neighbor_cell);
+                let mut trace_step = BridgeOracleAStarStep {
+                    search_id: options.trace_search_id,
+                    expansion_index: this_expansion_index,
+                    current_cell: (cx, cy),
+                    candidate_cell: (nx, ny),
+                    direction: dir_index as u8,
+                    incoming_path_height: current.height,
+                    current_layer: if on_bridge {
+                        MovementLayer::Bridge
+                    } else {
+                        MovementLayer::Ground
+                    },
+                    initial_candidate_closed_list_layer: initial_candidate_layer,
+                    computed_neighbor_height: neighbor_height,
+                    bridge_traversal_ran: false,
+                    bridge_traversal_allowed: None,
+                    bridge_traversal_path_height: None,
+                    bridge_traversal_force_bridge_list: None,
+                    final_candidate_layer: initial_candidate_layer,
+                    terrain_layer: layer_context.terrain_layer,
+                    object_list_layer: layer_context.object_list_layer,
+                    occupancy_bits_layer: layer_context.occupancy_bits_layer,
+                    walkable: None,
+                    terrain_cost: None,
+                    edge_cost: None,
+                    carried_height: neighbor_height,
+                    rejected_reason: None,
+                };
 
                 // Height-diff legality gate. Diff-1 transitions require the LOWER cell to
                 // be a canonical ramp (slope_type != 0); diff ∈ {±2, ±3, ±4, ±5+} is
@@ -946,7 +1050,14 @@ pub fn astar_search(
                             parent: Some((cur_cell, (cx, cy))),
                         },
                     );
+                    trace_step.bridge_traversal_ran = true;
+                    trace_step.bridge_traversal_allowed = Some(bridge_traversal.allowed);
+                    trace_step.bridge_traversal_path_height = Some(bridge_traversal.path_height);
+                    trace_step.bridge_traversal_force_bridge_list =
+                        Some(bridge_traversal.force_bridge_list);
                     if !bridge_traversal.allowed {
+                        trace_step.rejected_reason = Some("bridge_traversal_blocked");
+                        emit_astar_trace(options, trace_step);
                         continue;
                     }
                     if bridge_traversal.force_bridge_list {
@@ -966,6 +1077,9 @@ pub fn astar_search(
                         neighbor_cell,
                         bridge_traversal.path_height,
                     );
+                    trace_step.terrain_layer = layer_context.terrain_layer;
+                    trace_step.object_list_layer = layer_context.object_list_layer;
+                    trace_step.occupancy_bits_layer = layer_context.occupancy_bits_layer;
                 } else {
                     let layer = if neighbor_use_bridge {
                         MovementLayer::Bridge
@@ -985,9 +1099,16 @@ pub fn astar_search(
                         _ => false,
                     };
                     if !legal {
+                        trace_step.rejected_reason = Some("height_diff_illegal");
+                        emit_astar_trace(options, trace_step);
                         continue;
                     }
                 }
+                trace_step.final_candidate_layer = if neighbor_use_bridge {
+                    MovementLayer::Bridge
+                } else {
+                    MovementLayer::Ground
+                };
 
                 // Closed check on appropriate list
                 // Binary `1.009` handling is an early closed-neighbor skip/fallback
@@ -995,9 +1116,13 @@ pub fn astar_search(
                 // cells without a dedicated parity fixture for the blocked-goal path.
                 if neighbor_use_bridge {
                     if bridge_closed[n_idx] {
+                        trace_step.rejected_reason = Some("bridge_closed");
+                        emit_astar_trace(options, trace_step);
                         continue;
                     }
                 } else if ground_closed[n_idx] {
+                    trace_step.rejected_reason = Some("ground_closed");
+                    emit_astar_trace(options, trace_step);
                     continue;
                 }
 
@@ -1022,6 +1147,7 @@ pub fn astar_search(
                         options.resolved_terrain,
                     )
                 };
+                trace_step.walkable = Some(neighbor_passable);
                 if !neighbor_passable {
                     // Near-miss goal fallback (0x0042a17d): if the impassable neighbor
                     // IS the goal cell and start/goal heights are close, accept the
@@ -1040,6 +1166,8 @@ pub fn astar_search(
                             w,
                         ));
                     }
+                    trace_step.rejected_reason = Some("walkability_blocked");
+                    emit_astar_trace(options, trace_step);
                     continue;
                 }
 
@@ -1058,6 +1186,8 @@ pub fn astar_search(
                     .flatten()
                     .any(|blocks| blocks.contains(&(nx, ny)));
                     if blocked_by_selected_layers {
+                        trace_step.rejected_reason = Some("entity_blocked");
+                        emit_astar_trace(options, trace_step);
                         continue;
                     }
                 }
@@ -1067,6 +1197,8 @@ pub fn astar_search(
                 // defer explicit tube scenarios until their hierarchy semantics are verified.
                 if let Some(gate) = options.hierarchy_gate {
                     if !gate.allows(nx, ny) {
+                        trace_step.rejected_reason = Some("hierarchy_gate_blocked");
+                        emit_astar_trace(options, trace_step);
                         continue;
                     }
                 }
@@ -1075,6 +1207,8 @@ pub fn astar_search(
                 if let Some((zone_map, allowed)) = options.corridor {
                     let cell_zone = zone_map.zone_at(nx, ny, MovementLayer::Ground);
                     if cell_zone != ZONE_INVALID && !allowed.contains(&cell_zone) {
+                        trace_step.rejected_reason = Some("zone_corridor_blocked");
+                        emit_astar_trace(options, trace_step);
                         continue;
                     }
                 }
@@ -1089,7 +1223,10 @@ pub fn astar_search(
                 } else {
                     100 // no cost grid: uniform cost
                 };
+                trace_step.terrain_cost = Some(terrain_cost);
                 if terrain_cost == 0 {
+                    trace_step.rejected_reason = Some("terrain_cost_blocked");
+                    emit_astar_trace(options, trace_step);
                     continue;
                 }
 
@@ -1103,6 +1240,8 @@ pub fn astar_search(
                     if !grid.is_walkable_on_layer(nx, cy, MovementLayer::Bridge)
                         || !grid.is_walkable_on_layer(cx, ny, MovementLayer::Bridge)
                     {
+                        trace_step.rejected_reason = Some("bridge_diagonal_corner_blocked");
+                        emit_astar_trace(options, trace_step);
                         continue;
                     }
                 }
@@ -1143,6 +1282,7 @@ pub fn astar_search(
                 }
 
                 step_cost = apply_search_marker_cost(step_cost, options.marker_overlay, (nx, ny));
+                trace_step.edge_cost = Some(step_cost);
 
                 // Direction tie-breaker
                 let tentative_g = current.g_cost + step_cost + DIR_TIEBREAK[dir_index];
@@ -1170,6 +1310,10 @@ pub fn astar_search(
                     {
                         progress.maybe_advance(gate.level0_zones.zone_at(nx, ny), (nx, ny));
                     }
+                    emit_astar_trace(options, trace_step);
+                } else {
+                    trace_step.rejected_reason = Some("not_better_g_cost");
+                    emit_astar_trace(options, trace_step);
                 }
             }
 
