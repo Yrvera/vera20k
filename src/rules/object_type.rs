@@ -455,6 +455,11 @@ pub struct ObjectType {
     /// What this building undeploys into (e.g., GACNST UndeploysInto=AMCV).
     /// Parsed from rules.ini `UndeploysInto=`. Used for ConYard→MCV sell-back.
     pub undeploys_into: Option<String>,
+    /// Raw 8-bit facing required before a unit can deploy into this building type.
+    /// Parsed from building-side `DeployFacing=` as INI value << 5; default is 0x80.
+    pub deploy_facing: u8,
+    /// Whether this building is a construction yard. Enables ConYard-only MCV repack gates.
+    pub construction_yard: bool,
 
     /// Whether this unit can be crushed by vehicles with Crusher movement zones.
     /// Default: false for all types. Parsed from `Crushable=` in rules.ini.
@@ -1011,6 +1016,11 @@ impl ObjectType {
 
             deploys_into: section.get("DeploysInto").map(|s| s.to_string()),
             undeploys_into: section.get("UndeploysInto").map(|s| s.to_string()),
+            deploy_facing: section
+                .get_i32("DeployFacing")
+                .map(|v| (v.clamp(0, 7) as u8) << 5)
+                .unwrap_or(0x80),
+            construction_yard: section.get_bool("ConstructionYard").unwrap_or(false),
             factory: section.get("Factory").and_then(FactoryType::from_ini),
             cloning: section.get_bool("Cloning").unwrap_or(false),
             exit_coord: parse_exit_coord(section.get("ExitCoord")),
@@ -1484,6 +1494,24 @@ mod tests {
             ObjectType::from_ini_section("GACNST", section, ObjectCategory::Building);
         assert_eq!(obj.undeploys_into, Some("AMCV".to_string()));
         assert_eq!(obj.deploys_into, None);
+    }
+
+    #[test]
+    fn parse_construction_yard_and_deploy_facing() {
+        let ini: IniFile = IniFile::from_str("[GACNST]\nConstructionYard=yes\nDeployFacing=2\n");
+        let section: &IniSection = ini.section("GACNST").unwrap();
+        let obj = ObjectType::from_ini_section("GACNST", section, ObjectCategory::Building);
+        assert!(obj.construction_yard);
+        assert_eq!(obj.deploy_facing, 0x40);
+
+        let default_ini = IniFile::from_str("[GAPOWR]\n");
+        let default_obj = ObjectType::from_ini_section(
+            "GAPOWR",
+            default_ini.section("GAPOWR").unwrap(),
+            ObjectCategory::Building,
+        );
+        assert!(!default_obj.construction_yard);
+        assert_eq!(default_obj.deploy_facing, 0x80);
     }
 
     #[test]

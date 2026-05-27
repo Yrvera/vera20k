@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use super::Simulation;
+use super::{SimSoundEvent, Simulation};
 use crate::map::entities::{EntityCategory, MapEntity};
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::object_type::ObjectCategory;
@@ -21,7 +21,9 @@ use crate::sim::game_entity::GameEntity;
 use crate::sim::miner::{Miner, MinerConfig, miner_kind_for_object};
 use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
 use crate::sim::occupancy::CellListInsertion;
-use crate::sim::production::{building_base_foundation_cells, foundation_dimensions};
+use crate::sim::production::{
+    ProductionCategory, building_base_foundation_cells, foundation_dimensions,
+};
 use crate::sim::vision::MAX_SIGHT_RANGE;
 use crate::util::fixed_math::SimFixed;
 
@@ -622,7 +624,7 @@ impl Simulation {
         &mut self,
         stable_id: u64,
         rules: &RuleSet,
-        height_map: &BTreeMap<(u16, u16), u8>,
+        _height_map: &BTreeMap<(u16, u16), u8>,
     ) -> bool {
         // Read deploy data from EntityStore before mutating.
         let deploy_data = self.entities.get(stable_id).and_then(|entity| {
@@ -640,11 +642,24 @@ impl Simulation {
                 spawn_ry,
                 entity.position.z,
                 yard_type.clone(),
+                yard_obj.deploy_facing,
                 entity.selected,
                 yard_obj.foundation.clone(),
+                entity.facing,
             ))
         });
-        let Some((owner_id, rx, ry, z, yard_type, was_selected, foundation)) = deploy_data else {
+        let Some((
+            owner_id,
+            rx,
+            ry,
+            z,
+            yard_type,
+            deploy_facing,
+            was_selected,
+            foundation,
+            source_facing,
+        )) = deploy_data
+        else {
             return false;
         };
 
@@ -673,6 +688,8 @@ impl Simulation {
                 });
                 if occupied {
                     log::info!("MCV deploy blocked: structure at ({},{})", cell_x, cell_y,);
+                    self.sound_events
+                        .push(SimSoundEvent::CannotDeployHere { owner: owner_id });
                     return false;
                 }
                 // Check terrain build-blocked.
@@ -681,9 +698,20 @@ impl Simulation {
                     .unwrap_or(false)
                 {
                     log::info!("MCV deploy blocked: terrain at ({},{})", cell_x, cell_y,);
+                    self.sound_events
+                        .push(SimSoundEvent::CannotDeployHere { owner: owner_id });
                     return false;
                 }
             }
+        }
+
+        if source_facing != deploy_facing {
+            if let Some(entity) = self.entities.get_mut(stable_id) {
+                entity.facing_target = Some(deploy_facing);
+                entity.facing = deploy_facing;
+                entity.movement_target = None;
+            }
+            return true;
         }
 
         // Despawn the MCV.
@@ -716,11 +744,7 @@ impl Simulation {
     pub(crate) fn undeploy_building(&mut self, stable_id: u64, rules: &RuleSet) -> bool {
         // Read undeploy data before mutating.
         let undeploy_data = self.entities.get(stable_id).and_then(|entity| {
-            if entity.category != EntityCategory::Structure {
-                return None;
-            }
-            // Can't undeploy while still constructing or already undeploying.
-            if entity.building_up.is_some() || entity.building_down.is_some() {
+            if !self.can_undeploy_building_runtime(stable_id, rules) {
                 return None;
             }
             let type_str = self.interner.resolve(entity.type_ref);
@@ -756,6 +780,66 @@ impl Simulation {
             });
         }
         true
+    }
+
+    pub(crate) fn should_show_undeploy_building_command(
+        &self,
+        stable_id: u64,
+        rules: &RuleSet,
+    ) -> bool {
+        let Some(entity) = self.entities.get(stable_id) else {
+            return false;
+        };
+        let Some(obj) = rules.object(self.interner.resolve(entity.type_ref)) else {
+            return false;
+        };
+        if obj.construction_yard && self.owner_has_building_production_busy(entity.owner) {
+            return false;
+        }
+        self.can_undeploy_building_runtime(stable_id, rules)
+    }
+
+    pub(crate) fn can_undeploy_building_runtime(&self, stable_id: u64, rules: &RuleSet) -> bool {
+        let Some(entity) = self.entities.get(stable_id) else {
+            return false;
+        };
+        if entity.category != EntityCategory::Structure
+            || entity.building_up.is_some()
+            || entity.building_down.is_some()
+        {
+            return false;
+        }
+        let type_str = self.interner.resolve(entity.type_ref);
+        let Some(obj) = rules.object(type_str) else {
+            return false;
+        };
+        let Some(target) = obj.undeploys_into.as_deref() else {
+            return false;
+        };
+        if rules.object(target).is_none() {
+            return false;
+        }
+        if !obj.construction_yard {
+            return true;
+        }
+        self.construction_yard_redeploy_core_gate(entity)
+    }
+
+    fn construction_yard_redeploy_core_gate(&self, entity: &GameEntity) -> bool {
+        if !self.game_options.mcv_redeploy || !entity.radio_contacts.is_empty() {
+            return false;
+        }
+        self.houses
+            .get(&entity.owner)
+            .is_some_and(|house| house.is_human)
+    }
+
+    fn owner_has_building_production_busy(&self, owner: crate::sim::intern::InternedId) -> bool {
+        self.production
+            .queues_by_owner
+            .get(&owner)
+            .and_then(|queues| queues.get(&ProductionCategory::Building))
+            .is_some_and(|queue| !queue.is_empty())
     }
 
     /// Find the next available infantry sub-cell at a given cell position.

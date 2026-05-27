@@ -196,6 +196,11 @@ fn capability_cursor_for_hover(
                         }
                     }
                 }
+                if rules.is_some_and(|rules| {
+                    sim.should_show_undeploy_building_command(hover.stable_id, rules)
+                }) {
+                    return CursorFeedbackKind::Deploy;
+                }
             }
         }
     }

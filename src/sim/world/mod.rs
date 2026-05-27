@@ -20,6 +20,7 @@ mod world_spawn;
 use std::collections::BTreeMap;
 
 use crate::map::actions::ActionMap;
+use crate::map::bridge_facts::{BRIDGE_FLAG_DESTROYED_OR_RAMP, BRIDGE_FLAG_STRUCTURAL};
 use crate::map::entities::EntityCategory;
 use crate::map::events::EventMap;
 use crate::map::houses::HouseAllianceMap;
@@ -134,6 +135,10 @@ pub enum SimSoundEvent {
     BuildingComplete { owner: InternedId },
     /// A unit finished training — play EVA "Unit ready".
     UnitComplete { owner: InternedId },
+    /// A deploy command failed target placement validation.
+    /// App layer gates this to the local human player and plays
+    /// `EVA_CannotDeployHere`.
+    CannotDeployHere { owner: InternedId },
     /// A chrono teleport happened — play the resolved warp sound at this position.
     /// Sim emits two of these per warp: one at the source cell with the unit's
     /// `ChronoOutSound=`, one at the destination cell with the unit's
@@ -815,6 +820,14 @@ impl Simulation {
     pub(crate) fn effective_build_blocked(&self, rx: u16, ry: u16) -> Option<bool> {
         let terrain = self.resolved_terrain.as_ref()?;
         let cell = terrain.cell(rx, ry)?;
+        if cell.bridge_facts.has_flag(BRIDGE_FLAG_STRUCTURAL)
+            || cell.bridge_facts.has_flag(BRIDGE_FLAG_DESTROYED_OR_RAMP)
+            || cell.overlay_blocks
+            || cell.terrain_object_blocks
+            || cell.slope_type != 0
+        {
+            return Some(true);
+        }
         if let Some(bridge) = self
             .bridge_state
             .as_ref()

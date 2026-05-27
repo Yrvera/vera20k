@@ -100,6 +100,12 @@ pub enum GameSoundEvent {
         sound_id: String,
     },
 
+    /// EVA cue: a deploy command failed placement validation.
+    CannotDeployHere {
+        /// sound.ini ID for the EVA announcement.
+        sound_id: String,
+    },
+
     /// EVA cue: a friendly building was garrisoned (first occupant entered).
     StructureGarrisoned {
         /// sound.ini ID for the EVA announcement.
@@ -196,6 +202,7 @@ impl GameSoundEvent {
             | Self::ChronoTeleport { sound_id, .. }
             | Self::BuildingReady { sound_id }
             | Self::UnitReady { sound_id }
+            | Self::CannotDeployHere { sound_id }
             | Self::UiSound { sound_id }
             | Self::StructureGarrisoned { sound_id }
             | Self::StructureAbandoned { sound_id }
@@ -276,6 +283,15 @@ mod tests {
             sound_id: "ceva107".to_string(),
         };
         assert_eq!(evt.sound_id(), "ceva107");
+        assert_eq!(evt.screen_pos(), None);
+    }
+
+    #[test]
+    fn test_cannot_deploy_here_sound_id_accessor() {
+        let evt = GameSoundEvent::CannotDeployHere {
+            sound_id: "ceva063".to_string(),
+        };
+        assert_eq!(evt.sound_id(), "ceva063");
         assert_eq!(evt.screen_pos(), None);
     }
 

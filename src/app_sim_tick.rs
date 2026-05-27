@@ -433,6 +433,25 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                             .to_string();
                         GameSoundEvent::UnitReady { sound_id }
                     }
+                    SimSoundEvent::CannotDeployHere { owner } => {
+                        let owner_str = sim.interner.resolve(owner);
+                        if !local_owner_name
+                            .as_deref()
+                            .map_or(false, |l| l.eq_ignore_ascii_case(owner_str))
+                        {
+                            continue;
+                        }
+                        let faction = crate::app_building_anim::eva_faction_key(
+                            owner_str,
+                            &state.house_roster,
+                        );
+                        let sound_id = state
+                            .eva_registry
+                            .get("EVA_CannotDeployHere", faction)
+                            .unwrap_or("ceva063")
+                            .to_string();
+                        GameSoundEvent::CannotDeployHere { sound_id }
+                    }
                     SimSoundEvent::StructureGarrisoned { owner } => {
                         // EVA cue: only play for the local human player.
                         let owner_str = sim.interner.resolve(owner);

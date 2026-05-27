@@ -395,7 +395,7 @@ fn combat_test_rules() -> RuleSet {
          [E1]\nStrength=125\nArmor=flak\nSpeed=4\nPrimary=M60\n\n\
          [MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\nPrimary=105mm\n\n\
          [AMCV]\nStrength=450\nArmor=heavy\nSpeed=5\nPrimary=none\nDeploysInto=GACNST\n\n\
-         [GACNST]\nStrength=1000\nArmor=wood\nFoundation=4x3\nUndeploysInto=AMCV\n\n\
+         [GACNST]\nStrength=1000\nArmor=wood\nFoundation=4x3\nConstructionYard=yes\nUndeploysInto=AMCV\n\n\
          [M60]\nDamage=25\nROF=20\nRange=5\nWarhead=SA\n\n\
          [105mm]\nDamage=65\nROF=50\nRange=6\nWarhead=AP\n\n\
          [SA]\nVerses=100%,100%,100%,90%,70%,25%,100%,25%,25%,0%,0%\n\n\
@@ -416,7 +416,7 @@ fn short_game_defeat_test_rules() -> RuleSet {
          [AMCV]\nStrength=450\nArmor=heavy\nSpeed=5\nDeploysInto=GACNST\n\n\
          [SMCV]\nStrength=450\nArmor=heavy\nSpeed=5\nDeploysInto=GACNST\n\n\
          [PCV]\nStrength=450\nArmor=heavy\nSpeed=5\nDeploysInto=GACNST\n\n\
-         [GACNST]\nStrength=1000\nArmor=wood\nFoundation=4x3\nUndeploysInto=AMCV\n",
+         [GACNST]\nStrength=1000\nArmor=wood\nFoundation=4x3\nConstructionYard=yes\nUndeploysInto=AMCV\n",
     );
     RuleSet::from_ini(&ini).expect("short game defeat test rules should parse")
 }
@@ -2135,7 +2135,7 @@ fn test_deploy_mcv_replaces_vehicle_with_conyard() {
     let rules = combat_test_rules();
     let heights = empty_heights();
     let mcv = sim
-        .spawn_object("AMCV", "Americans", 20, 22, 64, &rules, &heights)
+        .spawn_object("AMCV", "Americans", 20, 22, 128, &rules, &heights)
         .expect("spawn MCV");
     if let Some(e) = sim.entities.get_mut(mcv) {
         e.selected = true;
@@ -2802,10 +2802,11 @@ fn test_undeploy_conyard_spawns_mcv() {
     let mut sim = Simulation::new();
     let rules = combat_test_rules();
     let heights = empty_heights();
+    insert_house_with_counts(&mut sim, "Americans", 0, 0);
 
     // First deploy an MCV to get a ConYard.
     let mcv = sim
-        .spawn_object("AMCV", "Americans", 20, 22, 64, &rules, &heights)
+        .spawn_object("AMCV", "Americans", 20, 22, 128, &rules, &heights)
         .expect("spawn MCV");
     if let Some(e) = sim.entities.get_mut(mcv) {
         e.selected = true;
@@ -2866,11 +2867,11 @@ fn test_undeploy_conyard_spawns_mcv() {
         .map(|e| (e.position.rx, e.position.ry, e.selected))
         .collect();
     assert_eq!(mcvs.len(), 1, "Exactly one MCV should exist after undeploy");
-    let (rx, ry, selected) = &mcvs[0];
+    let (rx, ry, selected) = mcvs[0];
     // Origin was (19, 21) from deploy, foundation 4x3, center = (19+2, 21+1) = (21, 22).
-    assert_eq!(*rx, 21, "MCV should spawn at foundation center X");
-    assert_eq!(*ry, 22, "MCV should spawn at foundation center Y");
-    assert!(*selected, "MCV should inherit selection from ConYard");
+    assert_eq!(rx, 21, "MCV should spawn at foundation center X");
+    assert_eq!(ry, 22, "MCV should spawn at foundation center Y");
+    assert!(selected, "MCV should inherit selection from ConYard");
 }
 
 #[test]

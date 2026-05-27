@@ -191,7 +191,12 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                                     Some(Command::UnloadPassengers {
                                         transport_id: target.stable_id,
                                     })
-                                } else if obj.map_or(false, |o| o.undeploys_into.is_some()) {
+                                } else if state.rules.as_ref().is_some_and(|rules| {
+                                    sim.should_show_undeploy_building_command(
+                                        target.stable_id,
+                                        rules,
+                                    )
+                                }) {
                                     Some(Command::UndeployBuilding {
                                         entity_id: target.stable_id,
                                     })
@@ -456,7 +461,12 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                                         transport_id: target.stable_id,
                                     })
                                 // ConYard → MCV
-                                } else if obj.map_or(false, |o| o.undeploys_into.is_some()) {
+                                } else if state.rules.as_ref().is_some_and(|rules| {
+                                    sim.should_show_undeploy_building_command(
+                                        target.stable_id,
+                                        rules,
+                                    )
+                                }) {
                                     Some(Command::UndeployBuilding {
                                         entity_id: target.stable_id,
                                     })

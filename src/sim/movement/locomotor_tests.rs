@@ -133,6 +133,8 @@ fn make_obj(locomotor: LocomotorKind, category: ObjectCategory) -> ObjectType {
         jumpjet_params: None,
         deploys_into: None,
         undeploys_into: None,
+        deploy_facing: 0x80,
+        construction_yard: false,
         factory: None,
         cloning: false,
         exit_coord: None,

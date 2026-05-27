@@ -590,7 +590,15 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
                     &state.audio_indices,
                 );
             }
-            // EVA events — temporarily disabled.
+            // Deploy failure EVA is active; other EVA events remain disabled below.
+            GameSoundEvent::CannotDeployHere { .. } => {
+                sfx.play_voice_sound(
+                    event.sound_id(),
+                    &state.sound_registry,
+                    assets,
+                    &state.audio_indices,
+                );
+            }
             GameSoundEvent::BuildingReady { .. }
             | GameSoundEvent::UnitReady { .. }
             | GameSoundEvent::StructureGarrisoned { .. }
