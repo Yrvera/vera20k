@@ -63,9 +63,12 @@ const SHELL_EDIT_SELECTION_DEPTH: f32 = 0.00040;
 const SHELL_EDIT_CARET_DEPTH: f32 = 0.00037;
 const SHELL_DROPDOWN_DEPTH: f32 = 0.00034;
 const SHELL_DROPDOWN_TEXT_DEPTH: f32 = 0.00029;
-// Owner-draw button dark text color 0x00000C05 decoded as RGB.
+// Owner-draw dark text color 0x00000C05 decoded as RGB; kept for regression
+// tests that ensure Skirmish shell labels do not use this source accidentally.
+#[cfg(test)]
 const SHELL_BUTTON_TEXT_RGB_00000C05: [f32; 3] = [5.0 / 255.0, 12.0 / 255.0, 0.0];
 const SHELL_LABEL_TEXT_RGB: [f32; 3] = [1.0, 1.0, 0.0];
+const SHELL_DISABLED_TEXT_RGB_FROM_PACKED_0000009F: [f32; 3] = [0x9F as f32 / 255.0, 0.0, 0.0];
 const RANDMAP_SENTINEL_FILE_NAME: &str = "RandMap.Sed";
 const RANDMAP_PREVIEW_FILE_NAME: &str = "RandMap.img";
 const COMBODROPWIN_TEXT_INSET_X: i32 = 3;
@@ -1261,15 +1264,16 @@ mod tests {
     }
 
     #[test]
-    fn skirmish_dropdown_side_text_clip_uses_combodropwin_client_width_minus_20() {
+    fn skirmish_dropdown_side_text_uses_row_rect_and_separate_fit_width() {
         let content = RectPx::new(287, 84, 97, 161);
 
         let text = combo_dropdown_text_rect_for_current_renderer(content, 0);
 
         assert_eq!(text.x, content.x + COMBODROPWIN_TEXT_INSET_X);
         assert_eq!(text.y, content.y);
-        assert_eq!(text.w, 77);
+        assert_eq!(text.w, 94);
         assert_eq!(text.h, COMBO_DROPDOWN_ROW_H as u32);
+        assert_eq!(combo_dropdown_text_fit_width(content), 77);
     }
 
     #[test]
@@ -1350,6 +1354,10 @@ mod tests {
             [5.0 / 255.0, 12.0 / 255.0, 0.0]
         );
         assert_eq!(SHELL_LABEL_TEXT_RGB, [1.0, 1.0, 0.0]);
+        assert_eq!(
+            SHELL_DISABLED_TEXT_RGB_FROM_PACKED_0000009F,
+            [0x9F as f32 / 255.0, 0.0, 0.0]
+        );
     }
 
     #[test]

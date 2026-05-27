@@ -1244,6 +1244,68 @@ fn inactive_ai_team_default_follows_allies_allowed() {
 }
 
 #[test]
+fn default_inactive_ai_rows_use_native_combo_defaults() {
+    let shell = SkirmishShellState::default();
+
+    for opponent in shell.opponents.iter().skip(1) {
+        assert_eq!(opponent.row_type, SkirmishAiRowType::None);
+        assert!(!opponent.enabled);
+        assert!(opponent.country_random);
+        assert!(!opponent.color_claimed);
+        assert_eq!(opponent.start_position, StartPosition::Auto);
+        assert_eq!(opponent.team, 3);
+    }
+}
+
+#[test]
+fn ai_type_none_applies_inactive_combo_defaults() {
+    let mut shell = SkirmishShellState::default();
+    shell.opponents[0].row_type = SkirmishAiRowType::Hard;
+    shell.opponents[0].enabled = true;
+    shell.opponents[0].country_random = false;
+    shell.opponents[0].country = SkirmishCountry::Yuri;
+    shell.opponents[0].color_index = 4;
+    shell.opponents[0].color_claimed = true;
+    shell.opponents[0].start_position = StartPosition::Position(5);
+    shell.opponents[0].team = 1;
+
+    apply_combo_selection_for_test(
+        &mut shell,
+        SkirmishComboId::AiType(0),
+        SkirmishComboItem::AiType(SkirmishAiRowType::None),
+    );
+
+    assert_eq!(shell.opponents[0].row_type, SkirmishAiRowType::None);
+    assert!(!shell.opponents[0].enabled);
+    assert!(shell.opponents[0].country_random);
+    assert_eq!(shell.opponents[0].country, SkirmishCountry::Yuri);
+    assert_eq!(shell.opponents[0].color_index, 4);
+    assert!(!shell.opponents[0].color_claimed);
+    assert_eq!(shell.opponents[0].start_position, StartPosition::Auto);
+    assert_eq!(shell.opponents[0].team, 3);
+}
+
+#[test]
+fn ai_type_none_uses_ffa_inactive_team_default() {
+    let mut shell = SkirmishShellState {
+        selected_mode_id: 2,
+        ..Default::default()
+    };
+    repair_teams_for_selected_mode(&mut shell, &stock_skirmish_modes());
+    shell.opponents[0].row_type = SkirmishAiRowType::Hard;
+    shell.opponents[0].enabled = true;
+    shell.opponents[0].team = 1;
+
+    apply_combo_selection_for_test(
+        &mut shell,
+        SkirmishComboId::AiType(0),
+        SkirmishComboItem::AiType(SkirmishAiRowType::None),
+    );
+
+    assert_eq!(shell.opponents[0].team, -2);
+}
+
+#[test]
 fn explicit_team_values_survive_mode_repair() {
     let mut shell = SkirmishShellState {
         selected_mode_id: 9,
