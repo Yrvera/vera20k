@@ -42,18 +42,20 @@ pub(crate) fn random_offset_at_radius(rng: &mut SimRng, magnitude_leptons: i32) 
     (dx as i32, dy as i32)
 }
 
-use std::collections::BTreeMap;
-
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::art_data::ArtRegistry;
 use crate::rules::smudge_type::SmudgeTypeRegistry;
 use crate::sim::combat::SmudgeSpawnRequest;
 use crate::sim::intern::StringInterner;
-use crate::sim::miner::{ResourceNode, reduce_tiberium};
+use crate::sim::miner::ResourceNode;
 use crate::sim::occupancy::OccupancyGrid;
+use crate::sim::ore_growth::OreGrowthState;
 use crate::sim::overlay_grid::OverlayGrid;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::smudge_grid::{SmudgeGrid, SmudgeKind};
+use crate::sim::tiberium::{ReduceTiberiumContext, reduce_tiberium};
+
+use std::collections::BTreeMap;
 
 /// Strict altitude gate from ledger #3: smudges only spawn when the anim
 /// is within 30 leptons of the ground.
@@ -71,6 +73,41 @@ const BUILDING_SMUDGE_DMG: i32 = 100;
 /// `SpawnSurvivors` call to `FUN_0049F420(magnitude=0x80, flag=0)`.
 const SURVIVOR_OFFSET_MAGNITUDE: i32 = 0x80;
 
+/// Mutable ore/tiberium state touched by crater smudge dispatch.
+pub struct SmudgeTiberiumContext<'a> {
+    pub resource_nodes: &'a mut BTreeMap<(u16, u16), ResourceNode>,
+    pub overlay_grid: &'a mut OverlayGrid,
+    pub ore_growth_state: &'a mut OreGrowthState,
+    pub radar_dirty_cells: &'a mut Vec<(u16, u16)>,
+    pub radar_dirty_generation: &'a mut u64,
+    pub tactical_dirty_cells: &'a mut Vec<(u16, u16)>,
+}
+
+impl SmudgeTiberiumContext<'_> {
+    fn overlay_grid(&self) -> &OverlayGrid {
+        self.overlay_grid
+    }
+
+    fn reduce(&mut self, cell: (u16, u16), amount: u16) {
+        let mut ctx = ReduceTiberiumContext {
+            resource_nodes: &mut *self.resource_nodes,
+            overlay_grid: Some(&mut *self.overlay_grid),
+            ore_growth_state: &mut *self.ore_growth_state,
+            overlay_registry: None,
+            tiberium_types: None,
+            resolved_terrain: None,
+            source_object_cells: None,
+            rng: None,
+            binary_frame: 0,
+            spread_enabled: false,
+            radar_dirty_cells: Some(&mut *self.radar_dirty_cells),
+            radar_dirty_generation: Some(&mut *self.radar_dirty_generation),
+            tactical_dirty_cells: Some(&mut *self.tactical_dirty_cells),
+        };
+        reduce_tiberium(&mut ctx, cell, amount);
+    }
+}
+
 /// Try to dispatch a smudge for an animation that just spawned at `coord`.
 ///
 /// Reads scorch/crater/force_big_craters bools from the AnimType's ArtEntry.
@@ -85,10 +122,9 @@ pub fn try_dispatch_anim_smudge(
     coord: SimCoord,
     ground_z: i32,
     smudge_grid: &mut SmudgeGrid,
-    overlay_grid: &OverlayGrid,
     occupancy: &OccupancyGrid,
     terrain: &ResolvedTerrainGrid,
-    resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
+    tiberium: &mut SmudgeTiberiumContext<'_>,
     rng: &mut SimRng,
 ) {
     let Some(entry) = art.get(anim_name) else {
@@ -112,7 +148,7 @@ pub fn try_dispatch_anim_smudge(
                 false,
                 smudge_types,
                 terrain,
-                overlay_grid,
+                tiberium.overlay_grid(),
                 occupancy,
                 rng,
             );
@@ -127,7 +163,7 @@ pub fn try_dispatch_anim_smudge(
                 false,
                 smudge_types,
                 terrain,
-                overlay_grid,
+                tiberium.overlay_grid(),
                 occupancy,
                 rng,
             );
@@ -137,7 +173,7 @@ pub fn try_dispatch_anim_smudge(
     if entry.crater {
         let rx = (coord.x >> 8).clamp(0, smudge_grid.width() as i32 - 1) as u16;
         let ry = (coord.y >> 8).clamp(0, smudge_grid.height() as i32 - 1) as u16;
-        reduce_tiberium(resource_nodes, (rx, ry), CRATER_ORE_REDUCTION);
+        tiberium.reduce((rx, ry), CRATER_ORE_REDUCTION);
 
         if entry.force_big_craters {
             smudge_grid.try_place(
@@ -148,7 +184,7 @@ pub fn try_dispatch_anim_smudge(
                 true,
                 smudge_types,
                 terrain,
-                overlay_grid,
+                tiberium.overlay_grid(),
                 occupancy,
                 rng,
             );
@@ -161,7 +197,7 @@ pub fn try_dispatch_anim_smudge(
                 false,
                 smudge_types,
                 terrain,
-                overlay_grid,
+                tiberium.overlay_grid(),
                 occupancy,
                 rng,
             );
@@ -189,10 +225,9 @@ pub fn try_dispatch_building_destruction_smudges(
     art: &ArtRegistry,
     smudge_types: &SmudgeTypeRegistry,
     smudge_grid: &mut SmudgeGrid,
-    overlay_grid: &OverlayGrid,
     occupancy: &OccupancyGrid,
     terrain: &ResolvedTerrainGrid,
-    resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
+    tiberium: &mut SmudgeTiberiumContext<'_>,
     rng: &mut SimRng,
 ) {
     let _ = art;
@@ -218,12 +253,12 @@ pub fn try_dispatch_building_destruction_smudges(
             true,
             smudge_types,
             terrain,
-            overlay_grid,
+            tiberium.overlay_grid(),
             occupancy,
             rng,
         );
     } else {
-        reduce_tiberium(resource_nodes, (rx, ry), CRATER_ORE_REDUCTION);
+        tiberium.reduce((rx, ry), CRATER_ORE_REDUCTION);
         smudge_grid.try_place(
             SmudgeKind::Crater,
             center,
@@ -232,7 +267,7 @@ pub fn try_dispatch_building_destruction_smudges(
             true,
             smudge_types,
             terrain,
-            overlay_grid,
+            tiberium.overlay_grid(),
             occupancy,
             rng,
         );
@@ -248,11 +283,10 @@ pub fn try_dispatch_building_survivor_smudges(
     art: &ArtRegistry,
     smudge_types: &SmudgeTypeRegistry,
     smudge_grid: &mut SmudgeGrid,
-    overlay_grid: &OverlayGrid,
     occupancy: &OccupancyGrid,
     terrain: &ResolvedTerrainGrid,
     path_grid: &PathGrid,
-    resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
+    tiberium: &mut SmudgeTiberiumContext<'_>,
     rng: &mut SimRng,
 ) {
     let _ = art;
@@ -282,12 +316,12 @@ pub fn try_dispatch_building_survivor_smudges(
                 false,
                 smudge_types,
                 terrain,
-                overlay_grid,
+                tiberium.overlay_grid(),
                 occupancy,
                 rng,
             );
         } else {
-            reduce_tiberium(resource_nodes, (snap_rx, snap_ry), CRATER_ORE_REDUCTION);
+            tiberium.reduce((snap_rx, snap_ry), CRATER_ORE_REDUCTION);
             smudge_grid.try_place(
                 SmudgeKind::Crater,
                 coord,
@@ -296,7 +330,7 @@ pub fn try_dispatch_building_survivor_smudges(
                 false,
                 smudge_types,
                 terrain,
-                overlay_grid,
+                tiberium.overlay_grid(),
                 occupancy,
                 rng,
             );
@@ -318,11 +352,10 @@ pub fn drain_smudge_spawn_requests(
     smudge_types: &SmudgeTypeRegistry,
     interner: &StringInterner,
     smudge_grid: &mut SmudgeGrid,
-    overlay_grid: &OverlayGrid,
     occupancy: &OccupancyGrid,
     terrain: &ResolvedTerrainGrid,
     path_grid: &PathGrid,
-    resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
+    tiberium: &mut SmudgeTiberiumContext<'_>,
     rng: &mut SimRng,
 ) {
     for req in requests {
@@ -353,10 +386,9 @@ pub fn drain_smudge_spawn_requests(
                     coord,
                     ground_z,
                     smudge_grid,
-                    overlay_grid,
                     occupancy,
                     terrain,
-                    resource_nodes,
+                    tiberium,
                     rng,
                 );
             }
@@ -376,10 +408,9 @@ pub fn drain_smudge_spawn_requests(
                     art,
                     smudge_types,
                     smudge_grid,
-                    overlay_grid,
                     occupancy,
                     terrain,
-                    resource_nodes,
+                    tiberium,
                     rng,
                 );
             }
@@ -389,11 +420,10 @@ pub fn drain_smudge_spawn_requests(
                     art,
                     smudge_types,
                     smudge_grid,
-                    overlay_grid,
                     occupancy,
                     terrain,
                     path_grid,
-                    resource_nodes,
+                    tiberium,
                     rng,
                 );
             }
@@ -467,6 +497,25 @@ mod tests {
 mod dispatch_tests {
     use super::*;
     use crate::map::resolved_terrain::ResolvedTerrainCell;
+    use crate::sim::ore_growth::OreGrowthState;
+
+    fn tiberium_ctx<'a>(
+        resource_nodes: &'a mut BTreeMap<(u16, u16), ResourceNode>,
+        overlay_grid: &'a mut OverlayGrid,
+        ore_growth_state: &'a mut OreGrowthState,
+        radar_dirty_cells: &'a mut Vec<(u16, u16)>,
+        radar_dirty_generation: &'a mut u64,
+        tactical_dirty_cells: &'a mut Vec<(u16, u16)>,
+    ) -> SmudgeTiberiumContext<'a> {
+        SmudgeTiberiumContext {
+            resource_nodes,
+            overlay_grid,
+            ore_growth_state,
+            radar_dirty_cells,
+            radar_dirty_generation,
+            tactical_dirty_cells,
+        }
+    }
 
     fn make_art(scorch: bool, crater: bool, force_big: bool) -> ArtRegistry {
         let scorch_str = if scorch { "yes" } else { "no" };
@@ -563,15 +612,27 @@ mod dispatch_tests {
         let smudge_reg = make_smudge_registry();
         let mut grid = SmudgeGrid::new(8, 8);
         let terrain = flat_terrain(8, 8);
-        let overlay = OverlayGrid::new(8, 8);
+        let mut overlay = OverlayGrid::new(8, 8);
         let occupancy = OccupancyGrid::new();
         let mut rng = SimRng::new(1);
         let mut nodes = BTreeMap::new();
+        let mut growth = OreGrowthState::new(8, 8);
+        let mut radar_dirty = Vec::new();
+        let mut radar_generation = 0;
+        let mut tactical_dirty = Vec::new();
         let coord = SimCoord {
             x: 4 * 256 + 128,
             y: 4 * 256 + 128,
             z: 100,
         };
+        let mut tiberium = tiberium_ctx(
+            &mut nodes,
+            &mut overlay,
+            &mut growth,
+            &mut radar_dirty,
+            &mut radar_generation,
+            &mut tactical_dirty,
+        );
         try_dispatch_anim_smudge(
             &art,
             &smudge_reg,
@@ -579,10 +640,9 @@ mod dispatch_tests {
             coord,
             0,
             &mut grid,
-            &overlay,
             &occupancy,
             &terrain,
-            &mut nodes,
+            &mut tiberium,
             &mut rng,
         );
         assert!(grid.iter_occupied().count() == 0);
@@ -594,10 +654,22 @@ mod dispatch_tests {
         let smudge_reg = make_smudge_registry();
         let mut grid = SmudgeGrid::new(8, 8);
         let terrain = flat_terrain(8, 8);
-        let overlay = OverlayGrid::new(8, 8);
+        let mut overlay = OverlayGrid::new(8, 8);
         let occupancy = OccupancyGrid::new();
         let mut rng = SimRng::new(1);
         let mut nodes = BTreeMap::new();
+        let mut growth = OreGrowthState::new(8, 8);
+        let mut radar_dirty = Vec::new();
+        let mut radar_generation = 0;
+        let mut tactical_dirty = Vec::new();
+        let mut tiberium = tiberium_ctx(
+            &mut nodes,
+            &mut overlay,
+            &mut growth,
+            &mut radar_dirty,
+            &mut radar_generation,
+            &mut tactical_dirty,
+        );
         // z - ground_z = 30 exactly -> must FAIL (strict <)
         let coord = SimCoord {
             x: 4 * 256 + 128,
@@ -611,10 +683,9 @@ mod dispatch_tests {
             coord,
             0,
             &mut grid,
-            &overlay,
             &occupancy,
             &terrain,
-            &mut nodes,
+            &mut tiberium,
             &mut rng,
         );
         assert!(grid.iter_occupied().count() == 0);
@@ -631,10 +702,9 @@ mod dispatch_tests {
             coord,
             0,
             &mut grid,
-            &overlay,
             &occupancy,
             &terrain,
-            &mut nodes,
+            &mut tiberium,
             &mut rng,
         );
         assert_eq!(grid.iter_occupied().count(), 1);
@@ -653,10 +723,14 @@ mod dispatch_tests {
         let terrain = flat_terrain(8, 8);
         let mut overlay = OverlayGrid::new(8, 8);
         // Block placement by putting an overlay on the impact cell.
-        overlay.place_overlay(4, 4, 0, 0);
+        overlay.place_overlay(4, 4, 0, 10);
         let occupancy = OccupancyGrid::new();
         let mut rng = SimRng::new(1);
         let mut nodes = BTreeMap::new();
+        let mut growth = OreGrowthState::new(8, 8);
+        let mut radar_dirty = Vec::new();
+        let mut radar_generation = 0;
+        let mut tactical_dirty = Vec::new();
         nodes.insert(
             (4, 4),
             ResourceNode {
@@ -669,19 +743,28 @@ mod dispatch_tests {
             y: 4 * 256 + 128,
             z: 0,
         };
-        try_dispatch_anim_smudge(
-            &art,
-            &smudge_reg,
-            "ANIM",
-            coord,
-            0,
-            &mut grid,
-            &overlay,
-            &occupancy,
-            &terrain,
-            &mut nodes,
-            &mut rng,
-        );
+        {
+            let mut tiberium = tiberium_ctx(
+                &mut nodes,
+                &mut overlay,
+                &mut growth,
+                &mut radar_dirty,
+                &mut radar_generation,
+                &mut tactical_dirty,
+            );
+            try_dispatch_anim_smudge(
+                &art,
+                &smudge_reg,
+                "ANIM",
+                coord,
+                0,
+                &mut grid,
+                &occupancy,
+                &terrain,
+                &mut tiberium,
+                &mut rng,
+            );
+        }
         // Smudge NOT placed (overlay blocks) but ore reduced by 6 density levels.
         assert_eq!(grid.iter_occupied().count(), 0);
         assert_eq!(
@@ -696,10 +779,22 @@ mod dispatch_tests {
         let smudge_reg = make_smudge_registry();
         let mut grid = SmudgeGrid::new(8, 8);
         let terrain = flat_terrain(8, 8);
-        let overlay = OverlayGrid::new(8, 8);
+        let mut overlay = OverlayGrid::new(8, 8);
         let occupancy = OccupancyGrid::new();
         let mut rng = SimRng::new(1);
         let mut nodes = BTreeMap::new();
+        let mut growth = OreGrowthState::new(8, 8);
+        let mut radar_dirty = Vec::new();
+        let mut radar_generation = 0;
+        let mut tactical_dirty = Vec::new();
+        let mut tiberium = tiberium_ctx(
+            &mut nodes,
+            &mut overlay,
+            &mut growth,
+            &mut radar_dirty,
+            &mut radar_generation,
+            &mut tactical_dirty,
+        );
         let coord = SimCoord {
             x: 4 * 256 + 128,
             y: 4 * 256 + 128,
@@ -712,10 +807,9 @@ mod dispatch_tests {
             coord,
             0,
             &mut grid,
-            &overlay,
             &occupancy,
             &terrain,
-            &mut nodes,
+            &mut tiberium,
             &mut rng,
         );
         let placed = grid.cell(4, 4).type_id.unwrap();
@@ -735,10 +829,22 @@ mod dispatch_tests {
             let mut grid = SmudgeGrid::new(8, 8);
             let art = ArtRegistry::empty();
             let terrain = flat_terrain(8, 8);
-            let overlay = OverlayGrid::new(8, 8);
+            let mut overlay = OverlayGrid::new(8, 8);
             let occupancy = OccupancyGrid::new();
             let mut rng = SimRng::new(1);
             let mut nodes = BTreeMap::new();
+            let mut growth = OreGrowthState::new(8, 8);
+            let mut radar_dirty = Vec::new();
+            let mut radar_generation = 0;
+            let mut tactical_dirty = Vec::new();
+            let mut tiberium = tiberium_ctx(
+                &mut nodes,
+                &mut overlay,
+                &mut growth,
+                &mut radar_dirty,
+                &mut radar_generation,
+                &mut tactical_dirty,
+            );
             try_dispatch_building_destruction_smudges(
                 4,
                 4,
@@ -748,10 +854,9 @@ mod dispatch_tests {
                 &art,
                 &smudge_reg,
                 &mut grid,
-                &overlay,
                 &occupancy,
                 &terrain,
-                &mut nodes,
+                &mut tiberium,
                 &mut rng,
             );
             assert_eq!(grid.iter_occupied().count(), 0);
@@ -767,9 +872,21 @@ mod dispatch_tests {
             let mut grid = SmudgeGrid::new(8, 8);
             let art = ArtRegistry::empty();
             let terrain = flat_terrain(8, 8);
-            let overlay = OverlayGrid::new(8, 8);
+            let mut overlay = OverlayGrid::new(8, 8);
             let occupancy = OccupancyGrid::new();
             let mut nodes = BTreeMap::new();
+            let mut growth = OreGrowthState::new(8, 8);
+            let mut radar_dirty = Vec::new();
+            let mut radar_generation = 0;
+            let mut tactical_dirty = Vec::new();
+            let mut tiberium = tiberium_ctx(
+                &mut nodes,
+                &mut overlay,
+                &mut growth,
+                &mut radar_dirty,
+                &mut radar_generation,
+                &mut tactical_dirty,
+            );
 
             let mut rng_a = SimRng::new(42);
             try_dispatch_building_destruction_smudges(
@@ -781,10 +898,9 @@ mod dispatch_tests {
                 &art,
                 &smudge_reg,
                 &mut grid,
-                &overlay,
                 &occupancy,
                 &terrain,
-                &mut nodes,
+                &mut tiberium,
                 &mut rng_a,
             );
 

@@ -36,6 +36,22 @@ fn test_rules() -> RuleSet {
     RuleSet::from_ini(&ini).expect("test rules should parse")
 }
 
+fn building_damage_state_aoe_rules() -> RuleSet {
+    let ini: IniFile = IniFile::from_str(
+        "\
+[InfantryTypes]\n\n\
+[VehicleTypes]\n0=MTNK\n\n\
+[AircraftTypes]\n\n\
+[BuildingTypes]\n0=GAPOWR\n\n\
+[MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\nPrimary=105mm\n\n\
+[GAPOWR]\nStrength=100\nArmor=wood\n\n\
+[105mm]\nDamage=20\nROF=50\nRange=6\nWarhead=AP\n\n\
+[AP]\nCellSpread=1\nPercentAtMax=100\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,0%,0%\n\n\
+[AudioVisual]\nConditionYellow=50%\nConditionRed=25%\n",
+    );
+    RuleSet::from_ini(&ini).expect("building damage state AoE rules should parse")
+}
+
 fn infantry_fire_frame_rules() -> RuleSet {
     let rules_ini: IniFile = IniFile::from_str(
         "\
@@ -113,6 +129,21 @@ fn make_infantry_entity(id: u64, type_ref: &str, rx: u16, ry: u16, hp: u16) -> G
     e.animation = Some(Animation::new(SequenceKind::Stand));
     e.infantry = Some(crate::sim::game_entity::InfantryRuntime::new());
     e
+}
+
+fn make_structure_entity(
+    id: u64,
+    type_ref: &str,
+    rx: u16,
+    ry: u16,
+    current: u16,
+    max: u16,
+) -> GameEntity {
+    let mut entity = make_entity(id, type_ref, rx, ry, max);
+    entity.category = EntityCategory::Structure;
+    entity.is_voxel = false;
+    entity.health = Health { current, max };
+    entity
 }
 
 fn considered_aircraft_weapon_rules() -> RuleSet {
@@ -345,6 +376,90 @@ fn test_tick_combat_applies_damage() {
         target_health,
         300 - 48,
         "Should take 48 damage (65 * 75 / 100)"
+    );
+}
+
+#[test]
+fn combat_damage_crossing_condition_yellow_sets_building_damage_state() {
+    let rules = test_rules();
+    let mut store = EntityStore::new();
+    store.insert(make_entity(1, "MTNK", 5, 5, 300));
+    store.insert(make_structure_entity(2, "GAPOWR", 8, 5, 60, 100));
+    let mut interner = test_interner();
+    issue_attack_command(&mut store, 1, 2, None, &interner);
+
+    tick_combat(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        0,
+        100,
+        0,
+    );
+
+    assert!(
+        store
+            .get(2)
+            .expect("building survives")
+            .building_damage_state_active
+    );
+}
+
+#[test]
+fn combat_damage_above_condition_yellow_leaves_building_damage_state_false() {
+    let rules = test_rules();
+    let mut store = EntityStore::new();
+    store.insert(make_entity(1, "MTNK", 5, 5, 300));
+    store.insert(make_structure_entity(2, "GAPOWR", 8, 5, 100, 100));
+    let mut interner = test_interner();
+    issue_attack_command(&mut store, 1, 2, None, &interner);
+
+    tick_combat(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        0,
+        100,
+        0,
+    );
+
+    assert!(
+        !store
+            .get(2)
+            .expect("building survives")
+            .building_damage_state_active
+    );
+}
+
+#[test]
+fn aoe_damage_crossing_condition_yellow_sets_building_damage_state() {
+    let rules = building_damage_state_aoe_rules();
+    let mut store = EntityStore::new();
+    store.insert(make_entity(1, "MTNK", 5, 5, 300));
+    store.insert(make_structure_entity(2, "GAPOWR", 8, 5, 60, 100));
+    let mut interner = test_interner();
+    issue_attack_command(&mut store, 1, 2, None, &interner);
+
+    tick_combat(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        0,
+        100,
+        0,
+    );
+
+    assert!(
+        store
+            .get(2)
+            .expect("building survives")
+            .building_damage_state_active
     );
 }
 

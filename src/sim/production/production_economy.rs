@@ -15,9 +15,16 @@ pub(super) fn tick_resource_economy(
     rules: &RuleSet,
     config: &MinerConfig,
     path_grid: Option<&pathfinding::PathGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
 ) {
     // Tick Miner-component-based system (War + Chrono miners).
-    super::super::miner::miner_system::tick_miners(sim, rules, config, path_grid);
+    super::super::miner::miner_system::tick_miners_with_overlay_registry(
+        sim,
+        rules,
+        config,
+        path_grid,
+        overlay_registry,
+    );
 
     // Tick Slave Miner subsystems: slave harvest AI + slave regeneration.
     super::super::slave_miner::tick_slave_harvesters(sim, rules, config, path_grid);
