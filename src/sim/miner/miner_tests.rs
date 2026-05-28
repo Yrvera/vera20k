@@ -2030,19 +2030,19 @@ fn refinery_pad_and_conditional_release_cells() {
     let grid = PathGrid::test_all_passable(64, 64);
 
     // 4×3 foundation at (10, 10), no art.ini overrides:
-    //   queue = (14, 11), pad = (12, 11), conditional release = queue.
+    //   queue = (14, 11), pad = (13, 11), conditional release = queue.
     // Stock zero-link unload completion does not call this release helper.
     assert_eq!(refinery_queue_cell(10, 10, 4, 3, None), (14, 11));
-    assert_eq!(refinery_pad_cell(10, 10, 4, 3, None), (12, 11));
+    assert_eq!(refinery_pad_cell(10, 10, 4, 3, None), (13, 11));
     assert_eq!(
         refinery_exit_cell(10, 10, 4, 3, None, Some(&grid), None, 0),
         (14, 11),
     );
 
     // 3×3 foundation at (5, 5), no art.ini overrides:
-    //   queue = (8, 6), pad = (7, 6), conditional release = queue.
+    //   queue = (8, 6), pad = (8, 6), conditional release = queue.
     assert_eq!(refinery_queue_cell(5, 5, 3, 3, None), (8, 6));
-    assert_eq!(refinery_pad_cell(5, 5, 3, 3, None), (7, 6));
+    assert_eq!(refinery_pad_cell(5, 5, 3, 3, None), (8, 6));
     assert_eq!(
         refinery_exit_cell(5, 5, 3, 3, None, Some(&grid), None, 0),
         (8, 6),

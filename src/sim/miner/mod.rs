@@ -19,6 +19,7 @@ mod miner_tests;
 pub(crate) use self::miner_dock_sequence::interrupt_refinery_docked_miners;
 pub(crate) use self::miner_system::{extract_bale, search_local_ore};
 
+#[cfg(test)]
 use std::collections::BTreeMap;
 
 use crate::rules::object_type::ObjectType;
@@ -26,7 +27,9 @@ use crate::rules::ruleset::GeneralRules;
 use crate::sim::movement::facing_class::FacingClass;
 
 /// Which kind of resource a map cell or cargo bale contains.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum ResourceType {
     Ore,
     Gem,
@@ -450,6 +453,7 @@ pub fn miner_kind_for_object(object: &ObjectType) -> Option<MinerKind> {
 ///
 /// Mirrors `CellClass::Reduce_Tiberium` (0x00480a80) in gamemd.exe.
 /// Called by the combat system after warhead detonation.
+#[cfg(test)]
 pub(crate) fn reduce_tiberium(
     resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
     cell: (u16, u16),

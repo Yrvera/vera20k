@@ -133,6 +133,18 @@ fn clear_unload_cluster(snap: &mut MinerSnapshot) {
     clear_unload_timer_cluster(snap);
 }
 
+fn mark_refinery_contact(sim: &mut Simulation, miner_id: u64, ref_sid: u64) {
+    if let Some(entity) = sim.entities.get_mut(miner_id) {
+        entity.mark_live_contact_with(ref_sid);
+    }
+}
+
+fn clear_refinery_contact(sim: &mut Simulation, miner_id: u64, ref_sid: u64) {
+    if let Some(entity) = sim.entities.get_mut(miner_id) {
+        entity.clear_live_contact_with(ref_sid);
+    }
+}
+
 fn tick_unload_accumulator(sim: &Simulation, snap: &mut MinerSnapshot) {
     let Some(start) = snap.miner.unload_cluster_start_frame else {
         snap.miner.unload_timer_fired = false;
@@ -193,9 +205,8 @@ pub(super) fn refinery_can_dock_queue_cell(rx: u16, ry: u16) -> (u16, u16) {
 /// When art.ini declares a `DockingOffset0` (passed through as `docking_offset`),
 /// delegates to [`crate::sim::docking::pad_geometry::pad_cell_for`] for the
 /// shared building-center-relative lepton→cell conversion. Otherwise falls back
-/// to the hardcoded retail refinery offset of `(+2 cells, +1 cell)` from the NW
-/// corner. The retail engine hardcodes this offset and does not scale with
-/// foundation dimensions; we match that for exact parity.
+/// to the stock refinery pad opened by the live building object-list scan:
+/// `(+3 cells, +1 cell)` from the NW corner.
 pub(super) fn refinery_pad_cell(
     rx: u16,
     ry: u16,
@@ -210,7 +221,7 @@ pub(super) fn refinery_pad_cell(
         crate::sim::docking::pad_geometry::pad_cell_for((rx, ry), (width, height), &pad)
     } else {
         let _ = (width, height);
-        (rx.saturating_add(2), ry.saturating_add(1))
+        (rx.saturating_add(3), ry.saturating_add(1))
     }
 }
 
@@ -549,6 +560,7 @@ pub(crate) fn interrupt_refinery_docked_miners(
         sim.production
             .dock_reservations
             .cancel_miner(ref_sid, entity_id);
+        clear_refinery_contact(sim, entity_id, ref_sid);
         let speed = entity_full_speed(sim, rules, entity_id);
         let Some(entity) = sim.entities.get_mut(entity_id) else {
             continue;
@@ -595,6 +607,7 @@ fn abort_invalid_refinery(sim: &mut Simulation, snap: &mut MinerSnapshot, ref_si
         sim.production
             .dock_reservations
             .cancel_miner(ref_sid, snap.entity_id);
+        clear_refinery_contact(sim, snap.entity_id, ref_sid);
     }
 
     if let Some(entity) = sim.entities.get_mut(snap.entity_id) {
@@ -625,6 +638,7 @@ fn abort_missing_unload_building(sim: &mut Simulation, snap: &mut MinerSnapshot,
     sim.production
         .dock_reservations
         .cancel_miner(ref_sid, snap.entity_id);
+    clear_refinery_contact(sim, snap.entity_id, ref_sid);
 
     if let Some(entity) = sim.entities.get_mut(snap.entity_id) {
         entity.facing_target = None;
@@ -773,6 +787,7 @@ fn phase_approach(
 
     snap.miner.dock_queued = admission != ContactAdmission::Accepted;
     if admission == ContactAdmission::Accepted {
+        mark_refinery_contact(sim, snap.entity_id, ref_sid);
         snap.miner.dock_phase = RefineryDockPhase::MissionEnter;
     }
 
@@ -809,6 +824,9 @@ fn phase_mission_enter(
         sim.production
             .dock_reservations
             .hello_or_wait(ref_sid, snap.entity_id, dock_capacity);
+    if admission == ContactAdmission::Accepted {
+        mark_refinery_contact(sim, snap.entity_id, ref_sid);
+    }
     let already_entered = sim
         .production
         .dock_reservations
@@ -861,7 +879,16 @@ fn phase_mission_enter(
         // Building 0x0E sends 0x12 with anchor+(3,1). The accepted cell is
         // inside the refinery footprint for stock GAREFN/NAREFN, so use the
         // direct move path already used for refinery pad entry.
-        movement::issue_direct_move(&mut sim.entities, snap.entity_id, accepted_cell, snap.speed);
+        if movement::issue_direct_move(&mut sim.entities, snap.entity_id, accepted_cell, snap.speed)
+        {
+            if let Some(target) = sim
+                .entities
+                .get_mut(snap.entity_id)
+                .and_then(|entity| entity.movement_target.as_mut())
+            {
+                target.bypass_grid = true;
+            }
+        }
     }
     schedule_enter_retry(sim, snap);
     snap.miner.dock_phase = RefineryDockPhase::AwaitingAcceptedCell;
@@ -1146,6 +1173,7 @@ fn phase_departing(sim: &mut Simulation, _rules: &RuleSet, snap: &mut MinerSnaps
     sim.production
         .dock_reservations
         .release_contact(ref_sid, snap.entity_id);
+    clear_refinery_contact(sim, snap.entity_id, ref_sid);
 
     if let Some(entity) = sim.entities.get_mut(snap.entity_id) {
         entity.display_type_override = None;
