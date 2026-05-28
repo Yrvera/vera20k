@@ -10,13 +10,13 @@ use crate::render::bit_font::BitFont;
 use crate::render::shell_text::{self, ShellAlign, ShellTextDraw, TextRect};
 use crate::ui::main_menu::SkirmishCountry;
 use crate::ui::skirmish_shell::{
-    COMBO_DROPDOWN_ROW_H, ChooseMapModalLayout, OwnerDrawButton, RectPx, SkirmishAiRowType,
-    SkirmishCheckboxId, SkirmishComboItem, SkirmishCountryChoice, SkirmishShellLayout,
-    SkirmishShellOpponent, SkirmishShellState, SkirmishTrackbarId, ValidationModalLayout,
-    checkbox_text_rect, choose_map_listbox_content_rect, choose_map_listbox_row_rect,
-    choose_map_listbox_visible_row_count, combo_dropdown_content_rect, combo_dropdown_rect,
-    combo_dropdown_visible_row_count, combo_items, combo_text_rect, player_name_edit_text_rect,
-    trackbar_value_text_rect, trackbar_visual_value,
+    COMBO_DROPDOWN_ROW_H, COMBO_FACE_H, COMBO_TEXT_LEFT_INSET, ChooseMapModalLayout,
+    OwnerDrawButton, RectPx, SkirmishAiRowType, SkirmishCheckboxId, SkirmishComboItem,
+    SkirmishCountryChoice, SkirmishShellLayout, SkirmishShellOpponent, SkirmishShellState,
+    SkirmishTrackbarId, ValidationModalLayout, checkbox_text_rect, choose_map_listbox_content_rect,
+    choose_map_listbox_row_rect, choose_map_listbox_visible_row_count, combo_dropdown_content_rect,
+    combo_dropdown_rect, combo_dropdown_visible_row_count, combo_items, combo_text_rect,
+    player_name_edit_text_rect, trackbar_value_text_rect, trackbar_visual_value,
 };
 
 use super::controls::trackbar_rect_for_id;
@@ -241,20 +241,66 @@ pub(super) fn combo_face_text_fit_width(rect: RectPx) -> u32 {
     combo_text_rect(rect).w.max(0) as u32
 }
 
+pub(super) fn combo_face_text_draw_rect(rect: RectPx) -> RectPx {
+    RectPx::new(
+        rect.x + COMBO_TEXT_LEFT_INSET,
+        rect.y,
+        (rect.w - COMBO_TEXT_LEFT_INSET).max(0),
+        COMBO_FACE_H,
+    )
+}
+
 pub(super) fn truncate_owner_draw_label<'a>(
     font: &BitFont,
     label: &'a str,
     fit_width: u32,
 ) -> std::borrow::Cow<'a, str> {
-    if font.text_width(label) <= fit_width {
+    let mut utf16: Vec<u16> = label.encode_utf16().collect();
+    if owner_draw_utf16_text_width(font, &utf16) <= fit_width {
         return std::borrow::Cow::Borrowed(label);
     }
 
-    let mut truncated = label.to_string();
-    while !truncated.is_empty() && font.text_width(&truncated) > fit_width {
-        truncated.pop();
+    while !utf16.is_empty() && owner_draw_utf16_text_width(font, &utf16) > fit_width {
+        utf16.pop();
     }
-    std::borrow::Cow::Owned(truncated)
+    std::borrow::Cow::Owned(String::from_utf16_lossy(&utf16))
+}
+
+fn owner_draw_utf16_text_width(font: &BitFont, units: &[u16]) -> u32 {
+    const TAB: u16 = b'\t' as u16;
+    const CR: u16 = b'\r' as u16;
+    const LF: u16 = b'\n' as u16;
+    const SPACE: u16 = b' ' as u16;
+
+    let mut x: u32 = 0;
+    let mut count: u32 = 0;
+    for unit in units.iter().copied() {
+        match unit {
+            0 => break,
+            TAB => {
+                let advanced = x + font.tab_width;
+                x = advanced - ((advanced.saturating_sub(font.tab_origin)) % font.tab_width);
+                continue;
+            }
+            CR | LF => continue,
+            SPACE => {
+                x += font.space_width;
+                count += 1;
+            }
+            other => {
+                let w = font
+                    .glyphs
+                    .get(&other)
+                    .map(|g| g.pixel_width as u32)
+                    .or_else(|| font.missing_glyph.as_ref().map(|g| g.pixel_width as u32));
+                if let Some(w) = w {
+                    x += w;
+                    count += 1;
+                }
+            }
+        }
+    }
+    x + count * font.char_spacing
 }
 
 pub(super) fn truncate_combo_dropdown_label<'a>(
@@ -331,7 +377,7 @@ fn push_combo_face_label_draw_with_color(
     color: [f32; 3],
     covering_overlays: &[RectPx],
 ) {
-    let text_rect = combo_text_rect(rect);
+    let text_rect = combo_face_text_draw_rect(rect);
     if text_covered_by_overlay(text_rect, covering_overlays) {
         return;
     }
@@ -960,6 +1006,48 @@ mod tests {
     }
 
     #[test]
+    fn owner_draw_label_truncates_ascii_by_utf16_code_unit() {
+        let font = crate::render::bit_font::tests::make_test_font(
+            &[
+                (b'a' as u16, 6),
+                (b'b' as u16, 6),
+                (b'c' as u16, 6),
+                (b'd' as u16, 6),
+            ],
+            4,
+        );
+
+        let label = truncate_owner_draw_label(&font, "abcd", 14);
+
+        assert_eq!(label.as_ref(), "ab");
+        assert!(font.text_width(label.as_ref()) <= 14);
+    }
+
+    #[test]
+    fn owner_draw_label_truncates_latin1_by_utf16_code_unit() {
+        let font = crate::render::bit_font::tests::make_test_font(
+            &[(b'a' as u16, 6), (0x00e9, 8), (b'b' as u16, 6)],
+            4,
+        );
+
+        let label = truncate_owner_draw_label(&font, "aéb", 16);
+
+        assert_eq!(label.as_ref(), "aé");
+        assert!(font.text_width(label.as_ref()) <= 16);
+    }
+
+    #[test]
+    fn owner_draw_label_truncates_non_bmp_by_utf16_code_unit() {
+        let font = crate::render::bit_font::tests::make_test_font(&[(b'a' as u16, 6)], 4);
+
+        let label = truncate_combo_dropdown_label(&font, "a😀", 13);
+
+        assert_eq!(label.as_ref(), "a\u{fffd}");
+        assert_ne!(label.as_ref(), "a");
+        assert!(font.text_width(label.as_ref()) <= 13);
+    }
+
+    #[test]
     fn collapsed_combo_face_text_pretruncates_to_arrow_reserved_width() {
         let font = crate::render::bit_font::tests::make_test_font(
             &[
@@ -973,6 +1061,8 @@ mod tests {
         );
         let combo = RectPx::new(423, 59, 44, 24);
 
+        let draw_rect = combo_face_text_draw_rect(combo);
+        assert_eq!(draw_rect, RectPx::new(425, 59, 42, 24));
         assert_eq!(combo_face_text_fit_width(combo), 24);
         let label = truncate_owner_draw_label(&font, "ab cd", combo_face_text_fit_width(combo));
 

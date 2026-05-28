@@ -611,6 +611,67 @@ fn status_help_ai_row_state_uses_item_specific_stt() {
 }
 
 #[test]
+fn status_help_side_row_uses_item_specific_stt() {
+    for (country, key) in [
+        (SkirmishCountryChoice::Random, "STT:PlayerSideRandom"),
+        (
+            SkirmishCountryChoice::Country(crate::ui::main_menu::SkirmishCountry::America),
+            "STT:PlayerSideAmerica",
+        ),
+        (
+            SkirmishCountryChoice::Country(crate::ui::main_menu::SkirmishCountry::GreatBritain),
+            "STT:PlayerSideBritain",
+        ),
+        (
+            SkirmishCountryChoice::Country(crate::ui::main_menu::SkirmishCountry::Yuri),
+            "STT:PlayerSideYuriCountry",
+        ),
+    ] {
+        assert_eq!(
+            status_help_key_for_hover(SkirmishHoverTarget::ComboItem {
+                id: SkirmishComboId::Side(0),
+                item: SkirmishComboItem::Country(country),
+            }),
+            Some(key)
+        );
+    }
+}
+
+#[test]
+fn status_help_color_row_uses_item_specific_stt_with_generic_miss_fallback() {
+    for (item, key) in [
+        (
+            SkirmishComboItem::ColorSentinel(-2),
+            "STT:PlayerColorRandom",
+        ),
+        (SkirmishComboItem::Color(0), "STT:PlayerColorGold"),
+        (SkirmishComboItem::Color(5), "STT:PlayerColorSkyBlue"),
+        (SkirmishComboItem::Color(7), "STT:PlayerColorPink"),
+        (SkirmishComboItem::Color(8), "STT:PlayerColorObserver"),
+    ] {
+        assert_eq!(
+            status_help_key_for_hover(SkirmishHoverTarget::ComboItem {
+                id: SkirmishComboId::Color(0),
+                item,
+            }),
+            Some(key)
+        );
+    }
+
+    assert_eq!(
+        status_help_key_for_hover(SkirmishHoverTarget::ComboItem {
+            id: SkirmishComboId::Color(0),
+            item: SkirmishComboItem::Color(9),
+        }),
+        Some("STT:SkirmishComboColor")
+    );
+    assert_eq!(
+        status_help_key_for_hover(SkirmishHoverTarget::ComboFace(SkirmishComboId::Color(0))),
+        Some("STT:SkirmishComboColor")
+    );
+}
+
+#[test]
 fn hovered_choose_map_modal_control_resolves_0x6b_status_targets() {
     let layout = compute_fixed_800_choose_map_modal_layout(800, 600);
     let modes = stock_skirmish_modes();

@@ -24,6 +24,7 @@ use crate::render::batch::SpriteInstance;
 use crate::render::bit_font::BitFont;
 #[cfg(test)]
 use crate::render::shell_text::ShellAlign;
+use crate::render::shell_transition_pass::ShellRenderTarget;
 use crate::render::skirmish_shell_chrome::{SkirmishShellChromeAtlas, SkirmishShellChromeEntry};
 use crate::skirmish_modes::SkirmishGameMode;
 use crate::ui::main_menu::SkirmishCountry;
@@ -33,8 +34,8 @@ use crate::ui::skirmish_shell::{
 };
 use crate::ui::skirmish_shell::{
     ChooseMapModalLayout, OwnerDrawButton, RectPx, SkirmishShellAction, SkirmishShellLayout,
-    SkirmishShellState, ValidationModalLayout, compute_fixed_800_choose_map_modal_layout,
-    compute_fixed_800_layout, compute_validation_modal_layout,
+    SkirmishShellState, ValidationModalLayout, compute_choose_map_modal_layout, compute_layout,
+    compute_validation_modal_layout,
 };
 
 use self::chrome::*;
@@ -90,6 +91,12 @@ const SHELL_DROPDOWN_BG_RGB_PENDING_COMBODROPWIN_SOURCE_CAPTURE: [f32; 3] = [0.0
 const SHELL_SCROLLBAR_TRACK_RGB_PENDING_SCROLLBAR_SOURCE_CAPTURE: [f32; 3] = [0.035, 0.042, 0.034];
 const SHELL_MODAL_BG_RGB: [f32; 3] = [0.020, 0.032, 0.025];
 const SHELL_MODAL_PANEL_RGB: [f32; 3] = [0.050, 0.060, 0.044];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ShellRenderMode {
+    Visible,
+    TransitionPreview,
+}
 
 #[cfg(test)]
 fn shell_text_origin(
@@ -320,12 +327,28 @@ pub fn build_skirmish_shell_instances(
     instances
 }
 
-fn update_owner_draw_button_paint_sound(state: &mut AppState) {
+fn apply_owner_draw_button_paint_state(
+    last_painted_pressed_button: &mut Option<OwnerDrawButton>,
+    pressed: Option<OwnerDrawButton>,
+    mode: ShellRenderMode,
+) -> bool {
+    if mode == ShellRenderMode::TransitionPreview {
+        return false;
+    }
+    let play_sound = pressed.is_some() && last_painted_pressed_button.is_none();
+    *last_painted_pressed_button = pressed;
+    play_sound
+}
+
+fn update_owner_draw_button_paint_sound(state: &mut AppState, mode: ShellRenderMode) {
     let pressed = state.skirmish_shell_state.pressed_owner_draw_button;
-    if pressed.is_some() && state.skirmish_shell_last_painted_pressed_button.is_none() {
+    if apply_owner_draw_button_paint_state(
+        &mut state.skirmish_shell_last_painted_pressed_button,
+        pressed,
+        mode,
+    ) {
         crate::app::App::play_skirmish_shell_generic_click_sound(state);
     }
-    state.skirmish_shell_last_painted_pressed_button = pressed;
 }
 
 pub(crate) fn render_skirmish_shell(
@@ -333,8 +356,26 @@ pub(crate) fn render_skirmish_shell(
     encoder: &mut wgpu::CommandEncoder,
     target: &wgpu::TextureView,
 ) -> anyhow::Result<SkirmishShellAction> {
+    let depth = state.depth_view.clone();
+    render_skirmish_shell_to_target(
+        state,
+        encoder,
+        ShellRenderTarget {
+            color: target,
+            depth: &depth,
+        },
+        ShellRenderMode::Visible,
+    )
+}
+
+pub(crate) fn render_skirmish_shell_to_target(
+    state: &mut AppState,
+    encoder: &mut wgpu::CommandEncoder,
+    target: ShellRenderTarget<'_>,
+    mode: ShellRenderMode,
+) -> anyhow::Result<SkirmishShellAction> {
     let chrome = state.skirmish_shell_chrome.take();
-    let result = render_skirmish_shell_with_atlas(state, encoder, target, chrome.as_ref());
+    let result = render_skirmish_shell_with_atlas(state, encoder, target, chrome.as_ref(), mode);
     state.skirmish_shell_chrome = chrome;
     result
 }
@@ -342,17 +383,16 @@ pub(crate) fn render_skirmish_shell(
 fn render_skirmish_shell_with_atlas(
     state: &mut AppState,
     encoder: &mut wgpu::CommandEncoder,
-    target: &wgpu::TextureView,
+    target: ShellRenderTarget<'_>,
     atlas: Option<&SkirmishShellChromeAtlas>,
+    mode: ShellRenderMode,
 ) -> anyhow::Result<SkirmishShellAction> {
-    let layout = compute_fixed_800_layout(state.render_width(), state.render_height());
+    let layout = compute_layout(state.render_width(), state.render_height());
     let choose_map_layout = state
         .skirmish_shell_state
         .choose_map_modal
         .as_ref()
-        .map(|_| {
-            compute_fixed_800_choose_map_modal_layout(state.render_width(), state.render_height())
-        });
+        .map(|_| compute_choose_map_modal_layout(state.render_width(), state.render_height()));
     let validation_layout = state
         .skirmish_shell_state
         .validation_modal
@@ -365,7 +405,7 @@ fn render_skirmish_shell_with_atlas(
         return Ok(action);
     };
 
-    update_owner_draw_button_paint_sound(state);
+    update_owner_draw_button_paint_sound(state, mode);
     ensure_selected_preview_texture(state);
     let selected_entry = state
         .skirmish_shell_maps
@@ -483,7 +523,7 @@ fn render_skirmish_shell_with_atlas(
     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("Skirmish Shell"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-            view: target,
+            view: target.color,
             depth_slice: None,
             resolve_target: None,
             ops: wgpu::Operations {
@@ -492,7 +532,7 @@ fn render_skirmish_shell_with_atlas(
             },
         })],
         depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-            view: &state.depth_view,
+            view: target.depth,
             depth_ops: Some(wgpu::Operations {
                 load: wgpu::LoadOp::Clear(1.0),
                 store: wgpu::StoreOp::Store,
@@ -565,14 +605,14 @@ fn render_skirmish_shell_with_atlas(
 }
 
 fn clear_shell_target(
-    state: &AppState,
+    _state: &AppState,
     encoder: &mut wgpu::CommandEncoder,
-    target: &wgpu::TextureView,
+    target: ShellRenderTarget<'_>,
 ) {
     let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("Skirmish Shell Clear"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-            view: target,
+            view: target.color,
             depth_slice: None,
             resolve_target: None,
             ops: wgpu::Operations {
@@ -581,7 +621,7 @@ fn clear_shell_target(
             },
         })],
         depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-            view: &state.depth_view,
+            view: target.depth,
             depth_ops: Some(wgpu::Operations {
                 load: wgpu::LoadOp::Clear(1.0),
                 store: wgpu::StoreOp::Store,
@@ -596,7 +636,7 @@ fn clear_shell_target(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::skirmish_shell::compute_layout;
+    use crate::ui::skirmish_shell::{compute_fixed_800_layout, compute_layout};
 
     fn test_entry(width: f32, height: f32) -> SkirmishShellChromeEntry {
         SkirmishShellChromeEntry {
@@ -688,6 +728,39 @@ mod tests {
     fn preview_backdrop_sits_behind_fitted_preview_surface() {
         assert!(SHELL_PREVIEW_BACKDROP_DEPTH > SHELL_PREVIEW_SURFACE_DEPTH);
         assert!(SHELL_PREVIEW_BACKDROP_DEPTH < 0.00080);
+    }
+
+    #[test]
+    fn transition_preview_suppresses_owner_draw_paint_side_effects() {
+        let mut last = None;
+        let play_sound = apply_owner_draw_button_paint_state(
+            &mut last,
+            Some(OwnerDrawButton::StartGame0x617),
+            ShellRenderMode::TransitionPreview,
+        );
+
+        assert!(!play_sound);
+        assert_eq!(last, None);
+    }
+
+    #[test]
+    fn visible_render_updates_owner_draw_paint_state_once() {
+        let mut last = None;
+        let play_sound = apply_owner_draw_button_paint_state(
+            &mut last,
+            Some(OwnerDrawButton::StartGame0x617),
+            ShellRenderMode::Visible,
+        );
+        assert!(play_sound);
+        assert_eq!(last, Some(OwnerDrawButton::StartGame0x617));
+
+        let play_sound = apply_owner_draw_button_paint_state(
+            &mut last,
+            Some(OwnerDrawButton::StartGame0x617),
+            ShellRenderMode::Visible,
+        );
+        assert!(!play_sound);
+        assert_eq!(last, Some(OwnerDrawButton::StartGame0x617));
     }
 
     #[test]
