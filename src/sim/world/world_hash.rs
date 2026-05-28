@@ -183,6 +183,21 @@ impl Simulation {
             ry.hash(hasher);
             spawner.hash(hasher);
         }
+        for (&stable_id, terrain) in &self.production.terrain_objects {
+            stable_id.hash(hasher);
+            terrain.hash(hasher);
+        }
+        for (&(rx, ry), &stable_id) in &self.production.terrain_object_cells {
+            rx.hash(hasher);
+            ry.hash(hasher);
+            stable_id.hash(hasher);
+        }
+        self.production.next_terrain_object_id.hash(hasher);
+        for (&(rx, ry), &bits) in &self.production.terrain_occupation_bits {
+            rx.hash(hasher);
+            ry.hash(hasher);
+            bits.hash(hasher);
+        }
         for &(rx, ry) in &self.production.tiberium_spawning_terrain_cells {
             rx.hash(hasher);
             ry.hash(hasher);
@@ -365,6 +380,9 @@ impl Simulation {
             entity.health.max.hash(hasher);
             entity.type_ref.hash(hasher);
             (entity.category as u8).hash(hasher);
+            entity.regular_crusher.hash(hasher);
+            entity.drive_accelerates.hash(hasher);
+            entity.building_damage_state_active.hash(hasher);
             entity.vision_range.hash(hasher);
 
             if let Some(ref movement) = entity.movement_target {
@@ -381,12 +399,16 @@ impl Simulation {
                 0u8.hash(hasher);
             }
 
+            entity.navigation.hash(hasher);
+
             if let Some(ref drive_track) = entity.drive_track {
                 1u8.hash(hasher);
                 hash_drive_track_state(drive_track, hasher);
             } else {
                 0u8.hash(hasher);
             }
+
+            entity.drive_locomotion.hash(hasher);
 
             if let Some(ref forced) = entity.forced_drive_track {
                 1u8.hash(hasher);
@@ -448,6 +470,19 @@ impl Simulation {
             entity.c4_plant.hash(hasher);
             entity.pending_c4_detonation.hash(hasher);
             entity.bunker_occupant.hash(hasher);
+            if let Some(gate) = entity.building_gate {
+                1u8.hash(hasher);
+                gate.mission_18_active.hash(hasher);
+                (gate.phase as u8).hash(hasher);
+                (gate.mission_state as u8).hash(hasher);
+                gate.transition_ticks_remaining.hash(hasher);
+                gate.transition_total_ticks.hash(hasher);
+                gate.transition_last_frame.hash(hasher);
+                gate.hold_ticks_remaining.hash(hasher);
+                gate.hold_last_frame.hash(hasher);
+            } else {
+                0u8.hash(hasher);
+            }
 
             match entity.deploy_state {
                 None => 0u8.hash(hasher),
@@ -561,6 +596,7 @@ impl Simulation {
 #[cfg(test)]
 mod rally_hash_tests {
     use super::Simulation;
+    use crate::sim::components::{DriveCoord, DriveLocomotionRuntime};
     use crate::sim::game_entity::GameEntity;
 
     #[test]
@@ -575,6 +611,51 @@ mod rally_hash_tests {
             .insert(GameEntity::test_default(1, "GAWEAP", "Americans", 10, 10));
 
         sim_b.entities.get_mut(1).unwrap().rally_target = Some((30, 31));
+
+        assert_ne!(sim_a.state_hash(), sim_b.state_hash());
+    }
+
+    #[test]
+    fn building_damage_state_changes_state_hash() {
+        let mut sim_a = Simulation::new();
+        let mut sim_b = Simulation::new();
+        let mut entity_a = GameEntity::test_default(1, "GAPOWR", "Americans", 10, 10);
+        let mut entity_b = entity_a.clone();
+        entity_a.category = crate::map::entities::EntityCategory::Structure;
+        entity_b.category = crate::map::entities::EntityCategory::Structure;
+        entity_b.building_damage_state_active = true;
+        sim_a.entities.insert(entity_a);
+        sim_b.entities.insert(entity_b);
+
+        assert_ne!(sim_a.state_hash(), sim_b.state_hash());
+    }
+
+    #[test]
+    fn drive_locomotion_state_changes_state_hash() {
+        let mut sim_a = Simulation::new();
+        let mut sim_b = Simulation::new();
+        let entity_a = GameEntity::test_default(1, "AMCV", "Americans", 10, 10);
+        let mut entity_b = entity_a.clone();
+        let mut drive = DriveLocomotionRuntime::default();
+        drive.destination = Some(DriveCoord::cell(45, 40, 0));
+        drive.path.directions = vec![2, 2, 2, 2, 2];
+        drive.residual_budget = 3;
+        entity_b.drive_locomotion = Some(drive);
+        sim_a.entities.insert(entity_a);
+        sim_b.entities.insert(entity_b);
+
+        assert_ne!(sim_a.state_hash(), sim_b.state_hash());
+    }
+
+    #[test]
+    fn drive_accelerates_changes_state_hash() {
+        let mut sim_a = Simulation::new();
+        let mut sim_b = Simulation::new();
+        let entity_a = GameEntity::test_default(1, "GTNK", "Americans", 10, 10);
+        let mut entity_b = entity_a.clone();
+        entity_b.drive_accelerates = false;
+        sim_a.entities.insert(entity_a);
+        sim_b.entities.insert(entity_b);
 
         assert_ne!(sim_a.state_hash(), sim_b.state_hash());
     }

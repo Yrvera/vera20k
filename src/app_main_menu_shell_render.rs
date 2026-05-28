@@ -9,6 +9,7 @@ use crate::app::AppState;
 use crate::render::batch::SpriteInstance;
 use crate::render::main_menu_shell_chrome::{MainMenuShellChromeAtlas, MainMenuShellChromeEntry};
 use crate::render::shell_text::ShellTextDraw;
+use crate::render::shell_transition_pass::ShellRenderTarget;
 use crate::ui::main_menu_shell::{
     MainMenuControlId, MainMenuShellLayout, RIGHT_PANEL_TILE_H, RIGHT_PANEL_WIDTH, RectPx,
     compute_layout, csf_key_for_control, tooltip_csf_key_for_control,
@@ -350,6 +351,22 @@ pub(crate) fn render_main_menu_shell(
     encoder: &mut wgpu::CommandEncoder,
     target: &wgpu::TextureView,
 ) -> Result<MainMenuShellRenderResult> {
+    let depth = state.depth_view.clone();
+    render_main_menu_shell_to_target(
+        state,
+        encoder,
+        ShellRenderTarget {
+            color: target,
+            depth: &depth,
+        },
+    )
+}
+
+pub(crate) fn render_main_menu_shell_to_target(
+    state: &mut AppState,
+    encoder: &mut wgpu::CommandEncoder,
+    target: ShellRenderTarget<'_>,
+) -> Result<MainMenuShellRenderResult> {
     ensure_movie_for_current_layout(state)?;
     if state.main_menu_shell_failed || state.main_menu_shell_chrome.is_none() {
         state.main_menu_shell_failed = true;
@@ -426,7 +443,7 @@ pub(crate) fn render_main_menu_shell(
     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("Main Menu Shell"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-            view: target,
+            view: target.color,
             depth_slice: None,
             resolve_target: None,
             ops: wgpu::Operations {
@@ -435,7 +452,7 @@ pub(crate) fn render_main_menu_shell(
             },
         })],
         depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-            view: &state.depth_view,
+            view: target.depth,
             depth_ops: Some(wgpu::Operations {
                 load: wgpu::LoadOp::Clear(1.0),
                 store: wgpu::StoreOp::Store,

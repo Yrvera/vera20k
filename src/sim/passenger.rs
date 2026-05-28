@@ -12,13 +12,17 @@
 //! - Part of sim/ — depends on rules/ (ObjectType), sim/game_entity, sim/entity_store.
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
+use std::collections::BTreeMap;
+
 use crate::rules::object_type::ObjectType;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::components::OrderIntent;
 use crate::sim::game_entity::GameEntity;
-use crate::sim::intern::StringInterner;
+use crate::sim::house_state::HouseState;
+use crate::sim::intern::{InternedId, StringInterner};
 use crate::sim::movement;
 use crate::sim::occupancy::CellListInsertion;
+use crate::sim::pathfinding::PathGrid;
 use crate::sim::world::{SimSoundEvent, Simulation};
 use crate::util::fixed_math::ra2_speed_to_leptons_per_second;
 use crate::util::lepton;
@@ -187,8 +191,10 @@ pub fn can_enter_transport(
     passenger_obj: &ObjectType,
     transport_obj: &ObjectType,
     cargo: &PassengerCargo,
-    condition_red_x1000: i64, // pre-scaled integer (0.25 → 250) for deterministic comparison
+    rules: &RuleSet,
+    houses: &BTreeMap<InternedId, HouseState>,
     interner: &StringInterner,
+    path_grid: Option<&PathGrid>,
 ) -> bool {
     // Must be alive, not dying, not already inside something
     if !passenger.is_alive() || passenger.dying {
@@ -201,39 +207,121 @@ pub fn can_enter_transport(
     if !transport.is_alive() || transport.dying {
         return false;
     }
-    // Owner check — garrison buildings allow neutral/special civilian buildings.
     if transport_obj.can_be_occupied {
-        let same_owner = passenger.owner == transport.owner;
-        let transport_owner_str = interner.resolve(transport.owner);
-        let neutral_building = transport_owner_str.eq_ignore_ascii_case("neutral")
-            || transport_owner_str.eq_ignore_ascii_case("special");
-        if !same_owner && !neutral_building {
-            return false;
-        }
+        return can_dock_occupier_garrison(
+            passenger,
+            transport,
+            passenger_obj,
+            transport_obj,
+            cargo,
+            rules,
+            houses,
+            interner,
+            path_grid,
+        );
     } else {
         // Vehicle transports: strict same-owner.
         if passenger.owner != transport.owner {
             return false;
         }
     }
-    // Garrison-specific: only Occupier infantry, and building must not be at red health.
-    if transport_obj.can_be_occupied {
-        if transport.building_up.is_some() || transport.building_down.is_some() {
-            return false;
-        }
-        if !passenger_obj.occupier {
-            return false;
-        }
-        // Pure integer comparison: health_ratio <= condition_red
-        // ↔ current * 1000 <= max * condition_red_x1000
-        let current_x1000: i64 = transport.health.current as i64 * 1000;
-        let threshold_x1000: i64 = transport.health.max.max(1) as i64 * condition_red_x1000;
-        if current_x1000 <= threshold_x1000 {
+    // Size check
+    cargo.can_accept(passenger_obj.size)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn can_dock_occupier_garrison(
+    passenger: &GameEntity,
+    building: &GameEntity,
+    passenger_obj: &ObjectType,
+    building_obj: &ObjectType,
+    cargo: &PassengerCargo,
+    rules: &RuleSet,
+    houses: &BTreeMap<InternedId, HouseState>,
+    interner: &StringInterner,
+    path_grid: Option<&PathGrid>,
+) -> bool {
+    if !building_obj.can_be_occupied {
+        return false;
+    }
+    if building.building_up.is_some() || building.building_down.is_some() {
+        return false;
+    }
+    if let Some(grid) = path_grid {
+        if building.position.rx >= grid.width() || building.position.ry >= grid.height() {
             return false;
         }
     }
-    // Size check
-    cargo.can_accept(passenger_obj.size)
+    if !passenger_obj.occupier {
+        return false;
+    }
+    let same_owner = passenger.owner == building.owner;
+    if !same_owner && !owner_country_multiplay_passive(building.owner, rules, houses, interner) {
+        return false;
+    }
+    if cargo.count() == building_obj.max_number_occupants {
+        return false;
+    }
+    if is_at_or_below_red_hp(
+        building.health.current,
+        building.health.max,
+        rules.general.condition_red_x1000,
+    ) {
+        return false;
+    }
+    if building.mind_controlled {
+        return false;
+    }
+    true
+}
+
+fn owner_country_multiplay_passive(
+    owner: InternedId,
+    rules: &RuleSet,
+    houses: &BTreeMap<InternedId, HouseState>,
+    interner: &StringInterner,
+) -> bool {
+    let country_name = houses
+        .get(&owner)
+        .and_then(|house| house.country)
+        .map(|country| interner.resolve(country))
+        .unwrap_or_else(|| interner.resolve(owner));
+    rules.country_multiplay_passive(country_name)
+}
+
+pub fn can_entity_enter_garrison(
+    sim: &Simulation,
+    rules: &RuleSet,
+    passenger_id: u64,
+    building_id: u64,
+    path_grid: Option<&PathGrid>,
+) -> bool {
+    let Some(passenger) = sim.entities.get(passenger_id) else {
+        return false;
+    };
+    let Some(building) = sim.entities.get(building_id) else {
+        return false;
+    };
+    let Some(passenger_obj) = rules.object(sim.interner.resolve(passenger.type_ref)) else {
+        return false;
+    };
+    let Some(building_obj) = rules.object(sim.interner.resolve(building.type_ref)) else {
+        return false;
+    };
+    let Some(cargo) = building.passenger_role.cargo() else {
+        return false;
+    };
+    can_enter_transport(
+        passenger,
+        building,
+        passenger_obj,
+        building_obj,
+        cargo,
+        rules,
+        &sim.houses,
+        &sim.interner,
+        path_grid,
+    )
 }
 
 /// Maximum cell distance for a passenger to be considered "at" the transport.
@@ -264,15 +352,273 @@ const NEIGHBORS: [(i16, i16); 8] = [
 /// Returns `true` if any entity's ownership changed this tick (garrison
 /// transfer or revert), signalling that the sprite atlas needs a rebuild.
 pub fn tick_passenger_system(sim: &mut Simulation, rules: &RuleSet) -> bool {
-    let boarding_changed = tick_boarding(sim, rules);
+    let order = sim.live_object_order_snapshot();
+    let boarding_changed = tick_boarding_and_garrison_reconciliation_in_order(sim, rules, &order);
     let unloading_changed = tick_unloading(sim, rules);
     boarding_changed || unloading_changed
 }
 
-/// Snapshot-then-mutate: process entities that are trying to board a transport.
-/// Returns `true` if any entity ownership changed (garrison transfer).
-fn tick_boarding(sim: &mut Simulation, rules: &RuleSet) -> bool {
+/// Local surrogate for gamemd's live object-vector walk for the garrison owner slice.
+///
+/// Production supplies `Simulation::live_object_order_snapshot`, while focused
+/// tests pass explicit relative passenger/building order. The owned parity
+/// contract here is that a building reconciles only when its own turn is reached
+/// after a cargo mutation.
+fn tick_boarding_and_garrison_reconciliation_in_order(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    order: &[u64],
+) -> bool {
     let mut ownership_changed = false;
+    for &entity_id in order {
+        if sim.entities.get(entity_id).is_none() {
+            continue;
+        }
+
+        if sim
+            .entities
+            .get(entity_id)
+            .is_some_and(|e| matches!(e.passenger_role, PassengerRole::Boarding { .. }))
+        {
+            process_boarding_passenger(sim, rules, entity_id);
+        }
+
+        if is_can_be_occupied_unloading_transport(sim, rules, entity_id) {
+            process_unloading_transport(sim, rules, entity_id);
+        }
+
+        ownership_changed |= reconcile_civilian_garrison_owner_for_building(sim, rules, entity_id);
+    }
+    ownership_changed
+}
+
+fn process_boarding_passenger(sim: &mut Simulation, rules: &RuleSet, pax_id: u64) {
+    let transport_id = match sim.entities.get(pax_id).map(|e| &e.passenger_role) {
+        Some(PassengerRole::Boarding {
+            target_transport_id,
+            ..
+        }) => *target_transport_id,
+        _ => return,
+    };
+
+    let transport_alive = sim
+        .entities
+        .get(transport_id)
+        .is_some_and(|t| t.is_alive() && !t.dying);
+    if !transport_alive {
+        if let Some(e) = sim.entities.get_mut(pax_id) {
+            e.passenger_role = PassengerRole::None;
+        }
+        return;
+    }
+
+    let (pax_rx, pax_ry) = match sim.entities.get(pax_id) {
+        Some(e) => (e.position.rx, e.position.ry),
+        None => return,
+    };
+    let (trx, try_) = match sim.entities.get(transport_id) {
+        Some(e) => (e.position.rx, e.position.ry),
+        None => return,
+    };
+
+    let dx = (pax_rx as i32 - trx as i32).unsigned_abs();
+    let dy = (pax_ry as i32 - try_ as i32).unsigned_abs();
+    if dx.max(dy) > BOARD_DISTANCE {
+        return;
+    }
+
+    let pax_type_str = sim
+        .entities
+        .get(pax_id)
+        .map(|e| sim.interner.resolve(e.type_ref).to_string())
+        .unwrap_or_default();
+    let transport_type_str = sim
+        .entities
+        .get(transport_id)
+        .map(|e| sim.interner.resolve(e.type_ref).to_string())
+        .unwrap_or_default();
+
+    let pax_size = rules.object(&pax_type_str).map(|obj| obj.size).unwrap_or(1);
+    let transport_obj = rules.object(&transport_type_str);
+    let transport_gunner = transport_obj.map(|obj| obj.gunner).unwrap_or(false);
+    let transport_open_topped = transport_obj.map(|obj| obj.open_topped).unwrap_or(false);
+
+    let pax_obj = rules.object(&pax_type_str);
+    let pax_ifv_mode = pax_obj.map(|obj| obj.ifv_mode).unwrap_or(0);
+    let pax_open_transport_weapon = pax_obj.map(|obj| obj.open_transport_weapon).unwrap_or(-1);
+    let entering_owner = sim.entities.get(pax_id).map(|pax| pax.owner);
+
+    let boarded = sim
+        .entities
+        .get_mut(transport_id)
+        .and_then(|t| t.passenger_role.cargo_mut())
+        .is_some_and(|cargo| cargo.board(pax_id, pax_size));
+
+    if boarded {
+        let first_occupant = sim
+            .entities
+            .get(transport_id)
+            .and_then(|t| t.passenger_role.cargo())
+            .map_or(false, |c| c.count() == 1);
+        if first_occupant
+            && rules
+                .object(&transport_type_str)
+                .map_or(false, |o| o.can_be_occupied)
+        {
+            if let (Some(owner), Some(t)) = (entering_owner, sim.entities.get(transport_id)) {
+                let rx = t.position.rx;
+                let ry = t.position.ry;
+                sim.sound_events
+                    .push(SimSoundEvent::StructureGarrisoned { owner });
+                sim.sound_events
+                    .push(SimSoundEvent::BuildingGarrisonedSfx { owner, rx, ry });
+            }
+        }
+
+        sim.clear_radio_contacts_for(pax_id);
+        if let Some(pax) = sim.entities.get_mut(pax_id) {
+            pax.passenger_role = PassengerRole::Inside { transport_id };
+            pax.movement_target = None;
+            pax.attack_target = None;
+            pax.order_intent = None;
+        }
+
+        let new_override = if transport_gunner {
+            Some(crate::sim::combat::combat_weapon::WeaponOverride::IfvSlot(
+                pax_ifv_mode,
+            ))
+        } else if transport_open_topped && pax_open_transport_weapon >= 0 {
+            Some(
+                crate::sim::combat::combat_weapon::WeaponOverride::OpenTransport(
+                    pax_open_transport_weapon as u32,
+                ),
+            )
+        } else {
+            None
+        };
+        if new_override.is_some() {
+            if let Some(t) = sim.entities.get_mut(transport_id) {
+                t.weapon_override = new_override;
+            }
+        }
+    } else if let Some(pax) = sim.entities.get_mut(pax_id) {
+        pax.passenger_role = PassengerRole::None;
+    }
+}
+
+fn is_civilian_garrison_owner(interner: &StringInterner, owner: InternedId) -> bool {
+    let owner = interner.resolve(owner);
+    owner.eq_ignore_ascii_case("neutral") || owner.eq_ignore_ascii_case("special")
+}
+
+fn resolved_civilian_garrison_owner(sim: &mut Simulation) -> InternedId {
+    let neutral = sim.interner.intern("Neutral");
+    if sim.houses.is_empty() || sim.houses.contains_key(&neutral) {
+        return neutral;
+    }
+
+    let special = sim.interner.intern("Special");
+    if sim.houses.contains_key(&special) {
+        return special;
+    }
+
+    neutral
+}
+
+fn is_at_or_below_red_hp(current: u16, max: u16, condition_red_x1000: i64) -> bool {
+    let current_x1000 = current as i64 * 1000;
+    let threshold_x1000 = max.max(1) as i64 * condition_red_x1000;
+    current_x1000 <= threshold_x1000
+}
+
+fn reconcile_civilian_garrison_owner_for_building(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    building_id: u64,
+) -> bool {
+    let Some((type_ref, mut current_owner, mut first_passenger, mut cargo_empty, red_hp_occupied)) =
+        sim.entities.get(building_id).and_then(|building| {
+            let cargo = building.passenger_role.cargo()?;
+            Some((
+                building.type_ref,
+                building.owner,
+                cargo.passengers.first().copied(),
+                cargo.is_empty(),
+                !cargo.is_empty()
+                    && is_at_or_below_red_hp(
+                        building.health.current,
+                        building.health.max,
+                        rules.general.condition_red_x1000,
+                    ),
+            ))
+        })
+    else {
+        return false;
+    };
+
+    let type_name = sim.interner.resolve(type_ref);
+    if !rules
+        .object(type_name)
+        .is_some_and(|obj| obj.can_be_occupied)
+    {
+        return false;
+    }
+
+    if red_hp_occupied {
+        crate::sim::production::eject_red_hp_garrison(sim, rules, building_id);
+        let Some((owner_after_eject, first_after_eject, empty_after_eject)) =
+            sim.entities.get(building_id).and_then(|building| {
+                let cargo = building.passenger_role.cargo()?;
+                Some((
+                    building.owner,
+                    cargo.passengers.first().copied(),
+                    cargo.is_empty(),
+                ))
+            })
+        else {
+            return false;
+        };
+        current_owner = owner_after_eject;
+        first_passenger = first_after_eject;
+        cargo_empty = empty_after_eject;
+    }
+
+    if !cargo_empty && is_civilian_garrison_owner(&sim.interner, current_owner) {
+        let Some(new_owner) = first_passenger
+            .and_then(|passenger_id| sim.entities.get(passenger_id))
+            .map(|passenger| passenger.owner)
+        else {
+            return false;
+        };
+        if new_owner == current_owner {
+            return false;
+        }
+        if let Some(building) = sim.entities.get_mut(building_id) {
+            building.owner = new_owner;
+        }
+        return true;
+    }
+
+    if cargo_empty && !is_civilian_garrison_owner(&sim.interner, current_owner) {
+        let civilian_owner = resolved_civilian_garrison_owner(sim);
+        sim.sound_events.push(SimSoundEvent::StructureAbandoned {
+            owner: current_owner,
+        });
+        if let Some(building) = sim.entities.get_mut(building_id) {
+            building.owner = civilian_owner;
+        }
+        return current_owner != civilian_owner;
+    }
+
+    false
+}
+
+/// Snapshot-then-mutate: process entities that are trying to board a transport.
+/// Returns `true` if any entity ownership changed. Boarding itself does not
+/// transfer civilian garrison ownership.
+#[cfg(test)]
+fn tick_boarding(sim: &mut Simulation, rules: &RuleSet) -> bool {
+    let ownership_changed = false;
     // Snapshot entities with Boarding role — must collect fully before mutating.
     let keys: Vec<u64> = sim.entities.keys_sorted();
     let boarding_snapshot: Vec<(u64, u64)> = keys
@@ -343,6 +689,7 @@ fn tick_boarding(sim: &mut Simulation, rules: &RuleSet) -> bool {
             let pax_ifv_mode = pax_obj.map(|obj| obj.ifv_mode).unwrap_or(0);
             let pax_open_transport_weapon =
                 pax_obj.map(|obj| obj.open_transport_weapon).unwrap_or(-1);
+            let entering_owner = sim.entities.get(pax_id).map(|pax| pax.owner);
 
             // Try to board.
             let boarded = sim
@@ -352,36 +699,6 @@ fn tick_boarding(sim: &mut Simulation, rules: &RuleSet) -> bool {
                 .is_some_and(|cargo| cargo.board(pax_id, pax_size));
 
             if boarded {
-                // Garrison ownership transfer: when infantry boards a neutral/civilian
-                // CanBeOccupied building, transfer building ownership to the infantry's
-                // owner. Matches original engine's CheckAutoSellOrCivilian reconciliation
-                // (we do it immediately rather than waiting one tick).
-                let transport_can_be_occupied = rules
-                    .object(&transport_type_str)
-                    .map(|obj| obj.can_be_occupied)
-                    .unwrap_or(false);
-                if transport_can_be_occupied {
-                    let pax_owner = sim.entities.get(pax_id).map(|e| e.owner);
-                    if let Some(new_owner) = pax_owner {
-                        if let Some(t) = sim.entities.get(transport_id) {
-                            let t_owner_str = sim.interner.resolve(t.owner);
-                            let is_neutral = t_owner_str.eq_ignore_ascii_case("neutral")
-                                || t_owner_str.eq_ignore_ascii_case("special");
-                            if is_neutral {
-                                if let Some(t) = sim.entities.get_mut(transport_id) {
-                                    // Save original owner before first transfer so we can
-                                    // revert when the last occupant exits.
-                                    if t.garrison_original_owner.is_none() {
-                                        t.garrison_original_owner = Some(t.owner);
-                                    }
-                                    t.owner = new_owner;
-                                    ownership_changed = true;
-                                }
-                            }
-                        }
-                    }
-                }
-
                 // Garrison sound/EVA: emit on first occupant entry only.
                 // gamemd AddGarrisonOccupant fires EVA + BuildingGarrisonedSound
                 // when count transitions 0→1; subsequent occupants are silent.
@@ -395,8 +712,8 @@ fn tick_boarding(sim: &mut Simulation, rules: &RuleSet) -> bool {
                         .object(&transport_type_str)
                         .map_or(false, |o| o.can_be_occupied)
                 {
-                    if let Some(t) = sim.entities.get(transport_id) {
-                        let owner = t.owner;
+                    if let (Some(owner), Some(t)) = (entering_owner, sim.entities.get(transport_id))
+                    {
                         let rx = t.position.rx;
                         let ry = t.position.ry;
                         sim.sound_events
@@ -453,9 +770,145 @@ fn tick_boarding(sim: &mut Simulation, rules: &RuleSet) -> bool {
 }
 
 /// Process transports with `OrderIntent::Unloading` — eject one passenger per tick.
-/// Returns `true` if any entity ownership changed (garrison revert to Neutral).
+fn is_can_be_occupied_unloading_transport(
+    sim: &Simulation,
+    rules: &RuleSet,
+    transport_id: u64,
+) -> bool {
+    let Some(entity) = sim.entities.get(transport_id) else {
+        return false;
+    };
+    if !matches!(entity.order_intent, Some(OrderIntent::Unloading)) {
+        return false;
+    }
+    rules
+        .object(sim.interner.resolve(entity.type_ref))
+        .is_some_and(|obj| obj.can_be_occupied)
+}
+
+fn process_unloading_transport(sim: &mut Simulation, rules: &RuleSet, transport_id: u64) {
+    let (trx, try_, tz) = match sim.entities.get(transport_id) {
+        Some(e) => (e.position.rx, e.position.ry, e.position.z),
+        None => return,
+    };
+
+    let occupied_cells: Vec<(u16, u16)> = {
+        let all_keys: Vec<u64> = sim.entities.keys_sorted();
+        all_keys
+            .iter()
+            .filter_map(|&eid| {
+                let e = sim.entities.get(eid)?;
+                if !e.passenger_role.is_inside_transport() && !e.dying && e.is_alive() {
+                    Some((e.position.rx, e.position.ry))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
+
+    let exit_cell = NEIGHBORS.iter().find_map(|&(dx, dy)| {
+        let nx = trx as i16 + dx;
+        let ny = try_ as i16 + dy;
+        if nx < 0 || ny < 0 {
+            return None;
+        }
+        let (nx, ny) = (nx as u16, ny as u16);
+        let occupied = occupied_cells.iter().any(|&(ox, oy)| ox == nx && oy == ny);
+        if occupied { None } else { Some((nx, ny)) }
+    });
+
+    let Some((exit_rx, exit_ry)) = exit_cell else {
+        return;
+    };
+
+    let pax_id = sim
+        .entities
+        .get_mut(transport_id)
+        .and_then(|t| t.passenger_role.cargo_mut())
+        .and_then(|cargo| cargo.unload_first());
+
+    let Some(pax_id) = pax_id else {
+        if let Some(t) = sim.entities.get_mut(transport_id) {
+            t.order_intent = None;
+        }
+        return;
+    };
+
+    let pax_type_str = sim
+        .entities
+        .get(pax_id)
+        .map(|e| sim.interner.resolve(e.type_ref).to_string())
+        .unwrap_or_default();
+    let pax_size = rules.object(&pax_type_str).map(|obj| obj.size).unwrap_or(1);
+
+    if let Some(cargo) = sim
+        .entities
+        .get_mut(transport_id)
+        .and_then(|t| t.passenger_role.cargo_mut())
+    {
+        cargo.total_size = cargo.total_size.saturating_sub(pax_size);
+    }
+
+    let pax_sub_cell;
+    if let Some(pax) = sim.entities.get_mut(pax_id) {
+        pax.passenger_role = PassengerRole::None;
+        pax.position.rx = exit_rx;
+        pax.position.ry = exit_ry;
+        pax.position.z = tz;
+        let (sub_x, sub_y) = lepton::subcell_lepton_offset(pax.sub_cell);
+        pax.position.sub_x = sub_x;
+        pax.position.sub_y = sub_y;
+        pax.position.refresh_screen_coords();
+        pax_sub_cell = pax.sub_cell;
+    } else {
+        pax_sub_cell = None;
+    }
+
+    sim.occupancy.add(
+        exit_rx,
+        exit_ry,
+        pax_id,
+        crate::sim::movement::locomotor::MovementLayer::Ground,
+        pax_sub_cell,
+        CellListInsertion::PrependNonBuilding,
+    );
+
+    let scatter_speed = rules
+        .object(&pax_type_str)
+        .map(|obj| ra2_speed_to_leptons_per_second(obj.speed))
+        .unwrap_or(ra2_speed_to_leptons_per_second(4));
+    let start_dir = sim.rng.next_u32() as usize % 8;
+    for i in 0..8 {
+        let (dx, dy) = NEIGHBORS[(start_dir + i) % 8];
+        let sx = exit_rx as i32 + dx as i32;
+        let sy = exit_ry as i32 + dy as i32;
+        if sx >= 0 && sy >= 0 {
+            let dest = (sx as u16, sy as u16);
+            let occupied = occupied_cells
+                .iter()
+                .any(|&(ox, oy)| ox == dest.0 && oy == dest.1);
+            if !occupied {
+                movement::issue_direct_move(&mut sim.entities, pax_id, dest, scatter_speed);
+                break;
+            }
+        }
+    }
+
+    let cargo_empty = sim
+        .entities
+        .get(transport_id)
+        .and_then(|t| t.passenger_role.cargo())
+        .is_some_and(|c| c.is_empty());
+    if cargo_empty {
+        if let Some(t) = sim.entities.get_mut(transport_id) {
+            t.weapon_override = None;
+            t.order_intent = None;
+        }
+    }
+}
+
 fn tick_unloading(sim: &mut Simulation, rules: &RuleSet) -> bool {
-    let mut ownership_changed = false;
     // Snapshot transports that are unloading — must collect fully before mutating.
     let keys: Vec<u64> = sim.entities.keys_sorted();
     let unload_snapshot: Vec<u64> = keys
@@ -471,6 +924,10 @@ fn tick_unloading(sim: &mut Simulation, rules: &RuleSet) -> bool {
         .collect();
 
     for transport_id in unload_snapshot {
+        if is_can_be_occupied_unloading_transport(sim, rules, transport_id) {
+            continue;
+        }
+
         let (trx, try_, tz) = match sim.entities.get(transport_id) {
             Some(e) => (e.position.rx, e.position.ry, e.position.z),
             None => continue,
@@ -593,11 +1050,6 @@ fn tick_unloading(sim: &mut Simulation, rules: &RuleSet) -> bool {
 
         // When the transport is empty, clear any passenger-driven weapon override
         // (covers both Gunner=yes IFV swap and open-topped passenger weapon).
-        let transport_type_str = sim
-            .entities
-            .get(transport_id)
-            .map(|e| sim.interner.resolve(e.type_ref).to_string())
-            .unwrap_or_default();
         let is_empty = sim
             .entities
             .get(transport_id)
@@ -609,51 +1061,26 @@ fn tick_unloading(sim: &mut Simulation, rules: &RuleSet) -> bool {
             }
         }
 
-        // If cargo is now empty, clear the unload order and revert garrison ownership.
+        // If cargo is now empty, clear the unload order. Civilian garrison owner
+        // revert is deferred to the building reconciliation turn.
         let cargo_empty = sim
             .entities
             .get(transport_id)
             .and_then(|t| t.passenger_role.cargo())
             .is_some_and(|c| c.is_empty());
         if cargo_empty {
-            // Garrison ownership revert: when last occupant leaves a CanBeOccupied
-            // building, revert ownership to the building's original (pre-garrison)
-            // owner. Matches original engine's CheckAutoSellOrCivilian which
-            // transfers back to the Civilian house identified by side index.
-            let is_garrison_building = rules
-                .object(&transport_type_str)
-                .map(|obj| obj.can_be_occupied)
-                .unwrap_or(false);
-            // Pre-intern "Neutral" as fallback for garrison ownership revert.
-            let neutral_id = sim.interner.intern("Neutral");
-            // Capture pre-revert owner BEFORE the mut borrow — gamemd's
-            // CheckAutoSellOrCivilian fires EVA_StructureAbandoned for the
-            // player whose garrison just emptied, not the post-revert civilian.
-            let abandoning_owner = if is_garrison_building {
-                sim.entities.get(transport_id).map(|t| t.owner)
-            } else {
-                None
-            };
             if let Some(t) = sim.entities.get_mut(transport_id) {
                 t.order_intent = None;
-                if is_garrison_building {
-                    let revert_owner = t.garrison_original_owner.take().unwrap_or(neutral_id);
-                    t.owner = revert_owner;
-                    ownership_changed = true;
-                }
-            }
-            if let Some(owner) = abandoning_owner {
-                sim.sound_events
-                    .push(SimSoundEvent::StructureAbandoned { owner });
             }
         }
     }
-    ownership_changed
+    false
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::entities::EntityCategory;
     use crate::rules::ini_parser::IniFile;
     use crate::rules::ruleset::RuleSet;
 
@@ -665,6 +1092,11 @@ mod tests {
 [AircraftTypes]
 [BuildingTypes]
 0=CAGAS01
+[Countries]
+0=Americans
+1=Russians
+2=Neutral
+3=Special
 
 [E1]
 Name=Conscript
@@ -683,6 +1115,12 @@ Foundation=2x2
 CanBeOccupied=yes
 CanOccupyFire=yes
 MaxNumberOccupants=5
+
+[Neutral]
+MultiplayPassive=true
+
+[Special]
+MultiplayPassive=true
 
 [General]
 [AudioVisual]
@@ -714,6 +1152,7 @@ ConditionYellow=50%
             cargo: PassengerCargo::new(obj.max_number_occupants, 1),
         };
         sim.entities.insert(ge);
+        sim.register_live_object(stable_id);
         stable_id
     }
 
@@ -738,6 +1177,7 @@ ConditionYellow=50%
             phase: BoardingPhase::Entering,
         };
         sim.entities.insert(ge);
+        sim.register_live_object(stable_id);
         stable_id
     }
 
@@ -762,9 +1202,18 @@ ConditionYellow=50%
             passenger_obj,
             transport_obj,
             cargo,
-            rules.general.condition_red_x1000,
+            rules,
+            &sim.houses,
             &sim.interner,
+            None,
         )
+    }
+
+    fn owner_name(sim: &Simulation, entity_id: u64) -> String {
+        sim.entities
+            .get(entity_id)
+            .map(|entity| sim.interner.resolve(entity.owner).to_string())
+            .expect("entity exists")
     }
 
     #[test]
@@ -854,6 +1303,177 @@ ConditionYellow=50%
     }
 
     #[test]
+    fn garrison_owner_not_changed_during_boarding_call() {
+        let mut sim = Simulation::new();
+        let rules = garrison_test_rules();
+        let bldg = spawn_garrison_building(&mut sim, &rules, "CAGAS01", "Neutral", 10, 10);
+        let pax = spawn_boarding_occupier(&mut sim, "E1", "Americans", bldg, 10, 11);
+
+        let changed = tick_boarding(&mut sim, &rules);
+
+        assert!(!changed, "boarding must not report ownership transfer");
+        assert_eq!(owner_name(&sim, bldg), "Neutral");
+        assert!(matches!(
+            sim.entities.get(pax).unwrap().passenger_role,
+            PassengerRole::Inside { transport_id } if transport_id == bldg
+        ));
+        assert_eq!(
+            sim.entities.get(bldg).unwrap().garrison_original_owner,
+            None,
+            "civilian garrison boarding must not save a per-building original owner"
+        );
+    }
+
+    #[test]
+    fn garrison_owner_transfers_same_frame_when_building_update_after_entry() {
+        let mut sim = Simulation::new();
+        let rules = garrison_test_rules();
+        let bldg = spawn_garrison_building(&mut sim, &rules, "CAGAS01", "Neutral", 10, 10);
+        let pax = spawn_boarding_occupier(&mut sim, "E1", "Americans", bldg, 10, 11);
+
+        let changed =
+            tick_boarding_and_garrison_reconciliation_in_order(&mut sim, &rules, &[pax, bldg]);
+
+        assert!(changed);
+        assert_eq!(owner_name(&sim, bldg), "Americans");
+    }
+
+    #[test]
+    fn production_garrison_owner_order_uses_live_object_order_not_stable_id() {
+        let mut sim = Simulation::new();
+        let rules = garrison_test_rules();
+        let bldg = spawn_garrison_building(&mut sim, &rules, "CAGAS01", "Neutral", 10, 10);
+        let pax = spawn_boarding_occupier(&mut sim, "E1", "Americans", bldg, 10, 11);
+        assert!(
+            bldg < pax,
+            "fixture keeps stable-id order opposite native order"
+        );
+        sim.live_object_order = vec![pax, bldg];
+
+        let changed = tick_passenger_system(&mut sim, &rules);
+
+        assert!(
+            changed,
+            "production passenger tick should use live object order for same-frame transfer"
+        );
+        assert_eq!(owner_name(&sim, bldg), "Americans");
+    }
+
+    #[test]
+    fn garrison_owner_waits_next_frame_when_building_update_before_entry() {
+        let mut sim = Simulation::new();
+        let rules = garrison_test_rules();
+        let bldg = spawn_garrison_building(&mut sim, &rules, "CAGAS01", "Neutral", 10, 10);
+        let pax = spawn_boarding_occupier(&mut sim, "E1", "Americans", bldg, 10, 11);
+
+        let changed =
+            tick_boarding_and_garrison_reconciliation_in_order(&mut sim, &rules, &[bldg, pax]);
+
+        assert!(!changed);
+        assert_eq!(owner_name(&sim, bldg), "Neutral");
+
+        let changed =
+            tick_boarding_and_garrison_reconciliation_in_order(&mut sim, &rules, &[bldg, pax]);
+
+        assert!(changed);
+        assert_eq!(owner_name(&sim, bldg), "Americans");
+    }
+
+    #[test]
+    fn garrison_reconciliation_uses_first_occupant_owner() {
+        let mut sim = Simulation::new();
+        let rules = garrison_test_rules();
+        let bldg = spawn_garrison_building(&mut sim, &rules, "CAGAS01", "Neutral", 10, 10);
+        let first = spawn_boarding_occupier(&mut sim, "E1", "Russians", bldg, 10, 11);
+        let second = spawn_boarding_occupier(&mut sim, "E1", "Americans", bldg, 11, 10);
+
+        if let Some(building) = sim.entities.get_mut(bldg) {
+            let cargo = building.passenger_role.cargo_mut().expect("cargo exists");
+            assert!(cargo.board(first, 1));
+            assert!(cargo.board(second, 1));
+        }
+
+        let changed = reconcile_civilian_garrison_owner_for_building(&mut sim, &rules, bldg);
+
+        assert!(changed);
+        assert_eq!(owner_name(&sim, bldg), "Russians");
+    }
+
+    #[test]
+    fn empty_captured_garrison_reverts_to_civilian_house_not_original_owner() {
+        let mut sim = Simulation::new();
+        let rules = garrison_test_rules();
+        let bldg = spawn_garrison_building(&mut sim, &rules, "CAGAS01", "Americans", 10, 10);
+        let special_id = sim.interner.intern("Special");
+        if let Some(building) = sim.entities.get_mut(bldg) {
+            building.garrison_original_owner = Some(special_id);
+        }
+
+        let changed = reconcile_civilian_garrison_owner_for_building(&mut sim, &rules, bldg);
+
+        assert!(changed);
+        assert_eq!(owner_name(&sim, bldg), "Neutral");
+        assert!(sim.sound_events.iter().any(|event| {
+            matches!(
+                event,
+                SimSoundEvent::StructureAbandoned { owner }
+                    if sim.interner.resolve(*owner) == "Americans"
+            )
+        }));
+    }
+
+    #[test]
+    fn red_hp_captured_garrison_ejects_and_reverts_in_same_reconciliation() {
+        let mut sim = Simulation::new();
+        let rules = garrison_test_rules();
+        let bldg = spawn_garrison_building(&mut sim, &rules, "CAGAS01", "Americans", 10, 10);
+        let pax = place_inside_garrison(&mut sim, &rules, bldg, "E1", "Americans");
+
+        if let Some(building) = sim.entities.get_mut(bldg) {
+            building.health.max = 400;
+            building.health.current = 100;
+            if let Some(cargo) = building.passenger_role.cargo_mut() {
+                cargo.garrison_fire_index = 3;
+            }
+        }
+
+        let changed = reconcile_civilian_garrison_owner_for_building(&mut sim, &rules, bldg);
+
+        assert!(
+            changed,
+            "red-HP ejection should let the same reconciliation call revert owner"
+        );
+        assert_eq!(owner_name(&sim, bldg), "Neutral");
+
+        let building = sim
+            .entities
+            .get(bldg)
+            .expect("building should remain alive");
+        let cargo = building
+            .passenger_role
+            .cargo()
+            .expect("cargo should remain");
+        assert!(
+            cargo.is_empty(),
+            "red-HP SellBuilding path clears occupants"
+        );
+        assert_eq!(cargo.garrison_fire_index, 0);
+
+        let passenger = sim.entities.get(pax).expect("occupant should still exist");
+        assert!(matches!(passenger.passenger_role, PassengerRole::None));
+        assert!(!passenger.dying);
+        assert_eq!((passenger.position.rx, passenger.position.ry), (12, 12));
+
+        assert!(sim.sound_events.iter().any(|event| {
+            matches!(
+                event,
+                SimSoundEvent::StructureAbandoned { owner }
+                    if sim.interner.resolve(*owner) == "Americans"
+            )
+        }));
+    }
+
+    #[test]
     fn test_can_enter_garrison_rejects_red_health_building() {
         let mut sim = Simulation::new();
         let rules = garrison_test_rules();
@@ -893,8 +1513,10 @@ ConditionYellow=50%
                 &passenger_obj,
                 transport_obj,
                 cargo,
-                rules.general.condition_red_x1000,
+                &rules,
+                &sim.houses,
                 &sim.interner,
+                None,
             ),
             "CanDock requires Occupier=yes infantry"
         );
@@ -951,6 +1573,60 @@ ConditionYellow=50%
     }
 
     #[test]
+    fn test_can_enter_garrison_uses_owner_country_multiplay_passive() {
+        let mut sim = Simulation::new();
+        let rules = garrison_test_rules();
+        let civ_house = sim.interner.intern("CivHouse");
+        let neutral_country = sim.interner.intern("Neutral");
+        sim.houses.insert(
+            civ_house,
+            crate::sim::house_state::HouseState::new(
+                civ_house,
+                0,
+                Some(neutral_country),
+                false,
+                0,
+                10,
+            ),
+        );
+        let bldg = spawn_garrison_building(&mut sim, &rules, "CAGAS01", "CivHouse", 10, 10);
+        let pax = spawn_boarding_occupier(&mut sim, "E1", "Americans", bldg, 10, 11);
+
+        assert!(
+            can_enter_garrison_fixture(&sim, &rules, pax, bldg),
+            "CanDock allows non-owner entry through target owner country MultiplayPassive"
+        );
+    }
+
+    #[test]
+    fn test_can_enter_garrison_rejects_mind_controlled_target() {
+        let mut sim = Simulation::new();
+        let rules = garrison_test_rules();
+        let bldg = spawn_garrison_building(&mut sim, &rules, "CAGAS01", "Americans", 10, 10);
+        let pax = spawn_boarding_occupier(&mut sim, "E1", "Americans", bldg, 10, 11);
+        sim.entities.get_mut(bldg).unwrap().mind_controlled = true;
+
+        assert!(
+            !can_enter_garrison_fixture(&sim, &rules, pax, bldg),
+            "CanDock rejects target buildings where IsMindControlled is true"
+        );
+    }
+
+    #[test]
+    fn test_can_enter_garrison_rejects_out_of_bounds_target_when_grid_available() {
+        let mut sim = Simulation::new();
+        let rules = garrison_test_rules();
+        let bldg = spawn_garrison_building(&mut sim, &rules, "CAGAS01", "Americans", 10, 10);
+        let pax = spawn_boarding_occupier(&mut sim, "E1", "Americans", bldg, 10, 11);
+        let grid = crate::sim::pathfinding::PathGrid::new(5, 5);
+
+        assert!(
+            !can_entity_enter_garrison(&sim, &rules, pax, bldg, Some(&grid)),
+            "CanDock rejects buildings outside the playfield bounds"
+        );
+    }
+
+    #[test]
     fn test_can_enter_garrison_rejects_building_up_or_down() {
         let rules = garrison_test_rules();
 
@@ -999,7 +1675,7 @@ ConditionYellow=50%
     fn test_first_occupant_emits_garrisoned_event() {
         let mut sim = Simulation::new();
         let rules = garrison_test_rules();
-        let bldg = spawn_garrison_building(&mut sim, &rules, "CAGAS01", "Americans", 10, 10);
+        let bldg = spawn_garrison_building(&mut sim, &rules, "CAGAS01", "Neutral", 10, 10);
         let _pax = spawn_boarding_occupier(&mut sim, "E1", "Americans", bldg, 10, 11);
 
         tick_boarding(&mut sim, &rules);
@@ -1115,9 +1791,14 @@ ConditionYellow=50%
         pax.type_ref = pax_type;
         pax.passenger_role = PassengerRole::Inside { transport_id: bldg };
         sim.entities.insert(pax);
+        sim.register_live_object(12345);
 
         // Tick unloading — should pop the one passenger and trigger empty branch.
-        tick_unloading(&mut sim, &rules);
+        let changed = tick_passenger_system(&mut sim, &rules);
+        assert!(
+            changed,
+            "last-occupant normal unload should report ownership change in the same tick"
+        );
 
         // Assert StructureAbandoned was emitted with the PRE-revert owner (Americans).
         let mut found = false;
@@ -1145,6 +1826,25 @@ ConditionYellow=50%
         assert_eq!(
             bldg_owner_str, "Neutral",
             "owner should have reverted to Neutral"
+        );
+
+        let abandoned_events = sim
+            .sound_events
+            .iter()
+            .filter(|evt| matches!(evt, SimSoundEvent::StructureAbandoned { .. }))
+            .count();
+        let changed_again = tick_passenger_system(&mut sim, &rules);
+        assert!(
+            !changed_again,
+            "empty revert must not be delayed into the next passenger pass"
+        );
+        assert_eq!(
+            sim.sound_events
+                .iter()
+                .filter(|evt| matches!(evt, SimSoundEvent::StructureAbandoned { .. }))
+                .count(),
+            abandoned_events,
+            "StructureAbandoned should emit on the unload/reconcile tick only"
         );
     }
 
@@ -1300,7 +2000,7 @@ ConditionYellow=50%
             "building despawned"
         );
 
-        let expected_positions = [(12, 10), (11, 12), (12, 11)];
+        let expected_positions = [(12, 12), (12, 12), (12, 12)];
         for (pid, expected_position) in [
             (pax1, expected_positions[0]),
             (pax2, expected_positions[1]),
@@ -1318,21 +2018,9 @@ ConditionYellow=50%
             assert_eq!(
                 (pax.position.rx, pax.position.ry),
                 expected_position,
-                "occupant {pid} should use sell-style foundation-edge ejection"
+                "occupant {pid} should reuse the one SellBuilding exit coordinate"
             );
         }
-
-        // Each occupant should be at a unique edge cell (LIFO + used_cells dedup).
-        let mut positions: Vec<(u16, u16)> = [pax1, pax2, pax3]
-            .iter()
-            .map(|&p| {
-                let pe = sim.entities.get(p).unwrap();
-                (pe.position.rx, pe.position.ry)
-            })
-            .collect();
-        positions.sort();
-        positions.dedup();
-        assert_eq!(positions.len(), 3, "all occupants on distinct cells");
     }
 
     #[test]
@@ -1360,9 +2048,19 @@ ConditionYellow=50%
         ] {
             let blocker_id = sim.allocate_stable_id();
             let mut blocker = GameEntity::test_default(blocker_id, "E1", "Allied", bx, by);
+            blocker.category = EntityCategory::Infantry;
             blocker.owner = owner_id;
             blocker.type_ref = sim.interner.intern("E1");
+            let blocker_sub_cell = blocker.sub_cell;
             sim.entities.insert(blocker);
+            sim.occupancy.add(
+                bx,
+                by,
+                blocker_id,
+                crate::sim::movement::locomotor::MovementLayer::Ground,
+                blocker_sub_cell,
+                CellListInsertion::PrependNonBuilding,
+            );
         }
 
         eject_via_event(&mut sim, &rules, building_id);

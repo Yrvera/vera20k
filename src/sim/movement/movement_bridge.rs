@@ -44,6 +44,22 @@ pub(super) enum BridgeStateUpdate {
     Unchanged,
 }
 
+/// Read-only runtime bridge row for oracle diagnostics.
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+pub struct BridgeRuntimeOracleTick {
+    pub tick: u64,
+    pub current_cell: (u16, u16),
+    pub next_cell: (u16, u16),
+    pub loco_layer_before: MovementLayer,
+    pub next_path_layer: MovementLayer,
+    pub on_bridge_before: bool,
+    pub on_bridge_after: bool,
+    pub bridge_update: String,
+    pub bridge_occupancy_before: Option<u8>,
+    pub bridge_occupancy_after: Option<u8>,
+    pub visible_z_after: u8,
+}
+
 pub(super) fn projected_on_bridge(current: bool, update: BridgeStateUpdate) -> bool {
     match update {
         BridgeStateUpdate::Set(_) => true,
@@ -129,6 +145,43 @@ pub(super) fn resolve_cell_transition_bridge_state(
             BridgeStateUpdate::Unchanged
         }
     }
+}
+
+/// Diagnostic wrapper for a single boundary crossing. It computes the same
+/// bridge update as `resolve_cell_transition_bridge_state` and returns an
+/// oracle row; callers opt in explicitly from tests/tools.
+pub(super) fn resolve_cell_transition_bridge_state_oracle(
+    position: &mut Position,
+    path_grid: Option<&PathGrid>,
+    src: (u16, u16),
+    dst: (u16, u16),
+    current_layer: MovementLayer,
+    next_layer: MovementLayer,
+    on_bridge_before: bool,
+    bridge_occupancy_before: Option<BridgeOccupancy>,
+    tick: u64,
+) -> (BridgeStateUpdate, BridgeRuntimeOracleTick) {
+    let update = resolve_cell_transition_bridge_state(position, path_grid, src, dst, next_layer);
+    let on_bridge_after = projected_on_bridge(on_bridge_before, update);
+    let bridge_occupancy_after = match update {
+        BridgeStateUpdate::Set(deck_level) => Some(BridgeOccupancy { deck_level }),
+        BridgeStateUpdate::Clear => None,
+        BridgeStateUpdate::Unchanged => bridge_occupancy_before,
+    };
+    let row = BridgeRuntimeOracleTick {
+        tick,
+        current_cell: src,
+        next_cell: dst,
+        loco_layer_before: current_layer,
+        next_path_layer: next_layer,
+        on_bridge_before,
+        on_bridge_after,
+        bridge_update: format!("{:?}", update),
+        bridge_occupancy_before: bridge_occupancy_before.map(|occ| occ.deck_level),
+        bridge_occupancy_after: bridge_occupancy_after.map(|occ| occ.deck_level),
+        visible_z_after: position.z,
+    };
+    (update, row)
 }
 
 /// Apply the post-resolver bridge state to entity components.
@@ -371,6 +424,30 @@ mod tests {
         );
         assert_eq!(update, BridgeStateUpdate::Set(4));
         assert_eq!(p.z, 4, "position.z must equal deck_level on Enter");
+    }
+
+    #[test]
+    fn resolver_oracle_reports_runtime_bridge_split_fields() {
+        let g = make_grid_with_cells(&[(5, 5, 4, true, true), (6, 5, 0, true, false)]);
+        let mut p = pos_at(6, 5, 0);
+        let (update, row) = resolve_cell_transition_bridge_state_oracle(
+            &mut p,
+            Some(&g),
+            (5, 5),
+            (6, 5),
+            MovementLayer::Ground,
+            MovementLayer::Bridge,
+            false,
+            None,
+            123,
+        );
+
+        assert_eq!(update, BridgeStateUpdate::Set(4));
+        assert_eq!(row.tick, 123);
+        assert_eq!(row.next_path_layer, MovementLayer::Bridge);
+        assert!(row.on_bridge_after);
+        assert_eq!(row.bridge_occupancy_after, Some(4));
+        assert_eq!(row.visible_z_after, 4);
     }
 
     #[test]

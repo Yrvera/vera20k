@@ -770,6 +770,7 @@ pub(crate) fn load_map_from_initial(
                 rules_for_terrain,
                 &overlay_names,
                 &terrain_frame_counts,
+                map_data.header.theater.eq_ignore_ascii_case("SNOW"),
             );
             if seeded_terrain > 0 {
                 log::info!(
@@ -854,6 +855,39 @@ pub(crate) fn load_map_from_initial(
         let map_h = map_data.header.height as u16;
         sim.production.ore_growth_config = ore_config;
         sim.production.ore_growth_state = crate::sim::ore_growth::OreGrowthState::new(map_w, map_h);
+        if let (Some(rules_for_tiberium), Some(overlay_grid)) =
+            (rules.as_ref(), sim.overlay_grid.as_ref())
+        {
+            let source_object_cells: BTreeSet<(u16, u16)> = sim
+                .production
+                .terrain_object_cells
+                .keys()
+                .copied()
+                .collect();
+            let stats = sim
+                .production
+                .ore_growth_state
+                .rebuild_native_tiberium_queues_from_overlays(
+                    overlay_grid,
+                    &overlay_registry,
+                    &rules_for_tiberium.tiberium_types,
+                    sim.resolved_terrain.as_ref(),
+                    &source_object_cells,
+                    map_data.basic.tiberium_growth_enabled.unwrap_or(true),
+                    general_rules.tiberium_spreads
+                        && map_data.special_flags.tiberium_spreads.unwrap_or(true),
+                    sim.binary_frame,
+                );
+            log::info!(
+                "Native tiberium queues rebuilt: {} growth entries, {} spread entries",
+                stats.growth_entries,
+                stats.spread_entries,
+            );
+        } else {
+            sim.production
+                .ore_growth_state
+                .reset_native_tiberium_classes(0, sim.binary_frame);
+        }
     }
 
     // Build PathGrid with terrain walkability derived from resolved terrain:

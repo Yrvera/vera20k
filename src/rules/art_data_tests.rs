@@ -137,6 +137,24 @@ fn parses_anim_start_sound_and_report() {
 }
 
 #[test]
+fn parses_generic_animtype_rate_with_constructor_default() {
+    let ini: IniFile = IniFile::from_str("[UCFAST]\nRate=300\n\n[UCDEFAULT]\n\n[UCSTOP]\nRate=0\n");
+    let reg: ArtRegistry = ArtRegistry::from_ini(&ini);
+
+    assert_eq!(reg.rate_ms("UCFAST"), Some(200));
+    assert_eq!(reg.rate_ms("UCDEFAULT"), Some(DEFAULT_ART_RATE_MS));
+    assert_eq!(reg.rate_ms("UCSTOP"), Some(0));
+    assert_eq!(reg.rate_ms("MISSING"), None);
+    assert_eq!(reg.rate_logic_frames("UCFAST"), Some(3));
+    assert_eq!(
+        reg.rate_logic_frames("UCDEFAULT"),
+        Some(DEFAULT_ART_RATE_LOGIC_FRAMES)
+    );
+    assert_eq!(reg.rate_logic_frames("UCSTOP"), Some(0));
+    assert_eq!(reg.rate_logic_frames("MISSING"), None);
+}
+
+#[test]
 fn test_resolve_effective_image_id_chain() {
     let ini: IniFile = IniFile::from_str("[NACNST]\nImage=CIVNC\n\n[E1]\n\n[MTNK]\nImage=MTNK\n");
     let reg: ArtRegistry = ArtRegistry::from_ini(&ini);
@@ -212,19 +230,96 @@ fn test_new_theater_from_ini_key() {
 #[test]
 fn test_parse_building_anims() {
     let ini: IniFile = IniFile::from_str(
-        "[CAOILD]\nActiveAnim=CAOILD_A\nActiveAnimYSort=362\nActiveAnimTwo=CAOILD_F\nActiveAnimTwoZAdjust=-50\n",
+        "[CAOILD]\nActiveAnim=CAOILD_A\nActiveAnimDamaged=CAOILD_AD\nActiveAnimGarrisoned=CAOILD_AG\nActiveAnimYSort=362\nActiveAnimTwo=CAOILD_F\nActiveAnimTwoZAdjust=-50\n",
     );
     let reg: ArtRegistry = ArtRegistry::from_ini(&ini);
     let entry: &ArtEntry = reg.get("CAOILD").expect("CAOILD exists");
     assert_eq!(entry.building_anims.len(), 2);
 
     assert_eq!(entry.building_anims[0].anim_type, "CAOILD_A");
+    assert_eq!(
+        entry.building_anims[0]
+            .damaged_variant
+            .as_ref()
+            .map(|v| v.anim_type.as_str()),
+        Some("CAOILD_AD")
+    );
+    assert_eq!(
+        entry.building_anims[0]
+            .garrisoned_variant
+            .as_ref()
+            .map(|v| v.anim_type.as_str()),
+        Some("CAOILD_AG")
+    );
     assert_eq!(entry.building_anims[0].y_sort, 362);
     assert_eq!(entry.building_anims[0].z_adjust, 0);
 
     assert_eq!(entry.building_anims[1].anim_type, "CAOILD_F");
     assert_eq!(entry.building_anims[1].y_sort, 0);
     assert_eq!(entry.building_anims[1].z_adjust, -50);
+}
+
+#[test]
+fn active_anim_garrisoned_replaces_base_slot_not_extra_overlay() {
+    let ini: IniFile = IniFile::from_str(
+        "[CAWASH19]\nActiveAnim=CAWA19_A\nActiveAnimGarrisoned=CAWA19_AG\nActiveAnimDamaged=CAWA19_AD\n",
+    );
+    let reg: ArtRegistry = ArtRegistry::from_ini(&ini);
+    let entry: &ArtEntry = reg.get("CAWASH19").expect("CAWASH19 exists");
+
+    assert_eq!(entry.building_anims.len(), 1);
+    assert_eq!(entry.building_anims[0].anim_type, "CAWA19_A");
+    assert_eq!(
+        entry.building_anims[0]
+            .garrisoned_variant
+            .as_ref()
+            .map(|v| v.anim_type.as_str()),
+        Some("CAWA19_AG")
+    );
+    assert_eq!(
+        entry.building_anims[0]
+            .damaged_variant
+            .as_ref()
+            .map(|v| v.anim_type.as_str()),
+        Some("CAWA19_AD")
+    );
+}
+
+#[test]
+fn damaged_active_anim_variant_uses_own_frame_metadata() {
+    let ini: IniFile = IniFile::from_str(
+        "[CASEAT02]\n\
+         ActiveAnim=CASEAT02_A\n\
+         ActiveAnimDamaged=CASEAT02_AD\n\
+         \n\
+         [CASEAT02_A]\n\
+         Start=0\n\
+         LoopStart=0\n\
+         LoopEnd=20\n\
+         LoopCount=-1\n\
+         Rate=150\n\
+         \n\
+         [CASEAT02_AD]\n\
+         Image=CASEAT02_A\n\
+         Start=21\n\
+         LoopStart=21\n\
+         LoopEnd=39\n\
+         LoopCount=-1\n\
+         Rate=150\n",
+    );
+    let reg: ArtRegistry = ArtRegistry::from_ini(&ini);
+    let entry: &ArtEntry = reg.get("CASEAT02").expect("CASEAT02 exists");
+    let anim = &entry.building_anims[0];
+    let damaged = anim.damaged_variant.as_ref().expect("damaged variant");
+
+    assert_eq!(anim.anim_type, "CASEAT02_A");
+    assert_eq!(anim.start_frame, 0);
+    assert_eq!(anim.loop_start, 0);
+    assert_eq!(anim.loop_end, 20);
+    assert_eq!(damaged.anim_type, "CASEAT02_AD");
+    assert_eq!(damaged.start_frame, 21);
+    assert_eq!(damaged.loop_start, 21);
+    assert_eq!(damaged.loop_end, 39);
 }
 
 #[test]

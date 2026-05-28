@@ -421,11 +421,24 @@ pub fn tick_production(
     path_grid: Option<&crate::sim::pathfinding::PathGrid>,
     tick_ms: u32,
 ) -> bool {
+    tick_production_with_overlay_registry(sim, rules, height_map, path_grid, None, tick_ms)
+}
+
+/// Advance production timers and spawn completed items with optional native
+/// tiberium context for harvester-side reduction/reseed.
+pub fn tick_production_with_overlay_registry(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    height_map: &BTreeMap<(u16, u16), u8>,
+    path_grid: Option<&crate::sim::pathfinding::PathGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    tick_ms: u32,
+) -> bool {
     if tick_ms == 0 {
         return false;
     }
     let miner_config = crate::sim::miner::MinerConfig::from_general_rules(&rules.general);
-    tick_resource_economy(sim, rules, &miner_config, path_grid);
+    tick_resource_economy(sim, rules, &miner_config, path_grid, overlay_registry);
     // Collect upfront: the loop body needs get_mut on queues_by_owner, so we
     // must release the immutable borrow before iterating. InternedId is Copy.
     let owner_categories: Vec<(InternedId, ProductionCategory)> = sim
@@ -603,6 +616,7 @@ pub fn tick_production(
                         cost_grid,
                         None,
                         sim.resolved_terrain.as_ref(),
+                        sim.zone_grid.as_ref(),
                         None,
                         false, // mover_is_crusher
                     );

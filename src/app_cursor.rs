@@ -117,7 +117,13 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
         &state.height_map,
         Some(&state.tactical_bridge_inverse_map),
     ) {
-        let kind = capability_cursor_for_hover(sim, &selected, &hover, state.rules.as_ref());
+        let kind = capability_cursor_for_hover(
+            sim,
+            &selected,
+            &hover,
+            state.rules.as_ref(),
+            state.path_grid.as_ref(),
+        );
         return Some(kind);
     }
     // Check for ore/gem under cursor — show attack cursor when miners are selected.
@@ -164,6 +170,7 @@ fn capability_cursor_for_hover(
     selected: &[u64],
     hover: &crate::app_entity_pick::HoverTargetKindWithId,
     rules: Option<&crate::rules::ruleset::RuleSet>,
+    path_grid: Option<&crate::sim::pathfinding::PathGrid>,
 ) -> CursorFeedbackKind {
     use crate::map::entities::EntityCategory;
 
@@ -195,6 +202,11 @@ fn capability_cursor_for_hover(
                             return CursorFeedbackKind::Deploy;
                         }
                     }
+                }
+                if rules.is_some_and(|rules| {
+                    sim.should_show_undeploy_building_command(hover.stable_id, rules)
+                }) {
+                    return CursorFeedbackKind::Deploy;
                 }
             }
         }
@@ -292,24 +304,19 @@ fn capability_cursor_for_hover(
                 }
             }
 
-            // 6. Infantry garrisoning a CanBeOccupied building (friendly or neutral/civilian).
-            //    Original engine checks Occupier=yes via BuildingClass::CanDock.
-            //    Neutral/civilian buildings are classified as EnemyStructure but still
+            // 6. Infantry garrisoning uses the shared CanDock-equivalent predicate.
             //    garrisonable — only show Enter for those, not actual enemy-player buildings.
-            if is_infantry && sel_obj.occupier && hovered_obj.map_or(false, |o| o.can_be_occupied) {
-                let is_garrisonable_target = match hover.kind {
-                    HoverTargetKind::FriendlyStructure => true,
-                    HoverTargetKind::EnemyStructure => {
-                        // Only neutral/civilian buildings — not real enemy player buildings.
-                        hovered_entity.map_or(false, |e| {
-                            let ow = sim.interner.resolve(e.owner);
-                            ow.eq_ignore_ascii_case("neutral") || ow.eq_ignore_ascii_case("special")
-                        })
+            if is_infantry {
+                if let Some(rules) = rules {
+                    if crate::sim::passenger::can_entity_enter_garrison(
+                        sim,
+                        rules,
+                        best_id,
+                        hover.stable_id,
+                        path_grid,
+                    ) {
+                        return CursorFeedbackKind::Enter;
                     }
-                    _ => false,
-                };
-                if is_garrisonable_target {
-                    return CursorFeedbackKind::Enter;
                 }
             }
 
@@ -719,7 +726,7 @@ mod tests {
         };
 
         // 6. Call the same function the live cursor pipeline calls.
-        let result = capability_cursor_for_hover(&sim, &[seal_id], &hover, Some(&rules));
+        let result = capability_cursor_for_hover(&sim, &[seal_id], &hover, Some(&rules), None);
 
         // 7. Dump the gate inputs so we can see which condition fails
         //    if the assertion below trips.
@@ -772,7 +779,7 @@ mod tests {
             stable_id: refinery_id,
         };
 
-        let result = capability_cursor_for_hover(&sim, &[miner_id], &hover, Some(&rules));
+        let result = capability_cursor_for_hover(&sim, &[miner_id], &hover, Some(&rules), None);
         assert_eq!(
             result,
             CursorFeedbackKind::Enter,

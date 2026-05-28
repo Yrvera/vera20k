@@ -18,6 +18,7 @@ pub mod main_menu;
 pub mod main_menu_shell;
 pub mod mission_status;
 pub mod pause_menu;
+pub mod single_player_shell;
 pub mod skirmish_shell;
 // pub mod skirmish;
 // pub mod dialog;

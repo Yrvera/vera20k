@@ -28,8 +28,9 @@ pub use self::production_queue::{
     enqueue_by_type, enqueue_default_unit_for_owner, has_strict_build_option_for_owner,
     power_balance_for_owner, queue_view_for_owner, rally_point_for_owner,
     ready_buildings_for_owner, seed_resource_nodes_from_overlays, set_rally_point_for_owner,
-    theoretical_power_for_owner, tick_production,
+    theoretical_power_for_owner, tick_production, tick_production_with_overlay_registry,
 };
+pub(crate) use self::production_sell::eject_red_hp_garrison;
 pub use self::production_sell::{
     eject_destruction_garrison, eject_destruction_survivors, sell_building, tick_repairs,
     toggle_repair,

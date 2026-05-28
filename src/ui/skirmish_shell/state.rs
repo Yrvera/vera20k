@@ -229,6 +229,14 @@ impl SkirmishShellOpponent {
     pub const fn is_active(&self) -> bool {
         self.row_type.is_active()
     }
+
+    fn apply_inactive_combo_defaults(&mut self, team_default: i32) {
+        self.enabled = false;
+        self.country_random = true;
+        self.color_claimed = false;
+        self.start_position = StartPosition::Auto;
+        self.team = team_default;
+    }
 }
 
 fn default_opponents(first_country: SkirmishCountry) -> Vec<SkirmishShellOpponent> {
@@ -251,7 +259,7 @@ fn default_opponents(first_country: SkirmishCountry) -> Vec<SkirmishShellOpponen
             } else {
                 SkirmishAiRowType::None
             };
-            SkirmishShellOpponent {
+            let mut opponent = SkirmishShellOpponent {
                 enabled: idx == 0,
                 row_type,
                 country,
@@ -261,7 +269,11 @@ fn default_opponents(first_country: SkirmishCountry) -> Vec<SkirmishShellOpponen
                 start_position: StartPosition::Auto,
                 team: -2,
                 difficulty: AiDifficulty::Easy,
+            };
+            if !row_type.is_active() {
+                opponent.apply_inactive_combo_defaults(3);
             }
+            opponent
         })
         .collect()
 }

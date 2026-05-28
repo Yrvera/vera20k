@@ -263,6 +263,171 @@ pub struct MovementTarget {
     pub bypass_grid: bool,
 }
 
+/// Native-like navigation target reference.
+///
+/// In gamemd this is an `AbstractClass*`. Phase 1 needs cell targets for normal
+/// Drive move commands, while the entity variant gives action lines and later
+/// destination paths a shared shape without claiming those paths are complete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum NavTargetRef {
+    Cell { rx: u16, ry: u16 },
+    Entity { id: u64 },
+    Object { id: u64 },
+    Building { id: u64 },
+}
+
+impl NavTargetRef {
+    pub fn cell(rx: u16, ry: u16) -> Self {
+        Self::Cell { rx, ry }
+    }
+
+    pub fn object(id: u64) -> Self {
+        Self::Object { id }
+    }
+
+    pub fn building(id: u64) -> Self {
+        Self::Building { id }
+    }
+}
+
+/// FootClass-style owner navigation fields.
+///
+/// `nav_com` is the owner destination. It must stay separate from
+/// `MovementTarget`, which is only the active execution path.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct NavigationState {
+    #[serde(default)]
+    pub nav_com_aux: Option<NavTargetRef>,
+    #[serde(default)]
+    pub nav_com: Option<NavTargetRef>,
+    #[serde(default)]
+    pub suspended_nav_com: Option<NavTargetRef>,
+    #[serde(default)]
+    pub nav_queue: Vec<NavTargetRef>,
+    /// Drive path execution reached the destination cell, but the owner
+    /// no-active-track arrival clear has not run yet.
+    #[serde(default)]
+    pub pending_arrival_clear: bool,
+}
+
+/// Integer world coordinate triplet used by DriveLocomotion state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct DriveCoord {
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
+}
+
+impl DriveCoord {
+    const CELL_LEPTONS: i32 = 256;
+    const CELL_CENTER: i32 = 128;
+
+    pub fn cell(rx: u16, ry: u16, z: i32) -> Self {
+        Self {
+            x: i32::from(rx) * Self::CELL_LEPTONS + Self::CELL_CENTER,
+            y: i32::from(ry) * Self::CELL_LEPTONS + Self::CELL_CENTER,
+            z,
+        }
+    }
+}
+
+/// DriveLocomotion-owned path direction cursor.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct DrivePathQueue {
+    #[serde(default)]
+    pub directions: Vec<u8>,
+    #[serde(default)]
+    pub cursor: u16,
+}
+
+/// Drive-owned 16-bit facing target and first-movement gate.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub struct DriveTurnState {
+    #[serde(default)]
+    pub target_direction: Option<u8>,
+    #[serde(default)]
+    pub target_facing_16: Option<u16>,
+    #[serde(default)]
+    pub rate_timer: u16,
+    #[serde(default)]
+    pub first_movement_allowed: bool,
+}
+
+/// UnitClass low-bridge TubeMovement payload carried by Drive/Unit movement.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct DriveTubePayload {
+    #[serde(default)]
+    pub tube_index: Option<u16>,
+    #[serde(default)]
+    pub cursor: u16,
+    #[serde(default)]
+    pub path_buffer: Vec<DriveCoord>,
+    #[serde(default)]
+    pub destination: Option<DriveCoord>,
+    #[serde(default)]
+    pub z_accumulator: i32,
+}
+
+fn default_drive_track_index() -> i16 {
+    -1
+}
+
+/// DriveLocomotion-owned destination/head-to state.
+///
+/// This is distinct from `DriveTrackState`: gamemd can clear destination,
+/// head-to, and active track state at different points in the lifecycle.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct DriveLocomotionRuntime {
+    #[serde(default)]
+    pub destination: Option<DriveCoord>,
+    #[serde(default)]
+    pub head_to: Option<DriveCoord>,
+    #[serde(default)]
+    pub path: DrivePathQueue,
+    #[serde(default)]
+    pub turn: DriveTurnState,
+    #[serde(default = "default_drive_track_index")]
+    pub track_index: i16,
+    #[serde(default)]
+    pub point_index: u16,
+    #[serde(default)]
+    pub track_valid: bool,
+    #[serde(default)]
+    pub is_reversed: bool,
+    #[serde(default)]
+    pub target_speed_fraction: SimFixed,
+    #[serde(default)]
+    pub current_speed_fraction: SimFixed,
+    #[serde(default)]
+    pub residual_budget: i32,
+    #[serde(default)]
+    pub drive_delay: u16,
+    #[serde(default)]
+    pub active_tube: Option<DriveTubePayload>,
+}
+
+impl Default for DriveLocomotionRuntime {
+    fn default() -> Self {
+        Self {
+            destination: None,
+            head_to: None,
+            path: DrivePathQueue::default(),
+            turn: DriveTurnState::default(),
+            track_index: -1,
+            point_index: 0,
+            track_valid: false,
+            is_reversed: false,
+            target_speed_fraction: SIM_ZERO,
+            current_speed_fraction: SIM_ZERO,
+            residual_budget: 0,
+            drive_delay: 0,
+            active_tube: None,
+        }
+    }
+}
+
 /// Default acceleration/deceleration values — zero means no ramping,
 /// movement system falls back to using `speed` directly.
 impl Default for MovementTarget {
@@ -501,17 +666,44 @@ pub struct DamageFireAnim {
     pub elapsed_ms: u32,
 }
 
+/// App-side runtime state for a normal AnimClass-like SHP animation.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AnimRuntime {
+    /// Current art section / SHP type, uppercase (e.g. "UCFLASH").
+    pub type_name: String,
+    /// Native current frame field before the type Start offset is applied.
+    pub current_frame: i32,
+    /// Signed frame step. Reverse and PingPong mutate this.
+    pub frame_step: i32,
+    /// Constructor delay / loop random delay in native logic visits.
+    pub delay_logic_frames: u16,
+    /// Chosen frame-delay reload in native logic visits. Zero blocks advance.
+    pub reload_logic_frames: u16,
+    /// Accumulated non-guard visits since the previous frame advance.
+    pub rate_elapsed_logic_frames: u16,
+    /// Remaining loop byte. `0xFF` is the native infinite sentinel.
+    pub loop_remaining: u8,
+    /// Constructor-set first AI guard; first visit clears this and returns.
+    pub first_ai_guard: bool,
+    /// Native expired/destroyed marker for app retention.
+    pub expired: bool,
+    /// Instance reverse bit from the constructor argument.
+    pub constructor_reverse: bool,
+    /// Accumulated fixed-sim elapsed time for AI visits.
+    pub elapsed_logic_ms: u32,
+}
+
 /// A one-shot muzzle flash animation at a garrison building's fire port.
 ///
 /// Spawned when a garrisoned building fires (one per shot). Positioned at the
 /// building's screen origin + MuzzleFlash pixel offset from art.ini. Auto-removed
-/// when the animation completes (not looping, unlike DamageFireAnim).
+/// by the embedded AnimClass-like runtime.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GarrisonMuzzleFlash {
     /// Stable ID of the building entity (to look up screen position each frame).
     pub building_id: u64,
-    /// SHP type interned ID (e.g., "UCFLASH").
-    pub shp_name: InternedId,
+    /// App-side AnimClass-like lifecycle state.
+    pub runtime: AnimRuntime,
     /// Pixel X offset from building screen origin (from art.ini MuzzleFlashN).
     pub pixel_x: i32,
     /// Pixel Y offset from building screen origin (from art.ini MuzzleFlashN).
@@ -523,14 +715,9 @@ pub struct GarrisonMuzzleFlash {
     pub rx: u16,
     pub ry: u16,
     pub z: u8,
-    /// Current animation frame.
-    pub frame: u16,
-    /// Total frames in the SHP (one-shot: removed when frame >= total_frames).
-    pub total_frames: u16,
-    /// Milliseconds per frame (~67ms = 15fps, standard for RA2 muzzle flashes).
-    pub rate_ms: u32,
-    /// Accumulated ms since last frame advance.
-    pub elapsed_ms: u32,
+    /// Native AnimClass `ZAdjust` sort adjustment. Occupied building shots
+    /// write -200 after constructing the `OccupantAnim` AnimClass.
+    pub z_adjust: i32,
 }
 
 /// A one-shot weapon muzzle flash animation at a fixed fire-tick origin.
@@ -804,6 +991,72 @@ mod tests {
         assert_send_sync::<AnimOverlayState>();
         assert_send_sync::<BuildingAnimOverlays>();
         assert_send_sync::<crate::sim::movement::locomotor::LocomotorState>();
+        assert_send_sync::<NavigationState>();
+        assert_send_sync::<DriveLocomotionRuntime>();
+        assert_send_sync::<DriveTubePayload>();
+    }
+
+    #[test]
+    fn drive_coord_cell_uses_center_leptons() {
+        let coord = DriveCoord::cell(45, 40, 0);
+        assert_eq!(coord.x, 45 * 256 + 128);
+        assert_eq!(coord.y, 40 * 256 + 128);
+        assert_eq!(coord.z, 0);
+    }
+
+    #[test]
+    fn nav_target_ref_has_cell_object_and_building_shapes() {
+        assert_eq!(
+            NavTargetRef::cell(45, 40),
+            NavTargetRef::Cell { rx: 45, ry: 40 }
+        );
+        assert_eq!(NavTargetRef::object(7), NavTargetRef::Object { id: 7 });
+        assert_eq!(NavTargetRef::building(9), NavTargetRef::Building { id: 9 });
+    }
+
+    #[test]
+    fn drive_locomotion_default_is_inert() {
+        let drive = DriveLocomotionRuntime::default();
+        assert_eq!(drive.destination, None);
+        assert_eq!(drive.head_to, None);
+        assert!(drive.path.directions.is_empty());
+        assert_eq!(drive.path.cursor, 0);
+        assert_eq!(drive.turn.target_direction, None);
+        assert_eq!(drive.track_index, -1);
+        assert_eq!(drive.point_index, 0);
+        assert!(!drive.track_valid);
+        assert!(!drive.is_reversed);
+        assert_eq!(drive.target_speed_fraction, SIM_ZERO);
+        assert_eq!(drive.current_speed_fraction, SIM_ZERO);
+        assert_eq!(drive.residual_budget, 0);
+        assert_eq!(drive.drive_delay, 0);
+        assert_eq!(drive.active_tube, None);
+    }
+
+    #[test]
+    fn drive_locomotion_serde_defaults_missing_fields() {
+        let drive: DriveLocomotionRuntime = serde_json::from_str("{}").expect("deserialize drive");
+        assert_eq!(drive, DriveLocomotionRuntime::default());
+    }
+
+    #[test]
+    fn drive_locomotion_hash_changes_when_runtime_state_changes() {
+        use std::hash::{Hash, Hasher};
+
+        fn hash_drive(drive: &DriveLocomotionRuntime) -> u64 {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            drive.hash(&mut hasher);
+            hasher.finish()
+        }
+
+        let drive_a = DriveLocomotionRuntime::default();
+        let mut drive_b = DriveLocomotionRuntime::default();
+        drive_b.destination = Some(DriveCoord::cell(45, 40, 0));
+        drive_b.path.directions = vec![2, 2, 2];
+        drive_b.turn.target_facing_16 = Some(0x4000);
+        drive_b.residual_budget = 6;
+
+        assert_ne!(hash_drive(&drive_a), hash_drive(&drive_b));
     }
 
     #[test]

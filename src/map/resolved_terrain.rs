@@ -19,7 +19,10 @@ pub mod zone_class {
 }
 
 use crate::assets::tmp_file::{TmpFile, TmpTile};
-use crate::map::bridge_facts::BridgeCellFacts;
+use crate::map::bridge_facts::{
+    BRIDGE_FLAG_ANCHOR_SELF, BRIDGE_FLAG_DESTROYED_OR_RAMP, BRIDGE_FLAG_STRUCTURAL,
+    BRIDGE_FLAG_TRANSITION, BridgeCellFacts,
+};
 use crate::map::lat;
 use crate::map::map_file::{MapCell, MapFile};
 use crate::map::overlay::OverlayEntry;
@@ -30,6 +33,47 @@ use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass, TerrainRules};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub const YR_CELL_LAND_TUNNEL: u8 = 10;
+
+/// Route-scoped bridge oracle dump for a resolved terrain cell.
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+pub struct BridgeOracleCellFacts {
+    pub rx: u16,
+    pub ry: u16,
+    pub source_tile_index: i32,
+    pub source_sub_tile: u8,
+    pub final_tile_index: i32,
+    pub final_sub_tile: u8,
+    pub level: u8,
+    pub slope_type: u8,
+    pub land_type: u8,
+    pub yr_cell_land_type: u8,
+    pub bridge_set_member: Option<bool>,
+    pub wood_bridge_set_member: Option<bool>,
+    pub bridge_raw_flags: u32,
+    pub flag_0x80_anchor_self: bool,
+    pub flag_0x100_structural: bool,
+    pub flag_0x200_transition: bool,
+    pub flag_0x400_destroyed_or_ramp: bool,
+    pub state_byte: u8,
+    pub overlay_id: Option<u8>,
+    pub family: String,
+    pub direction: Option<u8>,
+    pub anchor: Option<BridgeOracleAnchor>,
+    pub bridge_deck_level: u8,
+    pub has_bridge_deck: bool,
+    pub bridge_walkable: bool,
+    pub bridge_transition: bool,
+}
+
+/// Anchor relation fields flattened for stable JSON diagnostics.
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+pub struct BridgeOracleAnchor {
+    pub rx: u16,
+    pub ry: u16,
+    pub slot: String,
+    pub family: String,
+    pub direction: u8,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Canonical ramp direction from TS++ TIBSUN_DEFINES.H (slope types 1-4).
@@ -206,6 +250,49 @@ impl ResolvedTerrainCell {
     }
 }
 
+impl BridgeOracleCellFacts {
+    pub fn from_cell(cell: &ResolvedTerrainCell, theater_data: Option<&TheaterData>) -> Self {
+        let final_tile_id = normalize_tile_id(cell.final_tile_index);
+        let facts = cell.bridge_facts;
+        Self {
+            rx: cell.rx,
+            ry: cell.ry,
+            source_tile_index: cell.source_tile_index,
+            source_sub_tile: cell.source_sub_tile,
+            final_tile_index: cell.final_tile_index,
+            final_sub_tile: cell.final_sub_tile,
+            level: cell.level,
+            slope_type: cell.slope_type,
+            land_type: cell.land_type,
+            yr_cell_land_type: cell.yr_cell_land_type,
+            bridge_set_member: theater_data
+                .map(|td| tile_in_first_16_of_set(td, td.bridge_set, final_tile_id)),
+            wood_bridge_set_member: theater_data
+                .map(|td| tile_in_first_16_of_set(td, td.wood_bridge_set, final_tile_id)),
+            bridge_raw_flags: facts.raw_flags,
+            flag_0x80_anchor_self: facts.has_flag(BRIDGE_FLAG_ANCHOR_SELF),
+            flag_0x100_structural: facts.has_flag(BRIDGE_FLAG_STRUCTURAL),
+            flag_0x200_transition: facts.has_flag(BRIDGE_FLAG_TRANSITION),
+            flag_0x400_destroyed_or_ramp: facts.has_flag(BRIDGE_FLAG_DESTROYED_OR_RAMP),
+            state_byte: facts.state_byte,
+            overlay_id: facts.overlay_id,
+            family: format!("{:?}", facts.family),
+            direction: facts.direction,
+            anchor: facts.anchor.map(|anchor| BridgeOracleAnchor {
+                rx: anchor.anchor.0,
+                ry: anchor.anchor.1,
+                slot: format!("{:?}", anchor.slot),
+                family: format!("{:?}", anchor.family),
+                direction: anchor.direction,
+            }),
+            bridge_deck_level: cell.bridge_deck_level,
+            has_bridge_deck: cell.has_bridge_deck,
+            bridge_walkable: cell.bridge_walkable,
+            bridge_transition: cell.bridge_transition,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ResolvedTerrainGrid {
     width: u16,
@@ -321,6 +408,24 @@ impl ResolvedTerrainGrid {
             coord = self.step_coord_by_direction(coord, direction)?;
         }
         Some(coord)
+    }
+
+    /// Dump selected cells for the bridge crossing oracle.
+    ///
+    /// This is deliberately read-only and route-scoped. `theater_data` is
+    /// optional so tests can exercise bridge facts without retail theater data;
+    /// when it is absent, theater membership fields are `None` and the
+    /// comparator must keep that group `UNCHECKED`.
+    pub fn bridge_oracle_cell_facts(
+        &self,
+        coords: &[(u16, u16)],
+        theater_data: Option<&TheaterData>,
+    ) -> Vec<BridgeOracleCellFacts> {
+        coords
+            .iter()
+            .filter_map(|&(rx, ry)| self.cell(rx, ry))
+            .map(|cell| BridgeOracleCellFacts::from_cell(cell, theater_data))
+            .collect()
     }
 
     pub fn build(
@@ -1067,6 +1172,16 @@ fn is_wood_bridge_repair_tile(theater_data: Option<&TheaterData>, final_tile_ind
     tile_id >= start && tile_id < start + 16
 }
 
+fn tile_in_first_16_of_set(td: &TheaterData, set_index: Option<u16>, tile_id: u16) -> bool {
+    let Some(set_index) = set_index else {
+        return false;
+    };
+    let Some(bounds) = td.lookup.bounds().get(set_index as usize) else {
+        return false;
+    };
+    tile_id >= bounds.start && tile_id < bounds.start.saturating_add(16)
+}
+
 const AUTO_TUBE_DIRECTIONS: [u8; 4] = [2, 4, 6, 0];
 
 fn build_auto_low_bridge_tubes(
@@ -1173,24 +1288,29 @@ fn load_tile_metadata(
         return TileMetadata::default();
     };
     let Some(asset_manager) = asset_manager else {
-        return metadata_from_set_name(
+        let mut metadata = metadata_from_set_name(
             td.lookup
                 .tileset_index(key.tile_id)
                 .and_then(|idx| td.lookup.set_name(idx)),
             td.lookup.tileset_index(key.tile_id),
         );
+        apply_theater_cliff_ranges(&mut metadata, td, key.tile_id);
+        return metadata;
     };
     let tileset_index = td.lookup.tileset_index(key.tile_id);
     let set_name = tileset_index.and_then(|idx| td.lookup.set_name(idx));
     let mut metadata = metadata_from_set_name(set_name, tileset_index);
 
     let Some(filename) = td.lookup.filename(key.tile_id as i32) else {
+        apply_theater_cliff_ranges(&mut metadata, td, key.tile_id);
         return metadata;
     };
     let Some(bytes) = asset_manager.get(filename) else {
+        apply_theater_cliff_ranges(&mut metadata, td, key.tile_id);
         return metadata;
     };
     let Ok(tmp) = TmpFile::from_bytes(&bytes) else {
+        apply_theater_cliff_ranges(&mut metadata, td, key.tile_id);
         return metadata;
     };
     let Some(tile) = tmp
@@ -1199,6 +1319,7 @@ fn load_tile_metadata(
         .and_then(|t| t.as_ref())
     else {
         apply_land_type_semantics(&mut metadata, terrain_rules, warned_unknown_land_types);
+        apply_theater_cliff_ranges(&mut metadata, td, key.tile_id);
         return metadata;
     };
     // Remember tileset-name road detection before TMP byte overrides it.
@@ -1212,14 +1333,14 @@ fn load_tile_metadata(
         metadata.is_road = true;
         metadata.terrain_class = TerrainClass::Road;
     }
+    apply_theater_cliff_ranges(&mut metadata, td, key.tile_id);
     metadata
 }
 
 fn metadata_from_set_name(set_name: Option<&str>, tileset_index: Option<u16>) -> TileMetadata {
     let lower = set_name.unwrap_or("").to_ascii_lowercase();
     let is_water = lower.contains("water");
-    let is_cliff_like =
-        lower.contains("cliff") || lower.contains("rock") || lower.contains("shore");
+    let is_cliff_like = lower.contains("cliff") || lower.contains("rock");
     let is_rough = lower.contains("rough");
     let is_road = lower.contains("road") || lower.contains("pavement") || lower.contains("pave");
     let land_type = if is_water {
@@ -1261,6 +1382,26 @@ fn metadata_from_set_name(set_name: Option<&str>, tileset_index: Option<u16>) ->
         ground_blocked: is_water || is_cliff_like,
         build_blocked: is_water || is_cliff_like,
         ..TileMetadata::default()
+    }
+}
+
+fn apply_theater_cliff_ranges(
+    metadata: &mut TileMetadata,
+    theater_data: &TheaterData,
+    tile_id: u16,
+) {
+    if !theater_data.is_cliff_or_impassable_tile(tile_id, metadata.slope_type) {
+        return;
+    }
+    metadata.is_cliff_like = true;
+    metadata.ground_blocked = true;
+    metadata.build_blocked = true;
+    if !metadata.is_water && !metadata.has_tmp_metadata {
+        metadata.terrain_class = TerrainClass::Cliff;
+        metadata.land_type = crate::sim::pathfinding::passability::LandType::Rock.as_index();
+        metadata.yr_cell_land_type = metadata.land_type;
+    } else if !metadata.is_water {
+        metadata.terrain_class = TerrainClass::Cliff;
     }
 }
 
@@ -1505,6 +1646,7 @@ mod tests {
             track_tunnels: None,
             dirt_tunnels: None,
             dirt_track_tunnels: None,
+            cliff_ranges: crate::map::theater::TheaterCliffRanges::default(),
         }
     }
 
@@ -1533,6 +1675,7 @@ mod tests {
             track_tunnels: None,
             dirt_tunnels: None,
             dirt_track_tunnels: None,
+            cliff_ranges: crate::map::theater::TheaterCliffRanges::default(),
         }
     }
 
@@ -1749,6 +1892,85 @@ mod tests {
     }
 
     #[test]
+    fn theater_numeric_cliff_range_blocks_plain_named_tiles() {
+        let ini = b"[TileSet0000]\nTilesInSet=10\nFileName=clear\nSetName=Clear\n\n\
+                    [TileSet0001]\nTilesInSet=10\nFileName=plain\nSetName=Plain Terrain\n";
+        let mut theater = synthetic_theater_from_ini(ini);
+        theater.cliff_ranges.cliff_set = Some(10);
+        let map = make_map(
+            vec![MapCell {
+                rx: 0,
+                ry: 0,
+                tile_index: 10,
+                sub_tile: 0,
+                z: 0,
+            }],
+            Vec::new(),
+            Vec::new(),
+        );
+
+        let grid = ResolvedTerrainGrid::build(&map, Some(&theater), None, None, None, false, 0);
+        let cell = grid.cell(0, 0).expect("numeric cliff cell");
+
+        assert!(cell.is_cliff_like);
+        assert!(cell.base_ground_walk_blocked);
+        assert!(cell.ground_walk_blocked);
+        assert!(cell.build_blocked);
+        assert_eq!(cell.terrain_class, TerrainClass::Cliff);
+    }
+
+    #[test]
+    fn shore_set_name_alone_does_not_block_ground() {
+        let ini = b"[TileSet0000]\nTilesInSet=10\nFileName=shore\nSetName=Shore Pieces\n";
+        let theater = synthetic_theater_from_ini(ini);
+        let map = make_map(
+            vec![MapCell {
+                rx: 0,
+                ry: 0,
+                tile_index: 0,
+                sub_tile: 0,
+                z: 0,
+            }],
+            Vec::new(),
+            Vec::new(),
+        );
+
+        let grid = ResolvedTerrainGrid::build(&map, Some(&theater), None, None, None, false, 0);
+        let cell = grid.cell(0, 0).expect("shore cell");
+
+        assert!(!cell.is_cliff_like);
+        assert!(!cell.base_ground_walk_blocked);
+        assert!(!cell.ground_walk_blocked);
+        assert_eq!(cell.terrain_class, TerrainClass::Clear);
+    }
+
+    #[test]
+    fn numeric_cliff_range_preserves_tmp_land_bytes() {
+        let ini = b"[TileSet0000]\nTilesInSet=10\nFileName=clear\nSetName=Clear\n";
+        let mut theater = synthetic_theater_from_ini(ini);
+        theater.cliff_ranges.cliff_set = Some(0);
+        let mut metadata = TileMetadata {
+            has_tmp_metadata: true,
+            land_type: crate::sim::pathfinding::passability::LandType::Road.as_index(),
+            yr_cell_land_type: 11,
+            raw_land_type: 11,
+            ..TileMetadata::default()
+        };
+
+        apply_theater_cliff_ranges(&mut metadata, &theater, 0);
+
+        assert!(metadata.is_cliff_like);
+        assert!(metadata.ground_blocked);
+        assert!(metadata.build_blocked);
+        assert_eq!(
+            metadata.land_type,
+            crate::sim::pathfinding::passability::LandType::Road.as_index()
+        );
+        assert_eq!(metadata.yr_cell_land_type, 11);
+        assert_eq!(metadata.terrain_class, TerrainClass::Cliff);
+    }
+
+    #[test]
     fn resolved_terrain_allow_tiberium_uses_final_lat_tile() {
         let ini = b"[General]\n\
                     RoughTile=1\n\
@@ -1896,6 +2118,42 @@ mod tests {
             effects.bridge_layer.as_ref().map(|b| b.direction),
             Some(BridgeDirection::EastWest)
         );
+    }
+
+    #[test]
+    fn bridge_oracle_cell_facts_dump_stamped_flags_without_theater() {
+        let mut ini_str = String::from("[OverlayTypes]\n");
+        for i in 0..24 {
+            ini_str.push_str(&format!("{i}=FILLER{i}\n"));
+        }
+        ini_str.push_str("24=BRIDGE1\n");
+        let reg = OverlayTypeRegistry::from_ini(&IniFile::from_str(&ini_str), None);
+        let map = make_map(
+            vec![MapCell {
+                rx: 5,
+                ry: 5,
+                tile_index: 0,
+                sub_tile: 0,
+                z: 0,
+            }],
+            vec![OverlayEntry {
+                rx: 5,
+                ry: 5,
+                overlay_id: 0x18,
+                frame: 0,
+            }],
+            Vec::new(),
+        );
+
+        let grid = ResolvedTerrainGrid::build(&map, None, None, None, Some(&reg), false, 0);
+        let dump = grid.bridge_oracle_cell_facts(&[(5, 5)], None);
+
+        assert_eq!(dump.len(), 1);
+        assert_eq!(dump[0].rx, 5);
+        assert!(dump[0].flag_0x80_anchor_self);
+        assert!(dump[0].flag_0x100_structural);
+        assert!(dump[0].flag_0x200_transition);
+        assert_eq!(dump[0].bridge_set_member, None);
     }
 
     #[test]

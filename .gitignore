@@ -1,4 +1,5 @@
 /target
+**/graphify-out/
 
 config.toml
 
@@ -14,6 +15,7 @@ Thumbs.db
 *.txt
 *.tmp
 *.map
+*_todo.md
 
 /ini/
 

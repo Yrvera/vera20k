@@ -598,12 +598,9 @@ pub struct DestroyedCrewedBuilding {
 }
 
 /// A `CanBeOccupied` building destroyed in combat with live occupants —
-/// garrison ejection is deferred to the caller (which has access to
-/// `Simulation` for repositioning, occupancy registration, and scatter).
-///
-/// Occupants are placed at random cells within the building's foundation
-/// footprint, in LIFO order, inheriting the building's current owner (the
-/// garrisoning player).
+/// gamemd routes this through `BuildingClass::SellBuilding @ 0x00457DE0`, the
+/// same occupant-eject helper used by sell. The world layer owns the deferred
+/// repositioning because it has access to `Simulation` and the occupancy grid.
 pub struct DestroyedGarrisonBuilding {
     pub building_id: u64,
     pub type_id: InternedId,
@@ -702,6 +699,23 @@ pub(crate) fn emit_warhead_detonation_effects(
     });
 }
 
+/// Terrain object impact cells emitted by combat and applied by `World`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TerrainDamageEvent {
+    pub rx: u16,
+    pub ry: u16,
+    pub damage: i32,
+    pub warhead_ref: InternedId,
+}
+
+/// Tiberium reduction request emitted by combat and applied by `World`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TiberiumReductionRequest {
+    pub rx: u16,
+    pub ry: u16,
+    pub amount: u16,
+}
+
 /// Result of a combat tick: reveal events + stable IDs of despawned entities.
 pub struct CombatTickResult {
     pub reveal_events: Vec<RevealEvent>,
@@ -714,6 +728,10 @@ pub struct CombatTickResult {
     pub bridge_damage_events: Vec<BridgeDamageEvent>,
     /// Wall overlay impact cells that should apply wall damage after combat resolution.
     pub wall_damage_events: Vec<WallDamageEvent>,
+    /// Terrain object impact cells that should apply Wood/Immune terrain damage.
+    pub terrain_damage_events: Vec<TerrainDamageEvent>,
+    /// Tiberium cells that should be reduced through the shared cell reducer.
+    pub tiberium_reduction_requests: Vec<TiberiumReductionRequest>,
     /// Fire events for render-side muzzle flash / projectile origin computation.
     pub fire_events: Vec<SimFireEvent>,
     /// Crewed buildings destroyed this tick — survivors should be ejected by the caller.
@@ -773,6 +791,8 @@ struct DeathEffects {
     explosion_effects: Vec<ExplosionEffect>,
     bridge_damage_events: Vec<BridgeDamageEvent>,
     wall_damage_events: Vec<WallDamageEvent>,
+    terrain_damage_events: Vec<TerrainDamageEvent>,
+    tiberium_reduction_requests: Vec<TiberiumReductionRequest>,
     death_sounds: Vec<(InternedId, u16, u16)>,
     smudge_spawn_requests: Vec<SmudgeSpawnRequest>,
 }
@@ -788,13 +808,14 @@ fn handle_entity_deaths(
     interner: &mut StringInterner,
     dead_entities: &[u64],
     damage_events: &[(u64, u16, u64, InternedId)],
-    resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
+    _resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
     overlay_grid: Option<&OverlayGrid>,
     overlay_registry: Option<&OverlayTypeRegistry>,
     terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
     current_tick: u64,
 ) -> DeathEffects {
     let mut death_sounds: Vec<(InternedId, u16, u16)> = Vec::new();
+    let mut tiberium_reduction_requests: Vec<TiberiumReductionRequest> = Vec::new();
     // Death-weapon detonations use the destroyed object's game-space position.
     // The cell and z still drive damage/smudge dispatch; sub-cell leptons keep
     // AnimList placement aligned with the detonation CoordStruct shape.
@@ -869,10 +890,9 @@ fn handle_entity_deaths(
                 .map(|c| c.passengers.clone())
                 .unwrap_or_default();
 
-            // Branch: garrisoned CanBeOccupied buildings eject occupants at
-            // random foundation cells (handled post-combat by the world layer
-            // via production::eject_destruction_garrison). Transports continue
-            // to kill all riders — that's a separate parity gap to fix later.
+            // Branch: garrisoned CanBeOccupied buildings use the same gamemd
+            // SellBuilding occupant-eject contract as sell. Transports continue
+            // to kill all riders; that's a separate parity gap to fix later.
             //
             // Re-resolve the type string here because earlier mutable borrows
             // of `interner` (death_weapon_aoe, intern calls) ended its prior
@@ -1039,6 +1059,7 @@ fn handle_entity_deaths(
                         continue;
                     }
                     target.health.current = target.health.current.saturating_sub(aoe_dmg);
+                    target.refresh_building_damage_state_gate(rules.general.condition_yellow_x1000);
                     if let Some(obj) = rules.object(interner.resolve(target.type_ref)) {
                         infantry::apply_fear_from_damage(
                             obj,
@@ -1052,7 +1073,13 @@ fn handle_entity_deaths(
                 }
             }
             // Ore destruction from death explosion.
-            destroy_ore_at_impact(resource_nodes, *rx, *ry, *dmg, warhead.cell_spread);
+            destroy_ore_at_impact(
+                &mut tiberium_reduction_requests,
+                *rx,
+                *ry,
+                *dmg,
+                warhead.cell_spread,
+            );
             emit_warhead_detonation_effects(
                 warhead,
                 *dmg,
@@ -1077,6 +1104,8 @@ fn handle_entity_deaths(
         explosion_effects,
         bridge_damage_events,
         wall_damage_events,
+        terrain_damage_events: Vec::new(),
+        tiberium_reduction_requests,
         death_sounds,
         smudge_spawn_requests,
     }
@@ -1108,7 +1137,7 @@ fn clear_targets_on_dead_entity(entities: &mut EntityStore, dead_id: u64) {
 /// ALL warheads destroy ore unconditionally — the `Tiberium=` INI flag only
 /// gates vein destruction (not implemented).
 fn destroy_ore_at_impact(
-    resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
+    requests: &mut Vec<TiberiumReductionRequest>,
     impact_rx: u16,
     impact_ry: u16,
     base_damage: i32,
@@ -1123,7 +1152,11 @@ fn destroy_ore_at_impact(
         let cx = impact_rx as i32 + dx as i32;
         let cy = impact_ry as i32 + dy as i32;
         if cx >= 0 && cy >= 0 {
-            crate::sim::miner::reduce_tiberium(resource_nodes, (cx as u16, cy as u16), ore_damage);
+            requests.push(TiberiumReductionRequest {
+                rx: cx as u16,
+                ry: cy as u16,
+                amount: ore_damage,
+            });
         }
     }
 }
@@ -1159,6 +1192,8 @@ pub fn tick_combat_with_fog(
             spy_sat_reshroud_owners: Vec::new(),
             bridge_damage_events: Vec::new(),
             wall_damage_events: Vec::new(),
+            terrain_damage_events: Vec::new(),
+            tiberium_reduction_requests: Vec::new(),
             fire_events: Vec::new(),
             destroyed_crewed_buildings: Vec::new(),
             destroyed_garrison_buildings: Vec::new(),
@@ -1480,6 +1515,8 @@ pub fn tick_combat_with_fog(
     let mut reveal_events: Vec<RevealEvent> = Vec::new();
     let mut bridge_damage_events: Vec<BridgeDamageEvent> = Vec::new();
     let mut wall_damage_events: Vec<WallDamageEvent> = Vec::new();
+    let mut terrain_damage_events: Vec<TerrainDamageEvent> = Vec::new();
+    let mut tiberium_reduction_requests: Vec<TiberiumReductionRequest> = Vec::new();
     let mut explosion_effects: Vec<ExplosionEffect> = Vec::new();
     let mut smudge_spawn_requests: Vec<SmudgeSpawnRequest> = Vec::new();
     let mut burst_updates: Vec<(u64, u8, u8, u16)> = Vec::new(); // (id, burst_rem, burst_delay, rof_cd)
@@ -1897,6 +1934,14 @@ pub fn tick_combat_with_fog(
                     });
                 }
             }
+            if warhead.wood && base_damage > 0 {
+                terrain_damage_events.push(TerrainDamageEvent {
+                    rx: target_rx,
+                    ry: target_ry,
+                    damage: base_damage,
+                    warhead_ref: interner.intern(&warhead.id),
+                });
+            }
         } else {
             // Integer damage: base_damage * verses_pct / 100.
             // base_damage already includes OccupyDamageMultiplier for garrison.
@@ -1933,12 +1978,20 @@ pub fn tick_combat_with_fog(
                     });
                 }
             }
+            if warhead.wood && base_damage > 0 {
+                terrain_damage_events.push(TerrainDamageEvent {
+                    rx: target_rx,
+                    ry: target_ry,
+                    damage: base_damage,
+                    warhead_ref: interner.intern(&warhead.id),
+                });
+            }
         }
 
         // Ore destruction: all warheads unconditionally destroy ore at impact cells.
         // CellSpreadTable[0] = 1, so even CellSpread=0 weapons check the center cell.
         destroy_ore_at_impact(
-            resource_nodes,
+            &mut tiberium_reduction_requests,
             target_rx,
             target_ry,
             base_damage,
@@ -2117,6 +2170,7 @@ pub fn tick_combat_with_fog(
                 continue;
             }
             target.health.current = target.health.current.saturating_sub(*damage);
+            target.refresh_building_damage_state_gate(rules.general.condition_yellow_x1000);
             if let Some(obj) = rules.object(interner.resolve(target.type_ref)) {
                 infantry::apply_fear_from_damage(
                     obj,
@@ -2159,6 +2213,8 @@ pub fn tick_combat_with_fog(
     );
     bridge_damage_events.extend(death.bridge_damage_events);
     wall_damage_events.extend(death.wall_damage_events);
+    terrain_damage_events.extend(death.terrain_damage_events);
+    tiberium_reduction_requests.extend(death.tiberium_reduction_requests);
     explosion_effects.extend(death.explosion_effects);
     smudge_spawn_requests.extend(death.smudge_spawn_requests);
 
@@ -2188,6 +2244,8 @@ pub fn tick_combat_with_fog(
         spy_sat_reshroud_owners: death.spy_sat_reshroud_owners,
         bridge_damage_events,
         wall_damage_events,
+        terrain_damage_events,
+        tiberium_reduction_requests,
         fire_events,
         destroyed_crewed_buildings: death.destroyed_crewed_buildings,
         destroyed_garrison_buildings: death.destroyed_garrison_buildings,

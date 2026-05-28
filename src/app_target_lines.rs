@@ -17,6 +17,7 @@ use crate::rules::house_colors::{self, HouseColorIndex};
 use crate::rules::ruleset::RuleSet;
 use crate::sim::combat::{AttackTarget, TargetKind};
 use crate::sim::command::{Command, CommandEnvelope};
+use crate::sim::components::NavTargetRef;
 use crate::sim::game_entity::GameEntity;
 use crate::sim::world::Simulation;
 
@@ -191,13 +192,16 @@ fn selected_action_line_for_entity(
         });
     }
 
-    let movement = entity.movement_target.as_ref()?;
-    let (rx, ry) = movement
-        .final_goal
-        .or_else(|| movement.path.last().copied())?;
+    let _nav_com = entity.navigation.nav_com?;
+    let nav_target = entity
+        .navigation
+        .nav_queue
+        .last()
+        .copied()
+        .or(entity.navigation.nav_com)?;
     Some(SelectedActionLine {
         start,
-        end: project_cell_destination(rx, ry, height_map, None, Some(sim)).into(),
+        end: resolve_navigation_target_point(nav_target, sim, height_map)?,
         kind: SelectedLineKind::Move,
     })
 }
@@ -222,6 +226,24 @@ fn resolve_attack_target_point(
         TargetKind::Cell(rx, ry) => {
             Some(project_cell_destination(rx, ry, height_map, None, Some(sim)).into())
         }
+    }
+}
+
+fn resolve_navigation_target_point(
+    target: NavTargetRef,
+    sim: &Simulation,
+    height_map: &BTreeMap<(u16, u16), u8>,
+) -> Option<ScreenPoint> {
+    match target {
+        NavTargetRef::Cell { rx, ry } => {
+            Some(project_cell_destination(rx, ry, height_map, None, Some(sim)).into())
+        }
+        NavTargetRef::Entity { id }
+        | NavTargetRef::Object { id }
+        | NavTargetRef::Building { id } => sim.entities.get(id).map(|target| ScreenPoint {
+            x: target.position.screen_x,
+            y: target.position.screen_y,
+        }),
     }
 }
 
@@ -371,6 +393,7 @@ mod tests {
         let mut sim = Simulation::new();
         let mut unit = GameEntity::test_default(1, "MTNK", "Americans", 10, 10);
         unit.selected = true;
+        unit.navigation.nav_com = Some(NavTargetRef::cell(25, 25));
         unit.movement_target = Some(MovementTarget {
             final_goal: Some((25, 25)),
             path: vec![(10, 10), (25, 25)],
@@ -380,6 +403,17 @@ mod tests {
         let target = GameEntity::test_default(2, "HTNK", "Soviet", 14, 10);
         sim.entities.insert(unit);
         sim.entities.insert(target);
+        sim
+    }
+
+    fn sim_with_selected_unit_navcom(nav_com: Option<(u16, u16)>) -> Simulation {
+        let mut sim = Simulation::new();
+        let mut unit = GameEntity::test_default(1, "MTNK", "Americans", 10, 10);
+        unit.selected = true;
+        if let Some((rx, ry)) = nav_com {
+            unit.navigation.nav_com = Some(NavTargetRef::cell(rx, ry));
+        }
+        sim.entities.insert(unit);
         sim
     }
 
@@ -486,6 +520,44 @@ mod tests {
                     target.position.screen_y.round(),
                 ]
         }));
+    }
+
+    #[test]
+    fn selected_action_line_uses_navcom_without_movement_target() {
+        let sim = sim_with_selected_unit_navcom(Some((21, 22)));
+        let unit = sim.entities.get(1).unwrap();
+        let line = selected_action_line_for_entity(unit, &sim, &BTreeMap::new()).unwrap();
+        assert_eq!(
+            line.end,
+            project_cell_destination(21, 22, &BTreeMap::new(), None, Some(&sim)).into()
+        );
+    }
+
+    #[test]
+    fn selected_action_line_uses_navqueue_last_when_navcom_exists() {
+        let mut sim = sim_with_selected_unit_navcom(Some((21, 22)));
+        let unit = sim.entities.get_mut(1).unwrap();
+        unit.navigation.nav_queue.push(NavTargetRef::cell(30, 31));
+        unit.navigation.nav_queue.push(NavTargetRef::cell(32, 33));
+        let unit = sim.entities.get(1).unwrap();
+        let line = selected_action_line_for_entity(unit, &sim, &BTreeMap::new()).unwrap();
+        assert_eq!(
+            line.end,
+            project_cell_destination(32, 33, &BTreeMap::new(), None, Some(&sim)).into()
+        );
+    }
+
+    #[test]
+    fn selected_action_line_navqueue_without_navcom_does_not_draw() {
+        let mut sim = sim_with_selected_unit_navcom(None);
+        sim.entities
+            .get_mut(1)
+            .unwrap()
+            .navigation
+            .nav_queue
+            .push(NavTargetRef::cell(30, 31));
+        let unit = sim.entities.get(1).unwrap();
+        assert!(selected_action_line_for_entity(unit, &sim, &BTreeMap::new()).is_none());
     }
 
     #[test]

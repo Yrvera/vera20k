@@ -171,6 +171,10 @@ pub struct ObjectType {
     /// Fraction of max speed lost per tick during braking (DeaccelerationFactor=).
     /// Default 0.02. Applied when within slowdown_distance of destination.
     pub decel_factor: SimFixed,
+    /// Whether Drive locomotors ramp toward target speed (`Accelerates=`).
+    /// Defaults to true; `Accelerates=false` is handled by DriveLocomotion speed
+    /// fraction ownership, not by mutating raw `Speed=`.
+    pub accelerates: bool,
     /// Lepton distance from destination at which braking begins (SlowdownDistance=).
     /// Default 512 (~2 cells). Original engine default is 500.
     pub slowdown_distance: i32,
@@ -334,6 +338,18 @@ pub struct ObjectType {
     /// building's placement / ownership footprint. Matches the original
     /// engine's HasBib relaxation in the per-cell occupant chain check.
     pub bib: bool,
+    /// Whether this building is a native opening gate (`Gate=yes`).
+    ///
+    /// Consumed by the runtime cell-entry classifier together with live building
+    /// gate state. `GateStages=` is visual timing data and is not part of the
+    /// `CanGarrison` passability predicate.
+    pub gate: bool,
+    /// Native helper transition duration from `DeployTime=` converted as
+    /// `trunc(value * 900)`. Used by building gates for opening/closing.
+    pub deploy_time_ticks: u32,
+    /// Native open-hold delay from `GateCloseDelay=` converted as
+    /// `trunc(value * 900)`.
+    pub gate_close_delay_ticks: u32,
     /// Bonus credits storage for refineries (Storage= in rules.ini).
     /// Refineries typically have Storage=300 — added to owner credits on placement.
     pub storage: i32,
@@ -455,6 +471,11 @@ pub struct ObjectType {
     /// What this building undeploys into (e.g., GACNST UndeploysInto=AMCV).
     /// Parsed from rules.ini `UndeploysInto=`. Used for ConYard→MCV sell-back.
     pub undeploys_into: Option<String>,
+    /// Raw 8-bit facing required before a unit can deploy into this building type.
+    /// Parsed from building-side `DeployFacing=` as INI value << 5; default is 0x80.
+    pub deploy_facing: u8,
+    /// Whether this building is a construction yard. Enables ConYard-only MCV repack gates.
+    pub construction_yard: bool,
 
     /// Whether this unit can be crushed by vehicles with Crusher movement zones.
     /// Default: false for all types. Parsed from `Crushable=` in rules.ini.
@@ -464,6 +485,9 @@ pub struct ObjectType {
     /// Whether deployed infantry remains crushable by regular crushers.
     /// Defaults to true; stock Guardian GI overrides this with `DeployedCrushable=no`.
     pub deployed_crushable: bool,
+    /// Whether this unit has normal TechnoType `Crusher=yes` capability.
+    /// Distinct from `OmniCrusher=` and MovementZone crusher names.
+    pub crusher: bool,
     /// When true, this building cannot receive ForceShield invulnerability.
     /// From `NoForceShield=yes` in rulesmd.ini.
     pub no_force_shield: bool,
@@ -770,6 +794,14 @@ pub struct ObjectType {
     pub cloak_generator: bool,
 }
 
+fn native_minutes_to_ticks(value: f32) -> u32 {
+    if !value.is_finite() || value <= 0.0 {
+        0
+    } else {
+        (f64::from(value) * 900.0).trunc().min(u32::MAX as f64) as u32
+    }
+}
+
 impl ObjectType {
     /// Whether this type participates in selected factory rally-line visuals.
     pub fn has_rally_line(&self) -> bool {
@@ -848,6 +880,7 @@ impl ObjectType {
                 .get_f32("DeaccelerationFactor")
                 .map(sim_from_f32)
                 .unwrap_or(SimFixed::lit("0.002")),
+            accelerates: section.get_bool("Accelerates").unwrap_or(true),
             slowdown_distance: section.get_i32("SlowdownDistance").unwrap_or(500),
             sight: section.get_i32("Sight").unwrap_or(0),
             tech_level: section.get_i32("TechLevel").unwrap_or(-1),
@@ -932,6 +965,13 @@ impl ObjectType {
             harvester: section.get_bool("Harvester").unwrap_or(false),
             refinery: section.get_bool("Refinery").unwrap_or(false),
             bib: section.get_bool("Bib").unwrap_or(false),
+            gate: section.get_bool("Gate").unwrap_or(false),
+            deploy_time_ticks: native_minutes_to_ticks(
+                section.get_f32("DeployTime").unwrap_or(0.0),
+            ),
+            gate_close_delay_ticks: native_minutes_to_ticks(
+                section.get_f32("GateCloseDelay").unwrap_or(0.0),
+            ),
             storage: section.get_i32("Storage").unwrap_or(0),
             free_unit: section.get("FreeUnit").map(|s| s.to_string()),
             dock: section
@@ -1005,12 +1045,18 @@ impl ObjectType {
             // Crush properties -- default false for all types.
             crushable: section.get_bool("Crushable").unwrap_or(false),
             deployed_crushable: section.get_bool("DeployedCrushable").unwrap_or(true),
+            crusher: section.get_bool("Crusher").unwrap_or(false),
             no_force_shield: section.get_bool("NoForceShield").unwrap_or(false),
             omni_crusher: section.get_bool("OmniCrusher").unwrap_or(false),
             omni_crush_resistant: section.get_bool("OmniCrushResistant").unwrap_or(false),
 
             deploys_into: section.get("DeploysInto").map(|s| s.to_string()),
             undeploys_into: section.get("UndeploysInto").map(|s| s.to_string()),
+            deploy_facing: section
+                .get_i32("DeployFacing")
+                .map(|v| (v.clamp(0, 7) as u8) << 5)
+                .unwrap_or(0x80),
+            construction_yard: section.get_bool("ConstructionYard").unwrap_or(false),
             factory: section.get("Factory").and_then(FactoryType::from_ini),
             cloning: section.get_bool("Cloning").unwrap_or(false),
             exit_coord: parse_exit_coord(section.get("ExitCoord")),
@@ -1487,6 +1533,24 @@ mod tests {
     }
 
     #[test]
+    fn parse_construction_yard_and_deploy_facing() {
+        let ini: IniFile = IniFile::from_str("[GACNST]\nConstructionYard=yes\nDeployFacing=2\n");
+        let section: &IniSection = ini.section("GACNST").unwrap();
+        let obj = ObjectType::from_ini_section("GACNST", section, ObjectCategory::Building);
+        assert!(obj.construction_yard);
+        assert_eq!(obj.deploy_facing, 0x40);
+
+        let default_ini = IniFile::from_str("[GAPOWR]\n");
+        let default_obj = ObjectType::from_ini_section(
+            "GAPOWR",
+            default_ini.section("GAPOWR").unwrap(),
+            ObjectCategory::Building,
+        );
+        assert!(!default_obj.construction_yard);
+        assert_eq!(default_obj.deploy_facing, 0x80);
+    }
+
+    #[test]
     fn test_parse_slave_miner_fields() {
         let ini: IniFile = IniFile::from_str(
             "[SMIN]\nEnslaves=SLAV\nSlavesNumber=5\nSlaveRegenRate=500\n\
@@ -1790,6 +1854,18 @@ mod tests {
     }
 
     #[test]
+    fn gate_flag_parses_from_ini() {
+        let ini = IniFile::from_str(
+            "[GAGATE_A]\nGate=yes\nFoundation=3x1\nDeployTime=.044\nGateCloseDelay=.2\n",
+        );
+        let section = ini.section("GAGATE_A").unwrap();
+        let obj = ObjectType::from_ini_section("GAGATE_A", section, ObjectCategory::Building);
+        assert!(obj.gate);
+        assert_eq!(obj.deploy_time_ticks, 39);
+        assert_eq!(obj.gate_close_delay_ticks, 180);
+    }
+
+    #[test]
     fn bunkerable_defaults_true_for_vehicles_only() {
         let ini = IniFile::from_str("[TEST]\n");
         let section = ini.section("TEST").unwrap();
@@ -1998,6 +2074,38 @@ mod tests {
         let section = ini.section("GGI").unwrap();
         let obj = ObjectType::from_ini_section("GGI", section, ObjectCategory::Infantry);
         assert!(!obj.deployed_crushable);
+    }
+
+    #[test]
+    fn object_type_parses_regular_crusher_for_amcv_fixture() {
+        let ini = IniFile::from_str("[AMCV]\nSpeed=4\nMovementZone=Normal\nCrusher=yes\n");
+        let section = ini.section("AMCV").unwrap();
+        let obj = ObjectType::from_ini_section("AMCV", section, ObjectCategory::Vehicle);
+        assert!(obj.crusher);
+    }
+
+    #[test]
+    fn object_type_crusher_defaults_false() {
+        let ini = IniFile::from_str("[MTNK]\nSpeed=7\nMovementZone=Normal\n");
+        let section = ini.section("MTNK").unwrap();
+        let obj = ObjectType::from_ini_section("MTNK", section, ObjectCategory::Vehicle);
+        assert!(!obj.crusher);
+    }
+
+    #[test]
+    fn object_type_parses_accelerates_false() {
+        let ini = IniFile::from_str("[MTNK]\nSpeed=7\nAccelerates=false\n");
+        let section = ini.section("MTNK").unwrap();
+        let obj = ObjectType::from_ini_section("MTNK", section, ObjectCategory::Vehicle);
+        assert!(!obj.accelerates);
+    }
+
+    #[test]
+    fn object_type_accelerates_defaults_true() {
+        let ini = IniFile::from_str("[AMCV]\nSpeed=4\n");
+        let section = ini.section("AMCV").unwrap();
+        let obj = ObjectType::from_ini_section("AMCV", section, ObjectCategory::Vehicle);
+        assert!(obj.accelerates);
     }
 
     #[test]

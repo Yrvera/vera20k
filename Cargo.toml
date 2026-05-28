@@ -54,6 +54,10 @@ path = "src/bin/inspect-pcx-palette.rs"
 name = "inspect-yro-render"
 path = "src/bin/inspect-yro-render.rs"
 
+[[bin]]
+name = "bridge-oracle-compare"
+path = "src/bin/bridge-oracle-compare.rs"
+
 [dependencies]
 # --- GPU rendering ---
 # wgpu 27 is the latest version compatible with egui-wgpu 0.33 (requires ^27.0.1).

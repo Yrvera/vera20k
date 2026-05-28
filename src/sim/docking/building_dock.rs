@@ -301,6 +301,9 @@ pub fn tick_building_docks(sim: &mut Simulation, rules: &RuleSet) {
 
         if m.heal_amount > 0 {
             entity.health.current = (entity.health.current + m.heal_amount).min(entity.health.max);
+            // Service depots normally repair units/aircraft; this remains a no-op
+            // for them and protects the gate if a structure ever reaches this path.
+            entity.refresh_building_damage_state_gate(rules.general.condition_yellow_x1000);
         }
 
         if m.deduct_credits > 0 {

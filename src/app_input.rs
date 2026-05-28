@@ -880,7 +880,9 @@ fn queue_deploy_undeploy_for_selected(state: &mut AppState) {
                         commands.push(Command::UnloadPassengers {
                             transport_id: entity_id,
                         });
-                    } else if obj.map_or(false, |o| o.undeploys_into.is_some()) {
+                    } else if rules.is_some_and(|rules| {
+                        sim.should_show_undeploy_building_command(entity_id, rules)
+                    }) {
                         commands.push(Command::UndeployBuilding { entity_id });
                     }
                 }

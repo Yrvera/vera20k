@@ -11,8 +11,9 @@ use super::super::layout::{
 use super::trackbars::{trackbar_ids, trackbar_rect};
 use super::{
     ChooseMapHoverTarget, ChooseMapModalState, OwnerDrawButton, SkirmishAiRowType, SkirmishComboId,
-    SkirmishComboItem, SkirmishHoverTarget, SkirmishShellAction, SkirmishShellState,
-    combo_dropdown_content_rect, combo_dropdown_visible_row_count, combo_items, combo_rect,
+    SkirmishComboItem, SkirmishCountryChoice, SkirmishHoverTarget, SkirmishShellAction,
+    SkirmishShellState, combo_dropdown_content_rect, combo_dropdown_visible_row_count, combo_items,
+    combo_rect,
 };
 
 fn hover_open_combo_item(
@@ -139,6 +140,14 @@ pub fn status_help_key_for_hover(target: SkirmishHoverTarget) -> Option<&'static
             id: SkirmishComboId::AiType(_),
             item: SkirmishComboItem::AiType(row_type),
         } => status_help_key_for_ai_row_type(row_type),
+        SkirmishHoverTarget::ComboItem {
+            id: id @ SkirmishComboId::Side(_),
+            item: SkirmishComboItem::Country(country),
+        } => status_help_key_for_side_item(country).or_else(|| status_help_key_for_combo(id)),
+        SkirmishHoverTarget::ComboItem {
+            id: id @ SkirmishComboId::Color(_),
+            item,
+        } => status_help_key_for_color_item(item).or_else(|| status_help_key_for_combo(id)),
         SkirmishHoverTarget::ComboItem { id, .. } => status_help_key_for_combo(id),
     }
 }
@@ -209,6 +218,40 @@ fn status_help_key_for_ai_row_type(row_type: SkirmishAiRowType) -> Option<&'stat
         SkirmishAiRowType::Easy => Some("STT:PlayerDumbAI"),
         SkirmishAiRowType::Normal => Some("STT:PlayerSmartAI"),
         SkirmishAiRowType::Hard => Some("STT:PlayerGeniusAI"),
+    }
+}
+
+fn status_help_key_for_side_item(country: SkirmishCountryChoice) -> Option<&'static str> {
+    match country {
+        SkirmishCountryChoice::Random => Some("STT:PlayerSideRandom"),
+        SkirmishCountryChoice::Country(country) => match country {
+            crate::ui::main_menu::SkirmishCountry::America => Some("STT:PlayerSideAmerica"),
+            crate::ui::main_menu::SkirmishCountry::Korea => Some("STT:PlayerSideKorea"),
+            crate::ui::main_menu::SkirmishCountry::France => Some("STT:PlayerSideFrance"),
+            crate::ui::main_menu::SkirmishCountry::Germany => Some("STT:PlayerSideGermany"),
+            crate::ui::main_menu::SkirmishCountry::GreatBritain => Some("STT:PlayerSideBritain"),
+            crate::ui::main_menu::SkirmishCountry::Libya => Some("STT:PlayerSideLibya"),
+            crate::ui::main_menu::SkirmishCountry::Iraq => Some("STT:PlayerSideIraq"),
+            crate::ui::main_menu::SkirmishCountry::Cuba => Some("STT:PlayerSideCuba"),
+            crate::ui::main_menu::SkirmishCountry::Russia => Some("STT:PlayerSideRussia"),
+            crate::ui::main_menu::SkirmishCountry::Yuri => Some("STT:PlayerSideYuriCountry"),
+        },
+    }
+}
+
+fn status_help_key_for_color_item(item: SkirmishComboItem) -> Option<&'static str> {
+    match item {
+        SkirmishComboItem::ColorSentinel(-2) => Some("STT:PlayerColorRandom"),
+        SkirmishComboItem::Color(0) => Some("STT:PlayerColorGold"),
+        SkirmishComboItem::Color(1) => Some("STT:PlayerColorRed"),
+        SkirmishComboItem::Color(2) => Some("STT:PlayerColorBlue"),
+        SkirmishComboItem::Color(3) => Some("STT:PlayerColorGreen"),
+        SkirmishComboItem::Color(4) => Some("STT:PlayerColorOrange"),
+        SkirmishComboItem::Color(5) => Some("STT:PlayerColorSkyBlue"),
+        SkirmishComboItem::Color(6) => Some("STT:PlayerColorPurple"),
+        SkirmishComboItem::Color(7) => Some("STT:PlayerColorPink"),
+        SkirmishComboItem::Color(8) => Some("STT:PlayerColorObserver"),
+        _ => None,
     }
 }
 

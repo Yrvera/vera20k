@@ -108,6 +108,12 @@ pub(crate) struct DecodedAudio {
     pub(crate) channels: u16,
 }
 
+struct QueuedVoice {
+    sound_id: String,
+    decoded: DecodedAudio,
+    volume: f32,
+}
+
 /// Manages sound effect playback with separate SFX pool and voice slot.
 ///
 /// Matches the original engine's architecture:
@@ -121,6 +127,10 @@ pub struct SfxPlayer {
     /// Dedicated voice player — unit responses cut off the previous voice.
     /// Separate from SFX pool so voices never compete with weapon sounds.
     voice_player: Option<Player>,
+    /// Queued EVA/voice announcements waiting for the dedicated voice slot.
+    queued_voice: VecDeque<QueuedVoice>,
+    /// Sound id currently occupying the dedicated voice slot, when known.
+    current_voice_id: Option<String>,
     /// SFX master volume (0.0 to 1.0).
     volume: f64,
     /// Simple counter used as seed for pseudo-random sound selection.
@@ -139,6 +149,8 @@ impl SfxPlayer {
             _device: device,
             active: VecDeque::new(),
             voice_player: None,
+            queued_voice: VecDeque::new(),
+            current_voice_id: None,
             volume: 0.7,
             random_counter: 0,
         })
@@ -231,6 +243,8 @@ impl SfxPlayer {
         assets: &AssetManager,
         audio_indices: &[crate::assets::audio_bag::AudioIndex],
     ) -> bool {
+        self.advance_voice_queue();
+
         // Resolve through registry first, then fallback to bag name.
         let (decoded, entry_volume) = if let Some(entry) = registry.get(sound_id) {
             if entry.sounds.is_empty() {
@@ -251,15 +265,130 @@ impl SfxPlayer {
         };
 
         let final_volume = (entry_volume * self.volume) as f32;
-        self.play_voice(decoded, final_volume)
+        self.play_voice(decoded, final_volume, Some(sound_id.to_string()))
+    }
+
+    /// Queue an EVA-style announcement without interrupting the current voice.
+    ///
+    /// This is the narrow app-facing bridge for evamd.ini `Type=QUEUE` cues.
+    /// Full native priority tiers and inter-announcement delay remain a later
+    /// VoxClass parity surface.
+    pub fn queue_eva_sound(
+        &mut self,
+        sound_id: &str,
+        registry: &SoundRegistry,
+        assets: &AssetManager,
+        audio_indices: &[crate::assets::audio_bag::AudioIndex],
+    ) -> bool {
+        self.advance_voice_queue();
+
+        if self.current_voice_id.as_deref() == Some(sound_id)
+            || self
+                .queued_voice
+                .iter()
+                .any(|queued| queued.sound_id == sound_id)
+        {
+            return true;
+        }
+
+        let (decoded, entry_volume) =
+            match self.resolve_voice_audio(sound_id, registry, assets, audio_indices) {
+                Some(resolved) => resolved,
+                None => return false,
+            };
+        self.queued_voice.push_back(QueuedVoice {
+            sound_id: sound_id.to_string(),
+            decoded,
+            volume: (entry_volume * self.volume) as f32,
+        });
+        self.advance_voice_queue();
+        true
+    }
+
+    /// Play a STANDARD EVA cue only if the voice system is currently idle.
+    ///
+    /// Native STANDARD entries are fire-and-forget; when voice playback or a
+    /// queued announcement is active they are not retained for later playback.
+    pub fn play_standard_eva_sound(
+        &mut self,
+        sound_id: &str,
+        registry: &SoundRegistry,
+        assets: &AssetManager,
+        audio_indices: &[crate::assets::audio_bag::AudioIndex],
+    ) -> bool {
+        self.advance_voice_queue();
+        if self
+            .voice_player
+            .as_ref()
+            .is_some_and(|player| !player.empty())
+            || !self.queued_voice.is_empty()
+        {
+            return false;
+        }
+
+        let (decoded, entry_volume) =
+            match self.resolve_voice_audio(sound_id, registry, assets, audio_indices) {
+                Some(resolved) => resolved,
+                None => return false,
+            };
+        self.play_voice(
+            decoded,
+            (entry_volume * self.volume) as f32,
+            Some(sound_id.to_string()),
+        )
+    }
+
+    fn resolve_voice_audio(
+        &mut self,
+        sound_id: &str,
+        registry: &SoundRegistry,
+        assets: &AssetManager,
+        audio_indices: &[crate::assets::audio_bag::AudioIndex],
+    ) -> Option<(DecodedAudio, f64)> {
+        if let Some(entry) = registry.get(sound_id) {
+            if entry.sounds.is_empty() {
+                return None;
+            }
+            self.random_counter = self.random_counter.wrapping_add(1);
+            let idx = (self.random_counter as usize) % entry.sounds.len();
+            let filename = &entry.sounds[idx];
+            return load_sfx(filename, assets, audio_indices)
+                .map(|decoded| (decoded, entry.volume as f64 / 100.0));
+        }
+
+        load_sfx(sound_id, assets, audio_indices).map(|decoded| (decoded, 1.0))
+    }
+
+    /// Starts the next queued EVA cue if the dedicated voice slot is idle.
+    pub fn advance_voice_queue(&mut self) {
+        if self
+            .voice_player
+            .as_ref()
+            .is_some_and(|player| !player.empty())
+        {
+            return;
+        }
+        self.voice_player = None;
+        self.current_voice_id = None;
+
+        let Some(queued) = self.queued_voice.pop_front() else {
+            return;
+        };
+        self.play_voice(queued.decoded, queued.volume, Some(queued.sound_id));
     }
 
     /// Play decoded audio on the dedicated voice slot, cutting off any current voice.
-    fn play_voice(&mut self, mut decoded: DecodedAudio, final_volume: f32) -> bool {
+    fn play_voice(
+        &mut self,
+        mut decoded: DecodedAudio,
+        final_volume: f32,
+        sound_id: Option<String>,
+    ) -> bool {
         // Cut off previous voice immediately.
         if let Some(old) = self.voice_player.take() {
             old.stop();
         }
+        self.current_voice_id = None;
 
         apply_fade(
             &mut decoded.samples,
@@ -282,6 +411,7 @@ impl SfxPlayer {
         player.set_volume(final_volume);
         player.append(source);
         self.voice_player = Some(player);
+        self.current_voice_id = sound_id;
         true
     }
 
@@ -324,6 +454,7 @@ impl SfxPlayer {
     /// Remove handles for sounds that have finished playing.
     fn cleanup_finished(&mut self) {
         self.active.retain(|p: &Player| !p.empty());
+        self.advance_voice_queue();
     }
 
     /// Set the SFX master volume (0.0 = silent, 1.0 = full).
@@ -339,6 +470,11 @@ impl SfxPlayer {
     /// Number of currently active (playing) sound effects.
     pub fn active_count(&self) -> usize {
         self.active.len()
+    }
+
+    /// Number of queued EVA/voice announcements waiting on the voice slot.
+    pub fn queued_voice_count(&self) -> usize {
+        self.queued_voice.len()
     }
 }
 

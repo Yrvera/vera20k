@@ -212,9 +212,16 @@ pub struct ProductionState {
     /// Used to track which SLAV infantry belong to which deployed SMIN/YAREFN.
     pub slave_bindings: BTreeMap<u64, Vec<u64>>,
     /// TIBTRE-style ore-spawning terrain objects, keyed by map cell.
-    /// Populated at map load from `app.terrain_objects` filtered by
-    /// `SpawnsTiberium=yes` on the matching TerrainObjectType.
+    /// Derived from live `terrain_objects`; removal/limbo must remove this index.
     pub terrain_spawners: BTreeMap<(u16, u16), crate::sim::terrain_spawn::TerrainSpawnerState>,
+    /// Live `TerrainClass`-style map objects, keyed by deterministic stable id.
+    pub terrain_objects: BTreeMap<u64, crate::sim::terrain_object::TerrainObjectState>,
+    /// Live terrain object cell index, cell -> stable id.
+    pub terrain_object_cells: BTreeMap<(u16, u16), u64>,
+    /// Next deterministic terrain object stable id.
+    pub next_terrain_object_id: u64,
+    /// Terrain occupation mask by cell, mirroring CellClass+0x124 bits 0x04/0x08/0x10.
+    pub terrain_occupation_bits: BTreeMap<(u16, u16), u8>,
     /// Cells occupied by terrain objects whose type has `SpawnsTiberium=yes`.
     ///
     /// This is broader than `terrain_spawners`: non-animated legacy spawners do
@@ -243,6 +250,10 @@ impl Default for ProductionState {
             ore_growth_state: OreGrowthState::new(0, 0),
             slave_bindings: BTreeMap::new(),
             terrain_spawners: BTreeMap::new(),
+            terrain_objects: BTreeMap::new(),
+            terrain_object_cells: BTreeMap::new(),
+            next_terrain_object_id: 1,
+            terrain_occupation_bits: BTreeMap::new(),
             tiberium_spawning_terrain_cells: BTreeSet::new(),
             default_ore_overlay_id: None,
             depot_dock_reservations: DockReservations::default(),

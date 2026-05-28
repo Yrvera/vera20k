@@ -611,6 +611,67 @@ fn status_help_ai_row_state_uses_item_specific_stt() {
 }
 
 #[test]
+fn status_help_side_row_uses_item_specific_stt() {
+    for (country, key) in [
+        (SkirmishCountryChoice::Random, "STT:PlayerSideRandom"),
+        (
+            SkirmishCountryChoice::Country(crate::ui::main_menu::SkirmishCountry::America),
+            "STT:PlayerSideAmerica",
+        ),
+        (
+            SkirmishCountryChoice::Country(crate::ui::main_menu::SkirmishCountry::GreatBritain),
+            "STT:PlayerSideBritain",
+        ),
+        (
+            SkirmishCountryChoice::Country(crate::ui::main_menu::SkirmishCountry::Yuri),
+            "STT:PlayerSideYuriCountry",
+        ),
+    ] {
+        assert_eq!(
+            status_help_key_for_hover(SkirmishHoverTarget::ComboItem {
+                id: SkirmishComboId::Side(0),
+                item: SkirmishComboItem::Country(country),
+            }),
+            Some(key)
+        );
+    }
+}
+
+#[test]
+fn status_help_color_row_uses_item_specific_stt_with_generic_miss_fallback() {
+    for (item, key) in [
+        (
+            SkirmishComboItem::ColorSentinel(-2),
+            "STT:PlayerColorRandom",
+        ),
+        (SkirmishComboItem::Color(0), "STT:PlayerColorGold"),
+        (SkirmishComboItem::Color(5), "STT:PlayerColorSkyBlue"),
+        (SkirmishComboItem::Color(7), "STT:PlayerColorPink"),
+        (SkirmishComboItem::Color(8), "STT:PlayerColorObserver"),
+    ] {
+        assert_eq!(
+            status_help_key_for_hover(SkirmishHoverTarget::ComboItem {
+                id: SkirmishComboId::Color(0),
+                item,
+            }),
+            Some(key)
+        );
+    }
+
+    assert_eq!(
+        status_help_key_for_hover(SkirmishHoverTarget::ComboItem {
+            id: SkirmishComboId::Color(0),
+            item: SkirmishComboItem::Color(9),
+        }),
+        Some("STT:SkirmishComboColor")
+    );
+    assert_eq!(
+        status_help_key_for_hover(SkirmishHoverTarget::ComboFace(SkirmishComboId::Color(0))),
+        Some("STT:SkirmishComboColor")
+    );
+}
+
+#[test]
 fn hovered_choose_map_modal_control_resolves_0x6b_status_targets() {
     let layout = compute_fixed_800_choose_map_modal_layout(800, 600);
     let modes = stock_skirmish_modes();
@@ -1241,6 +1302,68 @@ fn inactive_ai_team_default_follows_allies_allowed() {
 
     assert_eq!(battle.opponents[1].team, 3);
     assert_eq!(ffa.opponents[1].team, -2);
+}
+
+#[test]
+fn default_inactive_ai_rows_use_native_combo_defaults() {
+    let shell = SkirmishShellState::default();
+
+    for opponent in shell.opponents.iter().skip(1) {
+        assert_eq!(opponent.row_type, SkirmishAiRowType::None);
+        assert!(!opponent.enabled);
+        assert!(opponent.country_random);
+        assert!(!opponent.color_claimed);
+        assert_eq!(opponent.start_position, StartPosition::Auto);
+        assert_eq!(opponent.team, 3);
+    }
+}
+
+#[test]
+fn ai_type_none_applies_inactive_combo_defaults() {
+    let mut shell = SkirmishShellState::default();
+    shell.opponents[0].row_type = SkirmishAiRowType::Hard;
+    shell.opponents[0].enabled = true;
+    shell.opponents[0].country_random = false;
+    shell.opponents[0].country = SkirmishCountry::Yuri;
+    shell.opponents[0].color_index = 4;
+    shell.opponents[0].color_claimed = true;
+    shell.opponents[0].start_position = StartPosition::Position(5);
+    shell.opponents[0].team = 1;
+
+    apply_combo_selection_for_test(
+        &mut shell,
+        SkirmishComboId::AiType(0),
+        SkirmishComboItem::AiType(SkirmishAiRowType::None),
+    );
+
+    assert_eq!(shell.opponents[0].row_type, SkirmishAiRowType::None);
+    assert!(!shell.opponents[0].enabled);
+    assert!(shell.opponents[0].country_random);
+    assert_eq!(shell.opponents[0].country, SkirmishCountry::Yuri);
+    assert_eq!(shell.opponents[0].color_index, 4);
+    assert!(!shell.opponents[0].color_claimed);
+    assert_eq!(shell.opponents[0].start_position, StartPosition::Auto);
+    assert_eq!(shell.opponents[0].team, 3);
+}
+
+#[test]
+fn ai_type_none_uses_ffa_inactive_team_default() {
+    let mut shell = SkirmishShellState {
+        selected_mode_id: 2,
+        ..Default::default()
+    };
+    repair_teams_for_selected_mode(&mut shell, &stock_skirmish_modes());
+    shell.opponents[0].row_type = SkirmishAiRowType::Hard;
+    shell.opponents[0].enabled = true;
+    shell.opponents[0].team = 1;
+
+    apply_combo_selection_for_test(
+        &mut shell,
+        SkirmishComboId::AiType(0),
+        SkirmishComboItem::AiType(SkirmishAiRowType::None),
+    );
+
+    assert_eq!(shell.opponents[0].team, -2);
 }
 
 #[test]

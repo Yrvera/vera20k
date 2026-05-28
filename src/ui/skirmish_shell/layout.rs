@@ -486,6 +486,12 @@ fn status_help_rect(screen_w: i32, screen_h: i32) -> RectPx {
     RectPx::new(offset_x + 10, screen_h - offset_y - 21, 615, 20)
 }
 
+fn choose_map_status_help_rect(screen_w: i32, screen_h: i32) -> RectPx {
+    let offset_x = center_offset(screen_w, SHELL_BASE_W);
+    let offset_y = center_offset(screen_h, SHELL_BASE_H);
+    RectPx::new(offset_x + 10, screen_h - offset_y - 21, 455, 20)
+}
+
 fn back_rect(screen_w: i32, panel: RightPanelRects) -> RectPx {
     let offset_x = center_offset(screen_w, SHELL_BASE_W);
     RectPx::new(
@@ -653,56 +659,39 @@ pub fn compute_layout(screen_w: u32, screen_h: u32) -> SkirmishShellLayout {
 pub fn compute_choose_map_modal_layout(screen_w: u32, screen_h: u32) -> ChooseMapModalLayout {
     let screen_w = screen_w as i32;
     let screen_h = screen_h as i32;
-    let dialog = centered_shell_dialog(screen_w, screen_h, CHOOSE_MAP_MODAL_W, CHOOSE_MAP_MODAL_H);
+    let panel = right_panel_rects(screen_w, screen_h);
+    let use_map_base = dlu_rect(425, 122, 108, 23);
+    let create_random_map_base = dlu_rect(425, 149, 108, 23);
+    let preview_base = dlu_rect(428, 23, 96, 69);
+    let title_base = dlu_rect(425, 1, 108, 10);
 
     ChooseMapModalLayout {
         screen: RectPx::new(0, 0, screen_w, screen_h),
-        dialog,
-        mode_list: dialog_child(dialog, RectPx::new(77, 78, 130, 211)),
-        map_list: dialog_child(dialog, RectPx::new(225, 78, 130, 211)),
-        use_map_button: dialog_child(dialog, RectPx::new(425, 122, 108, 23)),
-        cancel_button: dialog_child(dialog, RectPx::new(425, 346, 108, 23)),
-        create_random_map_button: dialog_child(dialog, RectPx::new(425, 149, 108, 23)),
-        title: dialog_child(dialog, RectPx::new(425, 1, 108, 10)),
-        select_engagement: dialog_child(dialog, RectPx::new(80, 20, 257, 12)),
-        game_type_heading: dialog_child(dialog, RectPx::new(77, 60, 130, 10)),
-        game_map_heading: dialog_child(dialog, RectPx::new(225, 60, 130, 10)),
-        status_help: dialog_child(dialog, RectPx::new(2, 355, 303, 12)),
-        preview: dialog_child(dialog, RectPx::new(428, 23, 96, 69)),
+        dialog: RectPx::new(0, 0, screen_w, screen_h),
+        mode_list: dlu_rect(77, 78, 130, 211),
+        map_list: dlu_rect(225, 78, 130, 211),
+        use_map_button: owner_draw_button_snap_rect(screen_w, screen_h, use_map_base, panel),
+        cancel_button: back_rect(screen_w, panel),
+        create_random_map_button: owner_draw_button_snap_rect(
+            screen_w,
+            screen_h,
+            create_random_map_base,
+            panel,
+        ),
+        title: right_anchor(screen_w, screen_h, title_base).translate(0, 1),
+        select_engagement: dlu_rect(80, 20, 257, 12),
+        game_type_heading: dlu_rect(77, 60, 130, 10),
+        game_map_heading: dlu_rect(225, 60, 130, 10),
+        status_help: choose_map_status_help_rect(screen_w, screen_h),
+        preview: right_anchor(screen_w, screen_h, preview_base),
     }
-}
-
-pub fn translate_choose_map_modal_layout(
-    mut layout: ChooseMapModalLayout,
-    dx: i32,
-    dy: i32,
-) -> ChooseMapModalLayout {
-    layout.screen = layout.screen.translate(dx, dy);
-    layout.dialog = layout.dialog.translate(dx, dy);
-    layout.mode_list = layout.mode_list.translate(dx, dy);
-    layout.map_list = layout.map_list.translate(dx, dy);
-    layout.use_map_button = layout.use_map_button.translate(dx, dy);
-    layout.cancel_button = layout.cancel_button.translate(dx, dy);
-    layout.create_random_map_button = layout.create_random_map_button.translate(dx, dy);
-    layout.title = layout.title.translate(dx, dy);
-    layout.select_engagement = layout.select_engagement.translate(dx, dy);
-    layout.game_type_heading = layout.game_type_heading.translate(dx, dy);
-    layout.game_map_heading = layout.game_map_heading.translate(dx, dy);
-    layout.status_help = layout.status_help.translate(dx, dy);
-    layout.preview = layout.preview.translate(dx, dy);
-    layout
 }
 
 pub fn compute_fixed_800_choose_map_modal_layout(
     screen_w: u32,
     screen_h: u32,
 ) -> ChooseMapModalLayout {
-    let (dx, dy) = centered_fixed_shell_offset(screen_w, screen_h);
-    translate_choose_map_modal_layout(
-        compute_choose_map_modal_layout(SHELL_BASE_W as u32, SHELL_BASE_H as u32),
-        dx,
-        dy,
-    )
+    compute_choose_map_modal_layout(screen_w, screen_h)
 }
 
 pub const fn choose_map_listbox_rect(
@@ -907,13 +896,20 @@ mod tests {
     }
 
     #[test]
-    fn fixed_800_choose_map_modal_centers_inside_fixed_shell() {
+    fn fixed_800_choose_map_modal_uses_verified_0x6b_shell_helpers() {
         let layout = compute_fixed_800_choose_map_modal_layout(1024, 768);
 
-        assert_eq!(layout.screen, RectPx::new(112, 84, 800, 600));
-        assert_eq!(layout.dialog, RectPx::new(245, 199, 533, 369));
-        assert_eq!(layout.mode_list, RectPx::new(322, 277, 130, 211));
-        assert_eq!(layout.map_list, RectPx::new(470, 277, 130, 211));
+        assert_eq!(layout.screen, RectPx::new(0, 0, 1024, 768));
+        assert_eq!(layout.dialog, RectPx::new(0, 0, 1024, 768));
+        assert_eq!(layout.mode_list, RectPx::new(116, 127, 195, 343));
+        assert_eq!(layout.map_list, RectPx::new(338, 127, 195, 343));
+        assert_eq!(layout.use_map_button, RectPx::new(756, 283, 156, 42));
+        assert_eq!(
+            layout.create_random_map_button,
+            RectPx::new(756, 325, 156, 42)
+        );
+        assert_eq!(layout.cancel_button, RectPx::new(756, 619, 156, 42));
+        assert_eq!(layout.status_help, RectPx::new(122, 663, 455, 20));
     }
 
     #[test]
@@ -1219,31 +1215,44 @@ mod tests {
     fn choose_map_modal_layout_matches_verified_0x6b_geometry() {
         let layout = compute_choose_map_modal_layout(800, 600);
 
-        assert_eq!(layout.dialog, RectPx::new(133, 115, 533, 369));
-        assert_eq!(layout.mode_list, RectPx::new(210, 193, 130, 211));
-        assert_eq!(layout.map_list, RectPx::new(358, 193, 130, 211));
-        assert_eq!(layout.use_map_button, RectPx::new(558, 237, 108, 23));
+        assert_eq!(layout.screen, RectPx::new(0, 0, 800, 600));
+        assert_eq!(layout.dialog, RectPx::new(0, 0, 800, 600));
+        assert_eq!(layout.mode_list, RectPx::new(116, 127, 195, 343));
+        assert_eq!(layout.map_list, RectPx::new(338, 127, 195, 343));
+        assert_eq!(layout.use_map_button, RectPx::new(644, 199, 156, 42));
         assert_eq!(
             layout.create_random_map_button,
-            RectPx::new(558, 264, 108, 23)
+            RectPx::new(644, 241, 156, 42)
         );
-        assert_eq!(layout.cancel_button, RectPx::new(558, 461, 108, 23));
-        assert_eq!(layout.title, RectPx::new(558, 116, 108, 10));
-        assert_eq!(layout.select_engagement, RectPx::new(213, 135, 257, 12));
-        assert_eq!(layout.game_type_heading, RectPx::new(210, 175, 130, 10));
-        assert_eq!(layout.game_map_heading, RectPx::new(358, 175, 130, 10));
-        assert_eq!(layout.status_help, RectPx::new(135, 470, 303, 12));
-        assert_eq!(layout.preview, RectPx::new(561, 138, 96, 69));
+        assert_eq!(layout.cancel_button, RectPx::new(644, 535, 156, 42));
+        assert_eq!(layout.title, RectPx::new(635, 3, 162, 16));
+        assert_eq!(layout.select_engagement, RectPx::new(120, 33, 386, 20));
+        assert_eq!(layout.game_type_heading, RectPx::new(116, 98, 195, 16));
+        assert_eq!(layout.game_map_heading, RectPx::new(338, 98, 195, 16));
+        assert_eq!(layout.status_help, RectPx::new(10, 579, 455, 20));
+        assert_eq!(layout.preview, RectPx::new(644, 37, 144, 112));
     }
 
     #[test]
-    fn choose_map_modal_centers_inside_shell_base_without_scaling() {
+    fn choose_map_modal_high_res_preserves_lists_and_offsets_shell_helpers() {
         let layout = compute_choose_map_modal_layout(1024, 768);
 
         assert_eq!(layout.screen, RectPx::new(0, 0, 1024, 768));
-        assert_eq!(layout.dialog, RectPx::new(245, 199, 533, 369));
-        assert_eq!(layout.mode_list, RectPx::new(322, 277, 130, 211));
-        assert_eq!(layout.map_list, RectPx::new(470, 277, 130, 211));
+        assert_eq!(layout.dialog, RectPx::new(0, 0, 1024, 768));
+        assert_eq!(layout.mode_list, RectPx::new(116, 127, 195, 343));
+        assert_eq!(layout.map_list, RectPx::new(338, 127, 195, 343));
+        assert_eq!(layout.use_map_button, RectPx::new(756, 283, 156, 42));
+        assert_eq!(
+            layout.create_random_map_button,
+            RectPx::new(756, 325, 156, 42)
+        );
+        assert_eq!(layout.cancel_button, RectPx::new(756, 619, 156, 42));
+        assert_eq!(layout.title, RectPx::new(747, 87, 162, 16));
+        assert_eq!(layout.select_engagement, RectPx::new(120, 33, 386, 20));
+        assert_eq!(layout.game_type_heading, RectPx::new(116, 98, 195, 16));
+        assert_eq!(layout.game_map_heading, RectPx::new(338, 98, 195, 16));
+        assert_eq!(layout.status_help, RectPx::new(122, 663, 455, 20));
+        assert_eq!(layout.preview, RectPx::new(756, 121, 144, 112));
     }
 
     #[test]
@@ -1326,8 +1335,8 @@ mod tests {
         let scrollbar = choose_map_listbox_scrollbar_rect(rows, layout.map_list).unwrap();
         let content = choose_map_listbox_content_rect(rows, layout.map_list);
 
-        assert_eq!(scrollbar, RectPx::new(468, 193, 20, 211));
-        assert_eq!(content, RectPx::new(358, 193, 110, 211));
+        assert_eq!(scrollbar, RectPx::new(513, 127, 20, 343));
+        assert_eq!(content, RectPx::new(338, 127, 175, 343));
         assert_eq!(
             choose_map_listbox_row_at(layout.map_list, rows, 5, content.x + 2, content.y),
             Some(5)
@@ -1364,7 +1373,7 @@ mod tests {
                 layout.map_list,
                 scrollbar.y + scrollbar.h - COMBO_DROPDOWN_SCROLLBAR_BUTTON_H - 1
             ),
-            Some(9)
+            Some(2)
         );
     }
 }

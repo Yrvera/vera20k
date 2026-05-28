@@ -6,23 +6,24 @@
 use crate::app::AppState;
 use crate::app_init::MapMenuEntry;
 use crate::render::batch::SpriteInstance;
+use crate::render::bit_font::BitFont;
 use crate::render::shell_text::{self, ShellAlign, ShellTextDraw, TextRect};
 use crate::ui::main_menu::SkirmishCountry;
 use crate::ui::skirmish_shell::{
-    COMBO_DROPDOWN_ROW_H, ChooseMapModalLayout, OwnerDrawButton, RectPx, SkirmishAiRowType,
-    SkirmishCheckboxId, SkirmishComboItem, SkirmishCountryChoice, SkirmishShellLayout,
-    SkirmishShellState, SkirmishTrackbarId, ValidationModalLayout, checkbox_text_rect,
-    choose_map_listbox_content_rect, choose_map_listbox_row_rect,
-    choose_map_listbox_visible_row_count, combo_dropdown_content_rect, combo_dropdown_rect,
-    combo_dropdown_visible_row_count, combo_items, combo_text_rect, player_name_edit_text_rect,
-    trackbar_value_text_rect, trackbar_visual_value,
+    COMBO_DROPDOWN_ROW_H, COMBO_FACE_H, COMBO_TEXT_LEFT_INSET, ChooseMapModalLayout,
+    OwnerDrawButton, RectPx, SkirmishAiRowType, SkirmishCheckboxId, SkirmishComboItem,
+    SkirmishCountryChoice, SkirmishShellLayout, SkirmishShellOpponent, SkirmishShellState,
+    SkirmishTrackbarId, ValidationModalLayout, checkbox_text_rect, choose_map_listbox_content_rect,
+    choose_map_listbox_row_rect, choose_map_listbox_visible_row_count, combo_dropdown_content_rect,
+    combo_dropdown_rect, combo_dropdown_visible_row_count, combo_items, combo_text_rect,
+    player_name_edit_text_rect, trackbar_value_text_rect, trackbar_visual_value,
 };
 
 use super::controls::trackbar_rect_for_id;
 use super::{
     COMBODROPWIN_TEXT_INSET_X, COMBODROPWIN_TEXT_TRUNCATION_SCROLLBAR_RESERVE_PX,
-    SHELL_BUTTON_TEXT_RGB_00000C05, SHELL_CONTROL_TEXT_DEPTH, SHELL_DROPDOWN_TEXT_DEPTH,
-    SHELL_LABEL_TEXT_RGB,
+    SHELL_CONTROL_TEXT_DEPTH, SHELL_DISABLED_TEXT_RGB_FROM_PACKED_0000009F,
+    SHELL_DROPDOWN_TEXT_DEPTH, SHELL_LABEL_TEXT_RGB,
 };
 
 pub(super) fn localized_label(state: &AppState, key: &str, fallback: &str) -> String {
@@ -81,13 +82,7 @@ pub(super) fn combo_item_label(state: &AppState, item: SkirmishComboItem) -> Str
             }
             crate::ui::main_menu::StartPosition::Position(idx) => (idx + 1).to_string(),
         },
-        SkirmishComboItem::Team(team) => {
-            if team == 0 {
-                localized_label(state, "GUI:None", "None")
-            } else {
-                team_label(team)
-            }
-        }
+        SkirmishComboItem::Team(team) => team_label(team),
     }
 }
 
@@ -109,6 +104,10 @@ pub(super) fn trackbar_display_value(shell: &SkirmishShellState, id: SkirmishTra
         SkirmishTrackbarId::Credits0x511 => shell.starting_credits.to_string(),
         SkirmishTrackbarId::UnitCount0x50c => shell.unit_count.to_string(),
     }
+}
+
+pub(super) fn trackbar_value_text_color() -> [f32; 3] {
+    SHELL_LABEL_TEXT_RGB
 }
 
 pub(super) fn trackbar_label(state: &AppState, id: SkirmishTrackbarId) -> String {
@@ -156,6 +155,18 @@ pub(super) fn push_button_label_draw(
 
 pub(super) fn button_label_color() -> [f32; 3] {
     SHELL_LABEL_TEXT_RGB
+}
+
+pub(super) fn combo_face_text_color(disabled: bool) -> [f32; 3] {
+    if disabled {
+        SHELL_DISABLED_TEXT_RGB_FROM_PACKED_0000009F
+    } else {
+        SHELL_LABEL_TEXT_RGB
+    }
+}
+
+fn opponent_sibling_combo_text_color(opponent: &SkirmishShellOpponent) -> [f32; 3] {
+    combo_face_text_color(!opponent.is_active())
 }
 
 pub(super) fn button_text_rect(rect: RectPx, pressed: bool) -> TextRect {
@@ -212,15 +223,92 @@ pub(super) fn combo_dropdown_text_rect_for_current_renderer(
     content: RectPx,
     visible_row: usize,
 ) -> TextRect {
-    // `ComboDropWin` draws from x+3 over the row rect but pre-truncates text to
-    // client_width-20. `shell_text` currently has one width for wrap/scissor, so
-    // use the verified truncation width as the clip width here.
+    // `ComboDropWin` draws from x+3 to the row right edge. The separate
+    // client_width-20 value is only the caller-side fit limit.
     TextRect {
         x: content.x + COMBODROPWIN_TEXT_INSET_X,
         y: content.y + visible_row as i32 * COMBO_DROPDOWN_ROW_H,
-        w: (content.w - COMBODROPWIN_TEXT_TRUNCATION_SCROLLBAR_RESERVE_PX).max(0) as u32,
+        w: (content.w - COMBODROPWIN_TEXT_INSET_X).max(0) as u32,
         h: COMBO_DROPDOWN_ROW_H.max(0) as u32,
     }
+}
+
+pub(super) fn combo_dropdown_text_fit_width(content: RectPx) -> u32 {
+    (content.w - COMBODROPWIN_TEXT_TRUNCATION_SCROLLBAR_RESERVE_PX).max(0) as u32
+}
+
+pub(super) fn combo_face_text_fit_width(rect: RectPx) -> u32 {
+    combo_text_rect(rect).w.max(0) as u32
+}
+
+pub(super) fn combo_face_text_draw_rect(rect: RectPx) -> RectPx {
+    RectPx::new(
+        rect.x + COMBO_TEXT_LEFT_INSET,
+        rect.y,
+        (rect.w - COMBO_TEXT_LEFT_INSET).max(0),
+        COMBO_FACE_H,
+    )
+}
+
+pub(super) fn truncate_owner_draw_label<'a>(
+    font: &BitFont,
+    label: &'a str,
+    fit_width: u32,
+) -> std::borrow::Cow<'a, str> {
+    let mut utf16: Vec<u16> = label.encode_utf16().collect();
+    if owner_draw_utf16_text_width(font, &utf16) <= fit_width {
+        return std::borrow::Cow::Borrowed(label);
+    }
+
+    while !utf16.is_empty() && owner_draw_utf16_text_width(font, &utf16) > fit_width {
+        utf16.pop();
+    }
+    std::borrow::Cow::Owned(String::from_utf16_lossy(&utf16))
+}
+
+fn owner_draw_utf16_text_width(font: &BitFont, units: &[u16]) -> u32 {
+    const TAB: u16 = b'\t' as u16;
+    const CR: u16 = b'\r' as u16;
+    const LF: u16 = b'\n' as u16;
+    const SPACE: u16 = b' ' as u16;
+
+    let mut x: u32 = 0;
+    let mut count: u32 = 0;
+    for unit in units.iter().copied() {
+        match unit {
+            0 => break,
+            TAB => {
+                let advanced = x + font.tab_width;
+                x = advanced - ((advanced.saturating_sub(font.tab_origin)) % font.tab_width);
+                continue;
+            }
+            CR | LF => continue,
+            SPACE => {
+                x += font.space_width;
+                count += 1;
+            }
+            other => {
+                let w = font
+                    .glyphs
+                    .get(&other)
+                    .map(|g| g.pixel_width as u32)
+                    .or_else(|| font.missing_glyph.as_ref().map(|g| g.pixel_width as u32));
+                if let Some(w) = w {
+                    x += w;
+                    count += 1;
+                }
+            }
+        }
+    }
+    x + count * font.char_spacing
+}
+
+pub(super) fn truncate_combo_dropdown_label<'a>(
+    font: &BitFont,
+    label: &'a str,
+    fit_width: u32,
+) -> std::borrow::Cow<'a, str> {
+    truncate_owner_draw_label(font, label, fit_width)
 }
 
 pub(super) fn push_label_draw(
@@ -271,11 +359,39 @@ fn push_combo_face_label_draw(
     rect: RectPx,
     covering_overlays: &[RectPx],
 ) {
-    let text_rect = combo_text_rect(rect);
+    push_combo_face_label_draw_with_color(
+        out,
+        state,
+        label,
+        rect,
+        SHELL_LABEL_TEXT_RGB,
+        covering_overlays,
+    );
+}
+
+fn push_combo_face_label_draw_with_color(
+    out: &mut Vec<ShellTextDraw>,
+    state: &AppState,
+    label: &str,
+    rect: RectPx,
+    color: [f32; 3],
+    covering_overlays: &[RectPx],
+) {
+    let text_rect = combo_face_text_draw_rect(rect);
     if text_covered_by_overlay(text_rect, covering_overlays) {
         return;
     }
-    push_label_draw(out, state, label, text_rect, SHELL_CONTROL_TEXT_DEPTH);
+    let fit_width = combo_face_text_fit_width(rect);
+    let label = truncate_owner_draw_label(&state.bit_font, label, fit_width);
+    push_text_draw(
+        out,
+        state,
+        label.as_ref(),
+        rect_to_text_rect(text_rect),
+        color,
+        ShellAlign::V_CENTER,
+        SHELL_CONTROL_TEXT_DEPTH,
+    );
 }
 
 pub(super) fn push_static_label_draw(
@@ -470,7 +586,7 @@ pub(super) fn build_shell_text_draws(
             state,
             &value,
             rect_to_text_rect(trackbar_value_text_rect(trackbar_rect_for_id(layout, id))),
-            SHELL_BUTTON_TEXT_RGB_00000C05,
+            trackbar_value_text_color(),
             ShellAlign::H_CENTER | ShellAlign::V_CENTER,
             SHELL_CONTROL_TEXT_DEPTH,
         );
@@ -522,29 +638,31 @@ pub(super) fn build_shell_text_draws(
             layout.rows.ai_type_combos[idx],
             &covering_overlays,
         );
-        if opponent.is_active() {
-            push_combo_face_label_draw(
-                &mut shell_draws,
-                state,
-                &country_choice_label(state, opponent.country_random, opponent.country),
-                layout.rows.side_combos[row],
-                &covering_overlays,
-            );
-            push_combo_face_label_draw(
-                &mut shell_draws,
-                state,
-                &start_position_label(opponent.start_position),
-                layout.rows.start_combos[row],
-                &covering_overlays,
-            );
-            push_combo_face_label_draw(
-                &mut shell_draws,
-                state,
-                &team_label(opponent.team),
-                layout.rows.team_combos[row],
-                &covering_overlays,
-            );
-        }
+        let sibling_text_color = opponent_sibling_combo_text_color(opponent);
+        push_combo_face_label_draw_with_color(
+            &mut shell_draws,
+            state,
+            &country_choice_label(state, opponent.country_random, opponent.country),
+            layout.rows.side_combos[row],
+            sibling_text_color,
+            &covering_overlays,
+        );
+        push_combo_face_label_draw_with_color(
+            &mut shell_draws,
+            state,
+            &start_position_label(opponent.start_position),
+            layout.rows.start_combos[row],
+            sibling_text_color,
+            &covering_overlays,
+        );
+        push_combo_face_label_draw_with_color(
+            &mut shell_draws,
+            state,
+            &team_label(opponent.team),
+            layout.rows.team_combos[row],
+            sibling_text_color,
+            &covering_overlays,
+        );
     }
 
     if let Some(open) = shell.open_combo_dropdown {
@@ -563,10 +681,12 @@ pub(super) fn build_shell_text_draws(
                     continue;
                 }
                 let rect = combo_dropdown_text_rect_for_current_renderer(content, idx);
+                let fit_width = combo_dropdown_text_fit_width(content);
+                let label = truncate_combo_dropdown_label(&state.bit_font, &label, fit_width);
                 push_text_draw(
                     &mut shell_draws,
                     state,
-                    &label,
+                    label.as_ref(),
                     rect,
                     SHELL_LABEL_TEXT_RGB,
                     ShellAlign::V_CENTER,
@@ -826,5 +946,127 @@ mod tests {
 
         assert!(!text_covered_by_overlay(above, &[dropdown]));
         assert!(!text_covered_by_overlay(below, &[dropdown]));
+    }
+
+    #[test]
+    fn team_label_uses_native_sentinel_values() {
+        assert_eq!(team_label(-2), "None");
+        assert_eq!(team_label(0), "A");
+        assert_eq!(team_label(1), "B");
+        assert_eq!(team_label(2), "C");
+        assert_eq!(team_label(3), "D");
+    }
+
+    #[test]
+    fn trackbar_value_text_uses_normal_shell_yellow_source() {
+        assert_eq!(trackbar_value_text_color(), SHELL_LABEL_TEXT_RGB);
+    }
+
+    #[test]
+    fn combo_face_text_color_uses_disabled_source_for_inactive_siblings() {
+        let shell = SkirmishShellState::default();
+
+        assert_eq!(combo_face_text_color(false), SHELL_LABEL_TEXT_RGB);
+        assert_eq!(
+            combo_face_text_color(true),
+            SHELL_DISABLED_TEXT_RGB_FROM_PACKED_0000009F
+        );
+        assert_eq!(
+            opponent_sibling_combo_text_color(&shell.opponents[0]),
+            SHELL_LABEL_TEXT_RGB
+        );
+        assert_eq!(
+            opponent_sibling_combo_text_color(&shell.opponents[1]),
+            SHELL_DISABLED_TEXT_RGB_FROM_PACKED_0000009F
+        );
+    }
+
+    #[test]
+    fn combodropwin_row_text_pretruncates_without_using_clip_width_as_rect_width() {
+        let font = crate::render::bit_font::tests::make_test_font(
+            &[
+                (b'a' as u16, 6),
+                (b'b' as u16, 6),
+                (b'c' as u16, 6),
+                (b'd' as u16, 6),
+                (b' ' as u16, 4),
+            ],
+            4,
+        );
+        let content = RectPx::new(100, 50, 40, COMBO_DROPDOWN_ROW_H);
+
+        let rect = combo_dropdown_text_rect_for_current_renderer(content, 0);
+        assert_eq!(rect.x, 103);
+        assert_eq!(rect.w, 37);
+        assert_eq!(combo_dropdown_text_fit_width(content), 20);
+
+        let label = truncate_combo_dropdown_label(&font, "ab cd", 20);
+        assert_eq!(label.as_ref(), "ab ");
+        assert!(font.text_width(label.as_ref()) <= 20);
+    }
+
+    #[test]
+    fn owner_draw_label_truncates_ascii_by_utf16_code_unit() {
+        let font = crate::render::bit_font::tests::make_test_font(
+            &[
+                (b'a' as u16, 6),
+                (b'b' as u16, 6),
+                (b'c' as u16, 6),
+                (b'd' as u16, 6),
+            ],
+            4,
+        );
+
+        let label = truncate_owner_draw_label(&font, "abcd", 14);
+
+        assert_eq!(label.as_ref(), "ab");
+        assert!(font.text_width(label.as_ref()) <= 14);
+    }
+
+    #[test]
+    fn owner_draw_label_truncates_latin1_by_utf16_code_unit() {
+        let font = crate::render::bit_font::tests::make_test_font(
+            &[(b'a' as u16, 6), (0x00e9, 8), (b'b' as u16, 6)],
+            4,
+        );
+
+        let label = truncate_owner_draw_label(&font, "aéb", 16);
+
+        assert_eq!(label.as_ref(), "aé");
+        assert!(font.text_width(label.as_ref()) <= 16);
+    }
+
+    #[test]
+    fn owner_draw_label_truncates_non_bmp_by_utf16_code_unit() {
+        let font = crate::render::bit_font::tests::make_test_font(&[(b'a' as u16, 6)], 4);
+
+        let label = truncate_combo_dropdown_label(&font, "a😀", 13);
+
+        assert_eq!(label.as_ref(), "a\u{fffd}");
+        assert_ne!(label.as_ref(), "a");
+        assert!(font.text_width(label.as_ref()) <= 13);
+    }
+
+    #[test]
+    fn collapsed_combo_face_text_pretruncates_to_arrow_reserved_width() {
+        let font = crate::render::bit_font::tests::make_test_font(
+            &[
+                (b'a' as u16, 6),
+                (b'b' as u16, 6),
+                (b'c' as u16, 6),
+                (b'd' as u16, 6),
+                (b' ' as u16, 4),
+            ],
+            4,
+        );
+        let combo = RectPx::new(423, 59, 44, 24);
+
+        let draw_rect = combo_face_text_draw_rect(combo);
+        assert_eq!(draw_rect, RectPx::new(425, 59, 42, 24));
+        assert_eq!(combo_face_text_fit_width(combo), 24);
+        let label = truncate_owner_draw_label(&font, "ab cd", combo_face_text_fit_width(combo));
+
+        assert_eq!(label.as_ref(), "ab ");
+        assert!(font.text_width(label.as_ref()) <= combo_face_text_fit_width(combo));
     }
 }

@@ -261,6 +261,7 @@ fn spawn_bolt(sim: &mut Simulation, rules: &RuleSet, rx: u16, ry: u16, owner: In
         for (stable_id, damage) in hits {
             if let Some(entity) = sim.entities.get_mut(stable_id) {
                 entity.health.current = entity.health.current.saturating_sub(damage);
+                entity.refresh_building_damage_state_gate(rules.general.condition_yellow_x1000);
             }
         }
 
@@ -316,6 +317,7 @@ fn spawn_bolt(sim: &mut Simulation, rules: &RuleSet, rx: u16, ry: u16, owner: In
 mod tests {
     use super::*;
     use crate::map::bridge_facts::{BRIDGE_FLAG_STRUCTURAL, BridgeCellFacts};
+    use crate::map::entities::EntityCategory;
     use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
     use crate::rules::ini_parser::IniFile;
     use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
@@ -332,8 +334,9 @@ mod tests {
             "[InfantryTypes]\n0=DUMMY\n\n\
              [VehicleTypes]\n\n\
              [AircraftTypes]\n\n\
-             [BuildingTypes]\n\n\
+             [BuildingTypes]\n0=GAPOWR\n\n\
              [DUMMY]\nStrength=100\nArmor=none\nSpeed=4\nPrimary=DUMMYW\n\n\
+             [GAPOWR]\nStrength=200\nArmor=wood\n\n\
              [DUMMYW]\nDamage=1\nROF=1\nRange=1\nWarhead=LWH\n\n\
              [General]\nLightningDamage=100\nLightningWarhead=LWH\n\n\
              [LWH]\nCellSpread=1\nPercentAtMax=1\nAnimList=EXPLOSION\n\
@@ -388,6 +391,28 @@ mod tests {
             0,
             "bridge-deck occupant must be hit by a bridge-targeted Lightning strike"
         );
+    }
+
+    #[test]
+    fn lightning_storm_crossing_condition_yellow_sets_building_damage_state() {
+        let (mut sim, rules) = lightning_test_setup();
+        let owner = sim.interner.intern("Americans");
+        let type_ref = sim.interner.intern("GAPOWR");
+        let mut building = GameEntity::test_default(10, "GAPOWR", "Soviet", 5, 5);
+        building.category = EntityCategory::Structure;
+        building.owner = sim.interner.intern("Soviet");
+        building.type_ref = type_ref;
+        building.health = Health {
+            current: 150,
+            max: 200,
+        };
+        sim.entities.insert(building);
+
+        spawn_bolt(&mut sim, &rules, 5, 5, owner);
+
+        let building = sim.entities.get(10).expect("building remains in sim");
+        assert_eq!(building.health.current, 50);
+        assert!(building.building_damage_state_active);
     }
 
     fn add_same_cell_bridge_targets(sim: &mut Simulation, type_name: &str) {

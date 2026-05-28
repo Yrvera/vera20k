@@ -17,9 +17,10 @@ mod world_hash;
 mod world_orders;
 mod world_spawn;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::map::actions::ActionMap;
+use crate::map::bridge_facts::{BRIDGE_FLAG_DESTROYED_OR_RAMP, BRIDGE_FLAG_STRUCTURAL};
 use crate::map::entities::EntityCategory;
 use crate::map::events::EventMap;
 use crate::map::houses::HouseAllianceMap;
@@ -80,7 +81,7 @@ pub struct TickResult {
     /// A structure was destroyed (combat, sell, crush) — PathGrid needs rebuild
     /// to unblock the footprint.
     pub destroyed_structure: bool,
-    /// An entity's owner changed (garrison transfer, engineer capture) — sprite
+    /// An entity's owner changed (garrison reconciliation, engineer capture) — sprite
     /// atlas needs rebuild for the new house color.
     pub ownership_changed: bool,
     /// A bridge cell transitioned to `DamageState::Destroyed` this tick —
@@ -134,6 +135,10 @@ pub enum SimSoundEvent {
     BuildingComplete { owner: InternedId },
     /// A unit finished training — play EVA "Unit ready".
     UnitComplete { owner: InternedId },
+    /// A deploy command failed target placement validation.
+    /// App layer gates this to the local human player and plays
+    /// `EVA_CannotDeployHere`.
+    CannotDeployHere { owner: InternedId },
     /// A chrono teleport happened — play the resolved warp sound at this position.
     /// Sim emits two of these per warp: one at the source cell with the unit's
     /// `ChronoOutSound=`, one at the destination cell with the unit's
@@ -148,8 +153,9 @@ pub enum SimSoundEvent {
     /// A lightning bolt struck — play thunder sound.
     SuperWeaponStrike { rx: u16, ry: u16 },
     /// First occupant entered a CanBeOccupied building (cargo 0→1).
-    /// Owner is the post-transfer building owner. App layer plays
-    /// EVA_StructureGarrisoned if owner is local human.
+    /// Owner is the building owner at AddGarrisonOccupant time; civilian
+    /// ownership transfer is reported separately from building reconciliation.
+    /// App layer plays EVA_StructureGarrisoned if owner is local human.
     StructureGarrisoned { owner: InternedId },
     /// Last occupant left a garrisoned building (cargo 1→0).
     /// Owner is the **pre-revert** owner — the player whose garrison
@@ -277,6 +283,10 @@ pub struct Simulation {
     /// Static alliance graph derived from map house data.
     pub house_alliances: HouseAllianceMap,
     pub(crate) next_stable_entity_id: u64,
+    /// Main-object update order surrogate for parity-sensitive systems that
+    /// depend on gamemd's live `LogicClass` object-vector walk.
+    #[serde(default)]
+    pub(crate) live_object_order: Vec<u64>,
     /// Sound events produced during the current tick — drained by the app layer.
     #[serde(skip)]
     pub sound_events: Vec<SimSoundEvent>,
@@ -350,6 +360,9 @@ pub struct Simulation {
     pub radar_terrain_dirty_cells: Vec<(u16, u16)>,
     #[serde(skip)]
     pub radar_terrain_dirty_generation: u64,
+    /// Runtime cell rects dirtied by tiberium mutation side effects.
+    #[serde(skip)]
+    pub tactical_dirty_cells: Vec<(u16, u16)>,
     /// Per-player power state (output, drain, low-power flag, spy blackout timer).
     /// Updated each tick by `power_system::tick_power_states()`.
     pub power_states: BTreeMap<InternedId, PowerState>,
@@ -438,6 +451,7 @@ impl Simulation {
             fog: FogState::default(),
             house_alliances: HouseAllianceMap::default(),
             next_stable_entity_id: 1,
+            live_object_order: Vec::new(),
             sound_events: Vec::new(),
             fire_events: Vec::new(),
             pending_smudge_requests: Vec::new(),
@@ -459,6 +473,7 @@ impl Simulation {
             radar_events: RadarEventQueue::default(),
             radar_terrain_dirty_cells: Vec::new(),
             radar_terrain_dirty_generation: 0,
+            tactical_dirty_cells: Vec::new(),
             power_states: BTreeMap::new(),
             super_weapons: BTreeMap::new(),
             lightning_storm: None,
@@ -501,6 +516,39 @@ impl Simulation {
             self.radar_terrain_dirty_generation =
                 self.radar_terrain_dirty_generation.wrapping_add(1);
         }
+    }
+
+    pub(crate) fn reduce_tiberium_at(
+        &mut self,
+        cell: (u16, u16),
+        amount: u16,
+    ) -> crate::sim::tiberium::ReduceTiberiumOutcome {
+        self.reduce_tiberium_at_with_native_context(cell, amount, None, None)
+    }
+
+    pub(crate) fn reduce_tiberium_at_with_native_context(
+        &mut self,
+        cell: (u16, u16),
+        amount: u16,
+        rules: Option<&RuleSet>,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    ) -> crate::sim::tiberium::ReduceTiberiumOutcome {
+        let mut ctx = crate::sim::tiberium::ReduceTiberiumContext {
+            resource_nodes: &mut self.production.resource_nodes,
+            overlay_grid: self.overlay_grid.as_mut(),
+            ore_growth_state: &mut self.production.ore_growth_state,
+            overlay_registry,
+            tiberium_types: rules.map(|rules| &rules.tiberium_types),
+            resolved_terrain: self.resolved_terrain.as_ref(),
+            source_object_cells: Some(&self.production.tiberium_spawning_terrain_cells),
+            rng: Some(&mut self.rng),
+            binary_frame: self.binary_frame,
+            spread_enabled: self.production.ore_growth_config.spreads,
+            radar_dirty_cells: Some(&mut self.radar_terrain_dirty_cells),
+            radar_dirty_generation: Some(&mut self.radar_terrain_dirty_generation),
+            tactical_dirty_cells: Some(&mut self.tactical_dirty_cells),
+        };
+        crate::sim::tiberium::reduce_tiberium(&mut ctx, cell, amount)
     }
 
     /// Intern a string, returning its InternedId.
@@ -561,6 +609,35 @@ impl Simulation {
         id
     }
 
+    pub(crate) fn register_live_object(&mut self, stable_id: u64) {
+        if !self.live_object_order.contains(&stable_id) {
+            self.live_object_order.push(stable_id);
+        }
+    }
+
+    pub(crate) fn unregister_live_object(&mut self, stable_id: u64) {
+        self.live_object_order.retain(|&id| id != stable_id);
+    }
+
+    pub(crate) fn live_object_order_snapshot(&self) -> Vec<u64> {
+        let mut seen = BTreeSet::new();
+        let mut order = Vec::with_capacity(self.entities.len());
+
+        for &stable_id in &self.live_object_order {
+            if self.entities.contains(stable_id) && seen.insert(stable_id) {
+                order.push(stable_id);
+            }
+        }
+
+        for stable_id in self.entities.keys_sorted() {
+            if seen.insert(stable_id) {
+                order.push(stable_id);
+            }
+        }
+
+        order
+    }
+
     /// Increment owned count for the given owner when an entity spawns.
     pub(crate) fn increment_owned_count(&mut self, owner: &str, category: EntityCategory) {
         if let Some(house) = crate::sim::house_state::house_state_for_owner_mut(
@@ -617,6 +694,7 @@ impl Simulation {
         }
         self.clear_radio_contacts_for(stable_id);
         self.entities.remove(stable_id);
+        self.unregister_live_object(stable_id);
     }
 
     pub(crate) fn clear_radio_contacts_for(&mut self, stable_id: u64) {
@@ -815,6 +893,14 @@ impl Simulation {
     pub(crate) fn effective_build_blocked(&self, rx: u16, ry: u16) -> Option<bool> {
         let terrain = self.resolved_terrain.as_ref()?;
         let cell = terrain.cell(rx, ry)?;
+        if cell.bridge_facts.has_flag(BRIDGE_FLAG_STRUCTURAL)
+            || cell.bridge_facts.has_flag(BRIDGE_FLAG_DESTROYED_OR_RAMP)
+            || cell.overlay_blocks
+            || cell.terrain_object_blocks
+            || cell.slope_type != 0
+        {
+            return Some(true);
+        }
         if let Some(bridge) = self
             .bridge_state
             .as_ref()
@@ -1178,6 +1264,15 @@ impl Simulation {
             rules,
             &mut self.sound_events,
         );
+        if let Some(rules) = rules {
+            crate::sim::gate_runtime::tick_gate_runtimes(
+                &mut self.entities,
+                &self.occupancy,
+                rules,
+                &self.interner,
+                self.binary_frame,
+            );
+        }
         // --- Phase 2: Air + special movement ---
         // DEPENDS ON: commands (may set movement targets for air/special units).
         // INDEPENDENT OF: ground movement (air units bypass A* and occupancy).
@@ -1397,6 +1492,34 @@ impl Simulation {
             if let Some(reg) = overlay_registry {
                 self.apply_wall_damage_events(&combat_result.wall_damage_events, rules, reg);
             }
+            for req in &combat_result.tiberium_reduction_requests {
+                self.reduce_tiberium_at_with_native_context(
+                    (req.rx, req.ry),
+                    req.amount,
+                    Some(rules),
+                    overlay_registry,
+                );
+            }
+            for event in &combat_result.terrain_damage_events {
+                let Some(warhead) = rules.warhead(self.interner.resolve(event.warhead_ref)) else {
+                    continue;
+                };
+                let result = crate::sim::terrain_object::damage_terrain_object_at_cell(
+                    &mut self.production,
+                    rules,
+                    &self.interner,
+                    (event.rx, event.ry),
+                    event.damage,
+                    warhead,
+                    self.resolved_terrain.as_mut(),
+                );
+                if matches!(
+                    result,
+                    crate::sim::terrain_object::TerrainDamageResult::Destroyed
+                ) {
+                    destroyed_structure = true;
+                }
+            }
             // Apply RevealOnFire events from combat.
             for ev in &combat_result.reveal_events {
                 vision::reveal_radius(&mut self.fog, ev.owner, ev.rx, ev.ry, ev.radius);
@@ -1477,10 +1600,18 @@ impl Simulation {
             // grids/path_grid aren't bound (headless tests, no map loaded).
             if let (Some(smudge_grid), Some(overlay), Some(terrain), Some(pg)) = (
                 self.smudge_grid.as_mut(),
-                self.overlay_grid.as_ref(),
+                self.overlay_grid.as_mut(),
                 self.resolved_terrain.as_ref(),
                 path_grid,
             ) {
+                let mut tiberium_ctx = crate::sim::combat::smudge_dispatch::SmudgeTiberiumContext {
+                    resource_nodes: &mut self.production.resource_nodes,
+                    overlay_grid: overlay,
+                    ore_growth_state: &mut self.production.ore_growth_state,
+                    radar_dirty_cells: &mut self.radar_terrain_dirty_cells,
+                    radar_dirty_generation: &mut self.radar_terrain_dirty_generation,
+                    tactical_dirty_cells: &mut self.tactical_dirty_cells,
+                };
                 // Phase 4.5 superweapon-emitted smudges first, then Phase 5
                 // combat-emitted. Drain order matches emission order so the
                 // RNG cursor advances deterministically.
@@ -1490,11 +1621,10 @@ impl Simulation {
                     &rules.smudge_types,
                     &self.interner,
                     smudge_grid,
-                    overlay,
                     &self.occupancy,
                     terrain,
                     pg,
-                    &mut self.production.resource_nodes,
+                    &mut tiberium_ctx,
                     &mut self.rng,
                 );
                 crate::sim::combat::smudge_dispatch::drain_smudge_spawn_requests(
@@ -1503,11 +1633,10 @@ impl Simulation {
                     &rules.smudge_types,
                     &self.interner,
                     smudge_grid,
-                    overlay,
                     &self.occupancy,
                     terrain,
                     pg,
-                    &mut self.production.resource_nodes,
+                    &mut tiberium_ctx,
                     &mut self.rng,
                 );
             }
@@ -1538,20 +1667,68 @@ impl Simulation {
             //     self.tick,
             //     &self.interner,
             // );
-            spawned_entities |=
-                production::tick_production(self, rules, height_map, path_grid, tick_ms);
+            spawned_entities |= production::tick_production_with_overlay_registry(
+                self,
+                rules,
+                height_map,
+                path_grid,
+                overlay_registry,
+                tick_ms,
+            );
             production::tick_repairs(self, rules);
             building_dock::tick_building_docks(self, rules);
             aircraft_dock::tick_aircraft_docks(self, rules);
-            // Ore growth/spread: incremental scan driven by rules.ini GrowthRate.
-            ore_growth::tick_ore_growth(
-                &self.production.ore_growth_config,
-                &mut self.production.ore_growth_state,
-                &mut self.production.resource_nodes,
-                path_grid,
-                self.overlay_grid.as_mut(),
-                &mut self.rng,
-            );
+            // Ore growth/spread: use native per-type queues once map load has
+            // initialized them, preserving gamemd's growth-before-spread order.
+            let native_growth_ready = !rules.tiberium_types.is_empty()
+                && self
+                    .production
+                    .ore_growth_state
+                    .native_tiberium_state()
+                    .classes
+                    .len()
+                    == rules.tiberium_types.len()
+                && self.overlay_grid.is_some()
+                && overlay_registry.is_some();
+            if native_growth_ready {
+                if let (Some(grid), Some(registry)) = (self.overlay_grid.as_mut(), overlay_registry)
+                {
+                    self.production.ore_growth_state.tick_native_growth_driver(
+                        grid,
+                        registry,
+                        &rules.tiberium_types,
+                        self.resolved_terrain.as_ref(),
+                        &self.production.tiberium_spawning_terrain_cells,
+                        &mut self.production.resource_nodes,
+                        &mut self.rng,
+                        self.binary_frame,
+                        self.production.ore_growth_config.grows,
+                        self.production.ore_growth_config.spreads,
+                    );
+                    self.production.ore_growth_state.tick_native_spread_driver(
+                        grid,
+                        registry,
+                        &rules.tiberium_types,
+                        &mut self.production.resource_nodes,
+                        path_grid,
+                        self.resolved_terrain.as_ref(),
+                        &self.production.tiberium_spawning_terrain_cells,
+                        &mut self.rng,
+                        self.binary_frame,
+                        self.production.ore_growth_config.grows,
+                        self.production.ore_growth_config.spreads,
+                    );
+                }
+            } else {
+                ore_growth::tick_ore_growth(
+                    &self.production.ore_growth_config,
+                    &mut self.production.ore_growth_state,
+                    &mut self.production.resource_nodes,
+                    path_grid,
+                    self.overlay_grid.as_mut(),
+                    &mut self.rng,
+                );
+            }
             // TIBTRE ore spawning: runs AFTER ore_growth so a spawn this tick
             // can't be grown/spread until next tick.
             let production = &mut self.production;

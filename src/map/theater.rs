@@ -159,6 +159,77 @@ pub struct TilesetBounds {
     pub count: u16,
 }
 
+/// Numeric theater cliff/ramp ranges loaded from `[General]`.
+///
+/// Gamemd.exe reads these keys as tileset ordinals, then stores the cumulative
+/// tile_id start for each matching tileset. The classifiers intentionally use
+/// fixed retail range lengths rather than `TilesInSet`, because several stock
+/// ranges span multiple adjacent tilesets.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TheaterCliffRanges {
+    pub cliff_set: Option<u16>,
+    pub cliff_ramps: Option<u16>,
+    pub water_cliffs: Option<u16>,
+    pub destroyable_cliffs: Option<u16>,
+    pub bridge_set: Option<u16>,
+    pub wood_bridge_set: Option<u16>,
+    pub water_caves: Option<u16>,
+    pub waterfall_east: Option<u16>,
+    pub waterfall_west: Option<u16>,
+    pub waterfall_north: Option<u16>,
+    pub waterfall_south: Option<u16>,
+}
+
+impl TheaterCliffRanges {
+    /// Broad `IsCliffOrImpassableTile @ 0x004863d0` predicate.
+    pub fn is_cliff_or_impassable_tile(&self, tile_id: u16, slope_byte: u8) -> bool {
+        in_fixed_range(self.cliff_set, tile_id, 0x28)
+            || in_fixed_range(self.cliff_ramps, tile_id, 0x14)
+            || in_fixed_range(self.water_cliffs, tile_id, 0x1c)
+            || in_fixed_range(self.destroyable_cliffs, tile_id, 2)
+            || in_fixed_range(self.bridge_set, tile_id, 0x10)
+            || in_fixed_range(self.wood_bridge_set, tile_id, 0x10)
+            || in_fixed_range(self.water_caves, tile_id, 4)
+            || waterfall_blocks(self.waterfall_east, tile_id, slope_byte, &[0, 4])
+            || waterfall_blocks(self.waterfall_west, tile_id, slope_byte, &[1, 3])
+            || waterfall_blocks(self.waterfall_south, tile_id, slope_byte, &[0, 1])
+            || waterfall_blocks(self.waterfall_north, tile_id, slope_byte, &[2, 3])
+    }
+
+    /// Narrow `IsOnBridgeRamp @ 0x00578d80` predicate.
+    pub fn is_on_bridge_ramp_tile(&self, tile_id: u16, slope_byte: u8) -> bool {
+        in_fixed_range(self.cliff_set, tile_id, 0x28)
+            || in_fixed_range(self.cliff_ramps, tile_id, 0x14)
+            || waterfall_blocks(self.waterfall_east, tile_id, slope_byte, &[0, 4])
+            || waterfall_blocks(self.waterfall_west, tile_id, slope_byte, &[1, 3])
+            || waterfall_blocks(self.waterfall_south, tile_id, slope_byte, &[0, 1])
+            || waterfall_blocks(self.waterfall_north, tile_id, slope_byte, &[2, 3])
+    }
+}
+
+fn in_fixed_range(start: Option<u16>, tile_id: u16, len: u16) -> bool {
+    let Some(start) = start else {
+        return false;
+    };
+    let end = start.saturating_add(len);
+    tile_id >= start && tile_id < end
+}
+
+fn waterfall_blocks(start: Option<u16>, tile_id: u16, slope_byte: u8, passable: &[u8]) -> bool {
+    let Some(start) = start else {
+        return false;
+    };
+    if !in_fixed_range(Some(start), tile_id, 4) {
+        return false;
+    }
+    let offset = tile_id - start;
+    if offset == 0 || offset == 3 {
+        !passable.contains(&slope_byte)
+    } else {
+        true
+    }
+}
+
 /// Maps tile_id → TMP filename. Built by parsing a theater INI file.
 pub struct TilesetLookup {
     /// tile_id → TMP filename (e.g., "clear01.tem"). None = blank/empty tileset.
@@ -463,6 +534,8 @@ pub struct TheaterData {
     pub dirt_tunnels: Option<u16>,
     /// `[General] DirtTrackTunnels=N` - dirt track tunnel tile set.
     pub dirt_track_tunnels: Option<u16>,
+    /// Numeric cliff/ramp/waterfall classifiers derived from theater `[General]`.
+    pub cliff_ranges: TheaterCliffRanges,
 }
 
 /// Theater-derived 4-NS + 4-EW tile_id table for HIGH bridge anchor variants.
@@ -570,6 +643,16 @@ impl BridgeRampTileTable {
 }
 
 impl TheaterData {
+    pub fn is_cliff_or_impassable_tile(&self, tile_id: u16, slope_byte: u8) -> bool {
+        self.cliff_ranges
+            .is_cliff_or_impassable_tile(tile_id, slope_byte)
+    }
+
+    pub fn is_on_bridge_ramp_tile(&self, tile_id: u16, slope_byte: u8) -> bool {
+        self.cliff_ranges
+            .is_on_bridge_ramp_tile(tile_id, slope_byte)
+    }
+
     /// Return the absolute tile_id starts for the two railing table ranges
     /// written from SlopeSetPieces and SlopeSetPieces2 by gamemd.exe.
     pub fn bridge_railing_slope_starts(&self) -> Option<(u16, u16)> {
@@ -734,8 +817,8 @@ pub fn load_theater(asset_manager: &mut AssetManager, theater_name: &str) -> Opt
     // Parse theater [General] tile-set keys directly from the raw text; these
     // keys are not represented by the TileSet parser.
     let ini_text = String::from_utf8_lossy(&ini_data);
-    let bridge_set = parse_general_int(&ini_text, "BridgeSet");
-    let wood_bridge_set = parse_general_int(&ini_text, "WoodBridgeSet");
+    let mut bridge_set = parse_general_int(&ini_text, "BridgeSet");
+    let mut wood_bridge_set = parse_general_int(&ini_text, "WoodBridgeSet");
     let slope_set_pieces = parse_general_int(&ini_text, "SlopeSetPieces");
     let slope_set_pieces2 = parse_general_int(&ini_text, "SlopeSetPieces2");
     let bridge_top_left_1 = parse_general_int(&ini_text, "BridgeTopLeft1");
@@ -755,6 +838,13 @@ pub fn load_theater(asset_manager: &mut AssetManager, theater_name: &str) -> Opt
     let track_tunnels = parse_general_int(&ini_text, "TrackTunnels");
     let dirt_tunnels = parse_general_int(&ini_text, "DirtTunnels");
     let dirt_track_tunnels = parse_general_int(&ini_text, "DirtTrackTunnels");
+    let mut cliff_ranges = resolve_cliff_ranges(&lookup, &ini_text, bridge_set, wood_bridge_set);
+    apply_lunar_cliff_zeroing(
+        theater_name,
+        &mut bridge_set,
+        &mut wood_bridge_set,
+        &mut cliff_ranges,
+    );
     if bridge_set.is_some() || wood_bridge_set.is_some() {
         log::info!(
             "Theater {}: BridgeSet={:?}, WoodBridgeSet={:?}, BridgeMiddle1={:?}, BridgeMiddle2={:?}, Tunnels={:?}/{:?}/{:?}/{:?}",
@@ -806,13 +896,73 @@ pub fn load_theater(asset_manager: &mut AssetManager, theater_name: &str) -> Opt
         track_tunnels,
         dirt_tunnels,
         dirt_track_tunnels,
+        cliff_ranges,
     })
+}
+
+fn resolve_tileset_start(lookup: &TilesetLookup, ordinal: Option<i32>) -> Option<u16> {
+    let ordinal = ordinal?;
+    if ordinal < 0 {
+        return None;
+    }
+    lookup
+        .bounds()
+        .get(ordinal as usize)
+        .map(|bounds| bounds.start)
+}
+
+fn resolve_cliff_ranges(
+    lookup: &TilesetLookup,
+    ini_text: &str,
+    bridge_set: Option<u16>,
+    wood_bridge_set: Option<u16>,
+) -> TheaterCliffRanges {
+    TheaterCliffRanges {
+        cliff_set: resolve_tileset_start(lookup, parse_general_i32(ini_text, "CliffSet")),
+        cliff_ramps: resolve_tileset_start(lookup, parse_general_i32(ini_text, "CliffRamps")),
+        water_cliffs: resolve_tileset_start(lookup, parse_general_i32(ini_text, "WaterCliffs")),
+        destroyable_cliffs: resolve_tileset_start(
+            lookup,
+            parse_general_i32(ini_text, "DestroyableCliffs"),
+        ),
+        bridge_set: resolve_tileset_start(lookup, bridge_set.map(i32::from)),
+        wood_bridge_set: resolve_tileset_start(lookup, wood_bridge_set.map(i32::from)),
+        water_caves: resolve_tileset_start(lookup, parse_general_i32(ini_text, "WaterCaves")),
+        waterfall_east: resolve_tileset_start(lookup, parse_general_i32(ini_text, "WaterfallEast")),
+        waterfall_west: resolve_tileset_start(lookup, parse_general_i32(ini_text, "WaterfallWest")),
+        waterfall_north: resolve_tileset_start(
+            lookup,
+            parse_general_i32(ini_text, "WaterfallNorth"),
+        ),
+        waterfall_south: resolve_tileset_start(
+            lookup,
+            parse_general_i32(ini_text, "WaterfallSouth"),
+        ),
+    }
+}
+
+fn apply_lunar_cliff_zeroing(
+    theater_name: &str,
+    bridge_set: &mut Option<u16>,
+    wood_bridge_set: &mut Option<u16>,
+    cliff_ranges: &mut TheaterCliffRanges,
+) {
+    if !theater_name.eq_ignore_ascii_case("LUNAR") {
+        return;
+    }
+    *bridge_set = None;
+    *wood_bridge_set = None;
+    *cliff_ranges = TheaterCliffRanges::default();
 }
 
 /// Parse a key=value integer from the `[General]` section of a theater INI file.
 /// BridgeSet and WoodBridgeSet are defined inside `[General]`, not in the
 /// global scope before any section header.
 fn parse_general_int(text: &str, key: &str) -> Option<u16> {
+    parse_general_i32(text, key).and_then(|value| u16::try_from(value).ok())
+}
+
+fn parse_general_i32(text: &str, key: &str) -> Option<i32> {
     let mut in_general = false;
     for line in text.lines() {
         let line = line.trim();

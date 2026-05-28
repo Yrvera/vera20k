@@ -48,6 +48,8 @@ pub(crate) struct MoveInfo {
     pub(crate) slowdown_distance: SimFixed,
     pub(crate) movement_zone: MovementZone,
     pub(crate) position: (u16, u16),
+    pub(crate) regular_crusher: bool,
+    pub(crate) drive_accelerates: bool,
     pub(crate) mover_is_crusher: bool,
 }
 
@@ -69,10 +71,8 @@ impl Simulation {
             .unwrap_or(SimFixed::from_num(1));
 
         let obj = rules.and_then(|r| r.object(self.interner.resolve(e.type_ref)));
-        // DEBUG: 3x speed boost for MCVs during development.
-        let speed_mult = obj.map_or(1, |o| if o.deploys_into.is_some() { 3 } else { 1 });
         let base_speed = obj
-            .map(|o| ra2_speed_to_leptons_per_second(o.speed * speed_mult))
+            .map(|o| ra2_speed_to_leptons_per_second(o.speed))
             .unwrap_or(ra2_speed_to_leptons_per_second(4));
         let speed = (base_speed * loco_multiplier).max(SimFixed::lit("25"));
 
@@ -90,6 +90,8 @@ impl Simulation {
             slowdown_distance: obj.map_or(SIM_ZERO, |o| SimFixed::from_num(o.slowdown_distance)),
             movement_zone: obj.map_or(MovementZone::Normal, |o| o.movement_zone),
             position: (e.position.rx, e.position.ry),
+            regular_crusher: e.regular_crusher,
+            drive_accelerates: e.drive_accelerates,
             mover_is_crusher: e.omni_crusher
                 || matches!(
                     loco.map(|l| l.movement_zone),
@@ -217,6 +219,7 @@ impl Simulation {
                                 cost_grid,
                                 Some(&entity_blocks),
                                 self.resolved_terrain.as_ref(),
+                                self.zone_grid.as_ref(),
                                 Some(&entity_block_map),
                                 info.mover_is_crusher,
                             );
@@ -255,6 +258,7 @@ impl Simulation {
                         cost_grid,
                         Some(&entity_blocks),
                         self.resolved_terrain.as_ref(),
+                        self.zone_grid.as_ref(),
                         Some(&entity_block_map),
                         info.mover_is_crusher,
                     )
@@ -280,6 +284,7 @@ impl Simulation {
                 // Cancel any dock state before clearing movement.
                 self.cancel_depot_dock(*entity_id);
                 if let Some(e) = self.entities.get_mut(*entity_id) {
+                    movement::clear_navigation_for_entity(e);
                     e.movement_target = None;
                     e.attack_target = None;
                     e.order_intent = None;
@@ -456,6 +461,7 @@ impl Simulation {
                         cost_grid,
                         Some(&entity_blocks),
                         self.resolved_terrain.as_ref(),
+                        self.zone_grid.as_ref(),
                         Some(&entity_block_map),
                         info.mover_is_crusher,
                     )
@@ -804,6 +810,7 @@ impl Simulation {
                         cost_grid,
                         Some(&entity_blocks),
                         self.resolved_terrain.as_ref(),
+                        self.zone_grid.as_ref(),
                         Some(&entity_block_map),
                         crusher,
                     );
@@ -843,8 +850,10 @@ impl Simulation {
                         pobj,
                         &transport_obj,
                         &cargo,
-                        rules.general.condition_red_x1000,
+                        rules,
+                        &self.houses,
                         &self.interner,
+                        path_grid,
                     ) {
                         Some(())
                     } else {
@@ -894,6 +903,7 @@ impl Simulation {
                         cost_grid,
                         Some(&entity_blocks),
                         self.resolved_terrain.as_ref(),
+                        self.zone_grid.as_ref(),
                         Some(&entity_block_map),
                         crusher,
                     );
@@ -1041,6 +1051,7 @@ impl Simulation {
                         cost_grid,
                         Some(&entity_blocks),
                         self.resolved_terrain.as_ref(),
+                        self.zone_grid.as_ref(),
                         Some(&entity_block_map),
                         crusher,
                     );
@@ -1133,6 +1144,7 @@ impl Simulation {
                         cost_grid,
                         Some(&entity_blocks),
                         self.resolved_terrain.as_ref(),
+                        self.zone_grid.as_ref(),
                         Some(&entity_block_map),
                         crusher,
                     );
@@ -1480,6 +1492,105 @@ mod tests {
     use crate::sim::game_entity::GameEntity;
     use crate::sim::house_state::HouseState;
     use crate::sim::miner::{Miner, MinerConfig, MinerKind, MinerState, RefineryDockPhase};
+    use crate::sim::movement::locomotor::LocomotorState;
+
+    fn amcv_move_rules() -> RuleSet {
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n\
+             [VehicleTypes]\n\
+             0=AMCV\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             [AMCV]\n\
+             Strength=1000\n\
+             Speed=4\n\
+             Locomotor={4A582741-9839-11d1-B709-00A024DDAFD1}\n\
+             MovementZone=Normal\n\
+             Crusher=yes\n\
+             DeploysInto=GACNST\n",
+        );
+        RuleSet::from_ini(&ini).expect("amcv rules")
+    }
+
+    fn spawn_rule_backed_unit(sim: &mut Simulation, sid: u64, type_id: &str, rules: &RuleSet) {
+        let owner = sim.interner.intern("Americans");
+        let type_ref = sim.interner.intern(type_id);
+        let obj = rules.object(type_id).expect("object type");
+        let health = obj.strength.clamp(0, u16::MAX as i32) as u16;
+        let mut entity = GameEntity::new(
+            sid,
+            20,
+            20,
+            0,
+            0,
+            owner,
+            Health {
+                current: health,
+                max: health,
+            },
+            type_ref,
+            EntityCategory::Unit,
+            0,
+            obj.sight.max(0) as u16,
+            true,
+        );
+        entity.locomotor = Some(LocomotorState::from_object_type(
+            obj,
+            rules.general.flight_level,
+        ));
+        entity.regular_crusher = obj.crusher;
+        entity.drive_accelerates = obj.accelerates;
+        entity.omni_crusher = obj.omni_crusher;
+        sim.entities.insert(entity);
+    }
+
+    #[test]
+    fn resolve_move_info_uses_stock_amcv_speed_without_deployable_multiplier() {
+        let rules = amcv_move_rules();
+        let mut sim = Simulation::new();
+        spawn_rule_backed_unit(&mut sim, 1, "AMCV", &rules);
+
+        let info = sim.resolve_move_info(1, Some(&rules)).expect("move info");
+
+        assert_eq!(info.speed, ra2_speed_to_leptons_per_second(4));
+    }
+
+    #[test]
+    fn resolve_move_info_carries_regular_crusher_but_keeps_legacy_crush_inert() {
+        let rules = amcv_move_rules();
+        let mut sim = Simulation::new();
+        spawn_rule_backed_unit(&mut sim, 1, "AMCV", &rules);
+
+        let info = sim.resolve_move_info(1, Some(&rules)).expect("move info");
+
+        assert!(info.regular_crusher);
+        assert_eq!(info.movement_zone, MovementZone::Normal);
+        assert!(!info.mover_is_crusher);
+    }
+
+    #[test]
+    fn resolve_move_info_carries_accelerates_flag() {
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n\
+             [VehicleTypes]\n\
+             0=AMCV\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             [AMCV]\n\
+             Strength=1000\n\
+             Speed=4\n\
+             Locomotor={4A582741-9839-11d1-B709-00A024DDAFD1}\n\
+             MovementZone=Normal\n\
+             Accelerates=false\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("amcv rules");
+        let mut sim = Simulation::new();
+        spawn_rule_backed_unit(&mut sim, 1, "AMCV", &rules);
+
+        let info = sim.resolve_move_info(1, Some(&rules)).expect("move info");
+
+        assert!(!info.drive_accelerates);
+    }
 
     fn miner_return_rules() -> RuleSet {
         let ini = IniFile::from_str(

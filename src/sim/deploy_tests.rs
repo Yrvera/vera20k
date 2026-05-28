@@ -4,9 +4,12 @@
 
 use std::collections::BTreeMap;
 
+use crate::map::bridge_facts::{BRIDGE_FLAG_DESTROYED_OR_RAMP, BRIDGE_FLAG_STRUCTURAL};
 use crate::map::entities::EntityCategory;
+use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
 use crate::rules::ini_parser::IniFile;
 use crate::rules::ruleset::RuleSet;
+use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
 use crate::sim::combat::AttackTarget;
 use crate::sim::command::{Command, CommandEnvelope};
 use crate::sim::components::Health;
@@ -152,6 +155,7 @@ Name=Construction Yard
 Strength=1000
 Armor=wood
 Foundation=4x3
+ConstructionYard=yes
 UndeploysInto=AMCV
 
 [GAPOWR]
@@ -196,6 +200,97 @@ fn spawn_infantry(sim: &mut Simulation, type_str: &str, owner: &str, rx: u16, ry
     id
 }
 
+fn clear_terrain_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
+    ResolvedTerrainCell {
+        rx,
+        ry,
+        source_tile_index: 0,
+        source_sub_tile: 0,
+        final_tile_index: 0,
+        final_sub_tile: 0,
+        is_wood_bridge_repair_tile: false,
+        level: 0,
+        filled_clear: false,
+        tileset_index: Some(0),
+        land_type: 0,
+        yr_cell_land_type: 0,
+        slope_type: 0,
+        template_height: 0,
+        render_offset_x: 0,
+        render_offset_y: 0,
+        terrain_class: TerrainClass::Clear,
+        speed_costs: SpeedCostProfile::default(),
+        is_water: false,
+        is_cliff_like: false,
+        is_cliff_redraw: false,
+        variant: 0,
+        is_rough: false,
+        is_road: false,
+        accepts_smudge: true,
+        allows_tiberium: true,
+        has_ramp: false,
+        canonical_ramp: None,
+        ground_walk_blocked: false,
+        terrain_object_blocks: false,
+        overlay_blocks: false,
+        zone_type: 0,
+        base_ground_walk_blocked: false,
+        base_build_blocked: false,
+        base_land_type: 0,
+        base_yr_cell_land_type: 0,
+        base_terrain_class: TerrainClass::Clear,
+        base_speed_costs: SpeedCostProfile::default(),
+        build_blocked: false,
+        has_bridge_deck: false,
+        bridge_walkable: false,
+        bridge_transition: false,
+        bridge_deck_level: 0,
+        bridge_layer: None,
+        bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+        tube_index: None,
+        radar_left: [0, 0, 0],
+        radar_right: [0, 0, 0],
+        has_damaged_data: false,
+        bridgehead_anchor_class_at_load: None,
+    }
+}
+
+fn mcv_deploy_terrain_with(
+    mut mutate: impl FnMut(&mut ResolvedTerrainCell),
+) -> ResolvedTerrainGrid {
+    let width = 32;
+    let height = 32;
+    let mut cells = Vec::with_capacity(width as usize * height as usize);
+    for ry in 0..height {
+        for rx in 0..width {
+            cells.push(clear_terrain_cell(rx, ry));
+        }
+    }
+    let idx = 21usize * width as usize + 20usize;
+    mutate(&mut cells[idx]);
+    ResolvedTerrainGrid::from_cells(width, height, cells)
+}
+
+fn deploy_mcv_with_terrain(terrain: ResolvedTerrainGrid) -> (bool, bool, usize) {
+    let rules = make_mcv_rules();
+    let mut sim = Simulation::new();
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    let mcv = sim
+        .spawn_object("AMCV", "Americans", 20, 22, 128, &rules, &height_map)
+        .expect("spawn MCV");
+    sim.resolved_terrain = Some(terrain);
+
+    let applied = sim.apply_command(
+        "Americans",
+        &Command::DeployMcv { entity_id: mcv },
+        Some(&rules),
+        None,
+        &height_map,
+    );
+    let mcv_remains = sim.entities.get(mcv).is_some();
+    (applied, mcv_remains, sim.sound_events.len())
+}
+
 #[test]
 fn deploy_mcv_uses_gamemd_large_foundation_origin_offset() {
     let rules = make_mcv_rules();
@@ -203,7 +298,7 @@ fn deploy_mcv_uses_gamemd_large_foundation_origin_offset() {
     let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
 
     let mcv = sim
-        .spawn_object("AMCV", "Americans", 20, 22, 64, &rules, &height_map)
+        .spawn_object("AMCV", "Americans", 20, 22, 128, &rules, &height_map)
         .expect("spawn MCV");
 
     let applied = sim.apply_command(
@@ -235,7 +330,7 @@ fn deploy_mcv_accepts_mixed_height_clear_foundation() {
     height_map.insert((20, 21), 1);
 
     let mcv = sim
-        .spawn_object("AMCV", "Americans", 20, 22, 64, &rules, &height_map)
+        .spawn_object("AMCV", "Americans", 20, 22, 128, &rules, &height_map)
         .expect("spawn MCV");
 
     let applied = sim.apply_command(
@@ -270,7 +365,7 @@ fn deploy_mcv_rejects_structure_in_rightmost_foundation_column() {
     let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
 
     let mcv = sim
-        .spawn_object("AMCV", "Americans", 20, 22, 64, &rules, &height_map)
+        .spawn_object("AMCV", "Americans", 20, 22, 128, &rules, &height_map)
         .expect("spawn MCV");
     let blocker = sim
         .spawn_object("GAPOWR", "Soviets", 21, 22, 0, &rules, &height_map)
@@ -289,6 +384,13 @@ fn deploy_mcv_rejects_structure_in_rightmost_foundation_column() {
     );
     assert!(sim.entities.get(mcv).is_some(), "MCV should remain");
     assert!(sim.entities.get(blocker).is_some(), "blocker should remain");
+    let americans = sim.interner.intern("Americans");
+    assert!(
+        sim.sound_events.iter().any(|event| {
+            matches!(event, SimSoundEvent::CannotDeployHere { owner } if *owner == americans)
+        }),
+        "blocked MCV deploy should emit EVA_CannotDeployHere for the command owner"
+    );
 
     if let Some(gacnst_id) = sim.interner.get("GACNST") {
         assert!(
@@ -296,6 +398,276 @@ fn deploy_mcv_rejects_structure_in_rightmost_foundation_column() {
             "blocked deploy must not spawn a Construction Yard"
         );
     }
+}
+
+#[test]
+fn deploy_mcv_waits_for_target_building_deploy_facing() {
+    let rules = make_mcv_rules();
+    let mut sim = Simulation::new();
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+
+    let mcv = sim
+        .spawn_object("AMCV", "Americans", 20, 22, 64, &rules, &height_map)
+        .expect("spawn MCV");
+
+    let applied = sim.apply_command(
+        "Americans",
+        &Command::DeployMcv { entity_id: mcv },
+        Some(&rules),
+        None,
+        &height_map,
+    );
+    assert!(applied, "misfaced deploy starts the facing turn");
+    let entity = sim
+        .entities
+        .get(mcv)
+        .expect("MCV should remain while turning");
+    assert_eq!(entity.facing, 0x80);
+    assert_eq!(entity.facing_target, Some(0x80));
+    assert!(
+        sim.interner.get("GACNST").map_or(true, |yard| !sim
+            .entities
+            .values()
+            .any(|e| e.type_ref == yard)),
+        "facing gate must run before ConYard creation"
+    );
+}
+
+#[test]
+fn deploy_mcv_uses_deploys_into_building_deploy_facing_override() {
+    let ini = IniFile::from_str(
+        "\
+[InfantryTypes]
+[VehicleTypes]
+0=AMCV
+[AircraftTypes]
+[BuildingTypes]
+0=GACNST
+[AMCV]
+Strength=450
+Speed=5
+DeploysInto=GACNST
+[GACNST]
+Strength=1000
+Foundation=4x3
+ConstructionYard=yes
+DeployFacing=2
+",
+    );
+    let rules = RuleSet::from_ini(&ini).expect("rules");
+    assert_eq!(rules.object("GACNST").unwrap().deploy_facing, 0x40);
+    let mut sim = Simulation::new();
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    let mcv = sim
+        .spawn_object("AMCV", "Americans", 20, 22, 0x80, &rules, &height_map)
+        .expect("spawn MCV");
+
+    assert!(sim.apply_command(
+        "Americans",
+        &Command::DeployMcv { entity_id: mcv },
+        Some(&rules),
+        None,
+        &height_map,
+    ));
+
+    let entity = sim
+        .entities
+        .get(mcv)
+        .expect("MCV should remain while turning");
+    assert_eq!(entity.facing, 0x40);
+    assert_eq!(entity.facing_target, Some(0x40));
+}
+
+#[test]
+fn deploy_mcv_rejects_overlay_blocked_foundation_cell() {
+    let terrain = mcv_deploy_terrain_with(|cell| {
+        cell.overlay_blocks = true;
+    });
+
+    let (applied, mcv_remains, sound_count) = deploy_mcv_with_terrain(terrain);
+
+    assert!(!applied);
+    assert!(mcv_remains);
+    assert_eq!(sound_count, 1);
+}
+
+#[test]
+fn deploy_mcv_rejects_sloped_foundation_cell() {
+    let terrain = mcv_deploy_terrain_with(|cell| {
+        cell.slope_type = 1;
+    });
+
+    let (applied, mcv_remains, sound_count) = deploy_mcv_with_terrain(terrain);
+
+    assert!(!applied);
+    assert!(mcv_remains);
+    assert_eq!(sound_count, 1);
+}
+
+#[test]
+fn deploy_mcv_rejects_nonbuildable_land_type_foundation_cell() {
+    let terrain = mcv_deploy_terrain_with(|cell| {
+        cell.land_type = crate::sim::pathfinding::passability::LandType::Water.as_index();
+        cell.yr_cell_land_type = cell.land_type;
+        cell.base_build_blocked = true;
+        cell.build_blocked = true;
+        cell.is_water = true;
+    });
+
+    let (applied, mcv_remains, sound_count) = deploy_mcv_with_terrain(terrain);
+
+    assert!(!applied);
+    assert!(mcv_remains);
+    assert_eq!(sound_count, 1);
+}
+
+#[test]
+fn deploy_mcv_rejects_live_bridge_foundation_cell() {
+    let terrain = mcv_deploy_terrain_with(|cell| {
+        cell.has_bridge_deck = true;
+        cell.bridge_walkable = true;
+        cell.bridge_facts.raw_flags = BRIDGE_FLAG_STRUCTURAL;
+    });
+
+    let (applied, mcv_remains, sound_count) = deploy_mcv_with_terrain(terrain);
+
+    assert!(!applied);
+    assert!(mcv_remains);
+    assert_eq!(sound_count, 1);
+}
+
+#[test]
+fn deploy_mcv_rejects_pure_0x400_bridge_marker_foundation_cell() {
+    let terrain = mcv_deploy_terrain_with(|cell| {
+        cell.bridge_facts.raw_flags = BRIDGE_FLAG_DESTROYED_OR_RAMP;
+    });
+
+    let (applied, mcv_remains, sound_count) = deploy_mcv_with_terrain(terrain);
+
+    assert!(!applied);
+    assert!(mcv_remains);
+    assert_eq!(sound_count, 1);
+}
+
+fn add_house(sim: &mut Simulation, owner: &str, is_human: bool) {
+    let owner_id = sim.interner.intern(owner);
+    sim.houses.insert(
+        owner_id,
+        crate::sim::house_state::HouseState::new(owner_id, 0, Some(owner_id), is_human, 5000, 10),
+    );
+}
+
+#[test]
+fn conyard_redeploy_runtime_rejects_when_mcv_redeploy_disabled() {
+    let rules = make_mcv_rules();
+    let mut sim = Simulation::new();
+    add_house(&mut sim, "Americans", true);
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    let yard = sim
+        .spawn_object("GACNST", "Americans", 19, 21, 0, &rules, &height_map)
+        .expect("spawn ConYard");
+    sim.game_options.mcv_redeploy = false;
+
+    let applied = sim.apply_command(
+        "Americans",
+        &Command::UndeployBuilding { entity_id: yard },
+        Some(&rules),
+        None,
+        &height_map,
+    );
+
+    assert!(!applied);
+    assert!(sim.entities.get(yard).unwrap().building_down.is_none());
+}
+
+#[test]
+fn conyard_redeploy_runtime_rejects_non_human_owner() {
+    let rules = make_mcv_rules();
+    let mut sim = Simulation::new();
+    add_house(&mut sim, "Americans", false);
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    let yard = sim
+        .spawn_object("GACNST", "Americans", 19, 21, 0, &rules, &height_map)
+        .expect("spawn ConYard");
+
+    let applied = sim.apply_command(
+        "Americans",
+        &Command::UndeployBuilding { entity_id: yard },
+        Some(&rules),
+        None,
+        &height_map,
+    );
+
+    assert!(!applied);
+    assert!(sim.entities.get(yard).unwrap().building_down.is_none());
+}
+
+#[test]
+fn conyard_redeploy_ui_hides_while_building_queue_busy() {
+    let rules = make_mcv_rules();
+    let mut sim = Simulation::new();
+    add_house(&mut sim, "Americans", true);
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    let yard = sim
+        .spawn_object("GACNST", "Americans", 19, 21, 0, &rules, &height_map)
+        .expect("spawn ConYard");
+
+    assert!(sim.should_show_undeploy_building_command(yard, &rules));
+    let owner = sim.interner.get("Americans").unwrap();
+    let type_id = sim.interner.intern("GAPOWR");
+    sim.production
+        .queues_by_owner
+        .entry(owner)
+        .or_default()
+        .entry(crate::sim::production::ProductionCategory::Building)
+        .or_default()
+        .push_back(crate::sim::production::BuildQueueItem {
+            owner,
+            type_id,
+            queue_category: crate::sim::production::ProductionCategory::Building,
+            state: crate::sim::production::BuildQueueState::Building,
+            total_base_frames: 100,
+            remaining_base_frames: 100,
+            progress_carry: 0,
+            enqueue_order: 1,
+        });
+
+    assert!(!sim.should_show_undeploy_building_command(yard, &rules));
+    assert!(
+        sim.can_undeploy_building_runtime(yard, &rules),
+        "production-busy is a UI visibility gate, not the runtime CanUndeployMCV core gate"
+    );
+}
+
+#[test]
+fn mcv_redeploy_option_does_not_gate_non_conyard_undeploys_into() {
+    let ini = IniFile::from_str(
+        "\
+[InfantryTypes]
+[VehicleTypes]
+0=SMIN
+[AircraftTypes]
+[BuildingTypes]
+0=YAREFN
+[SMIN]
+Strength=2000
+Speed=3
+[YAREFN]
+Strength=1000
+Foundation=2x2
+UndeploysInto=SMIN
+",
+    );
+    let rules = RuleSet::from_ini(&ini).expect("rules");
+    let mut sim = Simulation::new();
+    add_house(&mut sim, "Americans", true);
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    let refinery = sim
+        .spawn_object("YAREFN", "Americans", 19, 21, 0, &rules, &height_map)
+        .expect("spawn refinery");
+    sim.game_options.mcv_redeploy = false;
+
+    assert!(sim.can_undeploy_building_runtime(refinery, &rules));
 }
 
 /// Schedule one command for tick N+1 and run a single advance_tick.

@@ -33,9 +33,25 @@ use crate::rules::smudge_type::SmudgeTypeRegistry;
 use crate::rules::superweapon_type::SuperWeaponType;
 use crate::rules::terrain_object_type::TerrainObjectType;
 use crate::rules::terrain_rules::TerrainRules;
+use crate::rules::tiberium_type::TiberiumTypeRegistry;
 use crate::rules::warhead_type::WarheadType;
 use crate::rules::weapon_type::WeaponType;
 use crate::util::fixed_math::{SimFixed, sim_from_f32};
+
+/// Country-level fields needed by gameplay systems.
+#[derive(Debug, Clone, Default)]
+pub struct CountryRules {
+    /// `MultiplayPassive=` allows non-owner garrison entry in `BuildingClass::CanDock`.
+    pub multiplay_passive: bool,
+}
+
+impl CountryRules {
+    fn from_ini_section(section: &crate::rules::ini_parser::IniSection) -> Self {
+        Self {
+            multiplay_passive: section.get_bool("MultiplayPassive").unwrap_or(false),
+        }
+    }
+}
 
 /// Registry section names in rules.ini and their corresponding category.
 const TYPE_REGISTRIES: &[(&str, ObjectCategory)] = &[
@@ -1290,6 +1306,8 @@ pub struct RuleSet {
     warheads: HashMap<String, WarheadType>,
     /// All projectiles indexed by ID (e.g., "InvisibleLow" → ProjectileType).
     projectiles: HashMap<String, ProjectileType>,
+    /// Country-level rules indexed by country/house type ID.
+    countries: HashMap<String, CountryRules>,
     pub production: ProductionRules,
     /// Global gameplay constants (vision, gap generator, etc.).
     pub general: GeneralRules,
@@ -1313,6 +1331,8 @@ pub struct RuleSet {
     pub prerequisite_groups: HashMap<String, Vec<String>>,
     /// Rules-driven terrain land-type semantics keyed by TMP land byte.
     pub terrain_rules: TerrainRules,
+    /// Native `[Tiberiums]` definitions in GameMD type order.
+    pub tiberium_types: TiberiumTypeRegistry,
     /// Terrain object type definitions (TIBTRE*, TREE*, ROCK*, etc.) keyed by
     /// uppercase section name. Distinct from `terrain_rules` (land semantics);
     /// these are per-decoration-object types parsed from `[TerrainTypes]`.
@@ -1373,9 +1393,11 @@ impl RuleSet {
         let production: ProductionRules = ProductionRules::from_ini(ini);
         let general: GeneralRules = GeneralRules::from_ini(ini);
         let terrain_rules: TerrainRules = TerrainRules::from_ini(ini);
+        let tiberium_types = TiberiumTypeRegistry::from_ini(ini);
         let bridge_rules: BridgeRules = BridgeRules::from_ini(ini);
         let garrison_rules: GarrisonRules = GarrisonRules::from_ini(ini);
         let radar_event_config: RadarEventConfig = RadarEventConfig::from_ini(ini);
+        let countries = parse_country_rules(ini);
 
         // Step 1: Parse each type registry and load object sections.
         for &(registry_name, category) in TYPE_REGISTRIES {
@@ -1507,11 +1529,19 @@ impl RuleSet {
         // Parse [TerrainTypes] registry → per-type sections (TIBTRE01, TREE01, etc.).
         let mut terrain_object_types: HashMap<String, TerrainObjectType> = HashMap::new();
         let terrain_names: Vec<String> = parse_registry(ini, "TerrainTypes");
+        let tree_strength = ini
+            .section("General")
+            .and_then(|section| section.get_i32("TreeStrength"))
+            .unwrap_or(200);
         for name in &terrain_names {
             if let Some(section) = ini.section(name) {
                 terrain_object_types.insert(
                     name.to_ascii_uppercase(),
-                    TerrainObjectType::from_ini_section(name, section),
+                    TerrainObjectType::from_ini_section_with_tree_strength(
+                        name,
+                        section,
+                        tree_strength,
+                    ),
                 );
             }
         }
@@ -1552,6 +1582,7 @@ impl RuleSet {
             weapons,
             warheads,
             projectiles,
+            countries,
             production,
             general,
             infantry_ids,
@@ -1561,6 +1592,7 @@ impl RuleSet {
             factory_map,
             prerequisite_groups,
             terrain_rules,
+            tiberium_types,
             terrain_object_types,
             bridge_rules,
             garrison_rules,
@@ -1660,6 +1692,18 @@ impl RuleSet {
     /// Look up a projectile by ID.
     pub fn projectile(&self, id: &str) -> Option<&ProjectileType> {
         self.projectiles.get(id)
+    }
+
+    /// Whether a country/house type has `MultiplayPassive=true`.
+    pub fn country_multiplay_passive(&self, id: &str) -> bool {
+        self.countries
+            .get(id)
+            .or_else(|| {
+                self.countries
+                    .iter()
+                    .find_map(|(key, country)| key.eq_ignore_ascii_case(id).then_some(country))
+            })
+            .is_some_and(|country| country.multiplay_passive)
     }
 
     /// Look up a superweapon type by ID.
@@ -1859,10 +1903,23 @@ impl RuleSet {
             dock_patched,
             buildings_checked,
         );
+        let mut terrain_foundations_patched: u32 = 0;
+        for terrain in self.terrain_object_types.values_mut() {
+            if let Some(entry) = art.get(&terrain.name) {
+                if let Some(ref foundation) = entry.foundation {
+                    terrain.merge_art_foundation(foundation);
+                    terrain_foundations_patched += 1;
+                }
+            }
+        }
         log::trace!(
             "Merged infantry art metadata: {} Crawls flags ({} infantry checked)",
             crawls_patched,
             infantry_checked,
+        );
+        log::trace!(
+            "Merged terrain art metadata: {} Foundation values",
+            terrain_foundations_patched,
         );
     }
 
@@ -1939,6 +1996,16 @@ fn parse_registry(ini: &IniFile, section_name: &str) -> Vec<String> {
             Vec::new()
         }
     }
+}
+
+fn parse_country_rules(ini: &IniFile) -> HashMap<String, CountryRules> {
+    let mut countries = HashMap::new();
+    for id in parse_registry(ini, "Countries") {
+        if let Some(section) = ini.section(&id) {
+            countries.insert(id, CountryRules::from_ini_section(section));
+        }
+    }
+    countries
 }
 
 /// Collect all weapon and warhead IDs referenced by objects.

@@ -21,8 +21,8 @@ use crate::sim::animation::Animation;
 use crate::sim::combat::AttackTarget;
 use crate::sim::components::{
     BridgeOccupancy, BuildingAnimOverlays, BuildingDown, BuildingUp, C4PlantState,
-    DamageFireOverlays, HarvestOverlay, Health, MovementTarget, OrderIntent, PendingC4Detonation,
-    Position, RockingState, VoxelAnimation,
+    DamageFireOverlays, DriveLocomotionRuntime, HarvestOverlay, Health, MovementTarget,
+    NavigationState, OrderIntent, PendingC4Detonation, Position, RockingState, VoxelAnimation,
 };
 use crate::sim::debug_event_log::{DebugEventKind, DebugEventLog};
 use crate::sim::deploy::DeployPhase;
@@ -59,6 +59,67 @@ impl InfantryRuntime {
 
 fn default_true() -> bool {
     true
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum BuildingGatePhase {
+    #[default]
+    ClosedStable,
+    Opening,
+    OpenStable,
+    Closing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum BuildingGateMissionState {
+    #[default]
+    Setup,
+    OpeningWait,
+    OpenHold,
+    BeginClose,
+    ClosingWait,
+    PostClose,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BuildingGateRuntime {
+    pub mission_18_active: bool,
+    pub phase: BuildingGatePhase,
+    #[serde(default)]
+    pub mission_state: BuildingGateMissionState,
+    #[serde(default)]
+    pub transition_ticks_remaining: u32,
+    #[serde(default)]
+    pub transition_total_ticks: u32,
+    /// Native transition helper start-frame baseline. Direction reversal rewrites
+    /// the active duration field but preserves this frame.
+    #[serde(default)]
+    pub transition_last_frame: u32,
+    #[serde(default)]
+    pub hold_ticks_remaining: u32,
+    #[serde(default)]
+    pub hold_last_frame: u32,
+}
+
+impl Default for BuildingGateRuntime {
+    fn default() -> Self {
+        Self {
+            mission_18_active: false,
+            phase: BuildingGatePhase::ClosedStable,
+            mission_state: BuildingGateMissionState::Setup,
+            transition_ticks_remaining: 0,
+            transition_total_ticks: 0,
+            transition_last_frame: 0,
+            hold_ticks_remaining: 0,
+            hold_last_frame: 0,
+        }
+    }
+}
+
+impl BuildingGateRuntime {
+    pub fn can_garrison_passable(self) -> bool {
+        self.mission_18_active && self.phase == BuildingGatePhase::OpenStable
+    }
 }
 
 /// Unified entity struct — replaces all hecs ECS components.
@@ -110,6 +171,12 @@ pub struct GameEntity {
     pub locomotor: Option<LocomotorState>,
     /// Active movement path — present when unit is moving along an A* path.
     pub movement_target: Option<MovementTarget>,
+    /// FootClass-style owner navigation destination state.
+    ///
+    /// Native `NavCom` is distinct from the active execution path, so this can
+    /// remain visible after a `MovementTarget` or DriveTrack segment has cleared.
+    #[serde(default)]
+    pub navigation: NavigationState,
     /// Active attack target — present when entity is firing at something.
     pub attack_target: Option<AttackTarget>,
     /// RadioClass-style live contacts for this entity, stored as stable IDs.
@@ -133,6 +200,12 @@ pub struct GameEntity {
     pub building_down: Option<BuildingDown>,
     /// Active one-shot building animation overlays (e.g., ConYard crane).
     pub building_anim_overlays: Option<BuildingAnimOverlays>,
+    /// Scoped native-like damaged-state gate for building visuals.
+    ///
+    /// Models only the proven zero/nonzero damage gate, not the full native
+    /// BuildingClass BState table.
+    #[serde(default)]
+    pub building_damage_state_active: bool,
     /// Persistent fire/smoke overlays on damaged buildings (health < ConditionYellow).
     pub damage_fire_overlays: Option<DamageFireOverlays>,
     /// Bridge deck occupancy marker.
@@ -181,9 +254,15 @@ pub struct GameEntity {
     /// (except healing) until the timer expires. Applied by superweapon launch handlers.
     #[serde(default)]
     pub invulnerability: Option<InvulnerabilityState>,
+    /// Native `TechnoClass::IsMindControlled` gate surrogate.
+    #[serde(default)]
+    pub mind_controlled: bool,
     /// Active drive track curve state — present when a Drive vehicle is
     /// following a pre-computed curved path between cells.
     pub drive_track: Option<DriveTrackState>,
+    /// DriveLocomotion destination/head-to state separate from curve stepping.
+    #[serde(default)]
+    pub drive_locomotion: Option<DriveLocomotionRuntime>,
     /// One-shot forced drive track, independent of normal path movement.
     #[serde(default)]
     pub forced_drive_track: Option<ForcedDriveTrackState>,
@@ -209,6 +288,15 @@ pub struct GameEntity {
     /// Whether this entity can crush non-Crushable targets (OmniCrusher= in rules.ini).
     /// Only Battle Fortress has this in YR.
     pub omni_crusher: bool,
+    /// Whether this entity has normal TechnoType `Crusher=yes` capability.
+    /// Kept separate from MovementZone and OmniCrusher; activation waits for the
+    /// Drive PerCellProcess path so legacy cell-based crush does not drift.
+    #[serde(default)]
+    pub regular_crusher: bool,
+    /// Whether DriveLocomotion should ramp toward the computed target speed fraction.
+    /// Parsed from `Accelerates=` and kept separate from raw `Speed=`.
+    #[serde(default = "default_true")]
+    pub drive_accelerates: bool,
     /// Whether this entity is immune to ALL crush types (OmniCrushResistant= in rules.ini).
     pub omni_crush_resistant: bool,
     /// Render-only depth bias used when this entity is under or near a bridge.
@@ -274,6 +362,12 @@ pub struct GameEntity {
     /// occupied bunker remains a normal building blocker.
     #[serde(default)]
     pub bunker_occupant: Option<u64>,
+    /// Runtime state for `Gate=yes` building passability.
+    ///
+    /// Native `CanGarrison` accepts only mission `0x18` plus stable-open helper
+    /// state. Opening and closing gates are still blockers for the same check.
+    #[serde(default)]
+    pub building_gate: Option<BuildingGateRuntime>,
     /// Active deploy-fire phase. `None` = upright (default). `Some(Deploying)` /
     /// `Some(Deployed)` / `Some(Undeploying)` for the three machine states.
     /// Hashed for lockstep determinism. Set by `Command::ToggleInfantryDeploy`,
@@ -347,6 +441,7 @@ impl GameEntity {
             repairing: false,
             locomotor: None,
             movement_target: None,
+            navigation: NavigationState::default(),
             attack_target: None,
             radio_contacts: Vec::new(),
             rally_target: None,
@@ -355,6 +450,7 @@ impl GameEntity {
             building_up: None,
             building_down: None,
             building_anim_overlays: None,
+            building_damage_state_active: false,
             damage_fire_overlays: None,
             bridge_occupancy: None,
             on_bridge: false,
@@ -372,7 +468,9 @@ impl GameEntity {
             droppod_state: None,
             parachute_state: None,
             invulnerability: None,
+            mind_controlled: false,
             drive_track: None,
+            drive_locomotion: None,
             forced_drive_track: None,
             dock_state: None,
             aircraft_ammo: None,
@@ -387,6 +485,8 @@ impl GameEntity {
             crushable: false,
             deployed_crushable: true,
             omni_crusher: false,
+            regular_crusher: false,
+            drive_accelerates: true,
             omni_crush_resistant: false,
             zfudge_bridge: 7,
             too_big_to_fit_under_bridge: false,
@@ -400,6 +500,7 @@ impl GameEntity {
             c4_plant: None,
             pending_c4_detonation: None,
             bunker_occupant: None,
+            building_gate: None,
             deploy_state: None,
             infantry: if category == EntityCategory::Infantry {
                 Some(InfantryRuntime::new())
@@ -436,6 +537,23 @@ impl GameEntity {
     /// Clear a live RadioClass-style contact with another entity.
     pub fn clear_live_contact_with(&mut self, other_stable_id: u64) {
         self.radio_contacts.retain(|&sid| sid != other_stable_id);
+    }
+
+    /// Refresh the scoped building damaged-state visual gate from current HP.
+    ///
+    /// Returns true when the stored gate changed. Non-structures cannot carry
+    /// this building visual state and are forced inactive.
+    pub fn refresh_building_damage_state_gate(&mut self, condition_yellow_x1000: i64) -> bool {
+        let previous = self.building_damage_state_active;
+        let active = if self.category == EntityCategory::Structure && self.health.max > 0 {
+            let current = self.health.current as i64;
+            let max = self.health.max as i64;
+            current * 1000 <= max * condition_yellow_x1000
+        } else {
+            false
+        };
+        self.building_damage_state_active = active;
+        previous != active
     }
 
     /// Runtime movement/path layer with Ground as the fallback.
@@ -555,7 +673,95 @@ mod tests {
         assert!(e.barrel_facing.is_none());
         assert!(e.miner.is_none());
         assert!(e.order_intent.is_none());
+        assert!(!e.building_damage_state_active);
         assert!(!e.on_bridge);
+    }
+
+    fn building_damage_state_entity(current: u16, max: u16) -> GameEntity {
+        let mut entity = GameEntity::test_default(10, "GAPOWR", "Americans", 4, 5);
+        entity.category = EntityCategory::Structure;
+        entity.health = Health { current, max };
+        entity
+    }
+
+    #[test]
+    fn building_damage_state_non_structure_stays_false_even_below_yellow() {
+        let mut entity = GameEntity::test_default(10, "MTNK", "Americans", 4, 5);
+        entity.health = Health {
+            current: 25,
+            max: 100,
+        };
+
+        assert!(!entity.refresh_building_damage_state_gate(500));
+        assert!(!entity.building_damage_state_active);
+    }
+
+    #[test]
+    fn building_damage_state_structure_above_yellow_stays_false() {
+        let mut entity = building_damage_state_entity(51, 100);
+
+        assert!(!entity.refresh_building_damage_state_gate(500));
+        assert!(!entity.building_damage_state_active);
+    }
+
+    #[test]
+    fn building_damage_state_structure_exactly_at_yellow_sets_true() {
+        let mut entity = building_damage_state_entity(50, 100);
+
+        assert!(entity.refresh_building_damage_state_gate(500));
+        assert!(entity.building_damage_state_active);
+    }
+
+    #[test]
+    fn building_damage_state_structure_below_yellow_sets_true() {
+        let mut entity = building_damage_state_entity(49, 100);
+
+        assert!(entity.refresh_building_damage_state_gate(500));
+        assert!(entity.building_damage_state_active);
+    }
+
+    #[test]
+    fn building_damage_state_repaired_above_yellow_clears_true() {
+        let mut entity = building_damage_state_entity(49, 100);
+        entity.building_damage_state_active = true;
+        entity.health.current = 51;
+
+        assert!(entity.refresh_building_damage_state_gate(500));
+        assert!(!entity.building_damage_state_active);
+    }
+
+    #[test]
+    fn building_damage_state_zero_max_health_clears_false() {
+        let mut entity = building_damage_state_entity(0, 0);
+        entity.building_damage_state_active = true;
+
+        assert!(entity.refresh_building_damage_state_gate(500));
+        assert!(!entity.building_damage_state_active);
+    }
+
+    #[test]
+    fn building_damage_state_serde_round_trip_preserves_true() {
+        let mut entity = building_damage_state_entity(40, 100);
+        entity.building_damage_state_active = true;
+
+        let json = serde_json::to_string(&entity).expect("serialize entity");
+        let restored: GameEntity = serde_json::from_str(&json).expect("deserialize entity");
+
+        assert!(restored.building_damage_state_active);
+    }
+
+    #[test]
+    fn building_damage_state_serde_default_absent_field_is_false() {
+        let mut value =
+            serde_json::to_value(building_damage_state_entity(40, 100)).expect("serialize entity");
+        value
+            .as_object_mut()
+            .expect("entity serializes to object")
+            .remove("building_damage_state_active");
+
+        let restored: GameEntity = serde_json::from_value(value).expect("deserialize entity");
+
+        assert!(!restored.building_damage_state_active);
     }
 
     #[test]

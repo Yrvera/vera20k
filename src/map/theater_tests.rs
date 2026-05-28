@@ -157,6 +157,129 @@ fn parse_general_int_missing_bridge_middle_returns_none() {
 }
 
 #[test]
+fn cliff_ranges_resolve_ordinals_to_cumulative_tile_starts() {
+    let ini = b"[TileSet0000]\nTilesInSet=2\nFileName=clear\nSetName=Clear\n\n\
+                [TileSet0001]\nTilesInSet=3\nFileName=shore\nSetName=Shore\n\n\
+                [TileSet0002]\nTilesInSet=4\nFileName=cliff\nSetName=Anything\n";
+    let lookup = super::parse_tileset_ini(ini, "tem").unwrap();
+
+    assert_eq!(super::resolve_tileset_start(&lookup, Some(0)), Some(0));
+    assert_eq!(super::resolve_tileset_start(&lookup, Some(1)), Some(2));
+    assert_eq!(super::resolve_tileset_start(&lookup, Some(2)), Some(5));
+    assert_eq!(super::resolve_tileset_start(&lookup, Some(-1)), None);
+    assert_eq!(super::resolve_tileset_start(&lookup, Some(99)), None);
+}
+
+#[test]
+fn cliff_ranges_match_half_open_boundaries() {
+    let ranges = TheaterCliffRanges {
+        cliff_set: Some(100),
+        cliff_ramps: Some(200),
+        water_cliffs: Some(300),
+        destroyable_cliffs: Some(400),
+        water_caves: Some(500),
+        ..TheaterCliffRanges::default()
+    };
+
+    assert!(ranges.is_cliff_or_impassable_tile(100, 0));
+    assert!(ranges.is_cliff_or_impassable_tile(139, 0));
+    assert!(!ranges.is_cliff_or_impassable_tile(140, 0));
+    assert!(ranges.is_cliff_or_impassable_tile(219, 0));
+    assert!(!ranges.is_cliff_or_impassable_tile(220, 0));
+    assert!(ranges.is_cliff_or_impassable_tile(327, 0));
+    assert!(!ranges.is_cliff_or_impassable_tile(328, 0));
+    assert!(ranges.is_cliff_or_impassable_tile(401, 0));
+    assert!(!ranges.is_cliff_or_impassable_tile(402, 0));
+    assert!(ranges.is_cliff_or_impassable_tile(503, 0));
+    assert!(!ranges.is_cliff_or_impassable_tile(504, 0));
+}
+
+#[test]
+fn waterfall_exceptions_follow_tile_and_slope_byte() {
+    let ranges = TheaterCliffRanges {
+        waterfall_east: Some(10),
+        waterfall_west: Some(20),
+        waterfall_south: Some(30),
+        waterfall_north: Some(40),
+        ..TheaterCliffRanges::default()
+    };
+
+    assert!(!ranges.is_cliff_or_impassable_tile(10, 0));
+    assert!(!ranges.is_cliff_or_impassable_tile(10, 4));
+    assert!(ranges.is_cliff_or_impassable_tile(10, 1));
+    assert!(ranges.is_cliff_or_impassable_tile(11, 0));
+    assert!(!ranges.is_cliff_or_impassable_tile(23, 3));
+    assert!(ranges.is_cliff_or_impassable_tile(23, 2));
+    assert!(!ranges.is_cliff_or_impassable_tile(30, 1));
+    assert!(ranges.is_cliff_or_impassable_tile(30, 2));
+    assert!(!ranges.is_cliff_or_impassable_tile(43, 2));
+    assert!(ranges.is_cliff_or_impassable_tile(43, 1));
+}
+
+#[test]
+fn bridge_ramp_predicate_is_narrower_than_broad_impassable() {
+    let ranges = TheaterCliffRanges {
+        cliff_set: Some(100),
+        cliff_ramps: Some(200),
+        water_cliffs: Some(300),
+        destroyable_cliffs: Some(400),
+        water_caves: Some(500),
+        waterfall_east: Some(600),
+        bridge_set: Some(700),
+        wood_bridge_set: Some(800),
+        ..TheaterCliffRanges::default()
+    };
+
+    assert!(ranges.is_cliff_or_impassable_tile(700, 0));
+    assert!(ranges.is_cliff_or_impassable_tile(715, 0));
+    assert!(!ranges.is_cliff_or_impassable_tile(716, 0));
+    assert!(ranges.is_cliff_or_impassable_tile(800, 0));
+    assert!(ranges.is_cliff_or_impassable_tile(815, 0));
+    assert!(!ranges.is_cliff_or_impassable_tile(816, 0));
+    assert!(ranges.is_on_bridge_ramp_tile(100, 0));
+    assert!(ranges.is_on_bridge_ramp_tile(200, 0));
+    assert!(ranges.is_on_bridge_ramp_tile(601, 0));
+    assert!(!ranges.is_on_bridge_ramp_tile(600, 0));
+    assert!(!ranges.is_on_bridge_ramp_tile(300, 0));
+    assert!(!ranges.is_on_bridge_ramp_tile(400, 0));
+    assert!(!ranges.is_on_bridge_ramp_tile(500, 0));
+    assert!(!ranges.is_on_bridge_ramp_tile(700, 0));
+    assert!(!ranges.is_on_bridge_ramp_tile(800, 0));
+}
+
+#[test]
+fn lunar_theater_zeroing_clears_numeric_cliff_and_bridge_ranges() {
+    let mut ini = String::from(
+        "[General]\n\
+         CliffSet=10\n\
+         WaterCliffs=15\n\
+         CliffRamps=25\n\
+         BridgeSet=19\n\
+         WoodBridgeSet=80\n\
+         WaterfallEast=49\n\n",
+    );
+    for idx in 0..=80 {
+        let tiles = if idx == 0 { 1 } else { 0 };
+        ini.push_str(&format!(
+            "[TileSet{idx:04}]\nTilesInSet={tiles}\nFileName=set{idx}\nSetName=Set{idx}\n\n"
+        ));
+    }
+    let lookup = super::parse_tileset_ini(ini.as_bytes(), "lun").unwrap();
+    let mut bridge_set = super::parse_general_int(&ini, "BridgeSet");
+    let mut wood_bridge_set = super::parse_general_int(&ini, "WoodBridgeSet");
+    let mut ranges = super::resolve_cliff_ranges(&lookup, &ini, bridge_set, wood_bridge_set);
+
+    assert!(ranges.is_cliff_or_impassable_tile(1, 0));
+
+    super::apply_lunar_cliff_zeroing("LUNAR", &mut bridge_set, &mut wood_bridge_set, &mut ranges);
+
+    assert_eq!(bridge_set, None);
+    assert_eq!(wood_bridge_set, None);
+    assert_eq!(ranges, TheaterCliffRanges::default());
+    assert!(!ranges.is_cliff_or_impassable_tile(1, 0));
+}
+
+#[test]
 fn bridge_railing_slope_starts_use_tileset_bounds() {
     let ini = b"[TileSet0000]\nTilesInSet=2\nFileName=clear\nSetName=Clear\n\n\
                 [TileSet0001]\nTilesInSet=3\nFileName=slopea\nSetName=Slope A\n\n\
@@ -185,6 +308,7 @@ fn bridge_railing_slope_starts_use_tileset_bounds() {
         track_tunnels: None,
         dirt_tunnels: None,
         dirt_track_tunnels: None,
+        cliff_ranges: TheaterCliffRanges::default(),
     };
 
     assert_eq!(td.bridge_railing_slope_starts(), Some((2, 5)));
@@ -222,6 +346,7 @@ fn synthetic_theater_with_bridge_keys(
         track_tunnels: None,
         dirt_tunnels: None,
         dirt_track_tunnels: None,
+        cliff_ranges: TheaterCliffRanges::default(),
     }
 }
 

@@ -3717,6 +3717,21 @@ pub fn advance_drive_track(
     speed: SimFixed,
     dt: SimFixed,
 ) -> DriveTrackAdvance {
+    let mut residual = state.residual;
+    let fresh_budget: i32 = (speed * dt).to_num::<i32>();
+    advance_drive_track_with_budget(state, fresh_budget, &mut residual)
+}
+
+/// Advance a drive track using a caller-owned residual budget.
+///
+/// Normal `DriveLocomotion` stores residual at the locomotor object, not inside
+/// the track table cursor. `DriveTrackState::residual` remains a synchronized
+/// mirror so interpolation and forced-track callers can share the same code.
+pub fn advance_drive_track_with_budget(
+    state: &mut DriveTrackState,
+    fresh_budget: i32,
+    residual_budget: &mut i32,
+) -> DriveTrackAdvance {
     let meta = &RAW_TRACKS[state.raw_track_index as usize];
     let points = raw_track_points(state.raw_track_index);
     let last_index = meta.points_count.saturating_sub(1);
@@ -3724,7 +3739,8 @@ pub fn advance_drive_track(
     let mut chain_ready = false;
 
     // Budget = this tick's speed + leftover from last tick.
-    let mut budget: i32 = (speed * dt).to_num::<i32>() + state.residual;
+    state.residual = *residual_budget;
+    let mut budget: i32 = fresh_budget + *residual_budget;
 
     // Consume track points at TRACK_STEP_COST each.
     while budget > TRACK_STEP_COST && state.point_index < last_index {
@@ -3760,12 +3776,10 @@ pub fn advance_drive_track(
 
     // Save leftover budget for next tick.
     state.residual = budget;
+    *residual_budget = budget;
 
     let finished = state.point_index >= last_index;
-    if finished {
-        // Track complete — discard residual (will be cleared with the state).
-        state.residual = 0;
-    }
+    // Track complete — discard residual (will be cleared with the state).
 
     // Read position and facing from current track point, applying
     // transform flags and head/cell offsets.
