@@ -11,10 +11,20 @@
 //! - Part of map/ — depends on rules/ (ini_parser).
 
 use crate::rules::ini_parser::IniFile;
+use crate::rules::tiberium_type::{TiberiumType, TiberiumTypeId, TiberiumTypeRegistry};
 use std::borrow::Cow;
 use std::sync::OnceLock;
 
 const STOCK_FLAT_RIPARIUS_VARIANT_COUNT: usize = 12;
+const TIBERIUM_FLAT_VARIANT_COUNT: usize = 12;
+
+/// Mapping from an overlay type id to its native tiberium type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TiberiumOverlayMapping {
+    pub tiberium_type: TiberiumTypeId,
+    /// Zero-based flat art variant inside the tiberium type's image family.
+    pub flat_variant: u8,
+}
 
 /// Check if an overlay index is a bridge overlay. The original engine identifies
 /// bridges by hardcoded index position in `[OverlayTypes]`, not by INI flags.
@@ -324,6 +334,40 @@ impl OverlayTypeRegistry {
         ids.try_into().ok()
     }
 
+    /// Flat overlay variants for one parsed tiberium type image family.
+    pub fn flat_tiberium_variant_ids(&self, ty: &TiberiumType) -> Option<[u8; 12]> {
+        let mut ids: Vec<u8> = Vec::with_capacity(TIBERIUM_FLAT_VARIANT_COUNT);
+        for variant in 1..=TIBERIUM_FLAT_VARIANT_COUNT {
+            let name = tiberium_flat_overlay_name(ty.image, variant as u8)?;
+            let id = self.id_for_name(&name)?;
+            if !self.flags(id).is_some_and(|flags| flags.tiberium) {
+                return None;
+            }
+            ids.push(id);
+        }
+        ids.try_into().ok()
+    }
+
+    /// Resolve a `TIB*`/`GEM*` flat overlay id to the parsed tiberium type.
+    pub fn tiberium_overlay_mapping(
+        &self,
+        tiberium_types: &TiberiumTypeRegistry,
+        overlay_id: u8,
+    ) -> Option<TiberiumOverlayMapping> {
+        for ty in tiberium_types.types() {
+            let Some(variants) = self.flat_tiberium_variant_ids(ty) else {
+                continue;
+            };
+            if let Some(index) = variants.iter().position(|&id| id == overlay_id) {
+                return Some(TiberiumOverlayMapping {
+                    tiberium_type: ty.id,
+                    flat_variant: index as u8,
+                });
+            }
+        }
+        None
+    }
+
     /// Total number of registered overlay types.
     pub fn len(&self) -> usize {
         self.names.len()
@@ -348,6 +392,19 @@ fn stock_flat_riparius_variant_index(name: &str) -> Option<usize> {
     (1..=STOCK_FLAT_RIPARIUS_VARIANT_COUNT)
         .contains(&variant)
         .then_some(variant - 1)
+}
+
+fn tiberium_flat_overlay_name(image: u8, variant: u8) -> Option<String> {
+    if variant == 0 || variant as usize > TIBERIUM_FLAT_VARIANT_COUNT {
+        return None;
+    }
+    match image {
+        1 => Some(format!("TIB{:02}", variant)),
+        2 => Some(format!("GEM{:02}", variant)),
+        image => image
+            .checked_sub(1)
+            .map(|suffix| format!("TIB{}_{:02}", suffix, variant)),
+    }
 }
 
 fn section_wheel_speed_is_exact_zero(section: &crate::rules::ini_parser::IniSection) -> bool {
@@ -634,5 +691,88 @@ IsRubble=yes
         let reg = OverlayTypeRegistry::from_ini(&ini, None);
 
         assert_eq!(reg.stock_flat_riparius_variant_ids(), None);
+    }
+
+    #[test]
+    fn tiberium_overlay_mapping_uses_parsed_image_families() {
+        let mut text = String::from(
+            "\
+[Tiberiums]
+0=Riparius
+1=Cruentus
+2=Vinifera
+3=Aboreus
+
+[Riparius]
+Image=1
+[Cruentus]
+Image=2
+[Vinifera]
+Image=3
+[Aboreus]
+Image=4
+
+[OverlayTypes]
+",
+        );
+        let mut key = 1;
+        for prefix in ["TIB", "GEM", "TIB2_", "TIB3_"] {
+            for variant in 1..=12 {
+                let name = if prefix.ends_with('_') {
+                    format!("{}{:02}", prefix, variant)
+                } else {
+                    format!("{}{:02}", prefix, variant)
+                };
+                text.push_str(&format!("{}={}\n", key, name));
+                key += 1;
+            }
+        }
+        for prefix in ["TIB", "GEM", "TIB2_", "TIB3_"] {
+            for variant in 1..=12 {
+                let name = if prefix.ends_with('_') {
+                    format!("{}{:02}", prefix, variant)
+                } else {
+                    format!("{}{:02}", prefix, variant)
+                };
+                text.push_str(&format!("[{}]\nTiberium=yes\n", name));
+            }
+        }
+        let ini = IniFile::from_str(&text);
+        let overlays = OverlayTypeRegistry::from_ini(&ini, None);
+        let tiberiums = TiberiumTypeRegistry::from_ini(&ini);
+
+        let tib01 = overlays.id_for_name("TIB01").expect("TIB01 id");
+        let gem12 = overlays.id_for_name("GEM12").expect("GEM12 id");
+        let tib2_05 = overlays.id_for_name("TIB2_05").expect("TIB2_05 id");
+        let tib3_01 = overlays.id_for_name("TIB3_01").expect("TIB3_01 id");
+
+        assert_eq!(
+            overlays.tiberium_overlay_mapping(&tiberiums, tib01),
+            Some(TiberiumOverlayMapping {
+                tiberium_type: TiberiumTypeId(0),
+                flat_variant: 0,
+            })
+        );
+        assert_eq!(
+            overlays.tiberium_overlay_mapping(&tiberiums, gem12),
+            Some(TiberiumOverlayMapping {
+                tiberium_type: TiberiumTypeId(1),
+                flat_variant: 11,
+            })
+        );
+        assert_eq!(
+            overlays.tiberium_overlay_mapping(&tiberiums, tib2_05),
+            Some(TiberiumOverlayMapping {
+                tiberium_type: TiberiumTypeId(2),
+                flat_variant: 4,
+            })
+        );
+        assert_eq!(
+            overlays.tiberium_overlay_mapping(&tiberiums, tib3_01),
+            Some(TiberiumOverlayMapping {
+                tiberium_type: TiberiumTypeId(3),
+                flat_variant: 0,
+            })
+        );
     }
 }

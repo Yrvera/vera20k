@@ -23,6 +23,7 @@ use crate::map::entities::EntityCategory;
 use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
 use crate::rules::ruleset::RuleSet;
+use crate::rules::tiberium_type::TiberiumTypeRegistry;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::intern::{InternedId, StringInterner};
 use crate::sim::miner::{ResourceNode, ResourceType};
@@ -31,6 +32,7 @@ use crate::sim::ore_growth::OreGrowthState;
 use crate::sim::overlay_grid::OverlayGrid;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::rng::SimRng;
+use crate::sim::terrain_object::{TerrainObjectState, next_terrain_object_id};
 
 /// Probability roll denominator. Matches binary's `random % 1_000_000`
 /// against `AnimationProbability` scaled by 1.0e-6.
@@ -104,9 +106,8 @@ pub enum TerrainSpawnerPhase {
 
 /// Per-instance state for one TIBTRE-style spawner placed on the map.
 ///
-/// Keyed by cell in `ProductionState::terrain_spawners`. The spawner doesn't
-/// move and isn't destroyable (`Immune=yes` on TIBTRE), so the only lifecycle is
-/// "exists from map load to game end".
+/// Keyed by cell in `ProductionState::terrain_spawners`. This is a derived
+/// tick index for live terrain objects; terrain removal/limbo owns lifecycle.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct TerrainSpawnerState {
     /// Interned name of the TerrainObjectType (e.g. "TIBTRE01"). Kept for
@@ -335,6 +336,7 @@ pub fn tick_terrain_spawners_stateful(
             ctx.overlay_registry,
             ctx.path_grid,
             ctx.ore_growth_state.as_deref_mut(),
+            ctx.rules.map(|rules| &rules.tiberium_types),
             ctx.binary_frame,
             ctx.spawning_terrain_cells,
             live_object_context(ctx.entities, ctx.occupancy, ctx.rules, ctx.interner),
@@ -371,6 +373,7 @@ fn try_spawn_ore(
     overlay_registry: Option<&OverlayTypeRegistry>,
     path_grid: Option<&PathGrid>,
     ore_growth_state: Option<&mut OreGrowthState>,
+    tiberium_types: Option<&TiberiumTypeRegistry>,
     binary_frame: u32,
     spawning_terrain_cells: Option<&BTreeSet<(u16, u16)>>,
     live_context: Option<LiveObjectContext<'_>>,
@@ -409,6 +412,7 @@ fn try_spawn_ore(
             default_ore_overlay_id,
             overlay_registry,
             ore_growth_state.as_deref_mut(),
+            tiberium_types,
             binary_frame,
             rng,
         );
@@ -522,10 +526,11 @@ fn live_cell_rejects_tiberium(cell: (u16, u16), context: LiveObjectContext<'_>) 
 fn place_tiberium_empty(
     cell: (u16, u16),
     resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
-    overlay_grid: Option<&mut OverlayGrid>,
+    mut overlay_grid: Option<&mut OverlayGrid>,
     default_ore_overlay_id: Option<u8>,
     overlay_registry: Option<&OverlayTypeRegistry>,
     ore_growth_state: Option<&mut OreGrowthState>,
+    tiberium_types: Option<&TiberiumTypeRegistry>,
     binary_frame: u32,
     rng: &mut SimRng,
 ) -> bool {
@@ -546,13 +551,27 @@ fn place_tiberium_empty(
         },
     );
 
-    if let Some(grid) = overlay_grid {
+    if let Some(grid) = overlay_grid.as_deref_mut() {
         if let Some(id) = overlay_id {
             grid.place_overlay(cell.0, cell.1, id, SPAWN_DENSITY_LEVELS as u8);
         }
     }
     if let Some(state) = ore_growth_state {
-        state.enqueue_growth_queue_cell(cell.0, cell.1, binary_frame, rng);
+        if let (Some(grid), Some(registry), Some(types)) =
+            (overlay_grid.as_deref(), overlay_registry, tiberium_types)
+        {
+            state.add_native_growth_queue_cell(
+                grid,
+                registry,
+                types,
+                cell.0,
+                cell.1,
+                binary_frame,
+                rng,
+            );
+        } else {
+            state.enqueue_growth_queue_cell(cell.0, cell.1, binary_frame, rng);
+        }
     }
     true
 }
@@ -582,12 +601,18 @@ pub fn seed_terrain_spawners(
     rules: &crate::rules::ruleset::RuleSet,
     overlay_names: &BTreeMap<u8, String>,
     terrain_frame_counts: &BTreeMap<String, u16>,
+    snow_theater: bool,
 ) -> usize {
     sim.production.default_ore_overlay_id = overlay_names
         .iter()
         .find(|(_id, name)| name.to_ascii_uppercase().starts_with("TIB"))
         .map(|(id, _)| *id);
 
+    sim.production.terrain_spawners.clear();
+    sim.production.terrain_objects.clear();
+    sim.production.terrain_object_cells.clear();
+    sim.production.terrain_occupation_bits.clear();
+    sim.production.next_terrain_object_id = 1;
     sim.production.tiberium_spawning_terrain_cells.clear();
 
     let mut seeded = 0usize;
@@ -595,6 +620,21 @@ pub fn seed_terrain_spawners(
         let Some(t) = rules.terrain_object_type_case_insensitive(&obj.name) else {
             continue;
         };
+        let type_ref = sim.interner.intern(&obj.name);
+        let stable_id = next_terrain_object_id(&mut sim.production);
+        let terrain_state =
+            TerrainObjectState::new(stable_id, type_ref, obj.rx, obj.ry, t, snow_theater);
+        if terrain_state.occupation_bits != 0 {
+            sim.production
+                .terrain_occupation_bits
+                .insert((obj.rx, obj.ry), terrain_state.occupation_bits);
+        }
+        sim.production
+            .terrain_object_cells
+            .insert((obj.rx, obj.ry), stable_id);
+        sim.production
+            .terrain_objects
+            .insert(stable_id, terrain_state);
         if !t.spawns_tiberium {
             continue;
         }
@@ -609,7 +649,6 @@ pub fn seed_terrain_spawners(
             .or_else(|| terrain_frame_counts.get(&obj.name.to_ascii_uppercase()))
             .copied()
             .unwrap_or(0);
-        let type_ref = sim.interner.intern(&obj.name);
         sim.production.terrain_spawners.insert(
             (obj.rx, obj.ry),
             TerrainSpawnerState::new(
@@ -727,6 +766,23 @@ mod tests {
         }
         let ini = IniFile::from_str(&ini_text);
         OverlayTypeRegistry::from_ini(&ini, None)
+    }
+
+    fn tiberium_types_with_riparius() -> TiberiumTypeRegistry {
+        let ini = IniFile::from_str(
+            "\
+[Tiberiums]
+0=Riparius
+
+[Riparius]
+Image=1
+Growth=2200
+GrowthPercentage=.06
+Spread=2200
+SpreadPercentage=.06
+",
+        );
+        TiberiumTypeRegistry::from_ini(&ini)
     }
 
     fn signed_abs_mod_50(raw: u32) -> u32 {
@@ -1010,6 +1066,7 @@ mod tests {
             Some(&registry),
             None,
             None,
+            None,
             0,
             None,
             None,
@@ -1044,6 +1101,7 @@ mod tests {
             None,
             None,
             Some(&mut growth_state),
+            None,
             77,
             None,
             None,
@@ -1056,6 +1114,62 @@ mod tests {
         let entry = entries[0];
         assert_eq!((entry.rx, entry.ry), expected_cell);
         assert_eq!(entry.priority, (77 + signed_abs_mod_50(queue_raw)) as f32);
+    }
+
+    #[test]
+    fn new_cell_enqueues_native_growth_when_tiberium_types_available() {
+        let registry = registry_with_tib_variants();
+        let tiberium_types = tiberium_types_with_riparius();
+        let mut resource_nodes = BTreeMap::new();
+        let mut overlay_grid = OverlayGrid::new(32, 32);
+        let spawner_cells = BTreeSet::new();
+        let mut growth_state = OreGrowthState::new(32, 32);
+        growth_state.reset_native_tiberium_classes(tiberium_types.len(), 0);
+        let mut rng = SimRng::new(8);
+        let mut expected_rng = rng.clone();
+        let start_dir = expected_rng.next_range_u32(8) as usize;
+        let variant = expected_rng.next_range_u32(12) as u8;
+        let queue_raw = expected_rng.next_u32();
+        let (dx, dy) = ADJACENT_OFFSETS[start_dir];
+        let expected_cell = ((10 + dx) as u16, (10 + dy) as u16);
+
+        try_spawn_ore(
+            (10, 10),
+            &mut resource_nodes,
+            Some(&mut overlay_grid),
+            Some(99),
+            &spawner_cells,
+            None,
+            Some(&registry),
+            None,
+            Some(&mut growth_state),
+            Some(&tiberium_types),
+            77,
+            None,
+            None,
+            &mut rng,
+        );
+
+        assert!(resource_nodes.contains_key(&expected_cell));
+        assert_eq!(
+            overlay_grid
+                .cell(expected_cell.0, expected_cell.1)
+                .overlay_id,
+            Some(variant)
+        );
+        assert!(
+            growth_state.growth_queue_entries().is_empty(),
+            "native path should bypass the legacy growth queue"
+        );
+        let class = &growth_state.native_tiberium_state().classes[0];
+        assert_eq!(class.growth_heap.len(), 1);
+        assert!(class.growth_bitmap.contains(&expected_cell));
+        let entry = class.growth_heap[0];
+        assert_eq!((entry.rx, entry.ry), expected_cell);
+        assert_eq!(
+            entry.priority_bits,
+            (77.0 + signed_abs_mod_50(queue_raw) as f32).to_bits()
+        );
     }
 
     #[test]
@@ -1224,6 +1338,7 @@ mod tests {
             &rules,
             &overlay_names,
             &terrain_frame_counts,
+            false,
         );
         assert_eq!(seeded, 1);
         let placed = sim
