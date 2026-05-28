@@ -21,11 +21,15 @@
 //! - Part of sim/ — depends on sim/bump_crush, sim/entity_store, sim/locomotor,
 //!   sim/pathfinding, map/entities, map/houses, rules/locomotor_type.
 
+use std::collections::BTreeSet;
+
 use super::PathGrid;
+use super::passability;
 use super::terrain_cost::TerrainCostGrid;
 use crate::map::entities::EntityCategory;
 use crate::map::houses::{self, HouseAllianceMap};
-use crate::rules::locomotor_type::{LocomotorKind, MovementZone};
+use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
+use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
 use crate::sim::entity_store::EntityStore;
 use crate::sim::movement::bump_crush;
 use crate::sim::movement::locomotor::MovementLayer;
@@ -87,6 +91,100 @@ pub enum TerrainCheckResult {
     Impassable,
     /// Cell has occupants — needs Phase 2 EntityStore lookup to classify.
     NeedsBlockerCheck,
+}
+
+/// Terrain-only result for native-shaped cell-entry checks above `PathGrid`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerrainEntryResult {
+    Clear,
+    HardBlocked,
+}
+
+impl TerrainEntryResult {
+    pub fn is_clear(self) -> bool {
+        matches!(self, Self::Clear)
+    }
+}
+
+/// Caller flavor for the terrain-entry slice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerrainEntryMode {
+    AStarNeighbor,
+    RuntimeTransition,
+    Smoothing,
+    Scatter,
+    SpawnLike,
+}
+
+/// Native-shaped terrain context for the water/pier-critical entry slice.
+///
+/// This is deliberately terrain/layer-only. Reduced-zone reachability and FNPC
+/// candidate selection stay outside this context because gamemd uses different
+/// callers and state for those questions.
+#[derive(Debug, Clone, Copy)]
+pub struct CellEntryTerrainContext<'a> {
+    pub target: (u16, u16),
+    pub movement_zone: Option<MovementZone>,
+    pub speed_type: Option<SpeedType>,
+    pub path_grid: Option<&'a PathGrid>,
+    pub resolved_terrain: Option<&'a ResolvedTerrainGrid>,
+    pub terrain_costs: Option<&'a TerrainCostGrid>,
+    pub bypass_grid: bool,
+    pub mode: TerrainEntryMode,
+}
+
+/// Evaluate the terrain slice of cell entry for ground-layer movement.
+///
+/// `PathGrid` is a coarse structural filter. Final terrain legality must also
+/// consult the mover's SpeedType against the resolved target LandType/speed row
+/// so a PathGrid-walkable water cell is still illegal for ordinary ground movers.
+pub fn evaluate_cell_entry_terrain(ctx: CellEntryTerrainContext<'_>) -> TerrainEntryResult {
+    let (x, y) = ctx.target;
+
+    let grid_ok = ctx
+        .path_grid
+        .map_or(true, |grid| ctx.bypass_grid || grid.is_walkable(x, y));
+    if !grid_ok {
+        return TerrainEntryResult::HardBlocked;
+    }
+
+    if let Some(speed_type) = ctx.speed_type.or_else(|| {
+        if ctx.terrain_costs.is_some() {
+            None
+        } else {
+            ctx.movement_zone.map(|zone| zone.speed_type())
+        }
+    }) {
+        if let Some(terrain) = ctx.resolved_terrain {
+            let Some(cell) = terrain.cell(x, y) else {
+                return TerrainEntryResult::HardBlocked;
+            };
+            if !speed_type_allows_cell(cell, speed_type) {
+                return TerrainEntryResult::HardBlocked;
+            }
+        }
+    }
+
+    terrain_cost_result(ctx.terrain_costs, x, y)
+}
+
+fn terrain_cost_result(
+    terrain_costs: Option<&TerrainCostGrid>,
+    x: u16,
+    y: u16,
+) -> TerrainEntryResult {
+    if terrain_costs.is_some_and(|costs| costs.cost_at(x, y) == 0) {
+        TerrainEntryResult::HardBlocked
+    } else {
+        TerrainEntryResult::Clear
+    }
+}
+
+fn speed_type_allows_cell(cell: &ResolvedTerrainCell, speed_type: SpeedType) -> bool {
+    if let Some(cost) = cell.speed_costs.cost_for_speed_type(speed_type) {
+        return cost > 0;
+    }
+    passability::is_passable_for_speed_type(cell.land_type, speed_type)
 }
 
 /// Layer selections used by Can_Enter_Cell-style checks.
@@ -401,6 +499,43 @@ pub fn classify_occupied_cell_with_layers(
     alliances: &HouseAllianceMap,
     interner: &crate::sim::intern::StringInterner,
 ) -> CellEntryResult {
+    classify_occupied_cell_with_layers_and_ignored(
+        target,
+        layers,
+        mover_id,
+        mover_zone,
+        mover_omni_crusher,
+        mover_owner,
+        mover_locomotor,
+        mover_bypass_grid,
+        None,
+        occupancy,
+        entities,
+        alliances,
+        interner,
+    )
+}
+
+/// Classify an occupied cell while ignoring a caller-supplied subset of live
+/// object-list occupants. This is the runtime UnitClass path used by refinery
+/// pads and repair/bunker rows where gamemd skips only the checked building
+/// occupant, then continues scanning the same cell list.
+#[allow(clippy::too_many_arguments)]
+pub fn classify_occupied_cell_with_layers_and_ignored(
+    target: (u16, u16),
+    layers: CanEnterLayerContext,
+    mover_id: u64,
+    mover_zone: MovementZone,
+    mover_omni_crusher: bool,
+    mover_owner: &str,
+    mover_locomotor: LocomotorKind,
+    mover_bypass_grid: bool,
+    ignored_blockers: Option<&BTreeSet<u64>>,
+    occupancy: &OccupancyGrid,
+    entities: &EntityStore,
+    alliances: &HouseAllianceMap,
+    interner: &crate::sim::intern::StringInterner,
+) -> CellEntryResult {
     // --- Crush check ---
     let victims = bump_crush::collect_crush_victims(
         target,
@@ -429,6 +564,7 @@ pub fn classify_occupied_cell_with_layers(
         layers.object_list_layer,
         mover_id,
         mover_bypass_grid,
+        ignored_blockers,
         occupancy,
         entities,
     );
@@ -437,7 +573,7 @@ pub fn classify_occupied_cell_with_layers(
         // contained only structures that we're permitted to drive through —
         // treat as Clear. Without bypass_grid, this is unexpected (Phase 1
         // would have returned Clear if the cell were truly empty).
-        if mover_bypass_grid {
+        if ignored_blockers.is_some() {
             return apply_overrides(CellEntryResult::Clear, mover_locomotor);
         }
         return apply_overrides(CellEntryResult::Impassable, mover_locomotor);
@@ -451,27 +587,23 @@ pub fn classify_occupied_cell_with_layers(
 /// Find the primary blocker entity in a cell using the current local
 /// approximation's first-match rule over the selected occupancy layer.
 ///
-/// When `mover_bypass_grid` is true, occupants whose category is `Structure` are
-/// skipped — this lets the harvester dock drive treat foundation cells as clear,
-/// matching the original engine where buildings are not scatter targets.
+/// Live building exceptions are supplied through `ignored_blockers`; bypassing
+/// the static path grid does not suppress structure occupants by itself.
 fn find_primary_blocker(
     target: (u16, u16),
     layer: MovementLayer,
     mover_id: u64,
-    mover_bypass_grid: bool,
+    _mover_bypass_grid: bool,
+    ignored_blockers: Option<&BTreeSet<u64>>,
     occupancy: &OccupancyGrid,
-    entities: &EntityStore,
+    _entities: &EntityStore,
 ) -> Option<u64> {
     let occ = occupancy.get(target.0, target.1)?;
     for occupant in occ.iter_layer(layer) {
         if occupant.entity_id == mover_id {
             continue;
         }
-        if mover_bypass_grid
-            && entities
-                .get(occupant.entity_id)
-                .is_some_and(|e| e.category == EntityCategory::Structure)
-        {
+        if ignored_blockers.is_some_and(|ids| ids.contains(&occupant.entity_id)) {
             continue;
         }
         return Some(occupant.entity_id);
@@ -494,6 +626,14 @@ fn classify_blocker(
         houses::are_houses_friendly(alliances, mover_owner, interner.resolve(blocker.owner));
     if !is_friendly {
         return CellEntryResult::OccupiedEnemy { blocker_id };
+    }
+    if blocker
+        .building_gate
+        .is_some_and(|gate| !gate.can_garrison_passable())
+    {
+        return CellEntryResult::ScatterRequired {
+            blocker_id: Some(blocker_id),
+        };
     }
     // Friendly: moving -> temporary block, stationary -> code 6.
     if blocker.movement_target.is_some() {
@@ -688,6 +828,61 @@ mod tests {
         assert_eq!(CellEntryResult::Impassable.yr_code(), 7);
     }
 
+    #[test]
+    fn friendly_closed_or_opening_gate_returns_code_3_not_code_6() {
+        use crate::sim::entity_store::EntityStore;
+        use crate::sim::game_entity::{BuildingGatePhase, BuildingGateRuntime, GameEntity};
+
+        let mut entities = EntityStore::new();
+        let mut gate = GameEntity::test_default(100, "GAGATE_A", "Americans", 5, 5);
+        gate.category = EntityCategory::Structure;
+        gate.building_gate = Some(BuildingGateRuntime::default());
+        entities.insert(gate);
+        let alliances = HouseAllianceMap::new();
+        let interner = crate::sim::intern::test_interner();
+
+        let result = classify_blocker(100, "Americans", &entities, &alliances, &interner);
+        assert_eq!(
+            result,
+            CellEntryResult::ScatterRequired {
+                blocker_id: Some(100)
+            }
+        );
+        assert_eq!(result.yr_code(), 3);
+
+        entities.get_mut(100).unwrap().building_gate = Some(BuildingGateRuntime {
+            mission_18_active: true,
+            phase: BuildingGatePhase::Opening,
+            ..Default::default()
+        });
+        let result = classify_blocker(100, "Americans", &entities, &alliances, &interner);
+        assert_eq!(
+            result,
+            CellEntryResult::ScatterRequired {
+                blocker_id: Some(100)
+            }
+        );
+        assert_eq!(result.yr_code(), 3);
+    }
+
+    #[test]
+    fn enemy_closed_gate_keeps_enemy_result_code() {
+        use crate::sim::entity_store::EntityStore;
+        use crate::sim::game_entity::{BuildingGateRuntime, GameEntity};
+
+        let mut entities = EntityStore::new();
+        let mut gate = GameEntity::test_default(100, "GAGATE_A", "Soviets", 5, 5);
+        gate.category = EntityCategory::Structure;
+        gate.building_gate = Some(BuildingGateRuntime::default());
+        entities.insert(gate);
+        let alliances = HouseAllianceMap::new();
+        let interner = crate::sim::intern::test_interner();
+
+        let result = classify_blocker(100, "Americans", &entities, &alliances, &interner);
+        assert_eq!(result, CellEntryResult::OccupiedEnemy { blocker_id: 100 });
+        assert_eq!(result.yr_code(), 5);
+    }
+
     fn row_entry_input(
         mover_category: EntityCategory,
         branch: VehicleBuildingEntryBranch,
@@ -807,7 +1002,7 @@ mod tests {
     }
 
     #[test]
-    fn find_primary_blocker_skips_structure_with_bypass_grid() {
+    fn find_primary_blocker_does_not_use_bypass_grid_as_structure_skip() {
         use crate::sim::entity_store::EntityStore;
         use crate::sim::game_entity::GameEntity;
 
@@ -834,12 +1029,14 @@ mod tests {
             MovementLayer::Ground,
             42,   // mover_id
             true, // mover_bypass_grid
+            None,
             &occ,
             &entities,
         );
         assert_eq!(
-            result, None,
-            "with bypass_grid=true, Structure occupants must be filtered out"
+            result,
+            Some(100),
+            "bypass_grid must not erase live structure blockers"
         );
 
         // With bypass_grid=false: structure is the primary blocker → Some(100).
@@ -848,6 +1045,7 @@ mod tests {
             MovementLayer::Ground,
             42,
             false, // mover_bypass_grid
+            None,
             &occ,
             &entities,
         );
@@ -889,8 +1087,52 @@ mod tests {
         infantry.category = EntityCategory::Infantry;
         entities.insert(infantry);
 
-        let result =
-            find_primary_blocker((5, 5), MovementLayer::Ground, 42, false, &occ, &entities);
+        let result = find_primary_blocker(
+            (5, 5),
+            MovementLayer::Ground,
+            42,
+            false,
+            None,
+            &occ,
+            &entities,
+        );
+        assert_eq!(result, Some(20));
+    }
+
+    #[test]
+    fn find_primary_blocker_skips_caller_ignored_ids() {
+        use crate::sim::entity_store::EntityStore;
+
+        let mut occ = OccupancyGrid::new();
+        occ.add(
+            5,
+            5,
+            10,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::AppendBuilding,
+        );
+        occ.add(
+            5,
+            5,
+            20,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+
+        let ignored = std::collections::BTreeSet::from([10]);
+        let entities = EntityStore::new();
+        let result = find_primary_blocker(
+            (5, 5),
+            MovementLayer::Ground,
+            42,
+            false,
+            Some(&ignored),
+            &occ,
+            &entities,
+        );
+
         assert_eq!(result, Some(20));
     }
 

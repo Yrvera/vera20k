@@ -6,7 +6,7 @@ use super::*;
 use crate::map::map_file::MapCell;
 use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid, YR_CELL_LAND_TUNNEL};
 use crate::map::tube_facts::{TubeFact, TubeId};
-use crate::rules::locomotor_type::SpeedType;
+use crate::rules::locomotor_type::{MovementZone, SpeedType};
 use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
 use crate::sim::bridge_state::BridgeRuntimeState;
 use crate::sim::movement::locomotor::MovementLayer;
@@ -2587,6 +2587,25 @@ fn test_water_cells_are_pathgrid_walkable() {
     );
     // Land cells still walkable.
     assert!(grid.is_walkable(0, 0), "Land cell should be walkable");
+}
+
+#[test]
+fn ground_mover_rejects_pathgrid_walkable_water_without_cost_grid() {
+    let terrain: ResolvedTerrainGrid = make_water_channel_terrain();
+    let grid: PathGrid = PathGrid::from_resolved_terrain(&terrain);
+
+    assert!(
+        grid.is_walkable(0, 1),
+        "fixture keeps water PathGrid-walkable"
+    );
+    assert!(
+        !is_cell_passable_for_mover(&grid, 0, 1, Some(MovementZone::Normal), Some(&terrain)),
+        "Normal ground entry must reject true water through the terrain evaluator"
+    );
+    assert!(
+        is_cell_passable_for_mover(&grid, 0, 0, Some(MovementZone::Normal), Some(&terrain)),
+        "Normal ground entry still accepts ordinary land"
+    );
 }
 
 #[test]

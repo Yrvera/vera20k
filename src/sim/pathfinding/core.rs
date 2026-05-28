@@ -13,7 +13,9 @@
 //! - Part of sim/ — depends on map/ (MapCell, TilesetLookup for walkability).
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
-use super::cell_entry::CanEnterLayerContext;
+use super::cell_entry::{
+    CanEnterLayerContext, CellEntryTerrainContext, TerrainEntryMode, evaluate_cell_entry_terrain,
+};
 use super::passability;
 use super::terrain_cost::TerrainCostGrid;
 use super::zone_hierarchy::ZoneLevelGraph;
@@ -23,7 +25,7 @@ use crate::map::map_file::MapCell;
 use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
 use crate::map::theater::TilesetLookup;
 use crate::map::tube_facts::{TubeId, TubeSource};
-use crate::rules::locomotor_type::MovementZone;
+use crate::rules::locomotor_type::{MovementZone, SpeedType};
 use crate::sim::bridge_state::BridgeRuntimeState;
 use crate::sim::movement::locomotor::MovementLayer;
 use std::cell::Cell;
@@ -833,12 +835,16 @@ pub fn astar_search(
 
     // --- Goal passability ---
     // Goal must be walkable on at least one layer.
-    let goal_ground_ok = is_cell_passable_for_mover(
+    let goal_ground_ok = is_cell_passable_for_mover_with_speed(
         grid,
         goal.0,
         goal.1,
         options.movement_zone,
+        None,
         options.resolved_terrain,
+        options.terrain_costs,
+        false,
+        TerrainEntryMode::AStarNeighbor,
     );
     let goal_bridge_ok = grid.is_walkable_on_layer(goal.0, goal.1, MovementLayer::Bridge);
     if !goal_ground_ok && !goal_bridge_ok {
@@ -1139,12 +1145,16 @@ pub fn astar_search(
                             && neighbor_cell.transition
                     }
                 } else {
-                    is_cell_passable_for_mover(
+                    is_cell_passable_for_mover_with_speed(
                         grid,
                         nx,
                         ny,
                         options.movement_zone,
+                        None,
                         options.resolved_terrain,
+                        options.terrain_costs,
+                        false,
+                        TerrainEntryMode::AStarNeighbor,
                     )
                 };
                 trace_step.walkable = Some(neighbor_passable);
@@ -1369,8 +1379,8 @@ pub fn astar_search(
 /// marks water cells as non-walkable. Ships need to bypass PathGrid entirely and
 /// use the passability matrix instead (zone 10 = water only).
 ///
-/// For all other movers (or when `movement_zone` is `None`), uses the standard
-/// `PathGrid::is_walkable()` check.
+/// For all other movers (or when `movement_zone` is `None`), uses the shared
+/// terrain-entry evaluator above `PathGrid`.
 pub(crate) fn is_water_surface_cell_passable(
     cell: &ResolvedTerrainCell,
     movement_zone: MovementZone,
@@ -1396,9 +1406,31 @@ pub fn is_cell_passable_for_mover(
     movement_zone: Option<MovementZone>,
     resolved_terrain: Option<&ResolvedTerrainGrid>,
 ) -> bool {
-    // TODO(RE): This is still the local path-grid legality gate, not the stock
-    // search-time can-enter/cost predicate. Keep the distinction explicit so we
-    // can swap the real evaluator in once the remaining runtime inputs are known.
+    is_cell_passable_for_mover_with_speed(
+        grid,
+        x,
+        y,
+        movement_zone,
+        None,
+        resolved_terrain,
+        None,
+        false,
+        TerrainEntryMode::AStarNeighbor,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn is_cell_passable_for_mover_with_speed(
+    grid: &PathGrid,
+    x: u16,
+    y: u16,
+    movement_zone: Option<MovementZone>,
+    speed_type: Option<SpeedType>,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    terrain_costs: Option<&TerrainCostGrid>,
+    bypass_grid: bool,
+    mode: TerrainEntryMode,
+) -> bool {
     if let Some(mz) = movement_zone {
         if mz.is_water_mover() {
             // Water movers bypass PathGrid — use passability matrix directly.
@@ -1412,7 +1444,17 @@ pub fn is_cell_passable_for_mover(
             return false;
         }
     }
-    grid.is_walkable(x, y)
+    evaluate_cell_entry_terrain(CellEntryTerrainContext {
+        target: (x, y),
+        movement_zone,
+        speed_type,
+        path_grid: Some(grid),
+        resolved_terrain,
+        terrain_costs,
+        bypass_grid,
+        mode,
+    })
+    .is_clear()
 }
 
 /// Per-cell walkability and bridge metadata for pathfinding.

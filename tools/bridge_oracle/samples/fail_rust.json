@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "scenario": {
+    "id": "sample",
+    "map": "sample.map",
+    "theater": "TEMPERATE",
+    "unit": "MTNK",
+    "house": "Americans",
+    "start_cell": [10, 10],
+    "target_cell": [21, 10],
+    "route_window": [[10, 10], [20, 10]],
+    "bridge_overlay_anchors": [],
+    "activation_proof": {
+      "unit_pointer": "0x1",
+      "unit_type": "MTNK",
+      "house": "Americans",
+      "issued_order_id": 1,
+      "issued_order_tick": 2,
+      "pathfinder_search_id": 3,
+      "callsite_category": "UnitClass::Can_Enter_Cell"
+    }
+  },
+  "cell_facts": [],
+  "astar_steps": [],
+  "runtime_ticks": []
+}
