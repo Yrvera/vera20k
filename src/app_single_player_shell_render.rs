@@ -1,6 +1,5 @@
-//! Initial main-menu shell render glue for dialog 0xE2.
+//! Single Player intermediate shell render glue for dialog 0x100.
 
-use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
@@ -10,18 +9,22 @@ use crate::render::batch::SpriteInstance;
 use crate::render::main_menu_shell_chrome::{MainMenuShellChromeAtlas, MainMenuShellChromeEntry};
 use crate::render::shell_text::ShellTextDraw;
 use crate::render::shell_transition_pass::ShellRenderTarget;
-use crate::ui::main_menu_shell::{
-    MainMenuControlId, MainMenuShellLayout, RIGHT_PANEL_TILE_H, RIGHT_PANEL_WIDTH, RectPx,
-    compute_layout, csf_key_for_control, tooltip_csf_key_for_control,
+use crate::ui::main_menu_shell::RectPx;
+use crate::ui::single_player_shell::{
+    SinglePlayerControlId, SinglePlayerShellLayout, compute_layout, csf_key_for_control,
 };
 
 const MOVIE_DEPTH: f32 = 0.00095;
 const CHROME_DEPTH: f32 = 0.00085;
 const BUTTON_DEPTH: f32 = 0.00080;
 const TEXT_DEPTH: f32 = 0.00070;
+const RIGHT_PANEL_WIDTH: i32 = 168;
+const RIGHT_PANEL_TILE_H: i32 = 42;
 const SHELL_BUTTON_TEXT_RGB_FFFF00: [f32; 3] = [1.0, 1.0, 0.0];
+const SHELL_DISABLED_TEXT_RGB_FROM_PACKED_0000009F: [f32; 3] = [0x9F as f32 / 255.0, 0.0, 0.0];
+const BUTTON_DISABLED_ALPHA: f32 = 0x80 as f32 / 255.0;
 
-pub(crate) enum MainMenuShellRenderResult {
+pub(crate) enum SinglePlayerShellRenderResult {
     Rendered,
     Fallback,
 }
@@ -66,18 +69,25 @@ fn push_button_shp(
     rect: RectPx,
     pressed: bool,
     hover_highlight: bool,
-    depth: f32,
+    enabled: bool,
 ) {
     let frame = button_frame(atlas, pressed, hover_highlight);
-    // The 156x42 SHP frame sits inside the 168x42 chrome tile right-anchored
-    // against the right edge, leaving the 12 px bevel on the left only.
     let scale_x = rect.w as f32 / RIGHT_PANEL_WIDTH as f32;
     let scale_y = rect.h as f32 / RIGHT_PANEL_TILE_H as f32;
     let frame_w = frame.pixel_size[0] * scale_x;
     let frame_h = frame.pixel_size[1] * scale_y;
     let x = rect.x as f32 + (rect.w as f32 - frame_w);
     let y = rect.y as f32 + (rect.h as f32 - frame_h) * 0.5;
-    push_entry_sized(out, frame, x, y, [frame_w, frame_h], depth);
+    out.push(SpriteInstance {
+        position: [x, y],
+        size: [frame_w, frame_h],
+        uv_origin: frame.uv_origin,
+        uv_size: frame.uv_size,
+        depth: BUTTON_DEPTH,
+        tint: [1.0, 1.0, 1.0],
+        alpha: if enabled { 1.0 } else { BUTTON_DISABLED_ALPHA },
+        ..Default::default()
+    });
 }
 
 fn resolve_csf<'a>(state: &'a AppState, key: &'static str) -> &'a str {
@@ -94,6 +104,7 @@ fn push_label(
     text: &str,
     rect: RectPx,
     align: crate::render::shell_text::ShellAlign,
+    rgb: [f32; 3],
 ) {
     use crate::render::shell_text::TextRect;
 
@@ -107,7 +118,7 @@ fn push_label(
         &state.bit_font,
         text,
         text_rect,
-        SHELL_BUTTON_TEXT_RGB_FFFF00,
+        rgb,
         align,
         [0.0, 0.0],
         TEXT_DEPTH,
@@ -116,20 +127,19 @@ fn push_label(
 
 fn build_button_instances(
     atlas: &MainMenuShellChromeAtlas,
-    layout: &MainMenuShellLayout,
-    pressed_button: Option<MainMenuControlId>,
-    hovered_button: Option<MainMenuControlId>,
+    layout: &SinglePlayerShellLayout,
+    pressed_button: Option<SinglePlayerControlId>,
+    hovered_button: Option<SinglePlayerControlId>,
     hover_started_at: Option<Instant>,
+    load_saved_game_enabled: bool,
     now: Instant,
 ) -> Vec<SpriteInstance> {
     let mut out = Vec::new();
     for button in &layout.buttons {
-        let pressed = pressed_button == Some(button.id);
-        // gamemd arms a 1000 ms WM_TIMER on hover that toggles the +0xC5
-        // flash byte; WM_PAINT picks frame 3 (highlight) when the byte is
-        // non-zero, else frame 2 (default). Mirror that locally by deriving
-        // the toggle phase from elapsed wall-clock time since hover began.
-        let hover_highlight = if !pressed && hovered_button == Some(button.id) {
+        let enabled =
+            button.id != SinglePlayerControlId::LoadSavedGame0x689 || load_saved_game_enabled;
+        let pressed = enabled && pressed_button == Some(button.id);
+        let hover_highlight = if enabled && !pressed && hovered_button == Some(button.id) {
             hover_started_at
                 .map(|start| now.duration_since(start).as_millis() / 1000 % 2 == 1)
                 .unwrap_or(false)
@@ -142,7 +152,7 @@ fn build_button_instances(
             button.rect,
             pressed,
             hover_highlight,
-            BUTTON_DEPTH,
+            enabled,
         );
     }
     out
@@ -164,10 +174,6 @@ fn push_entry_rect(
     );
 }
 
-/// Draw the top `rect.h` rows of `entry` 1:1, cropping the SHP rather than
-/// stretching the full image to fit. Used for SDBTM where the SHP is 168x65
-/// native but the destination cap region is 23 px tall — gamemd clips, we
-/// must too.
 fn push_clipped_top(
     out: &mut Vec<SpriteInstance>,
     entry: MainMenuShellChromeEntry,
@@ -191,7 +197,7 @@ fn push_clipped_top(
 
 fn build_chrome_instances(
     atlas: &MainMenuShellChromeAtlas,
-    layout: &MainMenuShellLayout,
+    layout: &SinglePlayerShellLayout,
 ) -> Vec<SpriteInstance> {
     let mut out = Vec::new();
     if let Some(top) = atlas.right_panel_top_sdtp {
@@ -222,23 +228,19 @@ fn build_chrome_instances(
     out
 }
 
-fn build_text_draws(
-    state: &AppState,
-    layout: &MainMenuShellLayout,
-    pressed_button: Option<MainMenuControlId>,
-    hovered_button: Option<MainMenuControlId>,
-) -> Vec<ShellTextDraw> {
+fn build_text_draws(state: &AppState, layout: &SinglePlayerShellLayout) -> Vec<ShellTextDraw> {
     use crate::render::shell_text::ShellAlign;
+
     let mut out = Vec::new();
-    // Owner-draw buttons render h-centered + v-centered within a rect inset
-    // by top+=1 and right-=2 from the full button rect, matching gamemd's
-    // text-rect construction (`SHELL_BUTTON_PAINT_DETAILS_GHIDRA_REPORT §2`).
-    // When pressed the rect's left shifts by +x_offset, producing the net
-    // +1 px right text shift gamemd shows on click.
     let button_align = ShellAlign::H_CENTER | ShellAlign::V_CENTER;
     for button in &layout.buttons {
+        let enabled = button.id != SinglePlayerControlId::LoadSavedGame0x689
+            || state.single_player_shell_state.load_saved_game_enabled;
         let text = resolve_csf(state, csf_key_for_control(button.id));
-        let x_offset = if pressed_button == Some(button.id) {
+        let x_offset = if state.single_player_shell_state.pressed_owner_draw_button
+            == Some(button.id)
+            && enabled
+        {
             layout.pressed_content_offset_x
         } else {
             0
@@ -249,39 +251,34 @@ fn build_text_draws(
             (button.rect.w - 2).max(0),
             (button.rect.h - 1).max(0),
         );
-        push_label(&mut out, state, text, text_rect, button_align);
-    }
-    // Static text labels (title heading, version, tooltip) render top-anchored
-    // h-centered within their rect — they are not vertically centered.
-    let title = resolve_csf(state, "GUI:MainMenu");
-    push_label(&mut out, state, title, layout.title, ShellAlign::H_CENTER);
-
-    let version_label = resolve_csf(state, "GUI:Version");
-    let version_text = format!("{} {}", version_label, state.version_txt);
-    push_label(
-        &mut out,
-        state,
-        &version_text,
-        layout.version_line,
-        ShellAlign::H_CENTER,
-    );
-
-    if let Some(id) = hovered_button {
-        let tip_key = tooltip_csf_key_for_control(id);
-        let tip_text = resolve_csf(state, tip_key);
         push_label(
             &mut out,
             state,
-            tip_text,
-            layout.tooltip_line,
-            ShellAlign::H_CENTER,
+            text,
+            text_rect,
+            button_align,
+            if enabled {
+                SHELL_BUTTON_TEXT_RGB_FFFF00
+            } else {
+                SHELL_DISABLED_TEXT_RGB_FROM_PACKED_0000009F
+            },
         );
     }
+
+    let title = resolve_csf(state, "GUI:SinglePlayerMenu");
+    push_label(
+        &mut out,
+        state,
+        title,
+        layout.title,
+        ShellAlign::H_CENTER,
+        SHELL_BUTTON_TEXT_RGB_FFFF00,
+    );
 
     out
 }
 
-fn movie_instance(layout: &MainMenuShellLayout) -> SpriteInstance {
+fn movie_instance(layout: &SinglePlayerShellLayout) -> SpriteInstance {
     SpriteInstance {
         position: [layout.movie.x as f32, layout.movie.y as f32],
         size: [layout.movie.w as f32, layout.movie.h as f32],
@@ -294,83 +291,15 @@ fn movie_instance(layout: &MainMenuShellLayout) -> SpriteInstance {
     }
 }
 
-fn build_movie_instances(layout: &MainMenuShellLayout) -> Vec<SpriteInstance> {
-    vec![movie_instance(layout)]
-}
-
-pub(crate) fn ensure_movie_for_current_layout(state: &mut AppState) -> Result<()> {
-    let layout = compute_layout(state.gpu.config.width, state.gpu.config.height);
-    if state.main_menu_movie_base == Some(layout.movie_base) && state.main_menu_movie.is_some() {
-        return Ok(());
-    }
-
-    let Some(assets) = state.asset_manager.as_ref() else {
-        state.main_menu_shell_failed = true;
-        return Ok(());
-    };
-    let asset_name = layout.movie_base.asset_name();
-    let Some((bytes, source)) = assets.get_with_source_ref(asset_name) else {
-        log::warn!("Missing main-menu RA2TS movie asset {asset_name}");
-        state.main_menu_shell_failed = true;
-        return Ok(());
-    };
-    if asset_name.eq_ignore_ascii_case("ra2ts_l.bik")
-        && !source.eq_ignore_ascii_case("language.mix")
-    {
-        log::warn!(
-            "ra2ts_l.bik resolved from {source}; retail duplicate priority expected language.mix when both language.mix and langmd.mix contain the file"
-        );
-    }
-
-    let movie = match crate::render::bink_movie::BinkMovieSurface::from_bytes(
-        &state.gpu,
-        &state.batch_renderer,
-        Arc::<[u8]>::from(bytes),
-        source.to_string(),
-        true,
-    ) {
-        Ok(movie) => movie,
-        Err(err) => {
-            log::warn!("Failed to load main-menu RA2TS movie {asset_name} from {source}: {err:#}");
-            state.main_menu_shell_failed = true;
-            return Ok(());
-        }
-    };
-    log::info!(
-        "Loaded {asset_name} for main menu from {}",
-        movie.source_archive()
-    );
-    state.main_menu_movie = Some(movie);
-    state.main_menu_movie_base = Some(layout.movie_base);
-    state.main_menu_movie_last_step = Instant::now();
-    Ok(())
-}
-
-pub(crate) fn render_main_menu_shell(
+pub(crate) fn render_single_player_shell(
     state: &mut AppState,
     encoder: &mut wgpu::CommandEncoder,
     target: &wgpu::TextureView,
-) -> Result<MainMenuShellRenderResult> {
-    let depth = state.depth_view.clone();
-    render_main_menu_shell_to_target(
-        state,
-        encoder,
-        ShellRenderTarget {
-            color: target,
-            depth: &depth,
-        },
-    )
-}
-
-pub(crate) fn render_main_menu_shell_to_target(
-    state: &mut AppState,
-    encoder: &mut wgpu::CommandEncoder,
-    target: ShellRenderTarget<'_>,
-) -> Result<MainMenuShellRenderResult> {
-    ensure_movie_for_current_layout(state)?;
+) -> Result<SinglePlayerShellRenderResult> {
+    crate::app_main_menu_shell_render::ensure_movie_for_current_layout(state)?;
     if state.main_menu_shell_failed || state.main_menu_shell_chrome.is_none() {
         state.main_menu_shell_failed = true;
-        return Ok(MainMenuShellRenderResult::Fallback);
+        return Ok(SinglePlayerShellRenderResult::Fallback);
     }
 
     if let Some(movie) = state.main_menu_movie.as_mut() {
@@ -380,12 +309,17 @@ pub(crate) fn render_main_menu_shell_to_target(
             .as_secs_f64();
         state.main_menu_movie_last_step = now;
         if let Err(err) = movie.step(&state.gpu, elapsed) {
-            log::warn!("Failed to step main-menu RA2TS movie: {err:#}");
+            log::warn!("Failed to step single-player RA2TS movie: {err:#}");
             state.main_menu_shell_failed = true;
-            return Ok(MainMenuShellRenderResult::Fallback);
+            return Ok(SinglePlayerShellRenderResult::Fallback);
         }
     }
 
+    let depth = state.depth_view.clone();
+    let target = ShellRenderTarget {
+        color: target,
+        depth: &depth,
+    };
     let layout = compute_layout(state.gpu.config.width, state.gpu.config.height);
     let chrome = state
         .main_menu_shell_chrome
@@ -397,22 +331,18 @@ pub(crate) fn render_main_menu_shell_to_target(
         .map(|movie| movie.batch_texture())
         .expect("movie loaded before render");
 
-    let movie_instances = build_movie_instances(&layout);
+    let movie_instances = vec![movie_instance(&layout)];
     let chrome_instances = build_chrome_instances(chrome, &layout);
     let button_instances = build_button_instances(
         chrome,
         &layout,
-        state.main_menu_shell_state.pressed_owner_draw_button,
-        state.main_menu_shell_state.hovered_owner_draw_button,
-        state.main_menu_shell_state.hover_started_at,
+        state.single_player_shell_state.pressed_owner_draw_button,
+        state.single_player_shell_state.hovered_owner_draw_button,
+        state.single_player_shell_state.hover_started_at,
+        state.single_player_shell_state.load_saved_game_enabled,
         Instant::now(),
     );
-    let text_draws = build_text_draws(
-        state,
-        &layout,
-        state.main_menu_shell_state.pressed_owner_draw_button,
-        state.main_menu_shell_state.hovered_owner_draw_button,
-    );
+    let text_draws = build_text_draws(state, &layout);
 
     state.batch_renderer.update_camera(
         &state.gpu,
@@ -441,7 +371,7 @@ pub(crate) fn render_main_menu_shell_to_target(
         .collect();
 
     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("Main Menu Shell"),
+        label: Some("Single Player Shell"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
             view: target.color,
             depth_slice: None,
@@ -503,19 +433,5 @@ pub(crate) fn render_main_menu_shell_to_target(
     pass.set_scissor_rect(0, 0, state.gpu.config.width, state.gpu.config.height);
     drop(pass);
 
-    Ok(MainMenuShellRenderResult::Rendered)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::ui::main_menu_shell::compute_layout;
-
-    #[test]
-    fn movie_instance_uses_layout_movie_rect() {
-        let layout = compute_layout(800, 600);
-        let instance = movie_instance(&layout);
-        assert_eq!(instance.position, [0.0, 0.0]);
-        assert_eq!(instance.size, [632.0, 570.0]);
-    }
+    Ok(SinglePlayerShellRenderResult::Rendered)
 }

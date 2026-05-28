@@ -34,6 +34,7 @@ pub mod radar_anim;
 pub mod screenshot;
 pub mod selection_overlay;
 pub mod shell_text;
+pub mod shell_transition_pass;
 pub mod shroud_buffer;
 pub mod sidebar_cameo_atlas;
 pub mod sidebar_chrome;
