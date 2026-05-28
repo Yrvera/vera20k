@@ -9,11 +9,16 @@
 
 use crate::app::AppState;
 use crate::app_commands::preferred_local_owner_name;
+use crate::app_types::SIM_TICK_MS;
 use crate::map::entities::EntityCategory;
 use crate::sim::components::{
-    AnimOverlayState, BuildingAnimOverlays, DamageFireAnim, DamageFireOverlays, GarrisonMuzzleFlash,
+    AnimOverlayState, AnimRuntime, BuildingAnimOverlays, DamageFireAnim, DamageFireOverlays,
+    GarrisonMuzzleFlash,
 };
 use crate::sim::production;
+use crate::sim::world::Simulation;
+
+const GARRISON_OCCUPANT_ANIM_Z_ADJUST: i32 = -200;
 
 /// Advance one-shot building animation overlays stored as ECS components,
 /// and the global idle animation timer.
@@ -567,6 +572,9 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
 
     let events = state.sound_events.drain();
     if events.is_empty() {
+        if let Some(sfx) = &mut state.sfx_player {
+            sfx.advance_voice_queue();
+        }
         return;
     }
     let vp_w = state.render_width() as f32;
@@ -576,6 +584,7 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
     };
     let cam_x = state.camera_x;
     let cam_y = state.camera_y;
+    sfx.advance_voice_queue();
 
     for event in &events {
         match event {
@@ -590,19 +599,27 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
                     &state.audio_indices,
                 );
             }
-            // Deploy failure EVA is active; other EVA events remain disabled below.
-            GameSoundEvent::CannotDeployHere { .. } => {
-                sfx.play_voice_sound(
+            // STANDARD EVA cues are fire-and-forget: play only if voice is idle.
+            GameSoundEvent::BuildingReady { .. }
+            | GameSoundEvent::UnitReady { .. }
+            | GameSoundEvent::CannotDeployHere { .. } => {
+                sfx.play_standard_eva_sound(
                     event.sound_id(),
                     &state.sound_registry,
                     assets,
                     &state.audio_indices,
                 );
             }
-            GameSoundEvent::BuildingReady { .. }
-            | GameSoundEvent::UnitReady { .. }
-            | GameSoundEvent::StructureGarrisoned { .. }
-            | GameSoundEvent::StructureAbandoned { .. } => {}
+            // Garrison EVA cues are evamd.ini Type=QUEUE.
+            GameSoundEvent::StructureGarrisoned { .. }
+            | GameSoundEvent::StructureAbandoned { .. } => {
+                sfx.queue_eva_sound(
+                    event.sound_id(),
+                    &state.sound_registry,
+                    assets,
+                    &state.audio_indices,
+                );
+            }
             // UI events — always full volume (non-positional).
             GameSoundEvent::UiSound { .. } => {
                 sfx.play_sound(
@@ -639,7 +656,7 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
                     }
                 }
                 if let Some(eva_sound_id) = eva_sound_id.as_deref().filter(|s| !s.is_empty()) {
-                    sfx.play_voice_sound(
+                    sfx.play_standard_eva_sound(
                         eva_sound_id,
                         &state.sound_registry,
                         assets,
@@ -711,13 +728,19 @@ pub(crate) fn tick_garrison_muzzle_flashes(state: &mut AppState, dt_ms: u32) {
             .iter()
             .filter_map(|ev| {
                 let anim_name = ev.occupant_anim.as_ref()?;
+                let anim_section = sim.interner.resolve(*anim_name).to_ascii_uppercase();
                 let origin =
                     crate::app_fire_effects::resolve_fire_origin_from_sim(sim, rules, art_reg, ev)
                         .ok()?;
+                let runtime_config = art_reg.anim_runtime_config(&anim_section)?;
                 let total_frames = sim.effect_frame_counts.get(anim_name).copied().unwrap_or(1);
                 Some(GarrisonMuzzleFlash {
                     building_id: ev.attacker_id,
-                    shp_name: anim_name.clone(),
+                    runtime: garrison_occupant_anim_runtime(
+                        &anim_section,
+                        runtime_config,
+                        total_frames,
+                    ),
                     pixel_x: 0,
                     pixel_y: 0,
                     screen_x: origin.screen_x,
@@ -725,23 +748,426 @@ pub(crate) fn tick_garrison_muzzle_flashes(state: &mut AppState, dt_ms: u32) {
                     rx: origin.rx,
                     ry: origin.ry,
                     z: origin.z,
-                    frame: 0,
-                    total_frames,
-                    rate_ms: 67, // ~15fps, standard for RA2 muzzle flash anims
-                    elapsed_ms: 0,
+                    z_adjust: GARRISON_OCCUPANT_ANIM_Z_ADJUST,
                 })
             })
             .collect()
     };
     state.garrison_muzzle_flashes.extend(new_flashes);
 
-    // Phase 2: advance existing flashes and remove finished ones.
-    state.garrison_muzzle_flashes.retain_mut(|flash| {
-        flash.elapsed_ms += dt_ms;
-        while flash.elapsed_ms >= flash.rate_ms && flash.rate_ms > 0 {
-            flash.elapsed_ms -= flash.rate_ms;
-            flash.frame += 1;
-        }
-        flash.frame < flash.total_frames
-    });
+    // Phase 2: advance all flashes and remove finished ones. This is fed from
+    // completed fixed sim ticks, not render-frame wall time.
+    let (Some(sim), Some(art_reg)) = (&state.simulation, &state.art_registry) else {
+        state.garrison_muzzle_flashes.clear();
+        return;
+    };
+    state
+        .garrison_muzzle_flashes
+        .retain_mut(|flash| advance_garrison_muzzle_flash(flash, dt_ms, sim, art_reg));
+}
+
+fn advance_garrison_muzzle_flash(
+    flash: &mut GarrisonMuzzleFlash,
+    dt_ms: u32,
+    sim: &Simulation,
+    art_reg: &crate::rules::art_data::ArtRegistry,
+) -> bool {
+    flash.runtime.elapsed_logic_ms = flash.runtime.elapsed_logic_ms.saturating_add(dt_ms);
+    while flash.runtime.elapsed_logic_ms >= SIM_TICK_MS && !flash.runtime.expired {
+        flash.runtime.elapsed_logic_ms -= SIM_TICK_MS;
+        advance_anim_runtime_visit(&mut flash.runtime, sim, art_reg);
+    }
+    !flash.runtime.expired
+}
+
+fn garrison_occupant_anim_runtime(
+    anim_section: &str,
+    config: &crate::rules::art_data::AnimTypeRuntimeConfig,
+    total_frames: u16,
+) -> AnimRuntime {
+    let end = effective_anim_end(config, total_frames);
+    let loop_end = effective_anim_loop_end(config, end);
+    let reverse = config.reverse;
+    AnimRuntime {
+        type_name: anim_section.to_ascii_uppercase(),
+        current_frame: if reverse { loop_end - 1 } else { 0 },
+        frame_step: if reverse { -1 } else { 1 },
+        delay_logic_frames: 0,
+        reload_logic_frames: config.rate_logic_frames,
+        rate_elapsed_logic_frames: 0,
+        loop_remaining: native_loop_remaining(config.loop_count, 1),
+        first_ai_guard: true,
+        expired: false,
+        constructor_reverse: false,
+        elapsed_logic_ms: 0,
+    }
+}
+
+#[cfg(test)]
+fn garrison_occupant_anim_rate_logic_frames(
+    sim: &Simulation,
+    art_reg: &crate::rules::art_data::ArtRegistry,
+    anim_name: crate::sim::intern::InternedId,
+) -> Option<u16> {
+    let anim_section = sim.interner.resolve(anim_name);
+    art_reg
+        .anim_runtime_config(anim_section)
+        .map(|config| config.rate_logic_frames)
+}
+
+fn advance_anim_runtime_visit(
+    runtime: &mut AnimRuntime,
+    sim: &Simulation,
+    art_reg: &crate::rules::art_data::ArtRegistry,
+) {
+    if runtime.expired {
+        return;
+    }
+    if runtime.first_ai_guard {
+        runtime.first_ai_guard = false;
+        return;
+    }
+    if runtime.delay_logic_frames > 0 {
+        runtime.delay_logic_frames -= 1;
+        return;
+    }
+    if runtime.reload_logic_frames == 0 {
+        return;
+    }
+    runtime.rate_elapsed_logic_frames = runtime.rate_elapsed_logic_frames.saturating_add(1);
+    if runtime.rate_elapsed_logic_frames < runtime.reload_logic_frames {
+        return;
+    }
+    runtime.rate_elapsed_logic_frames = 0;
+    runtime.current_frame += runtime.frame_step;
+
+    let Some(config) = art_reg.anim_runtime_config(&runtime.type_name) else {
+        runtime.expired = true;
+        return;
+    };
+    if config.ping_pong && anim_runtime_at_boundary(runtime, config, sim) {
+        runtime.frame_step = -runtime.frame_step;
+        return;
+    }
+    if !anim_runtime_at_boundary(runtime, config, sim) {
+        return;
+    }
+    if runtime.loop_remaining != 0 && runtime.loop_remaining != u8::MAX {
+        runtime.loop_remaining = runtime.loop_remaining.saturating_sub(1);
+    }
+    if runtime.loop_remaining != 0 {
+        reset_anim_runtime_to_loop_start(runtime, config, sim);
+        return;
+    }
+    if let Some(next) = &config.next {
+        switch_anim_runtime_type(runtime, next, sim, art_reg);
+    } else {
+        runtime.expired = true;
+    }
+}
+
+fn anim_runtime_at_boundary(
+    runtime: &AnimRuntime,
+    config: &crate::rules::art_data::AnimTypeRuntimeConfig,
+    sim: &Simulation,
+) -> bool {
+    let end = effective_anim_end(config, anim_total_frames(sim, &runtime.type_name));
+    let loop_end = effective_anim_loop_end(config, end);
+    if runtime.frame_step >= 0 {
+        let limit = if runtime.loop_remaining < 2 {
+            end
+        } else {
+            loop_end - config.start
+        };
+        runtime.current_frame >= limit
+    } else {
+        let limit = if runtime.loop_remaining < 2 {
+            config.start
+        } else {
+            config.loop_start - config.start
+        };
+        runtime.current_frame <= limit
+    }
+}
+
+fn reset_anim_runtime_to_loop_start(
+    runtime: &mut AnimRuntime,
+    config: &crate::rules::art_data::AnimTypeRuntimeConfig,
+    sim: &Simulation,
+) {
+    if runtime.frame_step >= 0 && !runtime.constructor_reverse && !config.reverse {
+        runtime.current_frame = config.loop_start - config.start;
+    } else {
+        let end = effective_anim_end(config, anim_total_frames(sim, &runtime.type_name));
+        runtime.current_frame = effective_anim_loop_end(config, end);
+    }
+}
+
+fn switch_anim_runtime_type(
+    runtime: &mut AnimRuntime,
+    next: &str,
+    sim: &Simulation,
+    art_reg: &crate::rules::art_data::ArtRegistry,
+) {
+    let Some(next_config) = art_reg.anim_runtime_config(next) else {
+        runtime.expired = true;
+        return;
+    };
+    let total_frames = anim_total_frames(sim, next);
+    let end = effective_anim_end(next_config, total_frames);
+    let loop_end = effective_anim_loop_end(next_config, end);
+    let reverse = next_config.reverse || runtime.constructor_reverse;
+    runtime.type_name = next.to_ascii_uppercase();
+    runtime.current_frame = if reverse { loop_end - 1 } else { 0 };
+    runtime.frame_step = if reverse { -1 } else { 1 };
+    runtime.delay_logic_frames = 0;
+    runtime.reload_logic_frames = next_config.rate_logic_frames;
+    runtime.rate_elapsed_logic_frames = 0;
+    runtime.loop_remaining = native_loop_remaining(next_config.loop_count, 1);
+    runtime.first_ai_guard = false;
+    runtime.expired = false;
+}
+
+fn native_loop_remaining(loop_count: i32, constructor_loop: u8) -> u8 {
+    let raw = (loop_count as u8).wrapping_mul(constructor_loop.max(1));
+    if raw < 2 { 1 } else { raw }
+}
+
+fn effective_anim_end(
+    config: &crate::rules::art_data::AnimTypeRuntimeConfig,
+    total_frames: u16,
+) -> i32 {
+    if config.end == -1 {
+        let frames = i32::from(total_frames);
+        if config.shadow { frames / 2 } else { frames }
+    } else {
+        config.end
+    }
+}
+
+fn effective_anim_loop_end(
+    config: &crate::rules::art_data::AnimTypeRuntimeConfig,
+    effective_end: i32,
+) -> i32 {
+    if config.loop_end == -1 {
+        effective_end
+    } else {
+        config.loop_end
+    }
+}
+
+fn anim_total_frames(sim: &Simulation, type_name: &str) -> u16 {
+    sim.interner
+        .get(type_name)
+        .and_then(|id| sim.effect_frame_counts.get(&id).copied())
+        .unwrap_or(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rules::art_data::{ArtRegistry, DEFAULT_ART_RATE_LOGIC_FRAMES};
+    use crate::rules::ini_parser::IniFile;
+    use crate::sim::world::Simulation;
+
+    #[test]
+    fn garrison_occupant_anim_rate_uses_art_section_rate_logic_frames() {
+        let mut sim = Simulation::new();
+        let ucflash = sim.interner.intern("UCFLASH");
+        let art = ArtRegistry::from_ini(&IniFile::from_str("[UCFLASH]\nRate=300\n"));
+
+        assert_eq!(
+            garrison_occupant_anim_rate_logic_frames(&sim, &art, ucflash),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn garrison_occupant_anim_rate_uses_animtype_default_logic_tick_when_rate_missing() {
+        let mut sim = Simulation::new();
+        let ucflash = sim.interner.intern("UCFLASH");
+        let art = ArtRegistry::from_ini(&IniFile::from_str("[UCFLASH]\n"));
+
+        assert_eq!(
+            garrison_occupant_anim_rate_logic_frames(&sim, &art, ucflash),
+            Some(DEFAULT_ART_RATE_LOGIC_FRAMES)
+        );
+    }
+
+    #[test]
+    fn garrison_occupant_anim_rate_requires_art_section() {
+        let mut sim = Simulation::new();
+        let ucflash = sim.interner.intern("UCFLASH");
+        let art = ArtRegistry::empty();
+
+        assert_eq!(
+            garrison_occupant_anim_rate_logic_frames(&sim, &art, ucflash),
+            None
+        );
+    }
+
+    #[test]
+    fn garrison_muzzle_flash_first_ai_guard_does_not_advance_on_first_fixed_tick() {
+        let mut sim = Simulation::new();
+        let ucflash = sim.interner.intern("UCFLASH");
+        sim.effect_frame_counts.insert(ucflash, 3);
+        let art = ArtRegistry::from_ini(&IniFile::from_str("[UCFLASH]\nEnd=-1\n"));
+        let config = art.anim_runtime_config("UCFLASH").unwrap();
+        let mut flash = GarrisonMuzzleFlash {
+            building_id: 1,
+            runtime: garrison_occupant_anim_runtime("UCFLASH", config, 3),
+            pixel_x: 0,
+            pixel_y: 0,
+            screen_x: 0.0,
+            screen_y: 0.0,
+            rx: 0,
+            ry: 0,
+            z: 0,
+            z_adjust: GARRISON_OCCUPANT_ANIM_Z_ADJUST,
+        };
+
+        assert!(advance_garrison_muzzle_flash(
+            &mut flash,
+            SIM_TICK_MS,
+            &sim,
+            &art
+        ));
+        assert_eq!(flash.runtime.current_frame, 0);
+        assert!(!flash.runtime.first_ai_guard);
+        assert_eq!(flash.runtime.elapsed_logic_ms, 0);
+    }
+
+    #[test]
+    fn garrison_muzzle_flash_omitted_end_does_not_play_to_shp_frame_count() {
+        let mut sim = Simulation::new();
+        let ucflash = sim.interner.intern("UCFLASH");
+        sim.effect_frame_counts.insert(ucflash, 3);
+        let art = ArtRegistry::from_ini(&IniFile::from_str("[UCFLASH]\n"));
+        let config = art.anim_runtime_config("UCFLASH").unwrap();
+        let mut flash = GarrisonMuzzleFlash {
+            building_id: 1,
+            runtime: garrison_occupant_anim_runtime("UCFLASH", config, 3),
+            pixel_x: 0,
+            pixel_y: 0,
+            screen_x: 0.0,
+            screen_y: 0.0,
+            rx: 0,
+            ry: 0,
+            z: 0,
+            z_adjust: GARRISON_OCCUPANT_ANIM_Z_ADJUST,
+        };
+
+        assert!(advance_garrison_muzzle_flash(
+            &mut flash,
+            SIM_TICK_MS,
+            &sim,
+            &art
+        ));
+        assert!(!advance_garrison_muzzle_flash(
+            &mut flash,
+            SIM_TICK_MS,
+            &sim,
+            &art
+        ));
+        assert!(flash.runtime.expired);
+        assert_eq!(flash.runtime.current_frame, 1);
+    }
+
+    #[test]
+    fn garrison_muzzle_flash_rate_zero_never_advances() {
+        let mut sim = Simulation::new();
+        let ucflash = sim.interner.intern("UCFLASH");
+        sim.effect_frame_counts.insert(ucflash, 3);
+        let art = ArtRegistry::from_ini(&IniFile::from_str("[UCFLASH]\nEnd=-1\nRate=0\n"));
+        let config = art.anim_runtime_config("UCFLASH").unwrap();
+        let mut flash = GarrisonMuzzleFlash {
+            building_id: 1,
+            runtime: garrison_occupant_anim_runtime("UCFLASH", config, 3),
+            pixel_x: 0,
+            pixel_y: 0,
+            screen_x: 0.0,
+            screen_y: 0.0,
+            rx: 0,
+            ry: 0,
+            z: 0,
+            z_adjust: GARRISON_OCCUPANT_ANIM_Z_ADJUST,
+        };
+
+        assert!(advance_garrison_muzzle_flash(
+            &mut flash,
+            SIM_TICK_MS * 4,
+            &sim,
+            &art
+        ));
+        assert_eq!(flash.runtime.current_frame, 0);
+        assert!(!flash.runtime.expired);
+    }
+
+    #[test]
+    fn garrison_muzzle_flash_loopcount_ff_is_infinite_sentinel() {
+        let mut sim = Simulation::new();
+        let ucflash = sim.interner.intern("UCFLASH");
+        sim.effect_frame_counts.insert(ucflash, 3);
+        let art = ArtRegistry::from_ini(&IniFile::from_str(
+            "[UCFLASH]\nEnd=2\nLoopStart=0\nLoopEnd=2\nLoopCount=-1\n",
+        ));
+        let config = art.anim_runtime_config("UCFLASH").unwrap();
+        let mut flash = GarrisonMuzzleFlash {
+            building_id: 1,
+            runtime: garrison_occupant_anim_runtime("UCFLASH", config, 3),
+            pixel_x: 0,
+            pixel_y: 0,
+            screen_x: 0.0,
+            screen_y: 0.0,
+            rx: 0,
+            ry: 0,
+            z: 0,
+            z_adjust: GARRISON_OCCUPANT_ANIM_Z_ADJUST,
+        };
+
+        assert!(advance_garrison_muzzle_flash(
+            &mut flash,
+            SIM_TICK_MS * 3,
+            &sim,
+            &art
+        ));
+        assert_eq!(flash.runtime.loop_remaining, u8::MAX);
+        assert_eq!(flash.runtime.current_frame, 0);
+        assert!(!flash.runtime.expired);
+    }
+
+    #[test]
+    fn garrison_muzzle_flash_next_switches_same_runtime() {
+        let mut sim = Simulation::new();
+        let ucflash = sim.interner.intern("UCFLASH");
+        let mynext = sim.interner.intern("MYNEXT");
+        sim.effect_frame_counts.insert(ucflash, 2);
+        sim.effect_frame_counts.insert(mynext, 2);
+        let art = ArtRegistry::from_ini(&IniFile::from_str(
+            "[UCFLASH]\nEnd=1\nNext=MYNEXT\n[MYNEXT]\nEnd=-1\n",
+        ));
+        let config = art.anim_runtime_config("UCFLASH").unwrap();
+        let mut flash = GarrisonMuzzleFlash {
+            building_id: 1,
+            runtime: garrison_occupant_anim_runtime("UCFLASH", config, 2),
+            pixel_x: 0,
+            pixel_y: 0,
+            screen_x: 0.0,
+            screen_y: 0.0,
+            rx: 0,
+            ry: 0,
+            z: 0,
+            z_adjust: GARRISON_OCCUPANT_ANIM_Z_ADJUST,
+        };
+
+        assert!(advance_garrison_muzzle_flash(
+            &mut flash,
+            SIM_TICK_MS * 2,
+            &sim,
+            &art
+        ));
+        assert_eq!(flash.runtime.type_name, "MYNEXT");
+        assert_eq!(flash.runtime.current_frame, 0);
+        assert!(!flash.runtime.expired);
+    }
 }

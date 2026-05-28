@@ -465,8 +465,8 @@ pub(crate) fn build_garrison_muzzle_flash_instances(
     state: &AppState,
     paged: &mut [Vec<SpriteInstance>],
 ) {
-    let (sim, atlas) = match (&state.simulation, &state.sprite_atlas) {
-        (Some(s), Some(a)) => (s, a),
+    let (atlas, art_reg) = match (&state.sprite_atlas, &state.art_registry) {
+        (Some(a), Some(r)) => (a, r),
         _ => return,
     };
     let z = state.zoom_level;
@@ -496,10 +496,15 @@ pub(crate) fn build_garrison_muzzle_flash_instances(
         ) {
             continue;
         }
+        let start = art_reg
+            .anim_runtime_config(&flash.runtime.type_name)
+            .map(|config| config.start)
+            .unwrap_or(0);
+        let frame = (start + flash.runtime.current_frame).max(0) as u16;
         let key = ShpSpriteKey {
-            type_id: sim.interner.resolve(flash.shp_name).to_string(),
+            type_id: flash.runtime.type_name.clone(),
             facing: 0,
-            frame: flash.frame,
+            frame,
             house_color: HouseColorIndex(0),
         };
         let Some(entry) = atlas.get(&key) else {
@@ -508,8 +513,13 @@ pub(crate) fn build_garrison_muzzle_flash_instances(
         let fx: f32 = flash.screen_x + entry.offset_x;
         let fy: f32 = flash.screen_y + entry.offset_y;
         let tint: [f32; 3] = state.lighting_grid.anim_tint_at((flash.rx, flash.ry));
-        let depth: f32 =
-            compute_sprite_depth_params(origin_y, world_height, flash.screen_y, flash.z);
+        let depth: f32 = garrison_flash_depth(
+            origin_y,
+            world_height,
+            flash.screen_y,
+            flash.z,
+            flash.z_adjust,
+        );
         paged[entry.page as usize].push(SpriteInstance {
             position: [fx, fy],
             size: entry.pixel_size,
@@ -521,6 +531,24 @@ pub(crate) fn build_garrison_muzzle_flash_instances(
             ..Default::default()
         });
     }
+}
+
+fn garrison_flash_depth(
+    origin_y: f32,
+    world_height: f32,
+    screen_y: f32,
+    z: u8,
+    z_adjust: i32,
+) -> f32 {
+    let base_depth = compute_sprite_depth_params(origin_y, world_height, screen_y, z);
+    garrison_flash_depth_apply_z_adjust(base_depth, z_adjust)
+}
+
+fn garrison_flash_depth_apply_z_adjust(base_depth: f32, z_adjust: i32) -> f32 {
+    // CC_Draw_Shape treats z_adjust as a sort-depth bias: 1000 is neutral,
+    // lower values push the shape away, and higher values pull it forward.
+    let neutral_delta = 1000 - z_adjust;
+    (base_depth + neutral_delta as f32 * 0.000001).clamp(0.001, 0.999)
 }
 
 fn weapon_muzzle_flash_key(flash: &WeaponMuzzleFlash) -> ShpSpriteKey {
@@ -771,8 +799,11 @@ pub(crate) fn build_parachute_instances(state: &AppState, paged: &mut [Vec<Sprit
 
 #[cfg(test)]
 mod tests {
-    use super::{OverlayRenderBucket, classify_overlay_render_bucket, weapon_muzzle_flash_key};
-    use crate::sim::components::WeaponMuzzleFlash;
+    use super::{
+        OverlayRenderBucket, classify_overlay_render_bucket, garrison_flash_depth,
+        garrison_flash_depth_apply_z_adjust, weapon_muzzle_flash_key,
+    };
+    use crate::sim::components::{AnimRuntime, GarrisonMuzzleFlash, WeaponMuzzleFlash};
 
     #[test]
     fn wall_routes_to_wall_bucket() {
@@ -809,5 +840,45 @@ mod tests {
         assert_eq!(key.type_id, "MGUN-N");
         assert_eq!(key.frame, 3);
         assert_eq!(key.facing, 0);
+    }
+
+    #[test]
+    fn garrison_flash_depth_applies_native_z_adjust_as_depth_bias() {
+        let flash = GarrisonMuzzleFlash {
+            building_id: 42,
+            runtime: AnimRuntime {
+                type_name: "UCFLASH".to_string(),
+                current_frame: 0,
+                frame_step: 1,
+                delay_logic_frames: 0,
+                reload_logic_frames: 1,
+                rate_elapsed_logic_frames: 0,
+                loop_remaining: 1,
+                first_ai_guard: false,
+                expired: false,
+                constructor_reverse: false,
+                elapsed_logic_ms: 0,
+            },
+            pixel_x: 0,
+            pixel_y: 0,
+            screen_x: 100.0,
+            screen_y: 200.0,
+            rx: 10,
+            ry: 11,
+            z: 0,
+            z_adjust: -200,
+        };
+
+        let base = garrison_flash_depth(0.0, 1000.0, flash.screen_y, flash.z, 1000);
+        let biased = garrison_flash_depth(0.0, 1000.0, flash.screen_y, flash.z, flash.z_adjust);
+        assert_eq!(
+            garrison_flash_depth_apply_z_adjust(base, 1000),
+            base,
+            "z_adjust=1000 is neutral"
+        );
+        assert!(
+            biased > base,
+            "z_adjust=-200 should push the flash away without shifting its screen row"
+        );
     }
 }

@@ -255,46 +255,24 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                 }
             }
         } else {
-            // Garrison entry: infantry with Occupier=yes clicking a CanBeOccupied
-            // building issues EnterTransport commands. Neutral/civilian buildings
+            // Garrison entry uses the shared CanDock-equivalent predicate before
+            // issuing EnterTransport commands.
             // are classified as EnemyStructure but are still garrisonable —
-            // only allow for neutral/special owners, not actual enemy players.
             if !force_fire {
-                let garrison_target = hover.as_ref().and_then(|target| {
-                    let rules = state.rules.as_ref()?;
-                    let entity = sim.entities.get(target.stable_id)?;
-                    let type_str = sim.interner.resolve(entity.type_ref);
-                    let owner_str = sim.interner.resolve(entity.owner);
-                    let obj = rules.object(type_str)?;
-                    if !obj.can_be_occupied {
-                        return None;
-                    }
-                    let allowed = match target.kind {
-                        HoverTargetKind::FriendlyStructure => true,
-                        HoverTargetKind::EnemyStructure => {
-                            owner_str.eq_ignore_ascii_case("neutral")
-                                || owner_str.eq_ignore_ascii_case("special")
-                        }
-                        _ => false,
-                    };
-                    if allowed {
-                        Some(target.stable_id)
-                    } else {
-                        None
-                    }
-                });
+                let garrison_target = hover.as_ref().map(|target| target.stable_id);
                 if let Some(transport_id) = garrison_target {
                     let infantry_ids: Vec<u64> = selected_units
                         .iter()
                         .copied()
                         .filter(|&sid| {
-                            sim.entities.get(sid).is_some_and(|e| {
-                                e.category == EntityCategory::Infantry
-                                    && state
-                                        .rules
-                                        .as_ref()
-                                        .and_then(|r| r.object(sim.interner.resolve(e.type_ref)))
-                                        .map_or(false, |o| o.occupier)
+                            state.rules.as_ref().is_some_and(|rules| {
+                                crate::sim::passenger::can_entity_enter_garrison(
+                                    sim,
+                                    rules,
+                                    sid,
+                                    transport_id,
+                                    state.path_grid.as_ref(),
+                                )
                             })
                         })
                         .collect();

@@ -40,11 +40,36 @@ fn c4_test_rules() -> RuleSet {
     rules
 }
 
+fn c4_damage_state_rules() -> RuleSet {
+    let ini: IniFile = IniFile::from_str(
+        "[InfantryTypes]\n0=GHOST\n\n\
+         [VehicleTypes]\n\n\
+         [AircraftTypes]\n\n\
+         [BuildingTypes]\n0=GAPILE\n\n\
+         [GHOST]\nStrength=125\nArmor=flak\nSpeed=4\nC4=yes\nPrimary=Pistol\n\n\
+         [GAPILE]\nStrength=600\nArmor=wood\nFoundation=2x2\n\n\
+         [Pistol]\nDamage=25\nROF=20\nRange=5\nWarhead=SA\n\n\
+         [CombatDamage]\nC4Warhead=SA\n\n\
+         [SA]\nVerses=50%,50%,50%,50%,50%,50%,50%,50%,50%,0%,0%\n",
+    );
+    let mut rules = RuleSet::from_ini(&ini).expect("c4 damage-state rules should parse");
+    let art = ArtRegistry::from_ini(&IniFile::from_str("[GAPILE]\nFoundation=2x2\n"));
+    rules.merge_art_data(&art);
+    rules
+}
+
 fn build_sim_with_c4_rules() -> (Simulation, RuleSet, BTreeMap<(u16, u16), u8>) {
     let mut sim = Simulation::new();
     let mut rules = c4_test_rules();
     // Required: tick_c4_plants calls rules.c4_warhead_id() which panics
     // unless this resolver has run.
+    rules.resolve_bridge_warheads(&mut sim.interner);
+    (sim, rules, BTreeMap::new())
+}
+
+fn build_sim_with_c4_damage_state_rules() -> (Simulation, RuleSet, BTreeMap<(u16, u16), u8>) {
+    let mut sim = Simulation::new();
+    let mut rules = c4_damage_state_rules();
     rules.resolve_bridge_warheads(&mut sim.interner);
     (sim, rules, BTreeMap::new())
 }
@@ -165,6 +190,33 @@ fn c4_plant_happy_path_kills_building_and_seal_survives() {
         !sim.entities.get(seal).unwrap().dying,
         "SEAL must not be dying"
     );
+}
+
+#[test]
+fn c4_damage_crossing_condition_yellow_sets_building_damage_state() {
+    let (mut sim, rules, heights) = build_sim_with_c4_damage_state_rules();
+    let seal = spawn_infantry(&mut sim, "GHOST", "Americans", 10, 11);
+    let bld = spawn_building(&mut sim, "GAPILE", "Soviets", 10, 10);
+    sim.entities.get_mut(bld).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
+        plant_start_tick: sim.tick,
+        attacker_id: seal,
+    });
+
+    let delay = rules.c4_delay_ticks as u64;
+    for _ in 0..(delay + 2) {
+        step(&mut sim, &rules, &heights);
+        if sim
+            .entities
+            .get(bld)
+            .is_some_and(|building| building.building_damage_state_active)
+        {
+            break;
+        }
+    }
+
+    let building = sim.entities.get(bld).expect("building should survive");
+    assert_eq!(building.health.current, 300);
+    assert!(building.building_damage_state_active);
 }
 
 #[test]

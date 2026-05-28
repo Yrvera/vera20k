@@ -157,6 +157,7 @@ impl Simulation {
                     None,
                     None,
                     self.resolved_terrain.as_ref(),
+                    self.zone_grid.as_ref(),
                     None,
                     false, // mover_is_crusher
                 );
@@ -828,6 +829,7 @@ impl Simulation {
         };
         let new_hp = b.health.current.saturating_sub(scaled);
         b.health.current = new_hp;
+        b.refresh_building_damage_state_gate(rules.general.condition_yellow_x1000);
         if new_hp == 0 {
             b.dying = true;
             if let Some(att) = attacker_id {
@@ -979,6 +981,7 @@ impl Simulation {
                         cost_grid,
                         Some(&entity_blocks),
                         self.resolved_terrain.as_ref(),
+                        self.zone_grid.as_ref(),
                         Some(&entity_block_map),
                         info.mover_is_crusher,
                     );

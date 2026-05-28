@@ -57,6 +57,7 @@ pub mod bridge_state;
 
 // --- Infantry deploy-fire state machine ---
 pub mod deploy;
+pub mod gate_runtime;
 pub mod infantry;
 
 // --- Persistent cell occupancy ---
@@ -76,7 +77,9 @@ pub mod slave_miner;
 pub mod ore_growth;
 pub mod radar;
 pub mod rocking;
+pub mod terrain_object;
 pub mod terrain_spawn;
+pub mod tiberium;
 
 // --- Per-match settings, per-player state ---
 pub mod game_options;

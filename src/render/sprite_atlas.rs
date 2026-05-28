@@ -35,6 +35,34 @@ const SPRITE_PADDING: u32 = 1;
 const INFANTRY_FACING_STEP: u8 = 32;
 const INFANTRY_FACING_BUCKETS: u8 = 8;
 
+fn scan_building_anim_frame_count(
+    asset_manager: &AssetManager,
+    art_reg: &ArtRegistry,
+    anim_type: &str,
+    loop_end: u16,
+    theater_ext: &str,
+    theater_name: &str,
+) -> Option<u16> {
+    let anim_image: String = art_reg.resolve_effective_image_id(anim_type, anim_type);
+    let candidates: Vec<String> = art_data::anim_shp_candidates(
+        Some(art_reg),
+        anim_type,
+        &anim_image,
+        theater_ext,
+        theater_name,
+    );
+    let data = candidates.iter().find_map(|c| asset_manager.get_ref(c))?;
+    let shp = ShpFile::from_bytes(data).ok()?;
+    let real: u16 = (shp.frames.len() as u16) / 2;
+    Some(if real >= loop_end {
+        real
+    } else if (shp.frames.len() as u16) >= loop_end {
+        loop_end
+    } else {
+        shp.frames.len() as u16
+    })
+}
+
 /// Cache key: unique combination of object type, facing, and house color.
 /// For structures, facing is always 0 (buildings don't rotate).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -601,6 +629,45 @@ pub fn build_sprite_atlas(
                             house_color: key.house_color,
                         });
                     }
+
+                    for variant in [&anim.damaged_variant, &anim.garrisoned_variant] {
+                        let Some(variant) = variant.as_ref() else {
+                            continue;
+                        };
+                        let variant_type = variant.anim_type.as_str();
+                        let variant_upper: String = variant_type.to_uppercase();
+                        if !active_anim_frame_counts.contains_key(&variant_upper) {
+                            if let Some(count) = scan_building_anim_frame_count(
+                                asset_manager,
+                                art_reg,
+                                variant_type,
+                                variant.loop_end,
+                                theater_ext,
+                                theater_name,
+                            ) {
+                                active_anim_frame_counts.insert(variant_upper.clone(), count);
+                                log::info!(
+                                    "Building anim variant {} for {}: {} frames (loop_end={})",
+                                    variant_type,
+                                    key.type_id,
+                                    count,
+                                    variant.loop_end,
+                                );
+                            }
+                        }
+                        let count: u16 = active_anim_frame_counts
+                            .get(&variant_upper)
+                            .copied()
+                            .unwrap_or(1);
+                        for f in 0..count {
+                            needed.insert(ShpSpriteKey {
+                                type_id: variant_type.to_string(),
+                                facing: 0,
+                                frame: f,
+                                house_color: key.house_color,
+                            });
+                        }
+                    }
                 }
                 // BibShape: ground-level pad SHP (e.g., refinery dock GAREFNBB).
                 // Use bib name directly as atlas key so render can look it up.
@@ -1005,14 +1072,25 @@ fn compute_building_bounds(
             if let Some(art_entry) = art_reg.resolve_metadata_entry(type_id, &rules_image) {
                 for anim in &art_entry.building_anims {
                     // Anim overlays are offset by (anim.x, anim.y) pixels from building origin.
-                    for (k, v) in atlas.entries_iter() {
-                        if k.type_id == anim.anim_type {
-                            let ax: f32 = anim.x as f32 + v.offset_x;
-                            let ay: f32 = anim.y as f32 + v.offset_y;
-                            min_x = min_x.min(ax);
-                            min_y = min_y.min(ay);
-                            max_x = max_x.max(ax + v.pixel_size[0]);
-                            max_y = max_y.max(ay + v.pixel_size[1]);
+                    for anim_type in [
+                        Some(anim.anim_type.as_str()),
+                        anim.damaged_variant.as_ref().map(|v| v.anim_type.as_str()),
+                        anim.garrisoned_variant
+                            .as_ref()
+                            .map(|v| v.anim_type.as_str()),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        for (k, v) in atlas.entries_iter() {
+                            if k.type_id == anim_type {
+                                let ax: f32 = anim.x as f32 + v.offset_x;
+                                let ay: f32 = anim.y as f32 + v.offset_y;
+                                min_x = min_x.min(ax);
+                                min_y = min_y.min(ay);
+                                max_x = max_x.max(ax + v.pixel_size[0]);
+                                max_y = max_y.max(ay + v.pixel_size[1]);
+                            }
                         }
                     }
                 }

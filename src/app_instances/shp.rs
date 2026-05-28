@@ -150,7 +150,9 @@ pub(crate) fn build_shp_instances(
                             .as_ref()
                             .map(|r| (r.general.condition_yellow, r.general.condition_red))
                             .unwrap_or((0.5, 0.25));
-                        building_frame_index(
+                        rendered_garrison_body_frame_index(
+                            0,
+                            entity.building_damage_state_active,
                             occupant_count,
                             entity.health.current,
                             entity.health.max,
@@ -305,6 +307,7 @@ pub(crate) fn build_shp_instances(
                     Some(&sim.interner),
                     is_garrisoned,
                     is_player_owned,
+                    entity.building_damage_state_active,
                 );
             }
             // Emit VXL turret on top of building (e.g., SAM site, Prism Tower).
@@ -454,14 +457,30 @@ fn emit_building_bib(
 /// Supports PingPong mode (bounces: 0→1→2→3→2→1→0→...) and linear looping (0→1→2→3→0→...).
 /// LoopEnd in RA2 art.ini is **inclusive** — LoopStart=0,LoopEnd=3 means 4 frames (0,1,2,3).
 fn looping_frame(anim: &crate::rules::art_data::BuildingAnimConfig, elapsed_ms: u32) -> u16 {
+    looping_frame_values(
+        anim.loop_start,
+        anim.loop_end,
+        anim.rate,
+        anim.ping_pong,
+        elapsed_ms,
+    )
+}
+
+fn looping_frame_values(
+    loop_start: u16,
+    loop_end: u16,
+    rate: u16,
+    ping_pong: bool,
+    elapsed_ms: u32,
+) -> u16 {
     // LoopEnd is EXCLUSIVE in RA2 art.ini — e.g. GAPOWR_A has LoopStart=0,
     // LoopEnd=8 meaning frames 0..8 (0-7), while GAPOWR_AD starts at frame 8.
     // The ranges are contiguous: normal=[0..8), damaged=[8..16).
-    let range: u16 = anim.loop_end.saturating_sub(anim.loop_start).max(1);
-    let rate: u32 = (anim.rate as u32).max(1) * 2;
+    let range: u16 = loop_end.saturating_sub(loop_start).max(1);
+    let rate: u32 = (rate as u32).max(1) * 2;
     let tick: u32 = elapsed_ms / rate;
 
-    if anim.ping_pong && range > 1 {
+    if ping_pong && range > 1 {
         // PingPong cycle: 0,1,2,...,N-1,N-2,...,1 → cycle length = 2*(N-1).
         let cycle: u32 = 2 * (range as u32 - 1);
         let pos: u32 = tick % cycle;
@@ -471,9 +490,53 @@ fn looping_frame(anim: &crate::rules::art_data::BuildingAnimConfig, elapsed_ms: 
             // Bouncing back: cycle - pos.
             (cycle - pos) as u16
         };
-        anim.loop_start + offset
+        loop_start + offset
     } else {
-        anim.loop_start + (tick % range as u32) as u16
+        loop_start + (tick % range as u32) as u16
+    }
+}
+
+struct BuildingAnimFrameView<'a> {
+    anim_type: &'a str,
+    loop_start: u16,
+    loop_end: u16,
+    loop_count: i32,
+    rate: u16,
+    start_frame: u16,
+    ping_pong: bool,
+}
+
+fn selected_building_anim_view<'a>(
+    anim: &'a crate::rules::art_data::BuildingAnimConfig,
+    building_damage_state_active: bool,
+    is_garrisoned: bool,
+) -> BuildingAnimFrameView<'a> {
+    let variant = if building_damage_state_active {
+        anim.damaged_variant.as_ref()
+    } else if is_garrisoned {
+        anim.garrisoned_variant.as_ref()
+    } else {
+        None
+    };
+    match variant {
+        Some(v) => BuildingAnimFrameView {
+            anim_type: &v.anim_type,
+            loop_start: v.loop_start,
+            loop_end: v.loop_end,
+            loop_count: v.loop_count,
+            rate: v.rate,
+            start_frame: v.start_frame,
+            ping_pong: v.ping_pong,
+        },
+        None => BuildingAnimFrameView {
+            anim_type: &anim.anim_type,
+            loop_start: anim.loop_start,
+            loop_end: anim.loop_end,
+            loop_count: anim.loop_count,
+            rate: anim.rate,
+            start_frame: anim.start_frame,
+            ping_pong: anim.ping_pong,
+        },
     }
 }
 
@@ -498,6 +561,7 @@ fn emit_building_anims(
     interner: Option<&crate::sim::intern::StringInterner>,
     is_garrisoned: bool,
     is_player_owned: bool,
+    building_damage_state_active: bool,
 ) {
     let rules_image: String = rules
         .and_then(|r| r.object(building_type))
@@ -513,26 +577,17 @@ fn emit_building_anims(
         // One-shot anims (Active/Production with LoopCount>0): driven by ECS overlays.
         // Infinite-loop anims (LoopCount=-1 or IdleAnim): driven by global elapsed timer.
         // Special/Super: event-triggered one-shot — skip entirely if not in overlays.
+        let selected =
+            selected_building_anim_view(anim, building_damage_state_active, is_garrisoned);
         let anim_upper: String = anim.anim_type.to_uppercase();
         let anim_upper_id: Option<crate::sim::intern::InternedId> =
             interner.and_then(|i| i.get(&anim_upper));
         let frame: u16 = if matches!(
             anim.kind,
-            crate::rules::art_data::BuildingAnimKind::ActiveGarrisoned
-        ) {
-            // ActiveAnimGarrisoned: only show when building has garrison occupants.
-            // Loops continuously while garrisoned, hidden otherwise.
-            if is_garrisoned {
-                looping_frame(anim, idle_anim_elapsed_ms)
-            } else {
-                continue;
-            }
-        } else if matches!(
-            anim.kind,
             crate::rules::art_data::BuildingAnimKind::Active
                 | crate::rules::art_data::BuildingAnimKind::Production
         ) {
-            if anim.loop_count < 0 {
+            if selected.loop_count < 0 {
                 // Refinery ore-pile tier display: ActiveAnim/Two/Three/Four map
                 // to slots 3..6 in gamemd, and exactly ONE renders at a time —
                 // picked by `floor(stored * 4 / Storage)` (tier 0..3+). The
@@ -552,19 +607,37 @@ fn emit_building_anims(
                 // (country flags, etc.) always animate.
                 let is_capturable: bool = obj.map(|o| o.capturable).unwrap_or(false);
                 if anim.is_primary && is_capturable && !is_player_owned {
-                    anim.start_frame
+                    selected.start_frame
                 } else {
-                    looping_frame(anim, idle_anim_elapsed_ms)
+                    looping_frame_values(
+                        selected.loop_start,
+                        selected.loop_end,
+                        selected.rate,
+                        selected.ping_pong,
+                        idle_anim_elapsed_ms,
+                    )
                 }
             } else {
                 // One-shot: look up current frame from ECS BuildingAnimOverlays component.
                 overlays
                     .and_then(|o| o.anims.iter().find(|a| anim_upper_id == Some(a.anim_type)))
                     .map(|a| a.frame)
-                    .unwrap_or_else(|| resting_building_anim_frame(anim))
+                    .unwrap_or_else(|| {
+                        resting_building_anim_frame_values(
+                            selected.loop_start,
+                            selected.loop_end,
+                            selected.start_frame,
+                        )
+                    })
             }
         } else if matches!(anim.kind, crate::rules::art_data::BuildingAnimKind::Idle) {
-            looping_frame(anim, idle_anim_elapsed_ms)
+            looping_frame_values(
+                selected.loop_start,
+                selected.loop_end,
+                selected.rate,
+                selected.ping_pong,
+                idle_anim_elapsed_ms,
+            )
         } else {
             // Special/Super are one-shot event-triggered animations (e.g., GAREFNOR ore
             // conveyor). Only render if actively playing in the BuildingAnimOverlays state.
@@ -580,7 +653,7 @@ fn emit_building_anims(
         // This prevents a visual glitch where the anim disappears for one
         // tick when the atlas has fewer frames than the art.ini loop range.
         let mut anim_key: ShpSpriteKey = ShpSpriteKey {
-            type_id: anim.anim_type.clone(),
+            type_id: selected.anim_type.to_string(),
             facing: 0,
             frame,
             house_color,
@@ -623,11 +696,15 @@ fn emit_building_anims(
 }
 
 fn resting_building_anim_frame(anim: &crate::rules::art_data::BuildingAnimConfig) -> u16 {
-    if anim.loop_end > anim.loop_start {
+    resting_building_anim_frame_values(anim.loop_start, anim.loop_end, anim.start_frame)
+}
+
+fn resting_building_anim_frame_values(loop_start: u16, loop_end: u16, start_frame: u16) -> u16 {
+    if loop_end > loop_start {
         // LoopEnd is exclusive — last valid frame is loop_end - 1.
-        anim.loop_end - 1
+        loop_end - 1
     } else {
-        anim.start_frame
+        start_frame
     }
 }
 
@@ -651,7 +728,35 @@ fn resolve_infantry_shp_frame(
     (8 - (facing.wrapping_add(32) / 32) as u16) % 8
 }
 
-/// Body SHP frame index for a `CanBeOccupied=yes` building.
+/// Rendered body SHP frame index for a `CanBeOccupied=yes` building.
+///
+/// Native `GetCurrentFrame` only enters the garrison body-frame formula when
+/// the building damage/BState field is nonzero. Healthy idle garrisons keep
+/// the raw body frame, which is frame 0 in the current Rust model.
+fn rendered_garrison_body_frame_index(
+    raw_body_frame: u16,
+    building_damage_state_active: bool,
+    occupant_count: u32,
+    health_current: u16,
+    health_max: u16,
+    tech_level: i32,
+    condition_yellow: f32,
+    condition_red: f32,
+) -> u16 {
+    if !building_damage_state_active {
+        return raw_body_frame;
+    }
+    building_frame_index(
+        occupant_count,
+        health_current,
+        health_max,
+        tech_level,
+        condition_yellow,
+        condition_red,
+    )
+}
+
+/// BState-gated body SHP formula for a `CanBeOccupied=yes` building.
 ///
 /// For civilian buildings (`tech_level == -1`) the yellow-tier damage step is
 /// skipped, and the (occupied, red-HP) collapse maps frame 3 → frame 1 so
@@ -687,8 +792,11 @@ fn building_frame_index(
 #[cfg(test)]
 mod tests {
     use super::building_frame_index;
+    use super::looping_frame_values;
+    use super::rendered_garrison_body_frame_index;
     use super::resting_building_anim_frame;
-    use crate::rules::art_data::{BuildingAnimConfig, BuildingAnimKind};
+    use super::selected_building_anim_view;
+    use crate::rules::art_data::{BuildingAnimConfig, BuildingAnimKind, BuildingAnimVariantConfig};
 
     #[test]
     fn one_shot_building_anim_rests_on_last_loop_frame() {
@@ -696,6 +804,8 @@ mod tests {
         // so the resting frame is 7 (the last valid frame before LoopEnd).
         let anim = BuildingAnimConfig {
             anim_type: "GAAIRC_A".to_string(),
+            damaged_variant: None,
+            garrisoned_variant: None,
             kind: BuildingAnimKind::Active,
             x: 0,
             y: 0,
@@ -717,6 +827,8 @@ mod tests {
     fn one_shot_building_anim_without_loop_range_uses_start_frame() {
         let anim = BuildingAnimConfig {
             anim_type: "TEST".to_string(),
+            damaged_variant: None,
+            garrisoned_variant: None,
             kind: BuildingAnimKind::Active,
             x: 0,
             y: 0,
@@ -732,6 +844,136 @@ mod tests {
         };
 
         assert_eq!(resting_building_anim_frame(&anim), 3);
+    }
+
+    #[test]
+    fn damaged_active_anim_view_uses_damaged_variant_frame_range() {
+        let anim = BuildingAnimConfig {
+            anim_type: "CASEAT02_A".to_string(),
+            damaged_variant: Some(BuildingAnimVariantConfig {
+                anim_type: "CASEAT02_AD".to_string(),
+                loop_start: 21,
+                loop_end: 39,
+                loop_count: -1,
+                rate: 150,
+                start_frame: 21,
+                ping_pong: false,
+            }),
+            garrisoned_variant: None,
+            kind: BuildingAnimKind::Active,
+            x: 0,
+            y: 0,
+            y_sort: 0,
+            z_adjust: 0,
+            loop_start: 0,
+            loop_end: 20,
+            loop_count: -1,
+            rate: 150,
+            start_frame: 0,
+            ping_pong: false,
+            is_primary: true,
+        };
+
+        let selected = selected_building_anim_view(&anim, true, false);
+
+        assert_eq!(selected.anim_type, "CASEAT02_AD");
+        assert_eq!(selected.start_frame, 21);
+        assert_eq!(selected.loop_start, 21);
+        assert_eq!(selected.loop_end, 39);
+        assert_eq!(
+            looping_frame_values(
+                selected.loop_start,
+                selected.loop_end,
+                selected.rate,
+                selected.ping_pong,
+                0,
+            ),
+            21
+        );
+    }
+
+    #[test]
+    fn damaged_active_anim_variant_follows_stored_gate_not_health() {
+        let anim = BuildingAnimConfig {
+            anim_type: "CASEAT02_A".to_string(),
+            damaged_variant: Some(BuildingAnimVariantConfig {
+                anim_type: "CASEAT02_AD".to_string(),
+                loop_start: 21,
+                loop_end: 39,
+                loop_count: -1,
+                rate: 150,
+                start_frame: 21,
+                ping_pong: false,
+            }),
+            garrisoned_variant: None,
+            kind: BuildingAnimKind::Active,
+            x: 0,
+            y: 0,
+            y_sort: 0,
+            z_adjust: 0,
+            loop_start: 0,
+            loop_end: 20,
+            loop_count: -1,
+            rate: 150,
+            start_frame: 0,
+            ping_pong: false,
+            is_primary: true,
+        };
+
+        assert_eq!(
+            selected_building_anim_view(&anim, false, false).anim_type,
+            "CASEAT02_A"
+        );
+        assert_eq!(
+            selected_building_anim_view(&anim, true, false).anim_type,
+            "CASEAT02_AD"
+        );
+    }
+
+    #[test]
+    fn garrisoned_active_anim_variant_follows_stored_gate_not_health() {
+        let anim = BuildingAnimConfig {
+            anim_type: "CAWASH19_A".to_string(),
+            damaged_variant: Some(BuildingAnimVariantConfig {
+                anim_type: "CAWASH19_AD".to_string(),
+                loop_start: 12,
+                loop_end: 24,
+                loop_count: -1,
+                rate: 120,
+                start_frame: 12,
+                ping_pong: false,
+            }),
+            garrisoned_variant: Some(BuildingAnimVariantConfig {
+                anim_type: "CAWASH19_AG".to_string(),
+                loop_start: 24,
+                loop_end: 36,
+                loop_count: -1,
+                rate: 120,
+                start_frame: 24,
+                ping_pong: false,
+            }),
+            kind: BuildingAnimKind::Active,
+            x: 0,
+            y: 0,
+            y_sort: 0,
+            z_adjust: 0,
+            loop_start: 0,
+            loop_end: 12,
+            loop_count: -1,
+            rate: 120,
+            start_frame: 0,
+            ping_pong: false,
+            is_primary: true,
+        };
+
+        assert_eq!(
+            selected_building_anim_view(&anim, false, true).anim_type,
+            "CAWASH19_AG"
+        );
+        assert_eq!(
+            selected_building_anim_view(&anim, true, true).anim_type,
+            "CAWASH19_AD"
+        );
     }
 
     // Civilian (TechLevel == -1) — matches CABHUT, CALA01, CAGAS01, CABUNK01, etc.
@@ -756,7 +998,7 @@ mod tests {
     }
 
     #[test]
-    fn civilian_occupied_healthy_returns_2() {
+    fn civilian_occupied_healthy_bstate_formula_returns_2() {
         assert_eq!(building_frame_index(1, 100, 100, -1, 0.5, 0.25), 2);
     }
 
@@ -808,5 +1050,45 @@ mod tests {
     fn boundary_at_condition_red_inclusive() {
         // ratio == ConditionRed exactly → red_tier fires (<=).
         assert_eq!(building_frame_index(0, 25, 100, -1, 0.5, 0.25), 1);
+    }
+
+    #[test]
+    fn occupied_cagas01_healthy_bstate_zero_renders_frame_zero() {
+        assert_eq!(
+            rendered_garrison_body_frame_index(0, false, 1, 100, 100, -1, 0.5, 0.25),
+            0
+        );
+    }
+
+    #[test]
+    fn occupied_cagas01_yellow_bstate_false_stays_raw_frame() {
+        assert_eq!(
+            rendered_garrison_body_frame_index(7, false, 1, 40, 100, -1, 0.5, 0.25),
+            7
+        );
+    }
+
+    #[test]
+    fn occupied_cagas01_yellow_bstate_true_uses_frame_two() {
+        assert_eq!(
+            rendered_garrison_body_frame_index(0, true, 1, 40, 100, -1, 0.5, 0.25),
+            2
+        );
+    }
+
+    #[test]
+    fn occupied_cagas01_red_bstate_true_collapses_to_frame_one() {
+        assert_eq!(
+            rendered_garrison_body_frame_index(0, true, 1, 20, 100, -1, 0.5, 0.25),
+            1
+        );
+    }
+
+    #[test]
+    fn zero_max_hp_render_frame_treats_as_healthy() {
+        assert_eq!(
+            rendered_garrison_body_frame_index(4, false, 1, 0, 0, -1, 0.5, 0.25),
+            4
+        );
     }
 }

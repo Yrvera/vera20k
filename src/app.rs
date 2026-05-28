@@ -168,6 +168,7 @@ pub(crate) struct AppState {
         Option<crate::render::loading_screen_chrome::LoadingScreenAtlas>,
     pub(crate) loading_progress: crate::app_loading::LoadingProgressState,
     pub(crate) main_menu_shell_state: crate::ui::main_menu_shell::MainMenuShellState,
+    pub(crate) single_player_shell_state: crate::ui::single_player_shell::SinglePlayerShellState,
     pub(crate) main_menu_shell_chrome:
         Option<crate::render::main_menu_shell_chrome::MainMenuShellChromeAtlas>,
     pub(crate) main_menu_movie: Option<crate::render::bink_movie::BinkMovieSurface>,
@@ -178,8 +179,15 @@ pub(crate) struct AppState {
     /// bottom-right version line on the main menu. Falls back to the
     /// numeric `"1.001TUC"` format when the file is missing.
     pub(crate) version_txt: String,
+    pub(crate) main_menu_show_single_player_shell: bool,
     pub(crate) main_menu_show_skirmish_setup: bool,
     pub(crate) main_menu_show_native_skirmish_shell: bool,
+    pub(crate) skirmish_shell_return_to_single_player_shell: bool,
+    /// Active bridge/DRIFT transition for the current Rust main-menu shortcut.
+    pub(crate) main_menu_to_skirmish_transition:
+        Option<crate::app_shell_transition::ShellBridgeTransition>,
+    pub(crate) shell_transition_pass:
+        Option<crate::render::shell_transition_pass::ShellTransitionPass>,
     pub(crate) minimap: Option<MinimapRenderer>,
     /// True while left-dragging on minimap (camera pan mode).
     pub(crate) minimap_dragging: bool,
@@ -424,6 +432,15 @@ impl App {
     fn resize_surface_for_window_size(state: &mut AppState, size: PhysicalSize<u32>) {
         state.gpu.resize(size.width, size.height);
         state.depth_view = state.gpu.create_depth_texture();
+        match crate::app_shell_transition::resolve_resize(state) {
+            crate::app_shell_transition::ResizeTransitionResolution::ReturnToMainMenu => {
+                log::info!("Shell bridge transition cancelled by resize before halfway");
+            }
+            crate::app_shell_transition::ResizeTransitionResolution::CompleteToSkirmish => {
+                log::info!("Shell bridge transition completed by resize after halfway");
+            }
+            crate::app_shell_transition::ResizeTransitionResolution::NoTransition => {}
+        }
         let new_scale = auto_detect_ui_scale(size.width, size.height);
         if (new_scale - state.ui_scale).abs() > f32::EPSILON {
             log::info!("UI scale changed: {}x -> {}x", state.ui_scale, new_scale);
@@ -433,7 +450,7 @@ impl App {
         Self::invalidate_main_menu_movie_if_base_changed(state);
     }
 
-    fn enter_shell_window_mode(state: &mut AppState) {
+    pub(crate) fn enter_shell_window_mode(state: &mut AppState) {
         state.window.set_resizable(false);
         let target = PhysicalSize::new(SHELL_WINDOW_WIDTH, SHELL_WINDOW_HEIGHT);
         if state.window.inner_size() == target {
@@ -467,17 +484,27 @@ impl App {
             && (state.main_menu_show_native_skirmish_shell || state.dev_skirmish_shell_enabled)
     }
 
-    fn skirmish_shell_layout(state: &AppState) -> crate::ui::skirmish_shell::SkirmishShellLayout {
-        crate::ui::skirmish_shell::compute_fixed_800_layout(
-            state.render_width(),
-            state.render_height(),
+    fn single_player_shell_active(state: &AppState) -> bool {
+        state.screen == GameScreen::MainMenu && state.main_menu_show_single_player_shell
+    }
+
+    fn single_player_shell_layout(
+        state: &AppState,
+    ) -> crate::ui::single_player_shell::SinglePlayerShellLayout {
+        crate::ui::single_player_shell::compute_layout(
+            state.gpu.config.width,
+            state.gpu.config.height,
         )
+    }
+
+    fn skirmish_shell_layout(state: &AppState) -> crate::ui::skirmish_shell::SkirmishShellLayout {
+        crate::ui::skirmish_shell::compute_layout(state.render_width(), state.render_height())
     }
 
     fn skirmish_choose_map_layout(
         state: &AppState,
     ) -> crate::ui::skirmish_shell::ChooseMapModalLayout {
-        crate::ui::skirmish_shell::compute_fixed_800_choose_map_modal_layout(
+        crate::ui::skirmish_shell::compute_choose_map_modal_layout(
             state.render_width(),
             state.render_height(),
         )
@@ -485,6 +512,9 @@ impl App {
 
     fn close_native_skirmish_shell(state: &mut AppState) {
         state.main_menu_show_native_skirmish_shell = false;
+        state.main_menu_to_skirmish_transition = None;
+        state.shell_transition_pass = None;
+        state.skirmish_shell_return_to_single_player_shell = false;
         state.dev_skirmish_shell_enabled = false;
         state.skirmish_shell_state.choose_map_modal = None;
         state.skirmish_shell_state.validation_modal = None;
@@ -497,6 +527,59 @@ impl App {
         Self::enter_shell_window_mode(state);
     }
 
+    fn refresh_single_player_load_state(state: &mut AppState) {
+        state.save_list_cache.refresh_if_dirty();
+        state.single_player_shell_state.load_saved_game_enabled =
+            !state.save_list_cache.entries.is_empty();
+    }
+
+    fn open_single_player_shell(state: &mut AppState) {
+        Self::enter_shell_window_mode(state);
+        state.main_menu_show_single_player_shell = true;
+        state.main_menu_show_native_skirmish_shell = false;
+        state.main_menu_to_skirmish_transition = None;
+        state.shell_transition_pass = None;
+        state.skirmish_shell_return_to_single_player_shell = false;
+        state.single_player_shell_state.pressed_owner_draw_button = None;
+        state.single_player_shell_state.hovered_owner_draw_button = None;
+        state.single_player_shell_state.hover_started_at = None;
+        Self::refresh_single_player_load_state(state);
+    }
+
+    fn close_single_player_shell(state: &mut AppState) {
+        state.main_menu_show_single_player_shell = false;
+        state.single_player_shell_state.pressed_owner_draw_button = None;
+        state.single_player_shell_state.hovered_owner_draw_button = None;
+        state.single_player_shell_state.hover_started_at = None;
+    }
+
+    fn enter_native_skirmish_from_single_player(state: &mut AppState) {
+        state.main_menu_show_single_player_shell = false;
+        state.main_menu_show_native_skirmish_shell = true;
+        state.skirmish_shell_return_to_single_player_shell = true;
+        state.main_menu_to_skirmish_transition = None;
+        state.shell_transition_pass = None;
+        state.skirmish_shell_state.pressed_owner_draw_button = None;
+        state.skirmish_shell_last_painted_pressed_button = None;
+        Self::ensure_skirmish_shell_chrome(state);
+    }
+
+    fn return_from_skirmish_to_single_player_shell(state: &mut AppState) {
+        state.main_menu_show_native_skirmish_shell = false;
+        state.main_menu_to_skirmish_transition = None;
+        state.shell_transition_pass = None;
+        state.skirmish_shell_return_to_single_player_shell = false;
+        state.skirmish_shell_state.choose_map_modal = None;
+        state.skirmish_shell_state.validation_modal = None;
+        state.skirmish_shell_state.open_combo_dropdown = None;
+        state.skirmish_shell_state.dropdown_scroll_drag = None;
+        state.skirmish_shell_state.trackbar_drag = None;
+        state.skirmish_shell_state.pressed_owner_draw_button = None;
+        crate::ui::skirmish_shell::blur_player_name_edit(&mut state.skirmish_shell_state);
+        state.skirmish_shell_last_painted_pressed_button = None;
+        Self::open_single_player_shell(state);
+    }
+
     fn start_selected_skirmish(state: &mut AppState) {
         let map_name = state
             .available_maps
@@ -505,6 +588,10 @@ impl App {
             .unwrap_or_else(|| "auto".to_string());
         state.skirmish_shell_state.pressed_owner_draw_button = None;
         state.skirmish_shell_last_painted_pressed_button = None;
+        state.main_menu_show_single_player_shell = false;
+        state.skirmish_shell_return_to_single_player_shell = false;
+        state.main_menu_to_skirmish_transition = None;
+        state.shell_transition_pass = None;
         let request = crate::app_loading::LoadingRequest::generic_map_load(
             map_name,
             state.skirmish_settings.clone(),
@@ -525,7 +612,11 @@ impl App {
             .unwrap_or_else(|| "auto".to_string());
         state.skirmish_shell_state.pressed_owner_draw_button = None;
         state.skirmish_shell_last_painted_pressed_button = None;
+        state.main_menu_show_single_player_shell = false;
+        state.skirmish_shell_return_to_single_player_shell = false;
         state.main_menu_show_native_skirmish_shell = false;
+        state.main_menu_to_skirmish_transition = None;
+        state.shell_transition_pass = None;
         let request = crate::app_loading::LoadingRequest::native_selected_skirmish(
             map_name,
             session,
@@ -537,7 +628,7 @@ impl App {
         state.zoom_target = 1.0;
     }
 
-    fn ensure_skirmish_shell_chrome(state: &mut AppState) {
+    pub(crate) fn ensure_skirmish_shell_chrome(state: &mut AppState) {
         if state.skirmish_shell_chrome.is_some() {
             return;
         }
@@ -681,7 +772,9 @@ impl App {
                 }
             }
             crate::ui::skirmish_shell::SkirmishShellAction::BackOrExit => {
-                if Self::native_skirmish_shell_active(state) {
+                if state.skirmish_shell_return_to_single_player_shell {
+                    Self::return_from_skirmish_to_single_player_shell(state);
+                } else if Self::native_skirmish_shell_active(state) {
                     Self::close_native_skirmish_shell(state);
                 } else {
                     event_loop.exit();
@@ -1388,6 +1481,44 @@ impl App {
         Self::handle_main_menu_shell_action(state, action, event_loop);
     }
 
+    fn handle_single_player_shell_mouse_down(state: &mut AppState) {
+        let layout = Self::single_player_shell_layout(state);
+        crate::ui::single_player_shell::mouse_down(
+            &mut state.single_player_shell_state,
+            &layout,
+            state.cursor_x.round() as i32,
+            state.cursor_y.round() as i32,
+        );
+        if state
+            .single_player_shell_state
+            .pressed_owner_draw_button
+            .is_some()
+        {
+            Self::play_main_menu_button_sound(state);
+        }
+    }
+
+    fn handle_single_player_shell_mouse_move(state: &mut AppState) {
+        let layout = Self::single_player_shell_layout(state);
+        crate::ui::single_player_shell::mouse_move(
+            &mut state.single_player_shell_state,
+            &layout,
+            state.cursor_x.round() as i32,
+            state.cursor_y.round() as i32,
+        );
+    }
+
+    fn handle_single_player_shell_mouse_up(state: &mut AppState) {
+        let layout = Self::single_player_shell_layout(state);
+        let action = crate::ui::single_player_shell::mouse_up(
+            &mut state.single_player_shell_state,
+            &layout,
+            state.cursor_x.round() as i32,
+            state.cursor_y.round() as i32,
+        );
+        Self::handle_single_player_shell_action(state, action);
+    }
+
     fn play_main_menu_button_sound(state: &mut AppState) {
         let sound_id = state
             .rules
@@ -1461,6 +1592,34 @@ impl App {
         );
     }
 
+    fn handle_single_player_shell_action(
+        state: &mut AppState,
+        action: crate::ui::single_player_shell::SinglePlayerShellAction,
+    ) {
+        use crate::ui::single_player_shell::SinglePlayerShellAction;
+
+        match action {
+            SinglePlayerShellAction::None => {}
+            SinglePlayerShellAction::Skirmish => {
+                Self::enter_native_skirmish_from_single_player(state);
+            }
+            SinglePlayerShellAction::MainMenu => {
+                Self::close_single_player_shell(state);
+            }
+            SinglePlayerShellAction::LoadSavedGame => {
+                if state.single_player_shell_state.load_saved_game_enabled {
+                    state.show_save_load_panel = true;
+                    state.save_list_cache.invalidate();
+                }
+            }
+            SinglePlayerShellAction::NewCampaign => {
+                log::info!(
+                    "Single Player New Campaign route result 8 is preserved but downstream campaign shell is not implemented yet"
+                );
+            }
+        }
+    }
+
     fn handle_main_menu_shell_action(
         state: &mut AppState,
         action: crate::ui::main_menu_shell::MainMenuShellAction,
@@ -1472,10 +1631,7 @@ impl App {
             MainMenuShellAction::None => {}
             MainMenuShellAction::ExitGame => event_loop.exit(),
             MainMenuShellAction::SinglePlayer => {
-                state.main_menu_show_skirmish_setup = false;
-                state.main_menu_show_native_skirmish_shell = true;
-                Self::enter_shell_window_mode(state);
-                Self::ensure_skirmish_shell_chrome(state);
+                Self::open_single_player_shell(state);
             }
             MainMenuShellAction::WwOnline
             | MainMenuShellAction::Network
@@ -1557,6 +1713,10 @@ impl ApplicationHandler for App {
                         code == KeyCode::Escape && event.state.is_pressed() && !event.repeat;
                     let in_game: bool = state.screen == GameScreen::InGame;
 
+                    if crate::app_shell_transition::blocks_shell_input(state) {
+                        return;
+                    }
+
                     if Self::native_skirmish_shell_active(state)
                         && event.state.is_pressed()
                         && !event.repeat
@@ -1574,6 +1734,12 @@ impl ApplicationHandler for App {
                         }
                         Self::close_native_skirmish_shell(state);
                         state.window.request_redraw();
+                    }
+
+                    if Self::single_player_shell_active(state) && is_escape {
+                        Self::close_single_player_shell(state);
+                        state.window.request_redraw();
+                        return;
                     }
 
                     if Self::native_skirmish_shell_active(state)
@@ -1618,6 +1784,9 @@ impl ApplicationHandler for App {
                 if state.use_software_cursor() {
                     state.window.set_cursor_visible(false);
                 }
+                if crate::app_shell_transition::blocks_shell_input(state) {
+                    return;
+                }
                 if !egui_consumed
                     && (state.screen == GameScreen::InGame || state.screen == GameScreen::SpawnPick)
                 {
@@ -1626,10 +1795,14 @@ impl ApplicationHandler for App {
                 if !egui_consumed && Self::native_skirmish_shell_active(state) {
                     Self::handle_skirmish_shell_mouse_move(state);
                 }
+                if !egui_consumed && Self::single_player_shell_active(state) {
+                    Self::handle_single_player_shell_mouse_move(state);
+                }
                 if !egui_consumed
                     && state.screen == GameScreen::MainMenu
                     && !state.main_menu_shell_failed
                     && !state.main_menu_show_skirmish_setup
+                    && !Self::single_player_shell_active(state)
                     && !Self::native_skirmish_shell_active(state)
                 {
                     let layout = crate::ui::main_menu_shell::compute_layout(
@@ -1655,12 +1828,23 @@ impl ApplicationHandler for App {
                 if state.use_software_cursor() {
                     state.window.set_cursor_visible(false);
                 }
+                if crate::app_shell_transition::blocks_shell_input(state) {
+                    return;
+                }
                 if Self::native_skirmish_shell_active(state) {
                     if button == MouseButton::Left {
                         if btn_state.is_pressed() {
                             Self::handle_skirmish_shell_mouse_down(state);
                         } else {
                             Self::handle_skirmish_shell_mouse_up(state, event_loop);
+                        }
+                    }
+                } else if Self::single_player_shell_active(state) {
+                    if button == MouseButton::Left {
+                        if btn_state.is_pressed() {
+                            Self::handle_single_player_shell_mouse_down(state);
+                        } else {
+                            Self::handle_single_player_shell_mouse_up(state);
                         }
                     }
                 } else if state.screen == GameScreen::MainMenu
@@ -1688,6 +1872,9 @@ impl ApplicationHandler for App {
                     MouseScrollDelta::LineDelta(_, y) => y,
                     MouseScrollDelta::PixelDelta(pos) => (pos.y as f32 / 30.0).clamp(-3.0, 3.0),
                 };
+                if crate::app_shell_transition::blocks_shell_input(state) {
+                    return;
+                }
                 if !egui_consumed
                     && state.screen == GameScreen::MainMenu
                     && Self::native_skirmish_shell_active(state)
@@ -1919,14 +2106,20 @@ impl App {
             loading_screen_atlas: None,
             loading_progress: crate::app_loading::LoadingProgressState::standard_skirmish(),
             main_menu_shell_state: crate::ui::main_menu_shell::MainMenuShellState::default(),
+            single_player_shell_state:
+                crate::ui::single_player_shell::SinglePlayerShellState::default(),
             main_menu_shell_chrome,
             main_menu_movie: None,
             main_menu_movie_base: None,
             main_menu_movie_last_step: Instant::now(),
             main_menu_shell_failed,
             version_txt,
+            main_menu_show_single_player_shell: false,
             main_menu_show_skirmish_setup: false,
             main_menu_show_native_skirmish_shell: false,
+            skirmish_shell_return_to_single_player_shell: false,
+            main_menu_to_skirmish_transition: None,
+            shell_transition_pass: None,
             minimap: None,
             minimap_dragging: false,
             middle_mouse_panning: false,
@@ -2080,12 +2273,45 @@ impl App {
 
         match &state.screen {
             GameScreen::MainMenu => {
-                if Self::native_skirmish_shell_active(state) {
+                if crate::app_shell_transition::render_main_menu_to_skirmish_transition(
+                    state,
+                    &mut encoder,
+                    &view,
+                )? {
+                } else if Self::native_skirmish_shell_active(state) {
                     crate::app_skirmish_shell_render::render_skirmish_shell(
                         state,
                         &mut encoder,
                         &view,
                     )?;
+                } else if Self::single_player_shell_active(state) {
+                    match crate::app_single_player_shell_render::render_single_player_shell(
+                        state,
+                        &mut encoder,
+                        &view,
+                    )? {
+                        crate::app_single_player_shell_render::SinglePlayerShellRenderResult::Rendered => {
+                            state.egui.begin_frame(&state.window);
+                            if state.show_save_load_panel {
+                                Self::handle_save_load_panel(state);
+                            }
+                            state.egui.end_frame_and_render(
+                                &state.gpu,
+                                &mut encoder,
+                                &view,
+                                &state.window,
+                                state.use_software_cursor(),
+                            );
+                        }
+                        crate::app_single_player_shell_render::SinglePlayerShellRenderResult::Fallback => {
+                            Self::render_egui_main_menu_fallback(
+                                state,
+                                &mut encoder,
+                                &view,
+                                event_loop,
+                            )?;
+                        }
+                    }
                 } else if !state.main_menu_shell_failed && !state.main_menu_show_skirmish_setup {
                     match crate::app_main_menu_shell_render::render_main_menu_shell(
                         state,
