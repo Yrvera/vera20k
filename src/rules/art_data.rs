@@ -157,17 +157,75 @@ fn parse_sequence_frames(value: &str) -> Option<u16> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuildingAnimKind {
     Active,
-    ActiveGarrisoned,
     Idle,
     Super,
     Special,
     Production,
 }
 
+/// Animation name plus the frame-timing metadata from that animation section.
+#[derive(Debug, Clone)]
+pub struct BuildingAnimVariantConfig {
+    pub anim_type: String,
+    pub loop_start: u16,
+    pub loop_end: u16,
+    pub loop_count: i32,
+    pub rate: u16,
+    pub start_frame: u16,
+    pub ping_pong: bool,
+}
+
+/// Native-like metadata used by app-side `AnimClass` runtime slices.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnimTypeRuntimeConfig {
+    pub start: i32,
+    pub loop_start: i32,
+    pub loop_end: i32,
+    pub end: i32,
+    pub loop_count: i32,
+    pub rate_logic_frames: u16,
+    pub next: Option<String>,
+    pub random_loop_delay: Option<(u16, u16)>,
+    pub random_rate_logic_frames: Option<(u16, u16)>,
+    pub y_draw_offset: i32,
+    pub z_adjust: i32,
+    pub y_sort_adjust: i32,
+    pub layer: AnimLayer,
+    pub flat: bool,
+    pub tiled: bool,
+    pub translucent: bool,
+    pub shadow: bool,
+    pub ping_pong: bool,
+    pub reverse: bool,
+}
+
+/// Display layer used by native object submission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnimLayer {
+    Ground,
+    Top,
+    Other(i32),
+}
+
+impl AnimLayer {
+    fn from_ini(value: Option<&str>) -> Self {
+        match value.map(|v| v.trim().to_ascii_lowercase()) {
+            Some(v) if v == "ground" => Self::Ground,
+            Some(v) if v == "top" => Self::Top,
+            Some(v) => v.parse::<i32>().map(Self::Other).unwrap_or(Self::Top),
+            None => Self::Top,
+        }
+    }
+}
+
 /// Configuration for a building animation overlay (ActiveAnim, IdleAnim, etc.).
 #[derive(Debug, Clone)]
 pub struct BuildingAnimConfig {
     pub anim_type: String,
+    /// Replacement animation for this slot when the building is damaged.
+    pub damaged_variant: Option<BuildingAnimVariantConfig>,
+    /// Replacement animation for this slot when a garrisoned building is healthy.
+    pub garrisoned_variant: Option<BuildingAnimVariantConfig>,
     pub kind: BuildingAnimKind,
     /// True for the base key (e.g., `ActiveAnim`), false for suffixed variants
     /// (`ActiveAnimTwo`, `Three`, `Four`).  Used to gate the primary active anim
@@ -185,18 +243,74 @@ pub struct BuildingAnimConfig {
     pub ping_pong: bool,
 }
 
-/// Convert art.ini `Rate=` value to milliseconds per frame.
+/// Convert art.ini `Rate=` value to native game-logic frame delay.
 ///
-/// The engine stores `900 / INI_Rate` as the game-logic-frame delay
-/// (integer division). RA2 game logic runs at ~15fps at normal speed
-/// (one game frame = ~67ms): `delay_ms = (900 / rate) * 1000 / 15`.
-pub fn art_rate_to_delay_ms(ini_rate: i32) -> u32 {
+/// gamemd stores `900 / INI_Rate` as the AnimType frame delay when
+/// `Rate > 0`; `Rate <= 0` stores zero.
+pub fn art_rate_to_logic_frames(ini_rate: i32) -> u16 {
     if ini_rate < 1 {
         return 0;
     }
-    let delay_frames: u32 = 900 / ini_rate as u32;
+    (900 / ini_rate as u32) as u16
+}
+
+/// Convert art.ini `Rate=` value to milliseconds per frame.
+///
+/// This is an app/render convenience wrapper over the native logic-frame delay.
+/// Garrison `OccupantAnim` playback uses `art_rate_to_logic_frames` directly so
+/// the default remains one sim logic tick rather than a rounded wall-clock value.
+pub fn art_rate_to_delay_ms(ini_rate: i32) -> u32 {
+    let delay_frames: u32 = u32::from(art_rate_to_logic_frames(ini_rate));
+    if delay_frames == 0 {
+        return 0;
+    }
     (delay_frames * 1000 / 15).max(1)
 }
+
+fn parse_anim_runtime_config(section: &IniSection) -> AnimTypeRuntimeConfig {
+    AnimTypeRuntimeConfig {
+        start: section.get_i32("Start").unwrap_or(0),
+        loop_start: section.get_i32("LoopStart").unwrap_or(0),
+        loop_end: section.get_i32("LoopEnd").unwrap_or(0),
+        end: section.get_i32("End").unwrap_or(0),
+        loop_count: section.get_i32("LoopCount").unwrap_or(0),
+        rate_logic_frames: section
+            .get_i32("Rate")
+            .map(art_rate_to_logic_frames)
+            .unwrap_or(DEFAULT_ART_RATE_LOGIC_FRAMES),
+        next: section.get("Next").map(|s| s.trim().to_ascii_uppercase()),
+        random_loop_delay: section.get("RandomLoopDelay").and_then(parse_u16_pair),
+        random_rate_logic_frames: section.get("RandomRate").and_then(parse_random_rate_pair),
+        y_draw_offset: section.get_i32("YDrawOffset").unwrap_or(0),
+        z_adjust: section.get_i32("ZAdjust").unwrap_or(0),
+        y_sort_adjust: section.get_i32("YSortAdjust").unwrap_or(0),
+        layer: AnimLayer::from_ini(section.get("Layer")),
+        flat: section.get_bool("Flat").unwrap_or(false),
+        tiled: section.get_bool("Tiled").unwrap_or(false),
+        translucent: section.get_bool("Translucent").unwrap_or(false),
+        shadow: section.get_bool("Shadow").unwrap_or(false),
+        ping_pong: section.get_bool("PingPong").unwrap_or(false),
+        reverse: section.get_bool("Reverse").unwrap_or(false),
+    }
+}
+
+fn parse_u16_pair(value: &str) -> Option<(u16, u16)> {
+    let mut parts = value.split(',').map(str::trim);
+    let a = parts.next()?.parse::<i32>().ok()?.max(0) as u16;
+    let b = parts.next()?.parse::<i32>().ok()?.max(0) as u16;
+    Some((a, b))
+}
+
+fn parse_random_rate_pair(value: &str) -> Option<(u16, u16)> {
+    let (a, b) = parse_u16_pair(value)?;
+    Some((
+        art_rate_to_logic_frames(i32::from(a)),
+        art_rate_to_logic_frames(i32::from(b)),
+    ))
+}
+
+/// Default native frame delay when art.ini section has no `Rate=` key.
+pub const DEFAULT_ART_RATE_LOGIC_FRAMES: u16 = 1;
 
 /// Default ms-per-frame when art.ini section has no `Rate=` key.
 /// Matches gamemd constructor default of 1 game frame at ~15fps.
@@ -226,6 +340,13 @@ pub struct ArtRegistry {
     can_hide_things: HashMap<String, bool>,
     /// section ID (uppercase) -> `OccupyHeight=`, defaulting to art `Height=`.
     occupy_heights: HashMap<String, i32>,
+    /// section ID (uppercase) -> generic AnimType frame delay from `Rate=`.
+    /// Missing `Rate=` keeps the gamemd constructor default of one logic frame.
+    rates_ms: HashMap<String, u16>,
+    /// section ID (uppercase) -> native AnimType frame delay in logic frames.
+    rates_logic_frames: HashMap<String, u16>,
+    /// section ID (uppercase) -> generic AnimType runtime metadata.
+    anim_runtime_configs: HashMap<String, AnimTypeRuntimeConfig>,
 }
 
 /// Hardcoded filename prefixes that always receive `NewTheater` treatment
@@ -251,6 +372,9 @@ impl ArtRegistry {
         let mut entries: HashMap<String, ArtEntry> = HashMap::new();
         let mut can_hide_things: HashMap<String, bool> = HashMap::new();
         let mut occupy_heights: HashMap<String, i32> = HashMap::new();
+        let mut rates_ms: HashMap<String, u16> = HashMap::new();
+        let mut rates_logic_frames: HashMap<String, u16> = HashMap::new();
+        let mut anim_runtime_configs: HashMap<String, AnimTypeRuntimeConfig> = HashMap::new();
 
         for section_name in ini.section_names() {
             let section = match ini.section(section_name) {
@@ -348,6 +472,15 @@ impl ArtRegistry {
                 .unwrap_or(secondary_fire);
             let report = section.get("Report").map(|s| s.to_string());
             let start_sound = section.get("StartSound").map(|s| s.to_string());
+            let rate_ms: u16 = section
+                .get_i32("Rate")
+                .map(|r| art_rate_to_delay_ms(r) as u16)
+                .unwrap_or(DEFAULT_ART_RATE_MS);
+            let rate_logic_frames: u16 = section
+                .get_i32("Rate")
+                .map(art_rate_to_logic_frames)
+                .unwrap_or(DEFAULT_ART_RATE_LOGIC_FRAMES);
+            let anim_runtime_config = parse_anim_runtime_config(section);
             let extra_light: i32 = section.get_i32("ExtraLight").unwrap_or(0);
             let queueing_cell: Option<(u16, u16)> = section.get("QueueingCell").and_then(|s| {
                 let mut parts = s.split(',');
@@ -422,6 +555,9 @@ impl ArtRegistry {
             let section_key = section_name.to_uppercase();
             can_hide_things.insert(section_key.clone(), can_hide);
             occupy_heights.insert(section_key.clone(), occupy_height);
+            rates_ms.insert(section_key.clone(), rate_ms);
+            rates_logic_frames.insert(section_key.clone(), rate_logic_frames);
+            anim_runtime_configs.insert(section_key.clone(), anim_runtime_config);
             entries.insert(
                 section_key,
                 ArtEntry {
@@ -482,6 +618,9 @@ impl ArtRegistry {
             entries,
             can_hide_things,
             occupy_heights,
+            rates_ms,
+            rates_logic_frames,
+            anim_runtime_configs,
         }
     }
 
@@ -491,12 +630,32 @@ impl ArtRegistry {
             entries: HashMap::new(),
             can_hide_things: HashMap::new(),
             occupy_heights: HashMap::new(),
+            rates_ms: HashMap::new(),
+            rates_logic_frames: HashMap::new(),
+            anim_runtime_configs: HashMap::new(),
         }
     }
 
     /// Look up art entry for an image ID (case-insensitive).
     pub fn get(&self, image_id: &str) -> Option<&ArtEntry> {
         self.entries.get(&image_id.to_uppercase())
+    }
+
+    /// Generic AnimType frame delay for an art section, from `Rate=`.
+    pub fn rate_ms(&self, image_id: &str) -> Option<u16> {
+        self.rates_ms.get(&image_id.to_uppercase()).copied()
+    }
+
+    /// Generic AnimType frame delay in native logic frames for an art section.
+    pub fn rate_logic_frames(&self, image_id: &str) -> Option<u16> {
+        self.rates_logic_frames
+            .get(&image_id.to_uppercase())
+            .copied()
+    }
+
+    /// Generic native-like AnimType runtime metadata for an art section.
+    pub fn anim_runtime_config(&self, image_id: &str) -> Option<&AnimTypeRuntimeConfig> {
+        self.anim_runtime_configs.get(&image_id.to_uppercase())
     }
 
     /// Hidden-occupancy gate from art.ini `CanHideThings=`.
@@ -902,7 +1061,6 @@ pub fn voxel_asset_names(image_id: &str) -> (String, String) {
 /// Building animation key names and their suffixes.
 const BUILDING_ANIM_KEYS: &[(&str, &[&str])] = &[
     ("ActiveAnim", &["", "Two", "Three", "Four"]),
-    ("ActiveAnimGarrisoned", &[""]),
     ("IdleAnim", &["", "Two"]),
     ("SuperAnim", &[""]),
     ("SpecialAnim", &["", "Two", "Three"]),
@@ -915,7 +1073,6 @@ fn parse_building_anims(section: &IniSection, ini: &IniFile) -> Vec<BuildingAnim
     for &(base, suffixes) in BUILDING_ANIM_KEYS {
         let kind: BuildingAnimKind = match base {
             "ActiveAnim" => BuildingAnimKind::Active,
-            "ActiveAnimGarrisoned" => BuildingAnimKind::ActiveGarrisoned,
             "IdleAnim" => BuildingAnimKind::Idle,
             "SuperAnim" => BuildingAnimKind::Super,
             "SpecialAnim" => BuildingAnimKind::Special,
@@ -942,43 +1099,57 @@ fn parse_building_anims(section: &IniSection, ini: &IniFile) -> Vec<BuildingAnim
                 .get_i32(&format!("{}{}ZAdjust", base, suffix))
                 .unwrap_or(0);
 
-            let anim_section = ini.section(&anim_type);
-            let loop_start: u16 = anim_section
-                .and_then(|s| s.get_i32("LoopStart"))
-                .unwrap_or(0) as u16;
-            let loop_end: u16 = anim_section.and_then(|s| s.get_i32("LoopEnd")).unwrap_or(0) as u16;
-            let loop_count: i32 = anim_section
-                .and_then(|s| s.get_i32("LoopCount"))
-                .unwrap_or(0);
-            let rate: u16 = anim_section
-                .and_then(|s| s.get_i32("Rate"))
-                .map(|r| art_rate_to_delay_ms(r) as u16)
-                .unwrap_or(DEFAULT_ART_RATE_MS);
-            let start_frame: u16 =
-                anim_section.and_then(|s| s.get_i32("Start")).unwrap_or(0) as u16;
-            let ping_pong: bool = anim_section
-                .and_then(|s| s.get_bool("PingPong"))
-                .unwrap_or(false);
+            let base_variant = parse_building_anim_variant(anim_type.clone(), ini);
 
             anims.push(BuildingAnimConfig {
-                anim_type,
+                anim_type: base_variant.anim_type,
+                damaged_variant: section
+                    .get(&format!("{}{}Damaged", base, suffix))
+                    .filter(|v| !v.is_empty())
+                    .map(|v| parse_building_anim_variant(v.to_string(), ini)),
+                garrisoned_variant: section
+                    .get(&format!("{}{}Garrisoned", base, suffix))
+                    .filter(|v| !v.is_empty())
+                    .map(|v| parse_building_anim_variant(v.to_string(), ini)),
                 kind,
                 is_primary: suffix.is_empty(),
                 x,
                 y,
                 y_sort,
                 z_adjust,
-                loop_start,
-                loop_end,
-                loop_count,
-                rate,
-                start_frame,
-                ping_pong,
+                loop_start: base_variant.loop_start,
+                loop_end: base_variant.loop_end,
+                loop_count: base_variant.loop_count,
+                rate: base_variant.rate,
+                start_frame: base_variant.start_frame,
+                ping_pong: base_variant.ping_pong,
             });
         }
     }
 
     anims
+}
+
+fn parse_building_anim_variant(anim_type: String, ini: &IniFile) -> BuildingAnimVariantConfig {
+    let anim_section = ini.section(&anim_type);
+    BuildingAnimVariantConfig {
+        anim_type,
+        loop_start: anim_section
+            .and_then(|s| s.get_i32("LoopStart"))
+            .unwrap_or(0) as u16,
+        loop_end: anim_section.and_then(|s| s.get_i32("LoopEnd")).unwrap_or(0) as u16,
+        loop_count: anim_section
+            .and_then(|s| s.get_i32("LoopCount"))
+            .unwrap_or(0),
+        rate: anim_section
+            .and_then(|s| s.get_i32("Rate"))
+            .map(|r| art_rate_to_delay_ms(r) as u16)
+            .unwrap_or(DEFAULT_ART_RATE_MS),
+        start_frame: anim_section.and_then(|s| s.get_i32("Start")).unwrap_or(0) as u16,
+        ping_pong: anim_section
+            .and_then(|s| s.get_bool("PingPong"))
+            .unwrap_or(false),
+    }
 }
 
 fn parse_numbered_cell_offsets(section: &IniSection, prefix: &str) -> Vec<(i16, i16)> {

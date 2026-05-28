@@ -40,6 +40,9 @@ pub struct WarheadType {
     pub percent_at_max: u8,
     /// Whether this warhead can damage walls/bridges (Wall=yes).
     pub wall: bool,
+    /// Whether this warhead can damage terrain objects with Wood armor gate.
+    /// TerrainClass::Take_Damage requires this before applying damage.
+    pub wood: bool,
     /// Explosion animation names indexed by damage magnitude (AnimList= in rules.ini).
     /// The original engine selects by `damage / 25`, clamped to list length.
     /// Example: ["XGRYSML1","EXPLOSML","EXPLOMED","EXPLOLRG","TWLT070"].
@@ -149,6 +152,7 @@ impl WarheadType {
             cell_spread,
             percent_at_max,
             wall: section.get_bool("Wall").unwrap_or(false),
+            wood: section.get_bool("Wood").unwrap_or(false),
             anim_list,
             inf_death: section.get_i32("InfDeath").unwrap_or(1).clamp(0, 10) as u8,
 
