@@ -34,68 +34,164 @@ use super::{
 
 pub(super) type LiveBuildingEntrySkipMap = BTreeMap<(u16, u16), BTreeSet<u64>>;
 
+const RUNTIME_CAN_ENTER_ARG5: i32 = 1;
+const BRIDGE_DECK_LEVEL_DELTA: i16 = 4;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DeferredCellCheck {
     Infantry((u16, u16), CanEnterLayerContext),
     Vehicle((u16, u16), CanEnterLayerContext),
 }
 
-pub(super) fn resolve_runtime_can_enter_layers(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct RuntimeCanEnterCellArgs {
+    pub target_cell: (u16, u16),
+    pub direction: i8,
+    pub height: i16,
+    pub parent_current_cell: Option<(u16, u16)>,
+    pub arg5: i32,
+}
+
+impl RuntimeCanEnterCellArgs {
+    pub(super) fn runtime(
+        target_cell: (u16, u16),
+        direction: i8,
+        current_effective_height: i16,
+    ) -> Self {
+        Self {
+            target_cell,
+            direction,
+            height: current_effective_height,
+            parent_current_cell: None,
+            arg5: RUNTIME_CAN_ENTER_ARG5,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct RuntimeCanEnterCellEvaluation {
+    pub args: RuntimeCanEnterCellArgs,
+    pub layers: CanEnterLayerContext,
+    pub bridge_traversal_allowed: bool,
+}
+
+pub(super) fn runtime_can_enter_direction(current_cell: (u16, u16), target_cell: (u16, u16)) -> i8 {
+    let dx = (target_cell.0 as i32 - current_cell.0 as i32).signum();
+    let dy = (target_cell.1 as i32 - current_cell.1 as i32).signum();
+    match (dx, dy) {
+        (0, -1) => 0,
+        (1, -1) => 1,
+        (1, 0) => 2,
+        (1, 1) => 3,
+        (0, 1) => 4,
+        (-1, 1) => 5,
+        (-1, 0) => 6,
+        (-1, -1) => 7,
+        _ => -1,
+    }
+}
+
+pub(super) fn runtime_current_effective_height(
     path_grid: Option<&PathGrid>,
     current_cell: (u16, u16),
-    next_cell: (u16, u16),
+    on_bridge: bool,
+    fallback_z: u8,
+) -> i16 {
+    path_grid
+        .and_then(|grid| grid.cell(current_cell.0, current_cell.1))
+        .map_or(fallback_z as i16, |cell| {
+            cell.signed_level()
+                + if on_bridge {
+                    BRIDGE_DECK_LEVEL_DELTA
+                } else {
+                    0
+                }
+        })
+}
+
+pub(super) fn runtime_can_enter_cell_args(
+    path_grid: Option<&PathGrid>,
+    current_cell: (u16, u16),
+    target_cell: (u16, u16),
+    on_bridge: bool,
+    fallback_z: u8,
+) -> RuntimeCanEnterCellArgs {
+    RuntimeCanEnterCellArgs::runtime(
+        target_cell,
+        runtime_can_enter_direction(current_cell, target_cell),
+        runtime_current_effective_height(path_grid, current_cell, on_bridge, fallback_z),
+    )
+}
+
+pub(super) fn evaluate_runtime_can_enter_cell(
+    path_grid: Option<&PathGrid>,
     next_layer: MovementLayer,
-    path_height: u8,
-) -> CanEnterLayerContext {
+    args: RuntimeCanEnterCellArgs,
+) -> RuntimeCanEnterCellEvaluation {
     let base = CanEnterLayerContext::single(next_layer);
     let Some(grid) = path_grid else {
-        return base;
+        return RuntimeCanEnterCellEvaluation {
+            args,
+            layers: base,
+            bridge_traversal_allowed: true,
+        };
     };
-    let (Some(parent), Some(candidate)) = (
-        grid.cell(current_cell.0, current_cell.1),
-        grid.cell(next_cell.0, next_cell.1),
-    ) else {
-        return base;
+    let Some(candidate) = grid.cell(args.target_cell.0, args.target_cell.1) else {
+        return RuntimeCanEnterCellEvaluation {
+            args,
+            layers: base,
+            bridge_traversal_allowed: true,
+        };
     };
+    let explicit_parent = args
+        .parent_current_cell
+        .and_then(|coord| grid.cell(coord.0, coord.1).map(|cell| (cell, coord)));
 
-    let needs_bridge_traversal = candidate.has_bridgehead_transition()
-        || !candidate.has_structural_bridge()
-        || !parent.has_structural_bridge();
-    if !needs_bridge_traversal {
-        return base;
-    }
+    let mut object_list_layer = if candidate.has_structural_bridge()
+        && (args.height == -1 || (args.height - candidate.signed_level()).abs() >= 2)
+    {
+        MovementLayer::Bridge
+    } else {
+        MovementLayer::Ground
+    };
 
     let bridge_traversal = crate::sim::pathfinding::check_bridge_traversal(
         grid,
         BridgeTraversalInput {
             candidate,
-            candidate_coord: next_cell,
-            // Explicit parent is supplied, so the direction is not used for
-            // predecessor reconstruction. It only needs to avoid the -1 seed path.
-            direction: 0,
-            path_height: path_height as i16,
-            parent: Some((parent, current_cell)),
+            candidate_coord: args.target_cell,
+            direction: args.direction,
+            path_height: args.height,
+            parent: explicit_parent,
         },
     );
     if !bridge_traversal.allowed {
-        return base;
+        return RuntimeCanEnterCellEvaluation {
+            args,
+            layers: base,
+            bridge_traversal_allowed: false,
+        };
+    }
+    if bridge_traversal.force_bridge_list {
+        object_list_layer = MovementLayer::Bridge;
     }
 
-    crate::sim::pathfinding::can_enter_layer_context(
+    let layers = crate::sim::pathfinding::can_enter_layer_context(
         next_layer,
-        if bridge_traversal.force_bridge_list {
-            MovementLayer::Bridge
-        } else {
-            base.object_list_layer
-        },
+        object_list_layer,
         candidate,
         bridge_traversal.path_height,
-    )
+    );
+    RuntimeCanEnterCellEvaluation {
+        args,
+        layers,
+        bridge_traversal_allowed: true,
+    }
 }
 
 pub(super) fn detect_deferred_cell_check(
     mover_category: EntityCategory,
-    mover_bypass_grid: bool,
+    _mover_bypass_grid: bool,
     layer_context: CanEnterLayerContext,
     next_cell: (u16, u16),
     current_cell: (u16, u16),
@@ -111,27 +207,22 @@ pub(super) fn detect_deferred_cell_check(
         return None;
     }
 
-    // bypass_grid is only set during scripted choreographed drives (the
-    // harvester dock-into-foundation path). Skip the deferred occupancy
-    // check entirely for these — the cell transition completes inline,
-    // and dock_reservations already prevents multi-mover contention on
-    // the pad cell. Without this short-circuit, structure occupants in
-    // foundation cells trigger a deferred check that breaks the cell
-    // transition loop, then the Clear arm snaps the mover back to cell
-    // center → sub-cell oscillation, mover never advances.
-    if mover_bypass_grid {
-        return None;
-    }
-
+    // Static path-grid bypass is not a live-object exception. Only the skip map
+    // can suppress specific building occupants such as refinery bib pads and
+    // stable-open gates while preserving later blockers in the same cell list.
     let cell_occ = occupancy.get(next_cell.0, next_cell.1);
     if mover_category == EntityCategory::Infantry {
-        if bump_crush::allocate_sub_cell_with_reserved(cell_occ, occupancy_bits_layer, None)
-            .is_none()
-            || cell_occ.is_some_and(|o| {
-                o.has_blockers_on(object_list_layer)
-                    || o.infantry(object_list_layer).next().is_some()
-            })
-        {
+        if cell_occ.is_some_and(|o| {
+            has_unignored_blocker_on(o, object_list_layer, next_cell, live_building_entry_skips)
+                || has_unignored_blocker_on(
+                    o,
+                    occupancy_bits_layer,
+                    next_cell,
+                    live_building_entry_skips,
+                )
+                || o.infantry(object_list_layer).next().is_some()
+                || o.infantry(occupancy_bits_layer).next().is_some()
+        }) {
             return Some(DeferredCellCheck::Infantry(next_cell, layer_context));
         }
     } else if cell_occ.is_some_and(|o| {
@@ -163,7 +254,41 @@ fn has_unignored_blocker_on(
     })
 }
 
-pub(super) fn build_live_vehicle_building_entry_skip_map(
+pub(super) fn has_unignored_runtime_occupants_on_layers(
+    occupancy: &OccupancyGrid,
+    cell: (u16, u16),
+    layer_context: CanEnterLayerContext,
+    live_building_entry_skips: &LiveBuildingEntrySkipMap,
+) -> bool {
+    let Some(occ) = occupancy.get(cell.0, cell.1) else {
+        return false;
+    };
+    has_unignored_occupant_on(
+        occ,
+        layer_context.object_list_layer,
+        cell,
+        live_building_entry_skips,
+    ) || (layer_context.occupancy_bits_layer != layer_context.object_list_layer
+        && has_unignored_occupant_on(
+            occ,
+            layer_context.occupancy_bits_layer,
+            cell,
+            live_building_entry_skips,
+        ))
+}
+
+fn has_unignored_occupant_on(
+    occ: &crate::sim::occupancy::CellOccupancy,
+    layer: MovementLayer,
+    cell: (u16, u16),
+    live_building_entry_skips: &LiveBuildingEntrySkipMap,
+) -> bool {
+    let ignored = live_building_entry_skips.get(&cell);
+    occ.iter_layer(layer)
+        .any(|occupant| !ignored.is_some_and(|ids| ids.contains(&occupant.entity_id)))
+}
+
+pub(super) fn build_live_building_entry_skip_map(
     entities: &crate::sim::entity_store::EntityStore,
     mover_id: u64,
     interner: &crate::sim::intern::StringInterner,
@@ -175,7 +300,12 @@ pub(super) fn build_live_vehicle_building_entry_skip_map(
     let Some(mover) = entities.get(mover_id) else {
         return LiveBuildingEntrySkipMap::new();
     };
-    if mover.category != EntityCategory::Unit {
+    let vehicle_row_helpers = mover.category == EntityCategory::Unit;
+    let gate_helpers = matches!(
+        mover.category,
+        EntityCategory::Unit | EntityCategory::Infantry
+    );
+    if !vehicle_row_helpers && !gate_helpers {
         return LiveBuildingEntrySkipMap::new();
     }
 
@@ -187,8 +317,15 @@ pub(super) fn build_live_vehicle_building_entry_skip_map(
         let Some(obj) = rules.object(interner.resolve(building.type_ref)) else {
             continue;
         };
-        let has_contact = mover.has_live_contact_with(building.stable_id);
-        if !has_contact && !obj.unit_repair && !obj.bunker {
+        let gate_skip = gate_helpers
+            && obj.gate
+            && building
+                .building_gate
+                .is_some_and(|state| state.can_garrison_passable());
+        let has_contact = vehicle_row_helpers && mover.has_live_contact_with(building.stable_id);
+        let has_vehicle_exception =
+            vehicle_row_helpers && (has_contact || obj.unit_repair || obj.bunker || obj.bib);
+        if !has_vehicle_exception && !gate_skip {
             continue;
         }
         let is_bunker_occupied = obj.bunker
@@ -202,32 +339,48 @@ pub(super) fn build_live_vehicle_building_entry_skip_map(
             building.position.ry,
             &obj.foundation,
         );
+        let foundation_cell_set: BTreeSet<(u16, u16)> = foundation_cells.iter().copied().collect();
         for (cx, cy) in foundation_cells {
-            let input = LiveVehicleBuildingEntry {
-                mover_category: mover.category,
-                branch: VehicleBuildingEntryBranch::RadioContact {
-                    mover_has_contact: has_contact,
-                },
-                checked_building_id: building.stable_id,
-                candidate_building_id: Some(building.stable_id),
-                candidate_x: cx,
-                building_origin_x: building.position.rx,
-                number_impassable_rows: obj.number_impassable_rows,
-                is_unit_repair: obj.unit_repair,
-                is_bunker: obj.bunker,
-                bunker_occupied: is_bunker_occupied,
+            let (contact_skip, second_callsite_skip) = if vehicle_row_helpers {
+                let input = LiveVehicleBuildingEntry {
+                    mover_category: mover.category,
+                    branch: VehicleBuildingEntryBranch::RadioContact {
+                        mover_has_contact: has_contact,
+                    },
+                    checked_building_id: building.stable_id,
+                    candidate_building_id: Some(building.stable_id),
+                    candidate_x: cx,
+                    building_origin_x: building.position.rx,
+                    number_impassable_rows: obj.number_impassable_rows,
+                    is_unit_repair: obj.unit_repair,
+                    is_bunker: obj.bunker,
+                    bunker_occupied: is_bunker_occupied,
+                };
+                (
+                    cell_entry::decide_live_vehicle_building_entry(input),
+                    cell_entry::decide_live_vehicle_building_entry(LiveVehicleBuildingEntry {
+                        branch: VehicleBuildingEntryBranch::UnitRepairOrBunker,
+                        ..input
+                    }),
+                )
+            } else {
+                (
+                    BuildingOccupantEntryDecision::KeepBlocker,
+                    BuildingOccupantEntryDecision::KeepBlocker,
+                )
             };
-            let contact_skip = cell_entry::decide_live_vehicle_building_entry(input);
-            let second_callsite_skip =
-                cell_entry::decide_live_vehicle_building_entry(LiveVehicleBuildingEntry {
-                    branch: VehicleBuildingEntryBranch::UnitRepairOrBunker,
-                    ..input
-                });
+            let bib_skip = vehicle_row_helpers
+                && obj.bib
+                && cx
+                    .checked_add(1)
+                    .is_some_and(|east_x| !foundation_cell_set.contains(&(east_x, cy)));
             if matches!(contact_skip, BuildingOccupantEntryDecision::SkipBlocker)
                 || matches!(
                     second_callsite_skip,
                     BuildingOccupantEntryDecision::SkipBlocker
                 )
+                || bib_skip
+                || gate_skip
             {
                 skips
                     .entry((cx, cy))
@@ -302,6 +455,7 @@ pub(super) fn handle_deferred_occupancy(
     mover_entity_blocks: Option<&BTreeSet<(u16, u16)>>,
     mover_entity_block_map: Option<&crate::sim::pathfinding::LayeredEntityBlockMap>,
     occupancy: &mut OccupancyGrid,
+    live_building_entry_skips: &LiveBuildingEntrySkipMap,
     alliances: &HouseAllianceMap,
     path_grid: Option<&PathGrid>,
     resolved_terrain: Option<&ResolvedTerrainGrid>,
@@ -313,6 +467,7 @@ pub(super) fn handle_deferred_occupancy(
     blockage_path_delay_ticks: u16,
     sim_tick: u64,
     interner: &crate::sim::intern::StringInterner,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
 ) -> Vec<(u32, DebugEventKind)> {
     let mut debug_events: Vec<(u32, DebugEventKind)> = Vec::new();
     let (nx, ny, layer_context) = match check {
@@ -335,7 +490,20 @@ pub(super) fn handle_deferred_occupancy(
             )
         );
     let is_infantry = snap.category == EntityCategory::Infantry;
-    let entry_result = cell_entry::classify_occupied_cell_with_layers(
+    if let Some(rules) = rules {
+        crate::sim::gate_runtime::request_gate_open_for_cell(
+            entities,
+            occupancy,
+            (nx, ny),
+            object_list_layer,
+            entity_id,
+            interner.resolve(snap.owner),
+            rules,
+            alliances,
+            interner,
+        );
+    }
+    let entry_result = cell_entry::classify_occupied_cell_with_layers_and_ignored(
         (nx, ny),
         layer_context,
         entity_id,
@@ -344,6 +512,7 @@ pub(super) fn handle_deferred_occupancy(
         interner.resolve(snap.owner),
         mover_loco_kind,
         snap.bypass_grid,
+        live_building_entry_skips.get(&(nx, ny)),
         occupancy,
         entities,
         alliances,
@@ -376,14 +545,51 @@ pub(super) fn handle_deferred_occupancy(
     }
 
     match entry_result {
-        CellEntryResult::Clear | CellEntryResult::ScatterRequired { .. } => {
-            // Locomotor override (JumpJet) cleared the block. Code 3 is kept
-            // soft until the dedicated building scatter producer is ported.
+        CellEntryResult::Clear => {
+            // Locomotor override (JumpJet) can clear a lower native code before
+            // we reach this branch.
             if let Some(entity) = entities.get_mut(entity_id) {
                 snap_motion_to_cell_center(&mut entity.position, &mut entity.drive_track);
                 if let Some(ref mut target) = entity.movement_target {
                     target.blocked_delay = 0;
                     target.path_blocked = false;
+                }
+            }
+        }
+        CellEntryResult::ScatterRequired { .. } => {
+            // Native code 3 is a soft blocked result for allied gate/building
+            // contact. The opener request has already been issued above; the
+            // mover must wait/repath instead of entering this occupied cell.
+            if let Some(entity) = entities.get_mut(entity_id) {
+                snap_motion_to_cell_center(&mut entity.position, &mut entity.drive_track);
+                let cur_pos = (entity.position.rx, entity.position.ry);
+                if let Some(ref mut target) = entity.movement_target {
+                    let mut aborted_for_stuck = false;
+                    let evts = handle_blocked_tick(
+                        target,
+                        &mut entity.facing,
+                        &snap.locomotor,
+                        entity_id,
+                        cur_pos,
+                        active_layer,
+                        snap.on_bridge,
+                        stats,
+                        finished_entities,
+                        &mut aborted_for_stuck,
+                        ctx,
+                        entity_cost_grid,
+                        mover_entity_blocks,
+                        mover_entity_block_map,
+                        snap.too_big_to_fit_under_bridge,
+                        mcfg,
+                        rng,
+                        sim_tick,
+                        PATH_STUCK_INIT,
+                        mover_is_crusher,
+                        is_infantry,
+                        false,
+                    );
+                    debug_events.extend(evts);
                 }
             }
         }
@@ -624,9 +830,14 @@ mod tests {
         grid.set_cell_for_test(0, 0, 4, true, false);
         grid.set_cell_for_test(1, 0, 0, true, true);
 
-        let layers =
-            resolve_runtime_can_enter_layers(Some(&grid), (0, 0), (1, 0), MovementLayer::Bridge, 0);
+        let eval = evaluate_runtime_can_enter_cell(
+            Some(&grid),
+            MovementLayer::Bridge,
+            RuntimeCanEnterCellArgs::runtime((1, 0), 2, 0),
+        );
+        let layers = eval.layers;
 
+        assert!(eval.bridge_traversal_allowed);
         assert_eq!(layers.terrain_layer, MovementLayer::Bridge);
         assert_eq!(layers.object_list_layer, MovementLayer::Bridge);
         assert_eq!(layers.occupancy_bits_layer, MovementLayer::Ground);
@@ -638,11 +849,64 @@ mod tests {
         grid.set_cell_for_test(0, 0, 4, true, false);
         grid.set_cell_for_test(1, 0, 0, true, true);
 
-        let layers =
-            resolve_runtime_can_enter_layers(Some(&grid), (0, 0), (1, 0), MovementLayer::Bridge, 4);
+        let eval = evaluate_runtime_can_enter_cell(
+            Some(&grid),
+            MovementLayer::Bridge,
+            RuntimeCanEnterCellArgs::runtime((1, 0), 2, 4),
+        );
+        let layers = eval.layers;
 
+        assert!(eval.bridge_traversal_allowed);
         assert_eq!(layers.object_list_layer, MovementLayer::Bridge);
         assert_eq!(layers.occupancy_bits_layer, MovementLayer::Bridge);
+    }
+
+    #[test]
+    fn runtime_height_uses_current_cell_level_plus_on_bridge() {
+        let mut grid = PathGrid::new(1, 1);
+        grid.set_cell_for_test(0, 0, 2, false, false);
+
+        assert_eq!(
+            runtime_current_effective_height(Some(&grid), (0, 0), true, 99),
+            6
+        );
+        assert_eq!(
+            runtime_current_effective_height(Some(&grid), (0, 0), false, 99),
+            2
+        );
+    }
+
+    #[test]
+    fn runtime_null_parent_reconstructs_predecessor_from_target_and_direction() {
+        let mut grid = PathGrid::new(3, 1);
+        grid.set_cell_for_test(0, 0, 0, false, false);
+        grid.set_cell_for_test(1, 0, 4, true, false);
+        grid.set_cell_for_test(2, 0, 0, true, true);
+
+        let runtime_null_parent = evaluate_runtime_can_enter_cell(
+            Some(&grid),
+            MovementLayer::Bridge,
+            RuntimeCanEnterCellArgs::runtime((2, 0), 2, 0),
+        );
+        let explicit_wrong_parent = evaluate_runtime_can_enter_cell(
+            Some(&grid),
+            MovementLayer::Bridge,
+            RuntimeCanEnterCellArgs {
+                parent_current_cell: Some((0, 0)),
+                ..RuntimeCanEnterCellArgs::runtime((2, 0), 2, 0)
+            },
+        );
+
+        assert!(runtime_null_parent.bridge_traversal_allowed);
+        assert_eq!(
+            runtime_null_parent.layers.object_list_layer,
+            MovementLayer::Bridge
+        );
+        assert!(explicit_wrong_parent.bridge_traversal_allowed);
+        assert_eq!(
+            explicit_wrong_parent.layers.object_list_layer,
+            MovementLayer::Ground
+        );
     }
 
     #[test]
@@ -737,6 +1001,62 @@ mod tests {
     }
 
     #[test]
+    fn infantry_deferred_detection_ignores_only_live_skipped_gate_blocker() {
+        let mut occupancy = OccupancyGrid::new();
+        occupancy.add(
+            3,
+            3,
+            10,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::AppendBuilding,
+        );
+        let layers = CanEnterLayerContext::single(MovementLayer::Ground);
+        let mut skips = LiveBuildingEntrySkipMap::new();
+        skips.entry((3, 3)).or_default().insert(10);
+
+        let check = detect_deferred_cell_check(
+            EntityCategory::Infantry,
+            false,
+            layers,
+            (3, 3),
+            (2, 3),
+            MovementLayer::Ground,
+            &occupancy,
+            &skips,
+        );
+
+        assert_eq!(check, None);
+    }
+
+    #[test]
+    fn deferred_detection_bypass_grid_still_checks_unskipped_structure() {
+        let mut occupancy = OccupancyGrid::new();
+        occupancy.add(
+            3,
+            3,
+            10,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::AppendBuilding,
+        );
+        let layers = CanEnterLayerContext::single(MovementLayer::Ground);
+
+        let check = detect_deferred_cell_check(
+            EntityCategory::Unit,
+            true,
+            layers,
+            (3, 3),
+            (2, 3),
+            MovementLayer::Ground,
+            &occupancy,
+            &LiveBuildingEntrySkipMap::new(),
+        );
+
+        assert_eq!(check, Some(DeferredCellCheck::Vehicle((3, 3), layers)));
+    }
+
+    #[test]
     fn deferred_detection_keeps_unrelated_blocker_in_live_skipped_cell() {
         let mut occupancy = OccupancyGrid::new();
         occupancy.add(
@@ -771,5 +1091,144 @@ mod tests {
         );
 
         assert_eq!(check, Some(DeferredCellCheck::Vehicle((3, 3), layers)));
+    }
+
+    #[test]
+    fn refinery_live_skip_map_opens_bib_east_edge_not_interior() {
+        use crate::rules::ini_parser::IniFile;
+        use crate::rules::ruleset::RuleSet;
+        use crate::sim::entity_store::EntityStore;
+        use crate::sim::game_entity::GameEntity;
+
+        let ini = IniFile::from_str(
+            "[VehicleTypes]\n0=HARV\n[BuildingTypes]\n0=GAREFN\n\
+             [HARV]\nName=Harvester\nSpeed=4\n\
+             [GAREFN]\nName=Refinery\nFoundation=4x3\nBib=yes\nNumberImpassableRows=3\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("refinery rules");
+        let mut entities = EntityStore::new();
+        let mut mover = GameEntity::test_default(1, "HARV", "Americans", 14, 11);
+        mover.category = EntityCategory::Unit;
+        entities.insert(mover);
+        let mut refinery = GameEntity::test_default(100, "GAREFN", "Americans", 10, 10);
+        refinery.category = EntityCategory::Structure;
+        entities.insert(refinery);
+        let interner = crate::sim::intern::test_interner();
+
+        let skips = build_live_building_entry_skip_map(&entities, 1, &interner, Some(&rules));
+
+        assert!(skips.get(&(13, 11)).is_some_and(|ids| ids.contains(&100)));
+        assert!(!skips.get(&(12, 11)).is_some_and(|ids| ids.contains(&100)));
+    }
+
+    #[test]
+    fn refinery_contact_number_rows_opens_first_clear_column_only() {
+        use crate::rules::ini_parser::IniFile;
+        use crate::rules::ruleset::RuleSet;
+        use crate::sim::entity_store::EntityStore;
+        use crate::sim::game_entity::GameEntity;
+
+        let ini = IniFile::from_str(
+            "[VehicleTypes]\n0=HARV\n[BuildingTypes]\n0=GAREFN\n\
+             [HARV]\nName=Harvester\nSpeed=4\n\
+             [GAREFN]\nName=Refinery\nFoundation=4x3\nBib=no\nNumberImpassableRows=3\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("refinery rules");
+        let mut entities = EntityStore::new();
+        let mut mover = GameEntity::test_default(1, "HARV", "Americans", 14, 11);
+        mover.category = EntityCategory::Unit;
+        mover.mark_live_contact_with(100);
+        entities.insert(mover);
+        let mut refinery = GameEntity::test_default(100, "GAREFN", "Americans", 10, 10);
+        refinery.category = EntityCategory::Structure;
+        entities.insert(refinery);
+        let interner = crate::sim::intern::test_interner();
+
+        let skips = build_live_building_entry_skip_map(&entities, 1, &interner, Some(&rules));
+
+        assert!(skips.get(&(13, 11)).is_some_and(|ids| ids.contains(&100)));
+        assert!(!skips.get(&(12, 11)).is_some_and(|ids| ids.contains(&100)));
+    }
+
+    #[test]
+    fn open_gate_skip_map_requires_mission_18_and_stable_open() {
+        use crate::rules::ini_parser::IniFile;
+        use crate::rules::ruleset::RuleSet;
+        use crate::sim::entity_store::EntityStore;
+        use crate::sim::game_entity::{BuildingGatePhase, BuildingGateRuntime, GameEntity};
+
+        let ini = IniFile::from_str(
+            "[VehicleTypes]\n0=MTNK\n[BuildingTypes]\n0=GAGATE_A\n\
+             [MTNK]\nName=Tank\nSpeed=4\n\
+             [GAGATE_A]\nName=Allied Gate\nFoundation=3x1\nGate=yes\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("gate rules");
+
+        let mut entities = EntityStore::new();
+        let mut mover = GameEntity::test_default(1, "MTNK", "Americans", 8, 10);
+        mover.category = EntityCategory::Unit;
+        entities.insert(mover);
+        let mut gate = GameEntity::test_default(100, "GAGATE_A", "Americans", 10, 10);
+        gate.category = EntityCategory::Structure;
+        gate.building_gate = Some(BuildingGateRuntime {
+            mission_18_active: true,
+            phase: BuildingGatePhase::OpenStable,
+            ..Default::default()
+        });
+        entities.insert(gate);
+        let interner = crate::sim::intern::test_interner();
+
+        let skips = build_live_building_entry_skip_map(&entities, 1, &interner, Some(&rules));
+        assert!(skips.get(&(10, 10)).is_some_and(|ids| ids.contains(&100)));
+        assert!(skips.get(&(11, 10)).is_some_and(|ids| ids.contains(&100)));
+        assert!(skips.get(&(12, 10)).is_some_and(|ids| ids.contains(&100)));
+
+        entities.get_mut(100).unwrap().building_gate = Some(BuildingGateRuntime {
+            mission_18_active: true,
+            phase: BuildingGatePhase::Opening,
+            ..Default::default()
+        });
+        let skips = build_live_building_entry_skip_map(&entities, 1, &interner, Some(&rules));
+        assert!(!skips.get(&(10, 10)).is_some_and(|ids| ids.contains(&100)));
+
+        entities.get_mut(100).unwrap().building_gate = Some(BuildingGateRuntime {
+            mission_18_active: false,
+            phase: BuildingGatePhase::OpenStable,
+            ..Default::default()
+        });
+        let skips = build_live_building_entry_skip_map(&entities, 1, &interner, Some(&rules));
+        assert!(!skips.get(&(10, 10)).is_some_and(|ids| ids.contains(&100)));
+    }
+
+    #[test]
+    fn infantry_uses_open_gate_skip_without_vehicle_row_helpers() {
+        use crate::rules::ini_parser::IniFile;
+        use crate::rules::ruleset::RuleSet;
+        use crate::sim::entity_store::EntityStore;
+        use crate::sim::game_entity::{BuildingGatePhase, BuildingGateRuntime, GameEntity};
+
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n0=E1\n[BuildingTypes]\n0=GAGATE_A\n\
+             [E1]\nName=GI\nSpeed=4\n\
+             [GAGATE_A]\nName=Allied Gate\nFoundation=3x1\nGate=yes\nNumberImpassableRows=0\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("gate rules");
+        let mut entities = EntityStore::new();
+        let mut mover = GameEntity::test_default(1, "E1", "Americans", 8, 10);
+        mover.category = EntityCategory::Infantry;
+        entities.insert(mover);
+        let mut gate = GameEntity::test_default(100, "GAGATE_A", "Americans", 10, 10);
+        gate.category = EntityCategory::Structure;
+        gate.building_gate = Some(BuildingGateRuntime {
+            mission_18_active: true,
+            phase: BuildingGatePhase::OpenStable,
+            ..Default::default()
+        });
+        entities.insert(gate);
+        let interner = crate::sim::intern::test_interner();
+
+        let skips = build_live_building_entry_skip_map(&entities, 1, &interner, Some(&rules));
+
+        assert!(skips.get(&(10, 10)).is_some_and(|ids| ids.contains(&100)));
     }
 }

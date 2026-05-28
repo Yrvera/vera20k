@@ -42,6 +42,7 @@ use crate::sim::rng::SimRng;
 use crate::util::fixed_math::{SIM_ZERO, SimFixed, facing_from_delta_int};
 
 // --- Internal submodules ---
+mod drive_locomotion;
 mod movement_blocked;
 mod movement_bridge;
 mod movement_commands;
@@ -50,6 +51,7 @@ mod movement_path;
 mod movement_reservation;
 mod movement_step;
 mod movement_tick;
+mod navcom;
 mod path_markers;
 
 // --- Movement-related modules (public API) ---
@@ -74,8 +76,8 @@ pub use facing_class::FacingClass;
 
 // Re-export command functions so callers can use `movement::issue_move_command` etc.
 pub use movement_commands::{
-    issue_direct_move, issue_move_command, issue_move_command_with_layered,
-    set_destination_for_teleporter_entity,
+    clear_navigation_for_entity, issue_direct_move, issue_move_command,
+    issue_move_command_with_layered, set_destination_for_teleporter_entity,
 };
 // Re-export the tick function so callers can use `movement::tick_movement_with_grids`.
 pub use movement_tick::tick_movement_with_grids;
@@ -133,6 +135,8 @@ pub(super) struct MoverSnapshot {
     pub speed_type: Option<SpeedType>,
     pub movement_zone: MovementZone,
     pub omni_crusher: bool,
+    pub regular_crusher: bool,
+    pub drive_accelerates: bool,
     pub owner: InternedId,
     pub too_big_to_fit_under_bridge: bool,
     pub on_bridge: bool,

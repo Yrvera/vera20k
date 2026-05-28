@@ -4,14 +4,14 @@
 use super::*;
 use crate::map::entities::EntityCategory;
 use crate::map::terrain;
-use crate::sim::components::MovementTarget;
+use crate::sim::components::{DriveCoord, MovementTarget, NavTargetRef};
 use crate::sim::entity_store::EntityStore;
 use crate::sim::game_entity::GameEntity;
 use crate::sim::intern::test_interner;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::occupancy::{CellListInsertion, OccupancyGrid};
 use crate::sim::rng::SimRng;
-use crate::util::fixed_math::{SIM_ZERO, SimFixed};
+use crate::util::fixed_math::{SIM_HALF, SIM_ONE, SIM_ZERO, SimFixed};
 
 // --- Facing calculation tests ---
 // Cell deltas map directly to screen-relative RA2 DirStruct values:
@@ -127,6 +127,171 @@ fn test_tick_movement_removes_target_at_goal() {
     assert!(
         entity.movement_target.is_none(),
         "MovementTarget should be removed when path is complete"
+    );
+}
+
+#[test]
+fn test_drive_arrival_keeps_navcom_until_next_no_track_pass() {
+    let mut entities = EntityStore::new();
+
+    let mut e = GameEntity::test_default(1, "HTNK", "Americans", 0, 0);
+    e.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+    e.navigation.nav_com = Some(NavTargetRef::cell(0, 0));
+    e.drive_locomotion = Some(crate::sim::components::DriveLocomotionRuntime {
+        destination: Some(crate::sim::components::DriveCoord::cell(0, 0, 0)),
+        head_to: Some(crate::sim::components::DriveCoord::cell(0, 0, 0)),
+        track_valid: true,
+        track_index: 1,
+        point_index: 2,
+        ..Default::default()
+    });
+    e.movement_target = Some(MovementTarget {
+        path: vec![(0, 0)],
+        path_layers: vec![MovementLayer::Ground],
+        next_index: 1,
+        final_goal: Some((0, 0)),
+        ..Default::default()
+    });
+    entities.insert(e);
+
+    tick_movement(&mut entities, 16, &mut test_interner());
+    let entity = entities.get(1).expect("entity exists");
+    assert!(entity.movement_target.is_none());
+    assert_eq!(entity.navigation.nav_com, Some(NavTargetRef::cell(0, 0)));
+    assert!(entity.navigation.pending_arrival_clear);
+    let drive = entity.drive_locomotion.as_ref().expect("drive state");
+    assert_eq!(drive.head_to, None);
+    assert!(!drive.track_valid);
+    assert_eq!(drive.track_index, -1);
+    assert_eq!(drive.point_index, 0);
+
+    tick_movement(&mut entities, 16, &mut test_interner());
+    let entity = entities.get(1).expect("entity exists");
+    assert_eq!(entity.navigation.nav_com, None);
+    assert!(!entity.navigation.pending_arrival_clear);
+    assert_eq!(
+        entity
+            .drive_locomotion
+            .as_ref()
+            .and_then(|drive| drive.destination),
+        None
+    );
+}
+
+#[test]
+fn test_drive_queue_command_reissues_destination_without_navqueue_append() {
+    let mut entities = EntityStore::new();
+    let grid = PathGrid::new(8, 4);
+
+    let mut e = GameEntity::test_default(1, "HTNK", "Americans", 0, 0);
+    e.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+    entities.insert(e);
+
+    assert!(issue_move_command(
+        &mut entities,
+        &grid,
+        1,
+        (2, 0),
+        SimFixed::from_num(1024),
+        false,
+        None,
+        None,
+        None,
+        false,
+    ));
+    assert!(issue_move_command(
+        &mut entities,
+        &grid,
+        1,
+        (4, 0),
+        SimFixed::from_num(1024),
+        true,
+        None,
+        None,
+        None,
+        false,
+    ));
+
+    let entity = entities.get(1).expect("entity exists");
+    let movement = entity.movement_target.as_ref().expect("movement target");
+    assert_eq!(movement.path.first().copied(), Some((0, 0)));
+    assert_eq!(movement.path.last().copied(), Some((4, 0)));
+    assert_eq!(movement.final_goal, Some((4, 0)));
+    assert_eq!(entity.navigation.nav_com, Some(NavTargetRef::cell(4, 0)));
+    assert!(
+        entity.navigation.nav_queue.is_empty(),
+        "standard player/team/trigger movement must not create Foot NavQueue entries"
+    );
+}
+
+#[test]
+fn test_drive_queued_arrival_pops_navqueue_and_reissues_destination() {
+    let mut entities = EntityStore::new();
+    let grid = PathGrid::new(8, 4);
+
+    let mut e = GameEntity::test_default(1, "HTNK", "Americans", 0, 0);
+    e.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+    e.navigation.nav_com = Some(NavTargetRef::cell(0, 0));
+    e.navigation.nav_queue.push(NavTargetRef::cell(3, 0));
+    e.drive_locomotion = Some(crate::sim::components::DriveLocomotionRuntime {
+        destination: Some(crate::sim::components::DriveCoord::cell(0, 0, 0)),
+        head_to: Some(crate::sim::components::DriveCoord::cell(0, 0, 0)),
+        track_valid: true,
+        track_index: 1,
+        point_index: 2,
+        ..Default::default()
+    });
+    e.movement_target = Some(MovementTarget {
+        path: vec![(0, 0)],
+        path_layers: vec![MovementLayer::Ground],
+        next_index: 1,
+        final_goal: Some((0, 0)),
+        ..Default::default()
+    });
+    entities.insert(e);
+
+    tick_movement_with_grid(
+        &mut entities,
+        Some(&grid),
+        &Default::default(),
+        &Default::default(),
+        &mut OccupancyGrid::new(),
+        &mut SimRng::new(0),
+        16,
+        0,
+        &mut test_interner(),
+    );
+    let entity = entities.get(1).expect("entity exists");
+    assert!(entity.movement_target.is_none());
+    assert_eq!(entity.navigation.nav_com, Some(NavTargetRef::cell(0, 0)));
+    assert_eq!(entity.navigation.nav_queue, vec![NavTargetRef::cell(3, 0)]);
+    assert!(entity.navigation.pending_arrival_clear);
+
+    tick_movement_with_grid(
+        &mut entities,
+        Some(&grid),
+        &Default::default(),
+        &Default::default(),
+        &mut OccupancyGrid::new(),
+        &mut SimRng::new(0),
+        1,
+        1,
+        &mut test_interner(),
+    );
+    let entity = entities.get(1).expect("entity exists");
+    let movement = entity.movement_target.as_ref().expect("movement target");
+    assert_eq!(movement.final_goal, Some((3, 0)));
+    assert_eq!(movement.path.first().copied(), Some((0, 0)));
+    assert_eq!(movement.path.last().copied(), Some((3, 0)));
+    assert_eq!(entity.navigation.nav_com, Some(NavTargetRef::cell(3, 0)));
+    assert!(entity.navigation.nav_queue.is_empty());
+    assert!(!entity.navigation.pending_arrival_clear);
+    assert_eq!(
+        entity
+            .drive_locomotion
+            .as_ref()
+            .and_then(|drive| drive.destination),
+        Some(crate::sim::components::DriveCoord::cell(3, 0, 0))
     );
 }
 
@@ -254,6 +419,96 @@ fn test_issue_move_command_sets_path() {
     assert_eq!(*target.path.last().expect("non-empty"), (7, 3));
     assert_eq!(target.next_index, 1);
     assert_eq!(target.speed, SimFixed::from_num(768));
+}
+
+#[test]
+fn test_issue_move_command_starts_drive_track_for_drive_locomotor() {
+    let mut entities = EntityStore::new();
+    let grid: PathGrid = PathGrid::new(20, 20);
+
+    let mut e = GameEntity::test_default(1, "HTNK", "Americans", 2, 3);
+    e.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+    e.facing = 64;
+    entities.insert(e);
+
+    assert!(issue_move_command(
+        &mut entities,
+        &grid,
+        1,
+        (7, 3),
+        SimFixed::from_num(768),
+        false,
+        None,
+        None,
+        None,
+        false,
+    ));
+
+    let entity = entities.get(1).expect("entity exists");
+    assert!(
+        entity.drive_track.is_some(),
+        "Drive locomotor should own the first path leg through DriveTrack"
+    );
+    assert_eq!(
+        entity.facing_target, None,
+        "DriveTrack should handle Drive body facing instead of generic rotation"
+    );
+    assert_eq!(
+        entity.drive_track.as_ref().unwrap().raw_track_index,
+        1,
+        "straight east leg should use the transformed straight cardinal track"
+    );
+    assert_eq!(
+        entity.navigation.nav_com,
+        Some(NavTargetRef::cell(7, 3)),
+        "normal Drive move should install owner NavCom separately from MovementTarget"
+    );
+    assert_eq!(
+        entity
+            .drive_locomotion
+            .as_ref()
+            .and_then(|drive| drive.destination)
+            .map(|coord| (coord.x, coord.y, coord.z)),
+        Some((7 * 256 + 128, 3 * 256 + 128, 0)),
+        "Drive Head_To_Coord should write Drive destination state"
+    );
+    let drive = entity.drive_locomotion.as_ref().expect("drive state");
+    assert_eq!(drive.head_to, Some(DriveCoord::cell(7, 3, 0)));
+    assert_eq!(drive.path.directions, vec![2, 2, 2, 2, 2]);
+    assert_eq!(drive.path.cursor, 0);
+    assert_eq!(drive.turn.target_direction, Some(2));
+    assert_eq!(drive.turn.target_facing_16, Some(0x4000));
+}
+
+#[test]
+fn test_issue_move_command_starts_drive_track_for_initial_drive_turn() {
+    let mut entities = EntityStore::new();
+    let grid: PathGrid = PathGrid::new(20, 20);
+
+    let mut e = GameEntity::test_default(1, "HTNK", "Americans", 2, 2);
+    e.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+    e.facing = 64;
+    entities.insert(e);
+
+    assert!(issue_move_command(
+        &mut entities,
+        &grid,
+        1,
+        (6, 6),
+        SimFixed::from_num(768),
+        false,
+        None,
+        None,
+        None,
+        false,
+    ));
+
+    let entity = entities.get(1).expect("entity exists");
+    assert!(
+        entity.drive_track.is_some(),
+        "Drive initial turn should begin a DriveTrack instead of pre-rotating"
+    );
+    assert_eq!(entity.facing_target, None);
 }
 
 #[test]
@@ -1252,6 +1507,217 @@ fn make_drive_loco_for_test() -> crate::sim::movement::locomotor::LocomotorState
     }
 }
 
+fn drive_speed_test_cell(
+    rx: u16,
+    ry: u16,
+    speed_costs: crate::rules::terrain_rules::SpeedCostProfile,
+) -> crate::map::resolved_terrain::ResolvedTerrainCell {
+    crate::map::resolved_terrain::ResolvedTerrainCell {
+        rx,
+        ry,
+        source_tile_index: 0,
+        source_sub_tile: 0,
+        final_tile_index: 0,
+        final_sub_tile: 0,
+        is_wood_bridge_repair_tile: false,
+        level: 0,
+        filled_clear: false,
+        tileset_index: Some(0),
+        land_type: 0,
+        yr_cell_land_type: 0,
+        slope_type: 0,
+        template_height: 0,
+        render_offset_x: 0,
+        render_offset_y: 0,
+        terrain_class: crate::rules::terrain_rules::TerrainClass::Clear,
+        speed_costs,
+        is_water: false,
+        is_cliff_like: false,
+        is_rough: false,
+        is_road: false,
+        accepts_smudge: false,
+        allows_tiberium: false,
+        is_cliff_redraw: false,
+        variant: 0,
+        has_ramp: false,
+        canonical_ramp: None,
+        ground_walk_blocked: false,
+        terrain_object_blocks: false,
+        overlay_blocks: false,
+        zone_type: 0,
+        base_ground_walk_blocked: false,
+        base_build_blocked: false,
+        base_land_type: 0,
+        base_yr_cell_land_type: 0,
+        base_terrain_class: Default::default(),
+        base_speed_costs: Default::default(),
+        build_blocked: false,
+        has_bridge_deck: false,
+        bridge_walkable: false,
+        bridge_transition: false,
+        bridge_deck_level: 0,
+        bridge_layer: None,
+        bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+        tube_index: None,
+        radar_left: [0, 0, 0],
+        radar_right: [0, 0, 0],
+        has_damaged_data: false,
+        bridgehead_anchor_class_at_load: None,
+    }
+}
+
+#[test]
+fn drive_accelerates_false_tick_stores_modified_fraction_without_mutating_speed() {
+    let terrain = crate::map::resolved_terrain::ResolvedTerrainGrid::from_cells(
+        2,
+        1,
+        vec![
+            drive_speed_test_cell(0, 0, Default::default()),
+            drive_speed_test_cell(
+                1,
+                0,
+                crate::rules::terrain_rules::SpeedCostProfile {
+                    track: Some(50),
+                    ..Default::default()
+                },
+            ),
+        ],
+    );
+    let mut entities = EntityStore::new();
+    let mut mover = GameEntity::test_default(1, "GTNK", "Americans", 0, 0);
+    mover.locomotor = Some(make_drive_loco_for_test());
+    mover.drive_locomotion = Some(Default::default());
+    mover.drive_accelerates = false;
+    mover.movement_target = Some(MovementTarget {
+        path: vec![(0, 0), (1, 0)],
+        path_layers: vec![MovementLayer::Ground; 2],
+        next_index: 1,
+        speed: SimFixed::from_num(100),
+        current_speed: SimFixed::from_num(100),
+        move_dir_x: SimFixed::from_num(256),
+        move_dir_y: SIM_ZERO,
+        move_dir_len: SimFixed::from_num(256),
+        final_goal: Some((1, 0)),
+        ..Default::default()
+    });
+    entities.insert(mover);
+
+    let mut occupancy = OccupancyGrid::new();
+    let mut rng = SimRng::new(0);
+    let mut interner = test_interner();
+    let mut sounds = Vec::new();
+    let terrain_costs: std::collections::BTreeMap<
+        crate::rules::locomotor_type::SpeedType,
+        crate::sim::pathfinding::terrain_cost::TerrainCostGrid,
+    > = std::collections::BTreeMap::new();
+
+    tick_movement_with_grids(
+        &mut entities,
+        None,
+        &terrain_costs,
+        &Default::default(),
+        &mut occupancy,
+        &mut rng,
+        1000,
+        0,
+        None,
+        Some(&terrain),
+        &crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
+        SIM_ZERO,
+        9,
+        60,
+        &mut interner,
+        None,
+        &mut sounds,
+    );
+
+    let entity = entities.get(1).expect("mover exists");
+    let drive = entity.drive_locomotion.as_ref().expect("drive state");
+    assert_eq!(drive.target_speed_fraction, SIM_HALF);
+    assert_eq!(drive.current_speed_fraction, SIM_HALF);
+    assert_eq!(
+        entity.movement_target.as_ref().expect("still moving").speed,
+        SimFixed::from_num(100),
+        "Drive speed fraction must not mutate raw top speed"
+    );
+    assert_eq!(
+        entity
+            .movement_target
+            .as_ref()
+            .expect("still moving")
+            .current_speed,
+        SimFixed::from_num(50),
+        "Drive current speed should be raw speed scaled by current fraction"
+    );
+}
+
+#[test]
+fn drive_accelerates_true_tick_ramps_fraction_before_movement_speed() {
+    let mut entities = EntityStore::new();
+    let mut mover = GameEntity::test_default(1, "GTNK", "Americans", 0, 0);
+    mover.locomotor = Some(make_drive_loco_for_test());
+    mover.drive_locomotion = Some(Default::default());
+    mover.drive_accelerates = true;
+    mover.movement_target = Some(MovementTarget {
+        path: vec![(0, 0), (1, 0)],
+        path_layers: vec![MovementLayer::Ground; 2],
+        next_index: 1,
+        speed: SimFixed::from_num(100),
+        current_speed: SIM_ZERO,
+        accel_factor: SimFixed::lit("0.03"),
+        decel_factor: SimFixed::lit("0.002"),
+        slowdown_distance: SIM_ZERO,
+        move_dir_x: SimFixed::from_num(256),
+        move_dir_y: SIM_ZERO,
+        move_dir_len: SimFixed::from_num(256),
+        final_goal: Some((1, 0)),
+        ..Default::default()
+    });
+    entities.insert(mover);
+
+    let mut occupancy = OccupancyGrid::new();
+    let mut rng = SimRng::new(0);
+    let mut interner = test_interner();
+    let mut sounds = Vec::new();
+    let terrain_costs: std::collections::BTreeMap<
+        crate::rules::locomotor_type::SpeedType,
+        crate::sim::pathfinding::terrain_cost::TerrainCostGrid,
+    > = std::collections::BTreeMap::new();
+
+    tick_movement_with_grids(
+        &mut entities,
+        None,
+        &terrain_costs,
+        &Default::default(),
+        &mut occupancy,
+        &mut rng,
+        1000,
+        0,
+        None,
+        None,
+        &crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
+        SIM_ZERO,
+        9,
+        60,
+        &mut interner,
+        None,
+        &mut sounds,
+    );
+
+    let entity = entities.get(1).expect("mover exists");
+    let drive = entity.drive_locomotion.as_ref().expect("drive state");
+    assert_eq!(drive.target_speed_fraction, SIM_ONE);
+    assert_eq!(drive.current_speed_fraction, SimFixed::lit("0.03"));
+    assert_eq!(
+        entity
+            .movement_target
+            .as_ref()
+            .expect("still moving")
+            .current_speed,
+        SimFixed::from_num(100) * SimFixed::lit("0.03"),
+    );
+}
+
 #[test]
 fn test_initial_layered_path_avoids_friendly_building_footprint() {
     // A friendly Drive-locomotor unit ordered across a 2x2 friendly building
@@ -1309,9 +1775,10 @@ fn test_initial_layered_path_avoids_friendly_building_footprint() {
 }
 
 #[test]
-fn test_queued_append_layered_path_avoids_friendly_building_footprint() {
-    // Issue an initial move, then a queued (queue=true) move that crosses a
-    // 2x2 friendly building. The appended portion must avoid the foundation.
+fn test_queued_drive_reissue_layered_path_avoids_friendly_building_footprint() {
+    // Issue an initial Drive move, then a queued player move that crosses a
+    // 2x2 friendly building. Drive reissues the destination without using
+    // Foot NavQueue, and the replacement path must avoid the foundation.
     use crate::sim::production::building_footprint_cells;
     use std::collections::BTreeSet;
 
@@ -1324,8 +1791,8 @@ fn test_queued_append_layered_path_avoids_friendly_building_footprint() {
     let mut blocks = BTreeSet::new();
     blocks.extend(foundation.iter().copied());
 
-    // Mover at (1,5). First move to (3,5) (no obstacle). Second move queued
-    // to (10,5) — appended portion crosses the foundation.
+    // Mover at (1,5). First move to (3,5) (no obstacle). The queued Drive
+    // command reissues to (10,5), beyond the foundation.
     let mut mover = GameEntity::test_default(1, "HTNK", "Americans", 1, 5);
     mover.locomotor = Some(make_drive_loco_for_test());
     entities.insert(mover);
@@ -1348,7 +1815,7 @@ fn test_queued_append_layered_path_avoids_friendly_building_footprint() {
         1,
         (10, 5),
         SimFixed::from_num(1024),
-        true, // queue=true (append)
+        true, // queue=true (Drive destination reissue)
         None,
         Some(&blocks),
         None,
@@ -1356,12 +1823,15 @@ fn test_queued_append_layered_path_avoids_friendly_building_footprint() {
     ));
 
     let entity = entities.get(1).expect("mover exists");
-    let target = entity.movement_target.as_ref().expect("queued path exists");
+    let target = entity
+        .movement_target
+        .as_ref()
+        .expect("reissued path exists");
 
     for &cell in &target.path {
         assert!(
             !foundation.contains(&cell),
-            "Queued append path visited foundation cell {:?}. Path: {:?}",
+            "Queued Drive reissue path visited foundation cell {:?}. Path: {:?}",
             cell,
             target.path,
         );
@@ -1472,7 +1942,6 @@ use crate::sim::components::BridgeOccupancy;
 use crate::sim::movement::locomotor::{AirMovePhase, GroundMovePhase, LocomotorState};
 use crate::sim::movement::tick_movement_with_grid;
 use crate::sim::pathfinding::{PathGrid, terrain_cost::TerrainCostGrid};
-use crate::util::fixed_math::SIM_ONE;
 use std::collections::BTreeMap;
 
 fn make_drive_loco(layer: MovementLayer) -> LocomotorState {

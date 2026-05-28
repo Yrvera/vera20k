@@ -18,6 +18,8 @@ use crate::sim::entity_store::EntityStore;
 use crate::sim::pathfinding::LayeredEntityBlockMap;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
+use crate::sim::pathfinding::zone_map::ZoneGrid;
+use crate::util::direction::{DIRECTION_DELTAS, TUBE_STEP_DIRECTION};
 use crate::util::fixed_math::{SIM_ZERO, SimFixed};
 
 use super::movement_path::{
@@ -30,8 +32,27 @@ use crate::rules::locomotor_type::MovementZone;
 use crate::sim::components::OrderIntent;
 use crate::sim::game_entity::GameEntity;
 
+use super::drive_track;
 use super::droppod_movement::DropPodPhase;
 use super::teleport_movement;
+
+fn drive_direction_from_step(from: (u16, u16), to: (u16, u16)) -> Option<u8> {
+    let dx = to.0 as i32 - from.0 as i32;
+    let dy = to.1 as i32 - from.1 as i32;
+    if dx.abs() > 1 || dy.abs() > 1 {
+        return Some(TUBE_STEP_DIRECTION);
+    }
+    DIRECTION_DELTAS
+        .iter()
+        .position(|&delta| delta == (dx, dy))
+        .map(|idx| idx as u8)
+}
+
+fn drive_directions_from_path(path: &[(u16, u16)]) -> Vec<u8> {
+    path.windows(2)
+        .filter_map(|step| drive_direction_from_step(step[0], step[1]))
+        .collect()
+}
 
 /// Check if an entity can accept a new movement destination.
 ///
@@ -55,6 +76,13 @@ fn can_accept_destination(entity: &GameEntity) -> bool {
         return false;
     }
     true
+}
+
+/// Clear owner navigation and queued endpoint state through the native-shaped
+/// null-destination path.
+pub fn clear_navigation_for_entity(entity: &mut GameEntity) {
+    super::navcom::set_destination_internal_null(entity);
+    entity.navigation.nav_queue.clear();
 }
 
 /// Issue a move command: compute an A* path and attach a MovementTarget to the entity.
@@ -85,6 +113,7 @@ pub fn issue_move_command(
         terrain_costs,
         entity_blocks,
         None, // resolved_terrain — per-tick repath has it
+        None, // zone_grid — basic entrypoint has no Simulation context
         entity_block_map,
         mover_is_crusher,
     )
@@ -107,6 +136,7 @@ pub fn set_destination_for_teleporter_entity(
     terrain_costs: Option<&TerrainCostGrid>,
     entity_blocks: Option<&BTreeSet<(u16, u16)>>,
     resolved_terrain: Option<&ResolvedTerrainGrid>,
+    zone_grid: Option<&ZoneGrid>,
     entity_block_map: Option<&LayeredEntityBlockMap>,
     mover_is_crusher: bool,
     rules: &GeneralRules,
@@ -138,6 +168,7 @@ pub fn set_destination_for_teleporter_entity(
             terrain_costs,
             entity_blocks,
             resolved_terrain,
+            zone_grid,
             entity_block_map,
             mover_is_crusher,
         );
@@ -162,6 +193,7 @@ pub fn set_destination_for_teleporter_entity(
             terrain_costs,
             entity_blocks,
             resolved_terrain,
+            zone_grid,
             entity_block_map,
             mover_is_crusher,
         );
@@ -261,6 +293,7 @@ pub fn issue_move_command_with_layered(
     terrain_costs: Option<&TerrainCostGrid>,
     entity_blocks: Option<&BTreeSet<(u16, u16)>>,
     resolved_terrain: Option<&ResolvedTerrainGrid>,
+    zone_grid: Option<&ZoneGrid>,
     entity_block_map: Option<&LayeredEntityBlockMap>,
     mover_is_crusher: bool,
 ) -> bool {
@@ -275,6 +308,10 @@ pub fn issue_move_command_with_layered(
     let start_rx: u16 = entity.position.rx;
     let start_ry: u16 = entity.position.ry;
     let current_layer = entity.movement_layer_or_ground();
+    let uses_drive_locomotor = entity
+        .locomotor
+        .as_ref()
+        .is_some_and(|l| matches!(l.kind, LocomotorKind::Drive));
     // Derive movement_zone from the entity's locomotor — no parameter needed.
     let movement_zone: Option<MovementZone> = entity.locomotor.as_ref().map(|l| l.movement_zone);
     let too_big_to_fit_under_bridge = entity.too_big_to_fit_under_bridge;
@@ -282,7 +319,7 @@ pub fn issue_move_command_with_layered(
         .locomotor
         .as_ref()
         .is_some_and(|loco| supports_layered_bridge_pathing(loco, grid, entity.on_bridge));
-    let marker_request_start = if queue {
+    let marker_request_start = if queue && !uses_drive_locomotor {
         entity
             .movement_target
             .as_ref()
@@ -328,8 +365,10 @@ pub fn issue_move_command_with_layered(
         build_peer_search_marker_overlay(entities, entity_id, marker_request_start);
     let marker_overlay_ref = (!marker_overlay.is_empty()).then_some(&marker_overlay);
 
-    if queue {
-        // Check if entity already has a movement target to append to.
+    if queue && !uses_drive_locomotor {
+        // Check if entity already has a movement target to append to. Drive
+        // commands reissue the destination instead; standard YR player/team/
+        // trigger paths do not append to Foot NavQueue.
         let entity_mut = entities.get_mut(entity_id);
         if let Some(entity_mut) = entity_mut {
             if let Some(ref mut movement) = entity_mut.movement_target {
@@ -347,7 +386,7 @@ pub fn issue_move_command_with_layered(
                 let Some((appended, appended_layers)) = find_move_path_with_marker(
                     PathfindingContext {
                         path_grid: Some(grid),
-                        zone_grid: None,
+                        zone_grid,
                         resolved_terrain,
                         blocker_neighbor_counts: None,
                     },
@@ -394,7 +433,7 @@ pub fn issue_move_command_with_layered(
     let Some((path, path_layers)) = find_move_path_with_marker(
         PathfindingContext {
             path_grid: Some(grid),
-            zone_grid: None,
+            zone_grid,
             resolved_terrain,
             blocker_neighbor_counts: None,
         },
@@ -473,10 +512,18 @@ pub fn issue_move_command_with_layered(
     } else {
         (SIM_ZERO, SIM_ZERO, SIM_ZERO)
     };
+    let initial_step_delta = if path.len() >= 2 {
+        Some((
+            path[1].0 as i32 - path[0].0 as i32,
+            path[1].1 as i32 - path[0].1 as i32,
+        ))
+    } else {
+        None
+    };
 
     // Attach the MovementTarget and update facing on the entity.
     // All units start at full speed — acceleration/deceleration is disabled.
-    let movement: MovementTarget = MovementTarget {
+    let mut movement: MovementTarget = MovementTarget {
         path,
         path_layers,
         next_index: 1, // Index 0 is the current position, 1 is the first target.
@@ -493,19 +540,95 @@ pub fn issue_move_command_with_layered(
         movement.path_layers.len(),
         "path/path_layers desync in initial MovementTarget"
     );
+    let drive_path_directions = drive_directions_from_path(&movement.path);
 
     if let Some(entity_mut) = entities.get_mut(entity_id) {
-        entity_mut.movement_target = Some(movement);
+        let uses_drive_locomotor = entity_mut
+            .locomotor
+            .as_ref()
+            .is_some_and(|l| matches!(l.kind, LocomotorKind::Drive));
+        if uses_drive_locomotor {
+            super::navcom::set_destination_internal_cell(
+                entity_mut,
+                effective_target,
+                resolved_terrain,
+            );
+            entity_mut.navigation.nav_queue.clear();
+            let drive = entity_mut
+                .drive_locomotion
+                .get_or_insert_with(Default::default);
+            drive.path.directions = drive_path_directions;
+            drive.path.cursor = 0;
+            drive.turn.target_direction = drive.path.directions.first().copied();
+            drive.turn.target_facing_16 = initial_step_delta
+                .map(|(dx, dy)| crate::util::fixed_math::facing_from_delta_int_u16(dx, dy));
+            drive.turn.rate_timer = 0;
+            drive.turn.first_movement_allowed = false;
+            super::drive_locomotion::update_drive_speed_fraction(
+                drive,
+                crate::util::fixed_math::SIM_ONE,
+                entity_mut.drive_accelerates,
+                SIM_ZERO,
+                SIM_ZERO,
+                SIM_ZERO,
+                SIM_ZERO,
+                SIM_ZERO,
+            );
+        }
+        let mut drive_track_started = false;
         if let Some(f) = new_facing {
-            // Infantry always turn instantly (RA2 behavior).
-            // Vehicles with ROT>0 set facing_target for gradual rotation.
-            let has_rot: bool = entity_mut.locomotor.as_ref().is_some_and(|l| l.rot > 0);
-            if entity_mut.category != EntityCategory::Infantry && has_rot {
-                entity_mut.facing_target = Some(f);
+            if entity_mut.category != EntityCategory::Infantry
+                && uses_drive_locomotor
+                && let Some((dx, dy)) = initial_step_delta
+            {
+                if let Some(sel) = drive_track::select_drive_track(entity_mut.facing, f, false) {
+                    entity_mut.drive_track = drive_track::begin_drive_track(
+                        sel.raw_track_index,
+                        sel.flags,
+                        dx,
+                        dy,
+                        sel.target_facing,
+                    );
+                    drive_track_started = entity_mut.drive_track.is_some();
+                } else if let Some(fb) = drive_track::build_sharp_turn_fallback(entity_mut.facing) {
+                    let (cdx, cdy) = crate::util::fixed_math::dir_to_cell_delta(entity_mut.facing);
+                    entity_mut.drive_track = drive_track::begin_drive_track(
+                        fb.raw_track_index,
+                        fb.flags,
+                        cdx,
+                        cdy,
+                        fb.target_facing,
+                    );
+                    if entity_mut.drive_track.is_some() {
+                        movement.next_index += 1;
+                        let (d_x, d_y, d_len) =
+                            crate::util::lepton::cell_delta_to_lepton_dir(cdx, cdy);
+                        movement.move_dir_x = d_x;
+                        movement.move_dir_y = d_y;
+                        movement.move_dir_len = d_len;
+                        drive_track_started = true;
+                    }
+                }
+            }
+
+            if drive_track_started {
+                entity_mut.facing_target = None;
+            } else if uses_drive_locomotor {
+                entity_mut.drive_track = None;
+                entity_mut.facing_target = None;
             } else {
-                entity_mut.facing = f;
+                entity_mut.drive_track = None;
+                // Infantry always turn instantly (RA2 behavior).
+                // Vehicles with ROT>0 set facing_target for gradual rotation.
+                let has_rot: bool = entity_mut.locomotor.as_ref().is_some_and(|l| l.rot > 0);
+                if entity_mut.category != EntityCategory::Infantry && has_rot {
+                    entity_mut.facing_target = Some(f);
+                } else {
+                    entity_mut.facing = f;
+                }
             }
         }
+        entity_mut.movement_target = Some(movement);
     }
 
     true

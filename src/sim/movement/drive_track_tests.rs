@@ -150,6 +150,51 @@ fn track_3_begin_starts_at_entry_12() {
 }
 
 #[test]
+fn drive_track_budget_equal_seven_does_not_consume_point() {
+    let mut state = begin_drive_track_with_head_offset(1, 0, 0, 0, 0).unwrap();
+    let start_index = state.point_index;
+    let mut residual = 7;
+
+    let advance = advance_drive_track_with_budget(&mut state, 0, &mut residual);
+
+    assert_eq!(state.point_index, start_index);
+    assert_eq!(state.residual, 7);
+    assert_eq!(residual, 7);
+    assert!(!advance.finished);
+    assert!(!advance.cell_jump);
+}
+
+#[test]
+fn drive_runtime_residual_carries_across_track_ticks() {
+    let mut state = begin_drive_track_with_head_offset(1, 0, 0, 0, 0).unwrap();
+    let start_index = state.point_index;
+    let mut residual = 6;
+
+    let advance = advance_drive_track_with_budget(&mut state, 2, &mut residual);
+
+    assert_eq!(state.point_index, start_index + 1);
+    assert_eq!(state.residual, 1);
+    assert_eq!(residual, 1);
+    assert!(!advance.finished);
+    assert!(!advance.cell_jump);
+}
+
+#[test]
+fn drive_track_finish_preserves_residual_for_same_tick_retry() {
+    let mut state = begin_drive_track(15, 0, 0, 0, 0xC0).unwrap();
+    let last_index = raw_track_meta(15).unwrap().points_count - 1;
+    state.point_index = last_index - 1;
+    let mut residual = 0;
+
+    let advance = advance_drive_track_with_budget(&mut state, 20, &mut residual);
+
+    assert!(advance.finished);
+    assert_eq!(state.point_index, last_index);
+    assert_eq!(state.residual, 13);
+    assert_eq!(residual, 13);
+}
+
+#[test]
 fn select_drive_track_ne_diagonal_gives_track_2() {
     // Facing NE (32), moving NE (32) → entry 9: normal_track=2 (straight diagonal).
     let sel = select_drive_track(32, 32, false);
