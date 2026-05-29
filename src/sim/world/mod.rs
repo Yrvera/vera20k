@@ -1522,8 +1522,10 @@ impl Simulation {
         // --- Phase 1: Ground movement ---
         // DEPENDS ON: commands (may set movement_target), entity positions from prior tick.
         // PRODUCES: updated entity positions, crush/bump effects, drive track state.
+        let movement_order = self.live_object_order_snapshot();
         let movement_stats = movement::tick_movement_with_grids(
             &mut self.entities,
+            &movement_order,
             path_grid,
             &self.terrain_costs,
             &self.house_alliances,

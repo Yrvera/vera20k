@@ -85,6 +85,7 @@ fn advance_prone_mover(crawls: bool) -> SimFixed {
 
     tick_movement_with_grids(
         &mut entities,
+        &[],
         None,
         &terrain_costs,
         &Default::default(),

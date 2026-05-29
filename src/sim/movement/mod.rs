@@ -280,6 +280,7 @@ pub fn tick_movement_with_grid(
     let mut sound_events: Vec<crate::sim::world::SimSoundEvent> = Vec::new();
     tick_movement_with_grids(
         entities,
+        &[],
         path_grid,
         terrain_costs,
         alliances,

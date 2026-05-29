@@ -58,12 +58,12 @@ use crate::sim::occupancy::{CellListInsertion, OccupancyGrid};
 
 fn tick_forced_drive_tracks(
     entities: &mut EntityStore,
+    entity_order: &[u64],
     dt: SimFixed,
     stats: &mut MovementTickStats,
 ) -> BTreeSet<u64> {
     let mut processed: BTreeSet<u64> = BTreeSet::new();
-    let keys = entities.keys_sorted();
-    for &entity_id in &keys {
+    for &entity_id in entity_order {
         let Some(entity) = entities.get_mut(entity_id) else {
             continue;
         };
@@ -782,6 +782,7 @@ fn handle_deferred_drive_track_chain(
 
 pub fn tick_movement_with_grids(
     entities: &mut EntityStore,
+    live_order: &[u64],
     path_grid: Option<&PathGrid>,
     terrain_costs: &BTreeMap<SpeedType, TerrainCostGrid>,
     alliances: &HouseAllianceMap,
@@ -825,6 +826,13 @@ pub fn tick_movement_with_grids(
         blockage_path_delay_ticks,
     };
     let dt: SimFixed = dt_from_tick_ms(tick_ms);
+    let fallback_order;
+    let entity_order: &[u64] = if live_order.is_empty() {
+        fallback_order = entities.keys_sorted();
+        &fallback_order
+    } else {
+        live_order
+    };
     // Collect entities that have finished their paths (need movement_target removal after loop).
     let mut finished_entities: Vec<u64> = Vec::new();
     // Deferred effects — applied after the movement loop to avoid borrow conflicts.
@@ -850,13 +858,12 @@ pub fn tick_movement_with_grids(
     if let Some(terrain) = resolved_terrain {
         tube_movement::tick_low_bridge_tube_movement(entities, occupancy, terrain);
     }
-    let forced_drive_processed = tick_forced_drive_tracks(entities, dt, &mut stats);
+    let forced_drive_processed = tick_forced_drive_tracks(entities, entity_order, dt, &mut stats);
 
-    // Collect movers in deterministic order: ground/bridge entities with a movement_target.
-    let keys = entities.keys_sorted();
+    // Collect movers in live object order: ground/bridge entities with a movement_target.
     let mut movers: Vec<u64> = Vec::new();
     let mut mover_owners: BTreeSet<crate::sim::intern::InternedId> = BTreeSet::new();
-    for &id in &keys {
+    for &id in entity_order {
         if let Some(entity) = entities.get(id) {
             let _ = drive_locomotion::process_drive_locomotion_shell(entity);
             if entity.navigation.pending_arrival_clear {
@@ -904,7 +911,7 @@ pub fn tick_movement_with_grids(
         rules,
     );
     movers.clear();
-    for &id in &keys {
+    for &id in entity_order {
         if let Some(entity) = entities.get(id) {
             if forced_drive_processed.contains(&id)
                 || entity.movement_target.is_none()
