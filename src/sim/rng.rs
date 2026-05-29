@@ -54,6 +54,14 @@ impl SimRng {
         hash
     }
 
+    /// Test/debug accessor for the secondary lag index. Used by the two-stream
+    /// routing tests to assert both streams seed to the gamemd `index_b = 0x67`
+    /// start. Not part of the gameplay API.
+    #[cfg(test)]
+    pub(crate) fn index_b(&self) -> i32 {
+        self.index_b
+    }
+
     /// Hash the complete RNG state for deterministic replay/desync checks.
     pub fn hash_state(&self, hasher: &mut impl Hasher) {
         self.disabled.hash(hasher);
@@ -143,7 +151,16 @@ impl SimRng {
             return lo.wrapping_add(0x8000_0000);
         }
 
-        let mask = span.next_power_of_two().wrapping_sub(1);
+        // Mask one bit wider than the span's highest set bit, matching the
+        // rejection-sampling mask 2^(msb+1)-1. next_power_of_two() is wrong
+        // because it returns the span itself when span is already a power of
+        // two, producing a mask one bit too short (e.g. span=4 -> 3 instead of
+        // 7): that biases the output (the inclusive top is never reached) and
+        // changes how many raw draws are consumed. span is guaranteed in
+        // 1..=0x7FFF_FFFE here (lo==hi early return handles span==0; the
+        // span >= 0x7FFF_FFFF guard above handles the top), so leading_zeros is
+        // 1..=31 and the shift never reaches 32.
+        let mask = u32::MAX >> span.leading_zeros();
         loop {
             let sample = self.next_u32() & mask;
             if sample <= span {
@@ -211,5 +228,48 @@ mod tests {
         assert_eq!(rng.next_u32(), 0x78B7_6ED5);
         assert_eq!(rng.next_u32(), 0x275D_74AE);
         assert_eq!(rng.next_u32(), 0xDA63_B931);
+    }
+
+    #[test]
+    fn random_ranged_power_of_two_span_matches_gamemd_draw_stream() {
+        // Seed=1 raw draws are 0x78B76ED5, 0x275D74AE, 0xDA63B931
+        // (pinned by test_gamemd_raw_sequence_seed_one). With span=4 the
+        // rejection mask is 7, so masked values are 5, 6, 1 -> reject, reject,
+        // accept(1). Correct behavior: returns 1 AND consumes exactly 3 raw
+        // draws.
+        let mut rng = SimRng::new(1);
+        let v = rng.next_range_u32_inclusive(0, 4);
+        assert_eq!(v, 1, "RandomRanged(0,4) on seed 1 must reject 5,6 then accept 1");
+
+        // Pin the exact raw-draw count: a reference advanced exactly 3 times
+        // must match. The old span-1 mask (=3) accepts the first draw
+        // (0x78B76ED5 & 3 = 1), returning 1 but consuming only ONE draw, so
+        // this state assert fails on the old code and passes on the corrected
+        // code.
+        let mut reference = SimRng::new(1);
+        for _ in 0..3 {
+            reference.next_u32();
+        }
+        assert_eq!(
+            rng.state(),
+            reference.state(),
+            "RandomRanged(0,4) must consume exactly 3 raw draws (rejection sampling)"
+        );
+    }
+
+    #[test]
+    fn random_ranged_power_of_two_span_can_return_inclusive_top() {
+        // span=4 is a power of two; the inclusive top value 4 must be reachable
+        // (impossible with the buggy span-1 mask, which caps output at 3).
+        let mut rng = SimRng::new(7);
+        let mut saw_top = false;
+        for _ in 0..4096 {
+            let val = rng.next_range_u32_inclusive(0, 4);
+            assert!(val <= 4);
+            if val == 4 {
+                saw_top = true;
+            }
+        }
+        assert!(saw_top, "RandomRanged(0,4) must be able to return the inclusive top value 4");
     }
 }

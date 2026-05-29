@@ -14,7 +14,7 @@ use crate::map::houses::are_houses_friendly;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::components::WorldEffect;
 use crate::sim::intern::InternedId;
-use crate::sim::superweapon::invulnerability::{InvulnKind, apply_invulnerability};
+use crate::sim::superweapon::invulnerability::{apply_invulnerability, InvulnKind};
 use crate::sim::world::{SimSoundEvent, Simulation};
 
 const LEPTONS_PER_CELL: i64 = 256;
@@ -111,6 +111,7 @@ fn spawn_invoke_anim(sim: &mut Simulation, anim_name: &str, rx: u16, ry: u16) {
     let iid = sim.interner.intern(anim_name);
     let frames = sim.effect_frame_counts.get(&iid).copied().unwrap_or(20);
     sim.world_effects.push(WorldEffect {
+        anim_spawn: None,
         shp_name: iid,
         rx,
         ry,

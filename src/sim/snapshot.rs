@@ -13,7 +13,10 @@ use serde::{Deserialize, Serialize};
 use crate::sim::world::Simulation;
 
 /// Bump this when the snapshot binary format changes in a breaking way.
-const SNAPSHOT_VERSION: u32 = 10;
+// Bumped 11 -> 12 for the two-stream RNG split: `rng` (one field) became
+// `scenario_rng` + `main_rng` + `seed`, changing the positional bincode layout.
+// Old single-`rng` blobs must be rejected, not mis-deserialized.
+const SNAPSHOT_VERSION: u32 = 12;
 
 /// Binary snapshot envelope — wraps the full `Simulation` state plus
 /// compatibility hashes for the map and rules that were active at save time.
@@ -233,6 +236,194 @@ mod tests {
             .as_ref()
             .expect("attack_target should be restored");
         assert!(matches!(restored.target, TargetKind::Cell(50, 50)));
+    }
+
+    /// Reveal registers at the tail; a stored-but-unrevealed (limbo) object is
+    /// absent from the active order until revealed. (DRIFT 2 / ledger 9)
+    #[test]
+    fn limbo_object_registers_only_on_reveal() {
+        use crate::sim::game_entity::GameEntity;
+        let mut sim = Simulation::new();
+        // Stored but not revealed: present in the store, absent from the order.
+        sim.entities
+            .insert(GameEntity::test_default(1, "MTNK", "Americans", 5, 5));
+        assert!(sim.entities.contains(1));
+        assert!(!sim.live_object_order_snapshot().contains(&1));
+        // Reveal both: tail-append in reveal order, not sorted.
+        sim.entities
+            .insert(GameEntity::test_default(2, "MTNK", "Americans", 6, 6));
+        sim.register_live_object(2);
+        sim.register_live_object(1);
+        assert_eq!(sim.live_object_order_snapshot(), vec![2, 1]);
+    }
+
+    /// The active order is serialized directly and restored verbatim — not
+    /// re-derived, not sorted. (ledger 13)
+    #[test]
+    fn saveload_restores_live_object_order_verbatim() {
+        use crate::sim::game_entity::GameEntity;
+        let mut sim = Simulation::new();
+        for id in [10u64, 20, 30] {
+            sim.entities
+                .insert(GameEntity::test_default(id, "MTNK", "Americans", 5, 5));
+            sim.register_live_object(id);
+        }
+        // Force an order whose sequence differs from stable-id order.
+        sim.set_logic_order_for_test(vec![20, 10, 30]);
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "test_map", 0);
+        let restored = GameSnapshot::load(&bytes).expect("load should succeed").sim;
+        assert_eq!(restored.live_object_order_snapshot(), vec![20, 10, 30]);
+    }
+
+    /// After load, membership is rebuilt from the order; a restored member
+    /// unregisters exactly once (no stale entry) and re-registers without
+    /// duplicating (no double-add). Avoids the §3.4 hazard. (ledger 14)
+    #[test]
+    fn saveload_restored_member_removes_cleanly() {
+        use crate::sim::game_entity::GameEntity;
+        let mut sim = Simulation::new();
+        sim.entities
+            .insert(GameEntity::test_default(1, "MTNK", "Americans", 5, 5));
+        sim.register_live_object(1);
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "test_map", 0);
+        let mut restored = GameSnapshot::load(&bytes).expect("load should succeed").sim;
+        // Real load-path step: membership flags are false straight after deserialize.
+        restored.rebuild_logic_membership();
+
+        // Unregister removes exactly once — no stale entry left behind.
+        restored.unregister_live_object(1);
+        assert!(!restored.live_object_order_snapshot().contains(&1));
+        // Re-register appends once — no double-add.
+        restored.register_live_object(1);
+        assert_eq!(
+            restored
+                .live_object_order_snapshot()
+                .iter()
+                .filter(|&&x| x == 1)
+                .count(),
+            1
+        );
+    }
+
+    // --- LogicClass live count-reload pass (scheduler contract) ---
+
+    /// Insert an entity into the store and append it to the active order.
+    fn spawn_and_register(sim: &mut Simulation, id: u64) {
+        use crate::sim::game_entity::GameEntity;
+        sim.entities
+            .insert(GameEntity::test_default(id, "MTNK", "Americans", 5, 5));
+        sim.register_live_object(id);
+    }
+
+    /// An object the body tail-appends during the pass is ticked later in the
+    /// SAME pass, because the live length is re-read after each body call.
+    #[test]
+    fn logic_scheduler_append_during_pass_ticks_new_tail_same_tick() {
+        use crate::sim::game_entity::GameEntity;
+        let mut sim = Simulation::new();
+        spawn_and_register(&mut sim, 1); // A
+        spawn_and_register(&mut sim, 2); // B
+        // C exists in the store but is NOT yet in the active order.
+        sim.entities
+            .insert(GameEntity::test_default(3, "MTNK", "Americans", 6, 6));
+        assert!(!sim.live_object_order_snapshot().contains(&3));
+
+        let mut visited = Vec::new();
+        sim.for_each_live_object(|sim, id| {
+            visited.push(id);
+            if id == 1 {
+                // A's body reveals C at the tail.
+                sim.register_live_object(3);
+            }
+        });
+
+        // C ran in the same pass, after the old tail.
+        assert_eq!(visited, vec![1, 2, 3]);
+        assert_eq!(sim.live_object_order_snapshot(), vec![1, 2, 3]);
+    }
+
+    /// Registering the same object twice is a no-op: the order keeps one entry
+    /// and the body runs for it exactly once.
+    #[test]
+    fn logic_scheduler_duplicate_registration_is_idempotent() {
+        let mut sim = Simulation::new();
+        spawn_and_register(&mut sim, 1);
+        sim.register_live_object(1); // duplicate
+        assert_eq!(sim.live_object_order_snapshot(), vec![1]);
+
+        let mut visits = 0;
+        sim.for_each_live_object(|_, id| {
+            if id == 1 {
+                visits += 1;
+            }
+        });
+        assert_eq!(visits, 1);
+    }
+
+    /// When the current object unregisters itself, compaction shifts its
+    /// successor into the just-processed slot; the cursor still advances, so
+    /// that successor is skipped this pass (no index repair).
+    #[test]
+    fn logic_scheduler_self_unregister_uses_compacting_index_semantics() {
+        let mut sim = Simulation::new();
+        spawn_and_register(&mut sim, 1); // A
+        spawn_and_register(&mut sim, 2); // B
+        spawn_and_register(&mut sim, 3); // C
+
+        let mut visited = Vec::new();
+        sim.for_each_live_object(|sim, id| {
+            visited.push(id);
+            if id == 2 {
+                sim.unregister_live_object(2); // B removes itself
+            }
+        });
+
+        // A and B were visited; C (shifted into B's slot) is skipped this pass.
+        assert_eq!(visited, vec![1, 2]);
+        // Order is compacted, order-preserving — B gone, C retained.
+        assert_eq!(sim.live_object_order_snapshot(), vec![1, 3]);
+    }
+
+    /// Premise: a snapshot walk MISSES a same-pass append that the live pass
+    /// catches. This is the drift the live pass exists to remove.
+    #[test]
+    fn logic_scheduler_snapshot_walk_misses_same_pass_append() {
+        use crate::sim::game_entity::GameEntity;
+
+        // Snapshot path: appended object is invisible to this pass.
+        let mut sim = Simulation::new();
+        spawn_and_register(&mut sim, 1);
+        spawn_and_register(&mut sim, 2);
+        sim.entities
+            .insert(GameEntity::test_default(3, "MTNK", "Americans", 6, 6));
+        let order = sim.live_object_order_snapshot();
+        let mut snapshot_visited = Vec::new();
+        for &id in &order {
+            snapshot_visited.push(id);
+            if id == 1 {
+                sim.register_live_object(3);
+            }
+        }
+        assert_eq!(snapshot_visited, vec![1, 2]); // C missed
+
+        // Live path on an equivalent setup: appended object is visited.
+        let mut sim2 = Simulation::new();
+        spawn_and_register(&mut sim2, 1);
+        spawn_and_register(&mut sim2, 2);
+        sim2.entities
+            .insert(GameEntity::test_default(3, "MTNK", "Americans", 6, 6));
+        let mut live_visited = Vec::new();
+        sim2.for_each_live_object(|sim, id| {
+            live_visited.push(id);
+            if id == 1 {
+                sim.register_live_object(3);
+            }
+        });
+        assert_eq!(live_visited, vec![1, 2, 3]); // C caught
+
+        assert_ne!(snapshot_visited, live_visited);
     }
 
     /// `Command::ForceAttackCell` is serializable (replay/snapshot back-compat).

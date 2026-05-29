@@ -28,16 +28,28 @@ fn hash_drive_track_state(
 impl Simulation {
     /// Deterministic state hash over canonicalized simulation state.
     ///
-    /// Hashes tick, RNG, production, fog, alliances, and all entity components
-    /// in stable-entity-ID order (EntityStore keys_sorted) for determinism.
+    /// Hashes tick, both RNG streams, production, fog, alliances, and all entity
+    /// components in stable-entity-ID order (EntityStore keys_sorted) for determinism.
     pub fn state_hash(&self) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
         self.tick.hash(&mut hasher);
         self.total_sim_ms.hash(&mut hasher);
         self.binary_frame.hash(&mut hasher);
-        self.rng.hash_state(&mut hasher);
+        // Hash BOTH RNG streams in a fixed order. Order is part of the hash contract
+        // and must never change. Hashing only one stream would let a divergence in the
+        // other produce identical hashes on two desynced clients (desync detector goes
+        // blind exactly where the two-stream split matters).
+        self.scenario_rng.hash_state(&mut hasher);
+        self.main_rng.hash_state(&mut hasher);
         self.next_stable_entity_id.hash(&mut hasher);
+
+        // LogicClass active-object order — authoritative (drives reconciliation order).
+        let order = self.logic.as_slice();
+        order.len().hash(&mut hasher);
+        for id in order {
+            id.hash(&mut hasher);
+        }
 
         self.hash_game_options(&mut hasher);
         self.hash_houses(&mut hasher);

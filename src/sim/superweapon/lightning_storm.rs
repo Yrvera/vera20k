@@ -9,7 +9,7 @@
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
 use crate::rules::ruleset::RuleSet;
-use crate::sim::combat::combat_aoe::{AoELayerContext, apply_aoe_damage, bridge_adjusted_impact_z};
+use crate::sim::combat::combat_aoe::{apply_aoe_damage, bridge_adjusted_impact_z, AoELayerContext};
 use crate::sim::components::WorldEffect;
 use crate::sim::intern::InternedId;
 use crate::sim::world::{SimSoundEvent, Simulation};
@@ -187,8 +187,8 @@ fn pick_scatter_cell(
     let diameter = (spread * 2 + 1) as u32;
     for _ in 0..MAX_SCATTER_RETRIES {
         // Random offset within [-spread, +spread] for both axes.
-        let dx = sim.rng.next_range_u32(diameter) as i32 - spread;
-        let dy = sim.rng.next_range_u32(diameter) as i32 - spread;
+        let dx = sim.superweapon_rng().next_range_u32(diameter) as i32 - spread;
+        let dy = sim.superweapon_rng().next_range_u32(diameter) as i32 - spread;
         let rx = (center_rx as i32 + dx).max(0) as u16;
         let ry = (center_ry as i32 + dy).max(0) as u16;
 
@@ -199,8 +199,8 @@ fn pick_scatter_cell(
         }
     }
     // Fallback: use the last attempted position (avoids infinite loop).
-    let dx = sim.rng.next_range_u32(diameter) as i32 - spread;
-    let dy = sim.rng.next_range_u32(diameter) as i32 - spread;
+    let dx = sim.superweapon_rng().next_range_u32(diameter) as i32 - spread;
+    let dy = sim.superweapon_rng().next_range_u32(diameter) as i32 - spread;
     (
         (center_rx as i32 + dx).max(0) as u16,
         (center_ry as i32 + dy).max(0) as u16,
@@ -210,7 +210,7 @@ fn pick_scatter_cell(
 /// Spawn a single lightning bolt at the given cell: visual effect + area damage.
 fn spawn_bolt(sim: &mut Simulation, rules: &RuleSet, rx: u16, ry: u16, owner: InternedId) {
     // 1. Pick a random bolt animation.
-    let anim_idx = sim.rng.next_range_u32(BOLT_ANIMS.len() as u32) as usize;
+    let anim_idx = sim.superweapon_rng().next_range_u32(BOLT_ANIMS.len() as u32) as usize;
     let anim_name = BOLT_ANIMS[anim_idx];
     let anim_iid = sim.interner.intern(anim_name);
     let frames = sim
@@ -220,6 +220,7 @@ fn spawn_bolt(sim: &mut Simulation, rules: &RuleSet, rx: u16, ry: u16, owner: In
         .unwrap_or(20);
 
     sim.world_effects.push(WorldEffect {
+        anim_spawn: None,
         shp_name: anim_iid,
         rx,
         ry,
@@ -288,6 +289,7 @@ fn spawn_bolt(sim: &mut Simulation, rules: &RuleSet, rx: u16, ry: u16, owner: In
                 .copied()
                 .unwrap_or(20);
             sim.world_effects.push(WorldEffect {
+                anim_spawn: None,
                 shp_name: fx.shp_name,
                 rx: fx.rx,
                 ry: fx.ry,
@@ -316,7 +318,7 @@ fn spawn_bolt(sim: &mut Simulation, rules: &RuleSet, rx: u16, ry: u16, owner: In
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map::bridge_facts::{BRIDGE_FLAG_STRUCTURAL, BridgeCellFacts};
+    use crate::map::bridge_facts::{BridgeCellFacts, BRIDGE_FLAG_STRUCTURAL};
     use crate::map::entities::EntityCategory;
     use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
     use crate::rules::ini_parser::IniFile;

@@ -188,7 +188,7 @@ pub(super) fn tick_system(sys: &mut ParticleSystem, sim: &mut Simulation, rules:
     for p in &mut sys.particles {
         let pt = rules.particle_type(p.type_id);
         let frame_count = super::system_ai::resolve_image_frame_count(sim, pt);
-        tick_particle(p, pt, frame_count, &mut sim.rng);
+        tick_particle(p, pt, frame_count, sim.particle_rng());
     }
 
     // Phase 2 — prune dead particles. Fire has no NextParticle chaining
@@ -207,7 +207,7 @@ pub(super) fn tick_system(sys: &mut ParticleSystem, sim: &mut Simulation, rules:
                 sys.coords,
                 FIRE_INSERT_RANGE,
                 rules,
-                &mut sim.rng,
+                sim.particle_rng(),
             );
         }
     }
@@ -263,10 +263,10 @@ mod tests {
             IVec3::ZERO,
             IVec3::ZERO,
             pt,
-            &mut sim.rng,
+            sim.particle_rng(),
         );
         p.velocity = SIM_ZERO;
-        tick_particle(&mut p, pt, 0, &mut sim.rng);
+        tick_particle(&mut p, pt, 0, sim.particle_rng());
         assert!(p.marked_for_deletion, "zero-velocity fire dies immediately");
     }
 
@@ -293,13 +293,13 @@ mod tests {
             IVec3::ZERO,
             IVec3::ZERO,
             pt,
-            &mut sim.rng,
+            sim.particle_rng(),
         );
         // Force animation_state past final_damage_state (default 14).
         p.animation_state = 20;
         // Drive damage_counter to zero — must NOT reset to MaxDC.
         for _ in 0..5 {
-            tick_particle(&mut p, pt, 0, &mut sim.rng);
+            tick_particle(&mut p, pt, 0, sim.particle_rng());
         }
         assert!(
             p.damage_counter <= 0,
@@ -328,7 +328,7 @@ mod tests {
             IVec3::new(100, 100, 0),
             IVec3::ZERO,
             pt,
-            &mut sim.rng,
+            sim.particle_rng(),
         );
         p.prev_delta = [SimFixed::from_num(5), SIM_ZERO, SIM_ZERO];
         // old_ground=0, new_ground=10 → terrain rises.
@@ -358,7 +358,7 @@ mod tests {
             IVec3::new(100, 100, 0),
             IVec3::ZERO,
             pt,
-            &mut sim.rng,
+            sim.particle_rng(),
         );
         p.prev_delta = [SimFixed::from_num(5), SIM_ZERO, SIM_ZERO];
         move_fire(&mut p, 0, 0);
