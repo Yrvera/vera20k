@@ -28,11 +28,22 @@ pub struct PlayerNameEditState {
 
 impl Default for PlayerNameEditState {
     fn default() -> Self {
+        Self::with_name(PLAYER_NAME_DEFAULT)
+    }
+}
+
+impl PlayerNameEditState {
+    /// Build an edit state seeded with a starting name, capped to the field's
+    /// 19-character limit. Used to pre-fill the field from the persistent
+    /// player profile instead of a hardcoded literal.
+    pub fn with_name(name: &str) -> Self {
+        let text: String = name.chars().take(PLAYER_NAME_MAX_CHARS).collect();
+        let caret = text.chars().count();
         Self {
-            text: PLAYER_NAME_DEFAULT.to_string(),
+            text,
             focused: false,
             selection: None,
-            caret: PLAYER_NAME_DEFAULT.chars().count(),
+            caret,
             scroll_x: 0,
         }
     }
@@ -442,6 +453,12 @@ pub fn update_player_name_scroll_for_caret(
     state.player_name_edit.scroll_x != old
 }
 
+/// Handle Tab while the player-name edit has focus. The original moves keyboard
+/// focus to the next dialog tab-stop control; the skirmish shell currently
+/// models keyboard focus only for this edit, so the observable effect we can
+/// reproduce is that focus leaves the edit (its caret/selection clear). Full
+/// focus advancement to a specific next control awaits a shell-wide keyboard
+/// focus/tab-order model. Returns true when focus state changed.
 pub fn handle_player_name_tab(state: &mut SkirmishShellState) -> bool {
     blur_player_name_edit(state)
 }

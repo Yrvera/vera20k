@@ -2043,3 +2043,16 @@ fn all_colors_claimed_activation_leaves_row_without_claim() {
         "the other row's claim on color 1 must be preserved"
     );
 }
+
+#[test]
+fn player_name_with_name_caps_to_field_limit() {
+    let long = "X".repeat(PLAYER_NAME_MAX_CHARS + 5);
+    let edit = PlayerNameEditState::with_name(&long);
+    assert_eq!(edit.text.chars().count(), PLAYER_NAME_MAX_CHARS);
+    assert_eq!(edit.caret, PLAYER_NAME_MAX_CHARS);
+    assert!(!edit.focused);
+
+    let edit = PlayerNameEditState::with_name("Commander");
+    assert_eq!(edit.text, "Commander");
+    assert_eq!(edit.caret, "Commander".chars().count());
+}

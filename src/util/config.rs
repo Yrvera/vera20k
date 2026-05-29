@@ -27,6 +27,34 @@ pub struct GameConfig {
     /// Deterministic simulation settings.
     #[serde(default)]
     pub gameplay: GameplayConfig,
+    /// Local player profile (name pre-filled into skirmish/multiplayer setup).
+    #[serde(default)]
+    pub profile: ProfileConfig,
+}
+
+/// Local player profile settings.
+///
+/// `[profile]` may be omitted entirely. `name` is the persistent player handle
+/// the setup screen pre-fills into the name field; when unset the setup UI
+/// falls back to its own default. This mirrors the original reading the player
+/// name from a persistent profile source rather than a baked-in string.
+#[derive(Debug, Deserialize, Default)]
+pub struct ProfileConfig {
+    /// Player name shown/edited in skirmish setup. `None` (or empty) means use
+    /// the setup screen's built-in default.
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+impl ProfileConfig {
+    /// The configured player name, trimmed; `None` when unset or blank so the
+    /// caller can apply its own default.
+    pub fn player_name(&self) -> Option<&str> {
+        self.name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+    }
 }
 
 /// Paths to external resources (the player's RA2 installation).
@@ -177,5 +205,30 @@ ra2_dir = "C:/Westwood/RA2"
         assert!(!config.graphics.upscale);
         assert_eq!(config.gameplay.sim_tick_hz, 15);
         assert_eq!(config.gameplay.input_delay_ticks, 2);
+        // No [profile] section -> no pre-filled player name.
+        assert_eq!(config.profile.player_name(), None);
+    }
+
+    #[test]
+    fn test_profile_player_name_trims_and_blank_is_none() {
+        let toml_str = r#"
+[paths]
+ra2_dir = "C:/Westwood/RA2"
+
+[profile]
+name = "  Commander  "
+"#;
+        let config: GameConfig = toml::from_str(toml_str).expect("Failed to parse test config");
+        assert_eq!(config.profile.player_name(), Some("Commander"));
+
+        let blank = r#"
+[paths]
+ra2_dir = "C:/Westwood/RA2"
+
+[profile]
+name = "   "
+"#;
+        let config: GameConfig = toml::from_str(blank).expect("Failed to parse test config");
+        assert_eq!(config.profile.player_name(), None);
     }
 }
