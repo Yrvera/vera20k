@@ -457,6 +457,60 @@ fn teleport_command_test_rules() -> RuleSet {
     RuleSet::from_ini(&ini).expect("teleport command rules should parse")
 }
 
+fn gate_test_rules() -> RuleSet {
+    let ini: IniFile = IniFile::from_str(
+        "[InfantryTypes]\n\n\
+         [VehicleTypes]\n\n\
+         [AircraftTypes]\n\n\
+         [BuildingTypes]\n0=GAGATE_A\n\n\
+         [GAGATE_A]\nStrength=500\nArmor=wood\nFoundation=3x1\nGate=yes\nDeployTime=.066\nGateCloseDelay=.2\n",
+    );
+    RuleSet::from_ini(&ini).expect("gate test rules should parse")
+}
+
+#[test]
+fn binary_frame_committed_late_gate_captures_pre_increment_frame() {
+    // Native frame / tick contract: binary_frame is committed LATE (end of
+    // advance_tick), so a Phase-1 consumer sees the pre-increment frame N
+    // during the tick. One 67ms tick crosses the 0->1 binary-frame boundary:
+    // the gate's start_opening must capture frame 0 (pre-increment) while the
+    // committed counter ends at 1. If the counter were advanced at the TOP of
+    // advance_tick, the gate would capture 1 — this test guards that regression.
+    use crate::sim::game_entity::{BuildingGateMissionState, BuildingGatePhase};
+
+    let mut sim = Simulation::new();
+    let rules = gate_test_rules();
+    let heights = empty_heights();
+    let gate_id = sim
+        .spawn_object("GAGATE_A", "Americans", 10, 10, 0, &rules, &heights)
+        .expect("spawn gate");
+    {
+        let gate = sim.entities.get_mut(gate_id).expect("gate entity");
+        let rt = gate.building_gate.get_or_insert_with(Default::default);
+        rt.mission_18_active = true;
+        rt.mission_state = BuildingGateMissionState::Setup;
+        rt.phase = BuildingGatePhase::ClosedStable;
+    }
+    assert_eq!(sim.binary_frame, 0, "fresh sim starts at frame 0");
+
+    let _ = sim.advance_tick(&[], Some(&rules), &heights, None, None, 67);
+
+    // Committed late: post-tick frame advanced to 1.
+    assert_eq!(sim.binary_frame, 1, "binary_frame committed late to 1");
+    // The consumer captured the PRE-increment frame 0 during the tick.
+    let rt = sim
+        .entities
+        .get(gate_id)
+        .expect("gate entity")
+        .building_gate
+        .as_ref()
+        .expect("gate runtime");
+    assert_eq!(
+        rt.transition_last_frame, 0,
+        "gate captured pre-increment frame 0, not post-increment 1"
+    );
+}
+
 #[test]
 fn short_game_defeats_house_with_no_buildings_even_if_ordinary_units_remain() {
     let rules = short_game_defeat_test_rules();
@@ -1464,7 +1518,7 @@ fn test_bridge_orchestrator_state_machine_path_collapses_anchor_and_deactivates_
 fn test_bridge_collapse_is_deterministic_under_replay() {
     fn run_one_collapse(seed: u64) -> u64 {
         let mut sim = Simulation::new();
-        sim.rng = crate::sim::rng::SimRng::new(seed);
+        sim.reseed_both(seed);
         let (resolved, bridge_state) = ew_high_bridge_strip_for_dispatch(5, 5, 4, false, 0);
         sim.resolved_terrain = Some(resolved);
         sim.bridge_state = Some(bridge_state);
@@ -1504,7 +1558,7 @@ fn test_bridge_collapse_is_deterministic_under_replay() {
 fn replay_determinism_with_bridge_collapse_and_rim_refresh() {
     fn run_one(seed: u64) -> u64 {
         let mut sim = Simulation::new();
-        sim.rng = crate::sim::rng::SimRng::new(seed);
+        sim.reseed_both(seed);
         let (resolved, bridge_state) = ew_high_bridge_strip_for_dispatch(5, 5, 4, false, 0);
         sim.resolved_terrain = Some(resolved);
         sim.bridge_state = Some(bridge_state);
@@ -1610,7 +1664,7 @@ fn test_bridge_snapshot_roundtrip_preserves_state_after_collapse() {
 fn test_bridge_dispatcher_consumes_one_path_gate_draw_per_non_ion_event() {
     let seed = 0xABCD_1234_u64;
     let mut sim = Simulation::new();
-    sim.rng = crate::sim::rng::SimRng::new(seed);
+    sim.reseed_both(seed);
     let (resolved, bridge_state) = ew_high_bridge_strip_for_dispatch(5, 5, 4, false, 0);
     let bridge_strength = bridge_state.bridge_strength();
     sim.resolved_terrain = Some(resolved);
@@ -1644,7 +1698,7 @@ fn test_bridge_dispatcher_consumes_one_path_gate_draw_per_non_ion_event() {
     );
 
     assert_eq!(
-        sim.rng.state(),
+        sim.scenario_rng.state(),
         predicted.state(),
         "non-IonCannon hit must consume exactly one BridgeStrength gate roll"
     );

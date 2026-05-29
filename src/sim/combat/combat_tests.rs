@@ -1438,7 +1438,7 @@ fn test_weapon_fire_destroys_ore_in_spread() {
         },
     );
 
-    tick_combat_with_fog(
+    let result = tick_combat_with_fog(
         &mut store,
         &mut OccupancyGrid::new(),
         &rules,
@@ -1455,16 +1455,26 @@ fn test_weapon_fire_destroys_ore_in_spread() {
         0u32,
     );
 
-    // Damage=120, ore_damage = 120/10 = 12 density levels.
-    // Cell (8,5) had 6 levels — 12 >= 6, so fully removed.
-    assert!(
-        resource_nodes.get(&(8, 5)).is_none(),
-        "target cell ore should be fully destroyed (12 >= 6)"
+    // Combat emits TiberiumReductionRequests (applied later by World via the
+    // shared cell reducer); it no longer mutates resource_nodes directly.
+    // Damage=120 → ore_damage = 120/10 = 12 density levels at each cell within
+    // CellSpread=2. Both ore cells (8,5) and (9,5) get a reduction request.
+    let req_amount = |rx: u16, ry: u16| {
+        result
+            .tiberium_reduction_requests
+            .iter()
+            .find(|r| r.rx == rx && r.ry == ry)
+            .map(|r| r.amount)
+    };
+    assert_eq!(
+        req_amount(8, 5),
+        Some(12),
+        "target cell should get a 12-level reduction request"
     );
-    // Cell (9,5) had 3 levels — 12 >= 3, so fully removed.
-    assert!(
-        resource_nodes.get(&(9, 5)).is_none(),
-        "neighbor cell ore should be fully destroyed (12 >= 3)"
+    assert_eq!(
+        req_amount(9, 5),
+        Some(12),
+        "neighbor cell within CellSpread=2 should get a 12-level reduction request"
     );
 }
 
@@ -1494,7 +1504,7 @@ fn test_direct_hit_weapon_destroys_center_ore() {
         },
     );
 
-    tick_combat_with_fog(
+    let result = tick_combat_with_fog(
         &mut store,
         &mut OccupancyGrid::new(),
         &rules,
@@ -1511,17 +1521,24 @@ fn test_direct_hit_weapon_destroys_center_ore() {
         0u32,
     );
 
-    // 105mm damage=65, ore_damage = 65/10 = 6.
-    // Cell (8,5) had 6 density levels — 6 >= 6 → fully removed.
-    assert!(
-        resource_nodes.get(&(8, 5)).is_none(),
-        "center cell ore should be destroyed (6 >= 6)"
-    );
-    // Cell (9,5) should be untouched.
+    // Combat emits a TiberiumReductionRequest (applied later by World). 105mm
+    // damage=65 → ore_damage = 65/10 = 6 density levels. CellSpread=0 → only the
+    // impact cell (8,5) gets a request; the adjacent cell (9,5) gets none.
+    let center = result
+        .tiberium_reduction_requests
+        .iter()
+        .find(|r| r.rx == 8 && r.ry == 5);
     assert_eq!(
-        resource_nodes.get(&(9, 5)).unwrap().remaining,
-        720,
-        "adjacent cell should be untouched with CellSpread=0"
+        center.map(|r| r.amount),
+        Some(6),
+        "center cell should get a 6-level reduction request"
+    );
+    assert!(
+        !result
+            .tiberium_reduction_requests
+            .iter()
+            .any(|r| r.rx == 9 && r.ry == 5),
+        "adjacent cell should get no request with CellSpread=0"
     );
 }
 
@@ -1545,7 +1562,7 @@ fn test_weak_weapon_partial_ore_reduction() {
         },
     );
 
-    tick_combat_with_fog(
+    let result = tick_combat_with_fog(
         &mut store,
         &mut OccupancyGrid::new(),
         &rules,
@@ -1562,12 +1579,16 @@ fn test_weak_weapon_partial_ore_reduction() {
         0u32,
     );
 
-    // M60 damage=25, ore_damage = 25/10 = 2.
-    // 10 density levels, remove 2 → 8 remaining → 8 * 120 = 960.
+    // Combat emits a TiberiumReductionRequest (applied later by World). M60
+    // damage=25 → ore_damage = 25/10 = 2 density levels at the impact cell.
+    let req = result
+        .tiberium_reduction_requests
+        .iter()
+        .find(|r| r.rx == 8 && r.ry == 5);
     assert_eq!(
-        resource_nodes.get(&(8, 5)).unwrap().remaining,
-        960,
-        "should reduce by 2 density levels (25/10=2)"
+        req.map(|r| r.amount),
+        Some(2),
+        "should emit a 2-density-level reduction request (25/10=2)"
     );
 }
 
@@ -1755,7 +1776,7 @@ fn build_minimal_sim_with_gawall_seeded(
     seed: u64,
 ) -> (Simulation, RuleSet, OverlayTypeRegistry) {
     let (mut sim, rules, registry) = build_minimal_sim_with_gawall(rx, ry);
-    sim.rng = crate::sim::rng::SimRng::new(seed);
+    sim.reseed_both(seed);
     (sim, rules, registry)
 }
 

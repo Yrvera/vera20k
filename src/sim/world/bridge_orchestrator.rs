@@ -177,7 +177,9 @@ pub(crate) fn dispatch_bridge_collapse_from_hut(
             return false;
         };
         let mut presentation = BridgePresentationContext {
-            rng: &mut sim.rng,
+            // bridge collapse/repair — scenario stream. Direct field (NOT bridge_rng()):
+            // sits inside a live sim.bridge_state borrow + co-borrows world_effects etc.
+            rng: &mut sim.scenario_rng,
             world_effects: &mut sim.world_effects,
             bridge_explosions: &sim.bridge_explosions,
             effect_frame_counts: &sim.effect_frame_counts,
@@ -1175,14 +1177,14 @@ fn spawn_bridge_debris(sim: &mut Simulation, _rules: &RuleSet, cells: &BTreeSet<
     for &(rx, ry) in cells {
         // Step 1: outer 95% gate.
         let outer_draw = sim
-            .rng
+            .bridge_rng()
             .next_range_u32_inclusive(0, NORMALIZED_RNG_MAX_INCLUSIVE);
         if outer_draw >= BRIDGE_DEBRIS_OUTER_GATE_EXCLUSIVE {
             continue;
         }
 
         // Step 2: two normalized jitter draws become the in-cell offsets.
-        let (sub_x, sub_y) = bridge_jittered_subcells(&mut sim.rng);
+        let (sub_x, sub_y) = bridge_jittered_subcells(sim.bridge_rng());
 
         let deck_level = sim
             .resolved_terrain
@@ -1193,17 +1195,18 @@ fn spawn_bridge_debris(sim: &mut Simulation, _rules: &RuleSet, cells: &BTreeSet<
 
         // Step 3: MetallicDebris 50% gate.
         let metallic_draw = sim
-            .rng
+            .bridge_rng()
             .next_range_u32_inclusive(0, NORMALIZED_RNG_MAX_INCLUSIVE);
         let metallic_pass = metallic_draw < BRIDGE_METALLIC_GATE_EXCLUSIVE;
         // Step 4: MetallicDebris slot pick + spawn (no delay). Slot draw
         // only happens when all three gates pass — short-circuit matches
         // the binary's call order.
         if metallic_pass && metallic_count > 0 {
-            let idx = sim.rng.next_range_u32(metallic_count) as usize;
+            let idx = sim.bridge_rng().next_range_u32(metallic_count) as usize;
             let anim_id = sim.metallic_debris[idx];
             let frames = sim.effect_frame_counts.get(&anim_id).copied().unwrap_or(20);
             sim.world_effects.push(WorldEffect {
+                anim_spawn: None,
                 shp_name: anim_id,
                 rx,
                 ry,
@@ -1223,11 +1226,12 @@ fn spawn_bridge_debris(sim: &mut Simulation, _rules: &RuleSet, cells: &BTreeSet<
 
         // Step 5 + 6: always BridgeExplosion, delayed 1-5 frames.
         if explosion_count > 0 {
-            let delay_frames = sim.rng.next_range_u32_inclusive(1, 5);
-            let idx = sim.rng.next_range_u32(explosion_count) as usize;
+            let delay_frames = sim.bridge_rng().next_range_u32_inclusive(1, 5);
+            let idx = sim.bridge_rng().next_range_u32(explosion_count) as usize;
             let anim_id = sim.bridge_explosions[idx];
             let frames = sim.effect_frame_counts.get(&anim_id).copied().unwrap_or(20);
             sim.world_effects.push(WorldEffect {
+                anim_spawn: None,
                 shp_name: anim_id,
                 rx,
                 ry,
@@ -1270,6 +1274,7 @@ fn spawn_bridge_explosion_effect(
     presentation
         .world_effects
         .push(crate::sim::components::WorldEffect {
+            anim_spawn: None,
             shp_name: anim_id,
             rx,
             ry,
@@ -1389,7 +1394,9 @@ fn run_dispatch_loop(
         Some(bs) => bs,
         None => return outcomes,
     };
-    let rng = &mut sim.rng;
+    // bridge collapse — scenario stream. Direct field (NOT bridge_rng()): held with a
+    // live sim.bridge_state borrow; the disjoint-field split above is required.
+    let rng = &mut sim.scenario_rng;
 
     for event in events {
         let ctx = BridgeDamageContext {
@@ -1487,7 +1494,7 @@ mod tests {
         AirMovePhase, GroundMovePhase, LocomotorState, MovementLayer,
     };
     use crate::sim::occupancy::CellListInsertion;
-    use crate::util::fixed_math::{SIM_ZERO, SimFixed};
+    use crate::util::fixed_math::{SimFixed, SIM_ZERO};
 
     fn seed_bridge_cell(overlay_byte: u8) -> crate::sim::bridge_state::BridgeRuntimeCell {
         crate::sim::bridge_state::BridgeRuntimeCell {
@@ -1820,7 +1827,7 @@ mod tests {
     fn debris_consumes_correct_rng_count_per_cell() {
         let mut sim = Simulation::new();
         let seed = 0xDEAD_BEEF_u64;
-        sim.rng = crate::sim::rng::SimRng::new(seed);
+        sim.reseed_both(seed);
         sim.resolved_terrain = Some(water_below_bridge_terrain(3));
         sim.bridge_explosions
             .extend([test_intern("BRIDGEEXP1"), test_intern("BRIDGEEXP2")]);
@@ -1851,7 +1858,7 @@ mod tests {
         spawn_bridge_debris(&mut sim, &rules, &cells);
 
         assert_eq!(
-            sim.rng.state(),
+            sim.scenario_rng.state(),
             predicted.state(),
             "RNG draw order/count diverged from binary parity sequence"
         );
@@ -1863,7 +1870,7 @@ mod tests {
     fn bridge_debris_no_metallic_when_gate_fails_even_with_voxel_zero() {
         let mut sim = Simulation::new();
         let seed = 0xDEAD_BEEF_u64;
-        sim.rng = crate::sim::rng::SimRng::new(seed);
+        sim.reseed_both(seed);
         sim.resolved_terrain = Some(water_below_bridge_terrain(3));
         sim.bridge_explosions.push(test_intern("BRIDGEEXP1"));
         sim.metallic_debris.push(test_intern("METALDEB1"));
@@ -1900,7 +1907,7 @@ mod tests {
             .expect("fixture seed with metallic pass");
 
         let mut sim = Simulation::new();
-        sim.rng = crate::sim::rng::SimRng::new(seed);
+        sim.reseed_both(seed);
         sim.resolved_terrain = Some(water_below_bridge_terrain(3));
         sim.bridge_explosions.push(test_intern("BRIDGEEXP1"));
         sim.metallic_debris.push(test_intern("METALDEB1"));
@@ -1924,8 +1931,8 @@ mod tests {
     #[test]
     fn bridge_debris_requires_bridge_explosion_list() {
         let mut sim = Simulation::new();
-        sim.rng = crate::sim::rng::SimRng::new(7);
-        let baseline_state = sim.rng.state();
+        sim.reseed_both(7);
+        let baseline_state = sim.scenario_rng.state();
         sim.resolved_terrain = Some(water_below_bridge_terrain(3));
         sim.metallic_debris.push(test_intern("METALDEB1"));
         let rules = rules_with_voxel_max(3);
@@ -1936,7 +1943,7 @@ mod tests {
         spawn_bridge_debris(&mut sim, &rules, &cells);
 
         assert_eq!(
-            sim.rng.state(),
+            sim.scenario_rng.state(),
             baseline_state,
             "no RNG draws when BridgeExplosion metadata is absent"
         );

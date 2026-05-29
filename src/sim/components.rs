@@ -17,7 +17,7 @@
 use crate::map::entities::EntityCategory;
 use crate::sim::intern::InternedId;
 use crate::sim::movement::locomotor::MovementLayer;
-use crate::util::fixed_math::{SIM_ZERO, SimFixed};
+use crate::util::fixed_math::{SimFixed, SIM_ZERO};
 
 /// World position in isometric cell coordinates plus sub-cell lepton offset.
 ///
@@ -368,6 +368,8 @@ pub struct DriveTubePayload {
     pub destination: Option<DriveCoord>,
     #[serde(default)]
     pub z_accumulator: i32,
+    #[serde(default)]
+    pub z_step: i32,
 }
 
 fn default_drive_track_index() -> i16 {
@@ -637,19 +639,24 @@ pub struct BuildingAnimOverlays {
     pub anims: Vec<AnimOverlayState>,
 }
 
-/// Persistent fire/smoke overlays on damaged buildings (health < ConditionYellow).
+/// Persistent fire/smoke overlays on damaged buildings.
 ///
-/// Separate from the 21-slot BuildingAnimOverlays system. Each fire loops
-/// independently with a random starting frame for visual variety.
-/// Created when health drops below ConditionYellow, removed when repaired above.
+/// Separate from the 21-slot BuildingAnimOverlays system. These mirror the
+/// native 8 damage-fire slots as far as the current app-side overlay surface
+/// allows: created together on the damage threshold transition, kept until the
+/// building repairs above that threshold or leaves the world, and looped
+/// independently.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DamageFireOverlays {
     pub fires: Vec<DamageFireAnim>,
 }
 
-/// A single looping fire/smoke animation attached to a damaged building.
+/// A single looping fire/smoke animation in a native damage-fire slot.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DamageFireAnim {
+    /// Native damage-fire slot index, 0..7.
+    #[serde(default)]
+    pub slot: u8,
     /// SHP type interned ID (e.g., "FIRE01").
     pub shp_name: InternedId,
     /// Pixel X offset from building screen origin.
@@ -664,6 +671,9 @@ pub struct DamageFireAnim {
     pub rate_ms: u32,
     /// Accumulated ms since last frame advance.
     pub elapsed_ms: u32,
+    /// Native AnimClass ZAdjust written after constructor.
+    #[serde(default)]
+    pub z_adjust: i32,
 }
 
 /// App-side runtime state for a normal AnimClass-like SHP animation.
@@ -748,6 +758,62 @@ pub struct WeaponMuzzleFlash {
     pub elapsed_ms: u32,
 }
 
+/// Constructor row for a generic AnimClass-like runtime spawn.
+///
+/// This preserves the fields passed to `AnimClass::Constructor` separately from
+/// presentation conveniences such as cached frame count and wall-clock frame
+/// delay. Not every legacy `WorldEffect` producer has been migrated to native
+/// rows yet; migrated paths attach this descriptor so parity-sensitive code can
+/// inspect the original constructor surface.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct AnimClassSpawnDescriptor {
+    /// AnimType/SHP type interned ID.
+    pub type_name: InternedId,
+    /// World cell containing the constructor coordinate.
+    pub rx: u16,
+    pub ry: u16,
+    /// Sub-cell constructor coordinate in leptons.
+    pub sub_x: SimFixed,
+    pub sub_y: SimFixed,
+    /// Height level for the constructor coordinate.
+    pub z: u8,
+    /// Constructor `delay` argument, in native logic frames.
+    pub delay: u16,
+    /// Constructor `loop` argument.
+    pub loop_count: u8,
+    /// Constructor draw flags argument.
+    pub draw_flags: u32,
+    /// Constructor `ZAdjust` argument.
+    pub z_adjust: i32,
+    /// Constructor reverse argument.
+    pub reverse: bool,
+}
+
+impl AnimClassSpawnDescriptor {
+    pub fn new(
+        type_name: InternedId,
+        rx: u16,
+        ry: u16,
+        sub_x: SimFixed,
+        sub_y: SimFixed,
+        z: u8,
+    ) -> Self {
+        Self {
+            type_name,
+            rx,
+            ry,
+            sub_x,
+            sub_y,
+            z,
+            delay: 0,
+            loop_count: 1,
+            draw_flags: 0,
+            z_adjust: 0,
+            reverse: false,
+        }
+    }
+}
+
 /// A temporary one-shot SHP animation playing at a fixed world position.
 ///
 /// Used for visual effects not attached to any entity: chrono warp sparkles,
@@ -755,6 +821,9 @@ pub struct WeaponMuzzleFlash {
 /// these as flat ground-level sprites. They auto-remove when finished.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct WorldEffect {
+    /// Native constructor row, when this effect came from a verified
+    /// AnimClass-like spawn path.
+    pub anim_spawn: Option<AnimClassSpawnDescriptor>,
     /// SHP type interned ID (uppercase), e.g., "WARPOUT", "WARPIN", "FBALL1".
     pub shp_name: InternedId,
     /// World cell containing the effect's game-space anchor.
@@ -792,6 +861,32 @@ pub struct WorldEffectTick {
 }
 
 impl WorldEffect {
+    pub fn from_anim_spawn(
+        anim_spawn: AnimClassSpawnDescriptor,
+        total_frames: u16,
+        rate_ms: u32,
+        translucent: bool,
+        start_sound_id: Option<InternedId>,
+    ) -> Self {
+        Self {
+            shp_name: anim_spawn.type_name,
+            rx: anim_spawn.rx,
+            ry: anim_spawn.ry,
+            sub_x: anim_spawn.sub_x,
+            sub_y: anim_spawn.sub_y,
+            z: anim_spawn.z,
+            frame: 0,
+            total_frames,
+            rate_ms,
+            elapsed_ms: 0,
+            translucent,
+            delay_ms: u32::from(anim_spawn.delay) * 1000 / 15,
+            start_sound_id,
+            start_sound_emitted: false,
+            anim_spawn: Some(anim_spawn),
+        }
+    }
+
     /// Advance the animation by `dt_ms` milliseconds. Returns true when finished.
     pub fn tick(&mut self, dt_ms: u32) -> bool {
         self.tick_with_start_sound(dt_ms).finished
@@ -1060,6 +1155,25 @@ mod tests {
     }
 
     #[test]
+    fn drive_tube_payload_hash_changes_with_z_accumulator() {
+        use std::hash::{Hash, Hasher};
+
+        fn hash_drive(drive: &DriveLocomotionRuntime) -> u64 {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            drive.hash(&mut hasher);
+            hasher.finish()
+        }
+
+        let mut drive_a = DriveLocomotionRuntime::default();
+        let mut drive_b = DriveLocomotionRuntime::default();
+        drive_a.active_tube = Some(DriveTubePayload::default());
+        drive_b.active_tube = Some(DriveTubePayload::default());
+        drive_b.active_tube.as_mut().unwrap().z_accumulator = 1;
+
+        assert_ne!(hash_drive(&drive_a), hash_drive(&drive_b));
+    }
+
+    #[test]
     fn c4_state_types_are_send_sync_copy() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<C4PlantState>();
@@ -1129,6 +1243,7 @@ mod tests {
     fn test_world_effect_tick_advances_and_finishes() {
         use crate::sim::intern::test_intern;
         let mut fx = WorldEffect {
+            anim_spawn: None,
             shp_name: test_intern("WARPOUT"),
             rx: 10,
             ry: 10,
@@ -1160,6 +1275,7 @@ mod tests {
         use crate::sim::intern::test_intern;
         let sound_id = test_intern("Explosion06");
         let mut fx = WorldEffect {
+            anim_spawn: None,
             shp_name: test_intern("TWLT036"),
             rx: 10,
             ry: 10,
@@ -1182,5 +1298,30 @@ mod tests {
         assert_eq!(second.started_sound, Some(sound_id));
         let third = fx.tick_with_start_sound(67);
         assert_eq!(third.started_sound, None);
+    }
+
+    #[test]
+    fn world_effect_preserves_anim_class_constructor_row() {
+        use crate::sim::intern::test_intern;
+        let anim_id = test_intern("WARPOUT");
+        let mut row = AnimClassSpawnDescriptor::new(
+            anim_id,
+            12,
+            34,
+            crate::util::lepton::CELL_CENTER_LEPTON,
+            crate::util::lepton::CELL_CENTER_LEPTON,
+            2,
+        );
+        row.delay = 1;
+        row.loop_count = 1;
+        row.draw_flags = 0x600;
+        row.z_adjust = -30;
+        row.reverse = true;
+
+        let fx = WorldEffect::from_anim_spawn(row.clone(), 20, 67, true, None);
+
+        assert_eq!(fx.shp_name, anim_id);
+        assert_eq!(fx.delay_ms, 1000 / 15);
+        assert_eq!(fx.anim_spawn, Some(row));
     }
 }

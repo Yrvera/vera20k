@@ -165,6 +165,11 @@ pub struct GameEntity {
     pub selected: bool,
     /// Building is being repaired (spending credits to heal).
     pub repairing: bool,
+    /// LogicClass active-vector membership — mirrors gamemd ObjectClass+0x98.
+    /// True iff this entity is currently in `Simulation::logic`. Not serialized:
+    /// rebuilt from the restored order on load (native does not round-trip it).
+    #[serde(skip)]
+    pub in_logic_vector: bool,
 
     // --- Optional subsystem components ---
     /// Locomotor state — present on movable entities (speed > 0 in rules.ini).
@@ -439,6 +444,7 @@ impl GameEntity {
             is_voxel,
             selected: false,
             repairing: false,
+            in_logic_vector: false,
             locomotor: None,
             movement_target: None,
             navigation: NavigationState::default(),

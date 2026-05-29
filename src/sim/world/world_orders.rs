@@ -376,7 +376,9 @@ impl Simulation {
             let outcome = if let (Some(bs), Some(terrain)) =
                 (self.bridge_state.as_mut(), self.resolved_terrain.as_ref())
             {
-                bs.repair_bridge_from_engineer_scan(&scan, &mut self.rng, terrain)
+                // bridge repair — scenario stream. Direct field (NOT bridge_rng()):
+                // `bs`/`terrain` hold live disjoint &mut/&self borrows.
+                bs.repair_bridge_from_engineer_scan(&scan, &mut self.scenario_rng, terrain)
             } else {
                 crate::sim::bridge_state::RepairOutcome::default()
             };

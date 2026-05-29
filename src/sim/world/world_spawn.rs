@@ -585,7 +585,8 @@ impl Simulation {
         let spawn_owner_str = self.interner.resolve(ge.owner).to_string();
         let spawn_category = ge.category;
         self.entities.insert(ge);
-        self.register_live_object(stable_id);
+        // Limbo objects are NOT registered in the active order — registration
+        // happens at reveal/unlimbo (e.g. paradrop drop), mirroring ObjectClass+0x98.
         self.increment_owned_count(&spawn_owner_str, spawn_category);
         Some(stable_id)
     }

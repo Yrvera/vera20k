@@ -391,7 +391,7 @@ fn sellbuilding_direct_scatter_handoff(
         .map(|obj| ra2_speed_to_leptons_per_second(obj.speed))
         .unwrap_or_else(|| ra2_speed_to_leptons_per_second(4));
 
-    let jitter = sim.rng.next_range_u32_inclusive(0, 4) as i32 - 2;
+    let jitter = sim.scatter_rng().next_range_u32_inclusive(0, 4) as i32 - 2;
     let start_dir = ((base_dir as i32 + jitter) & 7) as usize;
     let mut dest = None;
     for i in 0..8 {
@@ -454,6 +454,9 @@ fn place_garrison_passenger_at_cell(
         pax_sub_cell,
         CellListInsertion::PrependNonBuilding,
     );
+    // Reveal: ejected garrison occupant is back on the playfield — re-append it
+    // to the active-object order (tail, idempotent).
+    sim.register_live_object(passenger_id);
 
     sellbuilding_direct_scatter_handoff(
         sim,
@@ -1159,7 +1162,7 @@ mod tests {
         let pax3 =
             insert_hidden_passenger_with_subcell(&mut sim, 13, building_id, "Neutral", Some(2));
         let owner = sim.interner.intern("Americans");
-        let rng_before = sim.rng.state();
+        let rng_before = sim.scenario_rng.state();
 
         let event = DestroyedGarrisonBuilding {
             building_id,
@@ -1175,7 +1178,7 @@ mod tests {
 
         assert_eq!(eject_destruction_garrison(&mut sim, &rules, &event), 3);
         assert_eq!(
-            sim.rng.state(),
+            sim.scenario_rng.state(),
             rng_before,
             "test passengers have no locomotor, so Scatter gates must reject before RNG"
         );
@@ -1233,7 +1236,7 @@ mod tests {
         {
             cargo.garrison_fire_index = 4;
         }
-        let rng_before = sim.rng.state();
+        let rng_before = sim.scenario_rng.state();
 
         assert_eq!(eject_garrison_occupants(&mut sim, &rules, building_id), 1);
 
@@ -1244,7 +1247,7 @@ mod tests {
         assert_eq!((passenger.position.rx, passenger.position.ry), (11, 11));
         assert!(!passenger.dying);
         assert!(matches!(passenger.passenger_role, PassengerRole::None));
-        assert_eq!(sim.rng.state(), rng_before);
+        assert_eq!(sim.scenario_rng.state(), rng_before);
 
         let cargo = sim
             .entities
@@ -1263,7 +1266,7 @@ mod tests {
         let passenger_id = insert_hidden_passenger(&mut sim, 51, building_id, "Neutral");
         give_walk_locomotor(&mut sim, passenger_id);
         let owner = sim.interner.intern("Americans");
-        let mut expected_rng = sim.rng.clone();
+        let mut expected_rng = sim.scenario_rng.clone();
         let _ = expected_rng.next_range_u32_inclusive(0, 4);
 
         let event = DestroyedGarrisonBuilding {
@@ -1280,7 +1283,7 @@ mod tests {
 
         assert_eq!(eject_destruction_garrison(&mut sim, &rules, &event), 1);
         assert_eq!(
-            sim.rng.state(),
+            sim.scenario_rng.state(),
             expected_rng.state(),
             "direct Scatter must use scenario RandomRanged(0,4), not raw %8"
         );
@@ -1304,7 +1307,7 @@ mod tests {
         let passenger_id = insert_hidden_passenger(&mut sim, 41, building_id, "Neutral");
         let owner = sim.interner.intern("Americans");
         block_all_garrison_exit_cells(&mut sim, 10, 10, 2, 2);
-        let rng_before = sim.rng.state();
+        let rng_before = sim.scenario_rng.state();
 
         let event = DestroyedGarrisonBuilding {
             building_id,
@@ -1319,7 +1322,7 @@ mod tests {
         };
 
         assert_eq!(eject_destruction_garrison(&mut sim, &rules, &event), 0);
-        assert_eq!(sim.rng.state(), rng_before);
+        assert_eq!(sim.scenario_rng.state(), rng_before);
 
         let passenger = sim
             .entities
