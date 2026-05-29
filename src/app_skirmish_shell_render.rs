@@ -93,6 +93,12 @@ const SHELL_SCROLLBAR_TRACK_RGB_PENDING_SCROLLBAR_SOURCE_CAPTURE: [f32; 3] = [0.
 const SHELL_MODAL_BG_RGB: [f32; 3] = [0.020, 0.032, 0.025];
 const SHELL_MODAL_PANEL_RGB: [f32; 3] = [0.050, 0.060, 0.044];
 
+/// The single discrete horizontal move in the native slide-in: the radar/SDTP
+/// shape shifts right by this many pixels while the wave is mid-flight.
+const RADAR_TRANSITION_SHIFT_PX: i32 = 80;
+/// The shift only applies at or above this shell width; below it the radar stays put.
+const RADAR_TRANSITION_MIN_WIDTH: i32 = 800;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ShellRenderMode {
     Visible,
@@ -192,7 +198,15 @@ pub fn build_skirmish_shell_instances(
     }
 
     if let Some(top) = atlas.right_panel_top_sdtp {
-        push_entry(&mut instances, top, layout.right_panel.top, 0.00080);
+        let mut rect = layout.right_panel.top;
+        // The one real positional move in the native slide-in: a single discrete
+        // horizontal shift of the radar/SDTP shape, applied only above the high-res
+        // width threshold and only while the wave is mid-flight (keyed by phase, not
+        // ramped). It snaps back to 0 once the wave completes.
+        if wave.is_some_and(|w| !w.is_complete()) && layout.screen.w >= RADAR_TRANSITION_MIN_WIDTH {
+            rect.x += RADAR_TRANSITION_SHIFT_PX;
+        }
+        push_entry(&mut instances, top, rect, 0.00080);
     }
 
     if let Some(tile) = atlas.right_panel_tile_sdbtnbkgd {
