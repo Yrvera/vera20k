@@ -1153,25 +1153,26 @@ fn launch_session_rejects_missing_map_and_bad_color() {
 }
 
 #[test]
-fn skirmish_launch_rejects_random_country_until_rng_verified() {
+fn skirmish_launch_random_country_succeeds_and_flags_slot_for_resolution() {
     let mut shell = SkirmishShellState {
         player_country_random: true,
         ..Default::default()
     };
     let maps = [test_map_entry("map.mmx")];
 
-    assert_eq!(
-        launch_session(&shell, &maps, &stock_skirmish_modes()).unwrap_err(),
-        LaunchValidationError::RandomSelectionUnverified { slot: 0 }
-    );
+    // A Random local country no longer blocks Start; the session is built with
+    // the slot flagged so the concrete country is drawn during resolution.
+    let session = launch_session(&shell, &maps, &stock_skirmish_modes())
+        .expect("random local country must not block Start");
+    assert!(session.local.country_random);
 
     shell.player_country_random = false;
     shell.opponents[0].country_random = true;
 
-    assert_eq!(
-        launch_session(&shell, &maps, &stock_skirmish_modes()).unwrap_err(),
-        LaunchValidationError::RandomSelectionUnverified { slot: 1 }
-    );
+    let session = launch_session(&shell, &maps, &stock_skirmish_modes())
+        .expect("random AI country must not block Start");
+    assert!(!session.local.country_random);
+    assert!(session.opponents[0].country_random);
 }
 
 #[test]

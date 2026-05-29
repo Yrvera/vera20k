@@ -5,6 +5,7 @@
 //! depend on UI, rendering, audio, or networking modules.
 
 use crate::sim::game_options::GameOptions;
+use crate::sim::rng::SimRng;
 use crate::skirmish_modes::SkirmishGameMode;
 
 pub const SKIRMISH_PLAYER_SLOT_COUNT: usize = 8;
@@ -73,6 +74,24 @@ impl LaunchCountry {
             Self::America | Self::Korea | Self::France | Self::Germany | Self::GreatBritain => 0,
             Self::Libya | Self::Iraq | Self::Cuba | Self::Russia => 1,
             Self::Yuri => 2,
+        }
+    }
+
+    /// Map a ranged country index (0..=9) onto a concrete country, in the
+    /// country-list order used by the setup UI. Values above the last index
+    /// clamp to the final country so the mapping is total.
+    pub const fn from_country_index(index: u32) -> Self {
+        match index {
+            0 => Self::America,
+            1 => Self::Korea,
+            2 => Self::France,
+            3 => Self::Germany,
+            4 => Self::GreatBritain,
+            5 => Self::Libya,
+            6 => Self::Iraq,
+            7 => Self::Cuba,
+            8 => Self::Russia,
+            _ => Self::Yuri,
         }
     }
 }
@@ -197,6 +216,9 @@ impl SkirmishLaunchOptions {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkirmishLocalSlot {
     pub country: LaunchCountry,
+    /// When true, `country` is a placeholder to be replaced by a random draw
+    /// during session resolution; see [`SkirmishLaunchSession::resolve_random_assignments`].
+    pub country_random: bool,
     pub color_index: u8,
     pub start_position: LaunchStartPosition,
     pub team: LaunchTeam,
@@ -205,6 +227,9 @@ pub struct SkirmishLocalSlot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkirmishAiSlot {
     pub country: LaunchCountry,
+    /// When true, `country` is a placeholder to be replaced by a random draw
+    /// during session resolution; see [`SkirmishLaunchSession::resolve_random_assignments`].
+    pub country_random: bool,
     pub color_index: u8,
     pub start_position: LaunchStartPosition,
     pub team: LaunchTeam,
@@ -221,6 +246,37 @@ pub struct SkirmishLaunchSession {
     pub options: SkirmishLaunchOptions,
 }
 
+impl SkirmishLaunchSession {
+    /// Resolve every slot left on "random country" into a concrete country by
+    /// drawing from the supplied scenario RNG. The selection order matches the
+    /// original setup handoff: the local (human) slot is resolved first, then
+    /// each AI slot in order, with one inclusive `(0, 9)` ranged draw per
+    /// random slot. Slots that already hold a concrete country are left
+    /// untouched and consume no draw, so the RNG stream only advances for the
+    /// slots that actually requested a random country.
+    ///
+    /// Drawing from the scenario stream (rather than a side RNG) keeps the
+    /// resolution deterministic for a given game seed and identical across
+    /// lockstep peers. Color is always concrete in the current setup UI, so no
+    /// color draw is made here.
+    pub fn resolve_random_assignments(&self, rng: &mut SimRng) -> Self {
+        let mut resolved = self.clone();
+        if resolved.local.country_random {
+            let index = rng.next_range_u32_inclusive(0, 9);
+            resolved.local.country = LaunchCountry::from_country_index(index);
+            resolved.local.country_random = false;
+        }
+        for opponent in &mut resolved.opponents {
+            if opponent.country_random {
+                let index = rng.next_range_u32_inclusive(0, 9);
+                opponent.country = LaunchCountry::from_country_index(index);
+                opponent.country_random = false;
+            }
+        }
+        resolved
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LaunchValidationError {
     NoSelectedMap,
@@ -234,9 +290,6 @@ pub enum LaunchValidationError {
     },
     SameExplicitTeam {
         team: u8,
-    },
-    RandomSelectionUnverified {
-        slot: usize,
     },
     InvalidColorIndex {
         slot: usize,
@@ -295,5 +348,101 @@ mod tests {
         assert_eq!(LaunchTeam::from_shell_value(-1), LaunchTeam::None);
         assert_eq!(LaunchTeam::from_shell_value(0), LaunchTeam::Team(0));
         assert_eq!(LaunchTeam::from_shell_value(3), LaunchTeam::Team(3));
+    }
+
+    fn random_test_session() -> SkirmishLaunchSession {
+        SkirmishLaunchSession {
+            mode: SkirmishLaunchMode {
+                id: 1,
+                ui_name_key: "GUI:Battle".to_string(),
+                tooltip_key: "STT:ModeBattle".to_string(),
+                override_file: "MPBattleMD.ini".to_string(),
+                map_filter: "standard".to_string(),
+                random_maps_allowed: true,
+                allies_allowed: true,
+                must_ally: false,
+            },
+            selected_map_file: Some("test.mmx".to_string()),
+            player_name: "Player".to_string(),
+            local: SkirmishLocalSlot {
+                country: LaunchCountry::America,
+                country_random: true,
+                color_index: 0,
+                start_position: LaunchStartPosition::Auto,
+                team: LaunchTeam::None,
+            },
+            opponents: vec![
+                SkirmishAiSlot {
+                    country: LaunchCountry::Russia,
+                    country_random: true,
+                    color_index: 1,
+                    start_position: LaunchStartPosition::Auto,
+                    team: LaunchTeam::None,
+                    difficulty: AiDifficulty::Easy,
+                },
+                SkirmishAiSlot {
+                    country: LaunchCountry::Cuba,
+                    country_random: false,
+                    color_index: 2,
+                    start_position: LaunchStartPosition::Auto,
+                    team: LaunchTeam::None,
+                    difficulty: AiDifficulty::Easy,
+                },
+            ],
+            options: SkirmishLaunchOptions::default(),
+        }
+    }
+
+    #[test]
+    fn resolve_random_assignments_is_deterministic_for_a_seed() {
+        let session = random_test_session();
+        let mut rng_a = SimRng::new(0xC0FFEE);
+        let mut rng_b = SimRng::new(0xC0FFEE);
+
+        let first = session.resolve_random_assignments(&mut rng_a);
+        let second = session.resolve_random_assignments(&mut rng_b);
+
+        assert_eq!(first, second, "same seed must yield the same assignment");
+        assert!(!first.local.country_random);
+        assert!(!first.opponents[0].country_random);
+    }
+
+    #[test]
+    fn resolve_random_assignments_only_draws_for_random_slots_in_order() {
+        let session = random_test_session();
+
+        // Two random slots (local + opponent 0); opponent 1 is concrete and must
+        // not consume a draw or change. The draw order is local first, then AI,
+        // so resolving by hand in that order must reproduce the same result.
+        let mut rng = SimRng::new(7);
+        let resolved = session.resolve_random_assignments(&mut rng);
+
+        let mut expected_rng = SimRng::new(7);
+        let expected_local =
+            LaunchCountry::from_country_index(expected_rng.next_range_u32_inclusive(0, 9));
+        let expected_ai0 =
+            LaunchCountry::from_country_index(expected_rng.next_range_u32_inclusive(0, 9));
+
+        assert_eq!(resolved.local.country, expected_local);
+        assert_eq!(resolved.opponents[0].country, expected_ai0);
+        // The concrete slot is untouched and the stream is now exhausted of the
+        // two expected draws — both RNGs must be in the same state.
+        assert_eq!(resolved.opponents[1].country, LaunchCountry::Cuba);
+        assert!(!resolved.opponents[1].country_random);
+        assert_eq!(rng.state(), expected_rng.state());
+    }
+
+    #[test]
+    fn resolve_random_assignments_leaves_concrete_session_untouched() {
+        let mut session = random_test_session();
+        session.local.country_random = false;
+        session.opponents[0].country_random = false;
+
+        let before = SimRng::new(42).state();
+        let mut rng = SimRng::new(42);
+        let resolved = session.resolve_random_assignments(&mut rng);
+
+        assert_eq!(resolved, session, "no random slots means no change");
+        assert_eq!(rng.state(), before, "no random slots means no draws");
     }
 }

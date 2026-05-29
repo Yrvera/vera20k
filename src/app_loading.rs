@@ -1043,12 +1043,14 @@ mod tests {
             player_name: "Player".to_string(),
             local: SkirmishLocalSlot {
                 country,
+                country_random: false,
                 color_index: 0,
                 start_position: LaunchStartPosition::Position(0),
                 team: LaunchTeam::None,
             },
             opponents: vec![SkirmishAiSlot {
                 country: LaunchCountry::Russia,
+                country_random: false,
                 color_index: 1,
                 start_position: LaunchStartPosition::Position(1),
                 team: LaunchTeam::None,

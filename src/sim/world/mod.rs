@@ -563,6 +563,9 @@ impl Simulation {
     pub(crate) fn miner_jitter_rng(&mut self) -> &mut SimRng {
         &mut self.scenario_rng
     } // dock-entry retry + unload-deploy frame jitter
+    pub(crate) fn random_assignment_rng(&mut self) -> &mut SimRng {
+        &mut self.scenario_rng
+    } // session random country/color resolution at launch handoff
 
     // --- Main stream (gamemd g_MainRng @ 0x00886B88); no sim/ consumer wired yet ---
     pub(crate) fn weapon_spread_rng(&mut self) -> &mut SimRng {
