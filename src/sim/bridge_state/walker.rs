@@ -750,9 +750,6 @@ impl BridgeRuntimeState {
         for slot in Self::ns_triple(rx, ry) {
             if let Some(pos) = slot {
                 if let Some(c) = self.cell_mut(pos.0, pos.1) {
-                    if matches!(c.role, crate::sim::bridge_state::BridgeCellRole::Bridgehead) {
-                        continue;
-                    }
                     c.overlay_byte = next;
                     if next == 0xE7 {
                         c.damage_state = DamageState::Destroyed;
@@ -803,9 +800,6 @@ impl BridgeRuntimeState {
         for slot in Self::ew_triple(rx, ry) {
             if let Some(pos) = slot {
                 if let Some(c) = self.cell_mut(pos.0, pos.1) {
-                    if matches!(c.role, crate::sim::bridge_state::BridgeCellRole::Bridgehead) {
-                        continue;
-                    }
                     c.overlay_byte = next;
                     if next == 0xE8 {
                         c.damage_state = DamageState::Destroyed;
@@ -872,13 +866,14 @@ impl BridgeRuntimeState {
         let mut destroyed: Vec<(u16, u16)> = Vec::new();
         let mut actions: Vec<((u16, u16), usize, CellAction)> = Vec::new();
 
-        // Write the (this, north, south) length-axis triple.
+        // Write the (this, north, south) length-axis triple. The write is
+        // UNCONDITIONAL: bridge destruction keys purely on the overlay band,
+        // with no per-cell role exception, so a bridgehead/ramp cell caught in
+        // the triple receives the destroy overlay (and a BlowUpBridge on a
+        // final collapse) like any other cell — it is NOT left standing.
         for (slot, opt_pos) in Self::ns_triple(rx, ry).into_iter().enumerate() {
             if let Some(pos) = opt_pos {
                 if let Some(c) = self.cell_mut(pos.0, pos.1) {
-                    if matches!(c.role, crate::sim::bridge_state::BridgeCellRole::Bridgehead) {
-                        continue;
-                    }
                     c.overlay_byte = next;
                     if is_final {
                         c.damage_state = DamageState::Destroyed;
@@ -969,9 +964,6 @@ impl BridgeRuntimeState {
         for (slot, opt_pos) in Self::ew_triple(rx, ry).into_iter().enumerate() {
             if let Some(pos) = opt_pos {
                 if let Some(c) = self.cell_mut(pos.0, pos.1) {
-                    if matches!(c.role, crate::sim::bridge_state::BridgeCellRole::Bridgehead) {
-                        continue;
-                    }
                     c.overlay_byte = next;
                     if is_final {
                         c.damage_state = DamageState::Destroyed;
@@ -1115,9 +1107,6 @@ impl BridgeRuntimeState {
         for slot in Self::ns_triple(rx, ry) {
             if let Some(pos) = slot {
                 if let Some(c) = self.cell_mut(pos.0, pos.1) {
-                    if matches!(c.role, crate::sim::bridge_state::BridgeCellRole::Bridgehead) {
-                        continue;
-                    }
                     c.overlay_byte = next;
                     if next == 0x64 {
                         c.damage_state = DamageState::Destroyed;
@@ -1167,9 +1156,6 @@ impl BridgeRuntimeState {
         for slot in Self::ew_triple(rx, ry) {
             if let Some(pos) = slot {
                 if let Some(c) = self.cell_mut(pos.0, pos.1) {
-                    if matches!(c.role, crate::sim::bridge_state::BridgeCellRole::Bridgehead) {
-                        continue;
-                    }
                     c.overlay_byte = next;
                     if next == 0x65 {
                         c.damage_state = DamageState::Destroyed;
@@ -1233,9 +1219,6 @@ impl BridgeRuntimeState {
         for (slot, opt_pos) in Self::ns_triple(rx, ry).into_iter().enumerate() {
             if let Some(pos) = opt_pos {
                 if let Some(c) = self.cell_mut(pos.0, pos.1) {
-                    if matches!(c.role, crate::sim::bridge_state::BridgeCellRole::Bridgehead) {
-                        continue;
-                    }
                     c.overlay_byte = next;
                     if is_final {
                         c.damage_state = DamageState::Destroyed;
@@ -1322,9 +1305,6 @@ impl BridgeRuntimeState {
         for (slot, opt_pos) in Self::ew_triple(rx, ry).into_iter().enumerate() {
             if let Some(pos) = opt_pos {
                 if let Some(c) = self.cell_mut(pos.0, pos.1) {
-                    if matches!(c.role, crate::sim::bridge_state::BridgeCellRole::Bridgehead) {
-                        continue;
-                    }
                     c.overlay_byte = next;
                     if is_final {
                         c.damage_state = DamageState::Destroyed;

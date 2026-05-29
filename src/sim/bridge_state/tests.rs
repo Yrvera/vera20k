@@ -243,10 +243,12 @@ fn repaired_overlay_is_walkable_even_with_stale_destroyed_state() {
 }
 
 #[test]
-fn ns_walker_triple_skips_bridgehead_neighbors() {
-    // 3x4 NS bridge: head(2,1), body(2,2), head(2,3). The walker
-    // triple-writes (this, north=(2,1), south=(2,3)) which would
-    // corrupt the bridgeheads if Task 2's role skip were missing.
+fn ns_walker_triple_writes_bridgehead_neighbors() {
+    // BR-11: the HIGH NS walker triple-writes (this, north=(2,1),
+    // south=(2,3)) UNCONDITIONALLY. Bridge destruction keys purely on the
+    // overlay band with no per-cell role concept, so the bridgehead neighbors
+    // in the triple must receive the destroy overlay and (on a final collapse)
+    // a BlowUpBridge action — they are NOT left standing.
     let mut state = BridgeRuntimeState::default();
     state.test_seed_cell(
         2,
@@ -260,6 +262,7 @@ fn ns_walker_triple_skips_bridgehead_neighbors() {
             axis: Some(Axis::NS),
             role: BridgeCellRole::Body,
             anchor_span_id: Some(1),
+            // 0xD3 ∈ [0xD3..=0xD5] → final-collapse case: triple writes 0xE7.
             overlay_byte: 0xD3,
             damaged_variant: false,
             bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
@@ -286,16 +289,70 @@ fn ns_walker_triple_skips_bridgehead_neighbors() {
     }
     let terrain = crate::map::resolved_terrain::ResolvedTerrainGrid::from_cells(3, 4, Vec::new());
 
-    let _ = state.destroy_bridge_walker_ns_high(2, 2, &terrain);
+    let outcome = state.destroy_bridge_walker_ns_high(2, 2, &terrain);
 
+    // Every triple cell — including the two bridgeheads — gets the 0xE7
+    // destroy overlay and a Destroyed damage_state.
+    for (rx, ry) in [(2u16, 1u16), (2, 2), (2, 3)] {
+        let c = state.cell(rx, ry).expect("triple cell present");
+        assert_eq!(
+            c.overlay_byte, 0xE7,
+            "({rx},{ry}) gets the destroy overlay band"
+        );
+        assert_eq!(
+            c.damage_state,
+            DamageState::Destroyed,
+            "({rx},{ry}) marked Destroyed"
+        );
+    }
+    // The bridgehead cells keep their role tag (role is derived/internal, not
+    // authoritative) but are now part of the collapse + BlowUpBridge cascade.
     for ry in [1u16, 3] {
-        let head = state.cell(2, ry).expect("bridgehead survives walker");
-        assert_eq!(head.overlay_byte, 0, "bridgehead overlay_byte untouched");
         assert!(matches!(
-            head.damage_state,
-            DamageState::Healthy { variant: 0 }
+            state.cell(2, ry).unwrap().role,
+            BridgeCellRole::Bridgehead
         ));
-        assert!(matches!(head.role, BridgeCellRole::Bridgehead));
+    }
+    match outcome {
+        StateOutcome::Collapsed {
+            binary_success,
+            destroyed_cells,
+            set_bridge_direction,
+            zones_dirty,
+            ..
+        } => {
+            assert!(binary_success);
+            assert!(zones_dirty, "final collapse marks zones dirty");
+            for pos in [(2u16, 1u16), (2, 2), (2, 3)] {
+                assert!(
+                    destroyed_cells.contains(&pos),
+                    "{pos:?} in destroyed_cells"
+                );
+            }
+            assert_eq!(
+                set_bridge_direction.actions.len(),
+                3,
+                "one BlowUpBridge per triple cell, bridgeheads included"
+            );
+            let blown: Vec<(u16, u16)> = set_bridge_direction
+                .actions
+                .iter()
+                .map(|(pos, _, _)| *pos)
+                .collect();
+            for pos in [(2u16, 1u16), (2, 2), (2, 3)] {
+                assert!(blown.contains(&pos), "{pos:?} has a BlowUpBridge action");
+                assert!(
+                    set_bridge_direction
+                        .actions
+                        .iter()
+                        .all(|(_, _, action)| matches!(
+                            action,
+                            crate::sim::bridge_specs::CellAction::BlowUpBridge
+                        ))
+                );
+            }
+        }
+        other => panic!("expected Collapsed, got {other:?}"),
     }
 }
 
