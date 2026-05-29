@@ -556,6 +556,7 @@ fn test_tick_combat_only_emits_bridge_damage_for_wall_warheads() {
         0u64,
         100,
         0u32,
+        &[],
     );
     assert!(
         result.bridge_damage_events.is_empty(),
@@ -598,6 +599,7 @@ fn test_tick_combat_only_emits_bridge_damage_for_wall_warheads() {
         0u64,
         100,
         0u32,
+        &[],
     );
     assert_eq!(
         wall_result.bridge_damage_events,
@@ -1113,6 +1115,7 @@ fn garrison_fire_keeps_occupant_anim_and_sound_path() {
         0,
         100,
         0,
+        &[],
     );
 
     assert_eq!(result.fire_events.len(), 1);
@@ -1290,6 +1293,7 @@ fn test_tick_combat_visibility_blocks_fire() {
         0u64,
         100,
         0u32,
+        &[],
     );
 
     let target_health = store.get(2).expect("target alive").health.current;
@@ -1328,6 +1332,7 @@ fn test_tick_combat_retargets_by_distance_then_stable_id() {
         0u64,
         100,
         0u32,
+        &[],
     );
 
     let attack = store
@@ -1376,6 +1381,7 @@ fn test_tick_combat_retargets_prefers_threat_class_when_distance_equal() {
         0u64,
         100,
         0u32,
+        &[],
     );
 
     let attack = store
@@ -1453,6 +1459,7 @@ fn test_weapon_fire_destroys_ore_in_spread() {
         0u64,
         100,
         0u32,
+        &[],
     );
 
     // Combat emits TiberiumReductionRequests (applied later by World via the
@@ -1519,6 +1526,7 @@ fn test_direct_hit_weapon_destroys_center_ore() {
         0u64,
         100,
         0u32,
+        &[],
     );
 
     // Combat emits a TiberiumReductionRequest (applied later by World). 105mm
@@ -1577,6 +1585,7 @@ fn test_weak_weapon_partial_ore_reduction() {
         0u64,
         100,
         0u32,
+        &[],
     );
 
     // Combat emits a TiberiumReductionRequest (applied later by World). M60
@@ -2198,4 +2207,94 @@ fn emit_warhead_detonation_effects_animlist_index_is_damage_div_25_clamped() {
         &mut smudges,
     );
     assert_eq!(explosions[0].shp_name, interner.intern("EXP3"));
+}
+
+#[test]
+fn combat_resolves_in_live_object_order_not_stable_id() {
+    // Two attackers A (stable_id 1) and B (stable_id 2), same owner, both able to
+    // lethally hit a shared enemy target T (stable_id 3) this tick. T has 50 HP, so
+    // the single 58-damage 105mm shot (65 * 90% AP-vs-heavy) from the FIRST-resolved
+    // attacker drops it to 0 and records the despawn.
+    //
+    // Phase 4 of tick_combat_with_fog applies damage_events in resolution order;
+    // damage_events is built in Phase 2 by walking the snapshots in their sorted
+    // order. fire_events is pushed in that same order, so fire_events[0].attacker_id
+    // is exactly the first-resolved attacker. The new sort keys on live_order
+    // position (stable_id tiebreak), so passing live_order = [2, 1] must make B
+    // resolve first, and live_order = &[] must fall back to stable-id order (A first).
+    fn build() -> (EntityStore, RuleSet, StringInterner) {
+        let rules = test_rules();
+        let mut store = EntityStore::new();
+        // A and B are co-located is irrelevant; both are in range (<= 6) of T.
+        store.insert(make_entity(1, "MTNK", 5, 5, 300)); // attacker A
+        store.insert(make_entity(2, "MTNK", 6, 5, 300)); // attacker B
+        store.insert(make_entity(3, "MTNK", 5, 6, 50)); // shared target T
+        let interner = test_interner();
+        issue_attack_command(&mut store, 1, 3, None, &interner);
+        issue_attack_command(&mut store, 2, 3, None, &interner);
+        (store, rules, interner)
+    }
+
+    // Run 1: live order [B(2), A(1)] (reversed vs stable-id). B resolves first:
+    // it fires first and lands the lethal shot.
+    {
+        let (mut store, rules, mut interner) = build();
+        let result = tick_combat_with_fog(
+            &mut store,
+            &mut OccupancyGrid::new(),
+            &rules,
+            &mut interner,
+            None,
+            &BTreeMap::<InternedId, PowerState>::new(),
+            None,
+            &mut BTreeMap::new(),
+            None,
+            None,
+            None,
+            0u64,
+            100,
+            0u32,
+            &[2, 1],
+        );
+        assert_eq!(
+            result.fire_events[0].attacker_id, 2,
+            "live order [2,1]: B (live-order-first) must fire first"
+        );
+        assert!(
+            result.despawned_ids.contains(&3),
+            "target must die this tick"
+        );
+    }
+
+    // Run 2: empty live order falls back to stable-id order [A(1), B(2)]. A now
+    // resolves first and fires first - the OPPOSITE of run 1 - proving live_order
+    // controls the resolution sequence and that &[] reproduces the prior order.
+    {
+        let (mut store, rules, mut interner) = build();
+        let result = tick_combat_with_fog(
+            &mut store,
+            &mut OccupancyGrid::new(),
+            &rules,
+            &mut interner,
+            None,
+            &BTreeMap::<InternedId, PowerState>::new(),
+            None,
+            &mut BTreeMap::new(),
+            None,
+            None,
+            None,
+            0u64,
+            100,
+            0u32,
+            &[],
+        );
+        assert_eq!(
+            result.fire_events[0].attacker_id, 1,
+            "empty live order: stable-id fallback fires A first"
+        );
+        assert!(
+            result.despawned_ids.contains(&3),
+            "target must die this tick"
+        );
+    }
 }

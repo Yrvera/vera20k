@@ -322,11 +322,18 @@ fn can_retaliate(
 /// Called after `tick_combat_with_fog()` in the game loop. Iterates entities
 /// that have a `last_attacker_id` but no `attack_target` and no `order_intent`.
 /// Skips retaliation if the weapon has 0% or 1% Verses against the attacker's armor.
-pub fn tick_retaliation(entities: &mut EntityStore, rules: &RuleSet, interner: &StringInterner) {
+pub fn tick_retaliation(
+    entities: &mut EntityStore,
+    rules: &RuleSet,
+    interner: &StringInterner,
+    live_order: &[u64],
+) {
     // Collect retaliation candidates: (retaliator_id, attacker_id).
     let mut retaliators: Vec<(u64, u64)> = Vec::new();
-    let keys: Vec<u64> = entities.keys_sorted();
-    for &id in &keys {
+    // Native retaliation is resolved during the same live-object (reveal/insertion
+    // order) AI walk as the rest of combat, so scan victims in live order rather
+    // than stable-id order.
+    for &id in live_order {
         let entity = match entities.get(id) {
             Some(e) => e,
             None => continue,

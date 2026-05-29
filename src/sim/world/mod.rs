@@ -1742,6 +1742,10 @@ impl Simulation {
             // halt movement on range entry. Must run before combat so combat
             // sees the up-to-date movement_target this tick.
             self.tick_attack_pursuit(rules, path_grid);
+            // LogicClass live-object order drives the firing/damage/kill-credit
+            // resolution sequence. Snapshot is owned, so it does not conflict
+            // with the &mut self.entities borrow below.
+            let logic_order = self.live_object_order_snapshot();
             let combat_result = combat::tick_combat_with_fog(
                 &mut self.entities,
                 &mut self.occupancy,
@@ -1757,6 +1761,7 @@ impl Simulation {
                 self.tick,
                 tick_ms,
                 self.binary_frame,
+                &logic_order,
             );
             turret::tick_turret_rotation(
                 &mut self.entities,
@@ -1952,7 +1957,8 @@ impl Simulation {
             crate::sim::particles::system_ai::tick_particle_systems(self, rules);
             // --- Phase 6: Retaliation + Passengers ---
             // DEPENDS ON: combat (sets last_attacker_id read by retaliation).
-            combat::tick_retaliation(&mut self.entities, rules, &self.interner);
+            let logic_order = self.live_object_order_snapshot();
+            combat::tick_retaliation(&mut self.entities, rules, &self.interner, &logic_order);
             passenger_ownership_changed = passenger::tick_passenger_system(self, rules);
             self.tick_order_intents_post_combat(path_grid, Some(rules));
             // --- Phase 7: Scatter + Production + Repairs + Docks + Ore ---

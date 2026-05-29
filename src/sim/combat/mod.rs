@@ -584,6 +584,9 @@ pub fn tick_combat(
         current_tick,
         tick_ms,
         binary_frame,
+        // Convenience shim (tests only); empty live order falls back to the
+        // stable-id resolution order, preserving prior behavior exactly.
+        &[],
     )
 }
 
@@ -1183,6 +1186,7 @@ pub fn tick_combat_with_fog(
     current_tick: u64,
     tick_ms: u32,
     binary_frame: u32,
+    live_order: &[u64],
 ) -> CombatTickResult {
     if tick_ms == 0 {
         return CombatTickResult {
@@ -1504,7 +1508,24 @@ pub fn tick_combat_with_fog(
             garrison,
         });
     }
-    snapshots.sort_by_key(|s| s.stable_id);
+    // Native combat resolves each object inline during the single live-object
+    // (reveal/insertion-order) AI walk, so firing/damage/kill-credit order is
+    // the live-object order, not stable-id. Sort the collected attacker
+    // snapshots by their position in the live order. stable_id is the
+    // deterministic tiebreaker for any attacker absent from the live order
+    // (limbo objects do not fire) and makes an empty live_order reproduce the
+    // previous stable-id order exactly.
+    let live_index: std::collections::HashMap<u64, usize> = live_order
+        .iter()
+        .enumerate()
+        .map(|(i, &id)| (id, i))
+        .collect();
+    snapshots.sort_by_key(|s| {
+        (
+            live_index.get(&s.stable_id).copied().unwrap_or(usize::MAX),
+            s.stable_id,
+        )
+    });
 
     // Phase 2: process each attacker against its target.
     // (target_id, damage, attacker_id, warhead_id)
