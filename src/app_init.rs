@@ -312,6 +312,7 @@ pub(crate) fn load_map_initial_with_assets(
     ra2_dir: PathBuf,
     asset_manager: AssetManager,
     requested_map: Option<&str>,
+    progress: &mut dyn crate::app_loading::LoadingProgressSink,
 ) -> Result<MapLoadInitial> {
     // Check RA2_QUICKPLAY env var: if it names a .map/.mpr file, load that directly.
     // UI-selected map name/path (requested_map) takes precedence.
@@ -357,6 +358,11 @@ pub(crate) fn load_map_initial_with_assets(
     );
     log_trigger_graph_diagnostics(&map_data);
 
+    // First post-render-handoff milestone: the selected map has been opened and
+    // parsed. (gamemd emits 8 at theater-init entry; in our pipeline the map is
+    // parsed first, so 8 marks the end of this initial phase.)
+    progress.milestone(8);
+
     Ok(MapLoadInitial {
         asset_manager,
         map_data,
@@ -370,6 +376,7 @@ pub(crate) fn load_map_from_initial(
     skirmish_launch_session: Option<&SkirmishLaunchSession>,
     skirmish_settings: &crate::ui::main_menu::SkirmishSettings,
     mut vxl_compute: Option<&mut crate::render::vxl_compute::VxlComputeRenderer>,
+    progress: &mut dyn crate::app_loading::LoadingProgressSink,
 ) -> Result<MapLoadResult> {
     let MapLoadInitial {
         mut asset_manager,
@@ -384,6 +391,9 @@ pub(crate) fn load_map_from_initial(
         Some(td) => td.extension,
         None => theater_ext_for(&map_data.header.theater),
     };
+    // Theater archives + palettes loaded (gamemd Init_Theater milestones).
+    progress.milestone(12);
+    progress.milestone(30);
 
     let parse_bool_env = |key: &str| -> Option<bool> {
         std::env::var(key).ok().map(|v| {
@@ -439,6 +449,11 @@ pub(crate) fn load_map_from_initial(
     } else {
         HashMap::new()
     };
+    // Rules + art parsed, merged, and processed (gamemd command-bar/CD/rules
+    // milestones).
+    progress.milestone(31);
+    progress.milestone(35);
+    progress.milestone(45);
     let csf: Option<crate::assets::csf_file::CsfFile> = load_csf(&asset_manager);
     let rules_ini: IniFile = asset_manager
         .get_with_source("rulesmd.ini")
@@ -475,9 +490,15 @@ pub(crate) fn load_map_from_initial(
         local_bounds,
         anchor_variant_table,
     );
+    // Side/house mix + resolved terrain grid ready.
+    progress.milestone(50);
+    progress.milestone(55);
 
     // Build per-cell lighting from map [Lighting] section.
     let lighting_config = lighting::parse_lighting(&map_data.ini);
+    // [Basic]/lighting read complete (gamemd Read_INI_Basic milestones).
+    progress.milestone(58);
+    progress.milestone(60);
 
     let tile_atlas: Option<TileAtlas> = match &theater_result {
         Some(td) => build_tile_atlas(
@@ -492,6 +513,10 @@ pub(crate) fn load_map_from_initial(
         None => None,
     };
 
+    // Theater tileset / map-section surfaces built (gamemd map-section milestones).
+    progress.milestone(63);
+    progress.milestone(65);
+
     let art_fallback: ArtRegistry = ArtRegistry::empty();
 
     // Parse house color assignments from map INI ([Houses] + per-house Color=).
@@ -500,6 +525,7 @@ pub(crate) fn load_map_from_initial(
         || house_roster.color_map(),
         |session| house_color_map_for_launch_session(session, &house_roster),
     );
+    progress.milestone(67);
 
     // Build height lookup for entity/overlay elevation (shared between subsystems).
     let height_map: BTreeMap<(u16, u16), u8> = resolved_terrain.build_height_map();
@@ -527,6 +553,10 @@ pub(crate) fn load_map_from_initial(
         ),
         None => (None, None, None),
     };
+    // Map/overlay prelude ready (gamemd IsoMapPack/overlay milestones).
+    progress.milestone(68);
+    progress.milestone(69);
+    progress.milestone(70);
 
     let bridge_destroyability_mode =
         skirmish_launch_session.map_or(BridgeDestroyabilityMode::CampaignOrEditor, |session| {
@@ -552,6 +582,12 @@ pub(crate) fn load_map_from_initial(
         vxl_compute.as_deref_mut(),
         bridge_destroyability_mode,
     );
+    // Terrain/tiberium + units/infantry/buildings created from the map
+    // (gamemd terrain/units/objects/buildings milestones).
+    progress.milestone(72);
+    progress.milestone(74);
+    progress.milestone(76);
+    progress.milestone(78);
     let mut simulation = simulation;
     if let Some(sim) = &mut simulation {
         if skirmish_launch_session.is_none() {
@@ -999,6 +1035,15 @@ pub(crate) fn load_map_from_initial(
         simulation.as_ref(),
         rules.as_ref(),
     );
+    // Final post-map-init milestones (gamemd cell-attributes, beacon-art [90
+    // coalesced here, no distinct Rust step], post-map-init, tactical cleanup,
+    // final pre-render refresh). 100 is emitted by the pump at Finished.
+    progress.milestone(82);
+    progress.milestone(86);
+    progress.milestone(93);
+    progress.milestone(96);
+    progress.milestone(98);
+
     // Move fields out of map_data (last use) instead of cloning.
     let theater_name = map_data.header.theater;
     Ok(MapLoadResult {

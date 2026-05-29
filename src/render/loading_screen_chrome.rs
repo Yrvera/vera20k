@@ -8,11 +8,20 @@ use std::collections::HashMap;
 
 use crate::assets::asset_manager::AssetManager;
 use crate::assets::pal_file::Palette;
+use crate::assets::pcx_file::PcxFile;
 use crate::assets::shp_file::ShpFile;
 use crate::render::batch::{BatchRenderer, BatchTexture};
 use crate::render::gpu::GpuContext;
 
 const ATLAS_PADDING: u32 = 2;
+
+/// Synthetic atlas label for the 1x1 white texel used to draw the solid backing
+/// fill (G3) as a tinted quad. Not an asset on disk.
+const SOLID_TEXEL_LABEL: &str = "__solid_texel__";
+
+/// Palette index treated as transparent when decoding the country side-icon PCX.
+/// The insignia PCX files use index 0 for their background.
+const SIDE_ICON_TRANSPARENT_INDEX: u8 = 0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoadingScreenWidth {
@@ -66,6 +75,26 @@ impl LoadingArtVariant {
         }
     }
 
+    /// Country insignia PCX drawn to the right of the loading bar (G4).
+    ///
+    /// Verified asset mapping from gamemd's loading-side-icon resolver
+    /// (`FUN_004e3560`): each launch country maps to a 4-letter insignia PCX.
+    pub fn side_icon_pcx(self) -> &'static str {
+        match self {
+            Self::Americans => "usai.pcx",
+            Self::Alliance => "japi.pcx",
+            Self::French => "frai.pcx",
+            Self::Germans => "geri.pcx",
+            Self::British => "gbri.pcx",
+            Self::Africans => "djbi.pcx",
+            Self::Arabs => "arbi.pcx",
+            Self::Confederation => "lati.pcx",
+            Self::Russians => "rusi.pcx",
+            Self::Yuri => "yrii.pcx",
+            Self::Observer => "obsi.pcx",
+        }
+    }
+
     pub fn manifest(self) -> LoadingArtManifest {
         match self {
             Self::Yuri => LoadingArtManifest::new("yuri", "MPYLS.PAL"),
@@ -113,6 +142,11 @@ pub struct LoadingScreenAtlas {
     pub texture: BatchTexture,
     pub background: LoadingScreenEntry,
     pub progress_frame0: LoadingScreenEntry,
+    /// Country insignia drawn right of the bar (G4). `None` when the PCX is
+    /// missing — the bar still draws without it.
+    pub side_icon: Option<LoadingScreenEntry>,
+    /// 1x1 white texel for drawing the solid backing fill (G3) as a tinted quad.
+    pub solid_texel: LoadingScreenEntry,
 }
 
 struct RenderedLoadingEntry {
@@ -135,7 +169,7 @@ pub fn build_loading_screen_atlas(
     let progress_palette = load_named_ui_palette(assets, "MPLS.PAL")
         .or_else(|| load_named_ui_palette(assets, manifest.palette_name))?;
 
-    let rendered = vec![
+    let mut rendered = vec![
         mandatory_shp(
             assets,
             &background_name,
@@ -144,7 +178,23 @@ pub fn build_loading_screen_atlas(
             manifest.palette_name,
         )?,
         mandatory_shp(assets, "PROGBARM.SHP", &progress_palette, 0, "MPLS.PAL")?,
+        solid_texel_entry(),
     ];
+
+    // Side-icon is non-fatal: if its PCX is missing or malformed the bar still
+    // draws. Record its label so it can be looked up after packing.
+    let side_icon_name = variant.side_icon_pcx();
+    let side_icon_label = match render_pcx_entry(assets, side_icon_name) {
+        Some(entry) => {
+            let label = entry.label.clone();
+            rendered.push(entry);
+            Some(label)
+        }
+        None => {
+            log::warn!("Missing standard Skirmish loading side icon {side_icon_name}");
+            None
+        }
+    };
 
     let (texture, packed) = pack_entries(gpu, batch, &rendered)?;
     let by_label: HashMap<String, LoadingScreenEntry> = rendered
@@ -152,10 +202,43 @@ pub fn build_loading_screen_atlas(
         .map(|entry| entry.label.clone())
         .zip(packed)
         .collect();
+    let side_icon = side_icon_label.and_then(|label| by_label.get(&label).copied());
     Some(LoadingScreenAtlas {
         texture,
         background: *by_label.get(&background_name.to_ascii_lowercase())?,
         progress_frame0: *by_label.get("progbarm.shp")?,
+        side_icon,
+        solid_texel: *by_label.get(SOLID_TEXEL_LABEL)?,
+    })
+}
+
+/// A 1x1 opaque-white texel. Drawn scaled and tinted to produce the G3 solid
+/// backing fill; tinting an all-white texel yields a flat color rect.
+fn solid_texel_entry() -> RenderedLoadingEntry {
+    RenderedLoadingEntry {
+        label: SOLID_TEXEL_LABEL.to_string(),
+        width: 1,
+        height: 1,
+        rgba: vec![255, 255, 255, 255],
+    }
+}
+
+/// Decode a palettized country-insignia PCX into an atlas entry, treating
+/// index 0 as transparent.
+fn render_pcx_entry(assets: &AssetManager, file_name: &str) -> Option<RenderedLoadingEntry> {
+    let bytes = assets.get_ref(file_name)?;
+    let pcx = PcxFile::from_bytes(bytes)
+        .map_err(|err| {
+            log::warn!("Could not parse standard Skirmish loading side icon {file_name}: {err:#}");
+            err
+        })
+        .ok()?;
+    let rgba = pcx.to_rgba(Some(SIDE_ICON_TRANSPARENT_INDEX));
+    Some(RenderedLoadingEntry {
+        label: file_name.to_ascii_lowercase(),
+        width: pcx.width as u32,
+        height: pcx.height as u32,
+        rgba,
     })
 }
 
@@ -425,6 +508,26 @@ mod tests {
             let name = manifest.background_asset(LoadingScreenWidth::W800);
             assert!(!name.to_ascii_lowercase().contains("pudlgbg"));
             assert_ne!(name.to_ascii_lowercase(), "spldbr.shp");
+        }
+    }
+
+    #[test]
+    fn side_icon_pcx_uses_verified_insignia_mapping() {
+        let cases = [
+            (LoadingArtVariant::Americans, "usai.pcx"),
+            (LoadingArtVariant::Alliance, "japi.pcx"),
+            (LoadingArtVariant::French, "frai.pcx"),
+            (LoadingArtVariant::Germans, "geri.pcx"),
+            (LoadingArtVariant::British, "gbri.pcx"),
+            (LoadingArtVariant::Africans, "djbi.pcx"),
+            (LoadingArtVariant::Arabs, "arbi.pcx"),
+            (LoadingArtVariant::Confederation, "lati.pcx"),
+            (LoadingArtVariant::Russians, "rusi.pcx"),
+            (LoadingArtVariant::Yuri, "yrii.pcx"),
+            (LoadingArtVariant::Observer, "obsi.pcx"),
+        ];
+        for (variant, expected) in cases {
+            assert_eq!(variant.side_icon_pcx(), expected, "{variant:?}");
         }
     }
 

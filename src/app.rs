@@ -2273,6 +2273,17 @@ impl App {
 
         match &state.screen {
             GameScreen::MainMenu => {
+                // The shell loops the menu [INTRO] theme the whole time the
+                // player is on the main menu. Idempotent start + per-frame
+                // update (the sim tick that normally pumps music does not run
+                // on the menu) keeps the looping theme alive on every entry
+                // path: initial launch, return-from-game, and mission result.
+                if let (Some(player), Some(assets)) =
+                    (&mut state.music_player, &state.asset_manager)
+                {
+                    player.play_menu_theme(assets);
+                    player.update(assets);
+                }
                 if crate::app_shell_transition::render_main_menu_to_skirmish_transition(
                     state,
                     &mut encoder,

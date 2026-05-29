@@ -48,6 +48,14 @@ pub struct MusicPlayer {
     playlist_index: usize,
     /// Music volume (0.0 to 1.0).
     volume: f64,
+    /// When set, the resolved sound stem to re-play on finish instead of
+    /// advancing the playlist (honors a theme's `Repeat=yes`, e.g. the menu
+    /// [INTRO] theme which loops the entire time the shell is shown).
+    looping_track: Option<String>,
+    /// Resolved sound stem of the menu [INTRO] theme, from theme INI.
+    menu_theme: Option<String>,
+    /// Whether the menu [INTRO] theme is marked `Repeat=yes` in the INI.
+    menu_theme_repeats: bool,
 }
 
 impl MusicPlayer {
@@ -65,14 +73,63 @@ impl MusicPlayer {
             aliases: HashMap::new(),
             playlist_index: 0,
             volume: 0.5,
+            looping_track: None,
+            menu_theme: None,
+            menu_theme_repeats: false,
         })
     }
 
     /// Play a specific track by name. Loads from the AssetManager on demand.
     /// Returns true if the track was found and playback started.
+    ///
+    /// This is the one-shot entry point used for gameplay tracks; it clears
+    /// any active looping so a menu loop does not bleed into a started map.
     pub fn play_track(&mut self, track_name: &str, assets: &AssetManager) -> bool {
+        self.looping_track = None;
         self.ensure_theme_config(assets);
-        self.stop();
+        self.start_track(track_name, assets)
+    }
+
+    /// Start the menu [INTRO] theme, looping it if the INI marks it
+    /// `Repeat=yes`. Idempotent: if the menu theme is already the current
+    /// track, this is a no-op so it is safe to call every frame the shell is
+    /// shown. Returns true if the menu theme is playing afterward.
+    ///
+    /// The theme name and repeat flag come from the theme INI ([INTRO]
+    /// section), not a hardcoded stem.
+    pub fn play_menu_theme(&mut self, assets: &AssetManager) -> bool {
+        self.ensure_theme_config(assets);
+
+        let Some(stem) = self.menu_theme.clone() else {
+            return false;
+        };
+
+        // Already playing the menu theme — don't restart it.
+        if self
+            .current_track
+            .as_deref()
+            .is_some_and(|t| t.eq_ignore_ascii_case(&stem))
+        {
+            return true;
+        }
+
+        let repeats = self.menu_theme_repeats;
+        let started = self.start_track(&stem, assets);
+        if started && repeats {
+            // start_track stores the resolved stem in current_track.
+            self.looping_track = self.current_track.clone();
+        }
+        started
+    }
+
+    /// Resolve, load, and begin playing a track. Does NOT touch the loop flag
+    /// — callers manage looping. Returns true if playback started.
+    fn start_track(&mut self, track_name: &str, assets: &AssetManager) -> bool {
+        // Stop the current player without clearing loop state owned by caller.
+        if let Some(player) = self.current_player.take() {
+            player.stop();
+        }
+        self.current_track = None;
 
         let resolved_name: String = self.resolve_track_name(track_name);
         let (samples, sample_rate) = match load_track(&resolved_name, assets) {
@@ -110,8 +167,10 @@ impl MusicPlayer {
         true
     }
 
-    /// Stop the currently playing track.
+    /// Stop the currently playing track. Also cancels any active loop so a
+    /// stopped menu theme does not silently re-trigger on the next update.
     pub fn stop(&mut self) {
+        self.looping_track = None;
         if let Some(player) = self.current_player.take() {
             player.stop();
         }
@@ -150,6 +209,15 @@ impl MusicPlayer {
         if finished {
             self.current_player = None;
             self.current_track = None;
+            // A looping track (e.g. the menu [INTRO] theme, Repeat=yes)
+            // re-plays itself instead of advancing the playlist.
+            if let Some(stem) = self.looping_track.clone() {
+                if self.start_track(&stem, assets) {
+                    return;
+                }
+                // Failed to restart — fall through to playlist advance.
+                self.looping_track = None;
+            }
             let _ = self.play_next(assets);
         }
     }
@@ -220,6 +288,15 @@ impl MusicPlayer {
         if !playlist.is_empty() {
             self.playlist = playlist;
             self.playlist_index = 0;
+        }
+
+        // Resolve the menu [INTRO] theme (the shell loops this the whole time
+        // the player is on the main menu). md overrides base on conflict.
+        for ini in [base.as_ref(), md.as_ref()].into_iter().flatten() {
+            if let Some((stem, repeats)) = menu_theme_from_ini(ini, &self.aliases) {
+                self.menu_theme = Some(stem);
+                self.menu_theme_repeats = repeats;
+            }
         }
     }
 }
@@ -299,6 +376,31 @@ fn merge_theme_aliases(into: &mut HashMap<String, String>, ini: &IniFile) {
     }
 }
 
+/// The section name of the main-menu shell theme in the theme INI.
+const MENU_THEME_SECTION: &str = "INTRO";
+
+/// Resolve the menu [INTRO] theme to (sound stem, repeats?) from a theme INI.
+/// `repeats` reflects the [INTRO] `Repeat=` value (defaults to no if absent).
+/// Returns None if the INI has no [INTRO] section with a resolvable sound.
+fn menu_theme_from_ini(
+    ini: &IniFile,
+    aliases: &HashMap<String, String>,
+) -> Option<(String, bool)> {
+    let section = ini.section(MENU_THEME_SECTION)?;
+    // Prefer the alias-resolved stem so casing matches what load_track uses.
+    let stem = aliases
+        .get(&MENU_THEME_SECTION.to_ascii_uppercase())
+        .cloned()
+        .or_else(|| {
+            section
+                .get("Sound")
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+        })?;
+    let repeats = section.get_bool("Repeat").unwrap_or(false);
+    Some((stem, repeats))
+}
+
 fn playlist_from_theme_ini(ini: &IniFile, aliases: &HashMap<String, String>) -> Vec<String> {
     let Some(themes) = ini.section("Themes") else {
         return Vec::new();
@@ -324,4 +426,45 @@ fn playlist_from_theme_ini(ini: &IniFile, aliases: &HashMap<String, String>) -> 
             Some(sound.clone())
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Mirrors thememd.ini [INTRO]: Sound=Drok, Repeat=yes (the looping menu
+    /// theme). Verifies we resolve the correct stem and honor Repeat=yes.
+    #[test]
+    fn menu_theme_resolves_intro_with_loop() {
+        let ini = IniFile::from_str(
+            "[INTRO]\nName=THEME:Intro\nSound=Drok\nNormal=no\nRepeat=yes\n",
+        );
+        let mut aliases = HashMap::new();
+        merge_theme_aliases(&mut aliases, &ini);
+
+        let (stem, repeats) =
+            menu_theme_from_ini(&ini, &aliases).expect("INTRO theme must resolve");
+        assert_eq!(stem, "Drok");
+        assert!(repeats, "INTRO has Repeat=yes, must loop");
+    }
+
+    /// Repeat= absent defaults to no (non-looping), so we never force a loop on
+    /// a theme that did not ask for one.
+    #[test]
+    fn menu_theme_repeat_defaults_to_no() {
+        let ini = IniFile::from_str("[INTRO]\nSound=Drok\n");
+        let aliases = HashMap::new();
+        let (stem, repeats) =
+            menu_theme_from_ini(&ini, &aliases).expect("INTRO theme must resolve");
+        assert_eq!(stem, "Drok");
+        assert!(!repeats);
+    }
+
+    /// No [INTRO] section -> no menu theme.
+    #[test]
+    fn menu_theme_absent_returns_none() {
+        let ini = IniFile::from_str("[SCORE]\nSound=Score\n");
+        let aliases = HashMap::new();
+        assert!(menu_theme_from_ini(&ini, &aliases).is_none());
+    }
 }

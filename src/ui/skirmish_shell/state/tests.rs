@@ -529,6 +529,41 @@ fn hovered_shell_control_resolves_core_controls_and_dropdown_rows() {
 }
 
 #[test]
+fn skirmish_status_help_includes_flag_and_right_panel_static_targets() {
+    let layout = compute_layout(800, 600);
+    let shell = SkirmishShellState::default();
+    let maps = vec![test_map_entry("arena.map")];
+
+    // Flag picture controls 0x6DA..0x6E1 -> STT:SkirmishPictureFlag.
+    for flag in &layout.flags {
+        let target = hovered_shell_control(&layout, &shell, &maps, flag.x, flag.y);
+        assert_eq!(target, Some(SkirmishHoverTarget::FlagPicture));
+        assert_eq!(
+            status_help_key_for_hover(target.unwrap()),
+            Some("STT:SkirmishPictureFlag")
+        );
+    }
+
+    // Right-panel game-type label 0x6EC -> STT:SkirmishLabelGameType.
+    let game_type = layout.right_panel_text.game_type;
+    let game_type_target = hovered_shell_control(&layout, &shell, &maps, game_type.x, game_type.y);
+    assert_eq!(game_type_target, Some(SkirmishHoverTarget::GameTypeLabel0x6ec));
+    assert_eq!(
+        status_help_key_for_hover(game_type_target.unwrap()),
+        Some("STT:SkirmishLabelGameType")
+    );
+
+    // Right-panel scenario/map label 0x5A8 -> STT:SkirmishLabelScenario.
+    let map_label = layout.right_panel_text.map_label;
+    let map_label_target = hovered_shell_control(&layout, &shell, &maps, map_label.x, map_label.y);
+    assert_eq!(map_label_target, Some(SkirmishHoverTarget::ScenarioLabel0x5a8));
+    assert_eq!(
+        status_help_key_for_hover(map_label_target.unwrap()),
+        Some("STT:SkirmishLabelScenario")
+    );
+}
+
+#[test]
 fn hovered_shell_control_blocks_parent_targets_when_modal_owns_input() {
     let layout = compute_layout(800, 600);
     let mut shell = SkirmishShellState::default();

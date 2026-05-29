@@ -20,6 +20,11 @@ const CHROME_DEPTH: f32 = 0.00085;
 const BUTTON_DEPTH: f32 = 0.00080;
 const TEXT_DEPTH: f32 = 0.00070;
 const SHELL_BUTTON_TEXT_RGB_FFFF00: [f32; 3] = [1.0, 1.0, 0.0];
+/// On press, gamemd's owner-draw button sinks the whole button content down by
+/// +2 px in Y (in addition to the +1 px right shift from
+/// `pressed_content_offset_x`). Both the button art and its label move together.
+/// Y+ is downward in this screen-space render path.
+const PRESSED_CONTENT_OFFSET_Y: f32 = 2.0;
 
 pub(crate) enum MainMenuShellRenderResult {
     Rendered,
@@ -60,6 +65,16 @@ fn button_frame(
     }
 }
 
+/// Vertical content sink applied to a button (art + label) while pressed.
+/// Returns +2 px (downward) when pressed, 0 otherwise.
+fn pressed_content_offset_y(pressed: bool) -> f32 {
+    if pressed {
+        PRESSED_CONTENT_OFFSET_Y
+    } else {
+        0.0
+    }
+}
+
 fn push_button_shp(
     out: &mut Vec<SpriteInstance>,
     atlas: &MainMenuShellChromeAtlas,
@@ -76,7 +91,10 @@ fn push_button_shp(
     let frame_w = frame.pixel_size[0] * scale_x;
     let frame_h = frame.pixel_size[1] * scale_y;
     let x = rect.x as f32 + (rect.w as f32 - frame_w);
-    let y = rect.y as f32 + (rect.h as f32 - frame_h) * 0.5;
+    // When pressed, sink the button art down by +2 px to match gamemd's
+    // owner-draw content shift (the label sinks the same amount in
+    // build_text_draws).
+    let y = rect.y as f32 + (rect.h as f32 - frame_h) * 0.5 + pressed_content_offset_y(pressed);
     push_entry_sized(out, frame, x, y, [frame_w, frame_h], depth);
 }
 
@@ -238,14 +256,18 @@ fn build_text_draws(
     let button_align = ShellAlign::H_CENTER | ShellAlign::V_CENTER;
     for button in &layout.buttons {
         let text = resolve_csf(state, csf_key_for_control(button.id));
-        let x_offset = if pressed_button == Some(button.id) {
+        let pressed = pressed_button == Some(button.id);
+        let x_offset = if pressed {
             layout.pressed_content_offset_x
         } else {
             0
         };
+        // gamemd sinks the whole button content (art + label) down +2 px on
+        // press; mirror the SHP shift here on the label's text rect.
+        let y_offset = pressed_content_offset_y(pressed) as i32;
         let text_rect = RectPx::new(
             button.rect.x + x_offset,
-            button.rect.y + 1,
+            button.rect.y + 1 + y_offset,
             (button.rect.w - 2).max(0),
             (button.rect.h - 1).max(0),
         );
@@ -510,6 +532,17 @@ pub(crate) fn render_main_menu_shell_to_target(
 mod tests {
     use super::*;
     use crate::ui::main_menu_shell::compute_layout;
+
+    #[test]
+    fn pressed_button_sinks_content_two_px_down() {
+        // Unpressed adds no vertical offset; pressed sinks content +2 px (down).
+        assert_eq!(pressed_content_offset_y(false), 0.0);
+        assert_eq!(pressed_content_offset_y(true), 2.0);
+        assert_eq!(
+            pressed_content_offset_y(true) - pressed_content_offset_y(false),
+            PRESSED_CONTENT_OFFSET_Y
+        );
+    }
 
     #[test]
     fn movie_instance_uses_layout_movie_rect() {

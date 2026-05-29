@@ -116,6 +116,12 @@ pub enum SkirmishHoverTarget {
         id: SkirmishComboId,
         item: SkirmishComboItem,
     },
+    // Static (non-interactive) controls in dialog 0x102 that still produce
+    // status help on hover. Flag pictures 0x6DA..0x6E1 share one STT key, so a
+    // single variant covers all eight.
+    FlagPicture,
+    GameTypeLabel0x6ec,
+    ScenarioLabel0x5a8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

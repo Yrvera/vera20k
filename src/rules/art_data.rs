@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 
-use crate::rules::flh::{Flh, parse_flh};
+use crate::rules::flh::{parse_flh, Flh};
 use crate::rules::ini_parser::{IniFile, IniSection};
 
 /// Per-object art configuration parsed from an art.ini section.
@@ -185,6 +185,10 @@ pub struct AnimTypeRuntimeConfig {
     pub loop_count: i32,
     pub rate_logic_frames: u16,
     pub next: Option<String>,
+    pub bounce_anim: Option<String>,
+    pub expire_anim: Option<String>,
+    pub trailer_anim: Option<String>,
+    pub trailer_seperation: i32,
     pub random_loop_delay: Option<(u16, u16)>,
     pub random_rate_logic_frames: Option<(u16, u16)>,
     pub y_draw_offset: i32,
@@ -279,6 +283,10 @@ fn parse_anim_runtime_config(section: &IniSection) -> AnimTypeRuntimeConfig {
             .map(art_rate_to_logic_frames)
             .unwrap_or(DEFAULT_ART_RATE_LOGIC_FRAMES),
         next: section.get("Next").map(|s| s.trim().to_ascii_uppercase()),
+        bounce_anim: parse_anim_ref(section, "BounceAnim"),
+        expire_anim: parse_anim_ref(section, "ExpireAnim"),
+        trailer_anim: parse_anim_ref(section, "TrailerAnim"),
+        trailer_seperation: section.get_i32("TrailerSeperation").unwrap_or(0),
         random_loop_delay: section.get("RandomLoopDelay").and_then(parse_u16_pair),
         random_rate_logic_frames: section.get("RandomRate").and_then(parse_random_rate_pair),
         y_draw_offset: section.get_i32("YDrawOffset").unwrap_or(0),
@@ -292,6 +300,14 @@ fn parse_anim_runtime_config(section: &IniSection) -> AnimTypeRuntimeConfig {
         ping_pong: section.get_bool("PingPong").unwrap_or(false),
         reverse: section.get_bool("Reverse").unwrap_or(false),
     }
+}
+
+fn parse_anim_ref(section: &IniSection, key: &str) -> Option<String> {
+    section
+        .get(key)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_uppercase)
 }
 
 fn parse_u16_pair(value: &str) -> Option<(u16, u16)> {
@@ -1228,6 +1244,82 @@ fn push_shp_pair(candidates: &mut Vec<String>, base_name: &str, theater_ext: &st
 fn push_candidate(candidates: &mut Vec<String>, candidate: String) {
     if !candidates.contains(&candidate) {
         candidates.push(candidate);
+    }
+}
+
+#[cfg(test)]
+mod anim_runtime_metadata_tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_anim_spawn_metadata_refs_to_uppercase() {
+        let ini = IniFile::from_str(
+            "[DBRIS1LG]\n\
+             TrailerAnim=smokey2\n\
+             BounceAnim=twlt026\n\
+             ExpireAnim=twlt036\n",
+        );
+        let reg = ArtRegistry::from_ini(&ini);
+
+        let config = reg
+            .anim_runtime_config("DBRIS1LG")
+            .expect("DBRIS1LG runtime metadata");
+        assert_eq!(config.trailer_anim.as_deref(), Some("SMOKEY2"));
+        assert_eq!(config.bounce_anim.as_deref(), Some("TWLT026"));
+        assert_eq!(config.expire_anim.as_deref(), Some("TWLT036"));
+    }
+
+    #[test]
+    fn parses_signed_trailer_seperation_without_clamping() {
+        let ini = IniFile::from_str(
+            "[DBRIS1LG]\n\
+             TrailerAnim=SMOKEY2\n\
+             TrailerSeperation=-2\n",
+        );
+        let reg = ArtRegistry::from_ini(&ini);
+
+        let config = reg
+            .anim_runtime_config("DBRIS1LG")
+            .expect("DBRIS1LG runtime metadata");
+        assert_eq!(config.trailer_seperation, -2);
+    }
+
+    #[test]
+    fn anim_spawn_metadata_defaults_to_native_nulls_and_zero_seperation() {
+        let ini = IniFile::from_str("[SMOKEY2]\nRate=600\n");
+        let reg = ArtRegistry::from_ini(&ini);
+
+        let config = reg
+            .anim_runtime_config("SMOKEY2")
+            .expect("SMOKEY2 runtime metadata");
+        assert_eq!(config.trailer_anim, None);
+        assert_eq!(config.trailer_seperation, 0);
+        assert_eq!(config.bounce_anim, None);
+        assert_eq!(config.expire_anim, None);
+    }
+
+    #[test]
+    fn anim_spawn_metadata_preserves_existing_next_random_and_rate_fields() {
+        let ini = IniFile::from_str(
+            "[METSTRAL]\n\
+             Rate=300\n\
+             Next=smokey\n\
+             RandomLoopDelay=2,5\n\
+             RandomRate=300,900\n",
+        );
+        let reg = ArtRegistry::from_ini(&ini);
+
+        let config = reg
+            .anim_runtime_config("METSTRAL")
+            .expect("METSTRAL runtime metadata");
+        assert_eq!(config.rate_logic_frames, 3);
+        assert_eq!(config.next.as_deref(), Some("SMOKEY"));
+        assert_eq!(config.random_loop_delay, Some((2, 5)));
+        assert_eq!(config.random_rate_logic_frames, Some((3, 1)));
+        assert_eq!(config.trailer_anim, None);
+        assert_eq!(config.trailer_seperation, 0);
+        assert_eq!(config.bounce_anim, None);
+        assert_eq!(config.expire_anim, None);
     }
 }
 
