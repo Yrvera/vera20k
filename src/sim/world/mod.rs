@@ -55,13 +55,13 @@ use crate::sim::movement::tunnel_movement;
 use crate::sim::movement::turret;
 use crate::sim::occupancy::OccupancyGrid;
 use crate::sim::ore_growth;
-use crate::sim::overlay_grid::{WallDamageEvent, cleanup_wall_neighbors, damage_wall_overlay};
+use crate::sim::overlay_grid::{cleanup_wall_neighbors, damage_wall_overlay, WallDamageEvent};
 use crate::sim::particles::ParticleSystemStore;
 use crate::sim::passenger;
-use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
 use crate::sim::pathfinding::terrain_speed;
 use crate::sim::pathfinding::zone_map::ZoneGrid;
+use crate::sim::pathfinding::PathGrid;
 use crate::sim::power_system::{self, PowerState};
 use crate::sim::production::{self, ProductionState};
 use crate::sim::radar::{RadarEventQueue, RadarEventType};
@@ -1632,6 +1632,7 @@ impl Simulation {
         tunnel_movement::tick_tunnel_movement(
             &mut self.entities,
             &mut self.occupancy,
+            &special_movement_order,
             tick_ms,
             self.tick,
         );
