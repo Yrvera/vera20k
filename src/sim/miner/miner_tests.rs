@@ -269,6 +269,7 @@ fn tick_miners_n(sim: &mut Simulation, rules: &RuleSet, n: usize) {
             &mut OccupancyGrid::new(),
             67,
             sim.tick,
+            None,
         );
         super::miner_system::tick_miners(sim, rules, &config, Some(&grid));
         // Also tick movement so issue_direct_move targets are consumed
@@ -472,6 +473,7 @@ fn chrono_miner_teleports_to_refinery_on_return() {
         &mut OccupancyGrid::new(),
         67,
         sim.tick,
+        None,
     );
 
     let entity = sim.entities.get(miner_id).expect("entity");
@@ -4083,7 +4085,7 @@ fn pivoting_phase_smoothly_rotates_to_east() {
     sim.production.dock_reservations.try_reserve(2, miner_id);
 
     let initial_facing = sim.entities.get(miner_id).expect("entity").facing;
-    let rng_before = sim.rng.state();
+    let rng_before = sim.scenario_rng.state();
     assert_eq!(initial_facing, 0);
 
     // The first direct tick initializes the FacingClass timer and samples its
@@ -4103,7 +4105,11 @@ fn pivoting_phase_smoothly_rotates_to_east() {
         assert!(m.dock_pivot_facing.is_some());
         assert_eq!(m.mission_deploy_duration, 5);
         assert_eq!(m.mission_deploy_start_frame, Some(sim.binary_frame));
-        assert_eq!(sim.rng.state(), rng_before, "facing wait consumes no RNG");
+        assert_eq!(
+            sim.scenario_rng.state(),
+            rng_before,
+            "facing wait consumes no RNG"
+        );
     }
 
     tick_miners_n(&mut sim, &rules, 1);
