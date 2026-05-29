@@ -186,8 +186,6 @@ pub(crate) struct AppState {
     /// Active Single Player -> Skirmish shell frame-index wave (presentation only).
     pub(crate) main_menu_to_skirmish_transition:
         Option<crate::app_shell_transition::ShellFrameWave>,
-    pub(crate) shell_transition_pass:
-        Option<crate::render::shell_transition_pass::ShellTransitionPass>,
     pub(crate) minimap: Option<MinimapRenderer>,
     /// True while left-dragging on minimap (camera pan mode).
     pub(crate) minimap_dragging: bool,
@@ -432,15 +430,8 @@ impl App {
     fn resize_surface_for_window_size(state: &mut AppState, size: PhysicalSize<u32>) {
         state.gpu.resize(size.width, size.height);
         state.depth_view = state.gpu.create_depth_texture();
-        match crate::app_shell_transition::resolve_resize(state) {
-            crate::app_shell_transition::ResizeTransitionResolution::ReturnToMainMenu => {
-                log::info!("Shell bridge transition cancelled by resize before halfway");
-            }
-            crate::app_shell_transition::ResizeTransitionResolution::CompleteToSkirmish => {
-                log::info!("Shell bridge transition completed by resize after halfway");
-            }
-            crate::app_shell_transition::ResizeTransitionResolution::NoTransition => {}
-        }
+        // The frame-index wave is driven by wall-clock ticks and repaints every
+        // frame, so a mid-flight resize simply lets it finish; no snap/cancel.
         let new_scale = auto_detect_ui_scale(size.width, size.height);
         if (new_scale - state.ui_scale).abs() > f32::EPSILON {
             log::info!("UI scale changed: {}x -> {}x", state.ui_scale, new_scale);
@@ -513,7 +504,6 @@ impl App {
     fn close_native_skirmish_shell(state: &mut AppState) {
         state.main_menu_show_native_skirmish_shell = false;
         state.main_menu_to_skirmish_transition = None;
-        state.shell_transition_pass = None;
         state.skirmish_shell_return_to_single_player_shell = false;
         state.dev_skirmish_shell_enabled = false;
         state.skirmish_shell_state.choose_map_modal = None;
@@ -538,7 +528,6 @@ impl App {
         state.main_menu_show_single_player_shell = true;
         state.main_menu_show_native_skirmish_shell = false;
         state.main_menu_to_skirmish_transition = None;
-        state.shell_transition_pass = None;
         state.skirmish_shell_return_to_single_player_shell = false;
         state.single_player_shell_state.pressed_owner_draw_button = None;
         state.single_player_shell_state.hovered_owner_draw_button = None;
@@ -557,7 +546,6 @@ impl App {
         state.main_menu_show_single_player_shell = false;
         state.main_menu_show_native_skirmish_shell = true;
         state.skirmish_shell_return_to_single_player_shell = true;
-        state.shell_transition_pass = None;
         state.skirmish_shell_state.pressed_owner_draw_button = None;
         state.skirmish_shell_last_painted_pressed_button = None;
         Self::ensure_skirmish_shell_chrome(state);
@@ -572,7 +560,6 @@ impl App {
     fn return_from_skirmish_to_single_player_shell(state: &mut AppState) {
         state.main_menu_show_native_skirmish_shell = false;
         state.main_menu_to_skirmish_transition = None;
-        state.shell_transition_pass = None;
         state.skirmish_shell_return_to_single_player_shell = false;
         state.skirmish_shell_state.choose_map_modal = None;
         state.skirmish_shell_state.validation_modal = None;
@@ -596,7 +583,6 @@ impl App {
         state.main_menu_show_single_player_shell = false;
         state.skirmish_shell_return_to_single_player_shell = false;
         state.main_menu_to_skirmish_transition = None;
-        state.shell_transition_pass = None;
         let request = crate::app_loading::LoadingRequest::generic_map_load(
             map_name,
             state.skirmish_settings.clone(),
@@ -621,7 +607,6 @@ impl App {
         state.skirmish_shell_return_to_single_player_shell = false;
         state.main_menu_show_native_skirmish_shell = false;
         state.main_menu_to_skirmish_transition = None;
-        state.shell_transition_pass = None;
         let request = crate::app_loading::LoadingRequest::native_selected_skirmish(
             map_name,
             session,
@@ -2131,7 +2116,6 @@ impl App {
             main_menu_show_native_skirmish_shell: false,
             skirmish_shell_return_to_single_player_shell: false,
             main_menu_to_skirmish_transition: None,
-            shell_transition_pass: None,
             minimap: None,
             minimap_dragging: false,
             middle_mouse_panning: false,

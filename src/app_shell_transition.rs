@@ -52,13 +52,6 @@ impl WaveDirection {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ResizeTransitionResolution {
-    ReturnToMainMenu,
-    CompleteToSkirmish,
-    NoTransition,
-}
-
 #[derive(Debug, Clone)]
 pub(crate) struct ShellFrameWave {
     last_step_at: Instant,
