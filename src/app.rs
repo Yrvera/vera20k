@@ -557,11 +557,16 @@ impl App {
         state.main_menu_show_single_player_shell = false;
         state.main_menu_show_native_skirmish_shell = true;
         state.skirmish_shell_return_to_single_player_shell = true;
-        state.main_menu_to_skirmish_transition = None;
         state.shell_transition_pass = None;
         state.skirmish_shell_state.pressed_owner_draw_button = None;
         state.skirmish_shell_last_painted_pressed_button = None;
         Self::ensure_skirmish_shell_chrome(state);
+        // Single Player -> Skirmish plays the SHP frame-index slide-in wave on the
+        // right-panel owner-draw buttons (Start, Choose, Back = 3 animated slots).
+        // The native main-menu -> Single Player leg is a proven instant swap and must
+        // NOT start a wave; do not add a trigger there.
+        const RIGHT_PANEL_BUTTON_SLOT_COUNT: u32 = 3;
+        crate::app_shell_transition::start_skirmish_slide_in(state, RIGHT_PANEL_BUTTON_SLOT_COUNT);
     }
 
     fn return_from_skirmish_to_single_player_shell(state: &mut AppState) {

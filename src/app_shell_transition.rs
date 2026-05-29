@@ -146,15 +146,11 @@ impl ShellFrameWave {
     }
 }
 
-pub(crate) fn start_main_menu_to_skirmish(state: &mut AppState) {
-    start_main_menu_to_skirmish_at(state, Instant::now());
-}
-
-pub(crate) fn start_main_menu_to_skirmish_at(state: &mut AppState, now: Instant) {
-    state.main_menu_show_skirmish_setup = false;
-    state.main_menu_show_native_skirmish_shell = false;
+/// Start the Single Player -> Skirmish slide-in wave. `slot_count` is the number
+/// of animated right-panel button slots (N); it sets the stagger length.
+pub(crate) fn start_skirmish_slide_in(state: &mut AppState, slot_count: u32) {
     state.main_menu_to_skirmish_transition =
-        Some(ShellBridgeTransition::new_main_menu_to_skirmish(now));
+        Some(ShellFrameWave::new_skirmish_slide_in(slot_count, Instant::now()));
 }
 
 pub(crate) fn blocks_shell_input(state: &AppState) -> bool {
