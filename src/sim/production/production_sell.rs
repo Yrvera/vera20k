@@ -456,7 +456,7 @@ fn place_garrison_passenger_at_cell(
     );
     // Reveal: ejected garrison occupant is back on the playfield — re-append it
     // to the active-object order (tail, idempotent).
-    sim.register_live_object(passenger_id);
+    sim.reveal(passenger_id);
 
     sellbuilding_direct_scatter_handoff(
         sim,

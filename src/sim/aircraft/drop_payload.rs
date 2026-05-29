@@ -235,9 +235,9 @@ pub fn try_drop(
         return DropResult::AttachFailedRetry;
     }
 
-    // Reveal/unlimbo: the dropped passenger is now an active object on the
-    // playfield. Mirrors ObjectClass::Reveal → adder (+0x98).
-    sim.register_live_object(passenger_id);
+    // Unlimbo: the dropped passenger leaves the transport's limbo and becomes an
+    // active object on the playfield. Mirrors TechnoClass::Unlimbo → Reveal.
+    sim.unlimbo(passenger_id);
 
     // 7. ChuteSound at drop cell.
     sim.sound_events.push(SimSoundEvent::ChuteSound {

@@ -307,6 +307,86 @@ mod tests {
         );
     }
 
+    // --- Slice 1: reveal/conceal/unlimbo/uninit lifecycle chokepoint ---
+
+    /// `reveal` adds a member; `conceal` removes it from the order but keeps the
+    /// store slot (limbo).
+    #[test]
+    fn reveal_then_conceal_roundtrips_membership() {
+        use crate::sim::game_entity::GameEntity;
+        let mut sim = Simulation::new();
+        sim.entities
+            .insert(GameEntity::test_default(1, "MTNK", "Americans", 5, 5));
+        sim.reveal(1);
+        assert!(sim.entities.get(1).unwrap().in_logic_vector);
+        assert_eq!(sim.live_object_order_snapshot(), vec![1]);
+        sim.conceal(1);
+        assert!(!sim.entities.get(1).unwrap().in_logic_vector);
+        assert!(sim.live_object_order_snapshot().is_empty());
+        assert!(sim.entities.get(1).is_some()); // conceal keeps the store slot
+    }
+
+    /// `unlimbo` is `reveal`: a stored limbo object joins the active order.
+    #[test]
+    fn unlimbo_equals_reveal_appends_member() {
+        use crate::sim::game_entity::GameEntity;
+        let mut sim = Simulation::new();
+        sim.entities
+            .insert(GameEntity::test_default(7, "E1", "Americans", 3, 3));
+        sim.unlimbo(7);
+        assert!(sim.entities.get(7).unwrap().in_logic_vector);
+        assert_eq!(sim.live_object_order_snapshot(), vec![7]);
+    }
+
+    /// `uninit` conceals then frees the store slot.
+    #[test]
+    fn uninit_conceals_then_frees_store_slot() {
+        use crate::sim::game_entity::GameEntity;
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Americans");
+        let mut ge = GameEntity::test_default(2, "MTNK", "Americans", 4, 4);
+        ge.owner = owner;
+        sim.entities.insert(ge);
+        sim.reveal(2);
+        sim.uninit(2);
+        assert!(sim.entities.get(2).is_none());
+        assert!(sim.live_object_order_snapshot().is_empty());
+    }
+
+    /// `despawn_entity` is retained and delegates to `uninit`.
+    #[test]
+    fn despawn_entity_delegates_to_uninit() {
+        use crate::sim::game_entity::GameEntity;
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Americans");
+        let mut ge = GameEntity::test_default(3, "MTNK", "Americans", 6, 6);
+        ge.owner = owner;
+        sim.entities.insert(ge);
+        sim.reveal(3);
+        sim.despawn_entity(3);
+        assert!(sim.entities.get(3).is_none());
+        assert!(sim.live_object_order_snapshot().is_empty());
+    }
+
+    /// The membership invariant holds across a mix of reveal/conceal/uninit.
+    #[test]
+    #[cfg(debug_assertions)]
+    fn lifecycle_keeps_membership_invariant() {
+        use crate::sim::game_entity::GameEntity;
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Americans");
+        for id in [1u64, 2, 3] {
+            let mut ge = GameEntity::test_default(id, "MTNK", "Americans", 5, 5);
+            ge.owner = owner;
+            sim.entities.insert(ge);
+            sim.reveal(id);
+        }
+        sim.conceal(2);
+        sim.uninit(1);
+        sim.debug_assert_logic_membership_consistent();
+        assert_eq!(sim.live_object_order_snapshot(), vec![3]);
+    }
+
     // --- LogicClass live count-reload pass (scheduler contract) ---
 
     /// Insert an entity into the store and append it to the active order.

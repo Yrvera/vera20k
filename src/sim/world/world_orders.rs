@@ -241,7 +241,7 @@ impl Simulation {
                 }
                 self.increment_owned_count(&engineer_owner_str, EntityCategory::Structure);
                 // Destroy engineer (consumed on capture).
-                self.despawn_entity(engineer_id);
+                self.uninit(engineer_id);
                 any_captured = true;
             }
         }
@@ -405,7 +405,7 @@ impl Simulation {
             self.mark_radar_terrain_dirty_cells(outcome.radar_cells.iter().copied());
 
             // Step D: engineer consumed.
-            self.despawn_entity(engineer_id);
+            self.uninit(engineer_id);
             // gamemd iterates a live object vector. Removing the current
             // engineer compacts the next object into this slot; the scheduler
             // then advances, so that immediate successor waits until later.

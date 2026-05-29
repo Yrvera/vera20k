@@ -257,7 +257,7 @@ impl Simulation {
                 None
             };
             self.entities.insert(ge);
-            self.register_live_object(spawn_sid);
+            self.reveal(spawn_sid);
             self.increment_owned_count(&owner_str, category);
             // Register in occupancy grid.
             let insertion = CellListInsertion::from_category(category);
@@ -435,7 +435,7 @@ impl Simulation {
             .map_or(MovementLayer::Ground, |l| l.layer);
         let spawn_sub_cell = ge.sub_cell;
         self.entities.insert(ge);
-        self.register_live_object(stable_id);
+        self.reveal(stable_id);
         self.increment_owned_count(&spawn_owner_str, spawn_category);
         // Register in occupancy grid.
         let insertion = CellListInsertion::from_category(spawn_category);
@@ -735,7 +735,7 @@ impl Simulation {
         }
 
         // Despawn the MCV.
-        self.despawn_entity(stable_id);
+        self.uninit(stable_id);
 
         // Spawn the construction yard.
         let owner_str = self.interner.resolve(owner_id).to_string();

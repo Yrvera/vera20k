@@ -685,6 +685,46 @@ impl Simulation {
         self.logic.remove(stable_id);
     }
 
+    /// Native `ObjectClass::Reveal` append: an object becomes a live AI member.
+    /// Active spawns / unlimbo / unload / paradrop call this. Delegates to the
+    /// membership-guarded tail-append primitive; idempotent.
+    pub(crate) fn reveal(&mut self, stable_id: u64) {
+        self.register_live_object(stable_id);
+    }
+
+    /// Native `ObjectClass::Conceal`: the object leaves the live AI set but stays
+    /// in the store (limbo). Delegates to the compacting-remove primitive.
+    pub(crate) fn conceal(&mut self, stable_id: u64) {
+        self.unregister_live_object(stable_id);
+    }
+
+    /// Native `TechnoClass::Unlimbo` -> Reveal: a limbo-created object joins the
+    /// live set at unlimbo/landing time, not at construction.
+    pub(crate) fn unlimbo(&mut self, stable_id: u64) {
+        self.reveal(stable_id);
+    }
+
+    /// Debug-only invariant: the active order and the per-entity membership flag
+    /// are two views of one set and must never disagree. The order must be
+    /// duplicate-free, and its length must equal the number of in-store entities
+    /// whose `in_logic_vector` is set. O(n); compiled out of release builds.
+    #[cfg(debug_assertions)]
+    pub(crate) fn debug_assert_logic_membership_consistent(&self) {
+        let order = self.logic.as_slice();
+        let mut seen = std::collections::BTreeSet::new();
+        for &id in order {
+            debug_assert!(seen.insert(id), "logic order has duplicate id {id}");
+        }
+        let flagged = self.entities.values().filter(|e| e.in_logic_vector).count();
+        debug_assert_eq!(
+            order.len(),
+            flagged,
+            "logic order length ({}) != entities flagged in_logic_vector ({})",
+            order.len(),
+            flagged
+        );
+    }
+
     /// The active order, verbatim. No sorted-ID fallback (was DRIFT).
     ///
     /// This is a point-in-time copy: a consumer iterating it CANNOT observe an
@@ -706,7 +746,7 @@ impl Simulation {
     /// - Each member is visited at most once per pass; the index only advances.
     ///
     /// The body must tolerate an id whose entity is absent — there is no item
-    /// guard here. `despawn_entity` always unregisters before freeing the store
+    /// guard here. `uninit` always conceals before freeing the store
     /// slot, so the order never references a removed entity in practice.
     pub(crate) fn for_each_live_object<F: FnMut(&mut Simulation, u64)>(&mut self, mut body: F) {
         let mut i = 0;
@@ -762,7 +802,7 @@ impl Simulation {
     /// Decrements owned count if the entity was not already dying (combat deaths
     /// are decremented when dying is first set, not at physical removal).
     /// Also removes the entity from the occupancy grid (origin cell only).
-    pub(crate) fn despawn_entity(&mut self, stable_id: u64) {
+    pub(crate) fn uninit(&mut self, stable_id: u64) {
         // Gather entity data before any mutable borrows.
         let entity_info = self.entities.get(stable_id).map(|e| {
             (
@@ -783,8 +823,14 @@ impl Simulation {
             self.occupancy.remove(rx, ry, stable_id);
         }
         self.clear_radio_contacts_for(stable_id);
-        self.unregister_live_object(stable_id); // conceal: leave the active order first
+        self.conceal(stable_id); // leave the active order before freeing the slot
         self.entities.remove(stable_id); // then free the slot
+    }
+
+    /// Remove an entity from the world. Retained name for existing callers and
+    /// tests; routes through `uninit` so conceal-before-free stays centralized.
+    pub(crate) fn despawn_entity(&mut self, stable_id: u64) {
+        self.uninit(stable_id);
     }
 
     pub(crate) fn clear_radio_contacts_for(&mut self, stable_id: u64) {
@@ -1273,7 +1319,7 @@ impl Simulation {
             let Some((unit_type_id, owner_id, rx, ry, z, was_selected)) = spawn_data else {
                 continue;
             };
-            self.despawn_entity(sid);
+            self.uninit(sid);
             let rules = match rules {
                 Some(r) => r,
                 None => continue,
@@ -2028,6 +2074,8 @@ impl Simulation {
             execute_tick,
             &mut spawned_entities,
         );
+        #[cfg(debug_assertions)]
+        self.debug_assert_logic_membership_consistent();
         let state_hash = self.state_hash();
         TickResult {
             tick: self.tick,

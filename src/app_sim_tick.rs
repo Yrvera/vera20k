@@ -303,7 +303,7 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                     let ry = entity.position.ry;
                     sim.occupancy.remove(rx, ry, *dead_id);
                 }
-                sim.despawn_entity(*dead_id);
+                sim.uninit(*dead_id);
             }
             if !death_finished.is_empty() {
                 refresh_after_tick = true;

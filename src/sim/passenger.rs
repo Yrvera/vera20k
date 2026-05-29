@@ -484,7 +484,7 @@ fn process_boarding_passenger(sim: &mut Simulation, rules: &RuleSet, pax_id: u64
         }
         // Conceal: a boarded passenger leaves the playfield, so it leaves the
         // active-object order and stops receiving per-tick AI until unloaded.
-        sim.unregister_live_object(pax_id);
+        sim.conceal(pax_id);
 
         let new_override = if transport_gunner {
             Some(crate::sim::combat::combat_weapon::WeaponOverride::IfvSlot(
@@ -878,7 +878,7 @@ fn process_unloading_transport(sim: &mut Simulation, rules: &RuleSet, transport_
     );
     // Reveal: the unloaded passenger is back on the playfield — re-append it to
     // the active-object order (tail, idempotent).
-    sim.register_live_object(pax_id);
+    sim.reveal(pax_id);
 
     let scatter_speed = rules
         .object(&pax_type_str)
@@ -1031,7 +1031,7 @@ fn tick_unloading(sim: &mut Simulation, rules: &RuleSet) -> bool {
             CellListInsertion::PrependNonBuilding,
         );
         // Reveal: back on the playfield — re-append to the active-object order.
-        sim.register_live_object(pax_id);
+        sim.reveal(pax_id);
 
         // Scatter: issue a short move to a random adjacent cell so ejected
         // infantry flee the building footprint (gamemd mission 0xF / Scatter).
