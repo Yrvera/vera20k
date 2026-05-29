@@ -387,6 +387,18 @@ impl Simulation {
                 any_repair = true;
             }
 
+            // Step B2: zone-graph refresh. The repair restores cells
+            // (Destroyed -> Healthy) but the endpoint records are
+            // deactivate-only at construction; without this the bidirectional
+            // `refresh_endpoint_active_flags` never runs on the repair path,
+            // so the long-range A* zone edge (gated on `record.active`) stays
+            // missing even though per-cell walkability is restored. Mirrors
+            // the collapse cascade's `refresh_bridge_zones_if_dirty` call.
+            crate::sim::world::bridge_orchestrator::refresh_bridge_zones_if_dirty(
+                self,
+                outcome.zones_dirty,
+            );
+
             // Step C: terrain/radar dirty propagation. The walker only emits
             // cells for destroyed-anchor restoration, matching gamemd's
             // `MarkTerrainDirty` gate.

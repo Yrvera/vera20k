@@ -31,6 +31,12 @@ const EIGHT_NEIGHBOR_OFFSETS: [(i32, i32); 8] = [
     (-1, -1), // NW
 ];
 
+/// Sentinel `overlay_byte` value meaning "no bridge overlay" (the original
+/// engine's -1 / 0xFF). A cell carrying this byte renders empty and is treated
+/// as non-walkable by `effective_render_state` / `is_bridge_walkable`. Also
+/// written by the orchestrator's `update_adjacent_bridges` stub-reset path.
+const OVERLAY_BYTE_NONE: u8 = 0xFF;
+
 /// Bridge body axis. Body cells are stacked along this axis; ramps face
 /// perpendicular.
 ///
@@ -1090,6 +1096,16 @@ impl BridgeRuntimeState {
                 let mut destroyed = vec![anchor_pos];
                 if let Some(c) = self.cell_mut(anchor_pos.0, anchor_pos.1) {
                     c.damage_state = DamageState::Destroyed;
+                    // Clear the collapsed anchor's visible overlay to the
+                    // no-overlay sentinel so it renders empty + stays
+                    // impassable; otherwise the stale loaded byte maps back
+                    // to a Healthy variant in `effective_render_state` and
+                    // `is_bridge_walkable` keeps returning true on the
+                    // collapsed cell.
+                    // TODO: full-span body-cell overlay clearing (every cell
+                    // in the collapsed span, not just the anchor) is deferred
+                    // to BR-10 / BR-15.
+                    c.overlay_byte = OVERLAY_BYTE_NONE;
                 }
                 // Collect any perpendicular cells that hit collapse-final
                 // (became Destroyed via update_ramp_perpendicular).
@@ -1131,6 +1147,9 @@ impl BridgeRuntimeState {
                 );
                 if let Some(c) = self.cell_mut(anchor_pos.0, anchor_pos.1) {
                     c.damage_state = DamageState::Destroyed;
+                    // Clear the collapsed anchor's visible overlay (see the
+                    // Damaged arm above). TODO: full-span clearing → BR-10/BR-15.
+                    c.overlay_byte = OVERLAY_BYTE_NONE;
                 }
                 let sbd = crate::sim::bridge_specs::set_bridge_direction(&span_clone, false);
                 let adj = compute_adjacent_bridges_dirty(rx, ry, axis);
@@ -1153,6 +1172,9 @@ impl BridgeRuntimeState {
                 );
                 if let Some(c) = self.cell_mut(anchor_pos.0, anchor_pos.1) {
                     c.damage_state = DamageState::Destroyed;
+                    // Clear the collapsed anchor's visible overlay (see the
+                    // Damaged arm above). TODO: full-span clearing → BR-10/BR-15.
+                    c.overlay_byte = OVERLAY_BYTE_NONE;
                 }
                 let sbd = crate::sim::bridge_specs::set_bridge_direction(&span_clone, false);
                 let adj = compute_adjacent_bridges_dirty(rx, ry, axis);
@@ -1573,32 +1595,45 @@ impl BridgeRuntimeState {
         &self.endpoint_records
     }
 
-    /// Recompute `endpoint_records[*].active` flags from current cell damage
-    /// state. Once any cell of a bridge group enters `DamageState::Destroyed`,
-    /// the bridge can no longer carry traffic across the span — the record
-    /// is deactivated so the zone graph (`zone_build`) stops treating its
-    /// endpoint pair as connected.
+    /// Recompute `endpoint_records[*].active` flags from current cell render
+    /// state, BIDIRECTIONALLY. A record is active iff its bridge group is
+    /// intact — i.e. no cell in the group is severed. When any cell of a group
+    /// is destroyed, its record deactivates so the zone graph (`zone_build`)
+    /// stops treating the endpoint pair as connected; when an engineer repair
+    /// restores every cell, the same test re-activates the record so the
+    /// long-range A* zone edge (gated on `record.active` in
+    /// `zone_build::bridge_record_matches`) is restored.
     ///
-    /// Deactivation is one-way (no re-activation). The legacy single-shot
-    /// `apply_damage` flipped `active = false` when the entire group was
-    /// destroyed in one hit; the orchestrator's state-machine collapses
-    /// cells individually, so the first destroyed cell already severs the
-    /// bridge and its zone connection.
+    /// "Severed" is keyed on `effective_render_state(cell).is_none()`, NOT on
+    /// `damage_state`. Decision A: the overlay byte is authoritative. The
+    /// repair path restores the overlay byte to a healthy band but
+    /// intentionally leaves `damage_state` stale at `Destroyed` (the original
+    /// engine leaves the body damage byte stale after repair), so keying on
+    /// `damage_state` would never re-activate a repaired record. The healthy
+    /// overlay-band arms of `effective_render_state` take precedence over its
+    /// `damage_state` fallback, so a repaired cell (healthy overlay, stale
+    /// `Destroyed`) reports `Some` and re-activates, while a collapsed cell
+    /// (destroyed-overlay byte, or `0xFF` + `Destroyed`) reports `None`.
+    ///
+    /// Granularity is whole-group (the group is the 4-cardinal BFS blob from
+    /// construction). Per-record geometric tolerance is the separate deferred
+    /// BR-40 work — do not narrow this here.
     pub fn refresh_endpoint_active_flags(&mut self) {
-        let mut destroyed_groups: BTreeSet<u16> = BTreeSet::new();
+        let mut severed_groups: BTreeSet<u16> = BTreeSet::new();
         for cell_opt in &self.cells {
             if let Some(cell) = cell_opt {
-                if matches!(cell.damage_state, DamageState::Destroyed) {
+                if Self::effective_render_state(cell).is_none() {
                     if let Some(gid) = cell.bridge_group_id {
-                        destroyed_groups.insert(gid);
+                        severed_groups.insert(gid);
                     }
                 }
             }
         }
         for record in &mut self.endpoint_records {
-            if destroyed_groups.contains(&record.group_id) {
-                record.active = false;
-            }
+            // Recompute in BOTH directions: active iff no cell of the group is
+            // severed. Repair restores the overlay byte (-> `Some`), removing
+            // the group from `severed_groups` and flipping the record active.
+            record.active = !severed_groups.contains(&record.group_id);
         }
     }
 

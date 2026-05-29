@@ -455,6 +455,46 @@ fn refresh_endpoint_active_flags_leaves_intact_groups_active() {
 }
 
 #[test]
+fn refresh_endpoint_active_flags_reactivates_after_repair() {
+    // BR-08: re-activation must be keyed on the authoritative overlay byte
+    // (effective_render_state), NOT damage_state. The real engineer-repair path
+    // restores the overlay byte to a healthy band but leaves damage_state STALE
+    // at Destroyed (the original engine never resets the body damage byte). This
+    // test mirrors that exactly, so it FAILS if the recompute is keyed on
+    // damage_state and only passes under the overlay-derived predicate.
+    let mut state = BridgeRuntimeState::from_resolved_terrain(&make_bridge_terrain(), true, 50);
+    assert!(state.endpoint_records()[0].active);
+
+    // Collapse (2,0) the way the body-SM does (BR-09): destroyed overlay + state.
+    {
+        let c = state.cell_mut(2, 0).unwrap();
+        c.damage_state = DamageState::Destroyed;
+        c.overlay_byte = 0xFF;
+    }
+    state.refresh_endpoint_active_flags();
+    assert!(
+        !state.endpoint_records()[0].active,
+        "destroyed cell must deactivate the record"
+    );
+
+    // Repair the REAL way: restore the overlay byte to a healthy body value,
+    // leaving damage_state stale at Destroyed.
+    {
+        let c = state.cell_mut(2, 0).unwrap();
+        c.overlay_byte = 0xCD; // healthy high-bridge body overlay (variant 0)
+        assert!(
+            matches!(c.damage_state, DamageState::Destroyed),
+            "repair leaves damage_state stale (matches the original engine)"
+        );
+    }
+    state.refresh_endpoint_active_flags();
+    assert!(
+        state.endpoint_records()[0].active,
+        "repaired (overlay-restored, damage_state stale) group must re-activate"
+    );
+}
+
+#[test]
 fn direction_offsets_match_compass() {
     assert_eq!(Direction::N.offset(), (0, -1));
     assert_eq!(Direction::E.offset(), (1, 0));
@@ -1057,6 +1097,66 @@ fn body_driver_bridgehead_cell_returns_no_change() {
     state.cell_mut(5, 5).unwrap().role = BridgeCellRole::Bridgehead;
     let outcome = state.body_cell_advance_state(5, 5, true, &flood_fill_terrain(20, 20, 0));
     assert!(matches!(outcome, StateOutcome::NoChange));
+}
+
+/// BR-09: each of the three collapse arms (Damaged, PartialCollapseA,
+/// PartialCollapseB) must clear the anchor's visible overlay to the
+/// no-overlay sentinel. We seed the anchor with a Healthy-mapping overlay
+/// byte (0xD6 ∈ the 0xD6..=0xD9 Healthy range of `effective_render_state`)
+/// so that, BEFORE the fix, the collapsed cell would still render Healthy +
+/// stay walkable. After collapse the byte must be 0xFF, render state None,
+/// and the cell non-walkable.
+fn assert_collapse_clears_anchor_overlay(start: DamageState) {
+    let mut state = make_body_driver_test_state();
+    {
+        let anchor = state.cell_mut(5, 5).unwrap();
+        anchor.damage_state = start;
+        // Healthy-mapping loaded byte: without the fix, effective_render_state
+        // maps this back to Healthy and is_bridge_walkable stays true.
+        anchor.overlay_byte = 0xD6;
+    }
+    // Pre-condition sanity: the seeded byte renders as Healthy + walkable.
+    assert!(matches!(
+        BridgeRuntimeState::effective_render_state(state.cell(5, 5).unwrap()),
+        Some(DamageState::Healthy { .. })
+    ));
+    assert!(state.is_bridge_walkable(5, 5));
+
+    let outcome = state.body_cell_advance_state(5, 5, true, &flood_fill_terrain(20, 20, 0));
+    assert!(
+        matches!(outcome, StateOutcome::Collapsed { .. }),
+        "start={start:?} must collapse"
+    );
+
+    let anchor = state.cell(5, 5).unwrap();
+    assert_eq!(anchor.damage_state, DamageState::Destroyed);
+    assert_eq!(
+        anchor.overlay_byte, 0xFF,
+        "collapsed anchor overlay must clear to 0xFF sentinel (start={start:?})"
+    );
+    assert!(
+        BridgeRuntimeState::effective_render_state(anchor).is_none(),
+        "collapsed anchor must render None (start={start:?})"
+    );
+    assert!(
+        !state.is_bridge_walkable(5, 5),
+        "collapsed anchor must not be walkable (start={start:?})"
+    );
+}
+
+#[test]
+fn body_collapse_from_damaged_clears_anchor_overlay() {
+    assert_collapse_clears_anchor_overlay(DamageState::Damaged);
+}
+
+#[test]
+fn body_collapse_from_partial_a_clears_anchor_overlay() {
+    assert_collapse_clears_anchor_overlay(DamageState::PartialCollapseA);
+}
+
+#[test]
+fn body_collapse_from_partial_b_clears_anchor_overlay() {
+    assert_collapse_clears_anchor_overlay(DamageState::PartialCollapseB);
 }
 
 #[test]

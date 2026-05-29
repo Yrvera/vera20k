@@ -370,8 +370,16 @@ const MAX_HUT_SWEEP_STEPS: usize = 4;
 const MAX_HUT_ATTEMPTS_PER_STEP: usize = 3;
 const NORMALIZED_RNG_MAX_INCLUSIVE: u32 = 0x7FFF_FFFE;
 const NORMALIZED_RNG_DENOMINATOR: u64 = 0x8000_0000;
-const BRIDGE_DEBRIS_OUTER_GATE_EXCLUSIVE: u32 = 2_040_109_466;
-const BRIDGE_METALLIC_GATE_EXCLUSIVE: u32 = 0x4000_0000;
+// Bridge-debris RNG gate boundaries. The original engine compares
+// `(double)draw * scale` against 0.95 / 0.5, where `scale` is the bit-exact
+// double `2^-31 + 2^-61` (NOT `1/2^31`). The tiny `2^-61` term pushes each
+// integer boundary just below the naive `threshold * 2^31`, so a draw landing
+// exactly on the float boundary must FAIL the gate. Gate passes iff
+// `draw < EXCLUSIVE`. Do NOT "simplify" these back to 2^31-scaled values
+// (…466 / 0x4000_0000): the off-by-{2,1} reproduces the float boundary, and a
+// spurious pass spends extra slot draws -> lockstep desync.
+const BRIDGE_DEBRIS_OUTER_GATE_EXCLUSIVE: u32 = 2_040_109_464;
+const BRIDGE_METALLIC_GATE_EXCLUSIVE: u32 = 0x3FFF_FFFF;
 const BRIDGE_JITTER_SPAN_LEPTONS: u64 = 50;
 const BRIDGE_JITTER_HALF_LEPTONS: i32 = 25;
 const BRIDGE_EFFECT_FRAME_MS: u32 = 67;
@@ -1005,6 +1013,11 @@ fn kill_ground_occupants_at(sim: &mut Simulation, rx: u16, ry: u16, c4_inf_death
             e.position.rx == rx
                 && e.position.ry == ry
                 && !e.is_on_bridge_layer()
+                // BlowUpBridge force-kills only the cell's GROUND object-list
+                // occupants. Air units (and TS-legacy underground) are never on
+                // that list, so an aircraft overflying the collapse cell must
+                // survive — `occupancy_list_layer()` is `None` for those layers.
+                && e.occupancy_list_layer().is_some()
                 && e.health.current > 0
         })
         .map(|(id, _)| id)
@@ -1134,7 +1147,7 @@ fn notify_bridge_span_collapse(sim: &mut Simulation, cells: &BTreeSet<(u16, u16)
 ///   2. Rebuild the path grid from the post-collapse bridge state.
 ///   3. Rerun `Simulation::rebuild_zone_grid` so cross-bridge
 ///      passability reflects the new connectivity.
-fn refresh_bridge_zones_if_dirty(sim: &mut Simulation, any_zones_dirty: bool) {
+pub(crate) fn refresh_bridge_zones_if_dirty(sim: &mut Simulation, any_zones_dirty: bool) {
     if !any_zones_dirty {
         return;
     }
@@ -2062,5 +2075,68 @@ mod tests {
         let cell = sim.occupancy.get(5, 5).expect("ground occupancy");
         assert_eq!(cell.count_on(MovementLayer::Ground), 1);
         assert_eq!(cell.count_on(MovementLayer::Bridge), 0);
+    }
+
+    /// Debris RNG gate boundaries reproduce the original engine's float
+    /// truncation (`scale = 2^-31 + 2^-61`), NOT the naive `threshold * 2^31`.
+    /// A draw landing exactly on the float boundary must FAIL the gate; a
+    /// spurious pass spends extra slot draws and desyncs lockstep. This test
+    /// fails if either constant is "simplified" back to its 2^31-scaled value.
+    #[test]
+    fn bridge_debris_gate_boundaries_match_float_truncation() {
+        // Outer 95% gate: largest passing draw is 2_040_109_463.
+        assert!(2_040_109_463 < BRIDGE_DEBRIS_OUTER_GATE_EXCLUSIVE);
+        assert!(2_040_109_464 >= BRIDGE_DEBRIS_OUTER_GATE_EXCLUSIVE);
+        // Metallic 50% gate: largest passing draw is 0x3FFF_FFFE; the value
+        // that maps to exactly 0.5 (0x3FFF_FFFF) must fail under strict `<`.
+        assert!(0x3FFF_FFFE_u32 < BRIDGE_METALLIC_GATE_EXCLUSIVE);
+        assert!(0x3FFF_FFFF_u32 >= BRIDGE_METALLIC_GATE_EXCLUSIVE);
+    }
+
+    /// BlowUpBridge force-kills only the cell's ground object-list occupants.
+    /// An aircraft overflying the collapse cell (air layer, `on_bridge=false`)
+    /// is not on that list and must survive; a ground unit at the cell dies.
+    #[test]
+    fn bridge_collapse_kill_spares_airborne_units() {
+        let mut sim = Simulation::new();
+
+        // Ground unit at (5,5): no locomotor => Ground layer, on_bridge=false.
+        let ground = GameEntity::new(
+            1, 5, 5, 0, 64,
+            test_intern("Americans"),
+            Health { current: 256, max: 256 },
+            test_intern("MTNK"),
+            crate::map::entities::EntityCategory::Unit,
+            0, 5, true,
+        );
+        sim.entities.insert(ground);
+
+        // Aircraft hovering over (5,5): Air layer, on_bridge=false.
+        let mut air = GameEntity::new(
+            2, 5, 5, 12, 64,
+            test_intern("Americans"),
+            Health { current: 256, max: 256 },
+            test_intern("ORCA"),
+            crate::map::entities::EntityCategory::Aircraft,
+            0, 5, true,
+        );
+        let mut loco = drive_loco_on_bridge();
+        loco.layer = MovementLayer::Air;
+        air.locomotor = Some(loco);
+        air.on_bridge = false;
+        sim.entities.insert(air);
+
+        kill_ground_occupants_at(&mut sim, 5, 5, 1);
+
+        let g = sim.entities.get(1).expect("ground unit present");
+        assert_eq!(g.health.current, 0, "ground occupant is force-killed");
+        assert!(g.dying, "ground occupant flagged dying");
+
+        let a = sim.entities.get(2).expect("aircraft present");
+        assert_eq!(
+            a.health.current, 256,
+            "aircraft overflying the collapse cell must NOT be killed"
+        );
+        assert!(!a.dying, "aircraft not flagged dying");
     }
 }
