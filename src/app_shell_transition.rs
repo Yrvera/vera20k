@@ -8,7 +8,6 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 
 use crate::app::AppState;
-use crate::render::shell_transition_pass::ShellTransitionPass;
 
 /// One animation tick per 30 ms, advancing exactly one frame (never skipped).
 pub(crate) const WAVE_TICK_MS: u32 = 30;
@@ -162,22 +161,8 @@ pub(crate) fn blocks_shell_input(state: &AppState) -> bool {
     transition_blocks_shell_input(state.main_menu_to_skirmish_transition.as_ref())
 }
 
-pub(crate) fn transition_blocks_shell_input(transition: Option<&ShellBridgeTransition>) -> bool {
+pub(crate) fn transition_blocks_shell_input(transition: Option<&ShellFrameWave>) -> bool {
     transition.is_some()
-}
-
-pub(crate) fn resolve_resize(state: &mut AppState) -> ResizeTransitionResolution {
-    let Some(transition) = state.main_menu_to_skirmish_transition.take() else {
-        return ResizeTransitionResolution::NoTransition;
-    };
-    state.shell_transition_pass = None;
-    if transition.progress() < 0.5 {
-        state.main_menu_show_native_skirmish_shell = false;
-        ResizeTransitionResolution::ReturnToMainMenu
-    } else {
-        state.main_menu_show_native_skirmish_shell = true;
-        ResizeTransitionResolution::CompleteToSkirmish
-    }
 }
 
 pub(crate) fn render_main_menu_to_skirmish_transition(
@@ -191,73 +176,50 @@ pub(crate) fn render_main_menu_to_skirmish_transition(
 
     crate::app::App::ensure_skirmish_shell_chrome(state);
     if state.skirmish_shell_chrome.is_none() {
-        log::warn!("Skirmish shell chrome unavailable; cancelling shell bridge transition");
+        log::warn!("Skirmish shell chrome unavailable; cancelling shell frame wave");
         state.main_menu_to_skirmish_transition = None;
-        state.shell_transition_pass = None;
         return Ok(false);
     }
 
-    let width = state.gpu.config.width.max(1);
-    let height = state.gpu.config.height.max(1);
-    let pass = match state.shell_transition_pass.take() {
-        Some(pass) if pass.size_matches(width, height) => pass,
-        _ => ShellTransitionPass::new(&state.gpu, width, height),
-    };
-
-    match crate::app_main_menu_shell_render::render_main_menu_shell_to_target(
-        state,
-        encoder,
-        pass.source_render_target(),
-    )? {
-        crate::app_main_menu_shell_render::MainMenuShellRenderResult::Rendered => {}
-        crate::app_main_menu_shell_render::MainMenuShellRenderResult::Fallback => {
-            state.main_menu_to_skirmish_transition = None;
-            state.shell_transition_pass = Some(pass);
-            return Ok(false);
-        }
+    if let Some(wave) = state.main_menu_to_skirmish_transition.as_mut() {
+        wave.advance(Instant::now());
     }
 
+    // The destination skirmish shell paints itself directly; the wave supplies
+    // each right-panel button's SDBTNANM frame for the duration of the slide-in.
+    let depth = state.depth_view.clone();
     crate::app_skirmish_shell_render::render_skirmish_shell_to_target(
         state,
         encoder,
-        pass.destination_render_target(),
+        crate::render::shell_transition_pass::ShellRenderTarget {
+            color: target,
+            depth: &depth,
+        },
         crate::app_skirmish_shell_render::ShellRenderMode::TransitionPreview,
     )?;
-
-    if let Some(transition) = state.main_menu_to_skirmish_transition.as_mut() {
-        transition.advance_to(Instant::now());
-    }
-    let progress = state
-        .main_menu_to_skirmish_transition
-        .as_ref()
-        .map_or(1.0, ShellBridgeTransition::progress);
-    pass.draw(&state.gpu, encoder, target, progress);
 
     if state
         .main_menu_to_skirmish_transition
         .as_ref()
-        .is_some_and(ShellBridgeTransition::is_complete)
+        .is_some_and(ShellFrameWave::is_complete)
     {
-        complete_main_menu_to_skirmish(state);
-    } else {
-        state.shell_transition_pass = Some(pass);
+        complete_skirmish_slide_in(state);
     }
 
     Ok(true)
 }
 
-fn complete_main_menu_to_skirmish(state: &mut AppState) {
-    let Some(mut transition) = state.main_menu_to_skirmish_transition.take() else {
+fn complete_skirmish_slide_in(state: &mut AppState) {
+    let Some(mut wave) = state.main_menu_to_skirmish_transition.take() else {
         return;
     };
-    if !transition.mark_completion_applied() {
+    if !wave.mark_completion_applied() {
         return;
     }
-    if transition.target == ShellBridgeTarget::Skirmish {
-        state.main_menu_show_native_skirmish_shell = true;
-        state.shell_transition_pass = None;
-        crate::app::App::ensure_skirmish_shell_chrome(state);
-    }
+    // Wave finished at terminal frame 10; hand back to the normal idle paint
+    // (frame2/frame4) by leaving the native shell as the active screen.
+    state.main_menu_show_native_skirmish_shell = true;
+    crate::app::App::ensure_skirmish_shell_chrome(state);
 }
 
 #[cfg(test)]
