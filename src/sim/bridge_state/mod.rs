@@ -2036,9 +2036,15 @@ fn walk_anchor_pattern(
         cells[4] = Some((ox as u16, oy as u16));
     }
 
-    // Slot 5: optional fixed-offset only when direction == W.
+    // Slot 5: optional extra cell, present only for the dir-W anchor. It is
+    // the OPPOSITE step taken twice — `anchor + 2·E` — i.e. one cell beyond the
+    // slot-4 opposite cell, NOT a duplicate of it. Matches
+    // `bridge_facts::stamp_slots` (`ExtraDir6 = step(opposite, E)`). Writing
+    // `+1` here aliased slot 4, which (a) left the true extra cell untagged and
+    // (b) flipped the opposite cell's role Tail->Body via last-write-wins in
+    // the pass-2 tagging loop.
     if direction == Direction::W {
-        let ex = anchor.0 as i32 + 1;
+        let ex = anchor.0 as i32 + 2;
         let ey = anchor.1 as i32;
         if ex >= 0 && ey >= 0 && (ex as u16) < width && (ey as u16) < height {
             cells[5] = Some((ex as u16, ey as u16));

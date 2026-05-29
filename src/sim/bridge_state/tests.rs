@@ -619,6 +619,31 @@ fn anchor_span_iter_cells_skips_none() {
 }
 
 #[test]
+fn walk_anchor_pattern_dir_w_extra_slot_is_anchor_plus_2e() {
+    // BR-39: the dir-W anchor's extra cell (slot 5) is `anchor + 2·E`, one cell
+    // BEYOND the slot-4 opposite cell — not a duplicate of slot 4. The previous
+    // `+1` aliased slot 4, so in the pass-2 tagging loop (slot 4 -> Tail, else
+    // -> Body, keyed on slot INDEX) the alias (a) left the true extra cell
+    // untagged and (b) overwrote the opposite cell's Tail role with Body via
+    // last-write-wins. Distinct slots fix both.
+    let span = walk_anchor_pattern(1, (5, 5), Axis::EW, Direction::W, 1, 12, 12);
+    assert_eq!(span.cells[0], Some((5, 5)), "slot 0 = anchor");
+    assert_eq!(span.cells[1], Some((4, 5)), "slot 1 = +W×1");
+    assert_eq!(span.cells[2], Some((3, 5)), "slot 2 = +W×2");
+    assert_eq!(span.cells[3], Some((2, 5)), "slot 3 = +W×3");
+    assert_eq!(span.cells[4], Some((6, 5)), "slot 4 = opposite (+E)×1");
+    assert_eq!(
+        span.cells[5],
+        Some((7, 5)),
+        "slot 5 = anchor + 2·E, distinct from slot 4"
+    );
+    assert_ne!(
+        span.cells[4], span.cells[5],
+        "extra cell must not alias the slot-4 opposite cell"
+    );
+}
+
+#[test]
 fn anchor_spans_empty_when_bridge_layer_none() {
     // The default test fixture sets bridge_layer: None, so pass 2 emits no
     // anchor spans. Verifies the constructor still wires everything else.
