@@ -76,14 +76,6 @@ covers the contract stack for native frame timing, active object scheduling,
 ObjectClass/TechnoClass lifecycle, global tick spine order, factory/house tail
 order, and projectile/AnimClass same-tick behavior.
 
-Current core engine-substrate TODO.
-
-The broader todo list for missing foundational systems is stored at
-`docs/plans/2026-05-29-core-engine-substrate-todo.md`. It tracks the native tick
-spine, two RNG streams, lifecycle/unregister discipline, frame timing,
-combat/projectile/warhead pipeline, target acquisition cadence, map/cell
-substrate, and save/load/hash/MP lockstep substrate.
-
 Rendering.
 
 A 2D sprite renderer using wgpu. At map load, all sprites (buildings, infantry, terrain tiles, overlays) are packed into atlas textures — big images containing many sprites side by side. Voxel models (vehicles, aircraft) are pre-rendered into 2D sprites and packed into atlases the same way.
