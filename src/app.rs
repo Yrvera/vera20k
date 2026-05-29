@@ -183,9 +183,9 @@ pub(crate) struct AppState {
     pub(crate) main_menu_show_skirmish_setup: bool,
     pub(crate) main_menu_show_native_skirmish_shell: bool,
     pub(crate) skirmish_shell_return_to_single_player_shell: bool,
-    /// Active bridge/DRIFT transition for the current Rust main-menu shortcut.
+    /// Active Single Player -> Skirmish shell frame-index wave (presentation only).
     pub(crate) main_menu_to_skirmish_transition:
-        Option<crate::app_shell_transition::ShellBridgeTransition>,
+        Option<crate::app_shell_transition::ShellFrameWave>,
     pub(crate) shell_transition_pass:
         Option<crate::render::shell_transition_pass::ShellTransitionPass>,
     pub(crate) minimap: Option<MinimapRenderer>,
@@ -827,9 +827,6 @@ impl App {
                     "TXT_CANNOT_ALLY",
                     "Must have more than one team to start a game!",
                 )
-            }
-            crate::skirmish_launch::LaunchValidationError::RandomSelectionUnverified { .. } => {
-                "Random side/color selection is not available yet.".to_string()
             }
             _ => return None,
         };
@@ -2043,6 +2040,16 @@ impl App {
             .map(crate::skirmish_modes::skirmish_modes_from_assets)
             .unwrap_or_else(crate::skirmish_modes::stock_skirmish_modes);
         let mut skirmish_shell_state = crate::ui::skirmish_shell::SkirmishShellState::default();
+        // Pre-fill the player-name field from the persistent profile name when
+        // configured, mirroring the original seeding the field from a profile
+        // source rather than always showing a fixed default.
+        if let Some(profile_name) = game_config
+            .as_ref()
+            .and_then(|config| config.profile.player_name())
+        {
+            skirmish_shell_state.player_name_edit =
+                crate::ui::skirmish_shell::PlayerNameEditState::with_name(profile_name);
+        }
         crate::ui::skirmish_shell::repair_teams_for_selected_mode(
             &mut skirmish_shell_state,
             &skirmish_modes,

@@ -18,6 +18,7 @@ pub(crate) use preview::SkirmishPreviewTexture;
 
 use crate::app::AppState;
 use crate::app_init::MapMenuEntry;
+use crate::app_shell_transition::{ButtonGroup, ShellFrameWave};
 #[cfg(test)]
 use crate::map::preview::PreviewSourceBounds;
 use crate::render::batch::SpriteInstance;
@@ -181,6 +182,7 @@ pub fn build_skirmish_shell_instances(
     shell: &SkirmishShellState,
     maps: &[MapMenuEntry],
     modes: &[SkirmishGameMode],
+    wave: Option<&ShellFrameWave>,
 ) -> Vec<SpriteInstance> {
     let mut instances = Vec::new();
 
@@ -260,29 +262,52 @@ pub fn build_skirmish_shell_instances(
         );
     }
 
-    push_right_panel_button_shp(
+    // Right-column owner-draw buttons. During the Single Player -> Skirmish slide-in
+    // wave each button shows its wave-scheduled SDBTNANM frame; slot index = top-to-bottom
+    // position in the right column (Start=0, Choose=1, Back=2). All three are enabled main
+    // buttons => Group A (held 1 -> ramp 5..=10 -> held 10). Off-transition uses the
+    // unchanged idle frame2/frame4 path.
+    const RIGHT_PANEL_BUTTON_DEPTH: f32 = 0.00059;
+    let emit_right_panel_button = |instances: &mut Vec<SpriteInstance>,
+                                   rect: RectPx,
+                                   pressed: bool,
+                                   disabled: bool,
+                                   slot: u32| {
+        match wave {
+            Some(wave) => {
+                let frame = wave.sdbtnanm_frame(slot, ButtonGroup::A);
+                push_right_panel_button_wave(instances, atlas, rect, frame, RIGHT_PANEL_BUTTON_DEPTH);
+            }
+            None => push_right_panel_button_shp(
+                instances,
+                atlas,
+                rect,
+                pressed,
+                disabled,
+                RIGHT_PANEL_BUTTON_DEPTH,
+            ),
+        }
+    };
+    emit_right_panel_button(
         &mut instances,
-        atlas,
         layout.start_button,
         shell.pressed_owner_draw_button == Some(OwnerDrawButton::StartGame0x617),
         shell.validation_modal.is_some(),
-        0.00059,
+        0,
     );
-    push_right_panel_button_shp(
+    emit_right_panel_button(
         &mut instances,
-        atlas,
-        layout.back_button,
-        shell.pressed_owner_draw_button == Some(OwnerDrawButton::Back0x5c0),
-        false,
-        0.00059,
-    );
-    push_right_panel_button_shp(
-        &mut instances,
-        atlas,
         layout.choose_map_button,
         shell.pressed_owner_draw_button == Some(OwnerDrawButton::ChooseMap0x5aa),
         false,
-        0.00059,
+        1,
+    );
+    emit_right_panel_button(
+        &mut instances,
+        layout.back_button,
+        shell.pressed_owner_draw_button == Some(OwnerDrawButton::Back0x5c0),
+        false,
+        2,
     );
 
     push_combo_instances(&mut instances, atlas, layout, shell);
@@ -447,6 +472,11 @@ fn render_skirmish_shell_with_atlas(
         .batch_renderer
         .create_instance_buffer(&state.gpu, &marker_instances);
 
+    let wave = if mode == ShellRenderMode::TransitionPreview {
+        state.main_menu_to_skirmish_transition.as_ref()
+    } else {
+        None
+    };
     let instances = build_skirmish_shell_instances(
         atlas,
         &state.bit_font,
@@ -456,6 +486,7 @@ fn render_skirmish_shell_with_atlas(
         &state.skirmish_shell_state,
         &state.skirmish_shell_maps,
         &state.skirmish_modes,
+        wave,
     );
     let mut instances = instances;
     if preview_instance.is_some() {

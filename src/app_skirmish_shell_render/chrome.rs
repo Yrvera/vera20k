@@ -401,6 +401,24 @@ pub(super) fn right_panel_button_sdbtnanm_frame(
         .flatten()
 }
 
+/// Draw a right-panel button at a wave-scheduled SDBTNANM frame index.
+/// Clamps down one frame if the exact index is missing; holds (draws nothing)
+/// if neither is baked — never panics on a short SHP.
+pub(super) fn push_right_panel_button_wave(
+    out: &mut Vec<SpriteInstance>,
+    atlas: &SkirmishShellChromeAtlas,
+    rect: RectPx,
+    frame: usize,
+    depth: f32,
+) {
+    match right_panel_button_sdbtnanm_frame(atlas, frame)
+        .or_else(|| right_panel_button_sdbtnanm_frame(atlas, frame.saturating_sub(1)))
+    {
+        Some(entry) => push_entry(out, entry, rect, depth),
+        None => { /* SHP lacks the frame: hold last available; clamp handled above */ }
+    }
+}
+
 pub(super) fn push_tinted_entry(
     out: &mut Vec<SpriteInstance>,
     entry: SkirmishShellChromeEntry,
