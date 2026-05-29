@@ -181,7 +181,9 @@ pub fn try_drop(
             None,
             drop_sub_x,
             drop_sub_y,
-            &mut sim.rng,
+            // sub-cell placement — scenario stream. Direct field: `occ` may borrow
+            // &sim.occupancy, so the subcell_rng() accessor could conflict.
+            &mut sim.scenario_rng,
         ) {
             Some(sub_cell) => Some(sub_cell),
             None => {
@@ -232,6 +234,10 @@ pub fn try_drop(
         restore_passenger_to_cargo_head(sim, aircraft_id, passenger_id);
         return DropResult::AttachFailedRetry;
     }
+
+    // Reveal/unlimbo: the dropped passenger is now an active object on the
+    // playfield. Mirrors ObjectClass::Reveal → adder (+0x98).
+    sim.register_live_object(passenger_id);
 
     // 7. ChuteSound at drop cell.
     sim.sound_events.push(SimSoundEvent::ChuteSound {

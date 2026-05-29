@@ -17,7 +17,6 @@ use crate::sim::pathfinding::{BlockerNeighborCounts, EntityBlockEntry, LayeredEn
 
 use crate::map::entities::EntityCategory;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
-use crate::rules::locomotor_type::MovementZone;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::game_entity::GameEntity;
 use crate::sim::movement::locomotor::MovementLayer;
@@ -401,6 +400,53 @@ pub fn allocate_sub_cell_with_preference(
 // Crush logic
 // ---------------------------------------------------------------------------
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CrushCapability {
+    pub regular_crusher: bool,
+    pub omni_crusher: bool,
+}
+
+impl CrushCapability {
+    pub const fn new(regular_crusher: bool, omni_crusher: bool) -> Self {
+        Self {
+            regular_crusher,
+            omni_crusher,
+        }
+    }
+
+    pub const fn can_crush_units(self) -> bool {
+        self.regular_crusher || self.omni_crusher
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DriveCrushPhase {
+    EnteringCell,
+    FullyInCell,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DriveCrushOutcome {
+    None,
+    Scatter { blockers: Vec<u64> },
+    Kill { victims: Vec<u64> },
+}
+
+pub const CRUSH_DISTANCE_SQ_LIMIT: i64 = 0x3fff;
+
+pub fn within_crush_distance_sq(crusher: (i32, i32), victim: (i32, i32)) -> bool {
+    let dx = i64::from(victim.0 - crusher.0);
+    let dy = i64::from(victim.1 - crusher.1);
+    dx * dx + dy * dy <= CRUSH_DISTANCE_SQ_LIMIT
+}
+
+fn entity_crush_coord(entity: &GameEntity) -> (i32, i32) {
+    (
+        i32::from(entity.position.rx) * 256 + entity.position.sub_x.to_num::<i32>(),
+        i32::from(entity.position.ry) * 256 + entity.position.sub_y.to_num::<i32>(),
+    )
+}
+
 /// Whether `mover_zone` can crush a target with the given properties.
 ///
 /// Crush hierarchy:
@@ -413,8 +459,7 @@ pub fn allocate_sub_cell_with_preference(
 /// 4. Standard Crusher zones crush only infantry with Crushable=yes
 /// 5. Structures and aircraft are NEVER crushable
 pub fn can_crush(
-    mover_zone: MovementZone,
-    mover_omni_crusher: bool,
+    capability: CrushCapability,
     target_category: EntityCategory,
     target_crushable: bool,
     target_low_silhouette: bool,
@@ -432,27 +477,14 @@ pub fn can_crush(
         return false;
     }
     // OmniCrusher (Battle Fortress) crushes any non-resistant mobile entity.
-    if mover_omni_crusher {
+    if capability.omni_crusher {
         return true;
     }
 
-    match mover_zone {
-        // CrusherAll zone handles wall crushing in pathfinding; for unit crush
-        // it behaves like OmniCrusher (in vanilla YR only BFRT has both).
-        MovementZone::CrusherAll => true,
-        // Standard crushers can only crush infantry with Crushable=yes.
-        MovementZone::Crusher
-        | MovementZone::AmphibiousCrusher
-        | MovementZone::Destroyer
-        | MovementZone::AmphibiousDestroyer
-        | MovementZone::InfantryDestroyer => {
-            target_category == EntityCategory::Infantry
-                && target_crushable
-                && !target_low_silhouette
-        }
-        // Non-crusher zones cannot crush anything.
-        _ => false,
-    }
+    capability.regular_crusher
+        && target_category == EntityCategory::Infantry
+        && target_crushable
+        && !target_low_silhouette
 }
 
 fn is_low_silhouette_for_crush(entity: &GameEntity) -> bool {
@@ -476,8 +508,7 @@ pub fn collect_crush_victims(
     cell: (u16, u16),
     occupancy: &OccupancyGrid,
     layer: MovementLayer,
-    mover_zone: MovementZone,
-    mover_omni_crusher: bool,
+    crush_capability: CrushCapability,
     entities: &EntityStore,
 ) -> Vec<u64> {
     let Some(occ) = occupancy.get(cell.0, cell.1) else {
@@ -488,8 +519,7 @@ pub fn collect_crush_victims(
     for occupant in occ.iter_layer(layer) {
         if let Some(e) = entities.get(occupant.entity_id) {
             if can_crush(
-                mover_zone,
-                mover_omni_crusher,
+                crush_capability,
                 e.category,
                 e.crushable,
                 is_low_silhouette_for_crush(e),
@@ -514,8 +544,24 @@ pub fn emit_crush_kill_sounds(
     interner: &mut crate::sim::intern::StringInterner,
     sound_events: &mut Vec<crate::sim::world::SimSoundEvent>,
 ) {
-    let rx = victim.position.rx;
-    let ry = victim.position.ry;
+    emit_crush_kill_sounds_at(
+        victim,
+        (i32::from(victim.position.rx), i32::from(victim.position.ry)),
+        rules,
+        interner,
+        sound_events,
+    );
+}
+
+pub fn emit_crush_kill_sounds_at(
+    victim: &crate::sim::game_entity::GameEntity,
+    crush_coord: (i32, i32),
+    rules: &crate::rules::ruleset::RuleSet,
+    interner: &mut crate::sim::intern::StringInterner,
+    sound_events: &mut Vec<crate::sim::world::SimSoundEvent>,
+) {
+    let rx = crush_coord.0.clamp(0, i32::from(u16::MAX)) as u16;
+    let ry = crush_coord.1.clamp(0, i32::from(u16::MAX)) as u16;
     let type_str = interner.resolve(victim.type_ref).to_string();
     let Some(obj) = rules.object(&type_str) else {
         return;
@@ -546,8 +592,7 @@ pub fn cell_passable_after_crush(
     cell: (u16, u16),
     occupancy: &OccupancyGrid,
     layer: MovementLayer,
-    mover_zone: MovementZone,
-    mover_omni_crusher: bool,
+    crush_capability: CrushCapability,
     entities: &EntityStore,
 ) -> bool {
     let Some(occ) = occupancy.get(cell.0, cell.1) else {
@@ -559,8 +604,7 @@ pub fn cell_passable_after_crush(
     for eid in occ.blockers(layer) {
         if let Some(e) = entities.get(eid) {
             if !can_crush(
-                mover_zone,
-                mover_omni_crusher,
+                crush_capability,
                 e.category,
                 e.crushable,
                 is_low_silhouette_for_crush(e),
@@ -574,8 +618,7 @@ pub fn cell_passable_after_crush(
     for (eid, _) in occ.infantry(layer) {
         if let Some(e) = entities.get(eid) {
             if !can_crush(
-                mover_zone,
-                mover_omni_crusher,
+                crush_capability,
                 e.category,
                 e.crushable,
                 is_low_silhouette_for_crush(e),
@@ -586,6 +629,62 @@ pub fn cell_passable_after_crush(
         }
     }
     true
+}
+
+pub fn classify_drive_crush_phase(
+    phase: DriveCrushPhase,
+    occ: &[u64],
+    entities: &EntityStore,
+    crusher_id: u64,
+    alliances: &crate::map::houses::HouseAllianceMap,
+    interner: &crate::sim::intern::StringInterner,
+    crusher_coord: (i32, i32),
+    capability: CrushCapability,
+) -> DriveCrushOutcome {
+    if !capability.can_crush_units() {
+        return DriveCrushOutcome::None;
+    }
+    let Some(crusher) = entities.get(crusher_id) else {
+        return DriveCrushOutcome::None;
+    };
+    let crusher_owner = interner.resolve(crusher.owner);
+    let mut selected = Vec::new();
+    for &id in occ {
+        if id == crusher_id {
+            continue;
+        }
+        let Some(victim) = entities.get(id) else {
+            continue;
+        };
+        match phase {
+            DriveCrushPhase::EnteringCell => selected.push(id),
+            DriveCrushPhase::FullyInCell => {
+                let victim_owner = interner.resolve(victim.owner);
+                if crate::map::houses::are_houses_friendly(alliances, crusher_owner, victim_owner) {
+                    continue;
+                }
+                if !within_crush_distance_sq(crusher_coord, entity_crush_coord(victim)) {
+                    continue;
+                }
+                if can_crush(
+                    capability,
+                    victim.category,
+                    victim.crushable,
+                    is_low_silhouette_for_crush(victim),
+                    victim.omni_crush_resistant,
+                ) {
+                    selected.push(id);
+                }
+            }
+        }
+    }
+    selected.sort_unstable();
+    selected.dedup();
+    match (phase, selected.is_empty()) {
+        (_, true) => DriveCrushOutcome::None,
+        (DriveCrushPhase::EnteringCell, false) => DriveCrushOutcome::Scatter { blockers: selected },
+        (DriveCrushPhase::FullyInCell, false) => DriveCrushOutcome::Kill { victims: selected },
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -765,8 +864,7 @@ mod tests {
     #[test]
     fn test_crusher_crushes_crushable_infantry() {
         assert!(can_crush(
-            MovementZone::Crusher,
-            false, // omni_crusher
+            CrushCapability::new(true, false),
             EntityCategory::Infantry,
             true,
             false,
@@ -777,8 +875,7 @@ mod tests {
     #[test]
     fn test_crusher_cannot_crush_non_crushable_infantry() {
         assert!(!can_crush(
-            MovementZone::Crusher,
-            false, // omni_crusher
+            CrushCapability::new(true, false),
             EntityCategory::Infantry,
             false,
             false,
@@ -789,8 +886,7 @@ mod tests {
     #[test]
     fn test_regular_crusher_cannot_crush_low_silhouette_infantry() {
         assert!(!can_crush(
-            MovementZone::Crusher,
-            false, // omni_crusher
+            CrushCapability::new(true, false),
             EntityCategory::Infantry,
             true,
             true, // low_silhouette
@@ -799,10 +895,9 @@ mod tests {
     }
 
     #[test]
-    fn test_crusher_all_crushes_non_crushable_infantry() {
+    fn test_omni_crusher_crushes_non_crushable_infantry() {
         assert!(can_crush(
-            MovementZone::CrusherAll,
-            false, // omni_crusher
+            CrushCapability::new(false, true),
             EntityCategory::Infantry,
             false,
             true, // low_silhouette does not gate CrusherAll/Omni-style crush
@@ -811,10 +906,9 @@ mod tests {
     }
 
     #[test]
-    fn test_crusher_all_crushes_vehicles() {
+    fn test_omni_crusher_crushes_vehicles() {
         assert!(can_crush(
-            MovementZone::CrusherAll,
-            false, // omni_crusher
+            CrushCapability::new(false, true),
             EntityCategory::Unit,
             false,
             false,
@@ -825,8 +919,7 @@ mod tests {
     #[test]
     fn test_omni_crush_resistant_blocks_all() {
         assert!(!can_crush(
-            MovementZone::CrusherAll,
-            true, // omni_crusher
+            CrushCapability::new(false, true),
             EntityCategory::Infantry,
             true,
             true,
@@ -837,8 +930,7 @@ mod tests {
     #[test]
     fn test_structures_never_crushable() {
         assert!(!can_crush(
-            MovementZone::CrusherAll,
-            true, // omni_crusher
+            CrushCapability::new(false, true),
             EntityCategory::Structure,
             true,
             false,
@@ -849,8 +941,7 @@ mod tests {
     #[test]
     fn test_crusher_cannot_crush_vehicles() {
         assert!(!can_crush(
-            MovementZone::Crusher,
-            false, // omni_crusher
+            CrushCapability::new(true, false),
             EntityCategory::Unit,
             false,
             false,
@@ -861,13 +952,132 @@ mod tests {
     #[test]
     fn test_normal_zone_cannot_crush() {
         assert!(!can_crush(
-            MovementZone::Normal,
-            false, // omni_crusher
+            CrushCapability::new(false, false),
             EntityCategory::Infantry,
             true,
             false,
             false,
         ));
+    }
+
+    #[test]
+    fn normal_zone_regular_crusher_crushes_crushable_infantry() {
+        assert!(can_crush(
+            CrushCapability::new(true, false),
+            EntityCategory::Infantry,
+            true,
+            false,
+            false,
+        ));
+    }
+
+    #[test]
+    fn normal_zone_non_crusher_still_cannot_crush() {
+        assert!(!can_crush(
+            CrushCapability::new(false, false),
+            EntityCategory::Infantry,
+            true,
+            false,
+            false,
+        ));
+    }
+
+    #[test]
+    fn missing_crusher_flag_does_not_crush_infantry() {
+        assert!(!can_crush(
+            CrushCapability::new(false, false),
+            EntityCategory::Infantry,
+            true,
+            false,
+            false,
+        ));
+    }
+
+    #[test]
+    fn crush_distance_gate_includes_0x3fff() {
+        assert!(within_crush_distance_sq((0, 0), (127, 14)));
+    }
+
+    #[test]
+    fn crush_distance_gate_excludes_0x4000() {
+        assert!(!within_crush_distance_sq((0, 0), (128, 0)));
+    }
+
+    #[test]
+    fn classify_drive_crush_phase_entering_scatters_without_kill() {
+        let mut entities = EntityStore::new();
+        let mut crusher = vehicle(1, 5, 5);
+        crusher.regular_crusher = true;
+        entities.insert(crusher);
+        let mut victim = GameEntity::test_default(2, "E1", "Soviet", 5, 5);
+        victim.category = EntityCategory::Infantry;
+        victim.crushable = true;
+        entities.insert(victim);
+        let interner = crate::sim::intern::test_interner();
+
+        let outcome = classify_drive_crush_phase(
+            DriveCrushPhase::EnteringCell,
+            &[2],
+            &entities,
+            1,
+            &crate::map::houses::HouseAllianceMap::new(),
+            &interner,
+            (5 * 256 + 128, 5 * 256 + 128),
+            CrushCapability::new(true, false),
+        );
+
+        assert_eq!(outcome, DriveCrushOutcome::Scatter { blockers: vec![2] });
+    }
+
+    #[test]
+    fn classify_drive_crush_phase_full_cell_kills_centered_enemy() {
+        let mut entities = EntityStore::new();
+        let mut crusher = vehicle(1, 5, 5);
+        crusher.regular_crusher = true;
+        entities.insert(crusher);
+        let mut victim = GameEntity::test_default(2, "E1", "Soviet", 5, 5);
+        victim.category = EntityCategory::Infantry;
+        victim.crushable = true;
+        entities.insert(victim);
+        let interner = crate::sim::intern::test_interner();
+
+        let outcome = classify_drive_crush_phase(
+            DriveCrushPhase::FullyInCell,
+            &[2],
+            &entities,
+            1,
+            &crate::map::houses::HouseAllianceMap::new(),
+            &interner,
+            (5 * 256 + 128, 5 * 256 + 128),
+            CrushCapability::new(true, false),
+        );
+
+        assert_eq!(outcome, DriveCrushOutcome::Kill { victims: vec![2] });
+    }
+
+    #[test]
+    fn classify_drive_crush_phase_full_cell_skips_allied_victim() {
+        let mut entities = EntityStore::new();
+        let mut crusher = vehicle(1, 5, 5);
+        crusher.regular_crusher = true;
+        entities.insert(crusher);
+        let mut victim = infantry(2, 5, 5, 2);
+        victim.crushable = true;
+        entities.insert(victim);
+        let interner = crate::sim::intern::test_interner();
+
+        let outcome = classify_drive_crush_phase(
+            DriveCrushPhase::FullyInCell,
+            &[2],
+            &entities,
+            1,
+            &crate::map::houses::HouseAllianceMap::new(),
+            &interner,
+            (5 * 256 + 128, 5 * 256 + 128),
+            CrushCapability::new(true, false),
+        );
+
+        assert_eq!(outcome, DriveCrushOutcome::None);
     }
 
     // -- sub-cell allocation tests --
@@ -942,8 +1152,7 @@ mod tests {
             (5, 5),
             &grid,
             MovementLayer::Ground,
-            MovementZone::Crusher,
-            false,
+            CrushCapability::new(true, false),
             &store,
         );
         assert_eq!(victims, vec![1]);
@@ -962,8 +1171,7 @@ mod tests {
             (5, 5),
             &grid,
             MovementLayer::Ground,
-            MovementZone::Crusher,
-            false,
+            CrushCapability::new(true, false),
             &store,
         );
         assert!(victims.is_empty());
@@ -983,8 +1191,7 @@ mod tests {
             (5, 5),
             &grid,
             MovementLayer::Ground,
-            MovementZone::Crusher,
-            false,
+            CrushCapability::new(true, false),
             &store,
         );
         assert!(victims.is_empty());
@@ -1004,8 +1211,7 @@ mod tests {
             (5, 5),
             &grid,
             MovementLayer::Ground,
-            MovementZone::Crusher,
-            false,
+            CrushCapability::new(true, false),
             &store,
         );
         assert_eq!(victims, vec![1]);
@@ -1027,8 +1233,7 @@ mod tests {
             (5, 5),
             &grid,
             MovementLayer::Ground,
-            MovementZone::Crusher,
-            false,
+            CrushCapability::new(true, false),
             &store,
         );
         assert!(victims.is_empty());

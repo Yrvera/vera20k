@@ -30,6 +30,7 @@ use crate::sim::rng::SimRng;
 
 use super::{
     MovementConfig, MovementTickStats, MoverSnapshot, PATH_STUCK_INIT, PathfindingContext,
+    PendingCrushKill,
 };
 
 pub(super) type LiveBuildingEntrySkipMap = BTreeMap<(u16, u16), BTreeSet<u64>>;
@@ -462,7 +463,7 @@ pub(super) fn handle_deferred_occupancy(
     rng: &mut SimRng,
     stats: &mut MovementTickStats,
     finished_entities: &mut Vec<u64>,
-    crush_kills: &mut Vec<u64>,
+    crush_kills: &mut Vec<PendingCrushKill>,
     already_scattered: &mut BTreeSet<u64>,
     blockage_path_delay_ticks: u16,
     sim_tick: u64,
@@ -480,15 +481,9 @@ pub(super) fn handle_deferred_occupancy(
         .locomotor
         .as_ref()
         .map_or(LocomotorKind::Drive, |l| l.kind);
-    let mover_is_crusher = snap.omni_crusher
-        || matches!(
-            snap.locomotor.as_ref().map(|l| l.movement_zone),
-            Some(
-                crate::rules::locomotor_type::MovementZone::Crusher
-                    | crate::rules::locomotor_type::MovementZone::AmphibiousCrusher
-                    | crate::rules::locomotor_type::MovementZone::CrusherAll
-            )
-        );
+    let crush_capability =
+        bump_crush::CrushCapability::new(snap.regular_crusher, snap.omni_crusher);
+    let mover_is_crusher = crush_capability.can_crush_units();
     let is_infantry = snap.category == EntityCategory::Infantry;
     if let Some(rules) = rules {
         crate::sim::gate_runtime::request_gate_open_for_cell(
@@ -507,8 +502,7 @@ pub(super) fn handle_deferred_occupancy(
         (nx, ny),
         layer_context,
         entity_id,
-        snap.movement_zone,
-        snap.omni_crusher,
+        crush_capability,
         interner.resolve(snap.owner),
         mover_loco_kind,
         snap.bypass_grid,
@@ -594,6 +588,53 @@ pub(super) fn handle_deferred_occupancy(
             }
         }
         CellEntryResult::Crushable { victims } => {
+            let crusher_cell = (i32::from(nx), i32::from(ny));
+            let crusher_lepton = (i32::from(nx) * 256 + 128, i32::from(ny) * 256 + 128);
+            let victims = match bump_crush::classify_drive_crush_phase(
+                bump_crush::DriveCrushPhase::FullyInCell,
+                &victims,
+                entities,
+                entity_id,
+                alliances,
+                interner,
+                crusher_lepton,
+                crush_capability,
+            ) {
+                bump_crush::DriveCrushOutcome::Kill { victims } => victims,
+                _ => Vec::new(),
+            };
+            let kill_set: BTreeSet<u64> = victims.iter().copied().collect();
+            if let bump_crush::DriveCrushOutcome::Scatter { blockers } =
+                bump_crush::classify_drive_crush_phase(
+                    bump_crush::DriveCrushPhase::EnteringCell,
+                    &victims,
+                    entities,
+                    entity_id,
+                    alliances,
+                    interner,
+                    crusher_lepton,
+                    crush_capability,
+                )
+            {
+                for blocker_id in blockers {
+                    if kill_set.contains(&blocker_id) {
+                        continue;
+                    }
+                    if !already_scattered.contains(&blocker_id)
+                        && bump_crush::scatter_blocker(
+                            entities,
+                            blocker_id,
+                            path_grid,
+                            occupancy,
+                            object_list_layer,
+                            rng,
+                        )
+                    {
+                        already_scattered.insert(blocker_id);
+                        stats.scatter_successes = stats.scatter_successes.saturating_add(1);
+                    }
+                }
+            }
             // Remove crush victims from occupancy immediately (matches gamemd's
             // PerCellProcess which calls RemoveFromGame before continuing).
             for &vid in &victims {
@@ -601,7 +642,11 @@ pub(super) fn handle_deferred_occupancy(
                     occupancy.remove(v.position.rx, v.position.ry, vid);
                 }
             }
-            crush_kills.extend(victims);
+            crush_kills.extend(victims.into_iter().map(|victim_id| PendingCrushKill {
+                victim_id,
+                crusher_id: entity_id,
+                crush_coord: crusher_cell,
+            }));
             if let Some(entity) = entities.get_mut(entity_id) {
                 snap_motion_to_cell_center(&mut entity.position, &mut entity.drive_track);
                 if let Some(ref mut target) = entity.movement_target {

@@ -22,6 +22,21 @@ use crate::util::fixed_math::facing_from_delta_int as facing_from_delta;
 
 use super::{MovementConfig, PathfindingContext};
 
+#[cfg(test)]
+pub(crate) fn reset_path_search_used_zone_grid_marker() {
+    PATH_SEARCH_USED_ZONE_GRID.with(|used| used.set(false));
+}
+
+#[cfg(test)]
+pub(crate) fn path_search_used_zone_grid_marker() -> bool {
+    PATH_SEARCH_USED_ZONE_GRID.with(|used| used.get())
+}
+
+#[cfg(test)]
+thread_local! {
+    static PATH_SEARCH_USED_ZONE_GRID: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 pub(super) fn merge_path_blocks(
     entity_blocks: Option<&BTreeSet<(u16, u16)>>,
     _resolved_terrain: Option<&ResolvedTerrainGrid>,
@@ -199,6 +214,10 @@ pub(super) fn find_move_path_with_marker(
 ) -> Option<(Vec<(u16, u16)>, Vec<MovementLayer>)> {
     let grid = ctx.path_grid?;
     let zone_grid = ctx.zone_grid;
+    #[cfg(test)]
+    if zone_grid.is_some() {
+        PATH_SEARCH_USED_ZONE_GRID.with(|used| used.set(true));
+    }
     let resolved_terrain = ctx.resolved_terrain;
     let merged_entity_blocks = merge_path_blocks(
         entity_blocks,

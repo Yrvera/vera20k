@@ -18,14 +18,64 @@
 //! - Part of sim/ — depends on sim/game_entity, sim/entity_store, sim/locomotor.
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
+use std::collections::BTreeMap;
+
 use crate::rules::locomotor_type::LocomotorKind;
 use crate::rules::ruleset::GeneralRules;
+use crate::sim::components::{AnimClassSpawnDescriptor, WorldEffect};
 use crate::sim::debug_event_log::DebugEventKind;
 use crate::sim::entity_store::EntityStore;
+use crate::sim::intern::InternedId;
 use crate::sim::movement::locomotor::OverrideKind;
 use crate::sim::occupancy::{CellListInsertion, OccupancyGrid};
 use crate::util::fixed_math::isqrt_i64;
 use crate::util::lepton::CELL_CENTER_LEPTON;
+
+const TELEPORT_WARP_DRAW_FLAGS: u32 = 0x600;
+const TELEPORT_WARP_DELAY: u16 = 0;
+const TELEPORT_WARP_LOOP_COUNT: u8 = 1;
+const TELEPORT_WARP_Z_ADJUST: i32 = 0;
+const TELEPORT_WARP_REVERSE: bool = false;
+const FALLBACK_WARP_FRAME_COUNT: u16 = 20;
+
+/// World-effect bridge for verified teleport `AnimClass` constructor rows.
+pub struct TeleportVisuals<'a> {
+    pub world_effects: &'a mut Vec<WorldEffect>,
+    pub effect_frame_counts: &'a BTreeMap<InternedId, u16>,
+    pub warp_out_type: InternedId,
+    pub warp_out_rate_ms: u32,
+}
+
+impl TeleportVisuals<'_> {
+    fn spawn_warp_out(&mut self, rx: u16, ry: u16, z: u8) {
+        let total_frames = self
+            .effect_frame_counts
+            .get(&self.warp_out_type)
+            .copied()
+            .unwrap_or(FALLBACK_WARP_FRAME_COUNT);
+        let mut anim_spawn = AnimClassSpawnDescriptor::new(
+            self.warp_out_type,
+            rx,
+            ry,
+            CELL_CENTER_LEPTON,
+            CELL_CENTER_LEPTON,
+            z,
+        );
+        anim_spawn.delay = TELEPORT_WARP_DELAY;
+        anim_spawn.loop_count = TELEPORT_WARP_LOOP_COUNT;
+        anim_spawn.draw_flags = TELEPORT_WARP_DRAW_FLAGS;
+        anim_spawn.z_adjust = TELEPORT_WARP_Z_ADJUST;
+        anim_spawn.reverse = TELEPORT_WARP_REVERSE;
+
+        self.world_effects.push(WorldEffect::from_anim_spawn(
+            anim_spawn,
+            total_frames,
+            self.warp_out_rate_ms,
+            true,
+            None,
+        ));
+    }
+}
 
 /// Phase within the teleport state machine.
 ///
@@ -117,10 +167,10 @@ pub fn issue_teleport_command(
         // non-Teleport base locomotor as a temporary override. CMIN far return uses
         // `issue_active_teleport_head_to_coord` instead, because Teleport is its
         // primary active locomotor in gamemd.
-        if let Some(ref mut loco) = entity.locomotor
-            && loco.kind != LocomotorKind::Teleport
-        {
-            loco.begin_override(OverrideKind::Teleport);
+        if let Some(ref mut loco) = entity.locomotor {
+            if loco.kind != LocomotorKind::Teleport {
+                loco.begin_override(OverrideKind::Teleport);
+            }
         }
     }
 
@@ -210,6 +260,7 @@ pub fn tick_teleport_movement(
     occupancy: &mut OccupancyGrid,
     tick_ms: u32,
     sim_tick: u64,
+    mut visuals: Option<&mut TeleportVisuals<'_>>,
 ) {
     if tick_ms == 0 {
         return;
@@ -235,11 +286,22 @@ pub fn tick_teleport_movement(
                 // Instant relocation in one tick — matches original Phase 0.
                 let old_rx = entity.position.rx;
                 let old_ry = entity.position.ry;
+                let old_z = entity.position.z;
+                if let Some(visuals) = visuals.as_deref_mut() {
+                    visuals.spawn_warp_out(old_rx, old_ry, old_z);
+                }
                 entity.position.rx = teleport.target_rx;
                 entity.position.ry = teleport.target_ry;
                 entity.position.sub_x = CELL_CENTER_LEPTON;
                 entity.position.sub_y = CELL_CENTER_LEPTON;
                 entity.position.refresh_screen_coords();
+                if let Some(visuals) = visuals.as_deref_mut() {
+                    visuals.spawn_warp_out(
+                        entity.position.rx,
+                        entity.position.ry,
+                        entity.position.z,
+                    );
+                }
                 let layer = entity.locomotor.as_ref().map_or(
                     crate::sim::movement::locomotor::MovementLayer::Ground,
                     |l| l.layer,
@@ -303,6 +365,8 @@ pub fn tick_teleport_movement(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+
     use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
     use crate::rules::object_type::{ObjectCategory, ObjectType, PipScale};
     use crate::sim::entity_store::EntityStore;
@@ -557,7 +621,7 @@ mod tests {
         );
 
         // One tick relocates instantly (matches original Phase 0).
-        tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), 33, 0);
+        tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), 33, 0, None);
 
         let entity = entities.get(1).expect("should exist");
         assert_eq!(entity.position.rx, 20, "Should have relocated to target");
@@ -572,7 +636,7 @@ mod tests {
         // Tick through ChronoDelay (being_warped_ticks countdown).
         let delay = ts.being_warped_ticks;
         for _ in 0..delay + 5 {
-            tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), 33, 0);
+            tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), 33, 0, None);
         }
 
         // TeleportState should be removed after completion.
@@ -580,6 +644,107 @@ mod tests {
         assert!(
             entity.teleport_state.is_none(),
             "TeleportState should be removed after completion"
+        );
+    }
+
+    #[test]
+    fn relocate_spawns_departure_and_arrival_warpout_rows() {
+        let mut entities = EntityStore::new();
+        let mut e = GameEntity::test_default(1, "CLEG", "Americans", 5, 5);
+        e.position.z = 2;
+        entities.insert(e);
+        let rules = default_rules();
+
+        assert!(issue_teleport_command(
+            &mut entities,
+            1,
+            (8, 9),
+            &rules,
+            true
+        ));
+
+        let warp_out_type = crate::sim::intern::test_intern("WARPOUT");
+        let mut effect_frame_counts = BTreeMap::new();
+        effect_frame_counts.insert(warp_out_type, 13);
+        let mut world_effects = Vec::new();
+        {
+            let mut visuals = TeleportVisuals {
+                world_effects: &mut world_effects,
+                effect_frame_counts: &effect_frame_counts,
+                warp_out_type,
+                warp_out_rate_ms: 42,
+            };
+            tick_teleport_movement(
+                &mut entities,
+                &mut OccupancyGrid::new(),
+                33,
+                0,
+                Some(&mut visuals),
+            );
+        }
+
+        assert_eq!(world_effects.len(), 2);
+        for (effect, (rx, ry)) in world_effects.iter().zip([(5, 5), (8, 9)]) {
+            assert_eq!(effect.shp_name, warp_out_type);
+            assert_eq!((effect.rx, effect.ry, effect.z), (rx, ry, 2));
+            assert_eq!(effect.total_frames, 13);
+            assert_eq!(effect.rate_ms, 42);
+            let row = effect.anim_spawn.as_ref().expect("AnimClass row");
+            assert_eq!(row.type_name, warp_out_type);
+            assert_eq!((row.rx, row.ry, row.z), (rx, ry, 2));
+            assert_eq!(row.delay, TELEPORT_WARP_DELAY);
+            assert_eq!(row.loop_count, TELEPORT_WARP_LOOP_COUNT);
+            assert_eq!(row.draw_flags, TELEPORT_WARP_DRAW_FLAGS);
+            assert_eq!(row.z_adjust, TELEPORT_WARP_Z_ADJUST);
+            assert_eq!(row.reverse, TELEPORT_WARP_REVERSE);
+        }
+    }
+
+    #[test]
+    fn chrono_delay_tick_does_not_spawn_extra_warpout_rows() {
+        let mut entities = EntityStore::new();
+        let e = GameEntity::test_default(1, "CLEG", "Americans", 5, 5);
+        entities.insert(e);
+        let rules = default_rules();
+
+        assert!(issue_teleport_command(
+            &mut entities,
+            1,
+            (20, 20),
+            &rules,
+            false
+        ));
+
+        let warp_out_type = crate::sim::intern::test_intern("WARPOUT");
+        let effect_frame_counts = BTreeMap::new();
+        let mut world_effects = Vec::new();
+        {
+            let mut visuals = TeleportVisuals {
+                world_effects: &mut world_effects,
+                effect_frame_counts: &effect_frame_counts,
+                warp_out_type,
+                warp_out_rate_ms: 120,
+            };
+            tick_teleport_movement(
+                &mut entities,
+                &mut OccupancyGrid::new(),
+                33,
+                0,
+                Some(&mut visuals),
+            );
+            tick_teleport_movement(
+                &mut entities,
+                &mut OccupancyGrid::new(),
+                33,
+                1,
+                Some(&mut visuals),
+            );
+        }
+
+        assert_eq!(
+            world_effects.len(),
+            2,
+            "only Relocate emits the verified departure and arrival rows"
         );
     }
 
@@ -611,7 +776,7 @@ mod tests {
 
         // Complete the whole sequence: 1 tick for Relocate + chrono delay ticks.
         for _ in 0..200 {
-            tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), 33, 0);
+            tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), 33, 0, None);
         }
 
         // Should have restored to Drive.
@@ -782,7 +947,7 @@ mod tests {
         assert!(entity.locomotor.as_ref().expect("loco").is_overridden());
 
         // Single tick: position snaps, then cleanup runs because being_warped_ticks==0.
-        tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), 33, 0);
+        tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), 33, 0, None);
 
         let entity = entities.get(1).expect("should exist");
         assert_eq!(entity.position.rx, 20);
@@ -823,7 +988,7 @@ mod tests {
         );
 
         // Tick 1: Relocate snaps position and transitions to ChronoDelay (NOT cleanup).
-        tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), 33, 0);
+        tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), 33, 0, None);
         let ts = entities
             .get(1)
             .and_then(|e| e.teleport_state.as_ref())

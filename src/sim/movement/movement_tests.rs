@@ -942,39 +942,44 @@ fn test_crush_removal_clears_live_radio_contacts() {
     entities.insert(victim);
 
     let mut mover = GameEntity::test_default(2, "HTNK", "Americans", 1, 2);
-    let mut loco = make_drive_loco_for_test();
-    loco.movement_zone = crate::rules::locomotor_type::MovementZone::Crusher;
-    mover.locomotor = Some(loco);
+    mover.regular_crusher = true;
+    mover.movement_target = Some(MovementTarget {
+        path: vec![(1, 2), (2, 2)],
+        path_layers: vec![MovementLayer::Ground; 2],
+        next_index: 1,
+        speed: SimFixed::from_num(1024),
+        move_dir_x: SimFixed::from_num(256),
+        move_dir_y: SIM_ZERO,
+        move_dir_len: SimFixed::from_num(256),
+        final_goal: Some((2, 2)),
+        ..Default::default()
+    });
     mover.mark_live_contact_with(1);
     entities.insert(mover);
 
-    assert!(issue_move_command(
-        &mut entities,
-        &grid,
-        2,
-        (3, 2),
-        SimFixed::from_num(1024),
-        false,
-        None,
-        None,
-        None,
-        true,
-    ));
+    let mut total_crush_kills = 0;
+    let mut rng = SimRng::new(0);
+    let mut interner = test_interner();
+    for tick in 0..16 {
+        let mut occupancy = OccupancyGrid::rebuild(&entities);
+        let stats = tick_movement_with_grid(
+            &mut entities,
+            Some(&grid),
+            &Default::default(),
+            &Default::default(),
+            &mut occupancy,
+            &mut rng,
+            250,
+            tick,
+            &mut interner,
+        );
+        total_crush_kills += stats.crush_kills;
+        if entities.get(1).is_none() {
+            break;
+        }
+    }
 
-    let mut occupancy = OccupancyGrid::rebuild(&entities);
-    let stats = tick_movement_with_grid(
-        &mut entities,
-        Some(&grid),
-        &Default::default(),
-        &Default::default(),
-        &mut occupancy,
-        &mut SimRng::new(0),
-        250,
-        0,
-        &mut test_interner(),
-    );
-
-    assert_eq!(stats.crush_kills, 1);
+    assert_eq!(total_crush_kills, 1);
     assert!(entities.get(1).is_none());
     assert!(
         !entities.get(2).unwrap().has_live_contact_with(1),

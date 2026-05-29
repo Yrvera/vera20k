@@ -7,8 +7,9 @@
 
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::map::tube_facts::{TubeFact, TubeId};
-use crate::sim::components::Position;
+use crate::sim::components::{DriveCoord, DriveTubePayload, Position};
 use crate::sim::entity_store::EntityStore;
+use crate::sim::game_entity::GameEntity;
 use crate::sim::movement::facing_from_delta;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::occupancy::{CellListInsertion, OccupancyGrid};
@@ -41,10 +42,21 @@ pub enum TubePathStepResult {
     Blocked,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UnitTubeAdvance {
+    Partial,
+    AdvancedStep,
+    ReachedFinal,
+    BlockedFinal,
+}
+
 pub fn begin_low_bridge_tube_movement(
     tube_id: TubeId,
     tube: &TubeFact,
 ) -> Result<LowBridgeTubeMovementState, TubeBeginError> {
+    if tube.path_len() == 0 {
+        return Err(TubeBeginError::ZeroLengthTube);
+    }
     Ok(LowBridgeTubeMovementState {
         tube_id,
         cursor: 0,
@@ -52,6 +64,114 @@ pub fn begin_low_bridge_tube_movement(
         exit: tube.exit,
         phase: LowBridgeTubePhase::Traversing,
     })
+}
+
+pub fn begin_drive_tube_traversal(
+    tube_id: TubeId,
+    tube: &TubeFact,
+    entry_ground: i32,
+    exit_ground: i32,
+) -> Result<DriveTubePayload, TubeBeginError> {
+    let path_len = tube.path_len();
+    if path_len == 0 {
+        return Err(TubeBeginError::ZeroLengthTube);
+    }
+    let z_step = (exit_ground - entry_ground) / path_len as i32;
+    let mut cell = tube.entry;
+    let mut path_buffer = Vec::with_capacity(path_len);
+    for &step in tube.path_steps() {
+        if let Some(&(dx, dy)) = crate::util::direction::DIRECTION_DELTAS.get(step as usize) {
+            let next_x = (i32::from(cell.0) + dx).clamp(0, i32::from(u16::MAX)) as u16;
+            let next_y = (i32::from(cell.1) + dy).clamp(0, i32::from(u16::MAX)) as u16;
+            cell = (next_x, next_y);
+        }
+        path_buffer.push(DriveCoord::cell(cell.0, cell.1, 0));
+    }
+    Ok(DriveTubePayload {
+        tube_index: Some(tube_id.0),
+        cursor: 0,
+        destination: path_buffer.first().copied(),
+        path_buffer,
+        z_accumulator: entry_ground + z_step,
+        z_step,
+    })
+}
+
+pub fn tick_unit_tube_payload(
+    payload: &mut DriveTubePayload,
+    position: &mut Position,
+    budget: i32,
+    _tube: &TubeFact,
+) -> UnitTubeAdvance {
+    let Some(destination) = payload.destination else {
+        return UnitTubeAdvance::ReachedFinal;
+    };
+    let budget = budget.max(0);
+    let cur_x = i32::from(position.rx) * 256 + position.sub_x.to_num::<i32>();
+    let cur_y = i32::from(position.ry) * 256 + position.sub_y.to_num::<i32>();
+    let dx = destination.x - cur_x;
+    let dy = destination.y - cur_y;
+    let dist_sq = i64::from(dx) * i64::from(dx) + i64::from(dy) * i64::from(dy);
+    let dist = crate::util::fixed_math::isqrt_i64(dist_sq) as i32;
+    if dist > budget && dist > 0 {
+        let step_x = i64::from(dx) * i64::from(budget) / i64::from(dist);
+        let step_y = i64::from(dy) * i64::from(budget) / i64::from(dist);
+        set_position_from_drive_coord(position, cur_x + step_x as i32, cur_y + step_y as i32);
+        return UnitTubeAdvance::Partial;
+    }
+
+    set_position_from_drive_coord(position, destination.x, destination.y);
+    position.z = payload.z_accumulator.clamp(0, i32::from(u8::MAX)) as u8;
+    payload.cursor = payload.cursor.saturating_add(1);
+    payload.z_accumulator = payload.z_accumulator.saturating_add(payload.z_step);
+    if usize::from(payload.cursor) >= payload.path_buffer.len() {
+        payload.destination = None;
+        UnitTubeAdvance::ReachedFinal
+    } else {
+        payload.destination = payload
+            .path_buffer
+            .get(usize::from(payload.cursor))
+            .copied();
+        UnitTubeAdvance::AdvancedStep
+    }
+}
+
+pub fn finish_unit_tube_movement(
+    entity: &mut GameEntity,
+    tube: &TubeFact,
+    exit_ground_blocked: bool,
+) -> UnitTubeAdvance {
+    if exit_ground_blocked {
+        return UnitTubeAdvance::BlockedFinal;
+    }
+    let Some(drive) = entity.drive_locomotion.as_mut() else {
+        return UnitTubeAdvance::ReachedFinal;
+    };
+    let z = drive
+        .active_tube
+        .as_ref()
+        .map_or(i32::from(entity.position.z), |payload| {
+            payload.z_accumulator
+        })
+        .clamp(0, i32::from(u8::MAX)) as u8;
+    entity.position.rx = tube.exit.0;
+    entity.position.ry = tube.exit.1;
+    entity.position.sub_x = CELL_CENTER_LEPTON;
+    entity.position.sub_y = CELL_CENTER_LEPTON;
+    entity.position.z = z;
+    entity.position.refresh_screen_coords();
+    drive.active_tube = None;
+    UnitTubeAdvance::ReachedFinal
+}
+
+fn set_position_from_drive_coord(position: &mut Position, x: i32, y: i32) {
+    let rx = x.div_euclid(256).clamp(0, i32::from(u16::MAX)) as u16;
+    let ry = y.div_euclid(256).clamp(0, i32::from(u16::MAX)) as u16;
+    position.rx = rx;
+    position.ry = ry;
+    position.sub_x = crate::util::fixed_math::SimFixed::from_num(x.rem_euclid(256));
+    position.sub_y = crate::util::fixed_math::SimFixed::from_num(y.rem_euclid(256));
+    position.refresh_screen_coords();
 }
 
 pub fn try_begin_path_tube_step(
@@ -284,7 +404,7 @@ mod tests {
     };
     use crate::map::tube_facts::TubeSource;
     use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
-    use crate::sim::components::{Health, MovementTarget};
+    use crate::sim::components::{DriveTubePayload, Health, MovementTarget};
     use crate::sim::game_entity::GameEntity;
     use crate::sim::intern::test_intern;
 
@@ -366,14 +486,13 @@ mod tests {
     }
 
     #[test]
-    fn begin_accepts_zero_length_auto_shell() {
+    fn direction8_rejects_zero_step_tube_shell() {
         let tube = TubeFact::auto_low_bridge((2, 2), 2);
 
-        let state = begin_low_bridge_tube_movement(TubeId(0), &tube).unwrap();
-        assert_eq!(state.tube_id, TubeId(0));
-        assert_eq!(state.entry, (2, 2));
-        assert_eq!(state.exit, (2, 2));
-        assert_eq!(state.cursor, 0);
+        assert_eq!(
+            begin_low_bridge_tube_movement(TubeId(0), &tube).unwrap_err(),
+            TubeBeginError::ZeroLengthTube
+        );
     }
 
     #[test]
@@ -446,7 +565,7 @@ mod tests {
     }
 
     #[test]
-    fn zero_step_shell_tick_completes_same_cell_and_projects_low_bridge_state() {
+    fn zero_step_shell_tick_does_not_start_active_tube_state() {
         let cells = vec![low_bridge_tube_cell(0, 0, TubeId(0), 4)];
         let terrain = ResolvedTerrainGrid::from_cells_with_tubes(
             1,
@@ -495,19 +614,16 @@ mod tests {
 
         let entity = entities.get(1).unwrap();
         assert!(entity.low_bridge_tube_state.is_none());
-        assert_eq!(entity.movement_target.as_ref().unwrap().next_index, 2);
         assert_eq!(
             (entity.position.rx, entity.position.ry, entity.position.z),
-            (0, 0, 4)
+            (0, 0, 0)
         );
-        assert!(entity.on_bridge);
-        assert_eq!(entity.bridge_occupancy.unwrap().deck_level, 4);
-        assert_eq!(occupancy.count_on_layer(0, 0, MovementLayer::Bridge), 1);
-        assert_eq!(occupancy.count_on_layer(0, 0, MovementLayer::Ground), 0);
+        assert!(!entity.on_bridge);
+        assert_eq!(occupancy.count_on_layer(0, 0, MovementLayer::Ground), 1);
     }
 
     #[test]
-    fn path_tube_step_starts_zero_step_shell_state() {
+    fn path_tube_step_blocks_zero_step_shell_state() {
         let mut cells = vec![cell(0, 0)];
         cells[0].yr_cell_land_type = YR_CELL_LAND_TUNNEL;
         cells[0].tube_index = Some(TubeId(0));
@@ -536,8 +652,8 @@ mod tests {
 
         let result = try_begin_path_tube_step(&mut state, &mut target, &position, Some(&terrain));
 
-        assert_eq!(result, TubePathStepResult::Began);
-        assert_eq!(state.unwrap().tube_id, TubeId(0));
+        assert_eq!(result, TubePathStepResult::Blocked);
+        assert!(state.is_none());
     }
 
     #[test]
@@ -572,5 +688,136 @@ mod tests {
 
         assert_eq!(result, TubePathStepResult::Began);
         assert_eq!(state.unwrap().tube_id, TubeId(0));
+    }
+
+    #[test]
+    fn direction8_seeds_z_step_with_signed_truncation() {
+        let tube = TubeFact::explicit((0, 0), (3, 0), 2, vec![2, 2, 2]);
+
+        let payload = begin_drive_tube_traversal(TubeId(0), &tube, 1, 8).unwrap();
+
+        assert_eq!(payload.z_step, 2);
+        assert_eq!(payload.z_accumulator, 3);
+        assert_eq!(payload.path_buffer.len(), 3);
+    }
+
+    #[test]
+    fn unit_tube_partial_budget_does_not_increment_cursor() {
+        let tube = TubeFact::explicit((0, 0), (1, 0), 2, vec![2]);
+        let mut payload = begin_drive_tube_traversal(TubeId(0), &tube, 0, 0).unwrap();
+        let mut position = Position {
+            rx: 0,
+            ry: 0,
+            z: 0,
+            sub_x: CELL_CENTER_LEPTON,
+            sub_y: CELL_CENTER_LEPTON,
+            screen_x: 0.0,
+            screen_y: 0.0,
+        };
+
+        let result = tick_unit_tube_payload(&mut payload, &mut position, 4, &tube);
+
+        assert_eq!(result, UnitTubeAdvance::Partial);
+        assert_eq!(payload.cursor, 0);
+    }
+
+    #[test]
+    fn unit_tube_reaches_one_step_per_tick() {
+        let tube = TubeFact::explicit((0, 0), (2, 0), 2, vec![2, 2]);
+        let mut payload = begin_drive_tube_traversal(TubeId(0), &tube, 0, 0).unwrap();
+        let mut position = Position {
+            rx: 0,
+            ry: 0,
+            z: 0,
+            sub_x: CELL_CENTER_LEPTON,
+            sub_y: CELL_CENTER_LEPTON,
+            screen_x: 0.0,
+            screen_y: 0.0,
+        };
+
+        let result = tick_unit_tube_payload(&mut payload, &mut position, 512, &tube);
+
+        assert_eq!(result, UnitTubeAdvance::AdvancedStep);
+        assert_eq!(payload.cursor, 1);
+    }
+
+    #[test]
+    fn unit_tube_final_empty_ground_list_keeps_accumulated_z() {
+        let tube = TubeFact::explicit((0, 0), (1, 0), 2, vec![2]);
+        let mut entity = GameEntity::new(
+            1,
+            0,
+            0,
+            0,
+            0,
+            test_intern("Allies"),
+            Health {
+                current: 100,
+                max: 100,
+            },
+            test_intern("MTNK"),
+            crate::map::entities::EntityCategory::Unit,
+            0,
+            5,
+            true,
+        );
+        entity.drive_locomotion = Some(crate::sim::components::DriveLocomotionRuntime {
+            active_tube: Some(DriveTubePayload {
+                z_accumulator: 7,
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+
+        let result = finish_unit_tube_movement(&mut entity, &tube, false);
+
+        assert_eq!(result, UnitTubeAdvance::ReachedFinal);
+        assert_eq!(entity.position.z, 7);
+        assert!(
+            entity
+                .drive_locomotion
+                .as_ref()
+                .unwrap()
+                .active_tube
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn unit_tube_final_blocked_ground_list_keeps_active_tube() {
+        let tube = TubeFact::explicit((0, 0), (1, 0), 2, vec![2]);
+        let mut entity = GameEntity::new(
+            1,
+            0,
+            0,
+            0,
+            0,
+            test_intern("Allies"),
+            Health {
+                current: 100,
+                max: 100,
+            },
+            test_intern("MTNK"),
+            crate::map::entities::EntityCategory::Unit,
+            0,
+            5,
+            true,
+        );
+        entity.drive_locomotion = Some(crate::sim::components::DriveLocomotionRuntime {
+            active_tube: Some(DriveTubePayload::default()),
+            ..Default::default()
+        });
+
+        let result = finish_unit_tube_movement(&mut entity, &tube, true);
+
+        assert_eq!(result, UnitTubeAdvance::BlockedFinal);
+        assert!(
+            entity
+                .drive_locomotion
+                .as_ref()
+                .unwrap()
+                .active_tube
+                .is_some()
+        );
     }
 }

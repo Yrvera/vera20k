@@ -79,6 +79,10 @@ pub use movement_commands::{
     clear_navigation_for_entity, issue_direct_move, issue_move_command,
     issue_move_command_with_layered, set_destination_for_teleporter_entity,
 };
+#[cfg(test)]
+pub(crate) use movement_path::{
+    path_search_used_zone_grid_marker, reset_path_search_used_zone_grid_marker,
+};
 // Re-export the tick function so callers can use `movement::tick_movement_with_grids`.
 pub use movement_tick::tick_movement_with_grids;
 
@@ -146,6 +150,13 @@ pub(super) struct MoverSnapshot {
     /// occupants are skipped during the foundation-cross occupancy check
     /// (harvester dock drive: buildings are not scatter targets).
     pub bypass_grid: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct PendingCrushKill {
+    pub victim_id: u64,
+    pub crusher_id: u64,
+    pub crush_coord: (i32, i32),
 }
 
 /// Per-tick movement diagnostics — returned by `tick_movement_with_grids`.
