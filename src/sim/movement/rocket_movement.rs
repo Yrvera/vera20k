@@ -130,15 +130,27 @@ pub fn attach_rocket_state(
 /// Called once per simulation tick from `advance_tick()`.
 /// Rockets that reach Detonation phase are collected for despawning.
 /// Returns a list of entity IDs that detonated this tick (caller handles despawn/damage).
-pub fn tick_rocket_movement(entities: &mut EntityStore, tick_ms: u32, sim_tick: u64) -> Vec<u64> {
+pub fn tick_rocket_movement(
+    entities: &mut EntityStore,
+    live_order: &[u64],
+    tick_ms: u32,
+    sim_tick: u64,
+) -> Vec<u64> {
     let mut detonated: Vec<u64> = Vec::new();
     if tick_ms == 0 {
         return detonated;
     }
     let dt: SimFixed = dt_from_tick_ms(tick_ms);
 
-    let keys = entities.keys_sorted();
-    for &id in &keys {
+    let fallback_order;
+    let entity_order: &[u64] = if live_order.is_empty() {
+        fallback_order = entities.keys_sorted();
+        &fallback_order
+    } else {
+        live_order
+    };
+
+    for &id in entity_order {
         let Some(entity) = entities.get_mut(id) else {
             continue;
         };
@@ -320,7 +332,7 @@ mod tests {
         // Tick through entire flight (~15 cells at 30 cells/s = ~0.5s = ~15 ticks at 33ms).
         let mut detonated = false;
         for _ in 0..60 {
-            let det = tick_rocket_movement(&mut entities, 33, 0);
+            let det = tick_rocket_movement(&mut entities, &[], 33, 0);
             if det.contains(&1) {
                 detonated = true;
                 break;
@@ -343,7 +355,7 @@ mod tests {
 
         // Tick past launch into ascending.
         for _ in 0..15 {
-            tick_rocket_movement(&mut entities, 33, 0);
+            tick_rocket_movement(&mut entities, &[], 33, 0);
         }
 
         let entity = entities.get(1).expect("should exist");
@@ -383,12 +395,49 @@ mod tests {
         // Should detonate quickly even with zero distance.
         let mut detonated = false;
         for _ in 0..30 {
-            let det = tick_rocket_movement(&mut entities, 33, 0);
+            let det = tick_rocket_movement(&mut entities, &[], 33, 0);
             if det.contains(&1) {
                 detonated = true;
                 break;
             }
         }
         assert!(detonated, "Rocket should detonate even with zero distance");
+    }
+
+    #[test]
+    fn rocket_detonations_return_in_live_object_order_not_stable_id() {
+        let mut live_entities = EntityStore::new();
+        let mut stable_entities = EntityStore::new();
+        for id in [1, 2] {
+            let mut entity = GameEntity::test_default(id, "V3RKT", "Soviet", 5, 5);
+            entity.rocket_state = Some(RocketState {
+                phase: RocketPhase::Detonation,
+                origin_rx: 5,
+                origin_ry: 5,
+                target_rx: 5,
+                target_ry: 5,
+                speed: SimFixed::from_num(10),
+                altitude: SIM_ZERO,
+                progress: SIM_ONE,
+                timer: SIM_ZERO,
+                pitch: 0.0,
+            });
+            live_entities.insert(entity.clone());
+            stable_entities.insert(entity);
+        }
+
+        let live = tick_rocket_movement(&mut live_entities, &[2, 1], 33, 0);
+        let stable = tick_rocket_movement(&mut stable_entities, &[], 33, 0);
+
+        assert_eq!(
+            live,
+            vec![2, 1],
+            "live object order controls projectile detonation order"
+        );
+        assert_eq!(
+            stable,
+            vec![1, 2],
+            "empty live order preserves prior stable-id fallback"
+        );
     }
 }

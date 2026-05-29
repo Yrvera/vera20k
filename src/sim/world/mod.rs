@@ -1593,6 +1593,7 @@ impl Simulation {
         // --- Phase 2: Air + special movement ---
         // DEPENDS ON: commands (may set movement targets for air/special units).
         // INDEPENDENT OF: ground movement (air units bypass A* and occupancy).
+        let special_movement_order = self.live_object_order_snapshot();
         air_movement::tick_air_movement(&mut self.entities, tick_ms, self.tick);
         if let Some(rules) = rules {
             let warp_out_type = self.interner.intern(&rules.general.warp_out.name);
@@ -1624,13 +1625,21 @@ impl Simulation {
             tick_ms,
             self.tick,
         );
-        let _rocket_detonations =
-            rocket_movement::tick_rocket_movement(&mut self.entities, tick_ms, self.tick);
+        let _rocket_detonations = rocket_movement::tick_rocket_movement(
+            &mut self.entities,
+            &special_movement_order,
+            tick_ms,
+            self.tick,
+        );
         // Homing missile state machine. Runs in the same air/special-movement
         // phase as rocket_movement; detonation list is currently unused — the
         // production projectile-spawn dispatch lands in a separate follow-up.
-        let _homing_detonations =
-            homing_movement::tick_homing_movement(&mut self.entities, tick_ms, self.tick);
+        let _homing_detonations = homing_movement::tick_homing_movement(
+            &mut self.entities,
+            &special_movement_order,
+            tick_ms,
+            self.tick,
+        );
         droppod_movement::tick_droppod_movement(&mut self.entities, tick_ms, self.tick);
         if let Some(rules) = rules {
             parachute_descent::tick_parachute_descent(

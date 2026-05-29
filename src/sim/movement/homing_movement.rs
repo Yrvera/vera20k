@@ -376,15 +376,26 @@ pub fn attach_homing_state(
 /// Returns the list of entity IDs that detonated this tick (impact or
 /// stall self-destruct). The caller is responsible for damage dispatch
 /// and despawn.
-pub fn tick_homing_movement(entities: &mut EntityStore, tick_ms: u32, _sim_tick: u64) -> Vec<u64> {
+pub fn tick_homing_movement(
+    entities: &mut EntityStore,
+    live_order: &[u64],
+    tick_ms: u32,
+    _sim_tick: u64,
+) -> Vec<u64> {
     let mut detonated: Vec<u64> = Vec::new();
     if tick_ms == 0 {
         return detonated;
     }
 
     let dt = dt_from_tick_ms(tick_ms);
-    let keys = entities.keys_sorted();
-    for &id in &keys {
+    let fallback_order;
+    let entity_order: &[u64] = if live_order.is_empty() {
+        fallback_order = entities.keys_sorted();
+        &fallback_order
+    } else {
+        live_order
+    };
+    for &id in entity_order {
         // Read target position (if target still alive) without holding a
         // mutable borrow on the bullet.
         let target_pos_opt: Option<(u16, u16)> = {
@@ -762,7 +773,7 @@ mod tests {
 
         let mut detonated = false;
         for _ in 0..200 {
-            let det = tick_homing_movement(&mut entities, 22, 0);
+            let det = tick_homing_movement(&mut entities, &[], 22, 0);
             if det.contains(&1) {
                 detonated = true;
                 break;
@@ -806,7 +817,7 @@ mod tests {
         // Inside dead-band -> altitude unchanged by the snap step.
         let (mut entities, bullet_id) =
             spawn_test_homing_at_altitude(SimFixed::from_num(5 * 64 + 10));
-        tick_homing_movement(&mut entities, 22, 0);
+        tick_homing_movement(&mut entities, &[], 22, 0);
         let alt_after = entities
             .get(bullet_id)
             .unwrap()
@@ -827,7 +838,7 @@ mod tests {
         // |dz| = 30 -> outside dead-band -> snap by -18 toward target.
         let (mut entities, bullet_id) =
             spawn_test_homing_at_altitude(SimFixed::from_num(5 * 64 + 30));
-        tick_homing_movement(&mut entities, 22, 0);
+        tick_homing_movement(&mut entities, &[], 22, 0);
         let alt_after = entities
             .get(bullet_id)
             .unwrap()
@@ -845,7 +856,7 @@ mod tests {
         // |dz| = 30 below target -> snap up by 18.
         let (mut entities, bullet_id) =
             spawn_test_homing_at_altitude(SimFixed::from_num(5 * 64 - 30));
-        tick_homing_movement(&mut entities, 22, 0);
+        tick_homing_movement(&mut entities, &[], 22, 0);
         let alt_after = entities
             .get(bullet_id)
             .unwrap()
@@ -908,7 +919,7 @@ mod tests {
             h.last_known_ry = 100;
         }
 
-        let det = tick_homing_movement(&mut entities, 22, 1);
+        let det = tick_homing_movement(&mut entities, &[], 22, 1);
         assert!(
             det.contains(&1),
             "missile with EMA<=0.5 and zero closure must self-destruct"
@@ -939,7 +950,7 @@ mod tests {
         );
 
         for tick in 0..400 {
-            let det = tick_homing_movement(&mut entities, 22, tick as u64);
+            let det = tick_homing_movement(&mut entities, &[], 22, tick as u64);
             assert!(
                 !det.contains(&1),
                 "floater missile must never self-destruct from stall"
@@ -964,6 +975,67 @@ mod tests {
             SIM_ONE,
         );
         assert!(!attached);
+    }
+
+    #[test]
+    fn homing_detonations_return_in_live_object_order_not_stable_id() {
+        use crate::sim::game_entity::GameEntity;
+
+        fn build_entities() -> EntityStore {
+            let mut entities = EntityStore::new();
+            entities.insert(GameEntity::test_default(10, "KIROV", "Soviet", 5, 5));
+            entities.insert(GameEntity::test_default(20, "KIROV", "Soviet", 6, 5));
+            entities.insert(GameEntity::test_default(1, "AAHeatSeeker2", "Allied", 5, 5));
+            entities.insert(GameEntity::test_default(2, "AAHeatSeeker2", "Allied", 6, 5));
+            attach_homing_state(
+                &mut entities,
+                1,
+                (5, 5),
+                10,
+                (5, 5),
+                SIM_ONE,
+                60,
+                0,
+                false,
+                false,
+                SIM_ONE,
+            );
+            attach_homing_state(
+                &mut entities,
+                2,
+                (6, 5),
+                20,
+                (6, 5),
+                SIM_ONE,
+                60,
+                0,
+                false,
+                false,
+                SIM_ONE,
+            );
+            for id in [1, 2] {
+                let h = entities.get_mut(id).unwrap().homing_state.as_mut().unwrap();
+                h.speed = SIM_ZERO;
+            }
+            entities
+        }
+
+        let mut live_entities = build_entities();
+        let mut stable_entities = build_entities();
+
+        let live = tick_homing_movement(&mut live_entities, &[2, 1], 22, 0);
+        let stable = tick_homing_movement(&mut stable_entities, &[], 22, 0);
+
+        assert_eq!(
+            live,
+            vec![2, 1],
+            "live object order controls homing detonation order"
+        );
+        assert_eq!(
+            stable,
+            vec![1, 2],
+            "empty live order preserves prior stable-id fallback"
+        );
     }
 
     #[test]
@@ -999,7 +1071,7 @@ mod tests {
                 t.position.rx = 35;
                 t.position.ry = 10;
             }
-            let det = tick_homing_movement(&mut entities, 22, tick as u64);
+            let det = tick_homing_movement(&mut entities, &[], 22, tick as u64);
             if det.contains(&1) {
                 detonated = true;
                 break;
