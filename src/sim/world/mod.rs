@@ -1611,6 +1611,7 @@ impl Simulation {
             teleport_movement::tick_teleport_movement(
                 &mut self.entities,
                 &mut self.occupancy,
+                &special_movement_order,
                 tick_ms,
                 self.tick,
                 Some(&mut teleport_visuals),
@@ -1619,6 +1620,7 @@ impl Simulation {
             teleport_movement::tick_teleport_movement(
                 &mut self.entities,
                 &mut self.occupancy,
+                &special_movement_order,
                 tick_ms,
                 self.tick,
                 None,

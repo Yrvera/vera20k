@@ -258,6 +258,7 @@ fn start_teleport_state(
 pub fn tick_teleport_movement(
     entities: &mut EntityStore,
     occupancy: &mut OccupancyGrid,
+    live_order: &[u64],
     tick_ms: u32,
     sim_tick: u64,
     mut visuals: Option<&mut TeleportVisuals<'_>>,
@@ -269,8 +270,15 @@ pub fn tick_teleport_movement(
     // Collect entity IDs that need cleanup after ticking.
     let mut finished: Vec<u64> = Vec::new();
 
-    let keys = entities.keys_sorted();
-    for &id in &keys {
+    let sorted_keys;
+    let ordered_ids = if live_order.is_empty() {
+        sorted_keys = entities.keys_sorted();
+        sorted_keys.as_slice()
+    } else {
+        live_order
+    };
+
+    for &id in ordered_ids {
         let Some(entity) = entities.get_mut(id) else {
             continue;
         };
@@ -621,7 +629,7 @@ mod tests {
         );
 
         // One tick relocates instantly (matches original Phase 0).
-        tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), 33, 0, None);
+        tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), &[], 33, 0, None);
 
         let entity = entities.get(1).expect("should exist");
         assert_eq!(entity.position.rx, 20, "Should have relocated to target");
@@ -636,7 +644,7 @@ mod tests {
         // Tick through ChronoDelay (being_warped_ticks countdown).
         let delay = ts.being_warped_ticks;
         for _ in 0..delay + 5 {
-            tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), 33, 0, None);
+            tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), &[], 33, 0, None);
         }
 
         // TeleportState should be removed after completion.
@@ -677,6 +685,7 @@ mod tests {
             tick_teleport_movement(
                 &mut entities,
                 &mut OccupancyGrid::new(),
+                &[],
                 33,
                 0,
                 Some(&mut visuals),
@@ -728,6 +737,7 @@ mod tests {
             tick_teleport_movement(
                 &mut entities,
                 &mut OccupancyGrid::new(),
+                &[],
                 33,
                 0,
                 Some(&mut visuals),
@@ -735,6 +745,7 @@ mod tests {
             tick_teleport_movement(
                 &mut entities,
                 &mut OccupancyGrid::new(),
+                &[],
                 33,
                 1,
                 Some(&mut visuals),
@@ -745,6 +756,74 @@ mod tests {
             world_effects.len(),
             2,
             "only Relocate emits the verified departure and arrival rows"
+        );
+    }
+
+    #[test]
+    fn teleport_movement_uses_live_object_order_not_stable_id_scan() {
+        fn teleporter(id: u64, rx: u16, ry: u16, target_rx: u16) -> GameEntity {
+            let mut entity = GameEntity::test_default(id, "CLEG", "Americans", rx, ry);
+            entity.teleport_state = Some(TeleportState {
+                phase: TeleportPhase::Relocate,
+                target_rx,
+                target_ry: 20,
+                being_warped_ticks: 0,
+            });
+            entity
+        }
+
+        let mut live_entities = EntityStore::new();
+        live_entities.insert(teleporter(1, 5, 5, 21));
+        live_entities.insert(teleporter(2, 6, 5, 22));
+
+        tick_teleport_movement(
+            &mut live_entities,
+            &mut OccupancyGrid::new(),
+            &[2],
+            33,
+            0,
+            None,
+        );
+
+        let first = live_entities.get(1).expect("id 1");
+        assert_eq!(
+            (first.position.rx, first.position.ry),
+            (5, 5),
+            "non-live-order IDs are not swept by stable-id fallback"
+        );
+        assert!(first.teleport_state.is_some());
+        let second = live_entities.get(2).expect("id 2");
+        assert_eq!((second.position.rx, second.position.ry), (22, 20));
+        assert!(second.teleport_state.is_none());
+
+        let mut fallback_entities = EntityStore::new();
+        fallback_entities.insert(teleporter(1, 5, 5, 21));
+        fallback_entities.insert(teleporter(2, 6, 5, 22));
+
+        tick_teleport_movement(
+            &mut fallback_entities,
+            &mut OccupancyGrid::new(),
+            &[],
+            33,
+            0,
+            None,
+        );
+
+        assert_eq!(
+            fallback_entities.get(1).map(|entity| (
+                entity.position.rx,
+                entity.position.ry,
+                entity.teleport_state.is_none()
+            )),
+            Some((21, 20, true))
+        );
+        assert_eq!(
+            fallback_entities.get(2).map(|entity| (
+                entity.position.rx,
+                entity.position.ry,
+                entity.teleport_state.is_none()
+            )),
+            Some((22, 20, true))
         );
     }
 
@@ -776,7 +855,7 @@ mod tests {
 
         // Complete the whole sequence: 1 tick for Relocate + chrono delay ticks.
         for _ in 0..200 {
-            tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), 33, 0, None);
+            tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), &[], 33, 0, None);
         }
 
         // Should have restored to Drive.
@@ -947,7 +1026,7 @@ mod tests {
         assert!(entity.locomotor.as_ref().expect("loco").is_overridden());
 
         // Single tick: position snaps, then cleanup runs because being_warped_ticks==0.
-        tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), 33, 0, None);
+        tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), &[], 33, 0, None);
 
         let entity = entities.get(1).expect("should exist");
         assert_eq!(entity.position.rx, 20);
@@ -988,7 +1067,7 @@ mod tests {
         );
 
         // Tick 1: Relocate snaps position and transitions to ChronoDelay (NOT cleanup).
-        tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), 33, 0, None);
+        tick_teleport_movement(&mut entities, &mut OccupancyGrid::new(), &[], 33, 0, None);
         let ts = entities
             .get(1)
             .and_then(|e| e.teleport_state.as_ref())

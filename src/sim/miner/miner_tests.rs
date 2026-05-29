@@ -267,6 +267,7 @@ fn tick_miners_n(sim: &mut Simulation, rules: &RuleSet, n: usize) {
         crate::sim::movement::teleport_movement::tick_teleport_movement(
             &mut sim.entities,
             &mut OccupancyGrid::new(),
+            &[],
             67,
             sim.tick,
             None,
@@ -471,6 +472,7 @@ fn chrono_miner_teleports_to_refinery_on_return() {
     crate::sim::movement::teleport_movement::tick_teleport_movement(
         &mut sim.entities,
         &mut OccupancyGrid::new(),
+        &[],
         67,
         sim.tick,
         None,
