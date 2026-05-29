@@ -1594,7 +1594,12 @@ impl Simulation {
         // DEPENDS ON: commands (may set movement targets for air/special units).
         // INDEPENDENT OF: ground movement (air units bypass A* and occupancy).
         let special_movement_order = self.live_object_order_snapshot();
-        air_movement::tick_air_movement(&mut self.entities, tick_ms, self.tick);
+        air_movement::tick_air_movement(
+            &mut self.entities,
+            &special_movement_order,
+            tick_ms,
+            self.tick,
+        );
         if let Some(rules) = rules {
             let warp_out_type = self.interner.intern(&rules.general.warp_out.name);
             let mut teleport_visuals = teleport_movement::TeleportVisuals {
