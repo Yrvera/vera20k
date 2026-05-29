@@ -12,9 +12,9 @@
 
 pub(crate) mod bridge_orchestrator;
 pub mod edge_cell;
+mod logic_vector;
 mod world_commands;
 mod world_hash;
-mod logic_vector;
 mod world_orders;
 mod world_spawn;
 
@@ -55,13 +55,13 @@ use crate::sim::movement::tunnel_movement;
 use crate::sim::movement::turret;
 use crate::sim::occupancy::OccupancyGrid;
 use crate::sim::ore_growth;
-use crate::sim::overlay_grid::{cleanup_wall_neighbors, damage_wall_overlay, WallDamageEvent};
+use crate::sim::overlay_grid::{WallDamageEvent, cleanup_wall_neighbors, damage_wall_overlay};
 use crate::sim::particles::ParticleSystemStore;
 use crate::sim::passenger;
+use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
 use crate::sim::pathfinding::terrain_speed;
 use crate::sim::pathfinding::zone_map::ZoneGrid;
-use crate::sim::pathfinding::PathGrid;
 use crate::sim::power_system::{self, PowerState};
 use crate::sim::production::{self, ProductionState};
 use crate::sim::radar::{RadarEventQueue, RadarEventType};
@@ -297,6 +297,14 @@ pub struct Simulation {
     /// today; seeded + hashed regardless so it is already in lockstep when those land.
     /// MUST be serialized + hashed.
     pub(crate) main_rng: SimRng,
+    /// Map-generator RNG — gamemd `g_MapGenRng` (0x00ABE890). On a non-random map
+    /// this `RandomClass` is never seeded, so it stays all-zero and returns 0 on
+    /// every draw. The bridge **repair** walker-variant pick consumes this stream;
+    /// on a fixed map it therefore always yields variant 0 (the base overlay), and
+    /// the scenario/main cursors are never advanced by a repair. Constructed via
+    /// `SimRng::zeroed()` (NOT seeded). MUST be serialized + hashed like the other
+    /// two streams. Seeding this for random maps is a deferred (Blocked) follow-up.
+    pub(crate) mapgen_rng: SimRng,
     /// Construction seed — recorded so the replay header carries the negotiated
     /// g_RngSeed (not a mid-stream fingerprint). Both streams derive from it.
     pub(crate) seed: u64,
@@ -471,6 +479,7 @@ impl Simulation {
             binary_frame: 0,
             scenario_rng: SimRng::new(seed),
             main_rng: SimRng::new(seed),
+            mapgen_rng: SimRng::zeroed(),
             seed,
             fog: FogState::default(),
             house_alliances: HouseAllianceMap::default(),
@@ -524,20 +533,44 @@ impl Simulation {
     // --- Scenario stream (gamemd Scenario->Random @ Scen+0x218) ---
     // Keep accessors distinct even though several return the same stream today:
     // the intent name is the per-consumer routing record and the grep/audit anchor.
-    pub(crate) fn scatter_rng(&mut self) -> &mut SimRng { &mut self.scenario_rng } // bump displacement, idle/forced scatter, passenger unload exit, sell-eject
-    pub(crate) fn subcell_rng(&mut self) -> &mut SimRng { &mut self.scenario_rng } // infantry sub-cell rotation, paradrop sub-cell
-    pub(crate) fn smudge_rng(&mut self) -> &mut SimRng { &mut self.scenario_rng } // destruction smudge/survivor/debris, smudge type pick
-    pub(crate) fn wall_damage_rng(&mut self) -> &mut SimRng { &mut self.scenario_rng } // overlay/wall damage roll
-    pub(crate) fn bridge_rng(&mut self) -> &mut SimRng { &mut self.scenario_rng } // bridge collapse/repair/debris/explosion
-    pub(crate) fn ore_rng(&mut self) -> &mut SimRng { &mut self.scenario_rng } // ore growth/spread queue + direction + variant, TIBTRE
-    pub(crate) fn anim_rng(&mut self) -> &mut SimRng { &mut self.scenario_rng } // building damage-fire type/start-frame
-    pub(crate) fn particle_rng(&mut self) -> &mut SimRng { &mut self.scenario_rng } // particle/smoke/gas/fire lifetime/offset/dir/insert
-    pub(crate) fn superweapon_rng(&mut self) -> &mut SimRng { &mut self.scenario_rng } // lightning-storm scatter/bolt
-    pub(crate) fn miner_jitter_rng(&mut self) -> &mut SimRng { &mut self.scenario_rng } // dock-entry retry + unload-deploy frame jitter
+    pub(crate) fn scatter_rng(&mut self) -> &mut SimRng {
+        &mut self.scenario_rng
+    } // bump displacement, idle/forced scatter, passenger unload exit, sell-eject
+    pub(crate) fn subcell_rng(&mut self) -> &mut SimRng {
+        &mut self.scenario_rng
+    } // infantry sub-cell rotation, paradrop sub-cell
+    pub(crate) fn smudge_rng(&mut self) -> &mut SimRng {
+        &mut self.scenario_rng
+    } // destruction smudge/survivor/debris, smudge type pick
+    pub(crate) fn wall_damage_rng(&mut self) -> &mut SimRng {
+        &mut self.scenario_rng
+    } // overlay/wall damage roll
+    pub(crate) fn bridge_rng(&mut self) -> &mut SimRng {
+        &mut self.scenario_rng
+    } // bridge collapse/debris/explosion
+    pub(crate) fn ore_rng(&mut self) -> &mut SimRng {
+        &mut self.scenario_rng
+    } // ore growth/spread queue + direction + variant, TIBTRE
+    pub(crate) fn anim_rng(&mut self) -> &mut SimRng {
+        &mut self.scenario_rng
+    } // building damage-fire type/start-frame
+    pub(crate) fn particle_rng(&mut self) -> &mut SimRng {
+        &mut self.scenario_rng
+    } // particle/smoke/gas/fire lifetime/offset/dir/insert
+    pub(crate) fn superweapon_rng(&mut self) -> &mut SimRng {
+        &mut self.scenario_rng
+    } // lightning-storm scatter/bolt
+    pub(crate) fn miner_jitter_rng(&mut self) -> &mut SimRng {
+        &mut self.scenario_rng
+    } // dock-entry retry + unload-deploy frame jitter
 
     // --- Main stream (gamemd g_MainRng @ 0x00886B88); no sim/ consumer wired yet ---
-    pub(crate) fn weapon_spread_rng(&mut self) -> &mut SimRng { &mut self.main_rng } // projectile spread X/Y, warhead detonate scatter
-    pub(crate) fn house_ai_rng(&mut self) -> &mut SimRng { &mut self.main_rng } // HouseClass superpower/AI gate roll
+    pub(crate) fn weapon_spread_rng(&mut self) -> &mut SimRng {
+        &mut self.main_rng
+    } // projectile spread X/Y, warhead detonate scatter
+    pub(crate) fn house_ai_rng(&mut self) -> &mut SimRng {
+        &mut self.main_rng
+    } // HouseClass superpower/AI gate roll
 
     /// Test/replay helper — reseed BOTH streams from one seed (mirrors the dual
     /// Seed+clone in gamemd Init_Random_Number_System). Replaces test code that
@@ -545,6 +578,9 @@ impl Simulation {
     pub(crate) fn reseed_both(&mut self, seed: u64) {
         self.scenario_rng = SimRng::new(seed);
         self.main_rng = SimRng::new(seed);
+        // mapgen_rng mirrors gamemd's unseeded g_MapGenRng — reset to zero-state,
+        // never seeded from the gameplay seed.
+        self.mapgen_rng = SimRng::zeroed();
         self.seed = seed;
     }
 

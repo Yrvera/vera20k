@@ -73,7 +73,11 @@ fn drawing_main_leaves_scenario_untouched() {
         fresh.state(),
         "drawing only from the main stream must not advance scenario"
     );
-    assert_ne!(sim.main_rng.state(), fresh.state(), "main stream must have advanced");
+    assert_ne!(
+        sim.main_rng.state(),
+        fresh.state(),
+        "main stream must have advanced"
+    );
 }
 
 // --- Test 3: per-stream gamemd raw-sequence pin (design §7.3) ---
@@ -136,7 +140,10 @@ macro_rules! assert_routes_main {
             assert_eq!(
                 sim.scenario_rng.state(),
                 fresh.state(),
-                concat!(stringify!($accessor), " must NOT advance the scenario stream")
+                concat!(
+                    stringify!($accessor),
+                    " must NOT advance the scenario stream"
+                )
             );
         }
     };
@@ -181,7 +188,10 @@ fn scenario_stream_matches_gamemd_random_ranged_0_4() {
     let mut sim = Simulation::with_seed(1);
     for (i, &expected) in GAMEMD_RANGED_0_4_SEED1.iter().enumerate() {
         let got = sim.wall_damage_rng().next_range_u32_inclusive(0, 4);
-        assert_eq!(got, expected, "scenario RandomRanged(0,4) draw {i} must match gamemd");
+        assert_eq!(
+            got, expected,
+            "scenario RandomRanged(0,4) draw {i} must match gamemd"
+        );
     }
 }
 
@@ -193,7 +203,10 @@ fn main_stream_matches_gamemd_random_ranged_0_7() {
     let mut sim = Simulation::with_seed(1);
     for (i, &expected) in GAMEMD_RANGED_0_7_SEED1.iter().enumerate() {
         let got = sim.weapon_spread_rng().next_range_u32_inclusive(0, 7);
-        assert_eq!(got, expected, "main RandomRanged(0,7) draw {i} must match gamemd");
+        assert_eq!(
+            got, expected,
+            "main RandomRanged(0,7) draw {i} must match gamemd"
+        );
     }
 }
 
@@ -236,14 +249,25 @@ fn snapshot_round_trip_persists_both_streams() {
     }
     let scenario_before = sim.scenario_rng.state();
     let main_before = sim.main_rng.state();
-    assert_ne!(scenario_before, main_before, "streams must have diverged for a meaningful test");
+    assert_ne!(
+        scenario_before, main_before,
+        "streams must have diverged for a meaningful test"
+    );
 
     let bytes = GameSnapshot::save(&sim, 0, 0, "rng_test", 0);
     let loaded = GameSnapshot::load(&bytes).expect("snapshot load");
     let restored = loaded.sim;
 
-    assert_eq!(restored.scenario_rng.state(), scenario_before, "scenario stream must round-trip");
-    assert_eq!(restored.main_rng.state(), main_before, "main stream must round-trip");
+    assert_eq!(
+        restored.scenario_rng.state(),
+        scenario_before,
+        "scenario stream must round-trip"
+    );
+    assert_eq!(
+        restored.main_rng.state(),
+        main_before,
+        "main stream must round-trip"
+    );
 }
 
 // --- Test 8: end-to-end determinism, both streams (design §7.8) ---
@@ -255,7 +279,11 @@ fn determinism_both_streams_match_across_ticks() {
     for _ in 0..40 {
         tick(&mut sim_a);
         tick(&mut sim_b);
-        assert_eq!(sim_a.state_hash(), sim_b.state_hash(), "world hash must match each tick");
+        assert_eq!(
+            sim_a.state_hash(),
+            sim_b.state_hash(),
+            "world hash must match each tick"
+        );
         assert_eq!(
             sim_a.scenario_rng.state(),
             sim_b.scenario_rng.state(),
@@ -267,4 +295,64 @@ fn determinism_both_streams_match_across_ticks() {
             "main streams must match each tick"
         );
     }
+}
+
+// --- Test 9: three-stream snapshot round-trip incl. mapgen_rng (§5) ---
+//
+// Mirrors `snapshot_round_trip_persists_both_streams` but advances all THREE
+// streams a DIFFERENT number of draws and proves each restores independently
+// after a save/load cycle. mapgen_rng is reseeded off its zero-state and drawn
+// so the round-trip is meaningful (a dropped/swapped field would diverge).
+// (`version_mismatch_is_rejected` in snapshot.rs already covers the v13 version
+// guard; not duplicated here.)
+#[test]
+fn snapshot_round_trip_persists_all_three_streams() {
+    let mut sim = Simulation::with_seed(0xABCD_1234);
+    for _ in 0..11 {
+        sim.scatter_rng().next_u32();
+    }
+    for _ in 0..7 {
+        sim.weapon_spread_rng().next_u32();
+    }
+    // Reseed mapgen off zero-state and advance a distinct draw count.
+    sim.mapgen_rng = SimRng::new(99);
+    for _ in 0..3 {
+        sim.mapgen_rng.next_u32();
+    }
+
+    let scenario_before = sim.scenario_rng.state();
+    let main_before = sim.main_rng.state();
+    let mapgen_before = sim.mapgen_rng.state();
+    assert_ne!(
+        scenario_before, main_before,
+        "streams must have diverged for a meaningful test"
+    );
+    assert_ne!(
+        scenario_before, mapgen_before,
+        "mapgen must differ from scenario too"
+    );
+    assert_ne!(
+        main_before, mapgen_before,
+        "mapgen must differ from main too"
+    );
+
+    let bytes = GameSnapshot::save(&sim, 0, 0, "rng_test", 0);
+    let loaded = GameSnapshot::load(&bytes).expect("snapshot load");
+    let restored = loaded.sim;
+
+    assert_eq!(
+        restored.scenario_rng.state(),
+        scenario_before,
+        "scenario stream must round-trip"
+    );
+    assert_eq!(
+        restored.main_rng.state(),
+        main_before,
+        "main stream must round-trip"
+    );
+    assert_eq!(
+        restored.mapgen_rng.state(),
+        mapgen_before,
+        "mapgen stream must round-trip"
+    );
 }

@@ -36,12 +36,15 @@ impl Simulation {
         self.tick.hash(&mut hasher);
         self.total_sim_ms.hash(&mut hasher);
         self.binary_frame.hash(&mut hasher);
-        // Hash BOTH RNG streams in a fixed order. Order is part of the hash contract
-        // and must never change. Hashing only one stream would let a divergence in the
-        // other produce identical hashes on two desynced clients (desync detector goes
-        // blind exactly where the two-stream split matters).
+        // Hash ALL THREE RNG streams in a fixed order. Order is part of the hash
+        // contract and must never change. Hashing only some streams would let a
+        // divergence in another produce identical hashes on two desynced clients
+        // (desync detector goes blind exactly where the RNG-stream split matters).
         self.scenario_rng.hash_state(&mut hasher);
         self.main_rng.hash_state(&mut hasher);
+        // mapgen_rng (gamemd g_MapGenRng): appended AFTER the two gameplay streams.
+        // This order is part of the hash contract and must never change.
+        self.mapgen_rng.hash_state(&mut hasher);
         self.next_stable_entity_id.hash(&mut hasher);
 
         // LogicClass active-object order — authoritative (drives reconciliation order).

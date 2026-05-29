@@ -409,19 +409,13 @@ impl BridgeRuntimeState {
         }
     }
 
+    /// Pick the healthy-tile variant for a repaired bridge strip. gamemd draws
+    /// `RandomRanged(0, 3)` from the map-gen RNG using the multiply-high (scaled)
+    /// shape — the HIGH two bits of one draw, not the low bits — so the variant
+    /// comes from `next_range_u32_inclusive_scaled`. (The map-gen stream is
+    /// unseeded on a fixed map, so in practice this is deterministically 0.)
     fn repair_variant_offset(rng: &mut SimRng) -> u8 {
-        Self::next_rejection_sampled_u8(rng, REPAIR_VARIANT_LIMIT_INCLUSIVE)
-    }
-
-    fn next_rejection_sampled_u8(rng: &mut SimRng, max_inclusive: u8) -> u8 {
-        let span = u64::from(max_inclusive) + 1;
-        let accepted = (u64::from(u32::MAX) + 1) / span * span;
-        loop {
-            let draw = u64::from(rng.next_u32());
-            if draw < accepted {
-                return (draw % span) as u8;
-            }
-        }
+        rng.next_range_u32_inclusive_scaled(0, u32::from(REPAIR_VARIANT_LIMIT_INCLUSIVE)) as u8
     }
 
     fn is_low_repair_outer_candidate(
@@ -2322,5 +2316,34 @@ mod tests {
         for y in 0..3 {
             assert_eq!(state.cell(2, y).unwrap().overlay_byte, 0xD3);
         }
+    }
+}
+
+#[cfg(test)]
+mod mapgen_variant_tests {
+    use super::*;
+    use crate::sim::rng::SimRng;
+
+    #[test]
+    fn repair_variant_is_zero_on_zero_state_stream() {
+        // gamemd's unseeded g_MapGenRng returns 0 forever, so the repaired variant is
+        // always 0 (the base overlay) on a fixed map. Draw many times to prove the
+        // state words stay zero across the index advance/wrap path — note the draw
+        // DOES advance the index counters, so we assert the variant value, not state().
+        let mut rng = SimRng::zeroed();
+        for _ in 0..300 {
+            assert_eq!(BridgeRuntimeState::repair_variant_offset(&mut rng), 0);
+        }
+    }
+
+    #[test]
+    fn repair_variant_consumes_whatever_stream_it_is_handed() {
+        // The walker is stream-agnostic: a seeded stream advances and yields a variant
+        // within the inclusive limit. (Proves the pick is not hard-coded to 0.)
+        let mut rng = SimRng::new(0x1234_5678);
+        let before = rng.state();
+        let variant = BridgeRuntimeState::repair_variant_offset(&mut rng);
+        assert!(variant <= REPAIR_VARIANT_LIMIT_INCLUSIVE);
+        assert_ne!(rng.state(), before, "seeded stream must advance");
     }
 }

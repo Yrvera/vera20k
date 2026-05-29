@@ -33,6 +33,23 @@ impl SimRng {
         rng
     }
 
+    /// Create an RNG in the all-zero "unseeded" state.
+    ///
+    /// Mirrors gamemd's `g_MapGenRng`, a `RandomClass` instance that lives in
+    /// zero-initialized BSS and is never seeded on a non-random map. With every
+    /// state word zero, `next_u32` returns `state[a] ^ state[b] == 0` on every
+    /// draw regardless of the index positions, so the stream yields 0 forever
+    /// until (and unless) it is explicitly reseeded. Do NOT reuse `new(0)`: that
+    /// runs `reseed`, which mixes a non-zero table into the state.
+    pub fn zeroed() -> Self {
+        Self {
+            disabled: 0,
+            index_a: 0,
+            index_b: 0,
+            state: vec![0; RNG_TABLE_LEN],
+        }
+    }
+
     /// Compact deterministic fingerprint of the full internal state.
     ///
     /// This is for tests and debug comparisons. Use `hash_state` when feeding
@@ -133,6 +150,40 @@ impl SimRng {
         self.next_range_u32_inclusive(0, max_exclusive - 1)
     }
 
+    /// Inclusive ranged draw in gamemd's *scaled* (multiply-high) `RandomRanged`
+    /// shape — the variant used by the map-gen / bridge-tile RNG path, distinct
+    /// from `next_range_u32_inclusive` (which masks the LOW bits and rejects).
+    ///
+    /// gamemd computes `lo + ftol(raw · range · (2^-32 + 2^-64))` with the FPU
+    /// in truncate-toward-zero mode, then loops while the result exceeds `hi`.
+    /// The scale `2^-32 + 2^-64` equals `(2^32 + 1) / 2^64`, so the truncated
+    /// product is exactly the integer `(raw · range · (2^32 + 1)) >> 64`, which
+    /// is provably in `0..=range-1` for every `raw` (max raw maps to range-1).
+    /// The original's rejection branch is therefore unreachable for this exact
+    /// integer form and is omitted.
+    ///
+    /// For the inclusive `(0, 3)` bridge-repair-variant range this reduces to
+    /// the high two bits of one draw (`raw >> 30`). Verified bit-identical to
+    /// the binary for that range; wider ranges (only reachable from the
+    /// random-map generator, which this engine does not run) are not separately
+    /// validated against the original's double-precision rounding.
+    ///
+    /// Unlike `next_range_u32_inclusive`, this consumes one draw even for equal
+    /// bounds — matching the binary, which has no equal-bounds early-out here.
+    pub fn next_range_u32_inclusive_scaled(&mut self, low: u32, high: u32) -> u32 {
+        let (lo, hi) = if low <= high {
+            (low, high)
+        } else {
+            (high, low)
+        };
+        let range = u64::from(hi - lo) + 1;
+        // (2^-32 + 2^-64) == (2^32 + 1) / 2^64
+        const SCALE_NUMERATOR: u128 = (1u128 << 32) + 1;
+        let raw = u128::from(self.next_u32());
+        let scaled = ((raw * u128::from(range) * SCALE_NUMERATOR) >> 64) as u32;
+        lo + scaled
+    }
+
     /// Random integer in `[low, high]` inclusive on both ends.
     /// Sorts reversed bounds and consumes no draw when the bounds are equal.
     /// Mirrors binary `Random__RandomRanged(low, high)` for ordinary spans.
@@ -173,6 +224,18 @@ impl SimRng {
 #[cfg(test)]
 mod tests {
     use super::SimRng;
+
+    #[test]
+    fn zeroed_stream_returns_zero_forever() {
+        let mut rng = SimRng::zeroed();
+        // Draw past one full table wrap (RNG_TABLE_LEN = 250) to cover the
+        // index advance/wrap path, not just the first few draws.
+        for _ in 0..600 {
+            assert_eq!(rng.next_u32(), 0, "unseeded zero-state must draw 0");
+        }
+        // A fresh zeroed stream must be byte-identical to another (deterministic).
+        assert_eq!(SimRng::zeroed().state(), SimRng::zeroed().state());
+    }
 
     #[test]
     fn test_rng_repeatable_sequence() {
@@ -239,7 +302,10 @@ mod tests {
         // draws.
         let mut rng = SimRng::new(1);
         let v = rng.next_range_u32_inclusive(0, 4);
-        assert_eq!(v, 1, "RandomRanged(0,4) on seed 1 must reject 5,6 then accept 1");
+        assert_eq!(
+            v, 1,
+            "RandomRanged(0,4) on seed 1 must reject 5,6 then accept 1"
+        );
 
         // Pin the exact raw-draw count: a reference advanced exactly 3 times
         // must match. The old span-1 mask (=3) accepts the first draw
@@ -270,6 +336,9 @@ mod tests {
                 saw_top = true;
             }
         }
-        assert!(saw_top, "RandomRanged(0,4) must be able to return the inclusive top value 4");
+        assert!(
+            saw_top,
+            "RandomRanged(0,4) must be able to return the inclusive top value 4"
+        );
     }
 }

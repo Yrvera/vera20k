@@ -376,9 +376,11 @@ impl Simulation {
             let outcome = if let (Some(bs), Some(terrain)) =
                 (self.bridge_state.as_mut(), self.resolved_terrain.as_ref())
             {
-                // bridge repair — scenario stream. Direct field (NOT bridge_rng()):
-                // `bs`/`terrain` hold live disjoint &mut/&self borrows.
-                bs.repair_bridge_from_engineer_scan(&scan, &mut self.scenario_rng, terrain)
+                // bridge repair walker-variant pick — gamemd draws g_MapGenRng, not the
+                // scenario stream. Direct field (NOT bridge_rng(); `bs`/`terrain` hold live
+                // disjoint borrows). On a fixed map mapgen_rng is zero-state => variant 0,
+                // and the scenario/main cursors are left untouched.
+                bs.repair_bridge_from_engineer_scan(&scan, &mut self.mapgen_rng, terrain)
             } else {
                 crate::sim::bridge_state::RepairOutcome::default()
             };

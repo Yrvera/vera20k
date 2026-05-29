@@ -13,10 +13,10 @@ use serde::{Deserialize, Serialize};
 use crate::sim::world::Simulation;
 
 /// Bump this when the snapshot binary format changes in a breaking way.
-// Bumped 11 -> 12 for the two-stream RNG split: `rng` (one field) became
-// `scenario_rng` + `main_rng` + `seed`, changing the positional bincode layout.
-// Old single-`rng` blobs must be rejected, not mis-deserialized.
-const SNAPSHOT_VERSION: u32 = 12;
+// Bumped 12 -> 13 for the third RNG stream: `mapgen_rng` (zero-state g_MapGenRng
+// mirror) is now a field of `Simulation`, changing the positional bincode layout.
+// Old v12 blobs (two streams only) must be rejected, not mis-deserialized.
+const SNAPSHOT_VERSION: u32 = 13;
 
 /// Binary snapshot envelope — wraps the full `Simulation` state plus
 /// compatibility hashes for the map and rules that were active at save time.
