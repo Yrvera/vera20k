@@ -1339,7 +1339,7 @@ mod homing_state_hash_tests {
     use super::Simulation;
     use crate::sim::game_entity::GameEntity;
     use crate::sim::movement::homing_movement::{HomingPhase, HomingState};
-    use crate::util::fixed_math::{SIM_ONE, SIM_ZERO, SimFixed};
+    use crate::util::fixed_math::{SimFixed, SIM_ONE, SIM_ZERO};
 
     fn make_homing(yaw_bam: u16) -> HomingState {
         HomingState {

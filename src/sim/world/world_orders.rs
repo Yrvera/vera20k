@@ -16,8 +16,8 @@ use crate::sim::movement::air_movement;
 use crate::sim::movement::bump_crush;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::pathfinding::PathGrid;
-use crate::util::fixed_math::SimFixed;
 use crate::util::fixed_math::ra2_speed_to_leptons_per_second;
+use crate::util::fixed_math::SimFixed;
 
 /// Result of one `apply_c4_damage_to_building` call.
 #[derive(Debug, Clone, Copy, Default)]

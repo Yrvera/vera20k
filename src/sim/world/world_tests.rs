@@ -18,7 +18,7 @@ use crate::sim::components::MovementTarget;
 use crate::sim::game_entity::GameEntity;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::pathfinding::PathGrid;
-use crate::util::fixed_math::{SIM_ZERO, SimFixed};
+use crate::util::fixed_math::{SimFixed, SIM_ZERO};
 
 fn make_test_entity(type_id: &str, category: EntityCategory) -> MapEntity {
     MapEntity {
@@ -2255,12 +2255,11 @@ fn test_execute_tick_delay_blocks_early_execution() {
         None,
         33,
     );
-    assert!(
-        sim.entities
-            .get(1)
-            .and_then(|e| e.movement_target.as_ref())
-            .is_none()
-    );
+    assert!(sim
+        .entities
+        .get(1)
+        .and_then(|e| e.movement_target.as_ref())
+        .is_none());
 
     let _ = sim.advance_tick(
         &[delayed.clone()],
@@ -2270,20 +2269,18 @@ fn test_execute_tick_delay_blocks_early_execution() {
         None,
         33,
     );
-    assert!(
-        sim.entities
-            .get(1)
-            .and_then(|e| e.movement_target.as_ref())
-            .is_none()
-    );
+    assert!(sim
+        .entities
+        .get(1)
+        .and_then(|e| e.movement_target.as_ref())
+        .is_none());
 
     let _ = sim.advance_tick(&[delayed], None, &empty_heights(), Some(&grid), None, 33);
-    assert!(
-        sim.entities
-            .get(1)
-            .and_then(|e| e.movement_target.as_ref())
-            .is_some()
-    );
+    assert!(sim
+        .entities
+        .get(1)
+        .and_then(|e| e.movement_target.as_ref())
+        .is_some());
 }
 
 #[test]
@@ -2427,11 +2424,10 @@ fn test_move_command_rejects_non_owned_entity() {
     );
 
     let _ = sim.advance_tick(&[cmd], None, &empty_heights(), Some(&grid), None, 33);
-    assert!(
-        sim.entities
-            .get(1)
-            .is_some_and(|e| e.movement_target.is_none())
-    );
+    assert!(sim
+        .entities
+        .get(1)
+        .is_some_and(|e| e.movement_target.is_none()));
 }
 
 #[test]

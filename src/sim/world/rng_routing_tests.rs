@@ -5,7 +5,7 @@
 //! hash coverage, snapshot persistence, end-to-end determinism, and a
 //! ground-truth gamemd value-parity pin for both streams.
 
-use super::{DEFAULT_SIM_SEED, Simulation};
+use super::{Simulation, DEFAULT_SIM_SEED};
 use crate::sim::rng::SimRng;
 use crate::sim::snapshot::GameSnapshot;
 use std::collections::BTreeMap;

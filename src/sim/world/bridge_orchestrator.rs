@@ -2157,23 +2157,41 @@ mod tests {
 
         // Ground unit at (5,5): no locomotor => Ground layer, on_bridge=false.
         let ground = GameEntity::new(
-            1, 5, 5, 0, 64,
+            1,
+            5,
+            5,
+            0,
+            64,
             test_intern("Americans"),
-            Health { current: 256, max: 256 },
+            Health {
+                current: 256,
+                max: 256,
+            },
             test_intern("MTNK"),
             crate::map::entities::EntityCategory::Unit,
-            0, 5, true,
+            0,
+            5,
+            true,
         );
         sim.entities.insert(ground);
 
         // Aircraft hovering over (5,5): Air layer, on_bridge=false.
         let mut air = GameEntity::new(
-            2, 5, 5, 12, 64,
+            2,
+            5,
+            5,
+            12,
+            64,
             test_intern("Americans"),
-            Health { current: 256, max: 256 },
+            Health {
+                current: 256,
+                max: 256,
+            },
             test_intern("ORCA"),
             crate::map::entities::EntityCategory::Aircraft,
-            0, 5, true,
+            0,
+            5,
+            true,
         );
         let mut loco = drive_loco_on_bridge();
         loco.layer = MovementLayer::Air;
