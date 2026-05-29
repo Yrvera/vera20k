@@ -838,15 +838,16 @@ impl BridgeRuntimeState {
     /// function; no mutation. Returns true iff the cell at `(rx, ry)`
     /// matches the entry conditions for `path` under `ctx`.
     ///
-    /// Mirrors the binary's per-path entry checks:
-    /// - HighStateMachine / LowStateMachine: cell is bridge-structural and
-    ///   has transitioned out of the raw body overlay range. Z-gate
-    ///   restricts `impact_z` to `[cell.level - 1, cell.level + 1]`.
-    ///   Raw-overlay cells are routed through the walker, NOT the state
-    ///   machine, so this path explicitly REJECTS cells whose `overlay_byte`
-    ///   is still in the body range.
-    /// - HighDirect: `overlay_byte ∈ [0xCD..=0xE6]`. Single-shot, no Z-gate.
-    /// - LowDirect:  `overlay_byte ∈ [0x4A..=0x63]`. Single-shot, no Z-gate.
+    /// Mirrors the binary's per-block entry checks (`Apply_area_damage`):
+    /// - HighStateMachine / LowStateMachine (binary blocks A/B): cell is a
+    ///   bridge-structural candidate of the matching FAMILY (high/low). The
+    ///   block's driver is overlay-first (`apply_damage_to_cell`), so this
+    ///   gate does NOT reject in-band overlays — an in-band cell is hit by
+    ///   the SM block (→ direct walker) AND, separately, by the matching
+    ///   direct block C/D, consuming two `BridgeStrength` draws (BR-02). The
+    ///   Z-gate restricts `impact_z` to `[cell.level - 1, cell.level + 1]`.
+    /// - HighDirect (block D): `overlay_byte ∈ [0xCD..=0xE6]`. Single-shot, no Z-gate.
+    /// - LowDirect  (block C): `overlay_byte ∈ [0x4A..=0x63]`. Single-shot, no Z-gate.
     pub(crate) fn path_matches_cell(
         &self,
         path: DispatchPath,
@@ -862,19 +863,12 @@ impl BridgeRuntimeState {
             DispatchPath::HighDirect => (0xCD..=0xE6).contains(&cell.overlay_byte),
             DispatchPath::LowDirect => (0x4A..=0x63).contains(&cell.overlay_byte),
             DispatchPath::HighStateMachine | DispatchPath::LowStateMachine => {
-                // Raw-overlay cells route to the walker, NOT the state
-                // machine. State-machine fires only after the overlay has
-                // been transitioned out of the body range.
-                if matches!(path, DispatchPath::HighStateMachine)
-                    && (0xCD..=0xE6).contains(&cell.overlay_byte)
-                {
-                    return false;
-                }
-                if matches!(path, DispatchPath::LowStateMachine)
-                    && (0x4A..=0x63).contains(&cell.overlay_byte)
-                {
-                    return false;
-                }
+                // BR-02: the SM block (binary block A/B) gates on bridge tile
+                // FAMILY, not the overlay band. Its driver is overlay-first
+                // (`apply_damage_to_cell`): an in-band cell routes to the direct
+                // walker here AND is hit again by the matching direct block
+                // C/D, consuming two draws. Do NOT reject in-band overlays — the
+                // second block draw is lockstep-significant.
                 if !matches!(
                     cell.role,
                     BridgeCellRole::Anchor
@@ -915,6 +909,36 @@ impl BridgeRuntimeState {
                 }
                 true
             }
+        }
+    }
+
+    /// Overlay-first inner dispatcher for a state-machine block (binary
+    /// `ApplyDamageToCell @ 0x00587180`, the driver of `Apply_area_damage`
+    /// blocks A/B). The visible overlay byte is checked FIRST: a cell already
+    /// in a destroy band routes straight to the matching direct walker; only
+    /// overlay-miss cells reach the damage state machine. `is_high` selects the
+    /// SM family for the overlay-miss fallback (bridgehead vs body branch is
+    /// then chosen by the cell's role).
+    ///
+    /// Both bands are tested regardless of `is_high` — the binary's overlay
+    /// short-circuit is family-agnostic; family only decides the SM fallback.
+    pub(crate) fn apply_damage_to_cell(
+        &mut self,
+        rx: u16,
+        ry: u16,
+        is_high: bool,
+        terrain: &crate::map::resolved_terrain::ResolvedTerrainGrid,
+    ) -> StateOutcome {
+        let overlay = self.cell(rx, ry).map(|c| c.overlay_byte);
+        match overlay {
+            Some(o) if (0xCD..=0xE6).contains(&o) => self.destroy_bridge_high(rx, ry, terrain),
+            Some(o) if (0x4A..=0x63).contains(&o) => self.destroy_bridge_low(rx, ry, terrain),
+            _ => match self.cell(rx, ry).map(|c| c.role) {
+                Some(BridgeCellRole::Bridgehead) => {
+                    self.bridgehead_advance_state(rx, ry, is_high, terrain)
+                }
+                _ => self.body_cell_advance_state(rx, ry, is_high, terrain),
+            },
         }
     }
 

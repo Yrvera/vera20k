@@ -1804,9 +1804,12 @@ fn path_matches_high_direct_for_raw_body_overlay() {
     let terrain = make_terrain_at_level(2, 0, 5);
     let ctx = dispatch_test_ctx(100, 5);
     assert!(state.path_matches_cell(DispatchPath::HighDirect, 2, 0, &ctx, &terrain));
+    // BR-02: an in-band high cell ALSO matches the High SM block (binary block
+    // A). Its overlay-first driver routes to the direct walker, and direct
+    // block D matches too — two BridgeStrength draws for one cell.
     assert!(
-        !state.path_matches_cell(DispatchPath::HighStateMachine, 2, 0, &ctx, &terrain),
-        "raw-overlay cell must NOT match HighStateMachine"
+        state.path_matches_cell(DispatchPath::HighStateMachine, 2, 0, &ctx, &terrain),
+        "in-band high cell matches the SM block (overlay-first), not only HighDirect"
     );
 }
 
@@ -1833,9 +1836,10 @@ fn path_matches_low_direct_for_raw_low_overlay() {
     let terrain = make_terrain_at_level(2, 0, 2);
     let ctx = dispatch_test_ctx(100, 2);
     assert!(state.path_matches_cell(DispatchPath::LowDirect, 2, 0, &ctx, &terrain));
+    // BR-02: an in-band low cell ALSO matches the Low SM block (binary block B).
     assert!(
-        !state.path_matches_cell(DispatchPath::LowStateMachine, 2, 0, &ctx, &terrain),
-        "raw-overlay cell must NOT match LowStateMachine"
+        state.path_matches_cell(DispatchPath::LowStateMachine, 2, 0, &ctx, &terrain),
+        "in-band low cell matches the SM block (overlay-first), not only LowDirect"
     );
     assert!(
         !state.path_matches_cell(DispatchPath::HighDirect, 2, 0, &ctx, &terrain),

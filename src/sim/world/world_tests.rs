@@ -1391,8 +1391,10 @@ fn test_bridge_dispatcher_state_machine_overlay_routes_to_high_sm_not_direct() {
         "transitioned overlay must NOT also match HighDirect"
     );
 
-    // Conversely: a cell still in the raw body range routes to HighDirect
-    // and NOT to HighSM. Re-seed (4, 5) with overlay 0xDC.
+    // BR-02: a cell still in the raw body range matches HighDirect AND the
+    // High SM block — the SM block's overlay-first driver routes it to the
+    // direct walker, so both blocks fire and consume two BridgeStrength draws.
+    // Re-seed (4, 5) with overlay 0xDC.
     let bs_mut = sim.bridge_state.as_mut().unwrap();
     bs_mut.test_seed_cell(
         4,
@@ -1417,8 +1419,8 @@ fn test_bridge_dispatcher_state_machine_overlay_routes_to_high_sm_not_direct() {
         "raw body overlay routes to HighDirect"
     );
     assert!(
-        !bs.path_matches_cell(DispatchPath::HighStateMachine, 4, 5, &ctx, terrain),
-        "raw body overlay must NOT also match HighSM"
+        bs.path_matches_cell(DispatchPath::HighStateMachine, 4, 5, &ctx, terrain),
+        "BR-02: in-band cell also matches the High SM block (overlay-first), consuming a second draw"
     );
 }
 

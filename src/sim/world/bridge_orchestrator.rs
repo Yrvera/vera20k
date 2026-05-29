@@ -1470,25 +1470,14 @@ fn run_dispatch_loop(
             };
             for _attempt in 0..max_attempts {
                 let outcome = match path {
+                    // Blocks A/B call the overlay-first inner dispatcher
+                    // (`ApplyDamageToCell`): in-band overlays route to the
+                    // direct walker, overlay-miss cells to the state machine.
                     DispatchPath::HighStateMachine => {
-                        match bridge_state.cell(event.rx, event.ry).map(|c| c.role) {
-                            Some(crate::sim::bridge_state::BridgeCellRole::Bridgehead) => {
-                                bridge_state
-                                    .bridgehead_advance_state(event.rx, event.ry, true, terrain)
-                            }
-                            _ => bridge_state
-                                .body_cell_advance_state(event.rx, event.ry, true, terrain),
-                        }
+                        bridge_state.apply_damage_to_cell(event.rx, event.ry, true, terrain)
                     }
                     DispatchPath::LowStateMachine => {
-                        match bridge_state.cell(event.rx, event.ry).map(|c| c.role) {
-                            Some(crate::sim::bridge_state::BridgeCellRole::Bridgehead) => {
-                                bridge_state
-                                    .bridgehead_advance_state(event.rx, event.ry, false, terrain)
-                            }
-                            _ => bridge_state
-                                .body_cell_advance_state(event.rx, event.ry, false, terrain),
-                        }
+                        bridge_state.apply_damage_to_cell(event.rx, event.ry, false, terrain)
                     }
                     DispatchPath::HighDirect => {
                         bridge_state.destroy_bridge_high(event.rx, event.ry, terrain)
@@ -1505,9 +1494,11 @@ fn run_dispatch_loop(
                     break;
                 }
             }
-            // First matching path that did real work wins; stop scanning
-            // remaining paths for this event.
-            break;
+            // BR-01: NO inter-block early-out. The binary's `Apply_area_damage`
+            // runs all four blocks A/B/C/D in fixed order; a cell matching more
+            // than one block consumes one `RandomRanged(1,BridgeStrength)` draw
+            // per eligible non-Ion block. Continue scanning the remaining blocks
+            // for this event instead of stopping at the first that did work.
         }
     }
 
@@ -1894,6 +1885,50 @@ mod tests {
             sim.scenario_rng.state(),
             predicted.state(),
             "RNG draw order/count diverged from binary parity sequence"
+        );
+    }
+
+    /// BR-01 + BR-02 (lockstep determinism): a single in-band high body cell
+    /// matches BOTH the High SM block (binary block A — its overlay-first
+    /// driver routes an in-band cell to the direct walker) AND the High direct
+    /// block (block D). With the inter-block early-out removed, the dispatcher
+    /// consumes exactly TWO `RandomRanged(1,BridgeStrength)` draws for the one
+    /// cell. Before BR-01/02 it consumed one; the missing draw desynced
+    /// lockstep on every multi-match cell. `run_dispatch_loop` is used directly
+    /// so only the per-block gate draws are measured (the debris/explosion
+    /// draws happen later in the cascade).
+    #[test]
+    fn dispatcher_in_band_cell_consumes_two_block_strength_draws() {
+        let mut sim = Simulation::new();
+        let seed = 0x0B11_D6E5_u64;
+        sim.reseed_both(seed);
+        sim.resolved_terrain = Some(water_below_bridge_terrain(4));
+        let mut bs = BridgeRuntimeState::default();
+        bs.test_seed_cell(5, 5, seed_bridge_cell(0xCD));
+        sim.bridge_state = Some(bs);
+
+        let bridge_strength = 1500u16;
+        // Predict exactly two BridgeStrength gate draws (block A + block D).
+        let mut predicted = crate::sim::rng::SimRng::new(seed);
+        predicted.next_range_u32_inclusive(1, bridge_strength as u32);
+        predicted.next_range_u32_inclusive(1, bridge_strength as u32);
+
+        let event = BridgeDamageEvent {
+            rx: 5,
+            ry: 5,
+            // damage > bridge_strength so both gates pass; the draw COUNT is the
+            // lockstep-significant property under test, not the gate outcome.
+            damage: 2000,
+            warhead_ref: crate::sim::intern::InternedId::default(),
+            is_ion_cannon: false,
+            impact_z: 0,
+        };
+        let _ = run_dispatch_loop(&mut sim, &[event], bridge_strength);
+
+        assert_eq!(
+            sim.scenario_rng.state(),
+            predicted.state(),
+            "in-band high cell must consume exactly 2 BridgeStrength draws (block A + block D)"
         );
     }
 
