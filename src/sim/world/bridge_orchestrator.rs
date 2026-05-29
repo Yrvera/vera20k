@@ -77,14 +77,17 @@ pub(crate) fn apply_bridge_damage_events(
     // the cascade walk.
     let mut destroyed_set: BTreeSet<(u16, u16)> = BTreeSet::new();
     let mut blow_up_cells: Vec<(u16, u16)> = Vec::new();
+    let mut radar_dirty: BTreeSet<(u16, u16)> = BTreeSet::new();
     for outcome in &outcomes {
         if let StateOutcome::Collapsed {
             destroyed_cells,
             set_bridge_direction,
+            radar_cells,
             ..
         } = outcome
         {
             destroyed_set.extend(destroyed_cells.iter().copied());
+            radar_dirty.extend(radar_cells.iter().copied());
             for (cell, _slot, action) in &set_bridge_direction.actions {
                 if matches!(action, crate::sim::bridge_specs::CellAction::BlowUpBridge) {
                     blow_up_cells.push(*cell);
@@ -130,6 +133,16 @@ pub(crate) fn apply_bridge_damage_events(
     // any final-stage walker cell flagged the bridge endpoint records
     // dirty.
     refresh_bridge_zones_if_dirty(sim, any_zones_dirty);
+
+    // BR-16: feed the minimap radar-dirty channel — the collapsed triple plus
+    // every cascade-leaf cell touched (carried in each outcome's `radar_cells`),
+    // unioned with the destroyed/BlowUpBridge set so the SetBridgeDirection
+    // cells are covered too. Same channel the engineer-repair path uses. The
+    // union may harmlessly over-mark a cell that did not change this tick (e.g.
+    // an already-Destroyed perpendicular neighbor); the minimap recomputes its
+    // color from current bridge state, so over-marking is a render-side no-op.
+    radar_dirty.extend(destroyed_set.iter().copied());
+    sim.mark_radar_terrain_dirty_cells(radar_dirty.iter().copied());
 
     // state_changed = "at least one cell collapsed this batch". The destroyed_set
     // is built from StateOutcome::Collapsed outcomes earlier in this function;
@@ -302,6 +315,7 @@ fn apply_hut_bridge_execution(
     let mut destroyed_set: BTreeSet<(u16, u16)> = BTreeSet::new();
     let mut blow_up_cells: Vec<(u16, u16)> = Vec::new();
     let mut rim_cells: BTreeSet<(u16, u16)> = BTreeSet::new();
+    let mut radar_dirty: BTreeSet<(u16, u16)> = BTreeSet::new();
     let mut any_zones_dirty = false;
     for outcome in outcomes {
         if let StateOutcome::Collapsed {
@@ -309,10 +323,12 @@ fn apply_hut_bridge_execution(
             set_bridge_direction,
             adjacent_bridges_dirty,
             zones_dirty,
+            radar_cells,
             ..
         } = outcome
         {
             destroyed_set.extend(destroyed_cells.iter().copied());
+            radar_dirty.extend(radar_cells.iter().copied());
             for (cell, _slot, action) in &set_bridge_direction.actions {
                 if matches!(action, crate::sim::bridge_specs::CellAction::BlowUpBridge) {
                     blow_up_cells.push(*cell);
@@ -335,6 +351,10 @@ fn apply_hut_bridge_execution(
     update_adjacent_bridges(sim, &rim_cells);
     notify_bridge_span_collapse(sim, &destroyed_set);
     refresh_bridge_zones_if_dirty(sim, any_zones_dirty);
+
+    // BR-16: feed the minimap radar-dirty channel (see apply_bridge_damage_events).
+    radar_dirty.extend(destroyed_set.iter().copied());
+    sim.mark_radar_terrain_dirty_cells(radar_dirty.iter().copied());
 
     !destroyed_set.is_empty() || extra_zones_dirty || extra_adjacent_dirty_anchor.is_some()
 }

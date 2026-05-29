@@ -868,6 +868,17 @@ fn c4_on_cabhut_collapses_bridge_and_hut_survives() {
         anchor.damage_state
     );
 
+    // BR-16: the collapse must feed the minimap radar-dirty channel end-to-end
+    // (the same channel the engineer-repair path uses).
+    assert!(
+        !sim.radar_terrain_dirty_cells.is_empty(),
+        "bridge collapse must dirty minimap terrain cells"
+    );
+    assert!(
+        sim.radar_terrain_dirty_cells.contains(&(10, 10)),
+        "the collapsed anchor (10,10) must be radar-dirty"
+    );
+
     assert!(
         bridge_state_changed_seen,
         "TickResult.bridge_state_changed must fire at least once so the app rebuilds PathGrid"

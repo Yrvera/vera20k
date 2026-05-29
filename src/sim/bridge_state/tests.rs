@@ -319,6 +319,7 @@ fn ns_walker_triple_writes_bridgehead_neighbors() {
             destroyed_cells,
             set_bridge_direction,
             zones_dirty,
+            radar_cells,
             ..
         } => {
             assert!(binary_success);
@@ -327,6 +328,11 @@ fn ns_walker_triple_writes_bridgehead_neighbors() {
                 assert!(
                     destroyed_cells.contains(&pos),
                     "{pos:?} in destroyed_cells"
+                );
+                // BR-16: every triple cell the walker wrote is minimap-dirty.
+                assert!(
+                    radar_cells.contains(&pos),
+                    "{pos:?} in radar_cells"
                 );
             }
             assert_eq!(
@@ -1119,9 +1125,12 @@ fn body_driver_damaged_anchor_collapses_and_emits_set_bridge_direction() {
             set_bridge_direction,
             adjacent_bridges_dirty,
             zones_dirty,
+            radar_cells,
         } => {
             assert!(binary_success);
             assert!(destroyed_cells.contains(&(5, 5)));
+            // BR-16: the collapsed anchor is fed to the minimap radar channel.
+            assert!(radar_cells.contains(&(5, 5)));
             // 4 BlowUpBridge actions per Task 12 invariant.
             let blow_ups = set_bridge_direction
                 .actions
@@ -1475,9 +1484,12 @@ fn bridgehead_advance_repeat_high_hit_collapses_about_to_fall_slot() {
             set_bridge_direction,
             adjacent_bridges_dirty,
             zones_dirty,
+            radar_cells,
         } => {
             assert!(binary_success);
             assert_eq!(destroyed_cells, vec![(2, 1), (2, 2), (2, 3)]);
+            // BR-16: the collapsed BlowUpBridge triple is minimap-dirty.
+            assert_eq!(radar_cells, vec![(2, 1), (2, 2), (2, 3)]);
             assert_eq!(set_bridge_direction.actions.len(), 3);
             assert!(
                 set_bridge_direction

@@ -404,6 +404,14 @@ pub enum StateOutcome {
         /// Whether the zone graph needs rebuild (`InvalidateBridgeZones` →
         /// `UpdateBridgeZonesHelper`). Orchestrator dispatches.
         zones_dirty: bool,
+        /// Cells whose visible terrain changed and must be marked dirty on the
+        /// minimap. On a collapse this is the collapsed triple PLUS every
+        /// cascade-leaf cell touched — including intermediate `Damaged`
+        /// perpendicular neighbors, not only the finals — so a partially-
+        /// damaged neighbor's minimap variant does not go stale. The
+        /// orchestrator feeds these into `mark_radar_terrain_dirty_cells`,
+        /// the same channel the engineer-repair path uses.
+        radar_cells: Vec<(u16, u16)>,
     },
     /// Cell is not a body-bridge cell, anchor span lookup failed, or anchor
     /// is already `Destroyed`. No-op.
@@ -1129,6 +1137,9 @@ impl BridgeRuntimeState {
                 let adj = compute_adjacent_bridges_dirty(rx, ry, axis);
                 StateOutcome::Collapsed {
                     binary_success: true,
+                    // Cloned before the move below; the collapsed anchor + any
+                    // perpendicular finals are the minimap-dirty set (BR-16).
+                    radar_cells: destroyed.clone(),
                     destroyed_cells: destroyed,
                     set_bridge_direction: sbd,
                     adjacent_bridges_dirty: adj,
@@ -1159,6 +1170,7 @@ impl BridgeRuntimeState {
                     set_bridge_direction: sbd,
                     adjacent_bridges_dirty: adj,
                     zones_dirty: true,
+                    radar_cells: vec![anchor_pos],
                 }
             }
             DamageState::PartialCollapseB => {
@@ -1184,6 +1196,7 @@ impl BridgeRuntimeState {
                     set_bridge_direction: sbd,
                     adjacent_bridges_dirty: adj,
                     zones_dirty: true,
+                    radar_cells: vec![anchor_pos],
                 }
             }
             DamageState::Destroyed => StateOutcome::NoChange,
@@ -1549,6 +1562,9 @@ impl BridgeRuntimeState {
             let adj = compute_adjacent_bridges_dirty(anchor_pos.0, anchor_pos.1, axis);
             return StateOutcome::Collapsed {
                 binary_success: is_high_bridge,
+                // Cloned before the move below; the BlowUpBridge triple + any
+                // perpendicular finals are the minimap-dirty set (BR-16).
+                radar_cells: destroyed.clone(),
                 destroyed_cells: destroyed,
                 set_bridge_direction: SetBridgeDirectionResult { actions },
                 adjacent_bridges_dirty: adj,
