@@ -68,6 +68,14 @@ The game loop is one function calling the others in order.
 
 `Simulation::advance_tick()` calls: commands → movement → combat → vision → power → superweapons → production → AI → defeat check → state hash. Every tick, same order.
 
+Current foundational scheduler TODO.
+
+The repo-local roadmap for native `LogicClass`-style timing and scheduler work is
+stored at `docs/plans/2026-05-28-foundational-scheduler-roadmap-todo.md`. It
+covers the contract stack for native frame timing, active object scheduling,
+ObjectClass/TechnoClass lifecycle, global tick spine order, factory/house tail
+order, and projectile/AnimClass same-tick behavior.
+
 Rendering.
 
 A 2D sprite renderer using wgpu. At map load, all sprites (buildings, infantry, terrain tiles, overlays) are packed into atlas textures — big images containing many sprites side by side. Voxel models (vehicles, aircraft) are pre-rendered into 2D sprites and packed into atlases the same way.
