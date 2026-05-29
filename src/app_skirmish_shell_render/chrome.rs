@@ -388,6 +388,19 @@ pub(super) const fn right_panel_button_sdbtnanm_frame_index(
     if pressed && !disabled { 4 } else { 2 }
 }
 
+/// Look up a baked SDBTNANM frame by index for the slide-in wave path.
+/// Returns `None` when the SHP lacks the frame so callers can clamp.
+pub(super) fn right_panel_button_sdbtnanm_frame(
+    atlas: &SkirmishShellChromeAtlas,
+    frame: usize,
+) -> Option<SkirmishShellChromeEntry> {
+    atlas
+        .right_panel_button_sdbtnanm_frames
+        .get(frame)
+        .copied()
+        .flatten()
+}
+
 pub(super) fn push_tinted_entry(
     out: &mut Vec<SpriteInstance>,
     entry: SkirmishShellChromeEntry,
