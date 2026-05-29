@@ -1,8 +1,8 @@
 //! Miner state machine tick — drives the SearchOre→Harvest→Return→Unload loop.
 //!
 //! Called once per sim tick from `tick_resource_economy()`. Uses the two-phase
-//! snapshot pattern: snapshot all miners, process deterministically by stable_id,
-//! then apply mutations back to the EntityStore.
+//! snapshot pattern: snapshot all live miners in LogicClass order, process them
+//! in that order, then apply mutations back to the EntityStore.
 //!
 //! ## Dependency rules
 //! - Part of sim/ — depends on sim/miner, sim/miner_dock, sim/components,
@@ -84,7 +84,8 @@ pub(super) struct MinerSnapshot {
 
 /// Main entry point: tick all entities with the Miner component.
 ///
-/// Deterministic: snapshots sorted by stable_id, mutations applied in order.
+/// Deterministic: snapshots follow LogicClass live-object order, mutations
+/// applied in that order.
 pub(crate) fn tick_miners(
     sim: &mut Simulation,
     rules: &RuleSet,
@@ -102,9 +103,18 @@ pub(crate) fn tick_miners_with_overlay_registry(
     overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
 ) {
     // Phase 1: Snapshot all miners from EntityStore.
-    let keys = sim.entities.keys_sorted();
+    let live_order = sim.live_object_order_snapshot();
+    let fallback_keys;
+    let keys: &[u64] = if live_order.is_empty() {
+        // Focused unit tests often insert entities directly without going
+        // through reveal/register. Preserve their old stable-id behavior.
+        fallback_keys = sim.entities.keys_sorted();
+        &fallback_keys
+    } else {
+        &live_order
+    };
     let mut snapshots: Vec<MinerSnapshot> = Vec::new();
-    for &id in &keys {
+    for &id in keys {
         let Some(entity) = sim.entities.get(id) else {
             continue;
         };
@@ -133,7 +143,9 @@ pub(crate) fn tick_miners_with_overlay_registry(
             debug_dock_events: Vec::new(),
         });
     }
-    // Already sorted by stable_id since keys_sorted() returns sorted order.
+    // Snapshot order already matches the native live-object pass. In direct
+    // unit tests with no live-order setup, the empty-order fallback preserves
+    // the previous stable-id order.
     log::debug!(
         "tick_miners: {} miners, {} resource_nodes",
         snapshots.len(),

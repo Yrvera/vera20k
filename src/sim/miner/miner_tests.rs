@@ -3346,6 +3346,72 @@ fn two_miners_waiter_before_releaser_not_retroactively_promoted() {
     );
 }
 
+#[test]
+fn two_miners_refinery_takeover_uses_live_object_order_not_stable_id() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    let waiter = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
+    spawn_refinery(&mut sim, 2, 10, 10);
+    let occupant = spawn_miner(&mut sim, 3, MinerKind::War, 13, 11);
+
+    // Stable-id order is [waiter(1), refinery(2), occupant(3)], which would
+    // process the waiter before the releaser and leave it queued. Native
+    // LogicClass order is reveal/insert order, so force the opposite
+    // order-visible case: releaser first, waiter second.
+    sim.set_logic_order_for_test(vec![occupant, waiter, 2]);
+
+    {
+        let entity = sim.entities.get_mut(waiter).expect("waiter entity");
+        let miner = entity.miner.as_mut().expect("waiter miner");
+        miner.cargo.push(CargoBale {
+            resource_type: ResourceType::Ore,
+            value: 25,
+        });
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::MissionEnter;
+        miner.reserved_refinery = Some(2);
+        miner.dock_queued = true;
+    }
+
+    {
+        let entity = sim.entities.get_mut(occupant).expect("occupant entity");
+        let miner = entity.miner.as_mut().expect("occupant miner");
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::Departing;
+        miner.reserved_refinery = Some(2);
+    }
+    assert!(sim.production.dock_reservations.try_reserve(2, occupant));
+    sim.production
+        .dock_reservations
+        .mark_contact_entered(2, occupant);
+    sim.production.dock_reservations.link_on_pad(2, occupant);
+    assert_eq!(
+        sim.production.dock_reservations.hello_or_wait(2, waiter, 1),
+        crate::sim::miner::miner_dock::ContactAdmission::Waiting
+    );
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    assert_eq!(get_miner(&sim, occupant).state, MinerState::SearchOre);
+    assert!(!sim.production.dock_reservations.has_contact(2, occupant));
+    assert!(!sim.production.dock_reservations.is_on_pad(2, occupant));
+
+    let waiter_miner = get_miner(&sim, waiter);
+    assert_eq!(
+        waiter_miner.dock_phase,
+        RefineryDockPhase::FaceSync,
+        "live order [occupant, waiter] must let the waiter claim after release even though stable-id order would not"
+    );
+    assert!(!waiter_miner.dock_queued);
+    assert!(sim.production.dock_reservations.has_contact(2, waiter));
+    assert!(
+        sim.production
+            .dock_reservations
+            .has_contact_entered(2, waiter)
+    );
+}
+
 /// Once CAN_DOCK's accepted-cell move is already satisfied, the stock path
 /// sets the 0x18/+0x418-style entered flag and runs ordinary 0x16 facing
 /// sync. It does not turn that first handshake into radio 0x15 or unload
