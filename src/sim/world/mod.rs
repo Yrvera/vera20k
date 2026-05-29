@@ -1651,7 +1651,12 @@ impl Simulation {
             tick_ms,
             self.tick,
         );
-        droppod_movement::tick_droppod_movement(&mut self.entities, tick_ms, self.tick);
+        droppod_movement::tick_droppod_movement(
+            &mut self.entities,
+            &special_movement_order,
+            tick_ms,
+            self.tick,
+        );
         if let Some(rules) = rules {
             parachute_descent::tick_parachute_descent(
                 &mut self.entities,
