@@ -13,10 +13,9 @@ use serde::{Deserialize, Serialize};
 use crate::sim::world::Simulation;
 
 /// Bump this when the snapshot binary format changes in a breaking way.
-// Bumped 12 -> 13 for the third RNG stream: `mapgen_rng` (zero-state g_MapGenRng
-// mirror) is now a field of `Simulation`, changing the positional bincode layout.
-// Old v12 blobs (two streams only) must be rejected, not mis-deserialized.
-const SNAPSHOT_VERSION: u32 = 13;
+// Bumped 13 -> 14 for the serialized occupancy entry-order fields used to rebuild
+// the skipped CellClass-style occupancy cache after load.
+const SNAPSHOT_VERSION: u32 = 14;
 
 /// Binary snapshot envelope — wraps the full `Simulation` state plus
 /// compatibility hashes for the map and rules that were active at save time.
@@ -135,6 +134,13 @@ impl GameSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
+    use crate::rules::locomotor_type::{MovementZone, SpeedType};
+    use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
+    use crate::sim::movement::locomotor::MovementLayer;
+    use crate::sim::pathfinding::PathGrid;
+    use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
+    use crate::sim::pathfinding::zone_map::ZoneGrid;
     use crate::sim::world::Simulation;
     use std::collections::BTreeMap;
 
@@ -142,6 +148,148 @@ mod tests {
     fn tick(sim: &mut Simulation) {
         let height_map = BTreeMap::new();
         sim.advance_tick(&[], None, &height_map, None, None, 67);
+    }
+
+    fn clear_terrain_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
+        ResolvedTerrainCell {
+            rx,
+            ry,
+            source_tile_index: 0,
+            source_sub_tile: 0,
+            final_tile_index: 0,
+            final_sub_tile: 0,
+            is_wood_bridge_repair_tile: false,
+            level: 0,
+            filled_clear: false,
+            tileset_index: Some(0),
+            land_type: 0,
+            yr_cell_land_type: 0,
+            slope_type: 0,
+            template_height: 0,
+            render_offset_x: 0,
+            render_offset_y: 0,
+            terrain_class: TerrainClass::Clear,
+            speed_costs: SpeedCostProfile::default(),
+            is_water: false,
+            is_cliff_like: false,
+            is_rough: false,
+            is_road: false,
+            accepts_smudge: false,
+            allows_tiberium: false,
+            is_cliff_redraw: false,
+            variant: 0,
+            has_ramp: false,
+            canonical_ramp: None,
+            ground_walk_blocked: false,
+            terrain_object_blocks: false,
+            overlay_blocks: false,
+            zone_type: crate::map::resolved_terrain::zone_class::GROUND,
+            base_ground_walk_blocked: false,
+            base_build_blocked: false,
+            base_land_type: 0,
+            base_yr_cell_land_type: 0,
+            base_terrain_class: TerrainClass::Clear,
+            base_speed_costs: SpeedCostProfile::default(),
+            build_blocked: false,
+            has_bridge_deck: false,
+            bridge_walkable: false,
+            bridge_transition: false,
+            bridge_deck_level: 0,
+            bridge_layer: None,
+            bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+            tube_index: None,
+            radar_left: [0, 0, 0],
+            radar_right: [0, 0, 0],
+            has_damaged_data: false,
+            bridgehead_anchor_class_at_load: None,
+        }
+    }
+
+    fn flat_terrain(width: u16, height: u16) -> ResolvedTerrainGrid {
+        let mut cells = Vec::with_capacity(width as usize * height as usize);
+        for ry in 0..height {
+            for rx in 0..width {
+                cells.push(clear_terrain_cell(rx, ry));
+            }
+        }
+        ResolvedTerrainGrid::from_cells(width, height, cells)
+    }
+
+    fn all_terrain_costs(terrain: &ResolvedTerrainGrid) -> BTreeMap<SpeedType, TerrainCostGrid> {
+        let mut costs = BTreeMap::new();
+        for speed_type in [
+            SpeedType::Foot,
+            SpeedType::Track,
+            SpeedType::Wheel,
+            SpeedType::Hover,
+            SpeedType::Winged,
+            SpeedType::Float,
+            SpeedType::Amphibious,
+            SpeedType::FloatBeach,
+        ] {
+            costs.insert(
+                speed_type,
+                TerrainCostGrid::from_resolved_terrain(terrain, speed_type),
+            );
+        }
+        costs
+    }
+
+    fn rebuild_load_caches(sim: &mut Simulation, terrain: ResolvedTerrainGrid) {
+        let terrain_costs = all_terrain_costs(&terrain);
+        sim.rebuild_caches_after_load(
+            terrain,
+            crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
+            Vec::new(),
+            Vec::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            terrain_costs,
+        );
+    }
+
+    fn cell_order(sim: &Simulation, rx: u16, ry: u16, layer: MovementLayer) -> Vec<u64> {
+        sim.occupancy
+            .get(rx, ry)
+            .map(|occ| occ.iter_layer(layer).map(|o| o.entity_id).collect())
+            .unwrap_or_default()
+    }
+
+    fn assert_zone_grids_equivalent(a: &ZoneGrid, b: &ZoneGrid) {
+        assert_eq!(a.width, b.width);
+        assert_eq!(a.height, b.height);
+        for &mz in MovementZone::all_ground() {
+            let map_a = a.map_for(mz).expect("zone map exists for movement zone");
+            let map_b = b.map_for(mz).expect("zone map exists for movement zone");
+            assert_eq!(map_a.zone_count, map_b.zone_count);
+            for y in 0..a.height {
+                for x in 0..a.width {
+                    assert_eq!(
+                        map_a.zone_at(x, y, MovementLayer::Ground),
+                        map_b.zone_at(x, y, MovementLayer::Ground),
+                        "ground zone mismatch for {mz:?} at ({x},{y})"
+                    );
+                    assert_eq!(
+                        map_a.zone_at(x, y, MovementLayer::Bridge),
+                        map_b.zone_at(x, y, MovementLayer::Bridge),
+                        "bridge zone mismatch for {mz:?} at ({x},{y})"
+                    );
+                }
+            }
+            let adj_a = a
+                .adjacency_for(mz)
+                .expect("zone adjacency exists for movement zone");
+            let adj_b = b
+                .adjacency_for(mz)
+                .expect("zone adjacency exists for movement zone");
+            for zone in 0..=map_a.zone_count {
+                assert_eq!(
+                    adj_a.neighbors_of(zone),
+                    adj_b.neighbors_of(zone),
+                    "adjacency mismatch for {mz:?} zone {zone}"
+                );
+            }
+        }
     }
 
     /// Prove snapshot round-trip preserves all authoritative state.
@@ -305,6 +453,111 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn saveload_occupancy_list_order_matches_incremental() {
+        use crate::map::entities::EntityCategory;
+        use crate::sim::game_entity::GameEntity;
+
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Americans");
+
+        let mut structure = GameEntity::test_default(100, "GAPOWR", "Americans", 5, 5);
+        structure.owner = owner;
+        structure.category = EntityCategory::Structure;
+        sim.entities.insert(structure);
+        sim.add_entity_occupancy(100);
+
+        let mut older_mobile = GameEntity::test_default(50, "MTNK", "Americans", 5, 5);
+        older_mobile.owner = owner;
+        older_mobile.category = EntityCategory::Unit;
+        sim.entities.insert(older_mobile);
+        sim.add_entity_occupancy(50);
+
+        let mut newer_mobile = GameEntity::test_default(10, "HTNK", "Americans", 5, 5);
+        newer_mobile.owner = owner;
+        newer_mobile.category = EntityCategory::Unit;
+        sim.entities.insert(newer_mobile);
+        sim.add_entity_occupancy(10);
+
+        let incremental = cell_order(&sim, 5, 5, MovementLayer::Ground);
+        assert_eq!(incremental, vec![10, 50, 100]);
+        let hash_at_save = sim.state_hash();
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "order_test", 0);
+        let mut restored = GameSnapshot::load(&bytes).expect("load should succeed").sim;
+        rebuild_load_caches(&mut restored, flat_terrain(8, 8));
+
+        assert_eq!(
+            cell_order(&restored, 5, 5, MovementLayer::Ground),
+            incremental,
+            "rebuilt occupancy cache must match the incremental CellClass list order"
+        );
+        assert_eq!(
+            restored.state_hash(),
+            hash_at_save,
+            "cache rebuild must not change authoritative save state"
+        );
+    }
+
+    #[test]
+    fn saveload_rebuild_is_deterministic() {
+        use crate::map::entities::EntityCategory;
+        use crate::sim::game_entity::GameEntity;
+
+        let terrain = flat_terrain(8, 8);
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Americans");
+        for (stable_id, type_id, category, rx, ry) in [
+            (3, "GAPOWR", EntityCategory::Structure, 2, 2),
+            (1, "MTNK", EntityCategory::Unit, 3, 2),
+            (2, "E1", EntityCategory::Infantry, 3, 2),
+        ] {
+            let mut entity = GameEntity::test_default(stable_id, type_id, "Americans", rx, ry);
+            entity.owner = owner;
+            entity.category = category;
+            if category == EntityCategory::Infantry {
+                entity.sub_cell = Some(2);
+            }
+            sim.entities.insert(entity);
+            sim.add_entity_occupancy(stable_id);
+        }
+        let bytes = GameSnapshot::save(&sim, 0, 0, "deterministic_rebuild", 0);
+
+        let mut a = GameSnapshot::load(&bytes)
+            .expect("first load should succeed")
+            .sim;
+        let mut b = GameSnapshot::load(&bytes)
+            .expect("second load should succeed")
+            .sim;
+        rebuild_load_caches(&mut a, terrain.clone());
+        rebuild_load_caches(&mut b, terrain);
+
+        assert_eq!(a.terrain_costs, b.terrain_costs);
+        assert_eq!(cell_order(&a, 3, 2, MovementLayer::Ground), vec![2, 1]);
+        assert_eq!(
+            cell_order(&a, 3, 2, MovementLayer::Ground),
+            cell_order(&b, 3, 2, MovementLayer::Ground)
+        );
+
+        let path_a = PathGrid::from_resolved_terrain_with_bridges(
+            a.resolved_terrain.as_ref().expect("terrain restored"),
+            a.bridge_state.as_ref(),
+        );
+        let path_b = PathGrid::from_resolved_terrain_with_bridges(
+            b.resolved_terrain.as_ref().expect("terrain restored"),
+            b.bridge_state.as_ref(),
+        );
+        assert_eq!(path_a, path_b);
+
+        a.rebuild_zone_grid(&path_a);
+        b.rebuild_zone_grid(&path_b);
+        assert_zone_grids_equivalent(
+            a.zone_grid.as_ref().expect("zone grid rebuilt"),
+            b.zone_grid.as_ref().expect("zone grid rebuilt"),
+        );
+        assert_eq!(a.state_hash(), b.state_hash());
     }
 
     // --- Slice 1: reveal/conceal/unlimbo/uninit lifecycle chokepoint ---

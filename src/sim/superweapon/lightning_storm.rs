@@ -9,7 +9,7 @@
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
 use crate::rules::ruleset::RuleSet;
-use crate::sim::combat::combat_aoe::{apply_aoe_damage, bridge_adjusted_impact_z, AoELayerContext};
+use crate::sim::combat::combat_aoe::{AoELayerContext, apply_aoe_damage, bridge_adjusted_impact_z};
 use crate::sim::components::WorldEffect;
 use crate::sim::intern::InternedId;
 use crate::sim::world::{SimSoundEvent, Simulation};
@@ -210,7 +210,9 @@ fn pick_scatter_cell(
 /// Spawn a single lightning bolt at the given cell: visual effect + area damage.
 fn spawn_bolt(sim: &mut Simulation, rules: &RuleSet, rx: u16, ry: u16, owner: InternedId) {
     // 1. Pick a random bolt animation.
-    let anim_idx = sim.superweapon_rng().next_range_u32(BOLT_ANIMS.len() as u32) as usize;
+    let anim_idx = sim
+        .superweapon_rng()
+        .next_range_u32(BOLT_ANIMS.len() as u32) as usize;
     let anim_name = BOLT_ANIMS[anim_idx];
     let anim_iid = sim.interner.intern(anim_name);
     let frames = sim
@@ -318,7 +320,7 @@ fn spawn_bolt(sim: &mut Simulation, rules: &RuleSet, rx: u16, ry: u16, owner: In
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map::bridge_facts::{BridgeCellFacts, BRIDGE_FLAG_STRUCTURAL};
+    use crate::map::bridge_facts::{BRIDGE_FLAG_STRUCTURAL, BridgeCellFacts};
     use crate::map::entities::EntityCategory;
     use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
     use crate::rules::ini_parser::IniFile;

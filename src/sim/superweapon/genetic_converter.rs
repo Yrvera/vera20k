@@ -12,7 +12,7 @@
 
 use crate::map::entities::EntityCategory;
 use crate::rules::ruleset::RuleSet;
-use crate::sim::combat::combat_aoe::{apply_aoe_damage, bridge_adjusted_impact_z, AoELayerContext};
+use crate::sim::combat::combat_aoe::{AoELayerContext, apply_aoe_damage, bridge_adjusted_impact_z};
 use crate::sim::components::WorldEffect;
 use crate::sim::intern::InternedId;
 use crate::sim::superweapon::cell_grid::iter_cells_3x3;
@@ -249,7 +249,7 @@ fn spawn_invoke_anim(sim: &mut Simulation, anim_name: &str, rx: u16, ry: u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map::bridge_facts::{BridgeCellFacts, BRIDGE_FLAG_STRUCTURAL};
+    use crate::map::bridge_facts::{BRIDGE_FLAG_STRUCTURAL, BridgeCellFacts};
     use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
     use crate::rules::ini_parser::IniFile;
     use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};

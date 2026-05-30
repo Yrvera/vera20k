@@ -14,7 +14,7 @@ use crate::rules::ruleset::RuleSet;
 use crate::sim::components::WorldEffect;
 use crate::sim::intern::InternedId;
 use crate::sim::superweapon::cell_grid::iter_cells_3x3;
-use crate::sim::superweapon::invulnerability::{apply_invulnerability, InvulnKind};
+use crate::sim::superweapon::invulnerability::{InvulnKind, apply_invulnerability};
 use crate::sim::world::{SimSoundEvent, Simulation};
 
 /// Launch IronCurtain at (target_rx, target_ry). Applies invulnerability or

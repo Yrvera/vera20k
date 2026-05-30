@@ -14,7 +14,7 @@ use crate::map::houses::are_houses_friendly;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::components::WorldEffect;
 use crate::sim::intern::InternedId;
-use crate::sim::superweapon::invulnerability::{apply_invulnerability, InvulnKind};
+use crate::sim::superweapon::invulnerability::{InvulnKind, apply_invulnerability};
 use crate::sim::world::{SimSoundEvent, Simulation};
 
 const LEPTONS_PER_CELL: i64 = 256;
