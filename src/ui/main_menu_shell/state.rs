@@ -1,7 +1,5 @@
 //! Initial main-menu shell control identity and hit testing.
 
-use std::time::Instant;
-
 use super::layout::MainMenuShellLayout;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,14 +29,11 @@ pub enum MainMenuShellAction {
 pub struct MainMenuShellState {
     pub pressed_owner_draw_button: Option<MainMenuControlId>,
     /// Control under the cursor right now, if any. Drives the bottom-left
-    /// tooltip status line and the SDBTNANM focus-flash frame selection.
+    /// tooltip status line. Dialog 0xE2 buttons have no hover frame change:
+    /// the focus-flash byte the paint path reads is only toggled by a timer
+    /// armed for a network-dialog control that does not exist on this dialog,
+    /// so hovering produces no visual change (default frame stays selected).
     pub hovered_owner_draw_button: Option<MainMenuControlId>,
-    /// When the current hover started, so the renderer can compute the
-    /// 1 Hz frame 2 ↔ frame 3 toggle gamemd arms via `SetTimer(hwnd, 0,
-    /// 1000, NULL)` in the WM_LBUTTONDOWN/hover-mutator path. Cleared on
-    /// unhover; only updated when the hovered button identity changes
-    /// (matches gamemd's "do not re-arm if already armed" guard).
-    pub hover_started_at: Option<Instant>,
 }
 
 pub fn action_for_control(id: MainMenuControlId) -> MainMenuShellAction {
@@ -110,15 +105,10 @@ pub fn mouse_down(state: &mut MainMenuShellState, layout: &MainMenuShellLayout, 
 
 /// Update the hover tracking from a cursor position. Called per mouse move.
 ///
-/// Only resets `hover_started_at` when the hovered control identity
-/// transitions — cursor moves within the same button do not re-arm the
-/// timer (matches gamemd's `piVar17[0x31] == '\0'` guard before SetTimer).
+/// Tracks which control the cursor is over so the bottom-left tooltip line
+/// can show its status text. There is no hover frame change on dialog 0xE2.
 pub fn mouse_move(state: &mut MainMenuShellState, layout: &MainMenuShellLayout, x: i32, y: i32) {
-    let new_hover = hit_test_owner_draw_button(layout, x, y);
-    if state.hovered_owner_draw_button != new_hover {
-        state.hovered_owner_draw_button = new_hover;
-        state.hover_started_at = new_hover.map(|_| Instant::now());
-    }
+    state.hovered_owner_draw_button = hit_test_owner_draw_button(layout, x, y);
 }
 
 pub fn mouse_up(
@@ -193,6 +183,23 @@ mod tests {
             Some(MainMenuControlId::SinglePlayer0x683)
         );
         assert_eq!(hit_test_owner_draw_button(&layout, 809, 255), None);
+    }
+
+    #[test]
+    fn client_rect_edge_excludes_old_tile_overhang() {
+        // The button is now the 162x37 DLU client rect (x=635..797, y=203..240
+        // for SinglePlayer), not the 168x42 chrome tile (x=632..800,
+        // y=199..241). A click in the old tile's left/top overhang must miss.
+        let layout = compute_layout(800, 600);
+        // x=633 is inside the old 632-wide tile but left of the 635 client.
+        assert_eq!(hit_test_owner_draw_button(&layout, 633, 210), None);
+        // y=200 is inside the old tile top but above the 203 client top.
+        assert_eq!(hit_test_owner_draw_button(&layout, 700, 200), None);
+        // Inside the 162x37 client rect still hits.
+        assert_eq!(
+            hit_test_owner_draw_button(&layout, 700, 210),
+            Some(MainMenuControlId::SinglePlayer0x683)
+        );
     }
 
     #[test]

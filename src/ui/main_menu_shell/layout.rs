@@ -90,6 +90,13 @@ pub const RIGHT_PANEL_TILE_COUNT_BASE: i32 = 9;
 pub const RIGHT_PANEL_BOTTOM_H: i32 = 23;
 pub const LOWER_STRIP_H: i32 = 32;
 
+/// Owner-draw button client rect, in dialog DLU. The dialog template defines
+/// each main-menu button as 108x23 DLU, which converts to 162x37 px at the
+/// 800x600 base (108*6/4 = 162; 23*13/8 = 37). This is the bevel/hit rect —
+/// distinct from the 168x42 chrome tile the SDBTNBKGD art draws into.
+const BUTTON_CLIENT_W_DLU: i32 = 108;
+const BUTTON_CLIENT_H_DLU: i32 = 23;
+
 fn mul_div_round(n: i32, numer: i32, denom: i32) -> i32 {
     let value = n * numer;
     if value >= 0 {
@@ -264,20 +271,23 @@ fn title_rect(screen_w: i32, right_panel: RightPanelRects) -> RectPx {
     RectPx::new(anchored.x, anchored.y + 7, anchored.w, anchored.h + 1)
 }
 
-/// Snap a DLU-derived button Y to the nearest chrome tile row.
+/// Build the owner-draw button client rect from its DLU Y position.
 ///
-/// Each button sits in one SDBTNBKGD tile slot in the right-panel chrome.
-/// The DLU positions in the dialog template land within ±4 px of a tile
-/// boundary, so we round to the nearest tile and use its rect directly.
-/// This makes the button rect == the chrome tile rect, so the SDBTNANM
-/// button artwork centers exactly inside it.
+/// The button bevel/hit rect is the dialog template's 108x23 DLU client rect
+/// (162x37 px), NOT the 168x42 SDBTNBKGD chrome tile. It is horizontally
+/// inset within the 168 px sidebar column by `(168 - 162) / 2 = 3` px from
+/// the panel's right edge, and anchored vertically at the DLU-derived top
+/// (no tile snapping). The chrome tiles continue to draw at the full 168x42
+/// behind these client rects.
 fn button_rect_for_dlu_y(dlu_y: i32, right_panel: RightPanelRects) -> RectPx {
-    let raw_y = mul_div_round(dlu_y, BASE_Y, 8) + right_panel.top.y;
-    let tile_y = right_panel.tile.y;
-    let tile_h = right_panel.tile.h.max(1);
-    let tile_index = ((raw_y - tile_y + tile_h / 2) / tile_h).max(0);
-    let y = tile_y + tile_index * tile_h;
-    RectPx::new(right_panel.tile.x, y, right_panel.tile.w, tile_h)
+    let w = mul_div_round(BUTTON_CLIENT_W_DLU, BASE_X, 4);
+    let h = mul_div_round(BUTTON_CLIENT_H_DLU, BASE_Y, 8);
+    let inset = (RIGHT_PANEL_WIDTH - w) / 2;
+    // right_panel.top.x already carries the oversized-screen left margin, so
+    // inset from its left edge reproduces the right-anchored 3 px sidebar gap.
+    let x = right_panel.top.x + inset;
+    let y = mul_div_round(dlu_y, BASE_Y, 8) + right_panel.top.y;
+    RectPx::new(x, y, w, h)
 }
 
 pub fn compute_layout(screen_w: u32, screen_h: u32) -> MainMenuShellLayout {
@@ -385,13 +395,14 @@ mod tests {
 
     #[test]
     fn key_rects_match_800x600() {
-        // Buttons snap to chrome tile rows (168x42). Tile 0 starts at the
-        // bottom of SDTP (y=199). SP→tile 0, Exit→tile 8 (y=535) at 800x600.
+        // Buttons are the 162x37 DLU client rect (not the 168x42 tile),
+        // inset 3 px from the 168 panel column (x = 635), anchored at the
+        // DLU-derived Y (SP dlu_y=125 → 203; Exit dlu_y=330 → 536).
         let layout = compute_layout(800, 600);
         assert_eq!(layout.movie_base, MainMenuMovieBase::Ra2tsL);
         assert_eq!(layout.movie, RectPx::new(0, 0, 632, 570));
-        assert_eq!(layout.buttons[0].rect, RectPx::new(632, 199, 168, 42));
-        assert_eq!(layout.buttons[5].rect, RectPx::new(632, 535, 168, 42));
+        assert_eq!(layout.buttons[0].rect, RectPx::new(635, 203, 162, 37));
+        assert_eq!(layout.buttons[5].rect, RectPx::new(635, 536, 162, 37));
     }
 
     #[test]
@@ -439,11 +450,13 @@ mod tests {
     }
 
     #[test]
-    fn large_screen_buttons_snap_to_centered_right_panel_tiles() {
+    fn large_screen_buttons_use_centered_dlu_client_rects() {
+        // 162x37 client rects, inset 3 px from the centered 168 column
+        // (x = 747), DLU-derived Y plus the 84 px top margin.
         let layout = compute_layout(1024, 768);
-        let expected_y = [283, 325, 367, 409, 451, 619];
+        let expected_y = [287, 331, 375, 419, 463, 620];
         for (button, y) in layout.buttons.iter().zip(expected_y) {
-            assert_eq!(button.rect, RectPx::new(744, y, 168, 42));
+            assert_eq!(button.rect, RectPx::new(747, y, 162, 37));
         }
     }
 
@@ -453,9 +466,10 @@ mod tests {
         assert_eq!(layout.screen, RectPx::new(0, 0, 1600, 900));
         assert_eq!(layout.movie_base, MainMenuMovieBase::Ra2tsL);
         assert_eq!(layout.movie, RectPx::new(0, 0, 1264, 855));
-        // Base buttons (632, 199, 168, 42) → at 2x/1.5x: (1264, 299, 336, 63).
-        assert_eq!(layout.buttons[0].rect, RectPx::new(1264, 299, 336, 63));
-        assert_eq!(layout.buttons[5].rect, RectPx::new(1264, 803, 336, 63));
+        // Base buttons (635, 203, 162, 37) → at 2x/1.5x: (1270, 305, 324, 55);
+        // base[5] (635, 536, 162, 37) → (1270, 804, 324, 56).
+        assert_eq!(layout.buttons[0].rect, RectPx::new(1270, 305, 324, 55));
+        assert_eq!(layout.buttons[5].rect, RectPx::new(1270, 804, 324, 56));
         assert_eq!(layout.pressed_content_offset_x, 2);
     }
 
@@ -464,7 +478,7 @@ mod tests {
         let layout = compute_responsive_layout(640, 480);
         assert_eq!(layout.movie_base, MainMenuMovieBase::Ra2tsS);
         assert_eq!(layout.movie, RectPx::new(0, 0, 506, 456));
-        // Base (632, 199, 168, 42) scaled by 0.8x/0.8x → (506, 159, 134, 34).
-        assert_eq!(layout.buttons[0].rect, RectPx::new(506, 159, 134, 34));
+        // Base (635, 203, 162, 37) scaled by 0.8x/0.8x → (508, 162, 130, 30).
+        assert_eq!(layout.buttons[0].rect, RectPx::new(508, 162, 130, 30));
     }
 }
