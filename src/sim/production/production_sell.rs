@@ -709,9 +709,7 @@ pub fn sell_building(sim: &mut Simulation, rules: &RuleSet, stable_id: u64) -> b
     let garrison_ejected = eject_garrison_occupants(sim, rules, stable_id);
     let interrupted_miners =
         crate::sim::miner::interrupt_refinery_docked_miners(sim, rules, stable_id);
-    // Remove from EntityStore.
-    sim.clear_radio_contacts_for(stable_id);
-    sim.entities.remove(stable_id);
+    sim.uninit(stable_id);
     // SpySat sold: fully reshroud the owner so only current LOS remains visible.
     let owner_id = sim.interner.intern(&owner_name);
     if obj.spy_sat {
@@ -983,6 +981,7 @@ mod tests {
 
         let mut building = GameEntity::test_default(building_id, "CAGAS01", "Americans", 10, 10);
         building.category = EntityCategory::Structure;
+        building.foundation = "2x2".to_string();
         building.owner = americans;
         building.type_ref = sim.interner.intern("CAGAS01");
         building.garrison_original_owner = Some(neutral);
@@ -993,6 +992,8 @@ mod tests {
             assert!(cargo.board(passenger_id, 1));
         }
         sim.entities.insert(building);
+        sim.reveal(building_id);
+        sim.add_entity_occupancy(building_id);
 
         insert_hidden_passenger(sim, passenger_id, building_id, "Americans");
     }
@@ -1081,6 +1082,13 @@ mod tests {
         assert!(sell_building(&mut sim, &rules, building_id));
 
         assert!(sim.entities.get(building_id).is_none());
+        for cell in [(10, 10), (10, 11), (11, 10), (11, 11)] {
+            assert!(
+                !sim.occupancy.contains_entity(cell.0, cell.1, building_id),
+                "sold building should clear foundation cell {cell:?}"
+            );
+        }
+        sim.debug_assert_logic_membership_consistent();
         assert_eq!(credits_for_owner(&sim, "Americans") - before, 200);
 
         let passenger = sim

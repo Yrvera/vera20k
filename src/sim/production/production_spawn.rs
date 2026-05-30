@@ -5,9 +5,14 @@
 //! production_tech.rs for file-size limits.
 
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
-use crate::rules::locomotor_type::MovementZone;
+use crate::rules::locomotor_type::{MovementZone, SpeedType};
 use crate::rules::object_type::{FactoryType, ObjectCategory};
 use crate::rules::ruleset::RuleSet;
+use crate::sim::cell_rect::{
+    CellRect, CellRectOccupancyContext, CellRectPassabilityContext, check_occupancy_rect,
+    check_passability_rect,
+};
+use crate::sim::entity_store::EntityStore;
 use crate::sim::world::Simulation;
 
 use super::production_tech::producer_candidates_for_owner_category;
@@ -45,6 +50,26 @@ pub fn find_spawn_selection_for_owner(
     sim: &mut Simulation,
     rules: &RuleSet,
     owner: &str,
+    produced_category: ObjectCategory,
+    path_grid: Option<&crate::sim::pathfinding::PathGrid>,
+    require_water: bool,
+) -> Option<ProductionSpawnSelection> {
+    find_spawn_selection_for_owner_with_type(
+        sim,
+        rules,
+        owner,
+        None,
+        produced_category,
+        path_grid,
+        require_water,
+    )
+}
+
+pub(super) fn find_spawn_selection_for_owner_with_type(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    owner: &str,
+    produced_type_id: Option<&str>,
     produced_category: ObjectCategory,
     path_grid: Option<&crate::sim::pathfinding::PathGrid>,
     require_water: bool,
@@ -97,6 +122,10 @@ pub fn find_spawn_selection_for_owner(
         &ordered_bases
     };
     let resolved_terrain = sim.resolved_terrain.as_ref();
+    let overlay_grid = sim.overlay_grid.as_ref();
+    let zone_grid = sim.zone_grid.as_ref();
+    let movement_profile =
+        spawn_movement_profile(rules, produced_type_id, produced_category, require_water);
 
     if produced_category == ObjectCategory::Vehicle && !require_water {
         if let Some((producer_id, bx, by, structure_id)) = bases.first() {
@@ -130,10 +159,14 @@ pub fn find_spawn_selection_for_owner(
                 *by,
                 structure_id,
                 produced_category,
+                movement_profile,
                 rules,
                 path_grid,
                 &sim.occupancy,
+                &sim.entities,
                 resolved_terrain,
+                overlay_grid,
+                zone_grid,
                 require_water,
             ),
         };
@@ -203,10 +236,14 @@ fn find_spawn_cell_near_structure(
     base_ry: u16,
     structure_id: &str,
     produced_category: ObjectCategory,
+    movement_profile: SpawnMovementProfile,
     rules: &RuleSet,
     path_grid: Option<&crate::sim::pathfinding::PathGrid>,
     occupancy: &OccupancyGrid,
+    entities: &EntityStore,
     resolved_terrain: Option<&ResolvedTerrainGrid>,
+    overlay_grid: Option<&crate::sim::overlay_grid::OverlayGrid>,
+    zone_grid: Option<&crate::sim::pathfinding::zone_map::ZoneGrid>,
     require_water: bool,
 ) -> Option<(u16, u16)> {
     let offsets: Vec<(i16, i16)> = preferred_exit_offsets(rules, structure_id);
@@ -252,8 +289,12 @@ fn find_spawn_cell_near_structure(
         (base_rx, base_ry),
         12,
         produced_category,
+        movement_profile,
         occupancy,
+        entities,
         resolved_terrain,
+        overlay_grid,
+        zone_grid,
         require_water,
     )
 }
@@ -313,8 +354,12 @@ fn nearest_walkable_around(
     center: (u16, u16),
     max_radius: u16,
     produced_category: ObjectCategory,
+    movement_profile: SpawnMovementProfile,
     occupancy: &OccupancyGrid,
+    entities: &EntityStore,
     resolved_terrain: Option<&ResolvedTerrainGrid>,
+    overlay_grid: Option<&crate::sim::overlay_grid::OverlayGrid>,
+    zone_grid: Option<&crate::sim::pathfinding::zone_map::ZoneGrid>,
     require_water: bool,
 ) -> Option<(u16, u16)> {
     let cx = center.0 as i32;
@@ -328,58 +373,174 @@ fn nearest_walkable_around(
         let max_y = (cy + r).min(h - 1);
         for x in min_x..=max_x {
             let top = (x as u16, min_y as u16);
-            if spawn_cell_passable(grid, top, resolved_terrain, require_water)
-                && cell_available_for_spawn(
-                    top,
-                    produced_category,
-                    occupancy,
-                    resolved_terrain,
-                    require_water,
-                )
-            {
+            if spawn_fallback_candidate_passable(
+                grid,
+                top,
+                movement_profile,
+                occupancy,
+                entities,
+                resolved_terrain,
+                overlay_grid,
+                zone_grid,
+                require_water,
+            ) && cell_available_for_spawn(
+                top,
+                produced_category,
+                occupancy,
+                resolved_terrain,
+                require_water,
+            ) {
                 return Some(top);
             }
             let bot = (x as u16, max_y as u16);
-            if spawn_cell_passable(grid, bot, resolved_terrain, require_water)
-                && cell_available_for_spawn(
-                    bot,
-                    produced_category,
-                    occupancy,
-                    resolved_terrain,
-                    require_water,
-                )
-            {
+            if spawn_fallback_candidate_passable(
+                grid,
+                bot,
+                movement_profile,
+                occupancy,
+                entities,
+                resolved_terrain,
+                overlay_grid,
+                zone_grid,
+                require_water,
+            ) && cell_available_for_spawn(
+                bot,
+                produced_category,
+                occupancy,
+                resolved_terrain,
+                require_water,
+            ) {
                 return Some(bot);
             }
         }
         for y in (min_y + 1)..=(max_y - 1) {
             let left = (min_x as u16, y as u16);
-            if spawn_cell_passable(grid, left, resolved_terrain, require_water)
-                && cell_available_for_spawn(
-                    left,
-                    produced_category,
-                    occupancy,
-                    resolved_terrain,
-                    require_water,
-                )
-            {
+            if spawn_fallback_candidate_passable(
+                grid,
+                left,
+                movement_profile,
+                occupancy,
+                entities,
+                resolved_terrain,
+                overlay_grid,
+                zone_grid,
+                require_water,
+            ) && cell_available_for_spawn(
+                left,
+                produced_category,
+                occupancy,
+                resolved_terrain,
+                require_water,
+            ) {
                 return Some(left);
             }
             let right = (max_x as u16, y as u16);
-            if spawn_cell_passable(grid, right, resolved_terrain, require_water)
-                && cell_available_for_spawn(
-                    right,
-                    produced_category,
-                    occupancy,
-                    resolved_terrain,
-                    require_water,
-                )
-            {
+            if spawn_fallback_candidate_passable(
+                grid,
+                right,
+                movement_profile,
+                occupancy,
+                entities,
+                resolved_terrain,
+                overlay_grid,
+                zone_grid,
+                require_water,
+            ) && cell_available_for_spawn(
+                right,
+                produced_category,
+                occupancy,
+                resolved_terrain,
+                require_water,
+            ) {
                 return Some(right);
             }
         }
     }
     None
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SpawnMovementProfile {
+    speed_type: SpeedType,
+    movement_zone: MovementZone,
+}
+
+fn spawn_movement_profile(
+    rules: &RuleSet,
+    produced_type_id: Option<&str>,
+    produced_category: ObjectCategory,
+    require_water: bool,
+) -> SpawnMovementProfile {
+    if let Some(obj) = produced_type_id.and_then(|type_id| rules.object(type_id)) {
+        return SpawnMovementProfile {
+            speed_type: obj.speed_type,
+            movement_zone: obj.movement_zone,
+        };
+    }
+    if require_water {
+        return SpawnMovementProfile {
+            speed_type: SpeedType::Float,
+            movement_zone: MovementZone::Water,
+        };
+    }
+    match produced_category {
+        ObjectCategory::Infantry => SpawnMovementProfile {
+            speed_type: SpeedType::Foot,
+            movement_zone: MovementZone::Infantry,
+        },
+        ObjectCategory::Aircraft => SpawnMovementProfile {
+            speed_type: SpeedType::Winged,
+            movement_zone: MovementZone::Fly,
+        },
+        ObjectCategory::Vehicle | ObjectCategory::Building => SpawnMovementProfile {
+            speed_type: SpeedType::Track,
+            movement_zone: MovementZone::Normal,
+        },
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_fallback_candidate_passable(
+    grid: &crate::sim::pathfinding::PathGrid,
+    cell: (u16, u16),
+    movement_profile: SpawnMovementProfile,
+    occupancy: &OccupancyGrid,
+    entities: &EntityStore,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    overlay_grid: Option<&crate::sim::overlay_grid::OverlayGrid>,
+    zone_grid: Option<&crate::sim::pathfinding::zone_map::ZoneGrid>,
+    require_water: bool,
+) -> bool {
+    if !spawn_cell_passable(grid, cell, resolved_terrain, require_water) {
+        return false;
+    }
+    if require_water {
+        return true;
+    }
+    let rect = CellRect::single(cell.0, cell.1);
+    check_passability_rect(CellRectPassabilityContext {
+        rect,
+        speed_type: movement_profile.speed_type,
+        required_zone_id: None,
+        movement_zone: movement_profile.movement_zone,
+        required_height_or_level: None,
+        bridge_aware_zone: false,
+        reject_any_overlay: false,
+        path_grid: Some(grid),
+        resolved_terrain,
+        overlay_grid,
+        occupancy: Some(occupancy),
+        zone_grid,
+    }) && check_occupancy_rect(CellRectOccupancyContext {
+        rect,
+        reservation_arg: -1,
+        reservations: None,
+        occupancy: Some(occupancy),
+        entities: Some(entities),
+        resolved_terrain,
+        overlay_grid,
+        map_size: None,
+    })
 }
 
 /// Check whether a cell can accept a newly spawned unit. Infantry require a free
@@ -567,4 +728,105 @@ pub fn find_helipad_for_aircraft(
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::map::bridge_facts::BridgeCellFacts;
+    use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid, zone_class};
+    use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
+    use crate::sim::entity_store::EntityStore;
+    use crate::sim::pathfinding::PathGrid;
+
+    fn terrain_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
+        ResolvedTerrainCell {
+            rx,
+            ry,
+            source_tile_index: 0,
+            source_sub_tile: 0,
+            final_tile_index: 0,
+            final_sub_tile: 0,
+            is_wood_bridge_repair_tile: false,
+            level: 0,
+            filled_clear: false,
+            tileset_index: Some(0),
+            land_type: 0,
+            yr_cell_land_type: 0,
+            slope_type: 0,
+            template_height: 0,
+            render_offset_x: 0,
+            render_offset_y: 0,
+            terrain_class: TerrainClass::Clear,
+            speed_costs: SpeedCostProfile::default(),
+            is_water: false,
+            is_cliff_like: false,
+            is_rough: false,
+            is_road: false,
+            accepts_smudge: false,
+            allows_tiberium: false,
+            is_cliff_redraw: false,
+            variant: 0,
+            has_ramp: false,
+            canonical_ramp: None,
+            ground_walk_blocked: false,
+            terrain_object_blocks: false,
+            overlay_blocks: false,
+            zone_type: zone_class::GROUND,
+            base_ground_walk_blocked: false,
+            base_build_blocked: false,
+            base_land_type: 0,
+            base_yr_cell_land_type: 0,
+            base_terrain_class: TerrainClass::Clear,
+            base_speed_costs: SpeedCostProfile::default(),
+            build_blocked: false,
+            has_bridge_deck: false,
+            bridge_walkable: false,
+            bridge_transition: false,
+            bridge_deck_level: 0,
+            bridge_layer: None,
+            bridge_facts: BridgeCellFacts::default(),
+            tube_index: None,
+            radar_left: [0, 0, 0],
+            radar_right: [0, 0, 0],
+            has_damaged_data: false,
+            bridgehead_anchor_class_at_load: None,
+        }
+    }
+
+    fn flat_terrain(width: u16, height: u16) -> ResolvedTerrainGrid {
+        let cells = (0..height)
+            .flat_map(|ry| (0..width).map(move |rx| terrain_cell(rx, ry)))
+            .collect();
+        ResolvedTerrainGrid::from_cells(width, height, cells)
+    }
+
+    #[test]
+    fn nearby_fallback_uses_cellrect_occupancy_blockers() {
+        let mut terrain = flat_terrain(3, 3);
+        terrain.cells[0].slope_type = 1;
+        let path_grid = PathGrid::from_resolved_terrain(&terrain);
+        let occupancy = OccupancyGrid::new();
+        let entities = EntityStore::new();
+        let movement_profile = SpawnMovementProfile {
+            speed_type: SpeedType::Track,
+            movement_zone: MovementZone::Normal,
+        };
+
+        let cell = nearest_walkable_around(
+            &path_grid,
+            (1, 1),
+            1,
+            ObjectCategory::Vehicle,
+            movement_profile,
+            &occupancy,
+            &entities,
+            Some(&terrain),
+            None,
+            None,
+            false,
+        );
+
+        assert_eq!(cell, Some((0, 2)));
+    }
 }
