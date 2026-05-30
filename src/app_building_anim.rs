@@ -1068,11 +1068,7 @@ fn switch_anim_runtime_type(
 
 fn native_loop_remaining(loop_count: i32, constructor_loop: u8) -> u8 {
     let raw = (loop_count as u8).wrapping_mul(constructor_loop.max(1));
-    if raw < 2 {
-        1
-    } else {
-        raw
-    }
+    if raw < 2 { 1 } else { raw }
 }
 
 fn effective_anim_end(
@@ -1081,11 +1077,7 @@ fn effective_anim_end(
 ) -> i32 {
     if config.end == -1 {
         let frames = i32::from(total_frames);
-        if config.shadow {
-            frames / 2
-        } else {
-            frames
-        }
+        if config.shadow { frames / 2 } else { frames }
     } else {
         config.end
     }
