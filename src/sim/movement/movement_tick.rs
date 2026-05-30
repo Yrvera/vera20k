@@ -169,6 +169,42 @@ fn snapshot_mover(entities: &EntityStore, entity_id: u64) -> Option<MoverSnapsho
     })
 }
 
+/// Rebuild one owner's pathfinding entity-block snapshot iff occupancy has
+/// mutated since that snapshot was last built. Returns whether a rebuild ran.
+///
+/// The movement tick builds these snapshots once before the mover loop, but
+/// gamemd processes movers in live object order — a mover that repaths after an
+/// earlier mover committed a move this tick must see the new position. Gating on
+/// the occupancy generation refreshes the snapshot to the live state at repath
+/// time (bit-equivalent to per-neighbor live classification for a synchronous A*
+/// search) while skipping the no-op case where nothing moved.
+#[allow(clippy::too_many_arguments)]
+fn refresh_owner_block_set_if_stale(
+    entity_block_sets: &mut BTreeMap<
+        crate::sim::intern::InternedId,
+        (
+            BTreeSet<(u16, u16)>,
+            crate::sim::pathfinding::LayeredEntityBlockMap,
+        ),
+    >,
+    built_at_gen: &mut BTreeMap<crate::sim::intern::InternedId, u64>,
+    owner: crate::sim::intern::InternedId,
+    current_gen: u64,
+    entities: &EntityStore,
+    alliances: &HouseAllianceMap,
+    interner: &crate::sim::intern::StringInterner,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
+) -> bool {
+    if built_at_gen.get(&owner).copied() == Some(current_gen) {
+        return false;
+    }
+    let owner_str = interner.resolve(owner);
+    let pair = bump_crush::build_entity_block_set(entities, owner_str, alliances, interner, rules);
+    entity_block_sets.insert(owner, pair);
+    built_at_gen.insert(owner, current_gen);
+    true
+}
+
 /// Result of path exhaustion check — tells the caller how to proceed.
 enum PathExhaustionResult {
     /// Path is not yet exhausted — continue to rotation/movement.
@@ -886,7 +922,7 @@ pub fn tick_movement_with_grids(
     // Pre-build entity block sets per owner for friendly-passable pathfinding during repath.
     // RA2 optimization: moving friendly units are passable (code-2 dynamic cost);
     // only stationary/enemy units hard-block. InternedId is Copy, so keys are cheap.
-    let entity_block_sets: BTreeMap<
+    let mut entity_block_sets: BTreeMap<
         crate::sim::intern::InternedId,
         (
             BTreeSet<(u16, u16)>,
@@ -901,6 +937,17 @@ pub fn tick_movement_with_grids(
             (owner_id, pair)
         })
         .collect();
+    // Occupancy generation these snapshots reflect. Captured before
+    // process_pending_drive_arrivals so any move it makes advances the generation
+    // and forces the first consuming mover to rebuild. Each owner's snapshot is
+    // lazily refreshed in the mover loop below whenever occupancy changed since it
+    // was last built (gamemd processes movers in live object order).
+    let block_set_build_gen = occupancy.generation();
+    let mut block_set_built_at_gen: BTreeMap<crate::sim::intern::InternedId, u64> =
+        entity_block_sets
+            .keys()
+            .map(|&owner| (owner, block_set_build_gen))
+            .collect();
 
     process_pending_drive_arrivals(
         entities,
@@ -945,6 +992,20 @@ pub fn tick_movement_with_grids(
         });
         let entity_cost_grid: Option<&TerrainCostGrid> =
             snap.speed_type.and_then(|st| terrain_costs.get(&st));
+        // Slice 6: refresh this owner's pathfinding snapshot if occupancy changed
+        // since it was built (e.g. an earlier mover committed a move this tick).
+        // Matches gamemd's live-order processing; no-op when nothing moved. Must run
+        // before the immutable refs below borrow `entity_block_sets`.
+        refresh_owner_block_set_if_stale(
+            &mut entity_block_sets,
+            &mut block_set_built_at_gen,
+            snap.owner,
+            occupancy.generation(),
+            entities,
+            alliances,
+            interner,
+            rules,
+        );
         let (mover_entity_blocks, mover_entity_block_map): (
             Option<&BTreeSet<(u16, u16)>>,
             Option<&crate::sim::pathfinding::LayeredEntityBlockMap>,
@@ -1794,6 +1855,97 @@ mod drive_track_chain_tests {
     use crate::sim::game_entity::GameEntity;
     use crate::sim::intern::{test_intern, test_interner};
     use crate::sim::movement::locomotor::LocomotorState;
+
+    // Slice 6 acceptance: a snapshot rebuilt at repath time reflects same-tick
+    // moves — observably equivalent to live per-neighbor Can_Enter_Cell for a
+    // synchronous search (study CELLCLASS_MAPCLASS..._SERVICE_STUDY §8 Slice 6).
+    #[test]
+    fn owner_block_set_refreshes_when_occupancy_generation_advances() {
+        let alliances = HouseAllianceMap::new();
+        let mut entities = EntityStore::new();
+        let mut blocker = GameEntity::test_default(10, "HTNK", "Americans", 5, 5);
+        blocker.category = EntityCategory::Unit;
+        entities.insert(blocker);
+        // Clone the test interner AFTER the entity is created so it can resolve
+        // the just-interned owner string.
+        let interner = test_interner();
+        let owner = test_intern("Americans");
+
+        // Initial snapshot at gen 0: friendly stationary unit -> soft-block at (5,5).
+        let mut sets = BTreeMap::new();
+        sets.insert(
+            owner,
+            bump_crush::build_entity_block_set(&entities, "Americans", &alliances, &interner, None),
+        );
+        let mut built_at: BTreeMap<crate::sim::intern::InternedId, u64> = BTreeMap::new();
+        built_at.insert(owner, 0);
+        assert!(sets[&owner].1.contains_key(MovementLayer::Ground, &(5, 5)));
+        assert!(!sets[&owner].1.contains_key(MovementLayer::Ground, &(6, 6)));
+
+        // Same-tick move of the blocker to (6,6); occupancy generation advances.
+        {
+            let b = entities.get_mut(10).unwrap();
+            b.position.rx = 6;
+            b.position.ry = 6;
+        }
+        let rebuilt = refresh_owner_block_set_if_stale(
+            &mut sets,
+            &mut built_at,
+            owner,
+            7,
+            &entities,
+            &alliances,
+            &interner,
+            None,
+        );
+        assert!(rebuilt, "stale snapshot must rebuild when generation advances");
+        assert!(
+            !sets[&owner].1.contains_key(MovementLayer::Ground, &(5, 5)),
+            "old cell freed"
+        );
+        assert!(
+            sets[&owner].1.contains_key(MovementLayer::Ground, &(6, 6)),
+            "new cell blocked"
+        );
+    }
+
+    #[test]
+    fn owner_block_set_not_rebuilt_when_generation_unchanged() {
+        let alliances = HouseAllianceMap::new();
+        let mut entities = EntityStore::new();
+        let mut blocker = GameEntity::test_default(10, "HTNK", "Americans", 5, 5);
+        blocker.category = EntityCategory::Unit;
+        entities.insert(blocker);
+        let interner = test_interner();
+        let owner = test_intern("Americans");
+
+        let mut sets = BTreeMap::new();
+        sets.insert(
+            owner,
+            bump_crush::build_entity_block_set(&entities, "Americans", &alliances, &interner, None),
+        );
+        let mut built_at: BTreeMap<crate::sim::intern::InternedId, u64> = BTreeMap::new();
+        built_at.insert(owner, 4);
+
+        // Generation matches the recorded build gen -> no rebuild, even though the
+        // entity moved underneath us.
+        entities.get_mut(10).unwrap().position.rx = 6;
+        let rebuilt = refresh_owner_block_set_if_stale(
+            &mut sets,
+            &mut built_at,
+            owner,
+            4,
+            &entities,
+            &alliances,
+            &interner,
+            None,
+        );
+        assert!(!rebuilt, "no rebuild when generation is unchanged");
+        assert!(
+            sets[&owner].1.contains_key(MovementLayer::Ground, &(5, 5)),
+            "snapshot left untouched"
+        );
+    }
 
     fn drive_snapshot() -> MoverSnapshot {
         let locomotor = LocomotorState::for_test_kind(LocomotorKind::Drive);
