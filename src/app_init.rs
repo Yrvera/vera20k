@@ -967,7 +967,6 @@ pub(crate) fn load_map_from_initial(
             }
             if let Some(sim) = &mut simulation {
                 sim.terrain_costs = terrain_costs;
-                sim.refresh_vision_heights(&grid);
             }
             // Winged units ignore terrain — no need for a Winged cost grid
             // (find_path_with_costs falls back to find_path when no grid found).

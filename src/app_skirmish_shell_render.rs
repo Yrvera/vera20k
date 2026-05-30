@@ -28,6 +28,7 @@ use crate::render::bit_font::BitFont;
 use crate::render::shell_text::ShellAlign;
 use crate::render::shell_transition_pass::ShellRenderTarget;
 use crate::render::skirmish_shell_chrome::{SkirmishShellChromeAtlas, SkirmishShellChromeEntry};
+use crate::rules::color_scheme::ColorSchemeEntry;
 use crate::skirmish_modes::SkirmishGameMode;
 use crate::ui::main_menu::SkirmishCountry;
 #[cfg(test)]
@@ -187,6 +188,7 @@ pub fn build_skirmish_shell_instances(
     choose_map_layout: Option<&ChooseMapModalLayout>,
     validation_layout: Option<&ValidationModalLayout>,
     shell: &SkirmishShellState,
+    color_schemes: &[ColorSchemeEntry],
     maps: &[MapMenuEntry],
     modes: &[SkirmishGameMode],
     wave: Option<&ShellFrameWave>,
@@ -291,7 +293,13 @@ pub fn build_skirmish_shell_instances(
         match wave {
             Some(wave) => {
                 let frame = wave.sdbtnanm_frame(slot, ButtonGroup::A);
-                push_right_panel_button_wave(instances, atlas, rect, frame, RIGHT_PANEL_BUTTON_DEPTH);
+                push_right_panel_button_wave(
+                    instances,
+                    atlas,
+                    rect,
+                    frame,
+                    RIGHT_PANEL_BUTTON_DEPTH,
+                );
             }
             None => push_right_panel_button_shp(
                 instances,
@@ -325,7 +333,7 @@ pub fn build_skirmish_shell_instances(
         2,
     );
 
-    push_combo_instances(&mut instances, atlas, layout, shell);
+    push_combo_instances(&mut instances, atlas, color_schemes, layout, shell);
     push_checkbox_instances(&mut instances, atlas, layout, shell);
     push_trackbar_instances(&mut instances, atlas, layout, shell);
 
@@ -354,7 +362,7 @@ pub fn build_skirmish_shell_instances(
         }
     }
 
-    push_dropdown_instances(&mut instances, atlas, layout, shell, maps);
+    push_dropdown_instances(&mut instances, atlas, color_schemes, layout, shell, maps);
     if shell.validation_modal.is_some() {
         if let Some(validation_layout) = validation_layout {
             let pressed = shell
@@ -488,10 +496,15 @@ fn render_skirmish_shell_with_atlas(
         .create_instance_buffer(&state.gpu, &marker_instances);
 
     let wave = if mode == ShellRenderMode::TransitionPreview {
-        state.main_menu_to_skirmish_transition.as_ref()
+        state.shell_first_paint_slide.as_ref()
     } else {
         None
     };
+    let color_schemes = state
+        .rules
+        .as_ref()
+        .map(|rules| rules.color_schemes.as_slice())
+        .unwrap_or(&[]);
     let instances = build_skirmish_shell_instances(
         atlas,
         &state.bit_font,
@@ -499,6 +512,7 @@ fn render_skirmish_shell_with_atlas(
         choose_map_layout.as_ref(),
         validation_layout.as_ref(),
         &state.skirmish_shell_state,
+        color_schemes,
         &state.skirmish_shell_maps,
         &state.skirmish_modes,
         wave,

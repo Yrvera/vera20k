@@ -183,9 +183,14 @@ pub(crate) struct AppState {
     pub(crate) main_menu_show_skirmish_setup: bool,
     pub(crate) main_menu_show_native_skirmish_shell: bool,
     pub(crate) skirmish_shell_return_to_single_player_shell: bool,
-    /// Active Single Player -> Skirmish shell frame-index wave (presentation only).
-    pub(crate) main_menu_to_skirmish_transition:
-        Option<crate::app_shell_transition::ShellFrameWave>,
+    /// Active shell first-paint controls-reveal slide (presentation only). gamemd
+    /// plays this on the first paint of every shell dialog (menu / single-player /
+    /// skirmish); the wave swaps each owner-draw button's SDBTNANM frame index.
+    pub(crate) shell_first_paint_slide: Option<crate::app_shell_transition::ShellFrameWave>,
+    /// Which shell dialog the first-paint slide last fired for. Drives per-frame
+    /// edge detection so the slide (re)starts on entry into each shell and is
+    /// cancelled on leaving all of them.
+    pub(crate) shell_slide_active_shell: Option<crate::app_shell_transition::ShellSlideKind>,
     pub(crate) minimap: Option<MinimapRenderer>,
     /// True while left-dragging on minimap (camera pan mode).
     pub(crate) minimap_dragging: bool,
@@ -357,6 +362,18 @@ pub(crate) struct AppState {
     pub(crate) debug_unit_inspector: bool,
     /// Save/load panel visible. Toggle with F5.
     pub(crate) show_save_load_panel: bool,
+    /// Exit-Game confirm message box, open while the player is being asked to
+    /// confirm quitting. The app only exits on confirm, never on the first
+    /// Exit click.
+    pub(crate) exit_confirm_modal: Option<crate::ui::main_menu_dialogs::ExitConfirmModalState>,
+    /// Options launcher dialog (open-level shell; real widgets not decoded).
+    pub(crate) options_dialog: Option<crate::ui::main_menu_dialogs::OptionsDialogState>,
+    /// Movies & Credits sub-panel (open-level shell; playback not implemented).
+    pub(crate) movies_credits_dialog:
+        Option<crate::ui::main_menu_dialogs::MoviesCreditsDialogState>,
+    /// Campaign selector dialog (Single Player -> New Campaign; launch mapping
+    /// not decoded).
+    pub(crate) campaign_select: Option<crate::ui::main_menu_dialogs::CampaignSelectState>,
     /// Cached save-file listing for the save/load panel (avoids per-frame disk I/O).
     pub(crate) save_list_cache: crate::app_save_load_panel::SaveListCache,
     /// Text-field buffer for the dev overlay's "Save As" name input.
@@ -395,7 +412,19 @@ impl AppState {
     /// Whether the software cursor (mouse.shp) should be active this frame.
     /// Returns false when an egui interactive panel is open so the OS cursor shows.
     pub(crate) fn use_software_cursor(&self) -> bool {
-        self.software_cursor.is_some() && !self.paused && !self.show_save_load_panel
+        self.software_cursor.is_some()
+            && !self.paused
+            && !self.show_save_load_panel
+            && !self.main_menu_dialog_open()
+    }
+
+    /// Whether any main-menu modal dialog (exit confirm, options, movies,
+    /// campaign select) is currently open.
+    pub(crate) fn main_menu_dialog_open(&self) -> bool {
+        self.exit_confirm_modal.is_some()
+            || self.options_dialog.is_some()
+            || self.movies_credits_dialog.is_some()
+            || self.campaign_select.is_some()
     }
 
     /// Return the building-placement section name if the targeting mode
@@ -503,7 +532,7 @@ impl App {
 
     fn close_native_skirmish_shell(state: &mut AppState) {
         state.main_menu_show_native_skirmish_shell = false;
-        state.main_menu_to_skirmish_transition = None;
+        state.shell_first_paint_slide = None;
         state.skirmish_shell_return_to_single_player_shell = false;
         state.dev_skirmish_shell_enabled = false;
         state.skirmish_shell_state.choose_map_modal = None;
@@ -527,7 +556,7 @@ impl App {
         Self::enter_shell_window_mode(state);
         state.main_menu_show_single_player_shell = true;
         state.main_menu_show_native_skirmish_shell = false;
-        state.main_menu_to_skirmish_transition = None;
+        state.shell_first_paint_slide = None;
         state.skirmish_shell_return_to_single_player_shell = false;
         state.single_player_shell_state.pressed_owner_draw_button = None;
         state.single_player_shell_state.hovered_owner_draw_button = None;
@@ -549,17 +578,16 @@ impl App {
         state.skirmish_shell_state.pressed_owner_draw_button = None;
         state.skirmish_shell_last_painted_pressed_button = None;
         Self::ensure_skirmish_shell_chrome(state);
-        // Single Player -> Skirmish plays the SHP frame-index slide-in wave on the
-        // right-panel owner-draw buttons (Start, Choose, Back = 3 animated slots).
-        // The native main-menu -> Single Player leg is a proven instant swap and must
-        // NOT start a wave; do not add a trigger there.
-        const RIGHT_PANEL_BUTTON_SLOT_COUNT: u32 = 3;
-        crate::app_shell_transition::start_skirmish_slide_in(state, RIGHT_PANEL_BUTTON_SLOT_COUNT);
+        // The skirmish dialog (0x102) slides its controls in on first paint like
+        // every shell dialog; the per-frame slide trigger starts that wave once
+        // the skirmish shell becomes the showing screen. Clear any stale wave
+        // from the source shell here so the trigger restarts cleanly.
+        state.shell_first_paint_slide = None;
     }
 
     fn return_from_skirmish_to_single_player_shell(state: &mut AppState) {
         state.main_menu_show_native_skirmish_shell = false;
-        state.main_menu_to_skirmish_transition = None;
+        state.shell_first_paint_slide = None;
         state.skirmish_shell_return_to_single_player_shell = false;
         state.skirmish_shell_state.choose_map_modal = None;
         state.skirmish_shell_state.validation_modal = None;
@@ -582,7 +610,7 @@ impl App {
         state.skirmish_shell_last_painted_pressed_button = None;
         state.main_menu_show_single_player_shell = false;
         state.skirmish_shell_return_to_single_player_shell = false;
-        state.main_menu_to_skirmish_transition = None;
+        state.shell_first_paint_slide = None;
         let request = crate::app_loading::LoadingRequest::generic_map_load(
             map_name,
             state.skirmish_settings.clone(),
@@ -606,7 +634,7 @@ impl App {
         state.main_menu_show_single_player_shell = false;
         state.skirmish_shell_return_to_single_player_shell = false;
         state.main_menu_show_native_skirmish_shell = false;
-        state.main_menu_to_skirmish_transition = None;
+        state.shell_first_paint_slide = None;
         let request = crate::app_loading::LoadingRequest::native_selected_skirmish(
             map_name,
             session,
@@ -708,13 +736,19 @@ impl App {
                 state.skirmish_shell_state.pressed_owner_draw_button = None;
             }
         }
-        state.egui.end_frame_and_render(
-            &state.gpu,
-            encoder,
-            view,
-            &state.window,
-            state.use_software_cursor(),
-        );
+        // Confirm modal can be open over the legacy egui menu too; draw it in
+        // the same frame so its buttons receive input.
+        let confirm = Self::draw_main_menu_dialogs(state);
+        // Degraded fallback (shell chrome failed to load) has no SHP cursor of
+        // its own, so keep the OS cursor visible here rather than hiding it and
+        // leaving the egui menu with no pointer at all.
+        state
+            .egui
+            .end_frame_and_render(&state.gpu, encoder, view, &state.window, false);
+        if confirm {
+            event_loop.exit();
+            return Ok(());
+        }
         Self::handle_main_menu_action(state, action, event_loop);
         Ok(())
     }
@@ -724,9 +758,12 @@ impl App {
         action: main_menu::MenuAction,
         event_loop: &ActiveEventLoop,
     ) {
+        let _ = event_loop;
         match action {
             main_menu::MenuAction::StartSelected => Self::start_selected_skirmish(state),
-            main_menu::MenuAction::Exit => event_loop.exit(),
+            // Route through the same confirm message box for consistency with
+            // the native shell; the game does not quit on the first click.
+            main_menu::MenuAction::Exit => Self::open_exit_confirm_modal(state),
             main_menu::MenuAction::None => {}
         }
     }
@@ -780,6 +817,12 @@ impl App {
     }
 
     fn skirmish_shell_label(state: &AppState, key: &str, fallback: &str) -> String {
+        Self::csf_label(state, key, fallback)
+    }
+
+    /// Resolve a CSF string key to display text, falling back to the supplied
+    /// English string when the table is absent or missing the key.
+    fn csf_label(state: &AppState, key: &str, fallback: &str) -> String {
         state
             .csf
             .as_ref()
@@ -1616,9 +1659,11 @@ impl App {
                 }
             }
             SinglePlayerShellAction::NewCampaign => {
-                log::info!(
-                    "Single Player New Campaign route result 8 is preserved but downstream campaign shell is not implemented yet"
-                );
+                // The original opens the campaign selector (Allied/Soviet +
+                // difficulty). Open the selector shell; the side/difficulty ->
+                // scenario mapping and first-mission launch are not decoded yet.
+                state.campaign_select =
+                    Some(crate::ui::main_menu_dialogs::CampaignSelectState::default());
             }
         }
     }
@@ -1630,16 +1675,25 @@ impl App {
     ) {
         use crate::ui::main_menu_shell::MainMenuShellAction;
 
+        let _ = event_loop;
         match action {
             MainMenuShellAction::None => {}
-            MainMenuShellAction::ExitGame => event_loop.exit(),
+            // The original pops a confirm message box here; it does NOT quit on
+            // the first Exit click. Quitting happens only on confirm.
+            MainMenuShellAction::ExitGame => Self::open_exit_confirm_modal(state),
             MainMenuShellAction::SinglePlayer => {
                 Self::open_single_player_shell(state);
             }
+            MainMenuShellAction::Options => {
+                state.options_dialog =
+                    Some(crate::ui::main_menu_dialogs::OptionsDialogState::default());
+            }
+            MainMenuShellAction::MoviesAndCredits => {
+                state.movies_credits_dialog =
+                    Some(crate::ui::main_menu_dialogs::MoviesCreditsDialogState::default());
+            }
             MainMenuShellAction::WwOnline
             | MainMenuShellAction::Network
-            | MainMenuShellAction::MoviesAndCredits
-            | MainMenuShellAction::Options
             | MainMenuShellAction::YuriWebsite => {
                 log::info!(
                     "Main-menu shell action {:?} is preserved but downstream dialog is not implemented yet",
@@ -1647,6 +1701,94 @@ impl App {
                 );
             }
         }
+    }
+
+    /// Open the Exit-Game confirm message box, resolving its labels from CSF.
+    fn open_exit_confirm_modal(state: &mut AppState) {
+        let csf = |key: &str, fallback: &str| Self::csf_label(state, key, fallback);
+        state.exit_confirm_modal = Some(crate::ui::main_menu_dialogs::ExitConfirmModalState::open(
+            &csf,
+        ));
+    }
+
+    /// Whether any main-menu modal dialog is currently open. Used to route
+    /// keyboard/mouse to the modal first.
+    pub(crate) fn main_menu_dialog_open(state: &AppState) -> bool {
+        state.main_menu_dialog_open()
+    }
+
+    /// Close every open main-menu modal dialog (e.g. on ESC).
+    pub(crate) fn close_main_menu_dialogs(state: &mut AppState) {
+        state.exit_confirm_modal = None;
+        state.options_dialog = None;
+        state.movies_credits_dialog = None;
+        state.campaign_select = None;
+    }
+
+    /// Draw whichever main-menu modal dialog is open in the current egui frame
+    /// and apply its outcome. Returns `true` when the player has confirmed
+    /// quitting, so the caller should exit the event loop.
+    fn draw_main_menu_dialogs(state: &mut AppState) -> bool {
+        use crate::ui::main_menu_dialogs as dialogs;
+
+        if let Some(modal) = state.exit_confirm_modal.clone() {
+            match dialogs::draw_exit_confirm_modal(&state.egui.ctx, &modal) {
+                dialogs::ExitConfirmAction::Confirm => {
+                    // The original writes options to ra2md.ini, fades, and stops
+                    // music before exiting. Options write-back is not decoded
+                    // yet; persist hook is a TODO. Exit on confirm.
+                    state.exit_confirm_modal = None;
+                    return true;
+                }
+                dialogs::ExitConfirmAction::Cancel => {
+                    state.exit_confirm_modal = None;
+                }
+                dialogs::ExitConfirmAction::None => {}
+            }
+            return false;
+        }
+
+        if state.options_dialog.is_some() {
+            let csf = |key: &str, fallback: &str| Self::csf_label(state, key, fallback);
+            if matches!(
+                dialogs::draw_options_dialog(&state.egui.ctx, &csf),
+                dialogs::OptionsDialogAction::Close
+            ) {
+                state.options_dialog = None;
+            }
+            return false;
+        }
+
+        if state.movies_credits_dialog.is_some() {
+            let csf = |key: &str, fallback: &str| Self::csf_label(state, key, fallback);
+            match dialogs::draw_movies_credits_dialog(&state.egui.ctx, &csf) {
+                dialogs::MoviesCreditsAction::Back => state.movies_credits_dialog = None,
+                // Sneak Preview / Movies / Credits playback is not implemented;
+                // the picker would derive entries only from artmd.ini [Movies],
+                // which is not parsed yet. No-op for now.
+                dialogs::MoviesCreditsAction::SneakPreview
+                | dialogs::MoviesCreditsAction::Movies
+                | dialogs::MoviesCreditsAction::Credits
+                | dialogs::MoviesCreditsAction::None => {}
+            }
+            return false;
+        }
+
+        if let Some(mut campaign) = state.campaign_select.take() {
+            let csf = |key: &str, fallback: &str| Self::csf_label(state, key, fallback);
+            let action = dialogs::draw_campaign_select(&state.egui.ctx, &csf, &mut campaign);
+            match action {
+                // The side/difficulty -> scenario mapping and first-mission
+                // launch are not decoded; Back returns to the SP shell.
+                dialogs::CampaignSelectAction::Back => {}
+                dialogs::CampaignSelectAction::None => {
+                    state.campaign_select = Some(campaign);
+                }
+            }
+            return false;
+        }
+
+        false
     }
 
     fn invalidate_main_menu_movie_if_base_changed(state: &mut AppState) {
@@ -1717,6 +1859,17 @@ impl ApplicationHandler for App {
                     let in_game: bool = state.screen == GameScreen::InGame;
 
                     if crate::app_shell_transition::blocks_shell_input(state) {
+                        return;
+                    }
+
+                    // A main-menu modal dialog (exit confirm, options, movies,
+                    // campaign select) takes ESC first: close it and stay,
+                    // never propagating to the shell-close handlers below.
+                    if Self::main_menu_dialog_open(state) {
+                        if is_escape {
+                            Self::close_main_menu_dialogs(state);
+                            state.window.request_redraw();
+                        }
                         return;
                     }
 
@@ -1832,6 +1985,12 @@ impl ApplicationHandler for App {
                     state.window.set_cursor_visible(false);
                 }
                 if crate::app_shell_transition::blocks_shell_input(state) {
+                    return;
+                }
+                // While a main-menu modal dialog is open, egui already handled
+                // the click (its buttons sit on top); do not route to the
+                // underlying shell hit-tests.
+                if Self::main_menu_dialog_open(state) {
                     return;
                 }
                 if Self::native_skirmish_shell_active(state) {
@@ -2061,6 +2220,13 @@ impl App {
             &skirmish_modes,
         );
 
+        // Build the software cursor at startup so the main menu draws the SHP
+        // arrow and hides the OS cursor, matching the original which hides the
+        // OS cursor for the whole process and blits the cursor SHP every frame.
+        let startup_software_cursor = startup_asset_manager.as_ref().and_then(|assets| {
+            crate::render::cursor_atlas::build_software_cursor(&gpu, &batch_renderer, assets)
+        });
+
         let mut state = AppState {
             window,
             gpu,
@@ -2131,7 +2297,8 @@ impl App {
             main_menu_show_skirmish_setup: false,
             main_menu_show_native_skirmish_shell: false,
             skirmish_shell_return_to_single_player_shell: false,
-            main_menu_to_skirmish_transition: None,
+            shell_first_paint_slide: None,
+            shell_slide_active_shell: None,
             minimap: None,
             minimap_dragging: false,
             middle_mouse_panning: false,
@@ -2147,7 +2314,7 @@ impl App {
             sidebar_cameo_atlas: None,
             sidebar_chrome: None,
             bit_font,
-            software_cursor: None,
+            software_cursor: startup_software_cursor,
             selection_state: SelectionState::new(),
             path_grid: None,
             animation_sequences: BTreeMap::new(),
@@ -2207,6 +2374,10 @@ impl App {
             show_hotkey_help: false,
             debug_unit_inspector: false,
             show_save_load_panel: false,
+            exit_confirm_modal: None,
+            options_dialog: None,
+            movies_credits_dialog: None,
+            campaign_select: None,
             save_list_cache: crate::app_save_load_panel::SaveListCache::new(),
             dev_overlay_save_name: String::new(),
             last_save_tick: None,
@@ -2217,6 +2388,20 @@ impl App {
             cached_overlay_instances: Vec::new(),
             cached_unit_instances: Vec::new(),
         };
+
+        // Seed the live music volume from the user's saved RA2MD.INI
+        // [Audio] ScoreVolume, falling back to the engine default when the
+        // file/section/key is absent. Matches the original reading this at boot.
+        if let Some(player) = state.music_player.as_mut() {
+            let saved_volume = state
+                .game_config
+                .as_ref()
+                .and_then(|config| {
+                    crate::audio::music::read_score_volume_from_ra2md(&config.paths.ra2_dir)
+                })
+                .unwrap_or(crate::audio::music::DEFAULT_SCORE_VOLUME);
+            player.set_volume(saved_volume);
+        }
 
         if std::env::var("RA2_QUICKPLAY").is_ok() {
             let skirmish_settings = state.skirmish_settings.clone();
@@ -2283,6 +2468,14 @@ impl App {
                     label: Some("Frame"),
                 });
 
+        // Start/cancel the shell first-paint controls-reveal slide on entry into
+        // (or exit from) each shell dialog. Edge-detected once per frame so launch,
+        // navigation, and return-from-game all (re)trigger the slide uniformly.
+        crate::app_shell_transition::update_shell_first_paint_slide_trigger(state);
+        // Advance the Skirmish right-panel static text reveals (started at the
+        // slide's completion edge). 30 ms-gated internally; a no-op when idle.
+        crate::app_shell_transition::advance_shell_static_reveals(state);
+
         match &state.screen {
             GameScreen::MainMenu => {
                 // The shell loops the menu [INTRO] theme the whole time the
@@ -2296,7 +2489,7 @@ impl App {
                     player.play_menu_theme(assets);
                     player.update(assets);
                 }
-                if crate::app_shell_transition::render_main_menu_to_skirmish_transition(
+                if crate::app_shell_transition::render_shell_first_paint_slide(
                     state,
                     &mut encoder,
                     &view,
@@ -2318,6 +2511,10 @@ impl App {
                             if state.show_save_load_panel {
                                 Self::handle_save_load_panel(state);
                             }
+                            // Campaign selector (and any other menu modal) draws
+                            // over the SP shell; confirm-quit cannot originate
+                            // here, so its return value is ignored.
+                            let _ = Self::draw_main_menu_dialogs(state);
                             state.egui.end_frame_and_render(
                                 &state.gpu,
                                 &mut encoder,
@@ -2343,6 +2540,7 @@ impl App {
                     )? {
                         crate::app_main_menu_shell_render::MainMenuShellRenderResult::Rendered => {
                             state.egui.begin_frame(&state.window);
+                            let confirm_quit = Self::draw_main_menu_dialogs(state);
                             state.egui.end_frame_and_render(
                                 &state.gpu,
                                 &mut encoder,
@@ -2350,6 +2548,12 @@ impl App {
                                 &state.window,
                                 state.use_software_cursor(),
                             );
+                            if confirm_quit {
+                                state.gpu.queue.submit(std::iter::once(encoder.finish()));
+                                output.present();
+                                event_loop.exit();
+                                return Ok(());
+                            }
                         }
                         crate::app_main_menu_shell_render::MainMenuShellRenderResult::Fallback => {
                             Self::render_egui_main_menu_fallback(

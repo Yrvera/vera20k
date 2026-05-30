@@ -547,7 +547,10 @@ fn skirmish_status_help_includes_flag_and_right_panel_static_targets() {
     // Right-panel game-type label 0x6EC -> STT:SkirmishLabelGameType.
     let game_type = layout.right_panel_text.game_type;
     let game_type_target = hovered_shell_control(&layout, &shell, &maps, game_type.x, game_type.y);
-    assert_eq!(game_type_target, Some(SkirmishHoverTarget::GameTypeLabel0x6ec));
+    assert_eq!(
+        game_type_target,
+        Some(SkirmishHoverTarget::GameTypeLabel0x6ec)
+    );
     assert_eq!(
         status_help_key_for_hover(game_type_target.unwrap()),
         Some("STT:SkirmishLabelGameType")
@@ -556,7 +559,10 @@ fn skirmish_status_help_includes_flag_and_right_panel_static_targets() {
     // Right-panel scenario/map label 0x5A8 -> STT:SkirmishLabelScenario.
     let map_label = layout.right_panel_text.map_label;
     let map_label_target = hovered_shell_control(&layout, &shell, &maps, map_label.x, map_label.y);
-    assert_eq!(map_label_target, Some(SkirmishHoverTarget::ScenarioLabel0x5a8));
+    assert_eq!(
+        map_label_target,
+        Some(SkirmishHoverTarget::ScenarioLabel0x5a8)
+    );
     assert_eq!(
         status_help_key_for_hover(map_label_target.unwrap()),
         Some("STT:SkirmishLabelScenario")
@@ -929,15 +935,17 @@ fn trackbar_mouse_move_updates_while_capture_active() {
 }
 
 #[test]
-fn trackbar_rail_capture_mouse_move_updates_until_release() {
+fn trackbar_rail_click_jumps_once_and_does_not_track_cursor() {
     let layout = compute_layout(800, 600);
     let mut shell = SkirmishShellState::default();
     let rect = layout.trackbars.credits;
 
     handle_option_mouse_down(&mut shell, &layout, &[], 443, 318);
+    // A rail click installs a drag-anchor but is NOT a thumb grab, so the
+    // following move must not retrack the value to the cursor.
     handle_option_mouse_move(&mut shell, &layout, &[], 470, 318);
 
-    assert_eq!(shell.starting_credits, 9500);
+    assert_eq!(shell.starting_credits, 7400);
     assert_eq!(
         shell.trackbar_drag,
         Some(TrackbarDragState {
@@ -947,19 +955,16 @@ fn trackbar_rail_capture_mouse_move_updates_until_release() {
     );
     assert_eq!(
         shell.drain_pending_trackbar_hscrolls(),
-        vec![(0x511, 7400, 0x1ce8_0005), (0x511, 9500, 0x251c_0005)]
+        vec![(0x511, 7400, 0x1ce8_0005)]
     );
     assert_eq!(
         shell.drain_pending_ui_sounds(),
-        vec![
-            SkirmishShellUiSound::GenericClick,
-            SkirmishShellUiSound::GenericClick
-        ]
+        vec![SkirmishShellUiSound::GenericClick]
     );
 
     handle_option_mouse_up(&mut shell);
     handle_option_mouse_move(&mut shell, &layout, &[], rect.x - 100, rect.y + 4);
-    assert_eq!(shell.starting_credits, 9500);
+    assert_eq!(shell.starting_credits, 7400);
     assert_eq!(shell.trackbar_drag, None);
     assert!(shell.pending_trackbar_hscrolls().is_empty());
     assert!(shell.drain_pending_ui_sounds().is_empty());
@@ -1447,7 +1452,7 @@ fn side_combo_exposes_random_country_and_verified_dropdown_cap() {
 }
 
 #[test]
-fn dropdown_wheel_and_hit_test_use_top_index() {
+fn dropdown_wheel_is_inert_and_content_click_uses_top_index() {
     let layout = compute_layout(800, 600);
     let mut shell = SkirmishShellState::default();
     let maps = [test_map_entry("map.mmx")];
@@ -1458,8 +1463,10 @@ fn dropdown_wheel_and_hit_test_use_top_index() {
         shell.drain_pending_ui_sounds(),
         vec![SkirmishShellUiSound::GuiComboOpenSound]
     );
-    assert!(handle_option_mouse_wheel(&mut shell, &maps, -1.0));
-    assert_eq!(shell.open_combo_dropdown.unwrap().top_index, 1);
+    // No verified retail wheel-scroll: the wheel neither consumes the event
+    // nor moves the open dropdown's top index.
+    assert!(!handle_option_mouse_wheel(&mut shell, &maps, -1.0));
+    assert_eq!(shell.open_combo_dropdown.unwrap().top_index, 0);
     assert!(shell.drain_pending_ui_sounds().is_empty());
 
     let content =
@@ -1469,7 +1476,7 @@ fn dropdown_wheel_and_hit_test_use_top_index() {
     assert_eq!(
         selected_combo_item(&shell, SkirmishComboId::Side(0)),
         combo_items(&shell, &maps, SkirmishComboId::Side(0))
-            .get(1)
+            .first()
             .copied()
     );
     assert_eq!(shell.open_combo_dropdown, None);
@@ -1733,6 +1740,88 @@ fn combo_outside_click_closes_with_close_sound() {
     assert_eq!(
         shell.drain_pending_ui_sounds(),
         vec![SkirmishShellUiSound::GuiComboCloseSound]
+    );
+}
+
+#[test]
+fn collapsed_combo_face_click_plays_open_sound_without_opening() {
+    let layout = compute_layout(800, 600);
+    let mut shell = SkirmishShellState::default();
+    let maps = [test_map_entry("map.mmx")];
+    let rect = layout.rows.side_combos[0];
+
+    // Click the left/text portion of the collapsed face (not the arrow zone).
+    handle_option_mouse_down(&mut shell, &layout, &maps, rect.x + 2, rect.y + 1);
+
+    assert_eq!(shell.open_combo_dropdown, None);
+    assert_eq!(
+        shell.drain_pending_ui_sounds(),
+        vec![SkirmishShellUiSound::GuiComboOpenSound]
+    );
+
+    // Click the rightmost arrow zone: open sound plays AND the dropdown opens.
+    handle_option_mouse_down(&mut shell, &layout, &maps, rect.x + rect.w - 1, rect.y + 1);
+    assert_eq!(
+        shell.open_combo_dropdown.map(|open| open.id),
+        Some(SkirmishComboId::Side(0))
+    );
+    assert_eq!(
+        shell.drain_pending_ui_sounds(),
+        vec![SkirmishShellUiSound::GuiComboOpenSound]
+    );
+}
+
+#[test]
+fn switching_combos_closes_first_without_opening_second() {
+    let layout = compute_layout(800, 600);
+    let mut shell = SkirmishShellState::default();
+    let maps = [test_map_entry("map.mmx")];
+    let combo_a = layout.rows.side_combos[0];
+    let combo_b = layout.rows.start_combos[0];
+
+    handle_option_mouse_down(
+        &mut shell,
+        &layout,
+        &maps,
+        combo_a.x + combo_a.w - 1,
+        combo_a.y + 1,
+    );
+    assert_eq!(
+        shell.open_combo_dropdown.map(|open| open.id),
+        Some(SkirmishComboId::Side(0))
+    );
+    shell.drain_pending_ui_sounds();
+
+    // With combo A open, clicking combo B's arrow only closes A (captured popup
+    // consumes the click); B does not open on this click.
+    handle_option_mouse_down(
+        &mut shell,
+        &layout,
+        &maps,
+        combo_b.x + combo_b.w - 1,
+        combo_b.y + 1,
+    );
+    assert_eq!(shell.open_combo_dropdown, None);
+    assert_eq!(
+        shell.drain_pending_ui_sounds(),
+        vec![SkirmishShellUiSound::GuiComboCloseSound]
+    );
+
+    // A second click on B's arrow opens B with the open sound.
+    handle_option_mouse_down(
+        &mut shell,
+        &layout,
+        &maps,
+        combo_b.x + combo_b.w - 1,
+        combo_b.y + 1,
+    );
+    assert_eq!(
+        shell.open_combo_dropdown.map(|open| open.id),
+        Some(SkirmishComboId::Start(0))
+    );
+    assert_eq!(
+        shell.drain_pending_ui_sounds(),
+        vec![SkirmishShellUiSound::GuiComboOpenSound]
     );
 }
 
