@@ -16,6 +16,7 @@
 
 use std::collections::HashMap;
 use std::num::NonZero;
+use std::path::Path;
 
 use rodio::buffer::SamplesBuffer;
 use rodio::{DeviceSinkBuilder, MixerDeviceSink, Player};
@@ -24,6 +25,17 @@ use crate::assets::asset_manager::AssetManager;
 use crate::assets::aud_file;
 use crate::audio::sfx::decode_wav;
 use crate::rules::ini_parser::IniFile;
+
+/// Engine default for the score (music) volume, applied before any user
+/// settings file is read. The original game seeds its live music volume to
+/// this same default when the saved `ScoreVolume` setting is absent.
+pub const DEFAULT_SCORE_VOLUME: f64 = 0.4;
+
+/// User settings filename in the RA2 install dir holding `[Audio] ScoreVolume`.
+const RA2MD_INI_FILENAME: &str = "RA2MD.INI";
+/// Section and key for the saved music volume in RA2MD.INI.
+const AUDIO_SECTION: &str = "Audio";
+const SCORE_VOLUME_KEY: &str = "ScoreVolume";
 
 const FALLBACK_TRACKS: &[&str] = &[
     "Grinder", "Power", "Fortific", "InDeep", "Tension", "EagleHun", "Industro", "Jank",
@@ -72,7 +84,7 @@ impl MusicPlayer {
             playlist: FALLBACK_TRACKS.iter().map(|s| s.to_string()).collect(),
             aliases: HashMap::new(),
             playlist_index: 0,
-            volume: 0.5,
+            volume: DEFAULT_SCORE_VOLUME,
             looping_track: None,
             menu_theme: None,
             menu_theme_repeats: false,
@@ -353,6 +365,23 @@ fn load_track(track_name: &str, assets: &AssetManager) -> Option<(Vec<f32>, u32)
     None
 }
 
+/// Read `[Audio] ScoreVolume` from `{ra2_dir}/RA2MD.INI`, clamped to [0,1].
+///
+/// Returns None when the file, section, or key is absent or unparsable so the
+/// caller can fall back to the engine default ([`DEFAULT_SCORE_VOLUME`]). This
+/// is a loose user-settings INI in the install dir, not a MIX payload.
+pub fn read_score_volume_from_ra2md(ra2_dir: &Path) -> Option<f64> {
+    let bytes = std::fs::read(ra2_dir.join(RA2MD_INI_FILENAME)).ok()?;
+    let ini = IniFile::from_bytes(&bytes).ok()?;
+    score_volume_from_ini(&ini)
+}
+
+/// Extract `[Audio] ScoreVolume` from a parsed INI, clamped to [0,1].
+fn score_volume_from_ini(ini: &IniFile) -> Option<f64> {
+    let value = ini.section(AUDIO_SECTION)?.get_f32(SCORE_VOLUME_KEY)?;
+    Some((value as f64).clamp(0.0, 1.0))
+}
+
 fn load_theme_ini(assets: &AssetManager, name: &str) -> Option<IniFile> {
     let bytes = assets.get_ref(name)?;
     IniFile::from_bytes(bytes).ok()
@@ -382,10 +411,7 @@ const MENU_THEME_SECTION: &str = "INTRO";
 /// Resolve the menu [INTRO] theme to (sound stem, repeats?) from a theme INI.
 /// `repeats` reflects the [INTRO] `Repeat=` value (defaults to no if absent).
 /// Returns None if the INI has no [INTRO] section with a resolvable sound.
-fn menu_theme_from_ini(
-    ini: &IniFile,
-    aliases: &HashMap<String, String>,
-) -> Option<(String, bool)> {
+fn menu_theme_from_ini(ini: &IniFile, aliases: &HashMap<String, String>) -> Option<(String, bool)> {
     let section = ini.section(MENU_THEME_SECTION)?;
     // Prefer the alias-resolved stem so casing matches what load_track uses.
     let stem = aliases
@@ -436,9 +462,8 @@ mod tests {
     /// theme). Verifies we resolve the correct stem and honor Repeat=yes.
     #[test]
     fn menu_theme_resolves_intro_with_loop() {
-        let ini = IniFile::from_str(
-            "[INTRO]\nName=THEME:Intro\nSound=Drok\nNormal=no\nRepeat=yes\n",
-        );
+        let ini =
+            IniFile::from_str("[INTRO]\nName=THEME:Intro\nSound=Drok\nNormal=no\nRepeat=yes\n");
         let mut aliases = HashMap::new();
         merge_theme_aliases(&mut aliases, &ini);
 
@@ -466,5 +491,28 @@ mod tests {
         let ini = IniFile::from_str("[SCORE]\nSound=Score\n");
         let aliases = HashMap::new();
         assert!(menu_theme_from_ini(&ini, &aliases).is_none());
+    }
+
+    /// [Audio] ScoreVolume parses to its float value in range.
+    #[test]
+    fn score_volume_reads_audio_section() {
+        let ini = IniFile::from_str("[Audio]\nScoreVolume=0.25\n");
+        assert_eq!(score_volume_from_ini(&ini), Some(0.25));
+    }
+
+    /// A ScoreVolume above 1.0 clamps to 1.0 (matching the engine clamp).
+    #[test]
+    fn score_volume_clamps_above_one() {
+        let ini = IniFile::from_str("[Audio]\nScoreVolume=1.5\n");
+        assert_eq!(score_volume_from_ini(&ini), Some(1.0));
+    }
+
+    /// Missing section or key yields None so the caller uses the default.
+    #[test]
+    fn score_volume_missing_returns_none() {
+        let ini = IniFile::from_str("[Options]\nFoo=bar\n");
+        assert!(score_volume_from_ini(&ini).is_none());
+        let empty = IniFile::from_str("[Audio]\nSoundVolume=0.7\n");
+        assert!(score_volume_from_ini(&empty).is_none());
     }
 }
