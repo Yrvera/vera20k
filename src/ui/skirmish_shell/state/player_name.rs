@@ -5,6 +5,7 @@ use crate::skirmish_modes::{SkirmishGameMode, mode_by_id};
 use crate::ui::main_menu::{SkirmishCountry, SkirmishSettings, StartPosition};
 
 use super::super::layout::{SkirmishShellLayout, SkirmishTrackbarId};
+use super::super::static_reveal::StaticReveal;
 use super::trackbars::{trackbar_control_id, trackbar_hscroll_wparam};
 use super::{
     ChooseMapModalState, DropdownScrollDragState, DropdownScrollbarPressState, OpenComboDropdown,
@@ -247,6 +248,12 @@ pub struct SkirmishShellState {
     pub status_help_text: String,
     pub pending_trackbar_hscrolls: Vec<SkirmishTrackbarHScrollNotification>,
     pub pending_ui_sounds: Vec<SkirmishShellUiSound>,
+    /// Title static 0x694 reveal cursor.
+    pub title_reveal: StaticReveal,
+    /// Game-type static 0x6EC reveal cursor.
+    pub game_type_reveal: StaticReveal,
+    /// Map-label static 0x5A8 reveal cursor.
+    pub map_label_reveal: StaticReveal,
 }
 
 impl Default for SkirmishShellState {
@@ -285,6 +292,9 @@ impl Default for SkirmishShellState {
             status_help_text: String::new(),
             pending_trackbar_hscrolls: Vec::new(),
             pending_ui_sounds: Vec::new(),
+            title_reveal: StaticReveal::default(),
+            game_type_reveal: StaticReveal::default(),
+            map_label_reveal: StaticReveal::default(),
         }
     }
 }
@@ -319,6 +329,28 @@ impl SkirmishShellState {
 
     pub fn drain_pending_ui_sounds(&mut self) -> Vec<SkirmishShellUiSound> {
         std::mem::take(&mut self.pending_ui_sounds)
+    }
+
+    /// Start the reveal for all three right-panel statics using their current
+    /// text. Called at shell first-paint slide completion (the 0x4EC->0x4EE
+    /// event).
+    pub fn start_right_panel_static_reveals(
+        &mut self,
+        title: &str,
+        game_type: &str,
+        map_label: &str,
+        now: std::time::Instant,
+    ) {
+        self.title_reveal.start(title, now);
+        self.game_type_reveal.start(game_type, now);
+        self.map_label_reveal.start(map_label, now);
+    }
+
+    /// Advance all three reveals one cadence step (each is internally 30 ms-gated).
+    pub fn advance_right_panel_static_reveals(&mut self, now: std::time::Instant) {
+        self.title_reveal.advance(now);
+        self.game_type_reveal.advance(now);
+        self.map_label_reveal.advance(now);
     }
 }
 
