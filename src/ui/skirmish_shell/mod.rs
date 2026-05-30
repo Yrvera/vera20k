@@ -6,6 +6,7 @@
 
 mod layout;
 mod state;
+pub mod static_reveal;
 
 pub use layout::{
     CHOOSE_MAP_LIST_ROW_H, CHOOSE_MAP_LISTBOX_ROW_H, CHOOSE_MAP_LISTBOX_SCROLLBAR_W,

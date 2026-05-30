@@ -49,8 +49,19 @@ pub(crate) struct MoveInfo {
     pub(crate) movement_zone: MovementZone,
     pub(crate) position: (u16, u16),
     pub(crate) regular_crusher: bool,
+    pub(crate) omni_crusher: bool,
     pub(crate) drive_accelerates: bool,
     pub(crate) mover_is_crusher: bool,
+}
+
+impl MoveInfo {
+    pub(crate) fn crush_capability(&self) -> bump_crush::CrushCapability {
+        bump_crush::CrushCapability::new(self.regular_crusher, self.omni_crusher)
+    }
+
+    pub(crate) fn can_crush_units(&self) -> bool {
+        self.crush_capability().can_crush_units()
+    }
 }
 
 impl Simulation {
@@ -91,16 +102,9 @@ impl Simulation {
             movement_zone: obj.map_or(MovementZone::Normal, |o| o.movement_zone),
             position: (e.position.rx, e.position.ry),
             regular_crusher: e.regular_crusher,
+            omni_crusher: e.omni_crusher,
             drive_accelerates: e.drive_accelerates,
-            mover_is_crusher: e.omni_crusher
-                || matches!(
-                    loco.map(|l| l.movement_zone),
-                    Some(
-                        MovementZone::Crusher
-                            | MovementZone::AmphibiousCrusher
-                            | MovementZone::CrusherAll
-                    )
-                ),
+            mover_is_crusher: e.regular_crusher || e.omni_crusher,
         })
     }
 
@@ -1556,7 +1560,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_move_info_carries_regular_crusher_but_keeps_legacy_crush_inert() {
+    fn resolve_move_info_carries_regular_crusher() {
         let rules = amcv_move_rules();
         let mut sim = Simulation::new();
         spawn_rule_backed_unit(&mut sim, 1, "AMCV", &rules);
@@ -1564,8 +1568,13 @@ mod tests {
         let info = sim.resolve_move_info(1, Some(&rules)).expect("move info");
 
         assert!(info.regular_crusher);
+        assert!(!info.omni_crusher);
         assert_eq!(info.movement_zone, MovementZone::Normal);
-        assert!(!info.mover_is_crusher);
+        assert!(info.can_crush_units());
+        assert_eq!(
+            info.crush_capability(),
+            bump_crush::CrushCapability::new(true, false)
+        );
     }
 
     #[test]
@@ -1590,6 +1599,38 @@ mod tests {
         let info = sim.resolve_move_info(1, Some(&rules)).expect("move info");
 
         assert!(!info.drive_accelerates);
+    }
+
+    #[test]
+    fn player_drive_move_command_passes_zone_grid_to_path_search() {
+        let rules = amcv_move_rules();
+        let mut sim = Simulation::new();
+        spawn_rule_backed_unit(&mut sim, 1, "AMCV", &rules);
+        let grid = crate::sim::pathfinding::PathGrid::new(64, 64);
+        sim.zone_grid = Some(crate::sim::pathfinding::zone_map::ZoneGrid::build(
+            &grid,
+            &BTreeMap::new(),
+            5,
+            1,
+        ));
+        crate::sim::movement::reset_path_search_used_zone_grid_marker();
+
+        let applied = sim.apply_command(
+            "Americans",
+            &Command::Move {
+                entity_id: 1,
+                target_rx: 25,
+                target_ry: 20,
+                queue: false,
+                group_id: None,
+            },
+            Some(&rules),
+            Some(&grid),
+            &BTreeMap::new(),
+        );
+
+        assert!(applied);
+        assert!(crate::sim::movement::path_search_used_zone_grid_marker());
     }
 
     fn miner_return_rules() -> RuleSet {

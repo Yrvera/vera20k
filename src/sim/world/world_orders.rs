@@ -241,7 +241,7 @@ impl Simulation {
                 }
                 self.increment_owned_count(&engineer_owner_str, EntityCategory::Structure);
                 // Destroy engineer (consumed on capture).
-                self.despawn_entity(engineer_id);
+                self.uninit(engineer_id);
                 any_captured = true;
             }
         }
@@ -376,7 +376,11 @@ impl Simulation {
             let outcome = if let (Some(bs), Some(terrain)) =
                 (self.bridge_state.as_mut(), self.resolved_terrain.as_ref())
             {
-                bs.repair_bridge_from_engineer_scan(&scan, &mut self.rng, terrain)
+                // bridge repair walker-variant pick — gamemd draws g_MapGenRng, not the
+                // scenario stream. Direct field (NOT bridge_rng(); `bs`/`terrain` hold live
+                // disjoint borrows). On a fixed map mapgen_rng is zero-state => variant 0,
+                // and the scenario/main cursors are left untouched.
+                bs.repair_bridge_from_engineer_scan(&scan, &mut self.mapgen_rng, terrain)
             } else {
                 crate::sim::bridge_state::RepairOutcome::default()
             };
@@ -385,13 +389,25 @@ impl Simulation {
                 any_repair = true;
             }
 
+            // Step B2: zone-graph refresh. The repair restores cells
+            // (Destroyed -> Healthy) but the endpoint records are
+            // deactivate-only at construction; without this the bidirectional
+            // `refresh_endpoint_active_flags` never runs on the repair path,
+            // so the long-range A* zone edge (gated on `record.active`) stays
+            // missing even though per-cell walkability is restored. Mirrors
+            // the collapse cascade's `refresh_bridge_zones_if_dirty` call.
+            crate::sim::world::bridge_orchestrator::refresh_bridge_zones_if_dirty(
+                self,
+                outcome.zones_dirty,
+            );
+
             // Step C: terrain/radar dirty propagation. The walker only emits
             // cells for destroyed-anchor restoration, matching gamemd's
             // `MarkTerrainDirty` gate.
             self.mark_radar_terrain_dirty_cells(outcome.radar_cells.iter().copied());
 
             // Step D: engineer consumed.
-            self.despawn_entity(engineer_id);
+            self.uninit(engineer_id);
             // gamemd iterates a live object vector. Removing the current
             // engineer compacts the next object into this slot; the scheduler
             // then advances, so that immediate successor waits until later.

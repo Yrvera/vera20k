@@ -28,16 +28,32 @@ fn hash_drive_track_state(
 impl Simulation {
     /// Deterministic state hash over canonicalized simulation state.
     ///
-    /// Hashes tick, RNG, production, fog, alliances, and all entity components
-    /// in stable-entity-ID order (EntityStore keys_sorted) for determinism.
+    /// Hashes tick, both RNG streams, production, fog, alliances, and all entity
+    /// components in stable-entity-ID order (EntityStore keys_sorted) for determinism.
     pub fn state_hash(&self) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
         self.tick.hash(&mut hasher);
         self.total_sim_ms.hash(&mut hasher);
         self.binary_frame.hash(&mut hasher);
-        self.rng.hash_state(&mut hasher);
-        self.next_stable_entity_id.hash(&mut hasher);
+        // Hash ALL THREE RNG streams in a fixed order. Order is part of the hash
+        // contract and must never change. Hashing only some streams would let a
+        // divergence in another produce identical hashes on two desynced clients
+        // (desync detector goes blind exactly where the RNG-stream split matters).
+        self.scenario_rng.hash_state(&mut hasher);
+        self.main_rng.hash_state(&mut hasher);
+        // mapgen_rng (gamemd g_MapGenRng): appended AFTER the two gameplay streams.
+        // This order is part of the hash contract and must never change.
+        self.mapgen_rng.hash_state(&mut hasher);
+        self.substrate.next_stable_entity_id.hash(&mut hasher);
+        self.substrate.next_occupancy_enter_order.hash(&mut hasher);
+
+        // LogicClass active-object order — authoritative (drives reconciliation order).
+        let order = self.substrate.logic.as_slice();
+        order.len().hash(&mut hasher);
+        for id in order {
+            id.hash(&mut hasher);
+        }
 
         self.hash_game_options(&mut hasher);
         self.hash_houses(&mut hasher);
@@ -368,6 +384,7 @@ impl Simulation {
     fn hash_entities(&self, hasher: &mut impl Hasher) {
         for entity in self.entities.values() {
             entity.stable_id.hash(hasher);
+            entity.occupancy_enter_order.hash(hasher);
             entity.position.rx.hash(hasher);
             entity.position.ry.hash(hasher);
             entity.position.z.hash(hasher);
@@ -380,6 +397,7 @@ impl Simulation {
             entity.health.max.hash(hasher);
             entity.type_ref.hash(hasher);
             (entity.category as u8).hash(hasher);
+            entity.foundation.hash(hasher);
             entity.regular_crusher.hash(hasher);
             entity.drive_accelerates.hash(hasher);
             entity.building_damage_state_active.hash(hasher);
@@ -1198,8 +1216,8 @@ mod rocking_hash_tests {
         let mut sim = Simulation::new();
         let owner = sim.interner.intern("Americans");
         let type_id = sim.interner.intern("HTNK");
-        let id = sim.next_stable_entity_id;
-        sim.next_stable_entity_id += 1;
+        let id = sim.substrate.next_stable_entity_id;
+        sim.substrate.next_stable_entity_id += 1;
         let e = GameEntity::new(
             id,
             10,
@@ -1277,8 +1295,8 @@ mod c4_hash_tests {
         let mut sim = Simulation::new();
         let owner = sim.interner.intern("Americans");
         let type_id = sim.interner.intern("GHOST");
-        let id = sim.next_stable_entity_id;
-        sim.next_stable_entity_id += 1;
+        let id = sim.substrate.next_stable_entity_id;
+        sim.substrate.next_stable_entity_id += 1;
         let e = GameEntity::new(
             id,
             10,

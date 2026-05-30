@@ -77,14 +77,17 @@ pub(crate) fn apply_bridge_damage_events(
     // the cascade walk.
     let mut destroyed_set: BTreeSet<(u16, u16)> = BTreeSet::new();
     let mut blow_up_cells: Vec<(u16, u16)> = Vec::new();
+    let mut radar_dirty: BTreeSet<(u16, u16)> = BTreeSet::new();
     for outcome in &outcomes {
         if let StateOutcome::Collapsed {
             destroyed_cells,
             set_bridge_direction,
+            radar_cells,
             ..
         } = outcome
         {
             destroyed_set.extend(destroyed_cells.iter().copied());
+            radar_dirty.extend(radar_cells.iter().copied());
             for (cell, _slot, action) in &set_bridge_direction.actions {
                 if matches!(action, crate::sim::bridge_specs::CellAction::BlowUpBridge) {
                     blow_up_cells.push(*cell);
@@ -130,6 +133,16 @@ pub(crate) fn apply_bridge_damage_events(
     // any final-stage walker cell flagged the bridge endpoint records
     // dirty.
     refresh_bridge_zones_if_dirty(sim, any_zones_dirty);
+
+    // BR-16: feed the minimap radar-dirty channel — the collapsed triple plus
+    // every cascade-leaf cell touched (carried in each outcome's `radar_cells`),
+    // unioned with the destroyed/BlowUpBridge set so the SetBridgeDirection
+    // cells are covered too. Same channel the engineer-repair path uses. The
+    // union may harmlessly over-mark a cell that did not change this tick (e.g.
+    // an already-Destroyed perpendicular neighbor); the minimap recomputes its
+    // color from current bridge state, so over-marking is a render-side no-op.
+    radar_dirty.extend(destroyed_set.iter().copied());
+    sim.mark_radar_terrain_dirty_cells(radar_dirty.iter().copied());
 
     // state_changed = "at least one cell collapsed this batch". The destroyed_set
     // is built from StateOutcome::Collapsed outcomes earlier in this function;
@@ -177,7 +190,9 @@ pub(crate) fn dispatch_bridge_collapse_from_hut(
             return false;
         };
         let mut presentation = BridgePresentationContext {
-            rng: &mut sim.rng,
+            // bridge collapse/repair — scenario stream. Direct field (NOT bridge_rng()):
+            // sits inside a live sim.bridge_state borrow + co-borrows world_effects etc.
+            rng: &mut sim.scenario_rng,
             world_effects: &mut sim.world_effects,
             bridge_explosions: &sim.bridge_explosions,
             effect_frame_counts: &sim.effect_frame_counts,
@@ -300,6 +315,7 @@ fn apply_hut_bridge_execution(
     let mut destroyed_set: BTreeSet<(u16, u16)> = BTreeSet::new();
     let mut blow_up_cells: Vec<(u16, u16)> = Vec::new();
     let mut rim_cells: BTreeSet<(u16, u16)> = BTreeSet::new();
+    let mut radar_dirty: BTreeSet<(u16, u16)> = BTreeSet::new();
     let mut any_zones_dirty = false;
     for outcome in outcomes {
         if let StateOutcome::Collapsed {
@@ -307,10 +323,12 @@ fn apply_hut_bridge_execution(
             set_bridge_direction,
             adjacent_bridges_dirty,
             zones_dirty,
+            radar_cells,
             ..
         } = outcome
         {
             destroyed_set.extend(destroyed_cells.iter().copied());
+            radar_dirty.extend(radar_cells.iter().copied());
             for (cell, _slot, action) in &set_bridge_direction.actions {
                 if matches!(action, crate::sim::bridge_specs::CellAction::BlowUpBridge) {
                     blow_up_cells.push(*cell);
@@ -333,6 +351,10 @@ fn apply_hut_bridge_execution(
     update_adjacent_bridges(sim, &rim_cells);
     notify_bridge_span_collapse(sim, &destroyed_set);
     refresh_bridge_zones_if_dirty(sim, any_zones_dirty);
+
+    // BR-16: feed the minimap radar-dirty channel (see apply_bridge_damage_events).
+    radar_dirty.extend(destroyed_set.iter().copied());
+    sim.mark_radar_terrain_dirty_cells(radar_dirty.iter().copied());
 
     !destroyed_set.is_empty() || extra_zones_dirty || extra_adjacent_dirty_anchor.is_some()
 }
@@ -368,8 +390,16 @@ const MAX_HUT_SWEEP_STEPS: usize = 4;
 const MAX_HUT_ATTEMPTS_PER_STEP: usize = 3;
 const NORMALIZED_RNG_MAX_INCLUSIVE: u32 = 0x7FFF_FFFE;
 const NORMALIZED_RNG_DENOMINATOR: u64 = 0x8000_0000;
-const BRIDGE_DEBRIS_OUTER_GATE_EXCLUSIVE: u32 = 2_040_109_466;
-const BRIDGE_METALLIC_GATE_EXCLUSIVE: u32 = 0x4000_0000;
+// Bridge-debris RNG gate boundaries. The original engine compares
+// `(double)draw * scale` against 0.95 / 0.5, where `scale` is the bit-exact
+// double `2^-31 + 2^-61` (NOT `1/2^31`). The tiny `2^-61` term pushes each
+// integer boundary just below the naive `threshold * 2^31`, so a draw landing
+// exactly on the float boundary must FAIL the gate. Gate passes iff
+// `draw < EXCLUSIVE`. Do NOT "simplify" these back to 2^31-scaled values
+// (…466 / 0x4000_0000): the off-by-{2,1} reproduces the float boundary, and a
+// spurious pass spends extra slot draws -> lockstep desync.
+const BRIDGE_DEBRIS_OUTER_GATE_EXCLUSIVE: u32 = 2_040_109_464;
+const BRIDGE_METALLIC_GATE_EXCLUSIVE: u32 = 0x3FFF_FFFF;
 const BRIDGE_JITTER_SPAN_LEPTONS: u64 = 50;
 const BRIDGE_JITTER_HALF_LEPTONS: i32 = 25;
 const BRIDGE_EFFECT_FRAME_MS: u32 = 67;
@@ -1003,6 +1033,11 @@ fn kill_ground_occupants_at(sim: &mut Simulation, rx: u16, ry: u16, c4_inf_death
             e.position.rx == rx
                 && e.position.ry == ry
                 && !e.is_on_bridge_layer()
+                // BlowUpBridge force-kills only the cell's GROUND object-list
+                // occupants. Air units (and TS-legacy underground) are never on
+                // that list, so an aircraft overflying the collapse cell must
+                // survive — `occupancy_list_layer()` is `None` for those layers.
+                && e.occupancy_list_layer().is_some()
                 && e.health.current > 0
         })
         .map(|(id, _)| id)
@@ -1132,7 +1167,7 @@ fn notify_bridge_span_collapse(sim: &mut Simulation, cells: &BTreeSet<(u16, u16)
 ///   2. Rebuild the path grid from the post-collapse bridge state.
 ///   3. Rerun `Simulation::rebuild_zone_grid` so cross-bridge
 ///      passability reflects the new connectivity.
-fn refresh_bridge_zones_if_dirty(sim: &mut Simulation, any_zones_dirty: bool) {
+pub(crate) fn refresh_bridge_zones_if_dirty(sim: &mut Simulation, any_zones_dirty: bool) {
     if !any_zones_dirty {
         return;
     }
@@ -1175,14 +1210,14 @@ fn spawn_bridge_debris(sim: &mut Simulation, _rules: &RuleSet, cells: &BTreeSet<
     for &(rx, ry) in cells {
         // Step 1: outer 95% gate.
         let outer_draw = sim
-            .rng
+            .bridge_rng()
             .next_range_u32_inclusive(0, NORMALIZED_RNG_MAX_INCLUSIVE);
         if outer_draw >= BRIDGE_DEBRIS_OUTER_GATE_EXCLUSIVE {
             continue;
         }
 
         // Step 2: two normalized jitter draws become the in-cell offsets.
-        let (sub_x, sub_y) = bridge_jittered_subcells(&mut sim.rng);
+        let (sub_x, sub_y) = bridge_jittered_subcells(sim.bridge_rng());
 
         let deck_level = sim
             .resolved_terrain
@@ -1193,17 +1228,18 @@ fn spawn_bridge_debris(sim: &mut Simulation, _rules: &RuleSet, cells: &BTreeSet<
 
         // Step 3: MetallicDebris 50% gate.
         let metallic_draw = sim
-            .rng
+            .bridge_rng()
             .next_range_u32_inclusive(0, NORMALIZED_RNG_MAX_INCLUSIVE);
         let metallic_pass = metallic_draw < BRIDGE_METALLIC_GATE_EXCLUSIVE;
         // Step 4: MetallicDebris slot pick + spawn (no delay). Slot draw
         // only happens when all three gates pass — short-circuit matches
         // the binary's call order.
         if metallic_pass && metallic_count > 0 {
-            let idx = sim.rng.next_range_u32(metallic_count) as usize;
+            let idx = sim.bridge_rng().next_range_u32(metallic_count) as usize;
             let anim_id = sim.metallic_debris[idx];
             let frames = sim.effect_frame_counts.get(&anim_id).copied().unwrap_or(20);
             sim.world_effects.push(WorldEffect {
+                anim_spawn: None,
                 shp_name: anim_id,
                 rx,
                 ry,
@@ -1223,11 +1259,12 @@ fn spawn_bridge_debris(sim: &mut Simulation, _rules: &RuleSet, cells: &BTreeSet<
 
         // Step 5 + 6: always BridgeExplosion, delayed 1-5 frames.
         if explosion_count > 0 {
-            let delay_frames = sim.rng.next_range_u32_inclusive(1, 5);
-            let idx = sim.rng.next_range_u32(explosion_count) as usize;
+            let delay_frames = sim.bridge_rng().next_range_u32_inclusive(1, 5);
+            let idx = sim.bridge_rng().next_range_u32(explosion_count) as usize;
             let anim_id = sim.bridge_explosions[idx];
             let frames = sim.effect_frame_counts.get(&anim_id).copied().unwrap_or(20);
             sim.world_effects.push(WorldEffect {
+                anim_spawn: None,
                 shp_name: anim_id,
                 rx,
                 ry,
@@ -1270,6 +1307,7 @@ fn spawn_bridge_explosion_effect(
     presentation
         .world_effects
         .push(crate::sim::components::WorldEffect {
+            anim_spawn: None,
             shp_name: anim_id,
             rx,
             ry,
@@ -1389,7 +1427,9 @@ fn run_dispatch_loop(
         Some(bs) => bs,
         None => return outcomes,
     };
-    let rng = &mut sim.rng;
+    // bridge collapse — scenario stream. Direct field (NOT bridge_rng()): held with a
+    // live sim.bridge_state borrow; the disjoint-field split above is required.
+    let rng = &mut sim.scenario_rng;
 
     for event in events {
         let ctx = BridgeDamageContext {
@@ -1430,25 +1470,14 @@ fn run_dispatch_loop(
             };
             for _attempt in 0..max_attempts {
                 let outcome = match path {
+                    // Blocks A/B call the overlay-first inner dispatcher
+                    // (`ApplyDamageToCell`): in-band overlays route to the
+                    // direct walker, overlay-miss cells to the state machine.
                     DispatchPath::HighStateMachine => {
-                        match bridge_state.cell(event.rx, event.ry).map(|c| c.role) {
-                            Some(crate::sim::bridge_state::BridgeCellRole::Bridgehead) => {
-                                bridge_state
-                                    .bridgehead_advance_state(event.rx, event.ry, true, terrain)
-                            }
-                            _ => bridge_state
-                                .body_cell_advance_state(event.rx, event.ry, true, terrain),
-                        }
+                        bridge_state.apply_damage_to_cell(event.rx, event.ry, true, terrain)
                     }
                     DispatchPath::LowStateMachine => {
-                        match bridge_state.cell(event.rx, event.ry).map(|c| c.role) {
-                            Some(crate::sim::bridge_state::BridgeCellRole::Bridgehead) => {
-                                bridge_state
-                                    .bridgehead_advance_state(event.rx, event.ry, false, terrain)
-                            }
-                            _ => bridge_state
-                                .body_cell_advance_state(event.rx, event.ry, false, terrain),
-                        }
+                        bridge_state.apply_damage_to_cell(event.rx, event.ry, false, terrain)
                     }
                     DispatchPath::HighDirect => {
                         bridge_state.destroy_bridge_high(event.rx, event.ry, terrain)
@@ -1465,9 +1494,11 @@ fn run_dispatch_loop(
                     break;
                 }
             }
-            // First matching path that did real work wins; stop scanning
-            // remaining paths for this event.
-            break;
+            // BR-01: NO inter-block early-out. The binary's `Apply_area_damage`
+            // runs all four blocks A/B/C/D in fixed order; a cell matching more
+            // than one block consumes one `RandomRanged(1,BridgeStrength)` draw
+            // per eligible non-Ion block. Continue scanning the remaining blocks
+            // for this event instead of stopping at the first that did work.
         }
     }
 
@@ -1820,7 +1851,7 @@ mod tests {
     fn debris_consumes_correct_rng_count_per_cell() {
         let mut sim = Simulation::new();
         let seed = 0xDEAD_BEEF_u64;
-        sim.rng = crate::sim::rng::SimRng::new(seed);
+        sim.reseed_both(seed);
         sim.resolved_terrain = Some(water_below_bridge_terrain(3));
         sim.bridge_explosions
             .extend([test_intern("BRIDGEEXP1"), test_intern("BRIDGEEXP2")]);
@@ -1851,9 +1882,53 @@ mod tests {
         spawn_bridge_debris(&mut sim, &rules, &cells);
 
         assert_eq!(
-            sim.rng.state(),
+            sim.scenario_rng.state(),
             predicted.state(),
             "RNG draw order/count diverged from binary parity sequence"
+        );
+    }
+
+    /// BR-01 + BR-02 (lockstep determinism): a single in-band high body cell
+    /// matches BOTH the High SM block (binary block A — its overlay-first
+    /// driver routes an in-band cell to the direct walker) AND the High direct
+    /// block (block D). With the inter-block early-out removed, the dispatcher
+    /// consumes exactly TWO `RandomRanged(1,BridgeStrength)` draws for the one
+    /// cell. Before BR-01/02 it consumed one; the missing draw desynced
+    /// lockstep on every multi-match cell. `run_dispatch_loop` is used directly
+    /// so only the per-block gate draws are measured (the debris/explosion
+    /// draws happen later in the cascade).
+    #[test]
+    fn dispatcher_in_band_cell_consumes_two_block_strength_draws() {
+        let mut sim = Simulation::new();
+        let seed = 0x0B11_D6E5_u64;
+        sim.reseed_both(seed);
+        sim.resolved_terrain = Some(water_below_bridge_terrain(4));
+        let mut bs = BridgeRuntimeState::default();
+        bs.test_seed_cell(5, 5, seed_bridge_cell(0xCD));
+        sim.bridge_state = Some(bs);
+
+        let bridge_strength = 1500u16;
+        // Predict exactly two BridgeStrength gate draws (block A + block D).
+        let mut predicted = crate::sim::rng::SimRng::new(seed);
+        predicted.next_range_u32_inclusive(1, bridge_strength as u32);
+        predicted.next_range_u32_inclusive(1, bridge_strength as u32);
+
+        let event = BridgeDamageEvent {
+            rx: 5,
+            ry: 5,
+            // damage > bridge_strength so both gates pass; the draw COUNT is the
+            // lockstep-significant property under test, not the gate outcome.
+            damage: 2000,
+            warhead_ref: crate::sim::intern::InternedId::default(),
+            is_ion_cannon: false,
+            impact_z: 0,
+        };
+        let _ = run_dispatch_loop(&mut sim, &[event], bridge_strength);
+
+        assert_eq!(
+            sim.scenario_rng.state(),
+            predicted.state(),
+            "in-band high cell must consume exactly 2 BridgeStrength draws (block A + block D)"
         );
     }
 
@@ -1863,7 +1938,7 @@ mod tests {
     fn bridge_debris_no_metallic_when_gate_fails_even_with_voxel_zero() {
         let mut sim = Simulation::new();
         let seed = 0xDEAD_BEEF_u64;
-        sim.rng = crate::sim::rng::SimRng::new(seed);
+        sim.reseed_both(seed);
         sim.resolved_terrain = Some(water_below_bridge_terrain(3));
         sim.bridge_explosions.push(test_intern("BRIDGEEXP1"));
         sim.metallic_debris.push(test_intern("METALDEB1"));
@@ -1900,7 +1975,7 @@ mod tests {
             .expect("fixture seed with metallic pass");
 
         let mut sim = Simulation::new();
-        sim.rng = crate::sim::rng::SimRng::new(seed);
+        sim.reseed_both(seed);
         sim.resolved_terrain = Some(water_below_bridge_terrain(3));
         sim.bridge_explosions.push(test_intern("BRIDGEEXP1"));
         sim.metallic_debris.push(test_intern("METALDEB1"));
@@ -1924,8 +1999,8 @@ mod tests {
     #[test]
     fn bridge_debris_requires_bridge_explosion_list() {
         let mut sim = Simulation::new();
-        sim.rng = crate::sim::rng::SimRng::new(7);
-        let baseline_state = sim.rng.state();
+        sim.reseed_both(7);
+        let baseline_state = sim.scenario_rng.state();
         sim.resolved_terrain = Some(water_below_bridge_terrain(3));
         sim.metallic_debris.push(test_intern("METALDEB1"));
         let rules = rules_with_voxel_max(3);
@@ -1936,7 +2011,7 @@ mod tests {
         spawn_bridge_debris(&mut sim, &rules, &cells);
 
         assert_eq!(
-            sim.rng.state(),
+            sim.scenario_rng.state(),
             baseline_state,
             "no RNG draws when BridgeExplosion metadata is absent"
         );
@@ -2055,5 +2130,86 @@ mod tests {
         let cell = sim.occupancy.get(5, 5).expect("ground occupancy");
         assert_eq!(cell.count_on(MovementLayer::Ground), 1);
         assert_eq!(cell.count_on(MovementLayer::Bridge), 0);
+    }
+
+    /// Debris RNG gate boundaries reproduce the original engine's float
+    /// truncation (`scale = 2^-31 + 2^-61`), NOT the naive `threshold * 2^31`.
+    /// A draw landing exactly on the float boundary must FAIL the gate; a
+    /// spurious pass spends extra slot draws and desyncs lockstep. This test
+    /// fails if either constant is "simplified" back to its 2^31-scaled value.
+    #[test]
+    fn bridge_debris_gate_boundaries_match_float_truncation() {
+        // Outer 95% gate: largest passing draw is 2_040_109_463.
+        assert!(2_040_109_463 < BRIDGE_DEBRIS_OUTER_GATE_EXCLUSIVE);
+        assert!(2_040_109_464 >= BRIDGE_DEBRIS_OUTER_GATE_EXCLUSIVE);
+        // Metallic 50% gate: largest passing draw is 0x3FFF_FFFE; the value
+        // that maps to exactly 0.5 (0x3FFF_FFFF) must fail under strict `<`.
+        assert!(0x3FFF_FFFE_u32 < BRIDGE_METALLIC_GATE_EXCLUSIVE);
+        assert!(0x3FFF_FFFF_u32 >= BRIDGE_METALLIC_GATE_EXCLUSIVE);
+    }
+
+    /// BlowUpBridge force-kills only the cell's ground object-list occupants.
+    /// An aircraft overflying the collapse cell (air layer, `on_bridge=false`)
+    /// is not on that list and must survive; a ground unit at the cell dies.
+    #[test]
+    fn bridge_collapse_kill_spares_airborne_units() {
+        let mut sim = Simulation::new();
+
+        // Ground unit at (5,5): no locomotor => Ground layer, on_bridge=false.
+        let ground = GameEntity::new(
+            1,
+            5,
+            5,
+            0,
+            64,
+            test_intern("Americans"),
+            Health {
+                current: 256,
+                max: 256,
+            },
+            test_intern("MTNK"),
+            crate::map::entities::EntityCategory::Unit,
+            0,
+            5,
+            true,
+        );
+        sim.entities.insert(ground);
+
+        // Aircraft hovering over (5,5): Air layer, on_bridge=false.
+        let mut air = GameEntity::new(
+            2,
+            5,
+            5,
+            12,
+            64,
+            test_intern("Americans"),
+            Health {
+                current: 256,
+                max: 256,
+            },
+            test_intern("ORCA"),
+            crate::map::entities::EntityCategory::Aircraft,
+            0,
+            5,
+            true,
+        );
+        let mut loco = drive_loco_on_bridge();
+        loco.layer = MovementLayer::Air;
+        air.locomotor = Some(loco);
+        air.on_bridge = false;
+        sim.entities.insert(air);
+
+        kill_ground_occupants_at(&mut sim, 5, 5, 1);
+
+        let g = sim.entities.get(1).expect("ground unit present");
+        assert_eq!(g.health.current, 0, "ground occupant is force-killed");
+        assert!(g.dying, "ground occupant flagged dying");
+
+        let a = sim.entities.get(2).expect("aircraft present");
+        assert_eq!(
+            a.health.current, 256,
+            "aircraft overflying the collapse cell must NOT be killed"
+        );
+        assert!(!a.dying, "aircraft not flagged dying");
     }
 }

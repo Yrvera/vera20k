@@ -139,6 +139,11 @@ rodio = "0.22"
 # stay fast because opt-level 1 is lightweight (no heavy inlining/LTO).
 [profile.dev]
 opt-level = 1
+# Emit line-table debuginfo only (keeps panic/backtrace line numbers) instead of
+# full debuginfo. On Windows/MSVC, PDB generation dominates link time once codegen
+# is cheap at opt-level 1, so this is the biggest safe build-speed win. Reversible;
+# does not affect runtime behavior or lockstep determinism.
+debug = "line-tables-only"
 
 [profile.dev.package."*"]
 opt-level = 1

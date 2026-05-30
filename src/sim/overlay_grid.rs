@@ -8,7 +8,7 @@
 //! Never depends on render/, ui/, sidebar/, audio/, net/.
 
 use crate::map::overlay::OverlayEntry;
-use crate::map::overlay_types::OverlayTypeRegistry;
+use crate::map::overlay_types::{OverlayTypeRegistry, is_bridge_overlay_index};
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 
 /// Per-cell mutable overlay state — mirrors CellClass +0x44 / +0x11E.
@@ -61,9 +61,16 @@ impl OverlayGrid {
     }
 
     /// Seed from parsed map overlay entries.
+    ///
+    /// Bridge overlays are intentionally excluded: bridge body/bridgehead
+    /// overlay bytes are owned by `BridgeRuntimeState`, while this grid owns
+    /// mutable non-bridge overlay bytes such as ore and walls.
     pub fn from_overlay_entries(entries: &[OverlayEntry], width: u16, height: u16) -> Self {
         let mut grid = Self::new(width, height);
         for entry in entries {
+            if is_bridge_overlay_index(entry.overlay_id) {
+                continue;
+            }
             if let Some(idx) = index_of(width, height, entry.rx, entry.ry) {
                 grid.cells[idx] = OverlayCell {
                     overlay_id: Some(entry.overlay_id),
@@ -582,6 +589,33 @@ mod tests {
         assert_eq!(grid.cell(1, 2).overlay_data, 7);
         assert_eq!(grid.cell(3, 0).overlay_id, Some(10));
         assert_eq!(grid.cell(0, 0).overlay_id, None);
+    }
+
+    #[test]
+    fn from_overlay_entries_skips_bridge_overlay_bytes() {
+        let entries = vec![
+            OverlayEntry {
+                rx: 1,
+                ry: 1,
+                overlay_id: 24,
+                frame: 3,
+            },
+            OverlayEntry {
+                rx: 2,
+                ry: 1,
+                overlay_id: 5,
+                frame: 7,
+            },
+        ];
+
+        let grid = OverlayGrid::from_overlay_entries(&entries, 4, 4);
+
+        assert_eq!(
+            grid.cell(1, 1).overlay_id,
+            None,
+            "bridge overlay byte is owned by BridgeRuntimeState"
+        );
+        assert_eq!(grid.cell(2, 1).overlay_id, Some(5));
     }
 
     #[test]

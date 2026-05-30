@@ -13,6 +13,7 @@ use crate::rules::locomotor_type::LocomotorKind;
 use crate::sim::components::{DriveLocomotionRuntime, MovementTarget, Position};
 use crate::sim::debug_event_log::DebugEventKind;
 use crate::sim::movement::bump_crush;
+use crate::sim::movement::drive_locomotion as drive_locomotion_helpers;
 use crate::sim::movement::drive_track::{self, DriveTrackState};
 use crate::sim::movement::locomotor::{GroundMovePhase, LocomotorState, MovementLayer};
 use crate::sim::movement::movement_blocked::handle_blocked_tick;
@@ -742,6 +743,75 @@ pub(super) fn advance_lepton_position(
             return AdvanceResult::DriveTrackActive;
         }
     } else {
+        let needs_drive_native_step = drive_locomotion
+            .as_ref()
+            .is_some_and(drive_locomotion_helpers::drive_requires_native_step);
+        if needs_drive_native_step {
+            if target.next_index >= target.path.len() {
+                if let Some(drive) = drive_locomotion.as_mut() {
+                    drive.residual_budget = 0;
+                    drive.path.cursor = drive.path.directions.len().min(u16::MAX as usize) as u16;
+                    drive.path.directions.clear();
+                }
+                return AdvanceResult::ReadyForCrossings;
+            }
+            let uses_drive_tracks = locomotor
+                .as_ref()
+                .is_some_and(|l| matches!(l.kind, LocomotorKind::Drive));
+            if uses_drive_tracks
+                && category != EntityCategory::Infantry
+                && let Some(next) = target.path.get(target.next_index).copied()
+            {
+                let ndx = next.0 as i32 - position.rx as i32;
+                let ndy = next.1 as i32 - position.ry as i32;
+                let next_face = facing_from_delta(ndx, ndy);
+                let mut substituted_delta: Option<(i32, i32)> = None;
+                let new_track =
+                    if let Some(sel) = drive_track::select_drive_track(*facing, next_face, false) {
+                        drive_track::begin_drive_track(
+                            sel.raw_track_index,
+                            sel.flags,
+                            ndx,
+                            ndy,
+                            sel.target_facing,
+                        )
+                    } else if let Some(fb) = drive_track::build_sharp_turn_fallback(*facing) {
+                        let (cdx, cdy) = crate::util::fixed_math::dir_to_cell_delta(*facing);
+                        substituted_delta = Some((cdx, cdy));
+                        drive_track::begin_drive_track(
+                            fb.raw_track_index,
+                            fb.flags,
+                            cdx,
+                            cdy,
+                            fb.target_facing,
+                        )
+                    } else {
+                        None
+                    };
+                if let Some(new_track) = new_track {
+                    if substituted_delta.is_some() {
+                        target.next_index += 1;
+                    }
+                    let (eff_dx, eff_dy) = substituted_delta.unwrap_or((ndx, ndy));
+                    let (d_x, d_y, d_len) =
+                        crate::util::lepton::cell_delta_to_lepton_dir(eff_dx, eff_dy);
+                    target.move_dir_x = d_x;
+                    target.move_dir_y = d_y;
+                    target.move_dir_len = d_len;
+                    *drive_track_state = Some(new_track);
+                    *facing_target = None;
+                    return advance_drive_track_retry_after_selection(
+                        target,
+                        position,
+                        facing,
+                        facing_target,
+                        drive_track_state,
+                        drive_locomotion,
+                    );
+                }
+            }
+            return AdvanceResult::DriveTrackActive;
+        }
         let lepton_step: SimFixed = effective_speed * dt;
         if target.move_dir_len > SIM_ZERO {
             let frac: SimFixed = lepton_step / target.move_dir_len;
@@ -836,6 +906,8 @@ pub(super) fn process_cell_crossings(
     mover_entity_block_map: Option<&crate::sim::pathfinding::LayeredEntityBlockMap>,
     live_building_entry_skips: &LiveBuildingEntrySkipMap,
     occupancy: &mut OccupancyGrid,
+    occupancy_enter_order: &mut u64,
+    next_occupancy_enter_order: &mut u64,
     stats: &mut MovementTickStats,
     finished_entities: &mut Vec<u64>,
     rng: &mut SimRng,
@@ -896,15 +968,7 @@ pub(super) fn process_cell_crossings(
             position.sub_y = crate::util::lepton::CELL_CENTER_LEPTON;
             *drive_track_state = None;
             target.movement_delay = 0;
-            let mover_is_crusher = snap.omni_crusher
-                || matches!(
-                    snap.locomotor.as_ref().map(|l| l.movement_zone),
-                    Some(
-                        crate::rules::locomotor_type::MovementZone::Crusher
-                            | crate::rules::locomotor_type::MovementZone::AmphibiousCrusher
-                            | crate::rules::locomotor_type::MovementZone::CrusherAll
-                    )
-                );
+            let mover_is_crusher = snap.regular_crusher || snap.omni_crusher;
             let evts = handle_blocked_tick(
                 target,
                 facing,
@@ -995,15 +1059,7 @@ pub(super) fn process_cell_crossings(
             // Terrain-blocked (building/cliff) — the path is stale.
             // Force immediate repath by clearing movement_delay.
             target.movement_delay = 0;
-            let mover_is_crusher = snap.omni_crusher
-                || matches!(
-                    snap.locomotor.as_ref().map(|l| l.movement_zone),
-                    Some(
-                        crate::rules::locomotor_type::MovementZone::Crusher
-                            | crate::rules::locomotor_type::MovementZone::AmphibiousCrusher
-                            | crate::rules::locomotor_type::MovementZone::CrusherAll
-                    )
-                );
+            let mover_is_crusher = snap.regular_crusher || snap.omni_crusher;
             let evts = handle_blocked_tick(
                 target,
                 facing,
@@ -1047,15 +1103,7 @@ pub(super) fn process_cell_crossings(
                     position.sub_y = crate::util::lepton::CELL_CENTER_LEPTON;
                     *drive_track_state = None;
                     target.movement_delay = 0;
-                    let mover_is_crusher = snap.omni_crusher
-                        || matches!(
-                            snap.locomotor.as_ref().map(|l| l.movement_zone),
-                            Some(
-                                crate::rules::locomotor_type::MovementZone::Crusher
-                                    | crate::rules::locomotor_type::MovementZone::AmphibiousCrusher
-                                    | crate::rules::locomotor_type::MovementZone::CrusherAll
-                            )
-                        );
+                    let mover_is_crusher = snap.regular_crusher || snap.omni_crusher;
                     let evts = handle_blocked_tick(
                         target,
                         facing,
@@ -1147,6 +1195,9 @@ pub(super) fn process_cell_crossings(
         // Uses current sub_cell (from old cell). For infantry, reserve_destination
         // below may allocate a new sub-cell and correct it via update_sub_cell.
         let insertion = CellListInsertion::from_category(category);
+        let order = *next_occupancy_enter_order;
+        *next_occupancy_enter_order = order.saturating_add(1);
+        *occupancy_enter_order = order;
         occupancy.move_entity(
             old_rx,
             old_ry,

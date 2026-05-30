@@ -6,7 +6,7 @@
 //! tile choice, land/slope bytes from TMP, and coarse blocking/buildability flags.
 
 /// Zone classification constants matching gamemd.exe RecalcZoneType output.
-/// These index columns of `MOVEMENT_CLASS_PASSABILITY` in zone_build.rs.
+/// These index columns of `MOVEMENT_ZONE_PASSABILITY` in pathfinding/passability.rs.
 pub mod zone_class {
     pub const GROUND: u8 = 0;
     pub const ROAD: u8 = 1;
@@ -132,7 +132,8 @@ pub struct ResolvedTerrainCell {
     pub land_type: u8,
     /// Final CellClass LandType value for binary predicates that need the
     /// original gamemd.exe value. Do not confuse this with `land_type`, which
-    /// is the compressed passability-matrix column.
+    /// is a legacy terrain/speed bucket for compatibility paths; matrix legality
+    /// should use `zone_type`.
     pub yr_cell_land_type: u8,
     pub slope_type: u8,
     pub template_height: u8,
@@ -164,7 +165,7 @@ pub struct ResolvedTerrainCell {
     pub terrain_object_blocks: bool,
     pub overlay_blocks: bool,
     /// Cached zone classification (0-7) matching gamemd.exe RecalcZoneType (0x483C80).
-    /// Indexes columns of `MOVEMENT_CLASS_PASSABILITY` in zone_build.rs.
+    /// Indexes columns of `MOVEMENT_ZONE_PASSABILITY` in pathfinding/passability.rs.
     ///
     /// 0=Ground, 1=Crushable overlay, 2=Wall, 3=Beach, 4=Water,
     /// 5=Building/TerrainObject, 6=Impassable, 7=Outside.

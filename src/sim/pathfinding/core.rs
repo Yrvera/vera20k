@@ -22,7 +22,7 @@ use super::zone_hierarchy::ZoneLevelGraph;
 use super::zone_map::{ZONE_INVALID, ZoneId};
 use crate::map::bridge_facts::BRIDGE_FLAG_ANCHOR_SELF;
 use crate::map::map_file::MapCell;
-use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
+use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid, zone_class};
 use crate::map::theater::TilesetLookup;
 use crate::map::tube_facts::{TubeId, TubeSource};
 use crate::rules::locomotor_type::{MovementZone, SpeedType};
@@ -1385,7 +1385,7 @@ pub(crate) fn is_water_surface_cell_passable(
     cell: &ResolvedTerrainCell,
     movement_zone: MovementZone,
 ) -> bool {
-    let matrix_ok = passability::is_passable_for_zone(cell.land_type, movement_zone);
+    let matrix_ok = passability::is_passable_for_zone(cell.zone_type, movement_zone);
     if matrix_ok {
         return true;
     }
@@ -1395,8 +1395,7 @@ pub(crate) fn is_water_surface_cell_passable(
     if cell.is_water {
         return true;
     }
-    movement_zone == MovementZone::WaterBeach
-        && cell.land_type == passability::LandType::Beach.as_index()
+    movement_zone == MovementZone::WaterBeach && cell.zone_type == zone_class::BEACH
 }
 
 pub fn is_cell_passable_for_mover(
@@ -1433,9 +1432,7 @@ pub fn is_cell_passable_for_mover_with_speed(
 ) -> bool {
     if let Some(mz) = movement_zone {
         if mz.is_water_mover() {
-            // Water movers bypass PathGrid — use passability matrix directly.
-            // cell.land_type is already the LandType column index (0-7), not
-            // the raw TMP byte — do NOT re-convert with tmp_terrain_to_land_type().
+            // Water movers bypass PathGrid and use the reduced ZoneType matrix.
             if let Some(terrain) = resolved_terrain {
                 if let Some(cell) = terrain.cell(x, y) {
                     return is_water_surface_cell_passable(cell, mz);
@@ -1560,7 +1557,7 @@ const DEFAULT_BLOCKED_CELL: PathCell = PathCell {
 /// Each cell stores ground walkability, bridge walkability, transition flags,
 /// and height levels. Flat A* reads `ground_walkable` via `is_walkable()`;
 /// layered A* reads both layers for bridge-aware routing.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PathGrid {
     cells: Vec<PathCell>,
     width: u16,
@@ -1593,6 +1590,15 @@ impl PathGrid {
     /// Grid height accessor.
     pub fn height(&self) -> u16 {
         self.height
+    }
+
+    /// Build a flat ground-level view derived from this path grid.
+    ///
+    /// This is intentionally a derived value, not persisted simulation state:
+    /// `ResolvedTerrainGrid` is the terrain-level owner and `PathGrid` is the
+    /// current path/cache projection.
+    pub fn ground_height_grid(&self) -> Vec<u8> {
+        self.cells.iter().map(|cell| cell.ground_level).collect()
     }
 
     /// Mark a cell as blocked (ground layer) or unblocked.

@@ -31,9 +31,9 @@ const TRANSPARENT: u8 = 0xFE;
 const SHROUD_CELL_PAD: i32 = 8;
 const SHROUD_HEIGHT_PAD_LEVELS: f32 = 16.0;
 
-/// Warn once if `height_grid` is `None` after world init — this indicates the
-/// app forgot to call `World::refresh_vision_heights` and the shroud will fall
-/// back to z=0 (sea-level) blits, breaking elevated-terrain rendering.
+/// Warn once if `height_grid` is `None` after world init. The app normally
+/// derives this from the current `PathGrid`; missing data falls back to z=0
+/// blits and breaks elevated-terrain rendering.
 static MISSING_HEIGHT_GRID_WARNED: OnceLock<()> = OnceLock::new();
 
 /// Shroud edge frame lookup table.
@@ -306,9 +306,8 @@ impl ShroudBuffer {
 
         if height_grid.is_none() && MISSING_HEIGHT_GRID_WARNED.set(()).is_ok() {
             log::warn!(
-                "shroud: vision_height_grid is None — shroud edges will render at \
-                 z=0 instead of cell elevation. Did the init path skip \
-                 World::refresh_vision_heights?"
+                "shroud: height grid is None - shroud edges will render at \
+                 z=0 instead of cell elevation. Is the PathGrid missing?"
             );
         }
 

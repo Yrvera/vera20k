@@ -95,7 +95,12 @@ pub fn begin_droppod_entry(entities: &mut EntityStore, entity_id: u64) -> bool {
 /// Advance all in-progress drop pod state machines.
 ///
 /// Called once per simulation tick from `advance_tick()`.
-pub fn tick_droppod_movement(entities: &mut EntityStore, tick_ms: u32, sim_tick: u64) {
+pub fn tick_droppod_movement(
+    entities: &mut EntityStore,
+    live_order: &[u64],
+    tick_ms: u32,
+    sim_tick: u64,
+) {
     if tick_ms == 0 {
         return;
     }
@@ -103,8 +108,15 @@ pub fn tick_droppod_movement(entities: &mut EntityStore, tick_ms: u32, sim_tick:
 
     let mut finished: Vec<u64> = Vec::new();
 
-    let keys = entities.keys_sorted();
-    for &id in &keys {
+    let sorted_keys;
+    let ordered_ids = if live_order.is_empty() {
+        sorted_keys = entities.keys_sorted();
+        sorted_keys.as_slice()
+    } else {
+        live_order
+    };
+
+    for &id in ordered_ids {
         let Some(entity) = entities.get_mut(id) else {
             continue;
         };
@@ -257,7 +269,7 @@ mod tests {
 
         // Tick through entire descent + landing.
         for _ in 0..200 {
-            tick_droppod_movement(&mut entities, 33, 0);
+            tick_droppod_movement(&mut entities, &[], 33, 0);
         }
 
         // Should be done: no DropPodState, locomotor restored to Walk.
@@ -284,7 +296,7 @@ mod tests {
 
         // Tick a few times — altitude should decrease.
         for _ in 0..5 {
-            tick_droppod_movement(&mut entities, 33, 0);
+            tick_droppod_movement(&mut entities, &[], 33, 0);
         }
 
         let entity = entities.get(1).expect("should exist");
@@ -308,10 +320,64 @@ mod tests {
 
         // Tick through — should complete without panic.
         for _ in 0..200 {
-            tick_droppod_movement(&mut entities, 33, 0);
+            tick_droppod_movement(&mut entities, &[], 33, 0);
         }
 
         let entity = entities.get(1).expect("should exist");
         assert!(entity.droppod_state.is_none());
+    }
+
+    #[test]
+    fn droppod_movement_uses_live_object_order_not_stable_id_scan() {
+        fn droppod_unit(id: u64) -> GameEntity {
+            let mut entity = GameEntity::test_default(id, "E1", "Americans", 5, 5);
+            entity.locomotor = Some(make_walk_loco());
+            entity.droppod_state = Some(DropPodState {
+                phase: DropPodPhase::Falling,
+                altitude: DROP_ALTITUDE,
+                timer: SIM_ZERO,
+            });
+            entity
+        }
+
+        let mut live_entities = EntityStore::new();
+        live_entities.insert(droppod_unit(1));
+        live_entities.insert(droppod_unit(2));
+
+        tick_droppod_movement(&mut live_entities, &[2], 33, 0);
+
+        assert_eq!(
+            live_entities
+                .get(1)
+                .and_then(|entity| entity.droppod_state.as_ref())
+                .map(|state| state.altitude),
+            Some(DROP_ALTITUDE),
+            "non-live-order IDs are not swept by stable-id fallback"
+        );
+        assert!(
+            live_entities
+                .get(2)
+                .and_then(|entity| entity.droppod_state.as_ref())
+                .is_some_and(|state| state.altitude < DROP_ALTITUDE)
+        );
+
+        let mut fallback_entities = EntityStore::new();
+        fallback_entities.insert(droppod_unit(1));
+        fallback_entities.insert(droppod_unit(2));
+
+        tick_droppod_movement(&mut fallback_entities, &[], 33, 0);
+
+        assert!(
+            fallback_entities
+                .get(1)
+                .and_then(|entity| entity.droppod_state.as_ref())
+                .is_some_and(|state| state.altitude < DROP_ALTITUDE)
+        );
+        assert!(
+            fallback_entities
+                .get(2)
+                .and_then(|entity| entity.droppod_state.as_ref())
+                .is_some_and(|state| state.altitude < DROP_ALTITUDE)
+        );
     }
 }

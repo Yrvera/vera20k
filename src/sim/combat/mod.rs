@@ -584,6 +584,9 @@ pub fn tick_combat(
         current_tick,
         tick_ms,
         binary_frame,
+        // Convenience shim (tests only); empty live order falls back to the
+        // stable-id resolution order, preserving prior behavior exactly.
+        &[],
     )
 }
 
@@ -720,6 +723,10 @@ pub struct TiberiumReductionRequest {
 pub struct CombatTickResult {
     pub reveal_events: Vec<RevealEvent>,
     pub despawned_ids: Vec<u64>,
+    /// IDs that should be physically removed by the world lifecycle this tick.
+    /// `despawned_ids` also includes SHP deaths that remain in-store for their
+    /// death animation; this list is immediate structure/voxel removal only.
+    pub immediate_uninit_ids: Vec<u64>,
     /// A structure was destroyed — PathGrid needs footprint unblock.
     pub structure_destroyed: bool,
     /// Owners who lost their last SpySat building — need full reshroud.
@@ -784,6 +791,7 @@ fn death_weapon_aoe(
 /// Collected side-effects from processing entity deaths in a single tick.
 struct DeathEffects {
     despawned_ids: Vec<u64>,
+    immediate_uninit_ids: Vec<u64>,
     structure_destroyed: bool,
     spy_sat_reshroud_owners: Vec<InternedId>,
     destroyed_crewed_buildings: Vec<DestroyedCrewedBuilding>,
@@ -830,6 +838,7 @@ fn handle_entity_deaths(
         InternedId,
     )> = Vec::new();
     let mut despawned_ids: Vec<u64> = Vec::new();
+    let mut immediate_uninit_ids: Vec<u64> = Vec::new();
     let mut spy_sat_reshroud_owners: Vec<InternedId> = Vec::new();
     let mut destroyed_crewed_buildings: Vec<DestroyedCrewedBuilding> = Vec::new();
     let mut destroyed_garrison_buildings: Vec<DestroyedGarrisonBuilding> = Vec::new();
@@ -997,13 +1006,15 @@ fn handle_entity_deaths(
                 despawned_ids.push(dead_id);
                 log::trace!("Entity {} dying (death animation)", dead_id);
             } else {
-                // Structures and voxel vehicles: immediate despawn.
-                // Remove from occupancy before entity is gone.
-                if let Some(entity) = entities.get(dead_id) {
-                    occupancy.remove(entity.position.rx, entity.position.ry, dead_id);
+                // Structures and voxel vehicles: immediate physical removal,
+                // but the world layer owns lifecycle cleanup.
+                if let Some(entity) = entities.get_mut(dead_id) {
+                    entity.dying = true;
+                    entity.attack_target = None;
+                    entity.movement_target = None;
+                    entity.selected = false;
                 }
-                entities.clear_radio_contacts_for(dead_id);
-                entities.remove(dead_id);
+                immediate_uninit_ids.push(dead_id);
                 despawned_ids.push(dead_id);
                 log::trace!("Entity {} destroyed", dead_id);
             }
@@ -1097,6 +1108,7 @@ fn handle_entity_deaths(
 
     DeathEffects {
         despawned_ids,
+        immediate_uninit_ids,
         structure_destroyed,
         spy_sat_reshroud_owners,
         destroyed_crewed_buildings,
@@ -1183,11 +1195,13 @@ pub fn tick_combat_with_fog(
     current_tick: u64,
     tick_ms: u32,
     binary_frame: u32,
+    live_order: &[u64],
 ) -> CombatTickResult {
     if tick_ms == 0 {
         return CombatTickResult {
             reveal_events: Vec::new(),
             despawned_ids: Vec::new(),
+            immediate_uninit_ids: Vec::new(),
             structure_destroyed: false,
             spy_sat_reshroud_owners: Vec::new(),
             bridge_damage_events: Vec::new(),
@@ -1504,7 +1518,24 @@ pub fn tick_combat_with_fog(
             garrison,
         });
     }
-    snapshots.sort_by_key(|s| s.stable_id);
+    // Native combat resolves each object inline during the single live-object
+    // (reveal/insertion-order) AI walk, so firing/damage/kill-credit order is
+    // the live-object order, not stable-id. Sort the collected attacker
+    // snapshots by their position in the live order. stable_id is the
+    // deterministic tiebreaker for any attacker absent from the live order
+    // (limbo objects do not fire) and makes an empty live_order reproduce the
+    // previous stable-id order exactly.
+    let live_index: std::collections::HashMap<u64, usize> = live_order
+        .iter()
+        .enumerate()
+        .map(|(i, &id)| (id, i))
+        .collect();
+    snapshots.sort_by_key(|s| {
+        (
+            live_index.get(&s.stable_id).copied().unwrap_or(usize::MAX),
+            s.stable_id,
+        )
+    });
 
     // Phase 2: process each attacker against its target.
     // (target_id, damage, attacker_id, warhead_id)
@@ -2240,6 +2271,7 @@ pub fn tick_combat_with_fog(
     CombatTickResult {
         reveal_events,
         despawned_ids: death.despawned_ids,
+        immediate_uninit_ids: death.immediate_uninit_ids,
         structure_destroyed: death.structure_destroyed,
         spy_sat_reshroud_owners: death.spy_sat_reshroud_owners,
         bridge_damage_events,

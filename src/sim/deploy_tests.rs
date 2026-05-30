@@ -177,8 +177,8 @@ Foundation=2x2
 fn spawn_infantry(sim: &mut Simulation, type_str: &str, owner: &str, rx: u16, ry: u16) -> u64 {
     let owner_id = sim.interner.intern(owner);
     let type_id = sim.interner.intern(type_str);
-    let id = sim.next_stable_entity_id;
-    sim.next_stable_entity_id += 1;
+    let id = sim.substrate.next_stable_entity_id;
+    sim.substrate.next_stable_entity_id += 1;
     let e = GameEntity::new(
         id,
         rx,

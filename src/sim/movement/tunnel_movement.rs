@@ -174,6 +174,7 @@ fn begin_burrow(
 pub fn tick_tunnel_movement(
     entities: &mut EntityStore,
     occupancy: &mut OccupancyGrid,
+    live_order: &[u64],
     tick_ms: u32,
     sim_tick: u64,
 ) {
@@ -184,8 +185,15 @@ pub fn tick_tunnel_movement(
 
     let mut finished: Vec<u64> = Vec::new();
 
-    let keys = entities.keys_sorted();
-    for &id in &keys {
+    let sorted_keys;
+    let ordered_ids = if live_order.is_empty() {
+        sorted_keys = entities.keys_sorted();
+        sorted_keys.as_slice()
+    } else {
+        live_order
+    };
+
+    for &id in ordered_ids {
         let Some(entity) = entities.get_mut(id) else {
             continue;
         };
@@ -423,7 +431,7 @@ mod tests {
 
         // Tick through the entire sequence.
         for _ in 0..200 {
-            tick_tunnel_movement(&mut entities, &mut OccupancyGrid::new(), 33, 0);
+            tick_tunnel_movement(&mut entities, &mut OccupancyGrid::new(), &[], 33, 0);
         }
 
         // Should have arrived at destination and be back on ground.
@@ -456,7 +464,7 @@ mod tests {
 
         // Tick past DigIn into UndergroundTravel.
         for _ in 0..10 {
-            tick_tunnel_movement(&mut entities, &mut OccupancyGrid::new(), 33, 0);
+            tick_tunnel_movement(&mut entities, &mut OccupancyGrid::new(), &[], 33, 0);
         }
 
         let entity = entities.get(1).expect("should exist");
@@ -465,6 +473,70 @@ mod tests {
             loco.layer,
             MovementLayer::Underground,
             "Should be underground during travel"
+        );
+    }
+
+    #[test]
+    fn tunnel_movement_uses_live_object_order_not_stable_id_scan() {
+        fn tunnel_unit(id: u64, rx: u16, target_rx: u16) -> GameEntity {
+            let mut entity = GameEntity::test_default(id, "DVIL", "Soviet", rx, 2);
+            entity.locomotor = Some(make_tunnel_loco());
+            entity.tunnel_state = Some(TunnelState {
+                phase: TunnelPhase::DigIn,
+                target_rx,
+                target_ry: 2,
+                timer: SimFixed::lit("0.01"),
+                tunnel_speed: SimFixed::from_num(4),
+                progress: SIM_ZERO,
+            });
+            entity
+        }
+
+        let mut live_entities = EntityStore::new();
+        live_entities.insert(tunnel_unit(1, 2, 12));
+        live_entities.insert(tunnel_unit(2, 3, 13));
+
+        tick_tunnel_movement(&mut live_entities, &mut OccupancyGrid::new(), &[2], 33, 0);
+
+        let first = live_entities.get(1).expect("id 1");
+        assert_eq!(
+            first.tunnel_state.as_ref().expect("id 1 state").phase,
+            TunnelPhase::DigIn,
+            "non-live-order IDs are not swept by stable-id fallback"
+        );
+        assert_eq!(
+            live_entities
+                .get(2)
+                .and_then(|entity| entity.tunnel_state.as_ref())
+                .map(|state| state.phase),
+            Some(TunnelPhase::UndergroundTravel)
+        );
+
+        let mut fallback_entities = EntityStore::new();
+        fallback_entities.insert(tunnel_unit(1, 2, 12));
+        fallback_entities.insert(tunnel_unit(2, 3, 13));
+
+        tick_tunnel_movement(
+            &mut fallback_entities,
+            &mut OccupancyGrid::new(),
+            &[],
+            33,
+            0,
+        );
+
+        assert_eq!(
+            fallback_entities
+                .get(1)
+                .and_then(|entity| entity.tunnel_state.as_ref())
+                .map(|state| state.phase),
+            Some(TunnelPhase::UndergroundTravel)
+        );
+        assert_eq!(
+            fallback_entities
+                .get(2)
+                .and_then(|entity| entity.tunnel_state.as_ref())
+                .map(|state| state.phase),
+            Some(TunnelPhase::UndergroundTravel)
         );
     }
 }

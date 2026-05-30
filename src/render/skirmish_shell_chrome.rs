@@ -39,6 +39,9 @@ pub struct SkirmishShellChromeAtlas {
     pub right_panel_button_sdbtnanm_frame2: Option<SkirmishShellChromeEntry>,
     pub right_panel_button_sdbtnanm_frame3: Option<SkirmishShellChromeEntry>,
     pub right_panel_button_sdbtnanm_frame4: Option<SkirmishShellChromeEntry>,
+    /// Full SDBTNANM frame range (indices 0..=16) for the slide-in wave; each
+    /// `None` when the loaded SHP lacks that frame (draw clamps, never panics).
+    pub right_panel_button_sdbtnanm_frames: [Option<SkirmishShellChromeEntry>; 17],
     pub right_panel_bottom_sdbtm: Option<SkirmishShellChromeEntry>,
     pub sd_map_button: Option<SkirmishShellChromeEntry>,
     pub background_640_mnscrns: Option<SkirmishShellChromeEntry>,
@@ -149,7 +152,9 @@ pub fn build_skirmish_shell_chrome_atlas(
         "SHELL.PAL",
     )?);
     if let Some(sdbtnanm_palette) = sdbtnanm_palette.as_ref() {
-        for frame in [2usize, 3, 4, 10] {
+        // Bake the full frame range the slide-in wave references (Group A uses 1/5..=10,
+        // Group B uses 0/11..=16) plus the existing idle frames 2/3/4 and overlay 10.
+        for frame in 0usize..=16 {
             match render_shp_entry_labeled(
                 assets,
                 "SDBTNANM.SHP",
@@ -347,6 +352,9 @@ pub fn build_skirmish_shell_chrome_atlas(
         right_panel_button_sdbtnanm_frame2: by_label.get("sdbtnanm.shp#2").copied(),
         right_panel_button_sdbtnanm_frame3: by_label.get("sdbtnanm.shp#3").copied(),
         right_panel_button_sdbtnanm_frame4: by_label.get("sdbtnanm.shp#4").copied(),
+        right_panel_button_sdbtnanm_frames: std::array::from_fn(|frame| {
+            by_label.get(&format!("sdbtnanm.shp#{frame}")).copied()
+        }),
         right_panel_bottom_sdbtm: by_label.get("sdbtm.shp").copied(),
         sd_map_button: by_label.get("sdmpbtn.shp").copied(),
         background_640_mnscrns: by_label.get("mnscrns.shp").copied(),

@@ -8,11 +8,79 @@ use std::collections::HashMap;
 
 use crate::assets::asset_manager::AssetManager;
 use crate::assets::pal_file::Palette;
+use crate::assets::pcx_file::PcxFile;
 use crate::assets::shp_file::ShpFile;
 use crate::render::batch::{BatchRenderer, BatchTexture};
 use crate::render::gpu::GpuContext;
 
 const ATLAS_PADDING: u32 = 2;
+
+/// Synthetic atlas label for the 1x1 white texel used to draw the solid backing
+/// fill (G3) as a tinted quad. Not an asset on disk.
+const SOLID_TEXEL_LABEL: &str = "__solid_texel__";
+
+/// Palette index treated as transparent when decoding the country side-icon PCX.
+/// The insignia PCX files use index 0 for their background.
+const SIDE_ICON_TRANSPARENT_INDEX: u8 = 0;
+
+/// Screen-width breakpoints that select the marker projection region rect.
+///
+/// The native loader compares the live screen width against two breakpoints
+/// (800 and 1024) to pick a fixed region rect for projecting per-player start
+/// markers; widths below 800 use the 640 fallback rect.
+const MMPB_REGION_BREAKPOINT_800: u32 = 800;
+const MMPB_REGION_BREAKPOINT_1024: u32 = 1024;
+
+/// Fixed region rect (origin_x, size_x, size_y, origin_y) used to project the
+/// per-player start markers (`mmpb.shp` frame 0) onto the loading background.
+///
+/// These four values are the verified, screen-width-keyed region constants
+/// (origin and size in screen pixels). The size pair (size_x, size_y) sizes the
+/// projection surface; the origin pair anchors it on screen. Marker X uses
+/// `origin_x` (after the per-axis `-3` nudge) and marker Y uses `origin_y`
+/// (after the per-axis `-2` nudge).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MmpbRegionRect {
+    pub origin_x: i32,
+    pub size_x: i32,
+    pub size_y: i32,
+    pub origin_y: i32,
+}
+
+/// Per-axis screen nudge applied to a projected marker before the region origin
+/// is added (verified marker projection: X gets `-3`, Y gets `-2`).
+pub const MMPB_MARKER_NUDGE_X: i32 = -3;
+pub const MMPB_MARKER_NUDGE_Y: i32 = -2;
+
+/// Select the marker projection region rect for the current screen width.
+///
+/// >=1024 and >=800 use their dedicated rects; anything narrower falls back to
+/// the 640 rect. These constants are pinned from the loader's region-const block
+/// and must not be interpolated between breakpoints.
+pub fn mmpb_region_rect(render_width: u32) -> MmpbRegionRect {
+    if render_width >= MMPB_REGION_BREAKPOINT_1024 {
+        MmpbRegionRect {
+            origin_x: 0x23a,
+            size_x: 0x1a8,
+            size_y: 0x12c,
+            origin_y: 0x104,
+        }
+    } else if render_width >= MMPB_REGION_BREAKPOINT_800 {
+        MmpbRegionRect {
+            origin_x: 0x1f3,
+            size_x: 0x17b,
+            size_y: 0xd8,
+            origin_y: 0xa6,
+        }
+    } else {
+        MmpbRegionRect {
+            origin_x: 0x181,
+            size_x: 0x10e,
+            size_y: 0xc8,
+            origin_y: 0xc8,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoadingScreenWidth {
@@ -66,6 +134,26 @@ impl LoadingArtVariant {
         }
     }
 
+    /// Country insignia PCX drawn to the right of the loading bar (G4).
+    ///
+    /// Verified asset mapping from gamemd's loading-side-icon resolver
+    /// (`FUN_004e3560`): each launch country maps to a 4-letter insignia PCX.
+    pub fn side_icon_pcx(self) -> &'static str {
+        match self {
+            Self::Americans => "usai.pcx",
+            Self::Alliance => "japi.pcx",
+            Self::French => "frai.pcx",
+            Self::Germans => "geri.pcx",
+            Self::British => "gbri.pcx",
+            Self::Africans => "djbi.pcx",
+            Self::Arabs => "arbi.pcx",
+            Self::Confederation => "lati.pcx",
+            Self::Russians => "rusi.pcx",
+            Self::Yuri => "yrii.pcx",
+            Self::Observer => "obsi.pcx",
+        }
+    }
+
     pub fn manifest(self) -> LoadingArtManifest {
         match self {
             Self::Yuri => LoadingArtManifest::new("yuri", "MPYLS.PAL"),
@@ -113,6 +201,11 @@ pub struct LoadingScreenAtlas {
     pub texture: BatchTexture,
     pub background: LoadingScreenEntry,
     pub progress_frame0: LoadingScreenEntry,
+    /// Country insignia drawn right of the bar (G4). `None` when the PCX is
+    /// missing — the bar still draws without it.
+    pub side_icon: Option<LoadingScreenEntry>,
+    /// 1x1 white texel for drawing the solid backing fill (G3) as a tinted quad.
+    pub solid_texel: LoadingScreenEntry,
 }
 
 struct RenderedLoadingEntry {
@@ -135,7 +228,7 @@ pub fn build_loading_screen_atlas(
     let progress_palette = load_named_ui_palette(assets, "MPLS.PAL")
         .or_else(|| load_named_ui_palette(assets, manifest.palette_name))?;
 
-    let rendered = vec![
+    let mut rendered = vec![
         mandatory_shp(
             assets,
             &background_name,
@@ -144,7 +237,23 @@ pub fn build_loading_screen_atlas(
             manifest.palette_name,
         )?,
         mandatory_shp(assets, "PROGBARM.SHP", &progress_palette, 0, "MPLS.PAL")?,
+        solid_texel_entry(),
     ];
+
+    // Side-icon is non-fatal: if its PCX is missing or malformed the bar still
+    // draws. Record its label so it can be looked up after packing.
+    let side_icon_name = variant.side_icon_pcx();
+    let side_icon_label = match render_pcx_entry(assets, side_icon_name) {
+        Some(entry) => {
+            let label = entry.label.clone();
+            rendered.push(entry);
+            Some(label)
+        }
+        None => {
+            log::warn!("Missing standard Skirmish loading side icon {side_icon_name}");
+            None
+        }
+    };
 
     let (texture, packed) = pack_entries(gpu, batch, &rendered)?;
     let by_label: HashMap<String, LoadingScreenEntry> = rendered
@@ -152,10 +261,43 @@ pub fn build_loading_screen_atlas(
         .map(|entry| entry.label.clone())
         .zip(packed)
         .collect();
+    let side_icon = side_icon_label.and_then(|label| by_label.get(&label).copied());
     Some(LoadingScreenAtlas {
         texture,
         background: *by_label.get(&background_name.to_ascii_lowercase())?,
         progress_frame0: *by_label.get("progbarm.shp")?,
+        side_icon,
+        solid_texel: *by_label.get(SOLID_TEXEL_LABEL)?,
+    })
+}
+
+/// A 1x1 opaque-white texel. Drawn scaled and tinted to produce the G3 solid
+/// backing fill; tinting an all-white texel yields a flat color rect.
+fn solid_texel_entry() -> RenderedLoadingEntry {
+    RenderedLoadingEntry {
+        label: SOLID_TEXEL_LABEL.to_string(),
+        width: 1,
+        height: 1,
+        rgba: vec![255, 255, 255, 255],
+    }
+}
+
+/// Decode a palettized country-insignia PCX into an atlas entry, treating
+/// index 0 as transparent.
+fn render_pcx_entry(assets: &AssetManager, file_name: &str) -> Option<RenderedLoadingEntry> {
+    let bytes = assets.get_ref(file_name)?;
+    let pcx = PcxFile::from_bytes(bytes)
+        .map_err(|err| {
+            log::warn!("Could not parse standard Skirmish loading side icon {file_name}: {err:#}");
+            err
+        })
+        .ok()?;
+    let rgba = pcx.to_rgba(Some(SIDE_ICON_TRANSPARENT_INDEX));
+    Some(RenderedLoadingEntry {
+        label: file_name.to_ascii_lowercase(),
+        width: pcx.width as u32,
+        height: pcx.height as u32,
+        rgba,
     })
 }
 
@@ -319,7 +461,46 @@ fn pack_entries(
 
 #[cfg(test)]
 mod tests {
-    use super::{LoadingArtVariant, LoadingScreenWidth, render_shp_entry};
+    use super::{
+        LoadingArtVariant, LoadingScreenWidth, MmpbRegionRect, mmpb_region_rect, render_shp_entry,
+    };
+
+    #[test]
+    fn mmpb_region_rect_uses_pinned_constants_per_breakpoint() {
+        // 640 fallback (any width below 800).
+        assert_eq!(
+            mmpb_region_rect(640),
+            MmpbRegionRect {
+                origin_x: 385,
+                size_x: 270,
+                size_y: 200,
+                origin_y: 200,
+            }
+        );
+        // Exactly at the 800 breakpoint.
+        assert_eq!(
+            mmpb_region_rect(800),
+            MmpbRegionRect {
+                origin_x: 499,
+                size_x: 379,
+                size_y: 216,
+                origin_y: 166,
+            }
+        );
+        // Between 800 and 1024 still uses the 800 rect (no interpolation).
+        assert_eq!(mmpb_region_rect(1023), mmpb_region_rect(800));
+        // Exactly at the 1024 breakpoint and above.
+        assert_eq!(
+            mmpb_region_rect(1024),
+            MmpbRegionRect {
+                origin_x: 570,
+                size_x: 424,
+                size_y: 300,
+                origin_y: 260,
+            }
+        );
+        assert_eq!(mmpb_region_rect(1920), mmpb_region_rect(1024));
+    }
 
     #[test]
     fn loading_art_manifest_uses_verified_binary_string_table_names() {
@@ -425,6 +606,69 @@ mod tests {
             let name = manifest.background_asset(LoadingScreenWidth::W800);
             assert!(!name.to_ascii_lowercase().contains("pudlgbg"));
             assert_ne!(name.to_ascii_lowercase(), "spldbr.shp");
+        }
+    }
+
+    #[test]
+    #[ignore = "diagnostic asset dump; run explicitly when inspecting PROGBARM palette indices"]
+    fn zz_dump_progbarm_frame0_indices() {
+        let config = match crate::util::config::GameConfig::load() {
+            Ok(config) => config,
+            Err(_) => return,
+        };
+        if !config.paths.ra2_dir.exists() {
+            return;
+        }
+        let assets = crate::assets::asset_manager::AssetManager::new(&config.paths.ra2_dir)
+            .expect("install loads");
+        let bytes = assets.get_ref("PROGBARM.SHP").expect("progbarm");
+        let shp = crate::assets::shp_file::ShpFile::from_bytes(bytes).expect("parse shp");
+        let f = &shp.frames[0];
+        let mut hist = [0u32; 256];
+        for &p in &f.pixels {
+            hist[p as usize] += 1;
+        }
+        eprintln!(
+            "PROGBARM frame0 fw={} fh={} fx={} fy={} npix={}",
+            f.frame_width,
+            f.frame_height,
+            f.frame_x,
+            f.frame_y,
+            f.pixels.len()
+        );
+        for i in 0..256 {
+            if hist[i] > 0 {
+                eprintln!("  idx {i:3} count {}", hist[i]);
+            }
+        }
+        // Dump MPLS.PAL RGB for the house-color band 16..31 (raw 6-bit *4 not applied here).
+        if let Some(pal) = assets.get_ref("MPLS.PAL") {
+            eprintln!("MPLS.PAL raw bytes 16..32:");
+            for i in 16..32 {
+                let o = i * 3;
+                eprintln!("  pal {i:2} = {} {} {}", pal[o], pal[o + 1], pal[o + 2]);
+            }
+        }
+        panic!("diagnostic dump");
+    }
+
+    #[test]
+    fn side_icon_pcx_uses_verified_insignia_mapping() {
+        let cases = [
+            (LoadingArtVariant::Americans, "usai.pcx"),
+            (LoadingArtVariant::Alliance, "japi.pcx"),
+            (LoadingArtVariant::French, "frai.pcx"),
+            (LoadingArtVariant::Germans, "geri.pcx"),
+            (LoadingArtVariant::British, "gbri.pcx"),
+            (LoadingArtVariant::Africans, "djbi.pcx"),
+            (LoadingArtVariant::Arabs, "arbi.pcx"),
+            (LoadingArtVariant::Confederation, "lati.pcx"),
+            (LoadingArtVariant::Russians, "rusi.pcx"),
+            (LoadingArtVariant::Yuri, "yrii.pcx"),
+            (LoadingArtVariant::Observer, "obsi.pcx"),
+        ];
+        for (variant, expected) in cases {
+            assert_eq!(variant.side_icon_pcx(), expected, "{variant:?}");
         }
     }
 

@@ -6,12 +6,70 @@
 
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::locomotor_type::{LocomotorKind, SpeedType};
-use crate::sim::components::DriveLocomotionRuntime;
+use crate::sim::components::{DriveCoord, DriveLocomotionRuntime, NavTargetRef};
+use crate::sim::entity_store::EntityStore;
+use crate::sim::game_entity::GameEntity;
 use crate::sim::occupancy::OccupancyGrid;
 use crate::sim::pathfinding::terrain_speed::{self, TerrainSpeedConfig};
 use crate::util::fixed_math::{SIM_ONE, SIM_ZERO, SimFixed};
 
 const DRIVE_DESTINATION_BRAKE_FLOOR: SimFixed = SimFixed::lit("0.3");
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum DriveProcessOutcome {
+    NotDrive,
+    Processed,
+    Waiting,
+    Arrived,
+    Blocked,
+}
+
+pub(super) fn process_drive_locomotion_shell(entity: &GameEntity) -> DriveProcessOutcome {
+    if entity.drive_locomotion.is_none() {
+        return DriveProcessOutcome::NotDrive;
+    }
+    DriveProcessOutcome::Processed
+}
+
+pub(super) fn drive_requires_native_step(drive: &DriveLocomotionRuntime) -> bool {
+    drive.active_tube.is_some() || !drive.path.directions.is_empty() || drive.residual_budget != 0
+}
+
+pub(super) fn refresh_drive_head_to_from_navcom(
+    entity: &mut GameEntity,
+    entities: &EntityStore,
+) -> bool {
+    let Some(target) = entity.navigation.nav_com else {
+        return false;
+    };
+    let Some(coord) = super::navcom::resolve_entity_nav_target_drive_coord(target, entities) else {
+        return false;
+    };
+    refresh_drive_head_to_coord(entity, coord)
+}
+
+pub(super) fn refresh_drive_head_to_coord(entity: &mut GameEntity, coord: DriveCoord) -> bool {
+    let Some(drive) = entity.drive_locomotion.as_mut() else {
+        return false;
+    };
+    if drive.head_to == Some(coord) {
+        return false;
+    }
+    drive.head_to = Some(coord);
+    true
+}
+
+pub(super) fn drive_entity_nav_targets(entities: &EntityStore) -> Vec<(u64, NavTargetRef)> {
+    entities
+        .keys_sorted()
+        .into_iter()
+        .filter_map(|id| {
+            let entity = entities.get(id)?;
+            let target = entity.navigation.nav_com?;
+            matches!(target, NavTargetRef::Entity { .. }).then_some((id, target))
+        })
+        .collect()
+}
 
 /// Compute the Drive-local target speed fraction from currently modeled runtime
 /// modifiers. This is the `DriveLocomotion` owner value; raw `Speed=` remains a

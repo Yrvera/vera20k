@@ -41,3 +41,6 @@ tools/research_index/
 
 /*.md
 !/README.md
+
+/*.js
+/*.py

@@ -111,6 +111,7 @@ fn spawn_invoke_anim(sim: &mut Simulation, anim_name: &str, rx: u16, ry: u16) {
     let iid = sim.interner.intern(anim_name);
     let frames = sim.effect_frame_counts.get(&iid).copied().unwrap_or(20);
     sim.world_effects.push(WorldEffect {
+        anim_spawn: None,
         shp_name: iid,
         rx,
         ry,

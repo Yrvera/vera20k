@@ -46,7 +46,9 @@ pub fn list_available_maps() -> Result<Vec<MapMenuEntry>> {
             }
         }
     }
-    maps.sort_by_key(|m| m.display_name.to_ascii_lowercase());
+    // No sort: the original game displays maps in source-enumeration order and
+    // never alphabetizes. read_dir order is filesystem-dependent, but matching
+    // the no-sort behavior is what parity requires here.
     Ok(maps)
 }
 

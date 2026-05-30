@@ -15,10 +15,15 @@ use crate::sim::components::{
     AnimOverlayState, AnimRuntime, BuildingAnimOverlays, DamageFireAnim, DamageFireOverlays,
     GarrisonMuzzleFlash,
 };
+use crate::sim::intern::InternedId;
 use crate::sim::production;
+use crate::sim::rng::SimRng;
 use crate::sim::world::Simulation;
 
 const GARRISON_OCCUPANT_ANIM_Z_ADJUST: i32 = -200;
+const DAMAGE_FIRE_SLOT_COUNT: usize = 8;
+const DAMAGE_FIRE_HEIGHT_STEP_PX: i32 = 15;
+const DAMAGE_FIRE_Z_ADJUST_BIAS: i32 = -10;
 
 /// Advance one-shot building animation overlays stored as ECS components,
 /// and the global idle animation timer.
@@ -68,161 +73,230 @@ pub(crate) fn tick_crane_animations(state: &mut AppState, dt_ms: u32) {
 
 /// Spawn, remove, and advance DamageFireAnim overlays on buildings.
 ///
-/// When a building's health drops below ConditionYellow, fire/smoke overlays are
-/// created at the DamageFireOffset positions defined in art.ini. When repaired
-/// above the threshold, fires are removed. Each fire loops independently.
+/// Gamemd creates the native damage-fire AnimClass slots when BuildingClass::Update
+/// flips its cached damage-fire byte false->true. This app-side bridge keeps that
+/// slot lifetime and RNG order as far as the current overlay surface allows.
 pub(crate) fn tick_damage_fire_overlays(state: &mut AppState, dt_ms: u32) {
-    let condition_yellow = state
-        .rules
-        .as_ref()
-        .map(|r| r.general.condition_yellow)
-        .unwrap_or(0.5);
-
-    // Collect fire type info outside the entity loop to avoid borrow conflicts.
-    let fire_types: Vec<(String, u32)> = state
-        .rules
-        .as_ref()
-        .map(|r| {
-            r.general
-                .damage_fire_types
-                .iter()
-                .map(|f| (f.name.clone(), f.rate_ms))
-                .collect()
-        })
-        .unwrap_or_default();
+    let Some(rules) = state.rules.as_ref() else {
+        return;
+    };
+    let condition_yellow = rules.general.condition_yellow;
+    let condition_red = rules.general.condition_red;
+    let fire_types: Vec<(String, u32)> = rules
+        .general
+        .damage_fire_types
+        .iter()
+        .map(|f| (f.name.clone(), f.rate_ms))
+        .collect();
 
     if fire_types.is_empty() {
         return;
     }
 
-    // Phase 1: Identify buildings that need new fire overlays spawned.
-    // Collect (entity_id, type_ref) pairs while only holding immutable borrows.
-    let needs_spawn: Vec<(u64, String)> = {
-        let sim = match &state.simulation {
-            Some(s) => s,
-            None => return,
+    let spawn_plans: Vec<DamageFireSpawnPlan> = {
+        let Some(sim) = state.simulation.as_ref() else {
+            return;
         };
+        let Some(art_reg) = state.art_registry.as_ref() else {
+            return;
+        };
+
         sim.entities
             .values()
             .filter_map(|entity| {
                 if entity.category != EntityCategory::Structure {
                     return None;
                 }
-                if entity.health.max == 0 {
+                if entity.health.max == 0 || entity.damage_fire_overlays.is_some() {
                     return None;
                 }
                 let ratio = entity.health.current as f32 / entity.health.max as f32;
-                if ratio <= condition_yellow && entity.damage_fire_overlays.is_none() {
-                    Some((
-                        entity.stable_id,
-                        sim.interner.resolve(entity.type_ref).to_string(),
-                    ))
-                } else {
-                    None
+                let threshold = damage_fire_threshold_for_current_surface(
+                    condition_yellow,
+                    condition_red,
+                    None,
+                );
+                if ratio > threshold {
+                    return None;
                 }
-            })
-            .collect()
-    };
 
-    // Resolve art offsets for buildings that need fires (immutable borrow of art_registry).
-    let spawn_data: Vec<(u64, Vec<DamageFireAnim>)> = {
-        let art_reg = state.art_registry.as_ref();
-        let effect_counts = state.simulation.as_ref().map(|s| &s.effect_frame_counts);
-        needs_spawn
-            .into_iter()
-            .filter_map(|(id, type_ref)| {
-                let offsets = art_reg
-                    .and_then(|a| a.get(&type_ref))
-                    .map(|art| &art.damage_fire_offsets)?;
+                let type_ref = sim.interner.resolve(entity.type_ref);
+                let rules_obj = rules.object(type_ref);
+                let rules_image = rules_obj.map(|obj| obj.image.as_str()).unwrap_or(type_ref);
+                let art_entry = art_reg.resolve_metadata_entry(type_ref, rules_image)?;
+                let offsets: Vec<(i32, i32)> = art_entry
+                    .damage_fire_offsets
+                    .iter()
+                    .take(DAMAGE_FIRE_SLOT_COUNT)
+                    .copied()
+                    .collect();
                 if offsets.is_empty() {
                     return None;
                 }
-                let fires: Vec<DamageFireAnim> = offsets
-                    .iter()
-                    .enumerate()
-                    .map(|(i, &(px, py))| {
-                        let (ref name, rate_ms) = fire_types[i % fire_types.len()];
-                        let name_id_for_lookup = state
-                            .simulation
-                            .as_ref()
-                            .and_then(|sim| sim.interner.get(name));
-                        let total_frames = effect_counts
-                            .and_then(|m| m.get(&name_id_for_lookup?).copied())
-                            .unwrap_or(1);
-                        let start_frame = if total_frames > 1 {
-                            (id.wrapping_mul(31).wrapping_add(i as u64 * 7) % total_frames as u64)
-                                as u16
-                        } else {
-                            0
-                        };
-                        let shp_name_id = state
-                            .simulation
-                            .as_ref()
-                            .map(|s| s.interner.get(name).unwrap_or_default())
-                            .unwrap_or_default();
-                        DamageFireAnim {
-                            shp_name: shp_name_id,
-                            pixel_x: px,
-                            pixel_y: py,
-                            frame: start_frame,
-                            total_frames,
-                            rate_ms,
-                            elapsed_ms: 0,
-                        }
-                    })
-                    .collect();
-                Some((id, fires))
+
+                let foundation = rules_obj
+                    .map(|obj| obj.foundation.as_str())
+                    .or(art_entry.foundation.as_deref())
+                    .unwrap_or("1x1");
+                let (foundation_width, foundation_height) =
+                    crate::rules::foundation::foundation_dimensions(foundation);
+
+                Some(DamageFireSpawnPlan {
+                    entity_id: entity.stable_id,
+                    offsets,
+                    foundation_width,
+                    foundation_height,
+                })
             })
             .collect()
     };
 
-    // Phase 2: Apply spawns + advance existing + remove healed (mutable borrow of sim).
     let sim = match &mut state.simulation {
         Some(s) => s,
         None => return,
     };
 
-    // Apply spawns.
-    for (id, fires) in spawn_data {
-        if let Some(entity) = sim.entities.get_mut(id) {
-            entity.damage_fire_overlays = Some(DamageFireOverlays { fires });
+    if !spawn_plans.is_empty() {
+        let damage_fire_types: Vec<DamageFireTypePlan> = fire_types
+            .iter()
+            .map(|(name, rate_ms)| {
+                let shp_name = sim.interner.intern(name);
+                let total_frames = sim.effect_frame_counts.get(&shp_name).copied().unwrap_or(1);
+                DamageFireTypePlan {
+                    shp_name,
+                    total_frames: total_frames.max(1),
+                    rate_ms: *rate_ms,
+                }
+            })
+            .collect();
+
+        for plan in spawn_plans {
+            let should_spawn = sim
+                .entities
+                .get(plan.entity_id)
+                .is_some_and(|entity| entity.damage_fire_overlays.is_none());
+            if !should_spawn {
+                continue;
+            }
+
+            let fires = create_damage_fire_slot_anims(
+                sim.anim_rng(),
+                &damage_fire_types,
+                &plan.offsets,
+                plan.foundation_width,
+                plan.foundation_height,
+            );
+            if fires.is_empty() {
+                continue;
+            }
+            if let Some(entity) = sim.entities.get_mut(plan.entity_id) {
+                if entity.damage_fire_overlays.is_none() {
+                    entity.damage_fire_overlays = Some(DamageFireOverlays { fires });
+                }
+            }
         }
     }
 
-    // Advance existing fire anims and remove fires on healed buildings.
     let keys: Vec<u64> = sim.entities.keys_sorted();
     for &id in &keys {
         let entity = match sim.entities.get_mut(id) {
             Some(e) => e,
             None => continue,
         };
-        if entity.category != EntityCategory::Structure {
-            continue;
-        }
-        if entity.health.max == 0 {
+        if entity.category != EntityCategory::Structure || entity.health.max == 0 {
             continue;
         }
         let ratio = entity.health.current as f32 / entity.health.max as f32;
+        let threshold =
+            damage_fire_threshold_for_current_surface(condition_yellow, condition_red, None);
 
-        if ratio > condition_yellow {
-            // Healed above threshold — remove fires.
+        if ratio > threshold {
             if entity.damage_fire_overlays.is_some() {
                 entity.damage_fire_overlays = None;
             }
         } else if let Some(overlays) = entity.damage_fire_overlays.as_mut() {
-            // Advance fire animation frames.
             for fire in &mut overlays.fires {
                 fire.elapsed_ms += dt_ms;
                 while fire.elapsed_ms >= fire.rate_ms && fire.rate_ms > 0 {
                     fire.elapsed_ms -= fire.rate_ms;
                     fire.frame += 1;
                     if fire.frame >= fire.total_frames {
-                        fire.frame = 0; // Loop infinitely.
+                        fire.frame = 0;
                     }
                 }
             }
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct DamageFireSpawnPlan {
+    entity_id: u64,
+    offsets: Vec<(i32, i32)>,
+    foundation_width: u16,
+    foundation_height: u16,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DamageFireTypePlan {
+    shp_name: InternedId,
+    total_frames: u16,
+    rate_ms: u32,
+}
+
+fn create_damage_fire_slot_anims(
+    rng: &mut SimRng,
+    fire_types: &[DamageFireTypePlan],
+    offsets: &[(i32, i32)],
+    foundation_width: u16,
+    foundation_height: u16,
+) -> Vec<DamageFireAnim> {
+    if fire_types.is_empty() {
+        return Vec::new();
+    }
+
+    let mut fire_type_index = rng.next_range_u32(fire_types.len() as u32) as usize;
+    let mut fires = Vec::with_capacity(offsets.len().min(DAMAGE_FIRE_SLOT_COUNT));
+    for (slot, &(pixel_x, pixel_y)) in offsets.iter().take(DAMAGE_FIRE_SLOT_COUNT).enumerate() {
+        let fire_type = fire_types[fire_type_index];
+        let total_frames = fire_type.total_frames.max(1);
+        let frame = rng.next_range_u32(total_frames as u32) as u16;
+        fires.push(DamageFireAnim {
+            slot: slot as u8,
+            shp_name: fire_type.shp_name,
+            pixel_x,
+            pixel_y,
+            frame,
+            total_frames,
+            rate_ms: fire_type.rate_ms,
+            elapsed_ms: 0,
+            z_adjust: damage_fire_z_adjust(pixel_y, foundation_width, foundation_height),
+        });
+
+        fire_type_index += 1;
+        if fire_type_index >= fire_types.len() {
+            fire_type_index = 0;
+        }
+    }
+    fires
+}
+
+fn damage_fire_z_adjust(offset_y: i32, foundation_width: u16, foundation_height: u16) -> i32 {
+    let foundation_sum = i32::from(foundation_width) + i32::from(foundation_height);
+    let raw = ((offset_y - foundation_sum * DAMAGE_FIRE_HEIGHT_STEP_PX) * 3 >> 1)
+        + DAMAGE_FIRE_Z_ADJUST_BIAS;
+    raw.min(0)
+}
+
+fn damage_fire_threshold_for_current_surface(
+    condition_yellow: f32,
+    _condition_red: f32,
+    _unresolved_type_0x157b: Option<bool>,
+) -> f32 {
+    // TODO(parity): expose the raw BuildingType+0x157B byte before selecting
+    // ConditionRed. Current Rust has semantic fields with disputed labels, not
+    // this verified raw selector, so keep the previous ConditionYellow fallback.
+    condition_yellow
 }
 
 /// Trigger a one-shot crane animation on the active producer (ConYard) for an owner.
@@ -820,8 +894,35 @@ fn advance_anim_runtime_visit(
     sim: &Simulation,
     art_reg: &crate::rules::art_data::ArtRegistry,
 ) {
+    advance_anim_runtime_visit_with_events(runtime, sim, art_reg, None);
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AnimRuntimeVisitEvent {
+    TrailerSpawn {
+        parent_type: String,
+        trailer_type: String,
+    },
+    NextInPlace {
+        previous_type: String,
+        next_type: String,
+    },
+    NormalDestroy {
+        type_name: String,
+    },
+}
+
+fn advance_anim_runtime_visit_with_events(
+    runtime: &mut AnimRuntime,
+    sim: &Simulation,
+    art_reg: &crate::rules::art_data::ArtRegistry,
+    mut events: Option<&mut Vec<AnimRuntimeVisitEvent>>,
+) {
     if runtime.expired {
         return;
+    }
+    if let Some(config) = art_reg.anim_runtime_config(&runtime.type_name) {
+        emit_anim_runtime_trailer(runtime, config, sim, &mut events);
     }
     if runtime.first_ai_guard {
         runtime.first_ai_guard = false;
@@ -860,10 +961,39 @@ fn advance_anim_runtime_visit(
         return;
     }
     if let Some(next) = &config.next {
-        switch_anim_runtime_type(runtime, next, sim, art_reg);
+        switch_anim_runtime_type(runtime, next, sim, art_reg, &mut events);
     } else {
+        if let Some(events) = events.as_deref_mut() {
+            events.push(AnimRuntimeVisitEvent::NormalDestroy {
+                type_name: runtime.type_name.clone(),
+            });
+        }
         runtime.expired = true;
     }
+}
+
+fn emit_anim_runtime_trailer(
+    runtime: &AnimRuntime,
+    config: &crate::rules::art_data::AnimTypeRuntimeConfig,
+    sim: &Simulation,
+    events: &mut Option<&mut Vec<AnimRuntimeVisitEvent>>,
+) {
+    let Some(trailer_type) = &config.trailer_anim else {
+        return;
+    };
+    if !anim_trailer_cadence_matches(sim.tick, config.trailer_seperation) {
+        return;
+    }
+    if let Some(events) = events.as_deref_mut() {
+        events.push(AnimRuntimeVisitEvent::TrailerSpawn {
+            parent_type: runtime.type_name.clone(),
+            trailer_type: trailer_type.clone(),
+        });
+    }
+}
+
+fn anim_trailer_cadence_matches(global_frame: u64, separation: i32) -> bool {
+    separation == 1 || (global_frame as i32) % separation == 0
 }
 
 fn anim_runtime_at_boundary(
@@ -908,11 +1038,13 @@ fn switch_anim_runtime_type(
     next: &str,
     sim: &Simulation,
     art_reg: &crate::rules::art_data::ArtRegistry,
+    events: &mut Option<&mut Vec<AnimRuntimeVisitEvent>>,
 ) {
     let Some(next_config) = art_reg.anim_runtime_config(next) else {
         runtime.expired = true;
         return;
     };
+    let previous_type = runtime.type_name.clone();
     let total_frames = anim_total_frames(sim, next);
     let end = effective_anim_end(next_config, total_frames);
     let loop_end = effective_anim_loop_end(next_config, end);
@@ -926,6 +1058,12 @@ fn switch_anim_runtime_type(
     runtime.loop_remaining = native_loop_remaining(next_config.loop_count, 1);
     runtime.first_ai_guard = false;
     runtime.expired = false;
+    if let Some(events) = events.as_deref_mut() {
+        events.push(AnimRuntimeVisitEvent::NextInPlace {
+            previous_type,
+            next_type: runtime.type_name.clone(),
+        });
+    }
 }
 
 fn native_loop_remaining(loop_count: i32, constructor_loop: u8) -> u8 {
@@ -968,7 +1106,68 @@ mod tests {
     use super::*;
     use crate::rules::art_data::{ArtRegistry, DEFAULT_ART_RATE_LOGIC_FRAMES};
     use crate::rules::ini_parser::IniFile;
+    use crate::sim::rng::SimRng;
     use crate::sim::world::Simulation;
+
+    #[test]
+    fn damage_fire_slot_creation_uses_rng_start_index_then_wraps() {
+        let mut sim = Simulation::new();
+        let fire01 = sim.interner.intern("FIRE01");
+        let fire02 = sim.interner.intern("FIRE02");
+        let fire03 = sim.interner.intern("FIRE03");
+        let fire_types = [
+            DamageFireTypePlan {
+                shp_name: fire01,
+                total_frames: 5,
+                rate_ms: 450,
+            },
+            DamageFireTypePlan {
+                shp_name: fire02,
+                total_frames: 6,
+                rate_ms: 450,
+            },
+            DamageFireTypePlan {
+                shp_name: fire03,
+                total_frames: 7,
+                rate_ms: 450,
+            },
+        ];
+        let offsets = [(-24, -1), (64, 36), (12, 8)];
+        let mut rng = SimRng::new(1);
+        let mut expected_rng = rng.clone();
+
+        let start = expected_rng.next_range_u32(fire_types.len() as u32) as usize;
+        let expected_indices = [start, (start + 1) % 3, (start + 2) % 3];
+        let expected_frames = expected_indices
+            .map(|idx| expected_rng.next_range_u32(fire_types[idx].total_frames as u32) as u16);
+
+        let fires = create_damage_fire_slot_anims(&mut rng, &fire_types, &offsets, 4, 4);
+
+        assert_eq!(fires.len(), 3);
+        for (slot, fire) in fires.iter().enumerate() {
+            let expected_type = fire_types[expected_indices[slot]];
+            assert_eq!(fire.slot, slot as u8);
+            assert_eq!(fire.shp_name, expected_type.shp_name);
+            assert_eq!(fire.frame, expected_frames[slot]);
+            assert_eq!(fire.total_frames, expected_type.total_frames);
+            assert_eq!(fire.rate_ms, expected_type.rate_ms);
+        }
+        assert_eq!(rng.state(), expected_rng.state());
+    }
+
+    #[test]
+    fn damage_fire_z_adjust_uses_native_formula_and_clamps_positive() {
+        assert_eq!(damage_fire_z_adjust(30, 4, 4), -145);
+        assert_eq!(damage_fire_z_adjust(100, 1, 1), 0);
+    }
+
+    #[test]
+    fn damage_fire_threshold_keeps_yellow_until_raw_selector_is_exposed() {
+        assert_eq!(
+            damage_fire_threshold_for_current_surface(0.5, 0.25, None),
+            0.5
+        );
+    }
 
     #[test]
     fn garrison_occupant_anim_rate_uses_art_section_rate_logic_frames() {
@@ -1169,5 +1368,102 @@ mod tests {
         assert_eq!(flash.runtime.type_name, "MYNEXT");
         assert_eq!(flash.runtime.current_frame, 0);
         assert!(!flash.runtime.expired);
+    }
+
+    #[test]
+    fn anim_runtime_trailer_emits_before_first_ai_guard_and_frame_advance() {
+        let mut sim = Simulation::new();
+        sim.tick = 6;
+        let parent = sim.interner.intern("PARENT");
+        sim.effect_frame_counts.insert(parent, 3);
+        let art = ArtRegistry::from_ini(&IniFile::from_str(
+            "[PARENT]\nEnd=2\nRate=100\nTrailerAnim=SMOKEY2\nTrailerSeperation=2\n",
+        ));
+        let config = art.anim_runtime_config("PARENT").unwrap();
+        let mut runtime = garrison_occupant_anim_runtime("PARENT", config, 3);
+        let mut events = Vec::new();
+
+        advance_anim_runtime_visit_with_events(&mut runtime, &sim, &art, Some(&mut events));
+
+        assert_eq!(
+            events,
+            vec![AnimRuntimeVisitEvent::TrailerSpawn {
+                parent_type: "PARENT".to_string(),
+                trailer_type: "SMOKEY2".to_string(),
+            }]
+        );
+        assert_eq!(runtime.current_frame, 0);
+        assert!(!runtime.first_ai_guard);
+        assert!(!runtime.expired);
+    }
+
+    #[test]
+    fn anim_runtime_trailer_cadence_uses_signed_global_frame_modulo() {
+        assert!(anim_trailer_cadence_matches(7, 1));
+        assert!(anim_trailer_cadence_matches(10, -5));
+        assert!(!anim_trailer_cadence_matches(11, -5));
+    }
+
+    #[test]
+    fn anim_runtime_trailer_uses_old_type_before_next_and_not_new_type_same_visit() {
+        let mut sim = Simulation::new();
+        sim.tick = 8;
+        let old = sim.interner.intern("OLDANIM");
+        let next = sim.interner.intern("NEXTANIM");
+        sim.effect_frame_counts.insert(old, 2);
+        sim.effect_frame_counts.insert(next, 2);
+        let art = ArtRegistry::from_ini(&IniFile::from_str(
+            "[OLDANIM]\nEnd=1\nRate=900\nNext=NEXTANIM\nTrailerAnim=OLDTRAIL\nTrailerSeperation=1\n\
+             [NEXTANIM]\nEnd=1\nRate=900\nTrailerAnim=NEWTRAIL\nTrailerSeperation=1\n",
+        ));
+        let config = art.anim_runtime_config("OLDANIM").unwrap();
+        let mut runtime = garrison_occupant_anim_runtime("OLDANIM", config, 2);
+        runtime.first_ai_guard = false;
+        let mut events = Vec::new();
+
+        advance_anim_runtime_visit_with_events(&mut runtime, &sim, &art, Some(&mut events));
+
+        assert_eq!(
+            events,
+            vec![
+                AnimRuntimeVisitEvent::TrailerSpawn {
+                    parent_type: "OLDANIM".to_string(),
+                    trailer_type: "OLDTRAIL".to_string(),
+                },
+                AnimRuntimeVisitEvent::NextInPlace {
+                    previous_type: "OLDANIM".to_string(),
+                    next_type: "NEXTANIM".to_string(),
+                },
+            ]
+        );
+        assert_eq!(runtime.type_name, "NEXTANIM");
+        assert_eq!(runtime.current_frame, 0);
+        assert!(!runtime.first_ai_guard);
+        assert!(!runtime.expired);
+    }
+
+    #[test]
+    fn anim_runtime_normal_destroy_does_not_emit_bounce_or_expire_anim_outputs() {
+        let mut sim = Simulation::new();
+        sim.tick = 9;
+        let boom = sim.interner.intern("BOOM");
+        sim.effect_frame_counts.insert(boom, 2);
+        let art = ArtRegistry::from_ini(&IniFile::from_str(
+            "[BOOM]\nEnd=1\nRate=900\nBounceAnim=BOUNCEFX\nExpireAnim=EXPIREFX\n",
+        ));
+        let config = art.anim_runtime_config("BOOM").unwrap();
+        let mut runtime = garrison_occupant_anim_runtime("BOOM", config, 2);
+        runtime.first_ai_guard = false;
+        let mut events = Vec::new();
+
+        advance_anim_runtime_visit_with_events(&mut runtime, &sim, &art, Some(&mut events));
+
+        assert_eq!(
+            events,
+            vec![AnimRuntimeVisitEvent::NormalDestroy {
+                type_name: "BOOM".to_string(),
+            }]
+        );
+        assert!(runtime.expired);
     }
 }

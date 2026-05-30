@@ -9,7 +9,7 @@ use super::super::layout::{
 };
 use super::{
     SkirmishShellAction, SkirmishShellState, SkirmishShellUiSound, handle_combo_mouse_down,
-    scroll_open_combo_by_rows, set_open_combo_top_index, top_index_from_thumb_y,
+    set_open_combo_top_index, top_index_from_thumb_y,
 };
 
 pub const TRACKBAR_MOUSE_X_BIAS: i32 = 6;
@@ -229,6 +229,12 @@ pub fn handle_option_mouse_move(
         return SkirmishShellAction::None;
     };
 
+    // A rail (non-thumb) press jumps the value once on mouse-down but does not
+    // begin a value-tracking drag — only grabbing the thumb follows the cursor.
+    if !drag.dragging_thumb {
+        return SkirmishShellAction::None;
+    }
+
     let rect = trackbar_rect(layout, drag.id);
     let (min, max, step) = trackbar_range(drag.id);
     let value = trackbar_mouse_value(rect, x, min, max, step);
@@ -245,19 +251,17 @@ pub fn handle_option_mouse_up(state: &mut SkirmishShellState) -> SkirmishShellAc
     SkirmishShellAction::None
 }
 
+/// Mouse-wheel handling for the skirmish shell.
+///
+/// There is no verified evidence that retail scrolls an open dropdown via the
+/// mouse wheel: no wheel handler exists in the owner-draw combo, popup, or
+/// scrollbar callbacks. Until a runtime capture proves otherwise, the wheel is
+/// inert in the shell and does not consume the event. Do NOT reintroduce a
+/// wheel-driven dropdown scroll without that evidence.
 pub fn handle_option_mouse_wheel(
-    state: &mut SkirmishShellState,
-    maps: &[MapMenuEntry],
-    lines: f32,
+    _state: &mut SkirmishShellState,
+    _maps: &[MapMenuEntry],
+    _lines: f32,
 ) -> bool {
-    let Some(open) = state.open_combo_dropdown else {
-        return false;
-    };
-    if lines == 0.0 {
-        return true;
-    }
-    let step = lines.abs().ceil().max(1.0) as i32;
-    let rows = if lines > 0.0 { -step } else { step };
-    scroll_open_combo_by_rows(state, maps, open.id, rows);
-    true
+    false
 }

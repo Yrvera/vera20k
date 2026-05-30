@@ -94,6 +94,21 @@ pub fn hovered_shell_control(
         }
     }
 
+    // Static (non-interactive) controls are tested last: they do not overlap
+    // the interactive widgets above, so order does not change any result, and
+    // gamemd does not restrict 0x102 status help to interactive widgets.
+    for flag in &layout.flags {
+        if flag.contains(x, y) {
+            return Some(SkirmishHoverTarget::FlagPicture);
+        }
+    }
+    if layout.right_panel_text.game_type.contains(x, y) {
+        return Some(SkirmishHoverTarget::GameTypeLabel0x6ec);
+    }
+    if layout.right_panel_text.map_label.contains(x, y) {
+        return Some(SkirmishHoverTarget::ScenarioLabel0x5a8);
+    }
+
     None
 }
 
@@ -135,6 +150,9 @@ pub fn status_help_key_for_hover(target: SkirmishHoverTarget) -> Option<&'static
         SkirmishHoverTarget::Trackbar(SkirmishTrackbarId::UnitCount0x50c) => {
             Some("STT:SkirmishSliderUnit")
         }
+        SkirmishHoverTarget::FlagPicture => Some("STT:SkirmishPictureFlag"),
+        SkirmishHoverTarget::GameTypeLabel0x6ec => Some("STT:SkirmishLabelGameType"),
+        SkirmishHoverTarget::ScenarioLabel0x5a8 => Some("STT:SkirmishLabelScenario"),
         SkirmishHoverTarget::ComboFace(id) => status_help_key_for_combo(id),
         SkirmishHoverTarget::ComboItem {
             id: SkirmishComboId::AiType(_),

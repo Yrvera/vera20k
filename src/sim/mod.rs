@@ -61,6 +61,7 @@ pub mod gate_runtime;
 pub mod infantry;
 
 // --- Persistent cell occupancy ---
+pub mod cell_rect;
 pub mod occupancy;
 
 // --- Mutable per-cell overlay state (ore density, wall damage, bridge frames) ---

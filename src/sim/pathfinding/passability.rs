@@ -2,15 +2,16 @@
 //!
 //! Extracted from the original engine (416 bytes = 13 x 8 x 4).
 //! The zone flood-fill and pathfinder use this matrix to determine whether
-//! a cell's reduced ZoneType is passable for a given movement profile.
+//! a cell's reduced ZoneType is passable for a given MovementZone row.
 //!
 //! ## How it works
 //! The binary matrix columns are reduced `ZoneType` values written by
 //! `CellClass::RecalcZoneType`, not raw TMP `LandType` bytes.
 //! Older helpers in this module still expose a local `LandType` compatibility
 //! enum for terrain bytes that have not gone through reduced-zone classification.
-//! Each unit has a **zone layer** derived from its MovementZone/SpeedType.
-//! The matrix lookup `PASSABILITY_MATRIX[zone_layer][reduced_zone_type]` returns:
+//! Native direct readers use the unit's **MovementZone** row, not SpeedType.
+//! SpeedType is speed/cost-domain and only appears here in compatibility helpers.
+//! The matrix lookup `MOVEMENT_ZONE_PASSABILITY[movement_zone][reduced_zone_type]` returns:
 //! - 1 = passable
 //! - 2 = blocked (dynamically, e.g. occupied)
 //! - 3 = impassable (always blocked, e.g. rock)
@@ -33,8 +34,7 @@ pub const PASS_IMPASSABLE: u8 = 3;
 /// The 8 terrain classification buckets used by compatibility helpers.
 ///
 /// These are not the binary reduced ZoneType meanings for every column.
-/// Raw TMP `terrain_type` bytes (0-15) must be mapped to these via
-/// `tmp_terrain_to_land_type()` before any matrix lookup.
+/// Native matrix lookups should use `ResolvedTerrainCell.zone_type` instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[repr(u8)]
 pub enum LandType {
@@ -49,17 +49,17 @@ pub enum LandType {
 }
 
 impl LandType {
-    /// Convert to the raw column index for passability matrix lookups.
+    /// Convert to the legacy compatibility bucket value.
     pub fn as_index(self) -> u8 {
         self as u8
     }
 }
 
-/// Map a raw TMP `terrain_type` byte (0-15) to its passability matrix column.
+/// Map a raw TMP `terrain_type` byte (0-15) to a legacy terrain bucket.
 ///
 /// RA2/YR TMP files encode 16 terrain types inherited from Tiberian Sun.
-/// The passability matrix only has 8 columns, so multiple TMP bytes map to
-/// the same LandType:
+/// Several older call sites use these 8 buckets for speed/cost fallback. They
+/// are not the native reduced ZoneType columns consumed by the matrix.
 ///
 /// | TMP byte | Name      | LandType  |
 /// |----------|-----------|-----------|
@@ -98,7 +98,7 @@ pub const ZONE_LAYER_COUNT: usize = 13;
 /// Number of reduced ZoneType columns in the binary matrix.
 pub const TERRAIN_TYPE_COUNT: usize = 8;
 
-/// Compatibility 13x8 passability matrix, adapted from the original engine (0x82A594).
+/// Verified native 13x8 passability matrix at `0x0082A594`.
 ///
 /// Rows = MovementZone index (0-12). Binary columns are reduced ZoneType values
 /// from `CellClass::RecalcZoneType`:
@@ -107,55 +107,55 @@ pub const TERRAIN_TYPE_COUNT: usize = 8;
 /// Values: 1 = passable, 2 = blocked, 3 = impassable (sentinel).
 ///
 /// Some older helpers index this table with local `LandType` buckets. Terrain-
-/// aware zone building should prefer `ResolvedTerrainCell.zone_type` and the
-/// reduced-zone matrix in `zone_build.rs`.
+/// aware code should prefer `ResolvedTerrainCell.zone_type`, which is already
+/// the reduced column written by the CellClass recalculation path.
 ///
 /// Do not label column 1 as road or crate; the verified writer uses overlay
 /// `Crushable=yes`.
-pub static PASSABILITY_MATRIX: [[u8; TERRAIN_TYPE_COUNT]; ZONE_LAYER_COUNT] = [
+pub const MOVEMENT_ZONE_PASSABILITY: [[u8; TERRAIN_TYPE_COUNT]; ZONE_LAYER_COUNT] = [
     // Reduced ZoneType:             Gnd Crs Wal Bch Wtr Bld Imp Out
     // Row  0 Normal:
-    [1, 2, 1, 2, 2, 2, 1, 2],
+    [1, 2, 2, 2, 2, 2, 2, 3],
     // Row  1 Crusher:
-    [1, 1, 1, 2, 2, 2, 1, 2],
+    [1, 1, 2, 2, 2, 2, 2, 3],
     // Row  2 Destroyer:
-    [1, 1, 1, 2, 2, 2, 1, 2],
+    [1, 1, 1, 2, 2, 2, 2, 3],
     // Row  3 AmphibiousDestroyer:
-    [1, 1, 1, 1, 1, 2, 1, 2],
+    [1, 1, 1, 1, 1, 1, 2, 3],
     // Row  4 AmphibiousCrusher:
-    [1, 1, 1, 1, 1, 2, 1, 2],
+    [1, 1, 2, 1, 1, 2, 2, 3],
     // Row  5 Amphibious:
-    [1, 2, 1, 1, 1, 2, 1, 2],
-    // Row  6 Subterranean (can dig through rock and tiberium):
-    [1, 1, 1, 2, 2, 1, 1, 1],
+    [1, 2, 2, 1, 1, 2, 2, 3],
+    // Row  6 Subterranean:
+    [1, 1, 1, 2, 2, 2, 1, 3],
     // Row  7 Infantry:
-    [1, 2, 1, 2, 2, 2, 1, 2],
+    [1, 2, 2, 2, 2, 1, 2, 3],
     // Row  8 InfantryDestroyer:
-    [1, 1, 1, 2, 2, 2, 1, 2],
-    // Row  9 Fly (everything passable):
-    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 2, 2, 1, 2, 3],
+    // Row  9 Fly:
+    [1, 1, 1, 1, 1, 1, 1, 3],
     // Row 10 Water:
-    [2, 2, 2, 2, 1, 2, 2, 2],
+    [2, 2, 2, 2, 1, 2, 2, 3],
     // Row 11 WaterBeach:
-    [2, 2, 2, 1, 1, 2, 2, 2],
+    [2, 2, 2, 1, 1, 2, 2, 3],
     // Row 12 CrusherAll:
-    [1, 1, 1, 2, 2, 2, 1, 2],
+    [1, 1, 1, 2, 2, 2, 2, 3],
 ];
 
-/// Map a SpeedType to its zone layer index (row in the passability matrix).
+/// Compatibility mapping from SpeedType to a matrix row.
 ///
-/// Multiple SpeedTypes may share a layer. The mapping matches the original
-/// engine's behavior.
+/// Native direct matrix readers use MovementZone. This helper remains for older
+/// fallback paths that have only a SpeedType and a compatibility terrain bucket.
 pub fn zone_layer_for_speed_type(speed_type: SpeedType) -> usize {
     match speed_type {
-        SpeedType::Foot => 2,       // clear + road + rough
-        SpeedType::Track => 2,      // clear + road + rough
-        SpeedType::Wheel => 1,      // clear + road only
-        SpeedType::Float => 9,      // everything except rock (hover)
-        SpeedType::FloatBeach => 4, // clear + road + beach + water
-        SpeedType::Hover => 9,      // everything except rock
-        SpeedType::Amphibious => 3, // land + water + beach + tiberium
-        SpeedType::Winged => 9,     // everything except rock (fly)
+        SpeedType::Foot => 2,
+        SpeedType::Track => 2,
+        SpeedType::Wheel => 1,
+        SpeedType::Float => 9,
+        SpeedType::FloatBeach => 4,
+        SpeedType::Hover => 9,
+        SpeedType::Amphibious => 3,
+        SpeedType::Winged => 9,
     }
 }
 
@@ -166,51 +166,72 @@ pub fn zone_layer_for_movement_zone(mz: MovementZone) -> usize {
     mz.matrix_row().unwrap_or(0)
 }
 
-/// Check if a terrain land type is passable for a given SpeedType.
+/// Compatibility check for older call sites that only have a terrain bucket.
 ///
 /// Returns true if the matrix entry is PASS_OK (1), false for PASS_BLOCKED (2)
 /// or PASS_IMPASSABLE (3).
-pub fn is_passable_for_speed_type(land_type: u8, speed_type: SpeedType) -> bool {
-    if land_type as usize >= TERRAIN_TYPE_COUNT {
+pub fn is_passable_for_speed_type(compat_land_type: u8, speed_type: SpeedType) -> bool {
+    if compat_land_type as usize >= TERRAIN_TYPE_COUNT {
         return false; // Out of range = impassable
     }
     let layer = zone_layer_for_speed_type(speed_type);
-    PASSABILITY_MATRIX[layer][land_type as usize] == PASS_OK
+    MOVEMENT_ZONE_PASSABILITY[layer][compat_land_type as usize] == PASS_OK
 }
 
-/// Check if a terrain land type is passable for a given MovementZone.
+/// Check if a reduced ZoneType is passable for a given MovementZone.
 ///
 /// Used by the zone flood-fill to partition the map into connectivity regions.
-pub fn is_passable_for_zone(land_type: u8, mz: MovementZone) -> bool {
-    if land_type as usize >= TERRAIN_TYPE_COUNT {
+pub fn is_passable_for_zone(reduced_zone_type: u8, mz: MovementZone) -> bool {
+    if reduced_zone_type as usize >= TERRAIN_TYPE_COUNT {
         return false;
     }
     let Some(layer) = mz.matrix_row() else {
         return false;
     };
-    PASSABILITY_MATRIX[layer][land_type as usize] == PASS_OK
+    MOVEMENT_ZONE_PASSABILITY[layer][reduced_zone_type as usize] == PASS_OK
 }
 
-/// Get the raw passability value (1/2/3) for a zone layer and terrain type.
+/// Get the raw passability value (1/2/3) for a row and reduced ZoneType.
 ///
 /// Returns PASS_IMPASSABLE for out-of-bounds inputs.
-pub fn passability_value(zone_layer: usize, land_type: u8) -> u8 {
-    if zone_layer >= ZONE_LAYER_COUNT || land_type as usize >= TERRAIN_TYPE_COUNT {
+pub fn passability_value(zone_layer: usize, reduced_zone_type: u8) -> u8 {
+    if zone_layer >= ZONE_LAYER_COUNT || reduced_zone_type as usize >= TERRAIN_TYPE_COUNT {
         return PASS_IMPASSABLE;
     }
-    PASSABILITY_MATRIX[zone_layer][land_type as usize]
+    MOVEMENT_ZONE_PASSABILITY[zone_layer][reduced_zone_type as usize]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const VERIFIED_NATIVE_ROWS: [[u8; TERRAIN_TYPE_COUNT]; ZONE_LAYER_COUNT] = [
+        [1, 2, 2, 2, 2, 2, 2, 3],
+        [1, 1, 2, 2, 2, 2, 2, 3],
+        [1, 1, 1, 2, 2, 2, 2, 3],
+        [1, 1, 1, 1, 1, 1, 2, 3],
+        [1, 1, 2, 1, 1, 2, 2, 3],
+        [1, 2, 2, 1, 1, 2, 2, 3],
+        [1, 1, 1, 2, 2, 2, 1, 3],
+        [1, 2, 2, 2, 2, 1, 2, 3],
+        [1, 1, 1, 2, 2, 1, 2, 3],
+        [1, 1, 1, 1, 1, 1, 1, 3],
+        [2, 2, 2, 2, 1, 2, 2, 3],
+        [2, 2, 2, 1, 1, 2, 2, 3],
+        [1, 1, 1, 2, 2, 2, 2, 3],
+    ];
+
+    #[test]
+    fn matrix_matches_verified_native_dump() {
+        assert_eq!(MOVEMENT_ZONE_PASSABILITY, VERIFIED_NATIVE_ROWS);
+    }
+
     #[test]
     fn clear_passable_for_all_ground() {
         // Terrain type 0 (Clear) should be passable for all non-water zone layers.
         for layer in 0..10 {
             assert_eq!(
-                PASSABILITY_MATRIX[layer][0], PASS_OK,
+                MOVEMENT_ZONE_PASSABILITY[layer][0], PASS_OK,
                 "Zone layer {} should pass on Clear terrain",
                 layer
             );
@@ -218,8 +239,8 @@ mod tests {
     }
 
     #[test]
-    fn rock_blocked_except_subterranean_and_fly() {
-        // Rock terrain maps to Impassable ZoneType in the original engine.
+    fn impassable_zone_type_blocked_except_subterranean_and_fly() {
+        // Reduced ZoneType 6 is the native Impassable column.
         // Subterranean (row 6) and Fly (row 9) can enter; all others blocked.
         for layer in 0..ZONE_LAYER_COUNT {
             let expected = if layer == 6 || layer == 9 {
@@ -228,8 +249,19 @@ mod tests {
                 PASS_BLOCKED
             };
             assert_eq!(
-                PASSABILITY_MATRIX[layer][7], expected,
-                "Zone layer {} on Rock terrain",
+                MOVEMENT_ZONE_PASSABILITY[layer][6], expected,
+                "Zone layer {} on Impassable ZoneType",
+                layer
+            );
+        }
+    }
+
+    #[test]
+    fn outside_zone_type_blocks_all_rows() {
+        for layer in 0..ZONE_LAYER_COUNT {
+            assert_eq!(
+                MOVEMENT_ZONE_PASSABILITY[layer][7], PASS_IMPASSABLE,
+                "Zone layer {} on Outside ZoneType",
                 layer
             );
         }
@@ -238,7 +270,7 @@ mod tests {
     #[test]
     fn water_only_for_ships() {
         // Zone 10 (ships) should only pass on water (col 4).
-        let row = PASSABILITY_MATRIX[10];
+        let row = MOVEMENT_ZONE_PASSABILITY[10];
         assert_eq!(row[4], PASS_OK);
         assert_eq!(row[0], PASS_BLOCKED); // clear = blocked for ships
         assert_eq!(row[1], PASS_BLOCKED); // crushable overlay = blocked for ships
@@ -247,30 +279,31 @@ mod tests {
     #[test]
     fn amphibious_destroyer_passes_land_and_water() {
         // Legacy compatibility buckets; terrain-aware zoning uses reduced ZoneType.
-        let row = PASSABILITY_MATRIX[3];
+        let row = MOVEMENT_ZONE_PASSABILITY[3];
         assert_eq!(row[0], PASS_OK); // clear
         assert_eq!(row[1], PASS_OK); // crushable overlay
         assert_eq!(row[2], PASS_OK); // rough
         assert_eq!(row[3], PASS_OK); // beach
         assert_eq!(row[4], PASS_OK); // water
-        assert_eq!(row[5], PASS_BLOCKED); // building compatibility bucket
-        assert_eq!(row[6], PASS_OK); // railroad = ground terrain
+        assert_eq!(row[5], PASS_OK); // building
+        assert_eq!(row[6], PASS_BLOCKED); // impassable
+        assert_eq!(row[7], PASS_IMPASSABLE); // outside
     }
 
     #[test]
     fn wheel_restricted() {
-        // Zone 1 (Crusher/wheel) passes clear, crushable overlay, and rough.
-        let row = PASSABILITY_MATRIX[1];
+        // Row 1 (Crusher/wheel compatibility) passes ground and crushable only.
+        let row = MOVEMENT_ZONE_PASSABILITY[1];
         assert_eq!(row[0], PASS_OK); // clear
         assert_eq!(row[1], PASS_OK); // crushable overlay
-        assert_eq!(row[2], PASS_OK); // rough = ground
+        assert_eq!(row[2], PASS_BLOCKED); // wall
     }
 
     #[test]
     fn speed_type_foot_uses_zone_2() {
         assert_eq!(zone_layer_for_speed_type(SpeedType::Foot), 2);
         assert!(is_passable_for_speed_type(0, SpeedType::Foot)); // clear
-        assert!(is_passable_for_speed_type(2, SpeedType::Foot)); // rough
+        assert!(is_passable_for_speed_type(2, SpeedType::Foot)); // reduced wall column
         assert!(!is_passable_for_speed_type(4, SpeedType::Foot)); // water
     }
 
@@ -279,8 +312,9 @@ mod tests {
         assert_eq!(zone_layer_for_speed_type(SpeedType::Float), 9);
         assert!(is_passable_for_speed_type(0, SpeedType::Float)); // clear
         assert!(is_passable_for_speed_type(4, SpeedType::Float)); // water
-        // Rock maps to Impassable ZoneType — Fly/hover CAN enter (row 9 col 6 = 1).
-        assert!(is_passable_for_speed_type(7, SpeedType::Float)); // rock passable for hover
+        // Row 9 Fly passes native Impassable (6) but blocks Outside (7).
+        assert!(is_passable_for_speed_type(6, SpeedType::Float)); // impassable reduced ZoneType
+        assert!(!is_passable_for_speed_type(7, SpeedType::Float)); // outside sentinel
     }
 
     #[test]
@@ -432,16 +466,20 @@ mod tests {
             SpeedType::Track
         ));
 
-        // Rock (TMP byte 7 → LandType::Rock = 7) maps to Impassable ZoneType.
-        // Hover/Fly (row 9) CAN enter, but ground units cannot.
+        // LandType::Rock is a legacy terrain bucket. Native reduced Impassable
+        // is column 6; column 7 is Outside and must block even for row 9 Fly.
         let rock = tmp_terrain_to_land_type(7);
         assert!(is_passable_for_speed_type(
-            rock.as_index(),
-            SpeedType::Float // Float → row 9 (hover) → passable on Impassable terrain
+            6,
+            SpeedType::Float // Float -> row 9 -> passable on native Impassable column
         ));
         assert!(!is_passable_for_speed_type(
             rock.as_index(),
-            SpeedType::Track // Track → row 2 → blocked on Impassable terrain
+            SpeedType::Float // Rock bucket value 7 is Outside in the native matrix
+        ));
+        assert!(!is_passable_for_speed_type(
+            6,
+            SpeedType::Track // Track -> row 2 -> blocked on Impassable terrain
         ));
     }
 }

@@ -37,6 +37,25 @@ fn target_cell_coord(
     DriveCoord::cell(rx, ry, z)
 }
 
+pub(super) fn resolve_entity_nav_target_drive_coord(
+    target: NavTargetRef,
+    entities: &EntityStore,
+) -> Option<DriveCoord> {
+    match target {
+        NavTargetRef::Entity { id } => entities.get(id).map(|entity| {
+            let pos = &entity.position;
+            DriveCoord {
+                x: i32::from(pos.rx) * 256 + pos.sub_x.to_num::<i32>(),
+                y: i32::from(pos.ry) * 256 + pos.sub_y.to_num::<i32>(),
+                z: i32::from(pos.z),
+            }
+        }),
+        NavTargetRef::Cell { .. } | NavTargetRef::Object { .. } | NavTargetRef::Building { .. } => {
+            None
+        }
+    }
+}
+
 /// Owner non-null destination path for the Phase 1 normal cell-target slice.
 pub(super) fn set_destination_internal_cell(
     entity: &mut GameEntity,
@@ -122,4 +141,46 @@ fn drive_stop_moving(entity: &mut GameEntity) {
         drive.current_speed_fraction = DRIVE_STOP_SPEED_CLAMP;
     }
     drive.destination = None;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sim::game_entity::GameEntity;
+
+    #[test]
+    fn resolve_nav_target_drive_coord_tracks_moving_entity() {
+        let mut entities = EntityStore::new();
+        entities.insert(GameEntity::test_default(2, "MTNK", "Allies", 3, 4));
+
+        let first =
+            resolve_entity_nav_target_drive_coord(NavTargetRef::Entity { id: 2 }, &entities)
+                .unwrap();
+        entities.get_mut(2).unwrap().position.rx += 1;
+        let second =
+            resolve_entity_nav_target_drive_coord(NavTargetRef::Entity { id: 2 }, &entities)
+                .unwrap();
+
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn resolve_nav_target_drive_coord_does_not_reaim_cell_targets() {
+        let entities = EntityStore::new();
+
+        assert_eq!(
+            resolve_entity_nav_target_drive_coord(NavTargetRef::Cell { rx: 12, ry: 34 }, &entities),
+            None
+        );
+    }
+
+    #[test]
+    fn resolve_nav_target_drive_coord_does_not_guess_building_anchor() {
+        let entities = EntityStore::new();
+
+        assert_eq!(
+            resolve_entity_nav_target_drive_coord(NavTargetRef::Building { id: 7 }, &entities),
+            None
+        );
+    }
 }

@@ -12,7 +12,8 @@ use crate::sim::world::Simulation;
 
 use super::production_economy::tick_resource_economy;
 use super::production_spawn::{
-    find_helipad_for_aircraft, find_spawn_selection_for_owner, mark_war_factory_spawn_contact,
+    find_helipad_for_aircraft, find_spawn_selection_for_owner_with_type,
+    mark_war_factory_spawn_contact,
 };
 use super::production_tech::{
     build_option_for_owner, build_time_base_frames, effective_progress_rate_ppm_for_type,
@@ -532,7 +533,15 @@ pub fn tick_production_with_overlay_registry(
         } else {
             let is_naval: bool = rules.object(&done_type_str).map_or(false, |o| o.naval);
             let spawn_selection = produced_category.and_then(|cat| {
-                find_spawn_selection_for_owner(sim, rules, &owner_str, cat, path_grid, is_naval)
+                find_spawn_selection_for_owner_with_type(
+                    sim,
+                    rules,
+                    &owner_str,
+                    Some(&done_type_str),
+                    cat,
+                    path_grid,
+                    is_naval,
+                )
             });
             spawn_cell = spawn_selection.map(|selection| selection.cell);
             spawn_producer_id = spawn_selection.map(|selection| selection.producer_id);

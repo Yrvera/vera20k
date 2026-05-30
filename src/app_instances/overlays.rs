@@ -153,7 +153,7 @@ pub(crate) fn build_damage_fire_instances(state: &AppState, paged: &mut [Vec<Spr
                 size: entry.pixel_size,
                 uv_origin: entry.uv_origin,
                 uv_size: entry.uv_size,
-                depth: fire_depth,
+                depth: garrison_flash_depth_apply_z_adjust(fire_depth, fire.z_adjust),
                 tint,
                 alpha: 1.0,
                 ..Default::default()

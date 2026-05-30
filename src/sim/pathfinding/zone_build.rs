@@ -30,28 +30,6 @@ pub(crate) const NEIGHBORS: [(i32, i32, bool); 8] = [
     (-1, -1, true), // NW
 ];
 
-/// RE-backed MovementClass8 passability rows used by zone/node rebuilding.
-///
-/// Columns are reduced ZoneType values from `CellClass::RecalcZoneType`, not
-/// raw TMP LandType bytes: 0=Ground, 1=Crushable, 2=Wall, 3=Beach, 4=Water,
-/// 5=Building, 6=Impassable, 7=Outside. RA2/YR connectivity is keyed by this
-/// per-cell movement class, then filtered by the mover's `MovementZone` row.
-const MOVEMENT_CLASS_PASSABILITY: [[u8; 8]; 13] = [
-    [1, 2, 2, 2, 2, 2, 2, 3], // Normal
-    [1, 1, 2, 2, 2, 2, 2, 3], // Crusher
-    [1, 1, 1, 2, 2, 2, 2, 3], // Destroyer
-    [1, 1, 1, 1, 1, 1, 2, 3], // AmphibiousDestroyer
-    [1, 1, 2, 1, 1, 2, 2, 3], // AmphibiousCrusher
-    [1, 2, 2, 1, 1, 2, 2, 3], // Amphibious
-    [1, 1, 1, 2, 2, 2, 1, 3], // Subterranean
-    [1, 2, 2, 2, 2, 1, 2, 3], // Infantry
-    [1, 1, 1, 2, 2, 1, 2, 3], // InfantryDestroyer
-    [1, 1, 1, 1, 1, 1, 1, 3], // Fly
-    [2, 2, 2, 2, 1, 2, 2, 3], // Water
-    [2, 2, 2, 1, 1, 2, 2, 3], // WaterBeach
-    [1, 1, 1, 2, 2, 2, 2, 3], // CrusherAll
-];
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BridgeRecordFilter {
     /// `UpdateBridgeZonesHelper @ 0x0056C510` uses active records while adding
@@ -362,7 +340,7 @@ fn rebuild_zone_ids_for_movement_zone(
     let Some(row_index) = movement_zone.matrix_row() else {
         return vec![0u16; node_count as usize + 1];
     };
-    let row = MOVEMENT_CLASS_PASSABILITY[row_index];
+    let row = passability::MOVEMENT_ZONE_PASSABILITY[row_index];
     let mut zone_id_by_node = vec![1u16; node_count as usize + 1];
     for node in 1..=node_count {
         let movement_class = node_movement_classes[node as usize] as usize;

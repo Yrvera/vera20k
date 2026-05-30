@@ -6,6 +6,16 @@
 use crate::render::batch::SpriteInstance;
 use crate::render::bit_font::BitFont;
 
+/// Character reveal window for kind-1 static text animation (v1: wipe only).
+/// `count` = number of leading characters drawn; characters at index >= count
+/// are not emitted. `range` is carried for the deferred highlight gradient
+/// (a separate work item) and is unused by the v1 wipe.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Reveal {
+    pub count: u32,
+    pub range: u32,
+}
+
 /// Alignment flag set for `draw_in_rect`.
 /// 0x01 = h-center, 0x02 = h-right, 0x04 = v-center.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
@@ -54,6 +64,7 @@ pub struct TextRect {
     pub h: u32,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn draw_in_rect(
     font: &BitFont,
     text: &str,
@@ -62,6 +73,7 @@ pub fn draw_in_rect(
     flags: ShellAlign,
     cam_offset: [f32; 2],
     depth: f32,
+    reveal: Option<Reveal>,
 ) -> ShellTextDraw {
     let scissor = ScissorRect {
         x: rect.x.max(0) as u32,
@@ -84,9 +96,20 @@ pub fn draw_in_rect(
     let line_advance = font.cell_height();
 
     let mut instances: Vec<SpriteInstance> = Vec::with_capacity(text.len());
+    // Running revealable-char index, threaded across wrapped segments so the
+    // cutoff stays continuous. Horizontal alignment uses the FULL span width
+    // (native lays the rect out from the whole string), so revealed chars fill
+    // in left-to-right from the centered start position. `None` reveal leaves
+    // the per-line output byte-identical to the steady-state path.
+    let mut consumed: u32 = 0;
     for span in &layout.lines {
         if (line_y + font.glyph_height()) > (rect.y as f32 + rect.h as f32) {
             break;
+        }
+        if let Some(r) = reveal {
+            if consumed >= r.count {
+                break;
+            }
         }
         let line_x_offset = if flags.contains(ShellAlign::H_CENTER) && span.width < rect.w {
             ((rect.w - span.width) / 2) as f32
@@ -96,7 +119,7 @@ pub fn draw_in_rect(
             0.0
         };
         let segment = &text[span.start_byte..span.end_byte];
-        let mut line_instances = font.build_text(
+        let (mut line_instances, new_consumed) = font.build_text_revealed(
             segment,
             base_x + line_x_offset,
             line_y,
@@ -104,7 +127,9 @@ pub fn draw_in_rect(
             depth,
             color,
             cam_offset,
+            reveal.map(|r| (consumed, r.count)),
         );
+        consumed = new_consumed;
         instances.append(&mut line_instances);
         line_y += line_advance;
     }
@@ -118,6 +143,15 @@ mod tests {
 
     fn test_font() -> BitFont {
         make_test_font(&[(b'x' as u16, 6), (b'a' as u16, 6), (b'b' as u16, 6)], 4)
+    }
+
+    fn rect_100x30() -> TextRect {
+        TextRect {
+            x: 0,
+            y: 0,
+            w: 100,
+            h: 30,
+        }
     }
 
     #[test]
@@ -136,6 +170,7 @@ mod tests {
             ShellAlign::NONE,
             [0.0, 0.0],
             0.5,
+            None,
         );
         assert_eq!(draw.scissor.x, 10);
         assert_eq!(draw.scissor.y, 20);
@@ -159,6 +194,7 @@ mod tests {
             ShellAlign::V_CENTER | ShellAlign::H_CENTER,
             [0.0, 0.0],
             0.5,
+            None,
         );
         assert!(draw.instances.is_empty());
     }
@@ -187,6 +223,7 @@ mod tests {
             ShellAlign::V_CENTER,
             [0.0, 0.0],
             0.5,
+            None,
         );
         assert_eq!(draw.instances.len(), 1);
         let expected_y = ((40 - 17) / 2) as f32;
@@ -213,6 +250,7 @@ mod tests {
             ShellAlign::H_CENTER,
             [0.0, 0.0],
             0.5,
+            None,
         );
         assert_eq!(draw.instances.len(), 1);
         // Single 'x' measured width per gamemd = 6 + 1*char_spacing = 7.
@@ -240,6 +278,7 @@ mod tests {
             ShellAlign::H_RIGHT,
             [0.0, 0.0],
             0.5,
+            None,
         );
         assert_eq!(draw.instances.len(), 1);
         let expected_x = (100 - 7) as f32;
@@ -248,5 +287,49 @@ mod tests {
             "x = {}",
             draw.instances[0].position[0]
         );
+    }
+
+    #[test]
+    fn reveal_draws_only_first_count_chars() {
+        let font = test_font(); // glyphs x,a,b
+        let full = draw_in_rect(
+            &font,
+            "xax",
+            rect_100x30(),
+            [1.0, 1.0, 1.0],
+            ShellAlign::NONE,
+            [0.0, 0.0],
+            0.5,
+            None,
+        );
+        let revealed = draw_in_rect(
+            &font,
+            "xax",
+            rect_100x30(),
+            [1.0, 1.0, 1.0],
+            ShellAlign::NONE,
+            [0.0, 0.0],
+            0.5,
+            Some(Reveal { count: 2, range: 8 }),
+        );
+        assert!(revealed.instances.len() < full.instances.len());
+        assert!(!revealed.instances.is_empty());
+    }
+
+    #[test]
+    fn reveal_none_matches_full_draw() {
+        let font = test_font();
+        let a = draw_in_rect(
+            &font,
+            "xax",
+            rect_100x30(),
+            [1.0, 1.0, 1.0],
+            ShellAlign::NONE,
+            [0.0, 0.0],
+            0.5,
+            None,
+        );
+        let full_glyphs = font.build_text("xax", 0.0, 0.0, 1.0, 0.5, [1.0, 1.0, 1.0], [0.0, 0.0]);
+        assert_eq!(a.instances.len(), full_glyphs.len());
     }
 }

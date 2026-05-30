@@ -482,6 +482,9 @@ fn process_boarding_passenger(sim: &mut Simulation, rules: &RuleSet, pax_id: u64
             pax.attack_target = None;
             pax.order_intent = None;
         }
+        // Conceal: a boarded passenger leaves the playfield, so it leaves the
+        // active-object order and stops receiving per-tick AI until unloaded.
+        sim.conceal(pax_id);
 
         let new_override = if transport_gunner {
             Some(crate::sim::combat::combat_weapon::WeaponOverride::IfvSlot(
@@ -873,12 +876,15 @@ fn process_unloading_transport(sim: &mut Simulation, rules: &RuleSet, transport_
         pax_sub_cell,
         CellListInsertion::PrependNonBuilding,
     );
+    // Reveal: the unloaded passenger is back on the playfield — re-append it to
+    // the active-object order (tail, idempotent).
+    sim.reveal(pax_id);
 
     let scatter_speed = rules
         .object(&pax_type_str)
         .map(|obj| ra2_speed_to_leptons_per_second(obj.speed))
         .unwrap_or(ra2_speed_to_leptons_per_second(4));
-    let start_dir = sim.rng.next_u32() as usize % 8;
+    let start_dir = sim.scatter_rng().next_u32() as usize % 8;
     for i in 0..8 {
         let (dx, dy) = NEIGHBORS[(start_dir + i) % 8];
         let sx = exit_rx as i32 + dx as i32;
@@ -1024,6 +1030,8 @@ fn tick_unloading(sim: &mut Simulation, rules: &RuleSet) -> bool {
             pax_sub_cell,
             CellListInsertion::PrependNonBuilding,
         );
+        // Reveal: back on the playfield — re-append to the active-object order.
+        sim.reveal(pax_id);
 
         // Scatter: issue a short move to a random adjacent cell so ejected
         // infantry flee the building footprint (gamemd mission 0xF / Scatter).
@@ -1031,7 +1039,7 @@ fn tick_unloading(sim: &mut Simulation, rules: &RuleSet) -> bool {
             .object(&pax_type_str)
             .map(|obj| ra2_speed_to_leptons_per_second(obj.speed))
             .unwrap_or(ra2_speed_to_leptons_per_second(4));
-        let start_dir = sim.rng.next_u32() as usize % 8;
+        let start_dir = sim.scatter_rng().next_u32() as usize % 8;
         for i in 0..8 {
             let (dx, dy) = NEIGHBORS[(start_dir + i) % 8];
             let sx = exit_rx as i32 + dx as i32;
@@ -1348,7 +1356,7 @@ ConditionYellow=50%
             bldg < pax,
             "fixture keeps stable-id order opposite native order"
         );
-        sim.live_object_order = vec![pax, bldg];
+        sim.set_logic_order_for_test(vec![pax, bldg]);
 
         let changed = tick_passenger_system(&mut sim, &rules);
 
@@ -1471,6 +1479,103 @@ ConditionYellow=50%
                     if sim.interner.resolve(*owner) == "Americans"
             )
         }));
+    }
+
+    // --- Contract #2: lifecycle → active-order membership (conceal/reveal) ---
+
+    /// Boarding conceals the passenger: it leaves the active object order and
+    /// stops receiving per-tick AI, while the transport/building stays.
+    #[test]
+    fn boarding_conceals_passenger_from_active_order() {
+        let mut sim = Simulation::new();
+        let rules = garrison_test_rules();
+        let bldg = spawn_garrison_building(&mut sim, &rules, "CAGAS01", "Neutral", 10, 10);
+        let pax = spawn_boarding_occupier(&mut sim, "E1", "Americans", bldg, 10, 11);
+        assert!(sim.live_object_order_snapshot().contains(&pax));
+
+        tick_boarding_and_garrison_reconciliation_in_order(&mut sim, &rules, &[pax, bldg]);
+
+        assert!(
+            matches!(
+                sim.entities.get(pax).unwrap().passenger_role,
+                PassengerRole::Inside { .. }
+            ),
+            "passenger should have boarded"
+        );
+        assert!(
+            !sim.live_object_order_snapshot().contains(&pax),
+            "boarded passenger leaves the active order"
+        );
+        assert!(
+            sim.live_object_order_snapshot().contains(&bldg),
+            "the garrisoned building stays in the active order"
+        );
+    }
+
+    /// Ejecting a garrison occupant reveals it: it re-enters the active order.
+    #[test]
+    fn garrison_eject_reveals_passenger_into_active_order() {
+        let mut sim = Simulation::new();
+        let rules = garrison_test_rules();
+        let bldg = spawn_garrison_building(&mut sim, &rules, "CAGAS01", "Americans", 10, 10);
+        let pax = place_inside_garrison(&mut sim, &rules, bldg, "E1", "Americans");
+        assert!(
+            !sim.live_object_order_snapshot().contains(&pax),
+            "an inside occupant is not in the active order"
+        );
+
+        if let Some(building) = sim.entities.get_mut(bldg) {
+            building.health.max = 400;
+            building.health.current = 100;
+            if let Some(cargo) = building.passenger_role.cargo_mut() {
+                cargo.garrison_fire_index = 3;
+            }
+        }
+
+        let changed = reconcile_civilian_garrison_owner_for_building(&mut sim, &rules, bldg);
+        assert!(changed);
+        assert!(matches!(
+            sim.entities.get(pax).unwrap().passenger_role,
+            PassengerRole::None
+        ));
+        assert!(
+            sim.live_object_order_snapshot().contains(&pax),
+            "ejected occupant is re-appended to the active order"
+        );
+    }
+
+    /// Board-then-eject leaves exactly one membership entry, re-appended at the
+    /// tail (idempotent, order-preserving — not sorted).
+    #[test]
+    fn board_then_eject_round_trip_reappends_once_at_tail() {
+        let mut sim = Simulation::new();
+        let rules = garrison_test_rules();
+        let bldg = spawn_garrison_building(&mut sim, &rules, "CAGAS01", "Neutral", 10, 10);
+        let pax = spawn_boarding_occupier(&mut sim, "E1", "Americans", bldg, 10, 11);
+
+        tick_boarding_and_garrison_reconciliation_in_order(&mut sim, &rules, &[pax, bldg]);
+        assert!(!sim.live_object_order_snapshot().contains(&pax));
+
+        if let Some(building) = sim.entities.get_mut(bldg) {
+            building.health.max = 400;
+            building.health.current = 100;
+            if let Some(cargo) = building.passenger_role.cargo_mut() {
+                cargo.garrison_fire_index = 3;
+            }
+        }
+        reconcile_civilian_garrison_owner_for_building(&mut sim, &rules, bldg);
+
+        let order = sim.live_object_order_snapshot();
+        assert_eq!(
+            order.iter().filter(|&&x| x == pax).count(),
+            1,
+            "exactly one membership entry after a board/eject round trip"
+        );
+        assert_eq!(
+            *order.last().expect("order non-empty"),
+            pax,
+            "re-appended at the tail, not in sorted id position"
+        );
     }
 
     #[test]

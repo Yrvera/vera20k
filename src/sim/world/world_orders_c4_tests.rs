@@ -77,8 +77,8 @@ fn build_sim_with_c4_damage_state_rules() -> (Simulation, RuleSet, BTreeMap<(u16
 fn spawn_infantry(sim: &mut Simulation, type_str: &str, owner: &str, rx: u16, ry: u16) -> u64 {
     let owner_id = sim.interner.intern(owner);
     let type_id = sim.interner.intern(type_str);
-    let id = sim.next_stable_entity_id;
-    sim.next_stable_entity_id += 1;
+    let id = sim.substrate.next_stable_entity_id;
+    sim.substrate.next_stable_entity_id += 1;
     let e = GameEntity::new(
         id,
         rx,
@@ -103,8 +103,8 @@ fn spawn_infantry(sim: &mut Simulation, type_str: &str, owner: &str, rx: u16, ry
 fn spawn_building(sim: &mut Simulation, type_str: &str, owner: &str, rx: u16, ry: u16) -> u64 {
     let owner_id = sim.interner.intern(owner);
     let type_id = sim.interner.intern(type_str);
-    let id = sim.next_stable_entity_id;
-    sim.next_stable_entity_id += 1;
+    let id = sim.substrate.next_stable_entity_id;
+    sim.substrate.next_stable_entity_id += 1;
     let e = GameEntity::new(
         id,
         rx,

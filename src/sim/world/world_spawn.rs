@@ -20,10 +20,7 @@ use crate::sim::components::{
 use crate::sim::game_entity::GameEntity;
 use crate::sim::miner::{Miner, MinerConfig, miner_kind_for_object};
 use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
-use crate::sim::occupancy::CellListInsertion;
-use crate::sim::production::{
-    ProductionCategory, building_base_foundation_cells, foundation_dimensions,
-};
+use crate::sim::production::{ProductionCategory, foundation_dimensions};
 use crate::sim::vision::MAX_SIGHT_RANGE;
 use crate::util::fixed_math::SimFixed;
 
@@ -237,45 +234,14 @@ impl Simulation {
 
             let owner_str = self.interner.resolve(ge.owner).to_string();
             let category = ge.category;
-            let spawn_rx = ge.position.rx;
-            let spawn_ry = ge.position.ry;
-            let spawn_layer = ge
-                .locomotor
-                .as_ref()
-                .map_or(MovementLayer::Ground, |l| l.layer);
-            let spawn_sub_cell = ge.sub_cell;
             let spawn_sid = ge.stable_id;
-            let spawn_cells: Option<Vec<(u16, u16)>> = if category == EntityCategory::Structure {
-                rules.and_then(|r| r.object(&map_ent.type_id)).map(|obj| {
-                    crate::sim::production::building_base_foundation_cells(
-                        spawn_rx,
-                        spawn_ry,
-                        &obj.foundation,
-                    )
-                })
-            } else {
-                None
-            };
-            self.entities.insert(ge);
-            self.register_live_object(spawn_sid);
-            self.increment_owned_count(&owner_str, category);
-            // Register in occupancy grid.
-            let insertion = CellListInsertion::from_category(category);
-            if let Some(cells) = spawn_cells {
-                for (rx, ry) in cells {
-                    self.occupancy
-                        .add(rx, ry, spawn_sid, spawn_layer, None, insertion);
-                }
-            } else {
-                self.occupancy.add(
-                    spawn_rx,
-                    spawn_ry,
-                    spawn_sid,
-                    spawn_layer,
-                    spawn_sub_cell,
-                    insertion,
-                );
+            if let Some(obj) = rules.and_then(|r| r.object(&map_ent.type_id)) {
+                ge.foundation = obj.foundation.clone();
             }
+            self.entities.insert(ge);
+            self.reveal(spawn_sid);
+            self.increment_owned_count(&owner_str, category);
+            self.add_entity_occupancy(spawn_sid);
             count += 1;
         }
 
@@ -427,34 +393,11 @@ impl Simulation {
 
         let spawn_owner_str = self.interner.resolve(ge.owner).to_string();
         let spawn_category = ge.category;
-        let spawn_rx = ge.position.rx;
-        let spawn_ry = ge.position.ry;
-        let spawn_layer = ge
-            .locomotor
-            .as_ref()
-            .map_or(MovementLayer::Ground, |l| l.layer);
-        let spawn_sub_cell = ge.sub_cell;
+        ge.foundation = obj.foundation.clone();
         self.entities.insert(ge);
-        self.register_live_object(stable_id);
+        self.reveal(stable_id);
         self.increment_owned_count(&spawn_owner_str, spawn_category);
-        // Register in occupancy grid.
-        let insertion = CellListInsertion::from_category(spawn_category);
-        if spawn_category == EntityCategory::Structure {
-            let cells = building_base_foundation_cells(spawn_rx, spawn_ry, &obj.foundation);
-            for (rx, ry) in cells {
-                self.occupancy
-                    .add(rx, ry, stable_id, spawn_layer, None, insertion);
-            }
-        } else {
-            self.occupancy.add(
-                spawn_rx,
-                spawn_ry,
-                stable_id,
-                spawn_layer,
-                spawn_sub_cell,
-                insertion,
-            );
-        }
+        self.add_entity_occupancy(stable_id);
         Some(stable_id)
     }
 
@@ -585,7 +528,8 @@ impl Simulation {
         let spawn_owner_str = self.interner.resolve(ge.owner).to_string();
         let spawn_category = ge.category;
         self.entities.insert(ge);
-        self.register_live_object(stable_id);
+        // Limbo objects are NOT registered in the active order — registration
+        // happens at reveal/unlimbo (e.g. paradrop drop), mirroring ObjectClass+0x98.
         self.increment_owned_count(&spawn_owner_str, spawn_category);
         Some(stable_id)
     }
@@ -734,7 +678,7 @@ impl Simulation {
         }
 
         // Despawn the MCV.
-        self.despawn_entity(stable_id);
+        self.uninit(stable_id);
 
         // Spawn the construction yard.
         let owner_str = self.interner.resolve(owner_id).to_string();

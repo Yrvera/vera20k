@@ -4,9 +4,10 @@
 //!
 //! Buttons are SDBTNANM.SHP frames 2 (default), 3 (hover), and 4 (pressed) —
 //! drawn through CC_Draw_Shape with the SDBTNANM palette, producing the
-//! red / orange / yellow gradient artwork the player sees. The `bue_*30` /
-//! `bde_*30` PCXs that ship in the same archives are greyscale and unused on
-//! this paint path.
+//! red / orange / yellow gradient artwork the player sees. The full 0..=16 frame
+//! set is also baked so the first-paint controls-reveal slide can ramp each
+//! button through its animation frames. The `bue_*30` / `bde_*30` PCXs that ship
+//! in the same archives are greyscale and unused on this paint path.
 
 use crate::assets::asset_manager::AssetManager;
 use crate::assets::pal_file::Palette;
@@ -16,7 +17,13 @@ use crate::render::gpu::GpuContext;
 
 const ATLAS_PADDING: u32 = 2;
 
-#[derive(Debug, Clone, Copy)]
+/// SDBTNANM.SHP frames baked for the first-paint slide ramp. The reveal animates
+/// "active" buttons through frames 5..=10 and "inactive" slots through 11..=16,
+/// so the full 0..=16 set is loaded; missing frames stay `None` and the wave
+/// clamps to the nearest available frame.
+const SDBTNANM_WAVE_FRAMES: usize = 17;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MainMenuShellChromeEntry {
     pub uv_origin: [f32; 2],
     pub uv_size: [f32; 2],
@@ -31,11 +38,21 @@ pub struct MainMenuShellChromeAtlas {
     pub button_hover: MainMenuShellChromeEntry,
     /// SDBTNANM.SHP frame 4 — pressed state.
     pub button_pressed: MainMenuShellChromeEntry,
+    /// SDBTNANM.SHP frames 0..=16, indexed by frame number, for the first-paint
+    /// slide ramp. Shared by the 0xE2 and 0x100 shell renderers (both reuse this
+    /// atlas). `None` where the SHP lacks that frame.
+    pub button_wave_frames: [Option<MainMenuShellChromeEntry>; SDBTNANM_WAVE_FRAMES],
     pub right_panel_top_sdtp: Option<MainMenuShellChromeEntry>,
     pub right_panel_tile_sdbtnbkgd: Option<MainMenuShellChromeEntry>,
     pub right_panel_bottom_sdbtm: Option<MainMenuShellChromeEntry>,
     pub lower_side_640_lwscrns: Option<MainMenuShellChromeEntry>,
     pub lower_side_large_lwscrnl: Option<MainMenuShellChromeEntry>,
+    /// MNSCRNS.SHP frame 0 — parent background that fills the screen behind
+    /// everything at 640-wide resolution. Painted through SHELL.PAL.
+    pub parent_background_640_mnscrns: Option<MainMenuShellChromeEntry>,
+    /// MNSCRNL.SHP frame 0 — parent background for all non-640 widths.
+    /// Painted through SHELL.PAL.
+    pub parent_background_large_mnscrnl: Option<MainMenuShellChromeEntry>,
 }
 
 struct RenderedChromeEntry {
@@ -52,17 +69,23 @@ pub fn build_main_menu_shell_chrome_atlas(
 ) -> Option<MainMenuShellChromeAtlas> {
     let mut rendered = Vec::new();
 
-    // Button artwork: SDBTNANM frames 2/3/4 rendered with SDBTNANM.PAL.
-    // Fall back to SHELL2.PAL if the dedicated palette isn't shipped (it
-    // still produces a close colorization).
+    // Button artwork: the full SDBTNANM frame set rendered with SDBTNANM.PAL.
+    // Fall back to SHELL2.PAL if the dedicated palette isn't shipped (it still
+    // produces a close colorization). Frames 2/3/4 are the steady default/hover/
+    // pressed states; the whole 0..=16 set feeds the first-paint slide ramp.
     let sdbtnanm_palette = load_named_palette(assets, "SDBTNANM.PAL")
         .or_else(|| load_named_palette(assets, "SHELL2.PAL"))?;
-    let frame_default = render_shp_frame(assets, "SDBTNANM.SHP", &sdbtnanm_palette, 2, "default")?;
-    let frame_hover = render_shp_frame(assets, "SDBTNANM.SHP", &sdbtnanm_palette, 3, "hover")?;
-    let frame_pressed = render_shp_frame(assets, "SDBTNANM.SHP", &sdbtnanm_palette, 4, "pressed")?;
-    rendered.push(frame_default);
-    rendered.push(frame_hover);
-    rendered.push(frame_pressed);
+    for frame in 0..SDBTNANM_WAVE_FRAMES {
+        if let Some(entry) = render_shp_frame(
+            assets,
+            "SDBTNANM.SHP",
+            &sdbtnanm_palette,
+            frame,
+            &format!("wave#{frame}"),
+        ) {
+            rendered.push(entry);
+        }
+    }
 
     // Right-panel + lower-side chrome SHPs. These render with SHELL.PAL,
     // except SDBTNBKGD which uses SHELL2.PAL.
@@ -73,6 +96,10 @@ pub fn build_main_menu_shell_chrome_atlas(
         push_optional_shp(&mut rendered, assets, "SDBTM.SHP", pal, 0);
         push_optional_shp(&mut rendered, assets, "LWSCRNS.SHP", pal, 0);
         push_optional_shp(&mut rendered, assets, "LWSCRNL.SHP", pal, 0);
+        // Parent backgrounds that fill the screen behind the movie + chrome.
+        // Native SHP canvas size is read at parse time (not hardcoded).
+        push_optional_shp(&mut rendered, assets, "MNSCRNS.SHP", pal, 0);
+        push_optional_shp(&mut rendered, assets, "MNSCRNL.SHP", pal, 0);
     } else {
         log::warn!("Missing SHELL.PAL; skipping main-menu right-panel chrome SHPs");
     }
@@ -89,22 +116,26 @@ pub fn build_main_menu_shell_chrome_atlas(
         by_label.insert(entry.label.clone(), placed);
     }
     log::info!("Main-menu shell chrome atlas loaded");
+    // Frames 2/3/4 (default/hover/pressed) are mandatory; bail to the fallback
+    // path if SDBTNANM is too short to contain them, rather than panicking.
+    let button_default = *by_label.get("sdbtnanm.shp:wave#2")?;
+    let button_hover = *by_label.get("sdbtnanm.shp:wave#3")?;
+    let button_pressed = *by_label.get("sdbtnanm.shp:wave#4")?;
     Some(MainMenuShellChromeAtlas {
         texture,
-        button_default: *by_label
-            .get("sdbtnanm.shp:default")
-            .expect("default button frame mandatory above"),
-        button_hover: *by_label
-            .get("sdbtnanm.shp:hover")
-            .expect("hover button frame mandatory above"),
-        button_pressed: *by_label
-            .get("sdbtnanm.shp:pressed")
-            .expect("pressed button frame mandatory above"),
+        button_default,
+        button_hover,
+        button_pressed,
+        button_wave_frames: std::array::from_fn(|frame| {
+            by_label.get(&format!("sdbtnanm.shp:wave#{frame}")).copied()
+        }),
         right_panel_top_sdtp: by_label.get("sdtp.shp").copied(),
         right_panel_tile_sdbtnbkgd: by_label.get("sdbtnbkgd.shp").copied(),
         right_panel_bottom_sdbtm: by_label.get("sdbtm.shp").copied(),
         lower_side_640_lwscrns: by_label.get("lwscrns.shp").copied(),
         lower_side_large_lwscrnl: by_label.get("lwscrnl.shp").copied(),
+        parent_background_640_mnscrns: by_label.get("mnscrns.shp").copied(),
+        parent_background_large_mnscrnl: by_label.get("mnscrnl.shp").copied(),
     })
 }
 

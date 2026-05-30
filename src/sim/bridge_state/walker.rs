@@ -409,19 +409,13 @@ impl BridgeRuntimeState {
         }
     }
 
+    /// Pick the healthy-tile variant for a repaired bridge strip. gamemd draws
+    /// `RandomRanged(0, 3)` from the map-gen RNG using the multiply-high (scaled)
+    /// shape — the HIGH two bits of one draw, not the low bits — so the variant
+    /// comes from `next_range_u32_inclusive_scaled`. (The map-gen stream is
+    /// unseeded on a fixed map, so in practice this is deterministically 0.)
     fn repair_variant_offset(rng: &mut SimRng) -> u8 {
-        Self::next_rejection_sampled_u8(rng, REPAIR_VARIANT_LIMIT_INCLUSIVE)
-    }
-
-    fn next_rejection_sampled_u8(rng: &mut SimRng, max_inclusive: u8) -> u8 {
-        let span = u64::from(max_inclusive) + 1;
-        let accepted = (u64::from(u32::MAX) + 1) / span * span;
-        loop {
-            let draw = u64::from(rng.next_u32());
-            if draw < accepted {
-                return (draw % span) as u8;
-            }
-        }
+        rng.next_range_u32_inclusive_scaled(0, u32::from(REPAIR_VARIANT_LIMIT_INCLUSIVE)) as u8
     }
 
     fn is_low_repair_outer_candidate(
@@ -711,7 +705,12 @@ impl BridgeRuntimeState {
     /// writes the (this, north, south) length-axis triple. Returns the
     /// list of cells that hit final-collapse (overlay 0xE7) so the caller
     /// can emit BlowUpBridge actions.
-    fn apply_bridge_destruction_ns_high(&mut self, rx: u16, ry: u16) -> Vec<(u16, u16)> {
+    fn apply_bridge_destruction_ns_high(
+        &mut self,
+        rx: u16,
+        ry: u16,
+        radar: &mut Vec<(u16, u16)>,
+    ) -> Vec<(u16, u16)> {
         use crate::sim::bridge_specs::pick_destruction_overlay;
         use crate::sim::bridge_state::{Axis, DamageState};
 
@@ -750,10 +749,9 @@ impl BridgeRuntimeState {
         for slot in Self::ns_triple(rx, ry) {
             if let Some(pos) = slot {
                 if let Some(c) = self.cell_mut(pos.0, pos.1) {
-                    if matches!(c.role, crate::sim::bridge_state::BridgeCellRole::Bridgehead) {
-                        continue;
-                    }
                     c.overlay_byte = next;
+                    // Every touched cell (final OR intermediate) is minimap-dirty.
+                    radar.push(pos);
                     if next == 0xE7 {
                         c.damage_state = DamageState::Destroyed;
                         final_cells.push(pos);
@@ -769,7 +767,12 @@ impl BridgeRuntimeState {
     /// Sibling-cascade leaf for the EW body axis. Mirror of
     /// `apply_bridge_destruction_ns_high` with EW axis classifier, EW
     /// table, EW intermediates (0xE3 → 0xE4, 0xE5 → 0xE6), and final 0xE8.
-    fn apply_bridge_destruction_ew_high(&mut self, rx: u16, ry: u16) -> Vec<(u16, u16)> {
+    fn apply_bridge_destruction_ew_high(
+        &mut self,
+        rx: u16,
+        ry: u16,
+        radar: &mut Vec<(u16, u16)>,
+    ) -> Vec<(u16, u16)> {
         use crate::sim::bridge_specs::pick_destruction_overlay;
         use crate::sim::bridge_state::{Axis, DamageState};
 
@@ -803,10 +806,9 @@ impl BridgeRuntimeState {
         for slot in Self::ew_triple(rx, ry) {
             if let Some(pos) = slot {
                 if let Some(c) = self.cell_mut(pos.0, pos.1) {
-                    if matches!(c.role, crate::sim::bridge_state::BridgeCellRole::Bridgehead) {
-                        continue;
-                    }
                     c.overlay_byte = next;
+                    // Every touched cell (final OR intermediate) is minimap-dirty.
+                    radar.push(pos);
                     if next == 0xE8 {
                         c.damage_state = DamageState::Destroyed;
                         final_cells.push(pos);
@@ -871,15 +873,20 @@ impl BridgeRuntimeState {
 
         let mut destroyed: Vec<(u16, u16)> = Vec::new();
         let mut actions: Vec<((u16, u16), usize, CellAction)> = Vec::new();
+        // BR-16: cells whose overlay this collapse touches (triple + cascade),
+        // fed to the minimap radar-dirty channel by the orchestrator.
+        let mut radar_cells: Vec<(u16, u16)> = Vec::new();
 
-        // Write the (this, north, south) length-axis triple.
+        // Write the (this, north, south) length-axis triple. The write is
+        // UNCONDITIONAL: bridge destruction keys purely on the overlay band,
+        // with no per-cell role exception, so a bridgehead/ramp cell caught in
+        // the triple receives the destroy overlay (and a BlowUpBridge on a
+        // final collapse) like any other cell — it is NOT left standing.
         for (slot, opt_pos) in Self::ns_triple(rx, ry).into_iter().enumerate() {
             if let Some(pos) = opt_pos {
                 if let Some(c) = self.cell_mut(pos.0, pos.1) {
-                    if matches!(c.role, crate::sim::bridge_state::BridgeCellRole::Bridgehead) {
-                        continue;
-                    }
                     c.overlay_byte = next;
+                    radar_cells.push(pos);
                     if is_final {
                         c.damage_state = DamageState::Destroyed;
                         destroyed.push(pos);
@@ -897,7 +904,7 @@ impl BridgeRuntimeState {
                 // wrapping_sub overflow at rx == 0 → west neighbor off-map.
                 continue;
             }
-            let sibling_finals = self.apply_bridge_destruction_ns_high(sx, sy);
+            let sibling_finals = self.apply_bridge_destruction_ns_high(sx, sy, &mut radar_cells);
             for pos in sibling_finals {
                 if !destroyed.contains(&pos) {
                     destroyed.push(pos);
@@ -919,6 +926,7 @@ impl BridgeRuntimeState {
             set_bridge_direction: SetBridgeDirectionResult { actions },
             adjacent_bridges_dirty: adj,
             zones_dirty: is_final,
+            radar_cells,
         }
     }
 
@@ -965,14 +973,15 @@ impl BridgeRuntimeState {
 
         let mut destroyed: Vec<(u16, u16)> = Vec::new();
         let mut actions: Vec<((u16, u16), usize, CellAction)> = Vec::new();
+        // BR-16: cells whose overlay this collapse touches (triple + cascade),
+        // fed to the minimap radar-dirty channel by the orchestrator.
+        let mut radar_cells: Vec<(u16, u16)> = Vec::new();
 
         for (slot, opt_pos) in Self::ew_triple(rx, ry).into_iter().enumerate() {
             if let Some(pos) = opt_pos {
                 if let Some(c) = self.cell_mut(pos.0, pos.1) {
-                    if matches!(c.role, crate::sim::bridge_state::BridgeCellRole::Bridgehead) {
-                        continue;
-                    }
                     c.overlay_byte = next;
+                    radar_cells.push(pos);
                     if is_final {
                         c.damage_state = DamageState::Destroyed;
                         destroyed.push(pos);
@@ -988,7 +997,7 @@ impl BridgeRuntimeState {
             if sy == u16::MAX {
                 continue;
             }
-            let sibling_finals = self.apply_bridge_destruction_ew_high(sx, sy);
+            let sibling_finals = self.apply_bridge_destruction_ew_high(sx, sy, &mut radar_cells);
             for pos in sibling_finals {
                 if !destroyed.contains(&pos) {
                     destroyed.push(pos);
@@ -1008,6 +1017,7 @@ impl BridgeRuntimeState {
             set_bridge_direction: SetBridgeDirectionResult { actions },
             adjacent_bridges_dirty: adj,
             zones_dirty: is_final,
+            radar_cells,
         }
     }
 
@@ -1081,7 +1091,12 @@ impl BridgeRuntimeState {
     /// `apply_bridge_destruction_ns_high` with LOW outer gate
     /// (`[0x4A..=0x65]`), LOW NS table, LOW intermediates 0x5C/0x5E, and
     /// final 0x64.
-    fn apply_bridge_destruction_ns_low(&mut self, rx: u16, ry: u16) -> Vec<(u16, u16)> {
+    fn apply_bridge_destruction_ns_low(
+        &mut self,
+        rx: u16,
+        ry: u16,
+        radar: &mut Vec<(u16, u16)>,
+    ) -> Vec<(u16, u16)> {
         use crate::sim::bridge_specs::pick_destruction_overlay;
         use crate::sim::bridge_state::{Axis, DamageState};
 
@@ -1115,10 +1130,9 @@ impl BridgeRuntimeState {
         for slot in Self::ns_triple(rx, ry) {
             if let Some(pos) = slot {
                 if let Some(c) = self.cell_mut(pos.0, pos.1) {
-                    if matches!(c.role, crate::sim::bridge_state::BridgeCellRole::Bridgehead) {
-                        continue;
-                    }
                     c.overlay_byte = next;
+                    // Every touched cell (final OR intermediate) is minimap-dirty.
+                    radar.push(pos);
                     if next == 0x64 {
                         c.damage_state = DamageState::Destroyed;
                         final_cells.push(pos);
@@ -1133,7 +1147,12 @@ impl BridgeRuntimeState {
 
     /// Sibling-cascade leaf for the LOW EW body axis. Intermediates
     /// 0x60/0x62 → 0x61/0x63; final 0x65.
-    fn apply_bridge_destruction_ew_low(&mut self, rx: u16, ry: u16) -> Vec<(u16, u16)> {
+    fn apply_bridge_destruction_ew_low(
+        &mut self,
+        rx: u16,
+        ry: u16,
+        radar: &mut Vec<(u16, u16)>,
+    ) -> Vec<(u16, u16)> {
         use crate::sim::bridge_specs::pick_destruction_overlay;
         use crate::sim::bridge_state::{Axis, DamageState};
 
@@ -1167,10 +1186,9 @@ impl BridgeRuntimeState {
         for slot in Self::ew_triple(rx, ry) {
             if let Some(pos) = slot {
                 if let Some(c) = self.cell_mut(pos.0, pos.1) {
-                    if matches!(c.role, crate::sim::bridge_state::BridgeCellRole::Bridgehead) {
-                        continue;
-                    }
                     c.overlay_byte = next;
+                    // Every touched cell (final OR intermediate) is minimap-dirty.
+                    radar.push(pos);
                     if next == 0x65 {
                         c.damage_state = DamageState::Destroyed;
                         final_cells.push(pos);
@@ -1229,14 +1247,15 @@ impl BridgeRuntimeState {
 
         let mut destroyed: Vec<(u16, u16)> = Vec::new();
         let mut actions: Vec<((u16, u16), usize, CellAction)> = Vec::new();
+        // BR-16: cells whose overlay this collapse touches (triple + cascade),
+        // fed to the minimap radar-dirty channel by the orchestrator.
+        let mut radar_cells: Vec<(u16, u16)> = Vec::new();
 
         for (slot, opt_pos) in Self::ns_triple(rx, ry).into_iter().enumerate() {
             if let Some(pos) = opt_pos {
                 if let Some(c) = self.cell_mut(pos.0, pos.1) {
-                    if matches!(c.role, crate::sim::bridge_state::BridgeCellRole::Bridgehead) {
-                        continue;
-                    }
                     c.overlay_byte = next;
+                    radar_cells.push(pos);
                     if is_final {
                         c.damage_state = DamageState::Destroyed;
                         destroyed.push(pos);
@@ -1252,7 +1271,7 @@ impl BridgeRuntimeState {
             if sx == u16::MAX {
                 continue;
             }
-            let sibling_finals = self.apply_bridge_destruction_ns_low(sx, sy);
+            let sibling_finals = self.apply_bridge_destruction_ns_low(sx, sy, &mut radar_cells);
             for pos in sibling_finals {
                 if !destroyed.contains(&pos) {
                     destroyed.push(pos);
@@ -1272,6 +1291,7 @@ impl BridgeRuntimeState {
             set_bridge_direction: SetBridgeDirectionResult { actions },
             adjacent_bridges_dirty: adj,
             zones_dirty: is_final,
+            radar_cells,
         }
     }
 
@@ -1318,14 +1338,15 @@ impl BridgeRuntimeState {
 
         let mut destroyed: Vec<(u16, u16)> = Vec::new();
         let mut actions: Vec<((u16, u16), usize, CellAction)> = Vec::new();
+        // BR-16: cells whose overlay this collapse touches (triple + cascade),
+        // fed to the minimap radar-dirty channel by the orchestrator.
+        let mut radar_cells: Vec<(u16, u16)> = Vec::new();
 
         for (slot, opt_pos) in Self::ew_triple(rx, ry).into_iter().enumerate() {
             if let Some(pos) = opt_pos {
                 if let Some(c) = self.cell_mut(pos.0, pos.1) {
-                    if matches!(c.role, crate::sim::bridge_state::BridgeCellRole::Bridgehead) {
-                        continue;
-                    }
                     c.overlay_byte = next;
+                    radar_cells.push(pos);
                     if is_final {
                         c.damage_state = DamageState::Destroyed;
                         destroyed.push(pos);
@@ -1341,7 +1362,7 @@ impl BridgeRuntimeState {
             if sy == u16::MAX {
                 continue;
             }
-            let sibling_finals = self.apply_bridge_destruction_ew_low(sx, sy);
+            let sibling_finals = self.apply_bridge_destruction_ew_low(sx, sy, &mut radar_cells);
             for pos in sibling_finals {
                 if !destroyed.contains(&pos) {
                     destroyed.push(pos);
@@ -1361,6 +1382,7 @@ impl BridgeRuntimeState {
             set_bridge_direction: SetBridgeDirectionResult { actions },
             adjacent_bridges_dirty: adj,
             zones_dirty: is_final,
+            radar_cells,
         }
     }
 }
@@ -2294,5 +2316,34 @@ mod tests {
         for y in 0..3 {
             assert_eq!(state.cell(2, y).unwrap().overlay_byte, 0xD3);
         }
+    }
+}
+
+#[cfg(test)]
+mod mapgen_variant_tests {
+    use super::*;
+    use crate::sim::rng::SimRng;
+
+    #[test]
+    fn repair_variant_is_zero_on_zero_state_stream() {
+        // gamemd's unseeded g_MapGenRng returns 0 forever, so the repaired variant is
+        // always 0 (the base overlay) on a fixed map. Draw many times to prove the
+        // state words stay zero across the index advance/wrap path — note the draw
+        // DOES advance the index counters, so we assert the variant value, not state().
+        let mut rng = SimRng::zeroed();
+        for _ in 0..300 {
+            assert_eq!(BridgeRuntimeState::repair_variant_offset(&mut rng), 0);
+        }
+    }
+
+    #[test]
+    fn repair_variant_consumes_whatever_stream_it_is_handed() {
+        // The walker is stream-agnostic: a seeded stream advances and yields a variant
+        // within the inclusive limit. (Proves the pick is not hard-coded to 0.)
+        let mut rng = SimRng::new(0x1234_5678);
+        let before = rng.state();
+        let variant = BridgeRuntimeState::repair_variant_offset(&mut rng);
+        assert!(variant <= REPAIR_VARIANT_LIMIT_INCLUSIVE);
+        assert_ne!(rng.state(), before, "seeded stream must advance");
     }
 }

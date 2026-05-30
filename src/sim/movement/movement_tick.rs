@@ -36,6 +36,7 @@ use crate::util::fixed_math::{
 };
 
 use super::bump_crush;
+use super::drive_locomotion;
 use super::locomotor::{GroundMovePhase, MovementLayer};
 use super::movement_bridge::{
     BRIDGE_Z_OFFSET, BridgeStateUpdate, apply_pending_bridge_render_state,
@@ -50,18 +51,19 @@ use super::movement_step;
 use super::tube_movement::{self, TubePathStepResult};
 use super::{
     INFANTRY_WOBBLE_AMPLITUDE, MIN_BRAKE_FRACTION, MovementConfig, MovementTickStats,
-    MoverSnapshot, PATH_STUCK_INIT, PathfindingContext, facing_from_delta, walking_to_subcell_dest,
+    MoverSnapshot, PATH_STUCK_INIT, PathfindingContext, PendingCrushKill, facing_from_delta,
+    walking_to_subcell_dest,
 };
 use crate::sim::occupancy::{CellListInsertion, OccupancyGrid};
 
 fn tick_forced_drive_tracks(
     entities: &mut EntityStore,
+    entity_order: &[u64],
     dt: SimFixed,
     stats: &mut MovementTickStats,
 ) -> BTreeSet<u64> {
     let mut processed: BTreeSet<u64> = BTreeSet::new();
-    let keys = entities.keys_sorted();
-    for &entity_id in &keys {
+    for &entity_id in entity_order {
         let Some(entity) = entities.get_mut(entity_id) else {
             continue;
         };
@@ -165,6 +167,42 @@ fn snapshot_mover(entities: &EntityStore, entity_id: u64) -> Option<MoverSnapsho
             .map(|mt| mt.bypass_grid)
             .unwrap_or(false),
     })
+}
+
+/// Rebuild one owner's pathfinding entity-block snapshot iff occupancy has
+/// mutated since that snapshot was last built. Returns whether a rebuild ran.
+///
+/// The movement tick builds these snapshots once before the mover loop, but
+/// gamemd processes movers in live object order — a mover that repaths after an
+/// earlier mover committed a move this tick must see the new position. Gating on
+/// the occupancy generation refreshes the snapshot to the live state at repath
+/// time (bit-equivalent to per-neighbor live classification for a synchronous A*
+/// search) while skipping the no-op case where nothing moved.
+#[allow(clippy::too_many_arguments)]
+fn refresh_owner_block_set_if_stale(
+    entity_block_sets: &mut BTreeMap<
+        crate::sim::intern::InternedId,
+        (
+            BTreeSet<(u16, u16)>,
+            crate::sim::pathfinding::LayeredEntityBlockMap,
+        ),
+    >,
+    built_at_gen: &mut BTreeMap<crate::sim::intern::InternedId, u64>,
+    owner: crate::sim::intern::InternedId,
+    current_gen: u64,
+    entities: &EntityStore,
+    alliances: &HouseAllianceMap,
+    interner: &crate::sim::intern::StringInterner,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
+) -> bool {
+    if built_at_gen.get(&owner).copied() == Some(current_gen) {
+        return false;
+    }
+    let owner_str = interner.resolve(owner);
+    let pair = bump_crush::build_entity_block_set(entities, owner_str, alliances, interner, rules);
+    entity_block_sets.insert(owner, pair);
+    built_at_gen.insert(owner, current_gen);
+    true
 }
 
 /// Result of path exhaustion check — tells the caller how to proceed.
@@ -610,8 +648,7 @@ fn classify_drive_track_chain_entry(
         chain.target_cell,
         chain.layers,
         entity_id,
-        snap.movement_zone,
-        snap.omni_crusher,
+        bump_crush::CrushCapability::new(snap.regular_crusher, snap.omni_crusher),
         interner.resolve(snap.owner),
         mover_loco_kind,
         snap.bypass_grid,
@@ -674,7 +711,7 @@ fn handle_deferred_drive_track_chain(
     rules: Option<&crate::rules::ruleset::RuleSet>,
     rng: &mut SimRng,
     stats: &mut MovementTickStats,
-    crush_kills: &mut Vec<u64>,
+    crush_kills: &mut Vec<PendingCrushKill>,
     already_scattered: &mut BTreeSet<u64>,
 ) -> bool {
     let entry_result = classify_drive_track_chain_entry(
@@ -700,12 +737,37 @@ fn handle_deferred_drive_track_chain(
             );
         }
         CellEntryResult::Crushable { victims } => {
+            let crusher_cell = (
+                i32::from(chain.target_cell.0),
+                i32::from(chain.target_cell.1),
+            );
+            let crusher_lepton = (
+                i32::from(chain.target_cell.0) * 256 + 128,
+                i32::from(chain.target_cell.1) * 256 + 128,
+            );
+            let victims = match bump_crush::classify_drive_crush_phase(
+                bump_crush::DriveCrushPhase::FullyInCell,
+                &victims,
+                entities,
+                entity_id,
+                alliances,
+                interner,
+                crusher_lepton,
+                bump_crush::CrushCapability::new(snap.regular_crusher, snap.omni_crusher),
+            ) {
+                bump_crush::DriveCrushOutcome::Kill { victims } => victims,
+                _ => Vec::new(),
+            };
             for &victim_id in &victims {
                 if let Some(victim) = entities.get(victim_id) {
                     occupancy.remove(victim.position.rx, victim.position.ry, victim_id);
                 }
             }
-            crush_kills.extend(victims);
+            crush_kills.extend(victims.into_iter().map(|victim_id| PendingCrushKill {
+                victim_id,
+                crusher_id: entity_id,
+                crush_coord: crusher_cell,
+            }));
         }
         CellEntryResult::FriendlyStationary { blocker_id } => {
             if !already_scattered.contains(&blocker_id)
@@ -756,10 +818,12 @@ fn handle_deferred_drive_track_chain(
 
 pub fn tick_movement_with_grids(
     entities: &mut EntityStore,
+    live_order: &[u64],
     path_grid: Option<&PathGrid>,
     terrain_costs: &BTreeMap<SpeedType, TerrainCostGrid>,
     alliances: &HouseAllianceMap,
     occupancy: &mut OccupancyGrid,
+    next_occupancy_enter_order: &mut u64,
     rng: &mut SimRng,
     tick_ms: u32,
     sim_tick: u64,
@@ -799,25 +863,46 @@ pub fn tick_movement_with_grids(
         blockage_path_delay_ticks,
     };
     let dt: SimFixed = dt_from_tick_ms(tick_ms);
+    let fallback_order;
+    let entity_order: &[u64] = if live_order.is_empty() {
+        fallback_order = entities.keys_sorted();
+        &fallback_order
+    } else {
+        live_order
+    };
     // Collect entities that have finished their paths (need movement_target removal after loop).
     let mut finished_entities: Vec<u64> = Vec::new();
     // Deferred effects — applied after the movement loop to avoid borrow conflicts.
-    let mut crush_kills: Vec<u64> = Vec::new();
+    let mut crush_kills: Vec<PendingCrushKill> = Vec::new();
     // Track which blockers have already been told to scatter this tick,
     // preventing duplicate scatter commands from multiple movers.
     let mut already_scattered: BTreeSet<u64> = BTreeSet::new();
 
+    let drive_reaims: Vec<(u64, crate::sim::components::DriveCoord)> =
+        drive_locomotion::drive_entity_nav_targets(entities)
+            .into_iter()
+            .filter_map(|(mover_id, target)| {
+                super::navcom::resolve_entity_nav_target_drive_coord(target, entities)
+                    .map(|coord| (mover_id, coord))
+            })
+            .collect();
+    for (mover_id, coord) in drive_reaims {
+        if let Some(entity) = entities.get_mut(mover_id) {
+            drive_locomotion::refresh_drive_head_to_coord(entity, coord);
+        }
+    }
+
     if let Some(terrain) = resolved_terrain {
         tube_movement::tick_low_bridge_tube_movement(entities, occupancy, terrain);
     }
-    let forced_drive_processed = tick_forced_drive_tracks(entities, dt, &mut stats);
+    let forced_drive_processed = tick_forced_drive_tracks(entities, entity_order, dt, &mut stats);
 
-    // Collect movers in deterministic order: ground/bridge entities with a movement_target.
-    let keys = entities.keys_sorted();
+    // Collect movers in live object order: ground/bridge entities with a movement_target.
     let mut movers: Vec<u64> = Vec::new();
     let mut mover_owners: BTreeSet<crate::sim::intern::InternedId> = BTreeSet::new();
-    for &id in &keys {
+    for &id in entity_order {
         if let Some(entity) = entities.get(id) {
+            let _ = drive_locomotion::process_drive_locomotion_shell(entity);
             if entity.navigation.pending_arrival_clear {
                 mover_owners.insert(entity.owner);
             }
@@ -837,7 +922,7 @@ pub fn tick_movement_with_grids(
     // Pre-build entity block sets per owner for friendly-passable pathfinding during repath.
     // RA2 optimization: moving friendly units are passable (code-2 dynamic cost);
     // only stationary/enemy units hard-block. InternedId is Copy, so keys are cheap.
-    let entity_block_sets: BTreeMap<
+    let mut entity_block_sets: BTreeMap<
         crate::sim::intern::InternedId,
         (
             BTreeSet<(u16, u16)>,
@@ -852,6 +937,17 @@ pub fn tick_movement_with_grids(
             (owner_id, pair)
         })
         .collect();
+    // Occupancy generation these snapshots reflect. Captured before
+    // process_pending_drive_arrivals so any move it makes advances the generation
+    // and forces the first consuming mover to rebuild. Each owner's snapshot is
+    // lazily refreshed in the mover loop below whenever occupancy changed since it
+    // was last built (gamemd processes movers in live object order).
+    let block_set_build_gen = occupancy.generation();
+    let mut block_set_built_at_gen: BTreeMap<crate::sim::intern::InternedId, u64> =
+        entity_block_sets
+            .keys()
+            .map(|&owner| (owner, block_set_build_gen))
+            .collect();
 
     process_pending_drive_arrivals(
         entities,
@@ -863,7 +959,7 @@ pub fn tick_movement_with_grids(
         rules,
     );
     movers.clear();
-    for &id in &keys {
+    for &id in entity_order {
         if let Some(entity) = entities.get(id) {
             if forced_drive_processed.contains(&id)
                 || entity.movement_target.is_none()
@@ -896,6 +992,20 @@ pub fn tick_movement_with_grids(
         });
         let entity_cost_grid: Option<&TerrainCostGrid> =
             snap.speed_type.and_then(|st| terrain_costs.get(&st));
+        // Slice 6: refresh this owner's pathfinding snapshot if occupancy changed
+        // since it was built (e.g. an earlier mover committed a move this tick).
+        // Matches gamemd's live-order processing; no-op when nothing moved. Must run
+        // before the immutable refs below borrow `entity_block_sets`.
+        refresh_owner_block_set_if_stale(
+            &mut entity_block_sets,
+            &mut block_set_built_at_gen,
+            snap.owner,
+            occupancy.generation(),
+            entities,
+            alliances,
+            interner,
+            rules,
+        );
         let (mover_entity_blocks, mover_entity_block_map): (
             Option<&BTreeSet<(u16, u16)>>,
             Option<&crate::sim::pathfinding::LayeredEntityBlockMap>,
@@ -1203,6 +1313,9 @@ pub fn tick_movement_with_grids(
                             }
                         }
                         // Update occupancy grid: move entity from old cell to new cell.
+                        let order = *next_occupancy_enter_order;
+                        *next_occupancy_enter_order = order.saturating_add(1);
+                        entity.occupancy_enter_order = order;
                         occupancy.move_entity(
                             old_rx,
                             old_ry,
@@ -1347,6 +1460,8 @@ pub fn tick_movement_with_grids(
                     mover_entity_block_map,
                     &live_building_entry_skips,
                     occupancy,
+                    &mut entity.occupancy_enter_order,
+                    next_occupancy_enter_order,
                     &mut stats,
                     &mut finished_entities,
                     rng,
@@ -1523,20 +1638,31 @@ pub fn tick_movement_with_grids(
 
     // Apply deferred crush kills (instant death, then remove from EntityStore).
     // Occupancy entries were already removed in handle_deferred_occupancy.
-    for &victim_id in &crush_kills {
+    crush_kills.sort_by_key(|kill| (kill.victim_id, kill.crusher_id));
+    crush_kills.dedup_by_key(|kill| kill.victim_id);
+    for kill in &crush_kills {
+        let victim_id = kill.victim_id;
         // Emit sounds BEFORE entity mutation/removal so position + type_ref
         // are still valid on the victim.
         if let Some(rules) = rules {
             if let Some(victim) = entities.get(victim_id) {
-                bump_crush::emit_crush_kill_sounds(victim, rules, interner, sound_events);
+                bump_crush::emit_crush_kill_sounds_at(
+                    victim,
+                    kill.crush_coord,
+                    rules,
+                    interner,
+                    sound_events,
+                );
             }
         }
-        if let Some(victim) = entities.get_mut(victim_id) {
-            victim.health.current = 0;
+        if entities.get(victim_id).is_some() {
+            if let Some(victim) = entities.get_mut(victim_id) {
+                victim.health.current = 0;
+            }
+            entities.clear_radio_contacts_for(victim_id);
+            entities.remove(victim_id);
+            stats.crush_kills = stats.crush_kills.saturating_add(1);
         }
-        entities.clear_radio_contacts_for(victim_id);
-        entities.remove(victim_id);
-        stats.crush_kills = stats.crush_kills.saturating_add(1);
     }
 
     finalize_finished_entities(entities, &finished_entities, sim_tick);
@@ -1729,6 +1855,97 @@ mod drive_track_chain_tests {
     use crate::sim::game_entity::GameEntity;
     use crate::sim::intern::{test_intern, test_interner};
     use crate::sim::movement::locomotor::LocomotorState;
+
+    // Slice 6 acceptance: a snapshot rebuilt at repath time reflects same-tick
+    // moves — observably equivalent to live per-neighbor Can_Enter_Cell for a
+    // synchronous search (study CELLCLASS_MAPCLASS..._SERVICE_STUDY §8 Slice 6).
+    #[test]
+    fn owner_block_set_refreshes_when_occupancy_generation_advances() {
+        let alliances = HouseAllianceMap::new();
+        let mut entities = EntityStore::new();
+        let mut blocker = GameEntity::test_default(10, "HTNK", "Americans", 5, 5);
+        blocker.category = EntityCategory::Unit;
+        entities.insert(blocker);
+        // Clone the test interner AFTER the entity is created so it can resolve
+        // the just-interned owner string.
+        let interner = test_interner();
+        let owner = test_intern("Americans");
+
+        // Initial snapshot at gen 0: friendly stationary unit -> soft-block at (5,5).
+        let mut sets = BTreeMap::new();
+        sets.insert(
+            owner,
+            bump_crush::build_entity_block_set(&entities, "Americans", &alliances, &interner, None),
+        );
+        let mut built_at: BTreeMap<crate::sim::intern::InternedId, u64> = BTreeMap::new();
+        built_at.insert(owner, 0);
+        assert!(sets[&owner].1.contains_key(MovementLayer::Ground, &(5, 5)));
+        assert!(!sets[&owner].1.contains_key(MovementLayer::Ground, &(6, 6)));
+
+        // Same-tick move of the blocker to (6,6); occupancy generation advances.
+        {
+            let b = entities.get_mut(10).unwrap();
+            b.position.rx = 6;
+            b.position.ry = 6;
+        }
+        let rebuilt = refresh_owner_block_set_if_stale(
+            &mut sets,
+            &mut built_at,
+            owner,
+            7,
+            &entities,
+            &alliances,
+            &interner,
+            None,
+        );
+        assert!(rebuilt, "stale snapshot must rebuild when generation advances");
+        assert!(
+            !sets[&owner].1.contains_key(MovementLayer::Ground, &(5, 5)),
+            "old cell freed"
+        );
+        assert!(
+            sets[&owner].1.contains_key(MovementLayer::Ground, &(6, 6)),
+            "new cell blocked"
+        );
+    }
+
+    #[test]
+    fn owner_block_set_not_rebuilt_when_generation_unchanged() {
+        let alliances = HouseAllianceMap::new();
+        let mut entities = EntityStore::new();
+        let mut blocker = GameEntity::test_default(10, "HTNK", "Americans", 5, 5);
+        blocker.category = EntityCategory::Unit;
+        entities.insert(blocker);
+        let interner = test_interner();
+        let owner = test_intern("Americans");
+
+        let mut sets = BTreeMap::new();
+        sets.insert(
+            owner,
+            bump_crush::build_entity_block_set(&entities, "Americans", &alliances, &interner, None),
+        );
+        let mut built_at: BTreeMap<crate::sim::intern::InternedId, u64> = BTreeMap::new();
+        built_at.insert(owner, 4);
+
+        // Generation matches the recorded build gen -> no rebuild, even though the
+        // entity moved underneath us.
+        entities.get_mut(10).unwrap().position.rx = 6;
+        let rebuilt = refresh_owner_block_set_if_stale(
+            &mut sets,
+            &mut built_at,
+            owner,
+            4,
+            &entities,
+            &alliances,
+            &interner,
+            None,
+        );
+        assert!(!rebuilt, "no rebuild when generation is unchanged");
+        assert!(
+            sets[&owner].1.contains_key(MovementLayer::Ground, &(5, 5)),
+            "snapshot left untouched"
+        );
+    }
 
     fn drive_snapshot() -> MoverSnapshot {
         let locomotor = LocomotorState::for_test_kind(LocomotorKind::Drive);

@@ -114,8 +114,8 @@ fn build_sim() -> (Simulation, RuleSet, BTreeMap<(u16, u16), u8>) {
 fn spawn_engineer(sim: &mut Simulation, rx: u16, ry: u16) -> u64 {
     let owner = sim.interner.intern("Americans");
     let ty = sim.interner.intern("ENGI");
-    let id = sim.next_stable_entity_id;
-    sim.next_stable_entity_id += 1;
+    let id = sim.substrate.next_stable_entity_id;
+    sim.substrate.next_stable_entity_id += 1;
     let e = GameEntity::new(
         id,
         rx,
@@ -140,8 +140,8 @@ fn spawn_engineer(sim: &mut Simulation, rx: u16, ry: u16) -> u64 {
 fn spawn_seal(sim: &mut Simulation, rx: u16, ry: u16) -> u64 {
     let owner = sim.interner.intern("Americans");
     let ty = sim.interner.intern("GHOST");
-    let id = sim.next_stable_entity_id;
-    sim.next_stable_entity_id += 1;
+    let id = sim.substrate.next_stable_entity_id;
+    sim.substrate.next_stable_entity_id += 1;
     let e = GameEntity::new(
         id,
         rx,
@@ -166,8 +166,8 @@ fn spawn_seal(sim: &mut Simulation, rx: u16, ry: u16) -> u64 {
 fn spawn_cabhut(sim: &mut Simulation, rx: u16, ry: u16) -> u64 {
     let owner = sim.interner.intern("Soviets");
     let ty = sim.interner.intern("CABHUT");
-    let id = sim.next_stable_entity_id;
-    sim.next_stable_entity_id += 1;
+    let id = sim.substrate.next_stable_entity_id;
+    sim.substrate.next_stable_entity_id += 1;
     let e = GameEntity::new(
         id,
         rx,
@@ -524,9 +524,11 @@ fn engineer_enters_cabhut_repairs_bridge() {
     let bs = sim.bridge_state.as_ref().unwrap();
     for &(rx, ry) in ENGINEER_REPAIR_STRIP_CELLS {
         let cell = bs.cell(rx, ry).unwrap();
-        assert!(
-            (0xCD..=0xD0).contains(&cell.overlay_byte),
-            "cell ({rx},{ry}) overlay={:#04X} must be repaired high-bridge healthy overlay",
+        assert_eq!(
+            cell.overlay_byte, 0xCD,
+            "cell ({rx},{ry}) overlay={:#04X} must repair to base+0 (variant 0) on a \
+             fixed map — mapgen_rng is zero-state, so the repaired tile is the base, \
+             never a random base+1..3",
             cell.overlay_byte
         );
         assert!(
@@ -866,6 +868,17 @@ fn c4_on_cabhut_collapses_bridge_and_hut_survives() {
         matches!(anchor.damage_state, DamageState::Destroyed),
         "anchor cell (10,10) must be Destroyed after C4 cascade, got {:?}",
         anchor.damage_state
+    );
+
+    // BR-16: the collapse must feed the minimap radar-dirty channel end-to-end
+    // (the same channel the engineer-repair path uses).
+    assert!(
+        !sim.radar_terrain_dirty_cells.is_empty(),
+        "bridge collapse must dirty minimap terrain cells"
+    );
+    assert!(
+        sim.radar_terrain_dirty_cells.contains(&(10, 10)),
+        "the collapsed anchor (10,10) must be radar-dirty"
     );
 
     assert!(
@@ -1648,5 +1661,203 @@ fn ramp_fire_collapses_high_bridgehead_on_ion_retry() {
             DamageState::Healthy { .. }
         ),
         "hit bridgehead cell itself is not the collapsed row",
+    );
+}
+
+// ---- mapgen_rng routing / lockstep proof for the engineer bridge repair -----
+//
+// These guard the "bridge repair draws g_MapGenRng, not the gameplay streams"
+// fix. They drive the walker via the same disjoint-field-borrow call the
+// production trigger uses in `world_orders.rs`
+// (`bs.repair_bridge_from_engineer_scan(&scan, &mut sim.mapgen_rng, terrain)`),
+// so a "scenario unchanged" assertion is never confounded by other RNG a full
+// `advance_tick` might draw. Fixtures reused: `build_sim`, `seed_destroyed_bridge`,
+// `seed_bridge_with_state`, `BRIDGE_CELLS`, `ENGINEER_REPAIR_STRIP_CELLS`, and
+// `cells_in_5x5_scan` (the exact scan the trigger builds).
+
+/// TEST A — engineer repair draws ONLY the mapgen stream, and with mapgen in
+/// its default zero-state the variant is 0 (base overlay 0xCD on every repaired
+/// strip cell). Proves acceptance (2) no gameplay RNG consumed + (3) the draw
+/// lands on mapgen_rng (zero case).
+#[test]
+fn repair_draws_only_mapgen_zero_state_yields_variant_zero() {
+    let (mut sim, _rules, _heights) = build_sim();
+    seed_destroyed_bridge(&mut sim); // all BRIDGE_CELLS overlay 0xE7 (NS-High destroyed)
+
+    // mapgen_rng is left in its constructed zero-state (SimRng::zeroed()).
+    let scenario_before = sim.scenario_rng.state();
+    let main_before = sim.main_rng.state();
+    let mapgen_before = sim.mapgen_rng.state();
+
+    // Drive the repair via the production disjoint-borrow call. Scan center is
+    // the CABHUT-arrival cell (9,10); its 5x5 window covers the 0xE7 strip.
+    let scan: Vec<(u16, u16)> = crate::sim::bridge_state::cells_in_5x5_scan((9, 10)).collect();
+    let outcome = if let (Some(bs), Some(terrain)) =
+        (sim.bridge_state.as_mut(), sim.resolved_terrain.as_ref())
+    {
+        bs.repair_bridge_from_engineer_scan(&scan, &mut sim.mapgen_rng, terrain)
+    } else {
+        crate::sim::bridge_state::RepairOutcome::default()
+    };
+
+    assert!(
+        outcome.repaired_cells > 0,
+        "fixture must actually repair cells, else the RNG assertions are vacuous"
+    );
+
+    // (2) Neither gameplay stream may move.
+    assert_eq!(
+        sim.scenario_rng.state(),
+        scenario_before,
+        "bridge repair must NOT advance the scenario stream"
+    );
+    assert_eq!(
+        sim.main_rng.state(),
+        main_before,
+        "bridge repair must NOT advance the main stream"
+    );
+
+    // (3) The mapgen stream MUST advance — even a zero-state draw bumps the
+    // index counters, so state() changes (assert_ne!), while every drawn VALUE
+    // is 0, which we verify via the resulting overlay byte (base + 0), never via
+    // state() equality.
+    assert_ne!(
+        sim.mapgen_rng.state(),
+        mapgen_before,
+        "bridge repair must draw the mapgen stream (index advances even on zero-state)"
+    );
+    let bs = sim.bridge_state.as_ref().unwrap();
+    for &(rx, ry) in ENGINEER_REPAIR_STRIP_CELLS {
+        assert_eq!(
+            bs.cell(rx, ry).unwrap().overlay_byte,
+            0xCD,
+            "zero-state mapgen ⇒ variant 0 ⇒ overlay == NS-High base 0xCD at ({rx},{ry})"
+        );
+    }
+}
+
+/// TEST B — a SEEDED (non-zero) mapgen stream drives a NON-zero, varied
+/// repaired variant through the same repair path, while scenario/main stay
+/// untouched. Acceptance (3) nonzero: proves the variant is read from
+/// mapgen_rng, not hardcoded to 0.
+///
+/// DIFFERENTIAL design (not single-cell): isolating a lone 0xE7 cell by
+/// blanking its neighbors breaks the walker's contiguous-span precondition, so
+/// the cell never repairs. Instead we reuse the full 3-cell 0xE7 strip that
+/// TEST A already proves repairs cleanly, run it under many seeds, and look for
+/// a seed whose repaired overlays are NOT all-0xCD. The production draw is
+/// `next_range_u32_inclusive_scaled(0, 3)` spanning variants 0..=3, so some
+/// seed varies; we don't predict exact per-cell values (cell processing order
+/// is unclear) — the differential "not all base" + "in range" is the robust
+/// proof, and the `assert!(found)` makes a regression to hardcoded-0 fail loud.
+#[test]
+fn seeded_mapgen_drives_repaired_variant() {
+    /// Build a FRESH destroyed-bridge fixture, set mapgen to `rng`, run the
+    /// repair via the same disjoint-borrow call TEST A uses, and return the
+    /// strip overlays plus the gameplay-stream states before/after the repair.
+    fn run_repair_with_mapgen(rng: crate::sim::rng::SimRng) -> (Vec<u8>, (u64, u64), (u64, u64)) {
+        let (mut sim, _rules, _heights) = build_sim();
+        seed_destroyed_bridge(&mut sim); // full 0xE7 NS-High strip
+        sim.mapgen_rng = rng;
+
+        let before = (sim.scenario_rng.state(), sim.main_rng.state());
+
+        // Scan center (9,10) = CABHUT-arrival cell, same as TEST A.
+        let scan: Vec<(u16, u16)> = crate::sim::bridge_state::cells_in_5x5_scan((9, 10)).collect();
+        if let (Some(bs), Some(terrain)) =
+            (sim.bridge_state.as_mut(), sim.resolved_terrain.as_ref())
+        {
+            bs.repair_bridge_from_engineer_scan(&scan, &mut sim.mapgen_rng, terrain);
+        }
+
+        let after = (sim.scenario_rng.state(), sim.main_rng.state());
+        let bs = sim.bridge_state.as_ref().unwrap();
+        let overlays: Vec<u8> = ENGINEER_REPAIR_STRIP_CELLS
+            .iter()
+            .map(|&(rx, ry)| bs.cell(rx, ry).unwrap().overlay_byte)
+            .collect();
+        (overlays, before, after)
+    }
+
+    // Probe seeds: find the first whose repaired overlays are NOT all 0xCD.
+    // A handful of seeds is near-certain to vary; 1..64 leaves wide margin.
+    let mut found: Option<(u64, Vec<u8>, (u64, u64), (u64, u64))> = None;
+    for seed in 1u64..64 {
+        let (overlays, before, after) = run_repair_with_mapgen(crate::sim::rng::SimRng::new(seed));
+        if overlays.iter().any(|&b| b != 0xCD) {
+            found = Some((seed, overlays, before, after));
+            break;
+        }
+    }
+
+    let (seed, overlays, before, after) = found.expect(
+        "some seed in 1..64 must drive a non-zero repaired variant; a constant \
+                      0xCD across every seed would mean the variant is hardcoded, not from mapgen",
+    );
+
+    // (a) At least one strip cell varied off the base — the variant came from
+    //     mapgen_rng's non-zero state, not a hardcoded 0.
+    assert!(
+        overlays.iter().any(|&b| b != 0xCD),
+        "seed {seed}: overlays {overlays:?} must include a non-base byte"
+    );
+    // (b) Every repaired cell is still a valid NS-High healthy variant
+    //     (base 0xCD + variant 0..=3).
+    for &b in &overlays {
+        assert!(
+            (0xCD..=0xD0).contains(&b),
+            "seed {seed}: overlay {b:#04X} must be NS-High base 0xCD + variant 0..3"
+        );
+    }
+    // (c) The repair consumed neither gameplay stream.
+    assert_eq!(
+        before.0, after.0,
+        "seed {seed}: scenario stream must not move during repair"
+    );
+    assert_eq!(
+        before.1, after.1,
+        "seed {seed}: main stream must not move during repair"
+    );
+}
+
+/// TEST C — lockstep determinism: two fresh identical sims repair identically,
+/// matching world hash AND all three RNG cursors. Acceptance (4).
+#[test]
+fn two_identical_sims_repair_with_identical_hash_and_streams() {
+    fn fresh_repair_sim() -> (Simulation, RuleSet, BTreeMap<(u16, u16), u8>) {
+        let (mut sim, rules, heights) = build_sim();
+        let cabhut = spawn_cabhut(&mut sim, 9, 10);
+        let engineer = spawn_engineer(&mut sim, 9, 10);
+        sim.entities.get_mut(engineer).unwrap().capture_target = Some(cabhut);
+        seed_destroyed_bridge(&mut sim);
+        (sim, rules, heights)
+    }
+
+    let (mut sim_a, rules, heights) = fresh_repair_sim();
+    let (mut sim_b, _rules_b, _heights_b) = fresh_repair_sim();
+
+    // Same repair driven on both via the full tick path (both run identically).
+    step(&mut sim_a, &rules, &heights);
+    step(&mut sim_b, &rules, &heights);
+
+    assert_eq!(
+        sim_a.state_hash(),
+        sim_b.state_hash(),
+        "two identical sims must reach the same world hash after repair (lockstep)"
+    );
+    assert_eq!(
+        sim_a.scenario_rng.state(),
+        sim_b.scenario_rng.state(),
+        "scenario streams must match"
+    );
+    assert_eq!(
+        sim_a.main_rng.state(),
+        sim_b.main_rng.state(),
+        "main streams must match"
+    );
+    assert_eq!(
+        sim_a.mapgen_rng.state(),
+        sim_b.mapgen_rng.state(),
+        "mapgen streams must match"
     );
 }

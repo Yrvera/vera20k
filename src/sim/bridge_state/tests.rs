@@ -243,10 +243,12 @@ fn repaired_overlay_is_walkable_even_with_stale_destroyed_state() {
 }
 
 #[test]
-fn ns_walker_triple_skips_bridgehead_neighbors() {
-    // 3x4 NS bridge: head(2,1), body(2,2), head(2,3). The walker
-    // triple-writes (this, north=(2,1), south=(2,3)) which would
-    // corrupt the bridgeheads if Task 2's role skip were missing.
+fn ns_walker_triple_writes_bridgehead_neighbors() {
+    // BR-11: the HIGH NS walker triple-writes (this, north=(2,1),
+    // south=(2,3)) UNCONDITIONALLY. Bridge destruction keys purely on the
+    // overlay band with no per-cell role concept, so the bridgehead neighbors
+    // in the triple must receive the destroy overlay and (on a final collapse)
+    // a BlowUpBridge action — they are NOT left standing.
     let mut state = BridgeRuntimeState::default();
     state.test_seed_cell(
         2,
@@ -260,6 +262,7 @@ fn ns_walker_triple_skips_bridgehead_neighbors() {
             axis: Some(Axis::NS),
             role: BridgeCellRole::Body,
             anchor_span_id: Some(1),
+            // 0xD3 ∈ [0xD3..=0xD5] → final-collapse case: triple writes 0xE7.
             overlay_byte: 0xD3,
             damaged_variant: false,
             bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
@@ -286,16 +289,70 @@ fn ns_walker_triple_skips_bridgehead_neighbors() {
     }
     let terrain = crate::map::resolved_terrain::ResolvedTerrainGrid::from_cells(3, 4, Vec::new());
 
-    let _ = state.destroy_bridge_walker_ns_high(2, 2, &terrain);
+    let outcome = state.destroy_bridge_walker_ns_high(2, 2, &terrain);
 
+    // Every triple cell — including the two bridgeheads — gets the 0xE7
+    // destroy overlay and a Destroyed damage_state.
+    for (rx, ry) in [(2u16, 1u16), (2, 2), (2, 3)] {
+        let c = state.cell(rx, ry).expect("triple cell present");
+        assert_eq!(
+            c.overlay_byte, 0xE7,
+            "({rx},{ry}) gets the destroy overlay band"
+        );
+        assert_eq!(
+            c.damage_state,
+            DamageState::Destroyed,
+            "({rx},{ry}) marked Destroyed"
+        );
+    }
+    // The bridgehead cells keep their role tag (role is derived/internal, not
+    // authoritative) but are now part of the collapse + BlowUpBridge cascade.
     for ry in [1u16, 3] {
-        let head = state.cell(2, ry).expect("bridgehead survives walker");
-        assert_eq!(head.overlay_byte, 0, "bridgehead overlay_byte untouched");
         assert!(matches!(
-            head.damage_state,
-            DamageState::Healthy { variant: 0 }
+            state.cell(2, ry).unwrap().role,
+            BridgeCellRole::Bridgehead
         ));
-        assert!(matches!(head.role, BridgeCellRole::Bridgehead));
+    }
+    match outcome {
+        StateOutcome::Collapsed {
+            binary_success,
+            destroyed_cells,
+            set_bridge_direction,
+            zones_dirty,
+            radar_cells,
+            ..
+        } => {
+            assert!(binary_success);
+            assert!(zones_dirty, "final collapse marks zones dirty");
+            for pos in [(2u16, 1u16), (2, 2), (2, 3)] {
+                assert!(destroyed_cells.contains(&pos), "{pos:?} in destroyed_cells");
+                // BR-16: every triple cell the walker wrote is minimap-dirty.
+                assert!(radar_cells.contains(&pos), "{pos:?} in radar_cells");
+            }
+            assert_eq!(
+                set_bridge_direction.actions.len(),
+                3,
+                "one BlowUpBridge per triple cell, bridgeheads included"
+            );
+            let blown: Vec<(u16, u16)> = set_bridge_direction
+                .actions
+                .iter()
+                .map(|(pos, _, _)| *pos)
+                .collect();
+            for pos in [(2u16, 1u16), (2, 2), (2, 3)] {
+                assert!(blown.contains(&pos), "{pos:?} has a BlowUpBridge action");
+                assert!(
+                    set_bridge_direction
+                        .actions
+                        .iter()
+                        .all(|(_, _, action)| matches!(
+                            action,
+                            crate::sim::bridge_specs::CellAction::BlowUpBridge
+                        ))
+                );
+            }
+        }
+        other => panic!("expected Collapsed, got {other:?}"),
     }
 }
 
@@ -455,6 +512,46 @@ fn refresh_endpoint_active_flags_leaves_intact_groups_active() {
 }
 
 #[test]
+fn refresh_endpoint_active_flags_reactivates_after_repair() {
+    // BR-08: re-activation must be keyed on the authoritative overlay byte
+    // (effective_render_state), NOT damage_state. The real engineer-repair path
+    // restores the overlay byte to a healthy band but leaves damage_state STALE
+    // at Destroyed (the original engine never resets the body damage byte). This
+    // test mirrors that exactly, so it FAILS if the recompute is keyed on
+    // damage_state and only passes under the overlay-derived predicate.
+    let mut state = BridgeRuntimeState::from_resolved_terrain(&make_bridge_terrain(), true, 50);
+    assert!(state.endpoint_records()[0].active);
+
+    // Collapse (2,0) the way the body-SM does (BR-09): destroyed overlay + state.
+    {
+        let c = state.cell_mut(2, 0).unwrap();
+        c.damage_state = DamageState::Destroyed;
+        c.overlay_byte = 0xFF;
+    }
+    state.refresh_endpoint_active_flags();
+    assert!(
+        !state.endpoint_records()[0].active,
+        "destroyed cell must deactivate the record"
+    );
+
+    // Repair the REAL way: restore the overlay byte to a healthy body value,
+    // leaving damage_state stale at Destroyed.
+    {
+        let c = state.cell_mut(2, 0).unwrap();
+        c.overlay_byte = 0xCD; // healthy high-bridge body overlay (variant 0)
+        assert!(
+            matches!(c.damage_state, DamageState::Destroyed),
+            "repair leaves damage_state stale (matches the original engine)"
+        );
+    }
+    state.refresh_endpoint_active_flags();
+    assert!(
+        state.endpoint_records()[0].active,
+        "repaired (overlay-restored, damage_state stale) group must re-activate"
+    );
+}
+
+#[test]
 fn direction_offsets_match_compass() {
     assert_eq!(Direction::N.offset(), (0, -1));
     assert_eq!(Direction::E.offset(), (1, 0));
@@ -519,6 +616,31 @@ fn anchor_span_iter_cells_skips_none() {
     let span = make_test_span();
     let count = span.iter_cells().count();
     assert_eq!(count, 5); // 6 slots, 1 None
+}
+
+#[test]
+fn walk_anchor_pattern_dir_w_extra_slot_is_anchor_plus_2e() {
+    // BR-39: the dir-W anchor's extra cell (slot 5) is `anchor + 2·E`, one cell
+    // BEYOND the slot-4 opposite cell — not a duplicate of slot 4. The previous
+    // `+1` aliased slot 4, so in the pass-2 tagging loop (slot 4 -> Tail, else
+    // -> Body, keyed on slot INDEX) the alias (a) left the true extra cell
+    // untagged and (b) overwrote the opposite cell's Tail role with Body via
+    // last-write-wins. Distinct slots fix both.
+    let span = walk_anchor_pattern(1, (5, 5), Axis::EW, Direction::W, 1, 12, 12);
+    assert_eq!(span.cells[0], Some((5, 5)), "slot 0 = anchor");
+    assert_eq!(span.cells[1], Some((4, 5)), "slot 1 = +W×1");
+    assert_eq!(span.cells[2], Some((3, 5)), "slot 2 = +W×2");
+    assert_eq!(span.cells[3], Some((2, 5)), "slot 3 = +W×3");
+    assert_eq!(span.cells[4], Some((6, 5)), "slot 4 = opposite (+E)×1");
+    assert_eq!(
+        span.cells[5],
+        Some((7, 5)),
+        "slot 5 = anchor + 2·E, distinct from slot 4"
+    );
+    assert_ne!(
+        span.cells[4], span.cells[5],
+        "extra cell must not alias the slot-4 opposite cell"
+    );
 }
 
 #[test]
@@ -897,9 +1019,8 @@ fn make_body_driver_test_state() -> BridgeRuntimeState {
     //                  (5,5), so these are the wrappers' targets.
     //   (5,4)  → non-anchor body cell, anchor_span_id=1 — exercises the
     //                  "follow to anchor" path in the driver.
-    // Other slots (7,5), (8,5) are referenced by the AnchorSpan but not
-    // seeded — body driver doesn't read them, only the partner indirection
-    // and the perpendicular cells.
+    // Slots (7,5), (8,5) are seeded so collapse can clear the full
+    // AnchorSpan overlay-byte surface, not just the anchor.
     let mut state = BridgeRuntimeState::default();
 
     let healthy_template = BridgeRuntimeCell {
@@ -938,6 +1059,17 @@ fn make_body_driver_test_state() -> BridgeRuntimeState {
             ..healthy_template
         },
     );
+
+    for rx in [7, 8] {
+        state.test_seed_cell(
+            rx,
+            5,
+            BridgeRuntimeCell {
+                role: BridgeCellRole::Body,
+                ..healthy_template
+            },
+        );
+    }
 
     // AnchorSpan registry entry. The driver looks up by anchor_span_id
     // and reads `span.anchor` to resolve. Slot positions beyond (5,5),
@@ -997,9 +1129,12 @@ fn body_driver_damaged_anchor_collapses_and_emits_set_bridge_direction() {
             set_bridge_direction,
             adjacent_bridges_dirty,
             zones_dirty,
+            radar_cells,
         } => {
             assert!(binary_success);
             assert!(destroyed_cells.contains(&(5, 5)));
+            // BR-16: the collapsed anchor is fed to the minimap radar channel.
+            assert!(radar_cells.contains(&(5, 5)));
             // 4 BlowUpBridge actions per Task 12 invariant.
             let blow_ups = set_bridge_direction
                 .actions
@@ -1057,6 +1192,102 @@ fn body_driver_bridgehead_cell_returns_no_change() {
     state.cell_mut(5, 5).unwrap().role = BridgeCellRole::Bridgehead;
     let outcome = state.body_cell_advance_state(5, 5, true, &flood_fill_terrain(20, 20, 0));
     assert!(matches!(outcome, StateOutcome::NoChange));
+}
+
+/// BR-09: each of the three collapse arms (Damaged, PartialCollapseA,
+/// PartialCollapseB) must clear the anchor's visible overlay to the
+/// no-overlay sentinel. We seed the anchor with a Healthy-mapping overlay
+/// byte (0xD6 ∈ the 0xD6..=0xD9 Healthy range of `effective_render_state`)
+/// so that, BEFORE the fix, the collapsed cell would still render Healthy +
+/// stay walkable. After collapse the byte must be 0xFF, render state None,
+/// and the cell non-walkable.
+fn assert_collapse_clears_anchor_overlay(start: DamageState) {
+    let mut state = make_body_driver_test_state();
+    {
+        let anchor = state.cell_mut(5, 5).unwrap();
+        anchor.damage_state = start;
+        // Healthy-mapping loaded byte: without the fix, effective_render_state
+        // maps this back to Healthy and is_bridge_walkable stays true.
+        anchor.overlay_byte = 0xD6;
+    }
+    // Pre-condition sanity: the seeded byte renders as Healthy + walkable.
+    assert!(matches!(
+        BridgeRuntimeState::effective_render_state(state.cell(5, 5).unwrap()),
+        Some(DamageState::Healthy { .. })
+    ));
+    assert!(state.is_bridge_walkable(5, 5));
+
+    let outcome = state.body_cell_advance_state(5, 5, true, &flood_fill_terrain(20, 20, 0));
+    assert!(
+        matches!(outcome, StateOutcome::Collapsed { .. }),
+        "start={start:?} must collapse"
+    );
+
+    let anchor = state.cell(5, 5).unwrap();
+    assert_eq!(anchor.damage_state, DamageState::Destroyed);
+    assert_eq!(
+        anchor.overlay_byte, 0xFF,
+        "collapsed anchor overlay must clear to 0xFF sentinel (start={start:?})"
+    );
+    assert!(
+        BridgeRuntimeState::effective_render_state(anchor).is_none(),
+        "collapsed anchor must render None (start={start:?})"
+    );
+    assert!(
+        !state.is_bridge_walkable(5, 5),
+        "collapsed anchor must not be walkable (start={start:?})"
+    );
+}
+
+#[test]
+fn body_collapse_from_damaged_clears_anchor_overlay() {
+    assert_collapse_clears_anchor_overlay(DamageState::Damaged);
+}
+
+#[test]
+fn body_collapse_from_partial_a_clears_anchor_overlay() {
+    assert_collapse_clears_anchor_overlay(DamageState::PartialCollapseA);
+}
+
+#[test]
+fn body_collapse_from_partial_b_clears_anchor_overlay() {
+    assert_collapse_clears_anchor_overlay(DamageState::PartialCollapseB);
+}
+
+#[test]
+fn bridge_collapse_clears_overlay_on_full_span() {
+    let mut state = make_body_driver_test_state();
+    state.cell_mut(5, 5).unwrap().damage_state = DamageState::Damaged;
+
+    let outcome = state.body_cell_advance_state(5, 5, true, &flood_fill_terrain(20, 20, 0));
+
+    let StateOutcome::Collapsed {
+        destroyed_cells,
+        radar_cells,
+        ..
+    } = outcome
+    else {
+        panic!("expected collapsed span");
+    };
+    for pos in [(5, 5), (6, 5), (7, 5), (8, 5), (4, 5)] {
+        let cell = state.cell(pos.0, pos.1).expect("seeded span cell");
+        assert_eq!(
+            cell.overlay_byte, 0xFF,
+            "span cell {pos:?} must clear the bridge overlay byte"
+        );
+        assert!(
+            BridgeRuntimeState::effective_render_state(cell).is_none(),
+            "span cell {pos:?} must render as collapsed"
+        );
+        assert!(
+            destroyed_cells.contains(&pos),
+            "destroyed_cells should include full span cell {pos:?}"
+        );
+        assert!(
+            radar_cells.contains(&pos),
+            "radar_cells should include full span cell {pos:?}"
+        );
+    }
 }
 
 #[test]
@@ -1293,9 +1524,12 @@ fn bridgehead_advance_repeat_high_hit_collapses_about_to_fall_slot() {
             set_bridge_direction,
             adjacent_bridges_dirty,
             zones_dirty,
+            radar_cells,
         } => {
             assert!(binary_success);
             assert_eq!(destroyed_cells, vec![(2, 1), (2, 2), (2, 3)]);
+            // BR-16: the collapsed BlowUpBridge triple is minimap-dirty.
+            assert_eq!(radar_cells, vec![(2, 1), (2, 2), (2, 3)]);
             assert_eq!(set_bridge_direction.actions.len(), 3);
             assert!(
                 set_bridge_direction
@@ -1610,9 +1844,12 @@ fn path_matches_high_direct_for_raw_body_overlay() {
     let terrain = make_terrain_at_level(2, 0, 5);
     let ctx = dispatch_test_ctx(100, 5);
     assert!(state.path_matches_cell(DispatchPath::HighDirect, 2, 0, &ctx, &terrain));
+    // BR-02: an in-band high cell ALSO matches the High SM block (binary block
+    // A). Its overlay-first driver routes to the direct walker, and direct
+    // block D matches too — two BridgeStrength draws for one cell.
     assert!(
-        !state.path_matches_cell(DispatchPath::HighStateMachine, 2, 0, &ctx, &terrain),
-        "raw-overlay cell must NOT match HighStateMachine"
+        state.path_matches_cell(DispatchPath::HighStateMachine, 2, 0, &ctx, &terrain),
+        "in-band high cell matches the SM block (overlay-first), not only HighDirect"
     );
 }
 
@@ -1639,9 +1876,10 @@ fn path_matches_low_direct_for_raw_low_overlay() {
     let terrain = make_terrain_at_level(2, 0, 2);
     let ctx = dispatch_test_ctx(100, 2);
     assert!(state.path_matches_cell(DispatchPath::LowDirect, 2, 0, &ctx, &terrain));
+    // BR-02: an in-band low cell ALSO matches the Low SM block (binary block B).
     assert!(
-        !state.path_matches_cell(DispatchPath::LowStateMachine, 2, 0, &ctx, &terrain),
-        "raw-overlay cell must NOT match LowStateMachine"
+        state.path_matches_cell(DispatchPath::LowStateMachine, 2, 0, &ctx, &terrain),
+        "in-band low cell matches the SM block (overlay-first), not only LowDirect"
     );
     assert!(
         !state.path_matches_cell(DispatchPath::HighDirect, 2, 0, &ctx, &terrain),

@@ -29,7 +29,7 @@ const COST_BLOCKED: u8 = 0;
 /// Values: 0 = blocked, 100 = normal speed, <100 = slow terrain.
 /// Built once per SpeedType from map data. The A* planner reads this to weight
 /// step costs, making units avoid rough terrain.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TerrainCostGrid {
     costs: Vec<u8>,
     width: u16,

@@ -79,7 +79,7 @@ fn dock_pivot_rot_byte(sim: &Simulation, rules: &RuleSet, snap: &MinerSnapshot) 
 
 fn schedule_enter_retry(sim: &mut Simulation, snap: &mut MinerSnapshot) {
     let jitter = sim
-        .rng
+        .miner_jitter_rng()
         .next_range_u32_inclusive(0, ENTER_RETRY_JITTER_MAX_FRAMES) as u8;
     snap.miner.dock_enter_retry_start_frame = Some(sim.binary_frame);
     snap.miner.dock_enter_retry_duration = ENTER_RETRY_BASE_FRAMES.saturating_add(jitter);
@@ -1014,7 +1014,7 @@ fn phase_pivoting(
         snap.miner.dock_pivot_facing = None;
         start_unload_deploy(sim, rules, snap);
         let jitter = sim
-            .rng
+            .miner_jitter_rng()
             .next_range_u32_inclusive(0, MISSION_DEPLOY_UNLOAD_JITTER_MAX_FRAMES)
             as u8;
         schedule_mission_deploy_delay(

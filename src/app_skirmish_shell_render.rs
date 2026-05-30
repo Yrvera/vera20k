@@ -15,9 +15,11 @@ pub use draw_order::{
     skirmish_shell_semantic_draw_order, validation_modal_semantic_draw_order,
 };
 pub(crate) use preview::SkirmishPreviewTexture;
+pub(crate) use text::skirmish_right_panel_label_strings;
 
 use crate::app::AppState;
 use crate::app_init::MapMenuEntry;
+use crate::app_shell_transition::{ButtonGroup, ShellFrameWave};
 #[cfg(test)]
 use crate::map::preview::PreviewSourceBounds;
 use crate::render::batch::SpriteInstance;
@@ -26,6 +28,7 @@ use crate::render::bit_font::BitFont;
 use crate::render::shell_text::ShellAlign;
 use crate::render::shell_transition_pass::ShellRenderTarget;
 use crate::render::skirmish_shell_chrome::{SkirmishShellChromeAtlas, SkirmishShellChromeEntry};
+use crate::rules::color_scheme::ColorSchemeEntry;
 use crate::skirmish_modes::SkirmishGameMode;
 use crate::ui::main_menu::SkirmishCountry;
 #[cfg(test)]
@@ -91,6 +94,12 @@ const SHELL_DROPDOWN_BG_RGB_PENDING_COMBODROPWIN_SOURCE_CAPTURE: [f32; 3] = [0.0
 const SHELL_SCROLLBAR_TRACK_RGB_PENDING_SCROLLBAR_SOURCE_CAPTURE: [f32; 3] = [0.035, 0.042, 0.034];
 const SHELL_MODAL_BG_RGB: [f32; 3] = [0.020, 0.032, 0.025];
 const SHELL_MODAL_PANEL_RGB: [f32; 3] = [0.050, 0.060, 0.044];
+
+/// The single discrete horizontal move in the native slide-in: the radar/SDTP
+/// shape shifts right by this many pixels while the wave is mid-flight.
+const RADAR_TRANSITION_SHIFT_PX: i32 = 80;
+/// The shift only applies at or above this shell width; below it the radar stays put.
+const RADAR_TRANSITION_MIN_WIDTH: i32 = 800;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ShellRenderMode {
@@ -179,8 +188,10 @@ pub fn build_skirmish_shell_instances(
     choose_map_layout: Option<&ChooseMapModalLayout>,
     validation_layout: Option<&ValidationModalLayout>,
     shell: &SkirmishShellState,
+    color_schemes: &[ColorSchemeEntry],
     maps: &[MapMenuEntry],
     modes: &[SkirmishGameMode],
+    wave: Option<&ShellFrameWave>,
 ) -> Vec<SpriteInstance> {
     let mut instances = Vec::new();
 
@@ -190,7 +201,15 @@ pub fn build_skirmish_shell_instances(
     }
 
     if let Some(top) = atlas.right_panel_top_sdtp {
-        push_entry(&mut instances, top, layout.right_panel.top, 0.00080);
+        let mut rect = layout.right_panel.top;
+        // The one real positional move in the native slide-in: a single discrete
+        // horizontal shift of the radar/SDTP shape, applied only above the high-res
+        // width threshold and only while the wave is mid-flight (keyed by phase, not
+        // ramped). It snaps back to 0 once the wave completes.
+        if wave.is_some_and(|w| !w.is_complete()) && layout.screen.w >= RADAR_TRANSITION_MIN_WIDTH {
+            rect.x += RADAR_TRANSITION_SHIFT_PX;
+        }
+        push_entry(&mut instances, top, rect, 0.00080);
     }
 
     if let Some(tile) = atlas.right_panel_tile_sdbtnbkgd {
@@ -260,32 +279,61 @@ pub fn build_skirmish_shell_instances(
         );
     }
 
-    push_right_panel_button_shp(
+    // Right-column owner-draw buttons. During the Single Player -> Skirmish slide-in
+    // wave each button shows its wave-scheduled SDBTNANM frame; slot index = top-to-bottom
+    // position in the right column (Start=0, Choose=1, Back=2). All three are enabled main
+    // buttons => Group A (held 1 -> ramp 5..=10 -> held 10). Off-transition uses the
+    // unchanged idle frame2/frame4 path.
+    const RIGHT_PANEL_BUTTON_DEPTH: f32 = 0.00059;
+    let emit_right_panel_button = |instances: &mut Vec<SpriteInstance>,
+                                   rect: RectPx,
+                                   pressed: bool,
+                                   disabled: bool,
+                                   slot: u32| {
+        match wave {
+            Some(wave) => {
+                let frame = wave.sdbtnanm_frame(slot, ButtonGroup::A);
+                push_right_panel_button_wave(
+                    instances,
+                    atlas,
+                    rect,
+                    frame,
+                    RIGHT_PANEL_BUTTON_DEPTH,
+                );
+            }
+            None => push_right_panel_button_shp(
+                instances,
+                atlas,
+                rect,
+                pressed,
+                disabled,
+                RIGHT_PANEL_BUTTON_DEPTH,
+            ),
+        }
+    };
+    emit_right_panel_button(
         &mut instances,
-        atlas,
         layout.start_button,
         shell.pressed_owner_draw_button == Some(OwnerDrawButton::StartGame0x617),
         shell.validation_modal.is_some(),
-        0.00059,
+        0,
     );
-    push_right_panel_button_shp(
+    emit_right_panel_button(
         &mut instances,
-        atlas,
-        layout.back_button,
-        shell.pressed_owner_draw_button == Some(OwnerDrawButton::Back0x5c0),
-        false,
-        0.00059,
-    );
-    push_right_panel_button_shp(
-        &mut instances,
-        atlas,
         layout.choose_map_button,
         shell.pressed_owner_draw_button == Some(OwnerDrawButton::ChooseMap0x5aa),
         false,
-        0.00059,
+        1,
+    );
+    emit_right_panel_button(
+        &mut instances,
+        layout.back_button,
+        shell.pressed_owner_draw_button == Some(OwnerDrawButton::Back0x5c0),
+        false,
+        2,
     );
 
-    push_combo_instances(&mut instances, atlas, layout, shell);
+    push_combo_instances(&mut instances, atlas, color_schemes, layout, shell);
     push_checkbox_instances(&mut instances, atlas, layout, shell);
     push_trackbar_instances(&mut instances, atlas, layout, shell);
 
@@ -314,7 +362,7 @@ pub fn build_skirmish_shell_instances(
         }
     }
 
-    push_dropdown_instances(&mut instances, atlas, layout, shell, maps);
+    push_dropdown_instances(&mut instances, atlas, color_schemes, layout, shell, maps);
     if shell.validation_modal.is_some() {
         if let Some(validation_layout) = validation_layout {
             let pressed = shell
@@ -447,6 +495,16 @@ fn render_skirmish_shell_with_atlas(
         .batch_renderer
         .create_instance_buffer(&state.gpu, &marker_instances);
 
+    let wave = if mode == ShellRenderMode::TransitionPreview {
+        state.shell_first_paint_slide.as_ref()
+    } else {
+        None
+    };
+    let color_schemes = state
+        .rules
+        .as_ref()
+        .map(|rules| rules.color_schemes.as_slice())
+        .unwrap_or(&[]);
     let instances = build_skirmish_shell_instances(
         atlas,
         &state.bit_font,
@@ -454,8 +512,10 @@ fn render_skirmish_shell_with_atlas(
         choose_map_layout.as_ref(),
         validation_layout.as_ref(),
         &state.skirmish_shell_state,
+        color_schemes,
         &state.skirmish_shell_maps,
         &state.skirmish_modes,
+        wave,
     );
     let mut instances = instances;
     if preview_instance.is_some() {

@@ -11,15 +11,12 @@ use crate::ui::main_menu::{SkirmishCountry, SkirmishSettings, StartPosition};
 
 use super::SkirmishShellState;
 
-fn launch_country_from_menu(
-    slot: usize,
-    country: SkirmishCountry,
-    random: bool,
-) -> Result<LaunchCountry, LaunchValidationError> {
-    if random {
-        return Err(LaunchValidationError::RandomSelectionUnverified { slot });
-    }
-    Ok(match country {
+/// Map the menu country selection onto a launch country. When the slot is set
+/// to Random this still returns the currently-shown menu country as a
+/// placeholder; the caller flags the slot via `country_random` so the concrete
+/// country is drawn later (see `SkirmishLaunchSession::resolve_random_assignments`).
+fn launch_country_from_menu(country: SkirmishCountry) -> LaunchCountry {
+    match country {
         SkirmishCountry::America => LaunchCountry::America,
         SkirmishCountry::Korea => LaunchCountry::Korea,
         SkirmishCountry::France => LaunchCountry::France,
@@ -30,7 +27,7 @@ fn launch_country_from_menu(
         SkirmishCountry::Cuba => LaunchCountry::Cuba,
         SkirmishCountry::Russia => LaunchCountry::Russia,
         SkirmishCountry::Yuri => LaunchCountry::Yuri,
-    })
+    }
 }
 
 fn launch_start_position(
@@ -120,7 +117,8 @@ pub fn launch_session(
         })?;
 
     let local = SkirmishLocalSlot {
-        country: launch_country_from_menu(0, state.player_country, state.player_country_random)?,
+        country: launch_country_from_menu(state.player_country),
+        country_random: state.player_country_random,
         color_index: launch_color_index(0, state.player_color_index)?,
         start_position: launch_start_position(0, state.player_start_position)?,
         team: LaunchTeam::from_shell_value(state.player_team),
@@ -133,7 +131,8 @@ pub fn launch_session(
         };
         let slot = idx + 1;
         opponents.push(SkirmishAiSlot {
-            country: launch_country_from_menu(slot, opponent.country, opponent.country_random)?,
+            country: launch_country_from_menu(opponent.country),
+            country_random: opponent.country_random,
             color_index: launch_color_index(slot, opponent.color_index)?,
             start_position: launch_start_position(slot, opponent.start_position)?,
             team: LaunchTeam::from_shell_value(opponent.team),

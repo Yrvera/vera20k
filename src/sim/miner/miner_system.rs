@@ -1,8 +1,8 @@
 //! Miner state machine tick — drives the SearchOre→Harvest→Return→Unload loop.
 //!
 //! Called once per sim tick from `tick_resource_economy()`. Uses the two-phase
-//! snapshot pattern: snapshot all miners, process deterministically by stable_id,
-//! then apply mutations back to the EntityStore.
+//! snapshot pattern: snapshot all live miners in LogicClass order, process them
+//! in that order, then apply mutations back to the EntityStore.
 //!
 //! ## Dependency rules
 //! - Part of sim/ — depends on sim/miner, sim/miner_dock, sim/components,
@@ -84,7 +84,8 @@ pub(super) struct MinerSnapshot {
 
 /// Main entry point: tick all entities with the Miner component.
 ///
-/// Deterministic: snapshots sorted by stable_id, mutations applied in order.
+/// Deterministic: snapshots follow LogicClass live-object order, mutations
+/// applied in that order.
 pub(crate) fn tick_miners(
     sim: &mut Simulation,
     rules: &RuleSet,
@@ -102,9 +103,18 @@ pub(crate) fn tick_miners_with_overlay_registry(
     overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
 ) {
     // Phase 1: Snapshot all miners from EntityStore.
-    let keys = sim.entities.keys_sorted();
+    let live_order = sim.live_object_order_snapshot();
+    let fallback_keys;
+    let keys: &[u64] = if live_order.is_empty() {
+        // Focused unit tests often insert entities directly without going
+        // through reveal/register. Preserve their old stable-id behavior.
+        fallback_keys = sim.entities.keys_sorted();
+        &fallback_keys
+    } else {
+        &live_order
+    };
     let mut snapshots: Vec<MinerSnapshot> = Vec::new();
-    for &id in &keys {
+    for &id in keys {
         let Some(entity) = sim.entities.get(id) else {
             continue;
         };
@@ -133,7 +143,9 @@ pub(crate) fn tick_miners_with_overlay_registry(
             debug_dock_events: Vec::new(),
         });
     }
-    // Already sorted by stable_id since keys_sorted() returns sorted order.
+    // Snapshot order already matches the native live-object pass. In direct
+    // unit tests with no live-order setup, the empty-order fallback preserves
+    // the previous stable-id order.
     log::debug!(
         "tick_miners: {} miners, {} resource_nodes",
         snapshots.len(),
@@ -975,11 +987,6 @@ fn try_issue_chrono_far_return_teleport(
         return false;
     };
 
-    let z = sim
-        .entities
-        .get(snap.entity_id)
-        .map(|entity| entity.position.z)
-        .unwrap_or(0);
     let issued = movement::set_destination_for_teleporter_entity(
         &mut sim.entities,
         path_grid,
@@ -999,13 +1006,7 @@ fn try_issue_chrono_far_return_teleport(
         false,
     );
     if issued {
-        spawn_warp_effects(
-            sim,
-            rules,
-            snap.type_id,
-            (snap.rx, snap.ry, z),
-            (staging.0, staging.1, z),
-        );
+        emit_chrono_warp_sounds(sim, rules, snap.type_id, (snap.rx, snap.ry), staging);
     }
     issued
 }
@@ -1052,46 +1053,13 @@ fn try_issue_standard_far_return_drive(
     true
 }
 
-fn spawn_warp_effects(
+fn emit_chrono_warp_sounds(
     sim: &mut Simulation,
     rules: &RuleSet,
     type_id: InternedId,
-    depart: (u16, u16, u8),
-    arrive: (u16, u16, u8),
+    depart: (u16, u16),
+    arrive: (u16, u16),
 ) {
-    use crate::sim::components::WorldEffect;
-
-    const FALLBACK_FRAME_COUNT: u16 = 20;
-
-    let anim_name: &str = &rules.general.warp_out.name;
-    let anim_rate: u32 = rules.general.warp_out.rate_ms;
-    let anim_interned = sim.interner.intern(anim_name);
-
-    let anim_frames: u16 = sim
-        .effect_frame_counts
-        .get(&anim_interned)
-        .copied()
-        .unwrap_or(FALLBACK_FRAME_COUNT);
-
-    for (rx, ry, z) in [depart, arrive] {
-        sim.world_effects.push(WorldEffect {
-            shp_name: anim_interned,
-            rx,
-            ry,
-            sub_x: crate::util::lepton::CELL_CENTER_LEPTON,
-            sub_y: crate::util::lepton::CELL_CENTER_LEPTON,
-            z,
-            frame: 0,
-            total_frames: anim_frames,
-            rate_ms: anim_rate,
-            elapsed_ms: 0,
-            translucent: true,
-            delay_ms: 0,
-            start_sound_id: None,
-            start_sound_emitted: false,
-        });
-    }
-
     let obj = rules.object_case_insensitive(sim.interner.resolve(type_id));
     let chrono_out = obj
         .and_then(|o| o.chrono_out_sound.clone())

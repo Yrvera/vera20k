@@ -9,10 +9,7 @@ mod trackbars;
 
 #[cfg(test)]
 use self::combos::{combo_dropdown_max_top_index, top_index_from_scrollbar_track_click};
-use self::combos::{
-    handle_combo_mouse_down, scroll_open_combo_by_rows, set_open_combo_top_index,
-    top_index_from_thumb_y,
-};
+use self::combos::{handle_combo_mouse_down, set_open_combo_top_index, top_index_from_thumb_y};
 
 pub use combos::{
     combo_dropdown_content_rect, combo_dropdown_needs_scrollbar, combo_dropdown_rect,
@@ -116,6 +113,12 @@ pub enum SkirmishHoverTarget {
         id: SkirmishComboId,
         item: SkirmishComboItem,
     },
+    // Static (non-interactive) controls in dialog 0x102 that still produce
+    // status help on hover. Flag pictures 0x6DA..0x6E1 share one STT key, so a
+    // single variant covers all eight.
+    FlagPicture,
+    GameTypeLabel0x6ec,
+    ScenarioLabel0x5a8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -239,6 +242,16 @@ impl SkirmishShellOpponent {
     }
 }
 
+/// Fresh-profile opponent rows for a clean offline skirmish (no persisted slot
+/// keys). The first opponent row defaults to an active Easy AI; all other rows
+/// default to None (inactive). This is the net end state of the engine's
+/// dialog-init: an intermediate pass resets every AI combo to None, then a
+/// second pass applies the persisted/default slot type codes — the first slot's
+/// default code maps to Easy and the rest map to None. Do NOT change this to
+/// all-None; the player-observable clean-profile shell shows exactly one Easy
+/// opponent. When persisted slot reading is added, the per-row fallbacks must be
+/// the Easy code for row 1 and the None code for rows 2-7, mapped through the
+/// slot type-code table, not hardcoded all-None.
 fn default_opponents(first_country: SkirmishCountry) -> Vec<SkirmishShellOpponent> {
     let countries = [
         first_country,

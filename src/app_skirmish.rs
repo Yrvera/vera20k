@@ -168,6 +168,11 @@ pub(crate) fn apply_skirmish_launch_session(
     resolved_terrain: &ResolvedTerrainGrid,
     session: &SkirmishLaunchSession,
 ) -> SkirmishLaunchApplyResult {
+    // Resolve any "random country" slots into concrete countries before any
+    // house/spawn state is built, drawing from the scenario stream so the
+    // choice is deterministic for the game seed and identical across peers.
+    let resolved_session = session.resolve_random_assignments(sim.random_assignment_rng());
+    let session = &resolved_session;
     let slots = normalized_launch_slots(session);
     let ai_difficulty = session
         .opponents
@@ -783,12 +788,14 @@ mod tests {
             player_name: "Player".to_string(),
             local: SkirmishLocalSlot {
                 country: LaunchCountry::America,
+                country_random: false,
                 color_index: 1,
                 start_position: LaunchStartPosition::Position(3),
                 team: LaunchTeam::None,
             },
             opponents: vec![SkirmishAiSlot {
                 country: LaunchCountry::Russia,
+                country_random: false,
                 color_index: 2,
                 start_position: LaunchStartPosition::Auto,
                 team: LaunchTeam::None,
@@ -1052,6 +1059,7 @@ mod tests {
         let mut session = test_session();
         session.opponents.push(SkirmishAiSlot {
             country: LaunchCountry::Cuba,
+            country_random: false,
             color_index: 3,
             start_position: LaunchStartPosition::Position(0),
             team: LaunchTeam::None,
@@ -1151,6 +1159,7 @@ mod tests {
         session.opponents[0].team = LaunchTeam::Team(0);
         session.opponents.push(SkirmishAiSlot {
             country: LaunchCountry::Cuba,
+            country_random: false,
             color_index: 3,
             start_position: LaunchStartPosition::Auto,
             team: LaunchTeam::Team(1),

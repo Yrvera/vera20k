@@ -190,6 +190,7 @@ pub struct AirMovementTickStats {
 /// straight lines at their speed, ignoring terrain and ground occupancy.
 pub fn tick_air_movement(
     entities: &mut EntityStore,
+    live_order: &[u64],
     tick_ms: u32,
     sim_tick: u64,
 ) -> AirMovementTickStats {
@@ -201,8 +202,16 @@ pub fn tick_air_movement(
 
     // Collect air entity IDs that need processing.
     let air_entity_ids: Vec<u64> = {
-        let keys = entities.keys_sorted();
-        keys.into_iter()
+        let fallback_order;
+        let entity_order: &[u64] = if live_order.is_empty() {
+            fallback_order = entities.keys_sorted();
+            &fallback_order
+        } else {
+            live_order
+        };
+        entity_order
+            .iter()
+            .copied()
             .filter(|&id| {
                 entities.get(id).is_some_and(|e| {
                     e.locomotor.as_ref().is_some_and(|loco| {
@@ -662,6 +671,71 @@ mod tests {
         // No MovementTarget should be added — already at goal.
         let e = entities.get(1).expect("has entity");
         assert!(e.movement_target.is_none());
+    }
+
+    #[test]
+    fn air_movement_uses_live_object_order_not_stable_id_scan() {
+        fn build_entities() -> EntityStore {
+            let mut entities = EntityStore::new();
+            for id in [1, 2] {
+                let mut entity = GameEntity::test_default(id, "ORCA", "Americans", 10, 10);
+                let mut loco = make_fly_loco();
+                loco.air_phase = AirMovePhase::Ascending;
+                loco.target_altitude = SimFixed::from_num(600);
+                loco.climb_rate = SimFixed::from_num(300);
+                entity.locomotor = Some(loco);
+                entities.insert(entity);
+            }
+            entities
+        }
+
+        let mut live_entities = build_entities();
+        let mut stable_entities = build_entities();
+
+        let live_stats = tick_air_movement(&mut live_entities, &[2], 1000, 0);
+        let stable_stats = tick_air_movement(&mut stable_entities, &[], 1000, 0);
+
+        assert_eq!(
+            live_stats.air_movers, 1,
+            "nonempty live order limits air movement to live-vector members"
+        );
+        assert_eq!(
+            live_entities
+                .get(1)
+                .unwrap()
+                .locomotor
+                .as_ref()
+                .unwrap()
+                .altitude,
+            SIM_ZERO,
+            "stable-id-first air mover absent from live order must not tick"
+        );
+        assert!(
+            live_entities
+                .get(2)
+                .unwrap()
+                .locomotor
+                .as_ref()
+                .unwrap()
+                .altitude
+                > SIM_ZERO,
+            "live-order member must tick"
+        );
+        assert_eq!(
+            stable_stats.air_movers, 2,
+            "empty live order preserves direct-test stable-id fallback"
+        );
+        assert!(
+            stable_entities
+                .get(1)
+                .unwrap()
+                .locomotor
+                .as_ref()
+                .unwrap()
+                .altitude
+                > SIM_ZERO,
+            "stable-id fallback still ticks directly inserted air movers"
+        );
     }
 
     fn make_fly_loco() -> LocomotorState {

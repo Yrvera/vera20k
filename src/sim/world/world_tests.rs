@@ -39,6 +39,50 @@ fn empty_heights() -> BTreeMap<(u16, u16), u8> {
     BTreeMap::new()
 }
 
+#[test]
+fn uninit_removes_all_structure_foundation_cells() {
+    let mut sim = Simulation::new();
+    let mut structure = GameEntity::test_default(10, "GAPOWR", "Americans", 4, 5);
+    // Entity ids must come from the Simulation's own interner — test_default interns
+    // into the thread-local test interner, which sim code never resolves against.
+    structure.owner = sim.interner.intern("Americans");
+    structure.type_ref = sim.interner.intern("GAPOWR");
+    structure.category = EntityCategory::Structure;
+    structure.foundation = "2x2".to_string();
+    sim.entities.insert(structure);
+    sim.reveal(10);
+    sim.add_entity_occupancy(10);
+
+    for cell in [(4, 5), (4, 6), (5, 5), (5, 6)] {
+        assert!(sim.occupancy.contains_entity(cell.0, cell.1, 10));
+    }
+
+    sim.uninit(10);
+
+    for cell in [(4, 5), (4, 6), (5, 5), (5, 6)] {
+        assert!(
+            !sim.occupancy.contains_entity(cell.0, cell.1, 10),
+            "uninit should clear foundation cell {cell:?}"
+        );
+    }
+    assert!(sim.entities.get(10).is_none());
+    sim.debug_assert_logic_membership_consistent();
+}
+
+#[test]
+fn unregister_live_object_scrubs_removed_store_id() {
+    let mut sim = Simulation::new();
+    let entity = GameEntity::test_default(10, "HTNK", "Americans", 4, 5);
+    sim.entities.insert(entity);
+    sim.reveal(10);
+    sim.entities.remove(10);
+
+    sim.unregister_live_object(10);
+
+    sim.debug_assert_logic_membership_consistent();
+    assert!(sim.live_object_order_snapshot().is_empty());
+}
+
 fn insert_house_with_counts(
     sim: &mut Simulation,
     name: &str,
@@ -455,6 +499,60 @@ fn teleport_command_test_rules() -> RuleSet {
          [GAREFN]\nStrength=900\nArmor=wood\nFoundation=4x3\nRefinery=yes\n",
     );
     RuleSet::from_ini(&ini).expect("teleport command rules should parse")
+}
+
+fn gate_test_rules() -> RuleSet {
+    let ini: IniFile = IniFile::from_str(
+        "[InfantryTypes]\n\n\
+         [VehicleTypes]\n\n\
+         [AircraftTypes]\n\n\
+         [BuildingTypes]\n0=GAGATE_A\n\n\
+         [GAGATE_A]\nStrength=500\nArmor=wood\nFoundation=3x1\nGate=yes\nDeployTime=.066\nGateCloseDelay=.2\n",
+    );
+    RuleSet::from_ini(&ini).expect("gate test rules should parse")
+}
+
+#[test]
+fn binary_frame_committed_late_gate_captures_pre_increment_frame() {
+    // Native frame / tick contract: binary_frame is committed LATE (end of
+    // advance_tick), so a Phase-1 consumer sees the pre-increment frame N
+    // during the tick. One 67ms tick crosses the 0->1 binary-frame boundary:
+    // the gate's start_opening must capture frame 0 (pre-increment) while the
+    // committed counter ends at 1. If the counter were advanced at the TOP of
+    // advance_tick, the gate would capture 1 — this test guards that regression.
+    use crate::sim::game_entity::{BuildingGateMissionState, BuildingGatePhase};
+
+    let mut sim = Simulation::new();
+    let rules = gate_test_rules();
+    let heights = empty_heights();
+    let gate_id = sim
+        .spawn_object("GAGATE_A", "Americans", 10, 10, 0, &rules, &heights)
+        .expect("spawn gate");
+    {
+        let gate = sim.entities.get_mut(gate_id).expect("gate entity");
+        let rt = gate.building_gate.get_or_insert_with(Default::default);
+        rt.mission_18_active = true;
+        rt.mission_state = BuildingGateMissionState::Setup;
+        rt.phase = BuildingGatePhase::ClosedStable;
+    }
+    assert_eq!(sim.binary_frame, 0, "fresh sim starts at frame 0");
+
+    let _ = sim.advance_tick(&[], Some(&rules), &heights, None, None, 67);
+
+    // Committed late: post-tick frame advanced to 1.
+    assert_eq!(sim.binary_frame, 1, "binary_frame committed late to 1");
+    // The consumer captured the PRE-increment frame 0 during the tick.
+    let rt = sim
+        .entities
+        .get(gate_id)
+        .expect("gate entity")
+        .building_gate
+        .as_ref()
+        .expect("gate runtime");
+    assert_eq!(
+        rt.transition_last_frame, 0,
+        "gate captured pre-increment frame 0, not post-increment 1"
+    );
 }
 
 #[test]
@@ -1337,8 +1435,10 @@ fn test_bridge_dispatcher_state_machine_overlay_routes_to_high_sm_not_direct() {
         "transitioned overlay must NOT also match HighDirect"
     );
 
-    // Conversely: a cell still in the raw body range routes to HighDirect
-    // and NOT to HighSM. Re-seed (4, 5) with overlay 0xDC.
+    // BR-02: a cell still in the raw body range matches HighDirect AND the
+    // High SM block — the SM block's overlay-first driver routes it to the
+    // direct walker, so both blocks fire and consume two BridgeStrength draws.
+    // Re-seed (4, 5) with overlay 0xDC.
     let bs_mut = sim.bridge_state.as_mut().unwrap();
     bs_mut.test_seed_cell(
         4,
@@ -1363,8 +1463,8 @@ fn test_bridge_dispatcher_state_machine_overlay_routes_to_high_sm_not_direct() {
         "raw body overlay routes to HighDirect"
     );
     assert!(
-        !bs.path_matches_cell(DispatchPath::HighStateMachine, 4, 5, &ctx, terrain),
-        "raw body overlay must NOT also match HighSM"
+        bs.path_matches_cell(DispatchPath::HighStateMachine, 4, 5, &ctx, terrain),
+        "BR-02: in-band cell also matches the High SM block (overlay-first), consuming a second draw"
     );
 }
 
@@ -1464,7 +1564,7 @@ fn test_bridge_orchestrator_state_machine_path_collapses_anchor_and_deactivates_
 fn test_bridge_collapse_is_deterministic_under_replay() {
     fn run_one_collapse(seed: u64) -> u64 {
         let mut sim = Simulation::new();
-        sim.rng = crate::sim::rng::SimRng::new(seed);
+        sim.reseed_both(seed);
         let (resolved, bridge_state) = ew_high_bridge_strip_for_dispatch(5, 5, 4, false, 0);
         sim.resolved_terrain = Some(resolved);
         sim.bridge_state = Some(bridge_state);
@@ -1504,7 +1604,7 @@ fn test_bridge_collapse_is_deterministic_under_replay() {
 fn replay_determinism_with_bridge_collapse_and_rim_refresh() {
     fn run_one(seed: u64) -> u64 {
         let mut sim = Simulation::new();
-        sim.rng = crate::sim::rng::SimRng::new(seed);
+        sim.reseed_both(seed);
         let (resolved, bridge_state) = ew_high_bridge_strip_for_dispatch(5, 5, 4, false, 0);
         sim.resolved_terrain = Some(resolved);
         sim.bridge_state = Some(bridge_state);
@@ -1610,7 +1710,7 @@ fn test_bridge_snapshot_roundtrip_preserves_state_after_collapse() {
 fn test_bridge_dispatcher_consumes_one_path_gate_draw_per_non_ion_event() {
     let seed = 0xABCD_1234_u64;
     let mut sim = Simulation::new();
-    sim.rng = crate::sim::rng::SimRng::new(seed);
+    sim.reseed_both(seed);
     let (resolved, bridge_state) = ew_high_bridge_strip_for_dispatch(5, 5, 4, false, 0);
     let bridge_strength = bridge_state.bridge_strength();
     sim.resolved_terrain = Some(resolved);
@@ -1644,7 +1744,7 @@ fn test_bridge_dispatcher_consumes_one_path_gate_draw_per_non_ion_event() {
     );
 
     assert_eq!(
-        sim.rng.state(),
+        sim.scenario_rng.state(),
         predicted.state(),
         "non-IonCannon hit must consume exactly one BridgeStrength gate roll"
     );
@@ -2875,7 +2975,7 @@ fn test_undeploy_conyard_spawns_mcv() {
 }
 
 #[test]
-fn refresh_vision_heights_copies_path_cell_ground_levels() {
+fn level_has_single_source_of_truth_for_vision_height_derivation() {
     use crate::map::resolved_terrain::ResolvedTerrainCell;
     use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
 
@@ -2943,18 +3043,7 @@ fn refresh_vision_heights_copies_path_cell_ground_levels() {
     let terrain = ResolvedTerrainGrid::from_cells(width, height, cells);
     let grid = PathGrid::from_resolved_terrain(&terrain);
 
-    let mut sim = Simulation::new();
-    assert!(
-        sim.vision_height_grid.is_none(),
-        "fresh sim should have no height grid"
-    );
-
-    sim.refresh_vision_heights(&grid);
-
-    let heights = sim
-        .vision_height_grid
-        .as_ref()
-        .expect("refresh_vision_heights must populate the grid");
+    let heights = grid.ground_height_grid();
     assert_eq!(heights.len(), (width as usize) * (height as usize));
 
     // Index = ry * width + rx; the elevated cell at (1,1) must report level 4.

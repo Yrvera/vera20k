@@ -31,6 +31,12 @@ const EIGHT_NEIGHBOR_OFFSETS: [(i32, i32); 8] = [
     (-1, -1), // NW
 ];
 
+/// Sentinel `overlay_byte` value meaning "no bridge overlay" (the original
+/// engine's -1 / 0xFF). A cell carrying this byte renders empty and is treated
+/// as non-walkable by `effective_render_state` / `is_bridge_walkable`. Also
+/// written by the orchestrator's `update_adjacent_bridges` stub-reset path.
+const OVERLAY_BYTE_NONE: u8 = 0xFF;
+
 /// Bridge body axis. Body cells are stacked along this axis; ramps face
 /// perpendicular.
 ///
@@ -398,6 +404,14 @@ pub enum StateOutcome {
         /// Whether the zone graph needs rebuild (`InvalidateBridgeZones` →
         /// `UpdateBridgeZonesHelper`). Orchestrator dispatches.
         zones_dirty: bool,
+        /// Cells whose visible terrain changed and must be marked dirty on the
+        /// minimap. On a collapse this is the collapsed triple PLUS every
+        /// cascade-leaf cell touched — including intermediate `Damaged`
+        /// perpendicular neighbors, not only the finals — so a partially-
+        /// damaged neighbor's minimap variant does not go stale. The
+        /// orchestrator feeds these into `mark_radar_terrain_dirty_cells`,
+        /// the same channel the engineer-repair path uses.
+        radar_cells: Vec<(u16, u16)>,
     },
     /// Cell is not a body-bridge cell, anchor span lookup failed, or anchor
     /// is already `Destroyed`. No-op.
@@ -824,15 +838,16 @@ impl BridgeRuntimeState {
     /// function; no mutation. Returns true iff the cell at `(rx, ry)`
     /// matches the entry conditions for `path` under `ctx`.
     ///
-    /// Mirrors the binary's per-path entry checks:
-    /// - HighStateMachine / LowStateMachine: cell is bridge-structural and
-    ///   has transitioned out of the raw body overlay range. Z-gate
-    ///   restricts `impact_z` to `[cell.level - 1, cell.level + 1]`.
-    ///   Raw-overlay cells are routed through the walker, NOT the state
-    ///   machine, so this path explicitly REJECTS cells whose `overlay_byte`
-    ///   is still in the body range.
-    /// - HighDirect: `overlay_byte ∈ [0xCD..=0xE6]`. Single-shot, no Z-gate.
-    /// - LowDirect:  `overlay_byte ∈ [0x4A..=0x63]`. Single-shot, no Z-gate.
+    /// Mirrors the binary's per-block entry checks (`Apply_area_damage`):
+    /// - HighStateMachine / LowStateMachine (binary blocks A/B): cell is a
+    ///   bridge-structural candidate of the matching FAMILY (high/low). The
+    ///   block's driver is overlay-first (`apply_damage_to_cell`), so this
+    ///   gate does NOT reject in-band overlays — an in-band cell is hit by
+    ///   the SM block (→ direct walker) AND, separately, by the matching
+    ///   direct block C/D, consuming two `BridgeStrength` draws (BR-02). The
+    ///   Z-gate restricts `impact_z` to `[cell.level - 1, cell.level + 1]`.
+    /// - HighDirect (block D): `overlay_byte ∈ [0xCD..=0xE6]`. Single-shot, no Z-gate.
+    /// - LowDirect  (block C): `overlay_byte ∈ [0x4A..=0x63]`. Single-shot, no Z-gate.
     pub(crate) fn path_matches_cell(
         &self,
         path: DispatchPath,
@@ -848,19 +863,12 @@ impl BridgeRuntimeState {
             DispatchPath::HighDirect => (0xCD..=0xE6).contains(&cell.overlay_byte),
             DispatchPath::LowDirect => (0x4A..=0x63).contains(&cell.overlay_byte),
             DispatchPath::HighStateMachine | DispatchPath::LowStateMachine => {
-                // Raw-overlay cells route to the walker, NOT the state
-                // machine. State-machine fires only after the overlay has
-                // been transitioned out of the body range.
-                if matches!(path, DispatchPath::HighStateMachine)
-                    && (0xCD..=0xE6).contains(&cell.overlay_byte)
-                {
-                    return false;
-                }
-                if matches!(path, DispatchPath::LowStateMachine)
-                    && (0x4A..=0x63).contains(&cell.overlay_byte)
-                {
-                    return false;
-                }
+                // BR-02: the SM block (binary block A/B) gates on bridge tile
+                // FAMILY, not the overlay band. Its driver is overlay-first
+                // (`apply_damage_to_cell`): an in-band cell routes to the direct
+                // walker here AND is hit again by the matching direct block
+                // C/D, consuming two draws. Do NOT reject in-band overlays — the
+                // second block draw is lockstep-significant.
                 if !matches!(
                     cell.role,
                     BridgeCellRole::Anchor
@@ -901,6 +909,36 @@ impl BridgeRuntimeState {
                 }
                 true
             }
+        }
+    }
+
+    /// Overlay-first inner dispatcher for a state-machine block (binary
+    /// `ApplyDamageToCell @ 0x00587180`, the driver of `Apply_area_damage`
+    /// blocks A/B). The visible overlay byte is checked FIRST: a cell already
+    /// in a destroy band routes straight to the matching direct walker; only
+    /// overlay-miss cells reach the damage state machine. `is_high` selects the
+    /// SM family for the overlay-miss fallback (bridgehead vs body branch is
+    /// then chosen by the cell's role).
+    ///
+    /// Both bands are tested regardless of `is_high` — the binary's overlay
+    /// short-circuit is family-agnostic; family only decides the SM fallback.
+    pub(crate) fn apply_damage_to_cell(
+        &mut self,
+        rx: u16,
+        ry: u16,
+        is_high: bool,
+        terrain: &crate::map::resolved_terrain::ResolvedTerrainGrid,
+    ) -> StateOutcome {
+        let overlay = self.cell(rx, ry).map(|c| c.overlay_byte);
+        match overlay {
+            Some(o) if (0xCD..=0xE6).contains(&o) => self.destroy_bridge_high(rx, ry, terrain),
+            Some(o) if (0x4A..=0x63).contains(&o) => self.destroy_bridge_low(rx, ry, terrain),
+            _ => match self.cell(rx, ry).map(|c| c.role) {
+                Some(BridgeCellRole::Bridgehead) => {
+                    self.bridgehead_advance_state(rx, ry, is_high, terrain)
+                }
+                _ => self.body_cell_advance_state(rx, ry, is_high, terrain),
+            },
         }
     }
 
@@ -961,6 +999,7 @@ impl BridgeRuntimeState {
             }),
             0xDA..=0xDE => Some(DamageState::Damaged),
             0xE7 | 0xE8 => None,
+            OVERLAY_BYTE_NONE => None,
             _ => Some(cell.damage_state),
         };
         match state_from_overlay {
@@ -972,6 +1011,20 @@ impl BridgeRuntimeState {
     pub fn is_bridge_walkable(&self, rx: u16, ry: u16) -> bool {
         self.cell(rx, ry)
             .is_some_and(|cell| cell.deck_present && Self::effective_render_state(cell).is_some())
+    }
+
+    fn clear_collapsed_span_overlay_bytes(&mut self, span: &AnchorSpan) -> Vec<(u16, u16)> {
+        let mut cleared = Vec::new();
+        for (_, pos) in span.iter_cells() {
+            if let Some(cell) = self.cell_mut(pos.0, pos.1) {
+                cell.damage_state = DamageState::Destroyed;
+                cell.overlay_byte = OVERLAY_BYTE_NONE;
+                if !cleared.contains(&pos) {
+                    cleared.push(pos);
+                }
+            }
+        }
+        cleared
     }
 
     /// Body-cell state-machine driver. Mirrors the body branch of binary
@@ -1087,9 +1140,9 @@ impl BridgeRuntimeState {
                     is_high_bridge,
                     terrain,
                 );
-                let mut destroyed = vec![anchor_pos];
-                if let Some(c) = self.cell_mut(anchor_pos.0, anchor_pos.1) {
-                    c.damage_state = DamageState::Destroyed;
+                let mut destroyed = self.clear_collapsed_span_overlay_bytes(&span_clone);
+                if !destroyed.contains(&anchor_pos) {
+                    destroyed.push(anchor_pos);
                 }
                 // Collect any perpendicular cells that hit collapse-final
                 // (became Destroyed via update_ramp_perpendicular).
@@ -1113,6 +1166,9 @@ impl BridgeRuntimeState {
                 let adj = compute_adjacent_bridges_dirty(rx, ry, axis);
                 StateOutcome::Collapsed {
                     binary_success: true,
+                    // Cloned before the move below; the collapsed anchor + any
+                    // perpendicular finals are the minimap-dirty set (BR-16).
+                    radar_cells: destroyed.clone(),
                     destroyed_cells: destroyed,
                     set_bridge_direction: sbd,
                     adjacent_bridges_dirty: adj,
@@ -1129,17 +1185,19 @@ impl BridgeRuntimeState {
                     is_high_bridge,
                     terrain,
                 );
-                if let Some(c) = self.cell_mut(anchor_pos.0, anchor_pos.1) {
-                    c.damage_state = DamageState::Destroyed;
+                let mut destroyed = self.clear_collapsed_span_overlay_bytes(&span_clone);
+                if !destroyed.contains(&anchor_pos) {
+                    destroyed.push(anchor_pos);
                 }
                 let sbd = crate::sim::bridge_specs::set_bridge_direction(&span_clone, false);
                 let adj = compute_adjacent_bridges_dirty(rx, ry, axis);
                 StateOutcome::Collapsed {
                     binary_success: true,
-                    destroyed_cells: vec![anchor_pos],
+                    destroyed_cells: destroyed.clone(),
                     set_bridge_direction: sbd,
                     adjacent_bridges_dirty: adj,
                     zones_dirty: true,
+                    radar_cells: destroyed,
                 }
             }
             DamageState::PartialCollapseB => {
@@ -1151,17 +1209,19 @@ impl BridgeRuntimeState {
                     is_high_bridge,
                     terrain,
                 );
-                if let Some(c) = self.cell_mut(anchor_pos.0, anchor_pos.1) {
-                    c.damage_state = DamageState::Destroyed;
+                let mut destroyed = self.clear_collapsed_span_overlay_bytes(&span_clone);
+                if !destroyed.contains(&anchor_pos) {
+                    destroyed.push(anchor_pos);
                 }
                 let sbd = crate::sim::bridge_specs::set_bridge_direction(&span_clone, false);
                 let adj = compute_adjacent_bridges_dirty(rx, ry, axis);
                 StateOutcome::Collapsed {
                     binary_success: true,
-                    destroyed_cells: vec![anchor_pos],
+                    destroyed_cells: destroyed.clone(),
                     set_bridge_direction: sbd,
                     adjacent_bridges_dirty: adj,
                     zones_dirty: true,
+                    radar_cells: destroyed,
                 }
             }
             DamageState::Destroyed => StateOutcome::NoChange,
@@ -1485,6 +1545,7 @@ impl BridgeRuntimeState {
                 actions.push((pos, slot, CellAction::BlowUpBridge));
                 if let Some(c) = self.cell_mut(pos.0, pos.1) {
                     c.damage_state = DamageState::Destroyed;
+                    c.overlay_byte = OVERLAY_BYTE_NONE;
                     if matches!(c.role, BridgeCellRole::Anchor | BridgeCellRole::Bridgehead) {
                         c.bridgehead_anchor_class = BridgeheadAnchorClass::AboutToFall;
                     }
@@ -1527,6 +1588,9 @@ impl BridgeRuntimeState {
             let adj = compute_adjacent_bridges_dirty(anchor_pos.0, anchor_pos.1, axis);
             return StateOutcome::Collapsed {
                 binary_success: is_high_bridge,
+                // Cloned before the move below; the BlowUpBridge triple + any
+                // perpendicular finals are the minimap-dirty set (BR-16).
+                radar_cells: destroyed.clone(),
                 destroyed_cells: destroyed,
                 set_bridge_direction: SetBridgeDirectionResult { actions },
                 adjacent_bridges_dirty: adj,
@@ -1573,32 +1637,45 @@ impl BridgeRuntimeState {
         &self.endpoint_records
     }
 
-    /// Recompute `endpoint_records[*].active` flags from current cell damage
-    /// state. Once any cell of a bridge group enters `DamageState::Destroyed`,
-    /// the bridge can no longer carry traffic across the span — the record
-    /// is deactivated so the zone graph (`zone_build`) stops treating its
-    /// endpoint pair as connected.
+    /// Recompute `endpoint_records[*].active` flags from current cell render
+    /// state, BIDIRECTIONALLY. A record is active iff its bridge group is
+    /// intact — i.e. no cell in the group is severed. When any cell of a group
+    /// is destroyed, its record deactivates so the zone graph (`zone_build`)
+    /// stops treating the endpoint pair as connected; when an engineer repair
+    /// restores every cell, the same test re-activates the record so the
+    /// long-range A* zone edge (gated on `record.active` in
+    /// `zone_build::bridge_record_matches`) is restored.
     ///
-    /// Deactivation is one-way (no re-activation). The legacy single-shot
-    /// `apply_damage` flipped `active = false` when the entire group was
-    /// destroyed in one hit; the orchestrator's state-machine collapses
-    /// cells individually, so the first destroyed cell already severs the
-    /// bridge and its zone connection.
+    /// "Severed" is keyed on `effective_render_state(cell).is_none()`, NOT on
+    /// `damage_state`. Decision A: the overlay byte is authoritative. The
+    /// repair path restores the overlay byte to a healthy band but
+    /// intentionally leaves `damage_state` stale at `Destroyed` (the original
+    /// engine leaves the body damage byte stale after repair), so keying on
+    /// `damage_state` would never re-activate a repaired record. The healthy
+    /// overlay-band arms of `effective_render_state` take precedence over its
+    /// `damage_state` fallback, so a repaired cell (healthy overlay, stale
+    /// `Destroyed`) reports `Some` and re-activates, while a collapsed cell
+    /// (destroyed-overlay byte, or `0xFF` + `Destroyed`) reports `None`.
+    ///
+    /// Granularity is whole-group (the group is the 4-cardinal BFS blob from
+    /// construction). Per-record geometric tolerance is the separate deferred
+    /// BR-40 work — do not narrow this here.
     pub fn refresh_endpoint_active_flags(&mut self) {
-        let mut destroyed_groups: BTreeSet<u16> = BTreeSet::new();
+        let mut severed_groups: BTreeSet<u16> = BTreeSet::new();
         for cell_opt in &self.cells {
             if let Some(cell) = cell_opt {
-                if matches!(cell.damage_state, DamageState::Destroyed) {
+                if Self::effective_render_state(cell).is_none() {
                     if let Some(gid) = cell.bridge_group_id {
-                        destroyed_groups.insert(gid);
+                        severed_groups.insert(gid);
                     }
                 }
             }
         }
         for record in &mut self.endpoint_records {
-            if destroyed_groups.contains(&record.group_id) {
-                record.active = false;
-            }
+            // Recompute in BOTH directions: active iff no cell of the group is
+            // severed. Repair restores the overlay byte (-> `Some`), removing
+            // the group from `severed_groups` and flipping the record active.
+            record.active = !severed_groups.contains(&record.group_id);
         }
     }
 
@@ -2001,9 +2078,15 @@ fn walk_anchor_pattern(
         cells[4] = Some((ox as u16, oy as u16));
     }
 
-    // Slot 5: optional fixed-offset only when direction == W.
+    // Slot 5: optional extra cell, present only for the dir-W anchor. It is
+    // the OPPOSITE step taken twice — `anchor + 2·E` — i.e. one cell beyond the
+    // slot-4 opposite cell, NOT a duplicate of it. Matches
+    // `bridge_facts::stamp_slots` (`ExtraDir6 = step(opposite, E)`). Writing
+    // `+1` here aliased slot 4, which (a) left the true extra cell untagged and
+    // (b) flipped the opposite cell's role Tail->Body via last-write-wins in
+    // the pass-2 tagging loop.
     if direction == Direction::W {
-        let ex = anchor.0 as i32 + 1;
+        let ex = anchor.0 as i32 + 2;
         let ey = anchor.1 as i32;
         if ex >= 0 && ey >= 0 && (ex as u16) < width && (ey as u16) < height {
             cells[5] = Some((ex as u16, ey as u16));

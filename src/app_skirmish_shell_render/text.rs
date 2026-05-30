@@ -7,7 +7,7 @@ use crate::app::AppState;
 use crate::app_init::MapMenuEntry;
 use crate::render::batch::SpriteInstance;
 use crate::render::bit_font::BitFont;
-use crate::render::shell_text::{self, ShellAlign, ShellTextDraw, TextRect};
+use crate::render::shell_text::{self, Reveal, ShellAlign, ShellTextDraw, TextRect};
 use crate::ui::main_menu::SkirmishCountry;
 use crate::ui::skirmish_shell::{
     COMBO_DROPDOWN_ROW_H, COMBO_FACE_H, COMBO_TEXT_LEFT_INSET, ChooseMapModalLayout,
@@ -198,6 +198,23 @@ pub(super) fn push_text_draw(
     align: ShellAlign,
     depth: f32,
 ) {
+    push_text_draw_revealed(out, state, label, text_rect, color, align, depth, None);
+}
+
+/// `push_text_draw` carrying a kind-1 character reveal window through to
+/// `draw_in_rect`. Only the three Skirmish right-panel statics use the reveal;
+/// every other text draw goes through the `None` wrapper above.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn push_text_draw_revealed(
+    out: &mut Vec<ShellTextDraw>,
+    state: &AppState,
+    label: &str,
+    text_rect: TextRect,
+    color: [f32; 3],
+    align: ShellAlign,
+    depth: f32,
+    reveal: Option<Reveal>,
+) {
     let draw = shell_text::draw_in_rect(
         &state.bit_font,
         label,
@@ -206,6 +223,7 @@ pub(super) fn push_text_draw(
         align,
         [0.0, 0.0],
         depth,
+        reveal,
     );
     out.push(draw);
 }
@@ -394,6 +412,7 @@ fn push_combo_face_label_draw_with_color(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn push_static_label_draw(
     out: &mut Vec<ShellTextDraw>,
     state: &AppState,
@@ -401,8 +420,9 @@ pub(super) fn push_static_label_draw(
     rect: RectPx,
     align: ShellAlign,
     depth: f32,
+    reveal: Option<Reveal>,
 ) {
-    push_text_draw(
+    push_text_draw_revealed(
         out,
         state,
         label,
@@ -410,7 +430,39 @@ pub(super) fn push_static_label_draw(
         SHELL_LABEL_TEXT_RGB,
         align,
         depth,
+        reveal,
     );
+}
+
+/// Reveal window for the renderer: maps a static's [`StaticReveal`] cursor onto
+/// the render-layer [`Reveal`] type (or `None` when inactive / complete).
+fn static_reveal_window(
+    reveal: &crate::ui::skirmish_shell::static_reveal::StaticReveal,
+) -> Option<Reveal> {
+    reveal.window().map(|w| Reveal {
+        count: w.count,
+        range: w.range,
+    })
+}
+
+/// Single source of truth for the three Skirmish 0x102 right-panel static
+/// label strings (title / game-type / map-label). Shared by the renderer and
+/// the reveal-start trigger so both resolve identical text.
+pub(crate) fn skirmish_right_panel_label_strings(state: &AppState) -> (String, String, String) {
+    let shell = &state.skirmish_shell_state;
+    let title = localized_label(state, "GUI:SkirmishGame", "Skirmish Game");
+    let game_type = state
+        .skirmish_modes
+        .iter()
+        .find(|mode| mode.id == shell.selected_mode_id)
+        .map(|mode| localized_label(state, &mode.ui_name_key, &mode.ui_name_key))
+        .unwrap_or_else(|| localized_label(state, "GUI:Battle", "Battle"));
+    let map_label = state
+        .skirmish_shell_maps
+        .get(shell.selected_map_idx)
+        .map(|map| map.display_name.clone())
+        .unwrap_or_else(|| "None".to_string());
+    (title, game_type, map_label)
 }
 
 pub(super) fn push_player_name_edit_text_draw(
@@ -516,7 +568,10 @@ pub(super) fn build_shell_text_draws(
         );
     }
 
-    let title = localized_label(state, "GUI:SkirmishGame", "Skirmish Game");
+    // Resolve all three static strings from the single shared source so the
+    // reveal-start trigger (app_shell_transition) and this renderer agree on the
+    // exact text whose length sets the reveal target.
+    let (title, game_type, map_label) = skirmish_right_panel_label_strings(state);
     push_static_label_draw(
         &mut shell_draws,
         state,
@@ -524,13 +579,8 @@ pub(super) fn build_shell_text_draws(
         layout.right_panel_text.title,
         ShellAlign::H_CENTER,
         SHELL_CONTROL_TEXT_DEPTH,
+        static_reveal_window(&shell.title_reveal),
     );
-    let game_type = state
-        .skirmish_modes
-        .iter()
-        .find(|mode| mode.id == shell.selected_mode_id)
-        .map(|mode| localized_label(state, &mode.ui_name_key, &mode.ui_name_key))
-        .unwrap_or_else(|| localized_label(state, "GUI:Battle", "Battle"));
     push_static_label_draw(
         &mut shell_draws,
         state,
@@ -538,18 +588,16 @@ pub(super) fn build_shell_text_draws(
         layout.right_panel_text.game_type,
         ShellAlign::H_CENTER,
         SHELL_CONTROL_TEXT_DEPTH,
+        static_reveal_window(&shell.game_type_reveal),
     );
-    let map_label = maps
-        .get(shell.selected_map_idx)
-        .map(|map| map.display_name.as_str())
-        .unwrap_or("None");
     push_static_label_draw(
         &mut shell_draws,
         state,
-        map_label,
+        &map_label,
         layout.right_panel_text.map_label,
         ShellAlign::H_CENTER,
         SHELL_CONTROL_TEXT_DEPTH,
+        static_reveal_window(&shell.map_label_reveal),
     );
 
     push_player_name_edit_text_draw(&mut shell_draws, state, shell, layout);

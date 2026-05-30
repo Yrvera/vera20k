@@ -1308,6 +1308,10 @@ pub struct RuleSet {
     projectiles: HashMap<String, ProjectileType>,
     /// Country-level rules indexed by country/house type ID.
     countries: HashMap<String, CountryRules>,
+    /// `[Colors]` scheme entries in declaration order. Consumed by the loading
+    /// screen to color the progress-bar backing from the player's color choice;
+    /// not used for unit/building/radar coloring.
+    pub color_schemes: Vec<crate::rules::color_scheme::ColorSchemeEntry>,
     pub production: ProductionRules,
     /// Global gameplay constants (vision, gap generator, etc.).
     pub general: GeneralRules,
@@ -1398,6 +1402,7 @@ impl RuleSet {
         let garrison_rules: GarrisonRules = GarrisonRules::from_ini(ini);
         let radar_event_config: RadarEventConfig = RadarEventConfig::from_ini(ini);
         let countries = parse_country_rules(ini);
+        let color_schemes = crate::rules::color_scheme::parse_color_schemes(ini);
 
         // Step 1: Parse each type registry and load object sections.
         for &(registry_name, category) in TYPE_REGISTRIES {
@@ -1583,6 +1588,7 @@ impl RuleSet {
             warheads,
             projectiles,
             countries,
+            color_schemes,
             production,
             general,
             infantry_ids,

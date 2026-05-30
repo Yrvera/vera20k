@@ -26,13 +26,15 @@ use crate::sim::game_entity::GameEntity;
 ///
 /// Maintains a secondary per-owner index (`by_owner`) so that queries like
 /// "all buildings owned by house X" are O(that house's entities) instead of
-/// O(total entities). The index is kept in sync automatically by `insert()`
-/// and `remove()`. Equivalent to gamemd.exe's per-HouseClass object arrays.
+/// O(total entities). The index is rebuilt by `rebuild_owner_index()` (the sim
+/// calls it once per tick); `insert()`/`remove()` do NOT update it, so any
+/// caller reading `ids_for_owner()` after a mid-tick mutation must rebuild
+/// first. Mirrors per-owner object membership.
 pub struct EntityStore {
     /// Primary storage: stable_id -> GameEntity.
     entities: BTreeMap<u64, GameEntity>,
     /// Per-owner index: owner InternedId -> sorted Vec of stable_ids.
-    /// Maintained automatically on insert/remove. Deterministic iteration
+    /// Rebuilt by `rebuild_owner_index()`, not by insert/remove. Deterministic iteration
     /// via BTreeMap key order + sorted Vecs.
     by_owner: BTreeMap<crate::sim::intern::InternedId, Vec<u64>>,
 }
@@ -470,6 +472,22 @@ mod tests {
         // After rebuild, entity moved to new owner.
         assert_eq!(store.ids_for_owner(americans), &[] as &[u64]);
         assert_eq!(store.ids_for_owner(soviets), &[1]);
+    }
+
+    #[test]
+    fn insert_does_not_auto_sync_owner_index() {
+        use crate::sim::intern::StringInterner;
+
+        let mut interner = StringInterner::new();
+        let americans = interner.intern("Americans");
+        let mut store = EntityStore::new();
+        let mut e = GameEntity::test_default(1, "HTNK", "Americans", 5, 5);
+        e.owner = americans;
+        store.insert(e);
+        // No rebuild yet: index stays empty, proving insert() does not auto-sync.
+        assert_eq!(store.ids_for_owner(americans), &[] as &[u64]);
+        store.rebuild_owner_index();
+        assert_eq!(store.ids_for_owner(americans), &[1]);
     }
 
     #[test]

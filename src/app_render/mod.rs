@@ -63,6 +63,10 @@ pub(crate) fn render_game(
     // building-bracket front redraw samples this CPU buffer during UI build.
     let rw = state.render_width();
     let rh = state.render_height();
+    let shroud_height_grid = state
+        .path_grid
+        .as_ref()
+        .map(crate::sim::pathfinding::PathGrid::ground_height_grid);
     if let Some(ref mut shroud_buf) = state.shroud_buffer {
         if !state.sandbox_full_visibility {
             if let (Some(sim), Some(owner)) = (&state.simulation, &local_owner) {
@@ -76,7 +80,7 @@ pub(crate) fn render_game(
                     rw,
                     rh,
                     state.zoom_level,
-                    sim.vision_height_grid.as_deref(),
+                    shroud_height_grid.as_deref(),
                 );
             }
         }

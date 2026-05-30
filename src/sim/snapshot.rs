@@ -13,7 +13,11 @@ use serde::{Deserialize, Serialize};
 use crate::sim::world::Simulation;
 
 /// Bump this when the snapshot binary format changes in a breaking way.
-const SNAPSHOT_VERSION: u32 = 10;
+// Bumped 13 -> 14 for the serialized occupancy entry-order fields used to rebuild
+// the skipped CellClass-style occupancy cache after load.
+// Bumped 14 -> 15: active-vector order + id/enter-order counters relocated under
+// Simulation.substrate (ObjectSubstrate); bincode layout changed (state hash unchanged).
+const SNAPSHOT_VERSION: u32 = 15;
 
 /// Binary snapshot envelope — wraps the full `Simulation` state plus
 /// compatibility hashes for the map and rules that were active at save time.
@@ -132,6 +136,13 @@ impl GameSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
+    use crate::rules::locomotor_type::{MovementZone, SpeedType};
+    use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
+    use crate::sim::movement::locomotor::MovementLayer;
+    use crate::sim::pathfinding::PathGrid;
+    use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
+    use crate::sim::pathfinding::zone_map::ZoneGrid;
     use crate::sim::world::Simulation;
     use std::collections::BTreeMap;
 
@@ -139,6 +150,148 @@ mod tests {
     fn tick(sim: &mut Simulation) {
         let height_map = BTreeMap::new();
         sim.advance_tick(&[], None, &height_map, None, None, 67);
+    }
+
+    fn clear_terrain_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
+        ResolvedTerrainCell {
+            rx,
+            ry,
+            source_tile_index: 0,
+            source_sub_tile: 0,
+            final_tile_index: 0,
+            final_sub_tile: 0,
+            is_wood_bridge_repair_tile: false,
+            level: 0,
+            filled_clear: false,
+            tileset_index: Some(0),
+            land_type: 0,
+            yr_cell_land_type: 0,
+            slope_type: 0,
+            template_height: 0,
+            render_offset_x: 0,
+            render_offset_y: 0,
+            terrain_class: TerrainClass::Clear,
+            speed_costs: SpeedCostProfile::default(),
+            is_water: false,
+            is_cliff_like: false,
+            is_rough: false,
+            is_road: false,
+            accepts_smudge: false,
+            allows_tiberium: false,
+            is_cliff_redraw: false,
+            variant: 0,
+            has_ramp: false,
+            canonical_ramp: None,
+            ground_walk_blocked: false,
+            terrain_object_blocks: false,
+            overlay_blocks: false,
+            zone_type: crate::map::resolved_terrain::zone_class::GROUND,
+            base_ground_walk_blocked: false,
+            base_build_blocked: false,
+            base_land_type: 0,
+            base_yr_cell_land_type: 0,
+            base_terrain_class: TerrainClass::Clear,
+            base_speed_costs: SpeedCostProfile::default(),
+            build_blocked: false,
+            has_bridge_deck: false,
+            bridge_walkable: false,
+            bridge_transition: false,
+            bridge_deck_level: 0,
+            bridge_layer: None,
+            bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+            tube_index: None,
+            radar_left: [0, 0, 0],
+            radar_right: [0, 0, 0],
+            has_damaged_data: false,
+            bridgehead_anchor_class_at_load: None,
+        }
+    }
+
+    fn flat_terrain(width: u16, height: u16) -> ResolvedTerrainGrid {
+        let mut cells = Vec::with_capacity(width as usize * height as usize);
+        for ry in 0..height {
+            for rx in 0..width {
+                cells.push(clear_terrain_cell(rx, ry));
+            }
+        }
+        ResolvedTerrainGrid::from_cells(width, height, cells)
+    }
+
+    fn all_terrain_costs(terrain: &ResolvedTerrainGrid) -> BTreeMap<SpeedType, TerrainCostGrid> {
+        let mut costs = BTreeMap::new();
+        for speed_type in [
+            SpeedType::Foot,
+            SpeedType::Track,
+            SpeedType::Wheel,
+            SpeedType::Hover,
+            SpeedType::Winged,
+            SpeedType::Float,
+            SpeedType::Amphibious,
+            SpeedType::FloatBeach,
+        ] {
+            costs.insert(
+                speed_type,
+                TerrainCostGrid::from_resolved_terrain(terrain, speed_type),
+            );
+        }
+        costs
+    }
+
+    fn rebuild_load_caches(sim: &mut Simulation, terrain: ResolvedTerrainGrid) {
+        let terrain_costs = all_terrain_costs(&terrain);
+        sim.rebuild_caches_after_load(
+            terrain,
+            crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
+            Vec::new(),
+            Vec::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            terrain_costs,
+        );
+    }
+
+    fn cell_order(sim: &Simulation, rx: u16, ry: u16, layer: MovementLayer) -> Vec<u64> {
+        sim.occupancy
+            .get(rx, ry)
+            .map(|occ| occ.iter_layer(layer).map(|o| o.entity_id).collect())
+            .unwrap_or_default()
+    }
+
+    fn assert_zone_grids_equivalent(a: &ZoneGrid, b: &ZoneGrid) {
+        assert_eq!(a.width, b.width);
+        assert_eq!(a.height, b.height);
+        for &mz in MovementZone::all_ground() {
+            let map_a = a.map_for(mz).expect("zone map exists for movement zone");
+            let map_b = b.map_for(mz).expect("zone map exists for movement zone");
+            assert_eq!(map_a.zone_count, map_b.zone_count);
+            for y in 0..a.height {
+                for x in 0..a.width {
+                    assert_eq!(
+                        map_a.zone_at(x, y, MovementLayer::Ground),
+                        map_b.zone_at(x, y, MovementLayer::Ground),
+                        "ground zone mismatch for {mz:?} at ({x},{y})"
+                    );
+                    assert_eq!(
+                        map_a.zone_at(x, y, MovementLayer::Bridge),
+                        map_b.zone_at(x, y, MovementLayer::Bridge),
+                        "bridge zone mismatch for {mz:?} at ({x},{y})"
+                    );
+                }
+            }
+            let adj_a = a
+                .adjacency_for(mz)
+                .expect("zone adjacency exists for movement zone");
+            let adj_b = b
+                .adjacency_for(mz)
+                .expect("zone adjacency exists for movement zone");
+            for zone in 0..=map_a.zone_count {
+                assert_eq!(
+                    adj_a.neighbors_of(zone),
+                    adj_b.neighbors_of(zone),
+                    "adjacency mismatch for {mz:?} zone {zone}"
+                );
+            }
+        }
     }
 
     /// Prove snapshot round-trip preserves all authoritative state.
@@ -233,6 +386,379 @@ mod tests {
             .as_ref()
             .expect("attack_target should be restored");
         assert!(matches!(restored.target, TargetKind::Cell(50, 50)));
+    }
+
+    /// Reveal registers at the tail; a stored-but-unrevealed (limbo) object is
+    /// absent from the active order until revealed. (DRIFT 2 / ledger 9)
+    #[test]
+    fn limbo_object_registers_only_on_reveal() {
+        use crate::sim::game_entity::GameEntity;
+        let mut sim = Simulation::new();
+        // Stored but not revealed: present in the store, absent from the order.
+        sim.entities
+            .insert(GameEntity::test_default(1, "MTNK", "Americans", 5, 5));
+        assert!(sim.entities.contains(1));
+        assert!(!sim.live_object_order_snapshot().contains(&1));
+        // Reveal both: tail-append in reveal order, not sorted.
+        sim.entities
+            .insert(GameEntity::test_default(2, "MTNK", "Americans", 6, 6));
+        sim.register_live_object(2);
+        sim.register_live_object(1);
+        assert_eq!(sim.live_object_order_snapshot(), vec![2, 1]);
+    }
+
+    /// The active order is serialized directly and restored verbatim — not
+    /// re-derived, not sorted. (ledger 13)
+    #[test]
+    fn saveload_restores_live_object_order_verbatim() {
+        use crate::sim::game_entity::GameEntity;
+        let mut sim = Simulation::new();
+        for id in [10u64, 20, 30] {
+            sim.entities
+                .insert(GameEntity::test_default(id, "MTNK", "Americans", 5, 5));
+            sim.register_live_object(id);
+        }
+        // Force an order whose sequence differs from stable-id order.
+        sim.set_logic_order_for_test(vec![20, 10, 30]);
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "test_map", 0);
+        let restored = GameSnapshot::load(&bytes).expect("load should succeed").sim;
+        assert_eq!(restored.live_object_order_snapshot(), vec![20, 10, 30]);
+    }
+
+    /// After load, membership is rebuilt from the order; a restored member
+    /// unregisters exactly once (no stale entry) and re-registers without
+    /// duplicating (no double-add). Avoids the §3.4 hazard. (ledger 14)
+    #[test]
+    fn saveload_restored_member_removes_cleanly() {
+        use crate::sim::game_entity::GameEntity;
+        let mut sim = Simulation::new();
+        sim.entities
+            .insert(GameEntity::test_default(1, "MTNK", "Americans", 5, 5));
+        sim.register_live_object(1);
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "test_map", 0);
+        let mut restored = GameSnapshot::load(&bytes).expect("load should succeed").sim;
+        // Real load-path step: membership flags are false straight after deserialize.
+        restored.rebuild_logic_membership();
+
+        // Unregister removes exactly once — no stale entry left behind.
+        restored.unregister_live_object(1);
+        assert!(!restored.live_object_order_snapshot().contains(&1));
+        // Re-register appends once — no double-add.
+        restored.register_live_object(1);
+        assert_eq!(
+            restored
+                .live_object_order_snapshot()
+                .iter()
+                .filter(|&&x| x == 1)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn saveload_occupancy_list_order_matches_incremental() {
+        use crate::map::entities::EntityCategory;
+        use crate::sim::game_entity::GameEntity;
+
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Americans");
+
+        let mut structure = GameEntity::test_default(100, "GAPOWR", "Americans", 5, 5);
+        structure.owner = owner;
+        structure.category = EntityCategory::Structure;
+        sim.entities.insert(structure);
+        sim.add_entity_occupancy(100);
+
+        let mut older_mobile = GameEntity::test_default(50, "MTNK", "Americans", 5, 5);
+        older_mobile.owner = owner;
+        older_mobile.category = EntityCategory::Unit;
+        sim.entities.insert(older_mobile);
+        sim.add_entity_occupancy(50);
+
+        let mut newer_mobile = GameEntity::test_default(10, "HTNK", "Americans", 5, 5);
+        newer_mobile.owner = owner;
+        newer_mobile.category = EntityCategory::Unit;
+        sim.entities.insert(newer_mobile);
+        sim.add_entity_occupancy(10);
+
+        let incremental = cell_order(&sim, 5, 5, MovementLayer::Ground);
+        assert_eq!(incremental, vec![10, 50, 100]);
+        let hash_at_save = sim.state_hash();
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "order_test", 0);
+        let mut restored = GameSnapshot::load(&bytes).expect("load should succeed").sim;
+        rebuild_load_caches(&mut restored, flat_terrain(8, 8));
+
+        assert_eq!(
+            cell_order(&restored, 5, 5, MovementLayer::Ground),
+            incremental,
+            "rebuilt occupancy cache must match the incremental CellClass list order"
+        );
+        assert_eq!(
+            restored.state_hash(),
+            hash_at_save,
+            "cache rebuild must not change authoritative save state"
+        );
+    }
+
+    #[test]
+    fn saveload_rebuild_is_deterministic() {
+        use crate::map::entities::EntityCategory;
+        use crate::sim::game_entity::GameEntity;
+
+        let terrain = flat_terrain(8, 8);
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Americans");
+        for (stable_id, type_id, category, rx, ry) in [
+            (3, "GAPOWR", EntityCategory::Structure, 2, 2),
+            (1, "MTNK", EntityCategory::Unit, 3, 2),
+            (2, "E1", EntityCategory::Infantry, 3, 2),
+        ] {
+            let mut entity = GameEntity::test_default(stable_id, type_id, "Americans", rx, ry);
+            entity.owner = owner;
+            entity.category = category;
+            if category == EntityCategory::Infantry {
+                entity.sub_cell = Some(2);
+            }
+            sim.entities.insert(entity);
+            sim.add_entity_occupancy(stable_id);
+        }
+        let bytes = GameSnapshot::save(&sim, 0, 0, "deterministic_rebuild", 0);
+
+        let mut a = GameSnapshot::load(&bytes)
+            .expect("first load should succeed")
+            .sim;
+        let mut b = GameSnapshot::load(&bytes)
+            .expect("second load should succeed")
+            .sim;
+        rebuild_load_caches(&mut a, terrain.clone());
+        rebuild_load_caches(&mut b, terrain);
+
+        assert_eq!(a.terrain_costs, b.terrain_costs);
+        assert_eq!(cell_order(&a, 3, 2, MovementLayer::Ground), vec![2, 1]);
+        assert_eq!(
+            cell_order(&a, 3, 2, MovementLayer::Ground),
+            cell_order(&b, 3, 2, MovementLayer::Ground)
+        );
+
+        let path_a = PathGrid::from_resolved_terrain_with_bridges(
+            a.resolved_terrain.as_ref().expect("terrain restored"),
+            a.bridge_state.as_ref(),
+        );
+        let path_b = PathGrid::from_resolved_terrain_with_bridges(
+            b.resolved_terrain.as_ref().expect("terrain restored"),
+            b.bridge_state.as_ref(),
+        );
+        assert_eq!(path_a, path_b);
+
+        a.rebuild_zone_grid(&path_a);
+        b.rebuild_zone_grid(&path_b);
+        assert_zone_grids_equivalent(
+            a.zone_grid.as_ref().expect("zone grid rebuilt"),
+            b.zone_grid.as_ref().expect("zone grid rebuilt"),
+        );
+        assert_eq!(a.state_hash(), b.state_hash());
+    }
+
+    // --- Slice 1: reveal/conceal/unlimbo/uninit lifecycle chokepoint ---
+
+    /// `reveal` adds a member; `conceal` removes it from the order but keeps the
+    /// store slot (limbo).
+    #[test]
+    fn reveal_then_conceal_roundtrips_membership() {
+        use crate::sim::game_entity::GameEntity;
+        let mut sim = Simulation::new();
+        sim.entities
+            .insert(GameEntity::test_default(1, "MTNK", "Americans", 5, 5));
+        sim.reveal(1);
+        assert!(sim.entities.get(1).unwrap().in_logic_vector);
+        assert_eq!(sim.live_object_order_snapshot(), vec![1]);
+        sim.conceal(1);
+        assert!(!sim.entities.get(1).unwrap().in_logic_vector);
+        assert!(sim.live_object_order_snapshot().is_empty());
+        assert!(sim.entities.get(1).is_some()); // conceal keeps the store slot
+    }
+
+    /// `unlimbo` is `reveal`: a stored limbo object joins the active order.
+    #[test]
+    fn unlimbo_equals_reveal_appends_member() {
+        use crate::sim::game_entity::GameEntity;
+        let mut sim = Simulation::new();
+        sim.entities
+            .insert(GameEntity::test_default(7, "E1", "Americans", 3, 3));
+        sim.unlimbo(7);
+        assert!(sim.entities.get(7).unwrap().in_logic_vector);
+        assert_eq!(sim.live_object_order_snapshot(), vec![7]);
+    }
+
+    /// `uninit` conceals then frees the store slot.
+    #[test]
+    fn uninit_conceals_then_frees_store_slot() {
+        use crate::sim::game_entity::GameEntity;
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Americans");
+        let mut ge = GameEntity::test_default(2, "MTNK", "Americans", 4, 4);
+        ge.owner = owner;
+        sim.entities.insert(ge);
+        sim.reveal(2);
+        sim.uninit(2);
+        assert!(sim.entities.get(2).is_none());
+        assert!(sim.live_object_order_snapshot().is_empty());
+    }
+
+    /// `despawn_entity` is retained and delegates to `uninit`.
+    #[test]
+    fn despawn_entity_delegates_to_uninit() {
+        use crate::sim::game_entity::GameEntity;
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Americans");
+        let mut ge = GameEntity::test_default(3, "MTNK", "Americans", 6, 6);
+        ge.owner = owner;
+        sim.entities.insert(ge);
+        sim.reveal(3);
+        sim.despawn_entity(3);
+        assert!(sim.entities.get(3).is_none());
+        assert!(sim.live_object_order_snapshot().is_empty());
+    }
+
+    /// The membership invariant holds across a mix of reveal/conceal/uninit.
+    #[test]
+    #[cfg(debug_assertions)]
+    fn lifecycle_keeps_membership_invariant() {
+        use crate::sim::game_entity::GameEntity;
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Americans");
+        for id in [1u64, 2, 3] {
+            let mut ge = GameEntity::test_default(id, "MTNK", "Americans", 5, 5);
+            ge.owner = owner;
+            sim.entities.insert(ge);
+            sim.reveal(id);
+        }
+        sim.conceal(2);
+        sim.uninit(1);
+        sim.debug_assert_logic_membership_consistent();
+        assert_eq!(sim.live_object_order_snapshot(), vec![3]);
+    }
+
+    // --- LogicClass live count-reload pass (scheduler contract) ---
+
+    /// Insert an entity into the store and append it to the active order.
+    fn spawn_and_register(sim: &mut Simulation, id: u64) {
+        use crate::sim::game_entity::GameEntity;
+        sim.entities
+            .insert(GameEntity::test_default(id, "MTNK", "Americans", 5, 5));
+        sim.register_live_object(id);
+    }
+
+    /// An object the body tail-appends during the pass is ticked later in the
+    /// SAME pass, because the live length is re-read after each body call.
+    #[test]
+    fn logic_scheduler_append_during_pass_ticks_new_tail_same_tick() {
+        use crate::sim::game_entity::GameEntity;
+        let mut sim = Simulation::new();
+        spawn_and_register(&mut sim, 1); // A
+        spawn_and_register(&mut sim, 2); // B
+        // C exists in the store but is NOT yet in the active order.
+        sim.entities
+            .insert(GameEntity::test_default(3, "MTNK", "Americans", 6, 6));
+        assert!(!sim.live_object_order_snapshot().contains(&3));
+
+        let mut visited = Vec::new();
+        sim.for_each_live_object(|sim, id| {
+            visited.push(id);
+            if id == 1 {
+                // A's body reveals C at the tail.
+                sim.register_live_object(3);
+            }
+        });
+
+        // C ran in the same pass, after the old tail.
+        assert_eq!(visited, vec![1, 2, 3]);
+        assert_eq!(sim.live_object_order_snapshot(), vec![1, 2, 3]);
+    }
+
+    /// Registering the same object twice is a no-op: the order keeps one entry
+    /// and the body runs for it exactly once.
+    #[test]
+    fn logic_scheduler_duplicate_registration_is_idempotent() {
+        let mut sim = Simulation::new();
+        spawn_and_register(&mut sim, 1);
+        sim.register_live_object(1); // duplicate
+        assert_eq!(sim.live_object_order_snapshot(), vec![1]);
+
+        let mut visits = 0;
+        sim.for_each_live_object(|_, id| {
+            if id == 1 {
+                visits += 1;
+            }
+        });
+        assert_eq!(visits, 1);
+    }
+
+    /// When the current object unregisters itself, compaction shifts its
+    /// successor into the just-processed slot; the cursor still advances, so
+    /// that successor is skipped this pass (no index repair).
+    #[test]
+    fn logic_scheduler_self_unregister_uses_compacting_index_semantics() {
+        let mut sim = Simulation::new();
+        spawn_and_register(&mut sim, 1); // A
+        spawn_and_register(&mut sim, 2); // B
+        spawn_and_register(&mut sim, 3); // C
+
+        let mut visited = Vec::new();
+        sim.for_each_live_object(|sim, id| {
+            visited.push(id);
+            if id == 2 {
+                sim.unregister_live_object(2); // B removes itself
+            }
+        });
+
+        // A and B were visited; C (shifted into B's slot) is skipped this pass.
+        assert_eq!(visited, vec![1, 2]);
+        // Order is compacted, order-preserving — B gone, C retained.
+        assert_eq!(sim.live_object_order_snapshot(), vec![1, 3]);
+    }
+
+    /// Premise: a snapshot walk MISSES a same-pass append that the live pass
+    /// catches. This is the drift the live pass exists to remove.
+    #[test]
+    fn logic_scheduler_snapshot_walk_misses_same_pass_append() {
+        use crate::sim::game_entity::GameEntity;
+
+        // Snapshot path: appended object is invisible to this pass.
+        let mut sim = Simulation::new();
+        spawn_and_register(&mut sim, 1);
+        spawn_and_register(&mut sim, 2);
+        sim.entities
+            .insert(GameEntity::test_default(3, "MTNK", "Americans", 6, 6));
+        let order = sim.live_object_order_snapshot();
+        let mut snapshot_visited = Vec::new();
+        for &id in &order {
+            snapshot_visited.push(id);
+            if id == 1 {
+                sim.register_live_object(3);
+            }
+        }
+        assert_eq!(snapshot_visited, vec![1, 2]); // C missed
+
+        // Live path on an equivalent setup: appended object is visited.
+        let mut sim2 = Simulation::new();
+        spawn_and_register(&mut sim2, 1);
+        spawn_and_register(&mut sim2, 2);
+        sim2.entities
+            .insert(GameEntity::test_default(3, "MTNK", "Americans", 6, 6));
+        let mut live_visited = Vec::new();
+        sim2.for_each_live_object(|sim, id| {
+            live_visited.push(id);
+            if id == 1 {
+                sim.register_live_object(3);
+            }
+        });
+        assert_eq!(live_visited, vec![1, 2, 3]); // C caught
+
+        assert_ne!(snapshot_visited, live_visited);
     }
 
     /// `Command::ForceAttackCell` is serializable (replay/snapshot back-compat).

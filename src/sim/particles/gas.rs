@@ -72,7 +72,7 @@ pub(super) fn tick_system(sys: &mut ParticleSystem, sim: &mut Simulation, rules:
             break;
         }
         let pt = rules.particle_type(spec.next_id);
-        sys.particles.push(make_child(spec, pt, &mut sim.rng));
+        sys.particles.push(make_child(spec, pt, sim.particle_rng()));
     }
 
     // Phase 3 — spawn a new particle if conditions allow.
@@ -83,8 +83,8 @@ pub(super) fn tick_system(sys: &mut ParticleSystem, sim: &mut Simulation, rules:
                 if sys.particles.len() < cap {
                     let pt = rules.particle_type(holds);
                     let r = pst.spawn_radius.max(0) as u32;
-                    let off_x = sim.rng.next_range_u32(r + 1) as i32;
-                    let off_y = sim.rng.next_range_u32(r + 1) as i32;
+                    let off_x = sim.particle_rng().next_range_u32(r + 1) as i32;
+                    let off_y = sim.particle_rng().next_range_u32(r + 1) as i32;
                     let spawn_pos = IVec3::new(
                         sys.coords.x + off_x,
                         sys.coords.y + off_y,
@@ -95,7 +95,7 @@ pub(super) fn tick_system(sys: &mut ParticleSystem, sim: &mut Simulation, rules:
                         spawn_pos,
                         spawn_pos,
                         pt,
-                        &mut sim.rng,
+                        sim.particle_rng(),
                     ));
                 }
             }
@@ -285,7 +285,7 @@ mod tests {
             IVec3::new(1000, 2000, 0),
             IVec3::ZERO,
             pt_a,
-            &mut sim.rng,
+            sim.particle_rng(),
         );
         parent.lifetime_remaining = 1;
         parent.velocity = SimFixed::from_num(3);
@@ -330,7 +330,7 @@ mod tests {
             IVec3::ZERO,
             IVec3::ZERO,
             pt,
-            &mut sim.rng,
+            sim.particle_rng(),
         );
         // make_particle initializes damage_counter = pt.max_dc.
         assert_eq!(p.damage_counter, 5);
@@ -364,7 +364,7 @@ mod tests {
             IVec3::ZERO,
             IVec3::ZERO,
             pt,
-            &mut sim.rng,
+            sim.particle_rng(),
         );
         move_gas_with_wind(&mut p, pt, 5, 3);
         assert_eq!(p.coords.x, 1, "GAS_WIND_DX[3] == 1");

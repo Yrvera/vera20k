@@ -257,7 +257,7 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
             sim.replay_log = Some(ReplayLog::new(ReplayHeader {
                 version: 1,
                 tick_hz: SIM_TICK_HZ,
-                seed: sim.rng.state(),
+                seed: sim.seed,
                 map_name: state.theater_name.clone(),
                 rules_hash: state.rules.as_ref().map(rules_hash).unwrap_or(0),
             }));
@@ -303,7 +303,7 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                     let ry = entity.position.ry;
                     sim.occupancy.remove(rx, ry, *dead_id);
                 }
-                sim.despawn_entity(*dead_id);
+                sim.uninit(*dead_id);
             }
             if !death_finished.is_empty() {
                 refresh_after_tick = true;

@@ -525,6 +525,25 @@ fn combo_arrow_at(
     })
 }
 
+/// A click anywhere on the collapsed combo face — not just the arrow zone.
+/// The owner-draw combo plays the open sound on any face click; only a click
+/// inside the rightmost arrow zone actually toggles the dropdown open. Splitting
+/// these two reachable areas lets us play the sound on a text-portion click
+/// while still gating the open on the arrow zone.
+fn combo_face_at(
+    state: &SkirmishShellState,
+    layout: &SkirmishShellLayout,
+    x: i32,
+    y: i32,
+) -> Option<SkirmishComboId> {
+    combo_hit_order().into_iter().find(|id| {
+        combo_enabled(state, *id)
+            && combo_rect(layout, *id)
+                .map(|rect| combo_face_rect(rect).contains(x, y))
+                .unwrap_or(false)
+    })
+}
+
 pub(super) fn apply_combo_selection(
     state: &mut SkirmishShellState,
     id: SkirmishComboId,
@@ -680,19 +699,12 @@ pub(super) fn handle_combo_mouse_down(
                 return true;
             }
         }
-        if let Some(id) = combo_arrow_at(state, layout, x, y) {
-            state.open_combo_dropdown = if id == open.id {
-                state.push_ui_sound(SkirmishShellUiSound::GuiComboCloseSound);
-                None
-            } else {
-                state.push_ui_sound(SkirmishShellUiSound::GuiComboCloseSound);
-                state.push_ui_sound(SkirmishShellUiSound::GuiComboOpenSound);
-                Some(OpenComboDropdown { id, top_index: 0 })
-            };
-            state.dropdown_scroll_drag = None;
-            state.dropdown_scroll_press = None;
-            return true;
-        }
+        // The open dropdown is a captured popup: any mouse-down outside its
+        // content/scrollbar is delivered to the popup, which plays the close
+        // sound and closes itself. Because the popup consumed the click, it
+        // does NOT propagate to a second combo — switching combos takes two
+        // clicks (this one closes, a later one opens). So even when the click
+        // lands on another combo's arrow, we only close here.
         state.open_combo_dropdown = None;
         state.dropdown_scroll_drag = None;
         state.dropdown_scroll_press = None;
@@ -700,11 +712,15 @@ pub(super) fn handle_combo_mouse_down(
         return true;
     }
 
-    if let Some(id) = combo_arrow_at(state, layout, x, y) {
-        state.open_combo_dropdown = Some(OpenComboDropdown { id, top_index: 0 });
-        state.dropdown_scroll_drag = None;
-        state.dropdown_scroll_press = None;
+    // A click anywhere on a collapsed combo face plays the open sound. Only a
+    // click inside the rightmost arrow zone actually opens the dropdown.
+    if let Some(id) = combo_face_at(state, layout, x, y) {
         state.push_ui_sound(SkirmishShellUiSound::GuiComboOpenSound);
+        if combo_arrow_at(state, layout, x, y) == Some(id) {
+            state.open_combo_dropdown = Some(OpenComboDropdown { id, top_index: 0 });
+            state.dropdown_scroll_drag = None;
+            state.dropdown_scroll_press = None;
+        }
         return true;
     }
 

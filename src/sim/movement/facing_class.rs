@@ -1,9 +1,13 @@
 //! Timer-based 16-bit facing interpolator, mirroring gamemd's FacingClass primitive.
 //!
 //! At any binary frame, the animated value is a pure function of state +
-//! frame: `current(frame) = prev + sign(diff) * rot_per_frame * elapsed`.
-//! Setting a new target snapshots the current animated value into `prev`
-//! so rotations retarget smoothly without snap-back.
+//! frame: `current(frame) = current - (diff / step_size) * remaining`, where
+//! `step_size = abs(diff) / rot_per_frame` and `remaining = duration - elapsed`.
+//! The per-step rate spreads the full signed arc evenly across the rotation's
+//! frame count, so elapsed=0 lands exactly on `prev` even when the arc is not a
+//! whole multiple of `rot_per_frame` (the remainder is absorbed into the rate,
+//! not dropped). Setting a new target snapshots the current animated value into
+//! `prev` so rotations retarget smoothly without snap-back.
 //!
 //! Verified against gamemd.exe — see
 //! ra2-rust-game-docs/UNITCLASS_TURRET_TRACKING_AND_FIRE_TIMING_GHIDRA_REPORT.md
@@ -76,7 +80,8 @@ impl FacingClass {
     /// - step_size < 1 (rotation request smaller than one frame's ROT — snaps)
     ///
     /// Otherwise interpolates linearly along the shortest signed arc from
-    /// prev to current at exactly rot_per_frame units per frame.
+    /// prev to current at the per-step rate `diff / step_size` (the arc spread
+    /// evenly across the rotation's frame count).
     pub fn current(&self, binary_frame: u32) -> u16 {
         if self.rot_per_frame == 0 {
             return self.current;
@@ -100,10 +105,13 @@ impl FacingClass {
             return self.current;
         }
 
-        // animated = current - sign(diff) * rot_per_frame * remaining
-        // (equivalent to: prev + sign(diff) * rot_per_frame * elapsed)
-        let signed_step: i32 = (diff.signum() as i32) * (self.rot_per_frame as i32);
-        let delta: i32 = signed_step * (remaining as i32);
+        // Per-step is the full signed arc spread evenly across the rotation's
+        // frame count (`diff / step_size`, integer-truncated toward zero), not a
+        // fixed `rot_per_frame`. When abs(diff) is not an exact multiple of
+        // rot_per_frame, this absorbs the remainder into the rate so elapsed=0
+        // lands exactly on `prev` instead of `prev + (diff % rot_per_frame)`.
+        let per_step: i32 = (diff as i32) / (step_size as i32);
+        let delta: i32 = per_step * (remaining as i32);
         ((self.current as i32) - delta).rem_euclid(65536) as u16
     }
 
@@ -250,6 +258,37 @@ mod tests {
     }
 
     #[test]
+    fn current_non_multiple_arc_lands_on_prev_at_start() {
+        // Regression: when abs(diff) is NOT an exact multiple of rot_per_frame,
+        // the per-step rate must absorb the remainder (per_step = diff/step_size)
+        // so elapsed=0 lands exactly on prev. The old fixed-rot_per_frame step
+        // left a `diff % rot_per_frame` gap (here 12900 % 1280 = 100 units).
+        // prev=0, current=12900, ROT byte 5 (rot_per_frame=1280).
+        // step_size = 12900/1280 = 10; per_step = 12900/10 = 1290.
+        let fc = mid_rotation(0, 12900, 0, 10, 5);
+        // elapsed=0, remaining=10: animated = 12900 - 1290*10 = 0 == prev.
+        assert_eq!(fc.current(0), 0);
+        // The old (wrong) fixed-step formula gave 12900 - 1280*10 = 100 here.
+        assert_ne!(fc.current(0), 100);
+        // Endpoint reached exactly at duration.
+        assert_eq!(fc.current(10), 12900);
+        // Mid-rotation interpolates at the spread per-step rate (1290/frame).
+        assert_eq!(fc.current(5), 12900 - 1290 * 5); // 6450
+    }
+
+    #[test]
+    fn current_non_multiple_arc_negative_diff_lands_on_prev() {
+        // Same as above for a negative (counter-clockwise) arc. prev=12900,
+        // current=0 → diff = -12900. step_size = 12900/1280 = 10;
+        // per_step = -12900/10 = -1290 (truncates toward zero).
+        let fc = mid_rotation(12900, 0, 0, 10, 5);
+        // elapsed=0, remaining=10: animated = 0 - (-1290*10) = 12900 == prev.
+        assert_eq!(fc.current(0), 12900);
+        assert_eq!(fc.current(10), 0);
+        assert_eq!(fc.current(5), 1290 * 5); // 6450
+    }
+
+    #[test]
     fn current_snaps_when_step_size_below_one() {
         // diff = current - prev = 100; rot_per_frame = 1280; step_size = 100/1280 = 0.
         // Should snap to current immediately.
@@ -292,6 +331,45 @@ mod tests {
         assert!(!changed);
         assert_eq!(fc.destination(), 1000);
         assert!(fc.start_frame.is_none());
+    }
+
+    // --- Native frame / tick contract acceptance tests ---
+
+    #[test]
+    fn set_and_check_same_frame_yields_zero_elapsed() {
+        // Acceptance: a timer started and checked in the SAME update sees
+        // elapsed 0 (binary_frame is constant within a tick). Retarget at
+        // frame 100, then query at the same frame 100 — animated sits at the
+        // start orientation and rotation is in progress.
+        let mut fc = FacingClass::new(0, 5); // rot_per_frame = 1280
+        let changed = fc.set(12800, 100); // 12800 / 1280 = exactly 10 frames
+        assert!(changed);
+        assert_eq!(fc.start_frame, Some(100));
+        assert_eq!(fc.duration_frames, 10);
+        // elapsed = 100 - 100 = 0 → animated == prev (start), still rotating.
+        assert_eq!(fc.current(100), 0);
+        assert!(fc.is_rotating(100));
+    }
+
+    #[test]
+    fn retarget_captures_supplied_frame_and_progresses_relative_to_it() {
+        // Acceptance: a facing retarget captures the frame it is given (the
+        // pre-increment frame visible during the tick) and animates relative
+        // to it. Invariant to a uniform frame offset — only relative elapsed
+        // matters.
+        let mut fc = FacingClass::new(0, 5); // rot_per_frame = 1280
+        fc.set(12800, 100); // duration 10, start_frame 100
+        assert_eq!(fc.start_frame, Some(100));
+        // 5 frames later: animated = 0 + 5 * 1280 = 6400, still rotating.
+        assert_eq!(fc.current(105), 6400);
+        assert!(fc.is_rotating(105));
+        // Retarget at frame 105: snapshots visible 6400 into prev, captures
+        // start_frame = 105.
+        fc.set(0, 105);
+        assert_eq!(fc.start_frame, Some(105));
+        assert_eq!(fc.prev, 6400);
+        // Same-frame after retarget: elapsed 0 → still at 6400.
+        assert_eq!(fc.current(105), 6400);
     }
 
     #[test]
