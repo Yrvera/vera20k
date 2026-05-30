@@ -5,6 +5,7 @@ use std::time::Instant;
 use anyhow::Result;
 
 use crate::app::AppState;
+use crate::app_shell_transition::{ButtonGroup, ShellFrameWave};
 use crate::render::batch::SpriteInstance;
 use crate::render::main_menu_shell_chrome::{MainMenuShellChromeAtlas, MainMenuShellChromeEntry};
 use crate::render::shell_text::ShellTextDraw;
@@ -126,6 +127,7 @@ fn push_label(
     ));
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_button_instances(
     atlas: &MainMenuShellChromeAtlas,
     layout: &SinglePlayerShellLayout,
@@ -134,11 +136,19 @@ fn build_button_instances(
     hover_started_at: Option<Instant>,
     load_saved_game_enabled: bool,
     now: Instant,
+    wave: Option<&ShellFrameWave>,
 ) -> Vec<SpriteInstance> {
     let mut out = Vec::new();
-    for button in &layout.buttons {
+    for (slot, button) in layout.buttons.iter().enumerate() {
         let enabled =
             button.id != SinglePlayerControlId::LoadSavedGame0x689 || load_saved_game_enabled;
+        if let Some(wave) = wave {
+            // First-paint slide: animate every button through Group A's ramp.
+            // Disabled buttons still slide in, dimmed, matching the steady alpha.
+            let frame = wave.sdbtnanm_frame(slot as u32, ButtonGroup::A);
+            push_button_wave_frame(&mut out, atlas, button.rect, frame, enabled);
+            continue;
+        }
         let pressed = enabled && pressed_button == Some(button.id);
         let hover_highlight = if enabled && !pressed && hovered_button == Some(button.id) {
             hover_started_at
@@ -157,6 +167,39 @@ fn build_button_instances(
         );
     }
     out
+}
+
+/// Draw a single-player button at a first-paint slide frame, using the same
+/// fit-scale and right-anchor as the steady button art. Clamps down one frame if
+/// the index is missing; holds (draws nothing) if neither is baked.
+fn push_button_wave_frame(
+    out: &mut Vec<SpriteInstance>,
+    atlas: &MainMenuShellChromeAtlas,
+    rect: RectPx,
+    frame_idx: usize,
+    enabled: bool,
+) {
+    let wave_frame = |idx: usize| atlas.button_wave_frames.get(idx).copied().flatten();
+    let Some(frame) = wave_frame(frame_idx).or_else(|| wave_frame(frame_idx.saturating_sub(1)))
+    else {
+        return;
+    };
+    let scale_x = rect.w as f32 / RIGHT_PANEL_WIDTH as f32;
+    let scale_y = rect.h as f32 / RIGHT_PANEL_TILE_H as f32;
+    let frame_w = frame.pixel_size[0] * scale_x;
+    let frame_h = frame.pixel_size[1] * scale_y;
+    let x = rect.x as f32 + (rect.w as f32 - frame_w);
+    let y = rect.y as f32 + (rect.h as f32 - frame_h) * 0.5;
+    out.push(SpriteInstance {
+        position: [x, y],
+        size: [frame_w, frame_h],
+        uv_origin: frame.uv_origin,
+        uv_size: frame.uv_size,
+        depth: BUTTON_DEPTH,
+        tint: [1.0, 1.0, 1.0],
+        alpha: if enabled { 1.0 } else { BUTTON_DISABLED_ALPHA },
+        ..Default::default()
+    });
 }
 
 fn push_entry_rect(
@@ -322,6 +365,9 @@ pub(crate) fn render_single_player_shell(
         depth: &depth,
     };
     let layout = compute_layout(state.gpu.config.width, state.gpu.config.height);
+    // While a first-paint slide is live the buttons animate through their
+    // SDBTNANM ramp frames; off-slide this is None and they paint steady-state.
+    let wave = state.shell_first_paint_slide.clone();
     let chrome = state
         .main_menu_shell_chrome
         .as_ref()
@@ -342,6 +388,7 @@ pub(crate) fn render_single_player_shell(
         state.single_player_shell_state.hover_started_at,
         state.single_player_shell_state.load_saved_game_enabled,
         Instant::now(),
+        wave.as_ref(),
     );
     let text_draws = build_text_draws(state, &layout);
 
