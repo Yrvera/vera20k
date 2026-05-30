@@ -122,6 +122,7 @@ fn push_label(
         align,
         [0.0, 0.0],
         TEXT_DEPTH,
+        None,
     ));
 }
 

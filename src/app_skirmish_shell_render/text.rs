@@ -206,6 +206,7 @@ pub(super) fn push_text_draw(
         align,
         [0.0, 0.0],
         depth,
+        None,
     );
     out.push(draw);
 }
