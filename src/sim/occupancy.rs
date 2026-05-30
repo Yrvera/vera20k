@@ -97,6 +97,12 @@ impl CellOccupancy {
 /// on spawn/move-in, remove on death/move-out.
 pub struct OccupancyGrid {
     cells: BTreeMap<(u16, u16), CellOccupancy>,
+    /// Monotonic counter bumped on every cell-membership mutation. Lets the
+    /// movement tick detect when a mover's pathfinding entity-block snapshot is
+    /// stale and must be rebuilt before a same-tick repath. Transient scheduling
+    /// state only: never serialized, never part of the state hash — it gates
+    /// *when* a deterministic rebuild happens, never *what* it produces.
+    generation: u64,
 }
 
 impl Default for OccupancyGrid {
@@ -161,7 +167,15 @@ impl OccupancyGrid {
     pub fn new() -> Self {
         Self {
             cells: BTreeMap::new(),
+            generation: 0,
         }
+    }
+
+    /// Current mutation generation. Bumped on every `add`/`remove`/`update_sub_cell`
+    /// (and thus `move_entity`). Compare across two points to detect whether cell
+    /// membership changed in between. Transient — not hashed, resets to 0 on rebuild.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// Add an entity to a cell. For structures, caller must invoke once per
@@ -175,6 +189,7 @@ impl OccupancyGrid {
         sub_cell: Option<u8>,
         insertion: CellListInsertion,
     ) {
+        self.generation = self.generation.wrapping_add(1);
         let new_occupant = CellOccupant {
             entity_id,
             layer,
@@ -204,6 +219,7 @@ impl OccupancyGrid {
     /// Remove an entity from a cell. No-op if entity not found.
     /// For structures, caller must invoke once per foundation cell.
     pub fn remove(&mut self, rx: u16, ry: u16, entity_id: u64) {
+        self.generation = self.generation.wrapping_add(1);
         if let Some(occ) = self.cells.get_mut(&(rx, ry)) {
             occ.occupants.retain(|o| o.entity_id != entity_id);
             if occ.occupants.is_empty() {
@@ -230,6 +246,7 @@ impl OccupancyGrid {
 
     /// Update an entity's sub-cell within the same cell.
     pub fn update_sub_cell(&mut self, rx: u16, ry: u16, entity_id: u64, new_sub_cell: Option<u8>) {
+        self.generation = self.generation.wrapping_add(1);
         if let Some(occ) = self.cells.get_mut(&(rx, ry)) {
             if let Some(o) = occ.occupants.iter_mut().find(|o| o.entity_id == entity_id) {
                 o.sub_cell = new_sub_cell;
@@ -304,6 +321,39 @@ impl OccupancyGrid {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generation_bumps_on_every_mutation() {
+        let mut grid = OccupancyGrid::new();
+        let g0 = grid.generation();
+        grid.add(
+            1,
+            1,
+            10,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        let g1 = grid.generation();
+        assert!(g1 > g0, "add must bump generation");
+        grid.move_entity(
+            1,
+            1,
+            2,
+            2,
+            10,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        let g2 = grid.generation();
+        assert!(g2 > g1, "move_entity (remove+add) must bump generation");
+        grid.update_sub_cell(2, 2, 10, Some(3));
+        let g3 = grid.generation();
+        assert!(g3 > g2, "update_sub_cell must bump generation");
+        grid.remove(2, 2, 10);
+        assert!(grid.generation() > g3, "remove must bump generation");
+    }
 
     #[test]
     fn add_and_get() {
