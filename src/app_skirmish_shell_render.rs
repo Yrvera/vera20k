@@ -15,6 +15,7 @@ pub use draw_order::{
     skirmish_shell_semantic_draw_order, validation_modal_semantic_draw_order,
 };
 pub(crate) use preview::SkirmishPreviewTexture;
+pub(crate) use text::skirmish_right_panel_label_strings;
 
 use crate::app::AppState;
 use crate::app_init::MapMenuEntry;
