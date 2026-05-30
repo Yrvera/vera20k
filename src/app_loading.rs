@@ -12,6 +12,7 @@ use crate::render::gpu::GpuContext;
 use crate::render::loading_screen_chrome::{
     LoadingArtVariant, LoadingScreenAtlas, LoadingScreenEntry, LoadingScreenWidth,
 };
+use crate::rules::color_scheme::ColorSchemeEntry;
 use crate::rules::house_colors::{self, HouseColorIndex};
 use crate::skirmish_launch::{LaunchCountry, SkirmishLaunchSession};
 use crate::ui::game_screen::GameScreen;
@@ -26,8 +27,10 @@ const BACKGROUND_DEPTH: f32 = 0.90;
 /// Solid backing fill (G3) sits just behind the bar so the bar draws over it.
 const SOLID_FILL_DEPTH: f32 = 0.20;
 /// Player-ramp shade indices (0 brightest, 15 darkest). The filled bar uses the
-/// brightest shade; the empty backing/track a darker one so progress is visible.
-/// Exact gamemd +0x308/+0x30C shades are a value-precision follow-up.
+/// brightest shade. `BACKING_RAMP_SHADE` is now only the fallback when the rules
+/// `[Colors]` schemes are unavailable; the parity-correct backing comes from the
+/// scheme HSV (see `NativeLoadingScreenState::backing_rgb`). The filled-bar
+/// palette remap is still a follow-up.
 const BAR_FILL_RAMP_SHADE: usize = 0;
 const BACKING_RAMP_SHADE: usize = 11;
 const PROGRESS_DEPTH: f32 = 0.10;
@@ -208,6 +211,10 @@ pub(crate) struct NativeLoadingScreenState {
     /// Local player's MP color scheme — source of the G3 solid backing fill and
     /// bar remap. Derived from the launch session, not the country variant.
     pub color_index: HouseColorIndex,
+    /// Empty-bar backing fill color (normalized RGB), resolved from the player's
+    /// color choice through the rules `[Colors]` scheme HSV. Falls back to a
+    /// synthesized shade when `[Colors]` is unavailable (e.g. assets missing).
+    pub backing_rgb: [f32; 3],
     pub progress: LoadingProgressState,
     pub atlas: Option<LoadingScreenAtlas>,
     pub first_renderer_ready: bool,
@@ -218,9 +225,21 @@ impl NativeLoadingScreenState {
         Self {
             variant,
             color_index,
+            backing_rgb: player_scheme_fallback_backing_rgb(color_index),
             progress: LoadingProgressState::standard_skirmish(),
             atlas: None,
             first_renderer_ready: false,
+        }
+    }
+
+    /// Resolve the backing fill from the rules `[Colors]` schemes, mapping the
+    /// local player's color choice through the scheme-priority table. Leaves the
+    /// synthesized fallback in place when the color list is empty/unmatched.
+    fn resolve_backing_color(&mut self, color_schemes: &[ColorSchemeEntry]) {
+        let priority = i32::from(self.color_index.0);
+        if let Some(rgb) = crate::rules::color_scheme::backing_rgb_for_priority(color_schemes, priority)
+        {
+            self.backing_rgb = normalize_rgb(rgb);
         }
     }
 }
@@ -241,8 +260,7 @@ impl LoadingSession {
             ) => {
                 let variant =
                     loading_art_variant_from_launch_country(skirmish_launch_session.local.country);
-                let color_index =
-                    HouseColorIndex(skirmish_launch_session.local.color_index);
+                let color_index = HouseColorIndex(skirmish_launch_session.local.color_index);
                 Some(NativeLoadingScreenState::standard_skirmish(
                     variant,
                     color_index,
@@ -302,7 +320,13 @@ impl LoadingJob {
 
 pub(crate) fn begin_loading(state: &mut AppState, request: LoadingRequest) {
     clear_loading_state(state);
-    state.loading_session = Some(LoadingSession::from_request(request));
+    let mut session = LoadingSession::from_request(request);
+    // Resolve the backing fill from the live rules `[Colors]` schemes now that
+    // `state.rules` is reachable (the native ctor only sees the launch session).
+    if let (Some(native), Some(rules)) = (session.native.as_mut(), state.rules.as_ref()) {
+        native.resolve_backing_color(&rules.color_schemes);
+    }
+    state.loading_session = Some(session);
     state.screen = GameScreen::Loading;
 }
 
@@ -400,6 +424,7 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                 // cannot draw, so fall back to the gate-only sink.
                 Some(native) if native.atlas.is_some() => {
                     let color_index = native.color_index;
+                    let backing_rgb = native.backing_rgb;
                     let atlas = native.atlas.as_ref().expect("atlas present checked above");
                     let mut sink = RenderingProgressSink {
                         gpu: &state.gpu,
@@ -408,6 +433,7 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                         progress: &mut native.progress,
                         atlas,
                         color_index,
+                        backing_rgb,
                         render_width,
                     };
                     app_init::load_map_from_initial(
@@ -612,6 +638,7 @@ pub(crate) fn render_loading_screen(
         atlas,
         &native.progress,
         native.color_index,
+        native.backing_rgb,
         state.gpu.config.width,
     );
 
@@ -747,6 +774,15 @@ fn standard_skirmish_side_icon_position(
     [icon_x, icon_y]
 }
 
+/// Normalize an 8-bit RGB triple to 0..1.
+fn normalize_rgb(rgb: [u8; 3]) -> [f32; 3] {
+    [
+        rgb[0] as f32 / 255.0,
+        rgb[1] as f32 / 255.0,
+        rgb[2] as f32 / 255.0,
+    ]
+}
+
 /// A shade of the player's color scheme ramp, normalized to 0..1.
 /// Ramp index 0 is the brightest shade, 15 the darkest.
 fn player_scheme_shade_rgb(color_index: HouseColorIndex, shade: usize) -> [f32; 3] {
@@ -755,17 +791,25 @@ fn player_scheme_shade_rgb(color_index: HouseColorIndex, shade: usize) -> [f32; 
     [c.r as f32 / 255.0, c.g as f32 / 255.0, c.b as f32 / 255.0]
 }
 
-/// Empty-bar backing color (gamemd ColorScheme+0x308). Drawn darker than the
-/// fill so the filled span reads as distinct — gamemd's track sits darker than
-/// the remapped bar. Exact +0x308 shade is a value-precision follow-up; a
-/// darker ramp shade is used until the precise HSV is matched.
-fn player_scheme_backing_rgb(color_index: HouseColorIndex) -> [f32; 3] {
+/// Fallback empty-bar backing color used only when the rules `[Colors]` schemes
+/// are unavailable (assets missing, headless tests). The parity-correct color is
+/// the player scheme's `[Colors]` HSV converted to RGB and stored in
+/// [`NativeLoadingScreenState::backing_rgb`]; this synthesized darker shade just
+/// keeps the empty track visible until the real color resolves.
+fn player_scheme_fallback_backing_rgb(color_index: HouseColorIndex) -> [f32; 3] {
     player_scheme_shade_rgb(color_index, BACKING_RAMP_SHADE)
 }
 
-/// Filled-bar color (gamemd ColorScheme+0x30C remap, approximated as a tint on
-/// the PROGBARM frame). Uses the brightest ramp shade so the fill reads brighter
-/// than the backing. A true palette remap of the frame is a deferred follow-up.
+/// Filled-bar color. The faithful behavior is a per-pixel palette remap of the
+/// PROGBARM frame-0 house-color indices through the player scheme's 16-shade
+/// ramp — NOT a uniform tint.
+///
+/// BLOCKED (UNKNOWN-exact): a true remap requires (a) the player scheme's real
+/// 16-shade ramp built from `[Colors]` HSV (same data blocker as the backing
+/// color), and (b) the frame-0 palette-index layout (which indices are
+/// remappable house-color indices) inspected from the real SHP. Until both are
+/// available, the frame is uniformly tinted with the brightest ramp shade; this
+/// preserves none of the frame's internal shading and is NOT parity-correct.
 fn player_scheme_bar_rgb(color_index: HouseColorIndex) -> [f32; 3] {
     player_scheme_shade_rgb(color_index, BAR_FILL_RAMP_SHADE)
 }
@@ -777,6 +821,7 @@ fn build_native_loading_instances(
     atlas: &LoadingScreenAtlas,
     progress: &LoadingProgressState,
     color_index: HouseColorIndex,
+    backing_rgb: [f32; 3],
     render_width: u32,
 ) -> Vec<SpriteInstance> {
     let mut instances = Vec::with_capacity(4);
@@ -796,15 +841,16 @@ fn build_native_loading_instances(
     let row_h = standard_skirmish_row_height(bar_h, side_icon_h);
     let bar_origin = standard_skirmish_progress_position(render_width, bar_h, row_h);
 
-    // G3: solid backing fill — full bar frame rect (W x H), tinted with the
-    // player color scheme, drawn BEFORE the clipped bar so the bar covers it.
+    // G3: solid backing fill — full bar frame rect (W x H), filled with the
+    // player scheme's `[Colors]` HSV→RGB color, drawn BEFORE the clipped bar so
+    // the bar covers it.
     push_entry_tinted(
         &mut instances,
         atlas.solid_texel,
         bar_origin,
         [bar_w, bar_h],
         SOLID_FILL_DEPTH,
-        player_scheme_backing_rgb(color_index),
+        backing_rgb,
     );
 
     // G2: clipped progress span. The bar frame is remapped to the player color
@@ -824,12 +870,8 @@ fn build_native_loading_instances(
     // G4: country side icon to the right of the bar, vertically centered. No
     // label is drawn (skirmish text pointer is 0).
     if let Some(icon) = atlas.side_icon {
-        let icon_pos = standard_skirmish_side_icon_position(
-            render_width,
-            bar_w,
-            row_h,
-            icon.pixel_size[1],
-        );
+        let icon_pos =
+            standard_skirmish_side_icon_position(render_width, bar_w, row_h, icon.pixel_size[1]);
         push_entry(&mut instances, icon, icon_pos, SIDE_ICON_DEPTH);
     }
 
@@ -848,6 +890,7 @@ fn present_native_loading(
     atlas: &LoadingScreenAtlas,
     progress: &LoadingProgressState,
     color_index: HouseColorIndex,
+    backing_rgb: [f32; 3],
     render_width: u32,
 ) -> anyhow::Result<()> {
     let output = gpu
@@ -861,7 +904,8 @@ fn present_native_loading(
             label: Some("Native Loading Repaint"),
         });
 
-    let instances = build_native_loading_instances(atlas, progress, color_index, render_width);
+    let instances =
+        build_native_loading_instances(atlas, progress, color_index, backing_rgb, render_width);
     batch.update_camera(
         gpu,
         gpu.config.width as f32,
@@ -918,6 +962,7 @@ struct RenderingProgressSink<'a> {
     progress: &'a mut LoadingProgressState,
     atlas: &'a LoadingScreenAtlas,
     color_index: HouseColorIndex,
+    backing_rgb: [f32; 3],
     render_width: u32,
 }
 
@@ -931,6 +976,7 @@ impl LoadingProgressSink for RenderingProgressSink<'_> {
                 self.atlas,
                 self.progress,
                 self.color_index,
+                self.backing_rgb,
                 self.render_width,
             ) {
                 log::warn!("Native loading repaint at milestone {percent} failed: {err:#}");
@@ -1319,7 +1365,7 @@ mod tests {
     #[test]
     fn player_scheme_colors_are_normalized_and_backing_is_darker_than_bar() {
         let bar = player_scheme_bar_rgb(HouseColorIndex(0));
-        let backing = player_scheme_backing_rgb(HouseColorIndex(0));
+        let backing = player_scheme_fallback_backing_rgb(HouseColorIndex(0));
         assert!(bar.iter().all(|c| (0.0..=1.0).contains(c)));
         assert!(backing.iter().all(|c| (0.0..=1.0).contains(c)));
         // The empty-bar backing must read darker than the filled bar so progress

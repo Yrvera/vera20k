@@ -23,6 +23,65 @@ const SOLID_TEXEL_LABEL: &str = "__solid_texel__";
 /// The insignia PCX files use index 0 for their background.
 const SIDE_ICON_TRANSPARENT_INDEX: u8 = 0;
 
+/// Screen-width breakpoints that select the marker projection region rect.
+///
+/// The native loader compares the live screen width against two breakpoints
+/// (800 and 1024) to pick a fixed region rect for projecting per-player start
+/// markers; widths below 800 use the 640 fallback rect.
+const MMPB_REGION_BREAKPOINT_800: u32 = 800;
+const MMPB_REGION_BREAKPOINT_1024: u32 = 1024;
+
+/// Fixed region rect (origin_x, size_x, size_y, origin_y) used to project the
+/// per-player start markers (`mmpb.shp` frame 0) onto the loading background.
+///
+/// These four values are the verified, screen-width-keyed region constants
+/// (origin and size in screen pixels). The size pair (size_x, size_y) sizes the
+/// projection surface; the origin pair anchors it on screen. Marker X uses
+/// `origin_x` (after the per-axis `-3` nudge) and marker Y uses `origin_y`
+/// (after the per-axis `-2` nudge).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MmpbRegionRect {
+    pub origin_x: i32,
+    pub size_x: i32,
+    pub size_y: i32,
+    pub origin_y: i32,
+}
+
+/// Per-axis screen nudge applied to a projected marker before the region origin
+/// is added (verified marker projection: X gets `-3`, Y gets `-2`).
+pub const MMPB_MARKER_NUDGE_X: i32 = -3;
+pub const MMPB_MARKER_NUDGE_Y: i32 = -2;
+
+/// Select the marker projection region rect for the current screen width.
+///
+/// >=1024 and >=800 use their dedicated rects; anything narrower falls back to
+/// the 640 rect. These constants are pinned from the loader's region-const block
+/// and must not be interpolated between breakpoints.
+pub fn mmpb_region_rect(render_width: u32) -> MmpbRegionRect {
+    if render_width >= MMPB_REGION_BREAKPOINT_1024 {
+        MmpbRegionRect {
+            origin_x: 0x23a,
+            size_x: 0x1a8,
+            size_y: 0x12c,
+            origin_y: 0x104,
+        }
+    } else if render_width >= MMPB_REGION_BREAKPOINT_800 {
+        MmpbRegionRect {
+            origin_x: 0x1f3,
+            size_x: 0x17b,
+            size_y: 0xd8,
+            origin_y: 0xa6,
+        }
+    } else {
+        MmpbRegionRect {
+            origin_x: 0x181,
+            size_x: 0x10e,
+            size_y: 0xc8,
+            origin_y: 0xc8,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoadingScreenWidth {
     W640,
@@ -402,7 +461,46 @@ fn pack_entries(
 
 #[cfg(test)]
 mod tests {
-    use super::{LoadingArtVariant, LoadingScreenWidth, render_shp_entry};
+    use super::{
+        LoadingArtVariant, LoadingScreenWidth, MmpbRegionRect, mmpb_region_rect, render_shp_entry,
+    };
+
+    #[test]
+    fn mmpb_region_rect_uses_pinned_constants_per_breakpoint() {
+        // 640 fallback (any width below 800).
+        assert_eq!(
+            mmpb_region_rect(640),
+            MmpbRegionRect {
+                origin_x: 385,
+                size_x: 270,
+                size_y: 200,
+                origin_y: 200,
+            }
+        );
+        // Exactly at the 800 breakpoint.
+        assert_eq!(
+            mmpb_region_rect(800),
+            MmpbRegionRect {
+                origin_x: 499,
+                size_x: 379,
+                size_y: 216,
+                origin_y: 166,
+            }
+        );
+        // Between 800 and 1024 still uses the 800 rect (no interpolation).
+        assert_eq!(mmpb_region_rect(1023), mmpb_region_rect(800));
+        // Exactly at the 1024 breakpoint and above.
+        assert_eq!(
+            mmpb_region_rect(1024),
+            MmpbRegionRect {
+                origin_x: 570,
+                size_x: 424,
+                size_y: 300,
+                origin_y: 260,
+            }
+        );
+        assert_eq!(mmpb_region_rect(1920), mmpb_region_rect(1024));
+    }
 
     #[test]
     fn loading_art_manifest_uses_verified_binary_string_table_names() {
@@ -509,6 +607,48 @@ mod tests {
             assert!(!name.to_ascii_lowercase().contains("pudlgbg"));
             assert_ne!(name.to_ascii_lowercase(), "spldbr.shp");
         }
+    }
+
+    #[test]
+    fn zz_dump_progbarm_frame0_indices() {
+        let config = match crate::util::config::GameConfig::load() {
+            Ok(config) => config,
+            Err(_) => return,
+        };
+        if !config.paths.ra2_dir.exists() {
+            return;
+        }
+        let assets = crate::assets::asset_manager::AssetManager::new(&config.paths.ra2_dir)
+            .expect("install loads");
+        let bytes = assets.get_ref("PROGBARM.SHP").expect("progbarm");
+        let shp = crate::assets::shp_file::ShpFile::from_bytes(bytes).expect("parse shp");
+        let f = &shp.frames[0];
+        let mut hist = [0u32; 256];
+        for &p in &f.pixels {
+            hist[p as usize] += 1;
+        }
+        eprintln!(
+            "PROGBARM frame0 fw={} fh={} fx={} fy={} npix={}",
+            f.frame_width,
+            f.frame_height,
+            f.frame_x,
+            f.frame_y,
+            f.pixels.len()
+        );
+        for i in 0..256 {
+            if hist[i] > 0 {
+                eprintln!("  idx {i:3} count {}", hist[i]);
+            }
+        }
+        // Dump MPLS.PAL RGB for the house-color band 16..31 (raw 6-bit *4 not applied here).
+        if let Some(pal) = assets.get_ref("MPLS.PAL") {
+            eprintln!("MPLS.PAL raw bytes 16..32:");
+            for i in 16..32 {
+                let o = i * 3;
+                eprintln!("  pal {i:2} = {} {} {}", pal[o], pal[o + 1], pal[o + 2]);
+            }
+        }
+        panic!("diagnostic dump");
     }
 
     #[test]
