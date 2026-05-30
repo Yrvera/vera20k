@@ -45,11 +45,11 @@ impl Simulation {
         // mapgen_rng (gamemd g_MapGenRng): appended AFTER the two gameplay streams.
         // This order is part of the hash contract and must never change.
         self.mapgen_rng.hash_state(&mut hasher);
-        self.next_stable_entity_id.hash(&mut hasher);
-        self.next_occupancy_enter_order.hash(&mut hasher);
+        self.substrate.next_stable_entity_id.hash(&mut hasher);
+        self.substrate.next_occupancy_enter_order.hash(&mut hasher);
 
         // LogicClass active-object order — authoritative (drives reconciliation order).
-        let order = self.logic.as_slice();
+        let order = self.substrate.logic.as_slice();
         order.len().hash(&mut hasher);
         for id in order {
             id.hash(&mut hasher);
@@ -1216,8 +1216,8 @@ mod rocking_hash_tests {
         let mut sim = Simulation::new();
         let owner = sim.interner.intern("Americans");
         let type_id = sim.interner.intern("HTNK");
-        let id = sim.next_stable_entity_id;
-        sim.next_stable_entity_id += 1;
+        let id = sim.substrate.next_stable_entity_id;
+        sim.substrate.next_stable_entity_id += 1;
         let e = GameEntity::new(
             id,
             10,
@@ -1295,8 +1295,8 @@ mod c4_hash_tests {
         let mut sim = Simulation::new();
         let owner = sim.interner.intern("Americans");
         let type_id = sim.interner.intern("GHOST");
-        let id = sim.next_stable_entity_id;
-        sim.next_stable_entity_id += 1;
+        let id = sim.substrate.next_stable_entity_id;
+        sim.substrate.next_stable_entity_id += 1;
         let e = GameEntity::new(
             id,
             10,

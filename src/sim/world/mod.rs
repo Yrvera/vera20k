@@ -13,12 +13,14 @@
 pub(crate) mod bridge_orchestrator;
 pub mod edge_cell;
 mod logic_vector;
+mod substrate;
 mod world_commands;
 mod world_hash;
 mod world_orders;
 mod world_spawn;
 
 pub(crate) use logic_vector::LogicVector;
+pub(crate) use substrate::ObjectSubstrate;
 
 use std::collections::BTreeMap;
 
@@ -312,15 +314,11 @@ pub struct Simulation {
     pub fog: FogState,
     /// Static alliance graph derived from map house data.
     pub house_alliances: HouseAllianceMap,
-    pub(crate) next_stable_entity_id: u64,
-    /// Monotonic source for rebuilt CellClass-style object-list order.
-    /// `OccupancyGrid` itself is a skipped cache; each entity stores the last
-    /// order value assigned when it entered a cell list.
-    pub(crate) next_occupancy_enter_order: u64,
-    /// LogicClass active-object vector — the single authority on object order.
-    /// Tail-append on reveal, compacting-remove on conceal. Serialized verbatim.
-    #[serde(default)]
-    pub(crate) logic: LogicVector,
+    /// Object substrate — the active-object order plus the monotonic id and
+    /// enter-order counters. The single owner the lifecycle contract
+    /// (reveal/conceal/unlimbo/uninit) mutates; entity storage and the
+    /// occupancy grid migrate here in later stages.
+    pub(crate) substrate: ObjectSubstrate,
     /// Sound events produced during the current tick — drained by the app layer.
     #[serde(skip)]
     pub sound_events: Vec<SimSoundEvent>,
@@ -483,9 +481,7 @@ impl Simulation {
             seed,
             fog: FogState::default(),
             house_alliances: HouseAllianceMap::default(),
-            next_stable_entity_id: 1,
-            next_occupancy_enter_order: 1,
-            logic: LogicVector::new(),
+            substrate: ObjectSubstrate::new(),
             sound_events: Vec::new(),
             fire_events: Vec::new(),
             pending_smudge_requests: Vec::new(),
@@ -698,8 +694,8 @@ impl Simulation {
     }
 
     pub(crate) fn allocate_stable_id(&mut self) -> u64 {
-        let id = self.next_stable_entity_id;
-        self.next_stable_entity_id = self.next_stable_entity_id.saturating_add(1);
+        let id = self.substrate.next_stable_entity_id;
+        self.substrate.next_stable_entity_id = self.substrate.next_stable_entity_id.saturating_add(1);
         id
     }
 
@@ -709,7 +705,7 @@ impl Simulation {
             Some(e) if !e.in_logic_vector => e.in_logic_vector = true,
             _ => return, // absent, or already a member (idempotent)
         }
-        self.logic.push(stable_id);
+        self.substrate.logic.push(stable_id);
     }
 
     /// Native Conceal's remove: gate on flag → clear flag → compacting remove.
@@ -721,7 +717,7 @@ impl Simulation {
             e.in_logic_vector = false;
         }
         // Entity present-and-member, or already gone from store: scrub the order.
-        self.logic.remove(stable_id);
+        self.substrate.logic.remove(stable_id);
     }
 
     /// Native `ObjectClass::Reveal` append: an object becomes a live AI member.
@@ -759,8 +755,8 @@ impl Simulation {
         } else {
             None
         };
-        let order = self.next_occupancy_enter_order;
-        self.next_occupancy_enter_order = self.next_occupancy_enter_order.saturating_add(1);
+        let order = self.substrate.next_occupancy_enter_order;
+        self.substrate.next_occupancy_enter_order = self.substrate.next_occupancy_enter_order.saturating_add(1);
         entity.occupancy_enter_order = order;
         let insertion = CellListInsertion::from_category(entity.category);
         for (rx, ry) in cells {
@@ -784,7 +780,7 @@ impl Simulation {
     /// whose `in_logic_vector` is set. O(n); compiled out of release builds.
     #[cfg(debug_assertions)]
     pub(crate) fn debug_assert_logic_membership_consistent(&self) {
-        let order = self.logic.as_slice();
+        let order = self.substrate.logic.as_slice();
         let mut seen = std::collections::BTreeSet::new();
         for &id in order {
             debug_assert!(seen.insert(id), "logic order has duplicate id {id}");
@@ -805,7 +801,7 @@ impl Simulation {
     /// object registered or unregistered during its own pass. For native
     /// same-pass membership semantics use [`Self::for_each_live_object`].
     pub(crate) fn live_object_order_snapshot(&self) -> Vec<u64> {
-        self.logic.snapshot()
+        self.substrate.logic.snapshot()
     }
 
     /// Forward pass over the active-object order that RE-READS the live length
@@ -824,8 +820,8 @@ impl Simulation {
     /// slot, so the order never references a removed entity in practice.
     pub(crate) fn for_each_live_object<F: FnMut(&mut Simulation, u64)>(&mut self, mut body: F) {
         let mut i = 0;
-        while i < self.logic.len() {
-            let id = self.logic.as_slice()[i];
+        while i < self.substrate.logic.len() {
+            let id = self.substrate.logic.as_slice()[i];
             body(self, id);
             i += 1;
         }
@@ -839,7 +835,7 @@ impl Simulation {
                 e.in_logic_vector = true;
             }
         }
-        self.logic.set_order_for_test(order);
+        self.substrate.logic.set_order_for_test(order);
     }
 
     /// Increment owned count for the given owner when an entity spawns.
@@ -1039,7 +1035,7 @@ impl Simulation {
         for entity in self.entities.values_mut() {
             entity.in_logic_vector = false;
         }
-        for &id in &self.logic.snapshot() {
+        for &id in &self.substrate.logic.snapshot() {
             if let Some(entity) = self.entities.get_mut(id) {
                 entity.in_logic_vector = true;
             }
@@ -1592,7 +1588,7 @@ impl Simulation {
             &self.terrain_costs,
             &self.house_alliances,
             &mut self.occupancy,
-            &mut self.next_occupancy_enter_order,
+            &mut self.substrate.next_occupancy_enter_order,
             // bump/scatter + sub-cell — scenario stream. Direct field (not
             // scatter_rng()): this call co-borrows &mut self.entities/occupancy.
             &mut self.scenario_rng,

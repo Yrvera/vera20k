@@ -15,7 +15,9 @@ use crate::sim::world::Simulation;
 /// Bump this when the snapshot binary format changes in a breaking way.
 // Bumped 13 -> 14 for the serialized occupancy entry-order fields used to rebuild
 // the skipped CellClass-style occupancy cache after load.
-const SNAPSHOT_VERSION: u32 = 14;
+// Bumped 14 -> 15: active-vector order + id/enter-order counters relocated under
+// Simulation.substrate (ObjectSubstrate); bincode layout changed (state hash unchanged).
+const SNAPSHOT_VERSION: u32 = 15;
 
 /// Binary snapshot envelope — wraps the full `Simulation` state plus
 /// compatibility hashes for the map and rules that were active at save time.

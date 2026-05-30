@@ -114,8 +114,8 @@ fn build_sim() -> (Simulation, RuleSet, BTreeMap<(u16, u16), u8>) {
 fn spawn_engineer(sim: &mut Simulation, rx: u16, ry: u16) -> u64 {
     let owner = sim.interner.intern("Americans");
     let ty = sim.interner.intern("ENGI");
-    let id = sim.next_stable_entity_id;
-    sim.next_stable_entity_id += 1;
+    let id = sim.substrate.next_stable_entity_id;
+    sim.substrate.next_stable_entity_id += 1;
     let e = GameEntity::new(
         id,
         rx,
@@ -140,8 +140,8 @@ fn spawn_engineer(sim: &mut Simulation, rx: u16, ry: u16) -> u64 {
 fn spawn_seal(sim: &mut Simulation, rx: u16, ry: u16) -> u64 {
     let owner = sim.interner.intern("Americans");
     let ty = sim.interner.intern("GHOST");
-    let id = sim.next_stable_entity_id;
-    sim.next_stable_entity_id += 1;
+    let id = sim.substrate.next_stable_entity_id;
+    sim.substrate.next_stable_entity_id += 1;
     let e = GameEntity::new(
         id,
         rx,
@@ -166,8 +166,8 @@ fn spawn_seal(sim: &mut Simulation, rx: u16, ry: u16) -> u64 {
 fn spawn_cabhut(sim: &mut Simulation, rx: u16, ry: u16) -> u64 {
     let owner = sim.interner.intern("Soviets");
     let ty = sim.interner.intern("CABHUT");
-    let id = sim.next_stable_entity_id;
-    sim.next_stable_entity_id += 1;
+    let id = sim.substrate.next_stable_entity_id;
+    sim.substrate.next_stable_entity_id += 1;
     let e = GameEntity::new(
         id,
         rx,
