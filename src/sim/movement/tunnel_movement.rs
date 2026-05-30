@@ -26,8 +26,8 @@ use crate::sim::movement::facing_from_delta;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::occupancy::{CellListInsertion, OccupancyGrid};
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
-use crate::sim::pathfinding::{find_path_with_costs, PathGrid};
-use crate::util::fixed_math::{dt_from_tick_ms, int_distance_to_sim, SimFixed, SIM_ZERO};
+use crate::sim::pathfinding::{PathGrid, find_path_with_costs};
+use crate::util::fixed_math::{SIM_ZERO, SimFixed, dt_from_tick_ms, int_distance_to_sim};
 use crate::util::lepton::CELL_CENTER_LEPTON;
 
 /// Route length threshold: if A* path is longer than this, the unit burrows.
@@ -319,7 +319,7 @@ mod tests {
     use crate::sim::entity_store::EntityStore;
     use crate::sim::game_entity::GameEntity;
     use crate::sim::movement::locomotor::{GroundMovePhase, LocomotorState, MovementLayer};
-    use crate::util::fixed_math::{SimFixed, SIM_ONE, SIM_ZERO};
+    use crate::util::fixed_math::{SIM_ONE, SIM_ZERO, SimFixed};
 
     /// Make a minimal LocomotorState for testing.
     fn make_tunnel_loco() -> LocomotorState {

@@ -278,6 +278,7 @@ pub fn tick_movement_with_grid(
     interner: &mut crate::sim::intern::StringInterner,
 ) -> MovementTickStats {
     let mut sound_events: Vec<crate::sim::world::SimSoundEvent> = Vec::new();
+    let mut next_occupancy_enter_order = 1;
     tick_movement_with_grids(
         entities,
         &[],
@@ -285,6 +286,7 @@ pub fn tick_movement_with_grid(
         terrain_costs,
         alliances,
         occupancy,
+        &mut next_occupancy_enter_order,
         rng,
         tick_ms,
         sim_tick,

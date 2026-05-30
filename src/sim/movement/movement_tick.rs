@@ -787,6 +787,7 @@ pub fn tick_movement_with_grids(
     terrain_costs: &BTreeMap<SpeedType, TerrainCostGrid>,
     alliances: &HouseAllianceMap,
     occupancy: &mut OccupancyGrid,
+    next_occupancy_enter_order: &mut u64,
     rng: &mut SimRng,
     tick_ms: u32,
     sim_tick: u64,
@@ -1251,6 +1252,9 @@ pub fn tick_movement_with_grids(
                             }
                         }
                         // Update occupancy grid: move entity from old cell to new cell.
+                        let order = *next_occupancy_enter_order;
+                        *next_occupancy_enter_order = order.saturating_add(1);
+                        entity.occupancy_enter_order = order;
                         occupancy.move_entity(
                             old_rx,
                             old_ry,
@@ -1395,6 +1399,8 @@ pub fn tick_movement_with_grids(
                     mover_entity_block_map,
                     &live_building_entry_skips,
                     occupancy,
+                    &mut entity.occupancy_enter_order,
+                    next_occupancy_enter_order,
                     &mut stats,
                     &mut finished_entities,
                     rng,

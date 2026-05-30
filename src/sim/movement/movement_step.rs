@@ -906,6 +906,8 @@ pub(super) fn process_cell_crossings(
     mover_entity_block_map: Option<&crate::sim::pathfinding::LayeredEntityBlockMap>,
     live_building_entry_skips: &LiveBuildingEntrySkipMap,
     occupancy: &mut OccupancyGrid,
+    occupancy_enter_order: &mut u64,
+    next_occupancy_enter_order: &mut u64,
     stats: &mut MovementTickStats,
     finished_entities: &mut Vec<u64>,
     rng: &mut SimRng,
@@ -1193,6 +1195,9 @@ pub(super) fn process_cell_crossings(
         // Uses current sub_cell (from old cell). For infantry, reserve_destination
         // below may allocate a new sub-cell and correct it via update_sub_cell.
         let insertion = CellListInsertion::from_category(category);
+        let order = *next_occupancy_enter_order;
+        *next_occupancy_enter_order = order.saturating_add(1);
+        *occupancy_enter_order = order;
         occupancy.move_entity(
             old_rx,
             old_ry,

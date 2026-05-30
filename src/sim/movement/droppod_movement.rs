@@ -22,7 +22,7 @@
 use crate::sim::debug_event_log::DebugEventKind;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::movement::locomotor::OverrideKind;
-use crate::util::fixed_math::{dt_from_tick_ms, sim_to_f32, SimFixed, SIM_ZERO};
+use crate::util::fixed_math::{SIM_ZERO, SimFixed, dt_from_tick_ms, sim_to_f32};
 
 /// Initial drop altitude in leptons.
 const DROP_ALTITUDE: SimFixed = SimFixed::lit("1200");
@@ -354,10 +354,12 @@ mod tests {
             Some(DROP_ALTITUDE),
             "non-live-order IDs are not swept by stable-id fallback"
         );
-        assert!(live_entities
-            .get(2)
-            .and_then(|entity| entity.droppod_state.as_ref())
-            .is_some_and(|state| state.altitude < DROP_ALTITUDE));
+        assert!(
+            live_entities
+                .get(2)
+                .and_then(|entity| entity.droppod_state.as_ref())
+                .is_some_and(|state| state.altitude < DROP_ALTITUDE)
+        );
 
         let mut fallback_entities = EntityStore::new();
         fallback_entities.insert(droppod_unit(1));
@@ -365,13 +367,17 @@ mod tests {
 
         tick_droppod_movement(&mut fallback_entities, &[], 33, 0);
 
-        assert!(fallback_entities
-            .get(1)
-            .and_then(|entity| entity.droppod_state.as_ref())
-            .is_some_and(|state| state.altitude < DROP_ALTITUDE));
-        assert!(fallback_entities
-            .get(2)
-            .and_then(|entity| entity.droppod_state.as_ref())
-            .is_some_and(|state| state.altitude < DROP_ALTITUDE));
+        assert!(
+            fallback_entities
+                .get(1)
+                .and_then(|entity| entity.droppod_state.as_ref())
+                .is_some_and(|state| state.altitude < DROP_ALTITUDE)
+        );
+        assert!(
+            fallback_entities
+                .get(2)
+                .and_then(|entity| entity.droppod_state.as_ref())
+                .is_some_and(|state| state.altitude < DROP_ALTITUDE)
+        );
     }
 }

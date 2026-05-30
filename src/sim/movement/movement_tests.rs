@@ -758,6 +758,7 @@ fn two_movers_contest_same_cell_in_live_object_order_not_stable_id() {
         &terrain_costs,
         &Default::default(),
         &mut stable_order.occupancy,
+        &mut stable_order.next_occupancy_enter_order,
         &mut stable_order.scenario_rng,
         1000,
         0,
@@ -781,6 +782,7 @@ fn two_movers_contest_same_cell_in_live_object_order_not_stable_id() {
         &terrain_costs,
         &Default::default(),
         &mut live_order.occupancy,
+        &mut live_order.next_occupancy_enter_order,
         &mut live_order.scenario_rng,
         1000,
         0,
@@ -1725,6 +1727,7 @@ fn drive_accelerates_false_tick_stores_modified_fraction_without_mutating_speed(
     let mut rng = SimRng::new(0);
     let mut interner = test_interner();
     let mut sounds = Vec::new();
+    let mut next_occupancy_enter_order = 1;
     let terrain_costs: std::collections::BTreeMap<
         crate::rules::locomotor_type::SpeedType,
         crate::sim::pathfinding::terrain_cost::TerrainCostGrid,
@@ -1737,6 +1740,7 @@ fn drive_accelerates_false_tick_stores_modified_fraction_without_mutating_speed(
         &terrain_costs,
         &Default::default(),
         &mut occupancy,
+        &mut next_occupancy_enter_order,
         &mut rng,
         1000,
         0,
@@ -1799,6 +1803,7 @@ fn drive_accelerates_true_tick_ramps_fraction_before_movement_speed() {
     let mut rng = SimRng::new(0);
     let mut interner = test_interner();
     let mut sounds = Vec::new();
+    let mut next_occupancy_enter_order = 1;
     let terrain_costs: std::collections::BTreeMap<
         crate::rules::locomotor_type::SpeedType,
         crate::sim::pathfinding::terrain_cost::TerrainCostGrid,
@@ -1811,6 +1816,7 @@ fn drive_accelerates_true_tick_ramps_fraction_before_movement_speed() {
         &terrain_costs,
         &Default::default(),
         &mut occupancy,
+        &mut next_occupancy_enter_order,
         &mut rng,
         1000,
         0,

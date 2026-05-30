@@ -14,6 +14,7 @@
 use std::collections::BTreeMap;
 
 use crate::map::entities::EntityCategory;
+use crate::sim::game_entity::GameEntity;
 use crate::sim::movement::locomotor::MovementLayer;
 
 /// Single occupant entry in a cell.
@@ -109,7 +110,9 @@ impl OccupancyGrid {
     /// Used at map load (deserialization) and for debug validation.
     pub fn rebuild(entities: &crate::sim::entity_store::EntityStore) -> Self {
         let mut grid = Self::new();
-        for entity in entities.values() {
+        let mut ordered: Vec<&GameEntity> = entities.values().collect();
+        ordered.sort_by_key(|entity| (entity.occupancy_enter_order, entity.stable_id));
+        for entity in ordered {
             // Entities inside transports don't occupy cells.
             if entity.passenger_role.is_inside_transport() {
                 continue;
@@ -117,8 +120,6 @@ impl OccupancyGrid {
             let Some(layer) = entity.occupancy_list_layer() else {
                 continue;
             };
-            let rx = entity.position.rx;
-            let ry = entity.position.ry;
             let sid = entity.stable_id;
             let sub = if entity.category == EntityCategory::Infantry {
                 entity.sub_cell
@@ -126,10 +127,33 @@ impl OccupancyGrid {
                 None
             };
             let insertion = CellListInsertion::from_category(entity.category);
-            grid.add(rx, ry, sid, layer, sub, insertion);
+            for (rx, ry) in entity_occupancy_cells(entity) {
+                grid.add(rx, ry, sid, layer, sub, insertion);
+            }
         }
         grid
     }
+}
+
+pub(crate) fn entity_occupancy_cells(entity: &GameEntity) -> Vec<(u16, u16)> {
+    if entity.category != EntityCategory::Structure {
+        return vec![(entity.position.rx, entity.position.ry)];
+    }
+
+    let (w, h) = crate::rules::foundation::foundation_dimensions(&entity.foundation);
+    let mut cells = Vec::with_capacity(w as usize * h as usize);
+    for dx in 0..w {
+        for dy in 0..h {
+            let Some(rx) = entity.position.rx.checked_add(dx) else {
+                continue;
+            };
+            let Some(ry) = entity.position.ry.checked_add(dy) else {
+                continue;
+            };
+            cells.push((rx, ry));
+        }
+    }
+    cells
 }
 
 impl OccupancyGrid {
@@ -267,16 +291,10 @@ impl OccupancyGrid {
         }
         for (&cell, expected_occ) in &expected.cells {
             let actual_occ = self.cells.get(&cell).unwrap();
-            let mut expected_ids: Vec<u64> =
-                expected_occ.occupants.iter().map(|o| o.entity_id).collect();
-            let mut actual_ids: Vec<u64> =
-                actual_occ.occupants.iter().map(|o| o.entity_id).collect();
-            expected_ids.sort();
-            actual_ids.sort();
-            if expected_ids != actual_ids {
+            if actual_occ.occupants != expected_occ.occupants {
                 panic!(
                     "OccupancyGrid mismatch at cell ({},{}): expected {:?}, got {:?}",
-                    cell.0, cell.1, expected_ids, actual_ids,
+                    cell.0, cell.1, expected_occ.occupants, actual_occ.occupants,
                 );
             }
         }
@@ -739,5 +757,55 @@ mod tests {
             .map(|o| o.entity_id)
             .collect();
         assert_eq!(ids, vec![2, 1, 100]);
+    }
+
+    #[test]
+    fn rebuild_uses_cell_entry_order_not_stable_id_order() {
+        let mut entities = crate::sim::entity_store::EntityStore::new();
+        let mut structure =
+            crate::sim::game_entity::GameEntity::test_default(100, "GAPOWR", "Allies", 5, 5);
+        structure.category = EntityCategory::Structure;
+        structure.occupancy_enter_order = 1;
+        let mut older_mobile =
+            crate::sim::game_entity::GameEntity::test_default(50, "MTNK", "Allies", 5, 5);
+        older_mobile.category = EntityCategory::Unit;
+        older_mobile.occupancy_enter_order = 2;
+        let mut newer_mobile =
+            crate::sim::game_entity::GameEntity::test_default(10, "HTNK", "Allies", 5, 5);
+        newer_mobile.category = EntityCategory::Unit;
+        newer_mobile.occupancy_enter_order = 3;
+
+        entities.insert(newer_mobile);
+        entities.insert(older_mobile);
+        entities.insert(structure);
+
+        let grid = OccupancyGrid::rebuild(&entities);
+        let ids: Vec<u64> = grid
+            .get(5, 5)
+            .unwrap()
+            .iter_layer(MovementLayer::Ground)
+            .map(|o| o.entity_id)
+            .collect();
+        assert_eq!(ids, vec![10, 50, 100]);
+    }
+
+    #[test]
+    fn rebuild_expands_structure_foundation_cells() {
+        let mut entities = crate::sim::entity_store::EntityStore::new();
+        let mut structure =
+            crate::sim::game_entity::GameEntity::test_default(100, "GAPOWR", "Allies", 5, 5);
+        structure.category = EntityCategory::Structure;
+        structure.foundation = "2x2".to_string();
+        entities.insert(structure);
+
+        let grid = OccupancyGrid::rebuild(&entities);
+
+        for cell in [(5, 5), (5, 6), (6, 5), (6, 6)] {
+            assert!(
+                grid.contains_entity(cell.0, cell.1, 100),
+                "structure should occupy foundation cell {cell:?}"
+            );
+        }
+        assert_eq!(grid.occupied_cell_count(), 4);
     }
 }

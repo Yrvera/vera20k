@@ -61,6 +61,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_foundation() -> String {
+    "1x1".to_string()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum BuildingGatePhase {
     #[default]
@@ -148,6 +152,14 @@ pub struct GameEntity {
     pub type_ref: InternedId,
     /// Entity category: Unit, Infantry, Aircraft, or Structure.
     pub category: EntityCategory,
+    /// Rules foundation string for structure footprint occupancy.
+    ///
+    /// Native CellClass list membership is removed from every foundation cell
+    /// during ExitCell/Unlimbo-style lifecycle paths. Storing the parsed source
+    /// string here lets `Simulation::uninit` perform that cleanup without a
+    /// RuleSet borrow.
+    #[serde(default = "default_foundation")]
+    pub foundation: String,
     /// Veterancy level: 0 = rookie, 100 = veteran, 200 = elite.
     pub veterancy: u16,
     /// Fog-of-war sight range in cells.
@@ -170,6 +182,11 @@ pub struct GameEntity {
     /// rebuilt from the restored order on load (native does not round-trip it).
     #[serde(skip)]
     pub in_logic_vector: bool,
+    /// Monotonic order of the last successful insertion into a CellClass-style
+    /// object list. Serialized because `OccupancyGrid` is a rebuilt cache; this
+    /// is the authoritative fact needed to reconstruct its linked-list order.
+    #[serde(default)]
+    pub occupancy_enter_order: u64,
 
     // --- Optional subsystem components ---
     /// Locomotor state — present on movable entities (speed > 0 in rules.ini).
@@ -439,12 +456,14 @@ impl GameEntity {
             health,
             type_ref,
             category,
+            foundation: default_foundation(),
             veterancy,
             vision_range,
             is_voxel,
             selected: false,
             repairing: false,
             in_logic_vector: false,
+            occupancy_enter_order: stable_id,
             locomotor: None,
             movement_target: None,
             navigation: NavigationState::default(),
