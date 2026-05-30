@@ -1518,7 +1518,7 @@ mod tests {
         AirMovePhase, GroundMovePhase, LocomotorState, MovementLayer,
     };
     use crate::sim::occupancy::CellListInsertion;
-    use crate::util::fixed_math::{SimFixed, SIM_ZERO};
+    use crate::util::fixed_math::{SIM_ZERO, SimFixed};
 
     fn seed_bridge_cell(overlay_byte: u8) -> crate::sim::bridge_state::BridgeRuntimeCell {
         crate::sim::bridge_state::BridgeRuntimeCell {

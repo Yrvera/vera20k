@@ -325,15 +325,9 @@ fn ns_walker_triple_writes_bridgehead_neighbors() {
             assert!(binary_success);
             assert!(zones_dirty, "final collapse marks zones dirty");
             for pos in [(2u16, 1u16), (2, 2), (2, 3)] {
-                assert!(
-                    destroyed_cells.contains(&pos),
-                    "{pos:?} in destroyed_cells"
-                );
+                assert!(destroyed_cells.contains(&pos), "{pos:?} in destroyed_cells");
                 // BR-16: every triple cell the walker wrote is minimap-dirty.
-                assert!(
-                    radar_cells.contains(&pos),
-                    "{pos:?} in radar_cells"
-                );
+                assert!(radar_cells.contains(&pos), "{pos:?} in radar_cells");
             }
             assert_eq!(
                 set_bridge_direction.actions.len(),
@@ -1025,9 +1019,8 @@ fn make_body_driver_test_state() -> BridgeRuntimeState {
     //                  (5,5), so these are the wrappers' targets.
     //   (5,4)  → non-anchor body cell, anchor_span_id=1 — exercises the
     //                  "follow to anchor" path in the driver.
-    // Other slots (7,5), (8,5) are referenced by the AnchorSpan but not
-    // seeded — body driver doesn't read them, only the partner indirection
-    // and the perpendicular cells.
+    // Slots (7,5), (8,5) are seeded so collapse can clear the full
+    // AnchorSpan overlay-byte surface, not just the anchor.
     let mut state = BridgeRuntimeState::default();
 
     let healthy_template = BridgeRuntimeCell {
@@ -1066,6 +1059,17 @@ fn make_body_driver_test_state() -> BridgeRuntimeState {
             ..healthy_template
         },
     );
+
+    for rx in [7, 8] {
+        state.test_seed_cell(
+            rx,
+            5,
+            BridgeRuntimeCell {
+                role: BridgeCellRole::Body,
+                ..healthy_template
+            },
+        );
+    }
 
     // AnchorSpan registry entry. The driver looks up by anchor_span_id
     // and reads `span.anchor` to resolve. Slot positions beyond (5,5),
@@ -1248,6 +1252,42 @@ fn body_collapse_from_partial_a_clears_anchor_overlay() {
 #[test]
 fn body_collapse_from_partial_b_clears_anchor_overlay() {
     assert_collapse_clears_anchor_overlay(DamageState::PartialCollapseB);
+}
+
+#[test]
+fn bridge_collapse_clears_overlay_on_full_span() {
+    let mut state = make_body_driver_test_state();
+    state.cell_mut(5, 5).unwrap().damage_state = DamageState::Damaged;
+
+    let outcome = state.body_cell_advance_state(5, 5, true, &flood_fill_terrain(20, 20, 0));
+
+    let StateOutcome::Collapsed {
+        destroyed_cells,
+        radar_cells,
+        ..
+    } = outcome
+    else {
+        panic!("expected collapsed span");
+    };
+    for pos in [(5, 5), (6, 5), (7, 5), (8, 5), (4, 5)] {
+        let cell = state.cell(pos.0, pos.1).expect("seeded span cell");
+        assert_eq!(
+            cell.overlay_byte, 0xFF,
+            "span cell {pos:?} must clear the bridge overlay byte"
+        );
+        assert!(
+            BridgeRuntimeState::effective_render_state(cell).is_none(),
+            "span cell {pos:?} must render as collapsed"
+        );
+        assert!(
+            destroyed_cells.contains(&pos),
+            "destroyed_cells should include full span cell {pos:?}"
+        );
+        assert!(
+            radar_cells.contains(&pos),
+            "radar_cells should include full span cell {pos:?}"
+        );
+    }
 }
 
 #[test]

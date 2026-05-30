@@ -6,9 +6,9 @@
 
 use super::*;
 use crate::map::bridge_facts::{
-    BridgeAnchorRelation, BridgeRampKind, BridgeRampTile, BridgeStampFamily, BridgeStampSlot,
     BRIDGE_FLAG_ANCHOR_SELF, BRIDGE_FLAG_DESTROYED_OR_RAMP, BRIDGE_FLAG_DIRECTION_ZERO,
-    BRIDGE_FLAG_STRUCTURAL,
+    BRIDGE_FLAG_STRUCTURAL, BridgeAnchorRelation, BridgeRampKind, BridgeRampTile,
+    BridgeStampFamily, BridgeStampSlot,
 };
 use crate::map::entities::EntityCategory;
 use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};

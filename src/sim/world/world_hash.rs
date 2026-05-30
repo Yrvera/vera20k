@@ -46,6 +46,7 @@ impl Simulation {
         // This order is part of the hash contract and must never change.
         self.mapgen_rng.hash_state(&mut hasher);
         self.next_stable_entity_id.hash(&mut hasher);
+        self.next_occupancy_enter_order.hash(&mut hasher);
 
         // LogicClass active-object order — authoritative (drives reconciliation order).
         let order = self.logic.as_slice();
@@ -383,6 +384,7 @@ impl Simulation {
     fn hash_entities(&self, hasher: &mut impl Hasher) {
         for entity in self.entities.values() {
             entity.stable_id.hash(hasher);
+            entity.occupancy_enter_order.hash(hasher);
             entity.position.rx.hash(hasher);
             entity.position.ry.hash(hasher);
             entity.position.z.hash(hasher);
@@ -395,6 +397,7 @@ impl Simulation {
             entity.health.max.hash(hasher);
             entity.type_ref.hash(hasher);
             (entity.category as u8).hash(hasher);
+            entity.foundation.hash(hasher);
             entity.regular_crusher.hash(hasher);
             entity.drive_accelerates.hash(hasher);
             entity.building_damage_state_active.hash(hasher);
@@ -1339,7 +1342,7 @@ mod homing_state_hash_tests {
     use super::Simulation;
     use crate::sim::game_entity::GameEntity;
     use crate::sim::movement::homing_movement::{HomingPhase, HomingState};
-    use crate::util::fixed_math::{SimFixed, SIM_ONE, SIM_ZERO};
+    use crate::util::fixed_math::{SIM_ONE, SIM_ZERO, SimFixed};
 
     fn make_homing(yaw_bam: u16) -> HomingState {
         HomingState {

@@ -999,6 +999,7 @@ impl BridgeRuntimeState {
             }),
             0xDA..=0xDE => Some(DamageState::Damaged),
             0xE7 | 0xE8 => None,
+            OVERLAY_BYTE_NONE => None,
             _ => Some(cell.damage_state),
         };
         match state_from_overlay {
@@ -1010,6 +1011,20 @@ impl BridgeRuntimeState {
     pub fn is_bridge_walkable(&self, rx: u16, ry: u16) -> bool {
         self.cell(rx, ry)
             .is_some_and(|cell| cell.deck_present && Self::effective_render_state(cell).is_some())
+    }
+
+    fn clear_collapsed_span_overlay_bytes(&mut self, span: &AnchorSpan) -> Vec<(u16, u16)> {
+        let mut cleared = Vec::new();
+        for (_, pos) in span.iter_cells() {
+            if let Some(cell) = self.cell_mut(pos.0, pos.1) {
+                cell.damage_state = DamageState::Destroyed;
+                cell.overlay_byte = OVERLAY_BYTE_NONE;
+                if !cleared.contains(&pos) {
+                    cleared.push(pos);
+                }
+            }
+        }
+        cleared
     }
 
     /// Body-cell state-machine driver. Mirrors the body branch of binary
@@ -1125,19 +1140,9 @@ impl BridgeRuntimeState {
                     is_high_bridge,
                     terrain,
                 );
-                let mut destroyed = vec![anchor_pos];
-                if let Some(c) = self.cell_mut(anchor_pos.0, anchor_pos.1) {
-                    c.damage_state = DamageState::Destroyed;
-                    // Clear the collapsed anchor's visible overlay to the
-                    // no-overlay sentinel so it renders empty + stays
-                    // impassable; otherwise the stale loaded byte maps back
-                    // to a Healthy variant in `effective_render_state` and
-                    // `is_bridge_walkable` keeps returning true on the
-                    // collapsed cell.
-                    // TODO: full-span body-cell overlay clearing (every cell
-                    // in the collapsed span, not just the anchor) is deferred
-                    // to BR-10 / BR-15.
-                    c.overlay_byte = OVERLAY_BYTE_NONE;
+                let mut destroyed = self.clear_collapsed_span_overlay_bytes(&span_clone);
+                if !destroyed.contains(&anchor_pos) {
+                    destroyed.push(anchor_pos);
                 }
                 // Collect any perpendicular cells that hit collapse-final
                 // (became Destroyed via update_ramp_perpendicular).
@@ -1180,21 +1185,19 @@ impl BridgeRuntimeState {
                     is_high_bridge,
                     terrain,
                 );
-                if let Some(c) = self.cell_mut(anchor_pos.0, anchor_pos.1) {
-                    c.damage_state = DamageState::Destroyed;
-                    // Clear the collapsed anchor's visible overlay (see the
-                    // Damaged arm above). TODO: full-span clearing → BR-10/BR-15.
-                    c.overlay_byte = OVERLAY_BYTE_NONE;
+                let mut destroyed = self.clear_collapsed_span_overlay_bytes(&span_clone);
+                if !destroyed.contains(&anchor_pos) {
+                    destroyed.push(anchor_pos);
                 }
                 let sbd = crate::sim::bridge_specs::set_bridge_direction(&span_clone, false);
                 let adj = compute_adjacent_bridges_dirty(rx, ry, axis);
                 StateOutcome::Collapsed {
                     binary_success: true,
-                    destroyed_cells: vec![anchor_pos],
+                    destroyed_cells: destroyed.clone(),
                     set_bridge_direction: sbd,
                     adjacent_bridges_dirty: adj,
                     zones_dirty: true,
-                    radar_cells: vec![anchor_pos],
+                    radar_cells: destroyed,
                 }
             }
             DamageState::PartialCollapseB => {
@@ -1206,21 +1209,19 @@ impl BridgeRuntimeState {
                     is_high_bridge,
                     terrain,
                 );
-                if let Some(c) = self.cell_mut(anchor_pos.0, anchor_pos.1) {
-                    c.damage_state = DamageState::Destroyed;
-                    // Clear the collapsed anchor's visible overlay (see the
-                    // Damaged arm above). TODO: full-span clearing → BR-10/BR-15.
-                    c.overlay_byte = OVERLAY_BYTE_NONE;
+                let mut destroyed = self.clear_collapsed_span_overlay_bytes(&span_clone);
+                if !destroyed.contains(&anchor_pos) {
+                    destroyed.push(anchor_pos);
                 }
                 let sbd = crate::sim::bridge_specs::set_bridge_direction(&span_clone, false);
                 let adj = compute_adjacent_bridges_dirty(rx, ry, axis);
                 StateOutcome::Collapsed {
                     binary_success: true,
-                    destroyed_cells: vec![anchor_pos],
+                    destroyed_cells: destroyed.clone(),
                     set_bridge_direction: sbd,
                     adjacent_bridges_dirty: adj,
                     zones_dirty: true,
-                    radar_cells: vec![anchor_pos],
+                    radar_cells: destroyed,
                 }
             }
             DamageState::Destroyed => StateOutcome::NoChange,
@@ -1544,6 +1545,7 @@ impl BridgeRuntimeState {
                 actions.push((pos, slot, CellAction::BlowUpBridge));
                 if let Some(c) = self.cell_mut(pos.0, pos.1) {
                     c.damage_state = DamageState::Destroyed;
+                    c.overlay_byte = OVERLAY_BYTE_NONE;
                     if matches!(c.role, BridgeCellRole::Anchor | BridgeCellRole::Bridgehead) {
                         c.bridgehead_anchor_class = BridgeheadAnchorClass::AboutToFall;
                     }

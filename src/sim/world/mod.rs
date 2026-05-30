@@ -53,15 +53,15 @@ use crate::sim::movement::rocket_movement;
 use crate::sim::movement::teleport_movement;
 use crate::sim::movement::tunnel_movement;
 use crate::sim::movement::turret;
-use crate::sim::occupancy::OccupancyGrid;
+use crate::sim::occupancy::{CellListInsertion, OccupancyGrid, entity_occupancy_cells};
 use crate::sim::ore_growth;
-use crate::sim::overlay_grid::{cleanup_wall_neighbors, damage_wall_overlay, WallDamageEvent};
+use crate::sim::overlay_grid::{WallDamageEvent, cleanup_wall_neighbors, damage_wall_overlay};
 use crate::sim::particles::ParticleSystemStore;
 use crate::sim::passenger;
+use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
 use crate::sim::pathfinding::terrain_speed;
 use crate::sim::pathfinding::zone_map::ZoneGrid;
-use crate::sim::pathfinding::PathGrid;
 use crate::sim::power_system::{self, PowerState};
 use crate::sim::production::{self, ProductionState};
 use crate::sim::radar::{RadarEventQueue, RadarEventType};
@@ -313,6 +313,10 @@ pub struct Simulation {
     /// Static alliance graph derived from map house data.
     pub house_alliances: HouseAllianceMap,
     pub(crate) next_stable_entity_id: u64,
+    /// Monotonic source for rebuilt CellClass-style object-list order.
+    /// `OccupancyGrid` itself is a skipped cache; each entity stores the last
+    /// order value assigned when it entered a cell list.
+    pub(crate) next_occupancy_enter_order: u64,
     /// LogicClass active-object vector — the single authority on object order.
     /// Tail-append on reveal, compacting-remove on conceal. Serialized verbatim.
     #[serde(default)]
@@ -343,10 +347,6 @@ pub struct Simulation {
     /// Built once at map load — units look up their SpeedType to pick the right grid.
     #[serde(skip)]
     pub terrain_costs: BTreeMap<SpeedType, TerrainCostGrid>,
-    /// Flat per-cell height grid for height-based LOS (RevealByHeight).
-    /// Built from PathGrid; indexed by `ry * width + rx`.
-    #[serde(skip)]
-    pub(crate) vision_height_grid: Option<Vec<u8>>,
     /// Zone-based connectivity map for instant unreachability detection.
     /// Built from terrain data; rebuilt when buildings or bridges change.
     #[serde(skip)]
@@ -484,6 +484,7 @@ impl Simulation {
             fog: FogState::default(),
             house_alliances: HouseAllianceMap::default(),
             next_stable_entity_id: 1,
+            next_occupancy_enter_order: 1,
             logic: LogicVector::new(),
             sound_events: Vec::new(),
             fire_events: Vec::new(),
@@ -492,7 +493,6 @@ impl Simulation {
             ai_players: Vec::new(),
             houses: BTreeMap::new(),
             terrain_costs: BTreeMap::new(),
-            vision_height_grid: None,
             zone_grid: None,
             prev_path_grid: None,
             resolved_terrain: None,
@@ -743,6 +743,41 @@ impl Simulation {
         self.reveal(stable_id);
     }
 
+    pub(crate) fn add_entity_occupancy(&mut self, stable_id: u64) {
+        let Some(entity) = self.entities.get_mut(stable_id) else {
+            return;
+        };
+        if entity.passenger_role.is_inside_transport() {
+            return;
+        }
+        let Some(layer) = entity.occupancy_list_layer() else {
+            return;
+        };
+        let cells = entity_occupancy_cells(entity);
+        let sub_cell = if entity.category == EntityCategory::Infantry {
+            entity.sub_cell
+        } else {
+            None
+        };
+        let order = self.next_occupancy_enter_order;
+        self.next_occupancy_enter_order = self.next_occupancy_enter_order.saturating_add(1);
+        entity.occupancy_enter_order = order;
+        let insertion = CellListInsertion::from_category(entity.category);
+        for (rx, ry) in cells {
+            self.occupancy
+                .add(rx, ry, stable_id, layer, sub_cell, insertion);
+        }
+    }
+
+    pub(crate) fn remove_entity_occupancy(&mut self, stable_id: u64) {
+        let Some(entity) = self.entities.get(stable_id) else {
+            return;
+        };
+        for (rx, ry) in entity_occupancy_cells(entity) {
+            self.occupancy.remove(rx, ry, stable_id);
+        }
+    }
+
     /// Debug-only invariant: the active order and the per-entity membership flag
     /// are two views of one set and must never disagree. The order must be
     /// duplicate-free, and its length must equal the number of in-store entities
@@ -840,7 +875,7 @@ impl Simulation {
     /// Despawn an entity by stable_id, removing it from EntityStore.
     /// Decrements owned count if the entity was not already dying (combat deaths
     /// are decremented when dying is first set, not at physical removal).
-    /// Also removes the entity from the occupancy grid (origin cell only).
+    /// Also removes the entity from every occupied foundation cell.
     pub(crate) fn uninit(&mut self, stable_id: u64) {
         // Gather entity data before any mutable borrows.
         let entity_info = self.entities.get(stable_id).map(|e| {
@@ -848,18 +883,13 @@ impl Simulation {
                 e.dying,
                 self.interner.resolve(e.owner).to_string(),
                 e.category,
-                e.position.rx,
-                e.position.ry,
             )
         });
-        if let Some((dying, owner_str, category, rx, ry)) = entity_info {
+        if let Some((dying, owner_str, category)) = entity_info {
             if !dying {
                 self.decrement_owned_count(&owner_str, category);
             }
-            // Remove from occupancy grid (origin cell only; multi-cell structures
-            // should have their foundation cells removed by the caller via
-            // remove_entity_occupancy before calling despawn_entity).
-            self.occupancy.remove(rx, ry, stable_id);
+            self.remove_entity_occupancy(stable_id);
         }
         self.clear_radio_contacts_for(stable_id);
         self.conceal(stable_id); // leave the active order before freeing the slot
@@ -1006,25 +1036,14 @@ impl Simulation {
     /// is authoritative. Idempotent — safe to call after any load. Standalone (no
     /// heavy load-arg dependency) so save/load membership is unit-testable.
     pub(crate) fn rebuild_logic_membership(&mut self) {
+        for entity in self.entities.values_mut() {
+            entity.in_logic_vector = false;
+        }
         for &id in &self.logic.snapshot() {
             if let Some(entity) = self.entities.get_mut(id) {
                 entity.in_logic_vector = true;
             }
         }
-    }
-
-    pub fn refresh_vision_heights(&mut self, grid: &PathGrid) {
-        let w = grid.width() as usize;
-        let h = grid.height() as usize;
-        let mut heights = vec![0u8; w * h];
-        for y in 0..grid.height() {
-            for x in 0..grid.width() {
-                if let Some(cell) = grid.cell(x, y) {
-                    heights[y as usize * w + x as usize] = cell.ground_level;
-                }
-            }
-        }
-        self.vision_height_grid = Some(heights);
     }
 
     /// Rebuild the zone connectivity map from the current PathGrid and terrain costs.
@@ -1206,13 +1225,19 @@ impl Simulation {
         // Recompute visibility in-place: clears FLAG_VISIBLE on existing grids
         // (preserving FLAG_REVEALED) then re-reveals from entity positions.
         // No allocation or merge_revealed_from pass needed.
+        let height_grid = if config.reveal_by_height {
+            path_grid.map(PathGrid::ground_height_grid)
+        } else {
+            None
+        };
+
         vision::recompute_owner_visibility_in_place(
             &mut self.fog,
             &self.entities,
             path_grid,
             &self.house_alliances,
             config,
-            self.vision_height_grid.as_deref(),
+            height_grid.as_deref(),
             &self.interner,
         );
 
@@ -1511,8 +1536,6 @@ impl Simulation {
 
         // Debug-mode safety net: rebuild occupancy from scratch and compare
         // with the persistent grid. Catches missed add/remove calls.
-        // Note: rebuild() only registers single cells (no multi-cell foundations),
-        // so this check is conservative — extra cells from foundations are expected.
         // Enable via OCCUPANCY_DEBUG=1 environment variable for focused debugging.
         #[cfg(debug_assertions)]
         if std::env::var("OCCUPANCY_DEBUG").is_ok() {
@@ -1569,6 +1592,7 @@ impl Simulation {
             &self.terrain_costs,
             &self.house_alliances,
             &mut self.occupancy,
+            &mut self.next_occupancy_enter_order,
             // bump/scatter + sub-cell — scenario stream. Direct field (not
             // scatter_rng()): this call co-borrows &mut self.entities/occupancy.
             &mut self.scenario_rng,
@@ -1744,9 +1768,9 @@ impl Simulation {
         let vision_config = vision::VisionConfig {
             veteran_sight_bonus: rules.map_or(0, |r| r.general.veteran_sight),
             leptons_per_sight_increase: rules.map_or(0, |r| r.general.leptons_per_sight_increase),
-            // Temporarily disabled: vision_height_grid is now populated for shroud
-            // rendering, but enabling RevealByHeight here would also flip on cliff LoS
-            // — a gameplay change shipped separately. Follow-up PR re-enables.
+            // Temporarily disabled: shroud rendering derives heights from PathGrid,
+            // but enabling RevealByHeight here would also flip on cliff LoS.
+            // Follow-up PR re-enables after gameplay parity review.
             reveal_by_height: false,
         };
         self.refresh_fog(path_grid, &vision_config, rules);
@@ -1833,13 +1857,35 @@ impl Simulation {
                 &self.interner,
             );
             destroyed_structure |= combat_result.structure_destroyed;
+            let combat_dead_infos: Vec<(InternedId, EntityCategory)> = combat_result
+                .despawned_ids
+                .iter()
+                .filter_map(|&dead_id| {
+                    self.entities
+                        .get(dead_id)
+                        .map(|entity| (entity.owner, entity.category))
+                })
+                .collect();
             // Decrement owned counts for entities killed in combat (dying=true set this tick).
+            for &(owner_id, category) in &combat_dead_infos {
+                let owner_str = self.interner.resolve(owner_id).to_string();
+                self.decrement_owned_count(&owner_str, category);
+            }
             for &dead_id in &combat_result.despawned_ids {
-                if let Some(entity) = self.entities.get(dead_id) {
-                    let owner_str = self.interner.resolve(entity.owner).to_string();
-                    let category = entity.category;
-                    self.decrement_owned_count(&owner_str, category);
+                self.unregister_live_object(dead_id);
+            }
+            let mut sw_refresh_owners: Vec<InternedId> = Vec::new();
+            if self.game_options.super_weapons && combat_result.structure_destroyed {
+                for &(owner_id, category) in &combat_dead_infos {
+                    if category == EntityCategory::Structure
+                        && !sw_refresh_owners.contains(&owner_id)
+                    {
+                        sw_refresh_owners.push(owner_id);
+                    }
                 }
+            }
+            for &dead_id in &combat_result.immediate_uninit_ids {
+                self.uninit(dead_id);
             }
             // Bridge damage: 4-path dispatcher + cascade
             // (kill ground occupants → DropIn deck → debris → rim refresh
@@ -1913,16 +1959,6 @@ impl Simulation {
             }
             // Refresh superweapon grants for owners who lost structures in combat.
             if self.game_options.super_weapons && combat_result.structure_destroyed {
-                let mut sw_refresh_owners: Vec<InternedId> = Vec::new();
-                for &dead_id in &combat_result.despawned_ids {
-                    if let Some(entity) = self.entities.get(dead_id) {
-                        if entity.category == crate::map::entities::EntityCategory::Structure
-                            && !sw_refresh_owners.contains(&entity.owner)
-                        {
-                            sw_refresh_owners.push(entity.owner);
-                        }
-                    }
-                }
                 for owner_id in sw_refresh_owners {
                     crate::sim::superweapon::refresh_super_weapons_for_owner(self, rules, owner_id);
                 }

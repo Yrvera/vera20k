@@ -26,7 +26,7 @@ use crate::sim::movement::tunnel_movement;
 use crate::sim::passenger;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::production;
-use crate::util::fixed_math::{ra2_speed_to_leptons_per_second, SimFixed, SIM_ZERO};
+use crate::util::fixed_math::{SIM_ZERO, SimFixed, ra2_speed_to_leptons_per_second};
 
 /// Read-only snapshot of entity + rules data needed for issuing movement commands.
 /// Captured once to avoid repeated entity lookups and type_ref clones.

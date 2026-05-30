@@ -18,7 +18,7 @@ use crate::sim::components::MovementTarget;
 use crate::sim::game_entity::GameEntity;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::pathfinding::PathGrid;
-use crate::util::fixed_math::{SimFixed, SIM_ZERO};
+use crate::util::fixed_math::{SIM_ZERO, SimFixed};
 
 fn make_test_entity(type_id: &str, category: EntityCategory) -> MapEntity {
     MapEntity {
@@ -37,6 +37,46 @@ fn make_test_entity(type_id: &str, category: EntityCategory) -> MapEntity {
 
 fn empty_heights() -> BTreeMap<(u16, u16), u8> {
     BTreeMap::new()
+}
+
+#[test]
+fn uninit_removes_all_structure_foundation_cells() {
+    let mut sim = Simulation::new();
+    let mut structure = GameEntity::test_default(10, "GAPOWR", "Americans", 4, 5);
+    structure.category = EntityCategory::Structure;
+    structure.foundation = "2x2".to_string();
+    sim.entities.insert(structure);
+    sim.reveal(10);
+    sim.add_entity_occupancy(10);
+
+    for cell in [(4, 5), (4, 6), (5, 5), (5, 6)] {
+        assert!(sim.occupancy.contains_entity(cell.0, cell.1, 10));
+    }
+
+    sim.uninit(10);
+
+    for cell in [(4, 5), (4, 6), (5, 5), (5, 6)] {
+        assert!(
+            !sim.occupancy.contains_entity(cell.0, cell.1, 10),
+            "uninit should clear foundation cell {cell:?}"
+        );
+    }
+    assert!(sim.entities.get(10).is_none());
+    sim.debug_assert_logic_membership_consistent();
+}
+
+#[test]
+fn unregister_live_object_scrubs_removed_store_id() {
+    let mut sim = Simulation::new();
+    let entity = GameEntity::test_default(10, "HTNK", "Americans", 4, 5);
+    sim.entities.insert(entity);
+    sim.reveal(10);
+    sim.entities.remove(10);
+
+    sim.unregister_live_object(10);
+
+    sim.debug_assert_logic_membership_consistent();
+    assert!(sim.live_object_order_snapshot().is_empty());
 }
 
 fn insert_house_with_counts(
@@ -2255,11 +2295,12 @@ fn test_execute_tick_delay_blocks_early_execution() {
         None,
         33,
     );
-    assert!(sim
-        .entities
-        .get(1)
-        .and_then(|e| e.movement_target.as_ref())
-        .is_none());
+    assert!(
+        sim.entities
+            .get(1)
+            .and_then(|e| e.movement_target.as_ref())
+            .is_none()
+    );
 
     let _ = sim.advance_tick(
         &[delayed.clone()],
@@ -2269,18 +2310,20 @@ fn test_execute_tick_delay_blocks_early_execution() {
         None,
         33,
     );
-    assert!(sim
-        .entities
-        .get(1)
-        .and_then(|e| e.movement_target.as_ref())
-        .is_none());
+    assert!(
+        sim.entities
+            .get(1)
+            .and_then(|e| e.movement_target.as_ref())
+            .is_none()
+    );
 
     let _ = sim.advance_tick(&[delayed], None, &empty_heights(), Some(&grid), None, 33);
-    assert!(sim
-        .entities
-        .get(1)
-        .and_then(|e| e.movement_target.as_ref())
-        .is_some());
+    assert!(
+        sim.entities
+            .get(1)
+            .and_then(|e| e.movement_target.as_ref())
+            .is_some()
+    );
 }
 
 #[test]
@@ -2424,10 +2467,11 @@ fn test_move_command_rejects_non_owned_entity() {
     );
 
     let _ = sim.advance_tick(&[cmd], None, &empty_heights(), Some(&grid), None, 33);
-    assert!(sim
-        .entities
-        .get(1)
-        .is_some_and(|e| e.movement_target.is_none()));
+    assert!(
+        sim.entities
+            .get(1)
+            .is_some_and(|e| e.movement_target.is_none())
+    );
 }
 
 #[test]
@@ -2927,7 +2971,7 @@ fn test_undeploy_conyard_spawns_mcv() {
 }
 
 #[test]
-fn refresh_vision_heights_copies_path_cell_ground_levels() {
+fn level_has_single_source_of_truth_for_vision_height_derivation() {
     use crate::map::resolved_terrain::ResolvedTerrainCell;
     use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
 
@@ -2995,18 +3039,7 @@ fn refresh_vision_heights_copies_path_cell_ground_levels() {
     let terrain = ResolvedTerrainGrid::from_cells(width, height, cells);
     let grid = PathGrid::from_resolved_terrain(&terrain);
 
-    let mut sim = Simulation::new();
-    assert!(
-        sim.vision_height_grid.is_none(),
-        "fresh sim should have no height grid"
-    );
-
-    sim.refresh_vision_heights(&grid);
-
-    let heights = sim
-        .vision_height_grid
-        .as_ref()
-        .expect("refresh_vision_heights must populate the grid");
+    let heights = grid.ground_height_grid();
     assert_eq!(heights.len(), (width as usize) * (height as usize));
 
     // Index = ry * width + rx; the elevated cell at (1,1) must report level 4.
