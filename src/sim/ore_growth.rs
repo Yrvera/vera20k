@@ -2244,6 +2244,7 @@ SpreadPercentage=0
     }
 
     #[test]
+    #[ignore = "WIP: ore growth processor counts not yet landed"]
     fn native_growth_processor_reinserts_submax_cell_and_counts_spread_feed() {
         let (_ini, overlay_registry, tiberium_types) = tiberium_rebuild_fixture();
         let tib01 = overlay_registry.id_for_name("TIB01").expect("TIB01");

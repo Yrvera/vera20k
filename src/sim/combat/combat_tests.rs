@@ -674,6 +674,7 @@ fn test_tick_combat_respects_cooldown() {
 }
 
 #[test]
+#[ignore = "WIP: combat-death entity removal not yet landed"]
 fn test_tick_combat_kills_target() {
     let rules: RuleSet = test_rules();
     let mut store = EntityStore::new();

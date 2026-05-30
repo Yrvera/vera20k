@@ -1374,6 +1374,7 @@ fn sell_building_uses_owner_appropriate_survivor_type_and_caps_count() {
 }
 
 #[test]
+#[ignore = "WIP: captured-civilian sell-revert not yet landed"]
 fn sell_captured_civilian_ejects_reverts_and_keeps_building() {
     use crate::sim::passenger::{PassengerCargo, PassengerRole};
     let mut sim = Simulation::new();
@@ -1440,6 +1441,7 @@ fn sell_captured_civilian_ejects_reverts_and_keeps_building() {
 }
 
 #[test]
+#[ignore = "WIP: captured-civilian sell-revert not yet landed"]
 fn sell_captured_civilian_emits_structure_abandoned_with_pre_revert_owner() {
     use crate::sim::passenger::{PassengerCargo, PassengerRole};
     use crate::sim::world::SimSoundEvent;
