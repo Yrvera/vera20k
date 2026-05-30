@@ -43,6 +43,10 @@ fn empty_heights() -> BTreeMap<(u16, u16), u8> {
 fn uninit_removes_all_structure_foundation_cells() {
     let mut sim = Simulation::new();
     let mut structure = GameEntity::test_default(10, "GAPOWR", "Americans", 4, 5);
+    // Entity ids must come from the Simulation's own interner — test_default interns
+    // into the thread-local test interner, which sim code never resolves against.
+    structure.owner = sim.interner.intern("Americans");
+    structure.type_ref = sim.interner.intern("GAPOWR");
     structure.category = EntityCategory::Structure;
     structure.foundation = "2x2".to_string();
     sim.entities.insert(structure);

@@ -610,6 +610,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "diagnostic asset dump; run explicitly when inspecting PROGBARM palette indices"]
     fn zz_dump_progbarm_frame0_indices() {
         let config = match crate::util::config::GameConfig::load() {
             Ok(config) => config,
