@@ -910,6 +910,22 @@ impl App {
             state.skirmish_settings.selected_map_idx = legacy_idx;
         }
         state.skirmish_preview_texture = None;
+
+        // Native 0x4B2: setting the right-panel game-type / map-label text
+        // restarts that static's reveal from the first character. The title is
+        // not re-revealed during ordinary setup, so leave it alone. Restart even
+        // if a prior reveal had already completed (native restarts regardless).
+        let now = Instant::now();
+        let (_title, game_type, map_label) =
+            crate::app_skirmish_shell_render::skirmish_right_panel_label_strings(state);
+        state
+            .skirmish_shell_state
+            .game_type_reveal
+            .start(&game_type, now);
+        state
+            .skirmish_shell_state
+            .map_label_reveal
+            .start(&map_label, now);
     }
 
     fn handle_choose_map_modal_mouse_down(state: &mut AppState) -> bool {

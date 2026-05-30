@@ -494,3 +494,23 @@ pub fn update_player_name_scroll_for_caret(
 pub fn handle_player_name_tab(state: &mut SkirmishShellState) -> bool {
     blur_player_name_edit(state)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn map_change_restarts_map_label_reveal_from_count_one() {
+        let now = Instant::now();
+        let mut s = SkirmishShellState::default();
+        s.map_label_reveal.start("OLD MAP", now);
+        for i in 1..=4 {
+            s.map_label_reveal.advance(now + Duration::from_millis(30 * i));
+        }
+        // Selecting a new map restarts the reveal with the new text (the 0x4B2
+        // text-update path the use-map handler drives), from the first character.
+        s.map_label_reveal.start("NEW MAP", now + Duration::from_millis(500));
+        assert_eq!(s.map_label_reveal.window().unwrap().count, 1);
+    }
+}
