@@ -165,7 +165,7 @@ mod tests {
     fn hit_test_uses_owner_draw_button_identity() {
         let layout = compute_layout(800, 600);
         assert_eq!(
-            hit_test_owner_draw_button(&layout, 639, 204),
+            hit_test_owner_draw_button(&layout, 700, 210),
             Some(MainMenuControlId::SinglePlayer0x683)
         );
         assert_eq!(
@@ -186,16 +186,16 @@ mod tests {
     }
 
     #[test]
-    fn client_rect_edge_excludes_old_tile_overhang() {
-        // The button is now the 162x37 DLU client rect (x=635..797, y=203..240
-        // for SinglePlayer), not the 168x42 chrome tile (x=632..800,
-        // y=199..241). A click in the old tile's left/top overhang must miss.
+    fn button_rect_is_flush_right_sdbtnanm_cell() {
+        // The hit rect is now the 156x42 SDBTNANM cell flush to the panel's right
+        // edge (x=644..800, y=199..241), not the old 162x37 DLU client at x=635.
+        // The 12 px on the column's left (632..644) is no longer clickable.
         let layout = compute_layout(800, 600);
-        // x=633 is inside the old 632-wide tile but left of the 635 client.
-        assert_eq!(hit_test_owner_draw_button(&layout, 633, 210), None);
-        // y=200 is inside the old tile top but above the 203 client top.
-        assert_eq!(hit_test_owner_draw_button(&layout, 700, 200), None);
-        // Inside the 162x37 client rect still hits.
+        // Left of the flush-right cell (inside the old 168 tile) now misses.
+        assert_eq!(hit_test_owner_draw_button(&layout, 640, 210), None);
+        // Above the cell top (199) misses; the top row is inclusive.
+        assert_eq!(hit_test_owner_draw_button(&layout, 700, 198), None);
+        // Inside the 156x42 cell still hits.
         assert_eq!(
             hit_test_owner_draw_button(&layout, 700, 210),
             Some(MainMenuControlId::SinglePlayer0x683)
@@ -206,14 +206,14 @@ mod tests {
     fn mouse_release_must_match_pressed_button() {
         let layout = compute_layout(800, 600);
         let mut state = MainMenuShellState::default();
-        mouse_down(&mut state, &layout, 639, 204);
+        mouse_down(&mut state, &layout, 700, 210);
         assert_eq!(
-            mouse_up(&mut state, &layout, 639, 247),
+            mouse_up(&mut state, &layout, 700, 250),
             MainMenuShellAction::None
         );
-        mouse_down(&mut state, &layout, 639, 204);
+        mouse_down(&mut state, &layout, 700, 210);
         assert_eq!(
-            mouse_up(&mut state, &layout, 639, 204),
+            mouse_up(&mut state, &layout, 700, 210),
             MainMenuShellAction::SinglePlayer
         );
     }

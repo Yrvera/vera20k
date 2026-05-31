@@ -727,7 +727,7 @@ mod tests {
     fn button_shp_draws_native_size_at_rect_top_left() {
         let frame = fake_entry(156.0, 42.0);
         let mut out = Vec::new();
-        let rect = RectPx::new(635, 203, 162, 37);
+        let rect = RectPx::new(644, 199, 156, 42);
         // Mirror push_button_shp's geometry directly (avoids needing an atlas):
         // native pixel size, top-left position, +2 px Y sink when pressed.
         let x = rect.x as f32;
@@ -742,7 +742,7 @@ mod tests {
         );
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].size, [156.0, 42.0]);
-        assert_eq!(out[0].position, [635.0, 203.0]);
+        assert_eq!(out[0].position, [644.0, 199.0]);
 
         out.clear();
         let y_pressed = rect.y as f32 + pressed_content_offset_y(true);
@@ -756,7 +756,7 @@ mod tests {
         );
         // Pressed: native size, same X, +2 px Y, no horizontal shift.
         assert_eq!(out[0].size, [156.0, 42.0]);
-        assert_eq!(out[0].position, [635.0, 205.0]);
+        assert_eq!(out[0].position, [644.0, 201.0]);
     }
 
     #[test]

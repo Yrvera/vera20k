@@ -90,6 +90,13 @@ pub const RIGHT_PANEL_TILE_COUNT_BASE: i32 = 9;
 pub const RIGHT_PANEL_BOTTOM_H: i32 = 23;
 pub const LOWER_STRIP_H: i32 = 32;
 
+/// SDBTNANM.SHP button-cell dimensions. The five non-Exit 0xE2 button windows
+/// are resized to this cell (distinct from the dialog-template 162x37 client
+/// rect). The cell height equals the SDBTNBKGD tile height (42) but is named
+/// separately because it is a different asset's canvas.
+pub const SDBTNANM_CELL_W: i32 = 156;
+pub const SDBTNANM_CELL_H: i32 = 42;
+
 /// Owner-draw button client rect, in dialog DLU. The dialog template defines
 /// each main-menu button as 108x23 DLU, which converts to 162x37 px at the
 /// 800x600 base (108*6/4 = 162; 23*13/8 = 37). This is the bevel/hit rect —
@@ -271,23 +278,47 @@ fn title_rect(screen_w: i32, right_panel: RightPanelRects) -> RectPx {
     RectPx::new(anchored.x, anchored.y + 7, anchored.w, anchored.h + 1)
 }
 
-/// Build the owner-draw button client rect from its DLU Y position.
+/// Right-anchored SDBTNANM-cell rect for the five non-Exit 0xE2 buttons.
 ///
-/// The button bevel/hit rect is the dialog template's 108x23 DLU client rect
-/// (162x37 px), NOT the 168x42 SDBTNBKGD chrome tile. It is horizontally
-/// inset within the 168 px sidebar column by `(168 - 162) / 2 = 3` px from
-/// the panel's right edge, and anchored vertically at the DLU-derived top
-/// (no tile snapping). The chrome tiles continue to draw at the full 168x42
-/// behind these client rects.
-fn button_rect_for_dlu_y(dlu_y: i32, right_panel: RightPanelRects) -> RectPx {
-    let w = mul_div_round(BUTTON_CLIENT_W_DLU, BASE_X, 4);
-    let h = mul_div_round(BUTTON_CLIENT_H_DLU, BASE_Y, 8);
-    let inset = (RIGHT_PANEL_WIDTH - w) / 2;
-    // right_panel.top.x already carries the oversized-screen left margin, so
-    // inset from its left edge reproduces the right-anchored 3 px sidebar gap.
-    let x = right_panel.top.x + inset;
-    let y = mul_div_round(dlu_y, BASE_Y, 8) + right_panel.top.y;
-    RectPx::new(x, y, w, h)
+/// These button windows are resized to the SDBTNANM.SHP cell (156x42),
+/// right-anchored flush to the panel's right edge (x = panel_left + 168 - 156),
+/// with the DLU-derived top snapped to the nearest 42-px SDBTNANM row anchored
+/// at the button-column top (the SDBTNBKGD tile origin). This replaces the
+/// dialog-template 162x37 client rect and its (168-162)/2 inset. All five
+/// buttons sit below the column top, so the snap delta is non-negative.
+fn sdbtnanm_button_rect(dlu_y: i32, right_panel: RightPanelRects) -> RectPx {
+    let dlu_top = mul_div_round(dlu_y, BASE_Y, 8) + right_panel.top.y;
+    let panel_y = right_panel.tile.y; // top of the SDBTNBKGD button column
+    let row_h = RIGHT_PANEL_TILE_H; // 42-px SDBTNANM row pitch
+    // Round (dlu_top - panel_y) to the nearest row, round-half-up: round up when
+    // the distance to the next row is <= the distance from the current row.
+    let delta = (dlu_top - panel_y).max(0);
+    let q = delta / row_h;
+    let rem = delta % row_h;
+    let q = if row_h - rem <= rem { q + 1 } else { q };
+    let y = q * row_h + panel_y;
+    let x = right_panel.top.x + (RIGHT_PANEL_WIDTH - SDBTNANM_CELL_W);
+    RectPx::new(x, y, SDBTNANM_CELL_W, SDBTNANM_CELL_H)
+}
+
+/// Exit button (0x3ee) keeps its raw dialog-template rect: it is NOT resized to
+/// the SDBTNANM cell and gets no sidebar inset or grid snap. Raw DLU
+/// (425,330,108,23) -> (638,536,162,37), offset by the shell centering margins
+/// on letterboxed screens (>1023w / >767h), matching how the rest of the shell
+/// block is centered.
+fn exit_button_rect(screen_w: i32, screen_h: i32) -> RectPx {
+    let base = dlu_rect(425, 330, BUTTON_CLIENT_W_DLU, BUTTON_CLIENT_H_DLU); // (638, 536, 162, 37)
+    let left_margin = if screen_w > 1023 {
+        (screen_w - SHELL_BASE_W) / 2
+    } else {
+        0
+    };
+    let top_margin = if screen_h > 767 {
+        (screen_h - SHELL_BASE_H) / 2
+    } else {
+        0
+    };
+    RectPx::new(base.x + left_margin, base.y + top_margin, base.w, base.h)
 }
 
 pub fn compute_layout(screen_w: u32, screen_h: u32) -> MainMenuShellLayout {
@@ -315,27 +346,27 @@ pub fn compute_layout(screen_w: u32, screen_h: u32) -> MainMenuShellLayout {
         buttons: [
             MainMenuButtonRect {
                 id: MainMenuControlId::SinglePlayer0x683,
-                rect: button_rect_for_dlu_y(125, right_panel),
+                rect: sdbtnanm_button_rect(125, right_panel),
             },
             MainMenuButtonRect {
                 id: MainMenuControlId::WwOnline0x684,
-                rect: button_rect_for_dlu_y(152, right_panel),
+                rect: sdbtnanm_button_rect(152, right_panel),
             },
             MainMenuButtonRect {
                 id: MainMenuControlId::Network0x578,
-                rect: button_rect_for_dlu_y(179, right_panel),
+                rect: sdbtnanm_button_rect(179, right_panel),
             },
             MainMenuButtonRect {
                 id: MainMenuControlId::MoviesAndCredits0x686,
-                rect: button_rect_for_dlu_y(206, right_panel),
+                rect: sdbtnanm_button_rect(206, right_panel),
             },
             MainMenuButtonRect {
                 id: MainMenuControlId::Options0x55c,
-                rect: button_rect_for_dlu_y(233, right_panel),
+                rect: sdbtnanm_button_rect(233, right_panel),
             },
             MainMenuButtonRect {
                 id: MainMenuControlId::ExitGame0x3ee,
-                rect: button_rect_for_dlu_y(330, right_panel),
+                rect: exit_button_rect(screen_w, screen_h),
             },
         ],
         pressed_content_offset_x: 1,
@@ -395,14 +426,26 @@ mod tests {
 
     #[test]
     fn key_rects_match_800x600() {
-        // Buttons are the 162x37 DLU client rect (not the 168x42 tile),
-        // inset 3 px from the 168 panel column (x = 635), anchored at the
-        // DLU-derived Y (SP dlu_y=125 → 203; Exit dlu_y=330 → 536).
+        // Five non-Exit buttons are SDBTNANM cells: 156x42, flush-right at x=644
+        // (632 panel left + 168 - 156), grid-snapped Y. Exit is the special case:
+        // raw template 162x37 at x=638, y=536.
         let layout = compute_layout(800, 600);
         assert_eq!(layout.movie_base, MainMenuMovieBase::Ra2tsL);
         assert_eq!(layout.movie, RectPx::new(0, 0, 632, 570));
-        assert_eq!(layout.buttons[0].rect, RectPx::new(635, 203, 162, 37));
-        assert_eq!(layout.buttons[5].rect, RectPx::new(635, 536, 162, 37));
+        assert_eq!(layout.buttons[0].rect, RectPx::new(644, 199, 156, 42)); // SP
+        assert_eq!(layout.buttons[5].rect, RectPx::new(638, 536, 162, 37)); // Exit
+    }
+
+    #[test]
+    fn buttons_grid_snap_and_exit_special_case_800x600() {
+        let layout = compute_layout(800, 600);
+        // SP/WW/Net/Movies/Options snap to 42-px SDBTNANM rows from y=199.
+        let expected_y = [199, 241, 283, 325, 367];
+        for (button, y) in layout.buttons[..5].iter().zip(expected_y) {
+            assert_eq!(button.rect, RectPx::new(644, y, 156, 42));
+        }
+        // Exit (0x3ee) is not resized/inset/snapped: raw DLU template rect.
+        assert_eq!(layout.buttons[5].rect, RectPx::new(638, 536, 162, 37));
     }
 
     #[test]
@@ -450,14 +493,16 @@ mod tests {
     }
 
     #[test]
-    fn large_screen_buttons_use_centered_dlu_client_rects() {
-        // 162x37 client rects, inset 3 px from the centered 168 column
-        // (x = 747), DLU-derived Y plus the 84 px top margin.
+    fn large_screen_buttons_sdbtnanm_cells_and_exit() {
+        // 1024x768: left_margin=112, top_margin=84, panel.top.x=744 -> cells at
+        // x=756. Grid anchor panel_y = 84 + 199 = 283; rows step 42.
         let layout = compute_layout(1024, 768);
-        let expected_y = [287, 331, 375, 419, 463, 620];
-        for (button, y) in layout.buttons.iter().zip(expected_y) {
-            assert_eq!(button.rect, RectPx::new(747, y, 162, 37));
+        let expected_y = [283, 325, 367, 409, 451];
+        for (button, y) in layout.buttons[..5].iter().zip(expected_y) {
+            assert_eq!(button.rect, RectPx::new(756, y, 156, 42));
         }
+        // Exit: raw 638 + left_margin 112 = 750; raw 536 + top_margin 84 = 620.
+        assert_eq!(layout.buttons[5].rect, RectPx::new(750, 620, 162, 37));
     }
 
     #[test]
@@ -466,10 +511,10 @@ mod tests {
         assert_eq!(layout.screen, RectPx::new(0, 0, 1600, 900));
         assert_eq!(layout.movie_base, MainMenuMovieBase::Ra2tsL);
         assert_eq!(layout.movie, RectPx::new(0, 0, 1264, 855));
-        // Base buttons (635, 203, 162, 37) → at 2x/1.5x: (1270, 305, 324, 55);
-        // base[5] (635, 536, 162, 37) → (1270, 804, 324, 56).
-        assert_eq!(layout.buttons[0].rect, RectPx::new(1270, 305, 324, 55));
-        assert_eq!(layout.buttons[5].rect, RectPx::new(1270, 804, 324, 56));
+        // Base SP cell (644,199,156,42) scaled 2x/1.5x (corner-rounded) ->
+        // (1288,299,312,63); base Exit (638,536,162,37) -> (1276,804,324,56).
+        assert_eq!(layout.buttons[0].rect, RectPx::new(1288, 299, 312, 63));
+        assert_eq!(layout.buttons[5].rect, RectPx::new(1276, 804, 324, 56));
         assert_eq!(layout.pressed_content_offset_x, 2);
     }
 
@@ -478,7 +523,7 @@ mod tests {
         let layout = compute_responsive_layout(640, 480);
         assert_eq!(layout.movie_base, MainMenuMovieBase::Ra2tsS);
         assert_eq!(layout.movie, RectPx::new(0, 0, 506, 456));
-        // Base (635, 203, 162, 37) scaled by 0.8x/0.8x → (508, 162, 130, 30).
-        assert_eq!(layout.buttons[0].rect, RectPx::new(508, 162, 130, 30));
+        // Base SP cell (644,199,156,42) scaled 0.8x/0.8x → (515, 159, 125, 34).
+        assert_eq!(layout.buttons[0].rect, RectPx::new(515, 159, 125, 34));
     }
 }
