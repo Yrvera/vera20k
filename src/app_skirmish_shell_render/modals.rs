@@ -13,8 +13,8 @@ use crate::ui::skirmish_shell::{
 };
 
 use super::chrome::{
-    push_button_30, push_entry_native, push_modal_button_mnbttn,
-    push_ownerdraw_two_pixel_bevel_frame, push_rect_outline, push_solid_rect,
+    push_entry_native, push_modal_button_mnbttn, push_ownerdraw_two_pixel_bevel_frame,
+    push_rect_outline, push_right_panel_button_shp, push_solid_rect,
 };
 use super::controls::push_dropdown_scrollbar_instances;
 use super::{
@@ -138,6 +138,10 @@ pub(super) fn push_choose_map_modal_instances(
         modal.highlighted_filtered_index,
         SHELL_DROPDOWN_DEPTH - 0.00010,
     );
+    // The modal's right-column buttons are the same owner-draw type-1 class as the
+    // setup shell's Start/Choose/Back: SDBTNANM frame 2 idle, frame 4 pressed. They
+    // share the right-panel SDBTNANM cell geometry, so draw them through the same
+    // path rather than the gray 3-slice PCX (push_button_30).
     for (button, id) in [
         (layout.use_map_button, ChooseMapModalButton::UseMap0x6c5),
         (layout.cancel_button, ChooseMapModalButton::Cancel0x5c0),
@@ -146,7 +150,7 @@ pub(super) fn push_choose_map_modal_instances(
             ChooseMapModalButton::CreateRandomMap0x583,
         ),
     ] {
-        push_button_30(
+        push_right_panel_button_shp(
             out,
             atlas,
             button,
