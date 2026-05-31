@@ -232,16 +232,10 @@ impl Simulation {
                 }
             }
 
-            let owner_str = self.interner.resolve(ge.owner).to_string();
-            let category = ge.category;
-            let spawn_sid = ge.stable_id;
             if let Some(obj) = rules.and_then(|r| r.object(&map_ent.type_id)) {
                 ge.foundation = obj.foundation.clone();
             }
-            self.substrate.entities.insert(ge);
-            self.reveal(spawn_sid);
-            self.increment_owned_count(&owner_str, category);
-            self.add_entity_occupancy(spawn_sid);
+            self.unlimbo(ge);
             count += 1;
         }
 
@@ -391,14 +385,8 @@ impl Simulation {
             };
         }
 
-        let spawn_owner_str = self.interner.resolve(ge.owner).to_string();
-        let spawn_category = ge.category;
         ge.foundation = obj.foundation.clone();
-        self.substrate.entities.insert(ge);
-        self.reveal(stable_id);
-        self.increment_owned_count(&spawn_owner_str, spawn_category);
-        self.add_entity_occupancy(stable_id);
-        Some(stable_id)
+        Some(self.unlimbo(ge))
     }
 
     /// Create an object in limbo: stored in EntityStore and owner counts, but
@@ -556,6 +544,15 @@ impl Simulation {
     /// happens later at reveal/landing (e.g. paradrop drop). Returns the stable id.
     pub(crate) fn create_limbo(&mut self, ge: GameEntity) -> u64 {
         self.place_spawned(ge, false)
+    }
+
+    /// Spawn an object and place it on the playfield in one step: insert, reveal
+    /// (active-object order), increment owner counts, and register map occupancy —
+    /// in that exact order. Returns the stable id. This is the active counterpart
+    /// to [`Self::create_limbo`]; the two differ only by whether reveal+occupancy
+    /// run.
+    pub(crate) fn unlimbo(&mut self, ge: GameEntity) -> u64 {
+        self.place_spawned(ge, true)
     }
 
     /// Update VoxelAnimation frame_counts for all voxel entities from atlas data.
