@@ -96,7 +96,7 @@ fn apply_mutate_explosion(
         &sim.interner,
         &owner_str,
         AoELayerContext {
-            occupancy: Some(&sim.occupancy),
+            occupancy: Some(&sim.substrate.occupancy),
             terrain: sim.resolved_terrain.as_ref(),
             impact_z,
         },
@@ -328,7 +328,7 @@ mod tests {
 
         sim.entities.insert(ground);
         sim.entities.insert(bridge);
-        sim.occupancy.add(
+        sim.substrate.occupancy.add(
             5,
             5,
             1,
@@ -336,7 +336,7 @@ mod tests {
             Some(2),
             CellListInsertion::PrependNonBuilding,
         );
-        sim.occupancy.add(
+        sim.substrate.occupancy.add(
             5,
             5,
             2,

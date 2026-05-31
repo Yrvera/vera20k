@@ -14,6 +14,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::LogicVector;
+use crate::sim::occupancy::OccupancyGrid;
 
 /// Owns the active-object order and the substrate's monotonic counters. Field
 /// paths are `Simulation.substrate.*`.
@@ -31,6 +32,11 @@ pub(crate) struct ObjectSubstrate {
     /// Tail-append on reveal, compacting-remove on conceal. Serialized verbatim.
     #[serde(default)]
     pub(crate) logic: LogicVector,
+    /// CellClass-style occupancy grid (per-cell object lists). A rebuilt cache:
+    /// `#[serde(skip)]`, reconstructed from the entity store on load, so it never
+    /// appears in the serialized snapshot and does not enter the state hash directly.
+    #[serde(skip)]
+    pub(crate) occupancy: OccupancyGrid,
 }
 
 impl ObjectSubstrate {
@@ -41,6 +47,7 @@ impl ObjectSubstrate {
             next_stable_entity_id: 1,
             next_occupancy_enter_order: 1,
             logic: LogicVector::new(),
+            occupancy: OccupancyGrid::new(),
         }
     }
 }

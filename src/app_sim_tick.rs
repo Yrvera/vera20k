@@ -301,7 +301,7 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                 if let Some(entity) = sim.entities.get(*dead_id) {
                     let rx = entity.position.rx;
                     let ry = entity.position.ry;
-                    sim.occupancy.remove(rx, ry, *dead_id);
+                    sim.occupancy_mut().remove(rx, ry, *dead_id);
                 }
                 sim.uninit(*dead_id);
             }

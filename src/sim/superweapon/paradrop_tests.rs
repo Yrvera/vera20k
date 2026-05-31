@@ -347,7 +347,7 @@ fn paradrop_cargo_load_bypasses_pdplane_capacity_and_passenger_occupancy() {
 
     for &pax_id in &cargo.passengers {
         assert!(
-            !sim.occupancy
+            !sim.substrate.occupancy
                 .contains_entity(edge_cell.0, edge_cell.1, pax_id),
             "limbo-loaded passenger should not transiently occupy the spawn edge"
         );

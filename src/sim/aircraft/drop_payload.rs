@@ -174,7 +174,7 @@ pub fn try_drop(
     }
 
     let selected_sub_cell = if passenger_category == EntityCategory::Infantry {
-        let occ = sim.occupancy.get(drop_rx, drop_ry);
+        let occ = sim.substrate.occupancy.get(drop_rx, drop_ry);
         match bump_crush::allocate_sub_cell_with_preference(
             occ,
             MovementLayer::Ground,
@@ -182,7 +182,7 @@ pub fn try_drop(
             drop_sub_x,
             drop_sub_y,
             // sub-cell placement — scenario stream. Direct field: `occ` may borrow
-            // &sim.occupancy, so the subcell_rng() accessor could conflict.
+            // &sim.substrate.occupancy, so the subcell_rng() accessor could conflict.
             &mut sim.scenario_rng,
         ) {
             Some(sub_cell) => Some(sub_cell),
@@ -212,7 +212,7 @@ pub fn try_drop(
         passenger.position.refresh_screen_coords();
         passenger.passenger_role = PassengerRole::None;
     }
-    sim.occupancy.add(
+    sim.substrate.occupancy.add(
         drop_rx,
         drop_ry,
         passenger_id,
@@ -224,7 +224,7 @@ pub fn try_drop(
     // 6. Attach parachute descent.
     if !begin_parachute_descent(&mut sim.entities, passenger_id, altitude) {
         // L17 deviation: revert passenger_role and re-insert at cargo HEAD; retry.
-        sim.occupancy.remove(drop_rx, drop_ry, passenger_id);
+        sim.substrate.occupancy.remove(drop_rx, drop_ry, passenger_id);
         sim.clear_radio_contacts_for(passenger_id);
         if let Some(passenger) = sim.entities.get_mut(passenger_id) {
             passenger.passenger_role = PassengerRole::Inside {
@@ -450,6 +450,7 @@ mod tests {
             lepton::subcell_lepton_offset(Some(sub_cell))
         );
         let occupied_subcells: Vec<(u64, u8)> = sim
+            .substrate
             .occupancy
             .get(51, 20)
             .expect("drop cell occupied")
@@ -466,7 +467,7 @@ mod tests {
         let passenger_id = 2;
         insert_loaded_paradrop_pair(&mut sim, aircraft_id, passenger_id);
         for (id, sub_cell) in [(90, 2), (91, 3), (92, 4)] {
-            sim.occupancy.add(
+            sim.substrate.occupancy.add(
                 51,
                 20,
                 id,
@@ -499,7 +500,7 @@ mod tests {
         ));
         assert!(passenger.parachute_state.is_none());
         assert!(
-            !sim.occupancy.contains_entity(51, 20, passenger_id),
+            !sim.substrate.occupancy.contains_entity(51, 20, passenger_id),
             "failed placement must not unlimbo the passenger into occupancy"
         );
     }

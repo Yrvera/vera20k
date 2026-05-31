@@ -352,7 +352,7 @@ fn build_pixel_fx_sparkle_instances(state: &AppState, sw: f32, sh: f32) -> Vec<S
         resolved_terrain: resolved,
         overlays,
         overlay_registry,
-        occupancy: &sim.occupancy,
+        occupancy: sim.occupancy(),
         fog: &sim.fog,
         camera_x: state.camera_x,
         camera_y: state.camera_y,

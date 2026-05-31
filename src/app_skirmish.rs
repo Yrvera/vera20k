@@ -754,7 +754,7 @@ fn starting_mcv_cell_placeable(
     rx: u16,
     ry: u16,
 ) -> bool {
-    if sim.occupancy.get(rx, ry).is_some() {
+    if sim.occupancy().get(rx, ry).is_some() {
         return false;
     }
     let Some(cell) = resolved_terrain.cell(rx, ry) else {

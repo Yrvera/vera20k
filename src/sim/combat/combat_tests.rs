@@ -265,7 +265,7 @@ fn considered_aircraft_infantry_is_air_for_projectile_legality() {
     issue_attack_command(&mut sim.entities, attacker, target, None, &sim.interner);
     let result = tick_combat(
         &mut sim.entities,
-        &mut sim.occupancy,
+        &mut sim.substrate.occupancy,
         &rules,
         &mut sim.interner,
         &mut BTreeMap::new(),
@@ -304,7 +304,7 @@ fn ordinary_infantry_remains_ground_for_projectile_legality() {
     issue_attack_command(&mut sim.entities, attacker, target, None, &sim.interner);
     let result = tick_combat(
         &mut sim.entities,
-        &mut sim.occupancy,
+        &mut sim.substrate.occupancy,
         &rules,
         &mut sim.interner,
         &mut BTreeMap::new(),

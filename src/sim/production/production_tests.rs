@@ -551,7 +551,7 @@ pub(super) fn spawn_structure(
     sim.entities.insert(ge);
     // Register structure in occupancy grid (single cell — test structures
     // don't have foundation data, so just register the origin cell).
-    sim.occupancy.add(
+    sim.substrate.occupancy.add(
         rx,
         ry,
         sid,
@@ -824,7 +824,7 @@ fn infantry_spawn_succeeds_when_center_cell_blocked() {
     spawn_structure(&mut sim, 1, "Americans", "GAPILE", 20, 20);
     // Also occupy the foundation-center cell explicitly to make the test
     // robust against future changes to spawn_structure's occupancy footprint.
-    sim.occupancy.add(
+    sim.substrate.occupancy.add(
         21,
         21,
         1,

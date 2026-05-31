@@ -254,7 +254,7 @@ fn spawn_bolt(sim: &mut Simulation, rules: &RuleSet, rx: u16, ry: u16, owner: In
             &sim.interner,
             &owner_str,
             AoELayerContext {
-                occupancy: Some(&sim.occupancy),
+                occupancy: Some(&sim.substrate.occupancy),
                 terrain: sim.resolved_terrain.as_ref(),
                 impact_z,
             },
@@ -443,7 +443,7 @@ mod tests {
 
         sim.entities.insert(ground);
         sim.entities.insert(bridge);
-        sim.occupancy.add(
+        sim.substrate.occupancy.add(
             5,
             5,
             1,
@@ -451,7 +451,7 @@ mod tests {
             None,
             CellListInsertion::PrependNonBuilding,
         );
-        sim.occupancy.add(
+        sim.substrate.occupancy.add(
             5,
             5,
             2,

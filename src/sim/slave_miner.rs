@@ -117,7 +117,7 @@ fn build_slave_scan_filter<'a>(
     path_grid: Option<&'a PathGrid>,
     self_id: u64,
 ) -> Box<dyn Fn((u16, u16)) -> bool + 'a> {
-    let occupancy = &sim.occupancy;
+    let occupancy = &sim.substrate.occupancy;
     Box::new(move |cell: (u16, u16)| {
         is_cell_path_clear_for_scan(occupancy, path_grid, cell, self_id)
     })

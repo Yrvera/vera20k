@@ -137,7 +137,7 @@ pub(super) fn find_spawn_selection_for_owner_with_type(
                     produced_category,
                     rules,
                     path_grid,
-                    &sim.occupancy,
+                    &sim.substrate.occupancy,
                     resolved_terrain,
                     require_water,
                 )
@@ -162,7 +162,7 @@ pub(super) fn find_spawn_selection_for_owner_with_type(
                 movement_profile,
                 rules,
                 path_grid,
-                &sim.occupancy,
+                &sim.substrate.occupancy,
                 &sim.entities,
                 resolved_terrain,
                 overlay_grid,

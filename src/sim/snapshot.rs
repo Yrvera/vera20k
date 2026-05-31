@@ -251,7 +251,7 @@ mod tests {
     }
 
     fn cell_order(sim: &Simulation, rx: u16, ry: u16, layer: MovementLayer) -> Vec<u64> {
-        sim.occupancy
+        sim.substrate.occupancy
             .get(rx, ry)
             .map(|occ| occ.iter_layer(layer).map(|o| o.entity_id).collect())
             .unwrap_or_default()

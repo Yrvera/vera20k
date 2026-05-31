@@ -1388,7 +1388,7 @@ fn drop_in_bridge_deck_entities(sim: &mut Simulation, rx: u16, ry: u16) {
             ));
         }
         if let Some((rx, ry, sub_cell, insertion)) = relayer {
-            sim.occupancy.move_entity(
+            sim.substrate.occupancy.move_entity(
                 rx,
                 ry,
                 rx,
@@ -1674,7 +1674,7 @@ mod tests {
         let mut sim = Simulation::new();
         sim.resolved_terrain = Some(water_below_bridge_terrain(3));
         let id = spawn_deck_unit(&mut sim);
-        sim.occupancy.add(
+        sim.substrate.occupancy.add(
             5,
             5,
             id,
@@ -1701,7 +1701,7 @@ mod tests {
             "layer flipped Bridge → Ground"
         );
         assert_eq!(loco.phase, GroundMovePhase::Idle, "phase reset to Idle");
-        let cell = sim.occupancy.get(5, 5).expect("occupancy retained");
+        let cell = sim.substrate.occupancy.get(5, 5).expect("occupancy retained");
         assert_eq!(cell.count_on(MovementLayer::Ground), 1);
         assert_eq!(cell.count_on(MovementLayer::Bridge), 0);
     }
@@ -2111,7 +2111,7 @@ mod tests {
         loco.layer = MovementLayer::Bridge;
         entity.locomotor = Some(loco);
         sim.entities.insert(entity);
-        sim.occupancy.add(
+        sim.substrate.occupancy.add(
             5,
             5,
             1,
@@ -2127,7 +2127,7 @@ mod tests {
         assert_eq!(e.health.current, 256);
         assert!(!e.on_bridge);
         assert_eq!(e.locomotor.as_ref().unwrap().layer, MovementLayer::Bridge);
-        let cell = sim.occupancy.get(5, 5).expect("ground occupancy");
+        let cell = sim.substrate.occupancy.get(5, 5).expect("ground occupancy");
         assert_eq!(cell.count_on(MovementLayer::Ground), 1);
         assert_eq!(cell.count_on(MovementLayer::Bridge), 0);
     }

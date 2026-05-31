@@ -218,7 +218,7 @@ fn occupy_structure_cells(
 ) {
     for y in ry..ry.saturating_add(height) {
         for x in rx..rx.saturating_add(width) {
-            sim.occupancy.add(
+            sim.substrate.occupancy.add(
                 x,
                 y,
                 sid,
@@ -3940,7 +3940,7 @@ fn departing_handoff_ignores_blocked_queue_cell() {
         miner.dock_queued = true;
     }
     // Register B's occupancy at the queue cell so the deferred check sees it.
-    sim.occupancy.add(
+    sim.substrate.occupancy.add(
         14,
         11,
         miner_b,
@@ -5427,7 +5427,7 @@ fn scan_skips_cell_occupied_by_other_miner() {
 
     // Miner A sits on ore at (10, 10). Miner B at (5, 10) is the scanner.
     let _miner_a = spawn_miner(&mut sim, 1, MinerKind::War, 10, 10);
-    sim.occupancy.add(
+    sim.substrate.occupancy.add(
         10,
         10,
         1,
@@ -5436,7 +5436,7 @@ fn scan_skips_cell_occupied_by_other_miner() {
         CellListInsertion::PrependNonBuilding,
     );
     let miner_b = spawn_miner(&mut sim, 2, MinerKind::War, 5, 10);
-    sim.occupancy.add(
+    sim.substrate.occupancy.add(
         5,
         10,
         2,
@@ -5487,7 +5487,7 @@ fn scan_ring_0_allows_harvesters_own_cell() {
     // Miner on ore at (10, 10). Register itself as occupant — ring 0
     // must still return (10, 10).
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 10, 10);
-    sim.occupancy.add(
+    sim.substrate.occupancy.add(
         10,
         10,
         1,

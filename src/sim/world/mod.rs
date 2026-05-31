@@ -361,11 +361,6 @@ pub struct Simulation {
     /// Per-cell smudge state (craters, scorches). Seeded from map [Smudge]
     /// entries at init, mutated by combat death-handling at runtime.
     pub smudge_grid: Option<crate::sim::smudge_grid::SmudgeGrid>,
-    /// Persistent cell occupancy — tracks what entities occupy each cell.
-    /// Maintained incrementally via add/remove at spawn, move, and death sites.
-    /// Rebuilt from entities on deserialization.
-    #[serde(skip)]
-    pub occupancy: OccupancyGrid,
     /// SHP interned IDs for bridge destruction explosions (from rules.ini BridgeExplosions=).
     #[serde(skip)]
     pub bridge_explosions: Vec<InternedId>,
@@ -495,7 +490,6 @@ impl Simulation {
             bridge_state: None,
             overlay_grid: None,
             smudge_grid: None,
-            occupancy: OccupancyGrid::new(),
             bridge_explosions: Vec::new(),
             metallic_debris: Vec::new(),
             bridge_anim_sounds: BTreeMap::new(),
@@ -581,6 +575,16 @@ impl Simulation {
         // never seeded from the gameplay seed.
         self.mapgen_rng = SimRng::zeroed();
         self.seed = seed;
+    }
+
+    /// The occupancy grid (per-cell object lists). Read access for systems above sim/.
+    pub fn occupancy(&self) -> &OccupancyGrid {
+        &self.substrate.occupancy
+    }
+
+    /// Mutable occupancy access for the few above-sim callers that unmark cells.
+    pub fn occupancy_mut(&mut self) -> &mut OccupancyGrid {
+        &mut self.substrate.occupancy
     }
 
     /// Resolve an InternedId back to its display string.
@@ -760,7 +764,7 @@ impl Simulation {
         entity.occupancy_enter_order = order;
         let insertion = CellListInsertion::from_category(entity.category);
         for (rx, ry) in cells {
-            self.occupancy
+            self.substrate.occupancy
                 .add(rx, ry, stable_id, layer, sub_cell, insertion);
         }
     }
@@ -770,7 +774,7 @@ impl Simulation {
             return;
         };
         for (rx, ry) in entity_occupancy_cells(entity) {
-            self.occupancy.remove(rx, ry, stable_id);
+            self.substrate.occupancy.remove(rx, ry, stable_id);
         }
     }
 
@@ -1023,7 +1027,7 @@ impl Simulation {
 
         // 3. Rebuild persistent occupancy from entity positions.
         // OccupancyGrid is #[serde(skip)] — starts empty after deserialization.
-        self.occupancy = OccupancyGrid::rebuild(&self.entities);
+        self.substrate.occupancy = OccupancyGrid::rebuild(&self.entities);
     }
 
     /// Rebuild LogicClass membership flags from the restored active order.
@@ -1536,7 +1540,7 @@ impl Simulation {
         #[cfg(debug_assertions)]
         if std::env::var("OCCUPANCY_DEBUG").is_ok() {
             let expected = OccupancyGrid::rebuild(&self.entities);
-            self.occupancy.debug_assert_matches(&expected);
+            self.substrate.occupancy.debug_assert_matches(&expected);
         }
 
         // Native frame / tick contract: commit the synthetic 15 Hz frame LATE,
@@ -1587,10 +1591,11 @@ impl Simulation {
             path_grid,
             &self.terrain_costs,
             &self.house_alliances,
-            &mut self.occupancy,
+            &mut self.substrate.occupancy,
             &mut self.substrate.next_occupancy_enter_order,
             // bump/scatter + sub-cell — scenario stream. Direct field (not
-            // scatter_rng()): this call co-borrows &mut self.entities/occupancy.
+            // scatter_rng()): this call co-borrows &mut self.entities and
+            // &mut self.substrate.occupancy (disjoint places).
             &mut self.scenario_rng,
             tick_ms,
             self.tick,
@@ -1607,7 +1612,7 @@ impl Simulation {
         if let Some(rules) = rules {
             crate::sim::gate_runtime::tick_gate_runtimes(
                 &mut self.entities,
-                &self.occupancy,
+                &self.substrate.occupancy,
                 rules,
                 &self.interner,
                 self.binary_frame,
@@ -1633,7 +1638,7 @@ impl Simulation {
             };
             teleport_movement::tick_teleport_movement(
                 &mut self.entities,
-                &mut self.occupancy,
+                &mut self.substrate.occupancy,
                 &special_movement_order,
                 tick_ms,
                 self.tick,
@@ -1642,7 +1647,7 @@ impl Simulation {
         } else {
             teleport_movement::tick_teleport_movement(
                 &mut self.entities,
-                &mut self.occupancy,
+                &mut self.substrate.occupancy,
                 &special_movement_order,
                 tick_ms,
                 self.tick,
@@ -1651,7 +1656,7 @@ impl Simulation {
         }
         tunnel_movement::tick_tunnel_movement(
             &mut self.entities,
-            &mut self.occupancy,
+            &mut self.substrate.occupancy,
             &special_movement_order,
             tick_ms,
             self.tick,
@@ -1831,7 +1836,7 @@ impl Simulation {
             let logic_order = self.live_object_order_snapshot();
             let combat_result = combat::tick_combat_with_fog(
                 &mut self.entities,
-                &mut self.occupancy,
+                &mut self.substrate.occupancy,
                 rules,
                 &mut self.interner,
                 Some(&self.fog),
@@ -2020,7 +2025,7 @@ impl Simulation {
                     &rules.smudge_types,
                     &self.interner,
                     smudge_grid,
-                    &self.occupancy,
+                    &self.substrate.occupancy,
                     terrain,
                     pg,
                     &mut tiberium_ctx,
@@ -2034,7 +2039,7 @@ impl Simulation {
                     &rules.smudge_types,
                     &self.interner,
                     smudge_grid,
-                    &self.occupancy,
+                    &self.substrate.occupancy,
                     terrain,
                     pg,
                     &mut tiberium_ctx,
@@ -2150,7 +2155,7 @@ impl Simulation {
                 )
                 .with_growth_queue(&mut production.ore_growth_state, self.binary_frame)
                 .with_spawning_terrain_cells(&production.tiberium_spawning_terrain_cells)
-                .with_live_object_context(&self.entities, &self.occupancy, rules, &self.interner)
+                .with_live_object_context(&self.entities, &self.substrate.occupancy, rules, &self.interner)
                 .with_validation_context(
                     self.resolved_terrain.as_ref(),
                     overlay_registry,

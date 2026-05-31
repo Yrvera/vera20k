@@ -321,7 +321,7 @@ fn garrison_infantry_can_enter_cell(
             infantry.category,
             None,
             None,
-            &sim.occupancy,
+            &sim.substrate.occupancy,
         ),
         TerrainCheckResult::Clear
     )
@@ -446,7 +446,7 @@ fn place_garrison_passenger_at_cell(
     pax.position.refresh_screen_coords();
     let pax_sub_cell = pax.sub_cell;
 
-    sim.occupancy.add(
+    sim.substrate.occupancy.add(
         rx,
         ry,
         passenger_id,
@@ -896,7 +896,7 @@ mod tests {
         let mut blocker = GameEntity::test_default(stable_id, "BLOCKER", "Neutral", rx, ry);
         blocker.category = EntityCategory::Unit;
         sim.entities.insert(blocker);
-        sim.occupancy.add(
+        sim.substrate.occupancy.add(
             rx,
             ry,
             stable_id,
@@ -911,7 +911,7 @@ mod tests {
         infantry.category = EntityCategory::Infantry;
         infantry.sub_cell = Some(sub_cell);
         sim.entities.insert(infantry);
-        sim.occupancy.add(
+        sim.substrate.occupancy.add(
             rx,
             ry,
             stable_id,
@@ -1084,7 +1084,7 @@ mod tests {
         assert!(sim.entities.get(building_id).is_none());
         for cell in [(10, 10), (10, 11), (11, 10), (11, 11)] {
             assert!(
-                !sim.occupancy.contains_entity(cell.0, cell.1, building_id),
+                !sim.substrate.occupancy.contains_entity(cell.0, cell.1, building_id),
                 "sold building should clear foundation cell {cell:?}"
             );
         }
@@ -1216,6 +1216,7 @@ mod tests {
         }
 
         let occupancy_ids: Vec<u64> = sim
+            .substrate
             .occupancy
             .get(12, 12)
             .expect("chosen exit cell should be occupied")

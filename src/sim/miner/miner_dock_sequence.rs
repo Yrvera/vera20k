@@ -454,7 +454,7 @@ fn mission_deploy_unload_building(sim: &Simulation, miner_id: u64) -> Option<u64
     let layer = miner
         .occupancy_list_layer()
         .unwrap_or(MovementLayer::Ground);
-    sim.occupancy
+    sim.substrate.occupancy
         .get(lookup_rx, lookup_ry)?
         .iter_layer(layer)
         .find_map(|occupant| {

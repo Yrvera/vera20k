@@ -54,14 +54,14 @@ fn uninit_removes_all_structure_foundation_cells() {
     sim.add_entity_occupancy(10);
 
     for cell in [(4, 5), (4, 6), (5, 5), (5, 6)] {
-        assert!(sim.occupancy.contains_entity(cell.0, cell.1, 10));
+        assert!(sim.substrate.occupancy.contains_entity(cell.0, cell.1, 10));
     }
 
     sim.uninit(10);
 
     for cell in [(4, 5), (4, 6), (5, 5), (5, 6)] {
         assert!(
-            !sim.occupancy.contains_entity(cell.0, cell.1, 10),
+            !sim.substrate.occupancy.contains_entity(cell.0, cell.1, 10),
             "uninit should clear foundation cell {cell:?}"
         );
     }

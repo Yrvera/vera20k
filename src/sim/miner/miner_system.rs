@@ -310,7 +310,7 @@ fn build_scan_filter<'a>(
         .unwrap_or(MovementLayer::Ground);
     let zone_grid = sim.zone_grid.as_ref()?;
     let anchor = effective_zone_cell(zone_grid, mz, snap.rx, snap.ry)?;
-    let occupancy = &sim.occupancy;
+    let occupancy = &sim.substrate.occupancy;
     let self_id = snap.entity_id;
 
     Some(Box::new(move |ore_cell: (u16, u16)| {

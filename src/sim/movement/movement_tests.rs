@@ -739,7 +739,7 @@ fn contested_same_cell_sim() -> crate::sim::world::Simulation {
 
     sim.reveal(2);
     sim.reveal(1);
-    sim.occupancy = OccupancyGrid::rebuild(&sim.entities);
+    sim.substrate.occupancy = OccupancyGrid::rebuild(&sim.entities);
     sim
 }
 
@@ -757,7 +757,7 @@ fn two_movers_contest_same_cell_in_live_object_order_not_stable_id() {
         None,
         &terrain_costs,
         &Default::default(),
-        &mut stable_order.occupancy,
+        &mut stable_order.substrate.occupancy,
         &mut stable_order.substrate.next_occupancy_enter_order,
         &mut stable_order.scenario_rng,
         1000,
@@ -781,7 +781,7 @@ fn two_movers_contest_same_cell_in_live_object_order_not_stable_id() {
         None,
         &terrain_costs,
         &Default::default(),
-        &mut live_order.occupancy,
+        &mut live_order.substrate.occupancy,
         &mut live_order.substrate.next_occupancy_enter_order,
         &mut live_order.scenario_rng,
         1000,

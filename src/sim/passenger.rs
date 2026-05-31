@@ -868,7 +868,7 @@ fn process_unloading_transport(sim: &mut Simulation, rules: &RuleSet, transport_
         pax_sub_cell = None;
     }
 
-    sim.occupancy.add(
+    sim.substrate.occupancy.add(
         exit_rx,
         exit_ry,
         pax_id,
@@ -1022,7 +1022,7 @@ fn tick_unloading(sim: &mut Simulation, rules: &RuleSet) -> bool {
             pax_sub_cell = None;
         }
         // Register unloaded passenger in occupancy grid.
-        sim.occupancy.add(
+        sim.substrate.occupancy.add(
             exit_rx,
             exit_ry,
             pax_id,
@@ -2158,7 +2158,7 @@ ConditionYellow=50%
             blocker.type_ref = sim.interner.intern("E1");
             let blocker_sub_cell = blocker.sub_cell;
             sim.entities.insert(blocker);
-            sim.occupancy.add(
+            sim.substrate.occupancy.add(
                 bx,
                 by,
                 blocker_id,
