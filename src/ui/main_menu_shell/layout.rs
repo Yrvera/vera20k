@@ -1,33 +1,17 @@
 //! Dialog 0xE2 shell layout recovered from gamemd.exe.
 
 use super::state::MainMenuControlId;
+pub use crate::ui::shell::geom::{RectPx, RightPanelRects};
+pub use crate::ui::shell::geom::{RIGHT_PANEL_TILE_H, RIGHT_PANEL_WIDTH};
+use crate::ui::shell::geom::{dlu_rect, lower_strip_rect, mul_div_round, right_panel_rects};
 
 pub const SHELL_BASE_W: i32 = 800;
 pub const SHELL_BASE_H: i32 = 600;
-const BASE_X: i32 = 6;
-const BASE_Y: i32 = 13;
+const BASE_Y: i32 = crate::ui::shell::geom::DLU_BASE_Y;
 pub const RA2TS_L_W: i32 = 632;
 pub const RA2TS_L_H: i32 = 570;
 pub const RA2TS_S_W: i32 = 472;
 pub const RA2TS_S_H: i32 = 450;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RectPx {
-    pub x: i32,
-    pub y: i32,
-    pub w: i32,
-    pub h: i32,
-}
-
-impl RectPx {
-    pub const fn new(x: i32, y: i32, w: i32, h: i32) -> Self {
-        Self { x, y, w, h }
-    }
-
-    pub fn contains(self, x: i32, y: i32) -> bool {
-        x >= self.x && y >= self.y && x < self.x + self.w && y < self.y + self.h
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MainMenuMovieBase {
@@ -50,18 +34,6 @@ pub struct MainMenuButtonRect {
     pub rect: RectPx,
 }
 
-/// Right-panel chrome rects (SDTP top, SDBTNBKGD repeated tile, SDBTM bottom)
-/// drawn behind the owner-draw buttons by the parent WM_PAINT_Handler in
-/// gamemd. Mirrors the skirmish shell layout — both shells share the same
-/// right-panel chrome stack.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RightPanelRects {
-    pub top: RectPx,
-    pub tile: RectPx,
-    pub tile_count: i32,
-    pub bottom: RectPx,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MainMenuShellLayout {
     pub screen: RectPx,
@@ -81,46 +53,23 @@ pub struct MainMenuShellLayout {
     pub lower_strip: RectPx,
 }
 
-/// Native dimensions of the SDBTNBKGD tile and SDTP/SDBTM caps at 800x600.
-/// These mirror retail RA2 SHP sizes verified in the skirmish shell research.
-pub const RIGHT_PANEL_WIDTH: i32 = 168;
-pub const RIGHT_PANEL_TOP_H: i32 = 199;
-pub const RIGHT_PANEL_TILE_H: i32 = 42;
-pub const RIGHT_PANEL_TILE_COUNT_BASE: i32 = 9;
+/// Native bottom-cap height at 800x600. Mirrors the retail RA2 SHP size verified
+/// in the skirmish shell research. (Documentation const; not in shared geom.)
 pub const RIGHT_PANEL_BOTTOM_H: i32 = 23;
-pub const LOWER_STRIP_H: i32 = 32;
 
 /// SDBTNANM.SHP button-cell dimensions. The five non-Exit 0xE2 button windows
 /// are resized to this cell (distinct from the dialog-template 162x37 client
 /// rect). The cell height equals the SDBTNBKGD tile height (42) but is named
 /// separately because it is a different asset's canvas.
 pub const SDBTNANM_CELL_W: i32 = 156;
-pub const SDBTNANM_CELL_H: i32 = 42;
+const SDBTNANM_CELL_H: i32 = crate::ui::shell::geom::SDBTNANM_CELL_H;
 
-/// Owner-draw button client rect, in dialog DLU. The dialog template defines
-/// each main-menu button as 108x23 DLU, which converts to 162x37 px at the
-/// 800x600 base (108*6/4 = 162; 23*13/8 = 37). This is the bevel/hit rect —
-/// distinct from the 168x42 chrome tile the SDBTNBKGD art draws into.
-const BUTTON_CLIENT_W_DLU: i32 = 108;
-const BUTTON_CLIENT_H_DLU: i32 = 23;
-
-fn mul_div_round(n: i32, numer: i32, denom: i32) -> i32 {
-    let value = n * numer;
-    if value >= 0 {
-        (value + denom / 2) / denom
-    } else {
-        (value - denom / 2) / denom
-    }
-}
-
-fn dlu_rect(x: i32, y: i32, w: i32, h: i32) -> RectPx {
-    RectPx::new(
-        mul_div_round(x, BASE_X, 4),
-        mul_div_round(y, BASE_Y, 8),
-        mul_div_round(w, BASE_X, 4),
-        mul_div_round(h, BASE_Y, 8),
-    )
-}
+/// Exit button (0x3ee) DLU top. Unlike the five stacked buttons, Exit is not
+/// grid-snapped: it keeps this raw DLU-derived top, which lands it lower, in the
+/// gap below the stack (y=536 at 800x600). Its cameo is still right-anchored to
+/// the same column edge as the others — Exit is offset vertically, not
+/// horizontally.
+const EXIT_DLU_TOP: i32 = 330;
 
 fn movie_origin(screen_w: i32, screen_h: i32) -> (i32, i32) {
     let x = if screen_w <= SHELL_BASE_W {
@@ -142,69 +91,6 @@ pub fn movie_base_for_screen_width(screen_w: u32) -> MainMenuMovieBase {
     } else {
         MainMenuMovieBase::Ra2tsL
     }
-}
-
-fn right_panel_rects(screen_w: i32, screen_h: i32) -> RightPanelRects {
-    let left_margin = if screen_w > 1023 {
-        (screen_w - SHELL_BASE_W) / 2
-    } else {
-        0
-    };
-    let top_margin = if screen_h > 767 {
-        (screen_h - SHELL_BASE_H) / 2
-    } else {
-        0
-    };
-    let effective_right = screen_w - left_margin;
-    let top = RectPx::new(
-        effective_right - RIGHT_PANEL_WIDTH,
-        top_margin,
-        RIGHT_PANEL_WIDTH,
-        RIGHT_PANEL_TOP_H,
-    );
-    let tile = RectPx::new(top.x, top.y + top.h, RIGHT_PANEL_WIDTH, RIGHT_PANEL_TILE_H);
-    let effective_h = if screen_h > 767 {
-        screen_h - top_margin * 2
-    } else {
-        screen_h
-    };
-    let remaining = (effective_h - top.h).max(0);
-    let tile_count = (remaining / RIGHT_PANEL_TILE_H).min(RIGHT_PANEL_TILE_COUNT_BASE);
-    let bottom_y = tile.y + tile_count * RIGHT_PANEL_TILE_H;
-    let bottom_h = (screen_h - top_margin - bottom_y).max(0);
-    RightPanelRects {
-        top,
-        tile,
-        tile_count,
-        bottom: RectPx::new(top.x, bottom_y, RIGHT_PANEL_WIDTH, bottom_h),
-    }
-}
-
-fn lower_strip_rect(screen_w: i32, screen_h: i32) -> RectPx {
-    let left_margin = if screen_w > 1023 {
-        (screen_w - SHELL_BASE_W) / 2
-    } else {
-        0
-    };
-    let top_margin = if screen_h > 767 {
-        (screen_h - SHELL_BASE_H) / 2
-    } else {
-        0
-    };
-    let shell_h = if screen_h > 767 {
-        SHELL_BASE_H
-    } else {
-        screen_h
-    };
-    // LWSCRNS at 640w is 472 wide; LWSCRNL at >=800w is 632 wide. The lower
-    // strip sits flush against the screen bottom (or centered shell bottom).
-    let w = if screen_w == 640 { 472 } else { 632 };
-    RectPx::new(
-        left_margin,
-        top_margin + shell_h - LOWER_STRIP_H,
-        w,
-        LOWER_STRIP_H,
-    )
 }
 
 /// Bottom-left tooltip/status rect anchored to the screen bottom-left.
@@ -301,24 +187,14 @@ fn sdbtnanm_button_rect(dlu_y: i32, right_panel: RightPanelRects) -> RectPx {
     RectPx::new(x, y, SDBTNANM_CELL_W, SDBTNANM_CELL_H)
 }
 
-/// Exit button (0x3ee) keeps its raw dialog-template rect: it is NOT resized to
-/// the SDBTNANM cell and gets no sidebar inset or grid snap. Raw DLU
-/// (425,330,108,23) -> (638,536,162,37), offset by the shell centering margins
-/// on letterboxed screens (>1023w / >767h), matching how the rest of the shell
-/// block is centered.
-fn exit_button_rect(screen_w: i32, screen_h: i32) -> RectPx {
-    let base = dlu_rect(425, 330, BUTTON_CLIENT_W_DLU, BUTTON_CLIENT_H_DLU); // (638, 536, 162, 37)
-    let left_margin = if screen_w > 1023 {
-        (screen_w - SHELL_BASE_W) / 2
-    } else {
-        0
-    };
-    let top_margin = if screen_h > 767 {
-        (screen_h - SHELL_BASE_H) / 2
-    } else {
-        0
-    };
-    RectPx::new(base.x + left_margin, base.y + top_margin, base.w, base.h)
+/// Exit button (0x3ee) cameo rect. Exit is the odd one out *vertically* — it is
+/// not grid-snapped and sits lower (raw DLU top, in the gap below the stack) —
+/// but its SDBTNANM cameo is right-anchored flush to the panel's right edge at
+/// the same column x as the other five buttons (x=644 at 800x600), not inset.
+fn exit_button_rect(right_panel: RightPanelRects) -> RectPx {
+    let y = mul_div_round(EXIT_DLU_TOP, BASE_Y, 8) + right_panel.top.y;
+    let x = right_panel.top.x + (RIGHT_PANEL_WIDTH - SDBTNANM_CELL_W);
+    RectPx::new(x, y, SDBTNANM_CELL_W, SDBTNANM_CELL_H)
 }
 
 pub fn compute_layout(screen_w: u32, screen_h: u32) -> MainMenuShellLayout {
@@ -366,7 +242,7 @@ pub fn compute_layout(screen_w: u32, screen_h: u32) -> MainMenuShellLayout {
             },
             MainMenuButtonRect {
                 id: MainMenuControlId::ExitGame0x3ee,
-                rect: exit_button_rect(screen_w, screen_h),
+                rect: exit_button_rect(right_panel),
             },
         ],
         pressed_content_offset_x: 1,
@@ -426,14 +302,14 @@ mod tests {
 
     #[test]
     fn key_rects_match_800x600() {
-        // Five non-Exit buttons are SDBTNANM cells: 156x42, flush-right at x=644
-        // (632 panel left + 168 - 156), grid-snapped Y. Exit is the special case:
-        // raw template 162x37 at x=638, y=536.
+        // All six buttons are SDBTNANM cells: 156x42, flush-right at x=644
+        // (632 panel left + 168 - 156). The five stacked buttons are grid-snapped
+        // Y; Exit is the special case: not snapped, sits lower at y=536.
         let layout = compute_layout(800, 600);
         assert_eq!(layout.movie_base, MainMenuMovieBase::Ra2tsL);
         assert_eq!(layout.movie, RectPx::new(0, 0, 632, 570));
         assert_eq!(layout.buttons[0].rect, RectPx::new(644, 199, 156, 42)); // SP
-        assert_eq!(layout.buttons[5].rect, RectPx::new(638, 536, 162, 37)); // Exit
+        assert_eq!(layout.buttons[5].rect, RectPx::new(644, 536, 156, 42)); // Exit
     }
 
     #[test]
@@ -444,8 +320,9 @@ mod tests {
         for (button, y) in layout.buttons[..5].iter().zip(expected_y) {
             assert_eq!(button.rect, RectPx::new(644, y, 156, 42));
         }
-        // Exit (0x3ee) is not resized/inset/snapped: raw DLU template rect.
-        assert_eq!(layout.buttons[5].rect, RectPx::new(638, 536, 162, 37));
+        // Exit (0x3ee): same flush-right cell, but not grid-snapped — sits lower
+        // at the raw DLU-derived Y, in the gap below the stack.
+        assert_eq!(layout.buttons[5].rect, RectPx::new(644, 536, 156, 42));
     }
 
     #[test]
@@ -501,8 +378,8 @@ mod tests {
         for (button, y) in layout.buttons[..5].iter().zip(expected_y) {
             assert_eq!(button.rect, RectPx::new(756, y, 156, 42));
         }
-        // Exit: raw 638 + left_margin 112 = 750; raw 536 + top_margin 84 = 620.
-        assert_eq!(layout.buttons[5].rect, RectPx::new(750, 620, 162, 37));
+        // Exit: same flush-right cell x=756, not snapped; raw 536 + 84 = 620.
+        assert_eq!(layout.buttons[5].rect, RectPx::new(756, 620, 156, 42));
     }
 
     #[test]
@@ -512,9 +389,9 @@ mod tests {
         assert_eq!(layout.movie_base, MainMenuMovieBase::Ra2tsL);
         assert_eq!(layout.movie, RectPx::new(0, 0, 1264, 855));
         // Base SP cell (644,199,156,42) scaled 2x/1.5x (corner-rounded) ->
-        // (1288,299,312,63); base Exit (638,536,162,37) -> (1276,804,324,56).
+        // (1288,299,312,63); base Exit (644,536,156,42) -> (1288,804,312,63).
         assert_eq!(layout.buttons[0].rect, RectPx::new(1288, 299, 312, 63));
-        assert_eq!(layout.buttons[5].rect, RectPx::new(1276, 804, 324, 56));
+        assert_eq!(layout.buttons[5].rect, RectPx::new(1288, 804, 312, 63));
         assert_eq!(layout.pressed_content_offset_x, 2);
     }
 

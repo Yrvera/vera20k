@@ -1,11 +1,16 @@
 //! Dialog 0x102 shell layout recovered from gamemd.exe.
 
+pub use crate::ui::shell::geom::{RectPx, RightPanelRects};
+use crate::ui::shell::geom::{
+    center_offset, dlu_rect, right_panel_rects, snap_button_biased_truncate,
+};
+
 pub const SHELL_BASE_W: i32 = 800;
 pub const SHELL_BASE_H: i32 = 600;
-pub const RIGHT_PANEL_WIDTH: i32 = 168;
+pub const RIGHT_PANEL_WIDTH: i32 = crate::ui::shell::geom::RIGHT_PANEL_WIDTH;
 pub const SDBTNANM_W: i32 = 156;
-pub const SDBTNANM_H: i32 = 42;
-pub const SDBTNBKGD_H: i32 = 42;
+pub const SDBTNANM_H: i32 = crate::ui::shell::geom::SDBTNANM_CELL_H;
+pub const SDBTNBKGD_H: i32 = crate::ui::shell::geom::RIGHT_PANEL_TILE_H;
 pub const SKIRMISH_CHECKBOX_COUNT: usize = 5;
 pub const CHECKBOX_ICON_W: i32 = 18;
 pub const CHECKBOX_ICON_H: i32 = 18;
@@ -38,33 +43,6 @@ pub const CHOOSE_MAP_LISTBOX_SCROLLBAR_W: i32 = 20;
 // pending a native GetClientRect/screenshot.
 pub const VALIDATION_MODAL_W: i32 = 450;
 pub const VALIDATION_MODAL_H: i32 = 325;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RectPx {
-    pub x: i32,
-    pub y: i32,
-    pub w: i32,
-    pub h: i32,
-}
-
-impl RectPx {
-    pub const fn new(x: i32, y: i32, w: i32, h: i32) -> Self {
-        Self { x, y, w, h }
-    }
-
-    pub const fn translate(self, dx: i32, dy: i32) -> Self {
-        Self {
-            x: self.x + dx,
-            y: self.y + dy,
-            w: self.w,
-            h: self.h,
-        }
-    }
-
-    pub fn contains(self, x: i32, y: i32) -> bool {
-        x >= self.x && y >= self.y && x < self.x + self.w && y < self.y + self.h
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShellControlId {
@@ -117,14 +95,6 @@ pub enum SkirmishTrackbarId {
     GameSpeed0x529,
     Credits0x511,
     UnitCount0x50c,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RightPanelRects {
-    pub top: RectPx,
-    pub tile: RectPx,
-    pub tile_count: i32,
-    pub bottom: RectPx,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -221,27 +191,6 @@ pub struct ValidationModalLayout {
     pub dialog: RectPx,
     pub message: RectPx,
     pub ok_button: RectPx,
-}
-
-const BASE_X: i32 = 6;
-const BASE_Y: i32 = 13;
-
-fn mul_div_round(n: i32, numer: i32, denom: i32) -> i32 {
-    let value = n * numer;
-    if value >= 0 {
-        (value + denom / 2) / denom
-    } else {
-        (value - denom / 2) / denom
-    }
-}
-
-fn dlu_rect(x: i32, y: i32, w: i32, h: i32) -> RectPx {
-    RectPx::new(
-        mul_div_round(x, BASE_X, 4),
-        mul_div_round(y, BASE_Y, 8),
-        mul_div_round(w, BASE_X, 4),
-        mul_div_round(h, BASE_Y, 8),
-    )
 }
 
 fn checkbox_dlu_rect(x: i32, y: i32, w: i32, h: i32) -> RectPx {
@@ -424,10 +373,6 @@ pub const fn combo_swatch_rect(rect: RectPx) -> RectPx {
     )
 }
 
-fn center_offset(screen: i32, base: i32) -> i32 {
-    ((screen - base) / 2).max(0)
-}
-
 fn dialog_child(dialog: RectPx, local: RectPx) -> RectPx {
     RectPx::new(dialog.x + local.x, dialog.y + local.y, local.w, local.h)
 }
@@ -442,37 +387,6 @@ fn right_anchor(screen_w: i32, screen_h: i32, original: RectPx) -> RectPx {
         original.w,
         original.h,
     )
-}
-
-fn right_panel_rects(screen_w: i32, screen_h: i32) -> RightPanelRects {
-    let left_margin = if screen_w > 1023 {
-        (screen_w - SHELL_BASE_W) / 2
-    } else {
-        0
-    };
-    let top_margin = if screen_h > 767 {
-        (screen_h - SHELL_BASE_H) / 2
-    } else {
-        0
-    };
-    let effective_right = screen_w - left_margin;
-    let top = RectPx::new(effective_right - RIGHT_PANEL_WIDTH, top_margin, 168, 199);
-    let tile = RectPx::new(top.x, top.y + top.h, 168, SDBTNBKGD_H);
-    let effective_h = if screen_h > 767 {
-        screen_h - top_margin * 2
-    } else {
-        screen_h
-    };
-    let remaining = (effective_h - top.h).max(0);
-    let tile_count = (remaining / SDBTNBKGD_H).min(9);
-    let bottom_y = tile.y + tile_count * SDBTNBKGD_H;
-    let bottom_h = screen_h - top_margin - bottom_y;
-    RightPanelRects {
-        top,
-        tile,
-        tile_count,
-        bottom: RectPx::new(top.x, bottom_y, 168, bottom_h.max(0)),
-    }
 }
 
 fn status_help_rect(screen_w: i32, screen_h: i32) -> RectPx {
@@ -492,24 +406,6 @@ fn back_rect(screen_w: i32, panel: RightPanelRects) -> RectPx {
     RectPx::new(
         screen_w - offset_x - SDBTNANM_W,
         panel.tile.y + (panel.tile_count - 1).max(0) * SDBTNBKGD_H,
-        SDBTNANM_W,
-        SDBTNANM_H,
-    )
-}
-
-fn owner_draw_button_snap_rect(
-    screen_w: i32,
-    screen_h: i32,
-    source: RectPx,
-    panel: RightPanelRects,
-) -> RectPx {
-    let offset_x = center_offset(screen_w, SHELL_BASE_W);
-    let source_y = source.y + center_offset(screen_h, SHELL_BASE_H);
-    let tile_h = panel.tile.h.max(1);
-    let tile_index = ((source_y - panel.tile.y + tile_h / 2) / tile_h).max(0);
-    RectPx::new(
-        screen_w - offset_x - SDBTNANM_W,
-        panel.tile.y + tile_index * tile_h,
         SDBTNANM_W,
         SDBTNANM_H,
     )
@@ -600,8 +496,10 @@ pub fn compute_layout(screen_w: u32, screen_h: u32) -> SkirmishShellLayout {
         screen: RectPx::new(0, 0, screen_w, screen_h),
         right_panel: panel,
         right_panel_text,
-        start_button: owner_draw_button_snap_rect(screen_w, screen_h, start_base, panel),
-        choose_map_button: owner_draw_button_snap_rect(screen_w, screen_h, choose_base, panel),
+        start_button: snap_button_biased_truncate(screen_w, screen_h, start_base, panel, SDBTNANM_W),
+        choose_map_button: snap_button_biased_truncate(
+            screen_w, screen_h, choose_base, panel, SDBTNANM_W,
+        ),
         back_button: back_rect(screen_w, panel),
         map_preview: right_anchor(screen_w, screen_h, preview_base),
         column_labels: SkirmishColumnLabelRects {
@@ -665,13 +563,16 @@ pub fn compute_choose_map_modal_layout(screen_w: u32, screen_h: u32) -> ChooseMa
         dialog: RectPx::new(0, 0, screen_w, screen_h),
         mode_list: dlu_rect(77, 78, 130, 211),
         map_list: dlu_rect(225, 78, 130, 211),
-        use_map_button: owner_draw_button_snap_rect(screen_w, screen_h, use_map_base, panel),
+        use_map_button: snap_button_biased_truncate(
+            screen_w, screen_h, use_map_base, panel, SDBTNANM_W,
+        ),
         cancel_button: back_rect(screen_w, panel),
-        create_random_map_button: owner_draw_button_snap_rect(
+        create_random_map_button: snap_button_biased_truncate(
             screen_w,
             screen_h,
             create_random_map_base,
             panel,
+            SDBTNANM_W,
         ),
         title: right_anchor(screen_w, screen_h, title_base).translate(0, 1),
         select_engagement: dlu_rect(80, 20, 257, 12),
