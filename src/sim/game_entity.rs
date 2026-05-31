@@ -126,6 +126,28 @@ impl BuildingGateRuntime {
     }
 }
 
+/// Authoritative-shadow lifecycle state of an object (the substrate `Presence`
+/// FSM, Slice 2). Mirrors the single InLimbo bit: an object is either in the
+/// active set (`InCell`) or out of it (`Limbo`). `Dying` is a transient marker
+/// set during teardown right before the store slot is freed; it becomes a
+/// persistent, observable state only once deferred-delete lands (later slice).
+///
+/// In this slice `presence` *shadows* the old gates (`in_logic_vector` + store
+/// membership) — those stay authoritative — and a debug assert proves the two
+/// never disagree. Not serialized (`#[serde(skip)]` on the field); rebuilt on
+/// load from the restored active order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum Presence {
+    /// Out of the active set: born-in-limbo, concealed, or loaded as cargo. The
+    /// default for a freshly constructed entity (born InLimbo).
+    #[default]
+    Limbo,
+    /// In the active-object set and placed on the playfield (`in_logic_vector`).
+    InCell,
+    /// Teardown in progress — set after conceal, before the slot is freed.
+    Dying,
+}
+
 /// Unified entity struct — replaces all hecs ECS components.
 ///
 /// Every game object (unit, infantry, building, aircraft) is one `GameEntity`.
@@ -182,6 +204,13 @@ pub struct GameEntity {
     /// rebuilt from the restored order on load (native does not round-trip it).
     #[serde(skip)]
     pub in_logic_vector: bool,
+    /// Substrate lifecycle shadow (Slice 2). Tracks `Limbo | InCell | Dying`.
+    /// Authoritative gates remain `in_logic_vector` + store membership; this
+    /// field rides alongside them and a per-tick debug assert proves they agree.
+    /// Not serialized (rebuilt from the restored active order on load), and NOT
+    /// hashed (non-authoritative this slice).
+    #[serde(skip)]
+    pub presence: Presence,
     /// Monotonic order of the last successful insertion into a CellClass-style
     /// object list. Serialized because `OccupancyGrid` is a rebuilt cache; this
     /// is the authoritative fact needed to reconstruct its linked-list order.
@@ -412,6 +441,19 @@ pub struct GameEntity {
 }
 
 impl GameEntity {
+    /// Ground-truth presence derived from the authoritative gates. A unit in the
+    /// active set is `InCell` (this includes a dying-but-animating unit, which
+    /// keeps ticking and stays in its cell until teardown); otherwise `Limbo`.
+    /// `Dying` is never *derived* in this slice — it is only ever set imperatively
+    /// during `uninit`, after which the slot is freed in the same call.
+    pub fn derived_presence(&self) -> Presence {
+        if self.in_logic_vector {
+            Presence::InCell
+        } else {
+            Presence::Limbo
+        }
+    }
+
     /// Create a new entity with all required fields. Optional fields default to None/false.
     pub fn new(
         stable_id: u64,
@@ -463,6 +505,7 @@ impl GameEntity {
             selected: false,
             repairing: false,
             in_logic_vector: false,
+            presence: Presence::Limbo,
             occupancy_enter_order: stable_id,
             locomotor: None,
             movement_target: None,
@@ -842,5 +885,30 @@ mod tests {
         let (corner_sx, corner_sy) = terrain::iso_to_screen(30, 40, 2);
         assert!((e.position.screen_x - (corner_sx + 30.0)).abs() < 0.01);
         assert!((e.position.screen_y - corner_sy).abs() < 0.01);
+    }
+}
+
+#[cfg(test)]
+mod presence_tests {
+    use super::*;
+
+    #[test]
+    fn derived_presence_tracks_active_membership() {
+        let mut e = GameEntity::test_default(1, "E1", "Americans", 3, 3);
+        // Born in limbo: not yet in the active set.
+        assert!(!e.in_logic_vector);
+        assert_eq!(e.derived_presence(), Presence::Limbo);
+
+        // Joins the active set.
+        e.in_logic_vector = true;
+        assert_eq!(e.derived_presence(), Presence::InCell);
+
+        // A dying-but-animating unit stays active → still InCell (dying ignored).
+        e.dying = true;
+        assert_eq!(e.derived_presence(), Presence::InCell);
+
+        // Leaves the active set.
+        e.in_logic_vector = false;
+        assert_eq!(e.derived_presence(), Presence::Limbo);
     }
 }

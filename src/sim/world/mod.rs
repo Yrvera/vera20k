@@ -43,6 +43,7 @@ use crate::sim::components::WorldEffect;
 use crate::sim::docking::aircraft_dock;
 use crate::sim::docking::building_dock;
 use crate::sim::entity_store::EntityStore;
+use crate::sim::game_entity::Presence;
 use crate::sim::game_options::GameOptions;
 use crate::sim::house_state::HouseState;
 use crate::sim::intern::InternedId;
@@ -723,7 +724,18 @@ impl Simulation {
     /// Native Reveal's append: +0x98 guard → tail-append → set flag. Idempotent.
     pub(crate) fn register_live_object(&mut self, stable_id: u64) {
         match self.substrate.entities.get_mut(stable_id) {
-            Some(e) if !e.in_logic_vector => e.in_logic_vector = true,
+            Some(e) if !e.in_logic_vector => {
+                // Legal source: the only non-active presence in this slice is
+                // Limbo, so an object joining the active set must be in Limbo.
+                debug_assert_eq!(
+                    e.presence,
+                    Presence::Limbo,
+                    "register_live_object: entity {stable_id} joined active set from {:?}, expected Limbo",
+                    e.presence,
+                );
+                e.in_logic_vector = true;
+                e.presence = Presence::InCell;
+            }
             _ => return, // absent, or already a member (idempotent)
         }
         self.substrate.logic.push(stable_id);
@@ -735,7 +747,15 @@ impl Simulation {
             if !e.in_logic_vector {
                 return; // not a member — nothing to remove
             }
+            // Legal source: an object leaving the active set was InCell.
+            debug_assert_eq!(
+                e.presence,
+                Presence::InCell,
+                "unregister_live_object: entity {stable_id} left active set from {:?}, expected InCell",
+                e.presence,
+            );
             e.in_logic_vector = false;
+            e.presence = Presence::Limbo;
         }
         // Entity present-and-member, or already gone from store: scrub the order.
         self.substrate.logic.remove(stable_id);
@@ -816,6 +836,26 @@ impl Simulation {
         );
     }
 
+    /// Debug-only invariant: the `presence` shadow must equal the value derivable
+    /// from the authoritative gates for every in-store entity. Proves transition
+    /// coverage is complete (every gate flip set the shadow). O(n); compiled out of
+    /// release builds. `Dying` is transient inside `uninit` (slot freed same call),
+    /// so no in-store entity is ever `Dying` at a tick boundary in this slice.
+    #[cfg(debug_assertions)]
+    pub(crate) fn debug_assert_presence_consistent(&self) {
+        for e in self.substrate.entities.values() {
+            debug_assert_eq!(
+                e.presence,
+                e.derived_presence(),
+                "entity {} presence {:?} != derived {:?} (in_logic_vector={})",
+                e.stable_id,
+                e.presence,
+                e.derived_presence(),
+                e.in_logic_vector,
+            );
+        }
+    }
+
     /// The active order, verbatim. No sorted-ID fallback (was DRIFT).
     ///
     /// This is a point-in-time copy: a consumer iterating it CANNOT observe an
@@ -854,6 +894,7 @@ impl Simulation {
         for &id in &order {
             if let Some(e) = self.substrate.entities.get_mut(id) {
                 e.in_logic_vector = true;
+                e.presence = Presence::InCell;
             }
         }
         self.substrate.logic.set_order_for_test(order);
@@ -910,6 +951,18 @@ impl Simulation {
         }
         self.clear_radio_contacts_for(stable_id);
         self.conceal(stable_id); // leave the active order before freeing the slot
+        // Transient teardown marker. Conceal moved presence to Limbo (or it was
+        // already Limbo for a never-revealed limbo object). In this slice the slot
+        // is freed immediately below, so Dying never survives to a tick boundary;
+        // deferred-delete (later slice) makes it a one-tick observable state.
+        if let Some(e) = self.substrate.entities.get_mut(stable_id) {
+            debug_assert_ne!(
+                e.presence,
+                Presence::Dying,
+                "uninit: entity {stable_id} already Dying (double teardown?)",
+            );
+            e.presence = Presence::Dying;
+        }
         self.substrate.entities.remove(stable_id); // then free the slot
     }
 
@@ -1060,6 +1113,12 @@ impl Simulation {
             if let Some(entity) = self.substrate.entities.get_mut(id) {
                 entity.in_logic_vector = true;
             }
+        }
+        // Presence is #[serde(skip)] → all-default (Limbo) straight after
+        // deserialize. Reconcile it from the just-restored authoritative gates so
+        // a save/load round-trip restores identical presence (Slice 2 acceptance).
+        for entity in self.substrate.entities.values_mut() {
+            entity.presence = entity.derived_presence();
         }
     }
 
@@ -2199,6 +2258,8 @@ impl Simulation {
         );
         #[cfg(debug_assertions)]
         self.debug_assert_logic_membership_consistent();
+        #[cfg(debug_assertions)]
+        self.debug_assert_presence_consistent();
         let state_hash = self.state_hash();
         TickResult {
             tick: self.tick,

@@ -459,6 +459,56 @@ mod tests {
         );
     }
 
+    /// Slice 2 acceptance: save/load restores identical `presence` for an active
+    /// unit (InCell), a never-revealed limbo object (Limbo), and a boarded/cargo
+    /// unit (Limbo) — and the state hash is unchanged by `presence` (it is
+    /// serde-skip and not hashed).
+    #[test]
+    fn saveload_restores_presence_for_active_limbo_and_cargo() {
+        use crate::sim::game_entity::{GameEntity, Presence};
+        use crate::sim::passenger::PassengerRole;
+
+        let mut sim = Simulation::new();
+        // (1) Active unit on the playfield → InCell.
+        sim.substrate
+            .entities
+            .insert(GameEntity::test_default(1, "MTNK", "Americans", 5, 5));
+        sim.reveal(1);
+        // (2) Never-revealed limbo object → Limbo (default, never joined active set).
+        sim.substrate
+            .entities
+            .insert(GameEntity::test_default(2, "E1", "Americans", 0, 0));
+        // (3) Transport-loaded infantry: revealed, then concealed while boarding → Limbo.
+        let mut pax = GameEntity::test_default(3, "E1", "Americans", 6, 6);
+        pax.passenger_role = PassengerRole::Inside { transport_id: 1 };
+        sim.substrate.entities.insert(pax);
+        sim.reveal(3);
+        sim.conceal(3); // boards: leaves the active order → Limbo
+
+        // Pre-save expectations.
+        assert_eq!(sim.substrate.entities.get(1).unwrap().presence, Presence::InCell);
+        assert_eq!(sim.substrate.entities.get(2).unwrap().presence, Presence::Limbo);
+        assert_eq!(sim.substrate.entities.get(3).unwrap().presence, Presence::Limbo);
+        let hash_before = sim.state_hash();
+
+        // Round-trip + the real load-path membership rebuild.
+        let bytes = GameSnapshot::save(&sim, 0, 0, "test_map", 0);
+        let mut restored = GameSnapshot::load(&bytes).expect("load should succeed").sim;
+        restored.rebuild_logic_membership();
+
+        // Presence restored identically.
+        assert_eq!(restored.substrate.entities.get(1).unwrap().presence, Presence::InCell);
+        assert_eq!(restored.substrate.entities.get(2).unwrap().presence, Presence::Limbo);
+        assert_eq!(restored.substrate.entities.get(3).unwrap().presence, Presence::Limbo);
+
+        // Hash is unaffected by presence (serde-skip + not hashed).
+        assert_eq!(restored.state_hash(), hash_before);
+
+        // The reconciled shadow agrees with the derivation everywhere.
+        #[cfg(debug_assertions)]
+        restored.debug_assert_presence_consistent();
+    }
+
     #[test]
     fn saveload_occupancy_list_order_matches_incremental() {
         use crate::map::entities::EntityCategory;
