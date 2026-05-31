@@ -67,6 +67,9 @@ const SHELL_EDIT_SELECTION_DEPTH: f32 = 0.00040;
 const SHELL_EDIT_CARET_DEPTH: f32 = 0.00037;
 const SHELL_DROPDOWN_DEPTH: f32 = 0.00034;
 const SHELL_DROPDOWN_TEXT_DEPTH: f32 = 0.00029;
+/// Software cursor draws on top of everything else on the shell (smallest
+/// depth). The original hides the OS cursor and blits the cursor SHP last.
+const SHELL_CURSOR_DEPTH: f32 = 0.00001;
 // Owner-draw dark text color 0x00000C05 decoded as RGB; kept for regression
 // tests that ensure Skirmish shell labels do not use this source accidentally.
 #[cfg(test)]
@@ -416,6 +419,31 @@ pub(crate) fn render_skirmish_shell(
     )
 }
 
+/// Build the software-cursor sprite for the skirmish shell.
+///
+/// The shell renders in screen space with the camera at (0,0), so the cursor
+/// sits at the raw pointer position minus its hotspot — same convention as the
+/// main-menu shell. Returns None when no software cursor is loaded; the OS
+/// cursor is hidden process-wide, so without this the shell shows no pointer.
+fn shell_cursor_instance(state: &AppState) -> Option<SpriteInstance> {
+    let cursor = state.software_cursor.as_ref()?;
+    let sequence = cursor.get(crate::app_types::CursorId::Default)?;
+    let frame = crate::app_cursor::current_software_cursor_frame(sequence)?;
+    Some(SpriteInstance {
+        position: [
+            state.cursor_x - sequence.hotspot[0],
+            state.cursor_y - sequence.hotspot[1],
+        ],
+        size: [frame.width, frame.height],
+        uv_origin: [0.0, 0.0],
+        uv_size: [1.0, 1.0],
+        depth: SHELL_CURSOR_DEPTH,
+        tint: [1.0, 1.0, 1.0],
+        alpha: 1.0,
+        ..Default::default()
+    })
+}
+
 pub(crate) fn render_skirmish_shell_to_target(
     state: &mut AppState,
     encoder: &mut wgpu::CommandEncoder,
@@ -579,6 +607,18 @@ fn render_skirmish_shell_with_atlas(
                 .create_instance_buffer(&state.gpu, &d.instances)
         })
         .collect();
+    let cursor_instances: Vec<SpriteInstance> =
+        shell_cursor_instance(state).into_iter().collect();
+    let cursor_buffer = state
+        .batch_renderer
+        .create_instance_buffer(&state.gpu, &cursor_instances);
+    // Default-cursor frame-0 texture, borrowed for the duration of the pass.
+    let cursor_texture = state
+        .software_cursor
+        .as_ref()
+        .and_then(|cursor| cursor.get(crate::app_types::CursorId::Default))
+        .and_then(|sequence| sequence.frames.first())
+        .map(|frame| &frame.texture);
 
     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("Skirmish Shell"),
@@ -659,6 +699,12 @@ fn render_skirmish_shell_with_atlas(
     }
     // Reset scissor to full render so any subsequent draws / passes aren't clipped.
     pass.set_scissor_rect(0, 0, state.render_width(), state.render_height());
+    // Software cursor draws last, on top of all chrome/controls/modals.
+    if let (Some((buffer, count)), Some(texture)) = (cursor_buffer.as_ref(), cursor_texture) {
+        state
+            .batch_renderer
+            .draw_with_buffer_passthrough(&mut pass, texture, buffer, *count);
+    }
     drop(pass);
 
     Ok(action)
