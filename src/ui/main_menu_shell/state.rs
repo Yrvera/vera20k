@@ -169,7 +169,7 @@ mod tests {
             Some(MainMenuControlId::SinglePlayer0x683)
         );
         assert_eq!(
-            hit_test_owner_draw_button(&layout, 639, 537),
+            hit_test_owner_draw_button(&layout, 700, 537),
             Some(MainMenuControlId::ExitGame0x3ee)
         );
         assert_eq!(hit_test_owner_draw_button(&layout, 800, 203), None);
