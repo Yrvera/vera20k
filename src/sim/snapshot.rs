@@ -633,6 +633,54 @@ mod tests {
         assert!(sim.substrate.entities.get(1).is_some()); // conceal keeps the store slot
     }
 
+    /// Slice 3: `unlimbo(ge)` places the entity into BOTH the active order and
+    /// occupancy in one atomic call — a caller can never observe it in `logic`
+    /// without occupancy, because the method returns only after both. Owner count
+    /// is incremented. (No-op collapse: same end state as the old 4-step.)
+    #[test]
+    fn unlimbo_ge_places_into_logic_and_occupancy_atomically() {
+        use crate::sim::game_entity::{GameEntity, Presence};
+        let mut sim = Simulation::new();
+        let mut ge = GameEntity::test_default(1, "MTNK", "Americans", 5, 5);
+        // `place_spawned` resolves the owner against `sim.interner`; re-intern so
+        // the id is valid there (test_default uses the thread-local test interner).
+        ge.owner = sim.interner.intern("Americans");
+        let id = sim.unlimbo(ge);
+
+        let e = sim.substrate.entities.get(id).expect("entity in store");
+        assert!(e.in_logic_vector, "must be in the active order");
+        assert_eq!(e.presence, Presence::InCell);
+        assert_eq!(sim.live_object_order_snapshot(), vec![id]);
+        assert!(
+            sim.substrate.occupancy.contains_entity(5, 5, id),
+            "must be registered in its foundation cell",
+        );
+        #[cfg(debug_assertions)]
+        sim.debug_assert_presence_consistent();
+    }
+
+    /// Slice 3: `create_limbo(ge)` stores the entity and increments owner counts
+    /// but leaves it OUT of the active order and OUT of occupancy (born InLimbo).
+    #[test]
+    fn create_limbo_leaves_entity_out_of_logic_and_occupancy() {
+        use crate::sim::game_entity::{GameEntity, Presence};
+        let mut sim = Simulation::new();
+        let mut ge = GameEntity::test_default(2, "E1", "Americans", 6, 6);
+        // `place_spawned` resolves the owner against `sim.interner`; re-intern so
+        // the id is valid there (test_default uses the thread-local test interner).
+        ge.owner = sim.interner.intern("Americans");
+        let id = sim.create_limbo(ge);
+
+        let e = sim.substrate.entities.get(id).expect("entity in store");
+        assert!(!e.in_logic_vector, "limbo object is not an active member");
+        assert_eq!(e.presence, Presence::Limbo);
+        assert!(sim.live_object_order_snapshot().is_empty());
+        assert!(
+            !sim.substrate.occupancy.contains_entity(6, 6, id),
+            "limbo object must not occupy a cell",
+        );
+    }
+
     /// `uninit` conceals then frees the store slot.
     #[test]
     fn uninit_conceals_then_frees_store_slot() {
