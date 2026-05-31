@@ -774,12 +774,6 @@ impl Simulation {
         self.unregister_live_object(stable_id);
     }
 
-    /// Native `TechnoClass::Unlimbo` -> Reveal: a limbo-created object joins the
-    /// live set at unlimbo/landing time, not at construction.
-    pub(crate) fn unlimbo(&mut self, stable_id: u64) {
-        self.reveal(stable_id);
-    }
-
     pub(crate) fn add_entity_occupancy(&mut self, stable_id: u64) {
         let Some(entity) = self.substrate.entities.get_mut(stable_id) else {
             return;

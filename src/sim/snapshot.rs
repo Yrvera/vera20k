@@ -633,18 +633,6 @@ mod tests {
         assert!(sim.substrate.entities.get(1).is_some()); // conceal keeps the store slot
     }
 
-    /// `unlimbo` is `reveal`: a stored limbo object joins the active order.
-    #[test]
-    fn unlimbo_equals_reveal_appends_member() {
-        use crate::sim::game_entity::GameEntity;
-        let mut sim = Simulation::new();
-        sim.substrate.entities
-            .insert(GameEntity::test_default(7, "E1", "Americans", 3, 3));
-        sim.unlimbo(7);
-        assert!(sim.substrate.entities.get(7).unwrap().in_logic_vector);
-        assert_eq!(sim.live_object_order_snapshot(), vec![7]);
-    }
-
     /// `uninit` conceals then frees the store slot.
     #[test]
     fn uninit_conceals_then_frees_store_slot() {

@@ -235,9 +235,10 @@ pub fn try_drop(
         return DropResult::AttachFailedRetry;
     }
 
-    // Unlimbo: the dropped passenger leaves the transport's limbo and becomes an
-    // active object on the playfield. Mirrors TechnoClass::Unlimbo → Reveal.
-    sim.unlimbo(passenger_id);
+    // Reveal: the dropped passenger leaves the transport's limbo and becomes an
+    // active object. Occupancy was already added above (the manual occupancy.add
+    // before parachute attach); this only appends it to the active-object order.
+    sim.reveal(passenger_id);
 
     // 7. ChuteSound at drop cell.
     sim.sound_events.push(SimSoundEvent::ChuteSound {
