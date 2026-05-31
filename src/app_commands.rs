@@ -190,7 +190,7 @@ pub(crate) fn sell_selected_buildings(state: &mut AppState) {
         return;
     };
     let to_sell: Vec<u64> = sim
-        .entities
+        .entities()
         .values()
         .filter(|e| {
             e.selected
@@ -359,7 +359,7 @@ fn fill_wall_between_endpoints(state: &mut AppState, type_id: &str, rx: u16, ry:
             // Stop if a non-wall building occupies this cell (can't build through it).
             if let (Some(sim), Some(rules)) = (&state.simulation, &state.rules) {
                 if crate::sim::production::structure_occupies_cell(
-                    &sim.entities,
+                    sim.entities(),
                     rules,
                     cell.0,
                     cell.1,
@@ -590,7 +590,7 @@ pub(crate) fn preferred_local_owner_name(state: &AppState) -> Option<String> {
 pub(crate) fn preferred_local_owner(state: &AppState) -> Option<String> {
     let sim = state.simulation.as_ref()?;
     // Prefer owner of selected unit first.
-    for entity in sim.entities.values() {
+    for entity in sim.entities().values() {
         let owner_str = sim.interner.resolve(entity.owner);
         if entity.selected && is_playable_house_name(owner_str) {
             return Some(owner_str.to_string());
@@ -606,7 +606,7 @@ pub(crate) fn preferred_local_owner(state: &AppState) -> Option<String> {
 
     // Prefer owners that currently have structures.
     let mut structure_counts: HashMap<String, usize> = HashMap::new();
-    for entity in sim.entities.values() {
+    for entity in sim.entities().values() {
         let owner_str = sim.interner.resolve(entity.owner);
         if entity.category == EntityCategory::Structure && is_playable_house_name(owner_str) {
             *structure_counts.entry(owner_str.to_string()).or_insert(0) += 1;
@@ -636,7 +636,7 @@ pub(crate) fn preferred_local_owner(state: &AppState) -> Option<String> {
 
     // Last fallback: any playable owner present in entity store.
     let mut owners: Vec<String> = sim
-        .entities
+        .entities()
         .values()
         .map(|e| sim.interner.resolve(e.owner).to_string())
         .filter(|o| is_playable_house_name(o))
@@ -656,7 +656,7 @@ pub(crate) fn collect_playable_owners(state: &AppState) -> Vec<String> {
         .map(|house| house.name.clone())
         .collect();
     if let Some(sim) = &state.simulation {
-        for entity in sim.entities.values() {
+        for entity in sim.entities().values() {
             let owner_str = sim.interner.resolve(entity.owner);
             if is_playable_house_name(owner_str) {
                 owners.push(owner_str.to_string());

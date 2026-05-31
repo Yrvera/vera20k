@@ -214,7 +214,7 @@ fn queue_view_uses_owner_power_modifier() {
     // Populate cached power states so the speed multiplier sees the deficit.
     crate::sim::power_system::tick_power_states(
         &mut sim.power_states,
-        &mut sim.entities,
+        &mut sim.substrate.entities,
         &rules,
         16,
         &sim.interner,
@@ -346,7 +346,7 @@ fn low_power_and_factory_bonus_apply_per_owner_and_category() {
     // Populate cached power states so the speed multiplier sees the deficit.
     crate::sim::power_system::tick_power_states(
         &mut sim.power_states,
-        &mut sim.entities,
+        &mut sim.substrate.entities,
         &rules,
         16,
         &sim.interner,
@@ -448,7 +448,7 @@ fn naval_unit_rally_uses_water_pathing_after_spawn() {
     assert!(spawned, "completed naval production should spawn the unit");
 
     let ship = sim
-        .entities
+        .substrate.entities
         .values()
         .find(|e| {
             sim.interner
@@ -567,7 +567,7 @@ fn tick_production_advances_each_owner_queue() {
     );
 
     let americans = sim
-        .entities
+        .substrate.entities
         .values()
         .filter(|e| {
             sim.interner
@@ -577,7 +577,7 @@ fn tick_production_advances_each_owner_queue() {
         })
         .count();
     let soviet = sim
-        .entities
+        .substrate.entities
         .values()
         .filter(|e| {
             sim.interner.resolve(e.owner).eq_ignore_ascii_case("Soviet")
@@ -632,7 +632,7 @@ fn tick_production_advances_multiple_queue_categories_for_same_owner() {
     );
 
     let infantry = sim
-        .entities
+        .substrate.entities
         .values()
         .filter(|e| {
             sim.interner
@@ -642,7 +642,7 @@ fn tick_production_advances_multiple_queue_categories_for_same_owner() {
         })
         .count();
     let vehicles = sim
-        .entities
+        .substrate.entities
         .values()
         .filter(|e| {
             sim.interner
@@ -719,7 +719,7 @@ fn blocked_vehicle_delivery_keeps_completed_item_and_holds_next_queue_item() {
         "next queued item must not start while completed vehicle is pending"
     );
     assert!(
-        sim.entities.values().all(|entity| {
+        sim.substrate.entities.values().all(|entity| {
             !sim.interner
                 .resolve(entity.type_ref)
                 .eq_ignore_ascii_case("MTNK")
@@ -779,7 +779,7 @@ fn pending_vehicle_delivery_success_consumes_completed_item_and_starts_next_item
     );
 
     let tanks = sim
-        .entities
+        .substrate.entities
         .values()
         .filter(|entity| {
             sim.interner

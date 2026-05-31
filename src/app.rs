@@ -2896,7 +2896,7 @@ impl App {
             } else {
                 1000.0 / state.sim_speed_tps as f32
             },
-            entity_count: state.simulation.as_ref().map_or(0, |s| s.entities.len()),
+            entity_count: state.simulation.as_ref().map_or(0, |s| s.entities().len()),
             save_name_buf: &mut save_name,
             last_save_tick: state.last_save_tick,
             last_save_age,

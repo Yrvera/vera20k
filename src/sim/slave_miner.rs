@@ -133,10 +133,10 @@ pub(super) fn tick_slave_harvesters(
     path_grid: Option<&PathGrid>,
 ) {
     // Phase 1: Snapshot all slave harvesters.
-    let keys = sim.entities.keys_sorted();
+    let keys = sim.substrate.entities.keys_sorted();
     let mut snapshots: Vec<SlaveSnapshot> = Vec::new();
     for &id in &keys {
-        let Some(entity) = sim.entities.get(id) else {
+        let Some(entity) = sim.substrate.entities.get(id) else {
             continue;
         };
         let Some(ref sh) = entity.slave_harvester else {
@@ -162,7 +162,7 @@ pub(super) fn tick_slave_harvesters(
 
     // Phase 3: Write back.
     for snap in &snapshots {
-        if let Some(entity) = sim.entities.get_mut(snap.entity_id) {
+        if let Some(entity) = sim.substrate.entities.get_mut(snap.entity_id) {
             entity.slave_harvester = Some(snap.harvester.clone());
         }
     }
@@ -177,7 +177,7 @@ fn process_slave(
     snap: &mut SlaveSnapshot,
 ) {
     // Check master is still alive.
-    if sim.entities.get(snap.harvester.master_id).is_none() {
+    if sim.substrate.entities.get(snap.harvester.master_id).is_none() {
         // Master destroyed — slave becomes idle (in real RA2, freed slaves wander).
         snap.harvester.state = SlaveHarvestState::Idle;
         return;
@@ -205,7 +205,7 @@ fn handle_slave_search(
 
     // Search from the master's position (slaves harvest around their deployed base).
     let master_pos = sim
-        .entities
+        .substrate.entities
         .get(snap.harvester.master_id)
         .map(|e| (e.position.rx, e.position.ry))
         .unwrap_or((snap.rx, snap.ry));
@@ -298,7 +298,7 @@ const SLAVE_HARVEST_RATE_TICKS: u32 = 150;
 
 /// Slave returning to master. Check proximity to master position.
 fn handle_slave_return(sim: &Simulation, snap: &mut SlaveSnapshot) {
-    let Some(master) = sim.entities.get(snap.harvester.master_id) else {
+    let Some(master) = sim.substrate.entities.get(snap.harvester.master_id) else {
         snap.harvester.state = SlaveHarvestState::Idle;
         return;
     };
@@ -365,7 +365,7 @@ fn handle_slave_idle(
     // Try to find ore every few ticks (reuse search logic).
     let scan_radius: u16 = rules.general.slave_miner_slave_scan.max(1) as u16;
     let master_pos = sim
-        .entities
+        .substrate.entities
         .get(snap.harvester.master_id)
         .map(|e| (e.position.rx, e.position.ry))
         .unwrap_or((snap.rx, snap.ry));
@@ -436,7 +436,7 @@ impl SlaveMinerConfig {
 pub fn deploy_slave_miner(sim: &mut Simulation, stable_id: u64, rules: &RuleSet) -> Option<u64> {
     // Read deploy data before mutating.
     let deploy_data = {
-        let entity = sim.entities.get(stable_id)?;
+        let entity = sim.substrate.entities.get(stable_id)?;
         let type_str = sim.interner.resolve(entity.type_ref);
         let obj = rules.object_case_insensitive(type_str)?;
         let target_type: &str = obj.deploys_into.as_deref()?;
@@ -475,7 +475,7 @@ pub fn deploy_slave_miner(sim: &mut Simulation, stable_id: u64, rules: &RuleSet)
     // Spawn the YAREFN building at the same cell.
     let new_sid: u64 = sim.spawn_object_at_height(&target_type, &owner, rx, ry, 0, z, rules)?;
 
-    if let Some(ge) = sim.entities.get_mut(new_sid) {
+    if let Some(ge) = sim.substrate.entities.get_mut(new_sid) {
         ge.selected = was_selected;
     }
 
@@ -486,7 +486,7 @@ pub fn deploy_slave_miner(sim: &mut Simulation, stable_id: u64, rules: &RuleSet)
 
     let mut slave_ids: Vec<u64> = Vec::with_capacity(slaves_number as usize);
     for slave_sid in existing_slave_ids {
-        if let Some(slave_entity) = sim.entities.get_mut(slave_sid) {
+        if let Some(slave_entity) = sim.substrate.entities.get_mut(slave_sid) {
             slave_entity.slave_harvester = Some(SlaveHarvester::new(new_sid, slave_capacity));
             slave_ids.push(slave_sid);
         }
@@ -503,7 +503,7 @@ pub fn deploy_slave_miner(sim: &mut Simulation, stable_id: u64, rules: &RuleSet)
         if let Some(slave_sid) =
             sim.spawn_object_at_height(&slave_type, &owner, sx, sy, 0, z, rules)
         {
-            if let Some(slave_entity) = sim.entities.get_mut(slave_sid) {
+            if let Some(slave_entity) = sim.substrate.entities.get_mut(slave_sid) {
                 slave_entity.slave_harvester = Some(SlaveHarvester::new(new_sid, slave_capacity));
             }
             slave_ids.push(slave_sid);
@@ -527,7 +527,7 @@ pub fn deploy_slave_miner(sim: &mut Simulation, stable_id: u64, rules: &RuleSet)
 pub fn undeploy_slave_miner(sim: &mut Simulation, stable_id: u64, rules: &RuleSet) -> Option<u64> {
     // Read undeploy data.
     let undeploy_data = {
-        let entity = sim.entities.get(stable_id)?;
+        let entity = sim.substrate.entities.get(stable_id)?;
         let type_str = sim.interner.resolve(entity.type_ref);
         let obj = rules.object_case_insensitive(type_str)?;
         let target_type: &str = obj.undeploys_into.as_deref()?;
@@ -557,13 +557,13 @@ pub fn undeploy_slave_miner(sim: &mut Simulation, stable_id: u64, rules: &RuleSe
     // Spawn the SMIN vehicle.
     let new_sid: u64 = sim.spawn_object_at_height(&target_type, &owner, rx, ry, 0, z, rules)?;
 
-    if let Some(ge) = sim.entities.get_mut(new_sid) {
+    if let Some(ge) = sim.substrate.entities.get_mut(new_sid) {
         ge.selected = was_selected;
     }
 
     let mut live_slave_ids = Vec::with_capacity(slave_ids.len());
     for slave_id in slave_ids {
-        if let Some(slave) = sim.entities.get_mut(slave_id) {
+        if let Some(slave) = sim.substrate.entities.get_mut(slave_id) {
             if let Some(ref mut harvester) = slave.slave_harvester {
                 harvester.master_id = new_sid;
             }
@@ -592,7 +592,7 @@ pub(super) fn tick_slave_regen(sim: &mut Simulation, rules: &RuleSet) {
     let master_ids: Vec<u64> = sim.production.slave_bindings.keys().copied().collect();
 
     for master_id in master_ids {
-        let Some(master) = sim.entities.get(master_id) else {
+        let Some(master) = sim.substrate.entities.get(master_id) else {
             // Master died — clean up bindings.
             sim.production.slave_bindings.remove(&master_id);
             continue;
@@ -624,14 +624,14 @@ pub(super) fn tick_slave_regen(sim: &mut Simulation, rules: &RuleSet) {
         };
         let alive_count: i32 = slave_ids
             .iter()
-            .filter(|&&sid| sim.entities.get(sid).is_some())
+            .filter(|&&sid| sim.substrate.entities.get(sid).is_some())
             .count() as i32;
 
         // Remove dead slave IDs from bindings.
         let alive_ids: Vec<u64> = slave_ids
             .iter()
             .copied()
-            .filter(|&sid| sim.entities.get(sid).is_some())
+            .filter(|&sid| sim.substrate.entities.get(sid).is_some())
             .collect();
 
         if alive_count < max_slaves {
@@ -648,7 +648,7 @@ pub(super) fn tick_slave_regen(sim: &mut Simulation, rules: &RuleSet) {
                     .map(|obj| obj.storage.max(1) as u16)
                     .unwrap_or(4);
 
-                if let Some(slave_entity) = sim.entities.get_mut(slave_sid) {
+                if let Some(slave_entity) = sim.substrate.entities.get_mut(slave_sid) {
                     slave_entity.slave_harvester =
                         Some(SlaveHarvester::new(master_id, slave_capacity));
                 }
@@ -682,7 +682,7 @@ pub fn check_scan_correction(
     path_grid: Option<&PathGrid>,
     master_id: u64,
 ) -> Option<(u16, u16)> {
-    let master = sim.entities.get(master_id)?;
+    let master = sim.substrate.entities.get(master_id)?;
     let mrx: u16 = master.position.rx;
     let mry: u16 = master.position.ry;
 
@@ -778,7 +778,7 @@ mod tests {
         assert!(sim.production.slave_bindings.get(&yarefn).is_none());
         assert_eq!(sim.production.slave_bindings.get(&smin), Some(&slave_ids));
         for slave_id in slave_ids {
-            let slave = sim.entities.get(slave_id).expect("slave remains live");
+            let slave = sim.substrate.entities.get(slave_id).expect("slave remains live");
             assert_eq!(slave.slave_harvester.as_ref().unwrap().master_id, smin);
         }
     }

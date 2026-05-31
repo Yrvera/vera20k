@@ -291,7 +291,7 @@ fn find_nearest_airfield(
 
     let mut best: Option<(u64, u16, u16, u32)> = None;
 
-    for entity in sim.entities.values() {
+    for entity in sim.substrate.entities.values() {
         if entity.category != EntityCategory::Structure {
             continue;
         }
@@ -348,7 +348,7 @@ const RESCAN_COOLDOWN_TICKS: u16 = 60;
 /// Called once per tick from `advance_tick()`, after combat and building docks.
 pub fn tick_aircraft_docks(sim: &mut Simulation, rules: &RuleSet) {
     // Phase 1: Cleanup dead entities from dock reservations.
-    let alive: BTreeSet<u64> = sim.entities.keys_sorted().iter().copied().collect();
+    let alive: BTreeSet<u64> = sim.substrate.entities.keys_sorted().iter().copied().collect();
     sim.production.airfield_docks.cleanup_dead(&alive);
 
     // Phase 2: Snapshot all aircraft with aircraft_ammo.
@@ -370,7 +370,7 @@ pub fn tick_aircraft_docks(sim: &mut Simulation, rules: &RuleSet) {
     }
 
     let snapshots: Vec<AircraftSnap> = sim
-        .entities
+        .substrate.entities
         .values()
         .filter_map(|e| {
             let ammo = e.aircraft_ammo.as_ref()?;
@@ -466,7 +466,7 @@ pub fn tick_aircraft_docks(sim: &mut Simulation, rules: &RuleSet) {
             Some(AircraftDockPhase::ReturnToBase) => {
                 // Verify target airfield still exists.
                 let airfield_ok = snap.target_airfield.and_then(|af_sid| {
-                    let af = sim.entities.get(af_sid)?;
+                    let af = sim.substrate.entities.get(af_sid)?;
                     if af.health.current == 0 || af.dying {
                         return None;
                     }
@@ -519,7 +519,7 @@ pub fn tick_aircraft_docks(sim: &mut Simulation, rules: &RuleSet) {
                     continue;
                 };
                 let max_slots = sim
-                    .entities
+                    .substrate.entities
                     .get(af_sid)
                     .and_then(|af| rules.object(sim.interner.resolve(af.type_ref)))
                     .map(|obj| obj.number_of_docks.max(1))
@@ -539,7 +539,7 @@ pub fn tick_aircraft_docks(sim: &mut Simulation, rules: &RuleSet) {
                     // multi-pad airfields visibly spread occupants. Falls back
                     // to whatever was previously targeted (building center)
                     // when the building has no DockingOffset%d in art.
-                    if let Some((px, py)) = sim.entities.get(af_sid).and_then(|af| {
+                    if let Some((px, py)) = sim.substrate.entities.get(af_sid).and_then(|af| {
                         let obj = rules.object(sim.interner.resolve(af.type_ref))?;
                         let foundation =
                             crate::sim::production::foundation_dimensions(&obj.foundation);
@@ -600,7 +600,7 @@ pub fn tick_aircraft_docks(sim: &mut Simulation, rules: &RuleSet) {
 
     // Phase 4: Apply mutations.
     for m in &mutations {
-        if let Some(entity) = sim.entities.get_mut(m.id) {
+        if let Some(entity) = sim.substrate.entities.get_mut(m.id) {
             if let Some(ref mut ammo) = entity.aircraft_ammo {
                 if let Some(new_phase) = m.new_dock_phase {
                     ammo.dock_phase = new_phase;
@@ -641,7 +641,7 @@ pub fn tick_aircraft_docks(sim: &mut Simulation, rules: &RuleSet) {
         .collect();
     for (id, rx, ry) in air_moves {
         let speed = sim
-            .entities
+            .substrate.entities
             .get(id)
             .and_then(|e| {
                 let obj = rules.object(sim.interner.resolve(e.type_ref))?;
@@ -651,7 +651,7 @@ pub fn tick_aircraft_docks(sim: &mut Simulation, rules: &RuleSet) {
             })
             .unwrap_or(crate::util::fixed_math::SimFixed::from_num(8));
         crate::sim::movement::air_movement::issue_air_move_command(
-            &mut sim.entities,
+            &mut sim.substrate.entities,
             id,
             (rx, ry),
             speed,

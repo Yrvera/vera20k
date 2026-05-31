@@ -64,7 +64,7 @@ pub(super) fn build_option_for_owner(
     }
     if reason.is_none()
         && mode == BuildMode::Strict
-        && !has_factory_for_owner(&sim.entities, rules, owner, queue_category, &sim.interner)
+        && !has_factory_for_owner(&sim.substrate.entities, rules, owner, queue_category, &sim.interner)
     {
         reason = Some(BuildDisabledReason::NoFactory);
     }
@@ -165,7 +165,7 @@ pub(super) fn owner_matches_build_identity(sim: &Simulation, owner: &str, candid
 
 /// Check if the owner has ANY completed structure from the PrerequisiteOverride list.
 fn has_any_override_building(sim: &Simulation, owner: &str, overrides: &[String]) -> bool {
-    sim.entities.values().any(|e| {
+    sim.substrate.entities.values().any(|e| {
         sim.interner.resolve(e.owner).eq_ignore_ascii_case(owner)
             && e.category == EntityCategory::Structure
             && e.building_up.is_none()
@@ -190,7 +190,7 @@ fn count_owned_and_queued(sim: &Simulation, owner: &str, type_id: &str) -> u32 {
 
     let owned = match (owner_id, type_interned) {
         (Some(oid), Some(tid)) => sim
-            .entities
+            .substrate.entities
             .values()
             .filter(|e| e.owner == oid && e.type_ref == tid)
             .count() as u32,
@@ -232,7 +232,7 @@ fn first_missing_prereq(
             continue;
         }
         // Only structures satisfy prerequisites — units/infantry/aircraft don't count.
-        let ok = sim.entities.values().any(|e| {
+        let ok = sim.substrate.entities.values().any(|e| {
             sim.interner.resolve(e.owner).eq_ignore_ascii_case(owner)
                 && e.category == EntityCategory::Structure
                 && e.building_up.is_none()
@@ -359,7 +359,7 @@ pub(super) fn effective_progress_rate_ppm_for_category(
     // effective_rate = power_speed / queue_time, also at 1M scale.
     let power_speed: u64 = owner_effective_production_speed_ppm(sim, rules, owner);
     let queue_time: u64 =
-        matching_factory_time_multiplier_ppm(&sim.entities, rules, owner, category, &sim.interner);
+        matching_factory_time_multiplier_ppm(&sim.substrate.entities, rules, owner, category, &sim.interner);
     // (power_speed / queue_time) * PRODUCTION_RATE_SCALE
     // = power_speed * PRODUCTION_RATE_SCALE / queue_time
     let rate: u64 = (u128::from(power_speed) * u128::from(PRODUCTION_RATE_SCALE)
@@ -407,7 +407,7 @@ fn effective_time_to_build_frames_for_object(
     time_to_build = apply_multiple_factory_scaling_ppm(
         time_to_build,
         rules.production.multiple_factory_ppm,
-        matching_factory_count_for_owner(&sim.entities, rules, owner, obj.category, &sim.interner),
+        matching_factory_count_for_owner(&sim.substrate.entities, rules, owner, obj.category, &sim.interner),
     );
     if obj.category == ObjectCategory::Building && obj.wall {
         // Wall coefficient is f32 in rules and only consumed by this UI-display

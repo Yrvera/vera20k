@@ -245,7 +245,7 @@ fn spawn_bolt(sim: &mut Simulation, rules: &RuleSet, rx: u16, ry: u16, owner: In
         let owner_str = sim.interner.resolve(owner).to_string();
         let impact_z = bridge_adjusted_impact_z(sim.resolved_terrain.as_ref(), rx, ry);
         let hits = apply_aoe_damage(
-            &sim.entities,
+            &sim.substrate.entities,
             rx,
             ry,
             rules.general.lightning_damage,
@@ -262,7 +262,7 @@ fn spawn_bolt(sim: &mut Simulation, rules: &RuleSet, rx: u16, ry: u16, owner: In
 
         // Apply damage to entities.
         for (stable_id, damage) in hits {
-            if let Some(entity) = sim.entities.get_mut(stable_id) {
+            if let Some(entity) = sim.substrate.entities.get_mut(stable_id) {
                 entity.health.current = entity.health.current.saturating_sub(damage);
                 entity.refresh_building_damage_state_gate(rules.general.condition_yellow_x1000);
             }
@@ -386,12 +386,12 @@ mod tests {
         spawn_bolt(&mut sim, &rules, 5, 5, owner);
 
         assert_eq!(
-            sim.entities.get(1).unwrap().health.current,
+            sim.substrate.entities.get(1).unwrap().health.current,
             100,
             "ground occupant under the bridge must not be hit by a deck strike"
         );
         assert_eq!(
-            sim.entities.get(2).unwrap().health.current,
+            sim.substrate.entities.get(2).unwrap().health.current,
             0,
             "bridge-deck occupant must be hit by a bridge-targeted Lightning strike"
         );
@@ -410,11 +410,11 @@ mod tests {
             current: 150,
             max: 200,
         };
-        sim.entities.insert(building);
+        sim.substrate.entities.insert(building);
 
         spawn_bolt(&mut sim, &rules, 5, 5, owner);
 
-        let building = sim.entities.get(10).expect("building remains in sim");
+        let building = sim.substrate.entities.get(10).expect("building remains in sim");
         assert_eq!(building.health.current, 50);
         assert!(building.building_damage_state_active);
     }
@@ -441,8 +441,8 @@ mod tests {
         bridge.on_bridge = true;
         bridge.position.z = 4;
 
-        sim.entities.insert(ground);
-        sim.entities.insert(bridge);
+        sim.substrate.entities.insert(ground);
+        sim.substrate.entities.insert(bridge);
         sim.substrate.occupancy.add(
             5,
             5,

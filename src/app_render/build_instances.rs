@@ -456,7 +456,7 @@ pub(super) fn update_minimap(state: &mut AppState, local_owner: &Option<String>)
         minimap.update_unit_dots(
             &state.gpu,
             &state.batch_renderer,
-            &sim.entities,
+            sim.entities(),
             &state.house_color_map,
             sim.tick,
             if state.sandbox_full_visibility {
@@ -639,7 +639,7 @@ fn compute_wall_autofill_cells(
             // Stop if a non-wall building occupies this cell (can't build through it).
             if let (Some(s), Some(r)) = (sim, rules) {
                 if crate::sim::production::structure_occupies_cell(
-                    &s.entities,
+                    s.entities(),
                     r,
                     cell.0,
                     cell.1,

@@ -14,6 +14,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::LogicVector;
+use crate::sim::entity_store::EntityStore;
 use crate::sim::occupancy::OccupancyGrid;
 
 /// Owns the active-object order and the substrate's monotonic counters. Field
@@ -37,6 +38,9 @@ pub(crate) struct ObjectSubstrate {
     /// appears in the serialized snapshot and does not enter the state hash directly.
     #[serde(skip)]
     pub(crate) occupancy: OccupancyGrid,
+    /// Plain-struct entity storage (`BTreeMap<u64, GameEntity>` + by_owner index).
+    /// The authoritative object store — serialized verbatim (NOT skipped).
+    pub(crate) entities: EntityStore,
 }
 
 impl ObjectSubstrate {
@@ -48,6 +52,7 @@ impl ObjectSubstrate {
             next_occupancy_enter_order: 1,
             logic: LogicVector::new(),
             occupancy: OccupancyGrid::new(),
+            entities: EntityStore::new(),
         }
     }
 }

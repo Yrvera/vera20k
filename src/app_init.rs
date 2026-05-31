@@ -192,7 +192,7 @@ fn collect_live_building_lights(
     let (Some(sim), Some(rules)) = (simulation, rules) else {
         return Vec::new();
     };
-    sim.entities
+    sim.entities()
         .values()
         .filter(|entity| {
             entity.category == crate::map::entities::EntityCategory::Structure

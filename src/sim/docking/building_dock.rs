@@ -76,7 +76,7 @@ pub fn tick_building_docks(sim: &mut Simulation, rules: &RuleSet) {
     // their depot reservation must release immediately so queued units can
     // be promoted without waiting through the death anim.
     let alive: BTreeSet<u64> = sim
-        .entities
+        .substrate.entities
         .values()
         .filter(|e| !e.dying)
         .map(|e| e.stable_id)
@@ -99,7 +99,7 @@ pub fn tick_building_docks(sim: &mut Simulation, rules: &RuleSet) {
     }
 
     let snapshots: Vec<DockSnapshot> = sim
-        .entities
+        .substrate.entities
         .values()
         .filter_map(|e| {
             let ds = e.dock_state.as_ref()?;
@@ -151,7 +151,7 @@ pub fn tick_building_docks(sim: &mut Simulation, rules: &RuleSet) {
         };
 
         // Verify depot still exists and is alive/friendly.
-        let depot_info = sim.entities.get(snap.dock_building_id).and_then(|depot| {
+        let depot_info = sim.substrate.entities.get(snap.dock_building_id).and_then(|depot| {
             if depot.health.current == 0 || depot.dying {
                 return None;
             }
@@ -274,7 +274,7 @@ pub fn tick_building_docks(sim: &mut Simulation, rules: &RuleSet) {
 
     // Phase 4: Apply mutations.
     for m in &mutations {
-        let Some(entity) = sim.entities.get_mut(m.id) else {
+        let Some(entity) = sim.substrate.entities.get_mut(m.id) else {
             continue;
         };
 

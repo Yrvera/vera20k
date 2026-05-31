@@ -134,13 +134,13 @@ fn clear_unload_cluster(snap: &mut MinerSnapshot) {
 }
 
 fn mark_refinery_contact(sim: &mut Simulation, miner_id: u64, ref_sid: u64) {
-    if let Some(entity) = sim.entities.get_mut(miner_id) {
+    if let Some(entity) = sim.substrate.entities.get_mut(miner_id) {
         entity.mark_live_contact_with(ref_sid);
     }
 }
 
 fn clear_refinery_contact(sim: &mut Simulation, miner_id: u64, ref_sid: u64) {
-    if let Some(entity) = sim.entities.get_mut(miner_id) {
+    if let Some(entity) = sim.substrate.entities.get_mut(miner_id) {
         entity.clear_live_contact_with(ref_sid);
     }
 }
@@ -415,7 +415,7 @@ fn resolve_refinery_cells(
     rules: &RuleSet,
     ref_sid: u64,
 ) -> Option<((u16, u16), (u16, u16), (u16, u16), usize)> {
-    let entity = sim.entities.get(ref_sid)?;
+    let entity = sim.substrate.entities.get(ref_sid)?;
     if entity.dying || entity.health.current == 0 {
         return None;
     }
@@ -445,7 +445,7 @@ fn unloading_class(rules: &RuleSet, type_id: &str) -> Option<String> {
 }
 
 fn mission_deploy_unload_building(sim: &Simulation, miner_id: u64) -> Option<u64> {
-    let miner = sim.entities.get(miner_id)?;
+    let miner = sim.substrate.entities.get(miner_id)?;
     if miner.position.rx == 0 {
         return None;
     }
@@ -458,7 +458,7 @@ fn mission_deploy_unload_building(sim: &Simulation, miner_id: u64) -> Option<u64
         .get(lookup_rx, lookup_ry)?
         .iter_layer(layer)
         .find_map(|occupant| {
-            let entity = sim.entities.get(occupant.entity_id)?;
+            let entity = sim.substrate.entities.get(occupant.entity_id)?;
             if entity.category == EntityCategory::Structure
                 && !entity.dying
                 && entity.health.current > 0
@@ -510,7 +510,7 @@ fn start_refinery_exit_force_track(
 }
 
 fn entity_full_speed(sim: &Simulation, rules: &RuleSet, entity_id: u64) -> SimFixed {
-    sim.entities
+    sim.substrate.entities
         .get(entity_id)
         .and_then(|entity| rules.object_case_insensitive(sim.interner.resolve(entity.type_ref)))
         .map(|obj| ra2_speed_to_leptons_per_second(obj.speed.max(1)))
@@ -525,12 +525,12 @@ pub(crate) fn interrupt_refinery_docked_miners(
     ref_sid: u64,
 ) -> usize {
     let candidates: Vec<(u64, bool)> = sim
-        .entities
+        .substrate.entities
         .keys_sorted()
         .iter()
         .copied()
         .filter_map(|entity_id| {
-            let Some(entity) = sim.entities.get(entity_id) else {
+            let Some(entity) = sim.substrate.entities.get(entity_id) else {
                 return None;
             };
             let Some(miner) = entity.miner.as_ref() else {
@@ -562,7 +562,7 @@ pub(crate) fn interrupt_refinery_docked_miners(
             .cancel_miner(ref_sid, entity_id);
         clear_refinery_contact(sim, entity_id, ref_sid);
         let speed = entity_full_speed(sim, rules, entity_id);
-        let Some(entity) = sim.entities.get_mut(entity_id) else {
+        let Some(entity) = sim.substrate.entities.get_mut(entity_id) else {
             continue;
         };
         let Some(miner) = entity.miner.as_mut() else {
@@ -610,7 +610,7 @@ fn abort_invalid_refinery(sim: &mut Simulation, snap: &mut MinerSnapshot, ref_si
         clear_refinery_contact(sim, snap.entity_id, ref_sid);
     }
 
-    if let Some(entity) = sim.entities.get_mut(snap.entity_id) {
+    if let Some(entity) = sim.substrate.entities.get_mut(snap.entity_id) {
         entity.display_type_override = None;
         entity.facing_target = None;
         entity.movement_target = None;
@@ -640,7 +640,7 @@ fn abort_missing_unload_building(sim: &mut Simulation, snap: &mut MinerSnapshot,
         .cancel_miner(ref_sid, snap.entity_id);
     clear_refinery_contact(sim, snap.entity_id, ref_sid);
 
-    if let Some(entity) = sim.entities.get_mut(snap.entity_id) {
+    if let Some(entity) = sim.substrate.entities.get_mut(snap.entity_id) {
         entity.facing_target = None;
         entity.movement_target = None;
         entity.drive_track = None;
@@ -796,7 +796,7 @@ fn phase_approach(
     {
         if let Some(grid) = path_grid {
             issue_move_if_idle(
-                &mut sim.entities,
+                &mut sim.substrate.entities,
                 grid,
                 snap.entity_id,
                 wait_queue,
@@ -841,7 +841,7 @@ fn phase_mission_enter(
         if !is_adjacent_or_at((snap.rx, snap.ry), wait_queue) {
             if let Some(grid) = path_grid {
                 issue_move_if_idle(
-                    &mut sim.entities,
+                    &mut sim.substrate.entities,
                     grid,
                     snap.entity_id,
                     wait_queue,
@@ -859,7 +859,7 @@ fn phase_mission_enter(
         (admission != ContactAdmission::Accepted && !already_entered) || !pad_clear_or_self;
 
     let moving = sim
-        .entities
+        .substrate.entities
         .get(snap.entity_id)
         .is_some_and(|e| e.movement_target.is_some());
 
@@ -879,10 +879,10 @@ fn phase_mission_enter(
         // Building 0x0E sends 0x12 with anchor+(3,1). The accepted cell is
         // inside the refinery footprint for stock GAREFN/NAREFN, so use the
         // direct move path already used for refinery pad entry.
-        if movement::issue_direct_move(&mut sim.entities, snap.entity_id, accepted_cell, snap.speed)
+        if movement::issue_direct_move(&mut sim.substrate.entities, snap.entity_id, accepted_cell, snap.speed)
         {
             if let Some(target) = sim
-                .entities
+                .substrate.entities
                 .get_mut(snap.entity_id)
                 .and_then(|entity| entity.movement_target.as_mut())
             {
@@ -896,14 +896,14 @@ fn phase_mission_enter(
 
 fn phase_awaiting_accepted_cell(sim: &mut Simulation, snap: &mut MinerSnapshot) {
     let moving = sim
-        .entities
+        .substrate.entities
         .get(snap.entity_id)
         .is_some_and(|e| e.movement_target.is_some());
     if moving {
         return;
     }
 
-    if let Some(entity) = sim.entities.get(snap.entity_id) {
+    if let Some(entity) = sim.substrate.entities.get(snap.entity_id) {
         snap.rx = entity.position.rx;
         snap.ry = entity.position.ry;
     }
@@ -916,14 +916,14 @@ fn phase_awaiting_accepted_cell(sim: &mut Simulation, snap: &mut MinerSnapshot) 
 
 fn phase_face_sync(sim: &mut Simulation, rules: &RuleSet, snap: &mut MinerSnapshot, ref_sid: u64) {
     let arrived = sim
-        .entities
+        .substrate.entities
         .get(snap.entity_id)
         .is_some_and(|e| e.movement_target.is_none());
     if !arrived {
         return;
     }
 
-    if let Some(entity) = sim.entities.get(snap.entity_id) {
+    if let Some(entity) = sim.substrate.entities.get(snap.entity_id) {
         snap.rx = entity.position.rx;
         snap.ry = entity.position.ry;
     }
@@ -952,7 +952,7 @@ fn phase_mission_queued(snap: &mut MinerSnapshot) {
 fn sync_dock_facing(sim: &mut Simulation, rules: &RuleSet, snap: &mut MinerSnapshot) -> bool {
     let rot = dock_pivot_rot_byte(sim, rules, snap);
     let binary_frame = sim.binary_frame;
-    let Some(entity) = sim.entities.get(snap.entity_id) else {
+    let Some(entity) = sim.substrate.entities.get(snap.entity_id) else {
         return false;
     };
 
@@ -975,7 +975,7 @@ fn sync_dock_facing(sim: &mut Simulation, rules: &RuleSet, snap: &mut MinerSnaps
 }
 
 fn start_unload_deploy(sim: &mut Simulation, rules: &RuleSet, snap: &mut MinerSnapshot) {
-    if let Some(entity) = sim.entities.get_mut(snap.entity_id) {
+    if let Some(entity) = sim.substrate.entities.get_mut(snap.entity_id) {
         if let Some(uc) = unloading_class(rules, sim.interner.resolve(snap.type_id)) {
             entity.display_type_override = Some(sim.interner.intern(&uc));
         }
@@ -1091,7 +1091,7 @@ fn phase_unloading(
         // work. The single GetOwner result also keys the purifier-count
         // lookup, so base credits and bonus always share one owner.
         let refinery_owner: String = sim
-            .entities
+            .substrate.entities
             .get(unload_building_id)
             .map(|b| sim.interner.resolve(b.owner).to_string())
             .expect("west-cell unload building should exist");
@@ -1155,7 +1155,7 @@ fn phase_deposit_cooldown(snap: &mut MinerSnapshot) {
 
 fn phase_departing(sim: &mut Simulation, _rules: &RuleSet, snap: &mut MinerSnapshot, ref_sid: u64) {
     let teleporting = sim
-        .entities
+        .substrate.entities
         .get(snap.entity_id)
         .is_some_and(|e| e.teleport_state.is_some());
     if teleporting {
@@ -1175,7 +1175,7 @@ fn phase_departing(sim: &mut Simulation, _rules: &RuleSet, snap: &mut MinerSnaps
         .release_contact(ref_sid, snap.entity_id);
     clear_refinery_contact(sim, snap.entity_id, ref_sid);
 
-    if let Some(entity) = sim.entities.get_mut(snap.entity_id) {
+    if let Some(entity) = sim.substrate.entities.get_mut(snap.entity_id) {
         entity.display_type_override = None;
         entity.movement_target = None;
         entity.drive_track = None;

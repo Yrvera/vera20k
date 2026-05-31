@@ -44,8 +44,8 @@ fn return_exceeds_too_far_threshold(
     refinery_sid: u64,
     threshold_cells: u16,
 ) -> Option<bool> {
-    let miner = sim.entities.get(miner_sid)?;
-    let refinery = sim.entities.get(refinery_sid)?;
+    let miner = sim.substrate.entities.get(miner_sid)?;
+    let refinery = sim.substrate.entities.get(refinery_sid)?;
     if refinery.dying || refinery.health.current == 0 {
         return None;
     }
@@ -108,14 +108,14 @@ pub(crate) fn tick_miners_with_overlay_registry(
     let keys: &[u64] = if live_order.is_empty() {
         // Focused unit tests often insert entities directly without going
         // through reveal/register. Preserve their old stable-id behavior.
-        fallback_keys = sim.entities.keys_sorted();
+        fallback_keys = sim.substrate.entities.keys_sorted();
         &fallback_keys
     } else {
         &live_order
     };
     let mut snapshots: Vec<MinerSnapshot> = Vec::new();
     for &id in keys {
-        let Some(entity) = sim.entities.get(id) else {
+        let Some(entity) = sim.substrate.entities.get(id) else {
             continue;
         };
         let Some(ref miner) = entity.miner else {
@@ -160,7 +160,7 @@ pub(crate) fn tick_miners_with_overlay_registry(
     // finishes, but their refinery reservation must release immediately so
     // queued miners can be promoted without waiting through the death anim.
     let alive_sids: BTreeSet<u64> = sim
-        .entities
+        .substrate.entities
         .values()
         .filter(|e| !e.dying)
         .map(|e| e.stable_id)
@@ -174,7 +174,7 @@ pub(crate) fn tick_miners_with_overlay_registry(
 
     // Phase 3: Write miner state back to EntityStore and flush debug events.
     for snap in &snapshots {
-        if let Some(entity) = sim.entities.get_mut(snap.entity_id) {
+        if let Some(entity) = sim.substrate.entities.get_mut(snap.entity_id) {
             entity.miner = Some(snap.miner.clone());
             for (from, to) in &snap.debug_events {
                 entity.push_debug_event(
@@ -200,7 +200,7 @@ pub(crate) fn tick_miners_with_overlay_registry(
     // Phase 4: Drive VoxelAnimation playing state from miner Harvest state.
     for snap in &snapshots {
         let is_harvesting: bool = snap.miner.state == MinerState::Harvest;
-        if let Some(entity) = sim.entities.get_mut(snap.entity_id) {
+        if let Some(entity) = sim.substrate.entities.get_mut(snap.entity_id) {
             if let Some(ref mut va) = entity.voxel_animation {
                 va.playing = is_harvesting;
                 if !is_harvesting {
@@ -214,7 +214,7 @@ pub(crate) fn tick_miners_with_overlay_registry(
     // Phase 4b: Drive HarvestOverlay (oregath.shp) visibility from miner Harvest state.
     for snap in &snapshots {
         let is_harvesting: bool = snap.miner.state == MinerState::Harvest;
-        if let Some(entity) = sim.entities.get_mut(snap.entity_id) {
+        if let Some(entity) = sim.substrate.entities.get_mut(snap.entity_id) {
             if let Some(ref mut ho) = entity.harvest_overlay {
                 if is_harvesting && !ho.visible {
                     ho.visible = true;
@@ -240,7 +240,7 @@ fn process_miner(
     snap: &mut MinerSnapshot,
 ) {
     if sim
-        .entities
+        .substrate.entities
         .get(snap.entity_id)
         .is_some_and(|entity| entity.forced_drive_track.is_some())
     {
@@ -300,7 +300,7 @@ fn build_scan_filter<'a>(
     path_grid: Option<&'a PathGrid>,
     snap: &MinerSnapshot,
 ) -> Option<Box<dyn Fn((u16, u16)) -> bool + 'a>> {
-    let entity = sim.entities.get(snap.entity_id);
+    let entity = sim.substrate.entities.get(snap.entity_id);
     let mz = entity
         .and_then(|e| e.locomotor.as_ref())
         .map(|loc| loc.movement_zone)
@@ -456,7 +456,7 @@ fn handle_move_to_ore(
     // (50% translucent). Transitioning to Harvest during delay would skip
     // the warp-in visual.
     let has_teleport = sim
-        .entities
+        .substrate.entities
         .get(snap.entity_id)
         .is_some_and(|e| e.teleport_state.is_some());
     if has_teleport {
@@ -485,7 +485,7 @@ fn handle_move_to_ore(
     if target != current_target {
         snap.miner.target_ore_cell = Some(target);
         // Clear existing movement so it gets re-issued to the new target.
-        if let Some(entity) = sim.entities.get_mut(snap.entity_id) {
+        if let Some(entity) = sim.substrate.entities.get_mut(snap.entity_id) {
             entity.movement_target = None;
         }
     }
@@ -501,7 +501,7 @@ fn handle_move_to_ore(
     // Check if entity still has an active movement target (may have just
     // been cleared above on retarget).
     let has_movement = sim
-        .entities
+        .substrate.entities
         .get(snap.entity_id)
         .is_some_and(|e| e.movement_target.is_some());
     // Adjacent to ore? The passability matrix blocks Tiberium terrain for
@@ -515,7 +515,7 @@ fn handle_move_to_ore(
 
     if dx <= 1 && dy <= 1 {
         if !has_movement {
-            movement::issue_direct_move(&mut sim.entities, snap.entity_id, target, snap.speed);
+            movement::issue_direct_move(&mut sim.substrate.entities, snap.entity_id, target, snap.speed);
         }
         return;
     }
@@ -525,9 +525,9 @@ fn handle_move_to_ore(
     // movement tick doesn't block at Tiberium cells along the path.
     // Harvesters must be able to traverse ore fields freely.
     if !has_movement && let Some(grid) = path_grid {
-        issue_move_if_idle(&mut sim.entities, grid, snap.entity_id, target, snap.speed);
+        issue_move_if_idle(&mut sim.substrate.entities, grid, snap.entity_id, target, snap.speed);
         // Mark the newly created movement as terrain-cost-exempt.
-        if let Some(entity) = sim.entities.get_mut(snap.entity_id)
+        if let Some(entity) = sim.substrate.entities.get_mut(snap.entity_id)
             && let Some(ref mut mt) = entity.movement_target
         {
             mt.ignore_terrain_cost = true;
@@ -660,7 +660,7 @@ fn handle_return(
     snap: &mut MinerSnapshot,
 ) {
     let has_teleport = sim
-        .entities
+        .substrate.entities
         .get(snap.entity_id)
         .is_some_and(|e| e.teleport_state.is_some());
     if has_teleport {
@@ -711,7 +711,7 @@ fn handle_return(
     };
 
     let moving = sim
-        .entities
+        .substrate.entities
         .get(snap.entity_id)
         .is_some_and(|entity| entity.movement_target.is_some());
     if !moving && try_issue_chrono_far_return_teleport(sim, rules, config, path_grid, snap, ref_sid)
@@ -730,7 +730,7 @@ fn handle_return(
     let contact = if snap.miner.kind == MinerKind::Chrono {
         at_dock
     } else {
-        let stopped_close_enough = sim.entities.get(snap.entity_id).is_some_and(|entity| {
+        let stopped_close_enough = sim.substrate.entities.get(snap.entity_id).is_some_and(|entity| {
             entity.movement_target.is_none()
                 && is_within_close_enough((snap.rx, snap.ry), dock, rules.general.close_enough)
         });
@@ -746,7 +746,7 @@ fn handle_return(
     }
 
     if let Some(grid) = path_grid {
-        issue_move_if_idle(&mut sim.entities, grid, snap.entity_id, dock, snap.speed);
+        issue_move_if_idle(&mut sim.substrate.entities, grid, snap.entity_id, dock, snap.speed);
     }
 }
 
@@ -766,7 +766,7 @@ fn handle_forced_return(
     snap: &mut MinerSnapshot,
 ) {
     let has_teleport = sim
-        .entities
+        .substrate.entities
         .get(snap.entity_id)
         .is_some_and(|e| e.teleport_state.is_some());
     if has_teleport {
@@ -934,7 +934,7 @@ fn try_begin_close_return_radio(
             .dock_reservations
             .hello_or_wait(ref_sid, snap.entity_id, dock_capacity);
 
-    if let Some(entity) = sim.entities.get_mut(snap.entity_id) {
+    if let Some(entity) = sim.substrate.entities.get_mut(snap.entity_id) {
         entity.movement_target = None;
     }
 
@@ -953,7 +953,7 @@ fn try_begin_close_return_radio(
             && !is_adjacent_or_at((snap.rx, snap.ry), staging)
             && let Some(grid) = path_grid
         {
-            issue_move_if_idle(&mut sim.entities, grid, snap.entity_id, staging, snap.speed);
+            issue_move_if_idle(&mut sim.substrate.entities, grid, snap.entity_id, staging, snap.speed);
         }
     }
 
@@ -988,7 +988,7 @@ fn try_issue_chrono_far_return_teleport(
     };
 
     let issued = movement::set_destination_for_teleporter_entity(
-        &mut sim.entities,
+        &mut sim.substrate.entities,
         path_grid,
         snap.entity_id,
         staging,
@@ -1048,7 +1048,7 @@ fn try_issue_standard_far_return_drive(
         return false;
     };
 
-    issue_move_if_idle(&mut sim.entities, grid, snap.entity_id, staging, snap.speed);
+    issue_move_if_idle(&mut sim.substrate.entities, grid, snap.entity_id, staging, snap.speed);
     snap.miner.state = MinerState::ReturnToRefinery;
     true
 }
@@ -1097,7 +1097,7 @@ fn find_nearest_refinery(
     from: (u16, u16),
 ) -> Option<(u64, (u16, u16))> {
     let mut best: Option<(u32, u64, u16, u16)> = None;
-    for entity in sim.entities.values() {
+    for entity in sim.substrate.entities.values() {
         let e_owner = sim.interner.resolve(entity.owner);
         let e_type = sim.interner.resolve(entity.type_ref);
         if entity.category != EntityCategory::Structure
@@ -1138,7 +1138,7 @@ fn find_nearest_refinery(
 
 /// Resolve a refinery's dock cell from its stable_id.
 fn refinery_dock_for_sid(sim: &Simulation, rules: &RuleSet, ref_sid: u64) -> Option<(u16, u16)> {
-    let entity = sim.entities.get(ref_sid)?;
+    let entity = sim.substrate.entities.get(ref_sid)?;
     if entity.dying || entity.health.current == 0 {
         return None;
     }
@@ -1161,7 +1161,7 @@ fn refinery_dock_capacity_for_sid(
     rules: &RuleSet,
     ref_sid: u64,
 ) -> Option<usize> {
-    let entity = sim.entities.get(ref_sid)?;
+    let entity = sim.substrate.entities.get(ref_sid)?;
     if entity.dying || entity.health.current == 0 {
         return None;
     }
@@ -1179,7 +1179,7 @@ fn chrono_return_staging_cell_for_sid(
     ref_sid: u64,
     path_grid: Option<&PathGrid>,
 ) -> Option<(u16, u16)> {
-    let entity = sim.entities.get(ref_sid)?;
+    let entity = sim.substrate.entities.get(ref_sid)?;
     let obj = rules.object_case_insensitive(sim.interner.resolve(entity.type_ref));
     let (w, h) = obj
         .map(|o| foundation_dimensions(&o.foundation))
@@ -1434,7 +1434,7 @@ pub(crate) fn player_has_purifier(sim: &Simulation, rules: &RuleSet, owner: &str
 /// Miner deposit path. The bonus is `count × PurifierBonus × amount`, so
 /// every real purifier stacks the bonus linearly.
 pub(crate) fn count_purifiers_for_owner(sim: &Simulation, rules: &RuleSet, owner: &str) -> i32 {
-    sim.entities
+    sim.substrate.entities
         .values()
         .filter(|e| {
             e.category == EntityCategory::Structure

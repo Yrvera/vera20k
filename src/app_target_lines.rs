@@ -120,7 +120,7 @@ pub(crate) fn build_target_line_instances(
     }
 
     let mut instances = Vec::new();
-    for entity in sim.entities.values() {
+    for entity in sim.entities().values() {
         let Some(line) = selected_action_line_for_entity(entity, sim, height_map) else {
             continue;
         };
@@ -145,7 +145,7 @@ pub(crate) fn build_factory_rally_line_instances(
         return Vec::new();
     };
     let mut instances = Vec::new();
-    for entity in sim.entities.values() {
+    for entity in sim.entities().values() {
         if !entity.selected || entity.category != EntityCategory::Structure {
             continue;
         }
@@ -219,7 +219,7 @@ fn resolve_attack_target_point(
     height_map: &BTreeMap<(u16, u16), u8>,
 ) -> Option<ScreenPoint> {
     match attack.target {
-        TargetKind::Entity(target_id) => sim.entities.get(target_id).map(|target| ScreenPoint {
+        TargetKind::Entity(target_id) => sim.entities().get(target_id).map(|target| ScreenPoint {
             x: target.position.screen_x,
             y: target.position.screen_y,
         }),
@@ -240,7 +240,7 @@ fn resolve_navigation_target_point(
         }
         NavTargetRef::Entity { id }
         | NavTargetRef::Object { id }
-        | NavTargetRef::Building { id } => sim.entities.get(id).map(|target| ScreenPoint {
+        | NavTargetRef::Building { id } => sim.entities().get(id).map(|target| ScreenPoint {
             x: target.position.screen_x,
             y: target.position.screen_y,
         }),
@@ -401,8 +401,8 @@ mod tests {
         });
         unit.attack_target = Some(AttackTarget::new(2));
         let target = GameEntity::test_default(2, "HTNK", "Soviet", 14, 10);
-        sim.entities.insert(unit);
-        sim.entities.insert(target);
+        sim.entities_mut().insert(unit);
+        sim.entities_mut().insert(target);
         sim
     }
 
@@ -413,7 +413,7 @@ mod tests {
         if let Some((rx, ry)) = nav_com {
             unit.navigation.nav_com = Some(NavTargetRef::cell(rx, ry));
         }
-        sim.entities.insert(unit);
+        sim.entities_mut().insert(unit);
         sim
     }
 
@@ -447,8 +447,8 @@ mod tests {
         power.position.rx = 12;
         power.rally_target = Some((16, 10));
         power.position.refresh_screen_coords();
-        sim.entities.insert(factory);
-        sim.entities.insert(power);
+        sim.entities_mut().insert(factory);
+        sim.entities_mut().insert(power);
         sim
     }
 
@@ -506,7 +506,7 @@ mod tests {
     #[test]
     fn selected_action_attack_target_wins_over_movement() {
         let sim = sim_with_selected_unit_that_has_attack_and_move();
-        let target = sim.entities.get(2).unwrap();
+        let target = sim.entities().get(2).unwrap();
         let lines = build_target_line_instances(
             &active_line_state_for_tick(sim.tick),
             Some(&sim),
@@ -525,7 +525,7 @@ mod tests {
     #[test]
     fn selected_action_line_uses_navcom_without_movement_target() {
         let sim = sim_with_selected_unit_navcom(Some((21, 22)));
-        let unit = sim.entities.get(1).unwrap();
+        let unit = sim.entities().get(1).unwrap();
         let line = selected_action_line_for_entity(unit, &sim, &BTreeMap::new()).unwrap();
         assert_eq!(
             line.end,
@@ -536,10 +536,10 @@ mod tests {
     #[test]
     fn selected_action_line_uses_navqueue_last_when_navcom_exists() {
         let mut sim = sim_with_selected_unit_navcom(Some((21, 22)));
-        let unit = sim.entities.get_mut(1).unwrap();
+        let unit = sim.entities_mut().get_mut(1).unwrap();
         unit.navigation.nav_queue.push(NavTargetRef::cell(30, 31));
         unit.navigation.nav_queue.push(NavTargetRef::cell(32, 33));
-        let unit = sim.entities.get(1).unwrap();
+        let unit = sim.entities().get(1).unwrap();
         let line = selected_action_line_for_entity(unit, &sim, &BTreeMap::new()).unwrap();
         assert_eq!(
             line.end,
@@ -550,13 +550,13 @@ mod tests {
     #[test]
     fn selected_action_line_navqueue_without_navcom_does_not_draw() {
         let mut sim = sim_with_selected_unit_navcom(None);
-        sim.entities
+        sim.entities_mut()
             .get_mut(1)
             .unwrap()
             .navigation
             .nav_queue
             .push(NavTargetRef::cell(30, 31));
-        let unit = sim.entities.get(1).unwrap();
+        let unit = sim.entities().get(1).unwrap();
         assert!(selected_action_line_for_entity(unit, &sim, &BTreeMap::new()).is_none());
     }
 

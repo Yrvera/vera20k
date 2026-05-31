@@ -268,8 +268,6 @@ pub struct SimFireEvent {
 pub struct Simulation {
     /// String interner for owner/type_ref — zero-cost ID clones instead of heap Strings.
     pub interner: crate::sim::intern::StringInterner,
-    /// Plain-struct entity storage.
-    pub entities: EntityStore,
     /// Credits, build queue state, and rally points.
     pub production: ProductionState,
     /// Current simulation tick (starts at 0, increments after each advance_tick).
@@ -465,7 +463,6 @@ impl Simulation {
     pub fn with_seed(seed: u64) -> Self {
         let out = Self {
             interner: crate::sim::intern::StringInterner::new(),
-            entities: EntityStore::new(),
             production: ProductionState::default(),
             tick: 0,
             total_sim_ms: 0,
@@ -587,6 +584,26 @@ impl Simulation {
         &mut self.substrate.occupancy
     }
 
+    /// The entity store. Read access for systems above sim/.
+    pub fn entities(&self) -> &EntityStore {
+        &self.substrate.entities
+    }
+
+    /// Mutable entity-store access for above-sim callers.
+    pub fn entities_mut(&mut self) -> &mut EntityStore {
+        &mut self.substrate.entities
+    }
+
+    /// Disjoint access to the entity store (mutable) and the interner (shared)
+    /// for the few above-sim callers that need both at once. The field-level
+    /// disjoint borrow that made this trivial when `entities` was a sibling
+    /// field of `interner` is no longer reachable from outside sim/.
+    pub fn entities_mut_and_interner(
+        &mut self,
+    ) -> (&mut EntityStore, &crate::sim::intern::StringInterner) {
+        (&mut self.substrate.entities, &self.interner)
+    }
+
     /// Resolve an InternedId back to its display string.
     #[inline]
     pub fn resolve(&self, id: crate::sim::intern::InternedId) -> &str {
@@ -705,7 +722,7 @@ impl Simulation {
 
     /// Native Reveal's append: +0x98 guard → tail-append → set flag. Idempotent.
     pub(crate) fn register_live_object(&mut self, stable_id: u64) {
-        match self.entities.get_mut(stable_id) {
+        match self.substrate.entities.get_mut(stable_id) {
             Some(e) if !e.in_logic_vector => e.in_logic_vector = true,
             _ => return, // absent, or already a member (idempotent)
         }
@@ -714,7 +731,7 @@ impl Simulation {
 
     /// Native Conceal's remove: gate on flag → clear flag → compacting remove.
     pub(crate) fn unregister_live_object(&mut self, stable_id: u64) {
-        if let Some(e) = self.entities.get_mut(stable_id) {
+        if let Some(e) = self.substrate.entities.get_mut(stable_id) {
             if !e.in_logic_vector {
                 return; // not a member — nothing to remove
             }
@@ -744,7 +761,7 @@ impl Simulation {
     }
 
     pub(crate) fn add_entity_occupancy(&mut self, stable_id: u64) {
-        let Some(entity) = self.entities.get_mut(stable_id) else {
+        let Some(entity) = self.substrate.entities.get_mut(stable_id) else {
             return;
         };
         if entity.passenger_role.is_inside_transport() {
@@ -770,7 +787,7 @@ impl Simulation {
     }
 
     pub(crate) fn remove_entity_occupancy(&mut self, stable_id: u64) {
-        let Some(entity) = self.entities.get(stable_id) else {
+        let Some(entity) = self.substrate.entities.get(stable_id) else {
             return;
         };
         for (rx, ry) in entity_occupancy_cells(entity) {
@@ -789,7 +806,7 @@ impl Simulation {
         for &id in order {
             debug_assert!(seen.insert(id), "logic order has duplicate id {id}");
         }
-        let flagged = self.entities.values().filter(|e| e.in_logic_vector).count();
+        let flagged = self.substrate.entities.values().filter(|e| e.in_logic_vector).count();
         debug_assert_eq!(
             order.len(),
             flagged,
@@ -835,7 +852,7 @@ impl Simulation {
     #[cfg(test)]
     pub(crate) fn set_logic_order_for_test(&mut self, order: Vec<u64>) {
         for &id in &order {
-            if let Some(e) = self.entities.get_mut(id) {
+            if let Some(e) = self.substrate.entities.get_mut(id) {
                 e.in_logic_vector = true;
             }
         }
@@ -878,7 +895,7 @@ impl Simulation {
     /// Also removes the entity from every occupied foundation cell.
     pub(crate) fn uninit(&mut self, stable_id: u64) {
         // Gather entity data before any mutable borrows.
-        let entity_info = self.entities.get(stable_id).map(|e| {
+        let entity_info = self.substrate.entities.get(stable_id).map(|e| {
             (
                 e.dying,
                 self.interner.resolve(e.owner).to_string(),
@@ -893,7 +910,7 @@ impl Simulation {
         }
         self.clear_radio_contacts_for(stable_id);
         self.conceal(stable_id); // leave the active order before freeing the slot
-        self.entities.remove(stable_id); // then free the slot
+        self.substrate.entities.remove(stable_id); // then free the slot
     }
 
     /// Remove an entity from the world. Retained name for existing callers and
@@ -903,7 +920,7 @@ impl Simulation {
     }
 
     pub(crate) fn clear_radio_contacts_for(&mut self, stable_id: u64) {
-        self.entities.clear_radio_contacts_for(stable_id);
+        self.substrate.entities.clear_radio_contacts_for(stable_id);
     }
 
     /// Check each house for defeat and game completion
@@ -975,7 +992,7 @@ impl Simulation {
             return false;
         };
 
-        self.entities.values().any(|entity| {
+        self.substrate.entities.values().any(|entity| {
             entity.owner == owner
                 && entity.category == EntityCategory::Unit
                 && !entity.dying
@@ -1018,7 +1035,7 @@ impl Simulation {
         self.terrain_costs = terrain_costs;
 
         // 2. Rebuild cached screen coords for all entities
-        for entity in self.entities.values_mut() {
+        for entity in self.substrate.entities.values_mut() {
             entity.position.refresh_screen_coords();
         }
 
@@ -1027,7 +1044,7 @@ impl Simulation {
 
         // 3. Rebuild persistent occupancy from entity positions.
         // OccupancyGrid is #[serde(skip)] — starts empty after deserialization.
-        self.substrate.occupancy = OccupancyGrid::rebuild(&self.entities);
+        self.substrate.occupancy = OccupancyGrid::rebuild(&self.substrate.entities);
     }
 
     /// Rebuild LogicClass membership flags from the restored active order.
@@ -1036,11 +1053,11 @@ impl Simulation {
     /// is authoritative. Idempotent — safe to call after any load. Standalone (no
     /// heavy load-arg dependency) so save/load membership is unit-testable.
     pub(crate) fn rebuild_logic_membership(&mut self) {
-        for entity in self.entities.values_mut() {
+        for entity in self.substrate.entities.values_mut() {
             entity.in_logic_vector = false;
         }
         for &id in &self.substrate.logic.snapshot() {
-            if let Some(entity) = self.entities.get_mut(id) {
+            if let Some(entity) = self.substrate.entities.get_mut(id) {
                 entity.in_logic_vector = true;
             }
         }
@@ -1187,7 +1204,7 @@ impl Simulation {
     /// caller continues without panicking.
     fn remove_wall_entity_at(&mut self, rx: u16, ry: u16, rules: &RuleSet) {
         let interner = &self.interner;
-        let to_remove: Option<u64> = self.entities.iter_sorted().find_map(|(id, e)| {
+        let to_remove: Option<u64> = self.substrate.entities.iter_sorted().find_map(|(id, e)| {
             if e.position.rx == rx
                 && e.position.ry == ry
                 && rules
@@ -1201,7 +1218,7 @@ impl Simulation {
         });
 
         if let Some(id) = to_remove {
-            self.entities.remove(id);
+            self.substrate.entities.remove(id);
         } else {
             log::warn!("apply_wall_damage_events: no wall entity at ({rx}, {ry})");
         }
@@ -1233,7 +1250,7 @@ impl Simulation {
 
         vision::recompute_owner_visibility_in_place(
             &mut self.fog,
-            &self.entities,
+            &self.substrate.entities,
             path_grid,
             &self.house_alliances,
             config,
@@ -1246,7 +1263,7 @@ impl Simulation {
             let mut spy_sat_owners: Vec<InternedId> = Vec::new();
             let mut gap_generators: Vec<(InternedId, u16, u16)> = Vec::new();
 
-            for entity in self.entities.values() {
+            for entity in self.substrate.entities.values() {
                 if entity.category != EntityCategory::Structure {
                     continue;
                 }
@@ -1303,7 +1320,7 @@ impl Simulation {
             }
             use std::collections::BTreeMap as DiagMap;
             let mut entity_stats: DiagMap<String, (u32, u16, u16, u16, u16)> = DiagMap::new();
-            for entity in self.entities.values() {
+            for entity in self.substrate.entities.values() {
                 let entry = entity_stats
                     .entry(self.interner.resolve(entity.owner).to_string())
                     .or_insert((0, u16::MAX, u16::MAX, 0, 0));
@@ -1330,10 +1347,10 @@ impl Simulation {
     /// Advance build-up animations: increment elapsed ticks, remove when done.
     fn tick_building_up(&mut self) {
         // Collect keys first to allow &mut iteration via get_mut().
-        let keys = self.entities.keys_sorted();
+        let keys = self.substrate.entities.keys_sorted();
         let mut finished: Vec<u64> = Vec::new();
         for &sid in &keys {
-            if let Some(entity) = self.entities.get_mut(sid) {
+            if let Some(entity) = self.substrate.entities.get_mut(sid) {
                 if let Some(ref mut bu) = entity.building_up {
                     bu.elapsed_ticks = bu.elapsed_ticks.saturating_add(1);
                     if bu.elapsed_ticks >= bu.total_ticks {
@@ -1343,7 +1360,7 @@ impl Simulation {
             }
         }
         for sid in finished {
-            if let Some(entity) = self.entities.get_mut(sid) {
+            if let Some(entity) = self.substrate.entities.get_mut(sid) {
                 entity.building_up = None;
             }
         }
@@ -1353,10 +1370,10 @@ impl Simulation {
     /// building and spawn the mobile unit (e.g., ConYard → MCV).
     /// Returns true if any entities were spawned (triggers atlas refresh).
     fn tick_building_down(&mut self, rules: Option<&RuleSet>) -> bool {
-        let keys = self.entities.keys_sorted();
+        let keys = self.substrate.entities.keys_sorted();
         let mut finished: Vec<u64> = Vec::new();
         for &sid in &keys {
-            if let Some(entity) = self.entities.get_mut(sid) {
+            if let Some(entity) = self.substrate.entities.get_mut(sid) {
                 if let Some(ref mut bd) = entity.building_down {
                     bd.elapsed_ticks = bd.elapsed_ticks.saturating_add(1);
                     if bd.elapsed_ticks >= bd.total_ticks {
@@ -1368,7 +1385,7 @@ impl Simulation {
         let any_finished = !finished.is_empty();
         for sid in finished {
             // Extract spawn data before despawning.
-            let spawn_data = self.entities.get(sid).and_then(|e| {
+            let spawn_data = self.substrate.entities.get(sid).and_then(|e| {
                 e.building_down.as_ref().map(|bd| {
                     (
                         bd.spawn_type,
@@ -1393,7 +1410,7 @@ impl Simulation {
             if let Some(new_sid) =
                 self.spawn_object_at_height(&unit_type_str, &owner_str, rx, ry, 0, z, rules)
             {
-                if let Some(ge) = self.entities.get_mut(new_sid) {
+                if let Some(ge) = self.substrate.entities.get_mut(new_sid) {
                     ge.selected = was_selected;
                 }
             }
@@ -1539,7 +1556,7 @@ impl Simulation {
         // Enable via OCCUPANCY_DEBUG=1 environment variable for focused debugging.
         #[cfg(debug_assertions)]
         if std::env::var("OCCUPANCY_DEBUG").is_ok() {
-            let expected = OccupancyGrid::rebuild(&self.entities);
+            let expected = OccupancyGrid::rebuild(&self.substrate.entities);
             self.substrate.occupancy.debug_assert_matches(&expected);
         }
 
@@ -1571,7 +1588,7 @@ impl Simulation {
         let execute_tick = self.tick.saturating_add(1);
         // Rebuild per-owner entity index. Cheap linear scan; captures any
         // owner mutations from the previous tick (engineer capture, mind control).
-        self.entities.rebuild_owner_index();
+        self.substrate.entities.rebuild_owner_index();
         // ===== SPINE REGION: EARLY — command application =====
         // gamemd applies player/network input before LogicClass::PerTickUpdate.
         // Native-spine slot: pre-object. (Step 3a skeleton: extracted to a region
@@ -1586,7 +1603,7 @@ impl Simulation {
         // PRODUCES: updated entity positions, crush/bump effects, drive track state.
         let movement_order = self.live_object_order_snapshot();
         let movement_stats = movement::tick_movement_with_grids(
-            &mut self.entities,
+            &mut self.substrate.entities,
             &movement_order,
             path_grid,
             &self.terrain_costs,
@@ -1611,7 +1628,7 @@ impl Simulation {
         );
         if let Some(rules) = rules {
             crate::sim::gate_runtime::tick_gate_runtimes(
-                &mut self.entities,
+                &mut self.substrate.entities,
                 &self.substrate.occupancy,
                 rules,
                 &self.interner,
@@ -1623,7 +1640,7 @@ impl Simulation {
         // INDEPENDENT OF: ground movement (air units bypass A* and occupancy).
         let special_movement_order = self.live_object_order_snapshot();
         air_movement::tick_air_movement(
-            &mut self.entities,
+            &mut self.substrate.entities,
             &special_movement_order,
             tick_ms,
             self.tick,
@@ -1637,7 +1654,7 @@ impl Simulation {
                 warp_out_rate_ms: rules.general.warp_out.rate_ms,
             };
             teleport_movement::tick_teleport_movement(
-                &mut self.entities,
+                &mut self.substrate.entities,
                 &mut self.substrate.occupancy,
                 &special_movement_order,
                 tick_ms,
@@ -1646,7 +1663,7 @@ impl Simulation {
             );
         } else {
             teleport_movement::tick_teleport_movement(
-                &mut self.entities,
+                &mut self.substrate.entities,
                 &mut self.substrate.occupancy,
                 &special_movement_order,
                 tick_ms,
@@ -1655,14 +1672,14 @@ impl Simulation {
             );
         }
         tunnel_movement::tick_tunnel_movement(
-            &mut self.entities,
+            &mut self.substrate.entities,
             &mut self.substrate.occupancy,
             &special_movement_order,
             tick_ms,
             self.tick,
         );
         let _rocket_detonations = rocket_movement::tick_rocket_movement(
-            &mut self.entities,
+            &mut self.substrate.entities,
             &special_movement_order,
             tick_ms,
             self.tick,
@@ -1671,26 +1688,26 @@ impl Simulation {
         // phase as rocket_movement; detonation list is currently unused — the
         // production projectile-spawn dispatch lands in a separate follow-up.
         let _homing_detonations = homing_movement::tick_homing_movement(
-            &mut self.entities,
+            &mut self.substrate.entities,
             &special_movement_order,
             tick_ms,
             self.tick,
         );
         droppod_movement::tick_droppod_movement(
-            &mut self.entities,
+            &mut self.substrate.entities,
             &special_movement_order,
             tick_ms,
             self.tick,
         );
         if let Some(rules) = rules {
             parachute_descent::tick_parachute_descent(
-                &mut self.entities,
+                &mut self.substrate.entities,
                 tick_ms,
                 rules.general.parachute_max_fall_rate,
                 self.tick,
             );
         }
-        movement::tick_locomotor_piggyback_restore(&mut self.entities);
+        movement::tick_locomotor_piggyback_restore(&mut self.substrate.entities);
 
         // --- Phase 2.5: Body rocking + slope-transition advance ---
         // DEPENDS ON: all movement above (slope_type lookups must see the
@@ -1703,7 +1720,7 @@ impl Simulation {
         // (Task 19); swap in a real hook then.
         if let (Some(rules), Some(terrain)) = (rules, self.resolved_terrain.as_ref()) {
             let mut hook = crate::sim::rocking::self_destruct::NoopSelfDestruct;
-            crate::sim::rocking::tick(&mut self.entities, terrain, rules, &mut hook);
+            crate::sim::rocking::tick(&mut self.substrate.entities, terrain, rules, &mut hook);
         }
 
         // Aircraft mission state machines — between movement and combat.
@@ -1723,11 +1740,11 @@ impl Simulation {
                     .unwrap_or(8);
                 // Collect positions to avoid borrow conflict (read entities, write world_effects).
                 let wake_positions: Vec<(u16, u16, u8)> = self
-                    .entities
+                    .substrate.entities
                     .keys_sorted()
                     .iter()
                     .filter_map(|id| {
-                        let e = self.entities.get(*id)?;
+                        let e = self.substrate.entities.get(*id)?;
                         if e.movement_target.is_none() {
                             return None;
                         }
@@ -1782,7 +1799,7 @@ impl Simulation {
             // PRODUCES: power_states used by combat (cloaking) and production (build speed).
             let _power_events = power_system::tick_power_states(
                 &mut self.power_states,
-                &mut self.entities,
+                &mut self.substrate.entities,
                 rules,
                 tick_ms,
                 &self.interner,
@@ -1799,11 +1816,11 @@ impl Simulation {
             //   Deploying/Undeploying this tick).
             // PRODUCES: phase advances (Deploying→Deployed, Undeploying→None)
             //   that combat (Phase 5) and animation (post-tick) read this tick.
-            crate::sim::deploy::tick_deploy_state(&mut self.entities);
+            crate::sim::deploy::tick_deploy_state(&mut self.substrate.entities);
 
             // Infantry fear decay and runtime prone transitions happen after
             // deploy state and before combat consumes the prone bit.
-            crate::sim::infantry::tick_fear_for_entities(&mut self.entities, rules, &self.interner);
+            crate::sim::infantry::tick_fear_for_entities(&mut self.substrate.entities, rules, &self.interner);
 
             // --- Phase 5: Combat + Turret rotation ---
             // DEPENDS ON: vision/fog (targeting uses fog state), power (cloaking).
@@ -1835,7 +1852,7 @@ impl Simulation {
             // with the &mut self.entities borrow below.
             let logic_order = self.live_object_order_snapshot();
             let combat_result = combat::tick_combat_with_fog(
-                &mut self.entities,
+                &mut self.substrate.entities,
                 &mut self.substrate.occupancy,
                 rules,
                 &mut self.interner,
@@ -1852,7 +1869,7 @@ impl Simulation {
                 &logic_order,
             );
             turret::tick_turret_rotation(
-                &mut self.entities,
+                &mut self.substrate.entities,
                 rules,
                 self.binary_frame,
                 &self.interner,
@@ -1862,7 +1879,7 @@ impl Simulation {
                 .despawned_ids
                 .iter()
                 .filter_map(|&dead_id| {
-                    self.entities
+                    self.substrate.entities
                         .get(dead_id)
                         .map(|entity| (entity.owner, entity.category))
                 })
@@ -2058,7 +2075,7 @@ impl Simulation {
             // --- Phase 6: Retaliation + Passengers ---
             // DEPENDS ON: combat (sets last_attacker_id read by retaliation).
             let logic_order = self.live_object_order_snapshot();
-            combat::tick_retaliation(&mut self.entities, rules, &self.interner, &logic_order);
+            combat::tick_retaliation(&mut self.substrate.entities, rules, &self.interner, &logic_order);
             passenger_ownership_changed = passenger::tick_passenger_system(self, rules);
             self.tick_order_intents_post_combat(path_grid, Some(rules));
             // --- Phase 7: Scatter + Production + Repairs + Docks + Ore ---
@@ -2155,7 +2172,7 @@ impl Simulation {
                 )
                 .with_growth_queue(&mut production.ore_growth_state, self.binary_frame)
                 .with_spawning_terrain_cells(&production.tiberium_spawning_terrain_cells)
-                .with_live_object_context(&self.entities, &self.substrate.occupancy, rules, &self.interner)
+                .with_live_object_context(&self.substrate.entities, &self.substrate.occupancy, rules, &self.interner)
                 .with_validation_context(
                     self.resolved_terrain.as_ref(),
                     overlay_registry,

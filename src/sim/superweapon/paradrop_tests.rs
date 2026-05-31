@@ -182,14 +182,14 @@ fn tick_n(sim: &mut Simulation, rules: &RuleSet, path_grid: &PathGrid, n: u32) {
 }
 
 fn count_descending_infantry(sim: &Simulation) -> usize {
-    sim.entities
+    sim.substrate.entities
         .values()
         .filter(|e| e.parachute_state.is_some())
         .count()
 }
 
 fn find_pdplane(sim: &Simulation) -> Option<u64> {
-    sim.entities
+    sim.substrate.entities
         .values()
         .find(|e| {
             sim.interner
@@ -201,7 +201,7 @@ fn find_pdplane(sim: &Simulation) -> Option<u64> {
 }
 
 fn count_alive_infantry(sim: &Simulation, type_str: &str) -> usize {
-    sim.entities
+    sim.substrate.entities
         .values()
         .filter(|e| {
             sim.interner
@@ -235,7 +235,7 @@ fn paradrop_launch_spawns_carrier_with_loaded_cargo() {
 
     // Cargo: 4 E1 (AmerParaDropNum=4 in test rules).
     let cargo_count = sim
-        .entities
+        .substrate.entities
         .get(pdplane_id)
         .unwrap()
         .passenger_role
@@ -245,7 +245,7 @@ fn paradrop_launch_spawns_carrier_with_loaded_cargo() {
     assert_eq!(cargo_count, 4, "cargo should be loaded with 4 E1");
 
     // Mission set to the Open-equivalent paradrop state with target + fog latch cleared.
-    match sim.entities.get(pdplane_id).unwrap().aircraft_mission {
+    match sim.substrate.entities.get(pdplane_id).unwrap().aircraft_mission {
         Some(AircraftMission::ParaDropApproach {
             target_rx,
             target_ry,
@@ -278,7 +278,7 @@ fn paradrop_launch_ignores_blocked_ground_spawn_edge() {
 
     assert!(ok, "carrier edge helper should bypass ground passability");
     let pdplane_id = find_pdplane(&sim).expect("PDPLANE must exist");
-    let pdplane = sim.entities.get(pdplane_id).unwrap();
+    let pdplane = sim.substrate.entities.get(pdplane_id).unwrap();
     assert_eq!(
         (pdplane.position.rx, pdplane.position.ry),
         (99, 20),
@@ -305,7 +305,7 @@ fn paradrop_launch_invalid_waypoint_edge_falls_back_to_north() {
 
     assert!(ok, "invalid waypoint edge should not abort standard launch");
     let pdplane_id = find_pdplane(&sim).expect("PDPLANE must exist");
-    let pdplane = sim.entities.get(pdplane_id).unwrap();
+    let pdplane = sim.substrate.entities.get(pdplane_id).unwrap();
     assert_eq!((pdplane.position.rx, pdplane.position.ry), (40, 0));
 }
 
@@ -327,7 +327,7 @@ fn paradrop_cargo_load_bypasses_pdplane_capacity_and_passenger_occupancy() {
 
     assert!(ok, "launch should load the configured paradrop payload");
     let pdplane_id = find_pdplane(&sim).expect("PDPLANE must exist");
-    let pdplane = sim.entities.get(pdplane_id).unwrap();
+    let pdplane = sim.substrate.entities.get(pdplane_id).unwrap();
     let edge_cell = (pdplane.position.rx, pdplane.position.ry);
     let cargo = pdplane
         .passenger_role
@@ -385,14 +385,14 @@ fn paradrop_full_pipeline_drops_infantry_until_cargo_empty() {
     let mut first_drop_tick: Option<u32> = None;
     for tick in 0..2000u32 {
         let cargo_before = sim
-            .entities
+            .substrate.entities
             .get(pdplane_id)
             .and_then(|e| e.passenger_role.cargo())
             .map(|c| c.count())
             .unwrap_or(0);
         tick_n(&mut sim, &rules, &path_grid, 1);
         let cargo_after = sim
-            .entities
+            .substrate.entities
             .get(pdplane_id)
             .and_then(|e| e.passenger_role.cargo())
             .map(|c| c.count())
@@ -448,7 +448,7 @@ fn paradrop_descent_ends_with_landed_infantry_and_carrier_despawned() {
 
     // Some E1 alive on the ground (parachute_state cleared).
     let landed = sim
-        .entities
+        .substrate.entities
         .values()
         .filter(|e| {
             sim.interner.resolve(e.type_ref).eq_ignore_ascii_case("E1")
@@ -570,7 +570,7 @@ CellSpread=0
 
         let pdplane_id = find_pdplane(&sim).expect("PDPLANE must exist");
         let cargo_count = sim
-            .entities
+            .substrate.entities
             .get(pdplane_id)
             .unwrap()
             .passenger_role
@@ -581,7 +581,7 @@ CellSpread=0
 
         // Verify cargo type is INIT.
         let cargo_ids = sim
-            .entities
+            .substrate.entities
             .get(pdplane_id)
             .unwrap()
             .passenger_role
@@ -592,7 +592,7 @@ CellSpread=0
         for pax_id in cargo_ids {
             let type_str = sim
                 .interner
-                .resolve(sim.entities.get(pax_id).unwrap().type_ref);
+                .resolve(sim.substrate.entities.get(pax_id).unwrap().type_ref);
             assert!(
                 type_str.eq_ignore_ascii_case("INIT"),
                 "Yuri cargo should be INIT, got {}",
@@ -625,7 +625,7 @@ CellSpread=0
 
         let pdplane_id = find_pdplane(&sim).expect("PDPLANE must exist");
         let cargo_count = sim
-            .entities
+            .substrate.entities
             .get(pdplane_id)
             .unwrap()
             .passenger_role
@@ -659,7 +659,7 @@ CellSpread=0
 
         let pdplane_id = find_pdplane(&sim).expect("PDPLANE must exist");
         let cargo_count = sim
-            .entities
+            .substrate.entities
             .get(pdplane_id)
             .unwrap()
             .passenger_role

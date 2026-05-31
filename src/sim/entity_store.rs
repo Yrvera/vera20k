@@ -30,6 +30,7 @@ use crate::sim::game_entity::GameEntity;
 /// calls it once per tick); `insert()`/`remove()` do NOT update it, so any
 /// caller reading `ids_for_owner()` after a mid-tick mutation must rebuild
 /// first. Mirrors per-owner object membership.
+#[derive(Debug, Clone)]
 pub struct EntityStore {
     /// Primary storage: stable_id -> GameEntity.
     entities: BTreeMap<u64, GameEntity>,

@@ -71,7 +71,7 @@ impl Simulation {
         entity_id: u64,
         rules: Option<&RuleSet>,
     ) -> Option<MoveInfo> {
-        let e = self.entities.get(entity_id)?;
+        let e = self.substrate.entities.get(entity_id)?;
         let loco = e.locomotor.as_ref();
         let loco_kind = loco.map(|l| l.kind);
         let loco_layer = e.movement_layer_or_ground();
@@ -135,7 +135,7 @@ impl Simulation {
                     return false;
                 }
                 if self
-                    .entities
+                    .substrate.entities
                     .get(*entity_id)
                     .is_some_and(|e| e.is_deployed())
                 {
@@ -146,7 +146,7 @@ impl Simulation {
                 self.cancel_aircraft_dock(*entity_id);
                 self.release_docked_idle(*entity_id);
                 // Clear attack and order intent.
-                if let Some(e) = self.entities.get_mut(*entity_id) {
+                if let Some(e) = self.substrate.entities.get_mut(*entity_id) {
                     e.attack_target = None;
                     e.order_intent = None;
                     e.dock_state = None;
@@ -165,7 +165,7 @@ impl Simulation {
 
                 // Build entity block set for friendly-passable pathfinding.
                 let (entity_blocks, entity_block_map) = bump_crush::build_entity_block_set(
-                    &self.entities,
+                    &self.substrate.entities,
                     command_owner,
                     &self.house_alliances,
                     &self.interner,
@@ -177,7 +177,7 @@ impl Simulation {
                     // `use_teleport_move` already excludes harvesters, so is_harvester=false.
                     let default_general = crate::rules::ruleset::GeneralRules::default();
                     teleport_movement::issue_teleport_command(
-                        &mut self.entities,
+                        &mut self.substrate.entities,
                         *entity_id,
                         (*target_rx, *target_ry),
                         general_rules.unwrap_or(&default_general),
@@ -197,7 +197,7 @@ impl Simulation {
                         tunnel_speed,
                         cost_grid,
                         info.movement_zone,
-                        &mut self.entities,
+                        &mut self.substrate.entities,
                         *entity_id,
                     )
                 } else if info.loco_layer == MovementLayer::Air {
@@ -214,7 +214,7 @@ impl Simulation {
                             let Some(grid) = path_grid else { return false };
                             let cost_grid = self.terrain_costs.get(&info.speed_type);
                             return movement::issue_move_command_with_layered(
-                                &mut self.entities,
+                                &mut self.substrate.entities,
                                 grid,
                                 *entity_id,
                                 (*target_rx, *target_ry),
@@ -231,7 +231,7 @@ impl Simulation {
                     }
                     // Air units fly in straight lines — no A* pathfinding needed.
                     let ok = air_movement::issue_air_move_command(
-                        &mut self.entities,
+                        &mut self.substrate.entities,
                         *entity_id,
                         (*target_rx, *target_ry),
                         info.speed,
@@ -239,7 +239,7 @@ impl Simulation {
                     // Set Move mission so the aircraft flies to destination
                     // before the Idle handler can redirect it to RTB.
                     if ok {
-                        if let Some(e) = self.entities.get_mut(*entity_id) {
+                        if let Some(e) = self.substrate.entities.get_mut(*entity_id) {
                             if e.aircraft_mission.is_some() {
                                 e.aircraft_mission =
                                     Some(crate::sim::aircraft::AircraftMission::Move {
@@ -253,7 +253,7 @@ impl Simulation {
                     let Some(grid) = path_grid else { return false };
                     let cost_grid = self.terrain_costs.get(&info.speed_type);
                     movement::issue_move_command_with_layered(
-                        &mut self.entities,
+                        &mut self.substrate.entities,
                         grid,
                         *entity_id,
                         (*target_rx, *target_ry),
@@ -270,7 +270,7 @@ impl Simulation {
                 // Stamp acceleration/deceleration parameters onto the newly created
                 // MovementTarget so the per-tick movement loop can ramp speed.
                 if result {
-                    if let Some(e) = self.entities.get_mut(*entity_id) {
+                    if let Some(e) = self.substrate.entities.get_mut(*entity_id) {
                         if let Some(ref mut mt) = e.movement_target {
                             mt.accel_factor = info.accel_factor;
                             mt.decel_factor = info.decel_factor;
@@ -287,7 +287,7 @@ impl Simulation {
                 }
                 // Cancel any dock state before clearing movement.
                 self.cancel_depot_dock(*entity_id);
-                if let Some(e) = self.entities.get_mut(*entity_id) {
+                if let Some(e) = self.substrate.entities.get_mut(*entity_id) {
                     movement::clear_navigation_for_entity(e);
                     e.movement_target = None;
                     e.attack_target = None;
@@ -296,7 +296,7 @@ impl Simulation {
                     e.c4_plant = None;
                 }
                 // Cancel any special locomotor states in progress.
-                if let Some(e) = self.entities.get_mut(*entity_id) {
+                if let Some(e) = self.substrate.entities.get_mut(*entity_id) {
                     e.teleport_state = None;
                     e.tunnel_state = None;
                     e.droppod_state = None;
@@ -319,7 +319,7 @@ impl Simulation {
                 if !self.entity_owned_by_id(command_owner, *attacker_id) {
                     return false;
                 }
-                if !self.entities.contains(*target_id) {
+                if !self.substrate.entities.contains(*target_id) {
                     return false;
                 }
                 if !self.can_attack_target_by_id(*attacker_id, *target_id) {
@@ -328,12 +328,12 @@ impl Simulation {
                 // Cancel aircraft RTB if interruptible.
                 self.cancel_aircraft_dock(*attacker_id);
                 self.release_docked_idle(*attacker_id);
-                if let Some(e) = self.entities.get_mut(*attacker_id) {
+                if let Some(e) = self.substrate.entities.get_mut(*attacker_id) {
                     e.order_intent = None;
                     Self::clear_aircraft_dock_phase(e);
                 }
                 combat::issue_attack_command(
-                    &mut self.entities,
+                    &mut self.substrate.entities,
                     *attacker_id,
                     *target_id,
                     rules,
@@ -347,16 +347,16 @@ impl Simulation {
                 if !self.entity_owned_by_id(command_owner, *attacker_id) {
                     return false;
                 }
-                if !self.entities.contains(*target_id) {
+                if !self.substrate.entities.contains(*target_id) {
                     return false;
                 }
                 // Force-attack bypasses friendship check (Ctrl+click).
                 self.release_docked_idle(*attacker_id);
-                if let Some(e) = self.entities.get_mut(*attacker_id) {
+                if let Some(e) = self.substrate.entities.get_mut(*attacker_id) {
                     e.order_intent = None;
                 }
                 combat::issue_attack_command(
-                    &mut self.entities,
+                    &mut self.substrate.entities,
                     *attacker_id,
                     *target_id,
                     rules,
@@ -373,12 +373,12 @@ impl Simulation {
                 }
                 // No target-entity existence check — cells always "exist".
                 self.release_docked_idle(*attacker_id);
-                if let Some(e) = self.entities.get_mut(*attacker_id) {
+                if let Some(e) = self.substrate.entities.get_mut(*attacker_id) {
                     e.order_intent = None;
                     Self::clear_aircraft_dock_phase(e);
                 }
                 combat::issue_attack_cell_command(
-                    &mut self.entities,
+                    &mut self.substrate.entities,
                     *attacker_id,
                     *target_rx,
                     *target_ry,
@@ -396,14 +396,14 @@ impl Simulation {
                     return false;
                 }
                 if self
-                    .entities
+                    .substrate.entities
                     .get(*entity_id)
                     .is_some_and(|e| e.is_deployed())
                 {
                     return false;
                 }
                 self.release_docked_idle(*entity_id);
-                if let Some(e) = self.entities.get_mut(*entity_id) {
+                if let Some(e) = self.substrate.entities.get_mut(*entity_id) {
                     e.attack_target = None;
                 }
 
@@ -416,7 +416,7 @@ impl Simulation {
                     && (info.loco_kind == Some(LocomotorKind::Teleport) || info.is_teleporter);
 
                 let (entity_blocks, entity_block_map) = bump_crush::build_entity_block_set(
-                    &self.entities,
+                    &self.substrate.entities,
                     command_owner,
                     &self.house_alliances,
                     &self.interner,
@@ -427,7 +427,7 @@ impl Simulation {
                 let issued = if use_teleport_move {
                     // `use_teleport_move` excludes harvesters, so is_harvester=false.
                     teleport_movement::issue_teleport_command(
-                        &mut self.entities,
+                        &mut self.substrate.entities,
                         *entity_id,
                         (*target_rx, *target_ry),
                         general_rules_ref,
@@ -436,13 +436,13 @@ impl Simulation {
                 } else if info.loco_layer == MovementLayer::Air {
                     // Air units fly in straight lines.
                     let ok = air_movement::issue_air_move_command(
-                        &mut self.entities,
+                        &mut self.substrate.entities,
                         *entity_id,
                         (*target_rx, *target_ry),
                         info.speed,
                     );
                     if ok {
-                        if let Some(e) = self.entities.get_mut(*entity_id) {
+                        if let Some(e) = self.substrate.entities.get_mut(*entity_id) {
                             if e.aircraft_mission.is_some() {
                                 e.aircraft_mission =
                                     Some(crate::sim::aircraft::AircraftMission::Move {
@@ -456,7 +456,7 @@ impl Simulation {
                     let Some(grid) = path_grid else { return false };
                     let cost_grid = self.terrain_costs.get(&info.speed_type);
                     movement::issue_move_command_with_layered(
-                        &mut self.entities,
+                        &mut self.substrate.entities,
                         grid,
                         *entity_id,
                         (*target_rx, *target_ry),
@@ -471,7 +471,7 @@ impl Simulation {
                     )
                 };
                 if issued {
-                    if let Some(e) = self.entities.get_mut(*entity_id) {
+                    if let Some(e) = self.substrate.entities.get_mut(*entity_id) {
                         e.order_intent = Some(OrderIntent::AttackMove {
                             goal_rx: *target_rx,
                             goal_ry: *target_ry,
@@ -489,7 +489,7 @@ impl Simulation {
                 if !self.entity_owned_by_id(command_owner, *entity_id) {
                     return false;
                 }
-                if self.entities.get(*entity_id).is_some_and(|entity| {
+                if self.substrate.entities.get(*entity_id).is_some_and(|entity| {
                     rules
                         .object(self.interner.resolve(entity.type_ref))
                         .is_some_and(|obj| obj.enslaves.is_some() && obj.deploys_into.is_some())
@@ -504,7 +504,7 @@ impl Simulation {
                 if !self.entity_owned_by_id(command_owner, *entity_id) {
                     return false;
                 }
-                if self.entities.get(*entity_id).is_some_and(|entity| {
+                if self.substrate.entities.get(*entity_id).is_some_and(|entity| {
                     rules
                         .object(self.interner.resolve(entity.type_ref))
                         .is_some_and(|obj| obj.enslaves.is_some() && obj.undeploys_into.is_some())
@@ -520,7 +520,7 @@ impl Simulation {
                 }
                 let Some(rules) = rules else { return false };
                 // INI gate: only DeployFire=yes types respond.
-                let type_str = match self.entities.get(*entity_id) {
+                let type_str = match self.substrate.entities.get(*entity_id) {
                     Some(e) => self.interner.resolve(e.type_ref).to_string(),
                     None => return false,
                 };
@@ -547,7 +547,7 @@ impl Simulation {
                     crate::sim::deploy::DeployPhaseKind::Undeploying,
                 );
 
-                let Some(entity) = self.entities.get_mut(*entity_id) else {
+                let Some(entity) = self.substrate.entities.get_mut(*entity_id) else {
                     return false;
                 };
                 let (rx, ry) = (entity.position.rx, entity.position.ry);
@@ -673,7 +673,7 @@ impl Simulation {
                     return false;
                 }
                 if self
-                    .entities
+                    .substrate.entities
                     .get(*entity_id)
                     .is_some_and(|e| e.is_deployed())
                 {
@@ -695,7 +695,7 @@ impl Simulation {
                     None => None,
                 };
                 let previous_refinery = self
-                    .entities
+                    .substrate.entities
                     .get(*entity_id)
                     .and_then(|e| e.miner.as_ref())
                     .and_then(|m| m.reserved_refinery);
@@ -709,7 +709,7 @@ impl Simulation {
                     }
                 }
                 // Update miner state in EntityStore.
-                let Some(e) = self.entities.get_mut(*entity_id) else {
+                let Some(e) = self.substrate.entities.get_mut(*entity_id) else {
                     return false;
                 };
                 let Some(ref mut miner) = e.miner else {
@@ -737,14 +737,14 @@ impl Simulation {
                     return false;
                 }
                 if self
-                    .entities
+                    .substrate.entities
                     .get(*entity_id)
                     .is_some_and(|e| e.is_deployed())
                 {
                     return false;
                 }
                 // Validate depot exists, is friendly, and has UnitRepair=yes.
-                let depot_info = self.entities.get(*depot_id).and_then(|depot| {
+                let depot_info = self.substrate.entities.get(*depot_id).and_then(|depot| {
                     if !command_owner.eq_ignore_ascii_case(self.interner.resolve(depot.owner)) {
                         return None;
                     }
@@ -758,7 +758,7 @@ impl Simulation {
                     return false;
                 };
                 // Validate entity is a unit or infantry (not structure/aircraft).
-                let entity_ok = self.entities.get(*entity_id).is_some_and(|e| {
+                let entity_ok = self.substrate.entities.get(*entity_id).is_some_and(|e| {
                     matches!(
                         e.category,
                         crate::map::entities::EntityCategory::Unit
@@ -774,7 +774,7 @@ impl Simulation {
                 // Set dock state and issue move toward depot.
                 let (dock_rx, dock_ry) =
                     building_dock::depot_dock_cell(depot_rx, depot_ry, &foundation);
-                if let Some(e) = self.entities.get_mut(*entity_id) {
+                if let Some(e) = self.substrate.entities.get_mut(*entity_id) {
                     e.attack_target = None;
                     e.order_intent = None;
                     e.dock_state = Some(DockState {
@@ -796,7 +796,7 @@ impl Simulation {
                     .unwrap_or(SpeedType::Track);
                 let crusher = info.as_ref().map_or(false, |i| i.mover_is_crusher);
                 let (entity_blocks, entity_block_map) = bump_crush::build_entity_block_set(
-                    &self.entities,
+                    &self.substrate.entities,
                     command_owner,
                     &self.house_alliances,
                     &self.interner,
@@ -805,7 +805,7 @@ impl Simulation {
                 if let Some(grid) = path_grid {
                     let cost_grid = self.terrain_costs.get(&speed_type);
                     movement::issue_move_command_with_layered(
-                        &mut self.entities,
+                        &mut self.substrate.entities,
                         grid,
                         *entity_id,
                         (dock_rx, dock_ry),
@@ -830,14 +830,14 @@ impl Simulation {
                     return false;
                 }
                 if self
-                    .entities
+                    .substrate.entities
                     .get(*passenger_id)
                     .is_some_and(|e| e.is_deployed())
                 {
                     return false;
                 }
                 // Validate transport exists and has cargo capacity.
-                let transport_info = self.entities.get(*transport_id).and_then(|t| {
+                let transport_info = self.substrate.entities.get(*transport_id).and_then(|t| {
                     let obj = rules.object(self.interner.resolve(t.type_ref))?;
                     let cargo = t.passenger_role.cargo()?;
                     Some((t.position.rx, t.position.ry, obj.clone(), cargo.clone()))
@@ -846,11 +846,11 @@ impl Simulation {
                     return false;
                 };
                 // Validate passenger can enter.
-                let pax_ok = self.entities.get(*passenger_id).and_then(|p| {
+                let pax_ok = self.substrate.entities.get(*passenger_id).and_then(|p| {
                     let pobj = rules.object(self.interner.resolve(p.type_ref))?;
                     if passenger::can_enter_transport(
                         p,
-                        self.entities.get(*transport_id)?,
+                        self.substrate.entities.get(*transport_id)?,
                         pobj,
                         &transport_obj,
                         &cargo,
@@ -868,7 +868,7 @@ impl Simulation {
                     return false;
                 }
                 // Clear existing state on the passenger.
-                if let Some(e) = self.entities.get_mut(*passenger_id) {
+                if let Some(e) = self.substrate.entities.get_mut(*passenger_id) {
                     e.attack_target = None;
                     e.order_intent = None;
                     e.dock_state = None;
@@ -889,7 +889,7 @@ impl Simulation {
                     .unwrap_or(SpeedType::Track);
                 let crusher = info.as_ref().map_or(false, |i| i.mover_is_crusher);
                 let (entity_blocks, entity_block_map) = bump_crush::build_entity_block_set(
-                    &self.entities,
+                    &self.substrate.entities,
                     command_owner,
                     &self.house_alliances,
                     &self.interner,
@@ -898,7 +898,7 @@ impl Simulation {
                 if let Some(grid) = path_grid {
                     let cost_grid = self.terrain_costs.get(&speed_type);
                     movement::issue_move_command_with_layered(
-                        &mut self.entities,
+                        &mut self.substrate.entities,
                         grid,
                         *passenger_id,
                         (trx, try_),
@@ -919,14 +919,14 @@ impl Simulation {
                     return false;
                 }
                 let has_passengers = self
-                    .entities
+                    .substrate.entities
                     .get(*transport_id)
                     .and_then(|t| t.passenger_role.cargo())
                     .is_some_and(|c| !c.is_empty());
                 if !has_passengers {
                     return false;
                 }
-                if let Some(e) = self.entities.get_mut(*transport_id) {
+                if let Some(e) = self.substrate.entities.get_mut(*transport_id) {
                     e.order_intent = Some(OrderIntent::Unloading);
                 }
                 true
@@ -940,13 +940,13 @@ impl Simulation {
                     return false;
                 }
                 if self
-                    .entities
+                    .substrate.entities
                     .get(*entity_id)
                     .is_some_and(|e| e.is_deployed())
                 {
                     return false;
                 }
-                let Some(e) = self.entities.get_mut(*entity_id) else {
+                let Some(e) = self.substrate.entities.get_mut(*entity_id) else {
                     return false;
                 };
                 let Some(ref mut miner) = e.miner else {
@@ -967,14 +967,14 @@ impl Simulation {
                     return false;
                 }
                 if self
-                    .entities
+                    .substrate.entities
                     .get(*attacker_id)
                     .is_some_and(|e| e.is_deployed())
                 {
                     return false;
                 }
                 // Validate attacker has C4=yes flag.
-                let c4_ok = self.entities.get(*attacker_id).and_then(|e| {
+                let c4_ok = self.substrate.entities.get(*attacker_id).and_then(|e| {
                     let obj = rules.object(self.interner.resolve(e.type_ref))?;
                     obj.c4.then_some(())
                 });
@@ -984,7 +984,7 @@ impl Simulation {
                 // Validate target is a CanC4, non-invisible enemy building, not iron-curtained.
                 // TODO(parity): also reject selling-in-progress buildings (Mission==0x13);
                 // requires building Mission state which isn't modeled yet.
-                let target_info = self.entities.get(*target_building_id).and_then(|b| {
+                let target_info = self.substrate.entities.get(*target_building_id).and_then(|b| {
                     if b.category != crate::map::entities::EntityCategory::Structure {
                         return None;
                     }
@@ -1015,7 +1015,7 @@ impl Simulation {
                     return false;
                 }
                 // Clear conflicting state and set c4_plant.
-                if let Some(e) = self.entities.get_mut(*attacker_id) {
+                if let Some(e) = self.substrate.entities.get_mut(*attacker_id) {
                     e.attack_target = None;
                     e.order_intent = None;
                     e.dock_state = None;
@@ -1037,7 +1037,7 @@ impl Simulation {
                 let crusher = info.as_ref().map_or(false, |i| i.mover_is_crusher);
                 let (entity_blocks, entity_block_map) =
                     crate::sim::movement::bump_crush::build_entity_block_set(
-                        &self.entities,
+                        &self.substrate.entities,
                         command_owner,
                         &self.house_alliances,
                         &self.interner,
@@ -1046,7 +1046,7 @@ impl Simulation {
                 if let Some(grid) = path_grid {
                     let cost_grid = self.terrain_costs.get(&speed_type);
                     movement::issue_move_command_with_layered(
-                        &mut self.entities,
+                        &mut self.substrate.entities,
                         grid,
                         *attacker_id,
                         (trx, try_),
@@ -1071,14 +1071,14 @@ impl Simulation {
                     return false;
                 }
                 if self
-                    .entities
+                    .substrate.entities
                     .get(*engineer_id)
                     .is_some_and(|e| e.is_deployed())
                 {
                     return false;
                 }
                 // Validate engineer has Engineer=yes flag.
-                let eng_ok = self.entities.get(*engineer_id).and_then(|e| {
+                let eng_ok = self.substrate.entities.get(*engineer_id).and_then(|e| {
                     let obj = rules.object(self.interner.resolve(e.type_ref))?;
                     obj.engineer.then_some(())
                 });
@@ -1086,7 +1086,7 @@ impl Simulation {
                     return false;
                 }
                 // Validate target is a capturable enemy building.
-                let target_info = self.entities.get(*target_building_id).and_then(|b| {
+                let target_info = self.substrate.entities.get(*target_building_id).and_then(|b| {
                     if b.category != crate::map::entities::EntityCategory::Structure {
                         return None;
                     }
@@ -1111,7 +1111,7 @@ impl Simulation {
                     return false;
                 }
                 // Clear conflicting state and set capture target.
-                if let Some(e) = self.entities.get_mut(*engineer_id) {
+                if let Some(e) = self.substrate.entities.get_mut(*engineer_id) {
                     e.attack_target = None;
                     e.order_intent = None;
                     e.dock_state = None;
@@ -1130,7 +1130,7 @@ impl Simulation {
                 let crusher = info.as_ref().map_or(false, |i| i.mover_is_crusher);
                 let (entity_blocks, entity_block_map) =
                     crate::sim::movement::bump_crush::build_entity_block_set(
-                        &self.entities,
+                        &self.substrate.entities,
                         command_owner,
                         &self.house_alliances,
                         &self.interner,
@@ -1139,7 +1139,7 @@ impl Simulation {
                 if let Some(grid) = path_grid {
                     let cost_grid = self.terrain_costs.get(&speed_type);
                     movement::issue_move_command_with_layered(
-                        &mut self.entities,
+                        &mut self.substrate.entities,
                         grid,
                         *engineer_id,
                         (trx, try_),
@@ -1278,7 +1278,7 @@ impl Simulation {
         ids.sort_unstable();
         ids.dedup();
         for stable_id in ids {
-            let eligible = self.entities.get(stable_id).is_some_and(|entity| {
+            let eligible = self.substrate.entities.get(stable_id).is_some_and(|entity| {
                 entity.category == crate::map::entities::EntityCategory::Structure
                     && command_owner.eq_ignore_ascii_case(self.interner.resolve(entity.owner))
                     && rules
@@ -1286,7 +1286,7 @@ impl Simulation {
                         .is_some_and(|obj| obj.has_rally_line())
             });
             if eligible {
-                if let Some(entity) = self.entities.get_mut(stable_id) {
+                if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
                     entity.rally_target = Some((rx, ry));
                 }
             }
@@ -1296,7 +1296,7 @@ impl Simulation {
 
     /// Cancel depot dock reservation for an entity. Called before issuing new orders.
     fn cancel_depot_dock(&mut self, entity_id: u64) {
-        if let Some(e) = self.entities.get(entity_id) {
+        if let Some(e) = self.substrate.entities.get(entity_id) {
             if let Some(ref ds) = e.dock_state {
                 self.production
                     .depot_dock_reservations
@@ -1307,7 +1307,7 @@ impl Simulation {
 
     /// Cancel aircraft dock reservation if in ReturnToBase or WaitForDock phase.
     fn cancel_aircraft_dock(&mut self, entity_id: u64) {
-        if let Some(e) = self.entities.get(entity_id) {
+        if let Some(e) = self.substrate.entities.get(entity_id) {
             if let Some(ref ammo) = e.aircraft_ammo {
                 use crate::sim::docking::aircraft_dock::AircraftDockPhase;
                 if matches!(
@@ -1337,7 +1337,7 @@ impl Simulation {
     /// Release a DockedIdle aircraft from its helipad and trigger takeoff.
     /// Called when a docked aircraft receives a Move or Attack command.
     fn release_docked_idle(&mut self, entity_id: u64) {
-        let Some(entity) = self.entities.get_mut(entity_id) else {
+        let Some(entity) = self.substrate.entities.get_mut(entity_id) else {
             return;
         };
         if let Some(crate::sim::aircraft::AircraftMission::DockedIdle { .. }) =
@@ -1359,15 +1359,15 @@ impl Simulation {
     /// Replace the current selection with exactly the given stable entity IDs.
     fn apply_selection_snapshot(&mut self, stable_ids: &[u64]) -> bool {
         // Deselect all via EntityStore.
-        let keys: Vec<u64> = self.entities.keys_sorted();
+        let keys: Vec<u64> = self.substrate.entities.keys_sorted();
         for &id in &keys {
-            if let Some(e) = self.entities.get_mut(id) {
+            if let Some(e) = self.substrate.entities.get_mut(id) {
                 e.selected = false;
             }
         }
         // Select the requested IDs.
         for &stable_id in stable_ids {
-            if let Some(e) = self.entities.get_mut(stable_id) {
+            if let Some(e) = self.substrate.entities.get_mut(stable_id) {
                 e.selected = true;
             }
         }
@@ -1376,7 +1376,7 @@ impl Simulation {
 
     /// Check ownership using stable_id via EntityStore.
     pub(crate) fn entity_owned_by_id(&self, command_owner: &str, stable_id: u64) -> bool {
-        self.entities
+        self.substrate.entities
             .get(stable_id)
             .is_some_and(|e| command_owner.eq_ignore_ascii_case(self.interner.resolve(e.owner)))
     }
@@ -1389,14 +1389,14 @@ impl Simulation {
         refinery_id: u64,
         rules: &RuleSet,
     ) -> bool {
-        let Some(miner) = self.entities.get(miner_id) else {
+        let Some(miner) = self.substrate.entities.get(miner_id) else {
             return false;
         };
         if miner.miner.is_none() {
             return false;
         }
         let harvester_type = self.interner.resolve(miner.type_ref);
-        let Some(refinery) = self.entities.get(refinery_id) else {
+        let Some(refinery) = self.substrate.entities.get(refinery_id) else {
             return false;
         };
         if refinery.category != crate::map::entities::EntityCategory::Structure {
@@ -1417,10 +1417,10 @@ impl Simulation {
     /// Check whether the attacker can attack the target (i.e. they are not allies).
     /// Uses EntityStore for ownership lookup.
     fn can_attack_target_by_id(&self, attacker_id: u64, target_id: u64) -> bool {
-        let Some(attacker) = self.entities.get(attacker_id) else {
+        let Some(attacker) = self.substrate.entities.get(attacker_id) else {
             return false;
         };
-        let Some(target) = self.entities.get(target_id) else {
+        let Some(target) = self.substrate.entities.get(target_id) else {
             return false;
         };
         !are_houses_friendly(
@@ -1442,29 +1442,29 @@ impl Simulation {
             return false;
         }
         let anchor = self
-            .entities
+            .substrate.entities
             .get(entity_id)
             .map(|e| (e.position.rx, e.position.ry));
         let Some((anchor_rx, anchor_ry)) = anchor else {
             return false;
         };
-        if let Some(e) = self.entities.get_mut(entity_id) {
+        if let Some(e) = self.substrate.entities.get_mut(entity_id) {
             e.movement_target = None;
         }
-        match target_id.filter(|&tid| self.entities.contains(tid)) {
+        match target_id.filter(|&tid| self.substrate.entities.contains(tid)) {
             Some(tid) => {
                 if !self.can_attack_target_by_id(entity_id, tid) {
                     return false;
                 }
                 let issued = combat::issue_attack_command(
-                    &mut self.entities,
+                    &mut self.substrate.entities,
                     entity_id,
                     tid,
                     rules,
                     &self.interner,
                 );
                 if issued {
-                    if let Some(e) = self.entities.get_mut(entity_id) {
+                    if let Some(e) = self.substrate.entities.get_mut(entity_id) {
                         e.order_intent = Some(OrderIntent::Guard {
                             anchor_rx,
                             anchor_ry,
@@ -1474,7 +1474,7 @@ impl Simulation {
                 issued
             }
             None => {
-                if let Some(e) = self.entities.get_mut(entity_id) {
+                if let Some(e) = self.substrate.entities.get_mut(entity_id) {
                     e.attack_target = None;
                     e.order_intent = Some(OrderIntent::Guard {
                         anchor_rx,
@@ -1545,7 +1545,7 @@ mod tests {
         entity.regular_crusher = obj.crusher;
         entity.drive_accelerates = obj.accelerates;
         entity.omni_crusher = obj.omni_crusher;
-        sim.entities.insert(entity);
+        sim.substrate.entities.insert(entity);
     }
 
     #[test]
@@ -1682,7 +1682,7 @@ mod tests {
             true,
         );
         entity.miner = Some(Miner::new(MinerKind::War, &MinerConfig::default(), 0));
-        sim.entities.insert(entity);
+        sim.substrate.entities.insert(entity);
     }
 
     fn spawn_refinery(sim: &mut Simulation, sid: u64, type_id: &str, rx: u16, ry: u16) {
@@ -1705,7 +1705,7 @@ mod tests {
             5,
             false,
         );
-        sim.entities.insert(entity);
+        sim.substrate.entities.insert(entity);
     }
 
     fn rally_rules() -> RuleSet {
@@ -1736,7 +1736,7 @@ mod tests {
     ) {
         let owner = sim.interner.intern(owner_name);
         let type_ref = sim.interner.intern(type_id);
-        sim.entities.insert(GameEntity::new(
+        sim.substrate.entities.insert(GameEntity::new(
             sid,
             rx,
             ry,
@@ -1782,10 +1782,10 @@ mod tests {
         };
 
         assert!(sim.apply_command("Americans", &command, Some(&rules), None, &BTreeMap::new()));
-        assert_eq!(sim.entities.get(2).unwrap().rally_target, Some((40, 41)));
-        assert_eq!(sim.entities.get(3).unwrap().rally_target, Some((40, 41)));
-        assert_eq!(sim.entities.get(4).unwrap().rally_target, None);
-        assert_eq!(sim.entities.get(5).unwrap().rally_target, None);
+        assert_eq!(sim.substrate.entities.get(2).unwrap().rally_target, Some((40, 41)));
+        assert_eq!(sim.substrate.entities.get(3).unwrap().rally_target, Some((40, 41)));
+        assert_eq!(sim.substrate.entities.get(4).unwrap().rally_target, None);
+        assert_eq!(sim.substrate.entities.get(5).unwrap().rally_target, None);
         assert_eq!(sim.houses.get(&owner).unwrap().rally_point, Some((40, 41)));
     }
 
@@ -1797,7 +1797,7 @@ mod tests {
         spawn_refinery(&mut sim, 2, "GAREFN", 10, 10);
         spawn_refinery(&mut sim, 3, "GAREFN", 30, 30);
         {
-            let miner = sim.entities.get_mut(1).unwrap().miner.as_mut().unwrap();
+            let miner = sim.substrate.entities.get_mut(1).unwrap().miner.as_mut().unwrap();
             miner.reserved_refinery = Some(2);
             miner.dock_queued = true;
             miner.dock_phase = RefineryDockPhase::Unloading;
@@ -1816,7 +1816,7 @@ mod tests {
         );
 
         assert!(applied);
-        let miner = sim.entities.get(1).unwrap().miner.as_ref().unwrap();
+        let miner = sim.substrate.entities.get(1).unwrap().miner.as_ref().unwrap();
         assert_eq!(miner.reserved_refinery, Some(3));
         assert!(miner.forced_return);
         assert_eq!(miner.state, MinerState::ForcedReturn);
@@ -1842,7 +1842,7 @@ mod tests {
         );
 
         assert!(applied);
-        let miner = sim.entities.get(1).unwrap().miner.as_ref().unwrap();
+        let miner = sim.substrate.entities.get(1).unwrap().miner.as_ref().unwrap();
         assert_eq!(miner.reserved_refinery, None);
         assert!(miner.forced_return);
         assert_eq!(miner.state, MinerState::ForcedReturn);
@@ -1867,7 +1867,7 @@ mod tests {
         );
 
         assert!(!applied);
-        let miner = sim.entities.get(1).unwrap().miner.as_ref().unwrap();
+        let miner = sim.substrate.entities.get(1).unwrap().miner.as_ref().unwrap();
         assert_eq!(miner.reserved_refinery, None);
         assert!(!miner.forced_return);
         assert_eq!(miner.state, MinerState::SearchOre);

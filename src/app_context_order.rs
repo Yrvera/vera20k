@@ -59,7 +59,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
 
     if let Some(sim) = &mut state.simulation {
         let execute_tick = sim.tick.saturating_add(sim.input_delay_ticks);
-        let selected_ids: Vec<u64> = selected_stable_ids_sorted(&sim.entities);
+        let selected_ids: Vec<u64> = selected_stable_ids_sorted(sim.entities());
         if selected_ids.is_empty() {
             return false;
         }
@@ -71,7 +71,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
         let mut _structure_count: usize = 0;
 
         for &sid in &selected_ids {
-            let Some(entity) = sim.entities.get(sid) else {
+            let Some(entity) = sim.entities().get(sid) else {
                 continue;
             };
             if entity.category == EntityCategory::Structure {
@@ -107,7 +107,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                         return None;
                     }
                     let rules = state.rules.as_ref()?;
-                    sim.entities.get(target.stable_id).and_then(|e| {
+                    sim.entities().get(target.stable_id).and_then(|e| {
                         rules
                             .is_refinery_type(sim.interner.resolve(e.type_ref))
                             .then_some(target.stable_id)
@@ -179,7 +179,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
             if !force_fire && clicked_friendly {
                 if let Some(target) = hover.as_ref() {
                     if selected_ids.contains(&target.stable_id) {
-                        if let Some(entity) = sim.entities.get(target.stable_id) {
+                        if let Some(entity) = sim.entities().get(target.stable_id) {
                             if entity.category == EntityCategory::Structure {
                                 let obj = state
                                     .rules
@@ -305,7 +305,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                         return None;
                     }
                     let rules = state.rules.as_ref()?;
-                    let building = sim.entities.get(target.stable_id)?;
+                    let building = sim.entities().get(target.stable_id)?;
                     let obj = rules.object(sim.interner.resolve(building.type_ref))?;
                     if !obj.can_c4 || obj.invisible_in_game {
                         return None;
@@ -325,7 +325,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                         .iter()
                         .copied()
                         .filter(|&sid| {
-                            sim.entities.get(sid).is_some_and(|e| {
+                            sim.entities().get(sid).is_some_and(|e| {
                                 e.category == EntityCategory::Infantry
                                     && state
                                         .rules
@@ -364,7 +364,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                         return None;
                     }
                     let rules = state.rules.as_ref()?;
-                    let building = sim.entities.get(target.stable_id)?;
+                    let building = sim.entities().get(target.stable_id)?;
                     let btype_str = sim.interner.resolve(building.type_ref);
                     let bowner_str = sim.interner.resolve(building.owner);
                     let obj = rules.object(btype_str)?;
@@ -385,7 +385,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                         .iter()
                         .copied()
                         .filter(|&sid| {
-                            sim.entities.get(sid).is_some_and(|e| {
+                            sim.entities().get(sid).is_some_and(|e| {
                                 e.category == EntityCategory::Infantry
                                     && state
                                         .rules
@@ -425,7 +425,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
             if clicked_friendly && !force_fire {
                 if let Some(target) = hover.as_ref() {
                     if selected_ids.contains(&target.stable_id) {
-                        if let Some(entity) = sim.entities.get(target.stable_id) {
+                        if let Some(entity) = sim.entities().get(target.stable_id) {
                             let obj = state
                                 .rules
                                 .as_ref()
@@ -516,7 +516,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     let mut vehicle_ids: Vec<u64> = Vec::new();
                     let mut infantry_ids: Vec<u64> = Vec::new();
                     for &sid in &selected_units {
-                        if let Some(entity) = sim.entities.get(sid) {
+                        if let Some(entity) = sim.entities().get(sid) {
                             if entity.category == EntityCategory::Infantry {
                                 infantry_ids.push(sid);
                             } else {
@@ -596,7 +596,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     // gamemd's DispatchMultiUnitOrder uses identical cell
                     // coords for every selected unit.
                     let unit_armed = sim
-                        .entities
+                        .entities()
                         .get(stable_id)
                         .and_then(|e| {
                             let type_str = sim.interner.resolve(e.type_ref);
@@ -608,7 +608,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                         })
                         .unwrap_or(false);
                     let is_harvester = sim
-                        .entities
+                        .entities()
                         .get(stable_id)
                         .is_some_and(|e| e.miner.is_some());
 
@@ -734,7 +734,7 @@ fn selected_rally_producer_ids(
         .iter()
         .copied()
         .filter(|stable_id| {
-            sim.entities.get(*stable_id).is_some_and(|entity| {
+            sim.entities().get(*stable_id).is_some_and(|entity| {
                 entity.category == EntityCategory::Structure && entity.owner == owner
             })
         })
@@ -757,7 +757,7 @@ mod tests {
         let owner = sim.interner.intern("Americans");
         let factory_type = sim.interner.intern("GAWEAP");
         let tank_type = sim.interner.intern("MTNK");
-        sim.entities.insert(GameEntity::new(
+        sim.entities_mut().insert(GameEntity::new(
             1,
             10,
             10,
@@ -774,7 +774,7 @@ mod tests {
             5,
             false,
         ));
-        sim.entities.insert(GameEntity::new(
+        sim.entities_mut().insert(GameEntity::new(
             2,
             11,
             10,

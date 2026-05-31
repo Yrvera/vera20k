@@ -78,7 +78,7 @@ pub(super) fn find_spawn_selection_for_owner_with_type(
         return None;
     };
     let preferred_factories = producer_candidates_for_owner_category(
-        &sim.entities,
+        &sim.substrate.entities,
         rules,
         owner,
         queue_category,
@@ -86,7 +86,7 @@ pub(super) fn find_spawn_selection_for_owner_with_type(
         &sim.interner,
     );
     let fallback_structures = producer_candidates_for_owner_category(
-        &sim.entities,
+        &sim.substrate.entities,
         rules,
         owner,
         queue_category,
@@ -163,7 +163,7 @@ pub(super) fn find_spawn_selection_for_owner_with_type(
                 rules,
                 path_grid,
                 &sim.substrate.occupancy,
-                &sim.entities,
+                &sim.substrate.entities,
                 resolved_terrain,
                 overlay_grid,
                 zone_grid,
@@ -192,9 +192,9 @@ pub fn mark_war_factory_spawn_contact(
     producer_id: u64,
     produced_id: u64,
 ) -> bool {
-    let Some((producer_type, produced_is_vehicle)) = sim.entities.get(producer_id).and_then(|p| {
+    let Some((producer_type, produced_is_vehicle)) = sim.substrate.entities.get(producer_id).and_then(|p| {
         let producer_type = sim.interner.resolve(p.type_ref).to_string();
-        let produced = sim.entities.get(produced_id)?;
+        let produced = sim.substrate.entities.get(produced_id)?;
         Some((
             producer_type,
             produced.category == crate::map::entities::EntityCategory::Unit,
@@ -207,7 +207,7 @@ pub fn mark_war_factory_spawn_contact(
         return false;
     }
 
-    let Some(produced) = sim.entities.get_mut(produced_id) else {
+    let Some(produced) = sim.substrate.entities.get_mut(produced_id) else {
         return false;
     };
     produced.mark_live_contact_with(producer_id);
@@ -696,7 +696,7 @@ pub fn find_helipad_for_aircraft(
 ) -> Option<(u64, u16, u16)> {
     let owner_id = sim.interner.get(owner)?;
 
-    for entity in sim.entities.values() {
+    for entity in sim.substrate.entities.values() {
         if entity.category != crate::map::entities::EntityCategory::Structure {
             continue;
         }

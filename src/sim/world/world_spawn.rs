@@ -238,7 +238,7 @@ impl Simulation {
             if let Some(obj) = rules.and_then(|r| r.object(&map_ent.type_id)) {
                 ge.foundation = obj.foundation.clone();
             }
-            self.entities.insert(ge);
+            self.substrate.entities.insert(ge);
             self.reveal(spawn_sid);
             self.increment_owned_count(&owner_str, category);
             self.add_entity_occupancy(spawn_sid);
@@ -394,7 +394,7 @@ impl Simulation {
         let spawn_owner_str = self.interner.resolve(ge.owner).to_string();
         let spawn_category = ge.category;
         ge.foundation = obj.foundation.clone();
-        self.entities.insert(ge);
+        self.substrate.entities.insert(ge);
         self.reveal(stable_id);
         self.increment_owned_count(&spawn_owner_str, spawn_category);
         self.add_entity_occupancy(stable_id);
@@ -527,7 +527,7 @@ impl Simulation {
 
         let spawn_owner_str = self.interner.resolve(ge.owner).to_string();
         let spawn_category = ge.category;
-        self.entities.insert(ge);
+        self.substrate.entities.insert(ge);
         // Limbo objects are NOT registered in the active order — registration
         // happens at reveal/unlimbo (e.g. paradrop drop), mirroring ObjectClass+0x98.
         self.increment_owned_count(&spawn_owner_str, spawn_category);
@@ -544,10 +544,10 @@ impl Simulation {
     ) {
         use crate::sim::components::VxlLayer;
 
-        let keys = self.entities.keys_sorted();
+        let keys = self.substrate.entities.keys_sorted();
         let mut updated: u32 = 0;
         for &sid in &keys {
-            let Some(entity) = self.entities.get_mut(sid) else {
+            let Some(entity) = self.substrate.entities.get_mut(sid) else {
                 continue;
             };
             let Some(ref mut va) = entity.voxel_animation else {
@@ -590,7 +590,7 @@ impl Simulation {
         _height_map: &BTreeMap<(u16, u16), u8>,
     ) -> bool {
         // Read deploy data from EntityStore before mutating.
-        let deploy_data = self.entities.get(stable_id).and_then(|entity| {
+        let deploy_data = self.substrate.entities.get(stable_id).and_then(|entity| {
             let type_str = self.interner.resolve(entity.type_ref);
             let yard_type = construction_yard_type_for_mcv(type_str, rules)?;
             let yard_obj = rules.object(&yard_type)?;
@@ -633,7 +633,7 @@ impl Simulation {
                 let cell_x = rx.saturating_add(dx);
                 let cell_y = ry.saturating_add(dy);
                 // Check for existing structures (excluding the MCV itself).
-                let occupied = self.entities.values().any(|e| {
+                let occupied = self.substrate.entities.values().any(|e| {
                     if e.stable_id == stable_id || e.category != EntityCategory::Structure {
                         return false;
                     }
@@ -669,7 +669,7 @@ impl Simulation {
         }
 
         if source_facing != deploy_facing {
-            if let Some(entity) = self.entities.get_mut(stable_id) {
+            if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
                 entity.facing_target = Some(deploy_facing);
                 entity.facing = deploy_facing;
                 entity.movement_target = None;
@@ -689,7 +689,7 @@ impl Simulation {
         };
 
         // Set selected and building-up state on the new entity.
-        if let Some(ge) = self.entities.get_mut(new_sid) {
+        if let Some(ge) = self.substrate.entities.get_mut(new_sid) {
             ge.selected = was_selected;
             ge.building_up = Some(BuildingUp {
                 elapsed_ticks: 0,
@@ -706,7 +706,7 @@ impl Simulation {
     /// spawn happens when the animation completes (see `tick_building_down`).
     pub(crate) fn undeploy_building(&mut self, stable_id: u64, rules: &RuleSet) -> bool {
         // Read undeploy data before mutating.
-        let undeploy_data = self.entities.get(stable_id).and_then(|entity| {
+        let undeploy_data = self.substrate.entities.get(stable_id).and_then(|entity| {
             if !self.can_undeploy_building_runtime(stable_id, rules) {
                 return None;
             }
@@ -730,7 +730,7 @@ impl Simulation {
 
         // Start the reverse build-up animation instead of instant despawn.
         let unit_type_id = self.interner.intern(&unit_type);
-        if let Some(ge) = self.entities.get_mut(stable_id) {
+        if let Some(ge) = self.substrate.entities.get_mut(stable_id) {
             ge.building_down = Some(BuildingDown {
                 elapsed_ticks: 0,
                 total_ticks: 30,
@@ -750,7 +750,7 @@ impl Simulation {
         stable_id: u64,
         rules: &RuleSet,
     ) -> bool {
-        let Some(entity) = self.entities.get(stable_id) else {
+        let Some(entity) = self.substrate.entities.get(stable_id) else {
             return false;
         };
         let Some(obj) = rules.object(self.interner.resolve(entity.type_ref)) else {
@@ -763,7 +763,7 @@ impl Simulation {
     }
 
     pub(crate) fn can_undeploy_building_runtime(&self, stable_id: u64, rules: &RuleSet) -> bool {
-        let Some(entity) = self.entities.get(stable_id) else {
+        let Some(entity) = self.substrate.entities.get(stable_id) else {
             return false;
         };
         if entity.category != EntityCategory::Structure
@@ -811,7 +811,7 @@ impl Simulation {
     /// (caller should have avoided full cells via spawn cell selection).
     fn allocate_infantry_sub_cell(&self, rx: u16, ry: u16) -> u8 {
         let mut occupied: [bool; 5] = [false; 5];
-        for entity in self.entities.values() {
+        for entity in self.substrate.entities.values() {
             if entity.position.rx == rx
                 && entity.position.ry == ry
                 && entity.category == EntityCategory::Infantry

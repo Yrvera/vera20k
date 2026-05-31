@@ -161,7 +161,7 @@ pub fn tick_aircraft_missions(
     }
 
     let snapshots: Vec<MissionSnap> = sim
-        .entities
+        .substrate.entities
         .values()
         .filter_map(|e| {
             let mission = e.aircraft_mission.as_ref()?;
@@ -221,7 +221,7 @@ pub fn tick_aircraft_missions(
 
         match &snap.mission {
             AircraftMission::Idle => {
-                let entity = match sim.entities.get(snap.id) {
+                let entity = match sim.substrate.entities.get(snap.id) {
                     Some(e) => e,
                     None => continue,
                 };
@@ -269,7 +269,7 @@ pub fn tick_aircraft_missions(
                 is_strafe,
             } => {
                 let result = attack_mission::tick_attack_state(
-                    &sim.entities,
+                    &sim.substrate.entities,
                     rules,
                     &sim.interner,
                     snap.id,
@@ -284,7 +284,7 @@ pub fn tick_aircraft_missions(
 
                 // Dive bombing: when in attack states 3-4, lower altitude to 1/3 cruise.
                 if matches!(*sub_state, 3 | 4) {
-                    if let Some(entity) = sim.entities.get(snap.id) {
+                    if let Some(entity) = sim.substrate.entities.get(snap.id) {
                         if let Some(loco) = &entity.locomotor {
                             let cruise = loco.target_altitude;
                             let dive_alt = cruise / SimFixed::from_num(3);
@@ -293,7 +293,7 @@ pub fn tick_aircraft_missions(
                     }
                 } else if *sub_state == 10 {
                     // Restore cruise altitude on RTB.
-                    if let Some(entity) = sim.entities.get(snap.id) {
+                    if let Some(entity) = sim.substrate.entities.get(snap.id) {
                         let type_str = sim.interner.resolve(entity.type_ref);
                         if let Some(obj) = rules.object(type_str) {
                             let cruise =
@@ -311,11 +311,11 @@ pub fn tick_aircraft_missions(
                 // Speed tiers based on distance to target.
                 // Cell targets resolve to cell-center coords via the helper.
                 if matches!(*sub_state, 3 | 4) {
-                    if let Some(entity) = sim.entities.get(snap.id) {
+                    if let Some(entity) = sim.substrate.entities.get(snap.id) {
                         if let Some(status) =
                             crate::sim::aircraft::attack_mission::aircraft_target_status(
                                 entity.attack_target.as_ref(),
-                                &sim.entities,
+                                &sim.substrate.entities,
                             )
                         {
                             let dx = (entity.position.rx as i32 - status.rx as i32).abs();
@@ -339,7 +339,7 @@ pub fn tick_aircraft_missions(
 
             AircraftMission::Guard => {
                 m.set_speed_fraction = Some(SIM_ONE);
-                let entity = match sim.entities.get(snap.id) {
+                let entity = match sim.substrate.entities.get(snap.id) {
                     Some(e) => e,
                     None => continue,
                 };
@@ -376,12 +376,12 @@ pub fn tick_aircraft_missions(
             }
 
             AircraftMission::ReturnToBase { airfield_id } => {
-                let entity = match sim.entities.get(snap.id) {
+                let entity = match sim.substrate.entities.get(snap.id) {
                     Some(e) => e,
                     None => continue,
                 };
                 let af_ok = sim
-                    .entities
+                    .substrate.entities
                     .get(*airfield_id)
                     .is_some_and(|af| af.health.current > 0 && !af.dying);
                 if !af_ok {
@@ -389,7 +389,7 @@ pub fn tick_aircraft_missions(
                     mutations.push(m);
                     continue;
                 }
-                let af = sim.entities.get(*airfield_id).unwrap();
+                let af = sim.substrate.entities.get(*airfield_id).unwrap();
                 let type_str = sim.interner.resolve(af.type_ref);
                 let (fw, fh) = rules
                     .object(type_str)
@@ -422,7 +422,7 @@ pub fn tick_aircraft_missions(
                 reload_timer,
                 pad_index,
             } => {
-                let entity = match sim.entities.get(snap.id) {
+                let entity = match sim.substrate.entities.get(snap.id) {
                     Some(e) => e,
                     None => continue,
                 };
@@ -436,7 +436,7 @@ pub fn tick_aircraft_missions(
                     0 => {
                         // Wait for dock slot.
                         let af_type_ref = sim
-                            .entities
+                            .substrate.entities
                             .get(*airfield_id)
                             .map_or(entity.type_ref, |af| af.type_ref);
                         let type_str = sim.interner.resolve(af_type_ref);
@@ -457,7 +457,7 @@ pub fn tick_aircraft_missions(
                             };
                             // Re-target descent toward the per-pad cell so
                             // multi-pad airfields visibly spread occupants.
-                            if let Some((px, py)) = sim.entities.get(*airfield_id).and_then(|af| {
+                            if let Some((px, py)) = sim.substrate.entities.get(*airfield_id).and_then(|af| {
                                 let obj = rules.object(sim.interner.resolve(af.type_ref))?;
                                 let foundation =
                                     crate::sim::production::foundation_dimensions(&obj.foundation);
@@ -472,7 +472,7 @@ pub fn tick_aircraft_missions(
                                 m.move_to = Some((px, py));
                             }
                             // Mirror into AircraftAmmo for downstream consumers.
-                            if let Some(entity) = sim.entities.get_mut(snap.id)
+                            if let Some(entity) = sim.substrate.entities.get_mut(snap.id)
                                 && let Some(ref mut ammo) = entity.aircraft_ammo
                             {
                                 ammo.target_pad = Some(reserved_pad);
@@ -526,7 +526,7 @@ pub fn tick_aircraft_missions(
                         if air_phase == Some(AirMovePhase::Cruising) {
                             m.new_mission = AircraftMission::Idle;
                             // Clear target_pad now that the dock is released.
-                            if let Some(entity) = sim.entities.get_mut(snap.id)
+                            if let Some(entity) = sim.substrate.entities.get_mut(snap.id)
                                 && let Some(ref mut ammo) = entity.aircraft_ammo
                             {
                                 ammo.target_pad = None;
@@ -540,7 +540,7 @@ pub fn tick_aircraft_missions(
             }
 
             AircraftMission::Move { .. } => {
-                let entity = match sim.entities.get(snap.id) {
+                let entity = match sim.substrate.entities.get(snap.id) {
                     Some(e) => e,
                     None => continue,
                 };
@@ -555,7 +555,7 @@ pub fn tick_aircraft_missions(
             } => {
                 // Check if airfield still alive.
                 let af_ok = sim
-                    .entities
+                    .substrate.entities
                     .get(*airfield_id)
                     .is_some_and(|af| af.health.current > 0 && !af.dying);
                 if !af_ok {
@@ -620,7 +620,7 @@ pub fn tick_aircraft_missions(
     // Phase 3: Apply mutations.
     for m in &mutations {
         if m.self_destruct {
-            if let Some(entity) = sim.entities.get_mut(m.id) {
+            if let Some(entity) = sim.substrate.entities.get_mut(m.id) {
                 entity.health.current = 0;
                 entity.dying = true;
                 entity.aircraft_mission = None;
@@ -628,7 +628,7 @@ pub fn tick_aircraft_missions(
             continue;
         }
 
-        if let Some(entity) = sim.entities.get_mut(m.id) {
+        if let Some(entity) = sim.substrate.entities.get_mut(m.id) {
             entity.aircraft_mission = Some(m.new_mission.clone());
 
             if m.ammo_delta != 0 {
@@ -677,7 +677,7 @@ pub fn tick_aircraft_missions(
         .collect();
     for (id, rx, ry) in air_moves {
         let speed = sim
-            .entities
+            .substrate.entities
             .get(id)
             .and_then(|e| {
                 let obj = rules.object(sim.interner.resolve(e.type_ref))?;
@@ -686,7 +686,7 @@ pub fn tick_aircraft_missions(
                 ))
             })
             .unwrap_or(SimFixed::from_num(8));
-        air_movement::issue_air_move_command(&mut sim.entities, id, (rx, ry), speed);
+        air_movement::issue_air_move_command(&mut sim.substrate.entities, id, (rx, ry), speed);
     }
 
     // Fire commands: set attack_target so combat system fires this tick.
@@ -696,7 +696,7 @@ pub fn tick_aircraft_missions(
         .filter_map(|m| m.fire_at.map(|tk| (m.id, tk)))
         .collect();
     for (attacker_id, target_kind) in fire_commands {
-        if let Some(entity) = sim.entities.get_mut(attacker_id) {
+        if let Some(entity) = sim.substrate.entities.get_mut(attacker_id) {
             entity.attack_target = Some(match target_kind {
                 crate::sim::combat::TargetKind::Entity(id) => AttackTarget::new(id),
                 crate::sim::combat::TargetKind::Cell(rx, ry) => AttackTarget::for_cell(rx, ry),
@@ -728,7 +728,7 @@ pub fn tick_aircraft_missions(
 
         let result = drop_payload::try_drop(sim, rules, aircraft_id, payload_pre, path_grid);
 
-        if let Some(entity) = sim.entities.get_mut(aircraft_id) {
+        if let Some(entity) = sim.substrate.entities.get_mut(aircraft_id) {
             if let Some(AircraftMission::ParaDropOverfly {
                 exit_rx,
                 exit_ry,
@@ -767,7 +767,7 @@ pub fn tick_aircraft_missions(
     // Silent despawns for carriers that exited the playfield with empty cargo.
     for m in &mutations {
         if m.paradrop_silent_despawn {
-            if let Some(entity) = sim.entities.get_mut(m.id) {
+            if let Some(entity) = sim.substrate.entities.get_mut(m.id) {
                 entity.health.current = 0;
                 entity.dying = true;
                 entity.aircraft_mission = None;
@@ -793,7 +793,7 @@ fn find_nearest_airfield_for(
     }
 
     let mut best: Option<(u64, u16, u16, u32)> = None;
-    for entity in sim.entities.values() {
+    for entity in sim.substrate.entities.values() {
         if entity.category != EntityCategory::Structure {
             continue;
         }

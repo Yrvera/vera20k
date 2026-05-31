@@ -101,7 +101,7 @@ pub(crate) fn build_building_status_instances(
     let (cond_y, cond_r) = condition_thresholds(state);
     let hovered_structure_id = building_health_hover_target(state, local_owner.as_deref());
     let mut instances = Vec::new();
-    for e in sim.entities.values() {
+    for e in sim.entities().values() {
         if e.category != EntityCategory::Structure {
             continue;
         }
@@ -300,7 +300,7 @@ pub(crate) fn build_occupant_pip_instances(
     let rules = state.rules.as_ref();
     let mut instances = Vec::new();
 
-    for e in sim.entities.values() {
+    for e in sim.entities().values() {
         if e.category != EntityCategory::Structure {
             continue;
         }
@@ -358,7 +358,7 @@ pub(crate) fn build_occupant_pip_instances(
             // Determine pip frame: occupied slot → occupant's OccupyPip, empty → frame 6.
             let frame_index: u32 = if (i as usize) < cargo.passengers.len() {
                 let pax_id = cargo.passengers[i as usize];
-                sim.entities
+                sim.entities()
                     .get(pax_id)
                     .and_then(|pax| {
                         rules.and_then(|r| r.object(sim.interner.resolve(pax.type_ref)))
@@ -403,7 +403,7 @@ pub(crate) fn build_unit_status_bg_instances(
     let local_owner_id = local_owner.as_deref().and_then(|n| sim.interner.get(n));
     let ignore_visibility = state.sandbox_full_visibility;
     let mut instances = Vec::new();
-    for e in sim.entities.values() {
+    for e in sim.entities().values() {
         if e.category == EntityCategory::Structure {
             continue;
         }
@@ -497,7 +497,7 @@ pub(crate) fn build_unit_status_fill_instances(
     let ignore_visibility = state.sandbox_full_visibility;
     let (cond_y, cond_r) = condition_thresholds(state);
     let mut instances = Vec::new();
-    for e in sim.entities.values() {
+    for e in sim.entities().values() {
         if e.category == EntityCategory::Structure {
             continue;
         }
@@ -659,7 +659,7 @@ pub(crate) fn build_cargo_pip_instances(state: &AppState, sw: f32, sh: f32) -> V
     let pip_size: [f32; 2] = overlay.tiberium_pip_frame_size();
     let pip_uv_size: [f32; 2] = overlay.tiberium_pip_uv_size();
 
-    for e in sim.entities.values() {
+    for e in sim.entities().values() {
         if e.category == EntityCategory::Structure {
             continue;
         }
@@ -788,7 +788,7 @@ pub(crate) fn build_cargo_pip_instances(state: &AppState, sw: f32, sh: f32) -> V
         log::debug!(
             "cargo pips: {} instances for {} entities (pip_size={:?}, uv_size={:?})",
             instances.len(),
-            sim.entities
+            sim.entities()
                 .values()
                 .filter(|e| e.selected && e.miner.is_some())
                 .count(),
@@ -814,7 +814,7 @@ pub(crate) fn build_building_radius_ring_instances(
     let ignore_visibility = state.sandbox_full_visibility;
     let mut instances = Vec::new();
 
-    for e in sim.entities.values() {
+    for e in sim.entities().values() {
         if e.category != EntityCategory::Structure || !e.selected {
             continue;
         }

@@ -46,7 +46,7 @@ pub fn placement_preview_for_owner(
             let cy: u16 = ry.saturating_add(dy);
             let ok = cell_placeable(
                 sim,
-                &sim.entities,
+                &sim.substrate.entities,
                 rules,
                 path_grid,
                 cx,
@@ -76,7 +76,7 @@ pub fn active_producer_for_owner_category(
     category: ProductionCategory,
 ) -> Option<ProducerFocusView> {
     let candidates = producer_candidates_for_owner_category(
-        &sim.entities,
+        &sim.substrate.entities,
         rules,
         owner,
         category,
@@ -144,7 +144,7 @@ pub fn cycle_active_producer_for_owner_category(
     category: ProductionCategory,
 ) -> bool {
     let candidates = producer_candidates_for_owner_category(
-        &sim.entities,
+        &sim.substrate.entities,
         rules,
         owner,
         category,
@@ -223,7 +223,7 @@ pub fn place_ready_building(
         None => return false,
     };
     // Log screen position for debugging placement alignment.
-    if let Some(ge) = sim.entities.get(new_sid) {
+    if let Some(ge) = sim.substrate.entities.get(new_sid) {
         let (fw, fh) = foundation_dimensions(&foundation_str);
         log::info!(
             "  → spawned sid={} screen=({:.0},{:.0}) foundation_cells: ({},{})..({},{})",
@@ -237,7 +237,7 @@ pub fn place_ready_building(
         );
     }
     // Tag newly placed buildings with build-up animation (~1 second at 30Hz).
-    if let Some(ge) = sim.entities.get_mut(new_sid) {
+    if let Some(ge) = sim.substrate.entities.get_mut(new_sid) {
         ge.building_up = Some(BuildingUp {
             elapsed_ticks: 0,
             total_ticks: 30,
@@ -301,7 +301,7 @@ fn evaluate_building_placement(
             let cell_y = ry.saturating_add(dy);
             if !cell_placeable(
                 sim,
-                &sim.entities,
+                &sim.substrate.entities,
                 rules,
                 path_grid,
                 cell_x,
@@ -309,7 +309,7 @@ fn evaluate_building_placement(
                 obj.water_bound,
             ) {
                 // Distinguish overlap from terrain for the error variant.
-                if structure_occupies_cell(&sim.entities, rules, cell_x, cell_y, &sim.interner) {
+                if structure_occupies_cell(&sim.substrate.entities, rules, cell_x, cell_y, &sim.interner) {
                     return Err(BuildingPlacementError::OverlapsStructure);
                 }
                 return Err(BuildingPlacementError::BlockedTerrain);
@@ -320,7 +320,7 @@ fn evaluate_building_placement(
         Ok(())
     } else {
         let providers: Vec<String> = sim
-            .entities
+            .substrate.entities
             .values()
             .filter(|e| {
                 e.category == EntityCategory::Structure
@@ -459,7 +459,7 @@ fn is_within_build_area(
     if placed_adjacent < 0 {
         return false;
     }
-    for e in sim.entities.values() {
+    for e in sim.substrate.entities.values() {
         if e.category != EntityCategory::Structure {
             continue;
         }

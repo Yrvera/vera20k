@@ -115,7 +115,7 @@ pub(crate) fn build_damage_fire_instances(state: &AppState, paged: &mut [Vec<Spr
         state.render_width() as f32 / z2,
         state.render_height() as f32 / z2,
     );
-    for entity in sim.entities.values() {
+    for entity in sim.entities().values() {
         let overlays = match &entity.damage_fire_overlays {
             Some(o) => o,
             None => continue,
@@ -739,7 +739,7 @@ pub(crate) fn build_parachute_instances(state: &AppState, paged: &mut [Vec<Sprit
     };
 
     for anim in &state.parachute_anims {
-        let entity = match sim.entities.get(anim.target_id) {
+        let entity = match sim.entities().get(anim.target_id) {
             Some(e) => e,
             None => continue,
         };

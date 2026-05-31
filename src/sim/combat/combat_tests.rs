@@ -250,7 +250,7 @@ fn considered_aircraft_infantry_is_air_for_projectile_legality() {
         .spawn_object("ROCK", "Soviet", 8, 5, 0, &rules, &heights)
         .expect("Rocketeer should spawn");
 
-    let target_entity = sim.entities.get(target).expect("target should exist");
+    let target_entity = sim.substrate.entities.get(target).expect("target should exist");
     assert_eq!(target_entity.category, EntityCategory::Infantry);
     assert!(
         rules
@@ -262,9 +262,9 @@ fn considered_aircraft_infantry_is_air_for_projectile_legality() {
         EntityCategory::Aircraft
     );
 
-    issue_attack_command(&mut sim.entities, attacker, target, None, &sim.interner);
+    issue_attack_command(&mut sim.substrate.entities, attacker, target, None, &sim.interner);
     let result = tick_combat(
-        &mut sim.entities,
+        &mut sim.substrate.entities,
         &mut sim.substrate.occupancy,
         &rules,
         &mut sim.interner,
@@ -294,16 +294,16 @@ fn ordinary_infantry_remains_ground_for_projectile_legality() {
         .spawn_object("E1", "Soviet", 8, 5, 0, &rules, &heights)
         .expect("ordinary infantry should spawn");
 
-    let target_entity = sim.entities.get(target).expect("target should exist");
+    let target_entity = sim.substrate.entities.get(target).expect("target should exist");
     assert_eq!(target_entity.category, EntityCategory::Infantry);
     assert_eq!(
         combat_target_category(target_entity, &rules, &sim.interner),
         EntityCategory::Infantry
     );
 
-    issue_attack_command(&mut sim.entities, attacker, target, None, &sim.interner);
+    issue_attack_command(&mut sim.substrate.entities, attacker, target, None, &sim.interner);
     let result = tick_combat(
-        &mut sim.entities,
+        &mut sim.substrate.entities,
         &mut sim.substrate.occupancy,
         &rules,
         &mut sim.interner,
@@ -1648,8 +1648,8 @@ fn build_minimal_sim_with_gawall(rx: u16, ry: u16) -> (Simulation, RuleSet, Over
         current: 400,
         max: 400,
     };
-    sim.entities.insert(entity);
-    sim.entities.rebuild_owner_index();
+    sim.substrate.entities.insert(entity);
+    sim.substrate.entities.rebuild_owner_index();
 
     (sim, rules, registry)
 }
@@ -1659,7 +1659,7 @@ fn wall_warhead_damages_and_destroys_wall_overlay() {
     let (mut sim, rules, registry) = build_minimal_sim_with_gawall(5, 5);
 
     let initial_wall_entities = sim
-        .entities
+        .substrate.entities
         .iter_sorted()
         .filter(|(_, e)| {
             rules
@@ -1692,7 +1692,7 @@ fn wall_warhead_damages_and_destroys_wall_overlay() {
 
     // Wall entity removed.
     let remaining = sim
-        .entities
+        .substrate.entities
         .iter_sorted()
         .filter(|(_, e)| {
             rules
@@ -1730,11 +1730,11 @@ fn build_minimal_sim_with_gawall_row(
             current: 400,
             max: 400,
         };
-        sim.entities.insert(entity);
+        sim.substrate.entities.insert(entity);
         next_id += 1;
     }
     sim.overlay_grid = Some(grid);
-    sim.entities.rebuild_owner_index();
+    sim.substrate.entities.rebuild_owner_index();
 
     (sim, rules, registry)
 }

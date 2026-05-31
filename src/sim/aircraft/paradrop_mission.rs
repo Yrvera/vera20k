@@ -44,7 +44,7 @@ pub fn tick_approach(
     has_revealed_fog: bool,
     path_grid: Option<&PathGrid>,
 ) -> ApproachOutcome {
-    let aircraft = match sim.entities.get(aircraft_id) {
+    let aircraft = match sim.substrate.entities.get(aircraft_id) {
         Some(e) => e,
         None => {
             return ApproachOutcome {
@@ -133,7 +133,7 @@ pub fn tick_overfly(
     landing_state: u8,
     payload_count: u8,
 ) -> OverflyOutcome {
-    let aircraft = match sim.entities.get(aircraft_id) {
+    let aircraft = match sim.substrate.entities.get(aircraft_id) {
         Some(e) => e,
         None => {
             return OverflyOutcome {
@@ -276,7 +276,7 @@ mod tests {
         }
         cargo.total_size = cargo_count;
         aircraft.passenger_role = PassengerRole::Transport { cargo };
-        sim.entities.insert(aircraft);
+        sim.substrate.entities.insert(aircraft);
         (sim, 1)
     }
 

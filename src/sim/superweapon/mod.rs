@@ -183,7 +183,7 @@ pub fn tick_superweapons(sim: &mut Simulation, rules: &RuleSet) {
     if !sim.super_weapons_initialized {
         sim.super_weapons_initialized = true;
         let owners: Vec<InternedId> = sim
-            .entities
+            .substrate.entities
             .values()
             .filter(|e| e.category == crate::map::entities::EntityCategory::Structure && !e.dying)
             .map(|e| e.owner)
@@ -251,7 +251,7 @@ pub fn refresh_super_weapons_for_owner(sim: &mut Simulation, rules: &RuleSet, ow
 
     // Collect all SW type IDs (as strings) granted by living buildings of this owner.
     let mut granted_strs: Vec<String> = Vec::new();
-    for (_, entity) in sim.entities.iter_sorted() {
+    for (_, entity) in sim.substrate.entities.iter_sorted() {
         if entity.owner != owner {
             continue;
         }

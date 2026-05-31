@@ -36,7 +36,7 @@ pub fn launch(
     // 2. Collect entity IDs in the 3×3 grid (snapshot to avoid borrow conflict).
     let cells: Vec<(u16, u16)> = iter_cells_3x3(target_rx, target_ry).collect();
     let target_ids: Vec<u64> = sim
-        .entities
+        .substrate.entities
         .values()
         .filter(|e| {
             cells
@@ -49,7 +49,7 @@ pub fn launch(
 
     // 3. Apply effect per entity.
     for id in &target_ids {
-        if let Some(entity) = sim.entities.get_mut(*id) {
+        if let Some(entity) = sim.substrate.entities.get_mut(*id) {
             if entity.category == EntityCategory::Infantry {
                 // IronCurtain kills infantry (matches binary override).
                 entity.health.current = 0;
@@ -116,7 +116,7 @@ mod tests {
             5,
             matches!(cat, EntityCategory::Unit),
         );
-        sim.entities.insert(e);
+        sim.substrate.entities.insert(e);
     }
 
     #[test]
@@ -126,7 +126,7 @@ mod tests {
         let owner = sim.interner.intern("Americans");
         spawn(&mut sim, 1, "MTNK", 10, 10, EntityCategory::Unit);
         assert!(launch(&mut sim, &rules, owner, 10, 10));
-        let e = sim.entities.get(1).expect("tank exists");
+        let e = sim.substrate.entities.get(1).expect("tank exists");
         assert!(e.invulnerability.is_some());
         assert!(is_invulnerable(e.invulnerability.as_ref(), sim.tick as u32));
     }
@@ -138,7 +138,7 @@ mod tests {
         let owner = sim.interner.intern("Americans");
         spawn(&mut sim, 1, "E1", 10, 10, EntityCategory::Infantry);
         assert!(launch(&mut sim, &rules, owner, 10, 10));
-        let e = sim.entities.get(1).expect("infantry exists");
+        let e = sim.substrate.entities.get(1).expect("infantry exists");
         assert_eq!(e.health.current, 0);
         assert!(e.dying);
         assert!(e.invulnerability.is_none());
@@ -153,9 +153,9 @@ mod tests {
         spawn(&mut sim, 2, "MTNK", 10, 10, EntityCategory::Unit);
         spawn(&mut sim, 3, "MTNK", 11, 11, EntityCategory::Unit);
         launch(&mut sim, &rules, owner, 10, 10);
-        assert!(sim.entities.get(1).unwrap().invulnerability.is_some());
-        assert!(sim.entities.get(2).unwrap().invulnerability.is_some());
-        assert!(sim.entities.get(3).unwrap().invulnerability.is_some());
+        assert!(sim.substrate.entities.get(1).unwrap().invulnerability.is_some());
+        assert!(sim.substrate.entities.get(2).unwrap().invulnerability.is_some());
+        assert!(sim.substrate.entities.get(3).unwrap().invulnerability.is_some());
     }
 
     #[test]
@@ -165,7 +165,7 @@ mod tests {
         let owner = sim.interner.intern("Americans");
         spawn(&mut sim, 1, "MTNK", 15, 15, EntityCategory::Unit);
         launch(&mut sim, &rules, owner, 10, 10);
-        assert!(sim.entities.get(1).unwrap().invulnerability.is_none());
+        assert!(sim.substrate.entities.get(1).unwrap().invulnerability.is_none());
     }
 }
 

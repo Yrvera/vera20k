@@ -243,7 +243,7 @@ pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
             // --- Entities at cursor cell ---
             if let Some(sim) = &state.simulation {
                 let mut found: Vec<String> = Vec::new();
-                for entity in sim.entities.values() {
+                for entity in sim.entities().values() {
                     if entity.position.rx == cursor_rx && entity.position.ry == cursor_ry {
                         let cat_str = match entity.category {
                             EntityCategory::Unit => "Unit",
@@ -272,7 +272,7 @@ pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
 
                 // Show building footprint info for structures near cursor.
                 if let Some(rules) = &state.rules {
-                    for entity in sim.entities.values() {
+                    for entity in sim.entities().values() {
                         if entity.category != EntityCategory::Structure {
                             continue;
                         }
@@ -310,7 +310,7 @@ pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
             // --- Selected unit path info ---
             if let Some(sim) = &state.simulation {
                 let selected: Vec<u64> = sim
-                    .entities
+                    .entities()
                     .values()
                     .filter(|e| e.selected)
                     .map(|e| e.stable_id)
@@ -319,7 +319,7 @@ pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
                     ui.label("Selected: (none)");
                 } else {
                     for &sid in &selected {
-                        if let Some(entity) = sim.entities.get(sid) {
+                        if let Some(entity) = sim.entities().get(sid) {
                             ui.label(format!(
                                 "Sel: {} @ ({},{}) sub=({},{})",
                                 sim.interner.resolve(entity.type_ref),
@@ -373,7 +373,7 @@ pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
 
             // --- Miner debug info for selected harvesters ---
             if let Some(sim) = &state.simulation {
-                for entity in sim.entities.values().filter(|e| e.selected) {
+                for entity in sim.entities().values().filter(|e| e.selected) {
                     let Some(ref miner) = entity.miner else {
                         continue;
                     };
@@ -424,7 +424,7 @@ pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
                     }
                     if let Some(ref_id) = miner.reserved_refinery {
                         let ref_type = sim
-                            .entities
+                            .entities()
                             .get(ref_id)
                             .map(|e| sim.interner.resolve(e.type_ref))
                             .unwrap_or("?");
@@ -467,7 +467,7 @@ pub(crate) fn draw_event_history_panel(ctx: &egui::Context, state: &AppState) {
         .show(ctx, |ui| {
             apply_light_text(ui);
 
-            let selected: Vec<_> = sim.entities.values().filter(|e| e.selected).collect();
+            let selected: Vec<_> = sim.entities().values().filter(|e| e.selected).collect();
             if selected.is_empty() {
                 ui.label(
                     egui::RichText::new("Select a unit to inspect")

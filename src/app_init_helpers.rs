@@ -416,7 +416,7 @@ pub(crate) fn spawn_entities(
             height_map,
             Some(resolved_terrain),
         );
-        let miner_count: usize = sim.entities.values().filter(|e| e.miner.is_some()).count();
+        let miner_count: usize = sim.entities().values().filter(|e| e.miner.is_some()).count();
         log::info!("Miner components attached: {}", miner_count);
     }
     let (unit_atlas, shp_atlas, palette_set) = build_entity_atlases(
@@ -475,7 +475,7 @@ pub(crate) fn build_entity_atlases(
         unit_atlas::build_unit_atlas(
             gpu,
             batch,
-            &sim.entities,
+            sim.entities(),
             asset_manager,
             rules,
             art,
@@ -488,12 +488,12 @@ pub(crate) fn build_entity_atlases(
     };
     // Pre-load building types that can be spawned at runtime (e.g., ConYards from MCV deploy).
     let extra_buildings: Vec<&str> =
-        deployable_building_types(&sim.entities, rules, Some(&sim.interner));
+        deployable_building_types(sim.entities(), rules, Some(&sim.interner));
     let shp_atlas: Option<SpriteAtlas> = palette.as_ref().and_then(|pal| {
         sprite_atlas::build_sprite_atlas(
             gpu,
             batch,
-            &sim.entities,
+            sim.entities(),
             asset_manager,
             pal,
             theater_ext,

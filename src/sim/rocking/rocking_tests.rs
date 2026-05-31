@@ -526,7 +526,7 @@ fn make_test_simulation_with_one_vehicle() -> (Simulation, RuleSet, PathGrid) {
     // Production-side spawn doesn't initialize `rocking` yet (sim-side only
     // path lands with combat in Task 19); flip it on here so the rocking
     // pipeline actually runs against this entity.
-    sim.entities
+    sim.substrate.entities
         .get_mut(id)
         .expect("spawned entity present")
         .rocking = Some(RockingState::default());
@@ -553,7 +553,7 @@ fn integration_impulse_decays_to_neutral_over_60_ticks() {
     // ±IMPULSE_VEL_CAP envelope, and large enough to actually settle visibly.
     let weight = SimFixed::lit("2.0");
     {
-        let e = sim.entities.values_mut().next().expect("one entity");
+        let e = sim.substrate.entities.values_mut().next().expect("one entity");
         let r = e.rocking.as_mut().expect("rocking present");
         apply_rocker_impulse(r, SimFixed::ONE, weight, SimFixed::ONE, SimFixed::ZERO);
         assert!(
@@ -569,7 +569,7 @@ fn integration_impulse_decays_to_neutral_over_60_ticks() {
         advance(&mut sim, &rules, &path_grid);
     }
 
-    let e = sim.entities.values().next().expect("one entity");
+    let e = sim.substrate.entities.values().next().expect("one entity");
     let r = e.rocking.as_ref().expect("rocking present");
     assert!(
         r.is_neutral(),
@@ -591,7 +591,7 @@ fn integration_determinism_same_impulse_same_hash() {
     // Identical impulses on both sims, applied before any tick advances.
     let weight = SimFixed::lit("2.0");
     {
-        let ea = a.entities.values_mut().next().unwrap();
+        let ea = a.substrate.entities.values_mut().next().unwrap();
         apply_rocker_impulse(
             ea.rocking.as_mut().unwrap(),
             SimFixed::lit("0.5"),
@@ -599,7 +599,7 @@ fn integration_determinism_same_impulse_same_hash() {
             SimFixed::ONE,
             SimFixed::ZERO,
         );
-        let eb = b.entities.values_mut().next().unwrap();
+        let eb = b.substrate.entities.values_mut().next().unwrap();
         apply_rocker_impulse(
             eb.rocking.as_mut().unwrap(),
             SimFixed::lit("0.5"),

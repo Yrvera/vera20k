@@ -50,7 +50,7 @@ pub(crate) fn build_shp_instances(
     let ignore_visibility = state.sandbox_full_visibility;
     let art_reg: Option<&crate::rules::art_data::ArtRegistry> = state.art_registry.as_ref();
 
-    for entity in sim.entities.values().filter(|e| !e.is_voxel) {
+    for entity in sim.entities().values().filter(|e| !e.is_voxel) {
         // Skip entities inside a transport/garrison — they are hidden from the map.
         if entity.passenger_role.is_inside_transport() {
             continue;

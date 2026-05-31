@@ -196,7 +196,7 @@ fn spawn_infantry(sim: &mut Simulation, type_str: &str, owner: &str, rx: u16, ry
         5,
         false,
     );
-    sim.entities.insert(e);
+    sim.substrate.entities.insert(e);
     id
 }
 
@@ -287,7 +287,7 @@ fn deploy_mcv_with_terrain(terrain: ResolvedTerrainGrid) -> (bool, bool, usize) 
         None,
         &height_map,
     );
-    let mcv_remains = sim.entities.get(mcv).is_some();
+    let mcv_remains = sim.substrate.entities.get(mcv).is_some();
     (applied, mcv_remains, sim.sound_events.len())
 }
 
@@ -309,14 +309,14 @@ fn deploy_mcv_uses_gamemd_large_foundation_origin_offset() {
         &height_map,
     );
     assert!(applied, "clear ConYard footprint should deploy");
-    assert!(sim.entities.get(mcv).is_none(), "MCV should be consumed");
+    assert!(sim.substrate.entities.get(mcv).is_none(), "MCV should be consumed");
 
     let gacnst_id = sim
         .interner
         .get("GACNST")
         .expect("GACNST should be interned after deploy");
     assert!(
-        sim.entities
+        sim.substrate.entities
             .values()
             .any(|e| { e.type_ref == gacnst_id && e.position.rx == 19 && e.position.ry == 21 })
     );
@@ -344,14 +344,14 @@ fn deploy_mcv_accepts_mixed_height_clear_foundation() {
         applied,
         "clear ConYard footprint should deploy even when foundation cells have mixed heights"
     );
-    assert!(sim.entities.get(mcv).is_none(), "MCV should be consumed");
+    assert!(sim.substrate.entities.get(mcv).is_none(), "MCV should be consumed");
 
     let gacnst_id = sim
         .interner
         .get("GACNST")
         .expect("GACNST should be interned after deploy");
     assert!(
-        sim.entities
+        sim.substrate.entities
             .values()
             .any(|e| { e.type_ref == gacnst_id && e.position.rx == 19 && e.position.ry == 21 }),
         "Construction Yard should spawn at gamemd's deploy foundation origin"
@@ -382,8 +382,8 @@ fn deploy_mcv_rejects_structure_in_rightmost_foundation_column() {
         !applied,
         "structure in the deployed foundation footprint must block MCV deploy"
     );
-    assert!(sim.entities.get(mcv).is_some(), "MCV should remain");
-    assert!(sim.entities.get(blocker).is_some(), "blocker should remain");
+    assert!(sim.substrate.entities.get(mcv).is_some(), "MCV should remain");
+    assert!(sim.substrate.entities.get(blocker).is_some(), "blocker should remain");
     let americans = sim.interner.intern("Americans");
     assert!(
         sim.sound_events.iter().any(|event| {
@@ -394,7 +394,7 @@ fn deploy_mcv_rejects_structure_in_rightmost_foundation_column() {
 
     if let Some(gacnst_id) = sim.interner.get("GACNST") {
         assert!(
-            !sim.entities.values().any(|e| e.type_ref == gacnst_id),
+            !sim.substrate.entities.values().any(|e| e.type_ref == gacnst_id),
             "blocked deploy must not spawn a Construction Yard"
         );
     }
@@ -419,14 +419,14 @@ fn deploy_mcv_waits_for_target_building_deploy_facing() {
     );
     assert!(applied, "misfaced deploy starts the facing turn");
     let entity = sim
-        .entities
+        .substrate.entities
         .get(mcv)
         .expect("MCV should remain while turning");
     assert_eq!(entity.facing, 0x80);
     assert_eq!(entity.facing_target, Some(0x80));
     assert!(
         sim.interner.get("GACNST").map_or(true, |yard| !sim
-            .entities
+            .substrate.entities
             .values()
             .any(|e| e.type_ref == yard)),
         "facing gate must run before ConYard creation"
@@ -471,7 +471,7 @@ DeployFacing=2
     ));
 
     let entity = sim
-        .entities
+        .substrate.entities
         .get(mcv)
         .expect("MCV should remain while turning");
     assert_eq!(entity.facing, 0x40);
@@ -577,7 +577,7 @@ fn conyard_redeploy_runtime_rejects_when_mcv_redeploy_disabled() {
     );
 
     assert!(!applied);
-    assert!(sim.entities.get(yard).unwrap().building_down.is_none());
+    assert!(sim.substrate.entities.get(yard).unwrap().building_down.is_none());
 }
 
 #[test]
@@ -599,7 +599,7 @@ fn conyard_redeploy_runtime_rejects_non_human_owner() {
     );
 
     assert!(!applied);
-    assert!(sim.entities.get(yard).unwrap().building_down.is_none());
+    assert!(sim.substrate.entities.get(yard).unwrap().building_down.is_none());
 }
 
 #[test]
@@ -709,14 +709,14 @@ fn deploy_phase_advances_to_deployed() {
         &rules,
     );
     assert!(matches!(
-        sim.entities.get(gi).unwrap().deploy_state,
+        sim.substrate.entities.get(gi).unwrap().deploy_state,
         Some(DeployPhase::Deploying { .. })
     ));
 
     let n = DEPLOY_DEFAULT_TICKS as u32;
     tick_n(&mut sim, &rules, n);
     assert_eq!(
-        sim.entities.get(gi).unwrap().deploy_state,
+        sim.substrate.entities.get(gi).unwrap().deploy_state,
         Some(DeployPhase::Deployed)
     );
 }
@@ -726,7 +726,7 @@ fn undeploy_phase_clears_to_none() {
     let rules = make_rules_with_deploy();
     let mut sim = Simulation::new();
     let gi = spawn_infantry(&mut sim, "E1", "Americans", 10, 10);
-    sim.entities.get_mut(gi).unwrap().deploy_state = Some(DeployPhase::Deployed);
+    sim.substrate.entities.get_mut(gi).unwrap().deploy_state = Some(DeployPhase::Deployed);
 
     dispatch(
         &mut sim,
@@ -735,13 +735,13 @@ fn undeploy_phase_clears_to_none() {
         &rules,
     );
     assert!(matches!(
-        sim.entities.get(gi).unwrap().deploy_state,
+        sim.substrate.entities.get(gi).unwrap().deploy_state,
         Some(DeployPhase::Undeploying { .. })
     ));
 
     let n = DEPLOY_DEFAULT_TICKS as u32;
     tick_n(&mut sim, &rules, n);
-    assert_eq!(sim.entities.get(gi).unwrap().deploy_state, None);
+    assert_eq!(sim.substrate.entities.get(gi).unwrap().deploy_state, None);
 }
 
 #[test]
@@ -749,7 +749,7 @@ fn mid_deploying_toggle_ignored() {
     let rules = make_rules_with_deploy();
     let mut sim = Simulation::new();
     let gi = spawn_infantry(&mut sim, "E1", "Americans", 10, 10);
-    sim.entities.get_mut(gi).unwrap().deploy_state =
+    sim.substrate.entities.get_mut(gi).unwrap().deploy_state =
         Some(DeployPhase::Deploying { ticks_remaining: 3 });
 
     let sounds_before = sim.sound_events.len();
@@ -761,7 +761,7 @@ fn mid_deploying_toggle_ignored() {
     );
     // Tick advance still runs; Deploying decremented from 3 → 2 (or to Deployed if already 1).
     assert!(matches!(
-        sim.entities.get(gi).unwrap().deploy_state,
+        sim.substrate.entities.get(gi).unwrap().deploy_state,
         Some(DeployPhase::Deploying { .. }) | Some(DeployPhase::Deployed)
     ));
     let new_deploy_undeploy_sounds = sim
@@ -783,7 +783,7 @@ fn mid_undeploying_toggle_ignored() {
     let rules = make_rules_with_deploy();
     let mut sim = Simulation::new();
     let gi = spawn_infantry(&mut sim, "E1", "Americans", 10, 10);
-    sim.entities.get_mut(gi).unwrap().deploy_state =
+    sim.substrate.entities.get_mut(gi).unwrap().deploy_state =
         Some(DeployPhase::Undeploying { ticks_remaining: 3 });
 
     dispatch(
@@ -793,7 +793,7 @@ fn mid_undeploying_toggle_ignored() {
         &rules,
     );
     assert!(matches!(
-        sim.entities.get(gi).unwrap().deploy_state,
+        sim.substrate.entities.get(gi).unwrap().deploy_state,
         Some(DeployPhase::Undeploying { .. }) | None
     ));
 }
@@ -803,7 +803,7 @@ fn move_silently_ignored_on_deployed() {
     let rules = make_rules_with_deploy();
     let mut sim = Simulation::new();
     let gi = spawn_infantry(&mut sim, "E1", "Americans", 10, 10);
-    sim.entities.get_mut(gi).unwrap().deploy_state = Some(DeployPhase::Deployed);
+    sim.substrate.entities.get_mut(gi).unwrap().deploy_state = Some(DeployPhase::Deployed);
 
     let applied = apply(
         &mut sim,
@@ -818,7 +818,7 @@ fn move_silently_ignored_on_deployed() {
         &rules,
     );
     assert!(!applied, "gate must reject Move on deployed unit");
-    let entity = sim.entities.get(gi).unwrap();
+    let entity = sim.substrate.entities.get(gi).unwrap();
     assert!(entity.movement_target.is_none());
 }
 
@@ -827,7 +827,7 @@ fn move_silently_ignored_on_deploying() {
     let rules = make_rules_with_deploy();
     let mut sim = Simulation::new();
     let gi = spawn_infantry(&mut sim, "E1", "Americans", 10, 10);
-    sim.entities.get_mut(gi).unwrap().deploy_state =
+    sim.substrate.entities.get_mut(gi).unwrap().deploy_state =
         Some(DeployPhase::Deploying { ticks_remaining: 5 });
 
     let applied = apply(
@@ -850,7 +850,7 @@ fn move_silently_ignored_on_undeploying() {
     let rules = make_rules_with_deploy();
     let mut sim = Simulation::new();
     let gi = spawn_infantry(&mut sim, "E1", "Americans", 10, 10);
-    sim.entities.get_mut(gi).unwrap().deploy_state =
+    sim.substrate.entities.get_mut(gi).unwrap().deploy_state =
         Some(DeployPhase::Undeploying { ticks_remaining: 5 });
 
     let applied = apply(
@@ -873,7 +873,7 @@ fn attack_move_silently_ignored_on_deployed() {
     let rules = make_rules_with_deploy();
     let mut sim = Simulation::new();
     let gi = spawn_infantry(&mut sim, "E1", "Americans", 10, 10);
-    sim.entities.get_mut(gi).unwrap().deploy_state = Some(DeployPhase::Deployed);
+    sim.substrate.entities.get_mut(gi).unwrap().deploy_state = Some(DeployPhase::Deployed);
 
     let applied = apply(
         &mut sim,
@@ -887,7 +887,7 @@ fn attack_move_silently_ignored_on_deployed() {
         &rules,
     );
     assert!(!applied, "gate must reject AttackMove on deployed unit");
-    let entity = sim.entities.get(gi).unwrap();
+    let entity = sim.substrate.entities.get(gi).unwrap();
     assert!(entity.movement_target.is_none());
     assert!(entity.order_intent.is_none());
 }
@@ -897,7 +897,7 @@ fn enter_transport_silently_ignored_on_deployed() {
     let rules = make_rules_with_deploy();
     let mut sim = Simulation::new();
     let gi = spawn_infantry(&mut sim, "E1", "Americans", 10, 10);
-    sim.entities.get_mut(gi).unwrap().deploy_state = Some(DeployPhase::Deployed);
+    sim.substrate.entities.get_mut(gi).unwrap().deploy_state = Some(DeployPhase::Deployed);
 
     let applied = apply(
         &mut sim,
@@ -910,7 +910,7 @@ fn enter_transport_silently_ignored_on_deployed() {
     );
     assert!(!applied, "gate must reject EnterTransport on deployed unit");
     assert!(matches!(
-        sim.entities.get(gi).unwrap().passenger_role,
+        sim.substrate.entities.get(gi).unwrap().passenger_role,
         crate::sim::passenger::PassengerRole::None
     ));
 }
@@ -920,7 +920,7 @@ fn move_works_after_undeploy_completes() {
     let rules = make_rules_with_deploy();
     let mut sim = Simulation::new();
     let gi = spawn_infantry(&mut sim, "E1", "Americans", 10, 10);
-    sim.entities.get_mut(gi).unwrap().deploy_state = Some(DeployPhase::Deployed);
+    sim.substrate.entities.get_mut(gi).unwrap().deploy_state = Some(DeployPhase::Deployed);
 
     // Apply ToggleInfantryDeploy directly — gate doesn't apply to it (it's
     // the toggle itself), and the handler returns true on Deployed → Undeploying.
@@ -932,13 +932,13 @@ fn move_works_after_undeploy_completes() {
     );
     assert!(toggled);
     assert!(matches!(
-        sim.entities.get(gi).unwrap().deploy_state,
+        sim.substrate.entities.get(gi).unwrap().deploy_state,
         Some(DeployPhase::Undeploying { .. })
     ));
 
     let n = DEPLOY_DEFAULT_TICKS as u32;
     tick_n(&mut sim, &rules, n);
-    assert_eq!(sim.entities.get(gi).unwrap().deploy_state, None);
+    assert_eq!(sim.substrate.entities.get(gi).unwrap().deploy_state, None);
 
     // Now the gate must let Move through — it'll fail downstream for
     // unrelated reasons (no path_grid), but only AFTER the gate.
@@ -948,7 +948,7 @@ fn move_works_after_undeploy_completes() {
     // mutates `e.dock_state = None` BEFORE the path_grid check; if the
     // gate fired, dock_state would stay Some.
     let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
-    sim.entities.get_mut(gi).unwrap().dock_state =
+    sim.substrate.entities.get_mut(gi).unwrap().dock_state =
         Some(crate::sim::docking::building_dock::DockState {
             dock_building_id: 9999,
             phase: crate::sim::docking::building_dock::DockPhase::Approach,
@@ -969,7 +969,7 @@ fn move_works_after_undeploy_completes() {
         &height_map,
     );
     assert!(
-        sim.entities.get(gi).unwrap().dock_state.is_none(),
+        sim.substrate.entities.get(gi).unwrap().dock_state.is_none(),
         "Move handler past the gate must clear dock_state after undeploy completes"
     );
 }
@@ -983,7 +983,7 @@ fn deploy_sound_emits_alongside_state_write() {
     let mut sim = Simulation::new();
     let gi = spawn_infantry(&mut sim, "E1", "Americans", 25, 30);
 
-    assert!(sim.entities.get(gi).unwrap().deploy_state.is_none());
+    assert!(sim.substrate.entities.get(gi).unwrap().deploy_state.is_none());
     let events_before = sim.sound_events.len();
 
     let applied = apply(
@@ -994,7 +994,7 @@ fn deploy_sound_emits_alongside_state_write() {
     );
     assert!(applied);
 
-    let entity = sim.entities.get(gi).unwrap();
+    let entity = sim.substrate.entities.get(gi).unwrap();
     assert!(matches!(
         entity.deploy_state,
         Some(DeployPhase::Deploying { .. })
@@ -1055,7 +1055,7 @@ fn deploy_sound_suppressed_when_unset() {
         .count();
     assert_eq!(count, 0);
     assert!(matches!(
-        sim.entities.get(gi).unwrap().deploy_state,
+        sim.substrate.entities.get(gi).unwrap().deploy_state,
         Some(DeployPhase::Deploying { .. })
     ));
 }
@@ -1065,7 +1065,7 @@ fn undeploy_sound_emitted_on_phase_entry() {
     let rules = make_rules_with_deploy();
     let mut sim = Simulation::new();
     let gi = spawn_infantry(&mut sim, "E1", "Americans", 25, 30);
-    sim.entities.get_mut(gi).unwrap().deploy_state = Some(DeployPhase::Deployed);
+    sim.substrate.entities.get_mut(gi).unwrap().deploy_state = Some(DeployPhase::Deployed);
 
     dispatch(
         &mut sim,
@@ -1095,7 +1095,7 @@ fn non_deploy_fire_infantry_no_op() {
         },
         &rules,
     );
-    assert!(sim.entities.get(conscript).unwrap().deploy_state.is_none());
+    assert!(sim.substrate.entities.get(conscript).unwrap().deploy_state.is_none());
 }
 
 #[test]
@@ -1135,13 +1135,13 @@ fn snapshot_round_trip_mid_deploying() {
     let _rules = make_rules_with_deploy();
     let mut sim = Simulation::new();
     let gi = spawn_infantry(&mut sim, "E1", "Americans", 10, 10);
-    sim.entities.get_mut(gi).unwrap().deploy_state =
+    sim.substrate.entities.get_mut(gi).unwrap().deploy_state =
         Some(DeployPhase::Deploying { ticks_remaining: 5 });
 
     let bytes = GameSnapshot::save(&sim, 0, 0, "test_map", 0);
     let snap = GameSnapshot::load(&bytes).expect("load");
     assert_eq!(
-        snap.sim.entities.get(gi).unwrap().deploy_state,
+        snap.sim.substrate.entities.get(gi).unwrap().deploy_state,
         Some(DeployPhase::Deploying { ticks_remaining: 5 })
     );
 }
@@ -1155,8 +1155,8 @@ fn combat_fires_during_deployed_attack() {
     let _rules = make_rules_with_deploy();
     let mut sim = Simulation::new();
     let gi = spawn_infantry(&mut sim, "E1", "Americans", 10, 10);
-    sim.entities.get_mut(gi).unwrap().deploy_state = Some(DeployPhase::Deployed);
-    sim.entities.get_mut(gi).unwrap().attack_target = Some(AttackTarget {
+    sim.substrate.entities.get_mut(gi).unwrap().deploy_state = Some(DeployPhase::Deployed);
+    sim.substrate.entities.get_mut(gi).unwrap().attack_target = Some(AttackTarget {
         target: crate::sim::combat::TargetKind::Entity(9999),
         cooldown_ticks: 10,
         burst_remaining: 0,
@@ -1166,7 +1166,7 @@ fn combat_fires_during_deployed_attack() {
             fire_frame: 2,
         }),
     });
-    sim.entities.get_mut(gi).unwrap().animation = Some(Animation::new(SequenceKind::Deployed));
+    sim.substrate.entities.get_mut(gi).unwrap().animation = Some(Animation::new(SequenceKind::Deployed));
 
     let mut sequences: BTreeMap<String, SequenceSet> = BTreeMap::new();
     let mut set = SequenceSet::new();
@@ -1196,9 +1196,9 @@ fn combat_fires_during_deployed_attack() {
     );
     sequences.insert("E1".to_string(), set);
 
-    let _ = tick_animations(&mut sim.entities, &sequences, 22, &sim.interner);
+    let _ = tick_animations(&mut sim.substrate.entities, &sequences, 22, &sim.interner);
     assert_eq!(
-        sim.entities
+        sim.substrate.entities
             .get(gi)
             .unwrap()
             .animation
@@ -1287,7 +1287,7 @@ fn ggi_deploy_uses_art_frame_count() {
     );
     assert!(applied);
 
-    let entity = sim.entities.get(ggi).unwrap();
+    let entity = sim.substrate.entities.get(ggi).unwrap();
     match entity.deploy_state {
         Some(DeployPhase::Deploying { ticks_remaining }) => {
             assert_eq!(
@@ -1316,19 +1316,19 @@ fn ggi_deploy_decrements_on_command_tick() {
     );
 
     assert_eq!(
-        sim.entities.get(ggi).unwrap().deploy_state,
+        sim.substrate.entities.get(ggi).unwrap().deploy_state,
         Some(DeployPhase::Deploying {
             ticks_remaining: deploy_ticks - 1
         })
     );
     tick_n(&mut sim, &rules, (deploy_ticks - 2) as u32);
     assert_eq!(
-        sim.entities.get(ggi).unwrap().deploy_state,
+        sim.substrate.entities.get(ggi).unwrap().deploy_state,
         Some(DeployPhase::Deploying { ticks_remaining: 1 })
     );
     tick_n(&mut sim, &rules, 1);
     assert_eq!(
-        sim.entities.get(ggi).unwrap().deploy_state,
+        sim.substrate.entities.get(ggi).unwrap().deploy_state,
         Some(DeployPhase::Deployed)
     );
 }
@@ -1339,7 +1339,7 @@ fn ggi_undeploy_uses_art_frame_count() {
     let rules = make_rules_with_ggi_art();
     let mut sim = Simulation::new();
     let ggi = spawn_infantry(&mut sim, "GGI", "Americans", 10, 10);
-    sim.entities.get_mut(ggi).unwrap().deploy_state = Some(DeployPhase::Deployed);
+    sim.substrate.entities.get_mut(ggi).unwrap().deploy_state = Some(DeployPhase::Deployed);
 
     let applied = apply(
         &mut sim,
@@ -1349,7 +1349,7 @@ fn ggi_undeploy_uses_art_frame_count() {
     );
     assert!(applied);
 
-    let entity = sim.entities.get(ggi).unwrap();
+    let entity = sim.substrate.entities.get(ggi).unwrap();
     match entity.deploy_state {
         Some(DeployPhase::Undeploying { ticks_remaining }) => {
             assert_eq!(
@@ -1368,7 +1368,7 @@ fn ggi_undeploy_decrements_on_command_tick() {
     let rules = make_rules_with_ggi_art();
     let mut sim = Simulation::new();
     let ggi = spawn_infantry(&mut sim, "GGI", "Americans", 10, 10);
-    sim.entities.get_mut(ggi).unwrap().deploy_state = Some(DeployPhase::Deployed);
+    sim.substrate.entities.get_mut(ggi).unwrap().deploy_state = Some(DeployPhase::Deployed);
     let undeploy_ticks = frames_to_ticks(2);
 
     dispatch(
@@ -1379,18 +1379,18 @@ fn ggi_undeploy_decrements_on_command_tick() {
     );
 
     assert_eq!(
-        sim.entities.get(ggi).unwrap().deploy_state,
+        sim.substrate.entities.get(ggi).unwrap().deploy_state,
         Some(DeployPhase::Undeploying {
             ticks_remaining: undeploy_ticks - 1
         })
     );
     tick_n(&mut sim, &rules, (undeploy_ticks - 2) as u32);
     assert_eq!(
-        sim.entities.get(ggi).unwrap().deploy_state,
+        sim.substrate.entities.get(ggi).unwrap().deploy_state,
         Some(DeployPhase::Undeploying { ticks_remaining: 1 })
     );
     tick_n(&mut sim, &rules, 1);
-    assert_eq!(sim.entities.get(ggi).unwrap().deploy_state, None);
+    assert_eq!(sim.substrate.entities.get(ggi).unwrap().deploy_state, None);
 }
 
 #[test]
@@ -1409,7 +1409,7 @@ fn sequence_less_infantry_falls_back_to_default_ticks() {
         &rules,
     );
     assert!(applied);
-    let entity = sim.entities.get(gi).unwrap();
+    let entity = sim.substrate.entities.get(gi).unwrap();
     match entity.deploy_state {
         Some(DeployPhase::Deploying { ticks_remaining }) => {
             assert_eq!(ticks_remaining, DEPLOY_DEFAULT_TICKS);

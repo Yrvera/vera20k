@@ -87,7 +87,7 @@ fn apply_mutate_explosion(
     let base_damage: i32 = MUTATE_AOE_DAMAGE;
     let impact_z = bridge_adjusted_impact_z(sim.resolved_terrain.as_ref(), target_rx, target_ry);
     let hits = apply_aoe_damage(
-        &sim.entities,
+        &sim.substrate.entities,
         target_rx,
         target_ry,
         base_damage,
@@ -146,7 +146,7 @@ fn apply_mutate_explosion(
     for (id, dmg) in &hits {
         // Pre-snapshot category + position + HP BEFORE mutating.
         let snapshot = sim
-            .entities
+            .substrate.entities
             .get(*id)
             .map(|e| (e.category, e.position.rx, e.position.ry, e.health.current));
         let Some((cat, rx, ry, hp)) = snapshot else {
@@ -155,7 +155,7 @@ fn apply_mutate_explosion(
         if cat != EntityCategory::Infantry {
             continue;
         }
-        if let Some(e) = sim.entities.get_mut(*id) {
+        if let Some(e) = sim.substrate.entities.get_mut(*id) {
             let new_hp = hp.saturating_sub(*dmg);
             e.health.current = new_hp;
             if new_hp == 0 && !e.dying {
@@ -179,7 +179,7 @@ fn apply_mutate_per_cell(
 
     // Collect infantry IDs + cell positions first (avoid borrow conflict).
     let victims: Vec<(u64, u16, u16)> = sim
-        .entities
+        .substrate.entities
         .values()
         .filter(|e| e.category == EntityCategory::Infantry)
         .filter(|e| e.health.current > 0 && !e.dying)
@@ -193,7 +193,7 @@ fn apply_mutate_per_cell(
 
     let mut killed: Vec<(u16, u16)> = Vec::new();
     for (id, rx, ry) in &victims {
-        if let Some(e) = sim.entities.get_mut(*id) {
+        if let Some(e) = sim.substrate.entities.get_mut(*id) {
             e.health.current = 0;
             e.dying = true;
             killed.push((*rx, *ry));
@@ -270,17 +270,17 @@ mod tests {
         assert_eq!(count, 1);
         assert_eq!(killed, vec![(5, 5)]);
         assert_eq!(
-            sim.entities.get(1).unwrap().health.current,
+            sim.substrate.entities.get(1).unwrap().health.current,
             100,
             "ground infantry under the bridge must not be mutated by a deck impact"
         );
         assert_eq!(
-            sim.entities.get(2).unwrap().health.current,
+            sim.substrate.entities.get(2).unwrap().health.current,
             0,
             "bridge-deck infantry must be mutated by a bridge-targeted impact"
         );
-        assert!(!sim.entities.get(1).unwrap().dying);
-        assert!(sim.entities.get(2).unwrap().dying);
+        assert!(!sim.substrate.entities.get(1).unwrap().dying);
+        assert!(sim.substrate.entities.get(2).unwrap().dying);
     }
 
     fn genetic_test_rules() -> RuleSet {
@@ -326,8 +326,8 @@ mod tests {
         bridge.on_bridge = true;
         bridge.position.z = 4;
 
-        sim.entities.insert(ground);
-        sim.entities.insert(bridge);
+        sim.substrate.entities.insert(ground);
+        sim.substrate.entities.insert(bridge);
         sim.substrate.occupancy.add(
             5,
             5,

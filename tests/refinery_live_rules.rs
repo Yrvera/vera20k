@@ -153,7 +153,7 @@ fn real_garefn_placement_spawns_cmin() {
     let cmin_id = sim.interner.get("CMIN").expect("CMIN should be interned");
 
     let cmins: Vec<(u16, u16)> = sim
-        .entities
+        .entities()
         .values()
         .filter(|e| e.owner == americans_id && e.category == EntityCategory::Unit)
         .filter(|e| e.type_ref == cmin_id)

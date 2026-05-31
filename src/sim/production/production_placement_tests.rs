@@ -223,7 +223,7 @@ fn place_ready_building_spawns_and_consumes_ready_item() {
     assert!(ready_buildings_for_owner(&sim, &rules, "Americans").is_empty());
 
     let structures = sim
-        .entities
+        .substrate.entities
         .values()
         .filter(|e| {
             sim.interner
@@ -290,7 +290,7 @@ fn place_ready_building_accepts_clear_mixed_height_footprint() {
         &height_map,
     ));
 
-    assert!(sim.entities.values().any(|e| {
+    assert!(sim.substrate.entities.values().any(|e| {
         sim.interner
             .resolve(e.type_ref)
             .eq_ignore_ascii_case("GAPOWR")
@@ -360,7 +360,7 @@ fn refinery_placement_spawns_one_starter_harvester() {
     ));
 
     let harvesters: Vec<(u16, u16)> = sim
-        .entities
+        .substrate.entities
         .values()
         .filter(|e| {
             sim.interner
@@ -427,7 +427,7 @@ fn modded_refinery_placement_uses_free_unit_from_rules() {
     ));
 
     let harvesters = sim
-        .entities
+        .substrate.entities
         .values()
         .filter(|e| {
             sim.interner
@@ -487,7 +487,7 @@ fn refinery_without_free_unit_spawns_nothing() {
     ));
 
     let harvesters = sim
-        .entities
+        .substrate.entities
         .values()
         .filter(|e| {
             sim.interner
@@ -1064,7 +1064,7 @@ fn producer_candidates_are_sorted_by_stable_id() {
     spawn_structure(&mut sim, 5, "Americans", "GAWEAP", 15, 15);
 
     let candidates = producer_candidates_for_owner_category(
-        &sim.entities,
+        &sim.substrate.entities,
         &rules,
         "Americans",
         ProductionCategory::Vehicle,
@@ -1289,7 +1289,7 @@ fn sell_building_refunds_half_current_value_and_ejects_allied_infantry() {
 
     // Use spawn_structure for dual-write, then reduce health for the test.
     spawn_structure(&mut sim, 1, "Americans", "GAPOWR", 20, 20);
-    if let Some(ge) = sim.entities.get_mut(1) {
+    if let Some(ge) = sim.substrate.entities.get_mut(1) {
         ge.health = Health {
             current: 375,
             max: 750,
@@ -1300,13 +1300,13 @@ fn sell_building_refunds_half_current_value_and_ejects_allied_infantry() {
     peer.owner = sim.interner.intern("Americans");
     peer.type_ref = sim.interner.intern("MTNK");
     peer.mark_live_contact_with(1);
-    sim.entities.insert(peer);
+    sim.substrate.entities.insert(peer);
 
     assert!(sell_building(&mut sim, &rules, 1));
     assert_eq!(credits_for_owner(&sim, "Americans"), 1200);
 
     let survivors: Vec<(String, u16, u16)> = sim
-        .entities
+        .substrate.entities
         .values()
         .filter(|e| {
             sim.interner
@@ -1324,11 +1324,11 @@ fn sell_building_refunds_half_current_value_and_ejects_allied_infantry() {
         "800-cost Allied building at half health: refund 200 / divisor 500 = 0 survivors"
     );
     assert!(
-        !sim.entities.contains(1),
+        !sim.substrate.entities.contains(1),
         "sold building should be removed from the store"
     );
     assert!(
-        !sim.entities.get(99).unwrap().has_live_contact_with(1),
+        !sim.substrate.entities.get(99).unwrap().has_live_contact_with(1),
         "selling a building should clear peer radio contacts to it"
     );
 }
@@ -1346,7 +1346,7 @@ fn sell_building_uses_owner_appropriate_survivor_type_and_caps_count() {
     );
 
     spawn_structure(&mut sim, 2, "Russians", "NAHAND", 30, 30);
-    if let Some(ge) = sim.entities.get_mut(2) {
+    if let Some(ge) = sim.substrate.entities.get_mut(2) {
         ge.health = Health {
             current: 500,
             max: 500,
@@ -1357,7 +1357,7 @@ fn sell_building_uses_owner_appropriate_survivor_type_and_caps_count() {
     assert_eq!(credits_for_owner(&sim, "Russians"), 1250);
 
     let conscripts = sim
-        .entities
+        .substrate.entities
         .values()
         .filter(|e| {
             sim.interner
@@ -1385,7 +1385,7 @@ fn sell_captured_civilian_ejects_reverts_and_keeps_building() {
     // garrison_original_owner = Some(Neutral).
     spawn_structure(&mut sim, 10, "Americans", "CAGAS01", 20, 20);
     let neutral_id = sim.interner.intern("Neutral");
-    if let Some(t) = sim.entities.get_mut(10) {
+    if let Some(t) = sim.substrate.entities.get_mut(10) {
         t.garrison_original_owner = Some(neutral_id);
         t.passenger_role = PassengerRole::Transport {
             cargo: PassengerCargo::new(5, 1),
@@ -1400,9 +1400,9 @@ fn sell_captured_civilian_ejects_reverts_and_keeps_building() {
         pax.owner = amer_id;
         pax.type_ref = e1_id;
         pax.passenger_role = PassengerRole::Inside { transport_id: 10 };
-        sim.entities.insert(pax);
+        sim.substrate.entities.insert(pax);
     }
-    if let Some(t) = sim.entities.get_mut(10) {
+    if let Some(t) = sim.substrate.entities.get_mut(10) {
         if let Some(c) = t.passenger_role.cargo_mut() {
             c.board(11, 1);
             c.board(12, 1);
@@ -1412,7 +1412,7 @@ fn sell_captured_civilian_ejects_reverts_and_keeps_building() {
     assert!(sell_building(&mut sim, &rules, 10));
 
     // Building still in store, owner reverted, cargo cleared.
-    let bldg = sim.entities.get(10).expect("building should still exist");
+    let bldg = sim.substrate.entities.get(10).expect("building should still exist");
     assert_eq!(sim.interner.resolve(bldg.owner), "Neutral");
     assert!(
         bldg.garrison_original_owner.is_none(),
@@ -1423,7 +1423,7 @@ fn sell_captured_civilian_ejects_reverts_and_keeps_building() {
 
     // Both occupants alive on the map, role=None, not dying.
     for &pid in &[11u64, 12u64] {
-        let pax = sim.entities.get(pid).expect("occupant exists");
+        let pax = sim.substrate.entities.get(pid).expect("occupant exists");
         assert!(!pax.dying, "occupant {pid} should not be dying");
         assert!(pax.health.current > 0, "occupant {pid} should be alive");
         assert!(
@@ -1451,7 +1451,7 @@ fn sell_captured_civilian_emits_structure_abandoned_with_pre_revert_owner() {
     let neutral_id = sim.interner.intern("Neutral");
     let amer_id = sim.interner.intern("Americans");
     let e1_id = sim.interner.intern("E1");
-    if let Some(t) = sim.entities.get_mut(20) {
+    if let Some(t) = sim.substrate.entities.get_mut(20) {
         t.garrison_original_owner = Some(neutral_id);
         t.passenger_role = PassengerRole::Transport {
             cargo: PassengerCargo::new(5, 1),
@@ -1461,8 +1461,8 @@ fn sell_captured_civilian_emits_structure_abandoned_with_pre_revert_owner() {
     pax.owner = amer_id;
     pax.type_ref = e1_id;
     pax.passenger_role = PassengerRole::Inside { transport_id: 20 };
-    sim.entities.insert(pax);
-    if let Some(t) = sim.entities.get_mut(20) {
+    sim.substrate.entities.insert(pax);
+    if let Some(t) = sim.substrate.entities.get_mut(20) {
         if let Some(c) = t.passenger_role.cargo_mut() {
             c.board(21, 1);
         }
@@ -1501,7 +1501,7 @@ fn sell_player_built_garrisoned_building_demolishes_and_ejects_alive() {
     spawn_structure(&mut sim, 30, "Americans", "CAGAS01", 40, 40);
     let amer_id = sim.interner.intern("Americans");
     let e1_id = sim.interner.intern("E1");
-    if let Some(t) = sim.entities.get_mut(30) {
+    if let Some(t) = sim.substrate.entities.get_mut(30) {
         // garrison_original_owner stays None — player-built path.
         t.passenger_role = PassengerRole::Transport {
             cargo: PassengerCargo::new(5, 1),
@@ -1511,8 +1511,8 @@ fn sell_player_built_garrisoned_building_demolishes_and_ejects_alive() {
     pax.owner = amer_id;
     pax.type_ref = e1_id;
     pax.passenger_role = PassengerRole::Inside { transport_id: 30 };
-    sim.entities.insert(pax);
-    if let Some(t) = sim.entities.get_mut(30) {
+    sim.substrate.entities.insert(pax);
+    if let Some(t) = sim.substrate.entities.get_mut(30) {
         if let Some(c) = t.passenger_role.cargo_mut() {
             c.board(31, 1);
         }
@@ -1522,11 +1522,11 @@ fn sell_player_built_garrisoned_building_demolishes_and_ejects_alive() {
 
     // Building removed.
     assert!(
-        !sim.entities.contains(30),
+        !sim.substrate.entities.contains(30),
         "player-built garrison should be demolished on sell"
     );
     // Occupant placed on the map alive.
-    let pax = sim.entities.get(31).expect("occupant exists");
+    let pax = sim.substrate.entities.get(31).expect("occupant exists");
     assert!(!pax.dying, "occupant should not be dying");
     assert!(pax.health.current > 0, "occupant should be alive");
     assert!(

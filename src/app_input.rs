@@ -96,7 +96,7 @@ pub(crate) fn handle_mouse_input(
                                 Some(&sim.fog)
                             };
                             queued_selection = compute_click_selection_snapshot(
-                                &sim.entities,
+                                sim.entities(),
                                 fog_ref,
                                 preferred_local_owner_name(state).as_deref(),
                                 world_x,
@@ -117,7 +117,7 @@ pub(crate) fn handle_mouse_input(
                             };
                             let z = state.zoom_level;
                             queued_selection = compute_box_selection_snapshot(
-                                &sim.entities,
+                                sim.entities(),
                                 fog_ref,
                                 preferred_local_owner_name(state).as_deref(),
                                 min_x / z + state.camera_x,
@@ -200,7 +200,7 @@ pub(crate) fn handle_cursor_moved_in_game(state: &mut AppState) {
     // the mouse button is released.
     if transition == DragTransition::Activated {
         if let Some(sim) = &mut state.simulation {
-            crate::sim::selection::deselect_all(&mut sim.entities);
+            crate::sim::selection::deselect_all(sim.entities_mut());
         }
     }
 }
@@ -328,14 +328,14 @@ pub(crate) fn toggle_unit_inspector(state: &mut AppState) {
     if let Some(sim) = &mut state.simulation {
         sim.debug_event_logging = state.debug_unit_inspector;
         if state.debug_unit_inspector {
-            for entity in sim.entities.values_mut() {
+            for entity in sim.entities_mut().values_mut() {
                 if entity.debug_log.is_none() {
                     entity.debug_log = Some(crate::sim::debug_event_log::DebugEventLog::new());
                 }
             }
             log::info!("Debug unit inspector: ON");
         } else {
-            for entity in sim.entities.values_mut() {
+            for entity in sim.entities_mut().values_mut() {
                 entity.debug_log = None;
             }
             log::info!("Debug unit inspector: OFF");
@@ -835,7 +835,7 @@ fn queue_selection_snapshot_command(state: &mut AppState, selected_ids: Vec<u64>
 
 fn queue_stop_for_selected(state: &mut AppState) {
     let Some(sim) = &state.simulation else { return };
-    let mut selected_ids: Vec<u64> = selected_stable_ids_sorted(&sim.entities);
+    let mut selected_ids: Vec<u64> = selected_stable_ids_sorted(sim.entities());
     if selected_ids.is_empty() {
         return;
     }
@@ -851,7 +851,7 @@ fn queue_stop_for_selected(state: &mut AppState) {
 /// - Selected structure with `UndeploysInto` → `Command::UndeployBuilding` (ConYard → MCV)
 fn queue_deploy_undeploy_for_selected(state: &mut AppState) {
     let Some(sim) = &state.simulation else { return };
-    let selected_ids: Vec<u64> = selected_stable_ids_sorted(&sim.entities);
+    let selected_ids: Vec<u64> = selected_stable_ids_sorted(sim.entities());
     if selected_ids.is_empty() {
         return;
     }
@@ -861,7 +861,7 @@ fn queue_deploy_undeploy_for_selected(state: &mut AppState) {
     {
         let rules = state.rules.as_ref();
         for &entity_id in &selected_ids {
-            let Some(entity) = sim.entities.get(entity_id) else {
+            let Some(entity) = sim.entities().get(entity_id) else {
                 continue;
             };
             let obj = rules.and_then(|r| r.object(sim.interner.resolve(entity.type_ref)));
@@ -923,7 +923,7 @@ fn handle_control_group_hotkey(state: &mut AppState, group_idx: usize) {
         let ids = state
             .simulation
             .as_ref()
-            .map(|sim| selected_stable_ids_sorted(&sim.entities))
+            .map(|sim| selected_stable_ids_sorted(sim.entities()))
             .unwrap_or_default();
         state.control_groups[group_idx] = ids;
         return;
@@ -938,7 +938,7 @@ fn handle_control_group_hotkey(state: &mut AppState, group_idx: usize) {
         state
             .simulation
             .as_ref()
-            .map(|sim| selected_stable_ids_sorted(&sim.entities))
+            .map(|sim| selected_stable_ids_sorted(sim.entities()))
             .unwrap_or_default()
     } else {
         Vec::new()
@@ -960,7 +960,7 @@ fn handle_control_group_hotkey(state: &mut AppState, group_idx: usize) {
 fn select_same_type(state: &mut AppState, additive: bool) {
     let Some(sim) = &state.simulation else { return };
     let anchor = sim
-        .entities
+        .entities()
         .values()
         .find(|e| e.selected)
         .map(|e| (e.type_ref, e.owner));
@@ -969,12 +969,12 @@ fn select_same_type(state: &mut AppState, additive: bool) {
     };
 
     let mut matching_ids: Vec<u64> = sim
-        .entities
+        .entities()
         .values()
         .filter_map(|e| (e.type_ref == type_id && e.owner == owner_id).then_some(e.stable_id))
         .collect();
     if additive {
-        matching_ids.extend(selected_stable_ids_sorted(&sim.entities));
+        matching_ids.extend(selected_stable_ids_sorted(sim.entities()));
     }
     matching_ids.sort_unstable();
     matching_ids.dedup();
@@ -999,7 +999,7 @@ fn emit_selection_voice(state: &mut AppState, snapshot: &[u64]) {
     let Some(rules) = &state.rules else { return };
 
     // Find the entity's type and look up its VoiceSelect sound.
-    if let Some(entity) = sim.entities.get(*first_id) {
+    if let Some(entity) = sim.entities().get(*first_id) {
         if let Some(obj) = rules.object(sim.interner.resolve(entity.type_ref)) {
             if let Some(ref voice_id) = obj.voice_select {
                 state.sound_events.push(GameSoundEvent::UnitSelected {
@@ -1022,7 +1022,7 @@ fn jump_camera_to_base(state: &mut AppState) {
     let target: Option<(u16, u16)> = state.simulation.as_ref().and_then(|sim| {
         let rules = state.rules.as_ref();
         // First pass: look for a ConYard (structure with UndeploysInto=).
-        let conyard = sim.entities.values().find(|e| {
+        let conyard = sim.entities().values().find(|e| {
             e.category == EntityCategory::Structure
                 && owner_name.map_or(true, |o| {
                     sim.interner.resolve(e.owner).eq_ignore_ascii_case(o)
@@ -1041,7 +1041,7 @@ fn jump_camera_to_base(state: &mut AppState) {
             return Some((entity.position.rx, entity.position.ry));
         }
         // Second pass: look for an MCV (unit with DeploysInto=).
-        let mcv = sim.entities.values().find(|e| {
+        let mcv = sim.entities().values().find(|e| {
             e.category != EntityCategory::Structure
                 && owner_name.map_or(true, |o| {
                     sim.interner.resolve(e.owner).eq_ignore_ascii_case(o)
@@ -1062,7 +1062,7 @@ fn jump_camera_to_base(state: &mut AppState) {
         log::info!(
             "H: no ConYard/MCV found (owner={:?}, entities={}, rules={})",
             owner_name,
-            sim.entities.len(),
+            sim.entities().len(),
             rules.is_some()
         );
         None
@@ -1092,7 +1092,7 @@ pub(crate) fn emit_order_voice(state: &mut AppState, voice_field: &str) {
     let Some(rules) = &state.rules else { return };
 
     // Find first selected entity and get its voice sound.
-    let first_selected = sim.entities.values().find(|e| e.selected);
+    let first_selected = sim.entities().values().find(|e| e.selected);
     let Some(sel_entity) = first_selected else {
         return;
     };
