@@ -525,13 +525,37 @@ impl Simulation {
             };
         }
 
-        let spawn_owner_str = self.interner.resolve(ge.owner).to_string();
-        let spawn_category = ge.category;
+        Some(self.create_limbo(ge))
+    }
+
+    /// Shared spawn placement. Inserts the entity, then either reveals + occupies
+    /// it (active spawn) or leaves it in limbo. Preserves the exact pre-collapse
+    /// step order (`insert -> reveal -> increment -> occupancy`) so the replay hash
+    /// is bit-identical (pure no-op collapse). Returns the stable id.
+    ///
+    /// `active=true` reproduces the old active 4-step; `active=false` reproduces the
+    /// limbo fork. A later slice adopts the native mark-before-register order — do
+    /// NOT swap occupancy ahead of reveal here.
+    fn place_spawned(&mut self, ge: GameEntity, active: bool) -> u64 {
+        let stable_id = ge.stable_id;
+        let owner = self.interner.resolve(ge.owner).to_string();
+        let category = ge.category;
         self.substrate.entities.insert(ge);
-        // Limbo objects are NOT registered in the active order — registration
-        // happens at reveal/unlimbo (e.g. paradrop drop), mirroring ObjectClass+0x98.
-        self.increment_owned_count(&spawn_owner_str, spawn_category);
-        Some(stable_id)
+        if active {
+            self.reveal(stable_id);
+            self.increment_owned_count(&owner, category);
+            self.add_entity_occupancy(stable_id);
+        } else {
+            self.increment_owned_count(&owner, category);
+        }
+        stable_id
+    }
+
+    /// Spawn an object directly into limbo: stored in EntityStore and owner counts
+    /// but NOT registered in the active order or map occupancy. Registration
+    /// happens later at reveal/landing (e.g. paradrop drop). Returns the stable id.
+    pub(crate) fn create_limbo(&mut self, ge: GameEntity) -> u64 {
+        self.place_spawned(ge, false)
     }
 
     /// Update VoxelAnimation frame_counts for all voxel entities from atlas data.
