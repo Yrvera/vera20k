@@ -425,6 +425,11 @@ pub(crate) fn structure_occupies_cell(
     interner: &crate::sim::intern::StringInterner,
 ) -> bool {
     entities.values().any(|e| {
+        // A dying structure is unmarked from cell lists synchronously in uninit;
+        // it must not block placement during its deferred-delete window.
+        if e.dying {
+            return false;
+        }
         if e.category != EntityCategory::Structure {
             return false;
         }
@@ -460,6 +465,10 @@ fn is_within_build_area(
         return false;
     }
     for e in sim.substrate.entities.values() {
+        // A dying structure provides no build-area adjacency during its window.
+        if e.dying {
+            continue;
+        }
         if e.category != EntityCategory::Structure {
             continue;
         }
