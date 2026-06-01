@@ -596,9 +596,7 @@ fn reconcile_civilian_garrison_owner_for_building(
         if new_owner == current_owner {
             return false;
         }
-        if let Some(building) = sim.substrate.entities.get_mut(building_id) {
-            building.owner = new_owner;
-        }
+        sim.change_owner(building_id, new_owner);
         return true;
     }
 
@@ -607,9 +605,7 @@ fn reconcile_civilian_garrison_owner_for_building(
         sim.sound_events.push(SimSoundEvent::StructureAbandoned {
             owner: current_owner,
         });
-        if let Some(building) = sim.substrate.entities.get_mut(building_id) {
-            building.owner = civilian_owner;
-        }
+        sim.change_owner(building_id, civilian_owner);
         return current_owner != civilian_owner;
     }
 
