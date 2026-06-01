@@ -25,11 +25,17 @@ const MUSIC_FADE_PER_MS: f64 = 1.0 / 1000.0;
 /// ≤1 s music fade, so this is reached only if audio never reports done.
 const WAIT_CEILING_MS: u64 = 0xBB8 * 16; // 48_000 ms
 
+/// Screen fade-to-black duration. The original fades the palette over `0x1E`=30
+/// timer ticks × ~16 ms/tick ≈ 480 ms, linear to a black palette.
+const SCREEN_FADE_MS: u64 = 480;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum QuitPhase {
     /// Music fading out while any trailing EVA/menu voice plays. Ends the instant
     /// the music fade completes OR voices finish OR the ceiling is hit.
     FadeMusicAndWaitVoices,
+    /// Full-screen fade-to-black over [`SCREEN_FADE_MS`], after the hard music stop.
+    FadeToBlack,
     /// Terminal — the app exits the event loop.
     Done,
 }
@@ -51,6 +57,9 @@ pub(crate) struct QuitCascade {
     phase_started_at: Instant,
     /// Live music volume captured when the cascade began (the fade start point).
     start_music_volume: f64,
+    /// Latest fade-to-black alpha (0.0..=1.0), updated each FadeToBlack tick;
+    /// read by the renderer for the black overlay.
+    overlay_alpha: f32,
 }
 
 impl QuitCascade {
@@ -61,6 +70,7 @@ impl QuitCascade {
             phase: QuitPhase::FadeMusicAndWaitVoices,
             phase_started_at: now,
             start_music_volume: start_music_volume.clamp(0.0, 1.0),
+            overlay_alpha: 0.0,
         }
     }
 
@@ -74,12 +84,10 @@ impl QuitCascade {
                     (self.start_music_volume - elapsed_ms as f64 * MUSIC_FADE_PER_MS).max(0.0);
                 let music_done = faded <= 0.0;
                 if music_done || !voices_active || elapsed_ms >= WAIT_CEILING_MS {
-                    self.enter(QuitPhase::Done, now);
-                    // 4b-ii-a: hard-stop music and exit on the same edge (the
-                    // screen fade is inserted between these in 4b-ii-b).
+                    self.enter(QuitPhase::FadeToBlack, now);
+                    // Hard-stop music as the visual fade-to-black begins.
                     return QuitCascadeTick {
                         stop_music: true,
-                        finished: true,
                         ..Default::default()
                     };
                 }
@@ -87,6 +95,14 @@ impl QuitCascade {
                     music_volume: Some(faded),
                     ..Default::default()
                 }
+            }
+            QuitPhase::FadeToBlack => {
+                self.overlay_alpha = (elapsed_ms as f32 / SCREEN_FADE_MS as f32).min(1.0);
+                if elapsed_ms >= SCREEN_FADE_MS {
+                    self.enter(QuitPhase::Done, now);
+                }
+                // Finish on the NEXT tick so the fully-black frame is presented.
+                QuitCascadeTick::default()
             }
             QuitPhase::Done => QuitCascadeTick {
                 finished: true,
@@ -98,6 +114,11 @@ impl QuitCascade {
     fn enter(&mut self, phase: QuitPhase, now: Instant) {
         self.phase = phase;
         self.phase_started_at = now;
+    }
+
+    /// Current fade-to-black overlay alpha (0.0 = none, 1.0 = full black).
+    pub(crate) fn overlay_alpha(&self) -> f32 {
+        self.overlay_alpha
     }
 }
 
@@ -122,32 +143,46 @@ mod tests {
         assert!((near.music_volume.unwrap() - 0.1).abs() < 1e-9);
     }
 
-    /// When the fade reaches silence, the cascade hard-stops music and finishes.
+    /// A trailing voice finishing early ends the wait and enters the screen fade
+    /// (hard-stop music, not yet finished).
     #[test]
-    fn fade_completion_stops_music_and_finishes() {
-        let t0 = Instant::now();
-        let mut c = QuitCascade::start(t0, 1.0);
-        let end = c.tick(at(t0, 1000), true);
-        assert!(end.stop_music && end.finished);
-        // Stays finished thereafter.
-        assert!(c.tick(at(t0, 1001), true).finished);
-    }
-
-    /// A trailing voice finishing early ends the wait before the fade completes.
-    #[test]
-    fn voices_done_ends_wait_early() {
+    fn voices_done_ends_wait_and_enters_screen_fade() {
         let t0 = Instant::now();
         let mut c = QuitCascade::start(t0, 1.0);
         let end = c.tick(at(t0, 200), false); // voices already done
-        assert!(end.stop_music && end.finished);
+        assert!(end.stop_music && !end.finished);
     }
 
-    /// Default menu volume (0.4) fades to silence in ~400 ms.
+    /// Default menu volume (0.4) fades to silence in ~400 ms, then enters the
+    /// screen fade (hard-stop, not finished).
     #[test]
-    fn default_volume_fades_in_400ms() {
+    fn default_volume_fades_in_400ms_then_screen_fade() {
         let t0 = Instant::now();
         let mut c = QuitCascade::start(t0, 0.4);
         assert_eq!(c.tick(at(t0, 200), true).music_volume, Some(0.2));
-        assert!(c.tick(at(t0, 400), true).finished);
+        let edge = c.tick(at(t0, 400), true);
+        assert!(edge.stop_music && !edge.finished);
+    }
+
+    /// When the fade completes, the cascade hard-stops music, runs the ~480 ms
+    /// fade-to-black ramp, then finishes.
+    #[test]
+    fn fade_completion_enters_screen_fade_then_finishes() {
+        let t0 = Instant::now();
+        let mut c = QuitCascade::start(t0, 1.0);
+        // Music fade completes at 1000 ms → hard-stop + enter screen fade. The
+        // fade clock starts at this `now` (t0+1000) since `enter` resets it.
+        let edge = c.tick(at(t0, 1000), true);
+        assert!(edge.stop_music && !edge.finished);
+        // Alpha ramps linearly over the next 480 ms.
+        let mid = c.tick(at(t0, 1000 + 240), true);
+        assert!((c.overlay_alpha() - 0.5).abs() < 0.01);
+        assert!(!mid.finished);
+        // At 480 ms the all-black frame is presented (alpha 1.0, not yet finished)…
+        let full = c.tick(at(t0, 1000 + 480), true);
+        assert!((c.overlay_alpha() - 1.0).abs() < 1e-6);
+        assert!(!full.finished);
+        // …and the cascade finishes on the next tick.
+        assert!(c.tick(at(t0, 1000 + 500), true).finished);
     }
 }

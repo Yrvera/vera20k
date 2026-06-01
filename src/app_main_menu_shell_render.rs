@@ -467,6 +467,37 @@ pub(crate) fn render_main_menu_shell_to_target(
         .and_then(|sequence| sequence.frames.first())
         .map(|frame| &frame.texture);
 
+    // Quit-cascade fade-to-black: a full-screen black quad over EVERYTHING (incl.
+    // the cursor), alpha ramped 0→1 by the cascade. Reuses the 1×1 opaque
+    // white_pixel + the ALPHA_BLENDING passthrough pipeline; no new shader. Built
+    // here (like every other layer) so it outlives the render pass. Only present on
+    // the SHP path (the atlas is unavailable on the egui fallback).
+    let fade_alpha = state
+        .quit_cascade
+        .as_ref()
+        .map_or(0.0, |cascade| cascade.overlay_alpha());
+    let fade_buffer = if fade_alpha > 0.0 {
+        skirmish_chrome
+            .and_then(|sk| sk.white_pixel)
+            .and_then(|white| {
+                let quad = [crate::render::batch::SpriteInstance {
+                    position: [0.0, 0.0],
+                    size: [state.gpu.config.width as f32, state.gpu.config.height as f32],
+                    uv_origin: white.uv_origin,
+                    uv_size: white.uv_size,
+                    // Passthrough compares depth Always and this draws last, so any
+                    // depth sits on top; the frontmost value is used for clarity.
+                    depth: 0.0,
+                    tint: [0.0, 0.0, 0.0],
+                    alpha: fade_alpha,
+                    ..Default::default()
+                }];
+                state.batch_renderer.create_instance_buffer(&state.gpu, &quad)
+            })
+    } else {
+        None
+    };
+
     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("Main Menu Shell"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -570,6 +601,13 @@ pub(crate) fn render_main_menu_shell_to_target(
         state
             .batch_renderer
             .draw_with_buffer_passthrough(&mut pass, texture, buffer, *count);
+    }
+    // Quit-cascade fade-to-black overlay, drawn LAST so it blackens everything
+    // including the cursor (the original's palette fade affects the whole frame).
+    if let (Some((buffer, count)), Some(sk_chrome)) = (fade_buffer.as_ref(), skirmish_chrome) {
+        state
+            .batch_renderer
+            .draw_with_buffer_passthrough(&mut pass, &sk_chrome.texture, buffer, *count);
     }
     drop(pass);
 
