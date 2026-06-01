@@ -833,8 +833,9 @@ impl Simulation {
     /// Debug-only invariant: the `presence` shadow must equal the value derivable
     /// from the authoritative gates for every in-store entity. Proves transition
     /// coverage is complete (every gate flip set the shadow). O(n); compiled out of
-    /// release builds. `Dying` is transient inside `uninit` (slot freed same call),
-    /// so no in-store entity is ever `Dying` at a tick boundary in this slice.
+    /// release builds. `Dying` entities exist in-store between `uninit`'s enqueue
+    /// and the end-of-tick `flush_pending_delete`. The flush runs in Phase 9 before
+    /// this assert, so no `Dying` entity remains in the store at this call point.
     #[cfg(debug_assertions)]
     pub(crate) fn debug_assert_presence_consistent(&self) {
         for e in self.substrate.entities.values() {

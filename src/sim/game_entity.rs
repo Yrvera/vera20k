@@ -128,9 +128,10 @@ impl BuildingGateRuntime {
 
 /// Authoritative-shadow lifecycle state of an object (the substrate `Presence`
 /// FSM, Slice 2). Mirrors the single InLimbo bit: an object is either in the
-/// active set (`InCell`) or out of it (`Limbo`). `Dying` is a transient marker
-/// set during teardown right before the store slot is freed; it becomes a
-/// persistent, observable state only once deferred-delete lands (later slice).
+/// active set (`InCell`) or out of it (`Limbo`). `Dying` is set during teardown
+/// after conceal and persists in the store until the end-of-tick deferred-delete
+/// drain frees the slot (Slice 6) — during that window the entity is resolvable by
+/// id but off occupancy + off the logic vector, excluded from all live systems.
 ///
 /// In this slice `presence` *shadows* the old gates (`in_logic_vector` + store
 /// membership) — those stay authoritative — and a debug assert proves the two
@@ -144,7 +145,8 @@ pub enum Presence {
     Limbo,
     /// In the active-object set and placed on the playfield (`in_logic_vector`).
     InCell,
-    /// Teardown in progress — set after conceal, before the slot is freed.
+    /// Teardown in progress — set after conceal; persists in-store until the
+    /// end-of-tick deferred-delete drain frees the slot.
     Dying,
 }
 
