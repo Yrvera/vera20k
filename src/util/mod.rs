@@ -13,6 +13,7 @@ pub mod direction;
 pub mod facing_table;
 pub mod fixed_math;
 pub mod flh_transform;
+pub mod ini_writer;
 pub mod lcw;
 pub mod lepton;
 pub mod logging;

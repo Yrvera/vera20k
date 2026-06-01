@@ -382,6 +382,32 @@ fn score_volume_from_ini(ini: &IniFile) -> Option<f64> {
     Some((value as f64).clamp(0.0, 1.0))
 }
 
+/// Format a score volume for `RA2MD.INI` exactly as the original does: six
+/// decimal places (e.g. `0.600000`), clamped to [0,1].
+fn format_score_volume(volume: f64) -> String {
+    format!("{:.6}", volume.clamp(0.0, 1.0))
+}
+
+/// Persist `[Audio] ScoreVolume` into `{ra2_dir}/RA2MD.INI`, updating the key
+/// in place and preserving every other key and section already in the file.
+///
+/// The original writes the user's settings on quit before tearing down; this
+/// closes the read/write loop for the live music volume — the one setting the
+/// engine currently both reads at boot ([`read_score_volume_from_ra2md`]) and
+/// lets the player change at runtime. The `[Audio]` section (and the file
+/// itself) is created when absent.
+pub fn write_score_volume_to_ra2md(ra2_dir: &Path, volume: f64) -> std::io::Result<()> {
+    let path = ra2_dir.join(RA2MD_INI_FILENAME);
+    let existing = std::fs::read(&path).unwrap_or_default();
+    let updated = crate::util::ini_writer::set_ini_value(
+        &existing,
+        AUDIO_SECTION,
+        SCORE_VOLUME_KEY,
+        &format_score_volume(volume),
+    );
+    std::fs::write(&path, updated)
+}
+
 fn load_theme_ini(assets: &AssetManager, name: &str) -> Option<IniFile> {
     let bytes = assets.get_ref(name)?;
     IniFile::from_bytes(bytes).ok()
@@ -505,6 +531,20 @@ mod tests {
     fn score_volume_clamps_above_one() {
         let ini = IniFile::from_str("[Audio]\nScoreVolume=1.5\n");
         assert_eq!(score_volume_from_ini(&ini), Some(1.0));
+    }
+
+    /// The persisted value matches the original's six-decimal format.
+    #[test]
+    fn score_volume_formats_six_decimals() {
+        assert_eq!(format_score_volume(0.6), "0.600000");
+        assert_eq!(format_score_volume(0.4), "0.400000");
+    }
+
+    /// Out-of-range volumes clamp to [0,1] before formatting.
+    #[test]
+    fn score_volume_format_clamps() {
+        assert_eq!(format_score_volume(1.5), "1.000000");
+        assert_eq!(format_score_volume(-0.2), "0.000000");
     }
 
     /// Missing section or key yields None so the caller uses the default.
