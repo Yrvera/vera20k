@@ -227,11 +227,10 @@ impl Simulation {
             let dy = (eng_ry as i32 - bld_ry as i32).abs();
 
             if dx <= 1 && dy <= 1 {
-                // CAPTURE: transfer building ownership.
+                // CAPTURE: transfer building ownership through the substrate
+                // chokepoint (updates by_owner + owner field together).
                 let old_owner = self.substrate.entities.get(building_id).map(|b| b.owner);
-                if let Some(b) = self.substrate.entities.get_mut(building_id) {
-                    b.owner = engineer_owner;
-                }
+                self.change_owner(building_id, engineer_owner);
                 // Update house owned counts for both old and new owner.
                 // Resolve interned IDs to strings before &mut self calls.
                 let engineer_owner_str = self.interner.resolve(engineer_owner).to_string();
