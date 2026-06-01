@@ -309,6 +309,9 @@ fn deploy_mcv_uses_gamemd_large_foundation_origin_offset() {
         &height_map,
     );
     assert!(applied, "clear ConYard footprint should deploy");
+    // Deferred-delete: apply_command enqueues the consumed MCV; the end-of-tick P9
+    // flush (here invoked directly) frees it. Until then it lingers resolvable-Dying.
+    sim.flush_pending_delete();
     assert!(sim.substrate.entities.get(mcv).is_none(), "MCV should be consumed");
 
     let gacnst_id = sim
@@ -344,6 +347,9 @@ fn deploy_mcv_accepts_mixed_height_clear_foundation() {
         applied,
         "clear ConYard footprint should deploy even when foundation cells have mixed heights"
     );
+    // Deferred-delete: apply_command enqueues the consumed MCV; the end-of-tick P9
+    // flush (here invoked directly) frees it. Until then it lingers resolvable-Dying.
+    sim.flush_pending_delete();
     assert!(sim.substrate.entities.get(mcv).is_none(), "MCV should be consumed");
 
     let gacnst_id = sim

@@ -1085,6 +1085,8 @@ mod tests {
 
         assert!(sell_building(&mut sim, &rules, building_id));
 
+        // Deferred-delete: drain at end-of-tick to free the sold building's slot.
+        sim.flush_pending_delete();
         assert!(sim.substrate.entities.get(building_id).is_none());
         for cell in [(10, 10), (10, 11), (11, 10), (11, 11)] {
             assert!(

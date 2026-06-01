@@ -3842,6 +3842,9 @@ fn sell_refinery_interrupts_docked_miner_with_force_track_0x47() {
 
     assert!(crate::sim::production::sell_building(&mut sim, &rules, 100));
 
+    // Deferred-delete: sell_building enqueues; the end-of-tick P9 flush (invoked
+    // directly here) frees the slot. Dock links are cleared synchronously in sell.
+    sim.flush_pending_delete();
     assert!(sim.substrate.entities.get(100).is_none(), "refinery sold");
     assert!(
         !sim.production.dock_reservations.is_occupied(100),
@@ -3890,6 +3893,9 @@ fn sell_refinery_cancels_contact_miner_without_force_track_0x47() {
 
     assert!(crate::sim::production::sell_building(&mut sim, &rules, 100));
 
+    // Deferred-delete: sell_building enqueues; the end-of-tick P9 flush (invoked
+    // directly here) frees the slot. Dock links are cleared synchronously in sell.
+    sim.flush_pending_delete();
     assert!(sim.substrate.entities.get(100).is_none(), "refinery sold");
     assert!(
         !sim.production.dock_reservations.has_contact(100, miner_id),

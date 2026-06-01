@@ -1323,6 +1323,8 @@ fn sell_building_refunds_half_current_value_and_ejects_allied_infantry() {
         0,
         "800-cost Allied building at half health: refund 200 / divisor 500 = 0 survivors"
     );
+    // Deferred-delete: sell_building enqueues; drain at end-of-tick to free the slot.
+    sim.flush_pending_delete();
     assert!(
         !sim.substrate.entities.contains(1),
         "sold building should be removed from the store"
@@ -1520,7 +1522,8 @@ fn sell_player_built_garrisoned_building_demolishes_and_ejects_alive() {
 
     assert!(sell_building(&mut sim, &rules, 30));
 
-    // Building removed.
+    // Building removed (deferred-delete: drain at end-of-tick to free the slot).
+    sim.flush_pending_delete();
     assert!(
         !sim.substrate.entities.contains(30),
         "player-built garrison should be demolished on sell"
