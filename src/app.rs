@@ -2308,6 +2308,13 @@ impl App {
         if let Some(assets) = startup_asset_manager.as_ref() {
             skirmish_shell_state.trackbar_bounds =
                 crate::app_init_helpers::load_skirmish_trackbar_bounds(assets);
+            // Seed the per-match option values (Money/UnitCount/TechLevel/
+            // GameSpeed and the checkbox toggles) from the merged rules
+            // [MultiplayerDialogSettings], so a mod that changes a default opens
+            // the dialog on — and launches the match with — its value. Without
+            // assets we keep the stock-default values.
+            let dialog_options = crate::app_init_helpers::load_skirmish_game_options(assets);
+            skirmish_shell_state.apply_multiplayer_dialog_values(&dialog_options);
         }
         // Pre-fill the player-name field from the persistent profile name when
         // configured, mirroring the original seeding the field from a profile

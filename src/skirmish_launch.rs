@@ -188,6 +188,35 @@ impl Default for SkirmishLaunchOptions {
 }
 
 impl SkirmishLaunchOptions {
+    /// Build the launch base from per-match options parsed once from
+    /// `[MultiplayerDialogSettings]`. The setup dialog later overrides the
+    /// values it exposes as widgets; the remaining fields — tech level and the
+    /// non-widget toggles (bases, shroud, tiberium growth, …) — flow straight
+    /// through to the match from this base. AI difficulty and player count are
+    /// supplied separately at launch from the configured opponent slots, so
+    /// they are not carried on this struct.
+    pub fn from_game_options(options: &GameOptions) -> Self {
+        Self {
+            starting_credits: options.starting_credits,
+            unit_count: options.unit_count,
+            tech_level: options.tech_level,
+            game_speed: options.game_speed,
+            short_game: options.short_game,
+            bases: options.bases,
+            bridges_destroyable: options.bridges_destroyable,
+            super_weapons: options.super_weapons,
+            build_off_ally: options.build_off_ally,
+            crates: options.crates,
+            mcv_redeploy: options.mcv_redeploy,
+            fog_of_war: options.fog_of_war,
+            shroud: options.shroud,
+            tiberium_grows: options.tiberium_grows,
+            multi_engineer: options.multi_engineer,
+            harvester_truce: options.harvester_truce,
+            ally_change_allowed: options.ally_change_allowed,
+        }
+    }
+
     pub fn to_game_options(&self, ai_players: i32, ai_difficulty: AiDifficulty) -> GameOptions {
         GameOptions {
             short_game: self.short_game,
@@ -318,6 +347,41 @@ mod tests {
     #[test]
     fn yuri_country_uses_third_side() {
         assert_eq!(LaunchCountry::Yuri.side_index(), 2);
+    }
+
+    #[test]
+    fn from_game_options_carries_non_widget_fields_to_the_match() {
+        // The launch base is the path by which parsed-INI fields the setup
+        // dialog does not expose (tech level, bases, shroud, …) reach the
+        // launched match. Build a base from modded options and confirm those
+        // fields survive the round-trip through to_game_options.
+        let mut parsed = GameOptions::default();
+        parsed.tech_level = 3;
+        parsed.bases = false;
+        parsed.shroud = false;
+        parsed.tiberium_grows = false;
+        parsed.harvester_truce = true;
+        parsed.multi_engineer = true;
+        parsed.bridges_destroyable = false;
+        parsed.ally_change_allowed = false;
+        parsed.fog_of_war = true;
+
+        let base = SkirmishLaunchOptions::from_game_options(&parsed);
+        let launched = base.to_game_options(2, AiDifficulty::Normal);
+
+        assert_eq!(launched.tech_level, 3);
+        assert!(!launched.bases);
+        assert!(!launched.shroud);
+        assert!(!launched.tiberium_grows);
+        assert!(launched.harvester_truce);
+        assert!(launched.multi_engineer);
+        assert!(!launched.bridges_destroyable);
+        assert!(!launched.ally_change_allowed);
+        assert!(launched.fog_of_war);
+        // AI difficulty / player count come from the opponent slots, not the
+        // parsed defaults.
+        assert_eq!(launched.ai_players, 2);
+        assert_eq!(launched.ai_difficulty, 1);
     }
 
     #[test]

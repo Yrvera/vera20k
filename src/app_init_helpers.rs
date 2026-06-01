@@ -313,6 +313,31 @@ pub(crate) fn load_skirmish_trackbar_bounds(
     SkirmishTrackbarBounds::from_multiplayer_dialog_settings(&ini)
 }
 
+/// Seed the per-match option values from `[MultiplayerDialogSettings]`,
+/// mirroring the original reading this section once into the rules data that
+/// both the skirmish setup dialog and the launched match read from. rulesmd.ini
+/// is a YR patch over rules.ini, so we merge the same way `load_rules_ini` does,
+/// then parse the section. Falls back to the stock-default options when the
+/// rules INI (or a key) is unavailable, so stock skirmishes are unchanged.
+pub(crate) fn load_skirmish_game_options(
+    asset_manager: &AssetManager,
+) -> crate::sim::game_options::GameOptions {
+    use crate::sim::game_options::GameOptions;
+
+    let Some((data, _)) = asset_manager.get_with_source("rules.ini") else {
+        return GameOptions::default();
+    };
+    let Ok(mut ini) = IniFile::from_bytes(&data) else {
+        return GameOptions::default();
+    };
+    if let Some((patch_data, _)) = asset_manager.get_with_source("rulesmd.ini") {
+        if let Ok(patch_ini) = IniFile::from_bytes(&patch_data) {
+            ini.merge(&patch_ini);
+        }
+    }
+    GameOptions::from_multiplayer_dialog_settings(&ini)
+}
+
 /// Load art.ini from MIX archives and parse into ArtRegistry.
 ///
 /// Like rules, artmd.ini is a YR patch on top of art.ini. We load art.ini
