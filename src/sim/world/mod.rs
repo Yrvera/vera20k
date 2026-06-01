@@ -1634,6 +1634,14 @@ impl Simulation {
         });
         self.sound_events.extend(started_effect_sounds);
 
+        // End-of-tick deferred-delete drain (ProcessPendingDelete). Frees every
+        // entity uninit'd during this advance_tick: immediate structure/voxel
+        // deaths in Phase 5, tick_building_down undeploy frees, sells, slave-miner
+        // conversions, engineer-capture consumption. Runs BEFORE the OCCUPANCY_DEBUG
+        // rebuild (which scans all entities and would re-add an unflushed dying
+        // structure) and before the tail presence/membership asserts + state_hash.
+        self.flush_pending_delete();
+
         // Debug-mode safety net: rebuild occupancy from scratch and compare
         // with the persistent grid. Catches missed add/remove calls.
         // Enable via OCCUPANCY_DEBUG=1 environment variable for focused debugging.
