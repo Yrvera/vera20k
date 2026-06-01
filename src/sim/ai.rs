@@ -157,6 +157,9 @@ fn try_deploy_mcv(
         {
             continue;
         }
+        if entity.dying {
+            continue;
+        }
         let is_deployable: bool = rules
             .object(sim.interner.resolve(entity.type_ref))
             .is_some_and(|obj| obj.deploys_into.is_some());
@@ -188,7 +191,8 @@ where
     F: FnMut(&str) -> bool,
 {
     sim.substrate.entities.values().any(|e| {
-        e.category == EntityCategory::Structure
+        !e.dying
+            && e.category == EntityCategory::Structure
             && sim.interner.resolve(e.owner).eq_ignore_ascii_case(owner)
             && matches(sim.interner.resolve(e.type_ref))
     })
@@ -431,6 +435,9 @@ fn send_attack_wave(
         {
             continue;
         }
+        if entity.dying {
+            continue;
+        }
         if !matches!(
             entity.category,
             EntityCategory::Unit | EntityCategory::Infantry
@@ -484,7 +491,8 @@ fn find_base_center(sim: &Simulation, owner: &str) -> Option<(u16, u16)> {
     let mut sum_y: i64 = 0;
     let mut count: i64 = 0;
     for entity in sim.substrate.entities.values() {
-        if entity.category == EntityCategory::Structure
+        if !entity.dying
+            && entity.category == EntityCategory::Structure
             && sim
                 .interner
                 .resolve(entity.owner)
@@ -510,6 +518,9 @@ fn find_nearest_enemy_structure(sim: &Simulation, owner: &str) -> Option<(u16, u
     let mut best: Option<(u32, u16, u16)> = None;
 
     for entity in sim.substrate.entities.values() {
+        if entity.dying {
+            continue;
+        }
         if entity.category != EntityCategory::Structure {
             continue;
         }
@@ -612,7 +623,8 @@ fn count_refineries(sim: &Simulation, owner: &str, rules: &RuleSet) -> usize {
     sim.substrate.entities
         .values()
         .filter(|e| {
-            e.category == EntityCategory::Structure
+            !e.dying
+                && e.category == EntityCategory::Structure
                 && sim.interner.resolve(e.owner).eq_ignore_ascii_case(owner)
                 && rules.is_refinery_type(sim.interner.resolve(e.type_ref))
         })
