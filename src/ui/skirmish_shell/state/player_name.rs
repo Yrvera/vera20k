@@ -6,7 +6,7 @@ use crate::ui::main_menu::{SkirmishCountry, SkirmishSettings, StartPosition};
 
 use super::super::layout::{SkirmishShellLayout, SkirmishTrackbarId};
 use super::super::static_reveal::StaticReveal;
-use super::trackbars::{trackbar_control_id, trackbar_hscroll_wparam};
+use super::trackbars::{SkirmishTrackbarBounds, trackbar_control_id, trackbar_hscroll_wparam};
 use super::{
     ChooseMapModalState, DropdownScrollDragState, DropdownScrollbarPressState, OpenComboDropdown,
     OwnerDrawButton, SkirmishShellOpponent, SkirmishShellUiSound,
@@ -229,6 +229,9 @@ pub struct SkirmishShellState {
     pub starting_credits: i32,
     pub game_speed: i32,
     pub unit_count: i32,
+    /// Credits/Unit Count slider ranges, seeded from `[MultiplayerDialogSettings]`
+    /// at lobby construction (stock-default constants until then).
+    pub trackbar_bounds: SkirmishTrackbarBounds,
     pub short_game: bool,
     pub super_weapons: bool,
     pub build_off_ally: bool,
@@ -273,6 +276,7 @@ impl Default for SkirmishShellState {
             starting_credits: options.starting_credits,
             game_speed: options.game_speed,
             unit_count: options.unit_count,
+            trackbar_bounds: SkirmishTrackbarBounds::default(),
             short_game: options.short_game,
             super_weapons: options.super_weapons,
             build_off_ally: options.build_off_ally,

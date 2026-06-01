@@ -359,11 +359,7 @@ pub(super) fn push_trackbar_instances(
         push_trackbar_plaque(out, atlas, rect, SHELL_CONTROL_DEPTH);
 
         let value = trackbar_visual_value(shell, id);
-        let (min, max, step) = match id {
-            SkirmishTrackbarId::GameSpeed0x529 => (0, 6, 1),
-            SkirmishTrackbarId::Credits0x511 => (5000, 10000, 100),
-            SkirmishTrackbarId::UnitCount0x50c => (0, 10, 1),
-        };
+        let (min, max, step) = shell.trackbar_bounds.range(id);
         let px = trackbar_pixel_offset(value, min, max, step, rect);
         if let Some(thumb) = atlas.trackbar_thumb_trakgrip {
             let thumb_rect = trackbar_thumb_rect(rect, px);

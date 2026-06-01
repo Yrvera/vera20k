@@ -1,6 +1,7 @@
 //! Trackbar and skirmish shell option input helpers.
 
 use crate::app_init::MapMenuEntry;
+use crate::rules::ini_parser::IniFile;
 
 use super::super::layout::{
     RectPx, SkirmishCheckboxId, SkirmishShellLayout, SkirmishTrackbarId, TRACKBAR_PLAQUE_W,
@@ -23,6 +24,80 @@ pub const CREDITS_STEP: i32 = 100;
 pub const UNIT_COUNT_MIN: i32 = 0;
 pub const UNIT_COUNT_MAX: i32 = 10;
 pub const UNIT_COUNT_STEP: i32 = 1;
+
+/// Credits and Unit Count slider ranges for dialog 0x102.
+///
+/// gamemd reads these from the live Rules instance when it builds the skirmish
+/// dialog — Credits from `[MultiplayerDialogSettings]` MinMoney/MaxMoney/
+/// MoneyIncrement and Unit Count from MinUnitCount/MaxUnitCount — so a mod that
+/// changes those keys shifts the slider extents and snap increment. We seed the
+/// same values from the merged rules INI at lobby construction and fall back to
+/// the stock-default constants when a key (or the INI) is absent. GameSpeed's
+/// range is a hardcoded literal in gamemd too (0..6), so it is not stored here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkirmishTrackbarBounds {
+    pub credits_min: i32,
+    pub credits_max: i32,
+    pub credits_step: i32,
+    pub unit_count_min: i32,
+    pub unit_count_max: i32,
+}
+
+impl Default for SkirmishTrackbarBounds {
+    fn default() -> Self {
+        Self {
+            credits_min: CREDITS_MIN,
+            credits_max: CREDITS_MAX,
+            credits_step: CREDITS_STEP,
+            unit_count_min: UNIT_COUNT_MIN,
+            unit_count_max: UNIT_COUNT_MAX,
+        }
+    }
+}
+
+impl SkirmishTrackbarBounds {
+    /// Resolve `(min, max, step)` for a trackbar. GameSpeed is a hardcoded range
+    /// (matching gamemd's literal 0..6); Credits and Unit Count come from the
+    /// seeded bounds. Unit Count has no increment message in gamemd, so its step
+    /// stays `UNIT_COUNT_STEP`.
+    pub fn range(&self, id: SkirmishTrackbarId) -> (i32, i32, i32) {
+        match id {
+            SkirmishTrackbarId::GameSpeed0x529 => (GAME_SPEED_MIN, GAME_SPEED_MAX, GAME_SPEED_STEP),
+            SkirmishTrackbarId::Credits0x511 => {
+                (self.credits_min, self.credits_max, self.credits_step)
+            }
+            SkirmishTrackbarId::UnitCount0x50c => {
+                (self.unit_count_min, self.unit_count_max, UNIT_COUNT_STEP)
+            }
+        }
+    }
+
+    /// Seed Credits/Unit Count bounds from a merged rules INI's
+    /// `[MultiplayerDialogSettings]` section, mirroring gamemd's runtime read.
+    /// Each missing key keeps its stock-default value.
+    pub fn from_multiplayer_dialog_settings(ini: &IniFile) -> Self {
+        let mut bounds = Self::default();
+        let Some(section) = ini.section("MultiplayerDialogSettings") else {
+            return bounds;
+        };
+        if let Some(value) = section.get_i32("MinMoney") {
+            bounds.credits_min = value;
+        }
+        if let Some(value) = section.get_i32("MaxMoney") {
+            bounds.credits_max = value;
+        }
+        if let Some(value) = section.get_i32("MoneyIncrement") {
+            bounds.credits_step = value;
+        }
+        if let Some(value) = section.get_i32("MinUnitCount") {
+            bounds.unit_count_min = value;
+        }
+        if let Some(value) = section.get_i32("MaxUnitCount") {
+            bounds.unit_count_max = value;
+        }
+        bounds
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TrackbarDragState {
@@ -78,14 +153,6 @@ pub(super) fn trackbar_rect(layout: &SkirmishShellLayout, id: SkirmishTrackbarId
         SkirmishTrackbarId::GameSpeed0x529 => layout.trackbars.game_speed,
         SkirmishTrackbarId::Credits0x511 => layout.trackbars.credits,
         SkirmishTrackbarId::UnitCount0x50c => layout.trackbars.unit_count,
-    }
-}
-
-fn trackbar_range(id: SkirmishTrackbarId) -> (i32, i32, i32) {
-    match id {
-        SkirmishTrackbarId::GameSpeed0x529 => (GAME_SPEED_MIN, GAME_SPEED_MAX, GAME_SPEED_STEP),
-        SkirmishTrackbarId::Credits0x511 => (CREDITS_MIN, CREDITS_MAX, CREDITS_STEP),
-        SkirmishTrackbarId::UnitCount0x50c => (UNIT_COUNT_MIN, UNIT_COUNT_MAX, UNIT_COUNT_STEP),
     }
 }
 
@@ -185,7 +252,7 @@ pub fn handle_option_mouse_down(
             continue;
         }
 
-        let (min, max, step) = trackbar_range(id);
+        let (min, max, step) = state.trackbar_bounds.range(id);
         let visual_value = trackbar_visual_value(state, id);
         let pixel_offset = trackbar_pixel_offset(visual_value, min, max, step, rect);
         if trackbar_thumb_hit(rect, pixel_offset, x, y) {
@@ -236,7 +303,7 @@ pub fn handle_option_mouse_move(
     }
 
     let rect = trackbar_rect(layout, drag.id);
-    let (min, max, step) = trackbar_range(drag.id);
+    let (min, max, step) = state.trackbar_bounds.range(drag.id);
     let value = trackbar_mouse_value(rect, x, min, max, step);
     if set_trackbar_visual_value_if_changed(state, drag.id, value) {
         push_trackbar_changed(state, drag.id, value);
@@ -264,4 +331,63 @@ pub fn handle_option_mouse_wheel(
     _lines: f32,
 ) -> bool {
     false
+}
+
+#[cfg(test)]
+mod bounds_tests {
+    use super::*;
+
+    #[test]
+    fn default_bounds_match_stock_constants() {
+        let bounds = SkirmishTrackbarBounds::default();
+        assert_eq!(
+            bounds.range(SkirmishTrackbarId::Credits0x511),
+            (CREDITS_MIN, CREDITS_MAX, CREDITS_STEP)
+        );
+        assert_eq!(
+            bounds.range(SkirmishTrackbarId::UnitCount0x50c),
+            (UNIT_COUNT_MIN, UNIT_COUNT_MAX, UNIT_COUNT_STEP)
+        );
+        assert_eq!(
+            bounds.range(SkirmishTrackbarId::GameSpeed0x529),
+            (GAME_SPEED_MIN, GAME_SPEED_MAX, GAME_SPEED_STEP)
+        );
+    }
+
+    #[test]
+    fn modded_multiplayer_dialog_settings_override_credit_and_unit_bounds() {
+        let ini = IniFile::from_str(
+            "[MultiplayerDialogSettings]\n\
+             MinMoney=2000\nMaxMoney=50000\nMoneyIncrement=250\n\
+             MinUnitCount=1\nMaxUnitCount=20\n",
+        );
+        let bounds = SkirmishTrackbarBounds::from_multiplayer_dialog_settings(&ini);
+        assert_eq!(
+            bounds.range(SkirmishTrackbarId::Credits0x511),
+            (2000, 50000, 250)
+        );
+        assert_eq!(
+            bounds.range(SkirmishTrackbarId::UnitCount0x50c),
+            (1, 20, UNIT_COUNT_STEP)
+        );
+        // GameSpeed has a hardcoded range in gamemd; modded keys never touch it.
+        assert_eq!(
+            bounds.range(SkirmishTrackbarId::GameSpeed0x529),
+            (GAME_SPEED_MIN, GAME_SPEED_MAX, GAME_SPEED_STEP)
+        );
+    }
+
+    #[test]
+    fn absent_keys_keep_stock_defaults() {
+        let ini = IniFile::from_str("[MultiplayerDialogSettings]\nMinMoney=3000\n");
+        let bounds = SkirmishTrackbarBounds::from_multiplayer_dialog_settings(&ini);
+        assert_eq!(
+            bounds.range(SkirmishTrackbarId::Credits0x511),
+            (3000, CREDITS_MAX, CREDITS_STEP)
+        );
+        assert_eq!(
+            bounds.range(SkirmishTrackbarId::UnitCount0x50c),
+            (UNIT_COUNT_MIN, UNIT_COUNT_MAX, UNIT_COUNT_STEP)
+        );
+    }
 }

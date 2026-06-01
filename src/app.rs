@@ -2301,6 +2301,14 @@ impl App {
             .map(crate::skirmish_modes::skirmish_modes_from_assets)
             .unwrap_or_else(crate::skirmish_modes::stock_skirmish_modes);
         let mut skirmish_shell_state = crate::ui::skirmish_shell::SkirmishShellState::default();
+        // Seed the Credits/Unit Count slider ranges from rulesmd's
+        // [MultiplayerDialogSettings] so a mod that changes the money/unit bounds
+        // shifts the slider extents like gamemd does (it reads them from Rules at
+        // dialog-build time); without assets we keep the stock-default ranges.
+        if let Some(assets) = startup_asset_manager.as_ref() {
+            skirmish_shell_state.trackbar_bounds =
+                crate::app_init_helpers::load_skirmish_trackbar_bounds(assets);
+        }
         // Pre-fill the player-name field from the persistent profile name when
         // configured, mirroring the original seeding the field from a profile
         // source rather than always showing a fixed default.

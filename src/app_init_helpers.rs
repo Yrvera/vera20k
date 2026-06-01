@@ -288,6 +288,31 @@ pub(crate) fn load_rules_ini(asset_manager: &AssetManager) -> Option<RuleSet> {
     }
 }
 
+/// Seed dialog 0x102's Credits/Unit Count trackbar bounds from
+/// `[MultiplayerDialogSettings]`, mirroring gamemd reading MinMoney/MaxMoney/
+/// MoneyIncrement and MinUnitCount/MaxUnitCount from the live Rules instance when
+/// it builds the skirmish dialog. rulesmd.ini is a YR patch over rules.ini, so we
+/// merge the same way `load_rules_ini` does, then read the section. Falls back to
+/// the stock-default constants when the rules INI (or a key) is unavailable.
+pub(crate) fn load_skirmish_trackbar_bounds(
+    asset_manager: &AssetManager,
+) -> crate::ui::skirmish_shell::SkirmishTrackbarBounds {
+    use crate::ui::skirmish_shell::SkirmishTrackbarBounds;
+
+    let Some((data, _)) = asset_manager.get_with_source("rules.ini") else {
+        return SkirmishTrackbarBounds::default();
+    };
+    let Ok(mut ini) = IniFile::from_bytes(&data) else {
+        return SkirmishTrackbarBounds::default();
+    };
+    if let Some((patch_data, _)) = asset_manager.get_with_source("rulesmd.ini") {
+        if let Ok(patch_ini) = IniFile::from_bytes(&patch_data) {
+            ini.merge(&patch_ini);
+        }
+    }
+    SkirmishTrackbarBounds::from_multiplayer_dialog_settings(&ini)
+}
+
 /// Load art.ini from MIX archives and parse into ArtRegistry.
 ///
 /// Like rules, artmd.ini is a YR patch on top of art.ini. We load art.ini
