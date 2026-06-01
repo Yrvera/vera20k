@@ -1,6 +1,9 @@
-//! Initial main-menu shell control identity and hit testing.
-
-use super::layout::MainMenuShellLayout;
+//! Initial main-menu shell control identity and CSF/result lookups.
+//!
+//! Hit-testing and the press-must-match-release gesture moved to the shared
+//! `ui::shell::controller::DialogController` (substrate Slice 2); this module
+//! keeps the control identity, the CSF/tooltip keys, and the action/result-code
+//! tables that the controller's activated-control id maps through.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MainMenuControlId {
@@ -11,6 +14,36 @@ pub enum MainMenuControlId {
     Options0x55c,
     ExitGame0x3ee,
     YuriWebsite0x71b,
+}
+
+impl MainMenuControlId {
+    /// The Win32 control resource id this identity stands for. The controller
+    /// works in raw resource ids; the app maps back via [`Self::from_resource_id`].
+    pub fn resource_id(self) -> u16 {
+        match self {
+            Self::SinglePlayer0x683 => 0x0683,
+            Self::WwOnline0x684 => 0x0684,
+            Self::Network0x578 => 0x0578,
+            Self::MoviesAndCredits0x686 => 0x0686,
+            Self::Options0x55c => 0x055C,
+            Self::ExitGame0x3ee => 0x03EE,
+            Self::YuriWebsite0x71b => 0x071B,
+        }
+    }
+
+    /// Inverse of [`Self::resource_id`]; `None` for an unknown id.
+    pub fn from_resource_id(id: u16) -> Option<Self> {
+        Some(match id {
+            0x0683 => Self::SinglePlayer0x683,
+            0x0684 => Self::WwOnline0x684,
+            0x0578 => Self::Network0x578,
+            0x0686 => Self::MoviesAndCredits0x686,
+            0x055C => Self::Options0x55c,
+            0x03EE => Self::ExitGame0x3ee,
+            0x071B => Self::YuriWebsite0x71b,
+            _ => return None,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,51 +120,25 @@ pub fn tooltip_csf_key_for_control(id: MainMenuControlId) -> &'static str {
     }
 }
 
-pub fn hit_test_owner_draw_button(
-    layout: &MainMenuShellLayout,
-    x: i32,
-    y: i32,
-) -> Option<MainMenuControlId> {
-    layout
-        .buttons
-        .iter()
-        .find(|button| button.rect.contains(x, y))
-        .map(|button| button.id)
-}
-
-pub fn mouse_down(state: &mut MainMenuShellState, layout: &MainMenuShellLayout, x: i32, y: i32) {
-    state.pressed_owner_draw_button = hit_test_owner_draw_button(layout, x, y);
-}
-
-/// Update the hover tracking from a cursor position. Called per mouse move.
-///
-/// Tracks which control the cursor is over so the bottom-left tooltip line
-/// can show its status text. There is no hover frame change on dialog 0xE2.
-pub fn mouse_move(state: &mut MainMenuShellState, layout: &MainMenuShellLayout, x: i32, y: i32) {
-    state.hovered_owner_draw_button = hit_test_owner_draw_button(layout, x, y);
-}
-
-pub fn mouse_up(
-    state: &mut MainMenuShellState,
-    layout: &MainMenuShellLayout,
-    x: i32,
-    y: i32,
-) -> MainMenuShellAction {
-    let released = hit_test_owner_draw_button(layout, x, y);
-    let pressed = state.pressed_owner_draw_button.take();
-    if pressed.is_some() && pressed == released {
-        released
-            .map(action_for_control)
-            .unwrap_or(MainMenuShellAction::None)
-    } else {
-        MainMenuShellAction::None
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ui::main_menu_shell::compute_layout;
+    use crate::ui::shell::controller::DialogController;
+    use crate::ui::shell::descriptor::DialogId;
+    use crate::ui::shell::layout::LaidOutControl;
+
+    /// Adapt the laid-out main-menu buttons into the controller's button-only feed.
+    fn button_feed(layout: &crate::ui::main_menu_shell::MainMenuShellLayout) -> Vec<LaidOutControl> {
+        layout
+            .buttons
+            .iter()
+            .map(|b| LaidOutControl {
+                id: b.id.resource_id(),
+                rect: b.rect,
+            })
+            .collect()
+    }
 
     #[test]
     fn button_actions_preserve_return_codes() {
@@ -162,59 +169,65 @@ mod tests {
     }
 
     #[test]
-    fn hit_test_uses_owner_draw_button_identity() {
+    fn controller_hits_main_menu_buttons_by_geometry() {
+        // Real layout geometry routed through the shared controller. SinglePlayer
+        // cell (644,199,156,42); Exit cell (644,536,156,42). The flush-right cell's
+        // exclusive right edge (x=800), the 632..644 gutter, and above-top all miss;
+        // statics are never fed, so the website/title never register as hits.
         let layout = compute_layout(800, 600);
+        let feed = button_feed(&layout);
+        let mut c = DialogController::default();
+        c.ensure_active(DialogId(0x00E2), false);
+        c.on_pointer_down(700, 210, &feed);
         assert_eq!(
-            hit_test_owner_draw_button(&layout, 700, 210),
-            Some(MainMenuControlId::SinglePlayer0x683)
+            c.pressed(),
+            Some(MainMenuControlId::SinglePlayer0x683.resource_id())
         );
+        c.on_pointer_down(700, 537, &feed);
         assert_eq!(
-            hit_test_owner_draw_button(&layout, 700, 537),
-            Some(MainMenuControlId::ExitGame0x3ee)
+            c.pressed(),
+            Some(MainMenuControlId::ExitGame0x3ee.resource_id())
         );
-        assert_eq!(hit_test_owner_draw_button(&layout, 800, 203), None);
+        c.on_pointer_down(800, 203, &feed);
+        assert_eq!(c.pressed(), None);
+        c.on_pointer_down(640, 210, &feed);
+        assert_eq!(c.pressed(), None);
+        c.on_pointer_down(700, 198, &feed);
+        assert_eq!(c.pressed(), None);
     }
 
     #[test]
-    fn hit_test_uses_unscaled_large_screen_button_rects() {
+    fn controller_hits_unscaled_large_screen_button_rects() {
         let layout = compute_layout(1024, 768);
+        let feed = button_feed(&layout);
+        let mut c = DialogController::default();
+        c.ensure_active(DialogId(0x00E2), false);
+        c.on_pointer_down(760, 300, &feed);
         assert_eq!(
-            hit_test_owner_draw_button(&layout, 760, 300),
-            Some(MainMenuControlId::SinglePlayer0x683)
+            c.pressed(),
+            Some(MainMenuControlId::SinglePlayer0x683.resource_id())
         );
-        assert_eq!(hit_test_owner_draw_button(&layout, 809, 255), None);
+        c.on_pointer_down(809, 255, &feed);
+        assert_eq!(c.pressed(), None);
     }
 
     #[test]
-    fn button_rect_is_flush_right_sdbtnanm_cell() {
-        // The hit rect is now the 156x42 SDBTNANM cell flush to the panel's right
-        // edge (x=644..800, y=199..241), not the old 162x37 DLU client at x=635.
-        // The 12 px on the column's left (632..644) is no longer clickable.
+    fn controller_release_must_match_pressed_button() {
         let layout = compute_layout(800, 600);
-        // Left of the flush-right cell (inside the old 168 tile) now misses.
-        assert_eq!(hit_test_owner_draw_button(&layout, 640, 210), None);
-        // Above the cell top (199) misses; the top row is inclusive.
-        assert_eq!(hit_test_owner_draw_button(&layout, 700, 198), None);
-        // Inside the 156x42 cell still hits.
+        let feed = button_feed(&layout);
+        let mut c = DialogController::default();
+        c.ensure_active(DialogId(0x00E2), false);
+        // Press SinglePlayer, release over the WW Online row -> no fire.
+        c.on_pointer_down(700, 210, &feed);
+        assert_eq!(c.on_pointer_up(700, 250, &feed), None);
+        // Press and release SinglePlayer -> the activated id maps to its action.
+        c.on_pointer_down(700, 210, &feed);
+        let activated = c.on_pointer_up(700, 210, &feed);
         assert_eq!(
-            hit_test_owner_draw_button(&layout, 700, 210),
-            Some(MainMenuControlId::SinglePlayer0x683)
-        );
-    }
-
-    #[test]
-    fn mouse_release_must_match_pressed_button() {
-        let layout = compute_layout(800, 600);
-        let mut state = MainMenuShellState::default();
-        mouse_down(&mut state, &layout, 700, 210);
-        assert_eq!(
-            mouse_up(&mut state, &layout, 700, 250),
-            MainMenuShellAction::None
-        );
-        mouse_down(&mut state, &layout, 700, 210);
-        assert_eq!(
-            mouse_up(&mut state, &layout, 700, 210),
-            MainMenuShellAction::SinglePlayer
+            activated
+                .and_then(MainMenuControlId::from_resource_id)
+                .map(action_for_control),
+            Some(MainMenuShellAction::SinglePlayer)
         );
     }
 }

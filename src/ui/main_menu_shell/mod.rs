@@ -10,6 +10,5 @@ pub use layout::{
 };
 pub use state::{
     MainMenuControlId, MainMenuShellAction, MainMenuShellState, action_for_control,
-    csf_key_for_control, hit_test_owner_draw_button, mouse_down, mouse_move, mouse_up,
-    return_code_for_action, tooltip_csf_key_for_control,
+    csf_key_for_control, return_code_for_action, tooltip_csf_key_for_control,
 };

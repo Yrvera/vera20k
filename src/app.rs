@@ -169,6 +169,11 @@ pub(crate) struct AppState {
     pub(crate) loading_progress: crate::app_loading::LoadingProgressState,
     pub(crate) main_menu_shell_state: crate::ui::main_menu_shell::MainMenuShellState,
     pub(crate) single_player_shell_state: crate::ui::single_player_shell::SinglePlayerShellState,
+    /// Shared descriptor-driven input authority for the front-end shell dialogs
+    /// (0xE2 main menu, 0x100 single player). Owns hit-test + press-must-match;
+    /// its press/hover state is mirrored back into the per-shell structs above for
+    /// the render path (substrate Slice 2).
+    pub(crate) shell_controller: crate::ui::shell::controller::DialogController,
     pub(crate) main_menu_shell_chrome:
         Option<crate::render::main_menu_shell_chrome::MainMenuShellChromeAtlas>,
     pub(crate) main_menu_movie: Option<crate::render::bink_movie::BinkMovieSurface>,
@@ -1491,26 +1496,96 @@ impl App {
         consumed
     }
 
+    /// Adapt the laid-out main-menu buttons into the shared controller's
+    /// button-only input feed. Statics (title/website) are deliberately excluded,
+    /// so the controller never hit-tests or hover-tracks them.
+    fn main_menu_shell_button_feed(
+        layout: &crate::ui::main_menu_shell::MainMenuShellLayout,
+    ) -> Vec<crate::ui::shell::layout::LaidOutControl> {
+        layout
+            .buttons
+            .iter()
+            .map(|b| crate::ui::shell::layout::LaidOutControl {
+                id: b.id.resource_id(),
+                rect: b.rect,
+            })
+            .collect()
+    }
+
+    fn single_player_shell_button_feed(
+        layout: &crate::ui::single_player_shell::SinglePlayerShellLayout,
+    ) -> Vec<crate::ui::shell::layout::LaidOutControl> {
+        layout
+            .buttons
+            .iter()
+            .map(|b| crate::ui::shell::layout::LaidOutControl {
+                id: b.id.resource_id(),
+                rect: b.rect,
+            })
+            .collect()
+    }
+
+    /// Mirror the controller's press/hover state into the per-shell struct the
+    /// render path reads. Slice-2/Slice-3 boundary: render is retired off these in
+    /// Slice 3, after which the controller is the sole authority.
+    fn mirror_shell_controller_to_main_menu(state: &mut AppState) {
+        state.main_menu_shell_state.pressed_owner_draw_button = state
+            .shell_controller
+            .pressed()
+            .and_then(crate::ui::main_menu_shell::MainMenuControlId::from_resource_id);
+        state.main_menu_shell_state.hovered_owner_draw_button = state
+            .shell_controller
+            .hovered()
+            .and_then(crate::ui::main_menu_shell::MainMenuControlId::from_resource_id);
+    }
+
+    fn mirror_shell_controller_to_single_player(state: &mut AppState) {
+        state.single_player_shell_state.pressed_owner_draw_button = state
+            .shell_controller
+            .pressed()
+            .and_then(crate::ui::single_player_shell::SinglePlayerControlId::from_resource_id);
+        state.single_player_shell_state.hovered_owner_draw_button = state
+            .shell_controller
+            .hovered()
+            .and_then(crate::ui::single_player_shell::SinglePlayerControlId::from_resource_id);
+        state.single_player_shell_state.hover_started_at = state.shell_controller.hover_started_at();
+    }
+
     fn handle_main_menu_shell_mouse_down(state: &mut AppState) {
         let layout = crate::ui::main_menu_shell::compute_layout(
             state.gpu.config.width,
             state.gpu.config.height,
         );
-        crate::ui::main_menu_shell::mouse_down(
-            &mut state.main_menu_shell_state,
-            &layout,
-            state.cursor_x.round() as i32,
-            state.cursor_y.round() as i32,
-        );
-        if crate::ui::main_menu_shell::hit_test_owner_draw_button(
-            &layout,
-            state.cursor_x.round() as i32,
-            state.cursor_y.round() as i32,
-        )
-        .is_some()
-        {
+        let feed = Self::main_menu_shell_button_feed(&layout);
+        let x = state.cursor_x.round() as i32;
+        let y = state.cursor_y.round() as i32;
+        state
+            .shell_controller
+            .ensure_active(crate::ui::shell::descriptor::DialogId(0x00E2), false);
+        state.shell_controller.on_pointer_down(x, y, &feed);
+        let pressed = state.shell_controller.pressed().is_some();
+        Self::mirror_shell_controller_to_main_menu(state);
+        // The original plays the button sound on mouse-DOWN over a button (not on
+        // release); `pressed` is button-only by construction, so the website static
+        // never triggers it.
+        if pressed {
             Self::play_main_menu_button_sound(state);
         }
+    }
+
+    fn handle_main_menu_shell_mouse_move(state: &mut AppState) {
+        let layout = crate::ui::main_menu_shell::compute_layout(
+            state.gpu.config.width,
+            state.gpu.config.height,
+        );
+        let feed = Self::main_menu_shell_button_feed(&layout);
+        let x = state.cursor_x.round() as i32;
+        let y = state.cursor_y.round() as i32;
+        state
+            .shell_controller
+            .ensure_active(crate::ui::shell::descriptor::DialogId(0x00E2), false);
+        state.shell_controller.on_pointer_move(x, y, &feed);
+        Self::mirror_shell_controller_to_main_menu(state);
     }
 
     fn handle_main_menu_shell_mouse_up(state: &mut AppState, event_loop: &ActiveEventLoop) {
@@ -1518,51 +1593,81 @@ impl App {
             state.gpu.config.width,
             state.gpu.config.height,
         );
-        let action = crate::ui::main_menu_shell::mouse_up(
-            &mut state.main_menu_shell_state,
-            &layout,
-            state.cursor_x.round() as i32,
-            state.cursor_y.round() as i32,
-        );
-        Self::handle_main_menu_shell_action(state, action, event_loop);
+        let feed = Self::main_menu_shell_button_feed(&layout);
+        let x = state.cursor_x.round() as i32;
+        let y = state.cursor_y.round() as i32;
+        state
+            .shell_controller
+            .ensure_active(crate::ui::shell::descriptor::DialogId(0x00E2), false);
+        let activated = state.shell_controller.on_pointer_up(x, y, &feed);
+        Self::mirror_shell_controller_to_main_menu(state);
+        if let Some(action) = activated
+            .and_then(crate::ui::main_menu_shell::MainMenuControlId::from_resource_id)
+            .map(crate::ui::main_menu_shell::action_for_control)
+        {
+            Self::handle_main_menu_shell_action(state, action, event_loop);
+        }
     }
 
     fn handle_single_player_shell_mouse_down(state: &mut AppState) {
         let layout = Self::single_player_shell_layout(state);
-        crate::ui::single_player_shell::mouse_down(
-            &mut state.single_player_shell_state,
-            &layout,
-            state.cursor_x.round() as i32,
-            state.cursor_y.round() as i32,
+        let feed = Self::single_player_shell_button_feed(&layout);
+        let x = state.cursor_x.round() as i32;
+        let y = state.cursor_y.round() as i32;
+        let load_enabled = state.single_player_shell_state.load_saved_game_enabled;
+        state
+            .shell_controller
+            .ensure_active(crate::ui::shell::descriptor::DialogId(0x0100), false);
+        // Refresh the Load Saved Game disabled guard before the gesture; the
+        // override persists through the matching release (ensure_active only resets
+        // on a dialog change, never mid-gesture).
+        state.shell_controller.set_disabled(
+            crate::ui::single_player_shell::SinglePlayerControlId::LoadSavedGame0x689.resource_id(),
+            !load_enabled,
         );
-        if state
-            .single_player_shell_state
-            .pressed_owner_draw_button
-            .is_some()
-        {
+        state.shell_controller.on_pointer_down(x, y, &feed);
+        let pressed = state.shell_controller.pressed().is_some();
+        Self::mirror_shell_controller_to_single_player(state);
+        if pressed {
             Self::play_main_menu_button_sound(state);
         }
     }
 
     fn handle_single_player_shell_mouse_move(state: &mut AppState) {
         let layout = Self::single_player_shell_layout(state);
-        crate::ui::single_player_shell::mouse_move(
-            &mut state.single_player_shell_state,
-            &layout,
-            state.cursor_x.round() as i32,
-            state.cursor_y.round() as i32,
-        );
+        let feed = Self::single_player_shell_button_feed(&layout);
+        let x = state.cursor_x.round() as i32;
+        let y = state.cursor_y.round() as i32;
+        state
+            .shell_controller
+            .ensure_active(crate::ui::shell::descriptor::DialogId(0x0100), false);
+        // Hover path is enable-UNfiltered: a disabled Load Saved Game still
+        // hover-tracks and arms its tooltip timer, exactly as before.
+        state.shell_controller.on_pointer_move(x, y, &feed);
+        Self::mirror_shell_controller_to_single_player(state);
     }
 
     fn handle_single_player_shell_mouse_up(state: &mut AppState) {
         let layout = Self::single_player_shell_layout(state);
-        let action = crate::ui::single_player_shell::mouse_up(
-            &mut state.single_player_shell_state,
-            &layout,
-            state.cursor_x.round() as i32,
-            state.cursor_y.round() as i32,
+        let feed = Self::single_player_shell_button_feed(&layout);
+        let x = state.cursor_x.round() as i32;
+        let y = state.cursor_y.round() as i32;
+        let load_enabled = state.single_player_shell_state.load_saved_game_enabled;
+        state
+            .shell_controller
+            .ensure_active(crate::ui::shell::descriptor::DialogId(0x0100), false);
+        state.shell_controller.set_disabled(
+            crate::ui::single_player_shell::SinglePlayerControlId::LoadSavedGame0x689.resource_id(),
+            !load_enabled,
         );
-        Self::handle_single_player_shell_action(state, action);
+        let activated = state.shell_controller.on_pointer_up(x, y, &feed);
+        Self::mirror_shell_controller_to_single_player(state);
+        if let Some(action) = activated
+            .and_then(crate::ui::single_player_shell::SinglePlayerControlId::from_resource_id)
+            .map(crate::ui::single_player_shell::action_for_control)
+        {
+            Self::handle_single_player_shell_action(state, action);
+        }
     }
 
     fn play_main_menu_button_sound(state: &mut AppState) {
@@ -1961,16 +2066,7 @@ impl ApplicationHandler for App {
                     && !Self::single_player_shell_active(state)
                     && !Self::native_skirmish_shell_active(state)
                 {
-                    let layout = crate::ui::main_menu_shell::compute_layout(
-                        state.gpu.config.width,
-                        state.gpu.config.height,
-                    );
-                    crate::ui::main_menu_shell::mouse_move(
-                        &mut state.main_menu_shell_state,
-                        &layout,
-                        state.cursor_x.round() as i32,
-                        state.cursor_y.round() as i32,
-                    );
+                    Self::handle_main_menu_shell_mouse_move(state);
                 }
             }
             WindowEvent::MouseInput {
@@ -2287,6 +2383,7 @@ impl App {
             main_menu_shell_state: crate::ui::main_menu_shell::MainMenuShellState::default(),
             single_player_shell_state:
                 crate::ui::single_player_shell::SinglePlayerShellState::default(),
+            shell_controller: crate::ui::shell::controller::DialogController::default(),
             main_menu_shell_chrome,
             main_menu_movie: None,
             main_menu_movie_base: None,
