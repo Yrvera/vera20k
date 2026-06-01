@@ -692,8 +692,11 @@ mod tests {
         sim.substrate.entities.insert(ge);
         sim.reveal(2);
         sim.uninit(2);
-        assert!(sim.substrate.entities.get(2).is_none());
+        // Two-phase: resolvable-but-Dying until the drain, off the logic order now.
+        assert!(sim.substrate.entities.get(2).is_some_and(|e| e.dying));
         assert!(sim.live_object_order_snapshot().is_empty());
+        sim.flush_pending_delete();
+        assert!(sim.substrate.entities.get(2).is_none());
     }
 
     /// `despawn_entity` is retained and delegates to `uninit`.
@@ -707,8 +710,11 @@ mod tests {
         sim.substrate.entities.insert(ge);
         sim.reveal(3);
         sim.despawn_entity(3);
-        assert!(sim.substrate.entities.get(3).is_none());
+        // Two-phase: resolvable-but-Dying until the drain, off the logic order now.
+        assert!(sim.substrate.entities.get(3).is_some_and(|e| e.dying));
         assert!(sim.live_object_order_snapshot().is_empty());
+        sim.flush_pending_delete();
+        assert!(sim.substrate.entities.get(3).is_none());
     }
 
     /// The membership invariant holds across a mix of reveal/conceal/uninit.

@@ -59,12 +59,16 @@ fn uninit_removes_all_structure_foundation_cells() {
 
     sim.uninit(10);
 
+    // Occupancy is unmarked synchronously in uninit, before the deferred free.
     for cell in [(4, 5), (4, 6), (5, 5), (5, 6)] {
         assert!(
             !sim.substrate.occupancy.contains_entity(cell.0, cell.1, 10),
             "uninit should clear foundation cell {cell:?}"
         );
     }
+    // Two-phase: still resolvable-but-Dying until the drain frees the slot.
+    assert!(sim.substrate.entities.get(10).is_some_and(|e| e.dying));
+    sim.flush_pending_delete();
     assert!(sim.substrate.entities.get(10).is_none());
     sim.debug_assert_logic_membership_consistent();
 }
@@ -146,11 +150,15 @@ fn despawn_entity_clears_live_radio_contacts() {
 
     sim.despawn_entity(1);
 
-    assert!(sim.substrate.entities.get(1).is_none());
+    // Radio contacts are cleared synchronously in uninit, before the deferred free;
+    // the despawned entity stays resolvable-but-Dying until the drain.
+    assert!(sim.substrate.entities.get(1).is_some_and(|e| e.dying));
     assert_eq!(
         sim.substrate.entities.get(2).unwrap().radio_contacts,
         Vec::<u64>::new()
     );
+    sim.flush_pending_delete();
+    assert!(sim.substrate.entities.get(1).is_none());
 }
 
 /// Create a water terrain grid (all cells are water, land_type=4) for ship tests.
