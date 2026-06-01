@@ -66,6 +66,14 @@ pub(crate) struct ObjectSubstrate {
     /// Plain-struct entity storage (`BTreeMap<u64, GameEntity>` + by_owner index).
     /// The authoritative object store — serialized verbatim (NOT skipped).
     pub(crate) entities: EntityStore,
+    /// Deferred-delete queue (the native `PendingDeleteList`). `uninit` pushes an
+    /// id here instead of freeing the store slot; `Simulation::flush_pending_delete`
+    /// drains it in death order at end-of-tick. Transient: empty at every tick/save
+    /// boundary, so it is `#[serde(skip)]` — not serialized, not hashed. Between
+    /// enqueue and drain the entity stays in the store as a `Dying`, off-occupancy,
+    /// off-logic corpse, resolvable by id (the two-phase death window).
+    #[serde(skip)]
+    pub(crate) pending_delete: Vec<u64>,
 }
 
 impl ObjectSubstrate {
@@ -78,6 +86,7 @@ impl ObjectSubstrate {
             logic: LogicVector::new(),
             occupancy: OccupancyGrid::new(),
             entities: EntityStore::new(),
+            pending_delete: Vec::new(),
         }
     }
 }
