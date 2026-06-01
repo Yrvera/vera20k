@@ -9,35 +9,32 @@ use crate::app::AppState;
 use crate::app_shell_transition::{ButtonGroup, ShellFrameWave};
 use crate::render::batch::SpriteInstance;
 use crate::render::main_menu_shell_chrome::{MainMenuShellChromeAtlas, MainMenuShellChromeEntry};
-use crate::render::shell_text::ShellTextDraw;
+use crate::render::shell_paint::{
+    self, ArtFit, ButtonPolicy, PaintButton, PaintLabel, CURSOR_DEPTH, MOVIE_DEPTH,
+    PARENT_BACKGROUND_DEPTH, PRESSED_CONTENT_OFFSET_Y, SHELL_TEXT_RGB_ENABLED,
+};
 use crate::render::shell_transition_pass::ShellRenderTarget;
 use crate::ui::main_menu_shell::{
     MainMenuControlId, MainMenuShellLayout, RectPx, compute_layout, csf_key_for_control,
     tooltip_csf_key_for_control,
 };
 
-/// Parent background sits behind the movie in the Z stack. Greater depth =
-/// farther back, so this must exceed MOVIE_DEPTH.
-const PARENT_BACKGROUND_DEPTH: f32 = 0.00098;
-const MOVIE_DEPTH: f32 = 0.00095;
-const CHROME_DEPTH: f32 = 0.00085;
 /// Screen-size thresholds above which the centered 800x600 shell is letterboxed
 /// (background and chrome offset by ((w-800)/2, (h-600)/2) instead of (0,0)).
 const SHELL_LETTERBOX_W_THRESHOLD: i32 = 1023;
 const SHELL_LETTERBOX_H_THRESHOLD: i32 = 767;
 const SHELL_BASE_W: i32 = 800;
 const SHELL_BASE_H: i32 = 600;
-const BUTTON_DEPTH: f32 = 0.00080;
-const TEXT_DEPTH: f32 = 0.00070;
-/// The software cursor draws on top of everything else on the menu (smallest
-/// depth). The original hides the OS cursor and blits the cursor SHP last.
-const CURSOR_DEPTH: f32 = 0.00001;
-const SHELL_BUTTON_TEXT_RGB_FFFF00: [f32; 3] = [1.0, 1.0, 0.0];
-/// On press, gamemd's owner-draw button sinks the whole button content down by
-/// +2 px in Y (in addition to the +1 px right shift from
-/// `pressed_content_offset_x`). Both the button art and its label move together.
-/// Y+ is downward in this screen-space render path.
-const PRESSED_CONTENT_OFFSET_Y: f32 = 2.0;
+
+/// Dialog 0xE2 owner-draw button policy: native art at the cell top-left, +2 px
+/// Y sink on press, no hover flash, no disabled dim (0xE2 has no disabled
+/// control). The +1 px text X shift on press is applied in the label builder.
+const MAIN_MENU_BUTTON_POLICY: ButtonPolicy = ButtonPolicy {
+    art_fit: ArtFit::Native,
+    hover_flash: false,
+    art_sink_y: PRESSED_CONTENT_OFFSET_Y,
+    disabled_dim: false,
+};
 
 pub(crate) enum MainMenuShellRenderResult {
     Rendered,
@@ -64,67 +61,30 @@ fn push_entry_sized(
     });
 }
 
-fn button_frame(atlas: &MainMenuShellChromeAtlas, pressed: bool) -> MainMenuShellChromeEntry {
-    // Dialog 0xE2 buttons only ever show frame 2 (default) or frame 4
-    // (pressed). The frame-3 focus-flash is never reached on this dialog, so
-    // `button_hover` stays loaded in the atlas but is not selected here.
-    if pressed {
-        atlas.button_pressed
-    } else {
-        atlas.button_default
-    }
-}
-
-/// Vertical content sink applied to a button (art + label) while pressed.
-/// Returns +2 px (downward) when pressed, 0 otherwise.
-fn pressed_content_offset_y(pressed: bool) -> f32 {
-    if pressed {
-        PRESSED_CONTENT_OFFSET_Y
-    } else {
-        0.0
-    }
-}
-
-fn push_button_shp(
-    out: &mut Vec<SpriteInstance>,
-    atlas: &MainMenuShellChromeAtlas,
-    rect: RectPx,
-    pressed: bool,
-    depth: f32,
-) {
-    let frame = button_frame(atlas, pressed);
-    // The SDBTNANM frame is drawn at its NATIVE pixel size at the button
-    // client rect's top-left — no stretch-to-tile and no centering/right
-    // anchor. The frame's own internal x/y offset (baked into the rendered
-    // atlas entry) handles the small inset of the 156-wide art inside the
-    // 162-wide client rect. Pressed art sinks +2 px in Y only.
-    let x = rect.x as f32;
-    let y = rect.y as f32 + pressed_content_offset_y(pressed);
-    push_entry_sized(out, frame, x, y, frame.pixel_size, depth);
-}
-
-/// Draw a main-menu button at a first-paint slide frame: native size at the
-/// button rect top-left, same geometry as the steady frame. Clamps down one
-/// frame if the exact index is missing, and holds (draws nothing) if neither is
-/// baked — never panics on a short SHP.
-fn push_button_wave_frame(
-    out: &mut Vec<SpriteInstance>,
-    atlas: &MainMenuShellChromeAtlas,
-    rect: RectPx,
-    frame: usize,
-    depth: f32,
-) {
-    let wave_frame = |idx: usize| atlas.button_wave_frames.get(idx).copied().flatten();
-    if let Some(entry) = wave_frame(frame).or_else(|| wave_frame(frame.saturating_sub(1))) {
-        push_entry_sized(
-            out,
-            entry,
-            rect.x as f32,
-            rect.y as f32,
-            entry.pixel_size,
-            depth,
-        );
-    }
+/// Map the layout + shell state into the owner-draw button list for the paint
+/// pass. 0xE2 never disables a control, so every button is `enabled: true`;
+/// during a first-paint slide each button rides Group A's ramp.
+fn main_menu_paint_buttons(
+    layout: &MainMenuShellLayout,
+    pressed_button: Option<MainMenuControlId>,
+    wave: Option<&ShellFrameWave>,
+) -> Vec<PaintButton> {
+    layout
+        .buttons
+        .iter()
+        .enumerate()
+        .map(|(slot, button)| {
+            let wave_frame =
+                wave.map(|w| w.sdbtnanm_frame(slot as u32, ButtonGroup::A) as usize);
+            PaintButton {
+                rect: button.rect,
+                pressed: pressed_button == Some(button.id),
+                hovered: false, // 0xE2 never flashes; hover state is unused on art
+                enabled: true,
+                wave_frame,
+            }
+        })
+        .collect()
 }
 
 fn resolve_csf<'a>(state: &'a AppState, key: &'static str) -> &'a str {
@@ -135,146 +95,23 @@ fn resolve_csf<'a>(state: &'a AppState, key: &'static str) -> &'a str {
         .unwrap_or(key)
 }
 
-fn push_label(
-    out: &mut Vec<ShellTextDraw>,
-    state: &AppState,
-    text: &str,
-    rect: RectPx,
-    align: crate::render::shell_text::ShellAlign,
-) {
-    use crate::render::shell_text::TextRect;
-
-    let text_rect = TextRect {
-        x: rect.x,
-        y: rect.y,
-        w: rect.w.max(0) as u32,
-        h: rect.h.max(0) as u32,
-    };
-    out.push(crate::render::shell_text::draw_in_rect(
-        &state.bit_font,
-        text,
-        text_rect,
-        SHELL_BUTTON_TEXT_RGB_FFFF00,
-        align,
-        [0.0, 0.0],
-        TEXT_DEPTH,
-        None,
-    ));
-}
-
-fn build_button_instances(
-    atlas: &MainMenuShellChromeAtlas,
-    layout: &MainMenuShellLayout,
-    pressed_button: Option<MainMenuControlId>,
-    wave: Option<&ShellFrameWave>,
-) -> Vec<SpriteInstance> {
-    let mut out = Vec::new();
-    for (slot, button) in layout.buttons.iter().enumerate() {
-        match wave {
-            // First-paint slide: every button is an enabled main button => Group A.
-            Some(wave) => {
-                let frame = wave.sdbtnanm_frame(slot as u32, ButtonGroup::A);
-                push_button_wave_frame(&mut out, atlas, button.rect, frame, BUTTON_DEPTH);
-            }
-            None => {
-                let pressed = pressed_button == Some(button.id);
-                push_button_shp(&mut out, atlas, button.rect, pressed, BUTTON_DEPTH);
-            }
-        }
-    }
-    out
-}
-
-fn push_entry_rect(
-    out: &mut Vec<SpriteInstance>,
-    entry: MainMenuShellChromeEntry,
-    rect: RectPx,
-    depth: f32,
-) {
-    push_entry_sized(
-        out,
-        entry,
-        rect.x as f32,
-        rect.y as f32,
-        [rect.w as f32, rect.h as f32],
-        depth,
-    );
-}
-
-/// Draw the top `rect.h` rows of `entry` 1:1, cropping the SHP rather than
-/// stretching the full image to fit. Used for SDBTM where the SHP is 168x65
-/// native but the destination cap region is 23 px tall — gamemd clips, we
-/// must too.
-fn push_clipped_top(
-    out: &mut Vec<SpriteInstance>,
-    entry: MainMenuShellChromeEntry,
-    rect: RectPx,
-    depth: f32,
-) {
-    let native_h = entry.pixel_size[1].max(1.0);
-    let visible_h = (rect.h as f32).min(native_h);
-    let uv_h = entry.uv_size[1] * (visible_h / native_h);
-    out.push(SpriteInstance {
-        position: [rect.x as f32, rect.y as f32],
-        size: [rect.w as f32, visible_h],
-        uv_origin: entry.uv_origin,
-        uv_size: [entry.uv_size[0], uv_h],
-        depth,
-        tint: [1.0, 1.0, 1.0],
-        alpha: 1.0,
-        ..Default::default()
-    });
-}
-
-fn build_chrome_instances(
-    atlas: &MainMenuShellChromeAtlas,
-    layout: &MainMenuShellLayout,
-) -> Vec<SpriteInstance> {
-    let mut out = Vec::new();
-    if let Some(top) = atlas.right_panel_top_sdtp {
-        push_entry_rect(&mut out, top, layout.right_panel.top, CHROME_DEPTH);
-    }
-    if let Some(tile) = atlas.right_panel_tile_sdbtnbkgd {
-        for row in 0..layout.right_panel.tile_count {
-            let rect = RectPx::new(
-                layout.right_panel.tile.x,
-                layout.right_panel.tile.y + row * layout.right_panel.tile.h,
-                layout.right_panel.tile.w,
-                layout.right_panel.tile.h,
-            );
-            push_entry_rect(&mut out, tile, rect, CHROME_DEPTH);
-        }
-    }
-    if let Some(bottom) = atlas.right_panel_bottom_sdbtm {
-        push_clipped_top(&mut out, bottom, layout.right_panel.bottom, CHROME_DEPTH);
-    }
-    let lower_strip_entry = if layout.screen.w == 640 {
-        atlas.lower_side_640_lwscrns
-    } else {
-        atlas.lower_side_large_lwscrnl
-    };
-    if let Some(strip) = lower_strip_entry {
-        push_entry_rect(&mut out, strip, layout.lower_strip, CHROME_DEPTH);
-    }
-    out
-}
-
-fn build_text_draws(
-    state: &AppState,
+/// Build the owner-draw button labels + statics (title / version / tooltip) as
+/// `PaintLabel`s consumed by `shell_paint::paint_labels`. Reproduces the prior
+/// `build_text_draws` exactly: button labels h+v-centered in a rect inset by
+/// top+=1 / right-=2, shifted +x_offset / +2y on press; statics h-centered
+/// top-anchored. 0xE2 text is always #FFFF00 (no disabled control). The `version`
+/// string is owned, so the returned labels borrow from `strings`.
+fn main_menu_paint_labels<'a>(
+    state: &'a AppState,
     layout: &MainMenuShellLayout,
     pressed_button: Option<MainMenuControlId>,
     hovered_button: Option<MainMenuControlId>,
-) -> Vec<ShellTextDraw> {
+    version_text: &'a str,
+) -> Vec<PaintLabel<'a>> {
     use crate::render::shell_text::ShellAlign;
     let mut out = Vec::new();
-    // Owner-draw buttons render h-centered + v-centered within a rect inset
-    // by top+=1 and right-=2 from the full button rect, matching gamemd's
-    // text-rect construction (`SHELL_BUTTON_PAINT_DETAILS_GHIDRA_REPORT §2`).
-    // When pressed the rect's left shifts by +x_offset, producing the net
-    // +1 px right text shift gamemd shows on click.
     let button_align = ShellAlign::H_CENTER | ShellAlign::V_CENTER;
     for button in &layout.buttons {
-        let text = resolve_csf(state, csf_key_for_control(button.id));
         let pressed = pressed_button == Some(button.id);
         let x_offset = if pressed {
             layout.pressed_content_offset_x
@@ -282,43 +119,46 @@ fn build_text_draws(
             0
         };
         // gamemd sinks the whole button content (art + label) down +2 px on
-        // press; mirror the SHP shift here on the label's text rect.
-        let y_offset = pressed_content_offset_y(pressed) as i32;
-        let text_rect = RectPx::new(
-            button.rect.x + x_offset,
-            button.rect.y + 1 + y_offset,
-            (button.rect.w - 2).max(0),
-            (button.rect.h - 1).max(0),
-        );
-        push_label(&mut out, state, text, text_rect, button_align);
+        // press. The text Y sink is applied as i32, distinct from the f32 art
+        // sink threaded through ButtonPolicy.
+        let y_offset = if pressed {
+            PRESSED_CONTENT_OFFSET_Y as i32
+        } else {
+            0
+        };
+        out.push(PaintLabel {
+            text: resolve_csf(state, csf_key_for_control(button.id)),
+            rect: RectPx::new(
+                button.rect.x + x_offset,
+                button.rect.y + 1 + y_offset,
+                (button.rect.w - 2).max(0),
+                (button.rect.h - 1).max(0),
+            ),
+            align: button_align,
+            rgb: SHELL_TEXT_RGB_ENABLED,
+        });
     }
-    // Static text labels (title heading, version, tooltip) render top-anchored
-    // h-centered within their rect — they are not vertically centered.
-    let title = resolve_csf(state, "GUI:MainMenu");
-    push_label(&mut out, state, title, layout.title, ShellAlign::H_CENTER);
-
-    let version_label = resolve_csf(state, "GUI:Version");
-    let version_text = format!("{} {}", version_label, state.version_txt);
-    push_label(
-        &mut out,
-        state,
-        &version_text,
-        layout.version_line,
-        ShellAlign::H_CENTER,
-    );
-
+    // Statics: title heading, version, tooltip — top-anchored, h-centered.
+    out.push(PaintLabel {
+        text: resolve_csf(state, "GUI:MainMenu"),
+        rect: layout.title,
+        align: ShellAlign::H_CENTER,
+        rgb: SHELL_TEXT_RGB_ENABLED,
+    });
+    out.push(PaintLabel {
+        text: version_text,
+        rect: layout.version_line,
+        align: ShellAlign::H_CENTER,
+        rgb: SHELL_TEXT_RGB_ENABLED,
+    });
     if let Some(id) = hovered_button {
-        let tip_key = tooltip_csf_key_for_control(id);
-        let tip_text = resolve_csf(state, tip_key);
-        push_label(
-            &mut out,
-            state,
-            tip_text,
-            layout.tooltip_line,
-            ShellAlign::H_CENTER,
-        );
+        out.push(PaintLabel {
+            text: resolve_csf(state, tooltip_csf_key_for_control(id)),
+            rect: layout.tooltip_line,
+            align: ShellAlign::H_CENTER,
+            rgb: SHELL_TEXT_RGB_ENABLED,
+        });
     }
-
     out
 }
 
@@ -532,21 +372,33 @@ pub(crate) fn render_main_menu_shell_to_target(
         .map(|movie| movie.batch_texture())
         .expect("movie loaded before render");
 
+    // 0xE2-only MNSCRN parent background, submitted FIRST (no analog on 0x100).
     let background_instances = build_parent_background_instances(chrome, &layout);
     let movie_instances = build_movie_instances(&layout);
-    let chrome_instances = build_chrome_instances(chrome, &layout);
-    let button_instances = build_button_instances(
-        chrome,
+    let chrome_instances =
+        shell_paint::paint_chrome(chrome, layout.right_panel, Some(layout.lower_strip), layout.screen.w);
+    let buttons = main_menu_paint_buttons(
         &layout,
         state.main_menu_shell_state.pressed_owner_draw_button,
         wave.as_ref(),
     );
-    let text_draws = build_text_draws(
+    // 0xE2 never flashes, so the hover clock is unused (None) — keep the call
+    // shape uniform with 0x100, which threads its hover_started_at.
+    let button_instances =
+        shell_paint::paint_buttons(chrome, &buttons, MAIN_MENU_BUTTON_POLICY, Instant::now(), None);
+    let version_text = format!(
+        "{} {}",
+        resolve_csf(state, "GUI:Version"),
+        state.version_txt
+    );
+    let labels = main_menu_paint_labels(
         state,
         &layout,
         state.main_menu_shell_state.pressed_owner_draw_button,
         state.main_menu_shell_state.hovered_owner_draw_button,
+        &version_text,
     );
+    let text_draws = shell_paint::paint_labels(&state.bit_font, &labels);
 
     state.batch_renderer.update_camera(
         &state.gpu,
@@ -672,16 +524,8 @@ mod tests {
     use super::*;
     use crate::ui::main_menu_shell::compute_layout;
 
-    #[test]
-    fn pressed_button_sinks_content_two_px_down() {
-        // Unpressed adds no vertical offset; pressed sinks content +2 px (down).
-        assert_eq!(pressed_content_offset_y(false), 0.0);
-        assert_eq!(pressed_content_offset_y(true), 2.0);
-        assert_eq!(
-            pressed_content_offset_y(true) - pressed_content_offset_y(false),
-            PRESSED_CONTENT_OFFSET_Y
-        );
-    }
+    // The pressed-sink and native-art geometry tests moved to
+    // `render::shell_paint` along with the geometry itself (Slice 3).
 
     #[test]
     fn movie_instance_uses_layout_movie_rect() {
@@ -721,42 +565,6 @@ mod tests {
     fn shell_origin_letterboxes_only_above_thresholds() {
         assert_eq!(shell_origin(&compute_layout(800, 600)), (0, 0));
         assert_eq!(shell_origin(&compute_layout(1024, 768)), (112, 84));
-    }
-
-    #[test]
-    fn button_shp_draws_native_size_at_rect_top_left() {
-        let frame = fake_entry(156.0, 42.0);
-        let mut out = Vec::new();
-        let rect = RectPx::new(644, 199, 156, 42);
-        // Mirror push_button_shp's geometry directly (avoids needing an atlas):
-        // native pixel size, top-left position, +2 px Y sink when pressed.
-        let x = rect.x as f32;
-        let y_unpressed = rect.y as f32 + pressed_content_offset_y(false);
-        push_entry_sized(
-            &mut out,
-            frame,
-            x,
-            y_unpressed,
-            frame.pixel_size,
-            BUTTON_DEPTH,
-        );
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].size, [156.0, 42.0]);
-        assert_eq!(out[0].position, [644.0, 199.0]);
-
-        out.clear();
-        let y_pressed = rect.y as f32 + pressed_content_offset_y(true);
-        push_entry_sized(
-            &mut out,
-            frame,
-            x,
-            y_pressed,
-            frame.pixel_size,
-            BUTTON_DEPTH,
-        );
-        // Pressed: native size, same X, +2 px Y, no horizontal shift.
-        assert_eq!(out[0].size, [156.0, 42.0]);
-        assert_eq!(out[0].position, [644.0, 201.0]);
     }
 
     #[test]
