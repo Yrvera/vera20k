@@ -14,6 +14,12 @@
 //! of this policy lives in `ui::shell::descriptor` (render-agnostic by contract):
 //! a frame index / pixel sink / fit-scale / disabled alpha is meaningless without
 //! the atlas, so it stays render-side.
+//!
+//! Slice 5 adds `paint_modal_shp`: the shared mode-2 SHP modal emitter (PUDLGBGN
+//! frame 0 background + MNBTTN owner-draw type-3 button + body/OK labels). It is
+//! source-atlas-neutral — the caller passes the resolved chrome entries (the modal
+//! art lives in the skirmish chrome atlas today) so the emitter stays a pure
+//! composition the quit-confirm and validation modals both delegate to.
 
 use std::time::Instant;
 
@@ -21,6 +27,7 @@ use crate::render::batch::SpriteInstance;
 use crate::render::bit_font::BitFont;
 use crate::render::main_menu_shell_chrome::{MainMenuShellChromeAtlas, MainMenuShellChromeEntry};
 use crate::render::shell_text::{ShellAlign, ShellTextDraw};
+use crate::render::skirmish_shell_chrome::SkirmishShellChromeEntry;
 use crate::ui::shell::geom::{RectPx, RightPanelRects};
 
 /// Parent background sits behind the movie in the Z stack. Greater depth =
@@ -319,6 +326,17 @@ pub fn paint_buttons(
 /// Emit one text draw per label at `TEXT_DEPTH` via `shell_text::draw_in_rect`.
 /// Color / inset / sink are pre-applied by the caller into each `PaintLabel`.
 pub fn paint_labels(font: &BitFont, labels: &[PaintLabel<'_>]) -> Vec<ShellTextDraw> {
+    paint_labels_at_depth(font, labels, TEXT_DEPTH)
+}
+
+/// As [`paint_labels`] but at a caller-chosen depth. The right-panel shells use
+/// `TEXT_DEPTH`; the mode-2 modal draws as a blocking overlay and supplies its own
+/// front-most text depth so the body/OK labels sit above the modal art.
+pub fn paint_labels_at_depth(
+    font: &BitFont,
+    labels: &[PaintLabel<'_>],
+    depth: f32,
+) -> Vec<ShellTextDraw> {
     use crate::render::shell_text::TextRect;
 
     labels
@@ -337,11 +355,155 @@ pub fn paint_labels(font: &BitFont, labels: &[PaintLabel<'_>]) -> Vec<ShellTextD
                 label.rgb,
                 label.align,
                 [0.0, 0.0],
-                TEXT_DEPTH,
+                depth,
                 None,
             )
         })
         .collect()
+}
+
+// --- Slice 5: mode-2 SHP modal emitter (PUDLGBGN + MNBTTN + labels) ---
+
+/// Native MNBTTN.SHP owner-draw type-3 frame index: `0` = up, `1` = disabled,
+/// `2` = pressed. A disabled button shows the disabled frame even when also
+/// flagged pressed (owner-draw precedence); the modal OK/Cancel buttons are always
+/// enabled in practice, so the live path is up-vs-pressed. The `pressed -> 2`
+/// mapping is the corrected one (an earlier modal helper mapped pressed -> 1, the
+/// disabled frame, leaving the pressed frame unreachable).
+pub fn modal_button_frame_index(pressed: bool, enabled: bool) -> usize {
+    if !enabled {
+        1
+    } else if pressed {
+        2
+    } else {
+        0
+    }
+}
+
+/// The three MNBTTN owner-draw frames for a mode-2 modal button (up/disabled/
+/// pressed). `Option` because a missing SHP frame draws nothing rather than panics.
+#[derive(Clone, Copy, Default)]
+pub struct ModalButtonFrames {
+    pub up: Option<SkirmishShellChromeEntry>,
+    pub disabled: Option<SkirmishShellChromeEntry>,
+    pub pressed: Option<SkirmishShellChromeEntry>,
+}
+
+impl ModalButtonFrames {
+    /// The frame for the current state, via [`modal_button_frame_index`].
+    pub fn select(self, pressed: bool, enabled: bool) -> Option<SkirmishShellChromeEntry> {
+        match modal_button_frame_index(pressed, enabled) {
+            1 => self.disabled,
+            2 => self.pressed,
+            _ => self.up,
+        }
+    }
+}
+
+/// Back-to-front depths for the mode-2 modal's three layers (background behind
+/// button behind text). The caller supplies them so the modal slots into its host
+/// shell's existing Z budget as a blocking overlay.
+#[derive(Clone, Copy)]
+pub struct ModalDepths {
+    pub background: f32,
+    pub button: f32,
+    pub text: f32,
+}
+
+/// Resolved draw lists for a mode-2 SHP modal.
+pub struct ModalDraw {
+    pub sprites: Vec<SpriteInstance>,
+    pub text: Vec<ShellTextDraw>,
+}
+
+/// One owner-draw button to paint in a mode-2 modal: its control rect plus the
+/// resolved press/enable state. The message-box family shares ONE MNBTTN frame set
+/// across all its buttons (OK/Cancel/third), so the buttons differ only by rect and
+/// state — `0xCE` passes one, `0x120` two, `0x121` three.
+#[derive(Clone, Copy)]
+pub struct ModalButton {
+    pub rect: RectPx,
+    pub pressed: bool,
+    pub enabled: bool,
+}
+
+/// Emit the mode-2 modal sprites: PUDLGBGN background at the dialog top-left
+/// (native size), then each MNBTTN button centered on its control rect at the
+/// state-selected frame. A missing background (retail always provides PUDLGBGN) is
+/// the caller's concern — only present entries are emitted here, so the solid-panel
+/// fallback stays with the host caller.
+pub fn paint_modal_sprites(
+    background: Option<SkirmishShellChromeEntry>,
+    button_frames: ModalButtonFrames,
+    dialog: RectPx,
+    buttons: &[ModalButton],
+    depths: ModalDepths,
+) -> Vec<SpriteInstance> {
+    let mut out = Vec::new();
+    if let Some(bg) = background {
+        push_skirmish_entry(
+            &mut out,
+            bg,
+            dialog.x as f32,
+            dialog.y as f32,
+            bg.pixel_size,
+            depths.background,
+        );
+    }
+    for button in buttons {
+        if let Some(entry) = button_frames.select(button.pressed, button.enabled) {
+            let [x, y] = modal_button_centered_position(button.rect, entry);
+            push_skirmish_entry(&mut out, entry, x, y, entry.pixel_size, depths.button);
+        }
+    }
+    out
+}
+
+/// Compose the full mode-2 SHP modal: [`paint_modal_sprites`] plus the body/button
+/// labels (via [`paint_labels_at_depth`] at the modal's front-most text depth).
+pub fn paint_modal_shp(
+    font: &BitFont,
+    background: Option<SkirmishShellChromeEntry>,
+    button_frames: ModalButtonFrames,
+    dialog: RectPx,
+    buttons: &[ModalButton],
+    labels: &[PaintLabel<'_>],
+    depths: ModalDepths,
+) -> ModalDraw {
+    let sprites = paint_modal_sprites(background, button_frames, dialog, buttons, depths);
+    let text = paint_labels_at_depth(font, labels, depths.text);
+    ModalDraw { sprites, text }
+}
+
+/// Center the native-size button art on its control rect (matches the existing
+/// modal button placement: integer-halved gaps on each axis).
+fn modal_button_centered_position(rect: RectPx, entry: SkirmishShellChromeEntry) -> [f32; 2] {
+    let art_w = entry.pixel_size[0].round() as i32;
+    let art_h = entry.pixel_size[1].round() as i32;
+    [
+        (rect.x + (rect.w - art_w) / 2) as f32,
+        (rect.y + (rect.h - art_h) / 2) as f32,
+    ]
+}
+
+fn push_skirmish_entry(
+    out: &mut Vec<SpriteInstance>,
+    entry: SkirmishShellChromeEntry,
+    x: f32,
+    y: f32,
+    size: [f32; 2],
+    depth: f32,
+) {
+    out.push(SpriteInstance {
+        position: [x, y],
+        size,
+        uv_origin: entry.uv_origin,
+        uv_size: entry.uv_size,
+        depth,
+        tint: [1.0, 1.0, 1.0],
+        alpha: 1.0,
+        ..Default::default()
+    });
 }
 
 #[cfg(test)]
@@ -659,5 +821,177 @@ mod tests {
         let expect_y = rect.y as f32 + (rect.h as f32 - expect_fh) * 0.5;
         assert_eq!(size, [expect_fw, expect_fh]);
         assert_eq!(pos, [expect_x, expect_y]);
+    }
+
+    // --- Slice 5: mode-2 SHP modal emitter ---
+
+    fn fake_skirmish_entry(
+        uv_origin: [f32; 2],
+        uv_size: [f32; 2],
+        pixel_size: [f32; 2],
+    ) -> SkirmishShellChromeEntry {
+        SkirmishShellChromeEntry {
+            uv_origin,
+            uv_size,
+            pixel_size,
+        }
+    }
+
+    const MODAL_DEPTHS: ModalDepths = ModalDepths {
+        background: 0.5,
+        button: 0.4,
+        text: 0.3,
+    };
+
+    /// MNBTTN owner-draw type-3 frame mapping: up=0, disabled=1, pressed=2. The
+    /// `pressed -> 2` row is the corrected mapping this slice introduces.
+    #[test]
+    fn modal_button_frame_index_maps_states() {
+        assert_eq!(modal_button_frame_index(false, true), 0); // up
+        assert_eq!(modal_button_frame_index(true, true), 2); // pressed -> frame 2
+        assert_eq!(modal_button_frame_index(false, false), 1); // disabled
+        assert_eq!(modal_button_frame_index(true, false), 1); // disabled beats pressed
+    }
+
+    /// `select` resolves the frame index to the matching entry.
+    #[test]
+    fn modal_button_frames_select_matches_index() {
+        let up = fake_skirmish_entry([0.0, 0.0], [0.1, 0.1], [80.0, 20.0]);
+        let disabled = fake_skirmish_entry([0.2, 0.0], [0.1, 0.1], [80.0, 20.0]);
+        let pressed = fake_skirmish_entry([0.4, 0.0], [0.1, 0.1], [80.0, 20.0]);
+        let frames = ModalButtonFrames {
+            up: Some(up),
+            disabled: Some(disabled),
+            pressed: Some(pressed),
+        };
+        assert_eq!(frames.select(false, true).unwrap().uv_origin, up.uv_origin);
+        assert_eq!(
+            frames.select(true, true).unwrap().uv_origin,
+            pressed.uv_origin
+        );
+        assert_eq!(
+            frames.select(false, false).unwrap().uv_origin,
+            disabled.uv_origin
+        );
+    }
+
+    /// Pressed modal draws the background at the dialog top-left and the MNBTTN
+    /// PRESSED frame (frame 2) centered on the OK control.
+    #[test]
+    fn modal_sprites_use_pressed_frame_centered_on_control() {
+        let bg = fake_skirmish_entry([0.1, 0.1], [0.2, 0.2], [200.0, 120.0]);
+        let up = fake_skirmish_entry([0.3, 0.0], [0.05, 0.05], [80.0, 20.0]);
+        let pressed_frame = fake_skirmish_entry([0.6, 0.0], [0.05, 0.05], [80.0, 20.0]);
+        let frames = ModalButtonFrames {
+            up: Some(up),
+            disabled: None,
+            pressed: Some(pressed_frame),
+        };
+        let dialog = RectPx::new(300, 200, 200, 120);
+        let ok = RectPx::new(360, 290, 90, 30);
+
+        let sprites = paint_modal_sprites(
+            Some(bg),
+            frames,
+            dialog,
+            &[ModalButton {
+                rect: ok,
+                pressed: true,
+                enabled: true,
+            }],
+            MODAL_DEPTHS,
+        );
+        assert_eq!(sprites.len(), 2);
+        // Background: native size at dialog top-left, background depth.
+        assert_eq!(sprites[0].position, [300.0, 200.0]);
+        assert_eq!(sprites[0].size, [200.0, 120.0]);
+        assert_eq!(sprites[0].uv_origin, bg.uv_origin);
+        assert_eq!(sprites[0].depth, MODAL_DEPTHS.background);
+        // Button: PRESSED frame uv proves frame 2 selected; centered on the OK rect.
+        assert_eq!(sprites[1].uv_origin, pressed_frame.uv_origin);
+        assert_eq!(
+            sprites[1].position,
+            [(360 + (90 - 80) / 2) as f32, (290 + (30 - 20) / 2) as f32]
+        );
+        assert_eq!(sprites[1].size, [80.0, 20.0]);
+        assert_eq!(sprites[1].depth, MODAL_DEPTHS.button);
+    }
+
+    /// Idle (unpressed, enabled) modal draws the UP frame (frame 0).
+    #[test]
+    fn modal_sprites_use_up_frame_when_idle() {
+        let up = fake_skirmish_entry([0.3, 0.0], [0.05, 0.05], [80.0, 20.0]);
+        let pressed_frame = fake_skirmish_entry([0.6, 0.0], [0.05, 0.05], [80.0, 20.0]);
+        let frames = ModalButtonFrames {
+            up: Some(up),
+            disabled: None,
+            pressed: Some(pressed_frame),
+        };
+        let sprites = paint_modal_sprites(
+            None,
+            frames,
+            RectPx::new(0, 0, 10, 10),
+            &[ModalButton {
+                rect: RectPx::new(0, 0, 90, 30),
+                pressed: false,
+                enabled: true,
+            }],
+            MODAL_DEPTHS,
+        );
+        // No background passed -> only the button sprite, using the UP frame.
+        assert_eq!(sprites.len(), 1);
+        assert_eq!(sprites[0].uv_origin, up.uv_origin);
+    }
+
+    /// A missing button frame draws nothing for the button (no panic on a short SHP).
+    #[test]
+    fn modal_sprites_skip_missing_button_frame() {
+        let frames = ModalButtonFrames::default(); // all None
+        let sprites = paint_modal_sprites(
+            None,
+            frames,
+            RectPx::new(0, 0, 10, 10),
+            &[ModalButton {
+                rect: RectPx::new(0, 0, 90, 30),
+                pressed: true,
+                enabled: true,
+            }],
+            MODAL_DEPTHS,
+        );
+        assert!(sprites.is_empty());
+    }
+
+    /// Two buttons (OK + Cancel) share the frame set; each resolves its own state.
+    #[test]
+    fn modal_sprites_draw_multiple_buttons() {
+        let up = fake_skirmish_entry([0.3, 0.0], [0.05, 0.05], [80.0, 20.0]);
+        let pressed_frame = fake_skirmish_entry([0.6, 0.0], [0.05, 0.05], [80.0, 20.0]);
+        let frames = ModalButtonFrames {
+            up: Some(up),
+            disabled: None,
+            pressed: Some(pressed_frame),
+        };
+        // OK pressed, Cancel idle.
+        let sprites = paint_modal_sprites(
+            None,
+            frames,
+            RectPx::new(0, 0, 10, 10),
+            &[
+                ModalButton {
+                    rect: RectPx::new(100, 100, 90, 30),
+                    pressed: true,
+                    enabled: true,
+                },
+                ModalButton {
+                    rect: RectPx::new(100, 140, 90, 30),
+                    pressed: false,
+                    enabled: true,
+                },
+            ],
+            MODAL_DEPTHS,
+        );
+        assert_eq!(sprites.len(), 2);
+        assert_eq!(sprites[0].uv_origin, pressed_frame.uv_origin); // OK pressed
+        assert_eq!(sprites[1].uv_origin, up.uv_origin); // Cancel idle
     }
 }

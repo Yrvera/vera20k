@@ -11,3 +11,4 @@ pub mod controller;
 pub mod descriptor;
 pub mod geom;
 pub mod layout;
+pub mod modal;
