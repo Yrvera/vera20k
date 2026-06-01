@@ -21,7 +21,7 @@ mod world_spawn;
 
 pub(crate) use logic_vector::LogicVector;
 pub(crate) use substrate::ObjectSubstrate;
-pub(crate) use substrate::EnterOrderCounter;
+pub use substrate::EnterOrderCounter;
 
 use std::collections::BTreeMap;
 

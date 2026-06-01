@@ -25,7 +25,7 @@ use crate::sim::occupancy::OccupancyGrid;
 /// bare `u64` it replaces).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
-pub(crate) struct EnterOrderCounter(u64);
+pub struct EnterOrderCounter(u64);
 
 impl EnterOrderCounter {
     /// Fresh counter. Starts at 1; 0 is the reserved sentinel.
