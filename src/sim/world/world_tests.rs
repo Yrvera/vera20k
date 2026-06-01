@@ -3377,3 +3377,126 @@ fn animated_death_uninit_enqueues_then_flush_frees() {
     assert!(sim.substrate.entities.get(5).is_none());
     assert!(sim.substrate.pending_delete.is_empty());
 }
+
+/// Command-applied death (here: selling a power plant) is uninit'd at the command-
+/// region boundary and flushed BEFORE Phase 1, so vision (P3) and power (P4) — raw-
+/// store consumers feeding the state hash — must not count it on the sell tick. The
+/// deferred Dying window is reserved for combat-immediate deaths (drained at Phase 9).
+#[test]
+fn command_death_is_flushed_before_vision_and_power() {
+    use crate::sim::components::Health;
+
+    let ini_str: &str = "\
+[VehicleTypes]\n\n\
+[BuildingTypes]\n0=GAPOWR\n\n\
+[InfantryTypes]\n\n\
+[AircraftTypes]\n\n\
+[GAPOWR]\nStrength=750\nArmor=wood\nFoundation=2x2\nPower=100\n";
+    let ini = IniFile::from_str(ini_str);
+    let rules = RuleSet::from_ini(&ini).expect("power rules parse");
+
+    let mut sim = Simulation::new();
+    sim.input_delay_ticks = 0;
+    let grid = PathGrid::test_all_passable(64, 64);
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+
+    // Two plants: selling one still leaves a structure, so power recomputes this
+    // tick. (With a single plant the owner would drop off the recompute list and
+    // retain a stale reading, masking whether the sold plant was counted.)
+    // Force the strings into the thread-local interner before snapshotting it.
+    let _ = (
+        crate::sim::intern::test_intern("GAPOWR"),
+        crate::sim::intern::test_intern("Americans"),
+    );
+    sim.interner = crate::sim::intern::test_interner();
+    let owner_id = sim.interner.intern("Americans");
+    for (id, rx, ry) in [(1u64, 10u16, 10u16), (2u64, 20u16, 20u16)] {
+        let mut bld = GameEntity::test_default(id, "GAPOWR", "Americans", rx, ry);
+        bld.category = EntityCategory::Structure;
+        bld.foundation = "2x2".to_string();
+        bld.health = Health { current: 750, max: 750 };
+        sim.substrate.entities.insert(bld);
+        sim.reveal(id);
+        sim.add_entity_occupancy(id);
+    }
+
+    // Tick 1: power registers both plants.
+    sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 100);
+    assert_eq!(
+        sim.power_states.get(&owner_id).map(|s| s.total_output),
+        Some(200),
+        "two power plants should produce 200 before sale",
+    );
+
+    // Tick 2: sell plant 1 via command. It is uninit'd at the command boundary and
+    // flushed before P1, so P4 power recomputes counting ONLY the surviving plant 2.
+    // Without the command-region flush, the dying plant 1 (health 750) would still be
+    // counted at P4 → 200.
+    let sell = CommandEnvelope::new(owner_id, sim.tick + 1, Command::SellBuilding { entity_id: 1 });
+    sim.advance_tick(&[sell], Some(&rules), &height_map, Some(&grid), None, 100);
+
+    assert!(sim.substrate.entities.get(1).is_none(), "sold plant freed this tick");
+    assert!(sim.substrate.entities.get(2).is_some(), "surviving plant still present");
+    assert!(sim.substrate.pending_delete.is_empty(), "command-death queue drained");
+    assert_eq!(
+        sim.power_states.get(&owner_id).map(|s| s.total_output),
+        Some(100),
+        "sold plant must not contribute power on the sell tick (command-region flush)",
+    );
+}
+
+/// Combat-death counterpart: a structure killed in combat (Phase 5) is drained at the
+/// END of Phase 5, before the Phase 7 repair scan — so a destroyed building on auto-
+/// repair is NOT healed (no credits spent) on the death tick. The repair scan has no
+/// dying gate; without the Phase-5 drain it would heal a health-0 corpse.
+#[test]
+fn combat_death_is_flushed_before_phase7_repairs() {
+    use crate::sim::components::Health;
+    use crate::sim::house_state::HouseState;
+
+    let ini_str: &str = "\
+[VehicleTypes]\n0=MTNK\n\n\
+[BuildingTypes]\n0=TARGB\n\n\
+[InfantryTypes]\n\n\
+[AircraftTypes]\n\n\
+[MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\nPrimary=105mm\n\n\
+[TARGB]\nStrength=750\nArmor=wood\nFoundation=1x1\nCost=1000\n\n\
+[105mm]\nDamage=65\nROF=20\nRange=6\nWarhead=AP\n\n\
+[AP]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n";
+    let ini = IniFile::from_str(ini_str);
+    let rules = RuleSet::from_ini(&ini).expect("repair rules parse");
+
+    let mut sim = Simulation::new();
+    sim.input_delay_ticks = 0;
+    let grid = PathGrid::test_all_passable(64, 64);
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+
+    let mut atk = GameEntity::test_default(1, "MTNK", "Americans", 5, 5);
+    atk.health = Health { current: 300, max: 300 };
+    // Damaged, auto-repairing enemy building MTNK destroys this tick at Phase 5.
+    let mut bld = GameEntity::test_default(2, "TARGB", "Russia", 7, 5);
+    bld.category = EntityCategory::Structure;
+    bld.foundation = "1x1".to_string();
+    bld.health = Health { current: 50, max: 750 };
+    bld.repairing = true;
+    sim.interner = crate::sim::intern::test_interner();
+    let russia = sim.interner.intern("Russia");
+    sim.houses
+        .insert(russia, HouseState::new(russia, 0, None, false, 1000, 10));
+    sim.substrate.entities.insert(atk);
+    sim.substrate.entities.insert(bld);
+    sim.reveal(1);
+    sim.reveal(2);
+    sim.add_entity_occupancy(2);
+    sim.substrate.entities.get_mut(1).unwrap().attack_target = Some(AttackTarget::new(2));
+
+    sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 100);
+
+    assert!(sim.substrate.entities.get(2).is_none(), "building destroyed + drained this tick");
+    assert!(sim.substrate.pending_delete.is_empty(), "combat-death queue drained");
+    assert_eq!(
+        sim.houses.get(&russia).map(|h| h.credits),
+        Some(1000),
+        "destroyed building must not be repaired at Phase 7 (no credits spent)",
+    );
+}

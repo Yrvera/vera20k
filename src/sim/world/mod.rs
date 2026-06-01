@@ -1684,6 +1684,15 @@ impl Simulation {
         // method; call order unchanged — behavior-preserving.)
         let (executed_commands, mut spawned_entities, mut destroyed_structure) =
             self.apply_due_commands(commands, rules, path_grid, height_map, execute_tick);
+        // Drain command-applied deaths (sell, MCV/slave deploy-undeploy, engineer
+        // capture) at the command-region boundary, BEFORE Phase 1. These uninit a
+        // structure/unit at tick start; without this drain they would linger Dying
+        // through vision (P3) and power (P4) — raw-store consumers with no dying gate
+        // that feed the state hash — counting a just-removed object for one tick. The
+        // deferred Dying window is intentionally scoped to combat-immediate deaths
+        // (drained at Phase 9) where it is the verified parity behavior; command
+        // deaths stay synchronous-equivalent (matching pre-deferral removal).
+        self.flush_pending_delete();
         let mut bridge_state_changed = false;
         let mut passenger_ownership_changed = false;
 
@@ -2157,6 +2166,17 @@ impl Simulation {
             // Always clear pending — even if grids were unbound (headless
             // tests). The vec is per-tick ephemeral state.
             self.pending_smudge_requests.clear();
+
+            // End-of-Phase-5 deferred-delete drain. Frees structures/voxels killed in
+            // combat (immediate_uninit above) plus any bridge/wall occupant kills, so
+            // no dying structure leaks into the Phase 5.5-8.5 raw-store consumers
+            // (particles, production speed/factory-spawn scans, repairs, AI) that have
+            // no dying gate. Combat post-processing above intentionally reads the dead
+            // ids while still resolvable (count decrement, owner snapshot); this drain
+            // runs after all of that. With the pre-Phase-1 command-death drain, every
+            // death frees at its own phase boundary — the dying window never spans a
+            // later phase's scans, keeping the slice behavior/hash-preserving.
+            self.flush_pending_delete();
             // --- Phase 5.5: ParticleSystems ---
             // DEPENDS ON: combat (gas/fire damage spawned this tick).
             // PRODUCES: damage applied via gas/fire particles, must be visible to phase 6 retaliation.
