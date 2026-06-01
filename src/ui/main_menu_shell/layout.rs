@@ -1,13 +1,18 @@
 //! Dialog 0xE2 shell layout recovered from gamemd.exe.
 
 use super::state::MainMenuControlId;
+use crate::ui::shell::descriptor::{
+    AnchorRule, BgKind, ControlDescriptor, ControlKind, DialogDescriptor, DialogId,
+    RepositionPolicy,
+};
+use crate::ui::shell::geom::SDBTNANM_CELL_W_NARROW;
+use crate::ui::shell::layout::{LaidOutControl, layout_pass};
 pub use crate::ui::shell::geom::{RectPx, RightPanelRects};
 pub use crate::ui::shell::geom::{RIGHT_PANEL_TILE_H, RIGHT_PANEL_WIDTH};
-use crate::ui::shell::geom::{dlu_rect, lower_strip_rect, mul_div_round, right_panel_rects};
+use crate::ui::shell::geom::{dlu_rect, lower_strip_rect, right_panel_rects};
 
 pub const SHELL_BASE_W: i32 = 800;
 pub const SHELL_BASE_H: i32 = 600;
-const BASE_Y: i32 = crate::ui::shell::geom::DLU_BASE_Y;
 pub const RA2TS_L_W: i32 = 632;
 pub const RA2TS_L_H: i32 = 570;
 pub const RA2TS_S_W: i32 = 472;
@@ -56,20 +61,6 @@ pub struct MainMenuShellLayout {
 /// Native bottom-cap height at 800x600. Mirrors the retail RA2 SHP size verified
 /// in the skirmish shell research. (Documentation const; not in shared geom.)
 pub const RIGHT_PANEL_BOTTOM_H: i32 = 23;
-
-/// SDBTNANM.SHP button-cell dimensions. The five non-Exit 0xE2 button windows
-/// are resized to this cell (distinct from the dialog-template 162x37 client
-/// rect). The cell height equals the SDBTNBKGD tile height (42) but is named
-/// separately because it is a different asset's canvas.
-pub const SDBTNANM_CELL_W: i32 = 156;
-const SDBTNANM_CELL_H: i32 = crate::ui::shell::geom::SDBTNANM_CELL_H;
-
-/// Exit button (0x3ee) DLU top. Unlike the five stacked buttons, Exit is not
-/// grid-snapped: it keeps this raw DLU-derived top, which lands it lower, in the
-/// gap below the stack (y=536 at 800x600). Its cameo is still right-anchored to
-/// the same column edge as the others — Exit is offset vertically, not
-/// horizontally.
-const EXIT_DLU_TOP: i32 = 330;
 
 fn movie_origin(screen_w: i32, screen_h: i32) -> (i32, i32) {
     let x = if screen_w <= SHELL_BASE_W {
@@ -139,62 +130,93 @@ fn version_line_rect(screen_w: i32, right_panel: RightPanelRects) -> RectPx {
     RectPx::new(x, y, ctrl_w, ctrl_h)
 }
 
-/// Position a right-panel child control with the same sidebar inset and
-/// oversized-screen horizontal compensation used by the retail right-anchor
-/// helper.
-fn right_anchor_rect(screen_w: i32, right_panel: RightPanelRects, rect: RectPx) -> RectPx {
-    let inset = (RIGHT_PANEL_WIDTH - rect.w) / 2;
-    let delta_x = if screen_w > SHELL_BASE_W {
-        (screen_w - SHELL_BASE_W) / 2
-    } else {
-        0
+/// Owner-draw button-cell width for the 0xE2 column: the 156-wide SDBTNANM cell
+/// flush at the panel right edge (distinct from the 168-wide single-player cell).
+const BUTTON_CELL_W: i32 = SDBTNANM_CELL_W_NARROW;
+
+/// Build a 0xE2 owner-draw button control descriptor. The anchor consumes only
+/// the DLU top; the x/w/h carry the 162x37 template client rect the SDBTNANM
+/// cell replaces.
+fn button_ctrl(
+    id: u16,
+    dlu_y: i32,
+    anchor: AnchorRule,
+    csf_key: &'static str,
+    tooltip_key: &'static str,
+) -> ControlDescriptor {
+    ControlDescriptor {
+        id,
+        kind: ControlKind::Button,
+        dlu_rect: RectPx::new(425, dlu_y, 108, 23),
+        anchor,
+        csf_key: Some(csf_key),
+        tooltip_key: Some(tooltip_key),
+        group: 0,
+        enabled: true,
+    }
+}
+
+/// Dialog 0xE2 descriptor: the six owner-draw buttons (five stacked + Exit) plus
+/// the 0x694 heading and the 0x71b Yuri-website static. The bottom-anchored
+/// version/tooltip statics keep their bespoke shell helpers for now (no verified
+/// resource id; one-of-a-kind anchors), so they are computed outside this table.
+fn dialog_descriptor() -> DialogDescriptor {
+    let snap = AnchorRule::OwnerDrawButtonSnap {
+        cell_w: BUTTON_CELL_W,
     };
-    RectPx::new(
-        screen_w - inset - rect.w - delta_x,
-        right_panel.top.y + rect.y,
-        rect.w,
-        rect.h,
-    )
+    DialogDescriptor {
+        id: DialogId(0x00E2),
+        bg_kind: BgKind::RightPanelShell,
+        slide_eligible: true,
+        reposition_policy: RepositionPolicy::IncludeSetReanchor,
+        controls: vec![
+            button_ctrl(0x0683, 125, snap, "GUI:SinglePlayer", "STT:MainButtonSinglePlayer"),
+            button_ctrl(0x0684, 152, snap, "GUI:WWOnline", "STT:MainButtonWWOnline"),
+            button_ctrl(0x0578, 179, snap, "GUI:Network", "STT:MainButtonNetwork"),
+            button_ctrl(0x0686, 206, snap, "GUI:MoviesAndCredits", "STT:MainButtonMovies"),
+            button_ctrl(0x055C, 233, snap, "GUI:Options", "STT:MainButtonOptions"),
+            button_ctrl(
+                0x03EE,
+                330,
+                AnchorRule::OwnerDrawButtonRawTop {
+                    cell_w: BUTTON_CELL_W,
+                },
+                "GUI:ExitGame",
+                "STT:MainButtonExitGamemd",
+            ),
+            // 0x694 heading: right-anchor then the +7y/+1h finalizer nudge.
+            ControlDescriptor {
+                id: 0x0694,
+                kind: ControlKind::Static,
+                dlu_rect: RectPx::new(425, 1, 108, 10),
+                anchor: AnchorRule::RightAnchorNudge { dy: 7, dh: 1 },
+                csf_key: None,
+                tooltip_key: None,
+                group: 0,
+                enabled: true,
+            },
+            // 0x71b Yuri-website static: plain right-anchor.
+            ControlDescriptor {
+                id: 0x071B,
+                kind: ControlKind::Static,
+                dlu_rect: RectPx::new(447, 29, 61, 33),
+                anchor: AnchorRule::RightAnchor,
+                csf_key: Some("TXT_YURI_WEBSITE"),
+                tooltip_key: Some("STT:MainButtonYuriWebSite"),
+                group: 0,
+                enabled: true,
+            },
+        ],
+    }
 }
 
-fn title_rect(screen_w: i32, right_panel: RightPanelRects) -> RectPx {
-    let anchored = right_anchor_rect(screen_w, right_panel, dlu_rect(425, 1, 108, 10));
-    // Retail special-cases the 0x694 heading after the right-anchor pass:
-    // top += 7, height += 1 in FUN_0060B950 for main menu dialog 0xE2.
-    RectPx::new(anchored.x, anchored.y + 7, anchored.w, anchored.h + 1)
-}
-
-/// Right-anchored SDBTNANM-cell rect for the five non-Exit 0xE2 buttons.
-///
-/// These button windows are resized to the SDBTNANM.SHP cell (156x42),
-/// right-anchored flush to the panel's right edge (x = panel_left + 168 - 156),
-/// with the DLU-derived top snapped to the nearest 42-px SDBTNANM row anchored
-/// at the button-column top (the SDBTNBKGD tile origin). This replaces the
-/// dialog-template 162x37 client rect and its (168-162)/2 inset. All five
-/// buttons sit below the column top, so the snap delta is non-negative.
-fn sdbtnanm_button_rect(dlu_y: i32, right_panel: RightPanelRects) -> RectPx {
-    let dlu_top = mul_div_round(dlu_y, BASE_Y, 8) + right_panel.top.y;
-    let panel_y = right_panel.tile.y; // top of the SDBTNBKGD button column
-    let row_h = RIGHT_PANEL_TILE_H; // 42-px SDBTNANM row pitch
-    // Round (dlu_top - panel_y) to the nearest row, round-half-up: round up when
-    // the distance to the next row is <= the distance from the current row.
-    let delta = (dlu_top - panel_y).max(0);
-    let q = delta / row_h;
-    let rem = delta % row_h;
-    let q = if row_h - rem <= rem { q + 1 } else { q };
-    let y = q * row_h + panel_y;
-    let x = right_panel.top.x + (RIGHT_PANEL_WIDTH - SDBTNANM_CELL_W);
-    RectPx::new(x, y, SDBTNANM_CELL_W, SDBTNANM_CELL_H)
-}
-
-/// Exit button (0x3ee) cameo rect. Exit is the odd one out *vertically* — it is
-/// not grid-snapped and sits lower (raw DLU top, in the gap below the stack) —
-/// but its SDBTNANM cameo is right-anchored flush to the panel's right edge at
-/// the same column x as the other five buttons (x=644 at 800x600), not inset.
-fn exit_button_rect(right_panel: RightPanelRects) -> RectPx {
-    let y = mul_div_round(EXIT_DLU_TOP, BASE_Y, 8) + right_panel.top.y;
-    let x = right_panel.top.x + (RIGHT_PANEL_WIDTH - SDBTNANM_CELL_W);
-    RectPx::new(x, y, SDBTNANM_CELL_W, SDBTNANM_CELL_H)
+/// Look up a laid-out control's pixel rect by resource id. The id set is a
+/// compile-time-constant table, so a miss is a programming error.
+fn rect_for(laid: &[LaidOutControl], id: u16) -> RectPx {
+    laid.iter()
+        .find(|c| c.id == id)
+        .unwrap_or_else(|| panic!("0xE2 descriptor missing control id {id:#06x}"))
+        .rect
 }
 
 pub fn compute_layout(screen_w: u32, screen_h: u32) -> MainMenuShellLayout {
@@ -210,39 +232,45 @@ pub fn compute_layout(screen_w: u32, screen_h: u32) -> MainMenuShellLayout {
     let lower_strip = lower_strip_rect(screen_w, screen_h);
     let version_line = version_line_rect(screen_w, right_panel);
     let tooltip_line = tooltip_line_rect(screen_w, screen_h);
-    let website_base = dlu_rect(447, 29, 61, 33);
+
+    // Owner-draw buttons + the 0x694 heading + 0x71b website static are laid out
+    // by the shared shell pass (contract C7: DLU->pixel once, then include-set
+    // re-anchor). The bottom-anchored version/tooltip statics keep their bespoke
+    // helpers above.
+    let laid = layout_pass(&dialog_descriptor(), screen_w, screen_h);
+
     MainMenuShellLayout {
         screen: RectPx::new(0, 0, screen_w, screen_h),
         movie_base,
         movie: RectPx::new(movie_x, movie_y, movie_w, movie_h),
-        title: title_rect(screen_w, right_panel),
+        title: rect_for(&laid, 0x0694),
         version_line,
         tooltip_line,
-        website_static: right_anchor_rect(screen_w, right_panel, website_base),
+        website_static: rect_for(&laid, 0x071B),
         buttons: [
             MainMenuButtonRect {
                 id: MainMenuControlId::SinglePlayer0x683,
-                rect: sdbtnanm_button_rect(125, right_panel),
+                rect: rect_for(&laid, 0x0683),
             },
             MainMenuButtonRect {
                 id: MainMenuControlId::WwOnline0x684,
-                rect: sdbtnanm_button_rect(152, right_panel),
+                rect: rect_for(&laid, 0x0684),
             },
             MainMenuButtonRect {
                 id: MainMenuControlId::Network0x578,
-                rect: sdbtnanm_button_rect(179, right_panel),
+                rect: rect_for(&laid, 0x0578),
             },
             MainMenuButtonRect {
                 id: MainMenuControlId::MoviesAndCredits0x686,
-                rect: sdbtnanm_button_rect(206, right_panel),
+                rect: rect_for(&laid, 0x0686),
             },
             MainMenuButtonRect {
                 id: MainMenuControlId::Options0x55c,
-                rect: sdbtnanm_button_rect(233, right_panel),
+                rect: rect_for(&laid, 0x055C),
             },
             MainMenuButtonRect {
                 id: MainMenuControlId::ExitGame0x3ee,
-                rect: exit_button_rect(right_panel),
+                rect: rect_for(&laid, 0x03EE),
             },
         ],
         pressed_content_offset_x: 1,

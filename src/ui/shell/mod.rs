@@ -7,4 +7,6 @@
 //! is roadmap (see docs/plans/2026-05-31-shell-substrate-design.md §5); only geom
 //! is shared today.
 
+pub mod descriptor;
 pub mod geom;
+pub mod layout;
