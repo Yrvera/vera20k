@@ -3275,3 +3275,105 @@ fn test_layered_astar_can_traverse_bridge_after_unrelated_rebuild() {
          must keep bridge_walkable across PathGrid refresh)"
     );
 }
+
+// --- Slice 6: deferred-delete Dying-window behavior ---
+
+/// Insert a revealed, occupancy-marked 2x2 structure owned by `Americans`.
+#[cfg(test)]
+fn insert_revealed_structure(sim: &mut Simulation, id: u64, rx: u16, ry: u16) {
+    let mut s = GameEntity::test_default(id, "GAPOWR", "Americans", rx, ry);
+    s.owner = sim.interner.intern("Americans");
+    s.type_ref = sim.interner.intern("GAPOWR");
+    s.category = EntityCategory::Structure;
+    s.foundation = "2x2".to_string();
+    sim.substrate.entities.insert(s);
+    sim.reveal(id);
+    sim.add_entity_occupancy(id);
+}
+
+/// Immediate (structure) path: `uninit` leaves the entity resolvable-but-`Dying`
+/// (off logic, off occupancy, enqueued) until the end-of-tick flush frees the slot.
+#[test]
+fn immediate_structure_death_is_dying_then_flushed() {
+    let mut sim = Simulation::new();
+    insert_revealed_structure(&mut sim, 7, 4, 5);
+
+    // Alive before death: on the logic order and on every foundation cell.
+    assert!(sim.live_object_order_snapshot().contains(&7));
+    assert!(sim.substrate.occupancy.contains_entity(4, 5, 7));
+
+    sim.uninit(7);
+
+    // The deferred-delete window: still in the store as Dying, but off logic +
+    // off occupancy + enqueued for the end-of-tick drain.
+    assert!(sim.substrate.entities.get(7).is_some_and(|e| e.dying));
+    assert!(!sim.live_object_order_snapshot().contains(&7));
+    for cell in [(4, 5), (4, 6), (5, 5), (5, 6)] {
+        assert!(
+            !sim.substrate.occupancy.contains_entity(cell.0, cell.1, 7),
+            "dying structure must be off occupancy cell {cell:?}"
+        );
+    }
+    assert!(sim.substrate.pending_delete.contains(&7));
+
+    sim.flush_pending_delete();
+    assert!(sim.substrate.entities.get(7).is_none());
+    assert!(sim.substrate.pending_delete.is_empty());
+}
+
+/// Mutual same-tick death: both structures resolve as `Dying` in death order until
+/// the flush, and the pre-flush state is replay-deterministic across two runs.
+#[test]
+fn mutual_same_tick_death_both_dying_then_flushed() {
+    fn build() -> Simulation {
+        let mut sim = Simulation::new();
+        insert_revealed_structure(&mut sim, 1, 4, 5);
+        insert_revealed_structure(&mut sim, 2, 8, 5);
+        sim
+    }
+
+    let mut a = build();
+    a.uninit(1);
+    a.uninit(2);
+    assert!(a.substrate.entities.get(1).is_some_and(|e| e.dying));
+    assert!(a.substrate.entities.get(2).is_some_and(|e| e.dying));
+    // Drain order = death (enqueue) order, deterministic.
+    assert_eq!(a.substrate.pending_delete, vec![1, 2]);
+
+    // Determinism: an identical second run hashes equal at the pre-flush point.
+    let mut b = build();
+    b.uninit(1);
+    b.uninit(2);
+    assert_eq!(
+        a.state_hash(),
+        b.state_hash(),
+        "pre-flush mutual-death state must be replay-deterministic",
+    );
+
+    a.flush_pending_delete();
+    assert!(a.substrate.entities.get(1).is_none());
+    assert!(a.substrate.entities.get(2).is_none());
+    assert!(a.substrate.pending_delete.is_empty());
+}
+
+/// Animated (infantry/SHP) path: the app layer despawns a finished-animation corpse
+/// via `uninit` (enqueue) then a single `flush_pending_delete`. This mirrors the
+/// app-layer drain so the corpse frees at exactly one frame, no extra tick of linger.
+#[test]
+fn animated_death_uninit_enqueues_then_flush_frees() {
+    let mut sim = Simulation::new();
+    let mut inf = GameEntity::test_default(5, "E1", "Americans", 3, 3);
+    inf.owner = sim.interner.intern("Americans");
+    inf.type_ref = sim.interner.intern("E1");
+    inf.category = EntityCategory::Infantry;
+    sim.substrate.entities.insert(inf);
+    sim.reveal(5);
+
+    sim.uninit(5);
+    assert!(sim.substrate.entities.get(5).is_some_and(|e| e.dying));
+    assert!(sim.substrate.pending_delete.contains(&5));
+
+    sim.flush_pending_delete();
+    assert!(sim.substrate.entities.get(5).is_none());
+    assert!(sim.substrate.pending_delete.is_empty());
+}
