@@ -307,6 +307,10 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                 sim.uninit(*dead_id);
             }
             if !death_finished.is_empty() {
+                // Anim-end corpses were uninit'd above (enqueued). Drain now so they
+                // free at exactly this frame — the deferred queue must not carry an
+                // animated death into the next tick.
+                sim.flush_pending_delete();
                 refresh_after_tick = true;
             }
             animation::tick_voxel_animations(sim.entities_mut(), SIM_TICK_MS);
