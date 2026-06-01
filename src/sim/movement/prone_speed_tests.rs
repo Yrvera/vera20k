@@ -81,7 +81,7 @@ fn advance_prone_mover(crawls: bool) -> SimFixed {
     let mut interner = test_interner();
     let mut occupancy = OccupancyGrid::new();
     let mut sounds = Vec::new();
-    let mut next_occupancy_enter_order = 1;
+    let mut next_occupancy_enter_order = crate::sim::world::EnterOrderCounter::new();
     let terrain_costs: BTreeMap<SpeedType, TerrainCostGrid> = BTreeMap::new();
 
     tick_movement_with_grids(

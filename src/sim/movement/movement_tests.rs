@@ -1727,7 +1727,7 @@ fn drive_accelerates_false_tick_stores_modified_fraction_without_mutating_speed(
     let mut rng = SimRng::new(0);
     let mut interner = test_interner();
     let mut sounds = Vec::new();
-    let mut next_occupancy_enter_order = 1;
+    let mut next_occupancy_enter_order = crate::sim::world::EnterOrderCounter::new();
     let terrain_costs: std::collections::BTreeMap<
         crate::rules::locomotor_type::SpeedType,
         crate::sim::pathfinding::terrain_cost::TerrainCostGrid,
@@ -1803,7 +1803,7 @@ fn drive_accelerates_true_tick_ramps_fraction_before_movement_speed() {
     let mut rng = SimRng::new(0);
     let mut interner = test_interner();
     let mut sounds = Vec::new();
-    let mut next_occupancy_enter_order = 1;
+    let mut next_occupancy_enter_order = crate::sim::world::EnterOrderCounter::new();
     let terrain_costs: std::collections::BTreeMap<
         crate::rules::locomotor_type::SpeedType,
         crate::sim::pathfinding::terrain_cost::TerrainCostGrid,

@@ -30,6 +30,7 @@ use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
 use crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig;
 use crate::sim::pathfinding::zone_map::ZoneGrid;
 use crate::sim::rng::SimRng;
+use crate::sim::world::EnterOrderCounter;
 use crate::util::fixed_math::{
     SIM_HALF, SIM_ONE, SIM_ZERO, SimFixed, dt_from_tick_ms, fixed_distance, isqrt_i64,
     ra2_speed_to_leptons_per_second,
@@ -823,7 +824,7 @@ pub fn tick_movement_with_grids(
     terrain_costs: &BTreeMap<SpeedType, TerrainCostGrid>,
     alliances: &HouseAllianceMap,
     occupancy: &mut OccupancyGrid,
-    next_occupancy_enter_order: &mut u64,
+    next_occupancy_enter_order: &mut EnterOrderCounter,
     rng: &mut SimRng,
     tick_ms: u32,
     sim_tick: u64,
@@ -1313,8 +1314,7 @@ pub fn tick_movement_with_grids(
                             }
                         }
                         // Update occupancy grid: move entity from old cell to new cell.
-                        let order = *next_occupancy_enter_order;
-                        *next_occupancy_enter_order = order.saturating_add(1);
+                        let order = next_occupancy_enter_order.next();
                         entity.occupancy_enter_order = order;
                         occupancy.move_entity(
                             old_rx,

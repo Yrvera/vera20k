@@ -21,6 +21,7 @@ mod world_spawn;
 
 pub(crate) use logic_vector::LogicVector;
 pub(crate) use substrate::ObjectSubstrate;
+pub(crate) use substrate::EnterOrderCounter;
 
 use std::collections::BTreeMap;
 
@@ -790,8 +791,7 @@ impl Simulation {
         } else {
             None
         };
-        let order = self.substrate.next_occupancy_enter_order;
-        self.substrate.next_occupancy_enter_order = self.substrate.next_occupancy_enter_order.saturating_add(1);
+        let order = self.substrate.next_occupancy_enter_order.next();
         entity.occupancy_enter_order = order;
         let insertion = CellListInsertion::from_category(entity.category);
         for (rx, ry) in cells {

@@ -50,10 +50,10 @@ pub(crate) struct ObjectSubstrate {
     /// draws the next value; a stale reference degrades to `None` rather than
     /// aliasing a reused slot.
     pub(crate) next_stable_entity_id: u64,
-    /// Monotonic source for rebuilt CellClass-style object-list order.
-    /// `OccupancyGrid` itself is a skipped cache; each entity stores the last
-    /// order value assigned when it entered a cell list.
-    pub(crate) next_occupancy_enter_order: u64,
+    /// Monotonic source for rebuilt CellClass-style object-list (enter) order.
+    /// See `EnterOrderCounter`. `OccupancyGrid` itself is a skipped cache; each
+    /// entity stores the last order value assigned when it entered a cell list.
+    pub(crate) next_occupancy_enter_order: EnterOrderCounter,
     /// LogicClass active-object vector — the single authority on object order.
     /// Tail-append on reveal, compacting-remove on conceal. Serialized verbatim.
     #[serde(default)]
@@ -74,7 +74,7 @@ impl ObjectSubstrate {
     pub(crate) fn new() -> Self {
         Self {
             next_stable_entity_id: 1,
-            next_occupancy_enter_order: 1,
+            next_occupancy_enter_order: EnterOrderCounter::new(),
             logic: LogicVector::new(),
             occupancy: OccupancyGrid::new(),
             entities: EntityStore::new(),
