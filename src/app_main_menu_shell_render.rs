@@ -13,6 +13,7 @@ use crate::render::shell_paint::{
     self, ArtFit, ButtonPolicy, PaintButton, PaintLabel, CURSOR_DEPTH, MOVIE_DEPTH,
     PARENT_BACKGROUND_DEPTH, PRESSED_CONTENT_OFFSET_Y, SHELL_TEXT_RGB_ENABLED,
 };
+use crate::render::shell_text::ShellAlign;
 use crate::render::shell_transition_pass::ShellRenderTarget;
 use crate::ui::main_menu_shell::{
     MainMenuControlId, MainMenuShellLayout, RectPx, compute_layout, csf_key_for_control,
@@ -400,6 +401,12 @@ pub(crate) fn render_main_menu_shell_to_target(
     );
     let text_draws = shell_paint::paint_labels(&state.bit_font, &labels);
 
+    // Quit-confirm SHP modal overlay (blocking; drawn over the menu, under the
+    // cursor). `None` when the modal is closed or the skirmish atlas (which holds
+    // PUDLGBGN/MNBTTN) is not loaded.
+    let modal_overlay = build_exit_confirm_modal_overlay(state);
+    let skirmish_chrome = state.skirmish_shell_chrome.as_ref();
+
     state.batch_renderer.update_camera(
         &state.gpu,
         state.gpu.config.width as f32,
@@ -428,6 +435,26 @@ pub(crate) fn render_main_menu_shell_to_target(
                 .create_instance_buffer(&state.gpu, &draw.instances)
         })
         .collect();
+    let modal_sprite_buffer = modal_overlay
+        .as_ref()
+        .and_then(|m| {
+            state
+                .batch_renderer
+                .create_instance_buffer(&state.gpu, &m.sprites)
+        });
+    let modal_text_buffers: Vec<_> = modal_overlay
+        .as_ref()
+        .map(|m| {
+            m.text
+                .iter()
+                .map(|draw| {
+                    state
+                        .batch_renderer
+                        .create_instance_buffer(&state.gpu, &draw.instances)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let cursor_instances: Vec<SpriteInstance> = menu_cursor_instance(state).into_iter().collect();
     let cursor_buffer = state
         .batch_renderer
@@ -509,6 +536,36 @@ pub(crate) fn render_main_menu_shell_to_target(
         );
     }
     pass.set_scissor_rect(0, 0, state.gpu.config.width, state.gpu.config.height);
+    // Quit-confirm modal overlay: SHP panel + buttons (skirmish atlas texture),
+    // then labels (font atlas), above the menu but below the cursor.
+    if let (Some(overlay), Some(sk_chrome)) = (modal_overlay.as_ref(), skirmish_chrome) {
+        if let Some((buffer, count)) = modal_sprite_buffer.as_ref() {
+            state.batch_renderer.draw_with_buffer_passthrough(
+                &mut pass,
+                &sk_chrome.texture,
+                buffer,
+                *count,
+            );
+        }
+        for (draw, buffer) in overlay.text.iter().zip(modal_text_buffers.iter()) {
+            let Some((buffer, count)) = buffer.as_ref() else {
+                continue;
+            };
+            pass.set_scissor_rect(
+                draw.scissor.x,
+                draw.scissor.y,
+                draw.scissor.w,
+                draw.scissor.h,
+            );
+            state.batch_renderer.draw_with_buffer_passthrough(
+                &mut pass,
+                state.bit_font.atlas(),
+                buffer,
+                *count,
+            );
+        }
+        pass.set_scissor_rect(0, 0, state.gpu.config.width, state.gpu.config.height);
+    }
     if let (Some((buffer, count)), Some(texture)) = (cursor_buffer.as_ref(), cursor_texture) {
         state
             .batch_renderer
@@ -517,6 +574,97 @@ pub(crate) fn render_main_menu_shell_to_target(
     drop(pass);
 
     Ok(MainMenuShellRenderResult::Rendered)
+}
+
+/// Back-to-front depths for the quit-confirm modal overlay. They sit in the clear
+/// band between the menu's front-most text (`TEXT_DEPTH`) and the cursor
+/// (`CURSOR_DEPTH`), so the modal blocks the menu while the cursor stays on top.
+const EXIT_CONFIRM_MODAL_DEPTHS: shell_paint::ModalDepths = shell_paint::ModalDepths {
+    background: 0.00050,
+    button: 0.00045,
+    text: 0.00040,
+};
+
+/// Build the quit-confirm (0x120) SHP modal overlay when it is open: the centered
+/// PUDLGBGN panel + MNBTTN OK/Cancel buttons + body/OK/Cancel labels, sourced from
+/// the skirmish chrome atlas (the only atlas that loads PUDLGBGN/MNBTTN). The
+/// pressed button is read from the shared shell controller (its top dialog is the
+/// modal while open). Returns `None` when the modal is closed or its art is absent.
+fn build_exit_confirm_modal_overlay(state: &AppState) -> Option<shell_paint::ModalDraw> {
+    use crate::ui::shell::modal;
+    let modal_state = state.exit_confirm_modal.as_ref()?;
+    let atlas = state.skirmish_shell_chrome.as_ref()?;
+    let layout = modal::quit_confirm_layout(
+        state.gpu.config.width as i32,
+        state.gpu.config.height as i32,
+    );
+    let pressed = state.shell_controller.pressed();
+    let ok_pressed = pressed == Some(modal::control::OK);
+    let cancel_pressed = pressed == Some(modal::control::CANCEL);
+    let frames = shell_paint::ModalButtonFrames {
+        up: atlas.modal_button_mnbttn_frame0,
+        disabled: atlas.modal_button_mnbttn_frame1,
+        pressed: atlas.modal_button_mnbttn_frame2,
+    };
+    let buttons = [
+        shell_paint::ModalButton {
+            rect: layout.ok,
+            pressed: ok_pressed,
+            enabled: true,
+        },
+        shell_paint::ModalButton {
+            rect: layout.cancel,
+            pressed: cancel_pressed,
+            enabled: true,
+        },
+    ];
+    // Body left-top wrapped; OK/Cancel centered on their buttons with the MNBTTN
+    // press sink — same conventions as the skirmish validation modal.
+    let labels = [
+        PaintLabel {
+            text: &modal_state.title,
+            rect: layout.body,
+            align: ShellAlign::NONE,
+            rgb: SHELL_TEXT_RGB_ENABLED,
+        },
+        PaintLabel {
+            text: &modal_state.confirm,
+            rect: modal_button_label_rect(layout.ok, ok_pressed),
+            align: ShellAlign::H_CENTER | ShellAlign::V_CENTER,
+            rgb: SHELL_TEXT_RGB_ENABLED,
+        },
+        PaintLabel {
+            text: &modal_state.cancel,
+            rect: modal_button_label_rect(layout.cancel, cancel_pressed),
+            align: ShellAlign::H_CENTER | ShellAlign::V_CENTER,
+            rgb: SHELL_TEXT_RGB_ENABLED,
+        },
+    ];
+    Some(shell_paint::paint_modal_shp(
+        &state.bit_font,
+        atlas.validation_modal_background_pudlgbgn,
+        frames,
+        layout.dialog,
+        &buttons,
+        &labels,
+        EXIT_CONFIRM_MODAL_DEPTHS,
+    ))
+}
+
+/// Owner-draw button label rect with the MNBTTN press sink. Matches the skirmish
+/// validation modal's `button_text_rect`: unpressed `+0x/+1y/-2w/-1h`, pressed
+/// `+2x/+5y/-4w/-5h`.
+fn modal_button_label_rect(
+    rect: crate::ui::shell::geom::RectPx,
+    pressed: bool,
+) -> crate::ui::shell::geom::RectPx {
+    let (dx, dy) = if pressed { (2, 5) } else { (0, 1) };
+    crate::ui::shell::geom::RectPx::new(
+        rect.x + dx,
+        rect.y + dy,
+        (rect.w - 2 - dx).max(0),
+        (rect.h - dy).max(0),
+    )
 }
 
 #[cfg(test)]

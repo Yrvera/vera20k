@@ -742,8 +742,9 @@ impl App {
             }
         }
         // Confirm modal can be open over the legacy egui menu too; draw it in
-        // the same frame so its buttons receive input.
-        let confirm = Self::draw_main_menu_dialogs(state);
+        // the same frame so its buttons receive input. This degraded egui path has
+        // no SHP shell, so the quit-confirm renders as the egui card here.
+        let confirm = Self::draw_main_menu_dialogs(state, true);
         // Degraded fallback (shell chrome failed to load) has no SHP cursor of
         // its own, so keep the OS cursor visible here rather than hiding it and
         // leaving the egui menu with no pointer at all.
@@ -1609,6 +1610,61 @@ impl App {
         }
     }
 
+    /// The quit-confirm (0x120) modal's OK/Cancel button feed: resource-id'd pixel
+    /// rects from the centered modal layout at the live screen size.
+    fn exit_confirm_modal_feed(state: &AppState) -> Vec<crate::ui::shell::layout::LaidOutControl> {
+        use crate::ui::shell::layout::LaidOutControl;
+        use crate::ui::shell::modal;
+        let layout = modal::quit_confirm_layout(
+            state.gpu.config.width as i32,
+            state.gpu.config.height as i32,
+        );
+        vec![
+            LaidOutControl {
+                id: modal::control::OK,
+                rect: layout.ok,
+            },
+            LaidOutControl {
+                id: modal::control::CANCEL,
+                rect: layout.cancel,
+            },
+        ]
+    }
+
+    fn handle_exit_confirm_modal_mouse_down(state: &mut AppState) {
+        let feed = Self::exit_confirm_modal_feed(state);
+        let x = state.cursor_x.round() as i32;
+        let y = state.cursor_y.round() as i32;
+        state
+            .shell_controller
+            .ensure_active(crate::ui::shell::descriptor::DialogId(0x0120), true);
+        state.shell_controller.on_pointer_down(x, y, &feed);
+    }
+
+    fn handle_exit_confirm_modal_mouse_up(state: &mut AppState, event_loop: &ActiveEventLoop) {
+        let feed = Self::exit_confirm_modal_feed(state);
+        let x = state.cursor_x.round() as i32;
+        let y = state.cursor_y.round() as i32;
+        state
+            .shell_controller
+            .ensure_active(crate::ui::shell::descriptor::DialogId(0x0120), true);
+        let activated = state.shell_controller.on_pointer_up(x, y, &feed);
+        match activated {
+            // OK -> quit (result 0). 4a exits the existing way; the RA2MD.INI
+            // persist + graceful cascade arrive in sub-step 4b.
+            Some(id) if id == crate::ui::shell::modal::control::OK => {
+                state.exit_confirm_modal = None;
+                event_loop.exit();
+            }
+            // Cancel (control 2) -> stay; close the modal.
+            Some(id) if id == crate::ui::shell::modal::control::CANCEL => {
+                Self::close_main_menu_dialogs(state);
+                state.window.request_redraw();
+            }
+            _ => {}
+        }
+    }
+
     fn handle_single_player_shell_mouse_down(state: &mut AppState) {
         let layout = Self::single_player_shell_layout(state);
         let feed = Self::single_player_shell_button_feed(&layout);
@@ -1811,9 +1867,16 @@ impl App {
     /// Open the Exit-Game confirm message box, resolving its labels from CSF.
     fn open_exit_confirm_modal(state: &mut AppState) {
         let csf = |key: &str, fallback: &str| Self::csf_label(state, key, fallback);
-        state.exit_confirm_modal = Some(crate::ui::main_menu_dialogs::ExitConfirmModalState::open(
-            &csf,
-        ));
+        let modal = crate::ui::main_menu_dialogs::ExitConfirmModalState::open(&csf);
+        // The SHP modal sources PUDLGBGN/MNBTTN from the skirmish chrome atlas; load
+        // it on demand so the quit-confirm renders straight from the main menu.
+        Self::ensure_skirmish_shell_chrome(state);
+        // Host the modal on the shared shell controller stack (0x120 over the menu's
+        // 0xE2) so its OK/Cancel buttons own the press-must-match-release gesture.
+        state
+            .shell_controller
+            .ensure_active(crate::ui::shell::descriptor::DialogId(0x0120), true);
+        state.exit_confirm_modal = Some(modal);
     }
 
     /// Whether any main-menu modal dialog is currently open. Used to route
@@ -1833,24 +1896,30 @@ impl App {
     /// Draw whichever main-menu modal dialog is open in the current egui frame
     /// and apply its outcome. Returns `true` when the player has confirmed
     /// quitting, so the caller should exit the event loop.
-    fn draw_main_menu_dialogs(state: &mut AppState) -> bool {
+    /// Draw whichever egui main-menu modal dialog is open. `render_exit_confirm_egui`
+    /// is true only on the degraded egui fallback path (where the SHP shell — and
+    /// thus the SHP quit-confirm modal — is unavailable); the normal SHP shell path
+    /// passes false and renders the quit-confirm as an SHP overlay instead.
+    fn draw_main_menu_dialogs(state: &mut AppState, render_exit_confirm_egui: bool) -> bool {
         use crate::ui::main_menu_dialogs as dialogs;
 
-        if let Some(modal) = state.exit_confirm_modal.clone() {
-            match dialogs::draw_exit_confirm_modal(&state.egui.ctx, &modal) {
-                dialogs::ExitConfirmAction::Confirm => {
-                    // The original writes options to ra2md.ini, fades, and stops
-                    // music before exiting. Options write-back is not decoded
-                    // yet; persist hook is a TODO. Exit on confirm.
-                    state.exit_confirm_modal = None;
-                    return true;
+        if render_exit_confirm_egui {
+            if let Some(modal) = state.exit_confirm_modal.clone() {
+                match dialogs::draw_exit_confirm_modal(&state.egui.ctx, &modal) {
+                    dialogs::ExitConfirmAction::Confirm => {
+                        // The original writes options to ra2md.ini, fades, and stops
+                        // music before exiting. Options write-back is not decoded
+                        // yet; persist hook is a TODO. Exit on confirm.
+                        state.exit_confirm_modal = None;
+                        return true;
+                    }
+                    dialogs::ExitConfirmAction::Cancel => {
+                        state.exit_confirm_modal = None;
+                    }
+                    dialogs::ExitConfirmAction::None => {}
                 }
-                dialogs::ExitConfirmAction::Cancel => {
-                    state.exit_confirm_modal = None;
-                }
-                dialogs::ExitConfirmAction::None => {}
+                return false;
             }
-            return false;
         }
 
         if state.options_dialog.is_some() {
@@ -2065,6 +2134,9 @@ impl ApplicationHandler for App {
                     && !state.main_menu_show_skirmish_setup
                     && !Self::single_player_shell_active(state)
                     && !Self::native_skirmish_shell_active(state)
+                    // While the SHP quit-confirm modal owns the controller, the menu
+                    // move handler must not re-activate 0xE2 and reset the gesture.
+                    && state.exit_confirm_modal.is_none()
                 {
                     Self::handle_main_menu_shell_mouse_move(state);
                 }
@@ -2083,10 +2155,23 @@ impl ApplicationHandler for App {
                 if crate::app_shell_transition::blocks_shell_input(state) {
                     return;
                 }
-                // While a main-menu modal dialog is open, egui already handled
-                // the click (its buttons sit on top); do not route to the
-                // underlying shell hit-tests.
+                // While a main-menu modal dialog is open, route the click to the
+                // SHP quit-confirm modal's OK/Cancel hit-test on the normal shell
+                // path; the egui fallback and the other egui dialogs (options/movies/
+                // campaign) were already handled by egui above.
                 if Self::main_menu_dialog_open(state) {
+                    if state.exit_confirm_modal.is_some()
+                        && state.screen == GameScreen::MainMenu
+                        && !state.main_menu_shell_failed
+                        && !state.main_menu_show_skirmish_setup
+                        && button == MouseButton::Left
+                    {
+                        if btn_state.is_pressed() {
+                            Self::handle_exit_confirm_modal_mouse_down(state);
+                        } else {
+                            Self::handle_exit_confirm_modal_mouse_up(state, event_loop);
+                        }
+                    }
                     return;
                 }
                 if Self::native_skirmish_shell_active(state) {
@@ -2626,7 +2711,7 @@ impl App {
                             // Campaign selector (and any other menu modal) draws
                             // over the SP shell; confirm-quit cannot originate
                             // here, so its return value is ignored.
-                            let _ = Self::draw_main_menu_dialogs(state);
+                            let _ = Self::draw_main_menu_dialogs(state, false);
                             state.egui.end_frame_and_render(
                                 &state.gpu,
                                 &mut encoder,
@@ -2652,7 +2737,11 @@ impl App {
                     )? {
                         crate::app_main_menu_shell_render::MainMenuShellRenderResult::Rendered => {
                             state.egui.begin_frame(&state.window);
-                            let confirm_quit = Self::draw_main_menu_dialogs(state);
+                            // The SHP shell renders the quit-confirm as an SHP
+                            // overlay (and OK exits via its hit-test), so the egui
+                            // exit-confirm is suppressed here; campaign/options/
+                            // movies egui dialogs still draw. confirm_quit stays false.
+                            let confirm_quit = Self::draw_main_menu_dialogs(state, false);
                             state.egui.end_frame_and_render(
                                 &state.gpu,
                                 &mut encoder,
