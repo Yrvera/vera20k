@@ -48,6 +48,7 @@ pub mod app_init_helpers;
 pub mod app_list_maps;
 pub mod app_loading;
 pub mod app_main_menu_shell_render;
+pub mod app_quit_cascade;
 pub mod app_shell_transition;
 pub mod app_single_player_shell_render;
 pub mod app_skirmish;

@@ -196,6 +196,10 @@ pub(crate) struct AppState {
     /// edge detection so the slide (re)starts on entry into each shell and is
     /// cancelled on leaving all of them.
     pub(crate) shell_slide_active_shell: Option<crate::app_shell_transition::ShellSlideKind>,
+    /// Active graceful quit cascade (music fade → trailing-voice wait → hard stop
+    /// → exit). Some only between Exit-confirm OK and window close; freezes shell
+    /// input while it runs.
+    pub(crate) quit_cascade: Option<crate::app_quit_cascade::QuitCascade>,
     pub(crate) minimap: Option<MinimapRenderer>,
     /// True while left-dragging on minimap (camera pan mode).
     pub(crate) minimap_dragging: bool,
@@ -1631,6 +1635,40 @@ impl App {
         ]
     }
 
+    /// Persist the user-tunable settings the engine currently tracks to
+    /// `RA2MD.INI`, preserving the file's other keys and sections. Invoked on
+    /// quit-confirm OK strictly BEFORE the app tears down, matching the
+    /// original writing options before exit. Today only `[Audio] ScoreVolume`
+    /// (the live music volume, already read at boot) round-trips; further
+    /// sections are added as the engine grows to model them. A write failure is
+    /// logged, never fatal — a quit must not be blocked by a settings error.
+    fn persist_settings_on_quit(state: &AppState) {
+        let Some(config) = state.game_config.as_ref() else {
+            return;
+        };
+        let Some(player) = state.music_player.as_ref() else {
+            return;
+        };
+        if let Err(err) = crate::audio::music::write_score_volume_to_ra2md(
+            &config.paths.ra2_dir,
+            player.volume(),
+        ) {
+            log::warn!("Failed to persist settings to RA2MD.INI on quit: {err}");
+        }
+    }
+
+    /// Begin the graceful quit cascade from the main-menu Exit-confirm OK. The
+    /// caller persists settings FIRST (so the captured volume is pre-fade), then
+    /// calls this instead of exiting immediately; `render_frame` drives it to
+    /// completion and then exits the event loop.
+    fn start_quit_cascade(state: &mut AppState) {
+        let start_volume = state.music_player.as_ref().map_or(0.0, |p| p.volume());
+        state.quit_cascade = Some(crate::app_quit_cascade::QuitCascade::start(
+            Instant::now(),
+            start_volume,
+        ));
+    }
+
     fn handle_exit_confirm_modal_mouse_down(state: &mut AppState) {
         let feed = Self::exit_confirm_modal_feed(state);
         let x = state.cursor_x.round() as i32;
@@ -1641,7 +1679,7 @@ impl App {
         state.shell_controller.on_pointer_down(x, y, &feed);
     }
 
-    fn handle_exit_confirm_modal_mouse_up(state: &mut AppState, event_loop: &ActiveEventLoop) {
+    fn handle_exit_confirm_modal_mouse_up(state: &mut AppState) {
         let feed = Self::exit_confirm_modal_feed(state);
         let x = state.cursor_x.round() as i32;
         let y = state.cursor_y.round() as i32;
@@ -1650,11 +1688,14 @@ impl App {
             .ensure_active(crate::ui::shell::descriptor::DialogId(0x0120), true);
         let activated = state.shell_controller.on_pointer_up(x, y, &feed);
         match activated {
-            // OK -> quit (result 0). 4a exits the existing way; the RA2MD.INI
-            // persist + graceful cascade arrive in sub-step 4b.
+            // OK -> quit (result 0). Persist settings to RA2MD.INI BEFORE teardown
+            // (4b-i), then run the graceful cascade (music fade → trailing-voice
+            // wait → hard stop → exit) via render_frame instead of exiting
+            // immediately. The screen fade-to-black is sub-step 4b-ii-b.
             Some(id) if id == crate::ui::shell::modal::control::OK => {
+                Self::persist_settings_on_quit(state);
                 state.exit_confirm_modal = None;
-                event_loop.exit();
+                Self::start_quit_cascade(state);
             }
             // Cancel (control 2) -> stay; close the modal.
             Some(id) if id == crate::ui::shell::modal::control::CANCEL => {
@@ -1907,11 +1948,14 @@ impl App {
             if let Some(modal) = state.exit_confirm_modal.clone() {
                 match dialogs::draw_exit_confirm_modal(&state.egui.ctx, &modal) {
                     dialogs::ExitConfirmAction::Confirm => {
-                        // The original writes options to ra2md.ini, fades, and stops
-                        // music before exiting. Options write-back is not decoded
-                        // yet; persist hook is a TODO. Exit on confirm.
+                        // Persist BEFORE teardown (4b-i), then start the graceful
+                        // cascade. Return false (not true) so exit is owned by the
+                        // cascade; this degraded egui-fallback path runs the audio
+                        // phases (the SHP fade overlay is unavailable here).
+                        Self::persist_settings_on_quit(state);
                         state.exit_confirm_modal = None;
-                        return true;
+                        Self::start_quit_cascade(state);
+                        return false;
                     }
                     dialogs::ExitConfirmAction::Cancel => {
                         state.exit_confirm_modal = None;
@@ -2169,7 +2213,7 @@ impl ApplicationHandler for App {
                         if btn_state.is_pressed() {
                             Self::handle_exit_confirm_modal_mouse_down(state);
                         } else {
-                            Self::handle_exit_confirm_modal_mouse_up(state, event_loop);
+                            Self::handle_exit_confirm_modal_mouse_up(state);
                         }
                     }
                     return;
@@ -2496,6 +2540,7 @@ impl App {
             skirmish_shell_return_to_single_player_shell: false,
             shell_first_paint_slide: None,
             shell_slide_active_shell: None,
+            quit_cascade: None,
             minimap: None,
             minimap_dragging: false,
             middle_mouse_panning: false,
@@ -2645,6 +2690,34 @@ impl App {
             state.startup_splash_until = None;
         }
 
+        // Drive the graceful quit cascade (started on Exit-confirm OK). Compute the
+        // voice poll before borrowing the cascade mutably to avoid aliasing.
+        if state.quit_cascade.is_some() {
+            let now = Instant::now();
+            let voices_active = state
+                .sfx_player
+                .as_ref()
+                .is_some_and(|sfx| sfx.voices_active());
+            let tick = state
+                .quit_cascade
+                .as_mut()
+                .expect("cascade present")
+                .tick(now, voices_active);
+            if let (Some(vol), Some(player)) = (tick.music_volume, state.music_player.as_mut()) {
+                player.set_volume(vol);
+            }
+            if tick.stop_music {
+                if let Some(player) = state.music_player.as_mut() {
+                    player.stop();
+                }
+            }
+            if tick.finished {
+                state.quit_cascade = None;
+                event_loop.exit();
+                return Ok(());
+            }
+        }
+
         if matches!(state.screen, GameScreen::InGame) {
             let now = Instant::now();
             let elapsed_ms = app_sim_tick::update_elapsed_ms(state, now);
@@ -2680,11 +2753,15 @@ impl App {
                 // update (the sim tick that normally pumps music does not run
                 // on the menu) keeps the looping theme alive on every entry
                 // path: initial launch, return-from-game, and mission result.
-                if let (Some(player), Some(assets)) =
-                    (&mut state.music_player, &state.asset_manager)
-                {
-                    player.play_menu_theme(assets);
-                    player.update(assets);
+                // Suppressed during the quit cascade so the hard music stop is not
+                // immediately undone by the per-frame menu-theme re-assert.
+                if state.quit_cascade.is_none() {
+                    if let (Some(player), Some(assets)) =
+                        (&mut state.music_player, &state.asset_manager)
+                    {
+                        player.play_menu_theme(assets);
+                        player.update(assets);
+                    }
                 }
                 if crate::app_shell_transition::render_shell_first_paint_slide(
                     state,

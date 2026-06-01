@@ -476,6 +476,13 @@ impl SfxPlayer {
     pub fn queued_voice_count(&self) -> usize {
         self.queued_voice.len()
     }
+
+    /// Whether any EVA/voice line is still playing or waiting in the voice queue.
+    /// Non-blocking (rodio `Player::empty()` is a poll). Used by the quit cascade
+    /// to wait for trailing voices before tearing down.
+    pub fn voices_active(&self) -> bool {
+        self.voice_player.as_ref().is_some_and(|p| !p.empty()) || !self.queued_voice.is_empty()
+    }
 }
 
 /// Load a sound effect file and decode it to interleaved f32 stereo samples.
@@ -830,6 +837,16 @@ fn decode_pcm(pcm: &[u8], channels: u16, bits_per_sample: u16) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An idle voice slot with an empty queue reports no active voices. Skips
+    /// gracefully when no audio device is available (CI).
+    #[test]
+    fn voices_active_false_when_idle() {
+        let Some(player) = SfxPlayer::new() else {
+            return;
+        };
+        assert!(!player.voices_active());
+    }
 
     fn build_test_wav(sample_rate: u32, bits: u16, channels: u16, samples: &[u8]) -> Vec<u8> {
         let data_size: u32 = samples.len() as u32;

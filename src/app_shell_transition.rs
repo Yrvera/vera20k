@@ -205,7 +205,11 @@ pub(crate) fn advance_shell_static_reveals(state: &mut AppState) {
 }
 
 pub(crate) fn blocks_shell_input(state: &AppState) -> bool {
-    transition_blocks_shell_input(state.shell_first_paint_slide.as_ref())
+    // The graceful quit cascade also freezes shell input (the original processes
+    // no input during its blocking teardown), so a stray click can't re-enter the
+    // menu mid-fade.
+    state.quit_cascade.is_some()
+        || transition_blocks_shell_input(state.shell_first_paint_slide.as_ref())
 }
 
 pub(crate) fn transition_blocks_shell_input(transition: Option<&ShellFrameWave>) -> bool {
