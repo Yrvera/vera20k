@@ -347,8 +347,17 @@ const RESCAN_COOLDOWN_TICKS: u16 = 60;
 ///
 /// Called once per tick from `advance_tick()`, after combat and building docks.
 pub fn tick_aircraft_docks(sim: &mut Simulation, rules: &RuleSet) {
-    // Phase 1: Cleanup dead entities from dock reservations.
-    let alive: BTreeSet<u64> = sim.substrate.entities.keys_sorted().iter().copied().collect();
+    // Phase 1: Cleanup dead/dying entities from dock reservations. Dying
+    // entities remain in `sim.entities` through the death animation, but their
+    // airfield-pad reservation must release immediately so other aircraft can
+    // dock without waiting through the death anim (matches building_dock/miner).
+    let alive: BTreeSet<u64> = sim
+        .substrate
+        .entities
+        .values()
+        .filter(|e| !e.dying)
+        .map(|e| e.stable_id)
+        .collect();
     sim.production.airfield_docks.cleanup_dead(&alive);
 
     // Phase 2: Snapshot all aircraft with aircraft_ammo.
