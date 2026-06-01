@@ -974,6 +974,22 @@ impl Simulation {
         self.uninit(stable_id);
     }
 
+    /// Drain the deferred-delete queue, freeing each enqueued store slot in death
+    /// (insertion) order. The end-of-tick `ProcessPendingDelete` drain. Called at
+    /// the end of `run_late_region` (inside `advance_tick`, before the asserts +
+    /// state hash) and in the app layer after the death-animation despawn loop.
+    /// After this returns the queue is empty and no `Dying` entity remains in the
+    /// store.
+    pub(crate) fn flush_pending_delete(&mut self) {
+        // mem::take so the loop body can call entities.remove without a
+        // simultaneous borrow of self.substrate.pending_delete. Removing an
+        // absent id is a no-op, covering any defensive double-enqueue.
+        let queued = std::mem::take(&mut self.substrate.pending_delete);
+        for id in queued {
+            self.substrate.entities.remove(id);
+        }
+    }
+
     pub(crate) fn clear_radio_contacts_for(&mut self, stable_id: u64) {
         self.substrate.entities.clear_radio_contacts_for(stable_id);
     }
