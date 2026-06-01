@@ -1647,9 +1647,6 @@ impl Simulation {
         // during the tick. execute_tick stays here: command scheduling below
         // filters on it.
         let execute_tick = self.tick.saturating_add(1);
-        // Rebuild per-owner entity index. Cheap linear scan; captures any
-        // owner mutations from the previous tick (engineer capture, mind control).
-        self.substrate.entities.rebuild_owner_index();
         // ===== SPINE REGION: EARLY — command application =====
         // gamemd applies player/network input before LogicClass::PerTickUpdate.
         // Native-spine slot: pre-object. (Step 3a skeleton: extracted to a region
