@@ -953,10 +953,10 @@ impl Simulation {
         }
         self.clear_radio_contacts_for(stable_id);
         self.conceal(stable_id); // leave the active order before freeing the slot
-        // Transient teardown marker. Conceal moved presence to Limbo (or it was
-        // already Limbo for a never-revealed limbo object). In this slice the slot
-        // is freed immediately below, so Dying never survives to a tick boundary;
-        // deferred-delete (later slice) makes it a one-tick observable state.
+        // Conceal moved presence to Limbo (or it was already Limbo for a never-
+        // revealed limbo object); we then mark Dying + enqueue. The store slot is
+        // NOT freed here — flush_pending_delete frees it at end-of-tick. The entity
+        // stays resolvable by id as a Dying corpse until then (the death window).
         if let Some(e) = self.substrate.entities.get_mut(stable_id) {
             debug_assert_ne!(
                 e.presence,
@@ -964,8 +964,14 @@ impl Simulation {
                 "uninit: entity {stable_id} already Dying (double teardown?)",
             );
             e.presence = Presence::Dying;
+            // IsAlive-equivalent: a queued corpse is dead for all live systems.
+            // Idempotent — the count-decrement above already read the original
+            // `dying`, so owned-counts are still adjusted exactly once.
+            e.dying = true;
         }
-        self.substrate.entities.remove(stable_id); // then free the slot
+        // Two-phase death: enqueue instead of freeing. The slot is freed by
+        // flush_pending_delete at end-of-tick (ProcessPendingDelete).
+        self.substrate.pending_delete.push(stable_id);
     }
 
     /// Remove an entity from the world. Retained name for existing callers and
