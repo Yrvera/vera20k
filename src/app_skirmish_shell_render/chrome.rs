@@ -318,8 +318,12 @@ pub(super) fn push_button_30(
     }
 }
 
+/// MNBTTN owner-draw frame for a modal OK/Cancel button: 0 = up, 2 = pressed.
+/// Frame 1 is the disabled cameo, unused here (modal buttons are always
+/// enabled). Matches the canonical 0=up / 1=disabled / 2=pressed mapping; a held
+/// button previously showed frame 1 (disabled art) instead of the pressed frame.
 pub(super) const fn modal_button_mnbttn_frame_index(pressed: bool) -> usize {
-    if pressed { 1 } else { 0 }
+    if pressed { 2 } else { 0 }
 }
 
 pub(super) fn modal_button_mnbttn_position(

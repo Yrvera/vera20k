@@ -967,7 +967,7 @@ mod tests {
     #[test]
     fn validation_modal_button_uses_mnbttn_normal_and_pressed_frames() {
         assert_eq!(modal_button_mnbttn_frame_index(false), 0);
-        assert_eq!(modal_button_mnbttn_frame_index(true), 1);
+        assert_eq!(modal_button_mnbttn_frame_index(true), 2);
     }
 
     #[test]
