@@ -924,6 +924,14 @@ impl Simulation {
         }
     }
 
+    /// Change an entity's owner through the substrate chokepoint: updates the
+    /// `by_owner` index and the entity's owner field together. Index only — the
+    /// caller owns any HouseState owned-count adjustment (count semantics differ
+    /// by transfer kind: engineer capture adjusts counts; garrison transfers do not).
+    pub(crate) fn change_owner(&mut self, stable_id: u64, new_owner: InternedId) {
+        self.substrate.entities.change_owner(stable_id, new_owner);
+    }
+
     /// Despawn an entity by stable_id, removing it from EntityStore.
     /// Decrements owned count if the entity was not already dying (combat deaths
     /// are decremented when dying is first set, not at physical removal).
