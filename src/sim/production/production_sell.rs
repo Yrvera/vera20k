@@ -430,13 +430,17 @@ fn place_garrison_passenger_at_cell(
     building_width: u16,
     building_height: u16,
 ) -> bool {
+    // Owner transfer (if any) goes through the substrate chokepoint first, so
+    // the by_owner index stays in sync; then take the mutable borrow for the
+    // remaining field writes. change_owner is a no-op if the id is absent —
+    // the get_mut below still guards absence.
+    if let Some(owner) = owner_override {
+        sim.change_owner(passenger_id, owner);
+    }
     let Some(pax) = sim.substrate.entities.get_mut(passenger_id) else {
         return false;
     };
     pax.passenger_role = PassengerRole::None;
-    if let Some(owner) = owner_override {
-        pax.owner = owner;
-    }
     pax.position.rx = rx;
     pax.position.ry = ry;
     pax.position.z = z;
