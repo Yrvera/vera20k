@@ -2299,3 +2299,90 @@ fn combat_resolves_in_live_object_order_not_stable_id() {
         );
     }
 }
+
+/// Slice 6 parity: a resolvable-but-`Dying` `last_attacker_id` (attacker present
+/// with health 0) yields the same retaliation outcome as a freed/absent attacker —
+/// both leave the victim with no `attack_target`. The deferred-delete window makes a
+/// dead attacker resolvable by id where it used to be `None`; the retaliation gate
+/// (`health > 0`) must treat the two identically. A live-attacker control branch
+/// proves the test is non-vacuous (retaliation DOES fire when the attacker lives).
+#[test]
+fn dying_attacker_retaliation_matches_absent_attacker() {
+    fn retal_rules() -> RuleSet {
+        let ini_str: &str = "\
+[VehicleTypes]\n0=MTNK\n1=TARGV\n\n\
+[InfantryTypes]\n\n\
+[AircraftTypes]\n\n\
+[BuildingTypes]\n\n\
+[MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\nPrimary=105mm\n\n\
+[TARGV]\nStrength=200\nArmor=none\nSpeed=5\n\n\
+[105mm]\nDamage=65\nROF=20\nRange=6\nWarhead=AP\n\n\
+[AP]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n";
+        let ini = IniFile::from_str(ini_str);
+        RuleSet::from_ini(&ini).expect("retal rules parse")
+    }
+
+    // Victim: armed MTNK last hit by attacker id 2; idle (no attack_target / order).
+    fn victim() -> GameEntity {
+        let mut v = GameEntity::test_default(1, "MTNK", "Americans", 5, 5);
+        v.health = Health { current: 300, max: 300 };
+        v.last_attacker_id = Some(2);
+        v
+    }
+
+    let rules = retal_rules();
+    // Force the type/owner strings into the thread-local test interner BEFORE
+    // snapshotting it, so resolve() of the test_default ids never indexes OOB.
+    let _ = (
+        test_intern("MTNK"),
+        test_intern("Americans"),
+        test_intern("TARGV"),
+        test_intern("Russia"),
+    );
+    let interner = test_interner();
+    let live_order = [1u64];
+
+    // Branch A: attacker absent (already freed) — get(2) == None.
+    let mut store_absent = EntityStore::new();
+    store_absent.insert(victim());
+    tick_retaliation(&mut store_absent, &rules, &interner, &live_order);
+
+    // Branch B: attacker present but Dying (health 0) — the deferred-delete window.
+    let mut store_dying = EntityStore::new();
+    store_dying.insert(victim());
+    let mut dead = GameEntity::test_default(2, "TARGV", "Russia", 6, 5);
+    dead.health = Health { current: 0, max: 200 };
+    dead.dying = true;
+    store_dying.insert(dead);
+    tick_retaliation(&mut store_dying, &rules, &interner, &live_order);
+
+    // Parity: identical victim outcome — no retaliation issued in either case.
+    let va = store_absent.get(1).unwrap();
+    let vb = store_dying.get(1).unwrap();
+    assert!(va.attack_target.is_none(), "absent-attacker: no retaliation");
+    assert!(vb.attack_target.is_none(), "dying-attacker: no retaliation");
+    assert_eq!(
+        va.last_attacker_id, vb.last_attacker_id,
+        "dying attacker must leave the same last_attacker_id as an absent one",
+    );
+
+    // Control: a LIVE attacker DOES draw retaliation — proves the test isn't vacuous.
+    let mut store_live = EntityStore::new();
+    store_live.insert(victim());
+    let mut live = GameEntity::test_default(2, "TARGV", "Russia", 6, 5);
+    live.health = Health { current: 200, max: 200 };
+    store_live.insert(live);
+    tick_retaliation(&mut store_live, &rules, &interner, &live_order);
+    let vc = store_live.get(1).unwrap();
+    assert!(
+        matches!(
+            vc.attack_target.as_ref().map(|t| t.target),
+            Some(TargetKind::Entity(2))
+        ),
+        "live attacker must draw retaliation (non-vacuous control)",
+    );
+    assert_eq!(
+        vc.last_attacker_id, None,
+        "retaliation against a live attacker clears last_attacker_id",
+    );
+}
