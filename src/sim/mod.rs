@@ -34,6 +34,10 @@ pub mod miner; // harvester state machine, dock sequences, ore delivery
 pub mod production; // build queue, placement, economy, tech tree, selling
 pub mod world; // Simulation orchestrator, command dispatch, spawn, hash
 
+// --- Mission scheduler substrate + radio contact RPC vocabulary ---
+pub mod mission; // MissionType, MissionTimer, MissionControl (INI table)
+pub mod radio; // RadioMessage / RadioResponse / RadioPayload
+
 // --- Movement: ground pathing, speed ramping, cell transitions,
 //     special locomotors, drive tracks, turret rotation ---
 pub mod movement;

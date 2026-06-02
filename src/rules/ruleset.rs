@@ -1379,6 +1379,9 @@ pub struct RuleSet {
     ion_cannon_warhead_id: Option<crate::sim::intern::InternedId>,
     /// Pre-resolved C4Warhead InternedId. Same lifecycle as above.
     c4_warhead_id: Option<crate::sim::intern::InternedId>,
+    /// Per-mission behaviour table parsed from the `[<MissionName>]` sections
+    /// (Rate/AARate + NoThreat/Zombie/Recruitable/Paralyzed/Retaliate/Scatter).
+    pub mission_control: crate::sim::mission::MissionControl,
 }
 
 impl RuleSet {
@@ -1549,6 +1552,9 @@ impl RuleSet {
             .map(|minutes| (minutes * 60.0 * SIM_TICKS_PER_SECOND as f64).round() as u32)
             .unwrap_or(27); // 0.03 × 60 × 15 = 27
 
+        // Per-mission behaviour table from the [<MissionName>] sections.
+        let mission_control = crate::sim::mission::MissionControl::from_ini(ini);
+
         // Parse [TerrainTypes] registry → per-type sections (TIBTRE01, TREE01, etc.).
         let mut terrain_object_types: HashMap<String, TerrainObjectType> = HashMap::new();
         let terrain_names: Vec<String> = parse_registry(ini, "TerrainTypes");
@@ -1660,6 +1666,7 @@ impl RuleSet {
             art_registry: crate::rules::art_data::ArtRegistry::empty(),
             ion_cannon_warhead_id: None,
             c4_warhead_id: None,
+            mission_control,
         })
     }
 
