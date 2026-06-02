@@ -658,7 +658,7 @@ impl Simulation {
                     if e.stable_id == stable_id || e.category != EntityCategory::Structure {
                         return false;
                     }
-                    let Some(existing) = rules.object(self.interner.resolve(e.type_ref)) else {
+                    let Some(existing) = self.object_type(e.type_ref, rules) else {
                         return false;
                     };
                     if existing.wall {
@@ -774,7 +774,7 @@ impl Simulation {
         let Some(entity) = self.substrate.entities.get(stable_id) else {
             return false;
         };
-        let Some(obj) = rules.object(self.interner.resolve(entity.type_ref)) else {
+        let Some(obj) = self.object_type(entity.type_ref, rules) else {
             return false;
         };
         if obj.construction_yard && self.owner_has_building_production_busy(entity.owner) {

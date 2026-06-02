@@ -160,8 +160,8 @@ fn try_deploy_mcv(
         if entity.dying {
             continue;
         }
-        let is_deployable: bool = rules
-            .object(sim.interner.resolve(entity.type_ref))
+        let is_deployable: bool = sim
+            .object_type(entity.type_ref, rules)
             .is_some_and(|obj| obj.deploys_into.is_some());
         if is_deployable {
             let owner_id = sim.interner.get(owner)?;

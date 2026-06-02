@@ -302,10 +302,10 @@ pub fn can_entity_enter_garrison(
     let Some(building) = sim.substrate.entities.get(building_id) else {
         return false;
     };
-    let Some(passenger_obj) = rules.object(sim.interner.resolve(passenger.type_ref)) else {
+    let Some(passenger_obj) = sim.object_type(passenger.type_ref, rules) else {
         return false;
     };
-    let Some(building_obj) = rules.object(sim.interner.resolve(building.type_ref)) else {
+    let Some(building_obj) = sim.object_type(building.type_ref, rules) else {
         return false;
     };
     let Some(cargo) = building.passenger_role.cargo() else {
@@ -780,8 +780,8 @@ fn is_can_be_occupied_unloading_transport(
     if !matches!(entity.order_intent, Some(OrderIntent::Unloading)) {
         return false;
     }
-    rules
-        .object(sim.interner.resolve(entity.type_ref))
+    sim
+        .object_type(entity.type_ref, rules)
         .is_some_and(|obj| obj.can_be_occupied)
 }
 

@@ -65,8 +65,8 @@ pub fn launch(
             are_houses_friendly(&sim.house_alliances, &owner_str, other)
         })
         .filter(|e| {
-            rules
-                .object(sim.interner.resolve(e.type_ref))
+            sim
+                .object_type(e.type_ref, rules)
                 .map(|o| !o.no_force_shield)
                 .unwrap_or(true)
         })

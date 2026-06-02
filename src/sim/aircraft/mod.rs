@@ -461,7 +461,7 @@ pub fn tick_aircraft_missions(
                             // Re-target descent toward the per-pad cell so
                             // multi-pad airfields visibly spread occupants.
                             if let Some((px, py)) = sim.substrate.entities.get(*airfield_id).and_then(|af| {
-                                let obj = rules.object(sim.interner.resolve(af.type_ref))?;
+                                let obj = sim.object_type(af.type_ref, rules)?;
                                 let foundation =
                                     crate::sim::production::foundation_dimensions(&obj.foundation);
                                 obj.pads.get(reserved_pad as usize).map(|pad| {
@@ -683,7 +683,7 @@ pub fn tick_aircraft_missions(
             .substrate.entities
             .get(id)
             .and_then(|e| {
-                let obj = rules.object(sim.interner.resolve(e.type_ref))?;
+                let obj = sim.object_type(e.type_ref, rules)?;
                 Some(crate::util::fixed_math::ra2_speed_to_leptons_per_second(
                     obj.speed.max(1),
                 ))
