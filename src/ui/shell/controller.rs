@@ -187,10 +187,10 @@ impl DialogController {
     }
 
     /// Keyboard event routed in `kbd_route` registration order (C3), independent of
-    /// the LIFO focus stack. The migrated shells register no keyboard controls, so
-    /// nothing consumes the key and the app keeps owning Esc at the top level.
-    pub fn on_key(&mut self, _key: ShellKey) -> bool {
-        false
+    /// the LIFO focus stack. Message-box modals consume Enter/Escape through this
+    /// route; the host app resolves the resulting dialog action.
+    pub fn on_key(&mut self, key: ShellKey) -> bool {
+        matches!(key, ShellKey::Enter | ShellKey::Escape) && !self.kbd_route.is_empty()
     }
 
     /// Press-path hit-test: the FIRST button containing the point, then suppressed
@@ -208,10 +208,7 @@ impl DialogController {
     /// Hover/release hit-test: first button containing the point, INCLUDING
     /// disabled (a disabled button still hover-tracks for its tooltip).
     fn hit_any(x: i32, y: i32, buttons: &[LaidOutControl]) -> Option<u16> {
-        buttons
-            .iter()
-            .find(|c| c.rect.contains(x, y))
-            .map(|c| c.id)
+        buttons.iter().find(|c| c.rect.contains(x, y)).map(|c| c.id)
     }
 }
 
@@ -293,7 +290,21 @@ mod tests {
         assert_eq!(c.kbd_route(), &[A, B]); // registration order, not LIFO
         c.pop();
         assert_eq!(c.kbd_route(), &[A]);
-        assert!(!c.on_key(ShellKey::Escape)); // no consumer yet
+        assert!(c.on_key(ShellKey::Escape));
+        c.pop();
+        assert!(!c.on_key(ShellKey::Escape));
+    }
+
+    #[test]
+    fn key_route_consumes_modal_enter_and_escape_only() {
+        let mut c = DialogController::default();
+        assert!(!c.on_key(ShellKey::Enter));
+        c.ensure_active(A, false);
+        assert!(!c.on_key(ShellKey::Enter));
+        c.ensure_active(B, true);
+        assert!(c.on_key(ShellKey::Enter));
+        assert!(c.on_key(ShellKey::Escape));
+        assert!(!c.on_key(ShellKey::Tab));
     }
 
     #[test]

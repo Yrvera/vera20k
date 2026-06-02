@@ -64,6 +64,7 @@ use crate::sim::selection::SelectionState;
 use crate::sim::world::Simulation;
 use crate::ui::game_screen::GameScreen;
 use crate::ui::main_menu::{self, SkirmishSettings};
+use crate::ui::shell::controller::ShellKey;
 use crate::util::config::GameConfig;
 
 const DEV_SKIRMISH_SHELL_ENV: &str = "RA2_DEV_SKIRMISH_SHELL";
@@ -539,6 +540,30 @@ impl App {
         )
     }
 
+    fn validation_modal_dialog_id() -> crate::ui::shell::descriptor::DialogId {
+        crate::ui::shell::descriptor::DialogId(0x00CE)
+    }
+
+    fn validation_modal_feed(state: &AppState) -> Vec<crate::ui::shell::layout::LaidOutControl> {
+        let layout = crate::ui::skirmish_shell::compute_validation_modal_layout(
+            state.render_width(),
+            state.render_height(),
+        );
+        vec![crate::ui::shell::layout::LaidOutControl {
+            id: crate::ui::shell::modal::control::OK,
+            rect: layout.ok_button,
+        }]
+    }
+
+    fn shell_key_for_code(code: KeyCode) -> Option<ShellKey> {
+        match code {
+            KeyCode::Tab => Some(ShellKey::Tab),
+            KeyCode::Enter | KeyCode::NumpadEnter => Some(ShellKey::Enter),
+            KeyCode::Escape => Some(ShellKey::Escape),
+            _ => None,
+        }
+    }
+
     fn close_native_skirmish_shell(state: &mut AppState) {
         state.main_menu_show_native_skirmish_shell = false;
         state.shell_first_paint_slide = None;
@@ -881,6 +906,9 @@ impl App {
         modal: crate::ui::skirmish_shell::SkirmishValidationModalState,
     ) {
         state.skirmish_shell_state.validation_modal = Some(modal);
+        state
+            .shell_controller
+            .ensure_active(Self::validation_modal_dialog_id(), true);
         state.skirmish_shell_state.pressed_owner_draw_button = None;
         state.skirmish_shell_state.open_combo_dropdown = None;
         state.skirmish_shell_state.dropdown_scroll_drag = None;
@@ -1308,71 +1336,63 @@ impl App {
         true
     }
 
-    fn is_validation_modal_dismissal_key(code: KeyCode) -> bool {
-        matches!(
-            code,
-            KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Escape
-        )
-    }
-
-    fn handle_validation_modal_key_input(state: &mut AppState, code: KeyCode) -> bool {
-        if state.skirmish_shell_state.validation_modal.is_none()
-            || !Self::is_validation_modal_dismissal_key(code)
-        {
-            return false;
-        }
-
+    fn close_validation_modal_from_controller(state: &mut AppState) {
         crate::ui::skirmish_shell::dismiss_validation_modal(&mut state.skirmish_shell_state);
+        if state.shell_controller.top_id() == Some(Self::validation_modal_dialog_id()) {
+            state.shell_controller.pop();
+        }
+    }
+
+    fn route_validation_modal_key(state: &mut AppState, key: ShellKey) -> bool {
+        if state.skirmish_shell_state.validation_modal.is_none() {
+            return false;
+        }
+        state
+            .shell_controller
+            .ensure_active(Self::validation_modal_dialog_id(), true);
+        if !state.shell_controller.on_key(key) {
+            return false;
+        }
+        Self::close_validation_modal_from_controller(state);
         state.window.request_redraw();
         true
     }
 
-    fn handle_validation_modal_mouse_down(state: &mut AppState) -> bool {
+    fn route_validation_modal_mouse_down(state: &mut AppState) -> bool {
         if state.skirmish_shell_state.validation_modal.is_none() {
             return false;
         }
-        let layout = crate::ui::skirmish_shell::compute_validation_modal_layout(
-            state.render_width(),
-            state.render_height(),
-        );
+        let feed = Self::validation_modal_feed(state);
         let x = state.cursor_x.round() as i32;
         let y = state.cursor_y.round() as i32;
-        if let Some(modal) = state.skirmish_shell_state.validation_modal.as_mut() {
-            modal.ok_button_pressed = layout.ok_button.contains(x, y);
-        }
+        state
+            .shell_controller
+            .ensure_active(Self::validation_modal_dialog_id(), true);
+        state.shell_controller.on_pointer_down(x, y, &feed);
         state.window.request_redraw();
         true
     }
 
-    fn handle_validation_modal_mouse_up(state: &mut AppState) -> bool {
+    fn route_validation_modal_mouse_up(state: &mut AppState) -> bool {
         if state.skirmish_shell_state.validation_modal.is_none() {
             return false;
         }
-        let layout = crate::ui::skirmish_shell::compute_validation_modal_layout(
-            state.render_width(),
-            state.render_height(),
-        );
+        let feed = Self::validation_modal_feed(state);
         let x = state.cursor_x.round() as i32;
         let y = state.cursor_y.round() as i32;
-        let was_pressed = state
-            .skirmish_shell_state
-            .validation_modal
-            .as_mut()
-            .map(|modal| {
-                let was_pressed = modal.ok_button_pressed;
-                modal.ok_button_pressed = false;
-                was_pressed
-            })
-            .unwrap_or(false);
-        if was_pressed && layout.ok_button.contains(x, y) {
-            crate::ui::skirmish_shell::dismiss_validation_modal(&mut state.skirmish_shell_state);
+        state
+            .shell_controller
+            .ensure_active(Self::validation_modal_dialog_id(), true);
+        let activated = state.shell_controller.on_pointer_up(x, y, &feed);
+        if activated == Some(crate::ui::shell::modal::control::OK) {
+            Self::close_validation_modal_from_controller(state);
         }
         state.window.request_redraw();
         true
     }
 
     fn handle_skirmish_shell_mouse_down(state: &mut AppState) {
-        if Self::handle_validation_modal_mouse_down(state) {
+        if Self::route_validation_modal_mouse_down(state) {
             return;
         }
         if Self::handle_choose_map_modal_mouse_down(state) {
@@ -1423,7 +1443,7 @@ impl App {
     }
 
     fn handle_skirmish_shell_mouse_up(state: &mut AppState, event_loop: &ActiveEventLoop) {
-        if Self::handle_validation_modal_mouse_up(state) {
+        if Self::route_validation_modal_mouse_up(state) {
             return;
         }
         if state.skirmish_shell_state.choose_map_modal.is_some() {
@@ -1553,7 +1573,8 @@ impl App {
             .shell_controller
             .hovered()
             .and_then(crate::ui::single_player_shell::SinglePlayerControlId::from_resource_id);
-        state.single_player_shell_state.hover_started_at = state.shell_controller.hover_started_at();
+        state.single_player_shell_state.hover_started_at =
+            state.shell_controller.hover_started_at();
     }
 
     fn handle_main_menu_shell_mouse_down(state: &mut AppState) {
@@ -1649,10 +1670,9 @@ impl App {
         let Some(player) = state.music_player.as_ref() else {
             return;
         };
-        if let Err(err) = crate::audio::music::write_score_volume_to_ra2md(
-            &config.paths.ra2_dir,
-            player.volume(),
-        ) {
+        if let Err(err) =
+            crate::audio::music::write_score_volume_to_ra2md(&config.paths.ra2_dir, player.volume())
+        {
             log::warn!("Failed to persist settings to RA2MD.INI on quit: {err}");
         }
     }
@@ -2094,15 +2114,14 @@ impl ApplicationHandler for App {
                     if Self::native_skirmish_shell_active(state)
                         && event.state.is_pressed()
                         && !event.repeat
-                        && Self::handle_validation_modal_key_input(state, code)
+                        && Self::shell_key_for_code(code)
+                            .is_some_and(|key| Self::route_validation_modal_key(state, key))
                     {
                         return;
                     }
 
                     if Self::native_skirmish_shell_active(state) && is_escape {
-                        if state.skirmish_shell_state.choose_map_modal.is_some()
-                            || state.skirmish_shell_state.validation_modal.is_some()
-                        {
+                        if state.skirmish_shell_state.choose_map_modal.is_some() {
                             state.window.request_redraw();
                             return;
                         }
@@ -3283,10 +3302,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn validation_modal_dismissal_keys_match_dialog_translation() {
-        assert!(App::is_validation_modal_dismissal_key(KeyCode::Enter));
-        assert!(App::is_validation_modal_dismissal_key(KeyCode::NumpadEnter));
-        assert!(App::is_validation_modal_dismissal_key(KeyCode::Escape));
-        assert!(!App::is_validation_modal_dismissal_key(KeyCode::Space));
+    fn shell_key_translation_matches_dialog_controller_route() {
+        assert_eq!(App::shell_key_for_code(KeyCode::Tab), Some(ShellKey::Tab));
+        assert_eq!(
+            App::shell_key_for_code(KeyCode::Enter),
+            Some(ShellKey::Enter)
+        );
+        assert_eq!(
+            App::shell_key_for_code(KeyCode::NumpadEnter),
+            Some(ShellKey::Enter)
+        );
+        assert_eq!(
+            App::shell_key_for_code(KeyCode::Escape),
+            Some(ShellKey::Escape)
+        );
+        assert_eq!(App::shell_key_for_code(KeyCode::Space), None);
     }
 }

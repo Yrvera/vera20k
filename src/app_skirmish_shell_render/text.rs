@@ -11,13 +11,13 @@ use crate::render::shell_paint::{self, PaintLabel};
 use crate::render::shell_text::{self, Reveal, ShellAlign, ShellTextDraw, TextRect};
 use crate::ui::main_menu::SkirmishCountry;
 use crate::ui::skirmish_shell::{
-    COMBO_DROPDOWN_ROW_H, COMBO_FACE_H, COMBO_TEXT_LEFT_INSET, ChooseMapModalLayout,
-    OwnerDrawButton, RectPx, SkirmishAiRowType, SkirmishCheckboxId, SkirmishComboItem,
-    SkirmishCountryChoice, SkirmishShellLayout, SkirmishShellOpponent, SkirmishShellState,
-    SkirmishTrackbarId, ValidationModalLayout, checkbox_text_rect, choose_map_listbox_content_rect,
-    choose_map_listbox_row_rect, choose_map_listbox_visible_row_count, combo_dropdown_content_rect,
-    combo_dropdown_rect, combo_dropdown_visible_row_count, combo_items, combo_text_rect,
-    player_name_edit_text_rect, trackbar_value_text_rect, trackbar_visual_value,
+    checkbox_text_rect, choose_map_listbox_content_rect, choose_map_listbox_row_rect,
+    choose_map_listbox_visible_row_count, combo_dropdown_content_rect, combo_dropdown_rect,
+    combo_dropdown_visible_row_count, combo_items, combo_text_rect, player_name_edit_text_rect,
+    trackbar_value_text_rect, trackbar_visual_value, ChooseMapModalLayout, OwnerDrawButton, RectPx,
+    SkirmishAiRowType, SkirmishCheckboxId, SkirmishComboItem, SkirmishCountryChoice,
+    SkirmishShellLayout, SkirmishShellOpponent, SkirmishShellState, SkirmishTrackbarId,
+    ValidationModalLayout, COMBO_DROPDOWN_ROW_H, COMBO_FACE_H, COMBO_TEXT_LEFT_INSET,
 };
 
 use super::controls::trackbar_rect_for_id;
@@ -905,6 +905,7 @@ pub(super) fn push_validation_modal_text_draws(
     out: &mut Vec<ShellTextDraw>,
     state: &AppState,
     layout: &ValidationModalLayout,
+    pressed: bool,
 ) {
     let Some(modal) = state.skirmish_shell_state.validation_modal.as_ref() else {
         return;
@@ -922,7 +923,7 @@ pub(super) fn push_validation_modal_text_draws(
     ));
     let ok = [PaintLabel {
         text: &modal.ok_button,
-        rect: button_label_rect_px(layout.ok_button, modal.ok_button_pressed),
+        rect: button_label_rect_px(layout.ok_button, pressed),
         rgb: SHELL_LABEL_TEXT_RGB,
         align: ShellAlign::H_CENTER | ShellAlign::V_CENTER,
     }];

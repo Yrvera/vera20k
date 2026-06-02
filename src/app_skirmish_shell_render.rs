@@ -11,8 +11,8 @@ mod preview;
 mod text;
 
 pub use draw_order::{
-    SkirmishShellDrawRole, choose_map_modal_semantic_draw_order,
-    skirmish_shell_semantic_draw_order, validation_modal_semantic_draw_order,
+    choose_map_modal_semantic_draw_order, skirmish_shell_semantic_draw_order,
+    validation_modal_semantic_draw_order, SkirmishShellDrawRole,
 };
 pub(crate) use preview::SkirmishPreviewTexture;
 pub(crate) use text::skirmish_right_panel_label_strings;
@@ -33,19 +33,19 @@ use crate::skirmish_modes::SkirmishGameMode;
 use crate::ui::main_menu::SkirmishCountry;
 #[cfg(test)]
 use crate::ui::skirmish_shell::{
-    COMBO_DROPDOWN_ROW_H, SkirmishComboId, combo_dropdown_content_rect, player_name_edit_text_rect,
+    combo_dropdown_content_rect, player_name_edit_text_rect, SkirmishComboId, COMBO_DROPDOWN_ROW_H,
 };
 use crate::ui::skirmish_shell::{
+    compute_choose_map_modal_layout, compute_layout, compute_validation_modal_layout,
     ChooseMapModalLayout, OwnerDrawButton, RectPx, SkirmishShellAction, SkirmishShellLayout,
-    SkirmishShellState, ValidationModalLayout, compute_choose_map_modal_layout, compute_layout,
-    compute_validation_modal_layout,
+    SkirmishShellState, ValidationModalLayout,
 };
 
 use self::chrome::*;
 use self::controls::*;
 #[cfg(test)]
 use self::draw_order::{
-    LowerStripRole, ParentBackgroundRole, lower_strip_role, parent_background_role,
+    lower_strip_role, parent_background_role, LowerStripRole, ParentBackgroundRole,
 };
 use self::modals::*;
 use self::preview::*;
@@ -190,6 +190,7 @@ pub fn build_skirmish_shell_instances(
     layout: &SkirmishShellLayout,
     choose_map_layout: Option<&ChooseMapModalLayout>,
     validation_layout: Option<&ValidationModalLayout>,
+    validation_ok_pressed: bool,
     shell: &SkirmishShellState,
     color_schemes: &[ColorSchemeEntry],
     maps: &[MapMenuEntry],
@@ -368,11 +369,12 @@ pub fn build_skirmish_shell_instances(
     push_dropdown_instances(&mut instances, atlas, color_schemes, layout, shell, maps);
     if shell.validation_modal.is_some() {
         if let Some(validation_layout) = validation_layout {
-            let pressed = shell
-                .validation_modal
-                .as_ref()
-                .is_some_and(|modal| modal.ok_button_pressed);
-            push_validation_modal_instances(&mut instances, atlas, validation_layout, pressed);
+            push_validation_modal_instances(
+                &mut instances,
+                atlas,
+                validation_layout,
+                validation_ok_pressed,
+            );
         }
     }
     instances
@@ -533,12 +535,16 @@ fn render_skirmish_shell_with_atlas(
         .as_ref()
         .map(|rules| rules.color_schemes.as_slice())
         .unwrap_or(&[]);
+    let validation_ok_pressed = state.shell_controller.top_id()
+        == Some(crate::ui::shell::descriptor::DialogId(0x00CE))
+        && state.shell_controller.pressed() == Some(crate::ui::shell::modal::control::OK);
     let instances = build_skirmish_shell_instances(
         atlas,
         &state.bit_font,
         &layout,
         choose_map_layout.as_ref(),
         validation_layout.as_ref(),
+        validation_ok_pressed,
         &state.skirmish_shell_state,
         color_schemes,
         &state.skirmish_shell_maps,
@@ -570,7 +576,12 @@ fn render_skirmish_shell_with_atlas(
         push_choose_map_modal_text_draws(&mut shell_draws, state, choose_map_layout);
     }
     if let Some(validation_layout) = validation_layout.as_ref() {
-        push_validation_modal_text_draws(&mut shell_draws, state, validation_layout);
+        push_validation_modal_text_draws(
+            &mut shell_draws,
+            state,
+            validation_layout,
+            validation_ok_pressed,
+        );
     }
     let marker_label_instances = if draw_start_marker_overlays {
         build_start_marker_label_instances(state, &projected_start_positions)
@@ -607,8 +618,7 @@ fn render_skirmish_shell_with_atlas(
                 .create_instance_buffer(&state.gpu, &d.instances)
         })
         .collect();
-    let cursor_instances: Vec<SpriteInstance> =
-        shell_cursor_instance(state).into_iter().collect();
+    let cursor_instances: Vec<SpriteInstance> = shell_cursor_instance(state).into_iter().collect();
     let cursor_buffer = state
         .batch_renderer
         .create_instance_buffer(&state.gpu, &cursor_instances);
