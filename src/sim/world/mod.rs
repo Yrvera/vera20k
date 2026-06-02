@@ -14,6 +14,7 @@ pub(crate) mod bridge_orchestrator;
 pub mod edge_cell;
 mod logic_vector;
 mod substrate;
+mod techno_ai;
 mod world_commands;
 mod world_hash;
 mod world_orders;
@@ -2385,6 +2386,13 @@ impl Simulation {
         self.debug_assert_logic_membership_consistent();
         #[cfg(debug_assertions)]
         self.debug_assert_presence_consistent();
+        // Object-AI stage (Slice S0): instrumented no-op walk over the live
+        // object order. Runs after all phases — including the end-of-tick
+        // flush_pending_delete drain inside run_late_region — and before the
+        // mission shadow + state_hash, so its no-op-ness is observable in this
+        // tick's hash. Later slices absorb per-leaf behavior into it WITHOUT
+        // moving this call site.
+        self.object_ai_stage();
         // Mission refresh runs after all systems and before the hash; `mission` is
         // unhashed so this is hash-neutral. The assert proves current/substate
         // match the legacy machines until a later slice fully flips authority.
