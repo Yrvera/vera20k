@@ -87,6 +87,39 @@ pub enum BuildingGateMissionState {
     PostClose,
 }
 
+/// The unit side of the tank-bunker reciprocal link (the pre-install approach
+/// state plus the installed link, folded into one hashed field). Distinct from
+/// `PassengerRole` cargo: a bunker is a single reciprocal link, never cargo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
+pub enum BunkerLink {
+    /// Not heading to or inside any bunker.
+    #[default]
+    None,
+    /// Ordered into bunker `id`, still approaching (pre-install). Cleared on any
+    /// retask, which lets the building install machine reset. (The explicit
+    /// unit-side marker is the abort signal the install machine reads.)
+    Approaching(u64),
+    /// Installed inside bunker `id` (reciprocal of `building.bunker_occupant`).
+    Installed(u64),
+}
+
+impl BunkerLink {
+    /// The bunker this unit is installed in, if any.
+    pub fn installed_in(self) -> Option<u64> {
+        match self {
+            BunkerLink::Installed(id) => Some(id),
+            _ => None,
+        }
+    }
+    /// The bunker this unit is approaching, if any.
+    pub fn approaching(self) -> Option<u64> {
+        match self {
+            BunkerLink::Approaching(id) => Some(id),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BuildingGateRuntime {
     pub mission_18_active: bool,
@@ -425,12 +458,20 @@ pub struct GameEntity {
     /// occupied bunker remains a normal building blocker.
     #[serde(default)]
     pub bunker_occupant: Option<u64>,
+    /// Unit side of the bunker reciprocal link (approach + installed states).
+    #[serde(default)]
+    pub bunker_link: BunkerLink,
     /// Runtime state for `Gate=yes` building passability.
     ///
     /// Native `CanGarrison` accepts only mission `0x18` plus stable-open helper
     /// state. Opening and closing gates are still blockers for the same check.
     #[serde(default)]
     pub building_gate: Option<BuildingGateRuntime>,
+    /// Tank-bunker install state machine. `Some` on `Bunker=yes` buildings from
+    /// spawn (state `Idle` when empty); its presence marks the entity as a tank
+    /// bunker. Drives entry admission → install.
+    #[serde(default)]
+    pub bunker_runtime: Option<crate::sim::docking::bunker_install::BunkerRuntime>,
     /// Active deploy-fire phase. `None` = upright (default). `Some(Deploying)` /
     /// `Some(Deployed)` / `Some(Undeploying)` for the three machine states.
     /// Hashed for lockstep determinism. Set by `Command::ToggleInfantryDeploy`,
@@ -624,7 +665,9 @@ impl GameEntity {
             c4_plant: None,
             pending_c4_detonation: None,
             bunker_occupant: None,
+            bunker_link: BunkerLink::None,
             building_gate: None,
+            bunker_runtime: None,
             deploy_state: None,
             infantry: if category == EntityCategory::Infantry {
                 Some(InfantryRuntime::new())

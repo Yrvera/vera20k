@@ -495,6 +495,9 @@ impl Simulation {
             entity.c4_plant.hash(hasher);
             entity.pending_c4_detonation.hash(hasher);
             entity.bunker_occupant.hash(hasher);
+            // Reciprocal link + install machine are authoritative lifecycle state.
+            entity.bunker_link.hash(hasher);
+            entity.bunker_runtime.hash(hasher);
             if let Some(gate) = entity.building_gate {
                 1u8.hash(hasher);
                 gate.mission_18_active.hash(hasher);
