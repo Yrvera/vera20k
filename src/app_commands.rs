@@ -13,22 +13,14 @@ use crate::sim::production;
 /// Default owner name when no playable house is found.
 const DEFAULT_OWNER: &str = "Americans";
 
-/// Intern an owner name string, returning its InternedId.
-/// Requires a mutable simulation (for intern). Returns default if no sim.
-fn intern_owner(state: &mut AppState, owner: &str) -> InternedId {
+/// Intern a string (owner name or type id) against the live simulation's
+/// interner, returning its InternedId. Returns the default ID when there is
+/// no simulation yet.
+fn intern_in_sim(state: &mut AppState, s: &str) -> InternedId {
     state
         .simulation
         .as_mut()
-        .map(|s| s.interner.intern(owner))
-        .unwrap_or_default()
-}
-
-/// Intern a type_id string, returning its InternedId.
-fn intern_type(state: &mut AppState, type_id: &str) -> InternedId {
-    state
-        .simulation
-        .as_mut()
-        .map(|s| s.interner.intern(type_id))
+        .map(|sim| sim.interner.intern(s))
         .unwrap_or_default()
 }
 
@@ -62,7 +54,7 @@ pub(crate) fn queue_default_build(state: &mut AppState) {
         log::warn!("No default buildable unit available for owner={}", owner);
         return;
     };
-    let owner_id = intern_owner(state, &owner);
+    let owner_id = intern_in_sim(state, &owner);
     schedule_command(
         state,
         &owner,
@@ -85,8 +77,8 @@ pub(crate) fn queue_default_build(state: &mut AppState) {
 
 pub(crate) fn queue_build_by_type(state: &mut AppState, type_id: &str) {
     let owner: String = resolve_owner(state);
-    let owner_id = intern_owner(state, &owner);
-    let type_interned = intern_type(state, type_id);
+    let owner_id = intern_in_sim(state, &owner);
+    let type_interned = intern_in_sim(state, type_id);
     schedule_command(
         state,
         &owner,
@@ -109,7 +101,7 @@ pub(crate) fn toggle_pause_build_queue(
     category: production::ProductionCategory,
 ) {
     let owner: String = resolve_owner(state);
-    let owner_id = intern_owner(state, &owner);
+    let owner_id = intern_in_sim(state, &owner);
     schedule_command(
         state,
         &owner,
@@ -131,7 +123,7 @@ pub(crate) fn cycle_active_producer(
     category: production::ProductionCategory,
 ) {
     let owner: String = resolve_owner(state);
-    let owner_id = intern_owner(state, &owner);
+    let owner_id = intern_in_sim(state, &owner);
     schedule_command(
         state,
         &owner,
@@ -150,7 +142,7 @@ pub(crate) fn cycle_active_producer(
 
 pub(crate) fn cancel_last_build(state: &mut AppState) {
     let owner: String = resolve_owner(state);
-    let owner_id = intern_owner(state, &owner);
+    let owner_id = intern_in_sim(state, &owner);
     schedule_command(
         state,
         &owner,
@@ -165,8 +157,8 @@ pub(crate) fn cancel_last_build(state: &mut AppState) {
 
 pub(crate) fn cancel_build_by_type(state: &mut AppState, type_id: &str) {
     let owner: String = resolve_owner(state);
-    let owner_id = intern_owner(state, &owner);
-    let type_interned = intern_type(state, type_id);
+    let owner_id = intern_in_sim(state, &owner);
+    let type_interned = intern_in_sim(state, type_id);
     schedule_command(
         state,
         &owner,
@@ -240,8 +232,8 @@ pub(crate) fn place_ready_building_at_cursor(state: &mut AppState, type_id: &str
             return;
         }
     }
-    let owner_id = intern_owner(state, &owner);
-    let type_interned = intern_type(state, type_id);
+    let owner_id = intern_in_sim(state, &owner);
+    let type_interned = intern_in_sim(state, type_id);
     schedule_command(
         state,
         &owner,
@@ -301,7 +293,7 @@ pub(crate) fn launch_super_weapon_at_cursor(state: &mut AppState, section: &str)
     }
 
     let owner: String = resolve_owner(state);
-    let sw_type_id = intern_type(state, section);
+    let sw_type_id = intern_in_sim(state, section);
     let (rx, ry) =
         crate::app_sim_tick::screen_point_to_world_cell(state, state.cursor_x, state.cursor_y);
     schedule_command(
@@ -442,8 +434,8 @@ pub(crate) fn place_starter_base_for_local_owner(state: &mut AppState) {
         .collect();
     let mut queued = 0u32;
     for type_id in queueable {
-        let owner_id = intern_owner(state, &owner);
-        let type_interned = intern_type(state, &type_id);
+        let owner_id = intern_in_sim(state, &owner);
+        let type_interned = intern_in_sim(state, &type_id);
         schedule_command(
             state,
             &owner,
