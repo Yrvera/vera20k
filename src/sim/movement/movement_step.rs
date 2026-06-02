@@ -28,6 +28,7 @@ use crate::sim::occupancy::{CellListInsertion, OccupancyGrid};
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
 use crate::sim::rng::SimRng;
+use crate::sim::world::EnterOrderCounter;
 use crate::util::fixed_math::{
     SIM_HALF, SIM_ONE, SIM_TICK_HZ, SIM_ZERO, SimFixed, facing_from_delta_int as facing_from_delta,
     fixed_distance,
@@ -907,7 +908,7 @@ pub(super) fn process_cell_crossings(
     live_building_entry_skips: &LiveBuildingEntrySkipMap,
     occupancy: &mut OccupancyGrid,
     occupancy_enter_order: &mut u64,
-    next_occupancy_enter_order: &mut u64,
+    next_occupancy_enter_order: &mut EnterOrderCounter,
     stats: &mut MovementTickStats,
     finished_entities: &mut Vec<u64>,
     rng: &mut SimRng,
@@ -1195,8 +1196,7 @@ pub(super) fn process_cell_crossings(
         // Uses current sub_cell (from old cell). For infantry, reserve_destination
         // below may allocate a new sub-cell and correct it via update_sub_cell.
         let insertion = CellListInsertion::from_category(category);
-        let order = *next_occupancy_enter_order;
-        *next_occupancy_enter_order = order.saturating_add(1);
+        let order = next_occupancy_enter_order.next();
         *occupancy_enter_order = order;
         occupancy.move_entity(
             old_rx,

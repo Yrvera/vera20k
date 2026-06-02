@@ -149,7 +149,7 @@ fn try_deploy_mcv(
     rules: &RuleSet,
     execute_tick: u64,
 ) -> Option<CommandEnvelope> {
-    for entity in sim.entities.values() {
+    for entity in sim.substrate.entities.values() {
         if !sim
             .interner
             .resolve(entity.owner)
@@ -157,8 +157,11 @@ fn try_deploy_mcv(
         {
             continue;
         }
-        let is_deployable: bool = rules
-            .object(sim.interner.resolve(entity.type_ref))
+        if entity.dying {
+            continue;
+        }
+        let is_deployable: bool = sim
+            .object_type(entity.type_ref, rules)
             .is_some_and(|obj| obj.deploys_into.is_some());
         if is_deployable {
             let owner_id = sim.interner.get(owner)?;
@@ -187,8 +190,9 @@ fn has_owned_structure_matching<F>(sim: &Simulation, owner: &str, mut matches: F
 where
     F: FnMut(&str) -> bool,
 {
-    sim.entities.values().any(|e| {
-        e.category == EntityCategory::Structure
+    sim.substrate.entities.values().any(|e| {
+        !e.dying
+            && e.category == EntityCategory::Structure
             && sim.interner.resolve(e.owner).eq_ignore_ascii_case(owner)
             && matches(sim.interner.resolve(e.type_ref))
     })
@@ -423,12 +427,15 @@ fn send_attack_wave(
 
     // Gather idle military units (no MovementTarget, not harvesters).
     let mut idle_units: Vec<(u64, u16, u16)> = Vec::new();
-    for entity in sim.entities.values() {
+    for entity in sim.substrate.entities.values() {
         if !sim
             .interner
             .resolve(entity.owner)
             .eq_ignore_ascii_case(owner)
         {
+            continue;
+        }
+        if entity.dying {
             continue;
         }
         if !matches!(
@@ -483,8 +490,9 @@ fn find_base_center(sim: &Simulation, owner: &str) -> Option<(u16, u16)> {
     let mut sum_x: i64 = 0;
     let mut sum_y: i64 = 0;
     let mut count: i64 = 0;
-    for entity in sim.entities.values() {
-        if entity.category == EntityCategory::Structure
+    for entity in sim.substrate.entities.values() {
+        if !entity.dying
+            && entity.category == EntityCategory::Structure
             && sim
                 .interner
                 .resolve(entity.owner)
@@ -509,7 +517,10 @@ fn find_nearest_enemy_structure(sim: &Simulation, owner: &str) -> Option<(u16, u
     let base_center = find_base_center(sim, owner)?;
     let mut best: Option<(u32, u16, u16)> = None;
 
-    for entity in sim.entities.values() {
+    for entity in sim.substrate.entities.values() {
+        if entity.dying {
+            continue;
+        }
         if entity.category != EntityCategory::Structure {
             continue;
         }
@@ -609,10 +620,11 @@ fn find_buildable_refinery(
 }
 
 fn count_refineries(sim: &Simulation, owner: &str, rules: &RuleSet) -> usize {
-    sim.entities
+    sim.substrate.entities
         .values()
         .filter(|e| {
-            e.category == EntityCategory::Structure
+            !e.dying
+                && e.category == EntityCategory::Structure
                 && sim.interner.resolve(e.owner).eq_ignore_ascii_case(owner)
                 && rules.is_refinery_type(sim.interner.resolve(e.type_ref))
         })
@@ -746,7 +758,7 @@ mod tests {
             5,
             false,
         );
-        sim.entities.insert(ge);
+        sim.substrate.entities.insert(ge);
         if sim.substrate.next_stable_entity_id <= sid {
             sim.substrate.next_stable_entity_id = sid + 1;
         }
@@ -1006,7 +1018,7 @@ mod tests {
         ));
 
         let refinery_sid = sim
-            .entities
+            .substrate.entities
             .values()
             .find_map(|e| {
                 (sim.interner
@@ -1019,7 +1031,7 @@ mod tests {
             .expect("placed refinery should exist");
 
         let miner_sid = sim
-            .entities
+            .substrate.entities
             .values()
             .find_map(|e| {
                 (sim.interner
@@ -1059,7 +1071,7 @@ mod tests {
             let _ = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 33);
 
             let miner = sim
-                .entities
+                .substrate.entities
                 .get(miner_sid)
                 .and_then(|e| e.miner.as_ref())
                 .expect("miner component should exist");
@@ -1095,7 +1107,7 @@ mod tests {
         }
 
         let miner = sim
-            .entities
+            .substrate.entities
             .get(miner_sid)
             .and_then(|e| e.miner.as_ref())
             .expect("miner component should exist");

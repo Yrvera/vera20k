@@ -27,12 +27,17 @@ pub mod entity_store;
 pub mod game_entity;
 pub mod intern;
 pub mod rng;
+pub mod type_handle_table; // InternedId -> TypeHandle, one-hop entity->type resolution
 
 // --- Subsystem folders (multi-file subsystems with internal mod.rs) ---
 pub mod combat; // targeting, weapons, AOE, fire gates, damage resolution
 pub mod miner; // harvester state machine, dock sequences, ore delivery
 pub mod production; // build queue, placement, economy, tech tree, selling
 pub mod world; // Simulation orchestrator, command dispatch, spawn, hash
+
+// --- Mission scheduler substrate + radio contact RPC vocabulary ---
+pub mod mission; // MissionType, MissionTimer, MissionControl (INI table)
+pub mod radio; // RadioMessage / RadioResponse / RadioPayload
 
 // --- Movement: ground pathing, speed ramping, cell transitions,
 //     special locomotors, drive tracks, turret rotation ---

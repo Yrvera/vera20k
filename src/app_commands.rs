@@ -13,22 +13,14 @@ use crate::sim::production;
 /// Default owner name when no playable house is found.
 const DEFAULT_OWNER: &str = "Americans";
 
-/// Intern an owner name string, returning its InternedId.
-/// Requires a mutable simulation (for intern). Returns default if no sim.
-fn intern_owner(state: &mut AppState, owner: &str) -> InternedId {
+/// Intern a string (owner name or type id) against the live simulation's
+/// interner, returning its InternedId. Returns the default ID when there is
+/// no simulation yet.
+fn intern_in_sim(state: &mut AppState, s: &str) -> InternedId {
     state
         .simulation
         .as_mut()
-        .map(|s| s.interner.intern(owner))
-        .unwrap_or_default()
-}
-
-/// Intern a type_id string, returning its InternedId.
-fn intern_type(state: &mut AppState, type_id: &str) -> InternedId {
-    state
-        .simulation
-        .as_mut()
-        .map(|s| s.interner.intern(type_id))
+        .map(|sim| sim.interner.intern(s))
         .unwrap_or_default()
 }
 
@@ -62,7 +54,7 @@ pub(crate) fn queue_default_build(state: &mut AppState) {
         log::warn!("No default buildable unit available for owner={}", owner);
         return;
     };
-    let owner_id = intern_owner(state, &owner);
+    let owner_id = intern_in_sim(state, &owner);
     schedule_command(
         state,
         &owner,
@@ -85,8 +77,8 @@ pub(crate) fn queue_default_build(state: &mut AppState) {
 
 pub(crate) fn queue_build_by_type(state: &mut AppState, type_id: &str) {
     let owner: String = resolve_owner(state);
-    let owner_id = intern_owner(state, &owner);
-    let type_interned = intern_type(state, type_id);
+    let owner_id = intern_in_sim(state, &owner);
+    let type_interned = intern_in_sim(state, type_id);
     schedule_command(
         state,
         &owner,
@@ -109,7 +101,7 @@ pub(crate) fn toggle_pause_build_queue(
     category: production::ProductionCategory,
 ) {
     let owner: String = resolve_owner(state);
-    let owner_id = intern_owner(state, &owner);
+    let owner_id = intern_in_sim(state, &owner);
     schedule_command(
         state,
         &owner,
@@ -131,7 +123,7 @@ pub(crate) fn cycle_active_producer(
     category: production::ProductionCategory,
 ) {
     let owner: String = resolve_owner(state);
-    let owner_id = intern_owner(state, &owner);
+    let owner_id = intern_in_sim(state, &owner);
     schedule_command(
         state,
         &owner,
@@ -150,7 +142,7 @@ pub(crate) fn cycle_active_producer(
 
 pub(crate) fn cancel_last_build(state: &mut AppState) {
     let owner: String = resolve_owner(state);
-    let owner_id = intern_owner(state, &owner);
+    let owner_id = intern_in_sim(state, &owner);
     schedule_command(
         state,
         &owner,
@@ -165,8 +157,8 @@ pub(crate) fn cancel_last_build(state: &mut AppState) {
 
 pub(crate) fn cancel_build_by_type(state: &mut AppState, type_id: &str) {
     let owner: String = resolve_owner(state);
-    let owner_id = intern_owner(state, &owner);
-    let type_interned = intern_type(state, type_id);
+    let owner_id = intern_in_sim(state, &owner);
+    let type_interned = intern_in_sim(state, type_id);
     schedule_command(
         state,
         &owner,
@@ -190,7 +182,7 @@ pub(crate) fn sell_selected_buildings(state: &mut AppState) {
         return;
     };
     let to_sell: Vec<u64> = sim
-        .entities
+        .entities()
         .values()
         .filter(|e| {
             e.selected
@@ -240,8 +232,8 @@ pub(crate) fn place_ready_building_at_cursor(state: &mut AppState, type_id: &str
             return;
         }
     }
-    let owner_id = intern_owner(state, &owner);
-    let type_interned = intern_type(state, type_id);
+    let owner_id = intern_in_sim(state, &owner);
+    let type_interned = intern_in_sim(state, type_id);
     schedule_command(
         state,
         &owner,
@@ -301,7 +293,7 @@ pub(crate) fn launch_super_weapon_at_cursor(state: &mut AppState, section: &str)
     }
 
     let owner: String = resolve_owner(state);
-    let sw_type_id = intern_type(state, section);
+    let sw_type_id = intern_in_sim(state, section);
     let (rx, ry) =
         crate::app_sim_tick::screen_point_to_world_cell(state, state.cursor_x, state.cursor_y);
     schedule_command(
@@ -359,7 +351,7 @@ fn fill_wall_between_endpoints(state: &mut AppState, type_id: &str, rx: u16, ry:
             // Stop if a non-wall building occupies this cell (can't build through it).
             if let (Some(sim), Some(rules)) = (&state.simulation, &state.rules) {
                 if crate::sim::production::structure_occupies_cell(
-                    &sim.entities,
+                    sim.entities(),
                     rules,
                     cell.0,
                     cell.1,
@@ -442,8 +434,8 @@ pub(crate) fn place_starter_base_for_local_owner(state: &mut AppState) {
         .collect();
     let mut queued = 0u32;
     for type_id in queueable {
-        let owner_id = intern_owner(state, &owner);
-        let type_interned = intern_type(state, &type_id);
+        let owner_id = intern_in_sim(state, &owner);
+        let type_interned = intern_in_sim(state, &type_id);
         schedule_command(
             state,
             &owner,
@@ -590,7 +582,7 @@ pub(crate) fn preferred_local_owner_name(state: &AppState) -> Option<String> {
 pub(crate) fn preferred_local_owner(state: &AppState) -> Option<String> {
     let sim = state.simulation.as_ref()?;
     // Prefer owner of selected unit first.
-    for entity in sim.entities.values() {
+    for entity in sim.entities().values() {
         let owner_str = sim.interner.resolve(entity.owner);
         if entity.selected && is_playable_house_name(owner_str) {
             return Some(owner_str.to_string());
@@ -606,7 +598,7 @@ pub(crate) fn preferred_local_owner(state: &AppState) -> Option<String> {
 
     // Prefer owners that currently have structures.
     let mut structure_counts: HashMap<String, usize> = HashMap::new();
-    for entity in sim.entities.values() {
+    for entity in sim.entities().values() {
         let owner_str = sim.interner.resolve(entity.owner);
         if entity.category == EntityCategory::Structure && is_playable_house_name(owner_str) {
             *structure_counts.entry(owner_str.to_string()).or_insert(0) += 1;
@@ -636,7 +628,7 @@ pub(crate) fn preferred_local_owner(state: &AppState) -> Option<String> {
 
     // Last fallback: any playable owner present in entity store.
     let mut owners: Vec<String> = sim
-        .entities
+        .entities()
         .values()
         .map(|e| sim.interner.resolve(e.owner).to_string())
         .filter(|o| is_playable_house_name(o))
@@ -656,7 +648,7 @@ pub(crate) fn collect_playable_owners(state: &AppState) -> Vec<String> {
         .map(|house| house.name.clone())
         .collect();
     if let Some(sim) = &state.simulation {
-        for entity in sim.entities.values() {
+        for entity in sim.entities().values() {
             let owner_str = sim.interner.resolve(entity.owner);
             if is_playable_house_name(owner_str) {
                 owners.push(owner_str.to_string());

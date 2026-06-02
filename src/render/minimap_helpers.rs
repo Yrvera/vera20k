@@ -331,10 +331,10 @@ pub(super) fn minimap_entity_visible(
     local_owner: InternedId,
     fog: &FogState,
     pos: &crate::sim::components::Position,
-    owner: &crate::sim::components::Owner,
+    owner: InternedId,
 ) -> bool {
     let interner = crate::sim::intern::test_interner();
-    fog.is_friendly_id(local_owner, owner.0, &interner)
+    fog.is_friendly_id(local_owner, owner, &interner)
         || fog.is_cell_revealed(local_owner, pos.rx, pos.ry)
 }
 

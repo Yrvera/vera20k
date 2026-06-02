@@ -27,7 +27,7 @@ pub fn has_radar_for_owner(sim: &Simulation, rules: &RuleSet, owner: &str) -> bo
         return false;
     };
     crate::sim::power_system::has_active_radar(
-        &sim.entities,
+        &sim.substrate.entities,
         &sim.power_states,
         rules,
         owner_id,
@@ -266,7 +266,7 @@ mod tests {
             5,
             false,
         );
-        sim.entities.insert(e);
+        sim.substrate.entities.insert(e);
     }
 
     #[test]
@@ -287,7 +287,7 @@ mod tests {
         // Tick power states so cached state reflects the buildings.
         crate::sim::power_system::tick_power_states(
             &mut sim.power_states,
-            &mut sim.entities,
+            &mut sim.substrate.entities,
             &rules,
             16,
             &sim.interner,
@@ -304,7 +304,7 @@ mod tests {
         // Tick power states so low-power is detected.
         crate::sim::power_system::tick_power_states(
             &mut sim.power_states,
-            &mut sim.entities,
+            &mut sim.substrate.entities,
             &rules,
             16,
             &sim.interner,

@@ -249,7 +249,7 @@ fn test_pick_enemy_target_ignores_hidden_entities() {
     );
     hidden.position.screen_x = hx;
     hidden.position.screen_y = hy;
-    sim.entities.insert(hidden);
+    sim.entities_mut().insert(hidden);
 
     let empty_heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
     let picked_hidden =
@@ -279,7 +279,7 @@ fn test_pick_enemy_target_ignores_hidden_entities() {
     );
     visible.position.screen_x = vx;
     visible.position.screen_y = vy;
-    sim.entities.insert(visible);
+    sim.entities_mut().insert(visible);
     sim.fog
         .mark_visible_for_owner(crate::sim::intern::test_intern("Americans"), 11, 10);
 
@@ -324,7 +324,7 @@ fn test_hover_target_distinguishes_friendly_and_enemy_categories() {
     );
     friendly.position.screen_x = friendly_sx;
     friendly.position.screen_y = friendly_sy;
-    sim.entities.insert(friendly);
+    sim.entities_mut().insert(friendly);
 
     let (esx, esy) = terrain::iso_to_screen(20, 5, 0);
     let (enemy_sx, enemy_sy) = (esx + half_tile, esy);
@@ -347,7 +347,7 @@ fn test_hover_target_distinguishes_friendly_and_enemy_categories() {
     );
     enemy.position.screen_x = enemy_sx;
     enemy.position.screen_y = enemy_sy;
-    sim.entities.insert(enemy);
+    sim.entities_mut().insert(enemy);
     sim.fog
         .mark_visible_for_owner(crate::sim::intern::test_intern("Americans"), 20, 5);
 

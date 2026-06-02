@@ -36,10 +36,10 @@ pub use player_name::{
     update_player_name_scroll_for_caret,
 };
 pub use trackbars::{
-    SkirmishTrackbarHScrollNotification, TrackbarDragState, game_speed_from_visual_position,
-    game_speed_visual_position, handle_option_mouse_down, handle_option_mouse_move,
-    handle_option_mouse_up, handle_option_mouse_wheel, trackbar_mouse_allowed_y,
-    trackbar_mouse_value, trackbar_thumb_hit, trackbar_visual_value,
+    SkirmishTrackbarBounds, SkirmishTrackbarHScrollNotification, TrackbarDragState,
+    game_speed_from_visual_position, game_speed_visual_position, handle_option_mouse_down,
+    handle_option_mouse_move, handle_option_mouse_up, handle_option_mouse_wheel,
+    trackbar_mouse_allowed_y, trackbar_mouse_value, trackbar_thumb_hit, trackbar_visual_value,
 };
 
 use crate::skirmish_launch::{AiDifficulty, HOUSE_COLOR_COUNT};

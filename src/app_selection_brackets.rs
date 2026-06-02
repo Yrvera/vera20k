@@ -269,7 +269,7 @@ pub(crate) fn build_selection_bracket_instances(
     let final_front_filter = BracketPixelFilter::from_state(state);
     let mut out = SelectionBracketInstances::default();
 
-    for e in sim.entities.values() {
+    for e in sim.entities().values() {
         if e.category != EntityCategory::Structure || !e.selected {
             continue;
         }

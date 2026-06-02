@@ -96,7 +96,7 @@ pub(crate) fn hover_target_at_point(
 ) -> Option<HoverTargetKindWithId> {
     let local_owner_id: InternedId = sim.interner.get(local_owner).unwrap_or_default();
     let mut best: Option<(u64, f32)> = None;
-    for entity in sim.entities.values() {
+    for entity in sim.entities().values() {
         let is_structure = entity.category == EntityCategory::Structure;
         let type_str = sim.interner.resolve(entity.type_ref);
         let owner_str = sim.interner.resolve(entity.owner);

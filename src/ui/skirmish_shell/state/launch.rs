@@ -3,8 +3,8 @@
 use crate::app_init::MapMenuEntry;
 use crate::skirmish_launch::{
     HOUSE_COLOR_COUNT, LaunchCountry, LaunchStartPosition, LaunchTeam, LaunchValidationError,
-    SKIRMISH_PLAYER_SLOT_COUNT, SkirmishAiSlot, SkirmishLaunchMode, SkirmishLaunchOptions,
-    SkirmishLaunchSession, SkirmishLocalSlot,
+    SKIRMISH_PLAYER_SLOT_COUNT, SkirmishAiSlot, SkirmishLaunchMode, SkirmishLaunchSession,
+    SkirmishLocalSlot,
 };
 use crate::skirmish_modes::{SkirmishGameMode, mode_by_id};
 use crate::ui::main_menu::{SkirmishCountry, SkirmishSettings, StartPosition};
@@ -140,7 +140,11 @@ pub fn launch_session(
         });
     }
 
-    let mut options = SkirmishLaunchOptions::default();
+    // Start from the per-match base seeded from `[MultiplayerDialogSettings]`
+    // (stock defaults until then). The fields the setup dialog exposes as
+    // widgets are overridden from the live shell state below; the remaining
+    // base fields (tech level and the non-widget toggles) carry into the match.
+    let mut options = state.launch_options_base.clone();
     options.starting_credits = state.starting_credits;
     options.unit_count = state.unit_count;
     options.game_speed = state.game_speed;

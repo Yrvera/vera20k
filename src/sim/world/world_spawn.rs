@@ -232,16 +232,10 @@ impl Simulation {
                 }
             }
 
-            let owner_str = self.interner.resolve(ge.owner).to_string();
-            let category = ge.category;
-            let spawn_sid = ge.stable_id;
             if let Some(obj) = rules.and_then(|r| r.object(&map_ent.type_id)) {
                 ge.foundation = obj.foundation.clone();
             }
-            self.entities.insert(ge);
-            self.reveal(spawn_sid);
-            self.increment_owned_count(&owner_str, category);
-            self.add_entity_occupancy(spawn_sid);
+            self.unlimbo(ge);
             count += 1;
         }
 
@@ -391,14 +385,8 @@ impl Simulation {
             };
         }
 
-        let spawn_owner_str = self.interner.resolve(ge.owner).to_string();
-        let spawn_category = ge.category;
         ge.foundation = obj.foundation.clone();
-        self.entities.insert(ge);
-        self.reveal(stable_id);
-        self.increment_owned_count(&spawn_owner_str, spawn_category);
-        self.add_entity_occupancy(stable_id);
-        Some(stable_id)
+        Some(self.unlimbo(ge))
     }
 
     /// Create an object in limbo: stored in EntityStore and owner counts, but
@@ -525,13 +513,46 @@ impl Simulation {
             };
         }
 
-        let spawn_owner_str = self.interner.resolve(ge.owner).to_string();
-        let spawn_category = ge.category;
-        self.entities.insert(ge);
-        // Limbo objects are NOT registered in the active order — registration
-        // happens at reveal/unlimbo (e.g. paradrop drop), mirroring ObjectClass+0x98.
-        self.increment_owned_count(&spawn_owner_str, spawn_category);
-        Some(stable_id)
+        Some(self.create_limbo(ge))
+    }
+
+    /// Shared spawn placement. Inserts the entity, then either reveals + occupies
+    /// it (active spawn) or leaves it in limbo. Preserves the exact pre-collapse
+    /// step order (`insert -> reveal -> increment -> occupancy`) so the replay hash
+    /// is bit-identical (pure no-op collapse). Returns the stable id.
+    ///
+    /// `active=true` reproduces the old active 4-step; `active=false` reproduces the
+    /// limbo fork. A later slice adopts the native mark-before-register order — do
+    /// NOT swap occupancy ahead of reveal here.
+    fn place_spawned(&mut self, ge: GameEntity, active: bool) -> u64 {
+        let stable_id = ge.stable_id;
+        let owner = self.interner.resolve(ge.owner).to_string();
+        let category = ge.category;
+        self.substrate.entities.insert(ge);
+        if active {
+            self.reveal(stable_id);
+            self.increment_owned_count(&owner, category);
+            self.add_entity_occupancy(stable_id);
+        } else {
+            self.increment_owned_count(&owner, category);
+        }
+        stable_id
+    }
+
+    /// Spawn an object directly into limbo: stored in EntityStore and owner counts
+    /// but NOT registered in the active order or map occupancy. Registration
+    /// happens later at reveal/landing (e.g. paradrop drop). Returns the stable id.
+    pub(crate) fn create_limbo(&mut self, ge: GameEntity) -> u64 {
+        self.place_spawned(ge, false)
+    }
+
+    /// Spawn an object and place it on the playfield in one step: insert, reveal
+    /// (active-object order), increment owner counts, and register map occupancy —
+    /// in that exact order. Returns the stable id. This is the active counterpart
+    /// to [`Self::create_limbo`]; the two differ only by whether reveal+occupancy
+    /// run.
+    pub(crate) fn unlimbo(&mut self, ge: GameEntity) -> u64 {
+        self.place_spawned(ge, true)
     }
 
     /// Update VoxelAnimation frame_counts for all voxel entities from atlas data.
@@ -544,10 +565,10 @@ impl Simulation {
     ) {
         use crate::sim::components::VxlLayer;
 
-        let keys = self.entities.keys_sorted();
+        let keys = self.substrate.entities.keys_sorted();
         let mut updated: u32 = 0;
         for &sid in &keys {
-            let Some(entity) = self.entities.get_mut(sid) else {
+            let Some(entity) = self.substrate.entities.get_mut(sid) else {
                 continue;
             };
             let Some(ref mut va) = entity.voxel_animation else {
@@ -590,7 +611,7 @@ impl Simulation {
         _height_map: &BTreeMap<(u16, u16), u8>,
     ) -> bool {
         // Read deploy data from EntityStore before mutating.
-        let deploy_data = self.entities.get(stable_id).and_then(|entity| {
+        let deploy_data = self.substrate.entities.get(stable_id).and_then(|entity| {
             let type_str = self.interner.resolve(entity.type_ref);
             let yard_type = construction_yard_type_for_mcv(type_str, rules)?;
             let yard_obj = rules.object(&yard_type)?;
@@ -633,11 +654,11 @@ impl Simulation {
                 let cell_x = rx.saturating_add(dx);
                 let cell_y = ry.saturating_add(dy);
                 // Check for existing structures (excluding the MCV itself).
-                let occupied = self.entities.values().any(|e| {
+                let occupied = self.substrate.entities.values().any(|e| {
                     if e.stable_id == stable_id || e.category != EntityCategory::Structure {
                         return false;
                     }
-                    let Some(existing) = rules.object(self.interner.resolve(e.type_ref)) else {
+                    let Some(existing) = self.object_type(e.type_ref, rules) else {
                         return false;
                     };
                     if existing.wall {
@@ -669,7 +690,7 @@ impl Simulation {
         }
 
         if source_facing != deploy_facing {
-            if let Some(entity) = self.entities.get_mut(stable_id) {
+            if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
                 entity.facing_target = Some(deploy_facing);
                 entity.facing = deploy_facing;
                 entity.movement_target = None;
@@ -689,7 +710,7 @@ impl Simulation {
         };
 
         // Set selected and building-up state on the new entity.
-        if let Some(ge) = self.entities.get_mut(new_sid) {
+        if let Some(ge) = self.substrate.entities.get_mut(new_sid) {
             ge.selected = was_selected;
             ge.building_up = Some(BuildingUp {
                 elapsed_ticks: 0,
@@ -706,7 +727,7 @@ impl Simulation {
     /// spawn happens when the animation completes (see `tick_building_down`).
     pub(crate) fn undeploy_building(&mut self, stable_id: u64, rules: &RuleSet) -> bool {
         // Read undeploy data before mutating.
-        let undeploy_data = self.entities.get(stable_id).and_then(|entity| {
+        let undeploy_data = self.substrate.entities.get(stable_id).and_then(|entity| {
             if !self.can_undeploy_building_runtime(stable_id, rules) {
                 return None;
             }
@@ -730,7 +751,7 @@ impl Simulation {
 
         // Start the reverse build-up animation instead of instant despawn.
         let unit_type_id = self.interner.intern(&unit_type);
-        if let Some(ge) = self.entities.get_mut(stable_id) {
+        if let Some(ge) = self.substrate.entities.get_mut(stable_id) {
             ge.building_down = Some(BuildingDown {
                 elapsed_ticks: 0,
                 total_ticks: 30,
@@ -750,10 +771,10 @@ impl Simulation {
         stable_id: u64,
         rules: &RuleSet,
     ) -> bool {
-        let Some(entity) = self.entities.get(stable_id) else {
+        let Some(entity) = self.substrate.entities.get(stable_id) else {
             return false;
         };
-        let Some(obj) = rules.object(self.interner.resolve(entity.type_ref)) else {
+        let Some(obj) = self.object_type(entity.type_ref, rules) else {
             return false;
         };
         if obj.construction_yard && self.owner_has_building_production_busy(entity.owner) {
@@ -763,7 +784,7 @@ impl Simulation {
     }
 
     pub(crate) fn can_undeploy_building_runtime(&self, stable_id: u64, rules: &RuleSet) -> bool {
-        let Some(entity) = self.entities.get(stable_id) else {
+        let Some(entity) = self.substrate.entities.get(stable_id) else {
             return false;
         };
         if entity.category != EntityCategory::Structure
@@ -811,7 +832,7 @@ impl Simulation {
     /// (caller should have avoided full cells via spawn cell selection).
     fn allocate_infantry_sub_cell(&self, rx: u16, ry: u16) -> u8 {
         let mut occupied: [bool; 5] = [false; 5];
-        for entity in self.entities.values() {
+        for entity in self.substrate.entities.values() {
             if entity.position.rx == rx
                 && entity.position.ry == ry
                 && entity.category == EntityCategory::Infantry

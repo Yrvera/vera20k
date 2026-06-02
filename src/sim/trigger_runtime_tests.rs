@@ -63,7 +63,7 @@ fn spawn_type(sim: &mut Simulation, type_id: &str) {
         5,
         false,
     );
-    sim.entities.insert(ge);
+    sim.substrate.entities.insert(ge);
 }
 
 #[test]

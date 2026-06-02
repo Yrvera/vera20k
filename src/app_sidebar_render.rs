@@ -242,7 +242,7 @@ fn minimap_move_order_if_selected(state: &mut AppState) -> bool {
     let Some(sim) = &state.simulation else {
         return false;
     };
-    let selected_ids = crate::app_input::selected_stable_ids_sorted(&sim.entities);
+    let selected_ids = crate::app_input::selected_stable_ids_sorted(sim.entities());
     if selected_ids.is_empty() {
         return false;
     }
@@ -259,7 +259,7 @@ fn minimap_move_order_if_selected(state: &mut AppState) -> bool {
     let shift_held: bool = crate::app_input::is_shift_held(state);
     let mut queued: Vec<crate::sim::command::CommandEnvelope> = Vec::new();
     for &entity_id in &selected_ids {
-        let Some(entity) = sim.entities.get(entity_id) else {
+        let Some(entity) = sim.entities().get(entity_id) else {
             continue;
         };
         // Only issue move to non-structure entities.

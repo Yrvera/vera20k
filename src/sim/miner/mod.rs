@@ -24,6 +24,7 @@ use std::collections::BTreeMap;
 
 use crate::rules::object_type::ObjectType;
 use crate::rules::ruleset::GeneralRules;
+use crate::sim::mission::MissionTimer;
 use crate::sim::movement::facing_class::FacingClass;
 
 /// Which kind of resource a map cell or cargo bale contains.
@@ -261,19 +262,19 @@ pub struct Miner {
     pub cargo: Vec<CargoBale>,
     /// Maximum number of bales this miner can carry.
     pub capacity_bales: u16,
-    /// Countdown timer for the next harvest action.
-    pub harvest_timer: u8,
-    /// Countdown timer for the next unload action, in tenths-of-a-tick.
-    /// Decremented by 10 each sim tick; when ≤ 0 a bale deposits and the
-    /// timer is incremented by `unload_tick_interval` (preserving any
-    /// negative leftover so average cadence matches the configured rate).
-    pub unload_timer: i16,
+    /// Frame-anchored gate for the next harvest action (was a per-tick `u8`
+    /// countdown). When `due`, a bale extracts and the timer re-arms for
+    /// `harvest_tick_interval + 1` frames (the +1 preserves the old
+    /// fire-when-zero fence-post: a seed of N decremented to 0 fires on the
+    /// (N+1)th call).
+    pub harvest_timer: MissionTimer,
     /// Whether the player issued a manual return order.
     pub forced_return: bool,
     /// Whether this miner is queued (but not yet occupying) a dock.
     pub dock_queued: bool,
-    /// Cooldown ticks before re-scanning for ore in WaitNoOre state.
-    pub rescan_cooldown: u8,
+    /// Frame-anchored cooldown before re-scanning for ore in WaitNoOre state
+    /// (was a per-tick `u8` countdown; same +1 fence-post as `harvest_timer`).
+    pub rescan_cooldown: MissionTimer,
     /// Archive ("ghost cell") of a nearby still-productive ore patch,
     /// saved on the `Harvest` → `ReturnToRefinery` transition (when the
     /// miner becomes full). Survives the entire dock cycle so the next
@@ -291,19 +292,15 @@ pub struct Miner {
     /// target-facing window.
     #[serde(default)]
     pub dock_pivot_facing: Option<FacingClass>,
-    /// Stock Mission_Enter retry timer start frame (`MissionClass +0xC8`).
-    /// Used after CAN_DOCK dispatches; accepted-cell arrival does not bypass it.
+    /// Stock Mission_Enter retry timer. Used after CAN_DOCK dispatches;
+    /// accepted-cell arrival does not bypass it. (Already frame-anchored — was
+    /// the `dock_enter_retry_start_frame`/`_duration` pair.)
     #[serde(default)]
-    pub dock_enter_retry_start_frame: Option<u32>,
-    /// Stock Mission_Enter retry duration (`MissionClass +0xD0`), in frames.
+    pub dock_enter_retry: MissionTimer,
+    /// Queued mission 0x10 (`Unload`) deploy-delay timer (was the
+    /// `mission_deploy_start_frame`/`_duration` pair).
     #[serde(default)]
-    pub dock_enter_retry_duration: u8,
-    /// MissionClass +0xC8 for queued mission 0x10 (`Unload`).
-    #[serde(default)]
-    pub mission_deploy_start_frame: Option<u32>,
-    /// MissionClass +0xD0 for queued mission 0x10 (`Unload`).
-    #[serde(default)]
-    pub mission_deploy_duration: u8,
+    pub mission_deploy_timer: MissionTimer,
     /// Unit+0x6D1 unload-active latch.
     #[serde(default)]
     pub unload_active: bool,
@@ -313,25 +310,20 @@ pub struct Miner {
     /// Unit+0xFC timer-fired marker.
     #[serde(default)]
     pub unload_timer_fired: bool,
-    /// Unit+0x100 timer-cluster start frame.
+    /// Unit timer-cluster gate: the start-frame + duration folded into one
+    /// frame-anchored timer (was `unload_cluster_start_frame` +
+    /// `unload_cluster_duration`; already frame-anchored).
     #[serde(default)]
-    pub unload_cluster_start_frame: Option<u32>,
+    pub unload_cluster_timer: MissionTimer,
     /// Unit+0x104 opaque timer-cluster scratch.
     #[serde(default)]
     pub unload_cluster_scratch: i32,
-    /// Unit+0x108 timer-cluster duration.
-    #[serde(default)]
-    pub unload_cluster_duration: u32,
     /// Unit+0x10C timer-cluster repeat interval / active flag.
     #[serde(default)]
     pub unload_cluster_repeat: u32,
     /// Unit+0x110 accumulator increment step. Constructor default is 1.
     #[serde(default = "default_unload_accumulator_step")]
     pub unload_accumulator_step: i32,
-    /// Sim ticks remaining in legacy `DepositCooldown` save states.
-    /// Stock unload completion now reaches Departing directly from the
-    /// empty-slot dump gate, so new unloads should leave this at 0.
-    pub deposit_cooldown_ticks: u16,
     /// Legacy/conditional exit cell cache. Stock zero-link refinery unload
     /// completion does not install a queue-cell destination; this remains
     /// serialized so old saves and conditional release experiments can be
@@ -373,27 +365,22 @@ impl Miner {
             target_ore_cell: None,
             cargo: Vec::with_capacity(capacity_bales as usize),
             capacity_bales,
-            harvest_timer: 0,
-            unload_timer: 0,
+            harvest_timer: MissionTimer::default(),
             forced_return: false,
             dock_queued: false,
-            rescan_cooldown: 0,
+            rescan_cooldown: MissionTimer::default(),
             last_harvest_cell: None,
             dock_phase: RefineryDockPhase::default(),
             dock_pivot_facing: None,
-            dock_enter_retry_start_frame: None,
-            dock_enter_retry_duration: 0,
-            mission_deploy_start_frame: None,
-            mission_deploy_duration: 0,
+            dock_enter_retry: MissionTimer::default(),
+            mission_deploy_timer: MissionTimer::default(),
             unload_active: false,
             unload_accumulator: 0,
             unload_timer_fired: false,
-            unload_cluster_start_frame: None,
+            unload_cluster_timer: MissionTimer::default(),
             unload_cluster_scratch: 0,
-            unload_cluster_duration: 0,
             unload_cluster_repeat: 0,
             unload_accumulator_step: default_unload_accumulator_step(),
-            deposit_cooldown_ticks: 0,
             exit_cell: None,
         }
     }

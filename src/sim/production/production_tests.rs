@@ -548,10 +548,10 @@ pub(super) fn spawn_structure(
         5,
         false,
     );
-    sim.entities.insert(ge);
+    sim.substrate.entities.insert(ge);
     // Register structure in occupancy grid (single cell — test structures
     // don't have foundation data, so just register the origin cell).
-    sim.occupancy.add(
+    sim.substrate.occupancy.add(
         rx,
         ry,
         sid,
@@ -746,14 +746,14 @@ fn war_factory_spawn_contact_is_marked_per_produced_mover() {
         produced,
     ));
     assert!(
-        sim.entities
+        sim.substrate.entities
             .get(produced)
             .unwrap()
             .has_live_contact_with(10),
         "produced vehicle should be contacted with its factory"
     );
     assert!(
-        !sim.entities
+        !sim.substrate.entities
             .get(unrelated)
             .unwrap()
             .has_live_contact_with(10),
@@ -824,7 +824,7 @@ fn infantry_spawn_succeeds_when_center_cell_blocked() {
     spawn_structure(&mut sim, 1, "Americans", "GAPILE", 20, 20);
     // Also occupy the foundation-center cell explicitly to make the test
     // robust against future changes to spawn_structure's occupancy footprint.
-    sim.occupancy.add(
+    sim.substrate.occupancy.add(
         21,
         21,
         1,
@@ -975,7 +975,7 @@ fn harvester_moves_to_ore_and_back_with_path_grid() {
     for _ in 0..3000 {
         let _ = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 33);
         let pos = sim
-            .entities
+            .substrate.entities
             .get(harvester_sid)
             .map(|e| (e.position.rx, e.position.ry))
             .expect("harvester position");

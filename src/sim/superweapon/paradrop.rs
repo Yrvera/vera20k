@@ -162,7 +162,7 @@ fn spawn_pdplane(
     // doesn't initialize a Transport cargo — gamemd's spawner builds the
     // CargoClass linked list directly. Mirror that here.
     let flight_level = SimFixed::from_num(rules.general.flight_level);
-    if let Some(entity) = sim.entities.get_mut(pdplane_id) {
+    if let Some(entity) = sim.substrate.entities.get_mut(pdplane_id) {
         if let Some(loco) = entity.locomotor.as_mut() {
             loco.altitude = flight_level;
             loco.target_altitude = flight_level;
@@ -191,13 +191,13 @@ fn spawn_pdplane(
             Some(id) => id,
             None => break,
         };
-        if let Some(pax) = sim.entities.get_mut(pax_id) {
+        if let Some(pax) = sim.substrate.entities.get_mut(pax_id) {
             pax.passenger_role = PassengerRole::Inside {
                 transport_id: pdplane_id,
             };
         }
         let boarded = sim
-            .entities
+            .substrate.entities
             .get_mut(pdplane_id)
             .and_then(|a| a.passenger_role.cargo_mut())
             .map(|c| {
@@ -214,7 +214,7 @@ fn spawn_pdplane(
 
     if loaded == 0 {
         // No passengers loaded — kill the empty carrier rather than fly empty.
-        if let Some(entity) = sim.entities.get_mut(pdplane_id) {
+        if let Some(entity) = sim.substrate.entities.get_mut(pdplane_id) {
             entity.health.current = 0;
             entity.dying = true;
         }
@@ -223,7 +223,7 @@ fn spawn_pdplane(
 
     // Set initial mission to the Open-equivalent paradrop state and issue
     // movement to target.
-    if let Some(entity) = sim.entities.get_mut(pdplane_id) {
+    if let Some(entity) = sim.substrate.entities.get_mut(pdplane_id) {
         entity.aircraft_mission = Some(AircraftMission::ParaDropApproach {
             target_rx,
             target_ry,
@@ -235,7 +235,7 @@ fn spawn_pdplane(
         .map(|o| ra2_speed_to_leptons_per_second(o.speed.max(1)))
         .unwrap_or(SimFixed::from_num(8));
     air_movement::issue_air_move_command(
-        &mut sim.entities,
+        &mut sim.substrate.entities,
         pdplane_id,
         (target_rx, target_ry),
         speed,

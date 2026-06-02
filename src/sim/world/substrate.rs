@@ -14,6 +14,33 @@
 use serde::{Deserialize, Serialize};
 
 use super::LogicVector;
+use crate::sim::entity_store::EntityStore;
+use crate::sim::occupancy::OccupancyGrid;
+
+/// Monotonic source for rebuilt CellClass-style object-list (enter) order. Each
+/// entity stores the last value assigned when it entered a cell list; this counter
+/// hands out the next one. The sole mutator is `next()` — callers cannot mis-increment
+/// or skip the saturating semantics. Serialized + hashed at its `ObjectSubstrate` field
+/// (a `#[serde(transparent)]` + derived-`Hash` newtype is byte- and hash-identical to the
+/// bare `u64` it replaces).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct EnterOrderCounter(u64);
+
+impl EnterOrderCounter {
+    /// Fresh counter. Starts at 1; 0 is the reserved sentinel.
+    pub(crate) const fn new() -> Self {
+        Self(1)
+    }
+
+    /// Return the current order value and advance. Saturating — never wraps,
+    /// matching the pre-consolidation `saturating_add(1)` at every assign-site.
+    pub(crate) fn next(&mut self) -> u64 {
+        let order = self.0;
+        self.0 = self.0.saturating_add(1);
+        order
+    }
+}
 
 /// Owns the active-object order and the substrate's monotonic counters. Field
 /// paths are `Simulation.substrate.*`.
@@ -23,14 +50,30 @@ pub(crate) struct ObjectSubstrate {
     /// draws the next value; a stale reference degrades to `None` rather than
     /// aliasing a reused slot.
     pub(crate) next_stable_entity_id: u64,
-    /// Monotonic source for rebuilt CellClass-style object-list order.
-    /// `OccupancyGrid` itself is a skipped cache; each entity stores the last
-    /// order value assigned when it entered a cell list.
-    pub(crate) next_occupancy_enter_order: u64,
+    /// Monotonic source for rebuilt CellClass-style object-list (enter) order.
+    /// See `EnterOrderCounter`. `OccupancyGrid` itself is a skipped cache; each
+    /// entity stores the last order value assigned when it entered a cell list.
+    pub(crate) next_occupancy_enter_order: EnterOrderCounter,
     /// LogicClass active-object vector — the single authority on object order.
     /// Tail-append on reveal, compacting-remove on conceal. Serialized verbatim.
     #[serde(default)]
     pub(crate) logic: LogicVector,
+    /// CellClass-style occupancy grid (per-cell object lists). A rebuilt cache:
+    /// `#[serde(skip)]`, reconstructed from the entity store on load, so it never
+    /// appears in the serialized snapshot and does not enter the state hash directly.
+    #[serde(skip)]
+    pub(crate) occupancy: OccupancyGrid,
+    /// Plain-struct entity storage (`BTreeMap<u64, GameEntity>` + by_owner index).
+    /// The authoritative object store — serialized verbatim (NOT skipped).
+    pub(crate) entities: EntityStore,
+    /// Deferred-delete queue (the native `PendingDeleteList`). `uninit` pushes an
+    /// id here instead of freeing the store slot; `Simulation::flush_pending_delete`
+    /// drains it in death order at end-of-tick. Transient: empty at every tick/save
+    /// boundary, so it is `#[serde(skip)]` — not serialized, not hashed. Between
+    /// enqueue and drain the entity stays in the store as a `Dying`, off-occupancy,
+    /// off-logic corpse, resolvable by id (the two-phase death window).
+    #[serde(skip)]
+    pub(crate) pending_delete: Vec<u64>,
 }
 
 impl ObjectSubstrate {
@@ -39,8 +82,11 @@ impl ObjectSubstrate {
     pub(crate) fn new() -> Self {
         Self {
             next_stable_entity_id: 1,
-            next_occupancy_enter_order: 1,
+            next_occupancy_enter_order: EnterOrderCounter::new(),
             logic: LogicVector::new(),
+            occupancy: OccupancyGrid::new(),
+            entities: EntityStore::new(),
+            pending_delete: Vec::new(),
         }
     }
 }
@@ -48,5 +94,33 @@ impl ObjectSubstrate {
 impl Default for ObjectSubstrate {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn enter_order_counter_new_starts_at_one() {
+        let mut c = EnterOrderCounter::new();
+        // First handout is 1 (0 is the reserved sentinel).
+        assert_eq!(c.next(), 1);
+    }
+
+    #[test]
+    fn enter_order_counter_next_returns_pre_increment_then_advances() {
+        let mut c = EnterOrderCounter::new();
+        assert_eq!(c.next(), 1);
+        assert_eq!(c.next(), 2);
+        assert_eq!(c.next(), 3);
+    }
+
+    #[test]
+    fn enter_order_counter_saturates_at_max() {
+        let mut c = EnterOrderCounter(u64::MAX);
+        // Returns MAX, then stays MAX (saturating, never wraps to 0).
+        assert_eq!(c.next(), u64::MAX);
+        assert_eq!(c.next(), u64::MAX);
     }
 }

@@ -1027,7 +1027,7 @@ fn kill_ground_occupants_at(sim: &mut Simulation, rx: u16, ry: u16, c4_inf_death
     use crate::sim::animation::death_sequence_for_inf_death;
     let death_seq = death_sequence_for_inf_death(c4_inf_death);
     let victims: Vec<u64> = sim
-        .entities
+        .substrate.entities
         .iter_sorted()
         .filter(|(_, e)| {
             e.position.rx == rx
@@ -1043,7 +1043,7 @@ fn kill_ground_occupants_at(sim: &mut Simulation, rx: u16, ry: u16, c4_inf_death
         .map(|(id, _)| id)
         .collect();
     for id in victims {
-        if let Some(entity) = sim.entities.get_mut(id) {
+        if let Some(entity) = sim.substrate.entities.get_mut(id) {
             entity.health.current = 0;
             entity.dying = true;
             entity.attack_target = None;
@@ -1362,7 +1362,7 @@ fn drop_in_bridge_deck_entities(sim: &mut Simulation, rx: u16, ry: u16) {
         .unwrap_or(0);
 
     let to_snap: Vec<u64> = sim
-        .entities
+        .substrate.entities
         .iter_sorted()
         .filter(|(_, e)| e.position.rx == rx && e.position.ry == ry && e.is_on_bridge_layer())
         .map(|(id, _)| id)
@@ -1370,7 +1370,7 @@ fn drop_in_bridge_deck_entities(sim: &mut Simulation, rx: u16, ry: u16) {
 
     for id in to_snap {
         let mut relayer = None;
-        if let Some(entity) = sim.entities.get_mut(id) {
+        if let Some(entity) = sim.substrate.entities.get_mut(id) {
             entity.bridge_occupancy = None;
             entity.on_bridge = false;
             entity.position.z = ground_level;
@@ -1388,7 +1388,7 @@ fn drop_in_bridge_deck_entities(sim: &mut Simulation, rx: u16, ry: u16) {
             ));
         }
         if let Some((rx, ry, sub_cell, insertion)) = relayer {
-            sim.occupancy.move_entity(
+            sim.substrate.occupancy.move_entity(
                 rx,
                 ry,
                 rx,
@@ -1661,7 +1661,7 @@ mod tests {
         // Give it a short fake movement target so we can verify it gets
         // halted on collapse.
         entity.movement_target = Some(crate::sim::components::MovementTarget::default());
-        sim.entities.insert(entity);
+        sim.substrate.entities.insert(entity);
         1
     }
 
@@ -1674,7 +1674,7 @@ mod tests {
         let mut sim = Simulation::new();
         sim.resolved_terrain = Some(water_below_bridge_terrain(3));
         let id = spawn_deck_unit(&mut sim);
-        sim.occupancy.add(
+        sim.substrate.occupancy.add(
             5,
             5,
             id,
@@ -1686,7 +1686,7 @@ mod tests {
         drop_in_bridge_deck_entities(&mut sim, 5, 5);
 
         let e = sim
-            .entities
+            .substrate.entities
             .get(id)
             .expect("deck entity must SURVIVE collapse over water");
         assert_eq!(e.position.z, 0, "snapped to ground level");
@@ -1701,7 +1701,7 @@ mod tests {
             "layer flipped Bridge → Ground"
         );
         assert_eq!(loco.phase, GroundMovePhase::Idle, "phase reset to Idle");
-        let cell = sim.occupancy.get(5, 5).expect("occupancy retained");
+        let cell = sim.substrate.occupancy.get(5, 5).expect("occupancy retained");
         assert_eq!(cell.count_on(MovementLayer::Ground), 1);
         assert_eq!(cell.count_on(MovementLayer::Bridge), 0);
     }
@@ -2110,8 +2110,8 @@ mod tests {
         let mut loco = drive_loco_on_bridge();
         loco.layer = MovementLayer::Bridge;
         entity.locomotor = Some(loco);
-        sim.entities.insert(entity);
-        sim.occupancy.add(
+        sim.substrate.entities.insert(entity);
+        sim.substrate.occupancy.add(
             5,
             5,
             1,
@@ -2123,11 +2123,11 @@ mod tests {
         drop_in_bridge_deck_entities(&mut sim, 5, 5);
 
         // Ground entity untouched — still alive, still ground layer.
-        let e = sim.entities.get(1).expect("ground entity untouched");
+        let e = sim.substrate.entities.get(1).expect("ground entity untouched");
         assert_eq!(e.health.current, 256);
         assert!(!e.on_bridge);
         assert_eq!(e.locomotor.as_ref().unwrap().layer, MovementLayer::Bridge);
-        let cell = sim.occupancy.get(5, 5).expect("ground occupancy");
+        let cell = sim.substrate.occupancy.get(5, 5).expect("ground occupancy");
         assert_eq!(cell.count_on(MovementLayer::Ground), 1);
         assert_eq!(cell.count_on(MovementLayer::Bridge), 0);
     }
@@ -2173,7 +2173,7 @@ mod tests {
             5,
             true,
         );
-        sim.entities.insert(ground);
+        sim.substrate.entities.insert(ground);
 
         // Aircraft hovering over (5,5): Air layer, on_bridge=false.
         let mut air = GameEntity::new(
@@ -2197,15 +2197,15 @@ mod tests {
         loco.layer = MovementLayer::Air;
         air.locomotor = Some(loco);
         air.on_bridge = false;
-        sim.entities.insert(air);
+        sim.substrate.entities.insert(air);
 
         kill_ground_occupants_at(&mut sim, 5, 5, 1);
 
-        let g = sim.entities.get(1).expect("ground unit present");
+        let g = sim.substrate.entities.get(1).expect("ground unit present");
         assert_eq!(g.health.current, 0, "ground occupant is force-killed");
         assert!(g.dying, "ground occupant flagged dying");
 
-        let a = sim.entities.get(2).expect("aircraft present");
+        let a = sim.substrate.entities.get(2).expect("aircraft present");
         assert_eq!(
             a.health.current, 256,
             "aircraft overflying the collapse cell must NOT be killed"

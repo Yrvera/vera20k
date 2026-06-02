@@ -56,7 +56,7 @@ pub fn launch(
     let target_y_leptons: i64 = target_ry as i64 * LEPTONS_PER_CELL + CELL_CENTER_LEPTON;
 
     let target_ids: Vec<u64> = sim
-        .entities
+        .substrate.entities
         .values()
         .filter(|e| e.category == EntityCategory::Structure)
         .filter(|e| e.health.current > 0 && !e.dying)
@@ -65,8 +65,8 @@ pub fn launch(
             are_houses_friendly(&sim.house_alliances, &owner_str, other)
         })
         .filter(|e| {
-            rules
-                .object(sim.interner.resolve(e.type_ref))
+            sim
+                .object_type(e.type_ref, rules)
                 .map(|o| !o.no_force_shield)
                 .unwrap_or(true)
         })
@@ -84,7 +84,7 @@ pub fn launch(
 
     // 4. Apply invulnerability.
     for id in &target_ids {
-        if let Some(entity) = sim.entities.get_mut(*id) {
+        if let Some(entity) = sim.substrate.entities.get_mut(*id) {
             apply_invulnerability(entity, current_frame, duration, InvulnKind::ForceShield);
         }
     }

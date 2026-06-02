@@ -38,7 +38,7 @@ pub(crate) fn tick_parachute_anims(state: &mut AppState, dt_ms: u32) {
     // Phase 1: despawn anims whose target is gone or has landed.
     state
         .parachute_anims
-        .retain(|anim| match sim.entities.get(anim.target_id) {
+        .retain(|anim| match sim.entities().get(anim.target_id) {
             Some(entity) => entity.parachute_state.is_some(),
             None => false,
         });
@@ -46,7 +46,7 @@ pub(crate) fn tick_parachute_anims(state: &mut AppState, dt_ms: u32) {
     // Phase 2: spawn for any descending entity not yet tracked. Collect IDs
     // first so we don't borrow `state.parachute_anims` mutably mid-iteration.
     let new_targets: Vec<u64> = sim
-        .entities
+        .entities()
         .values()
         .filter(|e| e.parachute_state.is_some())
         .map(|e| e.stable_id)

@@ -26,6 +26,7 @@ fn build_catalog_exposes_sidebar_categories_and_required_houses() {
     let rules = build_catalog_rules();
     // Pre-intern all rule type IDs so build_options_for_owner can resolve them.
     rules.intern_all_ids(&mut sim.interner);
+    sim.resolve_type_handles(&rules);
 
     spawn_structure(&mut sim, 1, "Americans", "GAPILE", 10, 10);
     spawn_structure(&mut sim, 2, "Americans", "GAWEAP", 12, 10);
@@ -99,6 +100,7 @@ fn named_skirmish_owner_uses_country_for_build_permissions() {
     let mut sim = Simulation::new();
     let rules = build_catalog_rules();
     rules.intern_all_ids(&mut sim.interner);
+    sim.resolve_type_handles(&rules);
 
     let owner_id = sim.interner.intern("Commander");
     let country_id = sim.interner.intern("Americans");
@@ -169,6 +171,7 @@ fn deployed_mcv_unlocks_building_options_for_named_skirmish_owner() {
     );
     let rules = RuleSet::from_ini(&ini).expect("rules should parse");
     rules.intern_all_ids(&mut sim.interner);
+    sim.resolve_type_handles(&rules);
     let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
 
     let owner_id = sim.interner.intern("Commander");
@@ -214,7 +217,7 @@ fn queue_view_uses_owner_power_modifier() {
     // Populate cached power states so the speed multiplier sees the deficit.
     crate::sim::power_system::tick_power_states(
         &mut sim.power_states,
-        &mut sim.entities,
+        &mut sim.substrate.entities,
         &rules,
         16,
         &sim.interner,
@@ -346,7 +349,7 @@ fn low_power_and_factory_bonus_apply_per_owner_and_category() {
     // Populate cached power states so the speed multiplier sees the deficit.
     crate::sim::power_system::tick_power_states(
         &mut sim.power_states,
-        &mut sim.entities,
+        &mut sim.substrate.entities,
         &rules,
         16,
         &sim.interner,
@@ -448,7 +451,7 @@ fn naval_unit_rally_uses_water_pathing_after_spawn() {
     assert!(spawned, "completed naval production should spawn the unit");
 
     let ship = sim
-        .entities
+        .substrate.entities
         .values()
         .find(|e| {
             sim.interner
@@ -504,6 +507,7 @@ fn build_options_dedupe_house_specific_sidebar_clone() {
     );
     let rules = RuleSet::from_ini(&ini).expect("rules should parse");
     rules.intern_all_ids(&mut sim.interner);
+    sim.resolve_type_handles(&rules);
 
     spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
 
@@ -567,7 +571,7 @@ fn tick_production_advances_each_owner_queue() {
     );
 
     let americans = sim
-        .entities
+        .substrate.entities
         .values()
         .filter(|e| {
             sim.interner
@@ -577,7 +581,7 @@ fn tick_production_advances_each_owner_queue() {
         })
         .count();
     let soviet = sim
-        .entities
+        .substrate.entities
         .values()
         .filter(|e| {
             sim.interner.resolve(e.owner).eq_ignore_ascii_case("Soviet")
@@ -632,7 +636,7 @@ fn tick_production_advances_multiple_queue_categories_for_same_owner() {
     );
 
     let infantry = sim
-        .entities
+        .substrate.entities
         .values()
         .filter(|e| {
             sim.interner
@@ -642,7 +646,7 @@ fn tick_production_advances_multiple_queue_categories_for_same_owner() {
         })
         .count();
     let vehicles = sim
-        .entities
+        .substrate.entities
         .values()
         .filter(|e| {
             sim.interner
@@ -719,7 +723,7 @@ fn blocked_vehicle_delivery_keeps_completed_item_and_holds_next_queue_item() {
         "next queued item must not start while completed vehicle is pending"
     );
     assert!(
-        sim.entities.values().all(|entity| {
+        sim.substrate.entities.values().all(|entity| {
             !sim.interner
                 .resolve(entity.type_ref)
                 .eq_ignore_ascii_case("MTNK")
@@ -779,7 +783,7 @@ fn pending_vehicle_delivery_success_consumes_completed_item_and_starts_next_item
     );
 
     let tanks = sim
-        .entities
+        .substrate.entities
         .values()
         .filter(|entity| {
             sim.interner

@@ -41,7 +41,7 @@ fn pursuit_rules() -> RuleSet {
 fn make_sim(entities: Vec<GameEntity>) -> (Simulation, PathGrid) {
     let mut sim = Simulation::new();
     for e in entities {
-        sim.entities.insert(e);
+        sim.substrate.entities.insert(e);
     }
     sim.interner = crate::sim::intern::test_interner();
     let grid = PathGrid::test_all_passable(64, 64);
@@ -67,7 +67,7 @@ fn cell_target_out_of_range_issues_movement() {
 
     sim.tick_attack_pursuit(&rules, Some(&grid));
 
-    let entity = sim.entities.get(1).unwrap();
+    let entity = sim.substrate.entities.get(1).unwrap();
     assert!(
         entity.attack_target.is_some(),
         "attack_target preserved during pursuit"
@@ -90,7 +90,7 @@ fn cell_target_in_range_clears_movement() {
 
     sim.tick_attack_pursuit(&rules, Some(&grid));
 
-    let entity = sim.entities.get(1).unwrap();
+    let entity = sim.substrate.entities.get(1).unwrap();
     assert!(
         entity.attack_target.is_some(),
         "attack_target preserved on range entry"
@@ -112,7 +112,7 @@ fn entity_target_out_of_range_pursues() {
 
     sim.tick_attack_pursuit(&rules, Some(&grid));
 
-    let entity = sim.entities.get(1).unwrap();
+    let entity = sim.substrate.entities.get(1).unwrap();
     assert!(entity.attack_target.is_some());
     assert!(
         entity.movement_target.is_some(),
@@ -133,7 +133,7 @@ fn entity_target_dying_pursuit_skips() {
     let rules = pursuit_rules();
 
     sim.tick_attack_pursuit(&rules, Some(&grid));
-    assert!(sim.entities.get(1).unwrap().attack_target.is_some());
+    assert!(sim.substrate.entities.get(1).unwrap().attack_target.is_some());
 }
 
 #[test]
@@ -154,7 +154,7 @@ fn aircraft_attack_target_skipped_by_pursuit() {
 
     sim.tick_attack_pursuit(&rules, Some(&grid));
 
-    let entity = sim.entities.get(1).unwrap();
+    let entity = sim.substrate.entities.get(1).unwrap();
     assert!(
         entity.movement_target.is_none(),
         "aircraft pursuit must not be touched by ground pursuit stage"
@@ -173,7 +173,7 @@ fn structure_attack_target_skipped_by_pursuit() {
 
     sim.tick_attack_pursuit(&rules, Some(&grid));
 
-    let entity = sim.entities.get(1).unwrap();
+    let entity = sim.substrate.entities.get(1).unwrap();
     assert!(
         entity.movement_target.is_none(),
         "structures must not pursue"
@@ -193,7 +193,7 @@ fn deployed_infantry_skipped_by_pursuit() {
 
     sim.tick_attack_pursuit(&rules, Some(&grid));
 
-    let entity = sim.entities.get(1).unwrap();
+    let entity = sim.substrate.entities.get(1).unwrap();
     assert!(
         entity.movement_target.is_none(),
         "deployed infantry must not pursue"
@@ -216,7 +216,7 @@ fn pursuit_uses_same_range_as_combat_no_oscillation() {
 
     sim.tick_attack_pursuit(&rules, Some(&grid));
 
-    let entity = sim.entities.get(1).unwrap();
+    let entity = sim.substrate.entities.get(1).unwrap();
     // is_within_range_leptons is inclusive at the boundary. Pursuit should
     // halt (clear movement). If pursuit and combat used different math,
     // this would fail.

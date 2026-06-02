@@ -330,7 +330,7 @@ fn build_non_garrison_fire_effects(
 fn target_fire_destination(sim: &Simulation, target: TargetKind) -> Option<FireOrigin> {
     match target {
         TargetKind::Entity(id) => {
-            let entity = sim.entities.get(id)?;
+            let entity = sim.entities().get(id)?;
             Some(FireOrigin {
                 screen_x: entity.position.screen_x,
                 screen_y: entity.position.screen_y,
@@ -570,7 +570,7 @@ mod tests {
         let report = sim.interner.intern("GIAttack");
         let anim = sim.interner.intern("MGUN-NE");
         sim.effect_frame_counts.insert(anim, 4);
-        sim.entities.insert(GameEntity::new(
+        sim.entities_mut().insert(GameEntity::new(
             1,
             10,
             11,

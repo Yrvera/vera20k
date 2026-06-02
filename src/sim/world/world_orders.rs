@@ -42,12 +42,17 @@ pub(crate) struct C4TickOutcome {
 impl Simulation {
     /// Pre-combat: entities with an OrderIntent but no current AttackTarget
     /// try to acquire a nearby enemy to engage.
+    ///
+    /// The `order_intent.is_some()` selector is retired in spirit (the busy role
+    /// moves to the `mission` substrate) but kept unchanged in code: `OrderIntent`
+    /// carries the AttackMove/Guard *coords* that `MissionType` cannot encode.
+    /// Full retirement (a goal field on the mission/nav substrate) is a later slice.
     pub(crate) fn tick_order_intents_pre_combat(&mut self, rules: &RuleSet) {
         // Collect attacker candidates from EntityStore.
-        let keys: Vec<u64> = self.entities.keys_sorted();
+        let keys: Vec<u64> = self.substrate.entities.keys_sorted();
         let mut attacker_ids: Vec<u64> = Vec::new();
         for &id in &keys {
-            if let Some(entity) = self.entities.get(id) {
+            if let Some(entity) = self.substrate.entities.get(id) {
                 if entity.order_intent.is_some() && entity.attack_target.is_none() {
                     attacker_ids.push(id);
                 }
@@ -56,7 +61,7 @@ impl Simulation {
 
         for attacker_id in attacker_ids {
             let Some(target_sid) = combat::acquire_best_target_for_entity(
-                &self.entities,
+                &self.substrate.entities,
                 rules,
                 &self.interner,
                 attacker_id,
@@ -66,7 +71,7 @@ impl Simulation {
                 continue;
             };
             let _ = combat::issue_attack_command(
-                &mut self.entities,
+                &mut self.substrate.entities,
                 attacker_id,
                 target_sid,
                 Some(rules),
@@ -76,7 +81,9 @@ impl Simulation {
     }
 
     /// Post-combat: entities with an OrderIntent but no active attack or movement
-    /// resume their patrol/guard movement toward the original goal.
+    /// resume their patrol/guard movement toward the original goal. The resume
+    /// coords stay on `OrderIntent` — the `mission` substrate has no goal field
+    /// yet (Slice-8 follow-up); only the busy-signalling role moved off it.
     pub(crate) fn tick_order_intents_post_combat(
         &mut self,
         path_grid: Option<&PathGrid>,
@@ -84,10 +91,10 @@ impl Simulation {
     ) {
         let Some(grid) = path_grid else { return };
         // Collect (stable_id, goal) for entities that need to resume movement.
-        let keys: Vec<u64> = self.entities.keys_sorted();
+        let keys: Vec<u64> = self.substrate.entities.keys_sorted();
         let mut resumes: Vec<(u64, u16, u16)> = Vec::new();
         for &id in &keys {
-            if let Some(entity) = self.entities.get(id) {
+            if let Some(entity) = self.substrate.entities.get(id) {
                 let intent = match entity.order_intent {
                     Some(ref i) => *i,
                     None => continue,
@@ -114,11 +121,11 @@ impl Simulation {
 
         for (stable_id, goal_rx, goal_ry) in resumes {
             let (base_speed, loco_multiplier, is_air) = self
-                .entities
+                .substrate.entities
                 .get(stable_id)
                 .map(|e| {
                     let bs: SimFixed = rules
-                        .and_then(|r| r.object(self.interner.resolve(e.type_ref)))
+                        .and_then(|r| self.object_type(e.type_ref, r))
                         .map(|obj| ra2_speed_to_leptons_per_second(obj.speed))
                         .unwrap_or(ra2_speed_to_leptons_per_second(4));
                     let lm: SimFixed = e
@@ -141,14 +148,14 @@ impl Simulation {
 
             if is_air {
                 let _ = air_movement::issue_air_move_command(
-                    &mut self.entities,
+                    &mut self.substrate.entities,
                     stable_id,
                     (goal_rx, goal_ry),
                     speed,
                 );
             } else {
                 let _ = movement::issue_move_command_with_layered(
-                    &mut self.entities,
+                    &mut self.substrate.entities,
                     grid,
                     stable_id,
                     (goal_rx, goal_ry),
@@ -178,7 +185,7 @@ impl Simulation {
         let mut any_captured = false;
         // Snapshot engineers with active capture targets.
         let captures: Vec<(u64, u64, InternedId)> = self
-            .entities
+            .substrate.entities
             .values()
             .filter(|e| e.capture_target.is_some() && !e.dying)
             .map(|e| (e.stable_id, e.capture_target.unwrap(), e.owner))
@@ -187,11 +194,11 @@ impl Simulation {
         for (engineer_id, building_id, engineer_owner) in captures {
             // Skip BridgeRepairHut targets — repair tick handles them.
             let target_bridge_hut = self
-                .entities
+                .substrate.entities
                 .get(building_id)
                 .and_then(|b| {
-                    rules
-                        .object(self.interner.resolve(b.type_ref))
+                    self
+                        .object_type(b.type_ref, rules)
                         .map(|t| t.bridge_repair_hut)
                 })
                 .unwrap_or(false);
@@ -201,12 +208,12 @@ impl Simulation {
 
             // Check building still exists and is capturable.
             let building_ok = self
-                .entities
+                .substrate.entities
                 .get(building_id)
                 .is_some_and(|b| b.category == EntityCategory::Structure && !b.dying);
             if !building_ok {
                 // Target lost — clear capture order.
-                if let Some(e) = self.entities.get_mut(engineer_id) {
+                if let Some(e) = self.substrate.entities.get_mut(engineer_id) {
                     e.capture_target = None;
                 }
                 continue;
@@ -214,12 +221,12 @@ impl Simulation {
 
             // Distance check: adjacent = Chebyshev distance <= 1 cell.
             let (eng_rx, eng_ry) = self
-                .entities
+                .substrate.entities
                 .get(engineer_id)
                 .map(|e| (e.position.rx, e.position.ry))
                 .unwrap_or((0, 0));
             let (bld_rx, bld_ry) = self
-                .entities
+                .substrate.entities
                 .get(building_id)
                 .map(|e| (e.position.rx, e.position.ry))
                 .unwrap_or((0, 0));
@@ -227,11 +234,10 @@ impl Simulation {
             let dy = (eng_ry as i32 - bld_ry as i32).abs();
 
             if dx <= 1 && dy <= 1 {
-                // CAPTURE: transfer building ownership.
-                let old_owner = self.entities.get(building_id).map(|b| b.owner);
-                if let Some(b) = self.entities.get_mut(building_id) {
-                    b.owner = engineer_owner;
-                }
+                // CAPTURE: transfer building ownership through the substrate
+                // chokepoint (updates by_owner + owner field together).
+                let old_owner = self.substrate.entities.get(building_id).map(|b| b.owner);
+                self.change_owner(building_id, engineer_owner);
                 // Update house owned counts for both old and new owner.
                 // Resolve interned IDs to strings before &mut self calls.
                 let engineer_owner_str = self.interner.resolve(engineer_owner).to_string();
@@ -266,13 +272,13 @@ impl Simulation {
         use crate::sim::bridge_state::cells_in_5x5_scan;
 
         let mut any_repair = false;
-        let keys = self.entities.keys_sorted();
+        let keys = self.substrate.entities.keys_sorted();
         let mut key_idx = 0;
 
         while key_idx < keys.len() {
             let engineer_id = keys[key_idx];
             let Some((building_id, engineer_owner)) =
-                self.entities.get(engineer_id).and_then(|e| {
+                self.substrate.entities.get(engineer_id).and_then(|e| {
                     if e.dying {
                         return None;
                     }
@@ -285,11 +291,11 @@ impl Simulation {
 
             // Resolve target type; only proceed for BridgeRepairHut=yes.
             let target_bridge_hut = self
-                .entities
+                .substrate.entities
                 .get(building_id)
                 .and_then(|b| {
-                    rules
-                        .object(self.interner.resolve(b.type_ref))
+                    self
+                        .object_type(b.type_ref, rules)
                         .map(|t| t.bridge_repair_hut)
                 })
                 .unwrap_or(false);
@@ -300,11 +306,11 @@ impl Simulation {
 
             // Target alive + still a Structure.
             let target_alive = self
-                .entities
+                .substrate.entities
                 .get(building_id)
                 .is_some_and(|b| b.category == EntityCategory::Structure && !b.dying);
             if !target_alive {
-                if let Some(e) = self.entities.get_mut(engineer_id) {
+                if let Some(e) = self.substrate.entities.get_mut(engineer_id) {
                     e.capture_target = None;
                 }
                 key_idx += 1;
@@ -314,7 +320,7 @@ impl Simulation {
             // Adjacency only issues the scripted enter move; repair itself
             // waits until the engineer has arrived inside the building cell.
             let Some((erx, ery)) = self
-                .entities
+                .substrate.entities
                 .get(engineer_id)
                 .map(|e| (e.position.rx, e.position.ry))
             else {
@@ -343,7 +349,7 @@ impl Simulation {
             }
 
             let Some((brx, bry)) = self
-                .entities
+                .substrate.entities
                 .get(building_id)
                 .map(|b| (b.position.rx, b.position.ry))
             else {
@@ -446,8 +452,8 @@ impl Simulation {
         // Snapshot attackers with c4_plant. Deterministic sorted order via
         // keys_sorted then look up c4_plant.
         let mut walkup: Vec<(u64, u64)> = Vec::new();
-        for sid in self.entities.keys_sorted() {
-            if let Some(e) = self.entities.get(sid) {
+        for sid in self.substrate.entities.keys_sorted() {
+            if let Some(e) = self.substrate.entities.get(sid) {
                 if let Some(plant) = e.c4_plant {
                     if !e.dying {
                         walkup.push((sid, plant.target_building_id));
@@ -459,11 +465,11 @@ impl Simulation {
         for (attacker_id, target_id) in walkup {
             // Target gone or dying? Clear c4_plant.
             let target_alive = self
-                .entities
+                .substrate.entities
                 .get(target_id)
                 .is_some_and(|b| b.category == EntityCategory::Structure && !b.dying);
             if !target_alive {
-                if let Some(e) = self.entities.get_mut(attacker_id) {
+                if let Some(e) = self.substrate.entities.get_mut(attacker_id) {
                     e.c4_plant = None;
                 }
                 continue;
@@ -473,7 +479,7 @@ impl Simulation {
             // to the target building. Normal pathing stops at the blocked
             // footprint boundary, then we issue the one-cell enter move below.
             let attacker_cell = self
-                .entities
+                .substrate.entities
                 .get(attacker_id)
                 .map(|e| (e.position.rx, e.position.ry));
             let target_footprint = self.building_entry_target_footprint(target_id, rules);
@@ -484,7 +490,7 @@ impl Simulation {
 
             // Already claimed by another attacker?
             let already_claimed = self
-                .entities
+                .substrate.entities
                 .get(target_id)
                 .is_some_and(|b| b.pending_c4_detonation.is_some());
             if already_claimed {
@@ -507,7 +513,7 @@ impl Simulation {
             }
 
             // Claim the plant.
-            if let Some(b) = self.entities.get_mut(target_id) {
+            if let Some(b) = self.substrate.entities.get_mut(target_id) {
                 b.pending_c4_detonation = Some(PendingC4Detonation {
                     plant_start_tick: self.tick,
                     attacker_id,
@@ -515,7 +521,7 @@ impl Simulation {
             }
 
             // Drive the plant animation (FireUp = Attack sequence).
-            if let Some(a) = self.entities.get_mut(attacker_id) {
+            if let Some(a) = self.substrate.entities.get_mut(attacker_id) {
                 a.movement_target = None;
                 if let Some(ref mut anim) = a.animation {
                     anim.switch_to(crate::sim::animation::SequenceKind::Attack);
@@ -524,7 +530,7 @@ impl Simulation {
 
             // SealPlaceBomb spatial sound. App-side dispatcher resolves to
             // `[SealPlaceBomb]` from soundmd.ini.
-            if let Some(a) = self.entities.get(attacker_id) {
+            if let Some(a) = self.substrate.entities.get(attacker_id) {
                 self.sound_events
                     .push(crate::sim::world::SimSoundEvent::C4Planted {
                         rx: a.position.rx,
@@ -535,8 +541,8 @@ impl Simulation {
 
         // ---- Phase 2: detonation ----
         let mut det_keys: Vec<u64> = Vec::new();
-        for sid in self.entities.keys_sorted() {
-            if let Some(e) = self.entities.get(sid) {
+        for sid in self.substrate.entities.keys_sorted() {
+            if let Some(e) = self.substrate.entities.get(sid) {
                 if e.pending_c4_detonation.is_some() && !e.dying {
                     det_keys.push(sid);
                 }
@@ -557,7 +563,7 @@ impl Simulation {
 
         for building_id in det_keys {
             let pending = self
-                .entities
+                .substrate.entities
                 .get(building_id)
                 .and_then(|e| e.pending_c4_detonation);
             let Some(pending) = pending else { continue };
@@ -572,7 +578,7 @@ impl Simulation {
             // Normal-building pending state is only cleared by despawn;
             // BridgeRepairHut returns consumed_pending_marker below.
             let dmg: i32 = self
-                .entities
+                .substrate.entities
                 .get(building_id)
                 .map(|b| b.health.current as i32)
                 .unwrap_or(0);
@@ -582,7 +588,7 @@ impl Simulation {
 
             // Resolve kill-credit. Attacker may have despawned — fall back to None.
             let attacker_for_credit: Option<u64> = self
-                .entities
+                .substrate.entities
                 .get(pending.attacker_id)
                 .map(|_| pending.attacker_id);
 
@@ -602,10 +608,10 @@ impl Simulation {
                 // Mission_Enter post-detonation block.
                 self.queue_c4_post_detonation_scatter(building_id);
             } else if outcome.consumed_pending_marker {
-                if let Some(building) = self.entities.get_mut(building_id) {
+                if let Some(building) = self.substrate.entities.get_mut(building_id) {
                     building.pending_c4_detonation = None;
                 }
-                if let Some(attacker) = self.entities.get_mut(pending.attacker_id) {
+                if let Some(attacker) = self.substrate.entities.get_mut(pending.attacker_id) {
                     if attacker
                         .c4_plant
                         .is_some_and(|plant| plant.target_building_id == building_id)
@@ -627,8 +633,8 @@ impl Simulation {
         target_id: u64,
         rules: &RuleSet,
     ) -> Option<Vec<(u16, u16)>> {
-        let target = self.entities.get(target_id)?;
-        let obj = rules.object(self.interner.resolve(target.type_ref))?;
+        let target = self.substrate.entities.get(target_id)?;
+        let obj = self.object_type(target.type_ref, rules)?;
         // Infantry building-entry resolves through normal building cell lookup.
         // AddOccupy/RemoveOccupy only affect hidden occupancy counters.
         Some(c4_base_foundation_cells(
@@ -651,7 +657,7 @@ impl Simulation {
     }
 
     fn infantry_has_active_movement(&self, attacker_id: u64) -> bool {
-        self.entities
+        self.substrate.entities
             .get(attacker_id)
             .is_some_and(|attacker| attacker.movement_target.is_some())
     }
@@ -676,9 +682,9 @@ impl Simulation {
             .as_ref()
             .map(|info| info.speed)
             .unwrap_or(ra2_speed_to_leptons_per_second(4));
-        if movement::issue_direct_move(&mut self.entities, attacker_id, entry_cell, speed) {
+        if movement::issue_direct_move(&mut self.substrate.entities, attacker_id, entry_cell, speed) {
             if let Some(target) = self
-                .entities
+                .substrate.entities
                 .get_mut(attacker_id)
                 .and_then(|attacker| attacker.movement_target.as_mut())
             {
@@ -715,15 +721,15 @@ impl Simulation {
         let (dx, dy) = DIR_DELTAS[dir];
 
         let bld_cell = self
-            .entities
+            .substrate.entities
             .get(dead_building_id)
             .map(|b| (b.position.rx, b.position.ry));
         let Some((brx, bry)) = bld_cell else { return };
 
         // Collect attackers on this cell with c4_plant on this building.
         let mut scatterers: Vec<u64> = Vec::new();
-        for sid in self.entities.keys_sorted() {
-            if let Some(e) = self.entities.get(sid) {
+        for sid in self.substrate.entities.keys_sorted() {
+            if let Some(e) = self.substrate.entities.get(sid) {
                 if !e.dying
                     && e.position.rx == brx
                     && e.position.ry == bry
@@ -738,13 +744,13 @@ impl Simulation {
         for sid in scatterers {
             let target_rx = (brx as i16 + dx).max(0) as u16;
             let target_ry = (bry as i16 + dy).max(0) as u16;
-            if let Some(e) = self.entities.get_mut(sid) {
+            if let Some(e) = self.substrate.entities.get_mut(sid) {
                 e.c4_plant = None;
             }
             // Queue a Move command for the next tick. Simpler than
             // reimplementing the pathfind call; 1-tick delay is below the
             // human-observable threshold.
-            if let Some(owner) = self.entities.get(sid).map(|e| e.owner) {
+            if let Some(owner) = self.substrate.entities.get(sid).map(|e| e.owner) {
                 self.pending_commands
                     .push(crate::sim::command::CommandEnvelope::new(
                         owner,
@@ -780,7 +786,7 @@ impl Simulation {
         // segment's, not the hut's. Also the right entry point for a
         // future demo-truck damage path.
         let target_bridge_hut = self
-            .entities
+            .substrate.entities
             .get(building_id)
             .and_then(|b| {
                 rules
@@ -790,7 +796,7 @@ impl Simulation {
             .unwrap_or(false);
         if target_bridge_hut {
             let bld_center = self
-                .entities
+                .substrate.entities
                 .get(building_id)
                 .map(|b| (b.position.rx, b.position.ry));
             let bridge_state_changed = match bld_center {
@@ -812,7 +818,7 @@ impl Simulation {
         // Check IC for normal C4 targets. If invulnerable, damage is
         // nullified but pending state stays, so we try again next tick.
         let invuln = self
-            .entities
+            .substrate.entities
             .get(building_id)
             .and_then(|e| e.invulnerability.clone());
         if crate::sim::superweapon::invulnerability::is_invulnerable(
@@ -827,10 +833,10 @@ impl Simulation {
         let Some(warhead) = rules.warhead(&warhead_name) else {
             return C4DamageOutcome::default();
         };
-        let armor_idx: usize = match self.entities.get(building_id) {
+        let armor_idx: usize = match self.substrate.entities.get(building_id) {
             Some(b) => {
-                let obj_armor = rules
-                    .object(self.interner.resolve(b.type_ref))
+                let obj_armor = self
+                    .object_type(b.type_ref, rules)
                     .map(|o| o.armor.as_str())
                     .unwrap_or("none");
                 crate::sim::combat::armor_index(obj_armor)
@@ -840,7 +846,7 @@ impl Simulation {
         let verses_pct = warhead.verses.get(armor_idx).copied().unwrap_or(100);
         let scaled = (damage as i32 * verses_pct as i32 / 100).max(0) as u16;
 
-        let Some(b) = self.entities.get_mut(building_id) else {
+        let Some(b) = self.substrate.entities.get_mut(building_id) else {
             return C4DamageOutcome::default();
         };
         let new_hp = b.health.current.saturating_sub(scaled);
@@ -886,11 +892,11 @@ impl Simulation {
             ClearMovement { entity_id: u64 },
         }
 
-        let keys: Vec<u64> = self.entities.keys_sorted();
+        let keys: Vec<u64> = self.substrate.entities.keys_sorted();
         let mut actions: Vec<PursuitAction> = Vec::new();
 
         for &id in &keys {
-            let Some(entity) = self.entities.get(id) else {
+            let Some(entity) = self.substrate.entities.get(id) else {
                 continue;
             };
             let Some(attack) = entity.attack_target.as_ref() else {
@@ -919,7 +925,7 @@ impl Simulation {
             // branch handles cleanup.
             let target_pos = combat::resolve_target_coords(
                 &attack.target,
-                &self.entities,
+                &self.substrate.entities,
                 Some(rules),
                 &self.interner,
             );
@@ -932,7 +938,7 @@ impl Simulation {
             let Some(weapon_range) = combat::pursuit_weapon_range(
                 entity,
                 &attack.target,
-                &self.entities,
+                &self.substrate.entities,
                 rules,
                 &self.interner,
             ) else {
@@ -975,12 +981,12 @@ impl Simulation {
                         continue;
                     };
                     let owner_str = self
-                        .entities
+                        .substrate.entities
                         .get(entity_id)
                         .map(|e| self.interner.resolve(e.owner).to_string())
                         .unwrap_or_default();
                     let (entity_blocks, entity_block_map) = bump_crush::build_entity_block_set(
-                        &self.entities,
+                        &self.substrate.entities,
                         &owner_str,
                         &self.house_alliances,
                         &self.interner,
@@ -988,7 +994,7 @@ impl Simulation {
                     );
                     let cost_grid = self.terrain_costs.get(&info.speed_type);
                     let _issued = movement::issue_move_command_with_layered(
-                        &mut self.entities,
+                        &mut self.substrate.entities,
                         grid,
                         entity_id,
                         goal,
@@ -1004,7 +1010,7 @@ impl Simulation {
                     // No-op if A* fails — pursuit retries next tick.
                 }
                 PursuitAction::ClearMovement { entity_id } => {
-                    if let Some(e) = self.entities.get_mut(entity_id) {
+                    if let Some(e) = self.substrate.entities.get_mut(entity_id) {
                         e.movement_target = None;
                     }
                 }

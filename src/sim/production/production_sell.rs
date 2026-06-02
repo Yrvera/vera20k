@@ -304,7 +304,7 @@ fn garrison_infantry_can_enter_cell(
     ry: u16,
     require_inside_transport: bool,
 ) -> bool {
-    let Some(infantry) = sim.entities.get(infantry_id) else {
+    let Some(infantry) = sim.substrate.entities.get(infantry_id) else {
         return false;
     };
     if !infantry.is_alive() {
@@ -321,7 +321,7 @@ fn garrison_infantry_can_enter_cell(
             infantry.category,
             None,
             None,
-            &sim.occupancy,
+            &sim.substrate.occupancy,
         ),
         TerrainCheckResult::Clear
     )
@@ -349,7 +349,7 @@ fn garrison_inside_foundation_fallback(rx: u16, ry: u16, width: u16, height: u16
 }
 
 fn mark_garrison_passenger_removed(sim: &mut Simulation, passenger_id: u64) {
-    if let Some(pax) = sim.entities.get_mut(passenger_id) {
+    if let Some(pax) = sim.substrate.entities.get_mut(passenger_id) {
         pax.health.current = 0;
         pax.dying = true;
         pax.passenger_role = PassengerRole::None;
@@ -365,7 +365,7 @@ fn sellbuilding_direct_scatter_handoff(
     building_width: u16,
     building_height: u16,
 ) {
-    let Some(pax) = sim.entities.get(passenger_id) else {
+    let Some(pax) = sim.substrate.entities.get(passenger_id) else {
         return;
     };
 
@@ -409,7 +409,7 @@ fn sellbuilding_direct_scatter_handoff(
     }
 
     if let Some(dest) = dest {
-        let _ = movement::issue_direct_move(&mut sim.entities, passenger_id, dest, speed);
+        let _ = movement::issue_direct_move(&mut sim.substrate.entities, passenger_id, dest, speed);
     }
 }
 
@@ -430,13 +430,17 @@ fn place_garrison_passenger_at_cell(
     building_width: u16,
     building_height: u16,
 ) -> bool {
-    let Some(pax) = sim.entities.get_mut(passenger_id) else {
+    // Owner transfer (if any) goes through the substrate chokepoint first, so
+    // the by_owner index stays in sync; then take the mutable borrow for the
+    // remaining field writes. change_owner is a no-op if the id is absent —
+    // the get_mut below still guards absence.
+    if let Some(owner) = owner_override {
+        sim.change_owner(passenger_id, owner);
+    }
+    let Some(pax) = sim.substrate.entities.get_mut(passenger_id) else {
         return false;
     };
     pax.passenger_role = PassengerRole::None;
-    if let Some(owner) = owner_override {
-        pax.owner = owner;
-    }
     pax.position.rx = rx;
     pax.position.ry = ry;
     pax.position.z = z;
@@ -446,7 +450,7 @@ fn place_garrison_passenger_at_cell(
     pax.position.refresh_screen_coords();
     let pax_sub_cell = pax.sub_cell;
 
-    sim.occupancy.add(
+    sim.substrate.occupancy.add(
         rx,
         ry,
         passenger_id,
@@ -537,7 +541,7 @@ fn eject_garrison_passengers_at_edges(
 fn eject_garrison_occupants(sim: &mut Simulation, rules: &RuleSet, building_id: u64) -> usize {
     // Snapshot building data before mutation.
     let (rx, ry, z, width, height, passenger_ids) = {
-        let entity = match sim.entities.get(building_id) {
+        let entity = match sim.substrate.entities.get(building_id) {
             Some(e) => e,
             None => return 0,
         };
@@ -545,7 +549,7 @@ fn eject_garrison_occupants(sim: &mut Simulation, rules: &RuleSet, building_id: 
             Some(c) if !c.is_empty() => c,
             _ => return 0,
         };
-        let obj = match rules.object(sim.interner.resolve(entity.type_ref)) {
+        let obj = match sim.object_type(entity.type_ref, rules) {
             Some(o) => o,
             None => return 0,
         };
@@ -575,7 +579,7 @@ fn eject_garrison_occupants(sim: &mut Simulation, rules: &RuleSet, building_id: 
 
     // Clear player-sell cargo only. Native SellBuilding is an ejection helper;
     // empty-garrison ownership reversion belongs to reconciliation/unload.
-    if let Some(building) = sim.entities.get_mut(building_id) {
+    if let Some(building) = sim.substrate.entities.get_mut(building_id) {
         if let Some(cargo) = building.passenger_role.cargo_mut() {
             cargo.passengers.clear();
             cargo.total_size = 0;
@@ -627,7 +631,7 @@ pub(crate) fn eject_red_hp_garrison(
     building_id: u64,
 ) -> usize {
     let (rx, ry, z, width, height, owner, passenger_ids) = {
-        let Some(entity) = sim.entities.get(building_id) else {
+        let Some(entity) = sim.substrate.entities.get(building_id) else {
             return 0;
         };
         let Some(cargo) = entity.passenger_role.cargo() else {
@@ -636,7 +640,7 @@ pub(crate) fn eject_red_hp_garrison(
         if cargo.is_empty() {
             return 0;
         }
-        let Some(obj) = rules.object(sim.interner.resolve(entity.type_ref)) else {
+        let Some(obj) = sim.object_type(entity.type_ref, rules) else {
             return 0;
         };
         if !obj.can_be_occupied {
@@ -667,7 +671,7 @@ pub(crate) fn eject_red_hp_garrison(
         GarrisonEjectMode::DestructionNoExitRemove,
     );
 
-    if let Some(building) = sim.entities.get_mut(building_id) {
+    if let Some(building) = sim.substrate.entities.get_mut(building_id) {
         if let Some(cargo) = building.passenger_role.cargo_mut() {
             cargo.passengers.clear();
             cargo.total_size = 0;
@@ -686,7 +690,7 @@ pub(crate) fn eject_red_hp_garrison(
 /// Revert-to-civilian belongs to empty-garrison reconciliation, not player sell.
 pub fn sell_building(sim: &mut Simulation, rules: &RuleSet, stable_id: u64) -> bool {
     let (owner_name, type_id, position, health) = {
-        let Some(entity) = sim.entities.get(stable_id) else {
+        let Some(entity) = sim.substrate.entities.get(stable_id) else {
             return false;
         };
         if entity.category != EntityCategory::Structure {
@@ -736,7 +740,7 @@ pub fn sell_building(sim: &mut Simulation, rules: &RuleSet, stable_id: u64) -> b
 
 /// Toggle repair mode on a building. If already repairing, stop. Otherwise start.
 pub fn toggle_repair(sim: &mut Simulation, stable_id: u64) -> bool {
-    let Some(entity) = sim.entities.get_mut(stable_id) else {
+    let Some(entity) = sim.substrate.entities.get_mut(stable_id) else {
         return false;
     };
     if entity.category != EntityCategory::Structure {
@@ -761,7 +765,7 @@ const REPAIR_HP_PER_TICK: u16 = 4;
 pub fn tick_repairs(sim: &mut Simulation, rules: &RuleSet) {
     // Collect snapshot of repairing structures.
     let actions: Vec<(u64, String, String, u16, u16)> = sim
-        .entities
+        .substrate.entities
         .values()
         .filter(|e| {
             e.repairing
@@ -799,7 +803,7 @@ pub fn tick_repairs(sim: &mut Simulation, rules: &RuleSet) {
             continue;
         }
         *credits_entry_for_owner(sim, &owner) -= cost_per_hp * heal as i32;
-        if let Some(entity) = sim.entities.get_mut(stable_id) {
+        if let Some(entity) = sim.substrate.entities.get_mut(stable_id) {
             entity.health.current = (entity.health.current + heal).min(entity.health.max);
             entity.refresh_building_damage_state_gate(rules.general.condition_yellow_x1000);
             if entity.health.current >= entity.health.max {
@@ -808,7 +812,7 @@ pub fn tick_repairs(sim: &mut Simulation, rules: &RuleSet) {
         }
     }
     for stable_id in stop_repairing {
-        if let Some(entity) = sim.entities.get_mut(stable_id) {
+        if let Some(entity) = sim.substrate.entities.get_mut(stable_id) {
             entity.repairing = false;
         }
     }
@@ -879,7 +883,7 @@ mod tests {
         pax.owner = sim.interner.intern(owner);
         pax.type_ref = sim.interner.intern("E1");
         pax.passenger_role = PassengerRole::Inside { transport_id };
-        sim.entities.insert(pax);
+        sim.substrate.entities.insert(pax);
         stable_id
     }
 
@@ -895,8 +899,8 @@ mod tests {
     fn insert_live_blocker(sim: &mut Simulation, stable_id: u64, rx: u16, ry: u16) {
         let mut blocker = GameEntity::test_default(stable_id, "BLOCKER", "Neutral", rx, ry);
         blocker.category = EntityCategory::Unit;
-        sim.entities.insert(blocker);
-        sim.occupancy.add(
+        sim.substrate.entities.insert(blocker);
+        sim.substrate.occupancy.add(
             rx,
             ry,
             stable_id,
@@ -910,8 +914,8 @@ mod tests {
         let mut infantry = GameEntity::test_default(stable_id, "E1", "Neutral", rx, ry);
         infantry.category = EntityCategory::Infantry;
         infantry.sub_cell = Some(sub_cell);
-        sim.entities.insert(infantry);
-        sim.occupancy.add(
+        sim.substrate.entities.insert(infantry);
+        sim.substrate.occupancy.add(
             rx,
             ry,
             stable_id,
@@ -922,7 +926,7 @@ mod tests {
     }
 
     fn give_walk_locomotor(sim: &mut Simulation, stable_id: u64) {
-        sim.entities
+        sim.substrate.entities
             .get_mut(stable_id)
             .expect("test entity should exist")
             .locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Walk));
@@ -962,11 +966,11 @@ mod tests {
         );
         building.repairing = true;
         building.building_damage_state_active = true;
-        sim.entities.insert(building);
+        sim.substrate.entities.insert(building);
 
         tick_repairs(&mut sim, &rules);
 
-        let building = sim.entities.get(1).expect("building should remain");
+        let building = sim.substrate.entities.get(1).expect("building should remain");
         assert_eq!(building.health.current, 53);
         assert!(!building.building_damage_state_active);
     }
@@ -991,7 +995,7 @@ mod tests {
         if let Some(cargo) = building.passenger_role.cargo_mut() {
             assert!(cargo.board(passenger_id, 1));
         }
-        sim.entities.insert(building);
+        sim.substrate.entities.insert(building);
         sim.reveal(building_id);
         sim.add_entity_occupancy(building_id);
 
@@ -1081,10 +1085,12 @@ mod tests {
 
         assert!(sell_building(&mut sim, &rules, building_id));
 
-        assert!(sim.entities.get(building_id).is_none());
+        // Deferred-delete: drain at end-of-tick to free the sold building's slot.
+        sim.flush_pending_delete();
+        assert!(sim.substrate.entities.get(building_id).is_none());
         for cell in [(10, 10), (10, 11), (11, 10), (11, 11)] {
             assert!(
-                !sim.occupancy.contains_entity(cell.0, cell.1, building_id),
+                !sim.substrate.occupancy.contains_entity(cell.0, cell.1, building_id),
                 "sold building should clear foundation cell {cell:?}"
             );
         }
@@ -1092,7 +1098,7 @@ mod tests {
         assert_eq!(credits_for_owner(&sim, "Americans") - before, 200);
 
         let passenger = sim
-            .entities
+            .substrate.entities
             .get(passenger_id)
             .expect("passenger should survive sell eject");
         assert!(matches!(passenger.passenger_role, PassengerRole::None));
@@ -1130,7 +1136,7 @@ mod tests {
         assert_eq!(eject_garrison_occupants(&mut sim, &rules, building_id), 1);
 
         let building = sim
-            .entities
+            .substrate.entities
             .get(building_id)
             .expect("helper should not remove building");
         assert_eq!(
@@ -1151,7 +1157,7 @@ mod tests {
         );
 
         let passenger = sim
-            .entities
+            .substrate.entities
             .get(passenger_id)
             .expect("passenger should remain");
         assert!(matches!(passenger.passenger_role, PassengerRole::None));
@@ -1194,7 +1200,7 @@ mod tests {
         let checks = [(pax3, (12, 12)), (pax2, (12, 12)), (pax1, (12, 12))];
 
         for (pax_id, expected_cell) in checks {
-            let pax = sim.entities.get(pax_id).expect("passenger should remain");
+            let pax = sim.substrate.entities.get(pax_id).expect("passenger should remain");
             assert_eq!(
                 (pax.position.rx, pax.position.ry),
                 expected_cell,
@@ -1216,6 +1222,7 @@ mod tests {
         }
 
         let occupancy_ids: Vec<u64> = sim
+            .substrate
             .occupancy
             .get(12, 12)
             .expect("chosen exit cell should be occupied")
@@ -1238,7 +1245,7 @@ mod tests {
         insert_captured_player_owned_garrison(&mut sim, building_id, passenger_id);
         block_all_garrison_exit_cells(&mut sim, 10, 10, 2, 2);
         if let Some(cargo) = sim
-            .entities
+            .substrate.entities
             .get_mut(building_id)
             .and_then(|building| building.passenger_role.cargo_mut())
         {
@@ -1249,7 +1256,7 @@ mod tests {
         assert_eq!(eject_garrison_occupants(&mut sim, &rules, building_id), 1);
 
         let passenger = sim
-            .entities
+            .substrate.entities
             .get(passenger_id)
             .expect("player-sell no-exit passenger should remain");
         assert_eq!((passenger.position.rx, passenger.position.ry), (11, 11));
@@ -1258,7 +1265,7 @@ mod tests {
         assert_eq!(sim.scenario_rng.state(), rng_before);
 
         let cargo = sim
-            .entities
+            .substrate.entities
             .get(building_id)
             .and_then(|building| building.passenger_role.cargo())
             .expect("building cargo remains present");
@@ -1296,7 +1303,7 @@ mod tests {
             "direct Scatter must use scenario RandomRanged(0,4), not raw %8"
         );
 
-        let passenger = sim.entities.get(passenger_id).unwrap();
+        let passenger = sim.substrate.entities.get(passenger_id).unwrap();
         assert!(
             passenger.movement_target.is_some(),
             "successful direct Scatter should install a movement destination after RNG"
@@ -1333,7 +1340,7 @@ mod tests {
         assert_eq!(sim.scenario_rng.state(), rng_before);
 
         let passenger = sim
-            .entities
+            .substrate.entities
             .get(passenger_id)
             .expect("null fallback leaves Rust entity marked dying");
         assert_eq!(passenger.health.current, 0);

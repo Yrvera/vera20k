@@ -33,6 +33,7 @@ pub mod pixel_fx_sparkles;
 pub mod radar_anim;
 pub mod screenshot;
 pub mod selection_overlay;
+pub mod shell_paint;
 pub mod shell_text;
 pub mod shell_transition_pass;
 pub mod shroud_buffer;

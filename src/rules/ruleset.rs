@@ -1291,15 +1291,24 @@ impl ProductionRules {
     }
 }
 
+/// O(1) index into `RuleSet::object_list`. Resolved once from a name (or from an
+/// interned id via the sim `TypeHandleTable`), then dereferenced directly —
+/// avoiding the per-call string round-trip + hash lookup of name resolution.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
+pub struct TypeHandle(pub u32);
+
 /// Master container for all game data parsed from rules.ini.
 ///
-/// All lookups are by string ID (case-sensitive — IDs are already stored
-/// in their original casing from rules.ini). The sim/ module uses RuleSet
+/// Name lookups are case-insensitive (matching the engine's find-or-allocate),
+/// resolved via `type_handle`/`object_by_handle`. The sim/ module uses RuleSet
 /// to look up costs, speeds, weapons, and prerequisites for every game action.
 #[derive(Debug)]
 pub struct RuleSet {
-    /// All game objects indexed by their ID (e.g., "MTNK" → ObjectType).
-    objects: HashMap<String, ObjectType>,
+    /// All game objects in registry insertion order, indexed by `TypeHandle`.
+    object_list: Vec<ObjectType>,
+    /// Uppercase type ID → handle. Uppercase keys give O(1) case-insensitive
+    /// resolution, matching the engine's case-insensitive find-or-allocate.
+    object_index: HashMap<String, TypeHandle>,
     /// All weapons indexed by ID (e.g., "105mm" → WeaponType).
     weapons: HashMap<String, WeaponType>,
     /// All warheads indexed by ID (e.g., "AP" → WarheadType).
@@ -1379,6 +1388,9 @@ pub struct RuleSet {
     ion_cannon_warhead_id: Option<crate::sim::intern::InternedId>,
     /// Pre-resolved C4Warhead InternedId. Same lifecycle as above.
     c4_warhead_id: Option<crate::sim::intern::InternedId>,
+    /// Per-mission behaviour table parsed from the `[<MissionName>]` sections
+    /// (Rate/AARate + NoThreat/Zombie/Recruitable/Paralyzed/Retaliate/Scatter).
+    pub mission_control: crate::sim::mission::MissionControl,
 }
 
 impl RuleSet {
@@ -1389,7 +1401,8 @@ impl RuleSet {
     /// are logged as warnings but don't cause errors — RA2's rules.ini
     /// sometimes references sections that don't exist.
     pub fn from_ini(ini: &IniFile) -> Result<Self, RulesError> {
-        let mut objects: HashMap<String, ObjectType> = HashMap::new();
+        let mut object_list: Vec<ObjectType> = Vec::new();
+        let mut object_index: HashMap<String, TypeHandle> = HashMap::new();
         let mut infantry_ids: Vec<String> = Vec::new();
         let mut vehicle_ids: Vec<String> = Vec::new();
         let mut aircraft_ids: Vec<String> = Vec::new();
@@ -1412,7 +1425,24 @@ impl RuleSet {
             for id in &ids {
                 if let Some(section) = ini.section(id) {
                     let obj: ObjectType = ObjectType::from_ini_section(id, section, category);
-                    objects.insert(id.clone(), obj);
+                    let key = id.to_ascii_uppercase();
+                    // Find-or-allocate: a name differing only by case reuses its
+                    // slot (last definition wins), matching the engine's single
+                    // type per name. Surface any merge so a malformed INI is visible.
+                    match object_index.get(&key) {
+                        Some(&TypeHandle(idx)) => {
+                            log::warn!(
+                                "Object '{}' merges onto an existing case-duplicate type",
+                                id
+                            );
+                            object_list[idx as usize] = obj;
+                        }
+                        None => {
+                            let handle = TypeHandle(object_list.len() as u32);
+                            object_list.push(obj);
+                            object_index.insert(key, handle);
+                        }
+                    }
                 } else {
                     log::trace!(
                         "Object '{}' listed in [{}] but has no section",
@@ -1432,7 +1462,7 @@ impl RuleSet {
         }
 
         // Step 2: Collect all weapon and warhead IDs referenced by objects.
-        let (weapon_ids, warhead_refs) = collect_weapon_refs(&objects);
+        let (weapon_ids, warhead_refs) = collect_weapon_refs(&object_list);
 
         // Step 3: Parse weapon sections.
         let mut weapons: HashMap<String, WeaponType> = HashMap::new();
@@ -1440,12 +1470,21 @@ impl RuleSet {
 
         for weapon_id in &weapon_ids {
             if let Some(section) = ini.section(weapon_id) {
-                let weapon: WeaponType = WeaponType::from_ini_section(weapon_id, section);
+                // Find-or-allocate by the section's canonical header name, so two
+                // references differing only in case resolve to a single type (the
+                // original engine allocates one type per section, matched
+                // case-insensitively). The header name is unique, so the key is
+                // deterministic regardless of reference iteration order.
+                let canonical = section.name.clone();
+                if weapons.contains_key(&canonical) {
+                    continue;
+                }
+                let weapon: WeaponType = WeaponType::from_ini_section(&canonical, section);
                 // Also collect warhead references from weapons themselves.
                 if let Some(wh) = &weapon.warhead {
                     warhead_ids.insert(wh.clone());
                 }
-                weapons.insert(weapon_id.clone(), weapon);
+                weapons.insert(canonical, weapon);
             } else {
                 log::trace!("Weapon '{}' referenced but has no section", weapon_id);
             }
@@ -1455,8 +1494,11 @@ impl RuleSet {
         let mut warheads: HashMap<String, WarheadType> = HashMap::new();
         for warhead_id in &warhead_ids {
             if let Some(section) = ini.section(warhead_id) {
-                let wh: WarheadType = WarheadType::from_ini_section(warhead_id, section);
-                warheads.insert(warhead_id.clone(), wh);
+                // Find-or-allocate by canonical section name (see weapons above).
+                let canonical = section.name.clone();
+                warheads
+                    .entry(canonical.clone())
+                    .or_insert_with(|| WarheadType::from_ini_section(&canonical, section));
             } else {
                 log::trace!("Warhead '{}' referenced but has no section", warhead_id);
             }
@@ -1472,16 +1514,22 @@ impl RuleSet {
         }
         for proj_id in &projectile_ids {
             if let Some(section) = ini.section(proj_id) {
-                let proj: ProjectileType = ProjectileType::from_ini_section(proj_id, section, None);
-                projectiles.insert(proj_id.clone(), proj);
+                // Find-or-allocate by canonical section name (see weapons above).
+                // Stock rulesmd references [InvisibleLow] as both "InvisibleLow"
+                // and "Invisiblelow"; this collapses them to one entry, as the
+                // original engine does.
+                let canonical = section.name.clone();
+                projectiles
+                    .entry(canonical.clone())
+                    .or_insert_with(|| ProjectileType::from_ini_section(&canonical, section, None));
             } else {
                 log::trace!("Projectile '{}' referenced but has no section", proj_id);
             }
         }
 
         // Step 6: Build factory lookup map from Factory= keys on all objects.
-        let factory_map: HashMap<String, FactoryType> = objects
-            .values()
+        let factory_map: HashMap<String, FactoryType> = object_list
+            .iter()
             .filter_map(|obj| obj.factory.map(|ft| (obj.id.to_ascii_uppercase(), ft)))
             .collect();
         log::info!("Factory map: {} entries", factory_map.len());
@@ -1531,6 +1579,9 @@ impl RuleSet {
             .map(|minutes| (minutes * 60.0 * SIM_TICKS_PER_SECOND as f64).round() as u32)
             .unwrap_or(27); // 0.03 × 60 × 15 = 27
 
+        // Per-mission behaviour table from the [<MissionName>] sections.
+        let mission_control = crate::sim::mission::MissionControl::from_ini(ini);
+
         // Parse [TerrainTypes] registry → per-type sections (TIBTRE01, TREE01, etc.).
         let mut terrain_object_types: HashMap<String, TerrainObjectType> = HashMap::new();
         let terrain_names: Vec<String> = parse_registry(ini, "TerrainTypes");
@@ -1570,7 +1621,7 @@ impl RuleSet {
             "RuleSet loaded: {} objects ({} inf, {} veh, {} air, {} bld), \
              {} weapons, {} warheads, {} projectiles, \
              {} particle types, {} particle system types",
-            objects.len(),
+            object_list.len(),
             infantry_ids.len(),
             vehicle_ids.len(),
             aircraft_ids.len(),
@@ -1582,8 +1633,37 @@ impl RuleSet {
             particle_system_types.len()
         );
 
+        // Lockstep invariant: `lookup_ci`'s case-insensitive scan is deterministic
+        // only if no two stored type names are equal ignoring case. The original
+        // engine's case-insensitive find-or-allocate merges case-duplicate names,
+        // guaranteeing this for valid data; assert it in debug so a malformed INI
+        // surfaces loudly instead of desyncing silently in lockstep. Compiled out
+        // of release, so normal play pays nothing.
+        #[cfg(debug_assertions)]
+        {
+            let check_unique_ci = |label: &str, keys: Vec<&String>| {
+                let mut lowered: Vec<String> =
+                    keys.iter().map(|k| k.to_ascii_lowercase()).collect();
+                lowered.sort();
+                for pair in lowered.windows(2) {
+                    debug_assert_ne!(
+                        pair[0], pair[1],
+                        "{label}: type names collide ignoring case ({:?}) — breaks deterministic lookup",
+                        pair[0]
+                    );
+                }
+            };
+            // Objects merge case-duplicates at insert (find-or-allocate), so the
+            // uppercase-keyed index can't hold a case-collision by construction.
+            check_unique_ci("weapons", weapons.keys().collect());
+            check_unique_ci("warheads", warheads.keys().collect());
+            check_unique_ci("projectiles", projectiles.keys().collect());
+            check_unique_ci("super_weapons", super_weapons.keys().collect());
+        }
+
         Ok(RuleSet {
-            objects,
+            object_list,
+            object_index,
             weapons,
             warheads,
             projectiles,
@@ -1615,6 +1695,7 @@ impl RuleSet {
             art_registry: crate::rules::art_data::ArtRegistry::empty(),
             ion_cannon_warhead_id: None,
             c4_warhead_id: None,
+            mission_control,
         })
     }
 
@@ -1667,17 +1748,43 @@ impl RuleSet {
         )
     }
 
-    pub fn object(&self, id: &str) -> Option<&ObjectType> {
-        self.objects.get(id)
+    /// Case-insensitive type-name lookup matching the original engine's
+    /// find-or-allocate (stricmp-style) name resolution.
+    ///
+    /// Exact match first — O(1) and the normal path, since RA2 type IDs are
+    /// consistently cased. Only on a case-mismatch miss does it scan for the
+    /// unique case-insensitive match. Valid RA2 data never holds two names
+    /// equal-ignoring-case (the original engine's case-insensitive find merges
+    /// them), so the scan yields at most one hit and the result stays
+    /// deterministic for lockstep.
+    fn lookup_ci<'a, T>(map: &'a HashMap<String, T>, id: &str) -> Option<&'a T> {
+        map.get(id).or_else(|| {
+            map.iter()
+                .find_map(|(key, value)| key.eq_ignore_ascii_case(id).then_some(value))
+        })
     }
 
-    /// Look up a game object by ID case-insensitively.
+    /// Resolve a type name to its handle, case-insensitively (engine parity).
+    pub fn type_handle(&self, id: &str) -> Option<TypeHandle> {
+        self.object_index.get(&id.to_ascii_uppercase()).copied()
+    }
+
+    /// Dereference a handle to its object. Handles only originate from this
+    /// `RuleSet`, so the index is always in bounds.
+    #[inline]
+    pub fn object_by_handle(&self, handle: TypeHandle) -> &ObjectType {
+        &self.object_list[handle.0 as usize]
+    }
+
+    /// Look up a game object by ID (case-insensitive, engine parity).
+    pub fn object(&self, id: &str) -> Option<&ObjectType> {
+        self.type_handle(id).map(|h| self.object_by_handle(h))
+    }
+
+    /// Deprecated: `object` is now case-insensitive. Retained as an alias so
+    /// the existing call sites keep compiling without churn.
     pub fn object_case_insensitive(&self, id: &str) -> Option<&ObjectType> {
-        self.objects.get(id).or_else(|| {
-            self.objects
-                .iter()
-                .find_map(|(key, obj)| key.eq_ignore_ascii_case(id).then_some(obj))
-        })
+        self.object(id)
     }
 
     /// Look up a TerrainObjectType by section name, case-insensitive.
@@ -1685,19 +1792,19 @@ impl RuleSet {
         self.terrain_object_types.get(&name.to_ascii_uppercase())
     }
 
-    /// Look up a weapon by ID.
+    /// Look up a weapon by ID (case-insensitive, gamemd parity).
     pub fn weapon(&self, id: &str) -> Option<&WeaponType> {
-        self.weapons.get(id)
+        Self::lookup_ci(&self.weapons, id)
     }
 
-    /// Look up a warhead by ID.
+    /// Look up a warhead by ID (case-insensitive, gamemd parity).
     pub fn warhead(&self, id: &str) -> Option<&WarheadType> {
-        self.warheads.get(id)
+        Self::lookup_ci(&self.warheads, id)
     }
 
-    /// Look up a projectile by ID.
+    /// Look up a projectile by ID (case-insensitive, gamemd parity).
     pub fn projectile(&self, id: &str) -> Option<&ProjectileType> {
-        self.projectiles.get(id)
+        Self::lookup_ci(&self.projectiles, id)
     }
 
     /// Whether a country/house type has `MultiplayPassive=true`.
@@ -1712,9 +1819,9 @@ impl RuleSet {
             .is_some_and(|country| country.multiplay_passive)
     }
 
-    /// Look up a superweapon type by ID.
+    /// Look up a superweapon type by ID (case-insensitive, gamemd parity).
     pub fn super_weapon(&self, id: &str) -> Option<&SuperWeaponType> {
-        self.super_weapons.get(id)
+        Self::lookup_ci(&self.super_weapons, id)
     }
 
     /// Look up a particle type by ID. Panics if `id` is out of range.
@@ -1822,7 +1929,7 @@ impl RuleSet {
         let mut buildings_checked: u32 = 0;
         let mut infantry_checked: u32 = 0;
         let mut crawls_patched: u32 = 0;
-        for obj in self.objects.values_mut() {
+        for obj in self.object_list.iter_mut() {
             // Resolve the art.ini section: use Image= override if present,
             // otherwise fall back to the object ID itself.
             let art_key: &str = &obj.image;
@@ -1931,7 +2038,7 @@ impl RuleSet {
 
     /// Total number of game objects across all categories.
     pub fn object_count(&self) -> usize {
-        self.objects.len()
+        self.object_list.len()
     }
 
     /// Total number of weapons.
@@ -1961,7 +2068,7 @@ impl RuleSet {
 
     /// Iterate over all game objects in the registry.
     pub fn all_objects(&self) -> impl Iterator<Item = &ObjectType> {
-        self.objects.values()
+        self.object_list.iter()
     }
 }
 
@@ -2018,12 +2125,12 @@ fn parse_country_rules(ini: &IniFile) -> HashMap<String, CountryRules> {
 ///
 /// Returns (weapon_ids, warhead_ids) as sets (deduplicated).
 fn collect_weapon_refs(
-    objects: &HashMap<String, ObjectType>,
+    objects: &[ObjectType],
 ) -> (HashSet<String>, HashSet<String>) {
     let mut weapon_ids: HashSet<String> = HashSet::new();
     let warhead_ids: HashSet<String> = HashSet::new();
 
-    for obj in objects.values() {
+    for obj in objects.iter() {
         if let Some(ref w) = obj.primary {
             weapon_ids.insert(w.clone());
         }
@@ -3349,6 +3456,93 @@ ZAdjust=-10
 
         // C4Delay must match the retail value (0.03 minutes = 27 ticks).
         assert_eq!(rules.c4_delay_ticks, 27, "C4Delay must parse to 27 ticks");
+    }
+
+    #[test]
+    fn type_lookups_are_case_insensitive() {
+        // Parity: the original engine resolves type names case-insensitively
+        // (stricmp-style find-or-allocate). Load real retail data and prove every
+        // type accessor resolves a stored name regardless of case, to the same entry.
+        let ini_text = std::fs::read_to_string("ini/rulesmd.ini").expect("ini/rulesmd.ini");
+        let ini = IniFile::from_str(&ini_text);
+        let rules = RuleSet::from_ini(&ini).expect("parse retail rulesmd");
+
+        // Concrete, readable anchor: [HTNK] exists in stock rulesmd.
+        assert!(rules.object("HTNK").is_some());
+        assert!(
+            rules.object("htnk").is_some(),
+            "lowercase must resolve (gamemd parity)"
+        );
+        assert!(rules.object("Htnk").is_some(), "mixed case must resolve");
+        assert_eq!(
+            rules.object("htnk").map(|o| o as *const _),
+            rules.object("HTNK").map(|o| o as *const _),
+            "all casings resolve to the same object",
+        );
+
+        // Property over each of the five type maps: take a real stored key and
+        // assert both the upper- and lower-cased forms resolve to the same entry.
+        // Toggling case guarantees at least one form differs from the stored key,
+        // so the case-fold scan path (not just exact match) is exercised.
+        fn check_ci<'a, M, V>(
+            map: &'a HashMap<String, M>,
+            lookup: impl Fn(&str) -> Option<&'a V>,
+            label: &str,
+        ) where
+            V: 'a,
+        {
+            let key = map
+                .keys()
+                .next()
+                .cloned()
+                .unwrap_or_else(|| panic!("{label} map empty"));
+            let canon = lookup(&key).map(|v| v as *const V);
+            assert!(canon.is_some(), "{label} '{key}' must resolve as stored");
+            assert_eq!(
+                lookup(&key.to_ascii_lowercase()).map(|v| v as *const V),
+                canon,
+                "{label} '{key}' lowercase must resolve to same entry"
+            );
+            assert_eq!(
+                lookup(&key.to_ascii_uppercase()).map(|v| v as *const V),
+                canon,
+                "{label} '{key}' uppercase must resolve to same entry"
+            );
+        }
+
+        check_ci(&rules.object_index, |k| rules.object(k), "object");
+        check_ci(&rules.weapons, |k| rules.weapon(k), "weapon");
+        check_ci(&rules.warheads, |k| rules.warhead(k), "warhead");
+        check_ci(&rules.projectiles, |k| rules.projectile(k), "projectile");
+        check_ci(&rules.super_weapons, |k| rules.super_weapon(k), "super_weapon");
+    }
+
+    /// Slice 8 acceptance: the sim TypeHandleTable resolves every interned type id
+    /// (no orphans) and does so case-insensitively (htnk vs [HTNK]).
+    #[test]
+    fn type_handle_table_completeness_and_casing() {
+        let ini = IniFile::from_str(&make_test_rules());
+        let rules = RuleSet::from_ini(&ini).expect("fixture parses");
+        let mut interner = crate::sim::intern::StringInterner::new();
+        rules.intern_all_ids(&mut interner);
+        let table = crate::sim::type_handle_table::TypeHandleTable::build(&rules, &interner);
+
+        // Completeness: every registry id in the fixture (E1, E2, MTNK, GAPOWR)
+        // has a [section], so none is an orphan type_ref.
+        assert_eq!(
+            table.orphan_count(),
+            0,
+            "no interned type id should fail to resolve to an object"
+        );
+
+        // Casing: a lowercased reference resolves to the same handle as the stored
+        // uppercase id. The interner is case-insensitive, so intern_all_ids("MTNK")
+        // and a later get("mtnk") share one id.
+        let mtnk_lower = interner
+            .get("mtnk")
+            .expect("MTNK interned case-insensitively");
+        assert_eq!(table.handle_for(mtnk_lower), rules.type_handle("MTNK"));
+        assert!(rules.object("mtnk").is_some(), "lowercased object() resolves");
     }
 
     /// Helper: parse a (rules.ini, art.ini) pair into a merged RuleSet for

@@ -30,6 +30,8 @@ use crate::sim::docking::aircraft_dock::AircraftAmmo;
 use crate::sim::docking::building_dock::DockState;
 use crate::sim::intern::InternedId;
 use crate::sim::miner::Miner;
+use crate::sim::mission::{MissionCom, MissionTimer, MissionType};
+use crate::sim::radio::Contacts;
 use crate::sim::movement::drive_track::{DriveTrackState, ForcedDriveTrackState};
 use crate::sim::movement::droppod_movement::DropPodState;
 use crate::sim::movement::locomotor::LocomotorState;
@@ -91,18 +93,18 @@ pub struct BuildingGateRuntime {
     pub phase: BuildingGatePhase,
     #[serde(default)]
     pub mission_state: BuildingGateMissionState,
+    /// Open/close transition deferral. `duration` is the active remaining ticks;
+    /// `start_frame` is the native helper baseline that direction reversal
+    /// preserves while it rewrites the duration.
     #[serde(default)]
-    pub transition_ticks_remaining: u32,
+    pub transition_timer: MissionTimer,
+    /// Nominal transition length (not a live timer) — direction reversal reads it
+    /// to recompute the reversed remaining.
     #[serde(default)]
     pub transition_total_ticks: u32,
-    /// Native transition helper start-frame baseline. Direction reversal rewrites
-    /// the active duration field but preserves this frame.
+    /// Stable-open hold countdown (reseeds while occupants remain in the footprint).
     #[serde(default)]
-    pub transition_last_frame: u32,
-    #[serde(default)]
-    pub hold_ticks_remaining: u32,
-    #[serde(default)]
-    pub hold_last_frame: u32,
+    pub hold_timer: MissionTimer,
 }
 
 impl Default for BuildingGateRuntime {
@@ -111,11 +113,12 @@ impl Default for BuildingGateRuntime {
             mission_18_active: false,
             phase: BuildingGatePhase::ClosedStable,
             mission_state: BuildingGateMissionState::Setup,
-            transition_ticks_remaining: 0,
+            // armed(0, 0) — NOT the sentinel — preserves the exact numeric values
+            // the old (last_frame, ticks_remaining) u32 pairs held at default,
+            // keeping the gate's wrapping_sub arithmetic and the state hash identical.
+            transition_timer: MissionTimer::armed(0, 0),
             transition_total_ticks: 0,
-            transition_last_frame: 0,
-            hold_ticks_remaining: 0,
-            hold_last_frame: 0,
+            hold_timer: MissionTimer::armed(0, 0),
         }
     }
 }
@@ -124,6 +127,30 @@ impl BuildingGateRuntime {
     pub fn can_garrison_passable(self) -> bool {
         self.mission_18_active && self.phase == BuildingGatePhase::OpenStable
     }
+}
+
+/// Authoritative-shadow lifecycle state of an object (the substrate `Presence`
+/// FSM, Slice 2). Mirrors the single InLimbo bit: an object is either in the
+/// active set (`InCell`) or out of it (`Limbo`). `Dying` is set during teardown
+/// after conceal and persists in the store until the end-of-tick deferred-delete
+/// drain frees the slot (Slice 6) — during that window the entity is resolvable by
+/// id but off occupancy + off the logic vector, excluded from all live systems.
+///
+/// In this slice `presence` *shadows* the old gates (`in_logic_vector` + store
+/// membership) — those stay authoritative — and a debug assert proves the two
+/// never disagree. Not serialized (`#[serde(skip)]` on the field); rebuilt on
+/// load from the restored active order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum Presence {
+    /// Out of the active set: born-in-limbo, concealed, or loaded as cargo. The
+    /// default for a freshly constructed entity (born InLimbo).
+    #[default]
+    Limbo,
+    /// In the active-object set and placed on the playfield (`in_logic_vector`).
+    InCell,
+    /// Teardown in progress — set after conceal; persists in-store until the
+    /// end-of-tick deferred-delete drain frees the slot.
+    Dying,
 }
 
 /// Unified entity struct — replaces all hecs ECS components.
@@ -182,6 +209,13 @@ pub struct GameEntity {
     /// rebuilt from the restored order on load (native does not round-trip it).
     #[serde(skip)]
     pub in_logic_vector: bool,
+    /// Substrate lifecycle shadow (Slice 2). Tracks `Limbo | InCell | Dying`.
+    /// Authoritative gates remain `in_logic_vector` + store membership; this
+    /// field rides alongside them and a per-tick debug assert proves they agree.
+    /// Not serialized (rebuilt from the restored active order on load), and NOT
+    /// hashed (non-authoritative this slice).
+    #[serde(skip)]
+    pub presence: Presence,
     /// Monotonic order of the last successful insertion into a CellClass-style
     /// object list. Serialized because `OccupancyGrid` is a rebuilt cache; this
     /// is the authoritative fact needed to reconstruct its linked-list order.
@@ -206,7 +240,14 @@ pub struct GameEntity {
     /// war factory exits and refinery dock entry. Kept per mover; a building
     /// being contacted does not globally relax passability for unrelated units.
     #[serde(default)]
-    pub radio_contacts: Vec<u64>,
+    pub radio_contacts: Contacts,
+    /// Models the TechnoClass dock-entered flag (ENTER_DOCK(0x18) sets it,
+    /// LEAVE_DOCK(0x19)/BREAK clears it). `Some(other_sid)` while this entity is
+    /// linked-and-entered at that dock partner; `None` otherwise. Written by the
+    /// radio bus; the legacy `RefineryDockContacts.contact_entered` map is kept
+    /// as a transitional mirror and retired in a later slice.
+    #[serde(default)]
+    pub dock_entered_with: Option<u64>,
     /// Per-producer rally target cell for selected factory rally visuals.
     /// Owner-level `HouseState.rally_point` remains the production fallback.
     #[serde(default)]
@@ -405,6 +446,14 @@ pub struct GameEntity {
     /// vehicles and voxel-bodied buildings.
     #[serde(default)]
     pub rocking: Option<RockingState>,
+    /// Mission substrate state. Written in parallel by the Slice-6 verb API
+    /// (`mission::verb` / `mission::retask`) alongside the still-authoritative
+    /// `Option<T>` machines; `current`/`substate` are additionally refreshed from
+    /// those machines each tick. NOT folded into `world_hash` yet (a later slice
+    /// makes it authoritative and hashes it), so it round-trips via serde without
+    /// affecting the lockstep hash. `#[serde(default)]` lets pre-Slice-6 saves load.
+    #[serde(default)]
+    pub mission: MissionCom,
     /// Debug event log — records movement/state transitions for the inspector panel.
     /// Only allocated when debug inspector is active (X hotkey). Not included in state hashing.
     #[serde(skip)]
@@ -412,6 +461,54 @@ pub struct GameEntity {
 }
 
 impl GameEntity {
+    /// Ground-truth presence derived from the authoritative gates. A unit in the
+    /// active set is `InCell` (this includes a dying-but-animating unit, which
+    /// keeps ticking and stays in its cell until teardown); otherwise `Limbo`.
+    /// `Dying` is never *derived* in this slice — it is only ever set imperatively
+    /// during `uninit`, after which the slot is freed in the same call.
+    pub fn derived_presence(&self) -> Presence {
+        if self.in_logic_vector {
+            Presence::InCell
+        } else {
+            Presence::Limbo
+        }
+    }
+
+    /// Ground-truth current mission + sub-phase derived from the authoritative
+    /// `Option<T>` machines. Priority: miner → aircraft → dock → attack → move →
+    /// idle. The `mission` component's `current`/`substate` are refreshed from
+    /// this each tick; a later slice makes `mission` authoritative and this
+    /// becomes the cross-check.
+    pub fn derived_mission(&self) -> (MissionType, u8) {
+        if let Some(miner) = &self.miner {
+            // The whole harvest loop is one mission; the FSM state is its sub-phase.
+            return (MissionType::Harvest, miner.state as u8);
+        }
+        if let Some(aircraft) = &self.aircraft_mission {
+            return match aircraft {
+                AircraftMission::Idle => (MissionType::Guard, 0),
+                AircraftMission::Move { sub_state } => (MissionType::Move, *sub_state),
+                AircraftMission::Attack { sub_state, .. } => (MissionType::Attack, *sub_state),
+                AircraftMission::Guard => (MissionType::Guard, 0),
+                AircraftMission::ReturnToBase { .. } => (MissionType::Enter, 0),
+                AircraftMission::Docking { sub_state, .. } => (MissionType::Enter, *sub_state),
+                AircraftMission::DockedIdle { .. } => (MissionType::Guard, 0),
+                AircraftMission::ParaDropApproach { .. } => (MissionType::ParadropApproach, 0),
+                AircraftMission::ParaDropOverfly { .. } => (MissionType::ParadropOverfly, 0),
+            };
+        }
+        if self.dock_state.is_some() {
+            return (MissionType::Enter, 0);
+        }
+        if self.attack_target.is_some() {
+            return (MissionType::Attack, 0);
+        }
+        if self.movement_target.is_some() {
+            return (MissionType::Move, 0);
+        }
+        (MissionType::None, 0)
+    }
+
     /// Create a new entity with all required fields. Optional fields default to None/false.
     pub fn new(
         stable_id: u64,
@@ -463,12 +560,14 @@ impl GameEntity {
             selected: false,
             repairing: false,
             in_logic_vector: false,
+            presence: Presence::Limbo,
             occupancy_enter_order: stable_id,
             locomotor: None,
             movement_target: None,
             navigation: NavigationState::default(),
             attack_target: None,
-            radio_contacts: Vec::new(),
+            radio_contacts: Contacts::default(),
+            dock_entered_with: None,
             rally_target: None,
             last_attacker_id: None,
             barrel_facing: None,
@@ -533,6 +632,7 @@ impl GameEntity {
                 None
             },
             rocking: None,
+            mission: MissionCom::idle(),
             debug_log: None,
         }
     }
@@ -546,22 +646,21 @@ impl GameEntity {
 
     /// Mark a live RadioClass-style contact with another entity.
     ///
-    /// Contacts are idempotent and keep first-observed order so replay hashing
-    /// stays deterministic.
+    /// First-null slot insert: idempotent, and full slots deny without evicting
+    /// (the receiver dock idiom). Slot order is hash-relevant and deterministic.
     pub fn mark_live_contact_with(&mut self, other_stable_id: u64) {
-        if !self.radio_contacts.contains(&other_stable_id) {
-            self.radio_contacts.push(other_stable_id);
-        }
+        self.radio_contacts.insert(other_stable_id);
     }
 
     /// Whether this entity has a live RadioClass-style contact with another entity.
     pub fn has_live_contact_with(&self, other_stable_id: u64) -> bool {
-        self.radio_contacts.contains(&other_stable_id)
+        self.radio_contacts.contains(other_stable_id)
     }
 
-    /// Clear a live RadioClass-style contact with another entity.
+    /// Clear a live RadioClass-style contact with another entity (BREAK: nulls
+    /// the slot in place, no compaction).
     pub fn clear_live_contact_with(&mut self, other_stable_id: u64) {
-        self.radio_contacts.retain(|&sid| sid != other_stable_id);
+        self.radio_contacts.remove(other_stable_id);
     }
 
     /// Refresh the scoped building damaged-state visual gate from current HP.
@@ -803,7 +902,7 @@ mod tests {
         contacted.mark_live_contact_with(100);
         contacted.mark_live_contact_with(100);
 
-        assert_eq!(contacted.radio_contacts, vec![100]);
+        assert_eq!(contacted.radio_contacts.len(), 1); // idempotent — one slot used
         assert!(contacted.has_live_contact_with(100));
         assert!(!unrelated.has_live_contact_with(100));
 
@@ -842,5 +941,84 @@ mod tests {
         let (corner_sx, corner_sy) = terrain::iso_to_screen(30, 40, 2);
         assert!((e.position.screen_x - (corner_sx + 30.0)).abs() < 0.01);
         assert!((e.position.screen_y - corner_sy).abs() < 0.01);
+    }
+}
+
+#[cfg(test)]
+mod presence_tests {
+    use super::*;
+
+    #[test]
+    fn derived_presence_tracks_active_membership() {
+        let mut e = GameEntity::test_default(1, "E1", "Americans", 3, 3);
+        // Born in limbo: not yet in the active set.
+        assert!(!e.in_logic_vector);
+        assert_eq!(e.derived_presence(), Presence::Limbo);
+
+        // Joins the active set.
+        e.in_logic_vector = true;
+        assert_eq!(e.derived_presence(), Presence::InCell);
+
+        // A dying-but-animating unit stays active → still InCell (dying ignored).
+        e.dying = true;
+        assert_eq!(e.derived_presence(), Presence::InCell);
+
+        // Leaves the active set.
+        e.in_logic_vector = false;
+        assert_eq!(e.derived_presence(), Presence::Limbo);
+    }
+}
+
+#[cfg(test)]
+mod mission_shadow_tests {
+    use super::*;
+    use crate::sim::combat::{AttackTarget, TargetKind};
+    use crate::sim::mission::MissionType;
+
+    #[test]
+    fn mission_defaults_to_idle_none() {
+        let e = GameEntity::test_default(1, "E1", "Americans", 3, 3);
+        assert_eq!(e.mission.current, MissionType::None);
+        assert_eq!(e.mission.substate, 0);
+        assert_eq!(e.mission.tick_counter, 0);
+    }
+
+    #[test]
+    fn derived_mission_idle_when_no_machine_active() {
+        let e = GameEntity::test_default(1, "E1", "Americans", 3, 3);
+        assert_eq!(e.derived_mission(), (MissionType::None, 0));
+    }
+
+    #[test]
+    fn derived_mission_tracks_attack_target() {
+        let mut e = GameEntity::test_default(1, "E1", "Americans", 3, 3);
+        e.attack_target = Some(AttackTarget {
+            target: TargetKind::Entity(2),
+            cooldown_ticks: 0,
+            burst_remaining: 0,
+            burst_delay_ticks: 0,
+            pending_infantry_fire: None,
+        });
+        assert_eq!(e.derived_mission().0, MissionType::Attack);
+    }
+
+    #[test]
+    fn mission_round_trips_through_serde() {
+        // Slice 6 un-skips the field so the queued/suspended interrupt stack +
+        // timer survive a save/load. (current/substate are also reconciled from
+        // the legacy machines on load; the rest persists as serialized.)
+        let mut e = GameEntity::test_default(1, "E1", "Americans", 3, 3);
+        e.mission.current = MissionType::Attack;
+        e.mission.queued = Some(MissionType::Guard);
+        e.mission.tick_counter = 99;
+        let json = serde_json::to_string(&e).expect("serialize entity");
+        assert!(
+            json.contains("mission"),
+            "mission must round-trip — present in serialized form"
+        );
+        let restored: GameEntity = serde_json::from_str(&json).expect("deserialize entity");
+        assert_eq!(restored.mission.current, MissionType::Attack);
+        assert_eq!(restored.mission.queued, Some(MissionType::Guard));
+        assert_eq!(restored.mission.tick_counter, 99);
     }
 }

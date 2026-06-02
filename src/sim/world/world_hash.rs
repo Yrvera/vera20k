@@ -226,12 +226,10 @@ impl Simulation {
                 miner_sid.hash(hasher);
             }
         }
-        for (&ref_sid, queue) in &self.production.dock_reservations.waiting_retry_queue {
-            ref_sid.hash(hasher);
-            for &miner_sid in queue {
-                miner_sid.hash(hasher);
-            }
-        }
+        // `waiting_retry_queue` removed in Slice 4 (V3-proven FIFO DRIFT — gamemd
+        // stores no wait-queue; rejected dockers re-probe on demand). The
+        // remaining `contacts`/`contact_entered`/`on_pad` folds are the
+        // transitional registry mirror, retired in a later slice.
         for (&ref_sid, &miner_sid) in &self.production.dock_reservations.contact_entered {
             ref_sid.hash(hasher);
             miner_sid.hash(hasher);
@@ -382,7 +380,7 @@ impl Simulation {
     /// Hash all entity components in stable-entity-ID order.
     /// BTreeMap iterates in key order (= stable_id), so no manual sort needed.
     fn hash_entities(&self, hasher: &mut impl Hasher) {
-        for entity in self.entities.values() {
+        for entity in self.substrate.entities.values() {
             entity.stable_id.hash(hasher);
             entity.occupancy_enter_order.hash(hasher);
             entity.position.rx.hash(hasher);
@@ -479,9 +477,18 @@ impl Simulation {
                 0u8.hash(hasher);
             }
 
-            (entity.radio_contacts.len() as u32).hash(hasher);
-            for contact_id in &entity.radio_contacts {
-                contact_id.hash(hasher);
+            // Slot-indexed fold: capacity + each slot's Option (null holes and
+            // pad positions are hash-relevant). Replaces the old len + ordered-id
+            // fold — an intended one-time re-baseline at this behavior boundary.
+            entity.radio_contacts.hash_fold(hasher);
+            // Dock-entered flag (+0x418 analogue). Intended one-time re-baseline
+            // at this behavior boundary alongside the slot-folded contacts.
+            match entity.dock_entered_with {
+                Some(sid) => {
+                    1u8.hash(hasher);
+                    sid.hash(hasher);
+                }
+                None => 0u8.hash(hasher),
             }
             entity.rally_target.hash(hasher);
             entity.capture_target.hash(hasher);
@@ -493,11 +500,13 @@ impl Simulation {
                 gate.mission_18_active.hash(hasher);
                 (gate.phase as u8).hash(hasher);
                 (gate.mission_state as u8).hash(hasher);
-                gate.transition_ticks_remaining.hash(hasher);
+                // Same u32 values, same order as the old (last_frame, ticks_remaining)
+                // pairs — the MissionTimer regrouping leaves the hash pre-image identical.
+                gate.transition_timer.duration.hash(hasher);
                 gate.transition_total_ticks.hash(hasher);
-                gate.transition_last_frame.hash(hasher);
-                gate.hold_ticks_remaining.hash(hasher);
-                gate.hold_last_frame.hash(hasher);
+                gate.transition_timer.start_frame.hash(hasher);
+                gate.hold_timer.duration.hash(hasher);
+                gate.hold_timer.start_frame.hash(hasher);
             } else {
                 0u8.hash(hasher);
             }
@@ -537,8 +546,9 @@ impl Simulation {
                 miner.home_refinery.hash(hasher);
                 miner.reserved_refinery.hash(hasher);
                 miner.target_ore_cell.hash(hasher);
+                // harvest_timer is now a MissionTimer (start_frame + duration)
+                // — intended one-time re-baseline. unload_timer was deleted.
                 miner.harvest_timer.hash(hasher);
-                miner.unload_timer.hash(hasher);
                 miner.forced_return.hash(hasher);
                 miner.dock_queued.hash(hasher);
                 miner.dock_phase.hash(hasher);
@@ -622,13 +632,13 @@ mod rally_hash_tests {
         let mut sim_a = Simulation::new();
         let mut sim_b = Simulation::new();
         sim_a
-            .entities
+            .substrate.entities
             .insert(GameEntity::test_default(1, "GAWEAP", "Americans", 10, 10));
         sim_b
-            .entities
+            .substrate.entities
             .insert(GameEntity::test_default(1, "GAWEAP", "Americans", 10, 10));
 
-        sim_b.entities.get_mut(1).unwrap().rally_target = Some((30, 31));
+        sim_b.substrate.entities.get_mut(1).unwrap().rally_target = Some((30, 31));
 
         assert_ne!(sim_a.state_hash(), sim_b.state_hash());
     }
@@ -642,8 +652,8 @@ mod rally_hash_tests {
         entity_a.category = crate::map::entities::EntityCategory::Structure;
         entity_b.category = crate::map::entities::EntityCategory::Structure;
         entity_b.building_damage_state_active = true;
-        sim_a.entities.insert(entity_a);
-        sim_b.entities.insert(entity_b);
+        sim_a.substrate.entities.insert(entity_a);
+        sim_b.substrate.entities.insert(entity_b);
 
         assert_ne!(sim_a.state_hash(), sim_b.state_hash());
     }
@@ -659,8 +669,8 @@ mod rally_hash_tests {
         drive.path.directions = vec![2, 2, 2, 2, 2];
         drive.residual_budget = 3;
         entity_b.drive_locomotion = Some(drive);
-        sim_a.entities.insert(entity_a);
-        sim_b.entities.insert(entity_b);
+        sim_a.substrate.entities.insert(entity_a);
+        sim_b.substrate.entities.insert(entity_b);
 
         assert_ne!(sim_a.state_hash(), sim_b.state_hash());
     }
@@ -672,8 +682,8 @@ mod rally_hash_tests {
         let entity_a = GameEntity::test_default(1, "GTNK", "Americans", 10, 10);
         let mut entity_b = entity_a.clone();
         entity_b.drive_accelerates = false;
-        sim_a.entities.insert(entity_a);
-        sim_b.entities.insert(entity_b);
+        sim_a.substrate.entities.insert(entity_a);
+        sim_b.substrate.entities.insert(entity_b);
 
         assert_ne!(sim_a.state_hash(), sim_b.state_hash());
     }
@@ -858,8 +868,8 @@ mod tube_movement_hash_tests {
             exit: (4, 0),
             phase: LowBridgeTubePhase::Traversing,
         });
-        sim_a.entities.insert(entity_a);
-        sim_b.entities.insert(entity_b);
+        sim_a.substrate.entities.insert(entity_a);
+        sim_b.substrate.entities.insert(entity_b);
 
         assert_ne!(sim_a.state_hash(), sim_b.state_hash());
     }
@@ -902,17 +912,17 @@ mod radio_contact_hash_tests {
         let unrelated_b = vehicle_entity(&mut sim_b, 2);
 
         contacted.mark_live_contact_with(100);
-        sim_a.entities.insert(contacted);
-        sim_a.entities.insert(unrelated);
-        sim_b.entities.insert(contacted_b);
-        sim_b.entities.insert(unrelated_b);
+        sim_a.substrate.entities.insert(contacted);
+        sim_a.substrate.entities.insert(unrelated);
+        sim_b.substrate.entities.insert(contacted_b);
+        sim_b.substrate.entities.insert(unrelated_b);
 
         assert_ne!(
             sim_a.state_hash(),
             sim_b.state_hash(),
             "per-mover live contacts must affect deterministic state hash",
         );
-        assert!(!sim_a.entities.get(2).unwrap().has_live_contact_with(100));
+        assert!(!sim_a.substrate.entities.get(2).unwrap().has_live_contact_with(100));
     }
 
     #[test]
@@ -924,13 +934,13 @@ mod radio_contact_hash_tests {
         let mut survivor = vehicle_entity(&mut with_stale_contact, 2);
         removed.mark_live_contact_with(2);
         survivor.mark_live_contact_with(1);
-        with_stale_contact.entities.insert(removed);
-        with_stale_contact.entities.insert(survivor);
+        with_stale_contact.substrate.entities.insert(removed);
+        with_stale_contact.substrate.entities.insert(survivor);
 
         let removed_b = vehicle_entity(&mut never_contacted, 1);
         let survivor_b = vehicle_entity(&mut never_contacted, 2);
-        never_contacted.entities.insert(removed_b);
-        never_contacted.entities.insert(survivor_b);
+        never_contacted.substrate.entities.insert(removed_b);
+        never_contacted.substrate.entities.insert(survivor_b);
 
         with_stale_contact.despawn_entity(1);
         never_contacted.despawn_entity(1);
@@ -982,8 +992,8 @@ mod infantry_hash_tests {
             fear_level: 10,
             is_prone: false,
         });
-        sim_a.entities.insert(a);
-        sim_b.entities.insert(b);
+        sim_a.substrate.entities.insert(a);
+        sim_b.substrate.entities.insert(b);
         assert_ne!(sim_a.state_hash(), sim_b.state_hash());
 
         let mut sim_a = Simulation::new();
@@ -994,8 +1004,8 @@ mod infantry_hash_tests {
             fear_level: 0,
             is_prone: true,
         });
-        sim_a.entities.insert(a);
-        sim_b.entities.insert(b);
+        sim_a.substrate.entities.insert(a);
+        sim_b.substrate.entities.insert(b);
         assert_ne!(sim_a.state_hash(), sim_b.state_hash());
     }
 
@@ -1007,12 +1017,12 @@ mod infantry_hash_tests {
         let mut b = infantry_entity(&mut sim_b);
         a.attack_target = Some(AttackTarget::new(99));
         b.attack_target = Some(AttackTarget::new(99));
-        sim_a.entities.insert(a);
-        sim_b.entities.insert(b);
+        sim_a.substrate.entities.insert(a);
+        sim_b.substrate.entities.insert(b);
         assert_eq!(sim_a.state_hash(), sim_b.state_hash());
 
         sim_a
-            .entities
+            .substrate.entities
             .get_mut(1)
             .unwrap()
             .attack_target
@@ -1235,7 +1245,7 @@ mod rocking_hash_tests {
             5,
             true,
         );
-        sim.entities.insert(e);
+        sim.substrate.entities.insert(e);
         sim
     }
 
@@ -1247,8 +1257,8 @@ mod rocking_hash_tests {
 
         // Mutate only the rocking state of one — hashes must diverge.
         let mut a = a;
-        let id = a.entities.values().next().unwrap().stable_id;
-        a.entities.get_mut(id).unwrap().rocking = Some(RockingState {
+        let id = a.substrate.entities.values().next().unwrap().stable_id;
+        a.substrate.entities.get_mut(id).unwrap().rocking = Some(RockingState {
             angle_sideways: SimFixed::lit("0.1"),
             ..Default::default()
         });
@@ -1259,13 +1269,13 @@ mod rocking_hash_tests {
     fn rocking_velocity_contributes_to_hash() {
         let mut a = make_sim_with_one_vehicle();
         let mut b = make_sim_with_one_vehicle();
-        let id_a = a.entities.values().next().unwrap().stable_id;
-        let id_b = b.entities.values().next().unwrap().stable_id;
-        a.entities.get_mut(id_a).unwrap().rocking = Some(RockingState {
+        let id_a = a.substrate.entities.values().next().unwrap().stable_id;
+        let id_b = b.substrate.entities.values().next().unwrap().stable_id;
+        a.substrate.entities.get_mut(id_a).unwrap().rocking = Some(RockingState {
             vel_sideways: SimFixed::lit("0.01"),
             ..Default::default()
         });
-        b.entities.get_mut(id_b).unwrap().rocking = Some(RockingState {
+        b.substrate.entities.get_mut(id_b).unwrap().rocking = Some(RockingState {
             vel_sideways: SimFixed::lit("0.02"),
             ..Default::default()
         });
@@ -1276,8 +1286,8 @@ mod rocking_hash_tests {
     fn rocking_none_vs_default_contributes_to_hash() {
         let mut a = make_sim_with_one_vehicle();
         let b = make_sim_with_one_vehicle();
-        let id = a.entities.values().next().unwrap().stable_id;
-        a.entities.get_mut(id).unwrap().rocking = Some(RockingState::default());
+        let id = a.substrate.entities.values().next().unwrap().stable_id;
+        a.substrate.entities.get_mut(id).unwrap().rocking = Some(RockingState::default());
         // a has Some(default), b has None — hashes must diverge.
         assert_ne!(a.state_hash(), b.state_hash());
     }
@@ -1314,18 +1324,18 @@ mod c4_hash_tests {
             5,
             false,
         );
-        sim.entities.insert(e);
+        sim.substrate.entities.insert(e);
         let h_initial = sim.state_hash();
 
         // Mutate c4_plant — hash must change.
-        sim.entities.get_mut(id).unwrap().c4_plant = Some(C4PlantState {
+        sim.substrate.entities.get_mut(id).unwrap().c4_plant = Some(C4PlantState {
             target_building_id: 99,
         });
         let h_with_plant = sim.state_hash();
         assert_ne!(h_initial, h_with_plant, "c4_plant must affect state hash");
 
         // Mutate pending_c4_detonation — hash must change again.
-        sim.entities.get_mut(id).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
+        sim.substrate.entities.get_mut(id).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
             plant_start_tick: 100,
             attacker_id: 7,
         });
@@ -1375,16 +1385,16 @@ mod homing_state_hash_tests {
         let mut a = Simulation::new();
         let mut b = Simulation::new();
         let a_id = a
-            .entities
+            .substrate.entities
             .insert(GameEntity::test_default(1, "AAHeatSeeker2", "Allied", 5, 5));
-        b.entities
+        b.substrate.entities
             .insert(GameEntity::test_default(1, "AAHeatSeeker2", "Allied", 5, 5));
 
         // Hashes match while both bullets lack homing_state.
         assert_eq!(a.state_hash(), b.state_hash());
 
         // Attaching homing_state to `a` only — hashes must diverge.
-        a.entities.get_mut(a_id).unwrap().homing_state = Some(make_homing(0));
+        a.substrate.entities.get_mut(a_id).unwrap().homing_state = Some(make_homing(0));
         assert_ne!(a.state_hash(), b.state_hash());
     }
 
@@ -1393,13 +1403,13 @@ mod homing_state_hash_tests {
         let mut a = Simulation::new();
         let mut b = Simulation::new();
         let a_id = a
-            .entities
+            .substrate.entities
             .insert(GameEntity::test_default(1, "AAHeatSeeker2", "Allied", 5, 5));
         let b_id = b
-            .entities
+            .substrate.entities
             .insert(GameEntity::test_default(1, "AAHeatSeeker2", "Allied", 5, 5));
-        a.entities.get_mut(a_id).unwrap().homing_state = Some(make_homing(0));
-        b.entities.get_mut(b_id).unwrap().homing_state = Some(make_homing(0x4000));
+        a.substrate.entities.get_mut(a_id).unwrap().homing_state = Some(make_homing(0));
+        b.substrate.entities.get_mut(b_id).unwrap().homing_state = Some(make_homing(0x4000));
         assert_ne!(a.state_hash(), b.state_hash());
     }
 
@@ -1410,15 +1420,15 @@ mod homing_state_hash_tests {
         let mut a = Simulation::new();
         let mut b = Simulation::new();
         let a_id = a
-            .entities
+            .substrate.entities
             .insert(GameEntity::test_default(1, "AAHeatSeeker2", "Allied", 5, 5));
         let b_id = b
-            .entities
+            .substrate.entities
             .insert(GameEntity::test_default(1, "AAHeatSeeker2", "Allied", 5, 5));
-        a.entities.get_mut(a_id).unwrap().homing_state = Some(make_homing(0));
+        a.substrate.entities.get_mut(a_id).unwrap().homing_state = Some(make_homing(0));
         let mut h = make_homing(0);
         h.pitch = 1.234;
-        b.entities.get_mut(b_id).unwrap().homing_state = Some(h);
+        b.substrate.entities.get_mut(b_id).unwrap().homing_state = Some(h);
         assert_eq!(
             a.state_hash(),
             b.state_hash(),

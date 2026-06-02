@@ -85,7 +85,7 @@ pub enum DropResult {
 
 fn restore_passenger_to_cargo_head(sim: &mut Simulation, aircraft_id: u64, passenger_id: u64) {
     if let Some(cargo) = sim
-        .entities
+        .substrate.entities
         .get_mut(aircraft_id)
         .and_then(|a| a.passenger_role.cargo_mut())
     {
@@ -113,7 +113,7 @@ pub fn try_drop(
     // Capture the aircraft's full lepton position (cell + sub-cell) so the
     // V-pattern offset can apply at lepton precision. With cell-only math the
     // ±128 lateral offset truncates to 0 and every drop lands on the same cell.
-    let (facing, altitude, aircraft_x_lep, aircraft_y_lep) = match sim.entities.get(aircraft_id) {
+    let (facing, altitude, aircraft_x_lep, aircraft_y_lep) = match sim.substrate.entities.get(aircraft_id) {
         Some(a) => {
             let alt = a.locomotor.as_ref().map(|l| l.altitude).unwrap_or(SIM_ZERO);
             let x_lep = a.position.rx as i32 * 256 + sim_to_i32(a.position.sub_x);
@@ -125,7 +125,7 @@ pub fn try_drop(
 
     // 2. Pop FIFO passenger from cargo.
     let passenger_id = match sim
-        .entities
+        .substrate.entities
         .get_mut(aircraft_id)
         .and_then(|a| a.passenger_role.cargo_mut())
         .and_then(|c| c.unload_first())
@@ -137,14 +137,14 @@ pub fn try_drop(
     // Look up passenger size now (needed to correct cargo.total_size on success).
     // PassengerCargo::unload_first does NOT decrement total_size — caller's job.
     let pax_size: u32 = sim
-        .entities
+        .substrate.entities
         .get(passenger_id)
         .and_then(|p| {
             let type_str = sim.interner.resolve(p.type_ref);
             rules.object(type_str).map(|o| o.size)
         })
         .unwrap_or(1);
-    let passenger_category = match sim.entities.get(passenger_id).map(|p| p.category) {
+    let passenger_category = match sim.substrate.entities.get(passenger_id).map(|p| p.category) {
         Some(category) => category,
         None => {
             sim.clear_radio_contacts_for(passenger_id);
@@ -174,7 +174,7 @@ pub fn try_drop(
     }
 
     let selected_sub_cell = if passenger_category == EntityCategory::Infantry {
-        let occ = sim.occupancy.get(drop_rx, drop_ry);
+        let occ = sim.substrate.occupancy.get(drop_rx, drop_ry);
         match bump_crush::allocate_sub_cell_with_preference(
             occ,
             MovementLayer::Ground,
@@ -182,7 +182,7 @@ pub fn try_drop(
             drop_sub_x,
             drop_sub_y,
             // sub-cell placement — scenario stream. Direct field: `occ` may borrow
-            // &sim.occupancy, so the subcell_rng() accessor could conflict.
+            // &sim.substrate.occupancy, so the subcell_rng() accessor could conflict.
             &mut sim.scenario_rng,
         ) {
             Some(sub_cell) => Some(sub_cell),
@@ -201,7 +201,7 @@ pub fn try_drop(
     // 5. Position passenger at drop cell; un-limbo. Do NOT touch
     // `loco.altitude` here: normal paradropped infantry keep their base
     // locomotor identity, while descent altitude lives in ParachuteDescentState.
-    if let Some(passenger) = sim.entities.get_mut(passenger_id) {
+    if let Some(passenger) = sim.substrate.entities.get_mut(passenger_id) {
         passenger.position.rx = drop_rx;
         passenger.position.ry = drop_ry;
         passenger.position.sub_x = final_sub_x;
@@ -212,7 +212,7 @@ pub fn try_drop(
         passenger.position.refresh_screen_coords();
         passenger.passenger_role = PassengerRole::None;
     }
-    sim.occupancy.add(
+    sim.substrate.occupancy.add(
         drop_rx,
         drop_ry,
         passenger_id,
@@ -222,11 +222,11 @@ pub fn try_drop(
     );
 
     // 6. Attach parachute descent.
-    if !begin_parachute_descent(&mut sim.entities, passenger_id, altitude) {
+    if !begin_parachute_descent(&mut sim.substrate.entities, passenger_id, altitude) {
         // L17 deviation: revert passenger_role and re-insert at cargo HEAD; retry.
-        sim.occupancy.remove(drop_rx, drop_ry, passenger_id);
+        sim.substrate.occupancy.remove(drop_rx, drop_ry, passenger_id);
         sim.clear_radio_contacts_for(passenger_id);
-        if let Some(passenger) = sim.entities.get_mut(passenger_id) {
+        if let Some(passenger) = sim.substrate.entities.get_mut(passenger_id) {
             passenger.passenger_role = PassengerRole::Inside {
                 transport_id: aircraft_id,
             };
@@ -235,9 +235,10 @@ pub fn try_drop(
         return DropResult::AttachFailedRetry;
     }
 
-    // Unlimbo: the dropped passenger leaves the transport's limbo and becomes an
-    // active object on the playfield. Mirrors TechnoClass::Unlimbo → Reveal.
-    sim.unlimbo(passenger_id);
+    // Reveal: the dropped passenger leaves the transport's limbo and becomes an
+    // active object. Occupancy was already added above (the manual occupancy.add
+    // before parachute attach); this only appends it to the active-object order.
+    sim.reveal(passenger_id);
 
     // 7. ChuteSound at drop cell.
     sim.sound_events.push(SimSoundEvent::ChuteSound {
@@ -247,7 +248,7 @@ pub fn try_drop(
 
     // 8. Decrement cargo.total_size on success (unload_first left it stale).
     if let Some(cargo) = sim
-        .entities
+        .substrate.entities
         .get_mut(aircraft_id)
         .and_then(|a| a.passenger_role.cargo_mut())
     {
@@ -298,7 +299,7 @@ mod tests {
         cargo.passengers.push(passenger_id);
         cargo.total_size = 1;
         aircraft.passenger_role = PassengerRole::Transport { cargo };
-        sim.entities.insert(aircraft);
+        sim.substrate.entities.insert(aircraft);
 
         let mut passenger = GameEntity::test_default(passenger_id, "E1", "Americans", 50, 20);
         passenger.owner = sim.interner.intern("Americans");
@@ -309,7 +310,7 @@ mod tests {
         passenger.passenger_role = PassengerRole::Inside {
             transport_id: aircraft_id,
         };
-        sim.entities.insert(passenger);
+        sim.substrate.entities.insert(passenger);
     }
 
     #[test]
@@ -427,7 +428,7 @@ mod tests {
             1,
             "successful passenger drop should emit exactly one ChuteSound"
         );
-        let passenger = sim.entities.get(passenger_id).expect("passenger exists");
+        let passenger = sim.substrate.entities.get(passenger_id).expect("passenger exists");
         assert_eq!((passenger.position.rx, passenger.position.ry), (51, 20));
         let sub_cell = passenger
             .sub_cell
@@ -450,6 +451,7 @@ mod tests {
             lepton::subcell_lepton_offset(Some(sub_cell))
         );
         let occupied_subcells: Vec<(u64, u8)> = sim
+            .substrate
             .occupancy
             .get(51, 20)
             .expect("drop cell occupied")
@@ -466,7 +468,7 @@ mod tests {
         let passenger_id = 2;
         insert_loaded_paradrop_pair(&mut sim, aircraft_id, passenger_id);
         for (id, sub_cell) in [(90, 2), (91, 3), (92, 4)] {
-            sim.occupancy.add(
+            sim.substrate.occupancy.add(
                 51,
                 20,
                 id,
@@ -486,20 +488,20 @@ mod tests {
             "failed placement retry must not emit ChuteSound"
         );
         let cargo = sim
-            .entities
+            .substrate.entities
             .get(aircraft_id)
             .and_then(|a| a.passenger_role.cargo())
             .expect("aircraft cargo restored");
         assert_eq!(cargo.passengers, vec![passenger_id]);
         assert_eq!(cargo.total_size, 1);
-        let passenger = sim.entities.get(passenger_id).expect("passenger exists");
+        let passenger = sim.substrate.entities.get(passenger_id).expect("passenger exists");
         assert!(matches!(
             passenger.passenger_role,
             PassengerRole::Inside { transport_id } if transport_id == aircraft_id
         ));
         assert!(passenger.parachute_state.is_none());
         assert!(
-            !sim.occupancy.contains_entity(51, 20, passenger_id),
+            !sim.substrate.occupancy.contains_entity(51, 20, passenger_id),
             "failed placement must not unlimbo the passenger into occupancy"
         );
     }
@@ -519,13 +521,13 @@ mod tests {
         cargo.passengers.push(missing_passenger_id);
         cargo.total_size = 1;
         aircraft.passenger_role = PassengerRole::Transport { cargo };
-        sim.entities.insert(aircraft);
+        sim.substrate.entities.insert(aircraft);
 
         let mut peer = GameEntity::test_default(peer_id, "E1", "Americans", 11, 10);
         peer.owner = sim.interner.intern("Americans");
         peer.type_ref = sim.interner.intern("E1");
         peer.mark_live_contact_with(missing_passenger_id);
-        sim.entities.insert(peer);
+        sim.substrate.entities.insert(peer);
 
         let result = try_drop(&mut sim, &rules, aircraft_id, 1, None);
 
@@ -537,13 +539,13 @@ mod tests {
             "attach-failed retry must not emit ChuteSound"
         );
         let cargo = sim
-            .entities
+            .substrate.entities
             .get(aircraft_id)
             .and_then(|a| a.passenger_role.cargo())
             .expect("aircraft cargo restored");
         assert_eq!(cargo.passengers, vec![missing_passenger_id]);
         assert!(
-            !sim.entities
+            !sim.substrate.entities
                 .get(peer_id)
                 .unwrap()
                 .has_live_contact_with(missing_passenger_id),

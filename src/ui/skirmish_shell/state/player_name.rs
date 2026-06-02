@@ -1,12 +1,13 @@
 //! Player-name edit state and input helpers for the skirmish shell.
 
+use crate::sim::game_options::GameOptions;
 use crate::skirmish_launch::SkirmishLaunchOptions;
 use crate::skirmish_modes::{SkirmishGameMode, mode_by_id};
 use crate::ui::main_menu::{SkirmishCountry, SkirmishSettings, StartPosition};
 
 use super::super::layout::{SkirmishShellLayout, SkirmishTrackbarId};
 use super::super::static_reveal::StaticReveal;
-use super::trackbars::{trackbar_control_id, trackbar_hscroll_wparam};
+use super::trackbars::{SkirmishTrackbarBounds, trackbar_control_id, trackbar_hscroll_wparam};
 use super::{
     ChooseMapModalState, DropdownScrollDragState, DropdownScrollbarPressState, OpenComboDropdown,
     OwnerDrawButton, SkirmishShellOpponent, SkirmishShellUiSound,
@@ -229,6 +230,14 @@ pub struct SkirmishShellState {
     pub starting_credits: i32,
     pub game_speed: i32,
     pub unit_count: i32,
+    /// Credits/Unit Count slider ranges, seeded from `[MultiplayerDialogSettings]`
+    /// at lobby construction (stock-default constants until then).
+    pub trackbar_bounds: SkirmishTrackbarBounds,
+    /// Per-match option base, seeded from `[MultiplayerDialogSettings]` at lobby
+    /// construction (stock defaults until then). The launch path overrides the
+    /// fields exposed as widgets from the live state above; this base carries
+    /// the non-widget toggles (tech level, bases, shroud, …) into the match.
+    pub launch_options_base: SkirmishLaunchOptions,
     pub short_game: bool,
     pub super_weapons: bool,
     pub build_off_ally: bool,
@@ -273,6 +282,8 @@ impl Default for SkirmishShellState {
             starting_credits: options.starting_credits,
             game_speed: options.game_speed,
             unit_count: options.unit_count,
+            trackbar_bounds: SkirmishTrackbarBounds::default(),
+            launch_options_base: SkirmishLaunchOptions::default(),
             short_game: options.short_game,
             super_weapons: options.super_weapons,
             build_off_ally: options.build_off_ally,
@@ -302,6 +313,24 @@ impl Default for SkirmishShellState {
 impl SkirmishShellState {
     pub const TRACKBAR_WM_HSCROLL_MESSAGE: u32 = 0x114;
     pub const TRACKBAR_HSCROLL_CHANGED_LOW_WORD: u16 = 5;
+
+    /// Seed the lobby from per-match options parsed from
+    /// `[MultiplayerDialogSettings]`. The values the setup dialog exposes as
+    /// widgets are copied into the live fields so each control opens on the
+    /// configured value; the full set is also retained as the launch base so
+    /// the non-widget toggles reach the match unchanged. `GameSpeed` is stored
+    /// as parsed — the trackbar inverts it only for display.
+    pub fn apply_multiplayer_dialog_values(&mut self, options: &GameOptions) {
+        self.starting_credits = options.starting_credits;
+        self.unit_count = options.unit_count;
+        self.game_speed = options.game_speed;
+        self.short_game = options.short_game;
+        self.super_weapons = options.super_weapons;
+        self.build_off_ally = options.build_off_ally;
+        self.crates = options.crates;
+        self.mcv_redeploy = options.mcv_redeploy;
+        self.launch_options_base = SkirmishLaunchOptions::from_game_options(options);
+    }
 
     pub(super) fn push_ui_sound(&mut self, sound: SkirmishShellUiSound) {
         self.pending_ui_sounds.push(sound);
@@ -380,6 +409,55 @@ pub(super) fn inactive_ai_team_default(state: &SkirmishShellState) -> i32 {
         3
     } else {
         -2
+    }
+}
+
+#[cfg(test)]
+mod multiplayer_dialog_value_tests {
+    use super::*;
+
+    #[test]
+    fn default_shell_launch_base_matches_hardcoded_defaults() {
+        // The safety-net default path must stay on the hardcoded fallback so a
+        // default()-constructed shell is byte-identical without an INI.
+        let shell = SkirmishShellState::default();
+        assert_eq!(shell.launch_options_base, SkirmishLaunchOptions::default());
+    }
+
+    #[test]
+    fn apply_multiplayer_dialog_values_seeds_widgets_and_launch_base() {
+        let mut shell = SkirmishShellState::default();
+        let options = GameOptions {
+            starting_credits: 7400,
+            unit_count: 4,
+            game_speed: 4,
+            short_game: false,
+            super_weapons: false,
+            build_off_ally: false,
+            crates: false,
+            mcv_redeploy: false,
+            tech_level: 3,
+            bases: false,
+            shroud: false,
+            ..GameOptions::default()
+        };
+
+        shell.apply_multiplayer_dialog_values(&options);
+
+        // Widget-backed fields are seeded into the live state.
+        assert_eq!(shell.starting_credits, 7400);
+        assert_eq!(shell.unit_count, 4);
+        // GameSpeed is stored as parsed; the trackbar handles display inversion.
+        assert_eq!(shell.game_speed, 4);
+        assert!(!shell.short_game);
+        assert!(!shell.super_weapons);
+        assert!(!shell.build_off_ally);
+        assert!(!shell.crates);
+        assert!(!shell.mcv_redeploy);
+        // Non-widget toggles ride on the launch base into the match.
+        assert_eq!(shell.launch_options_base.tech_level, 3);
+        assert!(!shell.launch_options_base.bases);
+        assert!(!shell.launch_options_base.shroud);
     }
 }
 

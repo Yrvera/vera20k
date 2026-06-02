@@ -35,9 +35,9 @@ const DAMAGE_FIRE_Z_ADJUST_BIAS: i32 = -10;
 pub(crate) fn tick_crane_animations(state: &mut AppState, dt_ms: u32) {
     if let Some(sim) = &mut state.simulation {
         // Advance all active building overlay animations using per-anim Rate.
-        let keys: Vec<u64> = sim.entities.keys_sorted();
+        let keys: Vec<u64> = sim.entities().keys_sorted();
         for &id in &keys {
-            let Some(entity) = sim.entities.get_mut(id) else {
+            let Some(entity) = sim.entities_mut().get_mut(id) else {
                 continue;
             };
             let Some(overlays) = entity.building_anim_overlays.as_mut() else {
@@ -101,7 +101,7 @@ pub(crate) fn tick_damage_fire_overlays(state: &mut AppState, dt_ms: u32) {
             return;
         };
 
-        sim.entities
+        sim.entities()
             .values()
             .filter_map(|entity| {
                 if entity.category != EntityCategory::Structure {
@@ -172,7 +172,7 @@ pub(crate) fn tick_damage_fire_overlays(state: &mut AppState, dt_ms: u32) {
 
         for plan in spawn_plans {
             let should_spawn = sim
-                .entities
+                .entities()
                 .get(plan.entity_id)
                 .is_some_and(|entity| entity.damage_fire_overlays.is_none());
             if !should_spawn {
@@ -189,7 +189,7 @@ pub(crate) fn tick_damage_fire_overlays(state: &mut AppState, dt_ms: u32) {
             if fires.is_empty() {
                 continue;
             }
-            if let Some(entity) = sim.entities.get_mut(plan.entity_id) {
+            if let Some(entity) = sim.entities_mut().get_mut(plan.entity_id) {
                 if entity.damage_fire_overlays.is_none() {
                     entity.damage_fire_overlays = Some(DamageFireOverlays { fires });
                 }
@@ -197,9 +197,9 @@ pub(crate) fn tick_damage_fire_overlays(state: &mut AppState, dt_ms: u32) {
         }
     }
 
-    let keys: Vec<u64> = sim.entities.keys_sorted();
+    let keys: Vec<u64> = sim.entities().keys_sorted();
     for &id in &keys {
-        let entity = match sim.entities.get_mut(id) {
+        let entity = match sim.entities_mut().get_mut(id) {
             Some(e) => e,
             None => continue,
         };
@@ -319,7 +319,7 @@ pub(crate) fn trigger_crane_anim(state: &mut AppState, owner: &str) {
             return;
         };
         // Use EntityStore O(1) lookup to find the type_id.
-        let Some(ge) = sim.entities.get(view.stable_id) else {
+        let Some(ge) = sim.entities().get(view.stable_id) else {
             return;
         };
         let type_str = sim.interner.resolve(ge.type_ref);
@@ -395,7 +395,7 @@ pub(crate) fn trigger_crane_anim(state: &mut AppState, owner: &str) {
     let Some(sim) = &mut state.simulation else {
         return;
     };
-    let Some(ge) = sim.entities.get_mut(stable_id) else {
+    let Some(ge) = sim.entities_mut().get_mut(stable_id) else {
         return;
     };
     if let Some(overlays) = ge.building_anim_overlays.as_mut() {
@@ -441,7 +441,7 @@ pub(crate) fn consume_bale_events(state: &mut AppState) {
         }
         let mut out: Vec<PerEvent> = Vec::with_capacity(sim.bale_events.len());
         for ev in &sim.bale_events {
-            let Some(building) = sim.entities.get(ev.building_id) else {
+            let Some(building) = sim.entities().get(ev.building_id) else {
                 continue;
             };
             let type_str = sim.interner.resolve(building.type_ref);
@@ -518,7 +518,7 @@ pub(crate) fn consume_bale_events(state: &mut AppState) {
     for ev in prepared {
         // 1) Push (or reset) the SpecialAnim in BuildingAnimOverlays.
         if let Some((anim_type, loop_start, loop_end, start_frame, rate)) = ev.special_anim {
-            if let Some(building) = sim.entities.get_mut(ev.building_id) {
+            if let Some(building) = sim.entities_mut().get_mut(ev.building_id) {
                 let new_state = AnimOverlayState {
                     anim_type,
                     frame: start_frame,

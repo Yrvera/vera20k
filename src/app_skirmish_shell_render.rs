@@ -11,8 +11,8 @@ mod preview;
 mod text;
 
 pub use draw_order::{
-    SkirmishShellDrawRole, choose_map_modal_semantic_draw_order,
-    skirmish_shell_semantic_draw_order, validation_modal_semantic_draw_order,
+    choose_map_modal_semantic_draw_order, skirmish_shell_semantic_draw_order,
+    validation_modal_semantic_draw_order, SkirmishShellDrawRole,
 };
 pub(crate) use preview::SkirmishPreviewTexture;
 pub(crate) use text::skirmish_right_panel_label_strings;
@@ -33,19 +33,19 @@ use crate::skirmish_modes::SkirmishGameMode;
 use crate::ui::main_menu::SkirmishCountry;
 #[cfg(test)]
 use crate::ui::skirmish_shell::{
-    COMBO_DROPDOWN_ROW_H, SkirmishComboId, combo_dropdown_content_rect, player_name_edit_text_rect,
+    combo_dropdown_content_rect, player_name_edit_text_rect, SkirmishComboId, COMBO_DROPDOWN_ROW_H,
 };
 use crate::ui::skirmish_shell::{
+    compute_choose_map_modal_layout, compute_layout, compute_validation_modal_layout,
     ChooseMapModalLayout, OwnerDrawButton, RectPx, SkirmishShellAction, SkirmishShellLayout,
-    SkirmishShellState, ValidationModalLayout, compute_choose_map_modal_layout, compute_layout,
-    compute_validation_modal_layout,
+    SkirmishShellState, ValidationModalLayout,
 };
 
 use self::chrome::*;
 use self::controls::*;
 #[cfg(test)]
 use self::draw_order::{
-    LowerStripRole, ParentBackgroundRole, lower_strip_role, parent_background_role,
+    lower_strip_role, parent_background_role, LowerStripRole, ParentBackgroundRole,
 };
 use self::modals::*;
 use self::preview::*;
@@ -67,6 +67,9 @@ const SHELL_EDIT_SELECTION_DEPTH: f32 = 0.00040;
 const SHELL_EDIT_CARET_DEPTH: f32 = 0.00037;
 const SHELL_DROPDOWN_DEPTH: f32 = 0.00034;
 const SHELL_DROPDOWN_TEXT_DEPTH: f32 = 0.00029;
+/// Software cursor draws on top of everything else on the shell (smallest
+/// depth). The original hides the OS cursor and blits the cursor SHP last.
+const SHELL_CURSOR_DEPTH: f32 = 0.00001;
 // Owner-draw dark text color 0x00000C05 decoded as RGB; kept for regression
 // tests that ensure Skirmish shell labels do not use this source accidentally.
 #[cfg(test)]
@@ -187,6 +190,7 @@ pub fn build_skirmish_shell_instances(
     layout: &SkirmishShellLayout,
     choose_map_layout: Option<&ChooseMapModalLayout>,
     validation_layout: Option<&ValidationModalLayout>,
+    validation_ok_pressed: bool,
     shell: &SkirmishShellState,
     color_schemes: &[ColorSchemeEntry],
     maps: &[MapMenuEntry],
@@ -365,11 +369,12 @@ pub fn build_skirmish_shell_instances(
     push_dropdown_instances(&mut instances, atlas, color_schemes, layout, shell, maps);
     if shell.validation_modal.is_some() {
         if let Some(validation_layout) = validation_layout {
-            let pressed = shell
-                .validation_modal
-                .as_ref()
-                .is_some_and(|modal| modal.ok_button_pressed);
-            push_validation_modal_instances(&mut instances, atlas, validation_layout, pressed);
+            push_validation_modal_instances(
+                &mut instances,
+                atlas,
+                validation_layout,
+                validation_ok_pressed,
+            );
         }
     }
     instances
@@ -414,6 +419,31 @@ pub(crate) fn render_skirmish_shell(
         },
         ShellRenderMode::Visible,
     )
+}
+
+/// Build the software-cursor sprite for the skirmish shell.
+///
+/// The shell renders in screen space with the camera at (0,0), so the cursor
+/// sits at the raw pointer position minus its hotspot — same convention as the
+/// main-menu shell. Returns None when no software cursor is loaded; the OS
+/// cursor is hidden process-wide, so without this the shell shows no pointer.
+fn shell_cursor_instance(state: &AppState) -> Option<SpriteInstance> {
+    let cursor = state.software_cursor.as_ref()?;
+    let sequence = cursor.get(crate::app_types::CursorId::Default)?;
+    let frame = crate::app_cursor::current_software_cursor_frame(sequence)?;
+    Some(SpriteInstance {
+        position: [
+            state.cursor_x - sequence.hotspot[0],
+            state.cursor_y - sequence.hotspot[1],
+        ],
+        size: [frame.width, frame.height],
+        uv_origin: [0.0, 0.0],
+        uv_size: [1.0, 1.0],
+        depth: SHELL_CURSOR_DEPTH,
+        tint: [1.0, 1.0, 1.0],
+        alpha: 1.0,
+        ..Default::default()
+    })
 }
 
 pub(crate) fn render_skirmish_shell_to_target(
@@ -505,12 +535,16 @@ fn render_skirmish_shell_with_atlas(
         .as_ref()
         .map(|rules| rules.color_schemes.as_slice())
         .unwrap_or(&[]);
+    let validation_ok_pressed = state.shell_controller.top_id()
+        == Some(crate::ui::shell::descriptor::DialogId(0x00CE))
+        && state.shell_controller.pressed() == Some(crate::ui::shell::modal::control::OK);
     let instances = build_skirmish_shell_instances(
         atlas,
         &state.bit_font,
         &layout,
         choose_map_layout.as_ref(),
         validation_layout.as_ref(),
+        validation_ok_pressed,
         &state.skirmish_shell_state,
         color_schemes,
         &state.skirmish_shell_maps,
@@ -542,7 +576,12 @@ fn render_skirmish_shell_with_atlas(
         push_choose_map_modal_text_draws(&mut shell_draws, state, choose_map_layout);
     }
     if let Some(validation_layout) = validation_layout.as_ref() {
-        push_validation_modal_text_draws(&mut shell_draws, state, validation_layout);
+        push_validation_modal_text_draws(
+            &mut shell_draws,
+            state,
+            validation_layout,
+            validation_ok_pressed,
+        );
     }
     let marker_label_instances = if draw_start_marker_overlays {
         build_start_marker_label_instances(state, &projected_start_positions)
@@ -579,6 +618,17 @@ fn render_skirmish_shell_with_atlas(
                 .create_instance_buffer(&state.gpu, &d.instances)
         })
         .collect();
+    let cursor_instances: Vec<SpriteInstance> = shell_cursor_instance(state).into_iter().collect();
+    let cursor_buffer = state
+        .batch_renderer
+        .create_instance_buffer(&state.gpu, &cursor_instances);
+    // Default-cursor frame-0 texture, borrowed for the duration of the pass.
+    let cursor_texture = state
+        .software_cursor
+        .as_ref()
+        .and_then(|cursor| cursor.get(crate::app_types::CursorId::Default))
+        .and_then(|sequence| sequence.frames.first())
+        .map(|frame| &frame.texture);
 
     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("Skirmish Shell"),
@@ -659,6 +709,12 @@ fn render_skirmish_shell_with_atlas(
     }
     // Reset scissor to full render so any subsequent draws / passes aren't clipped.
     pass.set_scissor_rect(0, 0, state.render_width(), state.render_height());
+    // Software cursor draws last, on top of all chrome/controls/modals.
+    if let (Some((buffer, count)), Some(texture)) = (cursor_buffer.as_ref(), cursor_texture) {
+        state
+            .batch_renderer
+            .draw_with_buffer_passthrough(&mut pass, texture, buffer, *count);
+    }
     drop(pass);
 
     Ok(action)
@@ -916,20 +972,6 @@ mod tests {
         assert_eq!(right_panel_button_sdbtnanm_frame_index(false, false), 2);
         assert_eq!(right_panel_button_sdbtnanm_frame_index(true, false), 4);
         assert_eq!(right_panel_button_sdbtnanm_frame_index(true, true), 2);
-    }
-
-    #[test]
-    fn validation_modal_button_uses_mnbttn_normal_and_pressed_frames() {
-        assert_eq!(modal_button_mnbttn_frame_index(false), 0);
-        assert_eq!(modal_button_mnbttn_frame_index(true), 1);
-    }
-
-    #[test]
-    fn validation_modal_button_draws_mnbttn_at_native_size_centered_on_control() {
-        let control = RectPx::new(485, 421, 125, 24);
-        let entry = test_entry(126.0, 25.0);
-
-        assert_eq!(modal_button_mnbttn_position(control, entry), [485.0, 421.0]);
     }
 
     #[test]

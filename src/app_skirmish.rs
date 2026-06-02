@@ -387,7 +387,7 @@ fn recount_house_owned_counts(sim: &mut Simulation) {
         house.owned_unit_count = 0;
     }
     let counts: Vec<_> = sim
-        .entities
+        .entities()
         .values()
         .map(|entity| (entity.owner, entity.category))
         .collect();
@@ -754,7 +754,7 @@ fn starting_mcv_cell_placeable(
     rx: u16,
     ry: u16,
 ) -> bool {
-    if sim.occupancy.get(rx, ry).is_some() {
+    if sim.occupancy().get(rx, ry).is_some() {
         return false;
     }
     let Some(cell) = resolved_terrain.cell(rx, ry) else {
@@ -930,7 +930,7 @@ mod tests {
     }
 
     fn entity_position_for_owner(sim: &Simulation, owner: &str) -> Option<(u16, u16)> {
-        sim.entities.values().find_map(|entity| {
+        sim.entities().values().find_map(|entity| {
             (sim.interner.resolve(entity.owner) == owner)
                 .then_some((entity.position.rx, entity.position.ry))
         })
@@ -1259,7 +1259,7 @@ mod tests {
 
         assert_eq!(result.spawned_mcvs, 0);
         assert_eq!(result.active_slots, 2);
-        assert_eq!(sim.entities.len(), 0);
+        assert_eq!(sim.entities().len(), 0);
         assert_eq!(
             crate::sim::house_state::house_state_for_owner(&sim.houses, "Player", &sim.interner)
                 .and_then(|house| house.base_center),
@@ -1294,7 +1294,7 @@ mod tests {
         );
 
         assert_eq!(result.spawned_mcvs, 0);
-        assert_eq!(sim.entities.len(), 2);
+        assert_eq!(sim.entities().len(), 2);
         assert_eq!(entity_position_for_owner(&sim, "Player"), Some((30, 30)));
         assert_eq!(entity_position_for_owner(&sim, "Computer1"), Some((10, 10)));
     }
@@ -1322,7 +1322,7 @@ mod tests {
 
         assert_eq!(result.spawned_mcvs, 2);
         assert_eq!(sim.game_options.unit_count, 0);
-        assert_eq!(sim.entities.len(), 2);
+        assert_eq!(sim.entities().len(), 2);
     }
 
     #[test]
@@ -1450,14 +1450,14 @@ mod tests {
         );
 
         assert_eq!(result.spawned_mcvs, 2);
-        assert_eq!(sim.entities.len(), 4);
+        assert_eq!(sim.entities().len(), 4);
         let player_units = sim
-            .entities
+            .entities()
             .values()
             .filter(|entity| sim.interner.resolve(entity.owner) == "Player")
             .count();
         let ai_units = sim
-            .entities
+            .entities()
             .values()
             .filter(|entity| sim.interner.resolve(entity.owner) == "Computer1")
             .count();

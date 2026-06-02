@@ -21,34 +21,41 @@ pub(crate) const WAVE_TAIL_TICKS: u32 = 6;
 /// Linear ramp length (delta 0..=5 inclusive => 6 steps).
 pub(crate) const WAVE_RAMP_STEPS: i32 = 6;
 
-/// SDBTNANM frame constants per button group, verified from the binary frame schedule.
-/// Each tuple is (held_before, ramp_base, held_after) for slide-IN; slide-OUT swaps
-/// held_before<->held_after and negates the ramp direction.
-/// Group A = enabled "active" buttons; Group B = the remaining buttons.
+/// SDBTNANM frame constants per button group, verified from `FUN_006071E0`.
+/// Each tuple is (held_before, ramp_base, held_after). With `dir() = -1` on
+/// slide-IN, the IN ramp counts DOWN from `base`; the held terminals are distinct
+/// constants, not `base`. Slide-OUT uses `dir() = +1` (ramp counts UP).
+/// Group A = regular owner-draw button cell (SDBTNANM 10→5, settle 1).
+/// Group B = the "second cell group" (SDBTNANM 16→11, settle 0) — not yet wired
+/// by any consumer.
 pub(crate) struct WaveFrames {
     pub before: i32,
     pub base: i32,
     pub after: i32,
 }
+/// SHOW: hold 10 → ramp 10,9,8,7,6,5 → settle 1.
 pub(crate) const GROUP_A_IN: WaveFrames = WaveFrames {
-    before: 1,
-    base: 5,
-    after: 10,
-};
-pub(crate) const GROUP_A_OUT: WaveFrames = WaveFrames {
     before: 10,
     base: 10,
     after: 1,
 };
-pub(crate) const GROUP_B_IN: WaveFrames = WaveFrames {
-    before: 0,
-    base: 11,
+/// CLOSE: hold 1 → ramp 5,6,7,8,9,10 → settle 10.
+pub(crate) const GROUP_A_OUT: WaveFrames = WaveFrames {
+    before: 1,
+    base: 5,
     after: 10,
 };
-pub(crate) const GROUP_B_OUT: WaveFrames = WaveFrames {
+/// SHOW: hold 10 → ramp 16,15,14,13,12,11 → settle 0.
+pub(crate) const GROUP_B_IN: WaveFrames = WaveFrames {
     before: 10,
     base: 16,
     after: 0,
+};
+/// CLOSE: hold 0 → ramp 11,12,13,14,15,16 → settle 10.
+pub(crate) const GROUP_B_OUT: WaveFrames = WaveFrames {
+    before: 0,
+    base: 11,
+    after: 10,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,11 +95,13 @@ impl ShellSlideKind {
 }
 
 impl WaveDirection {
-    /// frame multiplier: +1 on slide-in, -1 on slide-out.
+    /// frame multiplier: -1 on slide-in (frames count DOWN, e.g. 10→5), +1 on
+    /// slide-out (frames count UP). Matches gamemd `FUN_006071E0` ramp direction
+    /// (-1 on show / +1 on close).
     fn dir(self) -> i32 {
         match self {
-            WaveDirection::SlideIn => 1,
-            WaveDirection::SlideOut => -1,
+            WaveDirection::SlideIn => -1,
+            WaveDirection::SlideOut => 1,
         }
     }
 }
@@ -196,7 +205,11 @@ pub(crate) fn advance_shell_static_reveals(state: &mut AppState) {
 }
 
 pub(crate) fn blocks_shell_input(state: &AppState) -> bool {
-    transition_blocks_shell_input(state.shell_first_paint_slide.as_ref())
+    // The graceful quit cascade also freezes shell input (the original processes
+    // no input during its blocking teardown), so a stray click can't re-enter the
+    // menu mid-fade.
+    state.quit_cascade.is_some()
+        || transition_blocks_shell_input(state.shell_first_paint_slide.as_ref())
 }
 
 pub(crate) fn transition_blocks_shell_input(transition: Option<&ShellFrameWave>) -> bool {
@@ -352,31 +365,31 @@ mod tests {
     }
 
     #[test]
-    fn group_a_slide_in_holds_1_ramps_5_to_10_then_holds_10() {
+    fn group_a_slide_in_holds_10_ramps_10_to_5_then_holds_1() {
         let t0 = Instant::now();
         let mut w = ShellFrameWave::new_first_paint_slide(3, t0);
-        // slot 1 enters at tick 2; before that it holds at the "before" terminal = 1.
-        assert_eq!(w.sdbtnanm_frame(1, ButtonGroup::A), 1);
+        // slot 1 enters at tick 2; before that it holds at the "before" terminal = 10.
+        assert_eq!(w.sdbtnanm_frame(1, ButtonGroup::A), 10);
         for _ in 0..2 {
             w.tick += 1;
-        } // tick = 2 => delta 0 => base 5
+        } // tick = 2 => delta 0 => base 10
+        assert_eq!(w.sdbtnanm_frame(1, ButtonGroup::A), 10);
+        w.tick += 5; // delta 5 => 10 + 5*-1 = 5 (last ramp step)
         assert_eq!(w.sdbtnanm_frame(1, ButtonGroup::A), 5);
-        w.tick += 5; // delta 5 => 5 + 5 = 10 (last ramp step)
-        assert_eq!(w.sdbtnanm_frame(1, ButtonGroup::A), 10);
-        w.tick += 3; // delta >= 6 => held "after" terminal = 10
-        assert_eq!(w.sdbtnanm_frame(1, ButtonGroup::A), 10);
+        w.tick += 3; // delta >= 6 => held "after" terminal = 1
+        assert_eq!(w.sdbtnanm_frame(1, ButtonGroup::A), 1);
     }
 
     #[test]
-    fn group_b_slide_in_holds_0_ramps_11_to_16_then_holds_10() {
+    fn group_b_slide_in_holds_10_ramps_16_to_11_then_holds_0() {
         let t0 = Instant::now();
         let mut w = ShellFrameWave::new_first_paint_slide(3, t0);
-        assert_eq!(w.sdbtnanm_frame(0, ButtonGroup::B), 0); // before-entry (slot 0 enters tick 1)
-        w.tick += 1; // delta 0 => base 11
-        assert_eq!(w.sdbtnanm_frame(0, ButtonGroup::B), 11);
-        w.tick += 5; // delta 5 => 16
+        assert_eq!(w.sdbtnanm_frame(0, ButtonGroup::B), 10); // before-entry (slot 0 enters tick 1)
+        w.tick += 1; // delta 0 => base 16
         assert_eq!(w.sdbtnanm_frame(0, ButtonGroup::B), 16);
-        w.tick += 3; // delta >= 6 => held "after" = 10
-        assert_eq!(w.sdbtnanm_frame(0, ButtonGroup::B), 10);
+        w.tick += 5; // delta 5 => 16 + 5*-1 = 11
+        assert_eq!(w.sdbtnanm_frame(0, ButtonGroup::B), 11);
+        w.tick += 3; // delta >= 6 => held "after" = 0
+        assert_eq!(w.sdbtnanm_frame(0, ButtonGroup::B), 0);
     }
 }

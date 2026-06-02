@@ -42,13 +42,13 @@ fn rules_with_mtnk_rot(rot: u32) -> RuleSet {
 fn spawn_turreted(sim: &mut Simulation, stable_id: u64, rx: u16, ry: u16, rot_byte: u8) {
     let mut entity = GameEntity::test_default(stable_id, "MTNK", "Americans", rx, ry);
     entity.barrel_facing = Some(FacingClass::new(body_facing_to_turret(0), rot_byte));
-    sim.entities.insert(entity);
+    sim.substrate.entities.insert(entity);
 }
 
 /// Spawn a passive target at (rx, ry).
 fn spawn_target(sim: &mut Simulation, stable_id: u64, rx: u16, ry: u16) {
     let entity = GameEntity::test_default(stable_id, "GAPILE", "Soviet", rx, ry);
-    sim.entities.insert(entity);
+    sim.substrate.entities.insert(entity);
 }
 
 /// Replace sim's interner with the thread-local test interner so entity
@@ -71,16 +71,16 @@ fn one_tick_acquisition_latency_first_tick_no_fire() {
     let rules = rules_with_mtnk_rot(100);
 
     // Attach attack_target so combat will try to fire on the next tick.
-    if let Some(e) = sim.entities.get_mut(1) {
+    if let Some(e) = sim.substrate.entities.get_mut(1) {
         e.attack_target = Some(AttackTarget::new(2));
     }
 
-    let initial_target_health = sim.entities.get(2).unwrap().health.current;
+    let initial_target_health = sim.substrate.entities.get(2).unwrap().health.current;
     sim.advance_tick(&[], Some(&rules), &empty_height_map(), None, None, 67);
 
     // Target should still be alive — combat ran before turret rotation, so
     // turret was at facing 0 (body), not aligned with target.
-    let target_health_after_one_tick = sim.entities.get(2).unwrap().health.current;
+    let target_health_after_one_tick = sim.substrate.entities.get(2).unwrap().health.current;
     assert_eq!(
         target_health_after_one_tick, initial_target_health,
         "First tick after acquisition should not fire (1-tick latency)"
@@ -104,8 +104,8 @@ fn slow_rot_takes_more_frames_to_align_than_fast_rot() {
     let rules_fast = rules_with_mtnk_rot(10);
 
     // Attach attack_target on both.
-    sim_slow.entities.get_mut(1).unwrap().attack_target = Some(AttackTarget::new(2));
-    sim_fast.entities.get_mut(1).unwrap().attack_target = Some(AttackTarget::new(2));
+    sim_slow.substrate.entities.get_mut(1).unwrap().attack_target = Some(AttackTarget::new(2));
+    sim_fast.substrate.entities.get_mut(1).unwrap().attack_target = Some(AttackTarget::new(2));
 
     // Compute the expected duration: from facing 0 (north, after body_facing_to_turret(0))
     // to facing south (~32768). Diff = 32768. ROT=1: duration = 32768/256 = 128 frames.
@@ -119,7 +119,7 @@ fn slow_rot_takes_more_frames_to_align_than_fast_rot() {
     }
 
     let slow_rotating = sim_slow
-        .entities
+        .substrate.entities
         .get(1)
         .unwrap()
         .barrel_facing
@@ -127,7 +127,7 @@ fn slow_rot_takes_more_frames_to_align_than_fast_rot() {
         .map(|f| f.is_rotating(sim_slow.binary_frame))
         .unwrap_or(false);
     let fast_rotating = sim_fast
-        .entities
+        .substrate.entities
         .get(1)
         .unwrap()
         .barrel_facing
@@ -154,7 +154,7 @@ fn idle_turret_returns_to_body_facing() {
     entity.barrel_facing = Some(FacingClass::new(body_facing_to_turret(0), 100));
     // ROT=100 → rot_per_frame=25600. Diff from 0 (north turret) to body_facing_to_turret(64) =
     // 64*256 = 16384. Duration = 16384/25600 = 0 → snaps in 1 frame.
-    sim.entities.insert(entity);
+    sim.substrate.entities.insert(entity);
     use_test_interner(&mut sim);
     let rules = rules_with_mtnk_rot(100);
 
@@ -162,7 +162,7 @@ fn idle_turret_returns_to_body_facing() {
     sim.advance_tick(&[], Some(&rules), &empty_height_map(), None, None, 67);
     sim.advance_tick(&[], Some(&rules), &empty_height_map(), None, None, 67);
 
-    let barrel = sim.entities.get(1).unwrap().barrel_facing.as_ref().unwrap();
+    let barrel = sim.substrate.entities.get(1).unwrap().barrel_facing.as_ref().unwrap();
     assert_eq!(
         barrel.destination(),
         body_facing_to_turret(64),

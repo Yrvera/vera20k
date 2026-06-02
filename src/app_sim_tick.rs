@@ -59,7 +59,7 @@ pub(crate) fn build_animation_sequences(
 
     let mut data_driven_count: usize = 0;
 
-    for entity in sim.entities.values() {
+    for entity in sim.entities().values() {
         let type_str = sim.interner.resolve(entity.type_ref);
         if sequences.contains_key(type_str) {
             continue;
@@ -289,27 +289,32 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                 state.overlay_registry.as_ref(),
                 SIM_TICK_MS,
             );
+            let (ents, interner) = sim.entities_mut_and_interner();
             let death_finished = animation::tick_animations(
-                &mut sim.entities,
+                ents,
                 &state.animation_sequences,
                 SIM_TICK_MS,
-                &sim.interner,
+                interner,
             );
             // Despawn entities whose death animation has completed.
             for dead_id in &death_finished {
                 // Remove from occupancy before despawning.
-                if let Some(entity) = sim.entities.get(*dead_id) {
+                if let Some(entity) = sim.entities().get(*dead_id) {
                     let rx = entity.position.rx;
                     let ry = entity.position.ry;
-                    sim.occupancy.remove(rx, ry, *dead_id);
+                    sim.occupancy_mut().remove(rx, ry, *dead_id);
                 }
                 sim.uninit(*dead_id);
             }
             if !death_finished.is_empty() {
+                // Anim-end corpses were uninit'd above (enqueued). Drain now so they
+                // free at exactly this frame — the deferred queue must not carry an
+                // animated death into the next tick.
+                sim.flush_pending_delete();
                 refresh_after_tick = true;
             }
-            animation::tick_voxel_animations(&mut sim.entities, SIM_TICK_MS);
-            animation::tick_harvest_overlays(&mut sim.entities, SIM_TICK_MS);
+            animation::tick_voxel_animations(sim.entities_mut(), SIM_TICK_MS);
+            animation::tick_harvest_overlays(sim.entities_mut(), SIM_TICK_MS);
             // Pre-merge fog visibility for local owner so render queries are O(1).
             if let Some(owner) = &local_owner_for_fog {
                 if sim.tick == 1 {
@@ -857,7 +862,7 @@ pub(crate) fn rebuild_dynamic_path_grid(state: &mut AppState) {
         PathGrid::from_resolved_terrain_with_bridges(terrain, sim.bridge_state.as_ref());
 
     let mut structures: Vec<(u16, u16, String)> = sim
-        .entities
+        .entities()
         .values()
         .filter_map(|entity| {
             (entity.category == EntityCategory::Structure).then_some((
@@ -976,7 +981,7 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
 
     // Check if unit atlas needs rebuilding (new voxel entity types appeared).
     let unit_needed = unit_atlas::collect_needed_unit_keys(
-        &sim.entities,
+        sim.entities(),
         asset_manager,
         state.rules.as_ref(),
         state.art_registry.as_ref(),
@@ -989,12 +994,12 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
 
     // Check if sprite atlas needs rebuilding (new SHP entity types appeared).
     let extra_buildings: Vec<&str> = crate::app_skirmish::deployable_building_types(
-        &sim.entities,
+        sim.entities(),
         state.rules.as_ref(),
         Some(&sim.interner),
     );
     let sprite_base_keys = sprite_atlas::collect_needed_base_keys(
-        &sim.entities,
+        sim.entities(),
         &state.house_color_map,
         &extra_buildings,
         Some(&sim.interner),
@@ -1022,7 +1027,7 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
         if let Some(new_unit_atlas) = unit_atlas::build_unit_atlas(
             &state.gpu,
             &state.batch_renderer,
-            &sim.entities,
+            sim.entities(),
             asset_manager,
             state.rules.as_ref(),
             state.art_registry.as_ref(),
@@ -1040,7 +1045,7 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
         if let Some(new_sprite_atlas) = sprite_atlas::build_sprite_atlas(
             &state.gpu,
             &state.batch_renderer,
-            &sim.entities,
+            sim.entities(),
             asset_manager,
             &palette,
             &state.theater_ext,

@@ -64,6 +64,7 @@ use crate::sim::selection::SelectionState;
 use crate::sim::world::Simulation;
 use crate::ui::game_screen::GameScreen;
 use crate::ui::main_menu::{self, SkirmishSettings};
+use crate::ui::shell::controller::ShellKey;
 use crate::util::config::GameConfig;
 
 const DEV_SKIRMISH_SHELL_ENV: &str = "RA2_DEV_SKIRMISH_SHELL";
@@ -169,6 +170,11 @@ pub(crate) struct AppState {
     pub(crate) loading_progress: crate::app_loading::LoadingProgressState,
     pub(crate) main_menu_shell_state: crate::ui::main_menu_shell::MainMenuShellState,
     pub(crate) single_player_shell_state: crate::ui::single_player_shell::SinglePlayerShellState,
+    /// Shared descriptor-driven input authority for the front-end shell dialogs
+    /// (0xE2 main menu, 0x100 single player). Owns hit-test + press-must-match;
+    /// its press/hover state is mirrored back into the per-shell structs above for
+    /// the render path (substrate Slice 2).
+    pub(crate) shell_controller: crate::ui::shell::controller::DialogController,
     pub(crate) main_menu_shell_chrome:
         Option<crate::render::main_menu_shell_chrome::MainMenuShellChromeAtlas>,
     pub(crate) main_menu_movie: Option<crate::render::bink_movie::BinkMovieSurface>,
@@ -191,6 +197,10 @@ pub(crate) struct AppState {
     /// edge detection so the slide (re)starts on entry into each shell and is
     /// cancelled on leaving all of them.
     pub(crate) shell_slide_active_shell: Option<crate::app_shell_transition::ShellSlideKind>,
+    /// Active graceful quit cascade (music fade → trailing-voice wait → hard stop
+    /// → exit). Some only between Exit-confirm OK and window close; freezes shell
+    /// input while it runs.
+    pub(crate) quit_cascade: Option<crate::app_quit_cascade::QuitCascade>,
     pub(crate) minimap: Option<MinimapRenderer>,
     /// True while left-dragging on minimap (camera pan mode).
     pub(crate) minimap_dragging: bool,
@@ -530,6 +540,30 @@ impl App {
         )
     }
 
+    fn validation_modal_dialog_id() -> crate::ui::shell::descriptor::DialogId {
+        crate::ui::shell::descriptor::DialogId(0x00CE)
+    }
+
+    fn validation_modal_feed(state: &AppState) -> Vec<crate::ui::shell::layout::LaidOutControl> {
+        let layout = crate::ui::skirmish_shell::compute_validation_modal_layout(
+            state.render_width(),
+            state.render_height(),
+        );
+        vec![crate::ui::shell::layout::LaidOutControl {
+            id: crate::ui::shell::modal::control::OK,
+            rect: layout.ok_button,
+        }]
+    }
+
+    fn shell_key_for_code(code: KeyCode) -> Option<ShellKey> {
+        match code {
+            KeyCode::Tab => Some(ShellKey::Tab),
+            KeyCode::Enter | KeyCode::NumpadEnter => Some(ShellKey::Enter),
+            KeyCode::Escape => Some(ShellKey::Escape),
+            _ => None,
+        }
+    }
+
     fn close_native_skirmish_shell(state: &mut AppState) {
         state.main_menu_show_native_skirmish_shell = false;
         state.shell_first_paint_slide = None;
@@ -737,8 +771,9 @@ impl App {
             }
         }
         // Confirm modal can be open over the legacy egui menu too; draw it in
-        // the same frame so its buttons receive input.
-        let confirm = Self::draw_main_menu_dialogs(state);
+        // the same frame so its buttons receive input. This degraded egui path has
+        // no SHP shell, so the quit-confirm renders as the egui card here.
+        let confirm = Self::draw_main_menu_dialogs(state, true);
         // Degraded fallback (shell chrome failed to load) has no SHP cursor of
         // its own, so keep the OS cursor visible here rather than hiding it and
         // leaving the egui menu with no pointer at all.
@@ -871,6 +906,9 @@ impl App {
         modal: crate::ui::skirmish_shell::SkirmishValidationModalState,
     ) {
         state.skirmish_shell_state.validation_modal = Some(modal);
+        state
+            .shell_controller
+            .ensure_active(Self::validation_modal_dialog_id(), true);
         state.skirmish_shell_state.pressed_owner_draw_button = None;
         state.skirmish_shell_state.open_combo_dropdown = None;
         state.skirmish_shell_state.dropdown_scroll_drag = None;
@@ -1298,71 +1336,63 @@ impl App {
         true
     }
 
-    fn is_validation_modal_dismissal_key(code: KeyCode) -> bool {
-        matches!(
-            code,
-            KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Escape
-        )
-    }
-
-    fn handle_validation_modal_key_input(state: &mut AppState, code: KeyCode) -> bool {
-        if state.skirmish_shell_state.validation_modal.is_none()
-            || !Self::is_validation_modal_dismissal_key(code)
-        {
-            return false;
-        }
-
+    fn close_validation_modal_from_controller(state: &mut AppState) {
         crate::ui::skirmish_shell::dismiss_validation_modal(&mut state.skirmish_shell_state);
+        if state.shell_controller.top_id() == Some(Self::validation_modal_dialog_id()) {
+            state.shell_controller.pop();
+        }
+    }
+
+    fn route_validation_modal_key(state: &mut AppState, key: ShellKey) -> bool {
+        if state.skirmish_shell_state.validation_modal.is_none() {
+            return false;
+        }
+        state
+            .shell_controller
+            .ensure_active(Self::validation_modal_dialog_id(), true);
+        if !state.shell_controller.on_key(key) {
+            return false;
+        }
+        Self::close_validation_modal_from_controller(state);
         state.window.request_redraw();
         true
     }
 
-    fn handle_validation_modal_mouse_down(state: &mut AppState) -> bool {
+    fn route_validation_modal_mouse_down(state: &mut AppState) -> bool {
         if state.skirmish_shell_state.validation_modal.is_none() {
             return false;
         }
-        let layout = crate::ui::skirmish_shell::compute_validation_modal_layout(
-            state.render_width(),
-            state.render_height(),
-        );
+        let feed = Self::validation_modal_feed(state);
         let x = state.cursor_x.round() as i32;
         let y = state.cursor_y.round() as i32;
-        if let Some(modal) = state.skirmish_shell_state.validation_modal.as_mut() {
-            modal.ok_button_pressed = layout.ok_button.contains(x, y);
-        }
+        state
+            .shell_controller
+            .ensure_active(Self::validation_modal_dialog_id(), true);
+        state.shell_controller.on_pointer_down(x, y, &feed);
         state.window.request_redraw();
         true
     }
 
-    fn handle_validation_modal_mouse_up(state: &mut AppState) -> bool {
+    fn route_validation_modal_mouse_up(state: &mut AppState) -> bool {
         if state.skirmish_shell_state.validation_modal.is_none() {
             return false;
         }
-        let layout = crate::ui::skirmish_shell::compute_validation_modal_layout(
-            state.render_width(),
-            state.render_height(),
-        );
+        let feed = Self::validation_modal_feed(state);
         let x = state.cursor_x.round() as i32;
         let y = state.cursor_y.round() as i32;
-        let was_pressed = state
-            .skirmish_shell_state
-            .validation_modal
-            .as_mut()
-            .map(|modal| {
-                let was_pressed = modal.ok_button_pressed;
-                modal.ok_button_pressed = false;
-                was_pressed
-            })
-            .unwrap_or(false);
-        if was_pressed && layout.ok_button.contains(x, y) {
-            crate::ui::skirmish_shell::dismiss_validation_modal(&mut state.skirmish_shell_state);
+        state
+            .shell_controller
+            .ensure_active(Self::validation_modal_dialog_id(), true);
+        let activated = state.shell_controller.on_pointer_up(x, y, &feed);
+        if activated == Some(crate::ui::shell::modal::control::OK) {
+            Self::close_validation_modal_from_controller(state);
         }
         state.window.request_redraw();
         true
     }
 
     fn handle_skirmish_shell_mouse_down(state: &mut AppState) {
-        if Self::handle_validation_modal_mouse_down(state) {
+        if Self::route_validation_modal_mouse_down(state) {
             return;
         }
         if Self::handle_choose_map_modal_mouse_down(state) {
@@ -1413,7 +1443,7 @@ impl App {
     }
 
     fn handle_skirmish_shell_mouse_up(state: &mut AppState, event_loop: &ActiveEventLoop) {
-        if Self::handle_validation_modal_mouse_up(state) {
+        if Self::route_validation_modal_mouse_up(state) {
             return;
         }
         if state.skirmish_shell_state.choose_map_modal.is_some() {
@@ -1491,26 +1521,97 @@ impl App {
         consumed
     }
 
+    /// Adapt the laid-out main-menu buttons into the shared controller's
+    /// button-only input feed. Statics (title/website) are deliberately excluded,
+    /// so the controller never hit-tests or hover-tracks them.
+    fn main_menu_shell_button_feed(
+        layout: &crate::ui::main_menu_shell::MainMenuShellLayout,
+    ) -> Vec<crate::ui::shell::layout::LaidOutControl> {
+        layout
+            .buttons
+            .iter()
+            .map(|b| crate::ui::shell::layout::LaidOutControl {
+                id: b.id.resource_id(),
+                rect: b.rect,
+            })
+            .collect()
+    }
+
+    fn single_player_shell_button_feed(
+        layout: &crate::ui::single_player_shell::SinglePlayerShellLayout,
+    ) -> Vec<crate::ui::shell::layout::LaidOutControl> {
+        layout
+            .buttons
+            .iter()
+            .map(|b| crate::ui::shell::layout::LaidOutControl {
+                id: b.id.resource_id(),
+                rect: b.rect,
+            })
+            .collect()
+    }
+
+    /// Mirror the controller's press/hover state into the per-shell struct the
+    /// render path reads. Slice-2/Slice-3 boundary: render is retired off these in
+    /// Slice 3, after which the controller is the sole authority.
+    fn mirror_shell_controller_to_main_menu(state: &mut AppState) {
+        state.main_menu_shell_state.pressed_owner_draw_button = state
+            .shell_controller
+            .pressed()
+            .and_then(crate::ui::main_menu_shell::MainMenuControlId::from_resource_id);
+        state.main_menu_shell_state.hovered_owner_draw_button = state
+            .shell_controller
+            .hovered()
+            .and_then(crate::ui::main_menu_shell::MainMenuControlId::from_resource_id);
+    }
+
+    fn mirror_shell_controller_to_single_player(state: &mut AppState) {
+        state.single_player_shell_state.pressed_owner_draw_button = state
+            .shell_controller
+            .pressed()
+            .and_then(crate::ui::single_player_shell::SinglePlayerControlId::from_resource_id);
+        state.single_player_shell_state.hovered_owner_draw_button = state
+            .shell_controller
+            .hovered()
+            .and_then(crate::ui::single_player_shell::SinglePlayerControlId::from_resource_id);
+        state.single_player_shell_state.hover_started_at =
+            state.shell_controller.hover_started_at();
+    }
+
     fn handle_main_menu_shell_mouse_down(state: &mut AppState) {
         let layout = crate::ui::main_menu_shell::compute_layout(
             state.gpu.config.width,
             state.gpu.config.height,
         );
-        crate::ui::main_menu_shell::mouse_down(
-            &mut state.main_menu_shell_state,
-            &layout,
-            state.cursor_x.round() as i32,
-            state.cursor_y.round() as i32,
-        );
-        if crate::ui::main_menu_shell::hit_test_owner_draw_button(
-            &layout,
-            state.cursor_x.round() as i32,
-            state.cursor_y.round() as i32,
-        )
-        .is_some()
-        {
+        let feed = Self::main_menu_shell_button_feed(&layout);
+        let x = state.cursor_x.round() as i32;
+        let y = state.cursor_y.round() as i32;
+        state
+            .shell_controller
+            .ensure_active(crate::ui::shell::descriptor::DialogId(0x00E2), false);
+        state.shell_controller.on_pointer_down(x, y, &feed);
+        let pressed = state.shell_controller.pressed().is_some();
+        Self::mirror_shell_controller_to_main_menu(state);
+        // The original plays the button sound on mouse-DOWN over a button (not on
+        // release); `pressed` is button-only by construction, so the website static
+        // never triggers it.
+        if pressed {
             Self::play_main_menu_button_sound(state);
         }
+    }
+
+    fn handle_main_menu_shell_mouse_move(state: &mut AppState) {
+        let layout = crate::ui::main_menu_shell::compute_layout(
+            state.gpu.config.width,
+            state.gpu.config.height,
+        );
+        let feed = Self::main_menu_shell_button_feed(&layout);
+        let x = state.cursor_x.round() as i32;
+        let y = state.cursor_y.round() as i32;
+        state
+            .shell_controller
+            .ensure_active(crate::ui::shell::descriptor::DialogId(0x00E2), false);
+        state.shell_controller.on_pointer_move(x, y, &feed);
+        Self::mirror_shell_controller_to_main_menu(state);
     }
 
     fn handle_main_menu_shell_mouse_up(state: &mut AppState, event_loop: &ActiveEventLoop) {
@@ -1518,51 +1619,172 @@ impl App {
             state.gpu.config.width,
             state.gpu.config.height,
         );
-        let action = crate::ui::main_menu_shell::mouse_up(
-            &mut state.main_menu_shell_state,
-            &layout,
-            state.cursor_x.round() as i32,
-            state.cursor_y.round() as i32,
+        let feed = Self::main_menu_shell_button_feed(&layout);
+        let x = state.cursor_x.round() as i32;
+        let y = state.cursor_y.round() as i32;
+        state
+            .shell_controller
+            .ensure_active(crate::ui::shell::descriptor::DialogId(0x00E2), false);
+        let activated = state.shell_controller.on_pointer_up(x, y, &feed);
+        Self::mirror_shell_controller_to_main_menu(state);
+        if let Some(action) = activated
+            .and_then(crate::ui::main_menu_shell::MainMenuControlId::from_resource_id)
+            .map(crate::ui::main_menu_shell::action_for_control)
+        {
+            Self::handle_main_menu_shell_action(state, action, event_loop);
+        }
+    }
+
+    /// The quit-confirm (0x120) modal's OK/Cancel button feed: resource-id'd pixel
+    /// rects from the centered modal layout at the live screen size.
+    fn exit_confirm_modal_feed(state: &AppState) -> Vec<crate::ui::shell::layout::LaidOutControl> {
+        use crate::ui::shell::layout::LaidOutControl;
+        use crate::ui::shell::modal;
+        let layout = modal::quit_confirm_layout(
+            state.gpu.config.width as i32,
+            state.gpu.config.height as i32,
         );
-        Self::handle_main_menu_shell_action(state, action, event_loop);
+        vec![
+            LaidOutControl {
+                id: modal::control::OK,
+                rect: layout.ok,
+            },
+            LaidOutControl {
+                id: modal::control::CANCEL,
+                rect: layout.cancel,
+            },
+        ]
+    }
+
+    /// Persist the user-tunable settings the engine currently tracks to
+    /// `RA2MD.INI`, preserving the file's other keys and sections. Invoked on
+    /// quit-confirm OK strictly BEFORE the app tears down, matching the
+    /// original writing options before exit. Today only `[Audio] ScoreVolume`
+    /// (the live music volume, already read at boot) round-trips; further
+    /// sections are added as the engine grows to model them. A write failure is
+    /// logged, never fatal — a quit must not be blocked by a settings error.
+    fn persist_settings_on_quit(state: &AppState) {
+        let Some(config) = state.game_config.as_ref() else {
+            return;
+        };
+        let Some(player) = state.music_player.as_ref() else {
+            return;
+        };
+        if let Err(err) =
+            crate::audio::music::write_score_volume_to_ra2md(&config.paths.ra2_dir, player.volume())
+        {
+            log::warn!("Failed to persist settings to RA2MD.INI on quit: {err}");
+        }
+    }
+
+    /// Begin the graceful quit cascade from the main-menu Exit-confirm OK. The
+    /// caller persists settings FIRST (so the captured volume is pre-fade), then
+    /// calls this instead of exiting immediately; `render_frame` drives it to
+    /// completion and then exits the event loop.
+    fn start_quit_cascade(state: &mut AppState) {
+        let start_volume = state.music_player.as_ref().map_or(0.0, |p| p.volume());
+        state.quit_cascade = Some(crate::app_quit_cascade::QuitCascade::start(
+            Instant::now(),
+            start_volume,
+        ));
+    }
+
+    fn handle_exit_confirm_modal_mouse_down(state: &mut AppState) {
+        let feed = Self::exit_confirm_modal_feed(state);
+        let x = state.cursor_x.round() as i32;
+        let y = state.cursor_y.round() as i32;
+        state
+            .shell_controller
+            .ensure_active(crate::ui::shell::descriptor::DialogId(0x0120), true);
+        state.shell_controller.on_pointer_down(x, y, &feed);
+    }
+
+    fn handle_exit_confirm_modal_mouse_up(state: &mut AppState) {
+        let feed = Self::exit_confirm_modal_feed(state);
+        let x = state.cursor_x.round() as i32;
+        let y = state.cursor_y.round() as i32;
+        state
+            .shell_controller
+            .ensure_active(crate::ui::shell::descriptor::DialogId(0x0120), true);
+        let activated = state.shell_controller.on_pointer_up(x, y, &feed);
+        match activated {
+            // OK -> quit (result 0). Persist settings to RA2MD.INI BEFORE teardown
+            // (4b-i), then run the graceful cascade (music fade → trailing-voice
+            // wait → hard stop → exit) via render_frame instead of exiting
+            // immediately. The screen fade-to-black is sub-step 4b-ii-b.
+            Some(id) if id == crate::ui::shell::modal::control::OK => {
+                Self::persist_settings_on_quit(state);
+                state.exit_confirm_modal = None;
+                Self::start_quit_cascade(state);
+            }
+            // Cancel (control 2) -> stay; close the modal.
+            Some(id) if id == crate::ui::shell::modal::control::CANCEL => {
+                Self::close_main_menu_dialogs(state);
+                state.window.request_redraw();
+            }
+            _ => {}
+        }
     }
 
     fn handle_single_player_shell_mouse_down(state: &mut AppState) {
         let layout = Self::single_player_shell_layout(state);
-        crate::ui::single_player_shell::mouse_down(
-            &mut state.single_player_shell_state,
-            &layout,
-            state.cursor_x.round() as i32,
-            state.cursor_y.round() as i32,
+        let feed = Self::single_player_shell_button_feed(&layout);
+        let x = state.cursor_x.round() as i32;
+        let y = state.cursor_y.round() as i32;
+        let load_enabled = state.single_player_shell_state.load_saved_game_enabled;
+        state
+            .shell_controller
+            .ensure_active(crate::ui::shell::descriptor::DialogId(0x0100), false);
+        // Refresh the Load Saved Game disabled guard before the gesture; the
+        // override persists through the matching release (ensure_active only resets
+        // on a dialog change, never mid-gesture).
+        state.shell_controller.set_disabled(
+            crate::ui::single_player_shell::SinglePlayerControlId::LoadSavedGame0x689.resource_id(),
+            !load_enabled,
         );
-        if state
-            .single_player_shell_state
-            .pressed_owner_draw_button
-            .is_some()
-        {
+        state.shell_controller.on_pointer_down(x, y, &feed);
+        let pressed = state.shell_controller.pressed().is_some();
+        Self::mirror_shell_controller_to_single_player(state);
+        if pressed {
             Self::play_main_menu_button_sound(state);
         }
     }
 
     fn handle_single_player_shell_mouse_move(state: &mut AppState) {
         let layout = Self::single_player_shell_layout(state);
-        crate::ui::single_player_shell::mouse_move(
-            &mut state.single_player_shell_state,
-            &layout,
-            state.cursor_x.round() as i32,
-            state.cursor_y.round() as i32,
-        );
+        let feed = Self::single_player_shell_button_feed(&layout);
+        let x = state.cursor_x.round() as i32;
+        let y = state.cursor_y.round() as i32;
+        state
+            .shell_controller
+            .ensure_active(crate::ui::shell::descriptor::DialogId(0x0100), false);
+        // Hover path is enable-UNfiltered: a disabled Load Saved Game still
+        // hover-tracks and arms its tooltip timer, exactly as before.
+        state.shell_controller.on_pointer_move(x, y, &feed);
+        Self::mirror_shell_controller_to_single_player(state);
     }
 
     fn handle_single_player_shell_mouse_up(state: &mut AppState) {
         let layout = Self::single_player_shell_layout(state);
-        let action = crate::ui::single_player_shell::mouse_up(
-            &mut state.single_player_shell_state,
-            &layout,
-            state.cursor_x.round() as i32,
-            state.cursor_y.round() as i32,
+        let feed = Self::single_player_shell_button_feed(&layout);
+        let x = state.cursor_x.round() as i32;
+        let y = state.cursor_y.round() as i32;
+        let load_enabled = state.single_player_shell_state.load_saved_game_enabled;
+        state
+            .shell_controller
+            .ensure_active(crate::ui::shell::descriptor::DialogId(0x0100), false);
+        state.shell_controller.set_disabled(
+            crate::ui::single_player_shell::SinglePlayerControlId::LoadSavedGame0x689.resource_id(),
+            !load_enabled,
         );
-        Self::handle_single_player_shell_action(state, action);
+        let activated = state.shell_controller.on_pointer_up(x, y, &feed);
+        Self::mirror_shell_controller_to_single_player(state);
+        if let Some(action) = activated
+            .and_then(crate::ui::single_player_shell::SinglePlayerControlId::from_resource_id)
+            .map(crate::ui::single_player_shell::action_for_control)
+        {
+            Self::handle_single_player_shell_action(state, action);
+        }
     }
 
     fn play_main_menu_button_sound(state: &mut AppState) {
@@ -1706,9 +1928,16 @@ impl App {
     /// Open the Exit-Game confirm message box, resolving its labels from CSF.
     fn open_exit_confirm_modal(state: &mut AppState) {
         let csf = |key: &str, fallback: &str| Self::csf_label(state, key, fallback);
-        state.exit_confirm_modal = Some(crate::ui::main_menu_dialogs::ExitConfirmModalState::open(
-            &csf,
-        ));
+        let modal = crate::ui::main_menu_dialogs::ExitConfirmModalState::open(&csf);
+        // The SHP modal sources PUDLGBGN/MNBTTN from the skirmish chrome atlas; load
+        // it on demand so the quit-confirm renders straight from the main menu.
+        Self::ensure_skirmish_shell_chrome(state);
+        // Host the modal on the shared shell controller stack (0x120 over the menu's
+        // 0xE2) so its OK/Cancel buttons own the press-must-match-release gesture.
+        state
+            .shell_controller
+            .ensure_active(crate::ui::shell::descriptor::DialogId(0x0120), true);
+        state.exit_confirm_modal = Some(modal);
     }
 
     /// Whether any main-menu modal dialog is currently open. Used to route
@@ -1728,24 +1957,33 @@ impl App {
     /// Draw whichever main-menu modal dialog is open in the current egui frame
     /// and apply its outcome. Returns `true` when the player has confirmed
     /// quitting, so the caller should exit the event loop.
-    fn draw_main_menu_dialogs(state: &mut AppState) -> bool {
+    /// Draw whichever egui main-menu modal dialog is open. `render_exit_confirm_egui`
+    /// is true only on the degraded egui fallback path (where the SHP shell — and
+    /// thus the SHP quit-confirm modal — is unavailable); the normal SHP shell path
+    /// passes false and renders the quit-confirm as an SHP overlay instead.
+    fn draw_main_menu_dialogs(state: &mut AppState, render_exit_confirm_egui: bool) -> bool {
         use crate::ui::main_menu_dialogs as dialogs;
 
-        if let Some(modal) = state.exit_confirm_modal.clone() {
-            match dialogs::draw_exit_confirm_modal(&state.egui.ctx, &modal) {
-                dialogs::ExitConfirmAction::Confirm => {
-                    // The original writes options to ra2md.ini, fades, and stops
-                    // music before exiting. Options write-back is not decoded
-                    // yet; persist hook is a TODO. Exit on confirm.
-                    state.exit_confirm_modal = None;
-                    return true;
+        if render_exit_confirm_egui {
+            if let Some(modal) = state.exit_confirm_modal.clone() {
+                match dialogs::draw_exit_confirm_modal(&state.egui.ctx, &modal) {
+                    dialogs::ExitConfirmAction::Confirm => {
+                        // Persist BEFORE teardown (4b-i), then start the graceful
+                        // cascade. Return false (not true) so exit is owned by the
+                        // cascade; this degraded egui-fallback path runs the audio
+                        // phases (the SHP fade overlay is unavailable here).
+                        Self::persist_settings_on_quit(state);
+                        state.exit_confirm_modal = None;
+                        Self::start_quit_cascade(state);
+                        return false;
+                    }
+                    dialogs::ExitConfirmAction::Cancel => {
+                        state.exit_confirm_modal = None;
+                    }
+                    dialogs::ExitConfirmAction::None => {}
                 }
-                dialogs::ExitConfirmAction::Cancel => {
-                    state.exit_confirm_modal = None;
-                }
-                dialogs::ExitConfirmAction::None => {}
+                return false;
             }
-            return false;
         }
 
         if state.options_dialog.is_some() {
@@ -1876,15 +2114,14 @@ impl ApplicationHandler for App {
                     if Self::native_skirmish_shell_active(state)
                         && event.state.is_pressed()
                         && !event.repeat
-                        && Self::handle_validation_modal_key_input(state, code)
+                        && Self::shell_key_for_code(code)
+                            .is_some_and(|key| Self::route_validation_modal_key(state, key))
                     {
                         return;
                     }
 
                     if Self::native_skirmish_shell_active(state) && is_escape {
-                        if state.skirmish_shell_state.choose_map_modal.is_some()
-                            || state.skirmish_shell_state.validation_modal.is_some()
-                        {
+                        if state.skirmish_shell_state.choose_map_modal.is_some() {
                             state.window.request_redraw();
                             return;
                         }
@@ -1960,17 +2197,11 @@ impl ApplicationHandler for App {
                     && !state.main_menu_show_skirmish_setup
                     && !Self::single_player_shell_active(state)
                     && !Self::native_skirmish_shell_active(state)
+                    // While the SHP quit-confirm modal owns the controller, the menu
+                    // move handler must not re-activate 0xE2 and reset the gesture.
+                    && state.exit_confirm_modal.is_none()
                 {
-                    let layout = crate::ui::main_menu_shell::compute_layout(
-                        state.gpu.config.width,
-                        state.gpu.config.height,
-                    );
-                    crate::ui::main_menu_shell::mouse_move(
-                        &mut state.main_menu_shell_state,
-                        &layout,
-                        state.cursor_x.round() as i32,
-                        state.cursor_y.round() as i32,
-                    );
+                    Self::handle_main_menu_shell_mouse_move(state);
                 }
             }
             WindowEvent::MouseInput {
@@ -1987,10 +2218,23 @@ impl ApplicationHandler for App {
                 if crate::app_shell_transition::blocks_shell_input(state) {
                     return;
                 }
-                // While a main-menu modal dialog is open, egui already handled
-                // the click (its buttons sit on top); do not route to the
-                // underlying shell hit-tests.
+                // While a main-menu modal dialog is open, route the click to the
+                // SHP quit-confirm modal's OK/Cancel hit-test on the normal shell
+                // path; the egui fallback and the other egui dialogs (options/movies/
+                // campaign) were already handled by egui above.
                 if Self::main_menu_dialog_open(state) {
+                    if state.exit_confirm_modal.is_some()
+                        && state.screen == GameScreen::MainMenu
+                        && !state.main_menu_shell_failed
+                        && !state.main_menu_show_skirmish_setup
+                        && button == MouseButton::Left
+                    {
+                        if btn_state.is_pressed() {
+                            Self::handle_exit_confirm_modal_mouse_down(state);
+                        } else {
+                            Self::handle_exit_confirm_modal_mouse_up(state);
+                        }
+                    }
                     return;
                 }
                 if Self::native_skirmish_shell_active(state) {
@@ -2205,6 +2449,21 @@ impl App {
             .map(crate::skirmish_modes::skirmish_modes_from_assets)
             .unwrap_or_else(crate::skirmish_modes::stock_skirmish_modes);
         let mut skirmish_shell_state = crate::ui::skirmish_shell::SkirmishShellState::default();
+        // Seed the Credits/Unit Count slider ranges from rulesmd's
+        // [MultiplayerDialogSettings] so a mod that changes the money/unit bounds
+        // shifts the slider extents like gamemd does (it reads them from Rules at
+        // dialog-build time); without assets we keep the stock-default ranges.
+        if let Some(assets) = startup_asset_manager.as_ref() {
+            skirmish_shell_state.trackbar_bounds =
+                crate::app_init_helpers::load_skirmish_trackbar_bounds(assets);
+            // Seed the per-match option values (Money/UnitCount/TechLevel/
+            // GameSpeed and the checkbox toggles) from the merged rules
+            // [MultiplayerDialogSettings], so a mod that changes a default opens
+            // the dialog on — and launches the match with — its value. Without
+            // assets we keep the stock-default values.
+            let dialog_options = crate::app_init_helpers::load_skirmish_game_options(assets);
+            skirmish_shell_state.apply_multiplayer_dialog_values(&dialog_options);
+        }
         // Pre-fill the player-name field from the persistent profile name when
         // configured, mirroring the original seeding the field from a profile
         // source rather than always showing a fixed default.
@@ -2287,6 +2546,7 @@ impl App {
             main_menu_shell_state: crate::ui::main_menu_shell::MainMenuShellState::default(),
             single_player_shell_state:
                 crate::ui::single_player_shell::SinglePlayerShellState::default(),
+            shell_controller: crate::ui::shell::controller::DialogController::default(),
             main_menu_shell_chrome,
             main_menu_movie: None,
             main_menu_movie_base: None,
@@ -2299,6 +2559,7 @@ impl App {
             skirmish_shell_return_to_single_player_shell: false,
             shell_first_paint_slide: None,
             shell_slide_active_shell: None,
+            quit_cascade: None,
             minimap: None,
             minimap_dragging: false,
             middle_mouse_panning: false,
@@ -2448,6 +2709,34 @@ impl App {
             state.startup_splash_until = None;
         }
 
+        // Drive the graceful quit cascade (started on Exit-confirm OK). Compute the
+        // voice poll before borrowing the cascade mutably to avoid aliasing.
+        if state.quit_cascade.is_some() {
+            let now = Instant::now();
+            let voices_active = state
+                .sfx_player
+                .as_ref()
+                .is_some_and(|sfx| sfx.voices_active());
+            let tick = state
+                .quit_cascade
+                .as_mut()
+                .expect("cascade present")
+                .tick(now, voices_active);
+            if let (Some(vol), Some(player)) = (tick.music_volume, state.music_player.as_mut()) {
+                player.set_volume(vol);
+            }
+            if tick.stop_music {
+                if let Some(player) = state.music_player.as_mut() {
+                    player.stop();
+                }
+            }
+            if tick.finished {
+                state.quit_cascade = None;
+                event_loop.exit();
+                return Ok(());
+            }
+        }
+
         if matches!(state.screen, GameScreen::InGame) {
             let now = Instant::now();
             let elapsed_ms = app_sim_tick::update_elapsed_ms(state, now);
@@ -2483,11 +2772,15 @@ impl App {
                 // update (the sim tick that normally pumps music does not run
                 // on the menu) keeps the looping theme alive on every entry
                 // path: initial launch, return-from-game, and mission result.
-                if let (Some(player), Some(assets)) =
-                    (&mut state.music_player, &state.asset_manager)
-                {
-                    player.play_menu_theme(assets);
-                    player.update(assets);
+                // Suppressed during the quit cascade so the hard music stop is not
+                // immediately undone by the per-frame menu-theme re-assert.
+                if state.quit_cascade.is_none() {
+                    if let (Some(player), Some(assets)) =
+                        (&mut state.music_player, &state.asset_manager)
+                    {
+                        player.play_menu_theme(assets);
+                        player.update(assets);
+                    }
                 }
                 if crate::app_shell_transition::render_shell_first_paint_slide(
                     state,
@@ -2514,7 +2807,7 @@ impl App {
                             // Campaign selector (and any other menu modal) draws
                             // over the SP shell; confirm-quit cannot originate
                             // here, so its return value is ignored.
-                            let _ = Self::draw_main_menu_dialogs(state);
+                            let _ = Self::draw_main_menu_dialogs(state, false);
                             state.egui.end_frame_and_render(
                                 &state.gpu,
                                 &mut encoder,
@@ -2540,7 +2833,11 @@ impl App {
                     )? {
                         crate::app_main_menu_shell_render::MainMenuShellRenderResult::Rendered => {
                             state.egui.begin_frame(&state.window);
-                            let confirm_quit = Self::draw_main_menu_dialogs(state);
+                            // The SHP shell renders the quit-confirm as an SHP
+                            // overlay (and OK exits via its hit-test), so the egui
+                            // exit-confirm is suppressed here; campaign/options/
+                            // movies egui dialogs still draw. confirm_quit stays false.
+                            let confirm_quit = Self::draw_main_menu_dialogs(state, false);
                             state.egui.end_frame_and_render(
                                 &state.gpu,
                                 &mut encoder,
@@ -2896,7 +3193,7 @@ impl App {
             } else {
                 1000.0 / state.sim_speed_tps as f32
             },
-            entity_count: state.simulation.as_ref().map_or(0, |s| s.entities.len()),
+            entity_count: state.simulation.as_ref().map_or(0, |s| s.entities().len()),
             save_name_buf: &mut save_name,
             last_save_tick: state.last_save_tick,
             last_save_age,
@@ -3005,10 +3302,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn validation_modal_dismissal_keys_match_dialog_translation() {
-        assert!(App::is_validation_modal_dismissal_key(KeyCode::Enter));
-        assert!(App::is_validation_modal_dismissal_key(KeyCode::NumpadEnter));
-        assert!(App::is_validation_modal_dismissal_key(KeyCode::Escape));
-        assert!(!App::is_validation_modal_dismissal_key(KeyCode::Space));
+    fn shell_key_translation_matches_dialog_controller_route() {
+        assert_eq!(App::shell_key_for_code(KeyCode::Tab), Some(ShellKey::Tab));
+        assert_eq!(
+            App::shell_key_for_code(KeyCode::Enter),
+            Some(ShellKey::Enter)
+        );
+        assert_eq!(
+            App::shell_key_for_code(KeyCode::NumpadEnter),
+            Some(ShellKey::Enter)
+        );
+        assert_eq!(
+            App::shell_key_for_code(KeyCode::Escape),
+            Some(ShellKey::Escape)
+        );
+        assert_eq!(App::shell_key_for_code(KeyCode::Space), None);
     }
 }

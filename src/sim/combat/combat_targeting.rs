@@ -343,6 +343,12 @@ pub fn tick_retaliation(
             Some(sid) => sid,
             None => continue,
         };
+        // The `order_intent.is_some()` suppression is the conceptual mission-busy
+        // gate (`mission::verb::get_current_mission`), kept LITERAL on purpose: an
+        // `is_busy`-only gate would let a Guarding unit (order_intent = Guard,
+        // mission idle) begin retaliating — a proven DRIFT. Retiring the
+        // `order_intent` predicate in favour of a mission goal field is a later
+        // slice; the runtime check stays byte-identical here.
         if entity.attack_target.is_some() || entity.order_intent.is_some() {
             continue;
         }

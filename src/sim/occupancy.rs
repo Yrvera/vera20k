@@ -90,11 +90,12 @@ impl CellOccupancy {
     }
 }
 
-/// Persistent per-cell occupancy index, stored on `Simulation`.
+/// Persistent per-cell occupancy index, owned by `ObjectSubstrate`.
 ///
 /// Mirrors entity positions: every entity that occupies a map cell has an entry.
 /// Structures occupy all their foundation cells. Maintained incrementally — add
 /// on spawn/move-in, remove on death/move-out.
+#[derive(Debug, Clone)]
 pub struct OccupancyGrid {
     cells: BTreeMap<(u16, u16), CellOccupancy>,
     /// Monotonic counter bumped on every cell-membership mutation. Lets the

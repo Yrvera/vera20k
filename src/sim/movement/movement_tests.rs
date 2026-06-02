@@ -719,7 +719,7 @@ fn contested_same_cell_sim() -> crate::sim::world::Simulation {
         ..Default::default()
     });
     e1.facing = 64;
-    sim.entities.insert(e1);
+    sim.substrate.entities.insert(e1);
 
     let mut e2 = GameEntity::test_default(2, "HTNK", "Americans", 1, 2);
     e2.owner = owner;
@@ -735,11 +735,11 @@ fn contested_same_cell_sim() -> crate::sim::world::Simulation {
         ..Default::default()
     });
     e2.facing = 64;
-    sim.entities.insert(e2);
+    sim.substrate.entities.insert(e2);
 
     sim.reveal(2);
     sim.reveal(1);
-    sim.occupancy = OccupancyGrid::rebuild(&sim.entities);
+    sim.substrate.occupancy = OccupancyGrid::rebuild(&sim.substrate.entities);
     sim
 }
 
@@ -752,12 +752,12 @@ fn two_movers_contest_same_cell_in_live_object_order_not_stable_id() {
     let terrain_costs = Default::default();
     let mut stable_sounds = Vec::new();
     tick_movement_with_grids(
-        &mut stable_order.entities,
+        &mut stable_order.substrate.entities,
         &[],
         None,
         &terrain_costs,
         &Default::default(),
-        &mut stable_order.occupancy,
+        &mut stable_order.substrate.occupancy,
         &mut stable_order.substrate.next_occupancy_enter_order,
         &mut stable_order.scenario_rng,
         1000,
@@ -776,12 +776,12 @@ fn two_movers_contest_same_cell_in_live_object_order_not_stable_id() {
     let movement_order = live_order.live_object_order_snapshot();
     let mut live_sounds = Vec::new();
     tick_movement_with_grids(
-        &mut live_order.entities,
+        &mut live_order.substrate.entities,
         &movement_order,
         None,
         &terrain_costs,
         &Default::default(),
-        &mut live_order.occupancy,
+        &mut live_order.substrate.occupancy,
         &mut live_order.substrate.next_occupancy_enter_order,
         &mut live_order.scenario_rng,
         1000,
@@ -799,16 +799,16 @@ fn two_movers_contest_same_cell_in_live_object_order_not_stable_id() {
 
     assert_eq!(
         (
-            stable_order.entities.get(1).unwrap().position.rx,
-            stable_order.entities.get(1).unwrap().position.ry,
+            stable_order.substrate.entities.get(1).unwrap().position.rx,
+            stable_order.substrate.entities.get(1).unwrap().position.ry,
         ),
         (2, 1),
         "stable-id fallback lets id 1 claim the contested cell first"
     );
     assert_eq!(
         (
-            live_order.entities.get(2).unwrap().position.rx,
-            live_order.entities.get(2).unwrap().position.ry,
+            live_order.substrate.entities.get(2).unwrap().position.rx,
+            live_order.substrate.entities.get(2).unwrap().position.ry,
         ),
         (2, 1),
         "live object order lets id 2 claim the contested cell first"
@@ -1727,7 +1727,7 @@ fn drive_accelerates_false_tick_stores_modified_fraction_without_mutating_speed(
     let mut rng = SimRng::new(0);
     let mut interner = test_interner();
     let mut sounds = Vec::new();
-    let mut next_occupancy_enter_order = 1;
+    let mut next_occupancy_enter_order = crate::sim::world::EnterOrderCounter::new();
     let terrain_costs: std::collections::BTreeMap<
         crate::rules::locomotor_type::SpeedType,
         crate::sim::pathfinding::terrain_cost::TerrainCostGrid,
@@ -1803,7 +1803,7 @@ fn drive_accelerates_true_tick_ramps_fraction_before_movement_speed() {
     let mut rng = SimRng::new(0);
     let mut interner = test_interner();
     let mut sounds = Vec::new();
-    let mut next_occupancy_enter_order = 1;
+    let mut next_occupancy_enter_order = crate::sim::world::EnterOrderCounter::new();
     let terrain_costs: std::collections::BTreeMap<
         crate::rules::locomotor_type::SpeedType,
         crate::sim::pathfinding::terrain_cost::TerrainCostGrid,

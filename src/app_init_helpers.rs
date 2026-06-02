@@ -288,6 +288,56 @@ pub(crate) fn load_rules_ini(asset_manager: &AssetManager) -> Option<RuleSet> {
     }
 }
 
+/// Seed dialog 0x102's Credits/Unit Count trackbar bounds from
+/// `[MultiplayerDialogSettings]`, mirroring gamemd reading MinMoney/MaxMoney/
+/// MoneyIncrement and MinUnitCount/MaxUnitCount from the live Rules instance when
+/// it builds the skirmish dialog. rulesmd.ini is a YR patch over rules.ini, so we
+/// merge the same way `load_rules_ini` does, then read the section. Falls back to
+/// the stock-default constants when the rules INI (or a key) is unavailable.
+pub(crate) fn load_skirmish_trackbar_bounds(
+    asset_manager: &AssetManager,
+) -> crate::ui::skirmish_shell::SkirmishTrackbarBounds {
+    use crate::ui::skirmish_shell::SkirmishTrackbarBounds;
+
+    let Some((data, _)) = asset_manager.get_with_source("rules.ini") else {
+        return SkirmishTrackbarBounds::default();
+    };
+    let Ok(mut ini) = IniFile::from_bytes(&data) else {
+        return SkirmishTrackbarBounds::default();
+    };
+    if let Some((patch_data, _)) = asset_manager.get_with_source("rulesmd.ini") {
+        if let Ok(patch_ini) = IniFile::from_bytes(&patch_data) {
+            ini.merge(&patch_ini);
+        }
+    }
+    SkirmishTrackbarBounds::from_multiplayer_dialog_settings(&ini)
+}
+
+/// Seed the per-match option values from `[MultiplayerDialogSettings]`,
+/// mirroring the original reading this section once into the rules data that
+/// both the skirmish setup dialog and the launched match read from. rulesmd.ini
+/// is a YR patch over rules.ini, so we merge the same way `load_rules_ini` does,
+/// then parse the section. Falls back to the stock-default options when the
+/// rules INI (or a key) is unavailable, so stock skirmishes are unchanged.
+pub(crate) fn load_skirmish_game_options(
+    asset_manager: &AssetManager,
+) -> crate::sim::game_options::GameOptions {
+    use crate::sim::game_options::GameOptions;
+
+    let Some((data, _)) = asset_manager.get_with_source("rules.ini") else {
+        return GameOptions::default();
+    };
+    let Ok(mut ini) = IniFile::from_bytes(&data) else {
+        return GameOptions::default();
+    };
+    if let Some((patch_data, _)) = asset_manager.get_with_source("rulesmd.ini") {
+        if let Ok(patch_ini) = IniFile::from_bytes(&patch_data) {
+            ini.merge(&patch_ini);
+        }
+    }
+    GameOptions::from_multiplayer_dialog_settings(&ini)
+}
+
 /// Load art.ini from MIX archives and parse into ArtRegistry.
 ///
 /// Like rules, artmd.ini is a YR patch on top of art.ini. We load art.ini
@@ -416,7 +466,7 @@ pub(crate) fn spawn_entities(
             height_map,
             Some(resolved_terrain),
         );
-        let miner_count: usize = sim.entities.values().filter(|e| e.miner.is_some()).count();
+        let miner_count: usize = sim.entities().values().filter(|e| e.miner.is_some()).count();
         log::info!("Miner components attached: {}", miner_count);
     }
     let (unit_atlas, shp_atlas, palette_set) = build_entity_atlases(
@@ -475,7 +525,7 @@ pub(crate) fn build_entity_atlases(
         unit_atlas::build_unit_atlas(
             gpu,
             batch,
-            &sim.entities,
+            sim.entities(),
             asset_manager,
             rules,
             art,
@@ -488,12 +538,12 @@ pub(crate) fn build_entity_atlases(
     };
     // Pre-load building types that can be spawned at runtime (e.g., ConYards from MCV deploy).
     let extra_buildings: Vec<&str> =
-        deployable_building_types(&sim.entities, rules, Some(&sim.interner));
+        deployable_building_types(sim.entities(), rules, Some(&sim.interner));
     let shp_atlas: Option<SpriteAtlas> = palette.as_ref().and_then(|pal| {
         sprite_atlas::build_sprite_atlas(
             gpu,
             batch,
-            &sim.entities,
+            sim.entities(),
             asset_manager,
             pal,
             theater_ext,

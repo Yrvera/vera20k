@@ -24,6 +24,13 @@ impl InternedId {
     pub fn index(self) -> u32 {
         self.0
     }
+
+    /// Reconstruct an id from a raw index. Only valid for indices this interner
+    /// produced; used to iterate the interner by position (e.g. table builds).
+    #[inline]
+    pub fn from_index(idx: u32) -> Self {
+        Self(idx)
+    }
 }
 
 impl fmt::Debug for InternedId {

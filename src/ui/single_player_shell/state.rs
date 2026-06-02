@@ -1,8 +1,11 @@
-//! Dialog 0x100 Single Player shell control identity and hit testing.
+//! Dialog 0x100 Single Player shell control identity and CSF/result lookups.
+//!
+//! Hit-testing and the press-must-match-release gesture (including the Load Saved
+//! Game disabled guard) moved to the shared `ui::shell::controller::DialogController`
+//! (substrate Slice 2); this module keeps the control identity, the CSF keys, and
+//! the action/result-code tables the controller's activated-control id maps through.
 
 use std::time::Instant;
-
-use super::layout::SinglePlayerShellLayout;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SinglePlayerControlId {
@@ -10,6 +13,30 @@ pub enum SinglePlayerControlId {
     LoadSavedGame0x689,
     Skirmish0x579,
     MainMenu0x686,
+}
+
+impl SinglePlayerControlId {
+    /// The Win32 control resource id this identity stands for. The controller
+    /// works in raw resource ids; the app maps back via [`Self::from_resource_id`].
+    pub fn resource_id(self) -> u16 {
+        match self {
+            Self::NewCampaign0x688 => 0x0688,
+            Self::LoadSavedGame0x689 => 0x0689,
+            Self::Skirmish0x579 => 0x0579,
+            Self::MainMenu0x686 => 0x0686,
+        }
+    }
+
+    /// Inverse of [`Self::resource_id`]; `None` for an unknown id.
+    pub fn from_resource_id(id: u16) -> Option<Self> {
+        Some(match id {
+            0x0688 => Self::NewCampaign0x688,
+            0x0689 => Self::LoadSavedGame0x689,
+            0x0579 => Self::Skirmish0x579,
+            0x0686 => Self::MainMenu0x686,
+            _ => return None,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,68 +84,27 @@ pub fn csf_key_for_control(id: SinglePlayerControlId) -> &'static str {
     }
 }
 
-pub fn hit_test_owner_draw_button(
-    layout: &SinglePlayerShellLayout,
-    x: i32,
-    y: i32,
-) -> Option<SinglePlayerControlId> {
-    layout
-        .buttons
-        .iter()
-        .find(|button| button.rect.contains(x, y))
-        .map(|button| button.id)
-}
-
-pub fn mouse_down(
-    state: &mut SinglePlayerShellState,
-    layout: &SinglePlayerShellLayout,
-    x: i32,
-    y: i32,
-) {
-    let hit = hit_test_owner_draw_button(layout, x, y);
-    state.pressed_owner_draw_button = match hit {
-        Some(SinglePlayerControlId::LoadSavedGame0x689) if !state.load_saved_game_enabled => None,
-        other => other,
-    };
-}
-
-pub fn mouse_move(
-    state: &mut SinglePlayerShellState,
-    layout: &SinglePlayerShellLayout,
-    x: i32,
-    y: i32,
-) {
-    let new_hover = hit_test_owner_draw_button(layout, x, y);
-    if state.hovered_owner_draw_button != new_hover {
-        state.hovered_owner_draw_button = new_hover;
-        state.hover_started_at = new_hover.map(|_| Instant::now());
-    }
-}
-
-pub fn mouse_up(
-    state: &mut SinglePlayerShellState,
-    layout: &SinglePlayerShellLayout,
-    x: i32,
-    y: i32,
-) -> SinglePlayerShellAction {
-    let released = hit_test_owner_draw_button(layout, x, y);
-    let pressed = state.pressed_owner_draw_button.take();
-    if pressed.is_some() && pressed == released {
-        let id = released.expect("pressed/released checked above");
-        if id == SinglePlayerControlId::LoadSavedGame0x689 && !state.load_saved_game_enabled {
-            SinglePlayerShellAction::None
-        } else {
-            action_for_control(id)
-        }
-    } else {
-        SinglePlayerShellAction::None
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::shell::controller::DialogController;
+    use crate::ui::shell::descriptor::DialogId;
+    use crate::ui::shell::layout::LaidOutControl;
     use crate::ui::single_player_shell::compute_layout;
+
+    /// Adapt the laid-out single-player buttons into the controller's button feed.
+    fn button_feed(
+        layout: &crate::ui::single_player_shell::SinglePlayerShellLayout,
+    ) -> Vec<LaidOutControl> {
+        layout
+            .buttons
+            .iter()
+            .map(|b| LaidOutControl {
+                id: b.id.resource_id(),
+                rect: b.rect,
+            })
+            .collect()
+    }
 
     #[test]
     fn command_results_match_dialog_proc_0x52d640() {
@@ -143,37 +129,53 @@ mod tests {
     }
 
     #[test]
-    fn hit_test_uses_dialog_0x100_control_identity() {
+    fn controller_hits_dialog_0x100_buttons_by_geometry() {
         let layout = compute_layout(800, 600);
+        let feed = button_feed(&layout);
+        let mut c = DialogController::default();
+        c.ensure_active(DialogId(0x0100), false);
+        c.on_pointer_down(639, 204, &feed);
         assert_eq!(
-            hit_test_owner_draw_button(&layout, 639, 204),
-            Some(SinglePlayerControlId::NewCampaign0x688)
+            c.pressed(),
+            Some(SinglePlayerControlId::NewCampaign0x688.resource_id())
         );
+        c.on_pointer_down(639, 290, &feed);
         assert_eq!(
-            hit_test_owner_draw_button(&layout, 639, 290),
-            Some(SinglePlayerControlId::Skirmish0x579)
+            c.pressed(),
+            Some(SinglePlayerControlId::Skirmish0x579.resource_id())
         );
+        c.on_pointer_down(639, 540, &feed);
         assert_eq!(
-            hit_test_owner_draw_button(&layout, 639, 540),
-            Some(SinglePlayerControlId::MainMenu0x686)
+            c.pressed(),
+            Some(SinglePlayerControlId::MainMenu0x686.resource_id())
         );
     }
 
     #[test]
-    fn disabled_load_saved_game_does_not_emit_result_9() {
+    fn controller_disabled_load_saved_game_suppresses_press_but_still_hovers() {
         let layout = compute_layout(800, 600);
-        let mut state = SinglePlayerShellState::default();
-        mouse_down(&mut state, &layout, 639, 248);
+        let feed = button_feed(&layout);
+        let load = SinglePlayerControlId::LoadSavedGame0x689.resource_id();
+        let mut c = DialogController::default();
+        c.ensure_active(DialogId(0x0100), false);
+        // Disabled (no saves): press suppressed, no action emitted...
+        c.set_disabled(load, true);
+        c.on_pointer_down(639, 248, &feed);
+        assert_eq!(c.pressed(), None);
+        assert_eq!(c.on_pointer_up(639, 248, &feed), None);
+        // ...but the disabled button still hover-tracks and arms its timer.
+        c.on_pointer_move(639, 248, &feed);
+        assert_eq!(c.hovered(), Some(load));
+        assert!(c.hover_started_at().is_some());
+        // Enabled: press-and-release fires Load Saved Game.
+        c.set_disabled(load, false);
+        c.on_pointer_down(639, 248, &feed);
+        let activated = c.on_pointer_up(639, 248, &feed);
         assert_eq!(
-            mouse_up(&mut state, &layout, 639, 248),
-            SinglePlayerShellAction::None
-        );
-
-        state.load_saved_game_enabled = true;
-        mouse_down(&mut state, &layout, 639, 248);
-        assert_eq!(
-            mouse_up(&mut state, &layout, 639, 248),
-            SinglePlayerShellAction::LoadSavedGame
+            activated
+                .and_then(SinglePlayerControlId::from_resource_id)
+                .map(action_for_control),
+            Some(SinglePlayerShellAction::LoadSavedGame)
         );
     }
 }

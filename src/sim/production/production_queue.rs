@@ -270,7 +270,7 @@ pub fn build_options_for_owner(sim: &Simulation, rules: &RuleSet, owner: &str) -
             reason_counts
         );
         // Log owned structures and their factory status.
-        for e in sim.entities.values() {
+        for e in sim.substrate.entities.values() {
             if sim.interner.resolve(e.owner).eq_ignore_ascii_case(owner)
                 && e.category == crate::map::entities::EntityCategory::Structure
             {
@@ -568,7 +568,7 @@ pub fn tick_production_with_overlay_registry(
             // DockedIdle carrying the assigned pad index.
             if let Some(af_id) = helipad_airfield {
                 let max_slots = sim
-                    .entities
+                    .substrate.entities
                     .get(af_id)
                     .and_then(|af| {
                         let af_type = sim.interner.resolve(af.type_ref);
@@ -581,7 +581,7 @@ pub fn tick_production_with_overlay_registry(
                     .airfield_docks
                     .try_reserve(af_id, stable_id, max_slots)
                     .unwrap_or(0); // Fresh spawn on a single-pad helipad always wins pad 0.
-                if let Some(entity) = sim.entities.get_mut(stable_id) {
+                if let Some(entity) = sim.substrate.entities.get_mut(stable_id) {
                     entity.aircraft_mission =
                         Some(crate::sim::aircraft::AircraftMission::DockedIdle {
                             airfield_id: af_id,
@@ -599,7 +599,7 @@ pub fn tick_production_with_overlay_registry(
                 {
                     let obj = rules.object(&done_type_str);
                     let loco_mult = sim
-                        .entities
+                        .substrate.entities
                         .get(stable_id)
                         .and_then(|e| e.locomotor.as_ref())
                         .map(|l| l.speed_multiplier)
@@ -610,13 +610,13 @@ pub fn tick_production_with_overlay_registry(
                     let speed =
                         (speed * loco_mult).max(crate::util::fixed_math::SimFixed::lit("25"));
                     let speed_type = sim
-                        .entities
+                        .substrate.entities
                         .get(stable_id)
                         .and_then(|e| e.locomotor.as_ref())
                         .map(|l| l.speed_type);
                     let cost_grid = speed_type.and_then(|st| sim.terrain_costs.get(&st));
                     let _ = crate::sim::movement::issue_move_command_with_layered(
-                        &mut sim.entities,
+                        &mut sim.substrate.entities,
                         grid,
                         stable_id,
                         (tx, ty),

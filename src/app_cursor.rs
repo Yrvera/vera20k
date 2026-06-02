@@ -56,7 +56,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
     let Some(sim) = &state.simulation else {
         return None;
     };
-    let selected = crate::app_input::selected_stable_ids_sorted(&sim.entities);
+    let selected = crate::app_input::selected_stable_ids_sorted(sim.entities());
     if selected.is_empty() {
         return None;
     }
@@ -91,7 +91,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
     // falls through to the queued_order_mode cursor already chosen at lines
     // 79-84 — that branch already returned by here.
     if crate::app_input::is_ctrl_held(state) && !crate::app_input::is_alt_held(state) {
-        let selection_has_armed_unit = sim.entities.values().filter(|e| e.selected).any(|e| {
+        let selection_has_armed_unit = sim.entities().values().filter(|e| e.selected).any(|e| {
             let type_str = sim.interner.resolve(e.type_ref);
             state
                 .rules
@@ -135,7 +135,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
     if has_ore {
         let any_miner = selected
             .iter()
-            .any(|&sid| sim.entities.get(sid).is_some_and(|e| e.miner.is_some()));
+            .any(|&sid| sim.entities().get(sid).is_some_and(|e| e.miner.is_some()));
         if any_miner {
             return Some(CursorFeedbackKind::AttackMove);
         }
@@ -174,7 +174,7 @@ fn capability_cursor_for_hover(
 ) -> CursorFeedbackKind {
     use crate::map::entities::EntityCategory;
 
-    let hovered_entity = sim.entities.get(hover.stable_id);
+    let hovered_entity = sim.entities().get(hover.stable_id);
     let hovered_obj =
         rules.and_then(|r| hovered_entity.and_then(|e| r.object(sim.interner.resolve(e.type_ref))));
 
@@ -183,7 +183,7 @@ fn capability_cursor_for_hover(
     //    OR units with DeploysInto= set (e.g. MCV → ConYard).  In the original game
     //    both kinds show the deploy cursor when hovering over themselves.
     if selected.len() == 1 && selected[0] == hover.stable_id {
-        let entity = sim.entities.get(selected[0]);
+        let entity = sim.entities().get(selected[0]);
         let obj =
             entity.and_then(|e| rules.and_then(|r| r.object(sim.interner.resolve(e.type_ref))));
         if let Some(obj) = obj {
@@ -223,17 +223,17 @@ fn capability_cursor_for_hover(
         log::info!(
             "c4-cursor: best_id={} sel_type={:?} obj_lookup={}",
             best_id,
-            sim.entities
+            sim.entities()
                 .get(best_id)
                 .map(|e| sim.interner.resolve(e.type_ref)),
-            sim.entities
+            sim.entities()
                 .get(best_id)
                 .and_then(|e| rules.and_then(|r| r.object(sim.interner.resolve(e.type_ref))))
                 .is_some(),
         );
         if let (Some(sel_entity), Some(sel_obj)) = (
-            sim.entities.get(best_id),
-            sim.entities
+            sim.entities().get(best_id),
+            sim.entities()
                 .get(best_id)
                 .and_then(|e| rules.and_then(|r| r.object(sim.interner.resolve(e.type_ref)))),
         ) {
@@ -399,7 +399,7 @@ fn any_selected_unit_in_range(
         Some(r) => r,
         None => return true,
     };
-    let target_pos = match sim.entities.get(target_id) {
+    let target_pos = match sim.entities().get(target_id) {
         Some(t) => (
             t.position.rx,
             t.position.ry,
@@ -409,7 +409,7 @@ fn any_selected_unit_in_range(
         None => return false,
     };
     for &sid in selected_ids {
-        let Some(entity) = sim.entities.get(sid) else {
+        let Some(entity) = sim.entities().get(sid) else {
             continue;
         };
         let Some(obj) = rules.object(sim.interner.resolve(entity.type_ref)) else {
@@ -435,7 +435,7 @@ fn any_selected_unit_in_range(
                 weapon,
                 rules,
                 &sim.interner,
-                &sim.entities,
+                sim.entities(),
                 t,
             )
         } else {
@@ -481,7 +481,7 @@ fn select_best_for_action(
     let mut best_dist: u32 = u32::MAX;
 
     for &sid in selected {
-        let Some(entity) = sim.entities.get(sid) else {
+        let Some(entity) = sim.entities().get(sid) else {
             continue;
         };
         // Compute priority tier.
@@ -714,7 +714,7 @@ mod tests {
             .expect("Power Plant spawned");
 
         // 4. Mark the SEAL as selected (mirrors clicking it in-game).
-        if let Some(e) = sim.entities.get_mut(seal_id) {
+        if let Some(e) = sim.entities_mut().get_mut(seal_id) {
             e.selected = true;
         }
 
@@ -770,7 +770,7 @@ mod tests {
             .spawn_object("GAREFN", "Americans", 10, 10, 0, &rules, &height_map)
             .expect("Refinery spawned");
 
-        if let Some(e) = sim.entities.get_mut(miner_id) {
+        if let Some(e) = sim.entities_mut().get_mut(miner_id) {
             e.selected = true;
         }
 

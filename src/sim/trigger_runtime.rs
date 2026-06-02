@@ -328,7 +328,7 @@ fn parse_trigger_id_param(fields: &[String], index: usize) -> Option<String> {
 }
 
 fn count_techtype(sim: &Simulation, type_id: &str) -> usize {
-    sim.entities
+    sim.substrate.entities
         .values()
         .filter(|e| {
             sim.interner

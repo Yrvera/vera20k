@@ -58,7 +58,7 @@ pub(crate) fn resolve_debug_speed_type(state: &AppState) -> SpeedType {
         .simulation
         .as_ref()
         .and_then(|sim| {
-            sim.entities
+            sim.entities()
                 .values()
                 .find(|e| e.selected)
                 .and_then(|e| e.locomotor.as_ref())
@@ -322,7 +322,7 @@ pub(crate) fn build_path_overlay_instances(
     const GOAL_TINT: [f32; 3] = [0.7, 0.7, 0.0];
     const PATH_DEPTH: f32 = 0.0002;
 
-    for entity in sim.entities.values() {
+    for entity in sim.entities().values() {
         if !entity.selected {
             continue;
         }

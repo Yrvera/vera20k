@@ -7,7 +7,7 @@ use super::*;
 use crate::map::houses::HouseAllianceMap;
 use crate::render::minimap_helpers::*;
 use crate::rules::house_colors::HouseColorIndex;
-use crate::sim::components::{Owner, Position};
+use crate::sim::components::Position;
 use crate::sim::intern::test_intern;
 use crate::sim::vision::FogState;
 use std::collections::{BTreeMap, BTreeSet};
@@ -116,13 +116,11 @@ fn test_minimap_entity_visible_for_allied_owner() {
         screen_x: 0.0,
         screen_y: 0.0,
     };
-    let owner = Owner(test_intern("British"));
-
     assert!(minimap_entity_visible(
         test_intern("Americans"),
         &fog,
         &pos,
-        &owner
+        test_intern("British"),
     ));
 }
 

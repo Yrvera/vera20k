@@ -34,7 +34,7 @@ pub use state::{
     PLAYER_NAME_CARET_MARGIN_PX, PLAYER_NAME_DEFAULT, PLAYER_NAME_MAX_CHARS, PlayerNameEditState,
     SkirmishAiRowType, SkirmishComboId, SkirmishComboItem, SkirmishCountryChoice,
     SkirmishHoverTarget, SkirmishShellAction, SkirmishShellOpponent, SkirmishShellState,
-    SkirmishShellUiSound, SkirmishValidationModalState, TrackbarDragState,
+    SkirmishShellUiSound, SkirmishTrackbarBounds, SkirmishValidationModalState, TrackbarDragState,
     action_for_owner_draw_button, apply_action, blur_player_name_edit, clear_status_help_text,
     combo_dropdown_content_rect, combo_dropdown_needs_scrollbar, combo_dropdown_open,
     combo_dropdown_rect, combo_dropdown_scroll_thumb_rect, combo_dropdown_scrollbar_rect,
