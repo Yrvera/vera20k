@@ -171,6 +171,10 @@ impl Simulation {
                     ge.building_gate =
                         Some(crate::sim::game_entity::BuildingGateRuntime::default());
                 }
+                if map_ent.category == EntityCategory::Structure && obj.bunker {
+                    ge.bunker_runtime =
+                        Some(crate::sim::docking::bunker_install::BunkerRuntime::idle());
+                }
                 ge.zfudge_bridge = obj.zfudge_bridge;
                 ge.too_big_to_fit_under_bridge = obj.too_big_to_fit_under_bridge;
             }
@@ -336,6 +340,10 @@ impl Simulation {
         if category == EntityCategory::Structure && obj.gate {
             ge.building_gate = Some(crate::sim::game_entity::BuildingGateRuntime::default());
         }
+        if category == EntityCategory::Structure && obj.bunker {
+            ge.bunker_runtime =
+                Some(crate::sim::docking::bunker_install::BunkerRuntime::idle());
+        }
         ge.zfudge_bridge = obj.zfudge_bridge;
         ge.too_big_to_fit_under_bridge = obj.too_big_to_fit_under_bridge;
         if obj.speed > 0 {
@@ -468,6 +476,10 @@ impl Simulation {
         ge.omni_crush_resistant = obj.omni_crush_resistant;
         if category == EntityCategory::Structure && obj.gate {
             ge.building_gate = Some(crate::sim::game_entity::BuildingGateRuntime::default());
+        }
+        if category == EntityCategory::Structure && obj.bunker {
+            ge.bunker_runtime =
+                Some(crate::sim::docking::bunker_install::BunkerRuntime::idle());
         }
         ge.zfudge_bridge = obj.zfudge_bridge;
         ge.too_big_to_fit_under_bridge = obj.too_big_to_fit_under_bridge;

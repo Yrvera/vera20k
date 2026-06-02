@@ -2302,6 +2302,7 @@ impl Simulation {
             );
             production::tick_repairs(self, rules);
             building_dock::tick_building_docks(self, rules);
+            crate::sim::docking::bunker_install::tick_bunker_install(self, rules);
             aircraft_dock::tick_aircraft_docks(self, rules);
             // Ore growth/spread: use native per-type queues once map load has
             // initialized them, preserving gamemd's growth-before-spread order.

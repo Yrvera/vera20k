@@ -3,6 +3,18 @@
 use super::*;
 
 #[test]
+fn bunker_install_force_tracks_present_with_diagonal_targets() {
+    // Tank-bunker install approach curves (0x43 NE / 0x44 SE / 0x45 SW / 0x46 NW),
+    // siblings of the refinery-exit track 0x47. Each uses raw track 14 and ends at
+    // a diagonal facing — the octant→track map depends on these target facings.
+    for (idx, target) in [(0x43u8, 0x20u8), (0x44, 0x60), (0x45, 0xA0), (0x46, 0xE0)] {
+        let tt = turn_track_at(idx as usize).expect("install track present");
+        assert_eq!(tt.normal_track, 14, "track 0x{idx:02X} raw index");
+        assert_eq!(tt.target_facing, target, "track 0x{idx:02X} target facing");
+    }
+}
+
+#[test]
 fn turn_tracks_have_valid_raw_track_indices() {
     for (i, tt) in TURN_TRACKS.iter().enumerate() {
         assert!(
