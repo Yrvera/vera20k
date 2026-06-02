@@ -933,6 +933,13 @@ fn try_begin_close_return_radio(
         sim.production
             .dock_reservations
             .hello_or_wait(ref_sid, snap.entity_id, dock_capacity);
+    super::miner_dock_sequence::bus_hello(
+        sim,
+        snap.entity_id,
+        ref_sid,
+        dock_capacity,
+        admission == ContactAdmission::Accepted,
+    );
 
     if let Some(entity) = sim.substrate.entities.get_mut(snap.entity_id) {
         entity.movement_target = None;

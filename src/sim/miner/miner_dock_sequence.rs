@@ -29,6 +29,7 @@ use crate::util::fixed_math::SimFixed;
 
 use super::miner_dock::ContactAdmission;
 use super::miner_system::{MinerSnapshot, effective_purifier_count};
+use crate::sim::radio::{self, RadioMessage, RadioPayload};
 use crate::sim::production::{credits_entry_for_owner, foundation_dimensions};
 use crate::util::fixed_math::ra2_speed_to_leptons_per_second;
 
@@ -143,6 +144,66 @@ fn clear_refinery_contact(sim: &mut Simulation, miner_id: u64, ref_sid: u64) {
     if let Some(entity) = sim.substrate.entities.get_mut(miner_id) {
         entity.clear_live_contact_with(ref_sid);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Radio-bus shadow of the dock handshake.
+//
+// The `RefineryDockContacts` registry stays the FSM's admission/entered
+// decision source (so every existing direct-setup test still observes the same
+// state). These helpers maintain the authoritative-eventually radio-bus state
+// (`ref.radio_contacts` + the miner's `dock_entered_with`) in lockstep; a later
+// slice retires the registry mirror and reads the bus directly.
+// ---------------------------------------------------------------------------
+
+/// Mirror the registry's HELLO admission onto the bus: widen the refinery's
+/// contact slots to `NumberOfDocks` (grow-only) and, **only when the registry
+/// accepted**, transmit HELLO so `ref.radio_contacts` tracks the same
+/// membership. Gating on the registry decision keeps the two stores in lockstep
+/// even when a test seeds the registry out-of-band (the bus does not
+/// independently admit during this transitional slice — Slice 8 flips that).
+pub(super) fn bus_hello(
+    sim: &mut Simulation,
+    miner_id: u64,
+    ref_sid: u64,
+    dock_capacity: usize,
+    accepted: bool,
+) {
+    if let Some(refinery) = sim.substrate.entities.get_mut(ref_sid) {
+        refinery.radio_contacts.set_capacity(dock_capacity);
+    }
+    if accepted {
+        let _ = radio::transmit(
+            sim,
+            miner_id,
+            ref_sid,
+            RadioMessage::Hello,
+            RadioPayload::default(),
+        );
+    }
+}
+
+/// ENTER_DOCK over the bus — sets the miner's `dock_entered_with`.
+pub(super) fn bus_enter_dock(sim: &mut Simulation, miner_id: u64, ref_sid: u64) {
+    let _ = radio::transmit(
+        sim,
+        miner_id,
+        ref_sid,
+        RadioMessage::EnterDock,
+        RadioPayload::default(),
+    );
+}
+
+/// BREAK over the bus — drops the contact on both ends and clears the miner's
+/// `dock_entered_with`.
+pub(super) fn bus_break(sim: &mut Simulation, miner_id: u64, ref_sid: u64) {
+    let _ = radio::transmit(
+        sim,
+        miner_id,
+        ref_sid,
+        RadioMessage::Break,
+        RadioPayload::default(),
+    );
 }
 
 fn tick_unload_accumulator(sim: &Simulation, snap: &mut MinerSnapshot) {
@@ -560,6 +621,7 @@ pub(crate) fn interrupt_refinery_docked_miners(
         sim.production
             .dock_reservations
             .cancel_miner(ref_sid, entity_id);
+        bus_break(sim, entity_id, ref_sid);
         clear_refinery_contact(sim, entity_id, ref_sid);
         let speed = entity_full_speed(sim, rules, entity_id);
         let Some(entity) = sim.substrate.entities.get_mut(entity_id) else {
@@ -607,6 +669,7 @@ fn abort_invalid_refinery(sim: &mut Simulation, snap: &mut MinerSnapshot, ref_si
         sim.production
             .dock_reservations
             .cancel_miner(ref_sid, snap.entity_id);
+        bus_break(sim, snap.entity_id, ref_sid);
         clear_refinery_contact(sim, snap.entity_id, ref_sid);
     }
 
@@ -638,6 +701,7 @@ fn abort_missing_unload_building(sim: &mut Simulation, snap: &mut MinerSnapshot,
     sim.production
         .dock_reservations
         .cancel_miner(ref_sid, snap.entity_id);
+    bus_break(sim, snap.entity_id, ref_sid);
     clear_refinery_contact(sim, snap.entity_id, ref_sid);
 
     if let Some(entity) = sim.substrate.entities.get_mut(snap.entity_id) {
@@ -784,6 +848,13 @@ fn phase_approach(
         sim.production
             .dock_reservations
             .hello_or_wait(ref_sid, snap.entity_id, dock_capacity);
+    bus_hello(
+        sim,
+        snap.entity_id,
+        ref_sid,
+        dock_capacity,
+        admission == ContactAdmission::Accepted,
+    );
 
     snap.miner.dock_queued = admission != ContactAdmission::Accepted;
     if admission == ContactAdmission::Accepted {
@@ -824,6 +895,13 @@ fn phase_mission_enter(
         sim.production
             .dock_reservations
             .hello_or_wait(ref_sid, snap.entity_id, dock_capacity);
+    bus_hello(
+        sim,
+        snap.entity_id,
+        ref_sid,
+        dock_capacity,
+        admission == ContactAdmission::Accepted,
+    );
     if admission == ContactAdmission::Accepted {
         mark_refinery_contact(sim, snap.entity_id, ref_sid);
     }
@@ -868,6 +946,7 @@ fn phase_mission_enter(
             sim.production
                 .dock_reservations
                 .mark_contact_entered(ref_sid, snap.entity_id);
+            bus_enter_dock(sim, snap.entity_id, ref_sid);
             sync_dock_facing(sim, rules, snap);
             snap.miner.dock_phase = RefineryDockPhase::FaceSync;
         }
@@ -931,6 +1010,7 @@ fn phase_face_sync(sim: &mut Simulation, rules: &RuleSet, snap: &mut MinerSnapsh
     sim.production
         .dock_reservations
         .mark_contact_entered(ref_sid, snap.entity_id);
+    bus_enter_dock(sim, snap.entity_id, ref_sid);
 
     let accepted = sync_dock_facing(sim, rules, snap);
     if !enter_retry_due(sim, snap) {
@@ -1173,6 +1253,7 @@ fn phase_departing(sim: &mut Simulation, _rules: &RuleSet, snap: &mut MinerSnaps
     sim.production
         .dock_reservations
         .release_contact(ref_sid, snap.entity_id);
+    bus_break(sim, snap.entity_id, ref_sid);
     clear_refinery_contact(sim, snap.entity_id, ref_sid);
 
     if let Some(entity) = sim.substrate.entities.get_mut(snap.entity_id) {

@@ -241,6 +241,13 @@ pub struct GameEntity {
     /// being contacted does not globally relax passability for unrelated units.
     #[serde(default)]
     pub radio_contacts: Contacts,
+    /// Models the TechnoClass dock-entered flag (ENTER_DOCK(0x18) sets it,
+    /// LEAVE_DOCK(0x19)/BREAK clears it). `Some(other_sid)` while this entity is
+    /// linked-and-entered at that dock partner; `None` otherwise. Written by the
+    /// radio bus; the legacy `RefineryDockContacts.contact_entered` map is kept
+    /// as a transitional mirror and retired in a later slice.
+    #[serde(default)]
+    pub dock_entered_with: Option<u64>,
     /// Per-producer rally target cell for selected factory rally visuals.
     /// Owner-level `HouseState.rally_point` remains the production fallback.
     #[serde(default)]
@@ -556,6 +563,7 @@ impl GameEntity {
             navigation: NavigationState::default(),
             attack_target: None,
             radio_contacts: Contacts::default(),
+            dock_entered_with: None,
             rally_target: None,
             last_attacker_id: None,
             barrel_facing: None,

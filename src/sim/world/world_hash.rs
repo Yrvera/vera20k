@@ -226,12 +226,10 @@ impl Simulation {
                 miner_sid.hash(hasher);
             }
         }
-        for (&ref_sid, queue) in &self.production.dock_reservations.waiting_retry_queue {
-            ref_sid.hash(hasher);
-            for &miner_sid in queue {
-                miner_sid.hash(hasher);
-            }
-        }
+        // `waiting_retry_queue` removed in Slice 4 (V3-proven FIFO DRIFT — gamemd
+        // stores no wait-queue; rejected dockers re-probe on demand). The
+        // remaining `contacts`/`contact_entered`/`on_pad` folds are the
+        // transitional registry mirror, retired in a later slice.
         for (&ref_sid, &miner_sid) in &self.production.dock_reservations.contact_entered {
             ref_sid.hash(hasher);
             miner_sid.hash(hasher);
@@ -483,6 +481,15 @@ impl Simulation {
             // pad positions are hash-relevant). Replaces the old len + ordered-id
             // fold — an intended one-time re-baseline at this behavior boundary.
             entity.radio_contacts.hash_fold(hasher);
+            // Dock-entered flag (+0x418 analogue). Intended one-time re-baseline
+            // at this behavior boundary alongside the slot-folded contacts.
+            match entity.dock_entered_with {
+                Some(sid) => {
+                    1u8.hash(hasher);
+                    sid.hash(hasher);
+                }
+                None => 0u8.hash(hasher),
+            }
             entity.rally_target.hash(hasher);
             entity.capture_target.hash(hasher);
             entity.c4_plant.hash(hasher);

@@ -737,10 +737,19 @@ fn dock_queuing_one_at_a_time() {
         !sim.production.dock_reservations.has_contact(2, m2),
         "incoming full HELLO must not evict or replace Contacts[0]"
     );
+    // V3: no stored wait-queue. m2 is denied — absent from the refinery's radio
+    // contacts — and re-probes HELLO each tick (dock_queued stays set).
     assert!(
-        sim.production.dock_reservations.is_waiting(2, m2),
-        "busy stock refinery reply should leave the second miner in retry order"
+        !sim
+            .substrate
+            .entities
+            .get(2)
+            .expect("refinery")
+            .radio_contacts
+            .contains(m2),
+        "denied HELLO must not place m2 in the refinery's radio contacts"
     );
+    assert!(m2_miner.dock_queued, "denied miner keeps re-probing");
 }
 
 // ==========================================================================
@@ -1285,7 +1294,16 @@ fn chrono_close_hello_refused_stages_at_queueingcell_without_receiver_eviction()
         !sim.production.dock_reservations.has_contact(2, waiter),
         "refused HELLO must not evict or replace the receiver-side contact"
     );
-    assert!(sim.production.dock_reservations.is_waiting(2, waiter));
+    assert!(
+        !sim
+            .substrate
+            .entities
+            .get(2)
+            .expect("refinery")
+            .radio_contacts
+            .contains(waiter),
+        "denied waiter is absent from the refinery's radio contacts (no wait-queue)"
+    );
     assert_eq!(waiter_miner.state, MinerState::Dock);
     assert_eq!(waiter_miner.dock_phase, RefineryDockPhase::Approach);
     assert!(waiter_miner.dock_queued);
@@ -1398,7 +1416,10 @@ fn cmin_refused_close_return_stages_at_queueingcell_then_can_dock_uses_accepted_
     assert_eq!(waiter_miner.state, MinerState::Dock);
     assert_eq!(waiter_miner.dock_phase, RefineryDockPhase::Approach);
     assert!(waiter_miner.dock_queued);
-    assert!(sim.production.dock_reservations.is_waiting(2, waiter));
+    assert!(
+        !sim.production.dock_reservations.has_contact(2, waiter),
+        "denied waiter is not admitted (no wait-queue); it keeps re-probing"
+    );
     let movement = waiter_entity
         .movement_target
         .as_ref()
@@ -3322,7 +3343,7 @@ fn two_miners_waiter_before_releaser_not_retroactively_promoted() {
         "waiter already processed before release; no retroactive promotion"
     );
     assert!(waiter_miner.dock_queued);
-    assert!(sim.production.dock_reservations.is_waiting(2, waiter));
+    // No wait-queue (V3): "still not admitted" is the only observable state.
     assert!(!sim.production.dock_reservations.has_contact(2, waiter));
     assert!(
         !sim.production
@@ -4982,8 +5003,8 @@ fn queued_miner_takes_over_immediately_after_empty_gate_handoff() {
         "empty gate should reach state-4 handoff before release",
     );
     assert!(
-        sim.production.dock_reservations.is_waiting(2, waiter),
-        "waiter must remain queued until the state-4 release tick",
+        !sim.production.dock_reservations.has_contact(2, waiter),
+        "waiter is not admitted while the occupant holds the only slot (no wait-queue)",
     );
 
     tick_miners_n(&mut sim, &rules, 1);
@@ -5213,10 +5234,9 @@ fn dying_occupant_releases_dock_to_queued_miner() {
 
     tick_miners_n(&mut sim, &rules, 1);
 
-    assert_eq!(
-        sim.production.dock_reservations.is_waiting(2, waiter),
-        true,
-        "queued miner must remain next in retry order once the occupant enters its death phase",
+    assert!(
+        !sim.production.dock_reservations.has_contact(2, waiter),
+        "with the occupant dying, the waiter is still not yet admitted (it re-probes next tick)",
     );
 }
 
@@ -5647,4 +5667,122 @@ fn move_to_ore_target_stable_when_world_unchanged() {
     let t2 = get_miner(&sim, miner_id).target_ore_cell;
 
     assert_eq!(t1, t2, "stable world → stable target across ticks");
+}
+
+/// The dock handshake now routes contact admission + the dock-entered flag
+/// through the radio bus. The bus state (`ref.radio_contacts` /
+/// `dock_entered_with`) must mirror the registry every tick of a full cycle,
+/// the miner must actually enter the dock, and the unload cadence + clean
+/// release must be unchanged.
+#[test]
+fn refinery_cycle_over_radio_bus_matches_registry_cadence() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    spawn_refinery(&mut sim, 100, 10, 10);
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 14, 11);
+    {
+        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        for _ in 0..10 {
+            miner.cargo.push(CargoBale {
+                resource_type: ResourceType::Ore,
+                value: 25,
+            });
+        }
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::Approach;
+        miner.reserved_refinery = Some(100);
+    }
+
+    let before = credits_for_owner(&sim, "Americans");
+
+    let mut saw_entered = false;
+    for _ in 0..400 {
+        tick_miners_n(&mut sim, &rules, 1);
+
+        // Contact membership: ref.radio_contacts mirrors the registry mirror.
+        let reg_contact = sim.production.dock_reservations.has_contact(100, miner_id);
+        let bus_contact = sim
+            .substrate
+            .entities
+            .get(100)
+            .expect("refinery")
+            .radio_contacts
+            .contains(miner_id);
+        assert_eq!(
+            reg_contact, bus_contact,
+            "ref.radio_contacts must mirror the registry admission each tick"
+        );
+
+        // Dock-entered flag: dock_entered_with mirrors the registry flag.
+        let reg_entered = sim
+            .production
+            .dock_reservations
+            .has_contact_entered(100, miner_id);
+        let bus_entered =
+            sim.substrate.entities.get(miner_id).expect("miner").dock_entered_with == Some(100);
+        assert_eq!(
+            reg_entered, bus_entered,
+            "dock_entered_with must mirror the registry contact-entered flag each tick"
+        );
+        if bus_entered {
+            saw_entered = true;
+        }
+    }
+
+    assert!(
+        saw_entered,
+        "the miner must enter the dock (dock_entered_with set) during the cycle"
+    );
+
+    // Cadence unchanged: the whole ore slot deposits once (10 × 25 = 250).
+    assert_eq!(
+        credits_for_owner(&sim, "Americans") - before,
+        250,
+        "routing through the bus must not change the unload cadence",
+    );
+
+    // Clean release: no lingering bus or registry contact, flag cleared.
+    let refinery = sim.substrate.entities.get(100).expect("refinery");
+    assert!(!refinery.radio_contacts.contains(miner_id));
+    assert!(!sim.production.dock_reservations.has_contact(100, miner_id));
+    assert_eq!(
+        sim.substrate.entities.get(miner_id).expect("miner").dock_entered_with,
+        None,
+    );
+}
+
+/// Routing the unload handshake through the radio bus must leave the credit
+/// payout byte-identical to the registry-only path.
+#[test]
+fn full_unload_credits_unchanged_over_bus() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 14, 11);
+    spawn_refinery(&mut sim, 2, 10, 10);
+    {
+        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        for _ in 0..10 {
+            miner.cargo.push(CargoBale {
+                resource_type: ResourceType::Ore,
+                value: 25,
+            });
+        }
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::Unloading;
+        miner.reserved_refinery = Some(2);
+        miner.unload_timer = 0;
+    }
+    sim.production.dock_reservations.try_reserve(2, miner_id);
+
+    let before = credits_for_owner(&sim, "Americans");
+    tick_miners_n(&mut sim, &rules, 1);
+    assert_eq!(
+        credits_for_owner(&sim, "Americans") - before,
+        250,
+        "the whole ore slot must still drain in one dump tick over the bus",
+    );
 }

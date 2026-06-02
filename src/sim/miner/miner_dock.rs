@@ -1,8 +1,11 @@
-//! Refinery dock contact and queue management.
+//! Refinery dock contact management.
 //!
-//! Only one miner may occupy a refinery dock at a time. Additional miners
-//! queue up and retry in FIFO order after the dock contact is released.
-//! State lives in `ProductionState.dock_reservations` (shared across entities).
+//! A refinery admits up to `NumberOfDocks` miners into its `Contacts[]` list
+//! (capacity-1 for a stock refinery). gamemd stores **no** wait-queue: a denied
+//! miner re-probes on demand and whichever re-probing miner wins a freed slot
+//! docks next (V3). State lives in `ProductionState.dock_reservations` and is a
+//! transitional mirror of the radio-bus `Contacts`/`dock_entered_with` state,
+//! retired in a later slice.
 //!
 //! ## Dependency rules
 //! - Part of sim/ -- no dependencies outside sim/.
@@ -15,30 +18,32 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 pub enum ContactAdmission {
     /// The harvester is present in the refinery Contacts[] list.
     Accepted,
-    /// The harvester must wait and retry later.
+    /// The refinery is saturated. The harvester re-probes on a later tick; there
+    /// is no stored wait-queue (V3 — gamemd keeps none).
     Waiting,
 }
 
-/// Tracks the verified refinery radio/contact protocol for harvesters.
+/// Tracks the refinery radio/contact protocol for harvesters.
 ///
 /// `contacts` mirrors the refinery Contacts[] list populated by HELLO.
-/// `waiting_retry_queue` is Rust-side deterministic retry ordering for miners
-/// that received a negative reply. `contact_entered` mirrors the +0x418-like
-/// radio flag set by the 0x18/0x19 enter/leave handshake, separate from any
-/// conditional +0x2E4 reciprocal building/unit link. `on_pad` is only physical
-/// pad occupancy for stock refinery unload/release bookkeeping.
+/// `contact_entered` mirrors the +0x418-like radio flag set by the 0x18/0x19
+/// enter/leave handshake, separate from any conditional +0x2E4 reciprocal
+/// building/unit link. `on_pad` is only physical pad occupancy for stock
+/// refinery unload/release bookkeeping. There is deliberately **no** wait-queue:
+/// a denied miner re-probes and whichever re-probing miner wins a freed slot
+/// docks next (V3 — gamemd stores no FIFO).
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct RefineryDockContacts {
     pub contacts: BTreeMap<u64, Vec<u64>>,
-    pub waiting_retry_queue: BTreeMap<u64, VecDeque<u64>>,
     #[serde(default)]
     pub contact_entered: BTreeMap<u64, u64>,
     pub on_pad: BTreeMap<u64, u64>,
 }
 
 impl RefineryDockContacts {
-    /// Send HELLO to a refinery. Accepted miners enter Contacts[]; rejected
-    /// miners wait in deterministic FIFO retry order.
+    /// Send HELLO to a refinery. Accepted miners enter Contacts[]; a saturated
+    /// refinery replies `Waiting` with no enqueue — the miner re-probes later.
+    /// Idempotent: an already-present miner re-confirms `Accepted`.
     pub fn hello_or_wait(
         &mut self,
         refinery_sid: u64,
@@ -47,27 +52,12 @@ impl RefineryDockContacts {
     ) -> ContactAdmission {
         let capacity = capacity.max(1);
         if self.has_contact(refinery_sid, miner_sid) {
-            self.remove_waiter(refinery_sid, miner_sid);
             return ContactAdmission::Accepted;
         }
 
         let contacts_len = self.contacts.get(&refinery_sid).map_or(0, Vec::len);
-        let queue = self.waiting_retry_queue.entry(refinery_sid).or_default();
         if contacts_len >= capacity {
-            if !queue.contains(&miner_sid) {
-                queue.push_back(miner_sid);
-            }
             return ContactAdmission::Waiting;
-        }
-
-        if let Some(front) = queue.front().copied() {
-            if front != miner_sid {
-                if !queue.contains(&miner_sid) {
-                    queue.push_back(miner_sid);
-                }
-                return ContactAdmission::Waiting;
-            }
-            queue.pop_front();
         }
 
         self.contacts
@@ -81,12 +71,6 @@ impl RefineryDockContacts {
         self.contacts
             .get(&refinery_sid)
             .is_some_and(|contacts| contacts.contains(&miner_sid))
-    }
-
-    pub fn is_waiting(&self, refinery_sid: u64, miner_sid: u64) -> bool {
-        self.waiting_retry_queue
-            .get(&refinery_sid)
-            .is_some_and(|queue| queue.contains(&miner_sid))
     }
 
     pub fn link_on_pad(&mut self, refinery_sid: u64, miner_sid: u64) {
@@ -127,7 +111,6 @@ impl RefineryDockContacts {
         }
         self.contacts.retain(|_, contacts| !contacts.is_empty());
         self.clear_contact_entered(refinery_sid, miner_sid);
-        self.remove_waiter(refinery_sid, miner_sid);
     }
 
     pub fn cancel_miner(&mut self, refinery_sid: u64, miner_sid: u64) {
@@ -143,13 +126,6 @@ impl RefineryDockContacts {
             contacts.retain(|sid| alive.contains(sid));
             !contacts.is_empty()
         });
-        self.waiting_retry_queue.retain(|ref_sid, queue| {
-            if !alive.contains(ref_sid) {
-                return false;
-            }
-            queue.retain(|sid| alive.contains(sid));
-            !queue.is_empty()
-        });
         self.contact_entered
             .retain(|ref_sid, miner_sid| alive.contains(ref_sid) && alive.contains(miner_sid));
         self.on_pad
@@ -162,6 +138,8 @@ impl RefineryDockContacts {
     }
 
     /// Compatibility helper for older miner tests: release contact and pad link.
+    /// Returns `None` — there is no FIFO promotion (V3); the next docker is
+    /// whichever waiting miner re-probes and wins the freed slot.
     pub fn release(&mut self, refinery_sid: u64) -> Option<u64> {
         let released = self
             .contacts
@@ -171,9 +149,7 @@ impl RefineryDockContacts {
             self.release_on_pad(refinery_sid, miner_sid);
             self.release_contact(refinery_sid, miner_sid);
         }
-        self.waiting_retry_queue
-            .get(&refinery_sid)
-            .and_then(|queue| queue.front().copied())
+        None
     }
 
     /// Compatibility helper for older miner tests: cancel miner at refinery.
@@ -188,14 +164,6 @@ impl RefineryDockContacts {
             .is_some_and(|contacts| !contacts.is_empty())
             || self.contact_entered.contains_key(&refinery_sid)
             || self.on_pad.contains_key(&refinery_sid)
-    }
-
-    fn remove_waiter(&mut self, refinery_sid: u64, miner_sid: u64) {
-        if let Some(queue) = self.waiting_retry_queue.get_mut(&refinery_sid) {
-            queue.retain(|&sid| sid != miner_sid);
-        }
-        self.waiting_retry_queue
-            .retain(|_, queue| !queue.is_empty());
     }
 }
 
@@ -371,6 +339,7 @@ mod tests {
         );
         contacts.mark_contact_entered(100, 1);
         contacts.link_on_pad(100, 1);
+        // Saturated refinery denies the second miner with no stored queue (V3).
         assert_eq!(contacts.hello_or_wait(100, 2, 1), ContactAdmission::Waiting);
 
         contacts.release_contact(100, 1);
@@ -378,21 +347,16 @@ mod tests {
         assert!(!contacts.has_contact(100, 1));
         assert!(!contacts.has_contact_entered(100, 1));
         assert!(
-            contacts.is_waiting(100, 2),
-            "front waiter must remain queued until its own retry"
-        );
-        assert!(
             !contacts.has_contact(100, 2),
-            "release_contact must not promote a waiter into Contacts[]"
+            "release_contact must not promote anyone into Contacts[] — there is no FIFO"
         );
         assert!(
             contacts.is_on_pad(100, 1),
             "release_contact does not clear physical pad occupancy"
         );
 
-        contacts.release_on_pad(100, 1);
-        assert!(!contacts.is_on_pad(100, 1));
-        assert!(contacts.is_waiting(100, 2));
-        assert!(!contacts.has_contact(100, 2));
+        // The slot is free; miner 2 docks only by re-probing (winning on demand).
+        assert_eq!(contacts.hello_or_wait(100, 2, 1), ContactAdmission::Accepted);
+        assert!(contacts.has_contact(100, 2));
     }
 }

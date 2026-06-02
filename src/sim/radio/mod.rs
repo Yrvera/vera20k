@@ -9,7 +9,107 @@
 use serde::{Deserialize, Serialize};
 
 pub mod contacts;
+pub mod receive;
 pub use contacts::Contacts;
+pub use receive::{
+    receive_radio, refinery_accepted_cell, REFINERY_ACCEPTED_DX, REFINERY_ACCEPTED_DY,
+};
+
+use crate::map::entities::EntityCategory;
+use crate::sim::world::Simulation;
+
+/// Synchronous radio RPC (§5.2.1). Centralizes the HELLO/BREAK sender-side
+/// contact bookkeeping (already-linked ⇒ ROGER without re-dispatch; on ROGER
+/// the sender records the contact, self-evicting its own slot 0 when full); BREAK
+/// nulls every sender slot to the target before forwarding. Every other opcode
+/// dispatches straight to the receiver's [`receive_radio`]. The receiver only
+/// ever sees an RTTI-filtered (Techno) sender.
+pub fn transmit(
+    sim: &mut Simulation,
+    sender_sid: u64,
+    target_sid: u64,
+    msg: RadioMessage,
+    payload: RadioPayload,
+) -> RadioResponse {
+    let filtered = filtered_techno_sender(sim, sender_sid);
+    match msg {
+        RadioMessage::Hello => transmit_hello(sim, sender_sid, target_sid, filtered),
+        RadioMessage::Break => {
+            transmit_break(sim, sender_sid, target_sid, filtered);
+            RadioResponse::None
+        }
+        _ => receive_radio(sim, target_sid, filtered, msg, payload),
+    }
+}
+
+/// RTTI sender filter (§5.2.2): the receiver only sees Unit/Aircraft/Building/
+/// Infantry senders. Every `GameEntity` is a Techno, so this currently only
+/// drops a vanished sender — kept explicit for the non-Techno cases a later
+/// slice may introduce.
+fn filtered_techno_sender(sim: &Simulation, sender_sid: u64) -> Option<u64> {
+    match sim.substrate.entities.get(sender_sid)?.category {
+        EntityCategory::Unit
+        | EntityCategory::Infantry
+        | EntityCategory::Structure
+        | EntityCategory::Aircraft => Some(sender_sid),
+    }
+}
+
+/// HELLO sender side (§5.2.4): already linked ⇒ ROGER without re-dispatch; else
+/// dispatch to the receiver and, on ROGER, record the contact (slot-0 self-evict
+/// when the sender's own array is full).
+fn transmit_hello(
+    sim: &mut Simulation,
+    sender_sid: u64,
+    target_sid: u64,
+    filtered: Option<u64>,
+) -> RadioResponse {
+    if sim
+        .substrate
+        .entities
+        .get(sender_sid)
+        .is_some_and(|s| s.radio_contacts.contains(target_sid))
+    {
+        return RadioResponse::Roger;
+    }
+    let response = receive_radio(
+        sim,
+        target_sid,
+        filtered,
+        RadioMessage::Hello,
+        RadioPayload::default(),
+    );
+    if response == RadioResponse::Roger {
+        if let Some(sender) = sim.substrate.entities.get_mut(sender_sid) {
+            // A non-building sender holds capacity 1; the refinery FSM always
+            // BREAKs a prior dock before HELLOing a new one, so the self-evict
+            // path is dormant here (the evicted partner's BREAK cascade is a
+            // later-slice refinement, tracked with the broadcast-BREAK work).
+            let _ = sender.radio_contacts.insert_evicting(target_sid);
+        }
+    }
+    response
+}
+
+/// BREAK sender side (§5.2.5): null EVERY sender slot matching the target, then
+/// forward BREAK so the receiver runs its teardown.
+fn transmit_break(
+    sim: &mut Simulation,
+    sender_sid: u64,
+    target_sid: u64,
+    filtered: Option<u64>,
+) {
+    if let Some(sender) = sim.substrate.entities.get_mut(sender_sid) {
+        while sender.radio_contacts.remove(target_sid).is_some() {}
+    }
+    receive_radio(
+        sim,
+        target_sid,
+        filtered,
+        RadioMessage::Break,
+        RadioPayload::default(),
+    );
+}
 
 /// A radio message sent from one entity to another. Discriminant = wire opcode.
 ///

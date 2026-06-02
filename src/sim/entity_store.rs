@@ -80,8 +80,14 @@ impl EntityStore {
     pub fn clear_radio_contacts_for(&mut self, stable_id: u64) {
         for entity in self.entities.values_mut() {
             entity.clear_live_contact_with(stable_id);
+            // Drop a dangling dock-entered link pointing at the departing entity
+            // (the BREAK cascade a limbo'd dock partner would otherwise miss).
+            if entity.dock_entered_with == Some(stable_id) {
+                entity.dock_entered_with = None;
+            }
             if entity.stable_id == stable_id {
                 entity.radio_contacts.clear_all();
+                entity.dock_entered_with = None;
             }
         }
     }
