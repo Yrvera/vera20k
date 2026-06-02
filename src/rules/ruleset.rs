@@ -284,6 +284,9 @@ pub struct GeneralRules {
     /// Stock zero-link refinery unload completion does not play it. None =
     /// no sound configured.
     pub bunker_walls_down_sound: Option<String>,
+    /// Tank-bunker walls-up SFX. Parsed from [AudioVisual] BunkerWallsUpSound
+    /// (retail value "TankBunkerUp"). None = no sound configured.
+    pub bunker_walls_up_sound: Option<String>,
     /// Direct rocker force coefficient (DirectRockingCoefficient= in [AudioVisual]).
     /// Multiplies the final DirectRocker impulse force. Default 1.5.
     pub direct_rocking_coefficient: SimFixed,
@@ -606,6 +609,7 @@ impl Default for GeneralRules {
             gui_combo_open_sound: None,
             gui_combo_close_sound: None,
             bunker_walls_down_sound: None,
+            bunker_walls_up_sound: None,
             direct_rocking_coefficient: SimFixed::lit("1.5"),
             fallback_coefficient: SimFixed::lit("0.1"),
             chrono_in_sound: Some("ChronoMinerTeleport".to_string()),
@@ -931,6 +935,11 @@ impl GeneralRules {
                 .map(str::to_string),
             bunker_walls_down_sound: audio_visual
                 .and_then(|s| s.get("BunkerWallsDownSound"))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            bunker_walls_up_sound: audio_visual
+                .and_then(|s| s.get("BunkerWallsUpSound"))
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string),

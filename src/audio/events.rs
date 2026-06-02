@@ -146,6 +146,17 @@ pub enum GameSoundEvent {
         screen_pos: Option<(f32, f32)>,
     },
 
+    /// Positional SFX for tank-bunker walls raising (install) or falling
+    /// (exit/teardown). The up/down choice — and thus which rules key resolves
+    /// `sound_id` — is made when the event is built; plays at the bunker's
+    /// screen position. Skipped upstream when the rules key is empty.
+    BunkerWalls {
+        /// sound.ini ID (BunkerWallsUpSound or BunkerWallsDownSound).
+        sound_id: String,
+        /// Screen position for spatial audio.
+        screen_pos: Option<(f32, f32)>,
+    },
+
     /// Positional SFX played when a paradropped passenger successfully opens
     /// a parachute. Resolved from [AudioVisual] ChuteSound.
     ChuteSound {
@@ -209,6 +220,7 @@ impl GameSoundEvent {
             | Self::BuildingGarrisonedSfx { sound_id, .. }
             | Self::C4Planted { sound_id, .. }
             | Self::RefineryExitSfx { sound_id, .. }
+            | Self::BunkerWalls { sound_id, .. }
             | Self::ChuteSound { sound_id, .. }
             | Self::BridgeRepaired { sound_id, .. }
             | Self::WorldEffectStarted { sound_id, .. } => sound_id,
@@ -227,6 +239,7 @@ impl GameSoundEvent {
             Self::BuildingGarrisonedSfx { screen_pos, .. } => *screen_pos,
             Self::C4Planted { screen_pos, .. } => *screen_pos,
             Self::RefineryExitSfx { screen_pos, .. } => *screen_pos,
+            Self::BunkerWalls { screen_pos, .. } => *screen_pos,
             Self::ChuteSound { screen_pos, .. } => *screen_pos,
             Self::BridgeRepaired { screen_pos, .. } => *screen_pos,
             Self::WorldEffectStarted { screen_pos, .. } => *screen_pos,

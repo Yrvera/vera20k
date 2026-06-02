@@ -180,6 +180,12 @@ pub enum SimSoundEvent {
     /// "TankBunkerDown"). Stock zero-link refinery unload completion does
     /// not emit this event.
     RefineryExitSfx { rx: u16, ry: u16 },
+    /// Tank-bunker walls-up cue — emitted on install. App resolves to
+    /// [AudioVisual] BunkerWallsUpSound (retail "TankBunkerUp").
+    BunkerWallsUp { rx: u16, ry: u16 },
+    /// Tank-bunker walls-down cue — emitted on normal exit / clear teardown.
+    /// App resolves to [AudioVisual] BunkerWallsDownSound (retail "TankBunkerDown").
+    BunkerWallsDown { rx: u16, ry: u16 },
     /// A paratrooper was dropped from a carrier aircraft.
     /// Played at the drop position; app layer resolves to [AudioVisual] ChuteSound.
     ChuteSound { rx: u16, ry: u16 },

@@ -566,6 +566,38 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                             screen_pos: Some((sx, sy)),
                         }
                     }
+                    SimSoundEvent::BunkerWallsUp { rx, ry } => {
+                        // Walls-up cue on install; skip when the rules key is empty.
+                        let sound_id = match state
+                            .rules
+                            .as_ref()
+                            .and_then(|r| r.general.bunker_walls_up_sound.as_deref())
+                        {
+                            Some(s) if !s.is_empty() => s.to_string(),
+                            _ => continue,
+                        };
+                        let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
+                        GameSoundEvent::BunkerWalls {
+                            sound_id,
+                            screen_pos: Some((sx, sy)),
+                        }
+                    }
+                    SimSoundEvent::BunkerWallsDown { rx, ry } => {
+                        // Walls-down cue on normal exit / clear teardown.
+                        let sound_id = match state
+                            .rules
+                            .as_ref()
+                            .and_then(|r| r.general.bunker_walls_down_sound.as_deref())
+                        {
+                            Some(s) if !s.is_empty() => s.to_string(),
+                            _ => continue,
+                        };
+                        let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
+                        GameSoundEvent::BunkerWalls {
+                            sound_id,
+                            screen_pos: Some((sx, sy)),
+                        }
+                    }
                     SimSoundEvent::BridgeRepaired {
                         rx,
                         ry,
