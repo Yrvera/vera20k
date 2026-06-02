@@ -473,7 +473,7 @@ fn is_within_build_area(
             continue;
         }
         let provider_owner = sim.interner.resolve(e.owner);
-        let Some(existing) = rules.object(sim.interner.resolve(e.type_ref)) else {
+        let Some(existing) = sim.object_type(e.type_ref, rules) else {
             continue;
         };
         if provider_owner.eq_ignore_ascii_case(owner) {

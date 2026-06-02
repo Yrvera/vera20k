@@ -549,7 +549,7 @@ fn eject_garrison_occupants(sim: &mut Simulation, rules: &RuleSet, building_id: 
             Some(c) if !c.is_empty() => c,
             _ => return 0,
         };
-        let obj = match rules.object(sim.interner.resolve(entity.type_ref)) {
+        let obj = match sim.object_type(entity.type_ref, rules) {
             Some(o) => o,
             None => return 0,
         };
@@ -640,7 +640,7 @@ pub(crate) fn eject_red_hp_garrison(
         if cargo.is_empty() {
             return 0;
         }
-        let Some(obj) = rules.object(sim.interner.resolve(entity.type_ref)) else {
+        let Some(obj) = sim.object_type(entity.type_ref, rules) else {
             return 0;
         };
         if !obj.can_be_occupied {
