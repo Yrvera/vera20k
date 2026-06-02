@@ -158,7 +158,7 @@ pub fn tick_building_docks(sim: &mut Simulation, rules: &RuleSet) {
             if depot.owner != snap.owner {
                 return None;
             }
-            let obj = rules.object(sim.interner.resolve(depot.type_ref))?;
+            let obj = sim.object_type(depot.type_ref, rules)?;
             if !obj.unit_repair {
                 return None;
             }
@@ -214,8 +214,8 @@ pub fn tick_building_docks(sim: &mut Simulation, rules: &RuleSet) {
                     let timer = snap.service_timer.saturating_sub(1);
                     if timer == 0 {
                         // Time to apply a repair step.
-                        let cost = rules
-                            .object(sim.interner.resolve(snap.type_ref))
+                        let cost = sim
+                            .object_type(snap.type_ref, rules)
                             .map(|obj| obj.cost)
                             .unwrap_or(0);
                         let total_repair_cost =

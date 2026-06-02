@@ -466,7 +466,7 @@ fn resolve_refinery_cells(
     if entity.dying || entity.health.current == 0 {
         return None;
     }
-    let obj = rules.object_case_insensitive(sim.interner.resolve(entity.type_ref));
+    let obj = sim.object_type(entity.type_ref, rules);
     let (w, h) = obj
         .map(|o| foundation_dimensions(&o.foundation))
         .unwrap_or((1, 1));
@@ -559,7 +559,7 @@ fn start_refinery_exit_force_track(
 fn entity_full_speed(sim: &Simulation, rules: &RuleSet, entity_id: u64) -> SimFixed {
     sim.substrate.entities
         .get(entity_id)
-        .and_then(|entity| rules.object_case_insensitive(sim.interner.resolve(entity.type_ref)))
+        .and_then(|entity| sim.object_type(entity.type_ref, rules))
         .map(|obj| ra2_speed_to_leptons_per_second(obj.speed.max(1)))
         .unwrap_or_else(|| ra2_speed_to_leptons_per_second(4))
 }

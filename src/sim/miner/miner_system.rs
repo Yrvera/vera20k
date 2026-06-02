@@ -126,8 +126,8 @@ pub(crate) fn tick_miners_with_overlay_registry(
             continue;
         }
         // Use the authentic RA2 speed formula: Speed=4 → ~0.586 cells/sec.
-        let raw_speed: i32 = rules
-            .object_case_insensitive(sim.interner.resolve(entity.type_ref))
+        let raw_speed: i32 = sim
+            .object_type(entity.type_ref, rules)
             .map(|obj| obj.speed.max(1))
             .unwrap_or(4);
         let speed: SimFixed = ra2_speed_to_leptons_per_second(raw_speed);
@@ -1152,7 +1152,7 @@ fn refinery_dock_for_sid(sim: &Simulation, rules: &RuleSet, ref_sid: u64) -> Opt
     if entity.dying || entity.health.current == 0 {
         return None;
     }
-    let obj = rules.object_case_insensitive(sim.interner.resolve(entity.type_ref));
+    let obj = sim.object_type(entity.type_ref, rules);
     let (w, h) = obj
         .map(|o| foundation_dimensions(&o.foundation))
         .unwrap_or((1, 1));
@@ -1175,8 +1175,8 @@ fn refinery_dock_capacity_for_sid(
     if entity.dying || entity.health.current == 0 {
         return None;
     }
-    rules
-        .object_case_insensitive(sim.interner.resolve(entity.type_ref))
+    sim
+        .object_type(entity.type_ref, rules)
         .map(|o| o.number_of_docks.max(1) as usize)
         .or(Some(1))
 }
@@ -1190,7 +1190,7 @@ fn chrono_return_staging_cell_for_sid(
     path_grid: Option<&PathGrid>,
 ) -> Option<(u16, u16)> {
     let entity = sim.substrate.entities.get(ref_sid)?;
-    let obj = rules.object_case_insensitive(sim.interner.resolve(entity.type_ref));
+    let obj = sim.object_type(entity.type_ref, rules);
     let (w, h) = obj
         .map(|o| foundation_dimensions(&o.foundation))
         .unwrap_or((1, 1));
@@ -1449,8 +1449,8 @@ pub(crate) fn count_purifiers_for_owner(sim: &Simulation, rules: &RuleSet, owner
         .filter(|e| {
             e.category == EntityCategory::Structure
                 && sim.interner.resolve(e.owner).eq_ignore_ascii_case(owner)
-                && rules
-                    .object_case_insensitive(sim.interner.resolve(e.type_ref))
+                && sim
+                    .object_type(e.type_ref, rules)
                     .is_some_and(|obj| obj.ore_purifier)
         })
         .count() as i32
