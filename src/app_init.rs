@@ -618,6 +618,9 @@ pub(crate) fn load_map_from_initial(
     // InternedId(0) and resolve to the wrong string.
     if let (Some(sim), Some(ruleset)) = (&mut simulation, rules.as_ref()) {
         ruleset.intern_all_ids(&mut sim.interner);
+        // One-hop type resolution: build the handle table now that every type id
+        // is interned. Mirrors the bridge-warhead pre-resolve below.
+        sim.resolve_type_handles(ruleset);
     }
     // Pre-resolve `[CombatDamage] IonCannonWarhead=` and `C4Warhead=` against
     // the simulation interner. Combat reads these via accessors during the

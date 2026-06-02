@@ -26,6 +26,7 @@ fn build_catalog_exposes_sidebar_categories_and_required_houses() {
     let rules = build_catalog_rules();
     // Pre-intern all rule type IDs so build_options_for_owner can resolve them.
     rules.intern_all_ids(&mut sim.interner);
+    sim.resolve_type_handles(&rules);
 
     spawn_structure(&mut sim, 1, "Americans", "GAPILE", 10, 10);
     spawn_structure(&mut sim, 2, "Americans", "GAWEAP", 12, 10);
@@ -99,6 +100,7 @@ fn named_skirmish_owner_uses_country_for_build_permissions() {
     let mut sim = Simulation::new();
     let rules = build_catalog_rules();
     rules.intern_all_ids(&mut sim.interner);
+    sim.resolve_type_handles(&rules);
 
     let owner_id = sim.interner.intern("Commander");
     let country_id = sim.interner.intern("Americans");
@@ -169,6 +171,7 @@ fn deployed_mcv_unlocks_building_options_for_named_skirmish_owner() {
     );
     let rules = RuleSet::from_ini(&ini).expect("rules should parse");
     rules.intern_all_ids(&mut sim.interner);
+    sim.resolve_type_handles(&rules);
     let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
 
     let owner_id = sim.interner.intern("Commander");
@@ -504,6 +507,7 @@ fn build_options_dedupe_house_specific_sidebar_clone() {
     );
     let rules = RuleSet::from_ini(&ini).expect("rules should parse");
     rules.intern_all_ids(&mut sim.interner);
+    sim.resolve_type_handles(&rules);
 
     spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
 

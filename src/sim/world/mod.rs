@@ -34,6 +34,7 @@ use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::map::trigger_graph::TriggerGraph;
 use crate::map::triggers::TriggerMap;
 use crate::rules::locomotor_type::SpeedType;
+use crate::rules::object_type::ObjectType;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::ai::{self, AiPlayerState};
 use crate::sim::bridge_state::{BridgeRuntimeState, DamageState};
@@ -270,6 +271,11 @@ pub struct SimFireEvent {
 pub struct Simulation {
     /// String interner for owner/type_ref — zero-cost ID clones instead of heap Strings.
     pub interner: crate::sim::intern::StringInterner,
+    /// Derived cache: interned-id -> object handle for one-hop type resolution.
+    /// Built at init by `resolve_type_handles`; empty after deserialize (then
+    /// `object_type` uses the name-path fallback). NOT serialized, NOT hashed.
+    #[serde(skip)]
+    pub type_handles: crate::sim::type_handle_table::TypeHandleTable,
     /// Credits, build queue state, and rally points.
     pub production: ProductionState,
     /// Current simulation tick (starts at 0, increments after each advance_tick).
@@ -461,10 +467,38 @@ impl Simulation {
         Self::with_seed(DEFAULT_SIM_SEED)
     }
 
+    /// Build the interned-id -> type-handle table. Call once at sim init AFTER
+    /// `RuleSet::intern_all_ids` (mirrors `resolve_bridge_warheads`), and again
+    /// after load once the RuleSet is available. Idempotent.
+    pub fn resolve_type_handles(&mut self, rules: &RuleSet) {
+        self.type_handles =
+            crate::sim::type_handle_table::TypeHandleTable::build(rules, &self.interner);
+    }
+
+    /// Resolve an entity's type to its `ObjectType` in one precomputed hop
+    /// (two array indexes, no string allocation). Falls back to the name path
+    /// when the table is unbuilt (test setups that skip `resolve_type_handles`),
+    /// so no caller observes a stale empty table.
+    #[inline]
+    pub fn object_type<'r>(
+        &self,
+        type_ref: InternedId,
+        rules: &'r RuleSet,
+    ) -> Option<&'r ObjectType> {
+        match self.type_handles.handle_for(type_ref) {
+            Some(handle) => Some(rules.object_by_handle(handle)),
+            None if self.type_handles.is_empty() => {
+                rules.object(self.interner.resolve(type_ref))
+            }
+            None => None,
+        }
+    }
+
     /// Create a new empty simulation with an explicit deterministic seed.
     pub fn with_seed(seed: u64) -> Self {
         let out = Self {
             interner: crate::sim::intern::StringInterner::new(),
+            type_handles: crate::sim::type_handle_table::TypeHandleTable::default(),
             production: ProductionState::default(),
             tick: 0,
             total_sim_ms: 0,
