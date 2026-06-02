@@ -153,9 +153,8 @@ fn despawn_entity_clears_live_radio_contacts() {
     // Radio contacts are cleared synchronously in uninit, before the deferred free;
     // the despawned entity stays resolvable-but-Dying until the drain.
     assert!(sim.substrate.entities.get(1).is_some_and(|e| e.dying));
-    assert_eq!(
-        sim.substrate.entities.get(2).unwrap().radio_contacts,
-        Vec::<u64>::new()
+    assert!(
+        sim.substrate.entities.get(2).unwrap().radio_contacts.is_empty()
     );
     sim.flush_pending_delete();
     assert!(sim.substrate.entities.get(1).is_none());

@@ -1827,9 +1827,8 @@ ConditionYellow=50%
             sim.substrate.entities.get(pax).unwrap().passenger_role,
             PassengerRole::Inside { transport_id } if transport_id == bldg
         ));
-        assert_eq!(
-            sim.substrate.entities.get(pax).unwrap().radio_contacts,
-            Vec::<u64>::new()
+        assert!(
+            sim.substrate.entities.get(pax).unwrap().radio_contacts.is_empty()
         );
         assert!(
             !sim.substrate.entities.get(bldg).unwrap().has_live_contact_with(pax),

@@ -1,12 +1,15 @@
 //! Radio contact RPC vocabulary — the message/response opcodes and payload
 //! exchanged over the synchronous contact bus.
 //!
-//! This slice defines only the vocabulary; the `Contacts` slot store,
-//! `transmit()`, and the per-category `receive_radio()` handlers land in later
-//! slices. Opcodes equal the original radio protocol's wire values so dispatch
-//! stays a direct discriminant match. Pure enums — no float, no RNG. sim/ only
-//! — never render/ui/sidebar/audio/net.
+//! Defines the message/response vocabulary and the `Contacts` slot store; the
+//! `transmit()` bus and the per-category `receive_radio()` handlers land in
+//! later slices. Opcodes equal the original radio protocol's wire values so
+//! dispatch stays a direct discriminant match. Pure enums + integer slots — no
+//! float, no RNG. sim/ only — never render/ui/sidebar/audio/net.
 use serde::{Deserialize, Serialize};
+
+pub mod contacts;
+pub use contacts::Contacts;
 
 /// A radio message sent from one entity to another. Discriminant = wire opcode.
 ///

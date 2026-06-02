@@ -81,7 +81,7 @@ impl EntityStore {
         for entity in self.entities.values_mut() {
             entity.clear_live_contact_with(stable_id);
             if entity.stable_id == stable_id {
-                entity.radio_contacts.clear();
+                entity.radio_contacts.clear_all();
             }
         }
     }
@@ -290,8 +290,8 @@ mod tests {
 
         store.clear_radio_contacts_for(2);
 
-        assert_eq!(store.get(1).unwrap().radio_contacts, Vec::<u64>::new());
-        assert_eq!(store.get(2).unwrap().radio_contacts, Vec::<u64>::new());
+        assert!(store.get(1).unwrap().radio_contacts.is_empty());
+        assert!(store.get(2).unwrap().radio_contacts.is_empty());
     }
 
     #[test]
@@ -306,27 +306,31 @@ mod tests {
 
         store.clear_radio_contacts_for(1);
 
-        assert_eq!(store.get(1).unwrap().radio_contacts, Vec::<u64>::new());
-        assert_eq!(store.get(2).unwrap().radio_contacts, Vec::<u64>::new());
+        assert!(store.get(1).unwrap().radio_contacts.is_empty());
+        assert!(store.get(2).unwrap().radio_contacts.is_empty());
     }
 
     #[test]
     fn clear_radio_contacts_missing_id_preserves_unrelated_contacts() {
         let mut store = EntityStore::new();
         let mut entity = make_entity(1);
+        entity.radio_contacts.set_capacity(4); // hold more than one contact
         entity.mark_live_contact_with(2);
         entity.mark_live_contact_with(3);
         store.insert(entity);
 
         store.clear_radio_contacts_for(99);
 
-        assert_eq!(store.get(1).unwrap().radio_contacts, vec![2, 3]);
+        let contacts = &store.get(1).unwrap().radio_contacts;
+        assert_eq!(contacts.len(), 2);
+        assert!(contacts.contains(2) && contacts.contains(3));
     }
 
     #[test]
     fn clear_radio_contacts_preserves_remaining_order() {
         let mut store = EntityStore::new();
         let mut entity = make_entity(1);
+        entity.radio_contacts.set_capacity(4); // hold more than one contact
         entity.mark_live_contact_with(2);
         entity.mark_live_contact_with(3);
         entity.mark_live_contact_with(4);
@@ -335,7 +339,12 @@ mod tests {
 
         store.clear_radio_contacts_for(3);
 
-        assert_eq!(store.get(1).unwrap().radio_contacts, vec![2, 4]);
+        // Removal nulls slot 1 in place (no compaction): 2 and 4 keep their slots.
+        let contacts = &store.get(1).unwrap().radio_contacts;
+        assert_eq!(contacts.len(), 2);
+        assert!(contacts.contains(2) && contacts.contains(4) && !contacts.contains(3));
+        assert_eq!(contacts.find_slot(2), Some(0));
+        assert_eq!(contacts.find_slot(4), Some(2));
     }
 
     #[test]

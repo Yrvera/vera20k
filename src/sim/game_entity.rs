@@ -31,6 +31,7 @@ use crate::sim::docking::building_dock::DockState;
 use crate::sim::intern::InternedId;
 use crate::sim::miner::Miner;
 use crate::sim::mission::{MissionCom, MissionTimer, MissionType};
+use crate::sim::radio::Contacts;
 use crate::sim::movement::drive_track::{DriveTrackState, ForcedDriveTrackState};
 use crate::sim::movement::droppod_movement::DropPodState;
 use crate::sim::movement::locomotor::LocomotorState;
@@ -239,7 +240,7 @@ pub struct GameEntity {
     /// war factory exits and refinery dock entry. Kept per mover; a building
     /// being contacted does not globally relax passability for unrelated units.
     #[serde(default)]
-    pub radio_contacts: Vec<u64>,
+    pub radio_contacts: Contacts,
     /// Per-producer rally target cell for selected factory rally visuals.
     /// Owner-level `HouseState.rally_point` remains the production fallback.
     #[serde(default)]
@@ -554,7 +555,7 @@ impl GameEntity {
             movement_target: None,
             navigation: NavigationState::default(),
             attack_target: None,
-            radio_contacts: Vec::new(),
+            radio_contacts: Contacts::default(),
             rally_target: None,
             last_attacker_id: None,
             barrel_facing: None,
@@ -633,22 +634,21 @@ impl GameEntity {
 
     /// Mark a live RadioClass-style contact with another entity.
     ///
-    /// Contacts are idempotent and keep first-observed order so replay hashing
-    /// stays deterministic.
+    /// First-null slot insert: idempotent, and full slots deny without evicting
+    /// (the receiver dock idiom). Slot order is hash-relevant and deterministic.
     pub fn mark_live_contact_with(&mut self, other_stable_id: u64) {
-        if !self.radio_contacts.contains(&other_stable_id) {
-            self.radio_contacts.push(other_stable_id);
-        }
+        self.radio_contacts.insert(other_stable_id);
     }
 
     /// Whether this entity has a live RadioClass-style contact with another entity.
     pub fn has_live_contact_with(&self, other_stable_id: u64) -> bool {
-        self.radio_contacts.contains(&other_stable_id)
+        self.radio_contacts.contains(other_stable_id)
     }
 
-    /// Clear a live RadioClass-style contact with another entity.
+    /// Clear a live RadioClass-style contact with another entity (BREAK: nulls
+    /// the slot in place, no compaction).
     pub fn clear_live_contact_with(&mut self, other_stable_id: u64) {
-        self.radio_contacts.retain(|&sid| sid != other_stable_id);
+        self.radio_contacts.remove(other_stable_id);
     }
 
     /// Refresh the scoped building damaged-state visual gate from current HP.
@@ -890,7 +890,7 @@ mod tests {
         contacted.mark_live_contact_with(100);
         contacted.mark_live_contact_with(100);
 
-        assert_eq!(contacted.radio_contacts, vec![100]);
+        assert_eq!(contacted.radio_contacts.len(), 1); // idempotent — one slot used
         assert!(contacted.has_live_contact_with(100));
         assert!(!unrelated.has_live_contact_with(100));
 

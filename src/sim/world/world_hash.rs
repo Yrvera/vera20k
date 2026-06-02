@@ -479,10 +479,10 @@ impl Simulation {
                 0u8.hash(hasher);
             }
 
-            (entity.radio_contacts.len() as u32).hash(hasher);
-            for contact_id in &entity.radio_contacts {
-                contact_id.hash(hasher);
-            }
+            // Slot-indexed fold: capacity + each slot's Option (null holes and
+            // pad positions are hash-relevant). Replaces the old len + ordered-id
+            // fold — an intended one-time re-baseline at this behavior boundary.
+            entity.radio_contacts.hash_fold(hasher);
             entity.rally_target.hash(hasher);
             entity.capture_target.hash(hasher);
             entity.c4_plant.hash(hasher);
