@@ -3517,6 +3517,34 @@ ZAdjust=-10
         check_ci(&rules.super_weapons, |k| rules.super_weapon(k), "super_weapon");
     }
 
+    /// Slice 8 acceptance: the sim TypeHandleTable resolves every interned type id
+    /// (no orphans) and does so case-insensitively (htnk vs [HTNK]).
+    #[test]
+    fn type_handle_table_completeness_and_casing() {
+        let ini = IniFile::from_str(&make_test_rules());
+        let rules = RuleSet::from_ini(&ini).expect("fixture parses");
+        let mut interner = crate::sim::intern::StringInterner::new();
+        rules.intern_all_ids(&mut interner);
+        let table = crate::sim::type_handle_table::TypeHandleTable::build(&rules, &interner);
+
+        // Completeness: every registry id in the fixture (E1, E2, MTNK, GAPOWR)
+        // has a [section], so none is an orphan type_ref.
+        assert_eq!(
+            table.orphan_count(),
+            0,
+            "no interned type id should fail to resolve to an object"
+        );
+
+        // Casing: a lowercased reference resolves to the same handle as the stored
+        // uppercase id. The interner is case-insensitive, so intern_all_ids("MTNK")
+        // and a later get("mtnk") share one id.
+        let mtnk_lower = interner
+            .get("mtnk")
+            .expect("MTNK interned case-insensitively");
+        assert_eq!(table.handle_for(mtnk_lower), rules.type_handle("MTNK"));
+        assert!(rules.object("mtnk").is_some(), "lowercased object() resolves");
+    }
+
     /// Helper: parse a (rules.ini, art.ini) pair into a merged RuleSet for
     /// pad-merge tests. Keeps a minimal scaffolding (one BuildingType) so
     /// `RuleSet::from_ini` does not reject the input.
