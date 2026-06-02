@@ -11,12 +11,14 @@ use crate::rules::ruleset::RuleSet;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::game_entity::{BuildingGateMissionState, BuildingGatePhase, BuildingGateRuntime};
 use crate::sim::intern::StringInterner;
+use crate::sim::mission::MissionTimer;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::occupancy::OccupancyGrid;
 
 fn seed_hold_timer(gate: &mut BuildingGateRuntime, ticks: u32, binary_frame: u32) {
-    gate.hold_ticks_remaining = ticks;
-    gate.hold_last_frame = binary_frame;
+    // arm(now, n) == (start_frame=now, duration=n): the same pair the old
+    // (hold_last_frame, hold_ticks_remaining) assignment held.
+    gate.hold_timer.arm(binary_frame, ticks);
 }
 
 fn start_opening(gate: &mut BuildingGateRuntime, ticks: u32, binary_frame: u32) {
@@ -25,15 +27,13 @@ fn start_opening(gate: &mut BuildingGateRuntime, ticks: u32, binary_frame: u32) 
     }
     if ticks == 0 {
         gate.phase = BuildingGatePhase::OpenStable;
-        gate.transition_ticks_remaining = 0;
+        gate.transition_timer.defer(binary_frame, 0);
         gate.transition_total_ticks = 0;
-        gate.transition_last_frame = binary_frame;
         return;
     }
     gate.phase = BuildingGatePhase::Opening;
-    gate.transition_ticks_remaining = ticks;
+    gate.transition_timer.defer(binary_frame, ticks);
     gate.transition_total_ticks = ticks;
-    gate.transition_last_frame = binary_frame;
 }
 
 fn start_closing(gate: &mut BuildingGateRuntime, ticks: u32, binary_frame: u32) {
@@ -42,15 +42,13 @@ fn start_closing(gate: &mut BuildingGateRuntime, ticks: u32, binary_frame: u32) 
     }
     if ticks == 0 {
         gate.phase = BuildingGatePhase::ClosedStable;
-        gate.transition_ticks_remaining = 0;
+        gate.transition_timer.defer(binary_frame, 0);
         gate.transition_total_ticks = 0;
-        gate.transition_last_frame = binary_frame;
         return;
     }
     gate.phase = BuildingGatePhase::Closing;
-    gate.transition_ticks_remaining = ticks;
+    gate.transition_timer.defer(binary_frame, ticks);
     gate.transition_total_ticks = ticks;
-    gate.transition_last_frame = binary_frame;
 }
 
 fn reverse_transition(gate: &mut BuildingGateRuntime, binary_frame: u32) {
@@ -60,9 +58,11 @@ fn reverse_transition(gate: &mut BuildingGateRuntime, binary_frame: u32) {
     ) {
         return;
     }
-    let elapsed = binary_frame.wrapping_sub(gate.transition_last_frame);
-    let live_remaining = gate.transition_ticks_remaining.saturating_sub(elapsed);
-    gate.transition_ticks_remaining = gate.transition_total_ticks.saturating_sub(live_remaining);
+    // Recompute the reversed remaining from the nominal total, leaving the
+    // native start-frame baseline untouched (same field math as before).
+    let elapsed = gate.transition_timer.elapsed(binary_frame);
+    let live_remaining = gate.transition_timer.duration.saturating_sub(elapsed);
+    gate.transition_timer.duration = gate.transition_total_ticks.saturating_sub(live_remaining);
     gate.phase = match gate.phase {
         BuildingGatePhase::Opening => BuildingGatePhase::Closing,
         BuildingGatePhase::Closing => BuildingGatePhase::Opening,
@@ -70,11 +70,13 @@ fn reverse_transition(gate: &mut BuildingGateRuntime, binary_frame: u32) {
     };
 }
 
-fn advance_remaining(remaining: &mut u32, last_frame: &mut u32, binary_frame: u32) -> bool {
-    let elapsed = binary_frame.wrapping_sub(*last_frame);
-    *last_frame = binary_frame;
-    *remaining = remaining.saturating_sub(elapsed);
-    *remaining == 0
+fn advance_hold(timer: &mut MissionTimer, binary_frame: u32) -> bool {
+    // Re-anchor to now and saturating-decrement — the exact field math the old
+    // advance_remaining performed on (hold_ticks_remaining, hold_last_frame).
+    let elapsed = binary_frame.wrapping_sub(timer.start_frame);
+    timer.start_frame = binary_frame;
+    timer.duration = timer.duration.saturating_sub(elapsed);
+    timer.duration == 0
 }
 
 fn advance_transition(gate: &mut BuildingGateRuntime, binary_frame: u32) {
@@ -84,11 +86,11 @@ fn advance_transition(gate: &mut BuildingGateRuntime, binary_frame: u32) {
     ) {
         return;
     }
-    let elapsed = binary_frame.wrapping_sub(gate.transition_last_frame);
-    if elapsed < gate.transition_ticks_remaining {
+    // `due` is the exact complement of the old `elapsed < remaining` early-out.
+    if !gate.transition_timer.due(binary_frame) {
         return;
     }
-    gate.transition_ticks_remaining = 0;
+    gate.transition_timer.duration = 0;
     gate.phase = match gate.phase {
         BuildingGatePhase::Opening => BuildingGatePhase::OpenStable,
         BuildingGatePhase::Closing => BuildingGatePhase::ClosedStable,
@@ -248,11 +250,7 @@ pub fn tick_gate(
         BuildingGateMissionState::OpenHold => {
             if obstructed {
                 seed_hold_timer(gate, close_delay_ticks, binary_frame);
-            } else if advance_remaining(
-                &mut gate.hold_ticks_remaining,
-                &mut gate.hold_last_frame,
-                binary_frame,
-            ) {
+            } else if advance_hold(&mut gate.hold_timer, binary_frame) {
                 gate.mission_state = BuildingGateMissionState::BeginClose;
             }
         }
@@ -297,7 +295,7 @@ mod tests {
         assert_eq!(gate.phase, BuildingGatePhase::OpenStable);
 
         tick_gate(&mut gate, 1, 4, true, 4);
-        assert_eq!(gate.hold_ticks_remaining, 4);
+        assert_eq!(gate.hold_timer.duration, 4);
         tick_gate(&mut gate, 1, 4, false, 7);
         assert_eq!(gate.mission_state, BuildingGateMissionState::OpenHold);
         tick_gate(&mut gate, 1, 4, false, 8);
@@ -315,17 +313,16 @@ mod tests {
             mission_18_active: true,
             phase: BuildingGatePhase::Closing,
             mission_state: BuildingGateMissionState::ClosingWait,
-            transition_ticks_remaining: 2,
+            transition_timer: MissionTimer::armed(20, 2),
             transition_total_ticks: 4,
-            transition_last_frame: 20,
             ..Default::default()
         };
         request_open(&mut gate);
         assert_eq!(gate.mission_state, BuildingGateMissionState::Setup);
         tick_gate(&mut gate, 4, 10, false, 20);
         assert_eq!(gate.phase, BuildingGatePhase::Opening);
-        assert_eq!(gate.transition_ticks_remaining, 2);
-        assert_eq!(gate.transition_last_frame, 20);
+        assert_eq!(gate.transition_timer.duration, 2);
+        assert_eq!(gate.transition_timer.start_frame, 20);
     }
 
     #[test]
@@ -334,9 +331,8 @@ mod tests {
             mission_18_active: true,
             phase: BuildingGatePhase::Closing,
             mission_state: BuildingGateMissionState::ClosingWait,
-            transition_ticks_remaining: 39,
+            transition_timer: MissionTimer::armed(100, 39),
             transition_total_ticks: 39,
-            transition_last_frame: 100,
             ..Default::default()
         };
 
@@ -345,8 +341,8 @@ mod tests {
 
         tick_gate(&mut gate, 39, 180, false, 110);
         assert_eq!(gate.phase, BuildingGatePhase::Opening);
-        assert_eq!(gate.transition_ticks_remaining, 10);
-        assert_eq!(gate.transition_last_frame, 100);
+        assert_eq!(gate.transition_timer.duration, 10);
+        assert_eq!(gate.transition_timer.start_frame, 100);
         assert!(!gate.can_garrison_passable());
 
         tick_gate(&mut gate, 39, 180, false, 111);

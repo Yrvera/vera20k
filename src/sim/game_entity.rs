@@ -30,6 +30,7 @@ use crate::sim::docking::aircraft_dock::AircraftAmmo;
 use crate::sim::docking::building_dock::DockState;
 use crate::sim::intern::InternedId;
 use crate::sim::miner::Miner;
+use crate::sim::mission::MissionTimer;
 use crate::sim::movement::drive_track::{DriveTrackState, ForcedDriveTrackState};
 use crate::sim::movement::droppod_movement::DropPodState;
 use crate::sim::movement::locomotor::LocomotorState;
@@ -91,18 +92,18 @@ pub struct BuildingGateRuntime {
     pub phase: BuildingGatePhase,
     #[serde(default)]
     pub mission_state: BuildingGateMissionState,
+    /// Open/close transition deferral. `duration` is the active remaining ticks;
+    /// `start_frame` is the native helper baseline that direction reversal
+    /// preserves while it rewrites the duration.
     #[serde(default)]
-    pub transition_ticks_remaining: u32,
+    pub transition_timer: MissionTimer,
+    /// Nominal transition length (not a live timer) — direction reversal reads it
+    /// to recompute the reversed remaining.
     #[serde(default)]
     pub transition_total_ticks: u32,
-    /// Native transition helper start-frame baseline. Direction reversal rewrites
-    /// the active duration field but preserves this frame.
+    /// Stable-open hold countdown (reseeds while occupants remain in the footprint).
     #[serde(default)]
-    pub transition_last_frame: u32,
-    #[serde(default)]
-    pub hold_ticks_remaining: u32,
-    #[serde(default)]
-    pub hold_last_frame: u32,
+    pub hold_timer: MissionTimer,
 }
 
 impl Default for BuildingGateRuntime {
@@ -111,11 +112,12 @@ impl Default for BuildingGateRuntime {
             mission_18_active: false,
             phase: BuildingGatePhase::ClosedStable,
             mission_state: BuildingGateMissionState::Setup,
-            transition_ticks_remaining: 0,
+            // armed(0, 0) — NOT the sentinel — preserves the exact numeric values
+            // the old (last_frame, ticks_remaining) u32 pairs held at default,
+            // keeping the gate's wrapping_sub arithmetic and the state hash identical.
+            transition_timer: MissionTimer::armed(0, 0),
             transition_total_ticks: 0,
-            transition_last_frame: 0,
-            hold_ticks_remaining: 0,
-            hold_last_frame: 0,
+            hold_timer: MissionTimer::armed(0, 0),
         }
     }
 }

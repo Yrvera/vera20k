@@ -558,7 +558,7 @@ fn binary_frame_committed_late_gate_captures_pre_increment_frame() {
         .as_ref()
         .expect("gate runtime");
     assert_eq!(
-        rt.transition_last_frame, 0,
+        rt.transition_timer.start_frame, 0,
         "gate captured pre-increment frame 0, not post-increment 1"
     );
 }

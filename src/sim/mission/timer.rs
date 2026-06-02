@@ -156,6 +156,20 @@ mod tests {
     }
 
     #[test]
+    fn reversal_arithmetic_matches_gate_reverse() {
+        // Mirrors the building gate's direction-reversal math: a transition armed
+        // at frame 100 for 39 ticks, reversed at frame 110 against a nominal total
+        // of 39, yields duration 10 with the start-frame baseline preserved.
+        let mut t = MissionTimer::armed(100, 39);
+        let total = 39u32;
+        let elapsed = t.elapsed(110);
+        let live_remaining = t.duration.saturating_sub(elapsed);
+        t.duration = total.saturating_sub(live_remaining);
+        assert_eq!(t.duration, 10);
+        assert_eq!(t.start_frame, 100);
+    }
+
+    #[test]
     fn wraparound_delta_is_correct() {
         // Anchor near the top of u32; `now` has wrapped past 0.
         let t = MissionTimer::armed(u32::MAX - 2, 5);

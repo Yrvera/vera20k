@@ -493,11 +493,13 @@ impl Simulation {
                 gate.mission_18_active.hash(hasher);
                 (gate.phase as u8).hash(hasher);
                 (gate.mission_state as u8).hash(hasher);
-                gate.transition_ticks_remaining.hash(hasher);
+                // Same u32 values, same order as the old (last_frame, ticks_remaining)
+                // pairs — the MissionTimer regrouping leaves the hash pre-image identical.
+                gate.transition_timer.duration.hash(hasher);
                 gate.transition_total_ticks.hash(hasher);
-                gate.transition_last_frame.hash(hasher);
-                gate.hold_ticks_remaining.hash(hasher);
-                gate.hold_last_frame.hash(hasher);
+                gate.transition_timer.start_frame.hash(hasher);
+                gate.hold_timer.duration.hash(hasher);
+                gate.hold_timer.start_frame.hash(hasher);
             } else {
                 0u8.hash(hasher);
             }
