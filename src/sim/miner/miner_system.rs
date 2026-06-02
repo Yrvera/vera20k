@@ -264,13 +264,13 @@ fn process_miner(
             // through to SearchOre.
             snap.miner.state = MinerState::SearchOre;
         }
-        MinerState::WaitNoOre => handle_wait_no_ore(config, snap),
+        MinerState::WaitNoOre => handle_wait_no_ore(snap, sim.binary_frame),
         MinerState::ForcedReturn => handle_forced_return(sim, rules, config, path_grid, snap),
     }
     let state_after = format!("{:?}", snap.miner.state);
     if state_before != state_after {
         log::info!(
-            "MINER {} state: {} → {} pos=({},{}) target_ore={:?} cargo={} timer={}",
+            "MINER {} state: {} → {} pos=({},{}) target_ore={:?} cargo={} timer={:?}",
             snap.entity_id,
             state_before,
             state_after,
@@ -423,7 +423,9 @@ fn handle_search_ore(
 
     // No reachable ore anywhere.
     snap.miner.state = MinerState::WaitNoOre;
-    snap.miner.rescan_cooldown = config.rescan_cooldown_ticks;
+    snap.miner
+        .rescan_cooldown
+        .arm(sim.binary_frame, u32::from(config.rescan_cooldown_ticks) + 1);
 }
 
 fn handle_move_to_ore(
@@ -494,7 +496,9 @@ fn handle_move_to_ore(
     if (snap.rx, snap.ry) == target {
         snap.miner.state = MinerState::Harvest;
         // Original requires 9 StepTimer steps before first bale (18 frames at default rate).
-        snap.miner.harvest_timer = config.harvest_tick_interval;
+        snap.miner
+            .harvest_timer
+            .arm(sim.binary_frame, u32::from(config.harvest_tick_interval) + 1);
         return;
     }
 
@@ -543,9 +547,8 @@ fn handle_harvest(
     overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     snap: &mut MinerSnapshot,
 ) {
-    // Timer countdown.
-    if snap.miner.harvest_timer > 0 {
-        snap.miner.harvest_timer -= 1;
+    // Frame-anchored gate (was a per-tick countdown).
+    if !snap.miner.harvest_timer.due(sim.binary_frame) {
         return;
     }
 
@@ -589,7 +592,9 @@ fn handle_harvest(
         // Harvest. If the cell is now empty the next call returns 0 and
         // we fall through to short-scan; if it still has density we wait
         // 18 frames per gamemd's step-counter gate.
-        snap.miner.harvest_timer = config.harvest_tick_interval;
+        snap.miner
+            .harvest_timer
+            .arm(sim.binary_frame, u32::from(config.harvest_tick_interval) + 1);
         return;
     }
 
@@ -698,8 +703,7 @@ fn handle_return(
         snap.miner.reserved_refinery = None;
         snap.miner.dock_queued = false;
         snap.miner.dock_phase = RefineryDockPhase::Approach;
-        snap.miner.dock_enter_retry_start_frame = None;
-        snap.miner.dock_enter_retry_duration = 0;
+        snap.miner.dock_enter_retry.clear();
         snap.miner.exit_cell = None;
         if snap.miner.is_full() {
             snap.miner.target_ore_cell = None;
@@ -740,8 +744,7 @@ fn handle_return(
     if contact {
         snap.miner.state = MinerState::Dock;
         snap.miner.dock_phase = RefineryDockPhase::Approach;
-        snap.miner.dock_enter_retry_start_frame = None;
-        snap.miner.dock_enter_retry_duration = 0;
+        snap.miner.dock_enter_retry.clear();
         return;
     }
 
@@ -750,9 +753,8 @@ fn handle_return(
     }
 }
 
-fn handle_wait_no_ore(_config: &MinerConfig, snap: &mut MinerSnapshot) {
-    if snap.miner.rescan_cooldown > 0 {
-        snap.miner.rescan_cooldown -= 1;
+fn handle_wait_no_ore(snap: &mut MinerSnapshot, now: u32) {
+    if !snap.miner.rescan_cooldown.due(now) {
         return;
     }
     snap.miner.state = MinerState::SearchOre;
@@ -787,7 +789,9 @@ fn handle_forced_return(
             }
         } else {
             snap.miner.state = MinerState::WaitNoOre;
-            snap.miner.rescan_cooldown = config.rescan_cooldown_ticks;
+            snap.miner
+        .rescan_cooldown
+        .arm(sim.binary_frame, u32::from(config.rescan_cooldown_ticks) + 1);
             return;
         }
     }
@@ -947,8 +951,7 @@ fn try_begin_close_return_radio(
 
     snap.miner.state = MinerState::Dock;
     snap.miner.dock_queued = admission != ContactAdmission::Accepted;
-    snap.miner.dock_enter_retry_start_frame = None;
-    snap.miner.dock_enter_retry_duration = 0;
+    snap.miner.dock_enter_retry.clear();
     snap.miner.dock_phase = if admission == ContactAdmission::Accepted {
         RefineryDockPhase::MissionEnter
     } else {

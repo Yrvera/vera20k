@@ -416,7 +416,7 @@ pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
                         miner.cargo.len(),
                         miner.capacity_bales
                     ));
-                    ui.label(format!("Harvest timer: {}", miner.harvest_timer));
+                    ui.label(format!("Harvest timer: {:?}", miner.harvest_timer));
                     if let Some(ore) = miner.target_ore_cell {
                         ui.label(format!("Target ore: ({},{})", ore.0, ore.1));
                     } else {

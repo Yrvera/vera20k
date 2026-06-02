@@ -82,50 +82,35 @@ fn schedule_enter_retry(sim: &mut Simulation, snap: &mut MinerSnapshot) {
     let jitter = sim
         .miner_jitter_rng()
         .next_range_u32_inclusive(0, ENTER_RETRY_JITTER_MAX_FRAMES) as u8;
-    snap.miner.dock_enter_retry_start_frame = Some(sim.binary_frame);
-    snap.miner.dock_enter_retry_duration = ENTER_RETRY_BASE_FRAMES.saturating_add(jitter);
+    let duration = u32::from(ENTER_RETRY_BASE_FRAMES.saturating_add(jitter));
+    snap.miner.dock_enter_retry.arm(sim.binary_frame, duration);
 }
 
 fn enter_retry_due(sim: &Simulation, snap: &MinerSnapshot) -> bool {
-    match snap.miner.dock_enter_retry_start_frame {
-        Some(start) => {
-            let elapsed = sim.binary_frame.saturating_sub(start);
-            elapsed >= u32::from(snap.miner.dock_enter_retry_duration)
-        }
-        None => true,
-    }
+    snap.miner.dock_enter_retry.due(sim.binary_frame)
 }
 
 fn clear_enter_retry(snap: &mut MinerSnapshot) {
-    snap.miner.dock_enter_retry_start_frame = None;
-    snap.miner.dock_enter_retry_duration = 0;
+    snap.miner.dock_enter_retry.clear();
 }
 
 fn schedule_mission_deploy_delay(snap: &mut MinerSnapshot, frame: u32, duration: u8) {
-    snap.miner.mission_deploy_start_frame = Some(frame);
-    snap.miner.mission_deploy_duration = duration;
+    snap.miner.mission_deploy_timer.arm(frame, u32::from(duration));
 }
 
 fn mission_deploy_due(sim: &Simulation, snap: &MinerSnapshot) -> bool {
-    match snap.miner.mission_deploy_start_frame {
-        Some(start) => {
-            sim.binary_frame.saturating_sub(start) >= u32::from(snap.miner.mission_deploy_duration)
-        }
-        None => true,
-    }
+    snap.miner.mission_deploy_timer.due(sim.binary_frame)
 }
 
 fn clear_mission_deploy_delay(snap: &mut MinerSnapshot) {
-    snap.miner.mission_deploy_start_frame = None;
-    snap.miner.mission_deploy_duration = 0;
+    snap.miner.mission_deploy_timer.clear();
 }
 
 fn clear_unload_timer_cluster(snap: &mut MinerSnapshot) {
     snap.miner.unload_accumulator = 0;
     snap.miner.unload_timer_fired = false;
-    snap.miner.unload_cluster_start_frame = None;
+    snap.miner.unload_cluster_timer.clear();
     snap.miner.unload_cluster_scratch = 0;
-    snap.miner.unload_cluster_duration = 0;
     snap.miner.unload_cluster_repeat = 0;
 }
 
@@ -207,16 +192,16 @@ pub(super) fn bus_break(sim: &mut Simulation, miner_id: u64, ref_sid: u64) {
 }
 
 fn tick_unload_accumulator(sim: &Simulation, snap: &mut MinerSnapshot) {
-    let Some(start) = snap.miner.unload_cluster_start_frame else {
+    // An unarmed timer means the cluster is inactive (was `start_frame == None`).
+    if !snap.miner.unload_cluster_timer.is_armed() {
         snap.miner.unload_timer_fired = false;
         return;
-    };
+    }
     if snap.miner.unload_cluster_repeat == 0 {
         snap.miner.unload_timer_fired = false;
         return;
     }
-    let elapsed = sim.binary_frame.saturating_sub(start);
-    if elapsed < snap.miner.unload_cluster_duration {
+    if !snap.miner.unload_cluster_timer.due(sim.binary_frame) {
         snap.miner.unload_timer_fired = false;
         return;
     }
@@ -226,9 +211,10 @@ fn tick_unload_accumulator(sim: &Simulation, snap: &mut MinerSnapshot) {
         .unload_accumulator
         .saturating_add(snap.miner.unload_accumulator_step);
     snap.miner.unload_timer_fired = true;
-    snap.miner.unload_cluster_start_frame = Some(sim.binary_frame);
+    snap.miner
+        .unload_cluster_timer
+        .arm(sim.binary_frame, snap.miner.unload_cluster_repeat);
     snap.miner.unload_cluster_scratch = 0;
-    snap.miner.unload_cluster_duration = snap.miner.unload_cluster_repeat;
 }
 
 // ---------------------------------------------------------------------------
@@ -635,20 +621,15 @@ pub(crate) fn interrupt_refinery_docked_miners(
         miner.dock_queued = false;
         miner.dock_phase = RefineryDockPhase::Approach;
         miner.dock_pivot_facing = None;
-        miner.dock_enter_retry_start_frame = None;
-        miner.dock_enter_retry_duration = 0;
-        miner.mission_deploy_start_frame = None;
-        miner.mission_deploy_duration = 0;
+        miner.dock_enter_retry.clear();
+        miner.mission_deploy_timer.clear();
         miner.unload_active = false;
         miner.unload_accumulator = 0;
         miner.unload_timer_fired = false;
-        miner.unload_cluster_start_frame = None;
+        miner.unload_cluster_timer.clear();
         miner.unload_cluster_scratch = 0;
-        miner.unload_cluster_duration = 0;
         miner.unload_cluster_repeat = 0;
-        miner.deposit_cooldown_ticks = 0;
         miner.exit_cell = None;
-        miner.unload_timer = 0;
         if miner.is_full() {
             miner.target_ore_cell = None;
         }
@@ -688,9 +669,7 @@ fn abort_invalid_refinery(sim: &mut Simulation, snap: &mut MinerSnapshot, ref_si
     clear_enter_retry(snap);
     clear_mission_deploy_delay(snap);
     clear_unload_cluster(snap);
-    snap.miner.deposit_cooldown_ticks = 0;
     snap.miner.exit_cell = None;
-    snap.miner.unload_timer = 0;
     if snap.miner.is_full() {
         snap.miner.target_ore_cell = None;
     }
@@ -720,9 +699,7 @@ fn abort_missing_unload_building(sim: &mut Simulation, snap: &mut MinerSnapshot,
     clear_enter_retry(snap);
     clear_mission_deploy_delay(snap);
     clear_unload_timer_cluster(snap);
-    snap.miner.deposit_cooldown_ticks = 0;
     snap.miner.exit_cell = None;
-    snap.miner.unload_timer = 0;
     if snap.miner.is_full() {
         snap.miner.target_ore_cell = None;
     }
@@ -1065,11 +1042,9 @@ fn start_unload_deploy(sim: &mut Simulation, rules: &RuleSet, snap: &mut MinerSn
     snap.miner.unload_active = true;
     snap.miner.unload_accumulator = 0;
     snap.miner.unload_timer_fired = false;
-    snap.miner.unload_cluster_start_frame = Some(sim.binary_frame);
+    snap.miner.unload_cluster_timer.arm(sim.binary_frame, 1);
     snap.miner.unload_cluster_scratch = 0;
-    snap.miner.unload_cluster_duration = 1;
     snap.miner.unload_cluster_repeat = 1;
-    snap.miner.unload_timer = 0;
     snap.miner.dock_phase = RefineryDockPhase::Unloading;
 }
 
@@ -1117,13 +1092,12 @@ fn phase_unloading(
     snap: &mut MinerSnapshot,
     ref_sid: u64,
 ) {
-    if !snap.miner.unload_active && snap.miner.unload_cluster_start_frame.is_none() {
+    if !snap.miner.unload_active && !snap.miner.unload_cluster_timer.is_armed() {
         // Compatibility for old saves and tests that entered Unloading before
         // the byte-field cluster existed.
         snap.miner.unload_active = true;
         snap.miner.unload_accumulator = i32::from(config.unload_tick_interval.div_ceil(10));
-        snap.miner.unload_cluster_start_frame = Some(sim.binary_frame);
-        snap.miner.unload_cluster_duration = 1;
+        snap.miner.unload_cluster_timer.arm(sim.binary_frame, 1);
         snap.miner.unload_cluster_repeat = 1;
     }
 
@@ -1215,7 +1189,6 @@ fn phase_unloading(
     // state 4. Do not seed another dump-gate cooldown here; the due
     // mission-deploy delay and accumulator gate have already fired.
     snap.miner.home_refinery = mission_deploy_unload_building(sim, snap.entity_id);
-    snap.miner.deposit_cooldown_ticks = 0;
     schedule_mission_deploy_delay(snap, sim.binary_frame, 1);
     snap.miner.dock_phase = RefineryDockPhase::Departing;
 }
@@ -1224,12 +1197,9 @@ fn phase_unloading(
 /// unload reaches Departing directly from the empty-slot gate in
 /// `phase_unloading`.
 fn phase_deposit_cooldown(snap: &mut MinerSnapshot) {
-    if snap.miner.deposit_cooldown_ticks > 0 {
-        snap.miner.deposit_cooldown_ticks -= 1;
-        return;
-    }
-    // `phase_departing` owns the stock state-4 cleanup and clears the
-    // unloading sprite override during that handoff.
+    // Legacy pass-through: the deposit-cooldown countdown is retired (it was
+    // always 0 in the active path). `phase_departing` owns the state-4 cleanup
+    // and clears the unloading sprite override during that handoff.
     snap.miner.dock_phase = RefineryDockPhase::Departing;
 }
 
@@ -1273,7 +1243,6 @@ fn phase_departing(sim: &mut Simulation, _rules: &RuleSet, snap: &mut MinerSnaps
     clear_enter_retry(snap);
     clear_mission_deploy_delay(snap);
     clear_unload_cluster(snap);
-    snap.miner.deposit_cooldown_ticks = 0;
     // Clear the pending ore target and stale exit cache. Preserve
     // `last_harvest_cell`; the ghost-cell archive survives the dock cycle
     // so the next `SearchOre` can return to the productive patch saved when

@@ -546,8 +546,9 @@ impl Simulation {
                 miner.home_refinery.hash(hasher);
                 miner.reserved_refinery.hash(hasher);
                 miner.target_ore_cell.hash(hasher);
+                // harvest_timer is now a MissionTimer (start_frame + duration)
+                // — intended one-time re-baseline. unload_timer was deleted.
                 miner.harvest_timer.hash(hasher);
-                miner.unload_timer.hash(hasher);
                 miner.forced_return.hash(hasher);
                 miner.dock_queued.hash(hasher);
                 miner.dock_phase.hash(hasher);

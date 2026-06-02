@@ -781,7 +781,6 @@ fn credits_arrive_per_slot_during_unload() {
         miner.state = MinerState::Dock;
         miner.dock_phase = RefineryDockPhase::Unloading;
         miner.reserved_refinery = Some(2);
-        miner.unload_timer = 0;
     }
     sim.production.dock_reservations.try_reserve(2, miner_id);
 
@@ -820,7 +819,6 @@ fn credits_arrive_per_slot_during_unload() {
         miner.state = MinerState::Dock;
         miner.dock_phase = RefineryDockPhase::Unloading;
         miner.reserved_refinery = Some(2);
-        miner.unload_timer = 0;
     }
     sim.production.dock_reservations.try_reserve(2, miner_id);
 
@@ -868,7 +866,7 @@ fn local_continuation_after_cell_depletes() {
         let miner = entity.miner.as_mut().expect("miner component");
         miner.state = MinerState::Harvest;
         miner.target_ore_cell = Some((20, 20));
-        miner.harvest_timer = 0;
+        miner.harvest_timer.clear();
     }
 
     // Tick enough to deplete the small cell and search for the next.
@@ -913,7 +911,7 @@ fn harvest_continues_to_nearby_ore_when_cell_depletes_partial_cargo() {
         let miner = entity.miner.as_mut().expect("miner component");
         miner.state = MinerState::Harvest;
         miner.target_ore_cell = Some((20, 20));
-        miner.harvest_timer = 0;
+        miner.harvest_timer.clear();
     }
 
     // Tick enough to deplete (20,20) and trigger the continuation scan.
@@ -962,7 +960,7 @@ fn harvest_returns_when_no_ore_within_short_scan() {
         let miner = entity.miner.as_mut().expect("miner component");
         miner.state = MinerState::Harvest;
         miner.target_ore_cell = Some((20, 20));
-        miner.harvest_timer = 0;
+        miner.harvest_timer.clear();
     }
 
     tick_miners_n(&mut sim, &rules, 30);
@@ -1002,7 +1000,7 @@ fn empty_cargo_cell_depletion_returns_to_refinery() {
         let miner = entity.miner.as_mut().expect("miner component");
         miner.state = MinerState::Harvest;
         miner.target_ore_cell = Some((20, 20));
-        miner.harvest_timer = 0;
+        miner.harvest_timer.clear();
         // Cargo intentionally empty — extract_bale will fail on first tick.
         assert!(miner.cargo.is_empty());
     }
@@ -1793,11 +1791,14 @@ fn wait_no_ore_rescans_after_cooldown() {
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 20, 20);
     spawn_refinery(&mut sim, 2, 10, 10);
 
+    let now = sim.binary_frame;
     {
         let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
         let miner = entity.miner.as_mut().expect("miner component");
         miner.state = MinerState::WaitNoOre;
-        miner.rescan_cooldown = config.rescan_cooldown_ticks;
+        miner
+            .rescan_cooldown
+            .arm(now, u32::from(config.rescan_cooldown_ticks) + 1);
     }
 
     // rescan_cooldown_ticks = 105 (0x69 frames from original engine).
@@ -3059,7 +3060,6 @@ fn occupied_can_dock_defers_without_clearing_waiting_miner_target() {
         miner.state = MinerState::Dock;
         miner.dock_phase = RefineryDockPhase::Unloading;
         miner.reserved_refinery = Some(2);
-        miner.unload_timer = 1000;
     }
     assert!(sim.production.dock_reservations.try_reserve(2, occupant));
     sim.production
@@ -3513,7 +3513,6 @@ fn unloading_emits_one_event_per_slot_drain() {
         miner.state = MinerState::Dock;
         miner.dock_phase = RefineryDockPhase::Unloading;
         miner.reserved_refinery = Some(2);
-        miner.unload_timer = 0;
     }
     sim.production.dock_reservations.try_reserve(2, miner_id);
 
@@ -3549,7 +3548,6 @@ fn unloading_emits_one_event_per_slot_drain() {
         miner.state = MinerState::Dock;
         miner.dock_phase = RefineryDockPhase::Unloading;
         miner.reserved_refinery = Some(2);
-        miner.unload_timer = 0;
     }
     sim.production.dock_reservations.try_reserve(2, miner_id);
 
@@ -3615,7 +3613,6 @@ fn unloading_applies_per_slot_purifier_bonus() {
         miner.state = MinerState::Dock;
         miner.dock_phase = RefineryDockPhase::Unloading;
         miner.reserved_refinery = Some(2);
-        miner.unload_timer = 0;
     }
     sim.production.dock_reservations.try_reserve(2, miner_id);
 
@@ -4081,10 +4078,6 @@ fn linked_to_pivoting_then_unloading_on_pad_arrival() {
     {
         let m = get_miner(&sim, miner_id);
         assert_eq!(m.dock_phase, RefineryDockPhase::Pivoting);
-        assert_eq!(
-            m.unload_timer, 0,
-            "unload_timer must not be seeded until the pivot completes",
-        );
 
         let entity = sim.substrate.entities.get(miner_id).expect("entity");
         assert_eq!(entity.facing_target, None);
@@ -4109,17 +4102,16 @@ fn linked_to_pivoting_then_unloading_on_pad_arrival() {
             RefineryDockPhase::Unloading,
             "Pivoting must transition to Unloading once facing reaches 0x40",
         );
-        assert_eq!(m.unload_timer, 0, "Plan C does not preload unload_timer");
         assert!(m.unload_active, "unload-active latch should be set");
         assert_eq!(m.unload_accumulator, 0);
-        assert_eq!(m.unload_cluster_start_frame, Some(sim.binary_frame));
-        assert_eq!(m.unload_cluster_duration, 1);
+        assert_eq!(m.unload_cluster_timer.start_frame, sim.binary_frame);
+        assert_eq!(m.unload_cluster_timer.duration, 1);
         assert_eq!(m.unload_cluster_repeat, 1);
         assert_eq!(m.unload_accumulator_step, 1);
         assert!(
-            (14..=16).contains(&m.mission_deploy_duration),
+            (14..=16).contains(&m.mission_deploy_timer.duration),
             "accepted unload-start should schedule stock 14..16 frames, got {}",
-            m.mission_deploy_duration
+            m.mission_deploy_timer.duration
         );
 
         let entity = sim.substrate.entities.get(miner_id).expect("entity");
@@ -4196,11 +4188,10 @@ fn pivoting_phase_smoothly_rotates_to_east() {
             "dock facing timer must not write visible body facing"
         );
         assert_eq!(m.dock_phase, RefineryDockPhase::Pivoting);
-        assert_eq!(m.unload_timer, 0, "timer must not seed mid-pivot");
         assert_eq!(entity.facing_target, Some(0x40));
         assert!(m.dock_pivot_facing.is_some());
-        assert_eq!(m.mission_deploy_duration, 5);
-        assert_eq!(m.mission_deploy_start_frame, Some(sim.binary_frame));
+        assert_eq!(m.mission_deploy_timer.duration, 5);
+        assert_eq!(m.mission_deploy_timer.start_frame, sim.binary_frame);
         assert_eq!(
             sim.scenario_rng.state(),
             rng_before,
@@ -4217,7 +4208,6 @@ fn pivoting_phase_smoothly_rotates_to_east() {
             "passive mission delay must not advance visible facing"
         );
         assert_eq!(m.dock_phase, RefineryDockPhase::Pivoting);
-        assert_eq!(m.unload_timer, 0, "timer must not seed mid-pivot");
         assert_eq!(entity.facing_target, Some(0x40));
     }
 
@@ -4245,7 +4235,6 @@ fn pivoting_phase_smoothly_rotates_to_east() {
         "dock mission must not force the visible body facing to East"
     );
     assert!(entity.facing_target.is_none());
-    assert_eq!(m.unload_timer, 0);
     assert!(m.unload_active);
 }
 
@@ -4494,7 +4483,7 @@ fn harvester_drains_full_cell_in_one_extraction_tick() {
         let miner = entity.miner.as_mut().expect("miner component");
         miner.state = MinerState::Harvest;
         miner.target_ore_cell = Some((20, 20));
-        miner.harvest_timer = 0;
+        miner.harvest_timer.clear();
     }
 
     // Single tick: timer == 0 means extract_bales_max fires immediately and
@@ -4536,7 +4525,7 @@ fn harvester_caps_extraction_at_remaining_capacity() {
         }
         miner.state = MinerState::Harvest;
         miner.target_ore_cell = Some((20, 20));
-        miner.harvest_timer = 0;
+        miner.harvest_timer.clear();
     }
 
     tick_miners_n(&mut sim, &rules, 1);
@@ -4573,7 +4562,7 @@ fn harvester_continues_to_short_scan_when_partial_then_empty() {
         let miner = entity.miner.as_mut().expect("miner component");
         miner.state = MinerState::Harvest;
         miner.target_ore_cell = Some((20, 20));
-        miner.harvest_timer = 0;
+        miner.harvest_timer.clear();
     }
 
     // First tick: drain (20, 20) in one extraction → 5 bales. The post-
@@ -4688,8 +4677,8 @@ fn dock_first_slot_drain_waits_one_unload_interval() {
 /// 2. The same tick advances to Departing, with the dock still occupied.
 /// 3. The next tick runs the stock state-4 handoff and releases the dock.
 ///
-/// Sets the miner up in Unloading with empty cargo and `unload_timer = 0`
-/// so the cargo-empty branch fires on the very first tick.
+/// Sets the miner up in Unloading with empty cargo so the cargo-empty branch
+/// fires on the very first tick.
 #[test]
 fn empty_unload_gate_releases_dock_on_next_stock_state4_handoff() {
     let mut sim = Simulation::new();
@@ -4708,7 +4697,6 @@ fn empty_unload_gate_releases_dock_on_next_stock_state4_handoff() {
         miner.state = MinerState::Dock;
         miner.dock_phase = RefineryDockPhase::Unloading;
         miner.reserved_refinery = Some(2);
-        miner.unload_timer = 0;
     }
     // Mark the dock occupied so we can assert release timing directly.
     assert!(sim.production.dock_reservations.try_reserve(2, miner_id));
@@ -4723,10 +4711,6 @@ fn empty_unload_gate_releases_dock_on_next_stock_state4_handoff() {
         m.dock_phase,
         RefineryDockPhase::Departing,
         "empty-slot gate should transition directly to Departing",
-    );
-    assert_eq!(
-        m.deposit_cooldown_ticks, 0,
-        "empty-slot gate must not seed another unload interval",
     );
     assert!(
         sim.production.dock_reservations.is_occupied(2),
@@ -4776,7 +4760,6 @@ fn unload_state3_uses_west_cell_building_not_reserved_refinery() {
         miner.state = MinerState::Dock;
         miner.dock_phase = RefineryDockPhase::Unloading;
         miner.reserved_refinery = Some(2);
-        miner.unload_timer = 0;
     }
     assert!(sim.production.dock_reservations.try_reserve(2, miner_id));
 
@@ -4808,7 +4791,6 @@ fn missing_west_cell_building_does_not_credit_or_emit_deposit_event() {
         miner.state = MinerState::Dock;
         miner.dock_phase = RefineryDockPhase::Unloading;
         miner.reserved_refinery = Some(2);
-        miner.unload_timer = 0;
     }
     assert!(sim.production.dock_reservations.try_reserve(2, miner_id));
 
@@ -4841,7 +4823,6 @@ fn state3_null_lookup_preserves_full_cargo_and_returns_to_refinery_selection() {
         miner.state = MinerState::Dock;
         miner.dock_phase = RefineryDockPhase::Unloading;
         miner.reserved_refinery = Some(2);
-        miner.unload_timer = 0;
     }
     assert!(sim.production.dock_reservations.try_reserve(2, miner_id));
 
@@ -4874,7 +4855,6 @@ fn state3_null_lookup_does_not_clear_unload_display_latch() {
         miner.state = MinerState::Dock;
         miner.dock_phase = RefineryDockPhase::Unloading;
         miner.reserved_refinery = Some(2);
-        miner.unload_timer = 0;
     }
     assert!(sim.production.dock_reservations.try_reserve(2, miner_id));
 
@@ -4908,7 +4888,6 @@ fn reserved_refinery_released_but_not_used_for_unload_credit_identity() {
         miner.state = MinerState::Dock;
         miner.dock_phase = RefineryDockPhase::Unloading;
         miner.reserved_refinery = Some(2);
-        miner.unload_timer = 0;
     }
     assert!(sim.production.dock_reservations.try_reserve(2, miner_id));
     sim.production
@@ -4974,7 +4953,6 @@ fn queued_miner_takes_over_immediately_after_empty_gate_handoff() {
         miner.state = MinerState::Dock;
         miner.dock_phase = RefineryDockPhase::Unloading;
         miner.reserved_refinery = Some(2);
-        miner.unload_timer = 0;
     }
     assert!(sim.production.dock_reservations.try_reserve(2, occupant));
     sim.production
@@ -5061,7 +5039,6 @@ fn two_purifiers_stack_the_bonus_linearly() {
         miner.state = MinerState::Dock;
         miner.dock_phase = RefineryDockPhase::Unloading;
         miner.reserved_refinery = Some(2);
-        miner.unload_timer = 0;
     }
     sim.production.dock_reservations.try_reserve(2, miner_id);
 
@@ -5111,7 +5088,6 @@ fn ai_brutal_gets_virtual_purifier_bonus() {
         miner.state = MinerState::Dock;
         miner.dock_phase = RefineryDockPhase::Unloading;
         miner.reserved_refinery = Some(2);
-        miner.unload_timer = 0;
     }
     sim.production.dock_reservations.try_reserve(2, miner_id);
 
@@ -5157,7 +5133,6 @@ fn human_player_does_not_get_ai_virtual_bonus() {
         miner.state = MinerState::Dock;
         miner.dock_phase = RefineryDockPhase::Unloading;
         miner.reserved_refinery = Some(2);
-        miner.unload_timer = 0;
     }
     sim.production.dock_reservations.try_reserve(2, miner_id);
 
@@ -5171,8 +5146,9 @@ fn human_player_does_not_get_ai_virtual_bonus() {
     );
 }
 
-/// Legacy DepositCooldown save states still count down and pass through to
-/// Departing, even though stock unload no longer enters this phase.
+/// Legacy DepositCooldown save states pass straight through to Departing. The
+/// old per-tick `deposit_cooldown_ticks` countdown is retired (Slice 5), so the
+/// phase no longer holds — it advances on the first tick.
 #[test]
 fn legacy_deposit_cooldown_passes_through_to_departing() {
     let mut sim = Simulation::new();
@@ -5188,21 +5164,15 @@ fn legacy_deposit_cooldown_passes_through_to_departing() {
         miner.state = MinerState::Dock;
         miner.dock_phase = RefineryDockPhase::DepositCooldown;
         miner.reserved_refinery = Some(2);
-        miner.deposit_cooldown_ticks = 2;
     }
     sim.production.dock_reservations.try_reserve(2, miner_id);
 
     tick_miners_n(&mut sim, &rules, 1);
     let m = get_miner(&sim, miner_id);
-    assert_eq!(m.dock_phase, RefineryDockPhase::DepositCooldown);
-    assert_eq!(m.deposit_cooldown_ticks, 1);
-
-    tick_miners_n(&mut sim, &rules, 2);
-    let m = get_miner(&sim, miner_id);
     assert_eq!(
         m.dock_phase,
         RefineryDockPhase::Departing,
-        "legacy cooldown completion should pass through to Departing",
+        "legacy DepositCooldown should pass straight through to Departing",
     );
 }
 
@@ -5331,8 +5301,6 @@ fn dying_refinery_aborts_unload_without_credit_or_stuck_visual() {
         miner.reserved_refinery = Some(2);
         miner.dock_queued = true;
         miner.exit_cell = Some((14, 11));
-        miner.deposit_cooldown_ticks = 7;
-        miner.unload_timer = 0;
     }
     assert!(sim.production.dock_reservations.try_reserve(2, miner_id));
     sim.substrate.entities.get_mut(2).expect("refinery").dying = true;
@@ -5359,11 +5327,6 @@ fn dying_refinery_aborts_unload_without_credit_or_stuck_visual() {
     assert_eq!(m.reserved_refinery, None);
     assert!(!m.dock_queued, "queued flag must be cleared on abort");
     assert_eq!(m.exit_cell, None, "exit cache must be cleared on abort");
-    assert_eq!(
-        m.deposit_cooldown_ticks, 0,
-        "deposit cooldown must not survive an abort",
-    );
-    assert_eq!(m.unload_timer, 0, "unload timer must be reset on abort");
     assert!(
         !sim.production.dock_reservations.is_occupied(2),
         "dock reservation must be removed for a dying refinery",
@@ -5774,7 +5737,6 @@ fn full_unload_credits_unchanged_over_bus() {
         miner.state = MinerState::Dock;
         miner.dock_phase = RefineryDockPhase::Unloading;
         miner.reserved_refinery = Some(2);
-        miner.unload_timer = 0;
     }
     sim.production.dock_reservations.try_reserve(2, miner_id);
 
