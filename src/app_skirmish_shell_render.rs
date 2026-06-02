@@ -965,20 +965,6 @@ mod tests {
     }
 
     #[test]
-    fn validation_modal_button_uses_mnbttn_normal_and_pressed_frames() {
-        assert_eq!(modal_button_mnbttn_frame_index(false), 0);
-        assert_eq!(modal_button_mnbttn_frame_index(true), 2);
-    }
-
-    #[test]
-    fn validation_modal_button_draws_mnbttn_at_native_size_centered_on_control() {
-        let control = RectPx::new(485, 421, 125, 24);
-        let entry = test_entry(126.0, 25.0);
-
-        assert_eq!(modal_button_mnbttn_position(control, entry), [485.0, 421.0]);
-    }
-
-    #[test]
     fn validation_modal_body_text_is_left_top_wrapped_not_centered() {
         assert_eq!(validation_modal_body_text_align(), ShellAlign::NONE);
     }

@@ -7,6 +7,7 @@ use crate::app::AppState;
 use crate::app_init::MapMenuEntry;
 use crate::render::batch::SpriteInstance;
 use crate::render::bit_font::BitFont;
+use crate::render::shell_paint::{self, PaintLabel};
 use crate::render::shell_text::{self, Reveal, ShellAlign, ShellTextDraw, TextRect};
 use crate::ui::main_menu::SkirmishCountry;
 use crate::ui::skirmish_shell::{
@@ -183,6 +184,11 @@ pub(super) fn button_text_rect(rect: RectPx, pressed: bool) -> TextRect {
         w: (rect.x + rect.w - 2 - x).max(0) as u32,
         h: (rect.y + rect.h - y).max(0) as u32,
     }
+}
+
+fn button_label_rect_px(rect: RectPx, pressed: bool) -> RectPx {
+    let rect = button_text_rect(rect, pressed);
+    RectPx::new(rect.x, rect.y, rect.w as i32, rect.h as i32)
 }
 
 pub(super) const fn validation_modal_body_text_align() -> ShellAlign {
@@ -903,24 +909,28 @@ pub(super) fn push_validation_modal_text_draws(
     let Some(modal) = state.skirmish_shell_state.validation_modal.as_ref() else {
         return;
     };
-    push_text_draw(
-        out,
-        state,
-        &modal.message,
-        rect_to_text_rect(layout.message),
-        SHELL_LABEL_TEXT_RGB,
-        validation_modal_body_text_align(),
+    let body = [PaintLabel {
+        text: &modal.message,
+        rect: layout.message,
+        rgb: SHELL_LABEL_TEXT_RGB,
+        align: validation_modal_body_text_align(),
+    }];
+    out.extend(shell_paint::paint_labels_at_depth(
+        &state.bit_font,
+        &body,
         SHELL_DROPDOWN_TEXT_DEPTH - 0.00012,
-    );
-    push_text_draw(
-        out,
-        state,
-        &modal.ok_button,
-        button_text_rect(layout.ok_button, modal.ok_button_pressed),
-        SHELL_LABEL_TEXT_RGB,
-        ShellAlign::H_CENTER | ShellAlign::V_CENTER,
+    ));
+    let ok = [PaintLabel {
+        text: &modal.ok_button,
+        rect: button_label_rect_px(layout.ok_button, modal.ok_button_pressed),
+        rgb: SHELL_LABEL_TEXT_RGB,
+        align: ShellAlign::H_CENTER | ShellAlign::V_CENTER,
+    }];
+    out.extend(shell_paint::paint_labels_at_depth(
+        &state.bit_font,
+        &ok,
         SHELL_DROPDOWN_TEXT_DEPTH - 0.00013,
-    );
+    ));
 }
 
 pub(super) fn push_start_marker_labels(

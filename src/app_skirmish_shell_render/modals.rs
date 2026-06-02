@@ -3,6 +3,7 @@
 //! Covers Choose Map and validation modal instance construction.
 
 use crate::render::batch::SpriteInstance;
+use crate::render::shell_paint;
 use crate::render::skirmish_shell_chrome::{SkirmishShellChromeAtlas, SkirmishShellChromeEntry};
 use crate::skirmish_modes::SkirmishGameMode;
 use crate::ui::skirmish_shell::{
@@ -13,8 +14,8 @@ use crate::ui::skirmish_shell::{
 };
 
 use super::chrome::{
-    push_entry_native, push_modal_button_mnbttn, push_ownerdraw_two_pixel_bevel_frame,
-    push_rect_outline, push_right_panel_button_shp, push_solid_rect,
+    push_entry_native, push_ownerdraw_two_pixel_bevel_frame, push_rect_outline,
+    push_right_panel_button_shp, push_solid_rect,
 };
 use super::controls::push_dropdown_scrollbar_instances;
 use super::{
@@ -23,6 +24,12 @@ use super::{
     SHELL_DROPDOWN_BG_RGB_PENDING_COMBODROPWIN_SOURCE_CAPTURE, SHELL_DROPDOWN_DEPTH,
     SHELL_MODAL_BG_RGB, SHELL_MODAL_PANEL_RGB, SHELL_PARENT_BACKGROUND_DEPTH,
     SHELL_SCROLLBAR_TRACK_RGB_PENDING_SCROLLBAR_SOURCE_CAPTURE,
+};
+
+const VALIDATION_MODAL_SPRITE_DEPTHS: shell_paint::ModalDepths = shell_paint::ModalDepths {
+    background: SHELL_DROPDOWN_DEPTH - 0.00014,
+    button: SHELL_DROPDOWN_DEPTH - 0.00016,
+    text: 0.0,
 };
 
 pub(super) fn push_choose_map_listbox_instances(
@@ -174,21 +181,23 @@ pub(super) fn push_validation_modal_instances(
     layout: &ValidationModalLayout,
     pressed: bool,
 ) {
-    if let Some(background) = atlas.validation_modal_background_pudlgbgn {
-        push_entry_native(
-            out,
-            background,
-            layout.dialog.x,
-            layout.dialog.y,
-            SHELL_DROPDOWN_DEPTH - 0.00014,
-        );
-    } else {
+    let frames = shell_paint::ModalButtonFrames {
+        up: atlas.modal_button_mnbttn_frame0,
+        disabled: atlas.modal_button_mnbttn_frame1,
+        pressed: atlas.modal_button_mnbttn_frame2,
+    };
+    let button = shell_paint::ModalButton {
+        rect: layout.ok_button,
+        pressed,
+        enabled: true,
+    };
+    if atlas.validation_modal_background_pudlgbgn.is_none() {
         push_solid_rect(
             out,
             atlas,
             layout.dialog,
             SHELL_MODAL_PANEL_RGB,
-            SHELL_DROPDOWN_DEPTH - 0.00014,
+            VALIDATION_MODAL_SPRITE_DEPTHS.background,
         );
         push_rect_outline(
             out,
@@ -198,11 +207,11 @@ pub(super) fn push_validation_modal_instances(
             SHELL_DROPDOWN_DEPTH - 0.00015,
         );
     }
-    push_modal_button_mnbttn(
-        out,
-        atlas,
-        layout.ok_button,
-        pressed,
-        SHELL_DROPDOWN_DEPTH - 0.00016,
-    );
+    out.extend(shell_paint::paint_modal_sprites(
+        atlas.validation_modal_background_pudlgbgn,
+        frames,
+        layout.dialog,
+        &[button],
+        VALIDATION_MODAL_SPRITE_DEPTHS,
+    ));
 }

@@ -318,52 +318,6 @@ pub(super) fn push_button_30(
     }
 }
 
-/// MNBTTN owner-draw frame for a modal OK/Cancel button: 0 = up, 2 = pressed.
-/// Frame 1 is the disabled cameo, unused here (modal buttons are always
-/// enabled). Matches the canonical 0=up / 1=disabled / 2=pressed mapping; a held
-/// button previously showed frame 1 (disabled art) instead of the pressed frame.
-pub(super) const fn modal_button_mnbttn_frame_index(pressed: bool) -> usize {
-    if pressed { 2 } else { 0 }
-}
-
-pub(super) fn modal_button_mnbttn_position(
-    rect: RectPx,
-    entry: SkirmishShellChromeEntry,
-) -> [f32; 2] {
-    let art_w = entry.pixel_size[0].round() as i32;
-    let art_h = entry.pixel_size[1].round() as i32;
-    [
-        (rect.x + (rect.w - art_w) / 2) as f32,
-        (rect.y + (rect.h - art_h) / 2) as f32,
-    ]
-}
-
-pub(super) fn modal_button_mnbttn_entry(
-    atlas: &SkirmishShellChromeAtlas,
-    pressed: bool,
-) -> Option<SkirmishShellChromeEntry> {
-    match modal_button_mnbttn_frame_index(pressed) {
-        1 => atlas.modal_button_mnbttn_frame1,
-        2 => atlas.modal_button_mnbttn_frame2,
-        _ => atlas.modal_button_mnbttn_frame0,
-    }
-}
-
-pub(super) fn push_modal_button_mnbttn(
-    out: &mut Vec<SpriteInstance>,
-    atlas: &SkirmishShellChromeAtlas,
-    rect: RectPx,
-    pressed: bool,
-    depth: f32,
-) {
-    let Some(entry) = modal_button_mnbttn_entry(atlas, pressed) else {
-        push_button_30(out, atlas, rect, pressed, false, depth);
-        return;
-    };
-    let [x, y] = modal_button_mnbttn_position(rect, entry);
-    push_entry_sized(out, entry, x, y, entry.pixel_size, depth);
-}
-
 pub(super) fn push_right_panel_button_shp(
     out: &mut Vec<SpriteInstance>,
     atlas: &SkirmishShellChromeAtlas,
