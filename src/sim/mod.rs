@@ -27,6 +27,7 @@ pub mod entity_store;
 pub mod game_entity;
 pub mod intern;
 pub mod rng;
+pub mod type_handle_table; // InternedId -> TypeHandle, one-hop entity->type resolution
 
 // --- Subsystem folders (multi-file subsystems with internal mod.rs) ---
 pub mod combat; // targeting, weapons, AOE, fire gates, damage resolution
