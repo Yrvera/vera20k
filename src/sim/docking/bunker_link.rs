@@ -6,11 +6,15 @@
 //!
 //! sim/ only — never render/ui/sidebar/audio/net.
 use crate::rules::ruleset::RuleSet;
-use crate::sim::docking::bunker_install::BunkerState;
+use crate::sim::docking::bunker_install::{BunkerRuntime, BunkerState};
 use crate::sim::game_entity::BunkerLink;
 use crate::sim::mission::{verb, MissionType};
+use crate::sim::pathfinding::PathGrid;
 use crate::sim::radio::{transmit, RadioMessage, RadioPayload};
 use crate::sim::world::{SimSoundEvent, Simulation};
+
+/// Exit-search ring limit for the normal release (mirrors the refinery exit).
+const BUNKER_EXIT_SEARCH_MAX_RADIUS: i32 = 16;
 
 /// The per-unit half of the bunker admission gate: a Bunkerable vehicle that has
 /// a primary weapon. (Movement-zone / busy-guard sub-checks are not reproduced —
@@ -89,6 +93,150 @@ pub(crate) fn emit_bunker_wall_sound(sim: &mut Simulation, building_id: u64, up:
     } else {
         SimSoundEvent::BunkerWallsDown { rx, ry }
     });
+}
+
+/// Normal eject (player EjectBunker): walls-down sound + exit anim, clear both
+/// links, reveal the unit at a passable cell near the bunker's SW corner, and
+/// order it to Move. Resets the bunker to Idle.
+pub fn release_normal(
+    sim: &mut Simulation,
+    building_id: u64,
+    rules: &RuleSet,
+    grid: Option<&PathGrid>,
+) {
+    let _ = rules; // the health-gated exit anim wires this in a later slice.
+    emit_bunker_wall_anim(sim, building_id, false);
+    emit_bunker_wall_sound(sim, building_id, false);
+    let cell = bunker_exit_cell(sim, building_id, grid);
+    let Some(unit_id) = break_bunker_link(sim, building_id) else {
+        reset_bunker_idle(sim, building_id);
+        return;
+    };
+    let now = sim.binary_frame;
+    if let Some((rx, ry)) = cell {
+        if let Some(u) = sim.substrate.entities.get_mut(unit_id) {
+            u.position.rx = rx;
+            u.position.ry = ry;
+        }
+        sim.reveal(unit_id);
+        sim.add_entity_occupancy(unit_id);
+    }
+    if let Some(u) = sim.substrate.entities.get_mut(unit_id) {
+        verb::assign_mission(&mut u.mission, MissionType::Move, now);
+    }
+    reset_bunker_idle(sim, building_id);
+}
+
+/// Sell/destroy teardown (UndockUnit): NO sound/anim; clear both links; reveal
+/// the unit at the building cell, idle (no Move, no nearby-passable search). The
+/// full-conceal hide model requires the reveal+place here to reproduce gamemd's
+/// "unit at the building cell" visible result (gamemd's hide is light).
+pub fn release_sell_destroy(sim: &mut Simulation, building_id: u64) {
+    let Some((brx, bry)) = sim
+        .substrate
+        .entities
+        .get(building_id)
+        .map(|b| (b.position.rx, b.position.ry))
+    else {
+        return;
+    };
+    let Some(unit_id) = break_bunker_link(sim, building_id) else {
+        return;
+    };
+    if let Some(u) = sim.substrate.entities.get_mut(unit_id) {
+        u.position.rx = brx;
+        u.position.ry = bry;
+        // South per facing convention; gamemd UndockUnit head, no orderly move.
+        u.facing = 0x80;
+    }
+    sim.reveal(unit_id);
+    sim.add_entity_occupancy(unit_id);
+    // No Move mission, no sound, no anims (matches UndockUnit).
+}
+
+/// Clear-only teardown (super / temporal-non-building / unit death). Clears both
+/// links + plays the down sound/anim when occupied, but does NOT reposition the
+/// unit. Implemented for contract completeness; no live trigger exists in this
+/// slice (prerequisite systems absent + the concealed unit is not damageable
+/// until the combat slice).
+pub fn release_clear(sim: &mut Simulation, building_id: u64) {
+    if sim
+        .substrate
+        .entities
+        .get(building_id)
+        .and_then(|b| b.bunker_occupant)
+        .is_some()
+    {
+        emit_bunker_wall_anim(sim, building_id, false);
+        emit_bunker_wall_sound(sim, building_id, false);
+        break_bunker_link(sim, building_id);
+    }
+    reset_bunker_idle(sim, building_id);
+}
+
+/// Despawn safety net: if `id` is a bunker with an occupant, or a unit installed
+/// in a bunker, clear the reciprocal side. No anims/sound/placement.
+pub fn break_links_on_despawn(sim: &mut Simulation, id: u64) {
+    let Some(e) = sim.substrate.entities.get(id) else {
+        return;
+    };
+    let occupant = e.bunker_occupant;
+    let host = e.bunker_link.installed_in();
+    if let Some(unit_id) = occupant {
+        if let Some(u) = sim.substrate.entities.get_mut(unit_id) {
+            u.bunker_link = BunkerLink::None;
+        }
+    }
+    if let Some(building_id) = host {
+        if let Some(b) = sim.substrate.entities.get_mut(building_id) {
+            b.bunker_occupant = None;
+            if let Some(rt) = b.bunker_runtime.as_mut() {
+                *rt = BunkerRuntime::idle();
+            }
+        }
+    }
+}
+
+/// Reset the bunker runtime to empty/idle. The building's `mission` is never
+/// used to track install in this model (`bunker_runtime.state` is the machine),
+/// so only the runtime needs resetting on release.
+fn reset_bunker_idle(sim: &mut Simulation, building_id: u64) {
+    if let Some(b) = sim.substrate.entities.get_mut(building_id) {
+        if let Some(rt) = b.bunker_runtime.as_mut() {
+            *rt = BunkerRuntime::idle();
+        }
+    }
+}
+
+/// gamemd exit anchor for the normal release: building NW corner + (-1 west,
+/// +1 south), then the nearest passable cell (modulo-spread pick). Falls back to
+/// the anchor cell when no path grid is available (headless tests).
+fn bunker_exit_cell(
+    sim: &Simulation,
+    building_id: u64,
+    grid: Option<&PathGrid>,
+) -> Option<(u16, u16)> {
+    let b = sim.substrate.entities.get(building_id)?;
+    let ax = b.position.rx as i32 - 1;
+    let ay = b.position.ry as i32 + 1;
+    match grid {
+        Some(g) => crate::sim::miner::find_nearby_passable_cell_with_index(
+            ax,
+            ay,
+            g,
+            Some(&sim.substrate.occupancy),
+            BUNKER_EXIT_SEARCH_MAX_RADIUS,
+            sim.binary_frame as u64,
+        ),
+        None if ax >= 0 && ay >= 0 => Some((ax as u16, ay as u16)),
+        None => Some((b.position.rx, b.position.ry)),
+    }
+}
+
+/// Wall anim event emitter. No-op shim until the wall-anim event slice wires the
+/// sim→app event vec + overlay consumer.
+fn emit_bunker_wall_anim(sim: &mut Simulation, building_id: u64, up: bool) {
+    let _ = (sim, building_id, up);
 }
 
 #[cfg(test)]
@@ -213,5 +361,82 @@ mod tests {
             sim.substrate.entities.get(1).unwrap().bunker_link,
             BunkerLink::None
         );
+    }
+
+    fn installed_sim() -> Simulation {
+        let mut sim = Simulation::new();
+        spawn_bunker(&mut sim, 2, "Americans");
+        spawn_tank(&mut sim, 1, "Americans", "TANK");
+        sim.reveal(1);
+        sim.add_entity_occupancy(1);
+        install_bunker_link(&mut sim, 2, 1);
+        sim.sound_events.clear(); // drop the install up-sound; assert on down events
+        sim
+    }
+
+    fn down_sounds(sim: &Simulation) -> usize {
+        sim.sound_events
+            .iter()
+            .filter(|e| matches!(e, SimSoundEvent::BunkerWallsDown { .. }))
+            .count()
+    }
+
+    #[test]
+    fn release_normal_reveals_near_bunker_moves_and_plays_down_sound() {
+        let mut sim = installed_sim();
+        release_normal(&mut sim, 2, &rules(), None);
+        let unit = sim.substrate.entities.get(1).unwrap();
+        assert_eq!(unit.bunker_link, BunkerLink::None);
+        assert!(unit.in_logic_vector, "unit revealed");
+        // anchor = building NW (10,10) + (-1,+1) = (9,11)
+        assert_eq!((unit.position.rx, unit.position.ry), (9, 11));
+        assert_eq!(unit.mission.current, MissionType::Move);
+        assert_eq!(sim.substrate.entities.get(2).unwrap().bunker_occupant, None);
+        assert_eq!(down_sounds(&sim), 1, "one walls-down on normal eject");
+    }
+
+    #[test]
+    fn release_sell_destroy_places_at_building_cell_no_move_no_sound() {
+        let mut sim = installed_sim();
+        release_sell_destroy(&mut sim, 2);
+        let unit = sim.substrate.entities.get(1).unwrap();
+        assert_eq!(unit.bunker_link, BunkerLink::None);
+        assert!(unit.in_logic_vector, "unit revealed at building cell");
+        assert_eq!((unit.position.rx, unit.position.ry), (10, 10));
+        assert_eq!(unit.facing, 0x80);
+        assert_eq!(unit.mission.current, MissionType::Guard, "no Move order");
+        assert_eq!(down_sounds(&sim), 0, "sell teardown is silent");
+    }
+
+    #[test]
+    fn release_clear_plays_down_sound_but_does_not_reposition() {
+        let mut sim = installed_sim();
+        release_clear(&mut sim, 2);
+        let unit = sim.substrate.entities.get(1).unwrap();
+        assert_eq!(unit.bunker_link, BunkerLink::None);
+        assert!(!unit.in_logic_vector, "clear does not reveal");
+        assert_eq!(
+            (unit.position.rx, unit.position.ry),
+            (12, 12),
+            "not repositioned"
+        );
+        assert_eq!(down_sounds(&sim), 1, "one walls-down on clear");
+        assert_eq!(sim.substrate.entities.get(2).unwrap().bunker_occupant, None);
+    }
+
+    #[test]
+    fn despawn_safety_net_clears_surviving_side() {
+        // Building despawns → the occupant unit's link is cleared.
+        let mut sim = installed_sim();
+        break_links_on_despawn(&mut sim, 2);
+        assert_eq!(
+            sim.substrate.entities.get(1).unwrap().bunker_link,
+            BunkerLink::None
+        );
+
+        // Unit despawns → the surviving building's back-pointer is cleared.
+        let mut sim = installed_sim();
+        break_links_on_despawn(&mut sim, 1);
+        assert_eq!(sim.substrate.entities.get(2).unwrap().bunker_occupant, None);
     }
 }

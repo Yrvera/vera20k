@@ -17,6 +17,8 @@ pub(crate) mod miner_system;
 mod miner_tests;
 
 pub(crate) use self::miner_dock_sequence::interrupt_refinery_docked_miners;
+// Generic nearby-passable-cell search, reused by the tank-bunker exit placement.
+pub(crate) use self::miner_dock_sequence::find_nearby_passable_cell_with_index;
 pub(crate) use self::miner_system::{extract_bale, search_local_ore};
 
 #[cfg(test)]
