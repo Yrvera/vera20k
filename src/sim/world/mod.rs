@@ -1788,6 +1788,18 @@ impl Simulation {
         let mut bridge_state_changed = false;
         let mut passenger_ownership_changed = false;
 
+        // Object-AI stage (Slice S2a): instrumented no-op walk over the live
+        // object order, relocated to run immediately BEFORE Phase-1 ground
+        // movement. This is the per-object dispatch site that must precede the
+        // locomotor — gamemd decides each object's mission, then moves it, within
+        // one pass — so a later slice (S2b) can absorb the ground-movement loop
+        // into this stage. The stage is still a strict no-op here, so the
+        // relocation is hash-neutral (proven by the no-hash-change tests).
+        // Movement stays before the Phase-3 vision recompute, so sight is
+        // unaffected. The S1 shadow PROOF stays at end-of-tick, where the mission
+        // shadow is fresh.
+        self.object_ai_stage();
+
         // --- Phase 1: Ground movement ---
         // DEPENDS ON: commands (may set movement_target), entity positions from prior tick.
         // PRODUCES: updated entity positions, crush/bump effects, drive track state.
@@ -2314,7 +2326,7 @@ impl Simulation {
             );
             production::tick_repairs(self, rules);
             building_dock::tick_building_docks(self, rules);
-            crate::sim::docking::bunker_install::tick_bunker_install(self, rules);
+            crate::sim::docking::bunker_install::tick_bunker_install(self, rules, path_grid);
             aircraft_dock::tick_aircraft_docks(self, rules);
             // Ore growth/spread: use native per-type queues once map load has
             // initialized them, preserving gamemd's growth-before-spread order.
@@ -2413,13 +2425,6 @@ impl Simulation {
         self.debug_assert_logic_membership_consistent();
         #[cfg(debug_assertions)]
         self.debug_assert_presence_consistent();
-        // Object-AI stage (Slice S0): instrumented no-op walk over the live
-        // object order. Runs after all phases — including the end-of-tick
-        // flush_pending_delete drain inside run_late_region — and before the
-        // mission shadow + state_hash, so its no-op-ness is observable in this
-        // tick's hash. Later slices absorb per-leaf behavior into it WITHOUT
-        // moving this call site.
-        self.object_ai_stage();
         // Mission refresh runs after all systems and before the hash; `mission` is
         // unhashed so this is hash-neutral. The assert proves current/substate
         // match the legacy machines until a later slice fully flips authority.

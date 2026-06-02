@@ -10,9 +10,12 @@
 use crate::map::entities::EntityCategory;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::game_entity::BunkerLink;
+use crate::sim::movement::bump_crush::scatter_blocker;
 use crate::sim::movement::drive_track::begin_forced_turn_track;
 use crate::sim::movement::facing_from_delta;
+use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::occupancy::entity_occupancy_cells;
+use crate::sim::pathfinding::PathGrid;
 use crate::sim::world::Simulation;
 use serde::{Deserialize, Serialize};
 
@@ -62,13 +65,9 @@ impl BunkerRuntime {
 
 /// Advance every actively-installing tank bunker by one tick. The waits between
 /// states are facing-turn / force-track completions, NOT frame-count timers.
-///
-/// Note: gamemd actively scatters other units off the footprint during install;
-/// this slice instead WAITS in `ClearWait` until the footprint is clear (the
-/// common case — the installing unit drove the path clear itself). Active
-/// blocker-shove is a documented deferral (rare: another unit parked on the
-/// owner's own empty bunker footprint).
-pub fn tick_bunker_install(sim: &mut Simulation, rules: &RuleSet) {
+/// `ClearWait` actively scatters other units off the footprint (gamemd Scatter())
+/// so the installing unit can take the install cell.
+pub fn tick_bunker_install(sim: &mut Simulation, rules: &RuleSet, path_grid: Option<&PathGrid>) {
     for building_id in sim.substrate.entities.keys_sorted() {
         let active = sim.substrate.entities.get(building_id).is_some_and(|b| {
             matches!(
@@ -81,12 +80,17 @@ pub fn tick_bunker_install(sim: &mut Simulation, rules: &RuleSet) {
             )
         });
         if active {
-            step_install(sim, rules, building_id);
+            step_install(sim, rules, path_grid, building_id);
         }
     }
 }
 
-fn step_install(sim: &mut Simulation, rules: &RuleSet, building_id: u64) {
+fn step_install(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    path_grid: Option<&PathGrid>,
+    building_id: u64,
+) {
     let Some((state, candidate)) = sim
         .substrate
         .entities
@@ -125,6 +129,9 @@ fn step_install(sim: &mut Simulation, rules: &RuleSet, building_id: u64) {
                     }
                 }
                 set_state(sim, building_id, BunkerState::TurnToBuilding, Some(unit_id));
+            } else {
+                // Shove the blockers off the footprint (gamemd Scatter()); wait.
+                shove_footprint_blockers(sim, path_grid, building_id, unit_id);
             }
         }
         BunkerState::TurnToBuilding => {
@@ -211,6 +218,48 @@ fn footprint_clear_of_others(sim: &Simulation, building_id: u64, unit_id: u64) -
                 .iter()
                 .any(|&(cx, cy)| cx == e.position.rx && cy == e.position.ry)
     })
+}
+
+/// Issue a Scatter move to every live vehicle/infantry (other than the installer)
+/// standing on the bunker footprint, so the install cell clears. Uses the
+/// scenario RNG stream (the documented forced-scatter routing). Each blocker
+/// walks one cell via normal locomotion; the machine waits in `ClearWait` until
+/// the footprint is physically clear.
+fn shove_footprint_blockers(
+    sim: &mut Simulation,
+    path_grid: Option<&PathGrid>,
+    building_id: u64,
+    unit_id: u64,
+) {
+    let Some(building) = sim.substrate.entities.get(building_id) else {
+        return;
+    };
+    let footprint = entity_occupancy_cells(building);
+    let blockers: Vec<u64> = sim
+        .substrate
+        .entities
+        .iter_sorted()
+        .filter(|(id, e)| {
+            *id != unit_id
+                && *id != building_id
+                && e.in_logic_vector
+                && matches!(e.category, EntityCategory::Unit | EntityCategory::Infantry)
+                && footprint
+                    .iter()
+                    .any(|&(cx, cy)| cx == e.position.rx && cy == e.position.ry)
+        })
+        .map(|(id, _)| id)
+        .collect();
+    for blocker_id in blockers {
+        scatter_blocker(
+            &mut sim.substrate.entities,
+            blocker_id,
+            path_grid,
+            &sim.substrate.occupancy,
+            MovementLayer::Ground,
+            &mut sim.scenario_rng,
+        );
+    }
 }
 
 /// Body facing from the candidate toward the building anchor; `None` when the
@@ -386,15 +435,15 @@ mod tests {
         set_state(&mut sim, 2, BunkerState::ArriveWait, Some(1));
 
         // ArriveWait -> ClearWait (on footprint, stopped).
-        tick_bunker_install(&mut sim, &rules);
+        tick_bunker_install(&mut sim, &rules, None);
         assert_eq!(rt(&sim, 2).state, BunkerState::ClearWait);
 
         // ClearWait -> TurnToBuilding (footprint clear; delta 0 => no facing turn).
-        tick_bunker_install(&mut sim, &rules);
+        tick_bunker_install(&mut sim, &rules, None);
         assert_eq!(rt(&sim, 2).state, BunkerState::TurnToBuilding);
 
         // TurnToBuilding -> TurnSouth (delta 0 => force-track skipped; faces South).
-        tick_bunker_install(&mut sim, &rules);
+        tick_bunker_install(&mut sim, &rules, None);
         assert_eq!(rt(&sim, 2).state, BunkerState::TurnSouth);
         assert_eq!(
             sim.substrate.entities.get(1).unwrap().facing_target,
@@ -405,7 +454,7 @@ mod tests {
         sim.substrate.entities.get_mut(1).unwrap().facing_target = None;
 
         // TurnSouth -> install.
-        tick_bunker_install(&mut sim, &rules);
+        tick_bunker_install(&mut sim, &rules, None);
         assert_eq!(rt(&sim, 2).state, BunkerState::Occupied);
         assert_eq!(sim.substrate.entities.get(2).unwrap().bunker_occupant, Some(1));
         assert_eq!(
@@ -431,8 +480,50 @@ mod tests {
         sim.reveal(1);
         // No Approaching marker (a retask cleared it) → machine resets.
         set_state(&mut sim, 2, BunkerState::ArriveWait, Some(1));
-        tick_bunker_install(&mut sim, &rules);
+        tick_bunker_install(&mut sim, &rules, None);
         assert_eq!(rt(&sim, 2).state, BunkerState::Idle);
         assert_eq!(rt(&sim, 2).installing_unit, None);
+    }
+
+    #[test]
+    fn install_shoves_a_footprint_blocker() {
+        let mut sim = Simulation::new();
+        let rules = rules();
+        spawn_bunker(&mut sim, 2);
+        spawn_tank_on(&mut sim, 1, 10, 10); // installer on the anchor
+        spawn_tank_on(&mut sim, 3, 10, 10); // blocker on the same footprint cell
+        sim.reveal(1);
+        sim.add_entity_occupancy(1);
+        sim.reveal(3);
+        sim.add_entity_occupancy(3);
+        sim.substrate.entities.get_mut(1).unwrap().bunker_link = BunkerLink::Approaching(2);
+        set_state(&mut sim, 2, BunkerState::ArriveWait, Some(1));
+
+        // ArriveWait -> ClearWait.
+        tick_bunker_install(&mut sim, &rules, None);
+        assert_eq!(rt(&sim, 2).state, BunkerState::ClearWait);
+
+        // Blocker present → stay in ClearWait and shove it (issue a move).
+        tick_bunker_install(&mut sim, &rules, None);
+        assert_eq!(
+            rt(&sim, 2).state,
+            BunkerState::ClearWait,
+            "waits while a blocker occupies the footprint"
+        );
+        assert!(
+            sim.substrate.entities.get(3).unwrap().movement_target.is_some(),
+            "the footprint blocker was scattered"
+        );
+
+        // Simulate the blocker physically leaving the footprint cell.
+        {
+            let b = sim.substrate.entities.get_mut(3).unwrap();
+            b.position.rx = 20;
+            b.movement_target = None;
+        }
+
+        // Footprint clear now → advance.
+        tick_bunker_install(&mut sim, &rules, None);
+        assert_eq!(rt(&sim, 2).state, BunkerState::TurnToBuilding);
     }
 }
