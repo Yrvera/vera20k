@@ -12,6 +12,7 @@ use std::collections::BTreeSet;
 
 use crate::rules::ruleset::RuleSet;
 use crate::sim::intern::InternedId;
+use crate::sim::radio::RadioResponse;
 use crate::sim::world::Simulation;
 
 use crate::sim::production::foundation_dimensions;
@@ -52,6 +53,67 @@ pub struct DockState {
 /// Grace period in ticks before a docked unit exits due to insufficient funds.
 /// ~2 seconds at 15 Hz.
 const NO_FUNDS_GRACE_TICKS: u32 = 30;
+
+/// Outcome of one repair-depot service step — the depot's `REPAIR_TICK`
+/// trichotomy. Carries the per-step payload the caller applies, so the money/
+/// heal math lives in one pure place (`repair_tick`) instead of inline in the
+/// dock FSM. Maps to the dock-bus [`RadioResponse`] code via [`Self::radio_response`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepairResponse {
+    /// A repair step fired: heal `heal` HP and deduct `cost` credits.
+    Roger { heal: u16, cost: i32 },
+    /// Not enough credits for this step. `grace` is the incremented no-funds
+    /// counter; the caller exits the dock once it reaches [`NO_FUNDS_GRACE_TICKS`].
+    InsufficientFunds { grace: u32 },
+    /// Fully repaired — exit the dock.
+    RepairComplete,
+}
+
+impl RepairResponse {
+    /// The `RadioClass` response code this maps to on the dock bus.
+    pub fn radio_response(self) -> RadioResponse {
+        match self {
+            RepairResponse::Roger { .. } => RadioResponse::Roger,
+            RepairResponse::InsufficientFunds { .. } => RadioResponse::InsufficientFunds,
+            RepairResponse::RepairComplete => RadioResponse::RepairComplete,
+        }
+    }
+}
+
+/// Decide one repair-depot service step (the `REPAIR_TICK` trichotomy). Pure
+/// integer math — byte-identical to the inline `Servicing` arm it replaces:
+/// `total = cost * repair_percent / 100`, `cost_per_step = max(1, total *
+/// repair_step / max_hp)`, funded ⇒ `Roger`, unfunded ⇒ `InsufficientFunds`
+/// (grace incremented), already-full ⇒ `RepairComplete`. No clock/RNG/float.
+pub fn repair_tick(
+    hp: u16,
+    max_hp: u16,
+    unit_cost: i32,
+    repair_percent: u16,
+    repair_step: u16,
+    credits: i32,
+    no_funds_ticks: u32,
+) -> RepairResponse {
+    if hp >= max_hp {
+        return RepairResponse::RepairComplete;
+    }
+    let total_repair_cost = (unit_cost as i64 * repair_percent as i64 / 100) as i32;
+    let cost_per_step = if max_hp > 0 {
+        (total_repair_cost as i64 * repair_step as i64 / max_hp as i64).max(1) as i32
+    } else {
+        1
+    };
+    if credits >= cost_per_step {
+        RepairResponse::Roger {
+            heal: repair_step,
+            cost: cost_per_step,
+        }
+    } else {
+        RepairResponse::InsufficientFunds {
+            grace: no_funds_ticks + 1,
+        }
+    }
+}
 
 /// Compute the dock cell (center of foundation) for a building.
 pub fn depot_dock_cell(building_rx: u16, building_ry: u16, foundation: &str) -> (u16, u16) {
@@ -213,22 +275,11 @@ pub fn tick_building_docks(sim: &mut Simulation, rules: &RuleSet) {
                 } else {
                     let timer = snap.service_timer.saturating_sub(1);
                     if timer == 0 {
-                        // Time to apply a repair step.
-                        let cost = sim
+                        // A repair step is due — resolve the REPAIR_TICK trichotomy.
+                        let unit_cost = sim
                             .object_type(snap.type_ref, rules)
                             .map(|obj| obj.cost)
                             .unwrap_or(0);
-                        let total_repair_cost =
-                            (cost as i64 * rules.general.repair_percent as i64 / 100) as i32;
-                        let cost_per_step = if snap.max_hp > 0 {
-                            (total_repair_cost as i64 * rules.general.repair_step as i64
-                                / snap.max_hp as i64)
-                                .max(1) as i32
-                        } else {
-                            1
-                        };
-
-                        // Check credits.
                         let credits = crate::sim::house_state::house_state_for_owner(
                             &sim.houses,
                             sim.interner.resolve(snap.owner),
@@ -237,17 +288,29 @@ pub fn tick_building_docks(sim: &mut Simulation, rules: &RuleSet) {
                         .map(|h| h.credits)
                         .unwrap_or(0);
 
-                        if credits >= cost_per_step {
-                            m.heal_amount = rules.general.repair_step;
-                            m.deduct_credits = cost_per_step;
-                            m.new_no_funds = Some(0);
-                        } else {
-                            // No funds — increment grace counter.
-                            let nf = snap.no_funds_ticks + 1;
-                            if nf >= NO_FUNDS_GRACE_TICKS {
+                        match repair_tick(
+                            snap.hp,
+                            snap.max_hp,
+                            unit_cost,
+                            rules.general.repair_percent,
+                            rules.general.repair_step,
+                            credits,
+                            snap.no_funds_ticks,
+                        ) {
+                            RepairResponse::Roger { heal, cost } => {
+                                m.heal_amount = heal;
+                                m.deduct_credits = cost;
+                                m.new_no_funds = Some(0);
+                            }
+                            RepairResponse::InsufficientFunds { grace } => {
+                                if grace >= NO_FUNDS_GRACE_TICKS {
+                                    m.new_phase = Some(DockPhase::ExitDock);
+                                } else {
+                                    m.new_no_funds = Some(grace);
+                                }
+                            }
+                            RepairResponse::RepairComplete => {
                                 m.new_phase = Some(DockPhase::ExitDock);
-                            } else {
-                                m.new_no_funds = Some(nf);
                             }
                         }
                         m.new_timer = Some(rules.general.unit_repair_rate_ticks);
@@ -357,5 +420,98 @@ mod tests {
     #[test]
     fn cell_distance_diagonal() {
         assert_eq!(cell_distance(5, 5, 8, 9), 4);
+    }
+
+    // --- 7c: repair-depot REPAIR_TICK trichotomy (`repair_tick`) ---
+    // cost=1000, percent=15 -> total=150; step=8, max_hp=300 -> cost_per_step=4.
+
+    #[test]
+    fn depot_repair_full_hp_returns_complete() {
+        // Already full short-circuits to RepairComplete even with zero credits.
+        assert_eq!(
+            repair_tick(300, 300, 1000, 15, 8, 0, 0),
+            RepairResponse::RepairComplete
+        );
+    }
+
+    #[test]
+    fn depot_repair_funded_returns_roger_with_step_and_cost() {
+        assert_eq!(
+            repair_tick(100, 300, 1000, 15, 8, 10, 0),
+            RepairResponse::Roger { heal: 8, cost: 4 }
+        );
+        // Exactly affording the step still funds it (>= boundary).
+        assert_eq!(
+            repair_tick(100, 300, 1000, 15, 8, 4, 0),
+            RepairResponse::Roger { heal: 8, cost: 4 }
+        );
+    }
+
+    #[test]
+    fn depot_repair_unfunded_returns_insufficient_with_incremented_grace() {
+        assert_eq!(
+            repair_tick(100, 300, 1000, 15, 8, 3, 0),
+            RepairResponse::InsufficientFunds { grace: 1 }
+        );
+        // Grace accumulates from the prior streak.
+        assert_eq!(
+            repair_tick(100, 300, 1000, 15, 8, 0, 5),
+            RepairResponse::InsufficientFunds { grace: 6 }
+        );
+    }
+
+    #[test]
+    fn depot_repair_cost_per_step_clamps_to_one() {
+        // cost=10, percent=15 -> total=1; 1*8/300 = 0 -> max(1) = 1.
+        assert_eq!(
+            repair_tick(100, 300, 10, 15, 8, 1, 0),
+            RepairResponse::Roger { heal: 8, cost: 1 }
+        );
+        assert_eq!(
+            repair_tick(100, 300, 10, 15, 8, 0, 0),
+            RepairResponse::InsufficientFunds { grace: 1 }
+        );
+    }
+
+    #[test]
+    fn depot_repair_funded_step_ignores_prior_grace() {
+        // A funded step returns Roger regardless of the prior no-funds streak;
+        // the caller resets the counter to 0 on Roger (grace reset).
+        assert_eq!(
+            repair_tick(100, 300, 1000, 15, 8, 10, NO_FUNDS_GRACE_TICKS - 1),
+            RepairResponse::Roger { heal: 8, cost: 4 }
+        );
+    }
+
+    #[test]
+    fn depot_repair_grace_reaches_cap() {
+        // One unfunded tick below the cap pushes grace to the cap; the caller
+        // exits the dock once grace >= NO_FUNDS_GRACE_TICKS.
+        assert_eq!(
+            repair_tick(100, 300, 1000, 15, 8, 0, NO_FUNDS_GRACE_TICKS - 1),
+            RepairResponse::InsufficientFunds {
+                grace: NO_FUNDS_GRACE_TICKS
+            }
+        );
+    }
+
+    #[test]
+    fn depot_repair_response_maps_to_radio_codes() {
+        assert_eq!(
+            RepairResponse::Roger { heal: 8, cost: 4 }.radio_response(),
+            RadioResponse::Roger
+        );
+        assert_eq!(
+            RepairResponse::InsufficientFunds { grace: 1 }.radio_response(),
+            RadioResponse::InsufficientFunds
+        );
+        assert_eq!(
+            RepairResponse::RepairComplete.radio_response(),
+            RadioResponse::RepairComplete
+        );
+        // Parity values: Roger=0x01, InsufficientFunds=0x20, RepairComplete=0x21.
+        assert_eq!(RadioResponse::Roger as u8, 0x01);
+        assert_eq!(RadioResponse::InsufficientFunds as u8, 0x20);
+        assert_eq!(RadioResponse::RepairComplete as u8, 0x21);
     }
 }
