@@ -21,6 +21,7 @@ use crate::map::entities::EntityCategory;
 use crate::rules::locomotor_type::LocomotorKind;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::combat::AttackTarget;
+use crate::sim::mission::MissionTimer;
 use crate::sim::movement::air_movement;
 use crate::sim::movement::locomotor::AirMovePhase;
 use crate::sim::production::foundation_dimensions;
@@ -72,8 +73,9 @@ pub enum AircraftMission {
         airfield_id: u64,
         /// 0=wait_for_dock, 1=descending, 2=reloading, 3=launching
         sub_state: u8,
-        /// Ticks remaining until next ammo point is restored (during reloading).
-        reload_timer: u32,
+        /// Frame-anchored gate until the next ammo point is restored (during
+        /// reloading); was a per-tick `u32` countdown.
+        reload_timer: MissionTimer,
         /// Pad index assigned to this aircraft on the airfield (0-based).
         /// Meaningful once `sub_state >= 1` (after pad reservation succeeds).
         pad_index: u8,
@@ -200,6 +202,7 @@ pub fn tick_aircraft_missions(
     }
 
     let mut mutations: Vec<MissionMutation> = Vec::new();
+    let now = sim.binary_frame;
 
     for snap in &snapshots {
         let mut m = MissionMutation {
@@ -408,7 +411,7 @@ pub fn tick_aircraft_missions(
                     m.new_mission = AircraftMission::Docking {
                         airfield_id: *airfield_id,
                         sub_state: 0,
-                        reload_timer: 0,
+                        reload_timer: MissionTimer::default(),
                         pad_index: 0,
                     };
                 } else if entity.movement_target.is_none() {
@@ -452,7 +455,7 @@ pub fn tick_aircraft_missions(
                             m.new_mission = AircraftMission::Docking {
                                 airfield_id: *airfield_id,
                                 sub_state: 1,
-                                reload_timer: 0,
+                                reload_timer: MissionTimer::default(),
                                 pad_index: reserved_pad,
                             };
                             // Re-target descent toward the per-pad cell so
@@ -485,15 +488,14 @@ pub fn tick_aircraft_missions(
                             m.new_mission = AircraftMission::Docking {
                                 airfield_id: *airfield_id,
                                 sub_state: 2,
-                                reload_timer: reload_rate,
+                                reload_timer: MissionTimer::armed(now, reload_rate),
                                 pad_index: *pad_index,
                             };
                         }
                     }
                     2 => {
                         // Reloading.
-                        let timer = reload_timer.saturating_sub(1);
-                        if timer == 0 {
+                        if reload_timer.due(now) {
                             m.ammo_delta = 1;
                             if ammo_current + 1 >= ammo_max {
                                 // Fully reloaded → launch.
@@ -501,22 +503,23 @@ pub fn tick_aircraft_missions(
                                 m.new_mission = AircraftMission::Docking {
                                     airfield_id: *airfield_id,
                                     sub_state: 3,
-                                    reload_timer: 0,
+                                    reload_timer: MissionTimer::default(),
                                     pad_index: *pad_index,
                                 };
                             } else {
                                 m.new_mission = AircraftMission::Docking {
                                     airfield_id: *airfield_id,
                                     sub_state: 2,
-                                    reload_timer: reload_rate,
+                                    reload_timer: MissionTimer::armed(now, reload_rate),
                                     pad_index: *pad_index,
                                 };
                             }
                         } else {
+                            // Carry the same frame-anchored timer (no decrement).
                             m.new_mission = AircraftMission::Docking {
                                 airfield_id: *airfield_id,
                                 sub_state: 2,
-                                reload_timer: timer,
+                                reload_timer: *reload_timer,
                                 pad_index: *pad_index,
                             };
                         }
