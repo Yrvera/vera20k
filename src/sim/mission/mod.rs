@@ -170,6 +170,38 @@ impl MissionType {
     }
 }
 
+/// Shadow mission component: the single current-mission selector plus the
+/// queued/suspended interrupt stack, a sub-phase byte, the dispatch deferral
+/// timer, and a per-entity refresh counter.
+///
+/// In this slice it runs in *shadow mode* — derived each tick from the legacy
+/// `Option<T>` machines, never read by any system, never hashed, never
+/// serialized (`#[serde(skip)]` on the field). A later slice flips it to the
+/// authority for the retask/resume/retaliation paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MissionCom {
+    /// The committed current mission (`MissionType::None` = idle).
+    pub current: MissionType,
+    /// A queued follow-up to commence after the current mission, if any.
+    pub queued: Option<MissionType>,
+    /// A suspended mission to restore after an interrupt (override/restore stack).
+    pub suspended: Option<MissionType>,
+    /// Sub-phase byte within the current mission (attack sub-state, dock phase, …).
+    pub substate: u8,
+    /// Frame-anchored dispatch deferral.
+    pub timer: MissionTimer,
+    /// Monotonic per-entity refresh counter (wrapping).
+    pub tick_counter: u32,
+}
+
+impl MissionCom {
+    /// The idle component: no current mission, empty stack, default timer.
+    #[inline]
+    pub fn idle() -> Self {
+        Self::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -30,7 +30,7 @@ use crate::sim::docking::aircraft_dock::AircraftAmmo;
 use crate::sim::docking::building_dock::DockState;
 use crate::sim::intern::InternedId;
 use crate::sim::miner::Miner;
-use crate::sim::mission::MissionTimer;
+use crate::sim::mission::{MissionCom, MissionTimer, MissionType};
 use crate::sim::movement::drive_track::{DriveTrackState, ForcedDriveTrackState};
 use crate::sim::movement::droppod_movement::DropPodState;
 use crate::sim::movement::locomotor::LocomotorState;
@@ -438,6 +438,11 @@ pub struct GameEntity {
     /// vehicles and voxel-bodied buildings.
     #[serde(default)]
     pub rocking: Option<RockingState>,
+    /// Shadow mission state: derived each tick from the authoritative `Option<T>`
+    /// machines. Not read by any system, not hashed, not serialized in this slice;
+    /// becomes authoritative for retask/resume/retaliation later.
+    #[serde(skip)]
+    pub mission_com: MissionCom,
     /// Debug event log — records movement/state transitions for the inspector panel.
     /// Only allocated when debug inspector is active (X hotkey). Not included in state hashing.
     #[serde(skip)]
@@ -456,6 +461,40 @@ impl GameEntity {
         } else {
             Presence::Limbo
         }
+    }
+
+    /// Ground-truth current mission + sub-phase derived from the authoritative
+    /// `Option<T>` machines. Priority: miner → aircraft → dock → attack → move →
+    /// idle. The shadow `mission_com` is refreshed from this each tick; a later
+    /// slice makes `mission_com` authoritative and this becomes the cross-check.
+    pub fn derived_mission(&self) -> (MissionType, u8) {
+        if let Some(miner) = &self.miner {
+            // The whole harvest loop is one mission; the FSM state is its sub-phase.
+            return (MissionType::Harvest, miner.state as u8);
+        }
+        if let Some(aircraft) = &self.aircraft_mission {
+            return match aircraft {
+                AircraftMission::Idle => (MissionType::Guard, 0),
+                AircraftMission::Move { sub_state } => (MissionType::Move, *sub_state),
+                AircraftMission::Attack { sub_state, .. } => (MissionType::Attack, *sub_state),
+                AircraftMission::Guard => (MissionType::Guard, 0),
+                AircraftMission::ReturnToBase { .. } => (MissionType::Enter, 0),
+                AircraftMission::Docking { sub_state, .. } => (MissionType::Enter, *sub_state),
+                AircraftMission::DockedIdle { .. } => (MissionType::Guard, 0),
+                AircraftMission::ParaDropApproach { .. } => (MissionType::ParadropApproach, 0),
+                AircraftMission::ParaDropOverfly { .. } => (MissionType::ParadropOverfly, 0),
+            };
+        }
+        if self.dock_state.is_some() {
+            return (MissionType::Enter, 0);
+        }
+        if self.attack_target.is_some() {
+            return (MissionType::Attack, 0);
+        }
+        if self.movement_target.is_some() {
+            return (MissionType::Move, 0);
+        }
+        (MissionType::None, 0)
     }
 
     /// Create a new entity with all required fields. Optional fields default to None/false.
@@ -580,6 +619,7 @@ impl GameEntity {
                 None
             },
             rocking: None,
+            mission_com: MissionCom::idle(),
             debug_log: None,
         }
     }
@@ -914,5 +954,55 @@ mod presence_tests {
         // Leaves the active set.
         e.in_logic_vector = false;
         assert_eq!(e.derived_presence(), Presence::Limbo);
+    }
+}
+
+#[cfg(test)]
+mod mission_shadow_tests {
+    use super::*;
+    use crate::sim::combat::{AttackTarget, TargetKind};
+    use crate::sim::mission::MissionType;
+
+    #[test]
+    fn mission_com_defaults_to_idle_none() {
+        let e = GameEntity::test_default(1, "E1", "Americans", 3, 3);
+        assert_eq!(e.mission_com.current, MissionType::None);
+        assert_eq!(e.mission_com.substate, 0);
+        assert_eq!(e.mission_com.tick_counter, 0);
+    }
+
+    #[test]
+    fn derived_mission_idle_when_no_machine_active() {
+        let e = GameEntity::test_default(1, "E1", "Americans", 3, 3);
+        assert_eq!(e.derived_mission(), (MissionType::None, 0));
+    }
+
+    #[test]
+    fn derived_mission_tracks_attack_target() {
+        let mut e = GameEntity::test_default(1, "E1", "Americans", 3, 3);
+        e.attack_target = Some(AttackTarget {
+            target: TargetKind::Entity(2),
+            cooldown_ticks: 0,
+            burst_remaining: 0,
+            burst_delay_ticks: 0,
+            pending_infantry_fire: None,
+        });
+        assert_eq!(e.derived_mission().0, MissionType::Attack);
+    }
+
+    #[test]
+    fn mission_com_is_not_serialized() {
+        let mut e = GameEntity::test_default(1, "E1", "Americans", 3, 3);
+        e.mission_com.current = MissionType::Attack;
+        e.mission_com.tick_counter = 99;
+        let json = serde_json::to_string(&e).expect("serialize entity");
+        assert!(
+            !json.contains("mission_com"),
+            "mission_com must be #[serde(skip)] — absent from serialized form"
+        );
+        // Skipped on the wire → restores to the idle default on load.
+        let restored: GameEntity = serde_json::from_str(&json).expect("deserialize entity");
+        assert_eq!(restored.mission_com.current, MissionType::None);
+        assert_eq!(restored.mission_com.tick_counter, 0);
     }
 }

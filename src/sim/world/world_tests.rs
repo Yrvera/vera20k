@@ -564,6 +564,29 @@ fn binary_frame_committed_late_gate_captures_pre_increment_frame() {
 }
 
 #[test]
+fn mission_shadow_does_not_change_state_hash() {
+    // mission_com is #[serde(skip)] and absent from world_hash, so refreshing the
+    // shadow must leave the lockstep hash untouched — even though it mutates the
+    // shadow (here the tick_counter advances 0 -> 1).
+    let mut sim = Simulation::new();
+    sim.substrate
+        .entities
+        .insert(GameEntity::test_default(1, "E1", "Americans", 3, 3));
+    let before = sim.state_hash();
+    sim.refresh_mission_shadow();
+    let after = sim.state_hash();
+    assert_eq!(
+        before, after,
+        "mission shadow refresh must not perturb the state hash"
+    );
+    assert_eq!(
+        sim.substrate.entities.get(1).unwrap().mission_com.tick_counter,
+        1,
+        "refresh_mission_shadow actually ran"
+    );
+}
+
+#[test]
 fn short_game_defeats_house_with_no_buildings_even_if_ordinary_units_remain() {
     let rules = short_game_defeat_test_rules();
     let mut sim = Simulation::new();
