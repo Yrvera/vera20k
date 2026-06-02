@@ -2399,6 +2399,12 @@ impl Simulation {
         self.refresh_mission_shadow();
         #[cfg(debug_assertions)]
         self.debug_assert_mission_shadow_consistent();
+        // Object-AI Slice S1 shadow: for one bounded moving-UnitClass scenario,
+        // assert mission dispatch is observed before the locomotor Process within
+        // one object pass (the verified gamemd ordering). Read-only, unhashed,
+        // debug-only — the authority flip is a later slice.
+        #[cfg(debug_assertions)]
+        self.debug_assert_s1_shadow();
         let state_hash = self.state_hash();
         TickResult {
             tick: self.tick,

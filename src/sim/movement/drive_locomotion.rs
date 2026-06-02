@@ -16,7 +16,7 @@ use crate::util::fixed_math::{SIM_ONE, SIM_ZERO, SimFixed};
 const DRIVE_DESTINATION_BRAKE_FLOOR: SimFixed = SimFixed::lit("0.3");
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum DriveProcessOutcome {
+pub(crate) enum DriveProcessOutcome {
     NotDrive,
     Processed,
     Waiting,
@@ -24,7 +24,7 @@ pub(super) enum DriveProcessOutcome {
     Blocked,
 }
 
-pub(super) fn process_drive_locomotion_shell(entity: &GameEntity) -> DriveProcessOutcome {
+pub(crate) fn process_drive_locomotion_shell(entity: &GameEntity) -> DriveProcessOutcome {
     if entity.drive_locomotion.is_none() {
         return DriveProcessOutcome::NotDrive;
     }
