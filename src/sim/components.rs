@@ -7,7 +7,7 @@
 //! ## Design notes
 //! - Position stores both isometric cell coords AND pre-computed screen coords.
 //!   Screen coords are updated whenever position changes (avoids per-frame math).
-//! - Some types here (Facing, Owner, VoxelModel, etc.) are legacy wrappers
+//! - Some types here (Facing, VoxelModel, etc.) are legacy wrappers
 //!   kept for any remaining call sites. The canonical data lives in GameEntity fields.
 //!
 //! ## Dependency rules
@@ -74,10 +74,6 @@ pub struct Facing(pub u8);
 /// 0 = north, 64 = east, 128 = south, 192 = west.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct TurretFacing(pub u8);
-
-/// Which player/faction owns this entity (legacy wrapper — prefer InternedId directly).
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
-pub struct Owner(pub InternedId);
 
 /// Hit points â€” current and maximum health.
 ///
@@ -1067,7 +1063,6 @@ mod tests {
         assert_send_sync::<Position>();
         assert_send_sync::<Facing>();
         assert_send_sync::<TurretFacing>();
-        assert_send_sync::<Owner>();
         assert_send_sync::<Health>();
         assert_send_sync::<Vision>();
         assert_send_sync::<VoxelModel>();
