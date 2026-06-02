@@ -446,11 +446,14 @@ pub struct GameEntity {
     /// vehicles and voxel-bodied buildings.
     #[serde(default)]
     pub rocking: Option<RockingState>,
-    /// Shadow mission state: derived each tick from the authoritative `Option<T>`
-    /// machines. Not read by any system, not hashed, not serialized in this slice;
-    /// becomes authoritative for retask/resume/retaliation later.
-    #[serde(skip)]
-    pub mission_com: MissionCom,
+    /// Mission substrate state. Written in parallel by the Slice-6 verb API
+    /// (`mission::verb` / `mission::retask`) alongside the still-authoritative
+    /// `Option<T>` machines; `current`/`substate` are additionally refreshed from
+    /// those machines each tick. NOT folded into `world_hash` yet (a later slice
+    /// makes it authoritative and hashes it), so it round-trips via serde without
+    /// affecting the lockstep hash. `#[serde(default)]` lets pre-Slice-6 saves load.
+    #[serde(default)]
+    pub mission: MissionCom,
     /// Debug event log — records movement/state transitions for the inspector panel.
     /// Only allocated when debug inspector is active (X hotkey). Not included in state hashing.
     #[serde(skip)]
@@ -473,8 +476,9 @@ impl GameEntity {
 
     /// Ground-truth current mission + sub-phase derived from the authoritative
     /// `Option<T>` machines. Priority: miner → aircraft → dock → attack → move →
-    /// idle. The shadow `mission_com` is refreshed from this each tick; a later
-    /// slice makes `mission_com` authoritative and this becomes the cross-check.
+    /// idle. The `mission` component's `current`/`substate` are refreshed from
+    /// this each tick; a later slice makes `mission` authoritative and this
+    /// becomes the cross-check.
     pub fn derived_mission(&self) -> (MissionType, u8) {
         if let Some(miner) = &self.miner {
             // The whole harvest loop is one mission; the FSM state is its sub-phase.
@@ -628,7 +632,7 @@ impl GameEntity {
                 None
             },
             rocking: None,
-            mission_com: MissionCom::idle(),
+            mission: MissionCom::idle(),
             debug_log: None,
         }
     }
@@ -972,11 +976,11 @@ mod mission_shadow_tests {
     use crate::sim::mission::MissionType;
 
     #[test]
-    fn mission_com_defaults_to_idle_none() {
+    fn mission_defaults_to_idle_none() {
         let e = GameEntity::test_default(1, "E1", "Americans", 3, 3);
-        assert_eq!(e.mission_com.current, MissionType::None);
-        assert_eq!(e.mission_com.substate, 0);
-        assert_eq!(e.mission_com.tick_counter, 0);
+        assert_eq!(e.mission.current, MissionType::None);
+        assert_eq!(e.mission.substate, 0);
+        assert_eq!(e.mission.tick_counter, 0);
     }
 
     #[test]
@@ -999,18 +1003,22 @@ mod mission_shadow_tests {
     }
 
     #[test]
-    fn mission_com_is_not_serialized() {
+    fn mission_round_trips_through_serde() {
+        // Slice 6 un-skips the field so the queued/suspended interrupt stack +
+        // timer survive a save/load. (current/substate are also reconciled from
+        // the legacy machines on load; the rest persists as serialized.)
         let mut e = GameEntity::test_default(1, "E1", "Americans", 3, 3);
-        e.mission_com.current = MissionType::Attack;
-        e.mission_com.tick_counter = 99;
+        e.mission.current = MissionType::Attack;
+        e.mission.queued = Some(MissionType::Guard);
+        e.mission.tick_counter = 99;
         let json = serde_json::to_string(&e).expect("serialize entity");
         assert!(
-            !json.contains("mission_com"),
-            "mission_com must be #[serde(skip)] — absent from serialized form"
+            json.contains("mission"),
+            "mission must round-trip — present in serialized form"
         );
-        // Skipped on the wire → restores to the idle default on load.
         let restored: GameEntity = serde_json::from_str(&json).expect("deserialize entity");
-        assert_eq!(restored.mission_com.current, MissionType::None);
-        assert_eq!(restored.mission_com.tick_counter, 0);
+        assert_eq!(restored.mission.current, MissionType::Attack);
+        assert_eq!(restored.mission.queued, Some(MissionType::Guard));
+        assert_eq!(restored.mission.tick_counter, 99);
     }
 }

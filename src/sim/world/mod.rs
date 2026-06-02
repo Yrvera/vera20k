@@ -885,21 +885,23 @@ impl Simulation {
         }
     }
 
-    /// Refresh the shadow `mission_com` on every entity from the authoritative
-    /// `Option<T>` machines. Shadow-mode only: `mission_com` is `#[serde(skip)]`
-    /// and absent from `world_hash`, so this can never perturb the lockstep hash
-    /// (the `mission_shadow_does_not_change_state_hash` test pins that). BTreeMap
-    /// `values_mut()` yields deterministic ascending-id order.
+    /// Refresh the `mission` component's `current`/`substate` on every entity
+    /// from the authoritative `Option<T>` machines. The Slice-6 verb API writes
+    /// `mission` in parallel, but the legacy machines stay authoritative, so this
+    /// re-derivation keeps `current`/`substate` in lockstep with them each tick.
+    /// `mission` is still absent from `world_hash`, so this can never perturb the
+    /// lockstep hash (the `mission_shadow_does_not_change_state_hash` test pins
+    /// that). BTreeMap `values_mut()` yields deterministic ascending-id order.
     pub(crate) fn refresh_mission_shadow(&mut self) {
         for entity in self.substrate.entities.values_mut() {
             let (current, substate) = entity.derived_mission();
-            entity.mission_com.current = current;
-            entity.mission_com.substate = substate;
-            entity.mission_com.tick_counter = entity.mission_com.tick_counter.wrapping_add(1);
+            entity.mission.current = current;
+            entity.mission.substate = substate;
+            entity.mission.tick_counter = entity.mission.tick_counter.wrapping_add(1);
         }
     }
 
-    /// Debug-only invariant: the shadow `mission_com` (current + sub-phase) must
+    /// Debug-only invariant: the `mission` component's (current + sub-phase) must
     /// equal the value derivable from the authoritative machines for every
     /// in-store entity. O(n); compiled out of release builds.
     #[cfg(debug_assertions)]
@@ -907,12 +909,12 @@ impl Simulation {
         for e in self.substrate.entities.values() {
             let (current, substate) = e.derived_mission();
             debug_assert_eq!(
-                (e.mission_com.current, e.mission_com.substate),
+                (e.mission.current, e.mission.substate),
                 (current, substate),
                 "entity {} mission shadow {:?}/{} != derived {:?}/{}",
                 e.stable_id,
-                e.mission_com.current,
-                e.mission_com.substate,
+                e.mission.current,
+                e.mission.substate,
                 current,
                 substate,
             );
@@ -1212,11 +1214,12 @@ impl Simulation {
         // a save/load round-trip restores identical presence (Slice 2 acceptance).
         for entity in self.substrate.entities.values_mut() {
             entity.presence = entity.derived_presence();
-            // Same reconcile for the mission shadow (also #[serde(skip)] → default
-            // after load) so a save/load round-trip restores identical state.
+            // `mission` round-trips via serde now, but current/substate are
+            // re-derived from the just-restored authoritative machines so a
+            // save/load round-trip restores identical derived state.
             let (current, substate) = entity.derived_mission();
-            entity.mission_com.current = current;
-            entity.mission_com.substate = substate;
+            entity.mission.current = current;
+            entity.mission.substate = substate;
         }
     }
 
@@ -2382,9 +2385,9 @@ impl Simulation {
         self.debug_assert_logic_membership_consistent();
         #[cfg(debug_assertions)]
         self.debug_assert_presence_consistent();
-        // Shadow refresh runs after all systems and before the hash; mission_com is
-        // unhashed so this is hash-neutral (Slice 2). The assert proves the shadow
-        // matches the legacy machines until a later slice flips authority.
+        // Mission refresh runs after all systems and before the hash; `mission` is
+        // unhashed so this is hash-neutral. The assert proves current/substate
+        // match the legacy machines until a later slice fully flips authority.
         self.refresh_mission_shadow();
         #[cfg(debug_assertions)]
         self.debug_assert_mission_shadow_consistent();
@@ -2421,3 +2424,7 @@ mod world_orders_bridge_repair_tests;
 #[cfg(test)]
 #[path = "rng_routing_tests.rs"]
 mod rng_routing_tests;
+
+#[cfg(test)]
+#[path = "slice6_retask_tests.rs"]
+mod slice6_retask_tests;

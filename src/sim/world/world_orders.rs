@@ -42,6 +42,11 @@ pub(crate) struct C4TickOutcome {
 impl Simulation {
     /// Pre-combat: entities with an OrderIntent but no current AttackTarget
     /// try to acquire a nearby enemy to engage.
+    ///
+    /// The `order_intent.is_some()` selector is retired in spirit (the busy role
+    /// moves to the `mission` substrate) but kept unchanged in code: `OrderIntent`
+    /// carries the AttackMove/Guard *coords* that `MissionType` cannot encode.
+    /// Full retirement (a goal field on the mission/nav substrate) is a later slice.
     pub(crate) fn tick_order_intents_pre_combat(&mut self, rules: &RuleSet) {
         // Collect attacker candidates from EntityStore.
         let keys: Vec<u64> = self.substrate.entities.keys_sorted();
@@ -76,7 +81,9 @@ impl Simulation {
     }
 
     /// Post-combat: entities with an OrderIntent but no active attack or movement
-    /// resume their patrol/guard movement toward the original goal.
+    /// resume their patrol/guard movement toward the original goal. The resume
+    /// coords stay on `OrderIntent` — the `mission` substrate has no goal field
+    /// yet (Slice-8 follow-up); only the busy-signalling role moved off it.
     pub(crate) fn tick_order_intents_post_combat(
         &mut self,
         path_grid: Option<&PathGrid>,

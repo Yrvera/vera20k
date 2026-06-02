@@ -16,6 +16,7 @@ use crate::sim::combat;
 use crate::sim::command::Command;
 use crate::sim::components::OrderIntent;
 use crate::sim::docking::building_dock::{self, DockPhase, DockState};
+use crate::sim::mission::{DockTeardown, MissionType};
 use crate::sim::movement;
 use crate::sim::movement::air_movement;
 use crate::sim::movement::bump_crush;
@@ -141,10 +142,10 @@ impl Simulation {
                 {
                     return false;
                 }
-                // Cancel any dock state when given a new move order.
-                self.cancel_depot_dock(*entity_id);
-                self.cancel_aircraft_dock(*entity_id);
-                self.release_docked_idle(*entity_id);
+                // Drop any dock reservation (depot + aircraft + docked-idle) and
+                // retask onto a fresh Move via the verb API. The legacy field
+                // clears below stay authoritative in Slice 6.
+                self.assign_mission_with_teardown(*entity_id, MissionType::Move, DockTeardown::All);
                 // Clear attack and order intent.
                 if let Some(e) = self.substrate.entities.get_mut(*entity_id) {
                     e.attack_target = None;
@@ -285,8 +286,8 @@ impl Simulation {
                 if !self.entity_owned_by_id(command_owner, *entity_id) {
                     return false;
                 }
-                // Cancel any dock state before clearing movement.
-                self.cancel_depot_dock(*entity_id);
+                // Cancel any depot dock reservation, then retask onto Stop.
+                self.assign_mission_with_teardown(*entity_id, MissionType::Stop, DockTeardown::Depot);
                 if let Some(e) = self.substrate.entities.get_mut(*entity_id) {
                     movement::clear_navigation_for_entity(e);
                     e.movement_target = None;
@@ -325,9 +326,13 @@ impl Simulation {
                 if !self.can_attack_target_by_id(*attacker_id, *target_id) {
                     return false;
                 }
-                // Cancel aircraft RTB if interruptible.
-                self.cancel_aircraft_dock(*attacker_id);
-                self.release_docked_idle(*attacker_id);
+                // Cancel aircraft RTB/wait + docked-idle (not depot), then retask
+                // onto Attack keeping the interrupt stack (combat sets the target).
+                self.assign_mission_keep_fields(
+                    *attacker_id,
+                    MissionType::Attack,
+                    DockTeardown::AircraftOnly,
+                );
                 if let Some(e) = self.substrate.entities.get_mut(*attacker_id) {
                     e.order_intent = None;
                     Self::clear_aircraft_dock_phase(e);
@@ -350,8 +355,13 @@ impl Simulation {
                 if !self.substrate.entities.contains(*target_id) {
                     return false;
                 }
-                // Force-attack bypasses friendship check (Ctrl+click).
-                self.release_docked_idle(*attacker_id);
+                // Force-attack bypasses friendship check (Ctrl+click). Release a
+                // docked-idle aircraft only, then retask onto Attack keeping fields.
+                self.assign_mission_keep_fields(
+                    *attacker_id,
+                    MissionType::Attack,
+                    DockTeardown::IdleOnly,
+                );
                 if let Some(e) = self.substrate.entities.get_mut(*attacker_id) {
                     e.order_intent = None;
                 }
@@ -371,8 +381,13 @@ impl Simulation {
                 if !self.entity_owned_by_id(command_owner, *attacker_id) {
                     return false;
                 }
-                // No target-entity existence check — cells always "exist".
-                self.release_docked_idle(*attacker_id);
+                // No target-entity existence check — cells always "exist". Release
+                // a docked-idle aircraft only, then retask onto Attack keeping fields.
+                self.assign_mission_keep_fields(
+                    *attacker_id,
+                    MissionType::Attack,
+                    DockTeardown::IdleOnly,
+                );
                 if let Some(e) = self.substrate.entities.get_mut(*attacker_id) {
                     e.order_intent = None;
                     Self::clear_aircraft_dock_phase(e);
@@ -402,7 +417,13 @@ impl Simulation {
                 {
                     return false;
                 }
-                self.release_docked_idle(*entity_id);
+                // Release a docked-idle aircraft only, then retask onto AttackMove
+                // (the order_intent set after the move issues is the real driver).
+                self.assign_mission_keep_fields(
+                    *entity_id,
+                    MissionType::AttackMove,
+                    DockTeardown::IdleOnly,
+                );
                 if let Some(e) = self.substrate.entities.get_mut(*entity_id) {
                     e.attack_target = None;
                 }
@@ -769,8 +790,8 @@ impl Simulation {
                 if !entity_ok {
                     return false;
                 }
-                // Cancel any existing dock state.
-                self.cancel_depot_dock(*entity_id);
+                // Cancel any existing depot reservation, then retask onto Enter.
+                self.assign_mission_with_teardown(*entity_id, MissionType::Enter, DockTeardown::Depot);
                 // Set dock state and issue move toward depot.
                 let (dock_rx, dock_ry) =
                     building_dock::depot_dock_cell(depot_rx, depot_ry, &foundation);
@@ -867,6 +888,13 @@ impl Simulation {
                 if pax_ok.is_none() {
                     return false;
                 }
+                // Retask onto Enter (no dock reservation touched); the legacy
+                // field clears below stay authoritative.
+                self.assign_mission_with_teardown(
+                    *passenger_id,
+                    MissionType::Enter,
+                    DockTeardown::None,
+                );
                 // Clear existing state on the passenger.
                 if let Some(e) = self.substrate.entities.get_mut(*passenger_id) {
                     e.attack_target = None;
@@ -1014,6 +1042,13 @@ impl Simulation {
                 ) {
                     return false;
                 }
+                // Retask onto Sabotage (no dock reservation touched); the legacy
+                // field clears below stay authoritative.
+                self.assign_mission_with_teardown(
+                    *attacker_id,
+                    MissionType::Sabotage,
+                    DockTeardown::None,
+                );
                 // Clear conflicting state and set c4_plant.
                 if let Some(e) = self.substrate.entities.get_mut(*attacker_id) {
                     e.attack_target = None;
@@ -1110,6 +1145,13 @@ impl Simulation {
                 ) {
                     return false;
                 }
+                // Retask onto Capture (no dock reservation touched); the legacy
+                // field clears below stay authoritative.
+                self.assign_mission_with_teardown(
+                    *engineer_id,
+                    MissionType::Capture,
+                    DockTeardown::None,
+                );
                 // Clear conflicting state and set capture target.
                 if let Some(e) = self.substrate.entities.get_mut(*engineer_id) {
                     e.attack_target = None;
@@ -1295,7 +1337,7 @@ impl Simulation {
     }
 
     /// Cancel depot dock reservation for an entity. Called before issuing new orders.
-    fn cancel_depot_dock(&mut self, entity_id: u64) {
+    pub(crate) fn cancel_depot_dock(&mut self, entity_id: u64) {
         if let Some(e) = self.substrate.entities.get(entity_id) {
             if let Some(ref ds) = e.dock_state {
                 self.production
@@ -1306,7 +1348,7 @@ impl Simulation {
     }
 
     /// Cancel aircraft dock reservation if in ReturnToBase or WaitForDock phase.
-    fn cancel_aircraft_dock(&mut self, entity_id: u64) {
+    pub(crate) fn cancel_aircraft_dock(&mut self, entity_id: u64) {
         if let Some(e) = self.substrate.entities.get(entity_id) {
             if let Some(ref ammo) = e.aircraft_ammo {
                 use crate::sim::docking::aircraft_dock::AircraftDockPhase;
@@ -1336,7 +1378,7 @@ impl Simulation {
 
     /// Release a DockedIdle aircraft from its helipad and trigger takeoff.
     /// Called when a docked aircraft receives a Move or Attack command.
-    fn release_docked_idle(&mut self, entity_id: u64) {
+    pub(crate) fn release_docked_idle(&mut self, entity_id: u64) {
         let Some(entity) = self.substrate.entities.get_mut(entity_id) else {
             return;
         };

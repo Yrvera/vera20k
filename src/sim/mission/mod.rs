@@ -8,8 +8,11 @@
 //! only — never render/ui/sidebar/audio/net.
 
 pub mod control;
+pub mod retask;
 pub mod timer;
+pub mod verb;
 pub use control::{MissionControl, MissionControlEntry};
+pub use retask::DockTeardown;
 pub use timer::MissionTimer;
 
 /// Number of dispatched mission ids (0..=31). The `None` sentinel is outside
@@ -174,11 +177,14 @@ impl MissionType {
 /// queued/suspended interrupt stack, a sub-phase byte, the dispatch deferral
 /// timer, and a per-entity refresh counter.
 ///
-/// In this slice it runs in *shadow mode* — derived each tick from the legacy
-/// `Option<T>` machines, never read by any system, never hashed, never
-/// serialized (`#[serde(skip)]` on the field). A later slice flips it to the
-/// authority for the retask/resume/retaliation paths.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// The Slice-6 verb API writes this component in parallel with the legacy
+/// `Option<T>` machines (which stay authoritative); `current`/`substate` are also
+/// re-derived from those machines each tick. It round-trips via serde but is NOT
+/// yet folded into `world_hash`, so it cannot perturb the lockstep hash. A later
+/// slice hashes it and retires the redundant `Option<T>` selectors.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize,
+)]
 pub struct MissionCom {
     /// The committed current mission (`MissionType::None` = idle).
     pub current: MissionType,

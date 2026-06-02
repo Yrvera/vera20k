@@ -564,9 +564,9 @@ fn binary_frame_committed_late_gate_captures_pre_increment_frame() {
 
 #[test]
 fn mission_shadow_does_not_change_state_hash() {
-    // mission_com is #[serde(skip)] and absent from world_hash, so refreshing the
-    // shadow must leave the lockstep hash untouched — even though it mutates the
-    // shadow (here the tick_counter advances 0 -> 1).
+    // `mission` is absent from world_hash, so refreshing it must leave the
+    // lockstep hash untouched — even though it mutates the component (here the
+    // tick_counter advances 0 -> 1).
     let mut sim = Simulation::new();
     sim.substrate
         .entities
@@ -579,7 +579,7 @@ fn mission_shadow_does_not_change_state_hash() {
         "mission shadow refresh must not perturb the state hash"
     );
     assert_eq!(
-        sim.substrate.entities.get(1).unwrap().mission_com.tick_counter,
+        sim.substrate.entities.get(1).unwrap().mission.tick_counter,
         1,
         "refresh_mission_shadow actually ran"
     );
