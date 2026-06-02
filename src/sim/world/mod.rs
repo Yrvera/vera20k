@@ -1030,6 +1030,8 @@ impl Simulation {
             self.remove_entity_occupancy(stable_id);
         }
         self.clear_radio_contacts_for(stable_id);
+        // Despawn safety net: clear the surviving side of any bunker link.
+        crate::sim::docking::bunker_link::break_links_on_despawn(self, stable_id);
         self.conceal(stable_id); // leave the active order before freeing the slot
         // Conceal moved presence to Limbo (or it was already Limbo for a never-
         // revealed limbo object); we then mark Dying + enqueue. The store slot is
@@ -2091,6 +2093,16 @@ impl Simulation {
                 }
             }
             for &dead_id in &combat_result.immediate_uninit_ids {
+                // Eject a bunkered unit before the bunker is removed (UndockUnit).
+                if self
+                    .substrate
+                    .entities
+                    .get(dead_id)
+                    .and_then(|b| b.bunker_occupant)
+                    .is_some()
+                {
+                    crate::sim::docking::bunker_link::release_sell_destroy(self, dead_id);
+                }
                 self.uninit(dead_id);
             }
             // Bridge damage: 4-path dispatcher + cascade

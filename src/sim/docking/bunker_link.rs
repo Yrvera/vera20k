@@ -439,4 +439,26 @@ mod tests {
         break_links_on_despawn(&mut sim, 1);
         assert_eq!(sim.substrate.entities.get(2).unwrap().bunker_occupant, None);
     }
+
+    #[test]
+    fn uninit_bunker_clears_occupant_back_link() {
+        // The despawn safety net runs inside uninit.
+        let mut sim = installed_sim();
+        sim.uninit(2);
+        assert_eq!(
+            sim.substrate.entities.get(1).unwrap().bunker_link,
+            BunkerLink::None
+        );
+    }
+
+    #[test]
+    fn sell_occupied_bunker_ejects_unit_to_building_cell() {
+        let mut sim = installed_sim();
+        crate::sim::production::sell_building(&mut sim, &rules(), 2);
+        let unit = sim.substrate.entities.get(1).unwrap();
+        assert_eq!(unit.bunker_link, BunkerLink::None);
+        assert!(unit.in_logic_vector, "occupant revealed by sell");
+        assert_eq!((unit.position.rx, unit.position.ry), (10, 10));
+        assert_eq!(down_sounds(&sim), 0, "sell is silent (UndockUnit)");
+    }
 }

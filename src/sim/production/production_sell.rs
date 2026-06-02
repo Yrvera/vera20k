@@ -713,6 +713,18 @@ pub fn sell_building(sim: &mut Simulation, rules: &RuleSet, stable_id: u64) -> b
     let garrison_ejected = eject_garrison_occupants(sim, rules, stable_id);
     let interrupted_miners =
         crate::sim::miner::interrupt_refinery_docked_miners(sim, rules, stable_id);
+    // Eject a bunkered unit before the bunker is removed (gamemd UndockUnit: place
+    // at the building cell, no sound/anim/Move). Must precede uninit so the unit
+    // is revealed/placed before the despawn safety net would clear the link.
+    if sim
+        .substrate
+        .entities
+        .get(stable_id)
+        .and_then(|b| b.bunker_occupant)
+        .is_some()
+    {
+        crate::sim::docking::bunker_link::release_sell_destroy(sim, stable_id);
+    }
     sim.uninit(stable_id);
     // SpySat sold: fully reshroud the owner so only current LOS remains visible.
     let owner_id = sim.interner.intern(&owner_name);
