@@ -1378,7 +1378,15 @@ impl Simulation {
         });
 
         if let Some(id) = to_remove {
-            self.substrate.entities.remove(id);
+            // Route through the lifecycle chokepoint, not a raw store remove: a
+            // wall is an EntityCategory::Structure, so it owns owned-building
+            // count, foundation occupancy, logic-vector membership, and any radio
+            // contacts. uninit tears all of those down in native order, marks the
+            // entity Dying, and enqueues the slot for the end-of-tick
+            // flush_pending_delete (the same deferred-death window every combat
+            // death uses). A direct entities.remove leaks count/occupancy and
+            // leaves a dangling id in the active order.
+            self.uninit(id);
         } else {
             log::warn!("apply_wall_damage_events: no wall entity at ({rx}, {ry})");
         }

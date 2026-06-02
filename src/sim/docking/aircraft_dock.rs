@@ -83,7 +83,8 @@ impl AircraftAmmo {
 pub enum AircraftDockPhase {
     /// Flying toward the target airfield.
     ReturnToBase,
-    /// At/near the airfield, waiting for a dock slot (FIFO queue).
+    /// At/near the airfield, re-probing each tick for a free dock slot
+    /// (no wait queue — see [`AirfieldDocks`]).
     WaitForDock,
     /// Dock slot reserved, descending to land.
     Descending,
