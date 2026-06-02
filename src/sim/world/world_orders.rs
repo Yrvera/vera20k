@@ -118,7 +118,7 @@ impl Simulation {
                 .get(stable_id)
                 .map(|e| {
                     let bs: SimFixed = rules
-                        .and_then(|r| r.object(self.interner.resolve(e.type_ref)))
+                        .and_then(|r| self.object_type(e.type_ref, r))
                         .map(|obj| ra2_speed_to_leptons_per_second(obj.speed))
                         .unwrap_or(ra2_speed_to_leptons_per_second(4));
                     let lm: SimFixed = e
@@ -190,8 +190,8 @@ impl Simulation {
                 .substrate.entities
                 .get(building_id)
                 .and_then(|b| {
-                    rules
-                        .object(self.interner.resolve(b.type_ref))
+                    self
+                        .object_type(b.type_ref, rules)
                         .map(|t| t.bridge_repair_hut)
                 })
                 .unwrap_or(false);
@@ -287,8 +287,8 @@ impl Simulation {
                 .substrate.entities
                 .get(building_id)
                 .and_then(|b| {
-                    rules
-                        .object(self.interner.resolve(b.type_ref))
+                    self
+                        .object_type(b.type_ref, rules)
                         .map(|t| t.bridge_repair_hut)
                 })
                 .unwrap_or(false);
@@ -627,7 +627,7 @@ impl Simulation {
         rules: &RuleSet,
     ) -> Option<Vec<(u16, u16)>> {
         let target = self.substrate.entities.get(target_id)?;
-        let obj = rules.object(self.interner.resolve(target.type_ref))?;
+        let obj = self.object_type(target.type_ref, rules)?;
         // Infantry building-entry resolves through normal building cell lookup.
         // AddOccupy/RemoveOccupy only affect hidden occupancy counters.
         Some(c4_base_foundation_cells(
@@ -828,8 +828,8 @@ impl Simulation {
         };
         let armor_idx: usize = match self.substrate.entities.get(building_id) {
             Some(b) => {
-                let obj_armor = rules
-                    .object(self.interner.resolve(b.type_ref))
+                let obj_armor = self
+                    .object_type(b.type_ref, rules)
                     .map(|o| o.armor.as_str())
                     .unwrap_or("none");
                 crate::sim::combat::armor_index(obj_armor)

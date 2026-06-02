@@ -81,7 +81,7 @@ impl Simulation {
             .map(|l| l.speed_multiplier)
             .unwrap_or(SimFixed::from_num(1));
 
-        let obj = rules.and_then(|r| r.object(self.interner.resolve(e.type_ref)));
+        let obj = rules.and_then(|r| self.object_type(e.type_ref, r));
         let base_speed = obj
             .map(|o| ra2_speed_to_leptons_per_second(o.speed))
             .unwrap_or(ra2_speed_to_leptons_per_second(4));
@@ -490,8 +490,8 @@ impl Simulation {
                     return false;
                 }
                 if self.substrate.entities.get(*entity_id).is_some_and(|entity| {
-                    rules
-                        .object(self.interner.resolve(entity.type_ref))
+                    self
+                        .object_type(entity.type_ref, rules)
                         .is_some_and(|obj| obj.enslaves.is_some() && obj.deploys_into.is_some())
                 }) {
                     return crate::sim::slave_miner::deploy_slave_miner(self, *entity_id, rules)
@@ -505,8 +505,8 @@ impl Simulation {
                     return false;
                 }
                 if self.substrate.entities.get(*entity_id).is_some_and(|entity| {
-                    rules
-                        .object(self.interner.resolve(entity.type_ref))
+                    self
+                        .object_type(entity.type_ref, rules)
                         .is_some_and(|obj| obj.enslaves.is_some() && obj.undeploys_into.is_some())
                 }) {
                     return crate::sim::slave_miner::undeploy_slave_miner(self, *entity_id, rules)
@@ -748,7 +748,7 @@ impl Simulation {
                     if !command_owner.eq_ignore_ascii_case(self.interner.resolve(depot.owner)) {
                         return None;
                     }
-                    let obj = rules.object(self.interner.resolve(depot.type_ref))?;
+                    let obj = self.object_type(depot.type_ref, rules)?;
                     if !obj.unit_repair {
                         return None;
                     }
@@ -838,7 +838,7 @@ impl Simulation {
                 }
                 // Validate transport exists and has cargo capacity.
                 let transport_info = self.substrate.entities.get(*transport_id).and_then(|t| {
-                    let obj = rules.object(self.interner.resolve(t.type_ref))?;
+                    let obj = self.object_type(t.type_ref, rules)?;
                     let cargo = t.passenger_role.cargo()?;
                     Some((t.position.rx, t.position.ry, obj.clone(), cargo.clone()))
                 });
@@ -847,7 +847,7 @@ impl Simulation {
                 };
                 // Validate passenger can enter.
                 let pax_ok = self.substrate.entities.get(*passenger_id).and_then(|p| {
-                    let pobj = rules.object(self.interner.resolve(p.type_ref))?;
+                    let pobj = self.object_type(p.type_ref, rules)?;
                     if passenger::can_enter_transport(
                         p,
                         self.substrate.entities.get(*transport_id)?,
@@ -975,7 +975,7 @@ impl Simulation {
                 }
                 // Validate attacker has C4=yes flag.
                 let c4_ok = self.substrate.entities.get(*attacker_id).and_then(|e| {
-                    let obj = rules.object(self.interner.resolve(e.type_ref))?;
+                    let obj = self.object_type(e.type_ref, rules)?;
                     obj.c4.then_some(())
                 });
                 if c4_ok.is_none() {
@@ -991,7 +991,7 @@ impl Simulation {
                     if b.dying {
                         return None;
                     }
-                    let obj = rules.object(self.interner.resolve(b.type_ref))?;
+                    let obj = self.object_type(b.type_ref, rules)?;
                     if !obj.can_c4 || obj.invisible_in_game {
                         return None;
                     }
@@ -1079,7 +1079,7 @@ impl Simulation {
                 }
                 // Validate engineer has Engineer=yes flag.
                 let eng_ok = self.substrate.entities.get(*engineer_id).and_then(|e| {
-                    let obj = rules.object(self.interner.resolve(e.type_ref))?;
+                    let obj = self.object_type(e.type_ref, rules)?;
                     obj.engineer.then_some(())
                 });
                 if eng_ok.is_none() {
@@ -1093,7 +1093,7 @@ impl Simulation {
                     if b.dying {
                         return None;
                     }
-                    let obj = rules.object(self.interner.resolve(b.type_ref))?;
+                    let obj = self.object_type(b.type_ref, rules)?;
                     if !obj.capturable && !obj.bridge_repair_hut {
                         return None;
                     }
@@ -1281,8 +1281,8 @@ impl Simulation {
             let eligible = self.substrate.entities.get(stable_id).is_some_and(|entity| {
                 entity.category == crate::map::entities::EntityCategory::Structure
                     && command_owner.eq_ignore_ascii_case(self.interner.resolve(entity.owner))
-                    && rules
-                        .object(self.interner.resolve(entity.type_ref))
+                    && self
+                        .object_type(entity.type_ref, rules)
                         .is_some_and(|obj| obj.has_rally_line())
             });
             if eligible {

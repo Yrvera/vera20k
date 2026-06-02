@@ -1360,12 +1360,11 @@ impl Simulation {
     /// state with no matching entity; in that case a warn is logged and the
     /// caller continues without panicking.
     fn remove_wall_entity_at(&mut self, rx: u16, ry: u16, rules: &RuleSet) {
-        let interner = &self.interner;
         let to_remove: Option<u64> = self.substrate.entities.iter_sorted().find_map(|(id, e)| {
             if e.position.rx == rx
                 && e.position.ry == ry
-                && rules
-                    .object(interner.resolve(e.type_ref))
+                && self
+                    .object_type(e.type_ref, rules)
                     .is_some_and(|o| o.wall)
             {
                 Some(id)
@@ -1424,7 +1423,7 @@ impl Simulation {
                 if entity.category != EntityCategory::Structure {
                     continue;
                 }
-                if let Some(obj) = rules.object(self.interner.resolve(entity.type_ref)) {
+                if let Some(obj) = self.object_type(entity.type_ref, rules) {
                     let active = power_system::is_building_powered(
                         &self.power_states,
                         rules,
