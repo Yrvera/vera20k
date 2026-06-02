@@ -1291,15 +1291,24 @@ impl ProductionRules {
     }
 }
 
+/// O(1) index into `RuleSet::object_list`. Resolved once from a name (or from an
+/// interned id via the sim `TypeHandleTable`), then dereferenced directly —
+/// avoiding the per-call string round-trip + hash lookup of name resolution.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
+pub struct TypeHandle(pub u32);
+
 /// Master container for all game data parsed from rules.ini.
 ///
-/// All lookups are by string ID (case-sensitive — IDs are already stored
-/// in their original casing from rules.ini). The sim/ module uses RuleSet
+/// Name lookups are case-insensitive (matching the engine's find-or-allocate),
+/// resolved via `type_handle`/`object_by_handle`. The sim/ module uses RuleSet
 /// to look up costs, speeds, weapons, and prerequisites for every game action.
 #[derive(Debug)]
 pub struct RuleSet {
-    /// All game objects indexed by their ID (e.g., "MTNK" → ObjectType).
-    objects: HashMap<String, ObjectType>,
+    /// All game objects in registry insertion order, indexed by `TypeHandle`.
+    object_list: Vec<ObjectType>,
+    /// Uppercase type ID → handle. Uppercase keys give O(1) case-insensitive
+    /// resolution, matching the engine's case-insensitive find-or-allocate.
+    object_index: HashMap<String, TypeHandle>,
     /// All weapons indexed by ID (e.g., "105mm" → WeaponType).
     weapons: HashMap<String, WeaponType>,
     /// All warheads indexed by ID (e.g., "AP" → WarheadType).
@@ -1392,7 +1401,8 @@ impl RuleSet {
     /// are logged as warnings but don't cause errors — RA2's rules.ini
     /// sometimes references sections that don't exist.
     pub fn from_ini(ini: &IniFile) -> Result<Self, RulesError> {
-        let mut objects: HashMap<String, ObjectType> = HashMap::new();
+        let mut object_list: Vec<ObjectType> = Vec::new();
+        let mut object_index: HashMap<String, TypeHandle> = HashMap::new();
         let mut infantry_ids: Vec<String> = Vec::new();
         let mut vehicle_ids: Vec<String> = Vec::new();
         let mut aircraft_ids: Vec<String> = Vec::new();
@@ -1415,7 +1425,24 @@ impl RuleSet {
             for id in &ids {
                 if let Some(section) = ini.section(id) {
                     let obj: ObjectType = ObjectType::from_ini_section(id, section, category);
-                    objects.insert(id.clone(), obj);
+                    let key = id.to_ascii_uppercase();
+                    // Find-or-allocate: a name differing only by case reuses its
+                    // slot (last definition wins), matching the engine's single
+                    // type per name. Surface any merge so a malformed INI is visible.
+                    match object_index.get(&key) {
+                        Some(&TypeHandle(idx)) => {
+                            log::warn!(
+                                "Object '{}' merges onto an existing case-duplicate type",
+                                id
+                            );
+                            object_list[idx as usize] = obj;
+                        }
+                        None => {
+                            let handle = TypeHandle(object_list.len() as u32);
+                            object_list.push(obj);
+                            object_index.insert(key, handle);
+                        }
+                    }
                 } else {
                     log::trace!(
                         "Object '{}' listed in [{}] but has no section",
@@ -1435,7 +1462,7 @@ impl RuleSet {
         }
 
         // Step 2: Collect all weapon and warhead IDs referenced by objects.
-        let (weapon_ids, warhead_refs) = collect_weapon_refs(&objects);
+        let (weapon_ids, warhead_refs) = collect_weapon_refs(&object_list);
 
         // Step 3: Parse weapon sections.
         let mut weapons: HashMap<String, WeaponType> = HashMap::new();
@@ -1501,8 +1528,8 @@ impl RuleSet {
         }
 
         // Step 6: Build factory lookup map from Factory= keys on all objects.
-        let factory_map: HashMap<String, FactoryType> = objects
-            .values()
+        let factory_map: HashMap<String, FactoryType> = object_list
+            .iter()
             .filter_map(|obj| obj.factory.map(|ft| (obj.id.to_ascii_uppercase(), ft)))
             .collect();
         log::info!("Factory map: {} entries", factory_map.len());
@@ -1594,7 +1621,7 @@ impl RuleSet {
             "RuleSet loaded: {} objects ({} inf, {} veh, {} air, {} bld), \
              {} weapons, {} warheads, {} projectiles, \
              {} particle types, {} particle system types",
-            objects.len(),
+            object_list.len(),
             infantry_ids.len(),
             vehicle_ids.len(),
             aircraft_ids.len(),
@@ -1626,7 +1653,8 @@ impl RuleSet {
                     );
                 }
             };
-            check_unique_ci("objects", objects.keys().collect());
+            // Objects merge case-duplicates at insert (find-or-allocate), so the
+            // uppercase-keyed index can't hold a case-collision by construction.
             check_unique_ci("weapons", weapons.keys().collect());
             check_unique_ci("warheads", warheads.keys().collect());
             check_unique_ci("projectiles", projectiles.keys().collect());
@@ -1634,7 +1662,8 @@ impl RuleSet {
         }
 
         Ok(RuleSet {
-            objects,
+            object_list,
+            object_index,
             weapons,
             warheads,
             projectiles,
@@ -1735,8 +1764,21 @@ impl RuleSet {
         })
     }
 
+    /// Resolve a type name to its handle, case-insensitively (engine parity).
+    pub fn type_handle(&self, id: &str) -> Option<TypeHandle> {
+        self.object_index.get(&id.to_ascii_uppercase()).copied()
+    }
+
+    /// Dereference a handle to its object. Handles only originate from this
+    /// `RuleSet`, so the index is always in bounds.
+    #[inline]
+    pub fn object_by_handle(&self, handle: TypeHandle) -> &ObjectType {
+        &self.object_list[handle.0 as usize]
+    }
+
+    /// Look up a game object by ID (case-insensitive, engine parity).
     pub fn object(&self, id: &str) -> Option<&ObjectType> {
-        Self::lookup_ci(&self.objects, id)
+        self.type_handle(id).map(|h| self.object_by_handle(h))
     }
 
     /// Deprecated: `object` is now case-insensitive. Retained as an alias so
@@ -1887,7 +1929,7 @@ impl RuleSet {
         let mut buildings_checked: u32 = 0;
         let mut infantry_checked: u32 = 0;
         let mut crawls_patched: u32 = 0;
-        for obj in self.objects.values_mut() {
+        for obj in self.object_list.iter_mut() {
             // Resolve the art.ini section: use Image= override if present,
             // otherwise fall back to the object ID itself.
             let art_key: &str = &obj.image;
@@ -1996,7 +2038,7 @@ impl RuleSet {
 
     /// Total number of game objects across all categories.
     pub fn object_count(&self) -> usize {
-        self.objects.len()
+        self.object_list.len()
     }
 
     /// Total number of weapons.
@@ -2026,7 +2068,7 @@ impl RuleSet {
 
     /// Iterate over all game objects in the registry.
     pub fn all_objects(&self) -> impl Iterator<Item = &ObjectType> {
-        self.objects.values()
+        self.object_list.iter()
     }
 }
 
@@ -2083,12 +2125,12 @@ fn parse_country_rules(ini: &IniFile) -> HashMap<String, CountryRules> {
 ///
 /// Returns (weapon_ids, warhead_ids) as sets (deduplicated).
 fn collect_weapon_refs(
-    objects: &HashMap<String, ObjectType>,
+    objects: &[ObjectType],
 ) -> (HashSet<String>, HashSet<String>) {
     let mut weapon_ids: HashSet<String> = HashSet::new();
     let warhead_ids: HashSet<String> = HashSet::new();
 
-    for obj in objects.values() {
+    for obj in objects.iter() {
         if let Some(ref w) = obj.primary {
             weapon_ids.insert(w.clone());
         }
@@ -3442,31 +3484,33 @@ ZAdjust=-10
         // assert both the upper- and lower-cased forms resolve to the same entry.
         // Toggling case guarantees at least one form differs from the stored key,
         // so the case-fold scan path (not just exact match) is exercised.
-        fn check_ci<'a, T>(
-            map: &'a HashMap<String, T>,
-            lookup: impl Fn(&str) -> Option<&'a T>,
+        fn check_ci<'a, M, V>(
+            map: &'a HashMap<String, M>,
+            lookup: impl Fn(&str) -> Option<&'a V>,
             label: &str,
-        ) {
+        ) where
+            V: 'a,
+        {
             let key = map
                 .keys()
                 .next()
                 .cloned()
                 .unwrap_or_else(|| panic!("{label} map empty"));
-            let canon = lookup(&key).map(|v| v as *const T);
+            let canon = lookup(&key).map(|v| v as *const V);
             assert!(canon.is_some(), "{label} '{key}' must resolve as stored");
             assert_eq!(
-                lookup(&key.to_ascii_lowercase()).map(|v| v as *const T),
+                lookup(&key.to_ascii_lowercase()).map(|v| v as *const V),
                 canon,
                 "{label} '{key}' lowercase must resolve to same entry"
             );
             assert_eq!(
-                lookup(&key.to_ascii_uppercase()).map(|v| v as *const T),
+                lookup(&key.to_ascii_uppercase()).map(|v| v as *const V),
                 canon,
                 "{label} '{key}' uppercase must resolve to same entry"
             );
         }
 
-        check_ci(&rules.objects, |k| rules.object(k), "object");
+        check_ci(&rules.object_index, |k| rules.object(k), "object");
         check_ci(&rules.weapons, |k| rules.weapon(k), "weapon");
         check_ci(&rules.warheads, |k| rules.warhead(k), "warhead");
         check_ci(&rules.projectiles, |k| rules.projectile(k), "projectile");
