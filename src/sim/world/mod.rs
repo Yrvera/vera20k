@@ -2467,3 +2467,7 @@ mod rng_routing_tests;
 #[cfg(test)]
 #[path = "slice6_retask_tests.rs"]
 mod slice6_retask_tests;
+
+#[cfg(test)]
+#[path = "mission_authoritative_tests.rs"]
+mod mission_authoritative_tests;
