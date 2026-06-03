@@ -899,38 +899,19 @@ impl Simulation {
     }
 
     /// Refresh the `mission` component's `current`/`substate` on every entity
-    /// from the authoritative `Option<T>` machines. The Slice-6 verb API writes
-    /// `mission` in parallel, but the legacy machines stay authoritative, so this
-    /// re-derivation keeps `current`/`substate` in lockstep with them each tick.
-    /// `mission` is still absent from `world_hash`, so this can never perturb the
-    /// lockstep hash (the `mission_shadow_does_not_change_state_hash` test pins
-    /// that). BTreeMap `values_mut()` yields deterministic ascending-id order.
+    /// from the authoritative `Option<T>` machines, and advance its per-entity
+    /// `tick_counter`. As of Slice 8 `mission` IS folded into `world_hash`, so
+    /// this is the canonical projection writer: `current`/`substate` are a
+    /// deterministic function of the authoritative machines (the verbs own
+    /// `queued`/`suspended`/`timer`). Runs before `state_hash()` each tick tail,
+    /// so the folded value reflects the current tick. BTreeMap `values_mut()`
+    /// yields deterministic ascending-id order.
     pub(crate) fn refresh_mission_shadow(&mut self) {
         for entity in self.substrate.entities.values_mut() {
             let (current, substate) = entity.derived_mission();
             entity.mission.current = current;
             entity.mission.substate = substate;
             entity.mission.tick_counter = entity.mission.tick_counter.wrapping_add(1);
-        }
-    }
-
-    /// Debug-only invariant: the `mission` component's (current + sub-phase) must
-    /// equal the value derivable from the authoritative machines for every
-    /// in-store entity. O(n); compiled out of release builds.
-    #[cfg(debug_assertions)]
-    pub(crate) fn debug_assert_mission_shadow_consistent(&self) {
-        for e in self.substrate.entities.values() {
-            let (current, substate) = e.derived_mission();
-            debug_assert_eq!(
-                (e.mission.current, e.mission.substate),
-                (current, substate),
-                "entity {} mission shadow {:?}/{} != derived {:?}/{}",
-                e.stable_id,
-                e.mission.current,
-                e.mission.substate,
-                current,
-                substate,
-            );
         }
     }
 
@@ -2439,12 +2420,10 @@ impl Simulation {
         self.debug_assert_logic_membership_consistent();
         #[cfg(debug_assertions)]
         self.debug_assert_presence_consistent();
-        // Mission refresh runs after all systems and before the hash; `mission` is
-        // unhashed so this is hash-neutral. The assert proves current/substate
-        // match the legacy machines until a later slice fully flips authority.
+        // Mission projection runs after all systems and before the hash, so the
+        // folded `mission` reflects the current tick. As of Slice 8 `mission` is
+        // canonical hashed state; the Slice-2 shadow-agreement assert is retired.
         self.refresh_mission_shadow();
-        #[cfg(debug_assertions)]
-        self.debug_assert_mission_shadow_consistent();
         // Object-AI Slice S1 shadow: for one bounded moving-UnitClass scenario,
         // assert mission dispatch is observed before the locomotor Process within
         // one object pass (the verified gamemd ordering). Read-only, unhashed,

@@ -187,7 +187,8 @@ impl Simulation {
     /// Process within one object pass (the verified gamemd ordering) and that
     /// the observed mission is the in-scope `Move`. Read-only; never hashed,
     /// never serialized; a divergence is asserted with tick + id, never silently
-    /// equalized. Mirrors `debug_assert_mission_shadow_consistent`.
+    /// equalized. (The Slice-2 mission shadow-agreement assert it once mirrored
+    /// was retired in Slice 8 when `mission` became hashed-authoritative.)
     #[cfg(any(test, debug_assertions))]
     pub(crate) fn debug_assert_s1_shadow(&self) {
         let mut seq = 0u32;
