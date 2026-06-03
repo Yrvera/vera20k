@@ -19,7 +19,9 @@ use crate::sim::world::Simulation;
 // Simulation.substrate (ObjectSubstrate); bincode layout changed (state hash unchanged).
 // Bumped 15 -> 16: EntityStore relocated under Simulation.substrate (Slice 1b); bincode
 // layout changed (state hash unchanged — world_hash reads the store via the new path).
-const SNAPSHOT_VERSION: u32 = 16;
+// Bumped 16 -> 17: MissionCom folded into state_hash (Slice 8); bincode layout
+// unchanged (MissionCom already serialized since Slice 6), only the hash changed.
+const SNAPSHOT_VERSION: u32 = 17;
 
 /// Binary snapshot envelope — wraps the full `Simulation` state plus
 /// compatibility hashes for the map and rules that were active at save time.
