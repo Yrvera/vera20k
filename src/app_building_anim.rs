@@ -561,6 +561,159 @@ pub(crate) fn consume_bale_events(state: &mut AppState) {
     sim.bale_events.clear();
 }
 
+/// Build a SpecialAnim overlay state for a tank-bunker wall config, using the
+/// `…Damaged` variant when `damaged` is set and one exists. Returns `None` when
+/// the anim has no loop range or its section was never interned.
+fn bunker_special_overlay(
+    sim: &Simulation,
+    config: &crate::rules::art_data::BuildingAnimConfig,
+    damaged: bool,
+) -> Option<AnimOverlayState> {
+    let (anim_type, loop_start, loop_end, start_frame, rate) = match (damaged, &config.damaged_variant) {
+        (true, Some(v)) => (
+            v.anim_type.as_str(),
+            v.loop_start,
+            v.loop_end,
+            v.start_frame.max(v.loop_start),
+            v.rate,
+        ),
+        _ => (
+            config.anim_type.as_str(),
+            config.loop_start,
+            config.loop_end,
+            config.start_frame.max(config.loop_start),
+            config.rate,
+        ),
+    };
+    if loop_end <= loop_start {
+        return None;
+    }
+    let id = sim.interner.get(&anim_type.to_uppercase())?;
+    Some(AnimOverlayState {
+        anim_type: id,
+        frame: start_frame,
+        loop_start,
+        loop_end,
+        rate_ms: rate as u32,
+        elapsed_ms: 0,
+        finished: false,
+    })
+}
+
+/// Drain `Simulation::bunker_wall_events` and create the tank-bunker wall
+/// SpecialAnim overlays. Document order within `kind == Special` decides the
+/// pair: indices 0/1 = walls-up (install), 2/3 = walls-down (teardown). Each
+/// config's `…Damaged` variant is used when the event's `damaged` flag is set.
+/// A walls-down event clears the up-pair overlays first (exit helper's
+/// anim-clear-then-set order).
+pub(crate) fn consume_bunker_wall_events(state: &mut AppState) {
+    struct PerEvent {
+        building_id: u64,
+        clear_anim_types: Vec<InternedId>,
+        new_states: Vec<AnimOverlayState>,
+    }
+
+    let prepared: Vec<PerEvent> = {
+        let (Some(sim), Some(rules), Some(art_reg)) = (
+            state.simulation.as_ref(),
+            state.rules.as_ref(),
+            state.art_registry.as_ref(),
+        ) else {
+            return;
+        };
+        if sim.bunker_wall_events.is_empty() {
+            return;
+        }
+        let mut out: Vec<PerEvent> = Vec::with_capacity(sim.bunker_wall_events.len());
+        for ev in &sim.bunker_wall_events {
+            let Some(building) = sim.entities().get(ev.building_id) else {
+                continue;
+            };
+            let type_str = sim.interner.resolve(building.type_ref);
+            let Some(obj) = rules.object(type_str) else {
+                continue;
+            };
+            let Some(art_entry) = art_reg.resolve_metadata_entry(type_str, &obj.image) else {
+                continue;
+            };
+            // Special anims in document order: [0,1] = up pair, [2,3] = down pair.
+            let specials: Vec<&crate::rules::art_data::BuildingAnimConfig> = art_entry
+                .building_anims
+                .iter()
+                .filter(|a| matches!(a.kind, crate::rules::art_data::BuildingAnimKind::Special))
+                .collect();
+            let (pick, clear): (&[usize], &[usize]) = if ev.up {
+                (&[0, 1], &[])
+            } else {
+                (&[2, 3], &[0, 1])
+            };
+            let new_states: Vec<AnimOverlayState> = pick
+                .iter()
+                .filter_map(|&i| specials.get(i))
+                .filter_map(|cfg| bunker_special_overlay(sim, cfg, ev.damaged))
+                .collect();
+            // Collect every interned anim id (base + damaged) for the up pair so
+            // the down event removes whichever variant is currently playing.
+            let clear_anim_types: Vec<InternedId> = clear
+                .iter()
+                .filter_map(|&i| specials.get(i))
+                .flat_map(|cfg| {
+                    let mut ids: Vec<InternedId> = Vec::new();
+                    if let Some(id) = sim.interner.get(&cfg.anim_type.to_uppercase()) {
+                        ids.push(id);
+                    }
+                    if let Some(v) = &cfg.damaged_variant {
+                        if let Some(id) = sim.interner.get(&v.anim_type.to_uppercase()) {
+                            ids.push(id);
+                        }
+                    }
+                    ids
+                })
+                .collect();
+            out.push(PerEvent {
+                building_id: ev.building_id,
+                clear_anim_types,
+                new_states,
+            });
+        }
+        out
+    };
+
+    let Some(sim) = state.simulation.as_mut() else {
+        return;
+    };
+    for ev in prepared {
+        let Some(building) = sim.entities_mut().get_mut(ev.building_id) else {
+            continue;
+        };
+        if !ev.clear_anim_types.is_empty() {
+            if let Some(overlays) = building.building_anim_overlays.as_mut() {
+                overlays
+                    .anims
+                    .retain(|a| !ev.clear_anim_types.contains(&a.anim_type));
+            }
+        }
+        for new_state in ev.new_states {
+            if let Some(overlays) = building.building_anim_overlays.as_mut() {
+                if let Some(existing) = overlays
+                    .anims
+                    .iter_mut()
+                    .find(|a| a.anim_type == new_state.anim_type)
+                {
+                    *existing = new_state;
+                } else {
+                    overlays.anims.push(new_state);
+                }
+            } else {
+                building.building_anim_overlays = Some(BuildingAnimOverlays {
+                    anims: vec![new_state],
+                });
+            }
+        }
+    }
+    sim.bunker_wall_events.clear();
+}
+
 /// Tick the sidebar power bar animation (segment-by-segment transition).
 pub(crate) fn update_power_bar_anim(state: &mut AppState) {
     let owner_name = preferred_local_owner_name(state);

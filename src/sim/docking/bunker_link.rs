@@ -104,8 +104,7 @@ pub fn release_normal(
     rules: &RuleSet,
     grid: Option<&PathGrid>,
 ) {
-    let _ = rules; // the health-gated exit anim wires this in a later slice.
-    emit_bunker_wall_anim(sim, building_id, false);
+    emit_bunker_wall_anim(sim, building_id, false, rules);
     emit_bunker_wall_sound(sim, building_id, false);
     let cell = bunker_exit_cell(sim, building_id, grid);
     let Some(unit_id) = break_bunker_link(sim, building_id) else {
@@ -159,7 +158,7 @@ pub fn release_sell_destroy(sim: &mut Simulation, building_id: u64) {
 /// unit. Implemented for contract completeness; no live trigger exists in this
 /// slice (prerequisite systems absent + the concealed unit is not damageable
 /// until the combat slice).
-pub fn release_clear(sim: &mut Simulation, building_id: u64) {
+pub fn release_clear(sim: &mut Simulation, building_id: u64, rules: &RuleSet) {
     if sim
         .substrate
         .entities
@@ -167,7 +166,7 @@ pub fn release_clear(sim: &mut Simulation, building_id: u64) {
         .and_then(|b| b.bunker_occupant)
         .is_some()
     {
-        emit_bunker_wall_anim(sim, building_id, false);
+        emit_bunker_wall_anim(sim, building_id, false, rules);
         emit_bunker_wall_sound(sim, building_id, false);
         break_bunker_link(sim, building_id);
     }
@@ -233,10 +232,35 @@ fn bunker_exit_cell(
     }
 }
 
-/// Wall anim event emitter. No-op shim until the wall-anim event slice wires the
-/// sim→app event vec + overlay consumer.
-fn emit_bunker_wall_anim(sim: &mut Simulation, building_id: u64, up: bool) {
-    let _ = (sim, building_id, up);
+/// Emit the wall-anim event for the app overlay layer. `up` raises the walls
+/// (install), `false` drops them (teardown). The `damaged` flag picks the
+/// `…Damaged` SpecialAnim variant when the building is at/below ConditionRed
+/// (ledger health gate); computed with integer math (no f32 in sim).
+pub(crate) fn emit_bunker_wall_anim(
+    sim: &mut Simulation,
+    building_id: u64,
+    up: bool,
+    rules: &RuleSet,
+) {
+    let Some(b) = sim.substrate.entities.get(building_id) else {
+        return;
+    };
+    let damaged =
+        at_or_below_condition_red(b.health.current, b.health.max, rules.general.condition_red_x1000);
+    sim.bunker_wall_events
+        .push(crate::sim::components::BunkerWallAnimEvent {
+            building_id,
+            up,
+            damaged,
+        });
+}
+
+/// `current / max <= ConditionRed`, evaluated with the pre-scaled integer
+/// threshold so the sim stays float-free.
+fn at_or_below_condition_red(current: u16, max: u16, condition_red_x1000: i64) -> bool {
+    let current_x1000 = current as i64 * 1000;
+    let threshold_x1000 = max.max(1) as i64 * condition_red_x1000;
+    current_x1000 <= threshold_x1000
 }
 
 #[cfg(test)]
@@ -411,7 +435,7 @@ mod tests {
     #[test]
     fn release_clear_plays_down_sound_but_does_not_reposition() {
         let mut sim = installed_sim();
-        release_clear(&mut sim, 2);
+        release_clear(&mut sim, 2, &rules());
         let unit = sim.substrate.entities.get(1).unwrap();
         assert_eq!(unit.bunker_link, BunkerLink::None);
         assert!(!unit.in_logic_vector, "clear does not reveal");
@@ -449,6 +473,51 @@ mod tests {
             sim.substrate.entities.get(1).unwrap().bunker_link,
             BunkerLink::None
         );
+    }
+
+    fn down_anim_events(sim: &Simulation) -> usize {
+        sim.bunker_wall_events.iter().filter(|e| !e.up).count()
+    }
+
+    #[test]
+    fn release_normal_emits_one_walls_down_anim_event() {
+        let mut sim = installed_sim();
+        sim.bunker_wall_events.clear();
+        release_normal(&mut sim, 2, &rules(), None);
+        assert_eq!(down_anim_events(&sim), 1, "one walls-down anim on normal eject");
+        let ev = sim.bunker_wall_events.iter().find(|e| !e.up).unwrap();
+        assert_eq!(ev.building_id, 2);
+        assert!(!ev.damaged, "full-health bunker uses the non-damaged variant");
+    }
+
+    #[test]
+    fn release_clear_emits_one_walls_down_anim_event() {
+        let mut sim = installed_sim();
+        sim.bunker_wall_events.clear();
+        release_clear(&mut sim, 2, &rules());
+        assert_eq!(down_anim_events(&sim), 1, "one walls-down anim on clear");
+    }
+
+    #[test]
+    fn release_sell_destroy_emits_no_anim_event() {
+        let mut sim = installed_sim();
+        sim.bunker_wall_events.clear();
+        release_sell_destroy(&mut sim, 2);
+        assert!(
+            sim.bunker_wall_events.is_empty(),
+            "sell/destroy teardown emits no wall anim (UndockUnit)"
+        );
+    }
+
+    #[test]
+    fn walls_down_damaged_flag_set_below_condition_red() {
+        let mut sim = installed_sim();
+        sim.bunker_wall_events.clear();
+        // Drop the bunker to 10% HP — below the 0.25 ConditionRed default.
+        sim.substrate.entities.get_mut(2).unwrap().health.current = 100;
+        release_normal(&mut sim, 2, &rules(), None);
+        let ev = sim.bunker_wall_events.iter().find(|e| !e.up).unwrap();
+        assert!(ev.damaged, "below-ConditionRed bunker selects the damaged variant");
     }
 
     #[test]

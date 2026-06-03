@@ -349,6 +349,11 @@ pub struct Simulation {
     /// by the app layer for SpecialAnim trigger and particle bursts.
     #[serde(skip)]
     pub bale_events: Vec<crate::sim::components::BaleDepositEvent>,
+    /// Tank-bunker wall-anim events — walls rising on install / falling on
+    /// teardown. Drained by the app layer to create SpecialAnim overlays.
+    /// Render-only; never persisted or hashed.
+    #[serde(skip)]
+    pub bunker_wall_events: Vec<crate::sim::components::BunkerWallAnimEvent>,
     /// Per-AI-owner state for computer-controlled players.
     pub ai_players: Vec<AiPlayerState>,
     /// Per-player state keyed by uppercase owner name. Deterministic iteration
@@ -521,6 +526,7 @@ impl Simulation {
             fire_events: Vec::new(),
             pending_smudge_requests: Vec::new(),
             bale_events: Vec::new(),
+            bunker_wall_events: Vec::new(),
             ai_players: Vec::new(),
             houses: BTreeMap::new(),
             terrain_costs: BTreeMap::new(),

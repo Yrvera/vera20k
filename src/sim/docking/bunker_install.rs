@@ -157,7 +157,13 @@ fn step_install(
         }
         BunkerState::TurnSouth => {
             if !is_turning(sim, unit_id) {
-                // Entry anim emits just before the hide (wired in the anim slice).
+                // Walls rise just before the unit hides (health-gated variant).
+                crate::sim::docking::bunker_link::emit_bunker_wall_anim(
+                    sim,
+                    building_id,
+                    true,
+                    rules,
+                );
                 crate::sim::docking::bunker_link::install_bunker_link(sim, building_id, unit_id);
             }
         }
@@ -468,6 +474,11 @@ mod tests {
         assert_eq!(
             sim.substrate.entities.get(1).unwrap().presence,
             Presence::Limbo
+        );
+        assert_eq!(
+            sim.bunker_wall_events.iter().filter(|e| e.up).count(),
+            1,
+            "exactly one walls-up anim event on install"
         );
     }
 

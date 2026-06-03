@@ -965,6 +965,23 @@ pub struct BaleDepositEvent {
     pub tick: u64,
 }
 
+/// Emitted by the tank-bunker lifecycle when the walls rise (install) or fall
+/// (teardown). The app layer consumes it to create the bunker's SpecialAnim
+/// overlays — document order within `kind == Special` decides the pair: 0/1 =
+/// walls-up, 2/3 = walls-down. `damaged` selects the `…Damaged` art variant when
+/// the building was at/below ConditionRed health at emit time. Render-only event
+/// (`#[serde(skip)]` on the queue) — never part of the deterministic hash.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub struct BunkerWallAnimEvent {
+    /// Bunker building stable_id whose walls are animating.
+    pub building_id: u64,
+    /// `true` = walls rising (install), `false` = walls falling (teardown).
+    pub up: bool,
+    /// Building was at/below ConditionRed when the event fired — use the
+    /// `…Damaged` SpecialAnim variant.
+    pub damaged: bool,
+}
+
 /// Per-attacker walk-up intent for the C4 plant mission.
 ///
 /// Mirrors gamemd's SEAL/Tanya/PTROOP behavior: while this is `Some`, the
