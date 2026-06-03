@@ -15,6 +15,7 @@ mod production_sell;
 mod production_spawn;
 mod production_tech;
 mod production_types;
+mod war_factory_exit;
 
 // Re-export everything so external code can still use `production::X`.
 pub use self::production_economy::is_harvester_type;
@@ -43,6 +44,7 @@ pub use self::production_tech::{
     structure_satisfies_prerequisite,
 };
 pub use self::production_types::*;
+pub use self::war_factory_exit::tick_war_factory_exit_contacts;
 
 // Re-exports for external consumers (files outside production/ that previously
 // imported private submodules directly).
