@@ -25,6 +25,36 @@ fn hash_drive_track_state(
     state.target_facing.hash(hasher);
 }
 
+/// Fold the `MissionCom` mission component into the state hash.
+///
+/// Explicit field fold (MissionCom intentionally does NOT derive `Hash`): enum
+/// discriminants cast to `u16` (matching the `category as u8` idiom in
+/// `hash_entities`), `Option`s as a `0u8`/`1u8` presence tag plus value. As of
+/// Slice 8 `mission` is canonical hashed lockstep state, no longer an unhashed
+/// shadow; `refresh_mission_shadow` keeps `current`/`substate` a deterministic
+/// projection of the authoritative machines, so this fold cannot desync.
+fn hash_mission_com(mission: &crate::sim::mission::MissionCom, hasher: &mut impl Hasher) {
+    (mission.current as u16).hash(hasher);
+    match mission.queued {
+        Some(m) => {
+            1u8.hash(hasher);
+            (m as u16).hash(hasher);
+        }
+        None => 0u8.hash(hasher),
+    }
+    match mission.suspended {
+        Some(m) => {
+            1u8.hash(hasher);
+            (m as u16).hash(hasher);
+        }
+        None => 0u8.hash(hasher),
+    }
+    mission.substate.hash(hasher);
+    mission.timer.start_frame.hash(hasher);
+    mission.timer.duration.hash(hasher);
+    mission.tick_counter.hash(hasher);
+}
+
 impl Simulation {
     /// Deterministic state hash over canonicalized simulation state.
     ///
@@ -620,6 +650,10 @@ impl Simulation {
             } else {
                 0u8.hash(hasher);
             }
+
+            // Mission substrate — folded as of Slice 8 (MissionCom is now
+            // canonical hashed state, not an unhashed shadow).
+            hash_mission_com(&entity.mission, hasher);
         }
     }
 }

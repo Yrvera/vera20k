@@ -71,8 +71,10 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 /// the scripted scenario has no bunkers, so the value moved only because the
 /// tank-bunker lifecycle state (`bunker_link`, `bunker_runtime`) now joins the
 /// hash for every entity at its default — a hash-composition change, not a
-/// behavior drift. Re-baselined for Slice 7b.
-const SLICE6_BASELINE_HASH: u64 = 15996979913631807698;
+/// behavior drift. Re-baselined for Slice 7b, then Slice 8 (MissionCom folded
+/// into state_hash — every entity now contributes its default mission bytes;
+/// composition change, not a behavior drift).
+const SLICE6_BASELINE_HASH: u64 = 11204055998814135587;
 
 #[test]
 fn replay_hash_stable_through_slice6() {
