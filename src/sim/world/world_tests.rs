@@ -563,10 +563,10 @@ fn binary_frame_committed_late_gate_captures_pre_increment_frame() {
 }
 
 #[test]
-fn mission_shadow_does_not_change_state_hash() {
-    // `mission` is absent from world_hash, so refreshing it must leave the
-    // lockstep hash untouched — even though it mutates the component (here the
-    // tick_counter advances 0 -> 1).
+fn mission_refresh_changes_state_hash() {
+    // As of Slice 8 `mission` is folded into world_hash, so refreshing it (which
+    // advances tick_counter and re-derives current/substate) DOES move the
+    // lockstep hash — the inverse of the retired Slice-2 shadow invariant.
     let mut sim = Simulation::new();
     sim.substrate
         .entities
@@ -574,14 +574,14 @@ fn mission_shadow_does_not_change_state_hash() {
     let before = sim.state_hash();
     sim.refresh_mission_shadow();
     let after = sim.state_hash();
-    assert_eq!(
+    assert_ne!(
         before, after,
-        "mission shadow refresh must not perturb the state hash"
+        "mission refresh must perturb the state hash now that mission is folded"
     );
     assert_eq!(
         sim.substrate.entities.get(1).unwrap().mission.tick_counter,
         1,
-        "refresh_mission_shadow actually ran"
+        "refresh_mission_shadow actually ran (tick_counter advanced)"
     );
 }
 
