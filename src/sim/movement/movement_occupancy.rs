@@ -1276,4 +1276,44 @@ mod tests {
 
         assert!(skips.get(&(10, 10)).is_some_and(|ids| ids.contains(&100)));
     }
+
+    #[test]
+    fn empty_tank_bunker_is_passable_occupied_blocks() {
+        use crate::rules::ini_parser::IniFile;
+        use crate::rules::ruleset::RuleSet;
+        use crate::sim::entity_store::EntityStore;
+        use crate::sim::game_entity::GameEntity;
+
+        let ini = IniFile::from_str(
+            "[VehicleTypes]\n0=TANK\n[BuildingTypes]\n0=NATBNK\n\
+             [TANK]\nName=Tank\nSpeed=6\n\
+             [NATBNK]\nName=Tank Bunker\nFoundation=1x1\nBunker=yes\nNumberImpassableRows=0\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("bunker rules");
+        let mut entities = EntityStore::new();
+        let mut mover = GameEntity::test_default(1, "TANK", "Americans", 14, 11);
+        mover.category = EntityCategory::Unit;
+        entities.insert(mover);
+        let mut bunker = GameEntity::test_default(100, "NATBNK", "Americans", 10, 10);
+        bunker.category = EntityCategory::Structure;
+        entities.insert(bunker);
+        let interner = crate::sim::intern::test_interner();
+
+        // Empty bunker: the footprint cell is row-exempt (vehicle exception),
+        // so a vehicle may path through it.
+        let skips = build_live_building_entry_skip_map(&entities, 1, &interner, Some(&rules));
+        assert!(
+            skips.get(&(10, 10)).is_some_and(|ids| ids.contains(&100)),
+            "empty bunker footprint is passable"
+        );
+
+        // Occupied bunker: the gate that was previously dead (bunker_occupant
+        // read-but-never-set) is now live — the footprint blocks again.
+        entities.get_mut(100).unwrap().bunker_occupant = Some(1);
+        let skips = build_live_building_entry_skip_map(&entities, 1, &interner, Some(&rules));
+        assert!(
+            !skips.get(&(10, 10)).is_some_and(|ids| ids.contains(&100)),
+            "occupied bunker footprint blocks"
+        );
+    }
 }

@@ -2222,4 +2222,74 @@ mod tests {
 
         assert!(!applied, "ejecting an empty bunker does nothing");
     }
+
+    #[test]
+    fn bunker_full_lifecycle_enter_install_then_eject() {
+        use crate::sim::docking::bunker_install::{tick_bunker_install, BunkerState};
+        use crate::sim::game_entity::BunkerLink;
+        let rules = bunker_rules();
+        let mut sim = Simulation::new();
+        spawn_bunker_struct(&mut sim, 2, "Americans", 10, 10);
+        // Place the tank ON the bunker cell so the install needs no pathfinding
+        // (the movement subsystem is not run in this harness).
+        spawn_bunkerable(&mut sim, 1, "Americans", "TANK", 10, 10);
+        sim.reveal(1);
+        sim.add_entity_occupancy(1);
+
+        // 1) Enter: admission + install machine starts.
+        assert!(sim.apply_command(
+            "Americans",
+            &Command::EnterBunker {
+                unit_id: 1,
+                bunker_id: 2,
+            },
+            Some(&rules),
+            None,
+            &BTreeMap::new(),
+        ));
+        assert_eq!(
+            sim.substrate.entities.get(1).unwrap().bunker_link,
+            BunkerLink::Approaching(2)
+        );
+
+        // 2) Drive the install machine to Occupied. Clear facing_target each tick
+        // to simulate the body turn completing (no movement subsystem here).
+        for _ in 0..6 {
+            tick_bunker_install(&mut sim, &rules, None);
+            if let Some(u) = sim.substrate.entities.get_mut(1) {
+                u.facing_target = None;
+            }
+        }
+        let rt = sim.substrate.entities.get(2).unwrap().bunker_runtime.unwrap();
+        assert_eq!(rt.state, BunkerState::Occupied);
+        assert_eq!(sim.substrate.entities.get(2).unwrap().bunker_occupant, Some(1));
+        let unit = sim.substrate.entities.get(1).unwrap();
+        assert_eq!(unit.bunker_link, BunkerLink::Installed(2));
+        assert!(!unit.in_logic_vector, "occupant hidden while installed");
+        assert_eq!(
+            sim.bunker_wall_events.iter().filter(|e| e.up).count(),
+            1,
+            "one walls-up event on install"
+        );
+
+        // 3) Eject: occupant released near the bunker, links cleared, walls-down.
+        sim.bunker_wall_events.clear();
+        assert!(sim.apply_command(
+            "Americans",
+            &Command::EjectBunker { bunker_id: 2 },
+            Some(&rules),
+            None,
+            &BTreeMap::new(),
+        ));
+        assert_eq!(sim.substrate.entities.get(2).unwrap().bunker_occupant, None);
+        let unit = sim.substrate.entities.get(1).unwrap();
+        assert_eq!(unit.bunker_link, BunkerLink::None);
+        assert!(unit.in_logic_vector, "occupant revealed on eject");
+        assert_eq!(unit.mission.current, MissionType::Move);
+        assert_eq!(
+            sim.bunker_wall_events.iter().filter(|e| !e.up).count(),
+            1,
+            "one walls-down event on eject"
+        );
+    }
 }
