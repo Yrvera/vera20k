@@ -118,6 +118,16 @@ pub enum Command {
         passenger_id: u64,
         transport_id: u64,
     },
+    /// Order a bunkerable vehicle into a friendly `Bunker=yes` building (tank
+    /// bunker). The unit pathfinds to the bunker cell; the install machine takes
+    /// over on arrival (turn → slide onto the cell → turn south → hide). Gating
+    /// happens in `world_commands`: own-owner, the bunker idle/empty, and the
+    /// unit `Bunkerable=yes` with a primary weapon.
+    EnterBunker { unit_id: u64, bunker_id: u64 },
+    /// Eject the occupant of a friendly occupied tank bunker. Targets the bunker
+    /// (the hidden occupant is not selectable in this slice); the occupant
+    /// reappears on a passable cell SW of the bunker and drives out.
+    EjectBunker { bunker_id: u64 },
     /// Order a transport to unload all passengers to adjacent cells (one per tick).
     UnloadPassengers { transport_id: u64 },
     /// Direct a harvester to go harvest a specific ore cell.
