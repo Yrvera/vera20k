@@ -759,6 +759,16 @@ fn war_factory_spawn_contact_is_marked_per_produced_mover() {
             .has_live_contact_with(10),
         "unrelated vehicles must not inherit the war-factory row exception"
     );
+    assert_eq!(
+        sim.substrate.entities.get(produced).unwrap().dock_entered_with,
+        Some(10),
+        "WF exit must set the dock-entered (+0x418) flag toward the factory"
+    );
+    assert_eq!(
+        sim.substrate.entities.get(unrelated).unwrap().dock_entered_with,
+        None,
+        "unrelated vehicles get no dock-entered flag"
+    );
 }
 
 #[test]

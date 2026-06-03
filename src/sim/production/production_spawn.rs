@@ -211,10 +211,13 @@ pub fn mark_war_factory_spawn_contact(
         return false;
     };
     produced.mark_live_contact_with(producer_id);
+    // gamemd ExitObject_Main also sends 0x18 (sets +0x418) beside the HELLO contact;
+    // the footprint-clear break (tick_war_factory_exit_contacts) gates on this flag.
+    produced.dock_entered_with = Some(producer_id);
     true
 }
 
-fn exact_land_vehicle_exit_factory(rules: &RuleSet, structure_id: &str) -> bool {
+pub(super) fn exact_land_vehicle_exit_factory(rules: &RuleSet, structure_id: &str) -> bool {
     rules.object(structure_id).is_some_and(|obj| {
         obj.factory == Some(FactoryType::UnitType) && !obj.naval && obj.exit_coord.is_some()
     })
