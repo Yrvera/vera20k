@@ -2471,3 +2471,7 @@ mod slice6_retask_tests;
 #[cfg(test)]
 #[path = "mission_authoritative_tests.rs"]
 mod mission_authoritative_tests;
+
+#[cfg(test)]
+#[path = "global_parity_harness_tests.rs"]
+mod global_parity_harness_tests;
