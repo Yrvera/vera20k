@@ -1842,6 +1842,14 @@ impl Simulation {
                 &self.interner,
                 self.binary_frame,
             );
+            // Slice 7d: break each war-factory exit contact whose vehicle has cleared
+            // the factory footprint this tick (gamemd's per-cell-process break).
+            crate::sim::production::tick_war_factory_exit_contacts(
+                &mut self.substrate.entities,
+                &self.substrate.occupancy,
+                rules,
+                &self.interner,
+            );
         }
         // --- Phase 2: Air + special movement ---
         // DEPENDS ON: commands (may set movement targets for air/special units).
