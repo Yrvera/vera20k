@@ -231,7 +231,9 @@ static FALLBACK_RAMP: [Color; RAMP_SIZE] = [Color { r: 180, g: 180, b: 180, a: 2
 
 /// Runtime per-`[Colors]`-entry house-color ramp table. Index = `[Colors]` entry index =
 /// `HouseColorIndex.0`. Built once at load from the parsed `[Colors]` schemes; replaces the legacy
-/// compile-time invented `SCHEMES` once consumers are migrated.
+/// compile-time invented `SCHEMES` once consumers are migrated. `Default` (empty) is used only when
+/// rules are unavailable (headless tests, missing assets); `ramp()` then yields the flat fallback.
+#[derive(Debug, Default)]
 pub struct HouseColorRamps {
     ramps: Vec<[Color; RAMP_SIZE]>,
 }

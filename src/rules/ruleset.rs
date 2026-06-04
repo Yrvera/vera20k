@@ -1326,10 +1326,15 @@ pub struct RuleSet {
     projectiles: HashMap<String, ProjectileType>,
     /// Country-level rules indexed by country/house type ID.
     countries: HashMap<String, CountryRules>,
-    /// `[Colors]` scheme entries in declaration order. Consumed by the loading
-    /// screen to color the progress-bar backing from the player's color choice;
-    /// not used for unit/building/radar coloring.
+    /// `[Colors]` scheme entries in declaration order. Source of truth for every
+    /// house-color producer (loading-bar backing, lobby swatch, map `Color=`,
+    /// skirmish slot priority).
     pub color_schemes: Vec<crate::rules::color_scheme::ColorSchemeEntry>,
+    /// Per-`[Colors]`-entry team-color ramps (palette indices 16..31), built once
+    /// from `color_schemes`. Indexed by `HouseColorIndex` (= `[Colors]` entry
+    /// index). Consumed by unit/building atlas bake, the voxel GPU ramp texture,
+    /// radar dots, target lines, and the loading screen.
+    pub house_color_ramps: crate::rules::house_colors::HouseColorRamps,
     pub production: ProductionRules,
     /// Global gameplay constants (vision, gap generator, etc.).
     pub general: GeneralRules,
@@ -1425,6 +1430,8 @@ impl RuleSet {
         let radar_event_config: RadarEventConfig = RadarEventConfig::from_ini(ini);
         let countries = parse_country_rules(ini);
         let color_schemes = crate::rules::color_scheme::parse_color_schemes(ini);
+        let house_color_ramps =
+            crate::rules::house_colors::HouseColorRamps::from_schemes(&color_schemes);
 
         // Step 1: Parse each type registry and load object sections.
         for &(registry_name, category) in TYPE_REGISTRIES {
@@ -1678,6 +1685,7 @@ impl RuleSet {
             projectiles,
             countries,
             color_schemes,
+            house_color_ramps,
             production,
             general,
             infantry_ids,
