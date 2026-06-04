@@ -1522,6 +1522,8 @@ pub fn tick_combat_with_fog(
     // order. Each attacker is resolved through `resolve_attacker_fire` (the
     // reusable per-object fire body); emission order is identical to the prior
     // inline loop, so the downstream scenario_rng smudge cursor is unmoved.
+    // Fire is category-agnostic (Units fire through the same body here); Unit
+    // FACING is owned separately by `unit_post::tick_unit_facing` post-combat.
     let mut emit = CombatEmit::default();
     for snap in &snapshots {
         resolve_attacker_fire(

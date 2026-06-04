@@ -2188,13 +2188,6 @@ impl Simulation {
             // resolution sequence. Snapshot is owned, so it does not conflict
             // with the &mut self.entities borrow below.
             let logic_order = self.live_object_order_snapshot();
-            // L2 unit_post shadow (debug only): compute the per-object Unit FIRE on
-            // pre-combat state (cooldown decremented locally to match the legacy
-            // Phase-1 decrement that runs inside combat below). Read-only — touches
-            // no hashed state. Asserted against the legacy sweeps after they run.
-            #[cfg(debug_assertions)]
-            let l2_shadow =
-                self.l2_unit_post_fire_shadow(&logic_order, rules, overlay_registry, tick_ms);
             let combat_result = combat::tick_combat_with_fog(
                 &mut self.substrate.entities,
                 &mut self.substrate.occupancy,
@@ -2218,11 +2211,15 @@ impl Simulation {
                 self.binary_frame,
                 &self.interner,
             );
-            // L2 unit_post shadow assertion (debug only): the per-object Unit
-            // Fire→Facing host must agree with the legacy combat + turret sweeps.
-            // If this fires, STOP — the shadow caught a real divergence; diagnose it.
-            #[cfg(debug_assertions)]
-            self.l2_unit_post_assert(l2_shadow, &combat_result);
+            // Unit barrel facing is authoritative in unit_post; tick_turret_rotation
+            // above skips Units. Same keys_sorted set+order as the legacy sweep,
+            // restricted to Units, so the state hash is unmoved.
+            crate::sim::world::unit_post::tick_unit_facing(
+                &mut self.substrate.entities,
+                rules,
+                &self.interner,
+                self.binary_frame,
+            );
             destroyed_structure |= combat_result.structure_destroyed;
             let combat_dead_infos: Vec<(InternedId, EntityCategory)> = combat_result
                 .despawned_ids

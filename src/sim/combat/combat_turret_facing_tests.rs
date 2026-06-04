@@ -12,9 +12,7 @@ use crate::rules::ruleset::RuleSet;
 use crate::sim::combat::AttackTarget;
 use crate::sim::game_entity::GameEntity;
 use crate::sim::movement::FacingClass;
-use crate::sim::movement::turret::{
-    body_facing_to_turret, desired_turret_facing, facing_toward_lepton, tick_turret_rotation,
-};
+use crate::sim::movement::turret::{body_facing_to_turret, desired_turret_facing};
 use crate::sim::world::Simulation;
 
 fn empty_height_map() -> BTreeMap<(u16, u16), u8> {
@@ -216,10 +214,10 @@ fn unit_cooldown_decrement_order_independent() {
 }
 
 #[test]
-fn desired_turret_facing_matches_sweep_destination() {
-    // The live-order host's desired facing (read-only) must equal the destination
-    // the id-order turret sweep sets — proving the extraction is faithful and the
-    // facing reorder is output-neutral (desired_turret_facing is per-entity).
+fn unit_facing_pass_drives_turret_to_target() {
+    // The authoritative live-order Unit facing pass must drive the barrel to the
+    // per-entity desired facing (toward the target) — proving the pass is faithful
+    // and the id-order→live-order reorder is output-neutral (per-entity facing).
     let mut sim = Simulation::new();
     spawn_turreted(&mut sim, 1, 5, 5, 5);
     spawn_target(&mut sim, 2, 5, 9); // due south
@@ -231,7 +229,12 @@ fn desired_turret_facing_matches_sweep_destination() {
         let e = sim.substrate.entities.get(1).unwrap();
         desired_turret_facing(e, &sim.substrate.entities).expect("turreted unit has a desired facing")
     };
-    tick_turret_rotation(&mut sim.substrate.entities, &rules, sim.binary_frame, &sim.interner);
+    crate::sim::world::unit_post::tick_unit_facing(
+        &mut sim.substrate.entities,
+        &rules,
+        &sim.interner,
+        sim.binary_frame,
+    );
     let got = sim
         .substrate
         .entities
@@ -243,17 +246,18 @@ fn desired_turret_facing_matches_sweep_destination() {
         .destination();
     assert_eq!(
         got, want,
-        "id-order sweep destination must equal the live-order host's desired facing"
+        "tick_unit_facing must drive the Unit barrel to the per-entity desired facing"
     );
 }
 
 #[test]
-fn unit_post_shadow_holds_through_repeated_fire_and_kill() {
+fn unit_authoritative_fire_kills_target_via_advance_tick() {
     // Drive a turreted Unit through acquisition, alignment, repeated fire, and the
-    // target's death. The debug-only unit_post shadow asserts fire+facing agreement
-    // with the legacy sweeps every tick (advance_tick runs under debug_assertions in
-    // tests). A wrong pre-combat cooldown read or a pre-combat (stale-target) facing
-    // comparison would panic here — this is the net that catches both fixes.
+    // target's death via advance_tick — exercising the authoritative path end-to-end:
+    // shared-body fire + the per-object unit_post facing pass (incl. the retarget after
+    // the kill) + the deferred-death batch. A facing/fire break would show as the
+    // target never dying or a panic; the per-tick state_hash gate is the stronger net
+    // for hash-affecting drift.
     let mut sim = Simulation::new();
     spawn_turreted(&mut sim, 1, 5, 5, 100); // fast ROT — aligns within a frame
     spawn_target(&mut sim, 2, 5, 8); // 3 cells south, in range (Range=6)
@@ -285,102 +289,25 @@ fn unit_post_shadow_holds_through_repeated_fire_and_kill() {
     );
 }
 
-/// Build the attacker's snapshot and invoke the authoritative `unit_post` directly.
-/// (The const flag stays false in this slice, so the host is exercised via a direct
-/// call; `fog_on=false` lets re-acquire find enemies by range/ownership alone.)
-fn call_unit_post(
-    sim: &mut Simulation,
-    rules: &RuleSet,
-    id: u64,
-    target: crate::sim::combat::TargetKind,
-    fog_on: bool,
-) {
-    let snap = {
-        let e = sim.substrate.entities.get(id).unwrap();
-        crate::sim::combat::build_attacker_snapshot(e, target, 0, 0, 0, None, None)
-    };
-    let mut emit = crate::sim::combat::CombatEmit::default();
-    crate::sim::world::unit_post::unit_post(
-        &snap,
+#[test]
+fn unit_facing_pass_idles_turret_to_body_without_target() {
+    // A turreted Unit with no attack_target: tick_unit_facing returns the barrel to
+    // body facing. Covers idle Units, which the fire path never sees (no snapshot) —
+    // the regression that the all-Unit facing pass exists to prevent.
+    let mut sim = Simulation::new();
+    let mut entity = GameEntity::test_default(1, "MTNK", "Americans", 5, 5);
+    entity.facing = 64; // body east
+    entity.barrel_facing = Some(FacingClass::new(body_facing_to_turret(0), 100));
+    sim.substrate.entities.insert(entity);
+    use_test_interner(&mut sim);
+    let rules = rules_with_mtnk_rot(100);
+
+    crate::sim::world::unit_post::tick_unit_facing(
         &mut sim.substrate.entities,
-        &sim.substrate.occupancy,
-        rules,
-        &mut sim.interner,
-        if fog_on { Some(&sim.fog) } else { None },
-        sim.overlay_grid.as_ref(),
-        None,
-        sim.resolved_terrain.as_ref(),
+        &rules,
+        &sim.interner,
         sim.binary_frame,
-        67,
-        &mut emit,
     );
-}
-
-#[test]
-fn unit_post_drives_barrel_toward_live_target() {
-    // Authoritative unit_post aims the barrel at the current (live, valid) target.
-    let mut sim = Simulation::new();
-    spawn_turreted(&mut sim, 1, 5, 5, 5);
-    spawn_target(&mut sim, 2, 5, 9); // enemy, due south, in range
-    use_test_interner(&mut sim);
-    let rules = rules_with_mtnk_rot(5);
-    sim.substrate.entities.get_mut(1).unwrap().attack_target = Some(AttackTarget::new(2));
-
-    let expected = {
-        let a = sim.substrate.entities.get(1).unwrap();
-        let t = sim.substrate.entities.get(2).unwrap();
-        facing_toward_lepton(
-            a.position.rx,
-            a.position.ry,
-            a.position.sub_x,
-            a.position.sub_y,
-            t.position.rx,
-            t.position.ry,
-            t.position.sub_x,
-            t.position.sub_y,
-        )
-    };
-    call_unit_post(&mut sim, &rules, 1, crate::sim::combat::TargetKind::Entity(2), false);
-    let dest = sim
-        .substrate
-        .entities
-        .get(1)
-        .unwrap()
-        .barrel_facing
-        .as_ref()
-        .unwrap()
-        .destination();
-    assert_eq!(dest, expected, "unit_post should aim the barrel at the live target");
-}
-
-#[test]
-fn unit_post_faces_reacquired_target_on_retarget_tick() {
-    // Current target dead but a valid enemy is in range: resolve_attacker_fire
-    // re-acquires (retarget), and unit_post must face the NEW target, not the dead one.
-    let mut sim = Simulation::new();
-    spawn_turreted(&mut sim, 1, 5, 5, 5);
-    spawn_target(&mut sim, 2, 8, 5); // dead target, to the east
-    spawn_target(&mut sim, 3, 5, 9); // live enemy, due south, in range
-    use_test_interner(&mut sim);
-    let rules = rules_with_mtnk_rot(5);
-    sim.substrate.entities.get_mut(1).unwrap().attack_target = Some(AttackTarget::new(2));
-    sim.substrate.entities.get_mut(2).unwrap().health.current = 0; // dead → forces re-acquire
-
-    let expected = {
-        let a = sim.substrate.entities.get(1).unwrap();
-        let t = sim.substrate.entities.get(3).unwrap();
-        facing_toward_lepton(
-            a.position.rx,
-            a.position.ry,
-            a.position.sub_x,
-            a.position.sub_y,
-            t.position.rx,
-            t.position.ry,
-            t.position.sub_x,
-            t.position.sub_y,
-        )
-    };
-    call_unit_post(&mut sim, &rules, 1, crate::sim::combat::TargetKind::Entity(2), false);
     let dest = sim
         .substrate
         .entities
@@ -391,36 +318,8 @@ fn unit_post_faces_reacquired_target_on_retarget_tick() {
         .unwrap()
         .destination();
     assert_eq!(
-        dest, expected,
-        "unit_post must aim at the re-acquired target, not the dead one"
-    );
-}
-
-#[test]
-fn unit_post_idles_barrel_when_target_lost() {
-    // Target dead and no other enemy: resolve_attacker_fire emits remove_attack, so
-    // unit_post returns the barrel to body facing.
-    let mut sim = Simulation::new();
-    spawn_turreted(&mut sim, 1, 5, 5, 5);
-    spawn_target(&mut sim, 2, 5, 9);
-    use_test_interner(&mut sim);
-    let rules = rules_with_mtnk_rot(5);
-    sim.substrate.entities.get_mut(1).unwrap().attack_target = Some(AttackTarget::new(2));
-    sim.substrate.entities.get_mut(2).unwrap().health.current = 0; // dead, no other enemy
-
-    let body = body_facing_to_turret(sim.substrate.entities.get(1).unwrap().facing);
-    call_unit_post(&mut sim, &rules, 1, crate::sim::combat::TargetKind::Entity(2), false);
-    let dest = sim
-        .substrate
-        .entities
-        .get(1)
-        .unwrap()
-        .barrel_facing
-        .as_ref()
-        .unwrap()
-        .destination();
-    assert_eq!(
-        dest, body,
-        "unit_post should idle the barrel to body facing when the target is lost"
+        dest,
+        body_facing_to_turret(64),
+        "idle Unit barrel should return to body facing via tick_unit_facing"
     );
 }
