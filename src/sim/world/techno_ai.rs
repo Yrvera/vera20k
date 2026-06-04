@@ -358,6 +358,30 @@ impl Simulation {
         }
         out
     }
+
+    /// Test-only dormant probe (P5a): prove the C7 delivery -> start_next_queued
+    /// mechanics on a CLONE of the registry (NEVER the hashed shadow). Returns, per
+    /// factory, (owner, category, popped-front-after-a-simulated-delivery). NO
+    /// authoritative call site — a later slice binds start_next_queued to the real
+    /// delivery commit; this only proves the post-delivery pop end-to-end.
+    #[cfg(test)]
+    pub(crate) fn factory_delivery_probe(
+        &self,
+    ) -> Vec<(
+        crate::sim::intern::InternedId,
+        crate::sim::production::ProductionCategory,
+        Option<crate::sim::intern::InternedId>,
+    )> {
+        let mut out = Vec::new();
+        for factory in self.production.factory_shadow.iter_insertion_ordered() {
+            let mut d = factory.clone();
+            d.object = None; // simulate the delivery commit
+            d.suspended = false;
+            let popped = d.start_next_queued();
+            out.push((factory.owner, factory.category, popped));
+        }
+        out
+    }
 }
 
 #[cfg(test)]

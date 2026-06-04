@@ -184,13 +184,18 @@ fn factory_shadow_progress_tracks_legacy_remaining() {
 fn factory_registry_iteration_is_insertion_ordered() {
     let mut sim = Simulation::new();
     let rules = empty_rules();
+    // Distinct, monotonic enqueue_order per (owner, category) so the temporal mint
+    // (insertion_seq = front.enqueue_order) yields distinct seqs — keeping the
+    // monotonic-ordering assertion meaningful rather than vacuous all-equal.
+    let mut order = 0u64;
     for (i, name) in ["A", "B", "C"].iter().enumerate() {
         let owner = sim.interner.intern(name);
         let ty = sim.interner.intern(&format!("U{i}"));
         let mut cats = BTreeMap::new();
         for cat in [ProductionCategory::Vehicle, ProductionCategory::Infantry] {
+            order += 1;
             let mut dq = VecDeque::new();
-            dq.push_back(queued_item(owner, ty, cat, BuildQueueState::Building, 54, 10, 1));
+            dq.push_back(queued_item(owner, ty, cat, BuildQueueState::Building, 54, 10, order));
             cats.insert(cat, dq);
         }
         sim.production.queues_by_owner.insert(owner, cats);
@@ -592,4 +597,236 @@ fn production_shadow_with_cancel_is_deterministic() {
             .collect()
     }
     assert_eq!(run(), run(), "advance_tick with the P4 clone cancel probe stays deterministic");
+}
+
+// ===== P5a — flip-prep (pure producers + temporal mint + inversion-readiness, hash-neutral) =====
+
+/// P5a no-hash guarantee (the acceptance test; mirrors
+/// `factory_advance_step_does_not_change_state_hash` /
+/// `factory_cancel_one_does_not_change_state_hash`): building the producer, stepping a
+/// CLONE factory against a CLONE economy, and running the dormant delivery probe leaves
+/// `state_hash()` bit-identical (no serde derive; no authoritative call site; the mint
+/// change touches only the `#[serde(skip)]` registry).
+#[test]
+fn factory_flip_prep_does_not_change_state_hash() {
+    use crate::sim::production::{build_step_time, BuildStepTimeInputs};
+    let mut sim = Simulation::new();
+    let rules = empty_rules();
+    let owner = sim.interner.intern("Americans");
+    sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
+    let ty = sim.interner.intern("GRIZZLY");
+    insert_queue(
+        &mut sim,
+        owner,
+        ProductionCategory::Vehicle,
+        queued_item(owner, ty, ProductionCategory::Vehicle, BuildQueueState::Building, 54, 30, 1),
+    );
+    sim.refresh_production_shadow(Some(&rules));
+    let before = sim.state_hash();
+    let legacy_credits = sim.houses[&owner].credits;
+
+    // Run every P5a piece against CLONES / pure values.
+    let total = build_step_time(&BuildStepTimeInputs {
+        cost: 700,
+        build_time_bonus_ppm: 1_000_000,
+        build_time_multiplier_ppm: 1_000_000,
+        power_ratio_ppm: 1_000_000,
+        low_power_penalty_modifier_ppm: 1_000_000,
+        min_clamp_ppm: 500_000,
+        max_clamp_ppm: 900_000,
+        multiple_factory_ppm: 800_000,
+        factory_count: 1,
+        is_wall: false,
+        wall_build_speed_ppm: 1_000_000,
+    });
+    assert_eq!(total, 700, "producer is pure, returns the TOTAL");
+    let mut f = sim.production.factory_shadow.iter_insertion_ordered()[0].clone();
+    f.set_rate(total);
+    let mut oracle = sim.houses[&owner].economy.clone();
+    for _ in 0..PRODUCTION_STEPS {
+        let _ = f.advance_one_step(&mut oracle);
+    }
+    let _probe = sim.factory_delivery_probe(); // dormant; clone-only
+
+    assert_eq!(
+        before,
+        sim.state_hash(),
+        "P5a flip-prep on clones/pure values must not perturb the state hash"
+    );
+    assert_eq!(
+        sim.houses[&owner].credits, legacy_credits,
+        "the legacy wallet is untouched by the flip-prep"
+    );
+}
+
+/// P5a Lane-A mint: after `refresh_production_shadow`, each factory's `insertion_seq`
+/// equals its queue front's `enqueue_order` (the temporal first-Begin stamp), NOT the
+/// old BTreeMap sorted-(owner, category) mint. Aircraft begun BEFORE Vehicle (lower
+/// enqueue_order) must sweep first even though Vehicle sorts before Aircraft by enum.
+#[test]
+fn factory_insertion_seq_equals_front_enqueue_order() {
+    let mut sim = Simulation::new();
+    let rules = empty_rules();
+    let owner = sim.interner.intern("Americans");
+    let air_ty = sim.interner.intern("BEAG");
+    let veh_ty = sim.interner.intern("GRIZZLY");
+    let mut air_dq = VecDeque::new();
+    air_dq.push_back(queued_item(owner, air_ty, ProductionCategory::Aircraft, BuildQueueState::Building, 54, 30, 10));
+    let mut veh_dq = VecDeque::new();
+    veh_dq.push_back(queued_item(owner, veh_ty, ProductionCategory::Vehicle, BuildQueueState::Building, 54, 30, 20));
+    let mut cats = BTreeMap::new();
+    cats.insert(ProductionCategory::Aircraft, air_dq);
+    cats.insert(ProductionCategory::Vehicle, veh_dq);
+    sim.production.queues_by_owner.insert(owner, cats);
+    sim.refresh_production_shadow(Some(&rules));
+
+    let ordered: Vec<(ProductionCategory, u64)> = sim
+        .production
+        .factory_shadow
+        .iter_insertion_ordered()
+        .iter()
+        .map(|f| (f.category, f.insertion_seq))
+        .collect();
+    assert_eq!(
+        ordered,
+        vec![(ProductionCategory::Aircraft, 10), (ProductionCategory::Vehicle, 20)],
+        "insertion_seq == front.enqueue_order; sweep follows TEMPORAL, not enum-sort, order"
+    );
+}
+
+/// P5a Lane-A order: the sweep visits Aircraft (begun first) before Vehicle (begun
+/// second) — the DRIFT-fix vs the old sorted mint, exposed as a positive blocking test.
+#[test]
+fn factory_step_order_matches_legacy_temporal_order() {
+    let mut sim = Simulation::new();
+    let rules = empty_rules();
+    let owner = sim.interner.intern("Americans");
+    let air_ty = sim.interner.intern("BEAG");
+    let veh_ty = sim.interner.intern("GRIZZLY");
+    let mut air_dq = VecDeque::new();
+    air_dq.push_back(queued_item(owner, air_ty, ProductionCategory::Aircraft, BuildQueueState::Building, 54, 30, 5));
+    let mut veh_dq = VecDeque::new();
+    veh_dq.push_back(queued_item(owner, veh_ty, ProductionCategory::Vehicle, BuildQueueState::Building, 54, 30, 9));
+    let mut cats = BTreeMap::new();
+    cats.insert(ProductionCategory::Aircraft, air_dq);
+    cats.insert(ProductionCategory::Vehicle, veh_dq);
+    sim.production.queues_by_owner.insert(owner, cats);
+    sim.refresh_production_shadow(Some(&rules));
+
+    let cats_in_sweep: Vec<ProductionCategory> = sim
+        .production
+        .factory_shadow
+        .iter_insertion_ordered()
+        .iter()
+        .map(|f| f.category)
+        .collect();
+    assert_eq!(
+        cats_in_sweep,
+        vec![ProductionCategory::Aircraft, ProductionCategory::Vehicle],
+        "sweep visits the earlier-begun Aircraft first (temporal), not Vehicle (enum-sort)"
+    );
+}
+
+/// P5a inversion-readiness: drive `advance_tick` over N ticks; the live debug assert
+/// `debug_assert_factory_step_matches_legacy` runs each tick and a clean run (no panic)
+/// proves the (A) order + (D) delivery invariants hold across the suite.
+#[test]
+fn factory_step_matches_legacy_shadow_holds() {
+    let mut sim = Simulation::new();
+    let rules = empty_rules();
+    let owner = sim.interner.intern("Americans");
+    sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
+    let ty = sim.interner.intern("GRIZZLY");
+    insert_queue(
+        &mut sim,
+        owner,
+        ProductionCategory::Vehicle,
+        queued_item(owner, ty, ProductionCategory::Vehicle, BuildQueueState::Building, 54, 30, 1),
+    );
+    let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    for _ in 0..5 {
+        // If the inversion assert diverges, advance_tick panics in a debug build.
+        sim.advance_tick(&[], Some(&rules), &heights, None, None, 67);
+    }
+}
+
+/// P5a delivery seam is DORMANT: the probe is test-only and reports the post-delivery
+/// pop on a CLONE; the live shadow front is unchanged (no advance_tick path invokes
+/// start_next_queued) and the hash is untouched.
+#[test]
+fn production_delivery_probe_is_dormant() {
+    let mut sim = Simulation::new();
+    let rules = empty_rules();
+    let owner = sim.interner.intern("Americans");
+    sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
+    let active = sim.interner.intern("GRIZZLY");
+    let next = sim.interner.intern("FV");
+    let mut dq = VecDeque::new();
+    dq.push_back(queued_item(owner, active, ProductionCategory::Vehicle, BuildQueueState::Building, 54, 30, 1));
+    dq.push_back(queued_item(owner, next, ProductionCategory::Vehicle, BuildQueueState::Queued, 54, 54, 2));
+    let mut cats = BTreeMap::new();
+    cats.insert(ProductionCategory::Vehicle, dq);
+    sim.production.queues_by_owner.insert(owner, cats);
+    sim.refresh_production_shadow(Some(&rules));
+
+    let before = sim.state_hash();
+    let probe = sim.factory_delivery_probe();
+    assert_eq!(probe.len(), 1, "one factory with a tail");
+    assert_eq!(probe[0].2, Some(next), "the probe would pop FV after a delivery (on a clone)");
+    let view = sim
+        .production
+        .factory_shadow
+        .view(owner, ProductionCategory::Vehicle)
+        .unwrap();
+    assert_eq!(view.object.map(|o| o.type_id), Some(active), "live active still GRIZZLY");
+    assert_eq!(
+        view.queue.iter().copied().collect::<Vec<_>>(),
+        vec![next],
+        "live tail unchanged"
+    );
+    assert_eq!(before, sim.state_hash(), "the probe must not perturb the hash");
+}
+
+/// P5a determinism: a per-tick closure that builds the producer + runs the dormant
+/// probe on clones produces identical per-tick state_hash sequences across two runs
+/// (mirrors `production_shadow_with_cancel_is_deterministic`).
+#[test]
+fn production_flip_prep_is_deterministic() {
+    use crate::sim::production::{build_step_time, BuildStepTimeInputs};
+    fn run() -> Vec<u64> {
+        let mut sim = Simulation::new();
+        let rules = empty_rules();
+        let owner = sim.interner.intern("Americans");
+        sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
+        let ty = sim.interner.intern("GRIZZLY");
+        insert_queue(
+            &mut sim,
+            owner,
+            ProductionCategory::Vehicle,
+            queued_item(owner, ty, ProductionCategory::Vehicle, BuildQueueState::Building, 54, 30, 1),
+        );
+        let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+        (0..5)
+            .map(|_| {
+                sim.advance_tick(&[], Some(&rules), &heights, None, None, 67);
+                // Per-tick flip-prep probe on clones / pure values (NEVER written back).
+                let _ = build_step_time(&BuildStepTimeInputs {
+                    cost: 700,
+                    build_time_bonus_ppm: 1_000_000,
+                    build_time_multiplier_ppm: 1_000_000,
+                    power_ratio_ppm: 1_000_000,
+                    low_power_penalty_modifier_ppm: 1_000_000,
+                    min_clamp_ppm: 500_000,
+                    max_clamp_ppm: 900_000,
+                    multiple_factory_ppm: 800_000,
+                    factory_count: 1,
+                    is_wall: false,
+                    wall_build_speed_ppm: 1_000_000,
+                });
+                let _ = sim.factory_delivery_probe();
+                sim.state_hash()
+            })
+            .collect()
+    }
+    assert_eq!(run(), run(), "advance_tick with the P5a flip-prep probe stays deterministic");
 }

@@ -29,10 +29,12 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
+use crate::rules::object_type::ObjectType;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::economy::Economy;
 use crate::sim::intern::InternedId;
-use crate::sim::production::production_types::ProductionCategory;
+use crate::sim::production::production_tech::production_category_for_object;
+use crate::sim::production::production_types::{PRODUCTION_RATE_SCALE, ProductionCategory};
 
 /// Build completes at exactly this many progress steps (the engine's step count).
 pub const PRODUCTION_STEPS: u16 = 54;
@@ -296,6 +298,114 @@ impl Factory {
     }
 }
 
+/// Resolved inputs for the build-step TOTAL producer. A transient param struct (NO
+/// serde, NO storage, only `Debug`/`Clone`) so the producer is a pure function of
+/// explicit inputs — testable in isolation, no `Simulation` handle. The caller (the
+/// authority-flip begin path / the inversion-readiness assert) gathers these from rules
+/// + the owner's power + the per-category factory count. PPM scale =
+/// `PRODUCTION_RATE_SCALE` (1_000_000 = 1.0), so the parsed `*_ppm` rules fields feed it
+/// directly.
+#[derive(Debug, Clone)]
+pub struct BuildStepTimeInputs {
+    /// GetCost of the object under construction.
+    pub cost: i32,
+    /// Per-CATEGORY build-time bonus (side multiplier), default 1.0 =
+    /// `PRODUCTION_RATE_SCALE`. NOT a generic build-speed and NOT a single house scalar.
+    /// Stock YR (no per-side bonus) passes 1.0 — no rules field backs it yet.
+    pub build_time_bonus_ppm: u64,
+    /// Per-TYPE BuildTimeMultiplier, pre-scaled to PPM by the caller.
+    pub build_time_multiplier_ppm: u64,
+    /// Owner power ratio, clamped to `[0, SCALE]`; `SCALE` (1.0) when not under-powered.
+    pub power_ratio_ppm: u64,
+    /// LowPowerPenaltyModifier (already PPM-parsed).
+    pub low_power_penalty_modifier_ppm: u64,
+    /// MinLowPowerProductionSpeed (Min divisor clamp, applied ALWAYS).
+    pub min_clamp_ppm: u64,
+    /// MaxLowPowerProductionSpeed (Max divisor clamp, applied ONLY when ratio < 1.0).
+    pub max_clamp_ppm: u64,
+    /// MultipleFactory (loop gate, strict `> 0`).
+    pub multiple_factory_ppm: u64,
+    /// Per-category matching factory count (the `(n - 1)` loop count).
+    pub factory_count: u32,
+    /// True only for a wall building (building category AND the wall flag).
+    pub is_wall: bool,
+    /// BuildSpeed wall coefficient, pre-converted to PPM by the caller (used only when
+    /// `is_wall`).
+    pub wall_build_speed_ppm: u64,
+}
+
+/// Produce the build-step TOTAL — the per-step build-time pipeline's return BEFORE the
+/// caller's `/54 + clamp[1,255]` (`set_rate` owns that). PURE: integer/i128 throughout,
+/// no `&mut`, no RNG, no hashed-state read, no float in the committed math. The legacy
+/// `production_tech` build-time family is a verified DRIFT (it bakes a REFUTED ×0.9 via
+/// `* 9 / 10000`, models build time as a rate-domain single-truncate division, and uses
+/// a generic build-speed instead of the per-category bonus) and is NOT reused.
+///
+/// Pipeline (every multiply/divide truncates toward zero = floor for non-negatives):
+///   T1  base = trunc(BuildTimeBonus × Cost)                 (NO ×0.9)
+///   T2  × per-type BuildTimeMultiplier, trunc
+///   T3  ÷ divisor d = 1 − (1 − ratio) × LPPM, clamped:
+///         Min clamp ALWAYS; Max clamp ONLY when ratio < 1.0; d ≤ 0 floors to 0.01
+///   T4  MultipleFactory loop: (count − 1) iters, trunc EACH iter, gated MF > 0
+///   T5  wall branch: trunc(acc × BuildSpeed) only for a wall building
+pub fn build_step_time(inp: &BuildStepTimeInputs) -> i32 {
+    const SCALE: i128 = PRODUCTION_RATE_SCALE as i128; // 1_000_000 = 1.0
+    let cost = inp.cost.max(0) as i128;
+    if cost == 0 {
+        return 0; // no work -> the rate-0 path in set_rate
+    }
+
+    // T1: base = trunc(BuildTimeBonus × Cost). NO ×0.9 (the legacy *9/10000 is REFUTED).
+    let s1 = cost * inp.build_time_bonus_ppm as i128 / SCALE; // floor
+
+    // T2: × per-type BuildTimeMultiplier, trunc.
+    let s2 = s1 * inp.build_time_multiplier_ppm as i128 / SCALE; // floor
+
+    // T3: low-power divide. divisor d = 1 − (1 − ratio) × LPPM, clamped.
+    let ratio = (inp.power_ratio_ppm as i128).min(SCALE); // clamp ratio to [.., 1.0]
+    let deficit = SCALE - ratio; // (1 − ratio), >= 0
+    let penalty = deficit * inp.low_power_penalty_modifier_ppm as i128 / SCALE;
+    let mut d = SCALE - penalty; // (1 − (1 − ratio) × LPPM) in PPM
+    d = d.max(inp.min_clamp_ppm as i128); // Min clamp ALWAYS
+    if ratio < SCALE {
+        d = d.min(inp.max_clamp_ppm as i128); // Max clamp ONLY when under-powered
+    }
+    if d <= 0 {
+        d = SCALE / 100; // 0.01 divisor floor
+    }
+    let mut acc = s2 * SCALE / d; // trunc(s2 / d): s2 over a PPM fraction
+
+    // T4: MultipleFactory loop — (count − 1) iters, PER-ITERATION trunc, gated MF > 0.
+    if inp.multiple_factory_ppm > 0 && inp.factory_count > 1 {
+        for _ in 0..(inp.factory_count - 1) {
+            acc = acc * inp.multiple_factory_ppm as i128 / SCALE; // trunc EACH iter
+        }
+    }
+
+    // T5: wall branch — wall building only, trunc(acc × BuildSpeed).
+    if inp.is_wall {
+        acc = acc * inp.wall_build_speed_ppm as i128 / SCALE; // trunc
+    }
+
+    acc.clamp(0, i32::MAX as i128) as i32 // the TOTAL; set_rate does /54 + clamp[1,255]
+}
+
+/// Map an object type to the `ProductionCategory` whose factory produces it — the Rust
+/// analog of the engine's begin-production factory-slot resolution. A thin tested
+/// delegate over `production_category_for_object`: ONE routing source, not a fork. Its
+/// value is being the single call site the authority-flip registry sweep will use, and
+/// the place the routing DRIFTs are pinned by tests.
+///
+/// SURFACED DRIFT (NOT resolved here): the engine keeps a 6th factory slot for Ships,
+/// but Rust has no `Ship` `ProductionCategory` — naval object types collapse into
+/// `Vehicle`. When a house owns both a War Factory and a Naval Yard, the single
+/// `Vehicle` factory key collapses two engine factories, diverging the MultipleFactory
+/// count and same-frame completion ordering. That is a later structural decision (add
+/// `Ship` vs accept the collapse) requiring sign-off — NEVER silently folded.
+pub fn category_for_object(obj: &ObjectType) -> ProductionCategory {
+    production_category_for_object(obj)
+}
+
 /// Outcome of a single factory step (consumer is the P3 charge stepper + the
 /// conservation assert). Derives are serde-free (the no-hash contract).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -475,15 +585,18 @@ impl FactoryRegistry {
                 };
                 let key = (owner, category);
 
-                // insertion_seq: reuse a surviving factory's seq, else mint a new one.
-                let seq = match self.seq_carry.get(&key) {
-                    Some(&s) => s,
-                    None => {
-                        let s = self.next_insertion_seq;
-                        self.next_insertion_seq = self.next_insertion_seq.wrapping_add(1);
-                        s
-                    }
-                };
+                // insertion_seq = the front (earliest still-live) item's enqueue_order:
+                // the temporal first-Begin stamp of when this (owner, category) began
+                // producing. Reproduces the native factory array's temporal tail-append
+                // order, NOT the BTreeMap sorted-(owner, category) order the old
+                // next_insertion_seq++ mint produced. enqueue_order is strictly
+                // monotonic, so ties are impossible; a lapsed-then-restarted category
+                // re-reads a fresh, higher front enqueue_order each rebuild, matching the
+                // native destroy-recreate -> tail re-append. `seq_carry` /
+                // `next_insertion_seq` are no longer the ordering SOURCE (the carry kept
+                // a stale seq across a queue-empty gap, or re-minted in sorted position);
+                // they stay written for a minimal diff and are retired at the flip.
+                let seq = front.enqueue_order;
                 new_carry.insert(key, seq);
 
                 // progress 0..=54: monotone bridge from base-frame remaining.
@@ -1094,5 +1207,194 @@ mod tests {
         let mut f = Factory::default();
         assert_eq!(f.start_next_queued(), None);
         assert!(f.object.is_none(), "no object created from an empty queue");
+    }
+
+    // ---- P5a build_step_time producer (C5/C10/C11, x0.9-free) ----
+
+    /// Full-power, no-bonus, no-multiplier, single-factory inputs at `cost`.
+    fn bst(cost: i32) -> BuildStepTimeInputs {
+        BuildStepTimeInputs {
+            cost,
+            build_time_bonus_ppm: PRODUCTION_RATE_SCALE,      // 1.0
+            build_time_multiplier_ppm: PRODUCTION_RATE_SCALE, // 1.0
+            power_ratio_ppm: PRODUCTION_RATE_SCALE,           // 1.0 (full power)
+            low_power_penalty_modifier_ppm: PRODUCTION_RATE_SCALE,
+            min_clamp_ppm: PRODUCTION_RATE_SCALE / 2,             // 0.5
+            max_clamp_ppm: (PRODUCTION_RATE_SCALE * 9) / 10,      // 0.9
+            multiple_factory_ppm: (PRODUCTION_RATE_SCALE * 8) / 10, // 0.8
+            factory_count: 1,
+            is_wall: false,
+            wall_build_speed_ppm: PRODUCTION_RATE_SCALE,
+        }
+    }
+
+    #[test]
+    fn build_step_time_no_x09_base() {
+        // cost 700, all-1.0, count 1, no wall -> TOTAL 700, NOT 630 (the REFUTED ×0.9).
+        // Then set_rate(700) -> 700/54 = 12.
+        let total = build_step_time(&bst(700));
+        assert_eq!(total, 700, "x0.9-free base: trunc(1.0 * 700) = 700, not 630");
+        assert_ne!(total, 630, "the legacy x0.9 (630) must NOT appear");
+        let mut f = Factory {
+            object: Some(PendingObject::default()),
+            ..Factory::default()
+        };
+        f.set_rate(total);
+        assert_eq!(f.step_rate_frames, 12, "set_rate(700) -> 12");
+    }
+
+    #[test]
+    fn build_step_time_mtnk_rate_12() {
+        // Two totals that both divide to rate 12 (the C5 reference band): 700 and 661.
+        for total in [700, 661] {
+            let mut f = Factory {
+                object: Some(PendingObject::default()),
+                ..Factory::default()
+            };
+            f.set_rate(total);
+            assert_eq!(f.step_rate_frames, 12, "total {total} -> rate 12");
+        }
+    }
+
+    #[test]
+    fn build_step_time_build_time_multiplier_truncates_at_t2() {
+        // base 67 x mult 1.15 -> trunc(67 * 1.15) = trunc(77.05) = 77.
+        let mut inp = bst(67);
+        inp.build_time_multiplier_ppm = (PRODUCTION_RATE_SCALE * 115) / 100; // 1.15
+        assert_eq!(build_step_time(&inp), 77, "T2 truncates: trunc(67 * 1.15) = 77");
+    }
+
+    #[test]
+    fn build_step_time_low_power_max_clamp_gated() {
+        // ratio 0.5, LPPM 1.0 -> d = 1 - 0.5 = 0.5; Max clamp 0.9 does NOT lower it; Min
+        // 0.5 keeps it. cost 100 -> trunc(100 / 0.5) = 200.
+        let mut inp = bst(100);
+        inp.power_ratio_ppm = PRODUCTION_RATE_SCALE / 2; // 0.5
+        assert_eq!(build_step_time(&inp), 200, "under-power doubles the step total");
+
+        // ratio 1.0 (full power): the Max clamp is NOT applied; d = 1.0 -> total = cost.
+        let mut full = bst(100);
+        full.max_clamp_ppm = PRODUCTION_RATE_SCALE / 2; // a Max that WOULD bite if applied
+        assert_eq!(build_step_time(&full), 100, "ratio==1.0 skips the Max clamp");
+
+        // ratio 0.0, LPPM 1.0 -> d = 0.0 -> floored to 0.01 -> trunc(100 / 0.01) = 10000.
+        let mut zero = bst(100);
+        zero.power_ratio_ppm = 0;
+        zero.min_clamp_ppm = 0; // let d hit 0 so the 0.01 floor is exercised
+        zero.max_clamp_ppm = PRODUCTION_RATE_SCALE; // Max does not bite
+        assert_eq!(build_step_time(&zero), 10_000, "d<=0 floors to 0.01");
+    }
+
+    #[test]
+    fn build_step_time_multiple_factory_per_iteration_trunc() {
+        // count 3, MF 0.8: per-iteration trunc DIFFERS from acc * MF^2 single-truncate.
+        // base acc 11; iter1 trunc(11*0.8)=8; iter2 trunc(8*0.8)=6. Single MF^2=0.64 ->
+        // trunc(11*0.64)=7. So 6 != 7 proves per-iteration truncation.
+        let mut inp = bst(11);
+        inp.factory_count = 3;
+        inp.multiple_factory_ppm = (PRODUCTION_RATE_SCALE * 8) / 10; // 0.8
+        let per_iter = build_step_time(&inp);
+        assert_eq!(per_iter, 6, "per-iteration trunc: 11 -> 8 -> 6");
+        let single = (11i128 * (((PRODUCTION_RATE_SCALE * 8) / 10) as i128).pow(2)
+            / (PRODUCTION_RATE_SCALE as i128).pow(2)) as i32;
+        assert_eq!(single, 7, "single-truncate MF^2 would be 7");
+        assert_ne!(per_iter, single, "per-iteration trunc must DIFFER from MF^2 single");
+    }
+
+    #[test]
+    fn build_step_time_multiple_factory_gate_skips_on_zero_and_count_one() {
+        // MF == 0 -> loop skipped regardless of count.
+        let mut mf0 = bst(500);
+        mf0.factory_count = 4;
+        mf0.multiple_factory_ppm = 0;
+        assert_eq!(build_step_time(&mf0), 500, "MF=0 skips the loop");
+        // count == 1 -> loop skipped (n-1 == 0).
+        let mut c1 = bst(500);
+        c1.factory_count = 1;
+        assert_eq!(build_step_time(&c1), 500, "count 1 skips the loop");
+    }
+
+    #[test]
+    fn build_step_time_wall_branch_only_for_walls() {
+        // is_wall=true applies BuildSpeed 0.5 -> trunc(400 * 0.5) = 200.
+        let mut wall = bst(400);
+        wall.is_wall = true;
+        wall.wall_build_speed_ppm = PRODUCTION_RATE_SCALE / 2; // 0.5
+        assert_eq!(build_step_time(&wall), 200, "wall applies BuildSpeed");
+        // is_wall=false leaves the total unchanged.
+        let mut not_wall = bst(400);
+        not_wall.wall_build_speed_ppm = PRODUCTION_RATE_SCALE / 2;
+        assert_eq!(build_step_time(&not_wall), 400, "non-wall ignores BuildSpeed");
+    }
+
+    #[test]
+    fn build_step_time_zero_cost_is_zero() {
+        assert_eq!(build_step_time(&bst(0)), 0, "cost 0 -> total 0");
+        assert_eq!(build_step_time(&bst(-5)), 0, "negative cost clamps to 0 -> total 0");
+    }
+
+    #[test]
+    fn build_step_time_overflow_safe() {
+        // Large inputs do not overflow (i128 intermediates) and clamp to i32::MAX.
+        let mut big = bst(50_000);
+        big.power_ratio_ppm = 0; // forces a big divide (d floors to 0.01 when min=0)
+        big.min_clamp_ppm = 0;
+        big.max_clamp_ppm = PRODUCTION_RATE_SCALE;
+        assert_eq!(build_step_time(&big), 5_000_000, "no overflow, exact (50000 / 0.01)");
+        // Push past i32 to prove the clamp.
+        let mut huge = bst(2_000_000_000);
+        huge.power_ratio_ppm = 0;
+        huge.min_clamp_ppm = 0;
+        huge.max_clamp_ppm = PRODUCTION_RATE_SCALE;
+        assert_eq!(build_step_time(&huge), i32::MAX, "clamps to i32::MAX");
+    }
+
+    // ---- P5a category_for_object routing delegate ----
+
+    #[test]
+    fn category_for_object_matches_rtti_table() {
+        use crate::rules::ini_parser::IniFile;
+        use crate::rules::ruleset::RuleSet;
+        // One object per category; a Combat-categorized building routes to Defense.
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n0=GI\n[VehicleTypes]\n0=GRIZZLY\n[AircraftTypes]\n0=BEAG\n\
+             [BuildingTypes]\n0=GAPOWR\n1=GAPILL\n\
+             [GI]\nCost=100\n[GRIZZLY]\nCost=700\n[BEAG]\nCost=600\n\
+             [GAPOWR]\nCost=800\n[GAPILL]\nCost=500\nBuildCat=Combat\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("rules parse");
+        let inf = rules.object("GI").unwrap();
+        let veh = rules.object("GRIZZLY").unwrap();
+        let air = rules.object("BEAG").unwrap();
+        let bld = rules.object("GAPOWR").unwrap();
+        let def = rules.object("GAPILL").unwrap();
+        assert_eq!(category_for_object(inf), ProductionCategory::Infantry, "infantry -> Infantry (NOT the refuted inverse)");
+        assert_eq!(category_for_object(veh), ProductionCategory::Vehicle, "vehicle -> Vehicle");
+        assert_eq!(category_for_object(air), ProductionCategory::Aircraft, "aircraft -> Aircraft (NOT the refuted inverse)");
+        assert_eq!(category_for_object(bld), ProductionCategory::Building, "plain building -> Building");
+        assert_eq!(category_for_object(def), ProductionCategory::Defense, "BuildCat=Combat building -> Defense");
+        // The delegate must agree with the routing source it wraps (no fork).
+        assert_eq!(
+            category_for_object(veh),
+            production_category_for_object(veh),
+            "delegate == production_category_for_object (single routing source)"
+        );
+    }
+
+    #[test]
+    fn category_for_object_naval_collapses_to_vehicle_documented() {
+        use crate::rules::ini_parser::IniFile;
+        use crate::rules::ruleset::RuleSet;
+        // A naval unit is an ObjectCategory::Vehicle in the Rust rules model (no Ship
+        // category), so it routes to Vehicle. This PINS the documented collapse: if a
+        // future change adds a Ship category, this test breaks and forces a decision.
+        let ini = IniFile::from_str("[VehicleTypes]\n0=DEST\n[DEST]\nCost=1000\n");
+        let rules = RuleSet::from_ini(&ini).expect("rules parse");
+        let naval = rules.object("DEST").unwrap();
+        assert_eq!(
+            category_for_object(naval),
+            ProductionCategory::Vehicle,
+            "naval collapses to Vehicle (the surfaced DRIFT; no Ship category in this slice)"
+        );
     }
 }

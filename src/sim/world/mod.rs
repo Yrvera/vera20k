@@ -1025,6 +1025,7 @@ impl Simulation {
         self.debug_assert_economy_shadow();
         self.debug_assert_factory_shell_trace();
         self.debug_assert_factory_conservation(); // P3
+        self.debug_assert_factory_step_matches_legacy(None); // P5a
     }
 
     /// Debug-only P3 assert: each live shadow factory's `advance_one_step` conserves
@@ -1082,6 +1083,101 @@ impl Simulation {
             debug_assert!(
                 f.suspended && f.object.is_some(),
                 "C12: tick {} {:?}/{:?}: completion must suspend with the object attached",
+                self.tick, factory.owner, factory.category,
+            );
+        }
+    }
+
+    /// Debug-only P5a inversion-readiness assert: prove the AUTHORITATIVE-MODEL choices
+    /// the flip will bake in are already correct on the derived shadow, so the flip is a
+    /// verified-equivalent swap. Runs on CLONES / read-only state ONLY; SURFACES
+    /// divergence with tick+owner+category; NEVER equalizes, NEVER writes back. `rules`
+    /// is threaded for the (B) rate sub-check but is `None` in this slice (the co-edited
+    /// tick tail is left untouched), so (B) is a compile-checked-but-dormant seam and
+    /// (A) order + (D) delivery carry the load. (C) conservation is intentionally NOT
+    /// repeated here — `debug_assert_factory_conservation` (called just above) owns it.
+    #[cfg(debug_assertions)]
+    pub(crate) fn debug_assert_factory_step_matches_legacy(&self, rules: Option<&RuleSet>) {
+        use crate::sim::production::{build_step_time, BuildStepTimeInputs, ProductionCategory};
+
+        // (A) ORDER: the registry sweep order (temporal insertion_seq) must equal the
+        // legacy per-house temporal order. For each owner, the categories sorted by their
+        // front item's enqueue_order must match the sweep's per-owner category sequence.
+        // insertion_seq IS front.enqueue_order after the temporal mint, so this guards
+        // that the mint was not reverted to the old sorted-(owner, category) order.
+        for (&owner, queues) in &self.production.queues_by_owner {
+            let mut legacy: Vec<(ProductionCategory, u64)> = queues
+                .iter()
+                .filter_map(|(&cat, q)| q.front().map(|f| (cat, f.enqueue_order)))
+                .collect();
+            legacy.sort_by_key(|&(_, order)| order);
+            let legacy_cats: Vec<ProductionCategory> = legacy.iter().map(|&(c, _)| c).collect();
+            let swept_cats: Vec<ProductionCategory> = self
+                .production
+                .factory_shadow
+                .iter_insertion_ordered()
+                .iter()
+                .filter(|f| f.owner == owner)
+                .map(|f| f.category)
+                .collect();
+            debug_assert_eq!(
+                swept_cats, legacy_cats,
+                "P5a (A): tick {} owner {:?}: sweep order must equal legacy temporal order",
+                self.tick, owner,
+            );
+        }
+
+        for factory in self.production.factory_shadow.iter_insertion_ordered() {
+            let Some(pending) = factory.object.as_ref() else {
+                continue; // queue-only / no active object
+            };
+
+            // (B) RATE (dormant this slice; a compile-checked seam for the flip): build
+            // the producer inputs from rules + the per-type fields and assert set_rate
+            // clamps the producer's TOTAL into [1,255]. SURFACE only — it does NOT force a
+            // match with the verified-WRONG legacy frames rate (frames<->step is not
+            // bit-identical; forcing equality would be inventing equivalence).
+            if let Some(r) = rules {
+                if let Some(obj) = self.object_type(pending.type_id, r) {
+                    let inp = BuildStepTimeInputs {
+                        cost: obj.cost.max(0),
+                        build_time_bonus_ppm: 1_000_000, // stock YR default 1.0 (no per-side field yet)
+                        build_time_multiplier_ppm: obj.build_time_multiplier_x1000.max(1) * 1_000,
+                        power_ratio_ppm: 1_000_000, // full-power proxy this slice
+                        low_power_penalty_modifier_ppm: r.production.low_power_penalty_modifier_ppm,
+                        min_clamp_ppm: r.production.min_low_power_production_speed_ppm,
+                        max_clamp_ppm: r.production.max_low_power_production_speed_ppm,
+                        multiple_factory_ppm: r.production.multiple_factory_ppm,
+                        factory_count: 1, // the real per-category count is a flip input
+                        is_wall: obj.category
+                            == crate::rules::object_type::ObjectCategory::Building
+                            && obj.wall,
+                        wall_build_speed_ppm: (r.production.wall_build_speed_coefficient.max(0.0)
+                            as f64
+                            * 1_000_000.0) as u64,
+                    };
+                    let total = build_step_time(&inp);
+                    let mut probe = factory.clone();
+                    probe.set_rate(total);
+                    debug_assert!(
+                        probe.step_rate_frames >= 1 && probe.step_rate_frames <= 255,
+                        "P5a (B): tick {} {:?}/{:?}: set_rate must clamp the rate into [1,255] (got {})",
+                        self.tick, factory.owner, factory.category, probe.step_rate_frames,
+                    );
+                }
+            }
+
+            // (D) DELIVERY: on a CLONE, clear a completed factory's object then advance;
+            // the FIFO front must pop (the legacy ready->next transition). SURFACE only —
+            // no authoritative start_next_queued call site exists in this slice.
+            let mut d = factory.clone();
+            let expected_next = d.queue.front().copied();
+            d.object = None; // simulate the delivery commit (a later slice binds this)
+            d.suspended = false;
+            let popped = d.start_next_queued();
+            debug_assert_eq!(
+                popped, expected_next,
+                "P5a (D): tick {} {:?}/{:?}: post-delivery advance must pop the FIFO front",
                 self.tick, factory.owner, factory.category,
             );
         }

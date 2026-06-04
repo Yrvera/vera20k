@@ -46,8 +46,9 @@ pub use self::production_tech::{
 };
 pub use self::production_types::*;
 pub use self::factory::{
-    BuildEligibility, CancelOutcome, Factory, FactoryRegistry, FactoryView, PendingObject,
-    SpecialItem, StepOutcome, PRODUCTION_STEPS, STEP_RATE_MAX, STEP_RATE_MIN,
+    build_step_time, category_for_object, BuildEligibility, BuildStepTimeInputs, CancelOutcome,
+    Factory, FactoryRegistry, FactoryView, PendingObject, SpecialItem, StepOutcome,
+    PRODUCTION_STEPS, STEP_RATE_MAX, STEP_RATE_MIN,
 };
 pub use self::war_factory_exit::tick_war_factory_exit_contacts;
 
