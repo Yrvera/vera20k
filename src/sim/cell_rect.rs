@@ -168,6 +168,33 @@ pub struct CellRectOccupancyContext<'a> {
     pub resolved_terrain: Option<&'a ResolvedTerrainGrid>,
     pub overlay_grid: Option<&'a OverlayGrid>,
     pub map_size: Option<(u16, u16)>,
+    /// The map's isometric-diamond playfield bounds, when available. When present,
+    /// the playfield-corner test uses the exact diamond formula
+    /// (`rect_in_playfield_diamond`); when `None`, the test falls back to the
+    /// `map_size` rectangle — a non-authoritative convenience for callers that have
+    /// no diamond bounds yet (NOT the engine's shape).
+    pub playfield_bounds: Option<PlayfieldBounds>,
+}
+
+/// The five map bound values that define the engine's isometric playfield diamond.
+///
+/// Field names are kept as the binary offsets they were read from: the human names
+/// (MapRect origin vs visible-cell bounds) are UNVERIFIED, but the formula that
+/// consumes them is exact regardless. All five are signed map-coord values in the
+/// engine's internal frame; the diamond doubles the two extent pairs because the
+/// isometric map packs two cell axes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlayfieldBounds {
+    /// Base / origin offset (binary `MapClass +0xF4`).
+    pub base: i32,
+    /// Left-extent half (binary `+0xFC`).
+    pub off_fc: i32,
+    /// Low/top-extent half (binary `+0x100`).
+    pub off_100: i32,
+    /// Right-extent half (binary `+0x104`).
+    pub off_104: i32,
+    /// Height-extent half (binary `+0x108`).
+    pub off_108: i32,
 }
 
 pub fn check_passability_rect(ctx: CellRectPassabilityContext<'_>) -> bool {
@@ -243,6 +270,8 @@ pub fn check_occupancy_rect(ctx: CellRectOccupancyContext<'_>) -> bool {
 
     rect_in_playfield(
         ctx.rect,
+        ctx.playfield_bounds,
+        ctx.resolved_terrain,
         ctx.map_size
             .or_else(|| {
                 ctx.resolved_terrain
@@ -385,20 +414,95 @@ fn ground_building_present(
     })
 }
 
-fn rect_in_playfield(rect: CellRect, map_size: Option<(u16, u16)>) -> bool {
+/// Engine `IsRectInPlayfield`: test exactly four corners — NW `(x,y)`,
+/// NE `(x+w-1, y)`, SW `(x, y+h-1)`, SE `(x+w-1, y+h-1)` — in that fixed order,
+/// short-circuit AND, using INCLUSIVE `w-1`/`h-1` far edges. Each corner is judged
+/// by the isometric diamond predicate (`cell_in_playfield_diamond`), NOT a
+/// rectangular `0 <= x < width` index test.
+///
+/// A 0-size rect is NOT a no-op: with `width == 0` the NE/SE x become `x-1`, and
+/// with `height == 0` the SW/SE y become `y-1`, so the corners are evaluated at
+/// decremented coords and all four must still satisfy the diamond.
+///
+/// When `bounds` is `None` the function falls back to the `map_size` rectangle —
+/// a non-authoritative convenience for callers that have no diamond bounds wired
+/// yet. The diamond is the engine's shape; the rectangle is only a placeholder.
+fn rect_in_playfield(
+    rect: CellRect,
+    bounds: Option<PlayfieldBounds>,
+    terrain: Option<&ResolvedTerrainGrid>,
+    map_size: Option<(u16, u16)>,
+) -> bool {
+    let max_x = rect.x.saturating_add(rect.width).saturating_sub(1);
+    let max_y = rect.y.saturating_add(rect.height).saturating_sub(1);
+    let corners = [
+        (rect.x, rect.y),   // NW
+        (max_x, rect.y),    // NE
+        (rect.x, max_y),    // SW
+        (max_x, max_y),     // SE
+    ];
+
+    if let Some(bounds) = bounds {
+        return corners
+            .into_iter()
+            .all(|(sx, sy)| cell_in_playfield_diamond(sx, sy, &bounds, terrain));
+    }
+
+    // Fallback (no diamond bounds supplied): rectangular bounds. Not the engine's
+    // shape — only used until callers thread real playfield bounds.
     let Some((width, height)) = map_size else {
         return true;
     };
-    let max_x = rect.x.saturating_add(rect.width).saturating_sub(1);
-    let max_y = rect.y.saturating_add(rect.height).saturating_sub(1);
-    [
-        (rect.x, rect.y),
-        (max_x, rect.y),
-        (rect.x, max_y),
-        (max_x, max_y),
-    ]
-    .into_iter()
-    .all(|(x, y)| x >= 0 && y >= 0 && x < i32::from(width) && y < i32::from(height))
+    corners
+        .into_iter()
+        .all(|(x, y)| x >= 0 && y >= 0 && x < i32::from(width) && y < i32::from(height))
+}
+
+/// Engine `Is_Cell_In_Playfield` with `height_flag = 1` (the value the sole rect
+/// caller passes): the isometric-diamond containment test for a single cell.
+///
+/// With `sx`, `sy` the cell's signed coords and `h` the height extension, the cell
+/// passes iff its sum `sx+sy` lies in the half-open band `(base+LOW, base+HIGH]`
+/// (low exclusive, high inclusive) AND both differences are strictly below their
+/// bound:
+/// - `(base + LOW)  <  (sx + sy)`            (strict low)
+/// - `(sx + sy)     <= (base + HIGH)`        (inclusive high)
+/// - `(sx - sy)     <  RIGHT`                (strict)
+/// - `(sy - sx)     <  LEFT`                 (strict)
+///
+/// where `LOW = off_100*2 + h`, `HIGH = 2 + (off_108 + off_100)*2 + h`,
+/// `RIGHT = (off_104 + off_fc)*2 - base`, `LEFT = base - off_fc*2`.
+///
+/// Height extension (height_flag = 1): `h = signed(cell.level)`; if the cell's slope
+/// byte is nonzero AND `sx+sy < base + 4 + off_100*2 + h` then `h += 1`. An
+/// out-of-grid cell contributes `h = 0` (flat).
+fn cell_in_playfield_diamond(
+    sx: i32,
+    sy: i32,
+    bounds: &PlayfieldBounds,
+    terrain: Option<&ResolvedTerrainGrid>,
+) -> bool {
+    let base = bounds.base;
+
+    // Height extension from the cell at (sx, sy). The cell level byte is read signed;
+    // a nonzero slope byte bumps h by 1 when the cell sits below the slope threshold.
+    let mut h = 0i32;
+    if let (Ok(rx), Ok(ry)) = (u16::try_from(sx), u16::try_from(sy)) {
+        if let Some(cell) = terrain.and_then(|t| t.cell(rx, ry)) {
+            h = i32::from(cell.level as i8);
+            if cell.slope_type != 0 && (sx + sy) < base + 4 + bounds.off_100 * 2 + h {
+                h += 1;
+            }
+        }
+    }
+
+    let low = bounds.off_100 * 2 + h;
+    let high = 2 + (bounds.off_108 + bounds.off_100) * 2 + h;
+    let right = (bounds.off_104 + bounds.off_fc) * 2 - base;
+    let left = base - bounds.off_fc * 2;
+
+    let sum = sx + sy;
+    (base + low) < sum && sum <= (base + high) && (sx - sy) < right && (sy - sx) < left
 }
 
 fn reservation_mask(reservation_arg: i32) -> u32 {
@@ -504,6 +608,7 @@ mod tests {
             resolved_terrain: Some(&terrain),
             overlay_grid: None,
             map_size: None,
+            playfield_bounds: None,
         };
         assert!(check_occupancy_rect(clear_reserved));
 
@@ -516,6 +621,7 @@ mod tests {
             resolved_terrain: Some(&terrain),
             overlay_grid: None,
             map_size: None,
+            playfield_bounds: None,
         };
         assert!(!check_occupancy_rect(sloped));
     }
@@ -535,6 +641,7 @@ mod tests {
             resolved_terrain: Some(&terrain),
             overlay_grid: None,
             map_size: None,
+            playfield_bounds: None,
         };
         assert!(!check_occupancy_rect(same_house));
 
@@ -547,6 +654,7 @@ mod tests {
             resolved_terrain: Some(&terrain),
             overlay_grid: None,
             map_size: None,
+            playfield_bounds: None,
         };
         assert!(check_occupancy_rect(other_house));
 
@@ -559,6 +667,7 @@ mod tests {
             resolved_terrain: Some(&terrain),
             overlay_grid: None,
             map_size: None,
+            playfield_bounds: None,
         };
         assert!(check_occupancy_rect(skipped));
     }
@@ -677,6 +786,7 @@ mod tests {
             resolved_terrain: Some(&terrain),
             overlay_grid: None,
             map_size: None,
+            playfield_bounds: None,
         };
         assert!(check_occupancy_rect(occupancy_rect));
     }
@@ -782,6 +892,7 @@ mod tests {
             resolved_terrain: Some(&terrain),
             overlay_grid: None,
             map_size: None,
+            playfield_bounds: None,
         };
         assert!(check_occupancy_rect(clear)); // clear cell passes
 
@@ -794,6 +905,7 @@ mod tests {
             resolved_terrain: Some(&terrain),
             overlay_grid: None,
             map_size: None,
+            playfield_bounds: None,
         };
         assert!(!check_occupancy_rect(slope_only));
 
@@ -806,37 +918,79 @@ mod tests {
             resolved_terrain: Some(&terrain),
             overlay_grid: None,
             map_size: None,
+            playfield_bounds: None,
         };
         assert!(!check_occupancy_rect(zone_only));
     }
 
-    #[test]
-    #[ignore = "degenerate 0-size rect playfield-corner outcome depends on UNCHECKED gate #1 (IsRectInPlayfield 0x00578390 exact corner formula); deferred per cell-validation plan T3.5 — real callers never pass a 0-size rect. Un-ignore and pin the convention once that gate is closed."]
-    fn occupancy_zero_size_rect_still_runs_playfield_corners() {
-        // A degenerate rect skips the blocker scan but still runs the corner check:
-        // a fully out-of-play rect fails; an in-play degenerate rect passes.
-        let in_play = CellRectOccupancyContext {
-            rect: CellRect::new(0, 0, 0, 0),
-            reservation_arg: -1,
-            reservations: None,
-            occupancy: None,
-            entities: None,
-            resolved_terrain: None,
-            overlay_grid: None,
-            map_size: Some((4, 4)),
-        };
-        assert!(check_occupancy_rect(in_play));
+    /// A diamond bounds fixture chosen so the playable region is a clean interior:
+    /// pass iff `12 < sx+sy <= 26` AND `sx-sy < 14` AND `sy-sx < 6` (flat terrain,
+    /// so the height extension `h = 0`). Derived from the resolved formula in
+    /// `cell_in_playfield_diamond` with these five values:
+    ///   base=10, off_fc=2, off_100=1, off_104=10, off_108=6
+    ///   LOW=off_100*2 = 2; HIGH=2+(off_108+off_100)*2 = 16;
+    ///   RIGHT=(off_104+off_fc)*2-base = 14; LEFT=base-off_fc*2 = 6;
+    /// so base+LOW=12 (strict low), base+HIGH=26 (inclusive high).
+    fn diamond_bounds() -> PlayfieldBounds {
+        PlayfieldBounds {
+            base: 10,
+            off_fc: 2,
+            off_100: 1,
+            off_104: 10,
+            off_108: 6,
+        }
+    }
 
-        let out = CellRectOccupancyContext {
-            rect: CellRect::new(10, 10, 0, 0),
+    fn occupancy_with_bounds(rect: CellRect) -> CellRectOccupancyContext<'static> {
+        CellRectOccupancyContext {
+            rect,
             reservation_arg: -1,
             reservations: None,
             occupancy: None,
             entities: None,
             resolved_terrain: None,
             overlay_grid: None,
-            map_size: Some((4, 4)),
-        };
-        assert!(!check_occupancy_rect(out));
+            map_size: None,
+            playfield_bounds: Some(diamond_bounds()),
+        }
+    }
+
+    #[test]
+    fn rect_in_playfield_is_isometric_diamond_inclusive_four_corners() {
+        // A 1x1 rect on the diamond's INCLUSIVE high edge of the sum band passes:
+        // (13,13) has sum 26 == base+HIGH, and both diagonals are inside.
+        assert!(check_occupancy_rect(occupancy_with_bounds(CellRect::single(13, 13))));
+        // One cell past the high edge (sum 27 > 26) fails — proves the band is a
+        // diamond on sx+sy, not a rectangle on raw x/y.
+        assert!(!check_occupancy_rect(occupancy_with_bounds(CellRect::single(14, 13))));
+
+        // A 2x1 rect whose NW corner (13,13) is inside but whose INCLUSIVE far
+        // corner (x+w-1, y) = (14,13) leaves the diamond (sum 27) fails — proves the
+        // far corner uses w-1 AND that the corner predicate is the diamond.
+        assert!(!check_occupancy_rect(occupancy_with_bounds(CellRect::new(13, 13, 2, 1))));
+
+        // A point inside both diagonals but with sum just above the strict low edge
+        // (sum 13 > 12) passes; the same cell pair off the low edge (sum 12) fails.
+        assert!(check_occupancy_rect(occupancy_with_bounds(CellRect::single(7, 6))));
+        assert!(!check_occupancy_rect(occupancy_with_bounds(CellRect::single(6, 6))));
+    }
+
+    #[test]
+    fn occupancy_zero_size_rect_still_runs_playfield_corners() {
+        // A 0-size rect is NOT a no-op and NOT an auto-pass: with width=0/height=0 the
+        // far corners become (x-1, y)/(x, y-1)/(x-1, y-1), so all four corners are
+        // evaluated at DECREMENTED coords and each must still satisfy the diamond.
+        //
+        // At (13,13) the decremented corners (12,13)/(13,12)/(12,12) have sums
+        // 25/25/24 — all inside (12 < sum <= 26) — so the 0-size rect PASSES.
+        assert!(check_occupancy_rect(occupancy_with_bounds(CellRect::new(13, 13, 0, 0))));
+
+        // At (7,6) the NW corner (sum 13) is inside, but the decremented NE corner
+        // (6,6) has sum 12, which fails the strict low edge (12 < 12 is false). So the
+        // 0-size rect FAILS even though its (undecremented) NW corner is inside —
+        // exactly the engine's decremented-corner behavior. The corresponding 1x1
+        // rect at (7,6) passes (its corners are all (7,6), sum 13).
+        assert!(!check_occupancy_rect(occupancy_with_bounds(CellRect::new(7, 6, 0, 0))));
+        assert!(check_occupancy_rect(occupancy_with_bounds(CellRect::single(7, 6))));
     }
 }

@@ -543,6 +543,7 @@ fn spawn_fallback_candidate_passable(
         resolved_terrain,
         overlay_grid,
         map_size: None,
+        playfield_bounds: None,
     })
 }
 
@@ -940,6 +941,7 @@ mod tests {
             resolved_terrain: Some(&terrain),
             overlay_grid: None,
             map_size: None,
+            playfield_bounds: None,
         });
         assert!(facade_ok);
     }

@@ -71,8 +71,9 @@ pub struct NearbyQuery<'a> {
     pub map_size: Option<(u16, u16)>,
 }
 
-/// A surviving FNPC candidate, classified `direct` (on a cardinal axis from the
-/// seed) vs indirect. Direct candidates are preferred at selection time.
+/// A surviving FNPC candidate, classified `direct` vs indirect by the engine's
+/// height-projection identity test (see `is_direct_candidate`), NOT a cardinal-axis
+/// test. Direct candidates are preferred at selection time.
 #[derive(Debug, Clone, Copy)]
 struct Candidate {
     cell: (i32, i32),
@@ -125,56 +126,104 @@ pub fn find_nearby_passable_cell(
     cell_to_u16(chosen.cell)
 }
 
-/// Walk concentric diamond rings outward from the seed, collecting surviving
-/// candidates in deterministic order, early-terminating at `MAX_CANDIDATES`.
+/// Walk concentric square (Chebyshev-perimeter) rings outward from the seed,
+/// collecting surviving candidates in the engine's fixed visit order, capping at
+/// `MAX_CANDIDATES` and applying the per-ring early-out.
 ///
-/// Ring `r` is the set of cells with `|dx| + |dy| == r`. Within a ring the visit
-/// order is the top edge, then the bottom edge, then the left and right columns —
-/// a fixed traversal so the candidate index is reproducible. Ring 0 (the seed
-/// itself) is included first.
+/// The outer loop runs `r = 0 .. cap` where `cap = min(Speed + Sight, 32)`; the
+/// largest ring actually scanned is `cap - 1`. Ring shape and order match the
+/// engine exactly (see `ring_cells`).
+///
+/// Per-ring early-out: once ANY direct candidate has been accepted, the search
+/// finishes the *current* ring and then STOPS scanning further rings — biasing the
+/// result toward the nearest ring that yields a direct hit. The 24-candidate cap is
+/// also honored mid-ring (the engine compares the running count to `0x18` after
+/// every accept and jumps straight to selection on equality).
 fn collect_candidates(seed: (i32, i32), q: &NearbyQuery<'_>) -> Vec<Candidate> {
     let mut out: Vec<Candidate> = Vec::new();
     let cap = q.radius_cap.min(RADIUS_HARD_CAP) as i32;
+    let mut direct_found = false;
 
-    for r in 0..=cap {
-        for (cx, cy) in diamond_ring(seed, r) {
+    let mut r = 0;
+    while r < cap {
+        for (cx, cy) in ring_cells(seed, r) {
             if !candidate_passes(q, cx, cy) {
                 continue;
             }
-            // Direct == on a cardinal axis from the seed (a straight line out).
-            let direct = cx == seed.0 || cy == seed.1;
+            let direct = is_direct_candidate(q, cx, cy);
+            direct_found |= direct;
             out.push(Candidate {
                 cell: (cx, cy),
                 direct,
             });
+            // The candidate cap is checked after every accept, mid-ring — the
+            // engine stops the moment the 24th candidate lands.
             if out.len() >= MAX_CANDIDATES {
                 return out;
             }
         }
+        // Per-ring early-out: a direct hit anywhere so far finishes this ring then stops.
+        if direct_found {
+            return out;
+        }
+        r += 1;
     }
     out
 }
 
-/// Cells of the diamond ring `|dx| + |dy| == r` around `seed`, in a fixed order:
-/// the top edge (dy from -r upward to 0) and the bottom edge first as full rows,
-/// then the left and right columns for the interior rows. Ring 0 is just the seed.
-fn diamond_ring(seed: (i32, i32), r: i32) -> Vec<(i32, i32)> {
-    if r == 0 {
-        return vec![seed];
+/// Cells of square ring `r` (Chebyshev perimeter, `max(|dx|, |dy|) == r`) around
+/// the seed `(ox, oy)`, in the engine's fixed 4-segment order:
+///
+/// 1. for `d = -r ..= r`: North cell `(ox + d, oy - r)` then South cell `(ox + d, oy + r)`
+///    — the two full horizontal apex rows, scanned together W→E by `d`.
+/// 2. for `e = 1-r ..= r-1`: West cell `(ox - r, oy + e)` then East cell `(ox + r, oy + e)`
+///    — the two vertical side columns (interior rows only), scanned together N→S by `e`.
+///
+/// This is NOT a Manhattan diamond and NOT a continuous clockwise walk. At `r == 0`
+/// segment 1 runs once with `d == 0`: North and South coincide on the seed, so the
+/// engine emits the seed cell TWICE (segment 2's range `1..=-1` is empty). The
+/// duplicate is intentional — it is the engine's actual candidate stream, and it
+/// feeds the candidate count / frame-modulo index, so we reproduce it rather than
+/// dedup.
+fn ring_cells(seed: (i32, i32), r: i32) -> Vec<(i32, i32)> {
+    let (ox, oy) = seed;
+    let mut cells: Vec<(i32, i32)> = Vec::with_capacity((8 * r.max(1)) as usize);
+    // Segment 1: North row then South row, for d = -r..=r (N then S per d).
+    for d in -r..=r {
+        cells.push((ox + d, oy - r)); // North
+        cells.push((ox + d, oy + r)); // South (coincides with North at r == 0)
     }
-    let mut cells: Vec<(i32, i32)> = Vec::with_capacity((4 * r) as usize);
-    // Top apex row down to the bottom apex, visiting each ring row's two cells in
-    // left-then-right order; the apex rows have a single cell.
-    for dy in -r..=r {
-        let span = r - dy.abs(); // |dx| at this row
-        if span == 0 {
-            cells.push((seed.0, seed.1 + dy));
-        } else {
-            cells.push((seed.0 - span, seed.1 + dy));
-            cells.push((seed.0 + span, seed.1 + dy));
-        }
+    // Segment 2: West column then East column, interior rows e = 1-r..=r-1 (W then E per e).
+    for e in (1 - r)..=(r - 1) {
+        cells.push((ox - r, oy + e)); // West
+        cells.push((ox + r, oy + e)); // East
     }
     cells
+}
+
+/// Engine "direct" classification — the height-projection identity test
+/// (`FUN_006d6410`): a candidate is direct when its lepton-center, projected down
+/// the isometric height ray, resolves back to the candidate's own cell.
+///
+/// On flat terrain (the cell at level 0 with no structural-bridge bit) the
+/// projection is the identity, so every accepted flat cell is DIRECT — this is the
+/// case the cardinal-axis test got wrong (it marked only the seed's row/column
+/// direct). The full ray-walk over sloped / bridged neighbour cells is a deferred
+/// follow-up: it reads neighbour cell level bytes along the descent ray, which the
+/// flat-terrain slice does not yet model. Until then a non-flat candidate is
+/// conservatively classified as indirect.
+///
+/// TODO-cutover: model the full `FUN_006d6410` descent (neighbour level bytes +
+/// bridge bit) before relying on direct/indirect on sloped or bridged terrain.
+fn is_direct_candidate(q: &NearbyQuery<'_>, cx: i32, cy: i32) -> bool {
+    let (Ok(rx), Ok(ry)) = (u16::try_from(cx), u16::try_from(cy)) else {
+        return false;
+    };
+    let Some(cell) = q.resolved_terrain.and_then(|t| t.cell(rx, ry)) else {
+        // No terrain cell to project from; treat as flat-equivalent (direct).
+        return true;
+    };
+    cell.level == 0 && !cell.bridge_facts.has_structural_bridge()
 }
 
 /// Run the per-candidate predicates in FNPC order: passability first (1x1 rect,
@@ -213,6 +262,7 @@ fn candidate_passes(q: &NearbyQuery<'_>, cx: i32, cy: i32) -> bool {
             resolved_terrain: q.resolved_terrain,
             overlay_grid: q.overlay_grid,
             map_size: q.map_size,
+            playfield_bounds: None,
         })
     {
         return false;
@@ -350,24 +400,44 @@ mod tests {
     }
 
     #[test]
-    fn find_nearby_diamond_ring_visit_order() {
-        // Ring 0 is the seed; ring 1 visits the four orthogonal neighbours in the
-        // fixed top->bottom, left->right traversal. The radius cap and the 24-cap
-        // are honored.
-        let ring0 = diamond_ring((5, 5), 0);
-        assert_eq!(ring0, vec![(5, 5)]);
-        let ring1 = diamond_ring((5, 5), 1);
-        assert_eq!(ring1, vec![(5, 4), (4, 5), (6, 5), (5, 6)]);
-        // Ring 2 has 8 cells (|dx|+|dy| == 2).
-        assert_eq!(diamond_ring((5, 5), 2).len(), 8);
+    fn find_nearby_ring_visit_order_matches_engine_segments() {
+        // Square (Chebyshev) rings in the engine's fixed 4-segment order:
+        //   seg1: for d=-r..=r  -> North (ox+d, oy-r) then South (ox+d, oy+r)
+        //   seg2: for e=1-r..=r-1 -> West (ox-r, oy+e) then East (ox+r, oy+e)
+        // Ring 0 emits the seed TWICE (N and S coincide at r==0); seg2 range is empty.
+        assert_eq!(ring_cells((5, 5), 0), vec![(5, 5), (5, 5)]);
+        // Ring 1: seg1 d=-1,0,1 then seg2 e=0. Derived directly from the engine's
+        // (ox+d, oy-r)/(ox+d, oy+r) and (ox-r, oy+e)/(ox+r, oy+e) sequence.
+        assert_eq!(
+            ring_cells((5, 5), 1),
+            vec![
+                (4, 4), // d=-1 N
+                (4, 6), // d=-1 S
+                (5, 4), // d=0  N
+                (5, 6), // d=0  S
+                (6, 4), // d=1  N
+                (6, 6), // d=1  S
+                (4, 5), // e=0  W
+                (6, 5), // e=0  E
+            ]
+        );
+        // Ring 2 is the 16-cell square perimeter (10 from seg1, 6 from seg2).
+        assert_eq!(ring_cells((5, 5), 2).len(), 16);
+    }
 
-        // Radius cap clamps to RADIUS_HARD_CAP and the pool early-terminates at 24.
+    #[test]
+    fn find_nearby_per_ring_early_out_stops_after_first_direct_ring() {
+        // On flat terrain every accepted cell is DIRECT (height-projection identity),
+        // so ring 0 alone yields a direct hit: the per-ring early-out finishes ring 0
+        // (which emits the seed twice) and STOPS — it never walks out to fill 24.
         let terrain = flat_terrain(40, 40);
         let path_grid = PathGrid::from_resolved_terrain(&terrain);
         let mut q = base_query(&terrain, &path_grid);
-        q.radius_cap = 100; // requests beyond the hard cap
+        q.radius_cap = 100; // requests beyond the hard cap; clamps to 32
         let candidates = collect_candidates((20, 20), &q);
-        assert_eq!(candidates.len(), MAX_CANDIDATES);
+        // Ring 0 = seed twice, both direct -> early-out after ring 0.
+        assert_eq!(candidates.len(), 2);
+        assert!(candidates.iter().all(|c| c.cell == (20, 20) && c.direct));
     }
 
     #[test]
@@ -512,8 +582,10 @@ mod tests {
         let pick0 = find_nearby_passable_cell((4, 4), &q, 0);
         let pick9 = find_nearby_passable_cell((4, 4), &q, 9);
         assert_eq!(pick0, pick9, "target selection must ignore the frame counter");
-        // Nearest direct candidate toward (7,4) is on the +x axis from the seed.
+        // On flat terrain the per-ring early-out stops at ring 0 (seed is direct), so
+        // the nearest-distance pool is the seed itself; the chosen cell is at/east of
+        // the seed and never west of it.
         let pick = pick0.expect("a candidate exists");
-        assert!(pick.0 >= 4, "nearest-to-target should lean toward the target");
+        assert!(pick.0 >= 4, "nearest-to-target should not lean away from the target");
     }
 }

@@ -7,14 +7,21 @@
 //! instead of re-deriving each one at their own call site.
 //!
 //! Scope of THIS slice: the verified, hash-neutral predicate/offset
-//! consolidation only — the structural/bridgehead/anchor flag predicates, signed
-//! effective-height, the concrete- and wood-bridge tileset windows (kept SEPARATE
-//! from the structural `0x100` flag), the low-bridge/tube predicate, the list
-//! layer enum, and a delegating handle to the existing pathfinding traversal
-//! gate. The AoE/occupancy layer selectors and the gate authority-flip are NOT
-//! folded here: they depend on unproven binary operands (GetGroundHeight vs raw
-//! level) and/or change hashed state, so they stay at their current authoritative
-//! call sites.
+//! consolidation, plus the gamemd-correct SHADOW layer selectors — the
+//! structural/bridgehead/anchor flag predicates, signed effective-height, the
+//! concrete- and wood-bridge tileset windows (kept SEPARATE from the structural
+//! `0x100` flag), the low-bridge/tube predicate, the list layer enum, a
+//! delegating handle to the existing pathfinding traversal gate, and the verified
+//! deck-height consts + AoE/occupancy layer selectors AS SHADOW.
+//!
+//! The shadow selectors (`aoe_object_layer`, `occupancy_bit_layer`) encode the
+//! now-verified binary thresholds (deck offset = `2 × per_level`, NOT `4`), but
+//! the authority-flip is NOT done here: the authoritative AoE selector
+//! (`combat_aoe::select_object_damage_layer`) and the authoritative occupancy
+//! storage (`sim/occupancy.rs`) keep their current behavior. The cutover that
+//! swaps callers onto these and fixes the proven-wrong
+//! `BRIDGE_AOE_SELECTOR_HEIGHT_LEVELS = 4` is a separate reviewed step (it changes
+//! hashed state / damage target sets), so it is left as a TODO-cutover marker.
 //!
 //! ## Dependency rules
 //! - Depends on map/bridge_facts (flag bits), map/resolved_terrain, sim/pathfinding
@@ -26,17 +33,47 @@
 
 use crate::map::bridge_facts::BridgeFlags;
 use crate::map::resolved_terrain::{ResolvedTerrainCell, YR_CELL_LAND_TUNNEL};
+use crate::util::lepton::LEPTONS_PER_LEVEL;
 
-/// Anchor cells add the full 4-level bridge deck to their effective height.
+/// Level-unit seed an anchor cell adds to its *effective height* (`GetEffectiveHeight`
+/// = `Level + ((flags>>7)&1) * 4`). This is the discrete terrain-Level index seed
+/// (1 ElevationIncrement) used for pathfinding/layer/occupancy decisions in the
+/// `Can_Enter_Cell`/traversal family — it is NOT the coordinate-Z/AoE deck offset.
+/// Verified value `4` (Level units). Keep this strictly separate from the lepton
+/// deck offset below: the binary computes the two from different sources and never
+/// mixes them in one comparison.
 ///
-/// This is the CELL-LEVEL deck height (deck = 4 levels above ground), the same
-/// unit the existing combat-AoE selector compares `cell.level` against. It is NOT
-/// a lepton height: the binary frames the deck height in leptons (per-level x 4),
-/// but every Rust selector pre-divides to levels, so the resolved value here is
-/// the level count `4`. Single-sourced as one named const; if the AoE selector's
-/// own `BRIDGE_AOE_SELECTOR_HEIGHT_LEVELS` is later folded into this service it
-/// must collapse onto this same value.
-pub const BRIDGE_DECK_HEIGHT_LEVELS: i32 = 4;
+/// (Source: `GATE_BRIDGE_DECK_HEIGHT_RESOLUTION_GHIDRA_REPORT.md` §5 — the `+4`
+/// Level-unit pathfinding seed, distinct from the coordinate-Z deck.)
+pub const BRIDGE_EFFECTIVE_HEIGHT_ANCHOR_SEED_LEVELS: i32 = 4;
+
+/// Verified coordinate-Z / AoE / occupancy deck offset a unit's Z gains when it is
+/// on a HIGH structural bridge: `unit.Z = GetGroundHeight(coord) + DECK_OFFSET`.
+///
+/// The binary deck offset is the runtime global `2 × per_level_bridge_height`
+/// **in LEPTONS** (computed `per_level × 4 × 0.5` = `× 2`, NOT `round(per_level × 4)`
+/// and NOT a literal `4`). With the nominal per-level step of 104 leptons this is
+/// `2 × 104 = 208` leptons = exactly **2 levels**.
+///
+/// This is the deck height that the coordinate-Z snap, the AoE object-layer
+/// selector, and the occupancy bit-layer threshold all share — distinct from the
+/// `+4` Level-unit anchor seed above. We name it in BOTH units so callers that work
+/// in leptons and callers that work in Level units can each pick the right one
+/// without re-deriving the conversion.
+///
+/// (Source: `GATE_BRIDGE_DECK_HEIGHT_RESOLUTION_GHIDRA_REPORT.md` §3 — deck offset
+/// `DAT_00AC13BC = 2 × DAT_00AC13C8`; §0/§4 confirm leptons, cell-grid frame.)
+pub const BRIDGE_DECK_HEIGHT_LEPTONS: i32 = 2 * LEPTONS_PER_LEVEL as i32;
+/// The same verified deck offset expressed in Level units (`208 leptons / 104 =
+/// 2 levels`). Use this where the operand is already pre-divided to Level units
+/// (the current Rust AoE/occupancy selectors operate on `cell.level`).
+///
+/// NOTE — this is the gamemd-correct value `2`, which CONTRADICTS the existing
+/// authoritative `combat_aoe::BRIDGE_AOE_SELECTOR_HEIGHT_LEVELS = 4`. That
+/// authoritative const is NOT flipped in this pass (see the TODO-cutover marker in
+/// `aoe_object_layer` below); this shadow const encodes the proven value so the
+/// shadow selector is gamemd-correct and the divergence is testable.
+pub const BRIDGE_DECK_HEIGHT_LEVELS: i32 = (2 * LEPTONS_PER_LEVEL as i32) / LEPTONS_PER_LEVEL as i32;
 
 /// Width of a tileset window: a concrete- or wood-bridge tileset occupies the
 /// first 16 tiles `[base, base + 0x10)` of its theater set. Gated on base != -1.
@@ -123,15 +160,23 @@ impl CellBridgeView {
 
     // --- Effective height (L2 / C4) ------------------------------------------
 
-    /// Signed level plus the deck height for anchor cells.
+    /// Signed level plus the Level-unit anchor seed for anchor cells.
     ///
-    /// This is the `(i8)level + ((flags >> 7) & 1) * 4` form: the level read is
-    /// signed and an anchor adds exactly the deck height. It is intentionally NOT
-    /// the layer-driven `effective_cell_z_for_layer` form (which keys off the
-    /// mover's current layer instead of the anchor flag).
+    /// This is the `(i8)level + ((flags >> 7) & 1) * 4` form (`GetEffectiveHeight`):
+    /// the level read is signed and an anchor adds exactly the `+4` Level-unit
+    /// pathfinding seed. It is intentionally NOT the layer-driven
+    /// `effective_cell_z_for_layer` form (which keys off the mover's current layer
+    /// instead of the anchor flag), and it is NOT the coordinate-Z deck offset
+    /// (`BRIDGE_DECK_HEIGHT_LEPTONS` / `_LEVELS` = 2 levels) — A1 proved the `+4`
+    /// seed and the deck-Z offset are two distinct quantities that never mix.
     #[inline]
     pub fn effective_height(&self) -> i32 {
-        self.level as i32 + if self.is_anchor() { BRIDGE_DECK_HEIGHT_LEVELS } else { 0 }
+        self.level as i32
+            + if self.is_anchor() {
+                BRIDGE_EFFECTIVE_HEIGHT_ANCHOR_SEED_LEVELS
+            } else {
+                0
+            }
     }
 
     // --- Tileset windows (L3 / L4 / C5) --------------------------------------
@@ -177,6 +222,75 @@ impl CellBridgeView {
             .is_some_and(|t| t >= 0 && (t as usize) < tube_count)
             && self.land_type == YR_CELL_LAND_TUNNEL
     }
+
+    // --- AoE object-layer selector (SHADOW; not yet authoritative) -----------
+    //
+    // GATE A2/A1: which per-cell object list an AoE detonation damages, by
+    // comparing the detonation Z against the deck mid-height.
+
+    /// Select the AoE damage object list for a detonation over this cell.
+    ///
+    /// gamemd compares the impact Z against `ground_z + half_deck`, where the
+    /// half-deck term is the per-level step (`DECK / 2 = 1 level`). The compare is
+    /// STRICT `>` (impact exactly at the mid-height stays on the ground list).
+    /// `ground_z` is the `GetGroundHeight`-equivalent operand in the SAME domain
+    /// as `impact_z` (both Level units here).
+    ///
+    /// SHADOW: this encodes the verified `2 × per_level` deck (half = 1 level), so
+    /// the boundary differs from the still-authoritative
+    /// `combat_aoe::select_object_damage_layer` (which uses the proven-wrong
+    /// `BRIDGE_AOE_SELECTOR_HEIGHT_LEVELS = 4`, half = 2). The cutover that flips
+    /// that authoritative const is deferred (see the marker in `combat_aoe.rs`).
+    ///
+    /// (Source: `GATE_BRIDGE_ONBRIDGE_OCCUPANCY_RESOLUTION_GHIDRA_REPORT.md` +
+    /// `GATE_BRIDGE_DECK_HEIGHT_RESOLUTION_GHIDRA_REPORT.md` §3/§4.)
+    #[inline]
+    pub fn aoe_object_layer(&self, impact_z: i32, ground_z: i32) -> ListLayer {
+        if self.is_bridge_cell() && impact_z > ground_z + BRIDGE_DECK_HEIGHT_LEVELS / 2 {
+            ListLayer::Bridge
+        } else {
+            ListLayer::Ground
+        }
+    }
+
+    // --- Occupancy BIT-layer selector (SHADOW; not yet authoritative) --------
+    //
+    // GATE A2: the per-cell occupancy BITFIELD layer (ground vs bridge/deck) is
+    // a SEPARATE selection from the object-LIST layer. The list layer keys off the
+    // occupant's persistent `on_bridge` byte; the bit layer keys off the object's
+    // Z height vs ground. The two are independent and may disagree at ramp
+    // boundaries — a verified gamemd behavior, kept separate here.
+
+    /// Select the occupancy BIT layer for an object at `obj_z` over this cell.
+    ///
+    /// Bridge bit layer iff the object sits at/above the full deck height
+    /// (`ground_z + DECK <= obj_z`, threshold inclusive `<=`) AND — for the MARK
+    /// path only — the cell is structural (`Flags & 0x100`). The CLEAR path passes
+    /// `require_structural = false`: it clears by the Z threshold ALONE and does
+    /// NOT re-check the structural flag, so collapse cleanup still finds the deck
+    /// bit after the bridge flag is gone. This Mark/Clear asymmetry is load-bearing.
+    ///
+    /// SHADOW: `OccupancyGrid` authoritative storage (`src/sim/occupancy.rs`) is
+    /// NOT changed by this pass; this selector is only consumed by shadow tests and
+    /// the not-yet-wired bit-layer repr.
+    ///
+    /// (Source: `GATE_BRIDGE_ONBRIDGE_OCCUPANCY_RESOLUTION_GHIDRA_REPORT.md` §b —
+    /// Mark `0x007441B0` gates on `Flags&0x100`, Clear `0x00744210` does not.)
+    #[inline]
+    pub fn occupancy_bit_layer(
+        &self,
+        obj_z: i32,
+        ground_z: i32,
+        require_structural: bool,
+    ) -> ListLayer {
+        let z_on_deck = ground_z + BRIDGE_DECK_HEIGHT_LEVELS <= obj_z;
+        let structural_ok = !require_structural || self.is_bridge_cell();
+        if z_on_deck && structural_ok {
+            ListLayer::Bridge
+        } else {
+            ListLayer::Ground
+        }
+    }
 }
 
 // --- P2: service-facing traversal-gate handle --------------------------------
@@ -192,6 +306,22 @@ impl CellBridgeView {
 // Visibility note: the gate and its input/result types are `pub(crate)` in
 // pathfinding, so this handle is `pub(crate)` too — it cannot be made more public
 // than its owner, and making it so would be the authority-flip this slice avoids.
+//
+// GATE A4 inventory (verified, `GATE_BRIDGE_TRAVERSAL_RESOLUTION_GHIDRA_REPORT.md`):
+//   - The ground-unit bridge-traversal validator is the function this handle
+//     delegates to; in gamemd it is dispatched via the Foot/Unit/Infantry vtable
+//     slot `+0x1B0` (Aircraft/Building override that slot with non-bridge
+//     functions, so the dispatch is ground-unit-only). Our handle mirrors that:
+//     it is reached only from the ground-unit cell-entry path, never aircraft.
+//   - Warhead field `+0x144` is the `Wall=` boolean (INI key "Wall", default
+//     false). It is the per-warhead half of the AoE bridge-destruction gate
+//     (`DestroyableBridges && warhead.wall`) and also allows overlay-wall
+//     destruction. NOT to be conflated with `WallAbsoluteDestroyer` (`+0x145`).
+//     Recorded here for the topology inventory; the warhead parser/collapse wiring
+//     that consumes it is out of this slice's scope.
+//   - The `Level + 4` height seed the gate applies is the Level-unit pathfinding
+//     seed (1 ElevationIncrement) — DISTINCT from the lepton coordinate-Z deck
+//     offset (`BRIDGE_DECK_HEIGHT_LEPTONS`). The two are never mixed (A1 §5).
 pub(crate) use crate::sim::pathfinding::{
     BridgeTraversalInput, BridgeTraversalResult, check_bridge_traversal as bridge_traversal_gate,
 };
@@ -310,6 +440,97 @@ mod tests {
         assert!(!with(Some(-1), YR_CELL_LAND_TUNNEL).is_low_bridge_cell(tube_count));
         // no tube + land 10 -> false
         assert!(!with(None, YR_CELL_LAND_TUNNEL).is_low_bridge_cell(tube_count));
+    }
+
+    #[test]
+    fn deck_height_consts_resolve_to_verified_values() {
+        // GATE A1: the coordinate-Z/AoE/occupancy deck offset is 2 × per_level.
+        // With per_level = 104 leptons this is 208 leptons = exactly 2 levels.
+        // The anchor effective-height seed is the SEPARATE Level-unit +4.
+        assert_eq!(
+            BRIDGE_DECK_HEIGHT_LEPTONS, 208,
+            "deck offset = 2 × 104 leptons"
+        );
+        assert_eq!(BRIDGE_DECK_HEIGHT_LEVELS, 2, "208 leptons / 104 = 2 levels");
+        assert_eq!(
+            BRIDGE_EFFECTIVE_HEIGHT_ANCHOR_SEED_LEVELS, 4,
+            "GetEffectiveHeight anchor seed is +4 Level units, distinct from the deck"
+        );
+        // The two quantities must NOT be the same value — guards against a future
+        // refactor collapsing the deck offset onto the effective-height seed.
+        assert_ne!(
+            BRIDGE_DECK_HEIGHT_LEVELS, BRIDGE_EFFECTIVE_HEIGHT_ANCHOR_SEED_LEVELS,
+            "deck-Z (2) and the +4 pathfinding seed are different quantities (A1 §5)"
+        );
+    }
+
+    #[test]
+    fn aoe_object_layer_strict_gt_half_deck() {
+        // GATE A2/A1: STRICT `>` against ground + half_deck (half = DECK/2 = 1).
+        // base = 100; structural cell.
+        let bridge = view(100, BRIDGE_FLAG_STRUCTURAL, 0);
+        let ground_z = 100;
+        let half = BRIDGE_DECK_HEIGHT_LEVELS / 2; // = 1
+        assert_eq!(half, 1, "half-deck is 1 level (per_level), not 2");
+
+        // Exactly at the mid-height -> Ground (strict `>` excludes equality).
+        assert_eq!(
+            bridge.aoe_object_layer(ground_z + half, ground_z),
+            ListLayer::Ground
+        );
+        // One above the mid-height -> Bridge.
+        assert_eq!(
+            bridge.aoe_object_layer(ground_z + half + 1, ground_z),
+            ListLayer::Bridge
+        );
+        // Below -> Ground.
+        assert_eq!(
+            bridge.aoe_object_layer(ground_z, ground_z),
+            ListLayer::Ground
+        );
+
+        // Non-structural cell is always Ground regardless of Z.
+        let non_bridge = view(100, 0, 0);
+        assert_eq!(
+            non_bridge.aoe_object_layer(ground_z + 999, ground_z),
+            ListLayer::Ground
+        );
+    }
+
+    #[test]
+    fn occupancy_bit_layer_inclusive_full_deck_and_clear_asymmetry() {
+        // GATE A2 §b: bit layer is bridge iff (ground + full_deck <= obj_z) AND,
+        // for MARK only, the cell is structural. Threshold is INCLUSIVE `<=` and
+        // uses the FULL deck (not the half-deck AoE term).
+        let deck = BRIDGE_DECK_HEIGHT_LEVELS; // = 2 (full deck)
+        let ground_z = 50;
+        let structural = view(50, BRIDGE_FLAG_STRUCTURAL, 0);
+        let non_structural = view(50, 0, 0);
+
+        // MARK (require_structural = true):
+        //   exactly at full deck on a structural cell -> Bridge (inclusive).
+        assert_eq!(
+            structural.occupancy_bit_layer(ground_z + deck, ground_z, true),
+            ListLayer::Bridge
+        );
+        //   one below full deck -> Ground.
+        assert_eq!(
+            structural.occupancy_bit_layer(ground_z + deck - 1, ground_z, true),
+            ListLayer::Ground
+        );
+        //   at full deck but NON-structural -> Ground (Mark gates on Flags&0x100).
+        assert_eq!(
+            non_structural.occupancy_bit_layer(ground_z + deck, ground_z, true),
+            ListLayer::Ground
+        );
+
+        // CLEAR (require_structural = false): same Z but NO structural re-check ->
+        // a non-structural cell still resolves to Bridge by Z alone. This is the
+        // load-bearing collapse-cleanup asymmetry (the bridge flag may be gone).
+        assert_eq!(
+            non_structural.occupancy_bit_layer(ground_z + deck, ground_z, false),
+            ListLayer::Bridge
+        );
     }
 
     #[test]
