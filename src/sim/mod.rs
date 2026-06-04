@@ -29,6 +29,9 @@ pub mod intern;
 pub mod rng;
 pub mod type_handle_table; // InternedId -> TypeHandle, one-hop entity->type resolution
 
+// --- Pure read-only deterministic engine-data services (gamemd-exact lookup tables) ---
+pub mod substrate; // direction/facing tables; no render/ui/audio/net dep
+
 // --- Subsystem folders (multi-file subsystems with internal mod.rs) ---
 pub mod combat; // targeting, weapons, AOE, fire gates, damage resolution
 pub mod miner; // harvester state machine, dock sequences, ore delivery
