@@ -144,6 +144,13 @@ pub fn tick_turret_rotation(
             Some(e) => e,
             None => continue,
         };
+        // Unit turrets are driven per-object by unit_post once authoritative; leave
+        // Aircraft/Building turrets on this sweep.
+        if crate::sim::world::unit_post::L2_UNIT_POST_AUTHORITATIVE
+            && entity.category == crate::map::entities::EntityCategory::Unit
+        {
+            continue;
+        }
         // Skip non-turreted entities; otherwise take the per-entity desired facing
         // from the shared helper (single source for sweep + per-object host).
         let Some(desired_facing) = desired_turret_facing(entity, entities) else {

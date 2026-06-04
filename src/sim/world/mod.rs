@@ -15,7 +15,7 @@ pub mod edge_cell;
 mod logic_vector;
 mod substrate;
 mod techno_ai;
-mod unit_post;
+pub(crate) mod unit_post;
 mod world_commands;
 mod world_hash;
 mod world_orders;
@@ -946,6 +946,81 @@ impl Simulation {
             body(self, id);
             i += 1;
         }
+    }
+
+    /// P1 SHADOW BUILD: mirror each existing house's authoritative `credits` into
+    /// the non-hashed `economy` shadow and recompute its OrePurifier building
+    /// count. Derive direction is legacy -> shadow; READ-ONLY w.r.t. all hashed
+    /// state. It iterates the existing `houses` map only and NEVER inserts a house
+    /// (the auto-create hazard guard). A single pass over the entity store
+    /// accumulates purifier counts per owner, so the cost is O(entities), not
+    /// O(houses x entities). `rules` is the advance_tick tail's `Option`; with
+    /// `None` the purifier count is 0 (no type data to classify structures by).
+    pub(crate) fn refresh_economy_shadow(&mut self, rules: Option<&RuleSet>) {
+        use crate::map::entities::EntityCategory;
+        // One pass: accumulate OrePurifier building count per owner. Mirrors
+        // `count_purifiers_for_owner`'s predicate (category == Structure &&
+        // object_type.ore_purifier) but in a single sweep keyed by owner id.
+        let mut purifiers: std::collections::BTreeMap<crate::sim::intern::InternedId, i32> =
+            std::collections::BTreeMap::new();
+        if let Some(rules) = rules {
+            for e in self.substrate.entities.values() {
+                if e.category == EntityCategory::Structure
+                    && self
+                        .object_type(e.type_ref, rules)
+                        .is_some_and(|obj| obj.ore_purifier)
+                {
+                    *purifiers.entry(e.owner).or_insert(0) += 1;
+                }
+            }
+        }
+        for (id, house) in self.houses.iter_mut() {
+            // Mirror the authoritative wallet verbatim (same i32 scale in P1).
+            house.economy.credits = house.credits;
+            // Purifier-bonus base = real OrePurifier building COUNT (NOT silo
+            // storage capacity, NOT the AI-virtual-inclusive effective count).
+            house.economy.purifier_count = purifiers.get(id).copied().unwrap_or(0);
+            // spent_credits / harvested_credits have NO legacy mirror in P1 and are
+            // intentionally untouched here (isolated-method-tested only).
+        }
+    }
+
+    /// Debug-only P1 assert: every house's economy shadow tracks the authoritative
+    /// `credits`. Divergence is surfaced (tick + owner), never written back.
+    #[cfg(debug_assertions)]
+    pub(crate) fn debug_assert_economy_shadow(&self) {
+        for (owner, house) in &self.houses {
+            debug_assert_eq!(
+                house.economy.credits, house.credits,
+                "economy shadow: tick {} owner {:?}: economy.credits {} must track credits {}",
+                self.tick, owner, house.economy.credits, house.credits,
+            );
+        }
+    }
+
+    /// P2 SHADOW BUILD umbrella: refresh the per-house economy shadow, then rebuild
+    /// the factory registry from the legacy queues. Runs at the advance_tick tail,
+    /// AFTER all authoritative systems, so the derive sees settled legacy state.
+    /// Writes ONLY the non-hashed shadow fields; the legacy production path is
+    /// untouched. `rules` is the tail's `Option`, threaded to the economy refresh.
+    pub(crate) fn refresh_production_shadow(&mut self, rules: Option<&RuleSet>) {
+        self.refresh_economy_shadow(rules);
+        // Take the registry out so `rebuild_shadow` can borrow `&self` while writing
+        // the registry; swap it back after. `rebuild_shadow` reads
+        // `queues_by_owner` (the legacy source), not `factory_shadow`, so the
+        // temporarily-defaulted field is fine.
+        let mut registry = std::mem::take(&mut self.production.factory_shadow);
+        registry.rebuild_shadow(self);
+        self.production.factory_shadow = registry;
+    }
+
+    /// Debug-only P2 asserts: (a) economy tracks credits; (b) the factory shell
+    /// trace is well-formed (live Structures, strictly-increasing visit order).
+    /// Divergence is surfaced, never equalized.
+    #[cfg(debug_assertions)]
+    pub(crate) fn debug_assert_production_shadow(&self) {
+        self.debug_assert_economy_shadow();
+        self.debug_assert_factory_shell_trace();
     }
 
     /// Test-only: force the active order and sync membership flags to it.
@@ -2437,12 +2512,20 @@ impl Simulation {
         // folded `mission` reflects the current tick. As of Slice 8 `mission` is
         // canonical hashed state; the Slice-2 shadow-agreement assert is retired.
         self.refresh_mission_shadow();
+        // P1+P2 production+economy shadow: mirror credits + purifier_count and
+        // rebuild the factory registry from the legacy queues, after all
+        // authoritative systems and before the hash. Writes only non-hashed shadow
+        // fields, so state_hash stays bit-identical (proven by the *_no_hash_change
+        // tests). `rules` is the advance_tick `Option<&RuleSet>` tail param.
+        self.refresh_production_shadow(rules);
         // Object-AI Slice S1 shadow: for one bounded moving-UnitClass scenario,
         // assert mission dispatch is observed before the locomotor Process within
         // one object pass (the verified gamemd ordering). Read-only, unhashed,
         // debug-only — the authority flip is a later slice.
         #[cfg(debug_assertions)]
         self.debug_assert_s1_shadow();
+        #[cfg(debug_assertions)]
+        self.debug_assert_production_shadow();
         let state_hash = self.state_hash();
         TickResult {
             tick: self.tick,
@@ -2488,3 +2571,7 @@ mod mission_authoritative_tests;
 #[cfg(test)]
 #[path = "global_parity_harness_tests.rs"]
 mod global_parity_harness_tests;
+
+#[cfg(test)]
+#[path = "production_shadow_tests.rs"]
+mod production_shadow_tests;
