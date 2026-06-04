@@ -137,4 +137,45 @@ mod tests {
         assert_eq!(table.ramp(NO_REMAP), table.ramp(HouseColorIndex(2)));
         assert_eq!(table.ramp(HouseColorIndex(99)), table.ramp(HouseColorIndex(2)));
     }
+
+    /// Golden per-shade RGB for stock schemes — locks the current `f64` trig output.
+    ///
+    /// gamemd builds these via an 8192-step `float32` cos/sin lookup table, so an
+    /// `f64` port can differ by up to ±1 per channel on some shades (dominated by
+    /// the table's angle quantization, ~0.000767 rad/step). Per the project
+    /// decision we accept that ≤±1 tolerance — it is below the RGBA8-vs-RGB565
+    /// display-precision delta — and lock these values as a regression guard.
+    /// HSV→RGB and the angle/ftol math are bit-identical to gamemd; only the
+    /// table-vs-`f64` trig is the (bounded) residual. If `build_scheme_ramp`
+    /// changes intentionally, regenerate with a temporary dump test.
+    #[test]
+    fn build_scheme_ramp_matches_golden_stock_values() {
+        #[rustfmt::skip]
+        let cases: &[(&str, [u8; 3], [[u8; 3]; 16])] = &[
+            ("Gold", [43, 239, 255], [
+                [163,163,133],[153,154,94],[144,145,78],[134,135,64],
+                [123,124,51],[113,114,40],[102,103,31],[91,92,23],
+                [80,81,17],[69,70,12],[57,58,8],[46,47,5],
+                [34,35,3],[22,23,1],[10,11,0],[0,0,0],
+            ]),
+            ("DarkRed", [0, 230, 255], [
+                [163,134,134],[154,96,96],[145,81,81],[135,67,67],
+                [124,54,54],[114,43,43],[103,34,34],[92,26,26],
+                [81,19,19],[70,14,14],[58,10,10],[47,7,7],
+                [35,4,4],[23,2,2],[11,1,1],[0,0,0],
+            ]),
+            ("DarkBlue", [153, 214, 212], [
+                [114,123,136],[83,101,128],[71,90,120],[59,80,112],
+                [49,71,103],[40,62,95],[32,53,86],[25,46,77],
+                [19,38,67],[15,32,58],[11,25,48],[8,20,39],
+                [5,14,29],[3,9,19],[1,4,9],[0,0,0],
+            ]),
+        ];
+        for (name, hsv, expected) in cases {
+            let r = build_scheme_ramp(*hsv);
+            for (i, exp) in expected.iter().enumerate() {
+                assert_eq!([r[i].r, r[i].g, r[i].b], *exp, "{name} shade {i}");
+            }
+        }
+    }
 }
