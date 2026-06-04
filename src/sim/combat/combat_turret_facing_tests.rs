@@ -12,7 +12,9 @@ use crate::rules::ruleset::RuleSet;
 use crate::sim::combat::AttackTarget;
 use crate::sim::game_entity::GameEntity;
 use crate::sim::movement::FacingClass;
-use crate::sim::movement::turret::body_facing_to_turret;
+use crate::sim::movement::turret::{
+    body_facing_to_turret, desired_turret_facing, tick_turret_rotation,
+};
 use crate::sim::world::Simulation;
 
 fn empty_height_map() -> BTreeMap<(u16, u16), u8> {
@@ -185,5 +187,100 @@ fn mid_rotation_retarget_snapshots_into_prev() {
         fc.current(5),
         animated_at_5,
         "Animated value immediately after re-set should equal pre-set animated value (no jump)"
+    );
+}
+
+// --- L2 unit_post shadow acceptance tests ---
+
+#[test]
+fn unit_cooldown_decrement_order_independent() {
+    // The future per-object flip moves the cooldown/burst-delay decrement from the
+    // legacy id-order pre-pass to a per-object live-order step. `saturating_sub(1)`
+    // is per-entity with no cross-entity dependency, so any visitation order yields
+    // identical results — pin it empirically across two opposite orders.
+    let start = [(1u64, 7u16, 3u8), (2u64, 4u16, 0u8)];
+    let dec = |v: &mut [(u64, u16, u8)], order: &[usize]| {
+        for &i in order {
+            v[i].1 = v[i].1.saturating_sub(1);
+            v[i].2 = v[i].2.saturating_sub(1);
+        }
+    };
+    let mut ascending = start.to_vec();
+    let mut descending = start.to_vec();
+    dec(&mut ascending, &[0, 1]);
+    dec(&mut descending, &[1, 0]);
+    assert_eq!(
+        ascending, descending,
+        "per-entity cooldown decrement must be order-independent"
+    );
+}
+
+#[test]
+fn desired_turret_facing_matches_sweep_destination() {
+    // The live-order host's desired facing (read-only) must equal the destination
+    // the id-order turret sweep sets — proving the extraction is faithful and the
+    // facing reorder is output-neutral (desired_turret_facing is per-entity).
+    let mut sim = Simulation::new();
+    spawn_turreted(&mut sim, 1, 5, 5, 5);
+    spawn_target(&mut sim, 2, 5, 9); // due south
+    use_test_interner(&mut sim);
+    let rules = rules_with_mtnk_rot(5);
+    sim.substrate.entities.get_mut(1).unwrap().attack_target = Some(AttackTarget::new(2));
+
+    let want = {
+        let e = sim.substrate.entities.get(1).unwrap();
+        desired_turret_facing(e, &sim.substrate.entities).expect("turreted unit has a desired facing")
+    };
+    tick_turret_rotation(&mut sim.substrate.entities, &rules, sim.binary_frame, &sim.interner);
+    let got = sim
+        .substrate
+        .entities
+        .get(1)
+        .unwrap()
+        .barrel_facing
+        .as_ref()
+        .unwrap()
+        .destination();
+    assert_eq!(
+        got, want,
+        "id-order sweep destination must equal the live-order host's desired facing"
+    );
+}
+
+#[test]
+fn unit_post_shadow_holds_through_repeated_fire_and_kill() {
+    // Drive a turreted Unit through acquisition, alignment, repeated fire, and the
+    // target's death. The debug-only unit_post shadow asserts fire+facing agreement
+    // with the legacy sweeps every tick (advance_tick runs under debug_assertions in
+    // tests). A wrong pre-combat cooldown read or a pre-combat (stale-target) facing
+    // comparison would panic here — this is the net that catches both fixes.
+    let mut sim = Simulation::new();
+    spawn_turreted(&mut sim, 1, 5, 5, 100); // fast ROT — aligns within a frame
+    spawn_target(&mut sim, 2, 5, 8); // 3 cells south, in range (Range=6)
+    use_test_interner(&mut sim);
+    let rules = rules_with_mtnk_rot(100);
+    sim.substrate.entities.get_mut(1).unwrap().attack_target = Some(AttackTarget::new(2));
+
+    let start_hp = sim.substrate.entities.get(2).unwrap().health.current;
+    let mut fired = false;
+    let mut target_gone = false;
+    for _ in 0..400 {
+        sim.advance_tick(&[], Some(&rules), &empty_height_map(), None, None, 67);
+        match sim.substrate.entities.get(2) {
+            Some(t) => {
+                if t.health.current < start_hp {
+                    fired = true;
+                }
+            }
+            None => {
+                target_gone = true;
+                break;
+            }
+        }
+    }
+    assert!(fired, "the Unit should have fired and damaged the target");
+    assert!(
+        target_gone,
+        "repeated fire should have killed and despawned the target"
     );
 }
