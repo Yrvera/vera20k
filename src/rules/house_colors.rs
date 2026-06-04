@@ -223,7 +223,7 @@ pub fn build_scheme_ramp(hsv: [u8; 3]) -> [Color; RAMP_SIZE] {
 
 /// `[Colors]` entry index used when a house has no resolvable color. gamemd `InitColor` forces a
 /// negative ColorSchemeIndex to 5 (runtime scheme 5 → `[Colors]` entry 2 = LightGrey / white-ish).
-const DEFAULT_SCHEME_ENTRY: usize = 2;
+pub const DEFAULT_SCHEME_ENTRY: usize = 2;
 
 /// Flat fallback ramp used only when the `[Colors]` list is empty (rules not yet loaded); a real
 /// skirmish always has a populated scheme list.

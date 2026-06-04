@@ -10,7 +10,8 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use crate::rules::house_colors::{self, HouseColorIndex};
+use crate::rules::color_scheme::{ColorSchemeEntry, scheme_entry_by_name};
+use crate::rules::house_colors::{DEFAULT_SCHEME_ENTRY, HouseColorIndex};
 use crate::rules::ini_parser::IniFile;
 
 /// Mapping from owner name (e.g., "Americans") to house color index.
@@ -107,12 +108,18 @@ fn normalize_house_name(name: &str) -> String {
 /// Parse house color assignments from a map's INI data.
 ///
 /// This remains as a compatibility helper for systems that only need color.
-pub fn parse_house_colors(ini: &IniFile) -> HouseColorMap {
-    parse_house_roster(ini).color_map()
+/// `schemes` is the parsed `[Colors]` list used to resolve each house's
+/// `Color=<name>` to a `[Colors]` entry index.
+pub fn parse_house_colors(ini: &IniFile, schemes: &[ColorSchemeEntry]) -> HouseColorMap {
+    parse_house_roster(ini, schemes).color_map()
 }
 
 /// Parse the ordered active-house roster from a map's INI data.
-pub fn parse_house_roster(ini: &IniFile) -> HouseRoster {
+///
+/// `schemes` is the parsed `[Colors]` list; a house's `Color=<name>` resolves to
+/// that entry's index (case-insensitive). Houses with no/unknown color fall back
+/// to [`DEFAULT_SCHEME_ENTRY`].
+pub fn parse_house_roster(ini: &IniFile, schemes: &[ColorSchemeEntry]) -> HouseRoster {
     let houses_section = match ini.section("Houses") {
         Some(s) => s,
         None => {
@@ -136,8 +143,9 @@ pub fn parse_house_roster(ini: &IniFile) -> HouseRoster {
         let section = ini.section(&house_name);
         let color = section
             .and_then(|s| s.get("Color"))
-            .map(house_colors::color_index_for_name)
-            .unwrap_or_default();
+            .and_then(|name| scheme_entry_by_name(schemes, name))
+            .map(|entry| HouseColorIndex(entry as u8))
+            .unwrap_or(HouseColorIndex(DEFAULT_SCHEME_ENTRY as u8));
         let country = section.and_then(|s| s.get("Country")).map(str::to_string);
         let side = section.and_then(|s| s.get("Side")).map(str::to_string);
         let player_control = section.and_then(|s| s.get_bool("PlayerControl"));
@@ -167,6 +175,34 @@ pub fn parse_house_roster(ini: &IniFile) -> HouseRoster {
 mod tests {
     use super::*;
 
+    /// Retail `[Colors]` list (declaration order) — only the entries the tests
+    /// reference need exact positions: DarkRed = entry 5, DarkBlue = entry 10.
+    fn test_schemes() -> Vec<ColorSchemeEntry> {
+        let raw: &[(&str, [u8; 3])] = &[
+            ("LightGold", [25, 255, 255]),  // 0
+            ("Gold", [43, 239, 255]),       // 1
+            ("LightGrey", [0, 0, 240]),     // 2
+            ("Grey", [0, 0, 131]),          // 3
+            ("Red", [20, 255, 184]),        // 4
+            ("DarkRed", [0, 230, 255]),     // 5
+            ("Orange", [25, 230, 255]),     // 6
+            ("Magenta", [221, 102, 255]),   // 7
+            ("Purple", [201, 201, 189]),    // 8
+            ("LightBlue", [119, 143, 255]), // 9
+            ("DarkBlue", [153, 214, 212]),  // 10
+            ("NeonBlue", [185, 156, 238]),  // 11
+            ("DarkSky", [131, 200, 230]),   // 12
+            ("Green", [104, 241, 195]),     // 13
+            ("DarkGreen", [81, 200, 210]),  // 14
+        ];
+        raw.iter()
+            .map(|(name, hsv)| ColorSchemeEntry {
+                name: name.to_string(),
+                hsv: *hsv,
+            })
+            .collect()
+    }
+
     #[test]
     fn test_parse_standard_houses() {
         let ini: IniFile = IniFile::from_str(
@@ -174,11 +210,12 @@ mod tests {
              [Americans]\nColor=DarkBlue\nSide=Allies\nCountry=America\nPlayerControl=yes\n\
              [Russians]\nColor=DarkRed\nSide=Soviet\nCountry=Russia\nAllies=Confederation,YuriCountry\n",
         );
-        let roster = parse_house_roster(&ini);
+        let roster = parse_house_roster(&ini, &test_schemes());
         let map = roster.color_map();
         assert_eq!(map.len(), 2);
-        assert_eq!(map["Americans"], HouseColorIndex(1));
-        assert_eq!(map["Russians"], HouseColorIndex(2));
+        // Color=name resolves to the [Colors] entry index.
+        assert_eq!(map["Americans"], HouseColorIndex(10)); // DarkBlue
+        assert_eq!(map["Russians"], HouseColorIndex(5)); // DarkRed
         assert_eq!(roster.houses[0].side.as_deref(), Some("Allies"));
         assert_eq!(roster.houses[0].country.as_deref(), Some("America"));
         assert_eq!(roster.houses[0].player_control, Some(true));
@@ -193,23 +230,31 @@ mod tests {
     }
 
     #[test]
-    fn test_missing_color_defaults_to_gold() {
+    fn test_missing_color_defaults_to_default_scheme() {
         let ini: IniFile = IniFile::from_str("[Houses]\n0=Neutral\n[Neutral]\nIQ=5\n");
-        let map = parse_house_colors(&ini);
-        assert_eq!(map["Neutral"], HouseColorIndex(0));
+        let map = parse_house_colors(&ini, &test_schemes());
+        assert_eq!(map["Neutral"], HouseColorIndex(DEFAULT_SCHEME_ENTRY as u8));
+    }
+
+    #[test]
+    fn test_unknown_color_defaults_to_default_scheme() {
+        let ini: IniFile =
+            IniFile::from_str("[Houses]\n0=Neutral\n[Neutral]\nColor=PinkPolkaDot\n");
+        let map = parse_house_colors(&ini, &test_schemes());
+        assert_eq!(map["Neutral"], HouseColorIndex(DEFAULT_SCHEME_ENTRY as u8));
     }
 
     #[test]
     fn test_missing_houses_section() {
         let ini: IniFile = IniFile::from_str("[General]\nKey=Value\n");
-        let roster = parse_house_roster(&ini);
+        let roster = parse_house_roster(&ini, &test_schemes());
         assert!(roster.houses.is_empty());
     }
 
     #[test]
     fn test_house_without_section() {
         let ini: IniFile = IniFile::from_str("[Houses]\n0=Ghost\n");
-        let map = parse_house_colors(&ini);
-        assert_eq!(map["Ghost"], HouseColorIndex(0));
+        let map = parse_house_colors(&ini, &test_schemes());
+        assert_eq!(map["Ghost"], HouseColorIndex(DEFAULT_SCHEME_ENTRY as u8));
     }
 }
