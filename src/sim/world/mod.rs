@@ -1010,7 +1010,10 @@ impl Simulation {
         // `queues_by_owner` (the legacy source), not `factory_shadow`, so the
         // temporarily-defaulted field is fine.
         let mut registry = std::mem::take(&mut self.production.factory_shadow);
-        registry.rebuild_shadow(self);
+        match rules {
+            Some(r) => registry.rebuild_shadow(self, r), // cost-based oracle balance (P3)
+            None => registry.rebuild_shadow_no_rules(self), // cost-0 fallback (None tail)
+        }
         self.production.factory_shadow = registry;
     }
 
@@ -1021,6 +1024,67 @@ impl Simulation {
     pub(crate) fn debug_assert_production_shadow(&self) {
         self.debug_assert_economy_shadow();
         self.debug_assert_factory_shell_trace();
+        self.debug_assert_factory_conservation(); // P3
+    }
+
+    /// Debug-only P3 assert: each live shadow factory's `advance_one_step` conserves
+    /// exact cost (C15) and settles correctly (C2/C12). Steps a CLONE against a CLONE
+    /// economy seeded with exactly `original_balance`; SURFACES divergence with
+    /// tick + owner + category, NEVER writes back to the shadow or the wallet.
+    #[cfg(debug_assertions)]
+    pub(crate) fn debug_assert_factory_conservation(&self) {
+        use crate::sim::economy::Economy;
+        use crate::sim::production::{StepOutcome, PRODUCTION_STEPS};
+        for factory in self.production.factory_shadow.iter_insertion_ordered() {
+            if factory.object.is_none() {
+                continue; // queue-only / no active object: nothing to conserve
+            }
+            let cost = factory.original_balance;
+            // A fresh, armed clone driven from progress 0 with exact funds.
+            let mut f = factory.clone();
+            f.progress = 0;
+            f.balance = cost;
+            f.on_hold = false;
+            f.suspended = false;
+            f.manual = false;
+            let mut econ = Economy {
+                credits: cost,
+                ..Economy::default()
+            };
+            let mut steps = 0i32;
+            loop {
+                match f.advance_one_step(&mut econ) {
+                    StepOutcome::Stepped => steps += 1,
+                    StepOutcome::Completed => {
+                        steps += 1;
+                        break;
+                    }
+                    // Stalled/Idle cannot happen with exact funds + a fresh arm; the
+                    // asserts below fire (steps != 54) and surface the divergence.
+                    _ => break,
+                }
+            }
+            debug_assert_eq!(
+                steps, PRODUCTION_STEPS as i32,
+                "C2: tick {} {:?}/{:?}: a full build must take 54 steps (got {})",
+                self.tick, factory.owner, factory.category, steps,
+            );
+            debug_assert_eq!(
+                econ.spent_credits, cost,
+                "C15: tick {} {:?}/{:?}: total spent {} must equal full cost {}",
+                self.tick, factory.owner, factory.category, econ.spent_credits, cost,
+            );
+            debug_assert_eq!(
+                f.balance, 0,
+                "C12: tick {} {:?}/{:?}: completion must zero the balance",
+                self.tick, factory.owner, factory.category,
+            );
+            debug_assert!(
+                f.suspended && f.object.is_some(),
+                "C12: tick {} {:?}/{:?}: completion must suspend with the object attached",
+                self.tick, factory.owner, factory.category,
+            );
+        }
     }
 
     /// Test-only: force the active order and sync membership flags to it.

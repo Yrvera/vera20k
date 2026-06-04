@@ -347,3 +347,110 @@ fn production_shadow_preserves_advance_tick_phase_order() {
     }
     assert_eq!(run(), run(), "advance_tick with the production shadow stays deterministic");
 }
+
+// ===== P3 — per-step charge oracle (hash-neutral) =====
+
+/// P3 no-hash guarantee: stepping a CLONE of a shadow factory against a CLONE of the
+/// wallet 54 times leaves `state_hash()` bit-identical (the oracle never touches the
+/// hashed wallet; `Factory`/`Economy` carry no serde derive). The acceptance test.
+#[test]
+fn factory_advance_step_does_not_change_state_hash() {
+    let mut sim = Simulation::new();
+    let rules = empty_rules();
+    let owner = sim.interner.intern("Americans");
+    sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
+    let ty = sim.interner.intern("GRIZZLY");
+    insert_queue(
+        &mut sim,
+        owner,
+        ProductionCategory::Vehicle,
+        queued_item(owner, ty, ProductionCategory::Vehicle, BuildQueueState::Building, 54, 30, 1),
+    );
+    sim.refresh_production_shadow(Some(&rules)); // cost-based shadow built
+    let before = sim.state_hash();
+
+    // Step a CLONE of the shadow factory against a CLONE of the wallet, 54 times.
+    let mut f = sim.production.factory_shadow.iter_insertion_ordered()[0].clone();
+    // empty_rules -> cost 0; seed a real cost so the step machine actually charges.
+    f.progress = 0;
+    f.balance = 700;
+    f.original_balance = 700;
+    let mut oracle = sim.houses[&owner].economy.clone();
+    for _ in 0..PRODUCTION_STEPS {
+        let _ = f.advance_one_step(&mut oracle);
+    }
+
+    assert_eq!(
+        before,
+        sim.state_hash(),
+        "P3 oracle stepping must not perturb the state hash (serde-skip + clone)"
+    );
+    assert_eq!(
+        sim.houses[&owner].credits, 1_000_000,
+        "the legacy wallet is untouched by oracle stepping"
+    );
+}
+
+/// P3 determinism: identical fixtures over N ticks (with the cost-based rebuild +
+/// the conservation assert active in debug) produce identical per-tick state_hash
+/// sequences. `rules` is the 2nd positional arg to `advance_tick`.
+#[test]
+fn production_shadow_with_oracle_is_deterministic() {
+    fn run() -> Vec<u64> {
+        let mut sim = Simulation::new();
+        let rules = empty_rules();
+        let owner = sim.interner.intern("Americans");
+        sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
+        let ty = sim.interner.intern("GRIZZLY");
+        insert_queue(
+            &mut sim,
+            owner,
+            ProductionCategory::Vehicle,
+            queued_item(owner, ty, ProductionCategory::Vehicle, BuildQueueState::Building, 54, 30, 1),
+        );
+        let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+        (0..5)
+            .map(|_| {
+                sim.advance_tick(&[], Some(&rules), &heights, None, None, 67);
+                sim.state_hash()
+            })
+            .collect()
+    }
+    assert_eq!(run(), run(), "advance_tick with the P3 oracle path stays deterministic");
+}
+
+/// The FIT-(a) probe: build a cost-based shadow, place a live Structure for the
+/// owner, and confirm the oracle probe steps a clone per (live structure, owner
+/// factory-with-object) — read-only, deterministic, hash-neutral.
+#[test]
+fn factory_oracle_step_trace_walks_live_structures() {
+    let mut sim = Simulation::new();
+    let rules = empty_rules();
+    let owner = sim.interner.intern("Americans");
+    sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
+    let ty = sim.interner.intern("GRIZZLY");
+    insert_queue(
+        &mut sim,
+        owner,
+        ProductionCategory::Vehicle,
+        queued_item(owner, ty, ProductionCategory::Vehicle, BuildQueueState::Building, 54, 30, 1),
+    );
+    // A live Structure for the owner (the war factory the probe walks).
+    let mut e = GameEntity::test_default(1, "GAWEAP", "Americans", 5, 5);
+    e.category = EntityCategory::Structure;
+    e.owner = owner;
+    sim.substrate.entities.insert(e);
+    sim.set_logic_order_for_test(vec![1]);
+    sim.refresh_production_shadow(Some(&rules));
+
+    let before = sim.state_hash();
+    let trace = sim.factory_oracle_step_trace();
+    assert_eq!(trace.len(), 1, "one live structure x one owner factory-with-object");
+    assert_eq!(trace[0].0, 1, "the outcome is attributed to the live structure id");
+    assert_eq!(before, sim.state_hash(), "the probe must not perturb the hash");
+    assert_eq!(
+        trace,
+        sim.factory_oracle_step_trace(),
+        "the probe is deterministic across calls"
+    );
+}
