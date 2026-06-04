@@ -19,7 +19,7 @@
 
 pub(crate) mod cell_spread;
 pub(crate) mod combat_aoe;
-mod combat_fire_gate;
+pub(crate) mod combat_fire_gate;
 pub(crate) mod combat_targeting;
 pub(crate) mod combat_weapon;
 pub(crate) mod fire_decision;
@@ -1178,28 +1178,28 @@ fn destroy_ore_at_impact(
 /// through one `&mut` handle. Never stored on `Simulation`, never serialized,
 /// never hashed — destructured back into the named locals after the Phase-2 loop.
 #[derive(Default)]
-struct CombatEmit {
+pub(crate) struct CombatEmit {
     /// (target_id, damage, attacker_id, warhead_id)
-    damage_events: Vec<(u64, u16, u64, InternedId)>,
-    remove_attack: Vec<u64>,
+    pub(crate) damage_events: Vec<(u64, u16, u64, InternedId)>,
+    pub(crate) remove_attack: Vec<u64>,
     /// (attacker_id, new_target_id)
-    retarget_events: Vec<(u64, u64)>,
-    fire_events: Vec<SimFireEvent>,
-    reveal_events: Vec<RevealEvent>,
-    bridge_damage_events: Vec<BridgeDamageEvent>,
-    wall_damage_events: Vec<WallDamageEvent>,
-    terrain_damage_events: Vec<TerrainDamageEvent>,
-    tiberium_reduction_requests: Vec<TiberiumReductionRequest>,
-    explosion_effects: Vec<ExplosionEffect>,
-    smudge_spawn_requests: Vec<SmudgeSpawnRequest>,
+    pub(crate) retarget_events: Vec<(u64, u64)>,
+    pub(crate) fire_events: Vec<SimFireEvent>,
+    pub(crate) reveal_events: Vec<RevealEvent>,
+    pub(crate) bridge_damage_events: Vec<BridgeDamageEvent>,
+    pub(crate) wall_damage_events: Vec<WallDamageEvent>,
+    pub(crate) terrain_damage_events: Vec<TerrainDamageEvent>,
+    pub(crate) tiberium_reduction_requests: Vec<TiberiumReductionRequest>,
+    pub(crate) explosion_effects: Vec<ExplosionEffect>,
+    pub(crate) smudge_spawn_requests: Vec<SmudgeSpawnRequest>,
     /// (id, burst_rem, burst_delay, rof_cd)
-    burst_updates: Vec<(u64, u8, u8, u16)>,
+    pub(crate) burst_updates: Vec<(u64, u8, u8, u16)>,
     /// aircraft that fired this tick
-    ammo_deduct: Vec<u64>,
+    pub(crate) ammo_deduct: Vec<u64>,
     /// building IDs to advance fire index
-    garrison_advance: Vec<u64>,
-    pending_infantry_updates: Vec<(u64, Option<PendingInfantryFire>)>,
-    animation_switches: Vec<(u64, SequenceKind)>,
+    pub(crate) garrison_advance: Vec<u64>,
+    pub(crate) pending_infantry_updates: Vec<(u64, Option<PendingInfantryFire>)>,
+    pub(crate) animation_switches: Vec<(u64, SequenceKind)>,
 }
 
 /// Advance combat with optional owner visibility gating and sound event sink.
@@ -1404,8 +1404,17 @@ pub fn tick_combat_with_fog(
     // Phase 1: snapshot all attackers and advance cooldowns / burst delays.
     let mut snapshots: Vec<AttackerSnapshot> = Vec::new();
     for &id in &keys {
-        // Mutable borrow: tick cooldowns and extract entity data + garrison cargo info.
-        let (snap_base, garrison_cargo) = {
+        // Mutable borrow: tick cooldowns and capture the per-attacker scalars +
+        // garrison cargo info. Entity field-reads move into `build_attacker_snapshot`
+        // (pure) below, after this borrow releases.
+        let (
+            attack_target,
+            cooldown_ticks,
+            burst_remaining,
+            burst_delay_ticks,
+            pending_infantry_fire,
+            garrison_cargo,
+        ) = {
             let entity = match entities.get_mut(id) {
                 Some(e) => e,
                 None => continue,
@@ -1446,66 +1455,26 @@ pub fn tick_combat_with_fog(
                     None
                 };
 
-            let base = (
-                entity.stable_id,
-                entity.owner,
-                entity.category,
+            (
                 attack_target,
-                entity.position.rx,
-                entity.position.ry,
-                entity.position.z,
-                entity.position.sub_x,
-                entity.position.sub_y,
-                entity.type_ref,
-                entity.facing,
-                entity.veterancy,
                 cooldown_ticks,
-                entity.animation.as_ref().map(|a| a.sequence),
-                entity.animation.as_ref().map(|a| a.frame_index),
-                entity
-                    .infantry
-                    .as_ref()
-                    .is_some_and(|infantry| infantry.is_prone),
-                entity.is_fully_deployed(),
-                entity.movement_target.is_some(),
-                pending_infantry_fire,
-                entity.barrel_facing,
                 burst_remaining,
                 burst_delay_ticks,
-                entity.weapon_override,
-            );
-            (base, garrison_cargo)
+                pending_infantry_fire,
+                garrison_cargo,
+            )
         }; // mutable borrow released
 
-        let (
-            stable_id,
-            owner,
-            category,
-            target,
-            pos_rx,
-            pos_ry,
-            pos_z,
-            sub_x,
-            sub_y,
-            type_id,
-            facing,
-            veterancy,
-            cooldown_ticks,
-            animation_sequence,
-            animation_frame,
-            is_prone,
-            is_fully_deployed,
-            has_movement,
-            pending_infantry_fire,
-            barrel_facing,
-            burst_remaining,
-            burst_delay_ticks,
-            weapon_override,
-        ) = snap_base;
-
-        // Resolve garrison snapshot from cargo info (read-only borrow).
+        // Re-fetch the attacker immutably (nothing mutated `entities` since the
+        // borrow above released) and resolve any garrison occupant, then build the
+        // snapshot through the shared `build_attacker_snapshot` so the field-reads
+        // stay byte-identical to the per-object Fire→Facing host.
+        let entity = match entities.get(id) {
+            Some(e) => e,
+            None => continue,
+        };
         let garrison = garrison_cargo.and_then(|(fire_idx, count, occ_id)| {
-            let obj = rules.object(interner.resolve(type_id))?;
+            let obj = rules.object(interner.resolve(entity.type_ref))?;
             if !obj.can_be_occupied || !obj.can_occupy_fire {
                 return None;
             }
@@ -1520,32 +1489,15 @@ pub fn tick_combat_with_fog(
             })
         });
 
-        snapshots.push(AttackerSnapshot {
-            stable_id,
-            owner,
-            category,
-            target,
-            pos_rx,
-            pos_ry,
-            pos_z,
-            sub_x,
-            sub_y,
-            type_id,
-            facing,
-            veterancy,
+        snapshots.push(build_attacker_snapshot(
+            entity,
+            attack_target,
             cooldown_ticks,
-            animation_sequence,
-            animation_frame,
-            is_prone,
-            is_fully_deployed,
-            has_movement,
-            pending_infantry_fire,
-            barrel_facing,
             burst_remaining,
             burst_delay_ticks,
-            weapon_override,
+            pending_infantry_fire,
             garrison,
-        });
+        ));
     }
     // Native combat resolves each object inline during the single live-object
     // (reveal/insertion-order) AI walk, so firing/damage/kill-credit order is
@@ -1763,13 +1715,58 @@ pub fn tick_combat_with_fog(
     }
 }
 
+/// Build the per-attacker fire snapshot from current entity state. PURE READ —
+/// the caller has already decremented cooldown/burst-delay for this tick and
+/// resolved any garrison occupant. Single source of the snapshot field-reads so
+/// the legacy Phase-1 loop and the per-object Fire→Facing host build byte-identical
+/// snapshots (no field-read drift between the two call sites).
+pub(crate) fn build_attacker_snapshot(
+    entity: &GameEntity,
+    target: TargetKind,
+    cooldown_ticks: u16,
+    burst_remaining: u8,
+    burst_delay_ticks: u8,
+    pending_infantry_fire: Option<PendingInfantryFire>,
+    garrison: Option<GarrisonSnapshot>,
+) -> AttackerSnapshot {
+    AttackerSnapshot {
+        stable_id: entity.stable_id,
+        owner: entity.owner,
+        category: entity.category,
+        target,
+        pos_rx: entity.position.rx,
+        pos_ry: entity.position.ry,
+        pos_z: entity.position.z,
+        sub_x: entity.position.sub_x,
+        sub_y: entity.position.sub_y,
+        type_id: entity.type_ref,
+        facing: entity.facing,
+        veterancy: entity.veterancy,
+        cooldown_ticks,
+        animation_sequence: entity.animation.as_ref().map(|a| a.sequence),
+        animation_frame: entity.animation.as_ref().map(|a| a.frame_index),
+        is_prone: entity
+            .infantry
+            .as_ref()
+            .is_some_and(|infantry| infantry.is_prone),
+        is_fully_deployed: entity.is_fully_deployed(),
+        has_movement: entity.movement_target.is_some(),
+        pending_infantry_fire,
+        barrel_facing: entity.barrel_facing,
+        burst_remaining,
+        burst_delay_ticks,
+        weapon_override: entity.weapon_override,
+        garrison,
+    }
+}
+
 /// Resolve one attacker's Phase-2 fire decision + emission for the current tick.
 /// READ-ONLY w.r.t. entities/occupancy (HP/death are applied later in the batched
 /// Phase 4/6); it reads target/rules/occupancy/fog and pushes events into `out`.
 /// Interns warhead/weapon/anim strings (hence `&mut StringInterner`). Pure w.r.t.
 /// iteration order: the caller invokes it once per snapshot in live-LOGIC order,
 /// preserving emission order exactly.
-fn resolve_attacker_fire(
+pub(crate) fn resolve_attacker_fire(
     snap: &AttackerSnapshot,
     entities: &EntityStore,
     rules: &RuleSet,
