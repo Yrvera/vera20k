@@ -18,6 +18,69 @@ use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::passability;
 use crate::sim::pathfinding::zone_map::{ZoneGrid, ZoneId};
 
+/// Fixed cell-array stride — the engine indexes cells `y*0x200 + x` regardless of
+/// the loaded map's playfield width. The valid linear range is `[0, MAX_CELL_INDEX]`.
+/// This is NOT the loaded-map width index (that is `PathGrid`'s `y*width+x` cache).
+pub const CELL_ROW_STRIDE: i64 = 0x200;
+/// Highest valid linear cell index under the fixed 512-wide stride.
+pub const MAX_CELL_INDEX: i64 = 0x3FFFF;
+
+/// Linear cell index using the fixed 512-wide stride (NOT the loaded-map width).
+///
+/// Returns `None` only when the index falls outside `[0, MAX_CELL_INDEX]`; the
+/// dummy fallback (`get_cellclass_fallback`) turns that `None` into a non-null
+/// reference, mirroring the engine's never-null `Get_CellClass`.
+pub fn cell_linear_index(x: i32, y: i32) -> Option<i64> {
+    let idx = (y as i64) * CELL_ROW_STRIDE + (x as i64);
+    (0..=MAX_CELL_INDEX).contains(&idx).then_some(idx)
+}
+
+/// A non-null cell reference — `Real` for an in-range, present cell, or `Dummy`
+/// carrying the requested coord for an out-of-range / missing lookup.
+///
+/// Never the absence of a value: the engine's coord→cell lookup returns a
+/// non-null dummy that stores the requested coord and lets the caller keep
+/// dispatching on it. The dummy carries only the coord; its other field values
+/// are an open RE item and must NOT be read until that lands.
+#[derive(Debug, Clone, Copy)]
+pub enum CellRef<'a> {
+    Real(&'a ResolvedTerrainCell),
+    Dummy { coord: (i32, i32) },
+}
+
+// `ResolvedTerrainCell` is not `PartialEq`; compare `Real` by pointer identity
+// (same backing cell) and `Dummy` by the coord it carries. This is enough for the
+// facade's only need: distinguishing the dummy fallback and asserting its coord.
+impl PartialEq for CellRef<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (CellRef::Real(a), CellRef::Real(b)) => std::ptr::eq(*a, *b),
+            (CellRef::Dummy { coord: a }, CellRef::Dummy { coord: b }) => a == b,
+            _ => false,
+        }
+    }
+}
+impl Eq for CellRef<'_> {}
+
+/// Engine `Get_CellClass`: coord → cell via the fixed stride; an out-of-range or
+/// missing cell returns `CellRef::Dummy { coord }` carrying the *requested* coord
+/// (NOT `(0,0)`, NOT `None`). The width-based `PathGrid`/`ResolvedTerrainGrid`
+/// index stays as the cache; this is the never-null parity lookup.
+pub fn get_cellclass_fallback<'a>(
+    terrain: Option<&'a ResolvedTerrainGrid>,
+    x: i32,
+    y: i32,
+) -> CellRef<'a> {
+    if cell_linear_index(x, y).is_some() {
+        if let (Ok(rx), Ok(ry)) = (u16::try_from(x), u16::try_from(y)) {
+            if let Some(cell) = terrain.and_then(|t| t.cell(rx, ry)) {
+                return CellRef::Real(cell);
+            }
+        }
+    }
+    CellRef::Dummy { coord: (x, y) }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CellRect {
     pub x: i32,
@@ -155,13 +218,17 @@ pub fn check_occupancy_rect(ctx: CellRectOccupancyContext<'_>) -> bool {
                 if overlay_present(ctx.overlay_grid, rx, ry) {
                     return false;
                 }
-                if ctx
-                    .resolved_terrain
-                    .and_then(|terrain| terrain.cell(rx, ry))
-                    .is_some_and(|cell| {
-                        cell.zone_type != zone_class::GROUND || cell.slope_type != 0
-                    })
-                {
+                // The engine scans two separate per-cell columns in this order:
+                // (d) the reduced-ZoneType column (column 0 == Ground passes), then
+                // (e) the slope/special byte. They are split — not fused — so the
+                // first-blocker scan order is reproduced even though both reject the
+                // same way; a cell with only a slope and a cell with only a non-Ground
+                // zone-type each reject independently.
+                let tcell = ctx.resolved_terrain.and_then(|terrain| terrain.cell(rx, ry));
+                if tcell.is_some_and(|cell| cell.zone_type != zone_class::GROUND) {
+                    return false;
+                }
+                if tcell.is_some_and(|cell| cell.slope_type != 0) {
                     return false;
                 }
                 if ground_building_present(ctx.occupancy, ctx.entities, rx, ry) {
@@ -612,5 +679,164 @@ mod tests {
             map_size: None,
         };
         assert!(check_occupancy_rect(occupancy_rect));
+    }
+
+    // --- T1: fixed-stride cell index + non-null dummy fallback ---
+
+    #[test]
+    fn cell_index_uses_512_wide_stride_not_map_width() {
+        // (x=0, y=1) -> 0x200 under the fixed stride, regardless of any loaded width.
+        assert_eq!(cell_linear_index(0, 1), Some(0x200));
+        assert_eq!(cell_linear_index(1, 0), Some(1));
+        // Out of the [0, 0x3FFFF] linear range -> None (then a dummy at the caller).
+        assert_eq!(cell_linear_index(-1, 0), None);
+    }
+
+    #[test]
+    fn get_cellclass_oob_returns_dummy_with_requested_coord() {
+        let g = flat_terrain(2, 2);
+        assert!(matches!(
+            get_cellclass_fallback(Some(&g), 0, 0),
+            CellRef::Real(_)
+        ));
+        // Out of bounds: a non-null dummy carrying the *requested* coord
+        // (never None, never (0,0)).
+        assert_eq!(
+            get_cellclass_fallback(Some(&g), -3, 7),
+            CellRef::Dummy { coord: (-3, 7) }
+        );
+    }
+
+    // --- T2: passability shadow agreement + zero-size short-circuit ---
+
+    #[test]
+    fn passability_rect_shadow_agrees_with_pathgrid_on_plain_cells() {
+        // On cells with no overlay/zone/height constraint, a 1x1 passability rect
+        // must AGREE with PathGrid::is_walkable. Divergence is surfaced (the assert
+        // names the cell), never equalized away.
+        let terrain = flat_terrain(4, 4);
+        let path_grid = PathGrid::from_resolved_terrain(&terrain);
+        for ry in 0..4u16 {
+            for rx in 0..4u16 {
+                let ctx = CellRectPassabilityContext {
+                    rect: CellRect::single(rx, ry),
+                    speed_type: SpeedType::Track,
+                    required_zone_id: None,
+                    movement_zone: MovementZone::Normal,
+                    required_height_or_level: None,
+                    bridge_aware_zone: false,
+                    reject_any_overlay: false,
+                    path_grid: Some(&path_grid),
+                    resolved_terrain: Some(&terrain),
+                    overlay_grid: None,
+                    occupancy: None,
+                    zone_grid: None,
+                };
+                assert_eq!(
+                    check_passability_rect(ctx),
+                    path_grid.is_walkable(rx, ry),
+                    "passability/PathGrid divergence at ({rx},{ry})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn passability_zero_size_rect_returns_true() {
+        let terrain = flat_terrain(1, 1);
+        let ctx = CellRectPassabilityContext {
+            rect: CellRect::new(0, 0, 0, 0),
+            speed_type: SpeedType::Track,
+            required_zone_id: None,
+            movement_zone: MovementZone::Normal,
+            required_height_or_level: None,
+            bridge_aware_zone: false,
+            reject_any_overlay: false,
+            path_grid: None,
+            resolved_terrain: Some(&terrain),
+            overlay_grid: None,
+            occupancy: None,
+            zone_grid: None,
+        };
+        // width<=0 -> true, no cell read.
+        assert!(check_passability_rect(ctx));
+    }
+
+    // --- T3: occupancy blocker order + degenerate-rect corner check ---
+
+    #[test]
+    fn occupancy_blocker_order_matches_engine() {
+        // The reduced-ZoneType column (d) and the slope/special byte (e) reject
+        // independently: a cell with ONLY a slope rejects, and a cell with ONLY a
+        // non-Ground zone-type rejects, each on its own column.
+        let mut terrain = flat_terrain(3, 1);
+        terrain.cells[1].slope_type = 2; // (e) only
+        terrain.cells[2].zone_type = zone_class::WATER; // (d) only
+
+        let clear = CellRectOccupancyContext {
+            rect: CellRect::single(0, 0),
+            reservation_arg: -1,
+            reservations: None,
+            occupancy: None,
+            entities: None,
+            resolved_terrain: Some(&terrain),
+            overlay_grid: None,
+            map_size: None,
+        };
+        assert!(check_occupancy_rect(clear)); // clear cell passes
+
+        let slope_only = CellRectOccupancyContext {
+            rect: CellRect::single(1, 0),
+            reservation_arg: -1,
+            reservations: None,
+            occupancy: None,
+            entities: None,
+            resolved_terrain: Some(&terrain),
+            overlay_grid: None,
+            map_size: None,
+        };
+        assert!(!check_occupancy_rect(slope_only));
+
+        let zone_only = CellRectOccupancyContext {
+            rect: CellRect::single(2, 0),
+            reservation_arg: -1,
+            reservations: None,
+            occupancy: None,
+            entities: None,
+            resolved_terrain: Some(&terrain),
+            overlay_grid: None,
+            map_size: None,
+        };
+        assert!(!check_occupancy_rect(zone_only));
+    }
+
+    #[test]
+    #[ignore = "degenerate 0-size rect playfield-corner outcome depends on UNCHECKED gate #1 (IsRectInPlayfield 0x00578390 exact corner formula); deferred per cell-validation plan T3.5 — real callers never pass a 0-size rect. Un-ignore and pin the convention once that gate is closed."]
+    fn occupancy_zero_size_rect_still_runs_playfield_corners() {
+        // A degenerate rect skips the blocker scan but still runs the corner check:
+        // a fully out-of-play rect fails; an in-play degenerate rect passes.
+        let in_play = CellRectOccupancyContext {
+            rect: CellRect::new(0, 0, 0, 0),
+            reservation_arg: -1,
+            reservations: None,
+            occupancy: None,
+            entities: None,
+            resolved_terrain: None,
+            overlay_grid: None,
+            map_size: Some((4, 4)),
+        };
+        assert!(check_occupancy_rect(in_play));
+
+        let out = CellRectOccupancyContext {
+            rect: CellRect::new(10, 10, 0, 0),
+            reservation_arg: -1,
+            reservations: None,
+            occupancy: None,
+            entities: None,
+            resolved_terrain: None,
+            overlay_grid: None,
+            map_size: Some((4, 4)),
+        };
+        assert!(!check_occupancy_rect(out));
     }
 }

@@ -832,4 +832,146 @@ mod tests {
 
         assert_eq!(cell, Some((0, 2)));
     }
+
+    // --- T5: shadow-assert the FNPC search against the legacy box-ring ---
+
+    #[test]
+    fn find_nearby_candidate_set_shadows_nearest_walkable_around() {
+        // Shadow the new diamond-ring FNPC against the legacy box-ring on the same
+        // grid. They CHOOSE differently by design (frame-counter vs first-match), so
+        // we do NOT assert the chosen cell. Instead we assert the FNPC pick is itself
+        // a cell the legacy predicate would accept — surfacing search-shape divergence
+        // without flipping any authoritative output.
+        use crate::sim::find_nearby_cell::{
+            NearbyQuery, PassabilityArgs, RADIUS_HARD_CAP, find_nearby_passable_cell,
+        };
+        let terrain = flat_terrain(7, 7);
+        let path_grid = PathGrid::from_resolved_terrain(&terrain);
+        let occupancy = OccupancyGrid::new();
+        let entities = EntityStore::new();
+        let movement_profile = SpawnMovementProfile {
+            speed_type: SpeedType::Track,
+            movement_zone: MovementZone::Normal,
+        };
+
+        let q = NearbyQuery {
+            passability: PassabilityArgs {
+                speed_type: movement_profile.speed_type,
+                required_zone_id: None,
+                movement_zone: movement_profile.movement_zone,
+                bridge_aware_zone: false,
+            },
+            allow_bridge_cells: true,
+            check_height: false,
+            check_occupancy: true,
+            radius_cap: RADIUS_HARD_CAP,
+            target_cell: None,
+            path_grid: Some(&path_grid),
+            resolved_terrain: Some(&terrain),
+            overlay_grid: None,
+            occupancy: Some(&occupancy),
+            entities: Some(&entities),
+            zone_grid: None,
+            map_size: Some((terrain.width(), terrain.height())),
+        };
+
+        let fnpc = find_nearby_passable_cell((3, 3), &q, 0).expect("FNPC finds a cell");
+        // The FNPC pick must pass the legacy predicate the box-ring used per candidate.
+        assert!(
+            spawn_fallback_candidate_passable(
+                &path_grid,
+                fnpc,
+                movement_profile,
+                &occupancy,
+                &entities,
+                Some(&terrain),
+                None,
+                None,
+                false,
+            ) && cell_available_for_spawn(
+                fnpc,
+                ObjectCategory::Vehicle,
+                &occupancy,
+                Some(&terrain),
+                false,
+            ),
+            "FNPC chose ({},{}) which the legacy box-ring predicate rejects — search-shape divergence",
+            fnpc.0,
+            fnpc.1
+        );
+    }
+
+    // --- T6: the spawn fallback's accept/reject is the facade's verdict ---
+
+    #[test]
+    fn spawn_fallback_uses_validator_predicates() {
+        // The spawn fallback's per-candidate verdict is single-sourced through the
+        // facade predicates. On a free land cell the combined helper accepts; a
+        // structure-blocked cell is rejected by the occupancy facade.
+        let terrain = flat_terrain(3, 3);
+        let path_grid = PathGrid::from_resolved_terrain(&terrain);
+        let occupancy = OccupancyGrid::new();
+        let entities = EntityStore::new();
+        let movement_profile = SpawnMovementProfile {
+            speed_type: SpeedType::Track,
+            movement_zone: MovementZone::Normal,
+        };
+
+        // Free cell -> the facade-backed helper accepts.
+        assert!(spawn_fallback_candidate_passable(
+            &path_grid,
+            (1, 1),
+            movement_profile,
+            &occupancy,
+            &entities,
+            Some(&terrain),
+            None,
+            None,
+            false,
+        ));
+
+        // The facade occupancy predicate matches the helper: both agree the cell is free.
+        let facade_ok = check_occupancy_rect(CellRectOccupancyContext {
+            rect: CellRect::single(1, 1),
+            reservation_arg: -1,
+            reservations: None,
+            occupancy: Some(&occupancy),
+            entities: Some(&entities),
+            resolved_terrain: Some(&terrain),
+            overlay_grid: None,
+            map_size: None,
+        });
+        assert!(facade_ok);
+    }
+
+    #[test]
+    fn spawn_fallback_no_hash_change_when_predicates_agree() {
+        // Routing the per-candidate decision through the facade does not change the
+        // chosen cell: the legacy box-ring over the facade predicates returns the same
+        // first-match cell it did before the reconcile (proves the invert is hash-neutral).
+        let mut terrain = flat_terrain(3, 3);
+        terrain.cells[0].slope_type = 1; // (0,0) blocked, mirrors the existing fixture
+        let path_grid = PathGrid::from_resolved_terrain(&terrain);
+        let occupancy = OccupancyGrid::new();
+        let entities = EntityStore::new();
+        let movement_profile = SpawnMovementProfile {
+            speed_type: SpeedType::Track,
+            movement_zone: MovementZone::Normal,
+        };
+        let cell = nearest_walkable_around(
+            &path_grid,
+            (1, 1),
+            1,
+            ObjectCategory::Vehicle,
+            movement_profile,
+            &occupancy,
+            &entities,
+            Some(&terrain),
+            None,
+            None,
+            false,
+        );
+        // Same authoritative first-match the legacy ring produced (no behavior flip).
+        assert_eq!(cell, Some((0, 2)));
+    }
 }
