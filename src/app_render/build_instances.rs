@@ -580,7 +580,10 @@ fn build_placement_preview(
                             .unwrap_or_else(|| "Americans".to_string()),
                     )
                     .copied()
-                    .unwrap_or_default();
+                    // Missing local owner → the producers' default scheme entry, not entry 0.
+                    .unwrap_or(crate::rules::house_colors::HouseColorIndex(
+                        crate::rules::house_colors::DEFAULT_SCHEME_ENTRY as u8,
+                    ));
                 let ghost_result =
                     crate::render::selection_overlay::SelectionOverlay::build_ghost_sprite(
                         preview,

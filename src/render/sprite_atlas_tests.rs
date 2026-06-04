@@ -79,8 +79,8 @@ fn test_structure_facing_collapse() {
 
 #[test]
 fn test_different_houses_create_separate_keys() {
-    let hc0 = HouseColorIndex(0); // Gold
-    let hc1 = HouseColorIndex(1); // DarkBlue
+    let hc0 = HouseColorIndex(0); // [Colors] entry 0 (LightGold)
+    let hc1 = HouseColorIndex(1); // [Colors] entry 1 (Gold)
     let k1 = ShpSpriteKey {
         type_id: "E1".into(),
         facing: 64,

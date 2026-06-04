@@ -13,7 +13,7 @@ use crate::map::entities::EntityCategory;
 use crate::map::houses::HouseColorMap;
 use crate::map::terrain;
 use crate::render::batch::SpriteInstance;
-use crate::rules::house_colors::{HouseColorIndex, HouseColorRamps};
+use crate::rules::house_colors::{HouseColorIndex, HouseColorRamps, NO_REMAP};
 use crate::rules::ruleset::RuleSet;
 use crate::sim::combat::{AttackTarget, TargetKind};
 use crate::sim::command::{Command, CommandEnvelope};
@@ -284,10 +284,9 @@ fn rally_tint_for_owner(
     house_color_map: &HouseColorMap,
     ramps: &HouseColorRamps,
 ) -> [f32; 3] {
-    let index = house_color_map
-        .get(owner)
-        .copied()
-        .unwrap_or(HouseColorIndex(0));
+    // Unknown owner → NO_REMAP, which ramp() resolves to the default scheme
+    // (matching the producers' DEFAULT_SCHEME_ENTRY fallback), not entry 0.
+    let index = house_color_map.get(owner).copied().unwrap_or(NO_REMAP);
     // Shade 0 = the scheme's brightest band (palette index 16) — gamemd's
     // radar/target-line color.
     let color = ramps.ramp(index)[0];

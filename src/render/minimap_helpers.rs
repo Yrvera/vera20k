@@ -8,7 +8,7 @@
 
 use crate::map::houses::HouseColorMap;
 use crate::map::terrain::TerrainGrid;
-use crate::rules::house_colors::{HouseColorIndex, HouseColorRamps};
+use crate::rules::house_colors::{HouseColorIndex, HouseColorRamps, NO_REMAP};
 use crate::sim::intern::InternedId;
 use crate::sim::vision::FogState;
 
@@ -279,7 +279,9 @@ pub(super) fn owner_dot_color(
     house_colors: &HouseColorMap,
     ramps: &HouseColorRamps,
 ) -> [u8; 4] {
-    let index: HouseColorIndex = house_colors.get(owner).copied().unwrap_or_default();
+    // Unknown owner → NO_REMAP, which ramp() resolves to the default scheme
+    // (matching the producers' DEFAULT_SCHEME_ENTRY fallback), not entry 0.
+    let index: HouseColorIndex = house_colors.get(owner).copied().unwrap_or(NO_REMAP);
     let c = ramps.ramp(index)[0];
     [c.r, c.g, c.b, 255]
 }
