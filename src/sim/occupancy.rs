@@ -217,7 +217,7 @@ impl OccupancyGrid {
         }
     }
 
-    /// Remove an entity from a cell. No-op if entity not found.
+    /// Remove an entity from a cell, walking ALL layers. No-op if entity not found.
     /// For structures, caller must invoke once per foundation cell.
     pub fn remove(&mut self, rx: u16, ry: u16, entity_id: u64) {
         self.generation = self.generation.wrapping_add(1);
@@ -229,7 +229,35 @@ impl OccupancyGrid {
         }
     }
 
-    /// Move an entity from one cell to another (remove + add).
+    /// Remove an entity from ONLY the given layer's object list in a cell.
+    ///
+    /// This is the gamemd-native `RemoveContent` behavior: it walks only the
+    /// selected per-cell list (ground vs bridge/deck) chosen by the occupant's
+    /// `OnBridge` byte at the call site, never the other layer. On a bridge cell
+    /// crossing the removal must observe the OLD (pre-transition) layer — see
+    /// `move_entity_layered`. No-op if no matching-layer entry exists.
+    ///
+    /// For the single-entry-per-cell invariant this grid maintains (each entity is
+    /// `add`ed exactly once per cell), the per-layer result equals the layer-agnostic
+    /// `remove`; the per-layer form is the authoritative two-layer selector and keeps
+    /// the remove/add halves on the verified independent layers.
+    pub fn remove_on_layer(&mut self, rx: u16, ry: u16, entity_id: u64, layer: MovementLayer) {
+        self.generation = self.generation.wrapping_add(1);
+        if let Some(occ) = self.cells.get_mut(&(rx, ry)) {
+            occ.occupants
+                .retain(|o| !(o.entity_id == entity_id && o.layer == layer));
+            if occ.occupants.is_empty() {
+                self.cells.remove(&(rx, ry));
+            }
+        }
+    }
+
+    /// Move an entity from one cell to another (layer-agnostic remove + add).
+    ///
+    /// Convenience for callers that do NOT change the occupant's object-list layer
+    /// across the move (teleport, same-layer steps). For a bridge cell crossing that
+    /// may flip `on_bridge`, use `move_entity_layered` so the old-cell removal
+    /// observes the OLD layer and the new-cell insertion the NEW layer.
     pub fn move_entity(
         &mut self,
         old_rx: u16,
@@ -243,6 +271,35 @@ impl OccupancyGrid {
     ) {
         self.remove(old_rx, old_ry, entity_id);
         self.add(new_rx, new_ry, entity_id, layer, sub_cell, insertion);
+    }
+
+    /// Authoritative two-layer cell crossing — the verified gamemd order:
+    /// 1. remove from the OLD cell on the **OLD** object-list layer (the
+    ///    pre-transition `on_bridge` layer; `RemoveContent` walks only that list),
+    /// 2. add to the NEW cell on the **NEW** object-list layer (the post-transition
+    ///    `on_bridge` layer; `AddContent` selects the list by the new byte).
+    ///
+    /// Old-cell removal observes the pre-transition layer; new-cell insertion the
+    /// post-transition layer. The two halves may target different layers when the
+    /// occupant stepped on/off the deck during the crossing — this asymmetry is the
+    /// load-bearing part of the contract (the list layer is selected by the
+    /// occupant's `OnBridge` byte sampled at each call site, not a single layer
+    /// reused for both halves).
+    #[allow(clippy::too_many_arguments)]
+    pub fn move_entity_layered(
+        &mut self,
+        old_rx: u16,
+        old_ry: u16,
+        new_rx: u16,
+        new_ry: u16,
+        entity_id: u64,
+        old_layer: MovementLayer,
+        new_layer: MovementLayer,
+        sub_cell: Option<u8>,
+        insertion: CellListInsertion,
+    ) {
+        self.remove_on_layer(old_rx, old_ry, entity_id, old_layer);
+        self.add(new_rx, new_ry, entity_id, new_layer, sub_cell, insertion);
     }
 
     /// Update an entity's sub-cell within the same cell.
@@ -745,6 +802,60 @@ mod tests {
             .map(|o| o.entity_id)
             .collect();
         assert_eq!(ids, vec![3, 1]);
+    }
+
+    #[test]
+    fn transition_removes_old_layer_inserts_new_layer() {
+        // GATE A2 / P5: the authoritative two-layer crossing removes from the OLD
+        // cell on the OLD object-list layer and inserts into the NEW cell on the
+        // NEW layer. Step-onto-deck: occupant starts on Ground at the old cell and
+        // lands on Bridge at the new cell.
+        let mut grid = OccupancyGrid::new();
+        grid.add(
+            1,
+            1,
+            9,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        grid.move_entity_layered(
+            1,
+            1,
+            2,
+            2,
+            9,
+            MovementLayer::Ground, // OLD layer
+            MovementLayer::Bridge, // NEW layer
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        // Old cell emptied (the ground entry was removed); new cell holds the
+        // occupant on the BRIDGE layer, not Ground.
+        assert!(grid.get(1, 1).is_none());
+        assert_eq!(grid.count_on_layer(2, 2, MovementLayer::Ground), 0);
+        assert_eq!(grid.count_on_layer(2, 2, MovementLayer::Bridge), 1);
+        assert!(grid.contains_entity(2, 2, 9));
+    }
+
+    #[test]
+    fn remove_on_layer_walks_only_the_selected_layer() {
+        // GATE A2: RemoveContent walks ONLY the selected per-cell list. With a
+        // single occupant tagged Ground, removing on the WRONG (Bridge) layer is a
+        // no-op; removing on the right (Ground) layer removes it.
+        let mut grid = OccupancyGrid::new();
+        grid.add(
+            5,
+            5,
+            7,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        grid.remove_on_layer(5, 5, 7, MovementLayer::Bridge);
+        assert!(grid.contains_entity(5, 5, 7), "wrong-layer remove must miss");
+        grid.remove_on_layer(5, 5, 7, MovementLayer::Ground);
+        assert!(grid.get(5, 5).is_none(), "right-layer remove must hit");
     }
 
     #[test]

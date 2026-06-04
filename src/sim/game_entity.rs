@@ -844,6 +844,35 @@ mod tests {
         assert!(!e.on_bridge);
     }
 
+    #[test]
+    fn occupancy_list_layer_from_on_bridge_not_loco_layer() {
+        // GATE A2 / P5 (L13): the object-list layer is selected by the occupant's
+        // OnBridge byte, NOT the locomotor/path layer. Pin a mismatch — loco.layer
+        // = Ground while on_bridge = true — and assert the list layer follows
+        // on_bridge (Bridge), the gamemd `Object+0x8C` selector.
+        use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
+        use crate::rules::locomotor_type::LocomotorKind;
+
+        let mut entity = GameEntity::test_default(1, "HTNK", "Americans", 5, 5);
+        let mut loco = LocomotorState::for_test_kind(LocomotorKind::Drive);
+        loco.layer = MovementLayer::Ground;
+        entity.locomotor = Some(loco);
+
+        entity.on_bridge = true;
+        assert_eq!(
+            entity.occupancy_list_layer(),
+            Some(MovementLayer::Bridge),
+            "list layer must follow on_bridge, not loco.layer"
+        );
+
+        entity.on_bridge = false;
+        assert_eq!(
+            entity.occupancy_list_layer(),
+            Some(MovementLayer::Ground),
+            "list layer must follow on_bridge when off the deck"
+        );
+    }
+
     fn building_damage_state_entity(current: u16, max: u16) -> GameEntity {
         let mut entity = GameEntity::test_default(10, "GAPOWR", "Americans", 4, 5);
         entity.category = EntityCategory::Structure;
