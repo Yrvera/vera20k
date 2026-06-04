@@ -10,10 +10,12 @@
 //! - Part of sim/substrate — depends only on util/. No render/ui/audio/net.
 
 pub mod cell;
+pub mod dragon;
 pub mod lepton;
 pub mod quantize;
 
 pub use cell::{CELL_DELTAS, cell_delta, cell_delta_unchecked};
+pub use dragon::{DRAGON_FRAME_TABLE, dragon_frame_index};
 pub use lepton::{LEPTON_DELTAS, lepton_delta, lepton_to_cell};
 pub use quantize::{
     dir_from_facing8, dir_from_facing16, facing8_to_16, muzzle_anim_index_8way, opposite_dir,
