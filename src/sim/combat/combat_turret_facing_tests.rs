@@ -13,7 +13,7 @@ use crate::sim::combat::AttackTarget;
 use crate::sim::game_entity::GameEntity;
 use crate::sim::movement::FacingClass;
 use crate::sim::movement::turret::{
-    body_facing_to_turret, desired_turret_facing, tick_turret_rotation,
+    body_facing_to_turret, desired_turret_facing, facing_toward_lepton, tick_turret_rotation,
 };
 use crate::sim::world::Simulation;
 
@@ -282,5 +282,145 @@ fn unit_post_shadow_holds_through_repeated_fire_and_kill() {
     assert!(
         target_gone,
         "repeated fire should have killed and despawned the target"
+    );
+}
+
+/// Build the attacker's snapshot and invoke the authoritative `unit_post` directly.
+/// (The const flag stays false in this slice, so the host is exercised via a direct
+/// call; `fog_on=false` lets re-acquire find enemies by range/ownership alone.)
+fn call_unit_post(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    id: u64,
+    target: crate::sim::combat::TargetKind,
+    fog_on: bool,
+) {
+    let snap = {
+        let e = sim.substrate.entities.get(id).unwrap();
+        crate::sim::combat::build_attacker_snapshot(e, target, 0, 0, 0, None, None)
+    };
+    let mut emit = crate::sim::combat::CombatEmit::default();
+    crate::sim::world::unit_post::unit_post(
+        &snap,
+        &mut sim.substrate.entities,
+        &sim.substrate.occupancy,
+        rules,
+        &mut sim.interner,
+        if fog_on { Some(&sim.fog) } else { None },
+        sim.overlay_grid.as_ref(),
+        None,
+        sim.resolved_terrain.as_ref(),
+        sim.binary_frame,
+        67,
+        &mut emit,
+    );
+}
+
+#[test]
+fn unit_post_drives_barrel_toward_live_target() {
+    // Authoritative unit_post aims the barrel at the current (live, valid) target.
+    let mut sim = Simulation::new();
+    spawn_turreted(&mut sim, 1, 5, 5, 5);
+    spawn_target(&mut sim, 2, 5, 9); // enemy, due south, in range
+    use_test_interner(&mut sim);
+    let rules = rules_with_mtnk_rot(5);
+    sim.substrate.entities.get_mut(1).unwrap().attack_target = Some(AttackTarget::new(2));
+
+    let expected = {
+        let a = sim.substrate.entities.get(1).unwrap();
+        let t = sim.substrate.entities.get(2).unwrap();
+        facing_toward_lepton(
+            a.position.rx,
+            a.position.ry,
+            a.position.sub_x,
+            a.position.sub_y,
+            t.position.rx,
+            t.position.ry,
+            t.position.sub_x,
+            t.position.sub_y,
+        )
+    };
+    call_unit_post(&mut sim, &rules, 1, crate::sim::combat::TargetKind::Entity(2), false);
+    let dest = sim
+        .substrate
+        .entities
+        .get(1)
+        .unwrap()
+        .barrel_facing
+        .as_ref()
+        .unwrap()
+        .destination();
+    assert_eq!(dest, expected, "unit_post should aim the barrel at the live target");
+}
+
+#[test]
+fn unit_post_faces_reacquired_target_on_retarget_tick() {
+    // Current target dead but a valid enemy is in range: resolve_attacker_fire
+    // re-acquires (retarget), and unit_post must face the NEW target, not the dead one.
+    let mut sim = Simulation::new();
+    spawn_turreted(&mut sim, 1, 5, 5, 5);
+    spawn_target(&mut sim, 2, 8, 5); // dead target, to the east
+    spawn_target(&mut sim, 3, 5, 9); // live enemy, due south, in range
+    use_test_interner(&mut sim);
+    let rules = rules_with_mtnk_rot(5);
+    sim.substrate.entities.get_mut(1).unwrap().attack_target = Some(AttackTarget::new(2));
+    sim.substrate.entities.get_mut(2).unwrap().health.current = 0; // dead → forces re-acquire
+
+    let expected = {
+        let a = sim.substrate.entities.get(1).unwrap();
+        let t = sim.substrate.entities.get(3).unwrap();
+        facing_toward_lepton(
+            a.position.rx,
+            a.position.ry,
+            a.position.sub_x,
+            a.position.sub_y,
+            t.position.rx,
+            t.position.ry,
+            t.position.sub_x,
+            t.position.sub_y,
+        )
+    };
+    call_unit_post(&mut sim, &rules, 1, crate::sim::combat::TargetKind::Entity(2), false);
+    let dest = sim
+        .substrate
+        .entities
+        .get(1)
+        .unwrap()
+        .barrel_facing
+        .as_ref()
+        .unwrap()
+        .destination();
+    assert_eq!(
+        dest, expected,
+        "unit_post must aim at the re-acquired target, not the dead one"
+    );
+}
+
+#[test]
+fn unit_post_idles_barrel_when_target_lost() {
+    // Target dead and no other enemy: resolve_attacker_fire emits remove_attack, so
+    // unit_post returns the barrel to body facing.
+    let mut sim = Simulation::new();
+    spawn_turreted(&mut sim, 1, 5, 5, 5);
+    spawn_target(&mut sim, 2, 5, 9);
+    use_test_interner(&mut sim);
+    let rules = rules_with_mtnk_rot(5);
+    sim.substrate.entities.get_mut(1).unwrap().attack_target = Some(AttackTarget::new(2));
+    sim.substrate.entities.get_mut(2).unwrap().health.current = 0; // dead, no other enemy
+
+    let body = body_facing_to_turret(sim.substrate.entities.get(1).unwrap().facing);
+    call_unit_post(&mut sim, &rules, 1, crate::sim::combat::TargetKind::Entity(2), false);
+    let dest = sim
+        .substrate
+        .entities
+        .get(1)
+        .unwrap()
+        .barrel_facing
+        .as_ref()
+        .unwrap()
+        .destination();
+    assert_eq!(
+        dest, body,
+        "unit_post should idle the barrel to body facing when the target is lost"
     );
 }

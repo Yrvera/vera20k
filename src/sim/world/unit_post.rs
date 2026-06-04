@@ -17,50 +17,123 @@
 //! Dispatch is a `category == Unit` filter — no trait object / dyn (invariant #2).
 
 use super::Simulation;
+use crate::map::overlay_types::OverlayTypeRegistry;
+use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::ruleset::RuleSet;
-use crate::sim::combat;
+use crate::sim::combat::{self, TargetKind, combat_targeting::AttackerSnapshot};
+use crate::sim::entity_store::EntityStore;
+use crate::sim::intern::StringInterner;
+use crate::sim::movement::turret;
+use crate::sim::occupancy::OccupancyGrid;
+use crate::sim::overlay_grid::OverlayGrid;
+use crate::sim::vision::FogState;
+use crate::util::fixed_math::SimFixed;
 
 #[cfg(debug_assertions)]
 use crate::map::entities::EntityCategory;
 #[cfg(debug_assertions)]
-use crate::map::overlay_types::OverlayTypeRegistry;
-#[cfg(debug_assertions)]
-use crate::map::resolved_terrain::ResolvedTerrainGrid;
-#[cfg(debug_assertions)]
-use crate::sim::entity_store::EntityStore;
-#[cfg(debug_assertions)]
-use crate::sim::intern::{InternedId, StringInterner};
-#[cfg(debug_assertions)]
-use crate::sim::movement::turret;
-#[cfg(debug_assertions)]
-use crate::sim::occupancy::OccupancyGrid;
-#[cfg(debug_assertions)]
-use crate::sim::overlay_grid::OverlayGrid;
-#[cfg(debug_assertions)]
-use crate::sim::vision::FogState;
+use crate::sim::intern::InternedId;
 #[cfg(debug_assertions)]
 use std::collections::BTreeSet;
 
-/// When true, `unit_post` is authoritative for Unit fire+facing (flips the legacy
-/// combat + turret sweeps off for Units). L2 leaves this FALSE — the flip, the
-/// `SNAPSHOT_VERSION` bump, and the golden re-baseline are a later slice.
-#[allow(dead_code)]
+/// When true, `unit_post` is authoritative for Unit fire+facing (the legacy combat
+/// Phase-2 loop dispatches Unit attackers here, and `tick_turret_rotation` skips
+/// Units). The flip is hash-neutral (the L2-Task-2 shadow proved per-object output
+/// equals the legacy sweeps); no `SNAPSHOT_VERSION` bump.
 pub(crate) const L2_UNIT_POST_AUTHORITATIVE: bool = false;
 
-/// Authoritative per-object Unit Fire→Facing step (the future home of the flipped
-/// behavior). UNUSED while `L2_UNIT_POST_AUTHORITATIVE == false`; the later flip
-/// slice fills the body (per-object cooldown decrement → fire into the P4/P6 batch
-/// → `barrel.set` toward `desired_turret_facing`). Defined now to fix the seam so
-/// the flip is a small diff.
-#[allow(dead_code)]
+/// Authoritative per-object Unit Fire→Facing step. Called once per Unit attacker from
+/// the combat Phase-2 dispatch in live-LOGIC order, so fire emission order — and thus
+/// the downstream `scenario_rng` smudge cursor — is preserved. FIRE reuses the shared
+/// `resolve_attacker_fire` body (HP stays batched in P4/P6); FACING then drives the
+/// barrel toward the POST-fire target (honoring any retarget/remove this fire emitted),
+/// matching gamemd's per-object `Fire_At_Target` → `Facing_Update`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn unit_post(
-    _sim: &mut Simulation,
-    _id: u64,
-    _rules: &RuleSet,
-    _binary_frame: u32,
-    _tick_ms: u32,
-    _out: &mut combat::CombatEmit,
+    snap: &AttackerSnapshot,
+    entities: &mut EntityStore,
+    occupancy: &OccupancyGrid,
+    rules: &RuleSet,
+    interner: &mut StringInterner,
+    fog: Option<&FogState>,
+    overlay_grid: Option<&OverlayGrid>,
+    overlay_registry: Option<&OverlayTypeRegistry>,
+    terrain: Option<&ResolvedTerrainGrid>,
+    binary_frame: u32,
+    tick_ms: u32,
+    out: &mut combat::CombatEmit,
 ) {
+    // FIRE — shared body; emits into `out` (HP applied later in the batched P4/P6).
+    combat::resolve_attacker_fire(
+        snap,
+        entities,
+        rules,
+        interner,
+        fog,
+        occupancy,
+        overlay_grid,
+        overlay_registry,
+        terrain,
+        binary_frame,
+        tick_ms,
+        out,
+    );
+
+    // FACING — turreted Units only. Drive the barrel toward the POST-fire target: a
+    // retarget this fire emitted → the new target; a remove → idle (body facing);
+    // otherwise the snapshot's target. Mirrors what Phase 3 applies and what the legacy
+    // post-combat turret sweep faced (so id-order→live-order facing is output-neutral).
+    if snap.barrel_facing.is_none() {
+        return;
+    }
+    let post_target: Option<TargetKind> = if let Some(&(_, new)) = out
+        .retarget_events
+        .iter()
+        .rev()
+        .find(|&&(id, _)| id == snap.stable_id)
+    {
+        Some(TargetKind::Entity(new))
+    } else if out.remove_attack.contains(&snap.stable_id) {
+        None
+    } else {
+        Some(snap.target)
+    };
+    let desired: u16 = match post_target {
+        Some(TargetKind::Entity(tid)) => match entities.get(tid) {
+            Some(t) => turret::facing_toward_lepton(
+                snap.pos_rx,
+                snap.pos_ry,
+                snap.sub_x,
+                snap.sub_y,
+                t.position.rx,
+                t.position.ry,
+                t.position.sub_x,
+                t.position.sub_y,
+            ),
+            None => turret::body_facing_to_turret(snap.facing),
+        },
+        Some(TargetKind::Cell(rx, ry)) => turret::facing_toward_lepton(
+            snap.pos_rx,
+            snap.pos_ry,
+            snap.sub_x,
+            snap.sub_y,
+            rx,
+            ry,
+            SimFixed::from_num(128),
+            SimFixed::from_num(128),
+        ),
+        None => turret::body_facing_to_turret(snap.facing),
+    };
+    let rot_byte: u8 = rules
+        .object(interner.resolve(snap.type_id))
+        .map(|obj| obj.turret_rot.clamp(0, 0xFF) as u8)
+        .unwrap_or(5);
+    if let Some(entity) = entities.get_mut(snap.stable_id) {
+        if let Some(ref mut barrel) = entity.barrel_facing {
+            barrel.set_rot(rot_byte);
+            barrel.set(desired, binary_frame);
+        }
+    }
 }
 
 /// Read-only shadow of one Unit's FIRE for the current tick. Emits fire events
