@@ -10,5 +10,7 @@
 //! - Part of sim/substrate — depends only on util/. No render/ui/audio/net.
 
 pub mod cell;
+pub mod lepton;
 
 pub use cell::{CELL_DELTAS, cell_delta, cell_delta_unchecked};
+pub use lepton::{LEPTON_DELTAS, lepton_delta, lepton_to_cell};
