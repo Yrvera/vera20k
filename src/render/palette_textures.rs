@@ -32,7 +32,7 @@ pub const MAX_HOUSES: u32 = 32;
 pub const PALETTE_ENTRIES: u32 = 256;
 
 /// House remap range size: palette indices [16, 32) get house-color RGB
-/// substitution. Matches `house_colors::house_color_ramp` length.
+/// substitution. Matches the per-scheme band length in `house_colors`.
 pub const RAMP_SIZE: u32 = 16;
 
 /// GPU resources for voxel sprite color resolution.
