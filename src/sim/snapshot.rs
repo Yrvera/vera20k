@@ -367,6 +367,14 @@ mod tests {
         assert!(result.is_err(), "mismatched version should fail");
     }
 
+    /// P1+P2 production+economy shadow is additive `#[serde(skip)]` with NO serde
+    /// derive on the new types, so the bincode layout is byte-identical — the
+    /// version must NOT bump. The 17->18 bump lands at the authority flip (P5).
+    #[test]
+    fn snapshot_version_is_17_in_shadow_phase() {
+        assert_eq!(super::SNAPSHOT_VERSION, 17);
+    }
+
     /// `AttackTarget::for_cell` survives serialize → deserialize as the same
     /// `TargetKind::Cell` variant (regression for SNAPSHOT_VERSION 4 → 5).
     #[test]

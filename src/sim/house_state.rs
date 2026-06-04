@@ -7,6 +7,7 @@
 //! interned owner name for deterministic iteration (BTreeMap + InternedId give
 //! sorted order natively; all peers intern in the same order).
 
+use crate::sim::economy::Economy;
 use crate::sim::intern::InternedId;
 
 /// Per-player game state.
@@ -46,6 +47,12 @@ pub struct HouseState {
     /// Encoding: 0=N, 1=E, 2=S, 3=W. Computed at game start from base_center
     /// via the closest-edge-of-bounds algorithm.
     pub waypoint_edge: u8,
+    /// Per-house wallet/storage/statistics shadow (P1). Mirrors the authoritative
+    /// `credits` each tick; non-serialized and non-hashed until the authority flip.
+    /// `Economy` carries no serde derive in P1+P2, so this `#[serde(skip)]` field
+    /// cannot change the bincode layout or the lockstep state hash.
+    #[serde(skip)]
+    pub economy: Economy,
 }
 
 impl HouseState {
@@ -72,6 +79,7 @@ impl HouseState {
             base_center: None,
             tech_level,
             waypoint_edge: 0,
+            economy: Economy::default(),
         }
     }
 }

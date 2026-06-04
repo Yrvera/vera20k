@@ -12,6 +12,7 @@ use crate::sim::intern::InternedId;
 use crate::sim::miner::ResourceNode;
 use crate::sim::miner::miner_dock::{DockReservations, RefineryDockContacts};
 use crate::sim::ore_growth::{OreGrowthConfig, OreGrowthState};
+use crate::sim::production::factory::FactoryRegistry;
 
 /// Initial credits for the local player.
 pub const STARTING_CREDITS: i32 = 5000;
@@ -132,8 +133,13 @@ pub fn disabled_reason_text(reason: &BuildDisabledReason) -> String {
 }
 
 /// Sidebar queue/category for build options.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
+)]
 pub enum ProductionCategory {
+    /// Default variant so the `Factory`/`FactoryRegistry` value-types can derive
+    /// `Default`. Serde/hash-neutral: adds a `::default()` ctor, changes no value.
+    #[default]
     Building,
     Defense,
     Infantry,
@@ -235,6 +241,12 @@ pub struct ProductionState {
     pub depot_dock_reservations: DockReservations,
     /// Airfield dock reservations — multi-slot (NumberOfDocks per airfield).
     pub airfield_docks: crate::sim::docking::aircraft_dock::AirfieldDocks,
+    /// Per-(house, category) factory shadow, rebuilt each tick from
+    /// `queues_by_owner`. Derived; non-serialized and non-hashed until the
+    /// authority flip. `FactoryRegistry` carries no serde derive in P1+P2, so this
+    /// `#[serde(skip)]` field cannot change the bincode layout or the state hash.
+    #[serde(skip)]
+    pub factory_shadow: FactoryRegistry,
 }
 
 impl Default for ProductionState {
@@ -258,6 +270,7 @@ impl Default for ProductionState {
             default_ore_overlay_id: None,
             depot_dock_reservations: DockReservations::default(),
             airfield_docks: crate::sim::docking::aircraft_dock::AirfieldDocks::default(),
+            factory_shadow: FactoryRegistry::default(),
         }
     }
 }

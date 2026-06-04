@@ -23,6 +23,7 @@
 // --- Core types: entity storage, components, commands, RNG, interning ---
 pub mod command;
 pub mod components;
+pub mod economy; // per-house wallet/storage/statistics value-type (production+economy substrate)
 pub mod entity_store;
 pub mod game_entity;
 pub mod intern;
