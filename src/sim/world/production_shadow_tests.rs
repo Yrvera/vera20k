@@ -14,7 +14,10 @@ use crate::sim::economy::Economy;
 use crate::sim::game_entity::GameEntity;
 use crate::sim::house_state::HouseState;
 use crate::sim::intern::InternedId;
-use crate::sim::production::{BuildQueueItem, BuildQueueState, ProductionCategory, PRODUCTION_STEPS};
+use crate::sim::production::{
+    BuildQueueItem, BuildQueueState, CancelOutcome, ProductionCategory, StepOutcome,
+    PRODUCTION_STEPS,
+};
 use std::collections::{BTreeMap, VecDeque};
 
 fn empty_rules() -> RuleSet {
@@ -453,4 +456,140 @@ fn factory_oracle_step_trace_walks_live_structures() {
         sim.factory_oracle_step_trace(),
         "the probe is deterministic across calls"
     );
+}
+
+// ===== P4 — FIFO queue + cancel + partial refund (hash-neutral oracle) =====
+
+/// P4 no-hash guarantee (mirrors `factory_advance_step_does_not_change_state_hash`):
+/// cancelling a mid-build active object on a CLONE of the registry against a CLONE of
+/// the wallet leaves `state_hash()` bit-identical. With `empty_rules` the cost is 0
+/// (refund 0); the contract here is the HASH + legacy-wallet invariants, which hold
+/// regardless of the refund value (the nonzero refund is proven in the pure
+/// `cancel_one_active_when_no_queued_copy` test).
+#[test]
+fn factory_cancel_one_does_not_change_state_hash() {
+    let mut sim = Simulation::new();
+    let rules = empty_rules();
+    let owner = sim.interner.intern("Americans");
+    sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
+    let ty = sim.interner.intern("GRIZZLY");
+    insert_queue(
+        &mut sim,
+        owner,
+        ProductionCategory::Vehicle,
+        queued_item(owner, ty, ProductionCategory::Vehicle, BuildQueueState::Building, 54, 30, 1),
+    );
+    sim.refresh_production_shadow(Some(&rules)); // cost-based shadow built
+    let before = sim.state_hash();
+    let legacy_credits = sim.houses[&owner].credits;
+
+    // Cancel (active abandon, mid-build) against a CLONE of the registry + a CLONE of
+    // the wallet; the active GRIZZLY has no queued copy, so the active-abandon branch
+    // fires (AbandonedActive).
+    let mut reg = sim.production.factory_shadow.clone();
+    let mut oracle = sim.houses[&owner].economy.clone();
+    let outcome = reg.cancel_one(owner, ProductionCategory::Vehicle, ty, &mut oracle);
+    assert!(
+        matches!(outcome, CancelOutcome::AbandonedActive { .. }),
+        "the active build (no queued copy) is abandoned on the clone"
+    );
+
+    assert_eq!(
+        before,
+        sim.state_hash(),
+        "P4 cancel on a clone must not perturb the state hash (serde-skip + clone)"
+    );
+    assert_eq!(
+        sim.houses[&owner].credits, legacy_credits,
+        "the legacy wallet is untouched by the oracle cancel"
+    );
+}
+
+/// P4 C7/C12: completion suspends with the object attached; `start_next_queued` does
+/// NOT advance while the object is held; only after the object is CLEARED (simulating
+/// the delivery commit, a later slice) does the queue front advance. Proves the
+/// negative invariant end-to-end WITHOUT wiring delivery. Driven on a CLONE.
+#[test]
+fn queue_advances_only_after_delivery() {
+    let mut sim = Simulation::new();
+    let rules = empty_rules();
+    let owner = sim.interner.intern("Americans");
+    sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
+    let active = sim.interner.intern("GRIZZLY");
+    let next = sim.interner.intern("FV"); // the queued tail item
+    // Front Building (active object) with a tail item behind it.
+    let mut dq = VecDeque::new();
+    dq.push_back(queued_item(owner, active, ProductionCategory::Vehicle, BuildQueueState::Building, 54, 30, 1));
+    dq.push_back(queued_item(owner, next, ProductionCategory::Vehicle, BuildQueueState::Queued, 54, 54, 2));
+    let mut cats = BTreeMap::new();
+    cats.insert(ProductionCategory::Vehicle, dq);
+    sim.production.queues_by_owner.insert(owner, cats);
+    sim.refresh_production_shadow(Some(&rules));
+
+    let before = sim.state_hash();
+    let mut f = sim.production.factory_shadow.iter_insertion_ordered()[0].clone();
+    assert_eq!(f.object.as_ref().map(|o| o.type_id), Some(active), "active = GRIZZLY");
+    assert_eq!(f.queue.iter().copied().collect::<Vec<_>>(), vec![next], "tail = [FV]");
+    // empty_rules -> cost 0; seed a real cost so completion takes the full ladder.
+    f.progress = 0;
+    f.balance = 700;
+    f.original_balance = 700;
+    let mut oracle = sim.houses[&owner].economy.clone();
+    loop {
+        if matches!(f.advance_one_step(&mut oracle), StepOutcome::Completed) {
+            break;
+        }
+    }
+    assert!(f.suspended && f.object.is_some(), "C12: completion holds the object, suspended");
+    // The queue does NOT advance on completion alone.
+    assert_eq!(f.start_next_queued(), None, "C7: held object blocks the advance");
+    assert_eq!(
+        f.queue.iter().copied().collect::<Vec<_>>(),
+        vec![next],
+        "queue front unchanged while the object is held"
+    );
+    // Simulate the delivery commit: clear the object, THEN the queue advances.
+    f.object = None;
+    f.suspended = false;
+    assert_eq!(f.start_next_queued(), Some(next), "after delivery the front pops");
+    assert_eq!(f.object.as_ref().map(|o| o.type_id), Some(next), "active = FV");
+    assert!(f.queue.is_empty(), "tail consumed");
+
+    assert_eq!(before, sim.state_hash(), "the clone drive must not perturb the hash");
+}
+
+/// P4 determinism: identical fixtures over N ticks with a per-tick cancel probe on
+/// CLONES produce identical per-tick state_hash sequences (mirrors
+/// `production_shadow_with_oracle_is_deterministic`).
+#[test]
+fn production_shadow_with_cancel_is_deterministic() {
+    fn run() -> Vec<u64> {
+        let mut sim = Simulation::new();
+        let rules = empty_rules();
+        let owner = sim.interner.intern("Americans");
+        sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
+        let ty = sim.interner.intern("GRIZZLY");
+        insert_queue(
+            &mut sim,
+            owner,
+            ProductionCategory::Vehicle,
+            queued_item(owner, ty, ProductionCategory::Vehicle, BuildQueueState::Building, 54, 30, 1),
+        );
+        let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+        (0..5)
+            .map(|_| {
+                sim.advance_tick(&[], Some(&rules), &heights, None, None, 67);
+                // Per-tick clone cancel probe (NEVER written back).
+                let mut reg = sim.production.factory_shadow.clone();
+                let mut oracle = sim
+                    .houses
+                    .get(&owner)
+                    .map(|h| h.economy.clone())
+                    .unwrap_or_default();
+                let _ = reg.cancel_one(owner, ProductionCategory::Vehicle, ty, &mut oracle);
+                sim.state_hash()
+            })
+            .collect()
+    }
+    assert_eq!(run(), run(), "advance_tick with the P4 clone cancel probe stays deterministic");
 }
