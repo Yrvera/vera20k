@@ -6,7 +6,8 @@
 use super::*;
 use crate::map::houses::HouseAllianceMap;
 use crate::render::minimap_helpers::*;
-use crate::rules::house_colors::HouseColorIndex;
+use crate::rules::color_scheme::ColorSchemeEntry;
+use crate::rules::house_colors::{HouseColorIndex, HouseColorRamps};
 use crate::sim::components::Position;
 use crate::sim::intern::test_intern;
 use crate::sim::vision::FogState;
@@ -71,25 +72,40 @@ fn test_world_to_minimap_pixel_with_offset() {
     assert_eq!(py, 0);
 }
 
-#[test]
-fn test_owner_dot_color_uses_house_map() {
-    let mut map: HouseColorMap = HouseColorMap::new();
-    map.insert("Americans".to_string(), HouseColorIndex(1)); // DarkBlue
-    map.insert("Russians".to_string(), HouseColorIndex(2)); // DarkRed
-
-    let blue: [u8; 4] = owner_dot_color("Americans", &map);
-    let red: [u8; 4] = owner_dot_color("Russians", &map);
-    // Blue should have more B than R, red should have more R than B.
-    assert!(blue[2] > blue[0], "Americans should be blue-ish");
-    assert!(red[0] > red[2], "Russians should be red-ish");
+/// Ramps where entry 0 = Gold, entry 1 = DarkBlue, entry 2 = DarkRed (HSV from
+/// the retail `[Colors]` list) so dot colors carry the expected hue dominance.
+fn test_ramps() -> HouseColorRamps {
+    let mk = |name: &str, hsv: [u8; 3]| ColorSchemeEntry {
+        name: name.into(),
+        hsv,
+    };
+    HouseColorRamps::from_schemes(&[
+        mk("Gold", [43, 239, 255]),
+        mk("DarkBlue", [153, 214, 212]),
+        mk("DarkRed", [0, 230, 255]),
+    ])
 }
 
 #[test]
-fn test_owner_dot_color_unknown_defaults_gold() {
+fn test_owner_dot_color_uses_house_map() {
+    let mut map: HouseColorMap = HouseColorMap::new();
+    map.insert("Americans".to_string(), HouseColorIndex(1)); // DarkBlue entry
+    map.insert("Russians".to_string(), HouseColorIndex(2)); // DarkRed entry
+    let ramps = test_ramps();
+
+    let blue: [u8; 4] = owner_dot_color("Americans", &map, &ramps);
+    let red: [u8; 4] = owner_dot_color("Russians", &map, &ramps);
+    // Blue should have more B than R, red should have more R than B.
+    assert!(blue[2] > blue[0], "Americans should be blue-ish: {blue:?}");
+    assert!(red[0] > red[2], "Russians should be red-ish: {red:?}");
+}
+
+#[test]
+fn test_owner_dot_color_unknown_defaults_to_entry_zero() {
     let map: HouseColorMap = HouseColorMap::new();
-    let gold: [u8; 4] = owner_dot_color("Unknown", &map);
-    // Gold ramp: R and G should both be significant.
-    assert!(gold[0] > 100, "Gold should have significant R");
+    let gold: [u8; 4] = owner_dot_color("Unknown", &map, &test_ramps());
+    // Unknown owner → entry 0 (Gold here): R significant, fully opaque.
+    assert!(gold[0] > 100, "Gold should have significant R: {gold:?}");
     assert!(gold[3] == 255, "Alpha should be fully opaque");
 }
 

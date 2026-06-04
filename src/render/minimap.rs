@@ -25,6 +25,7 @@ use crate::map::houses::HouseColorMap;
 use crate::map::terrain::TerrainGrid;
 use crate::render::batch::{BatchRenderer, BatchTexture, SpriteInstance};
 use crate::render::gpu::GpuContext;
+use crate::rules::house_colors::HouseColorRamps;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::intern::InternedId;
 use crate::sim::vision::FogState;
@@ -281,7 +282,10 @@ impl MinimapRenderer {
             }
         }
 
-        // Stamp unit dots on top of terrain + overlays.
+        // Stamp unit dots on top of terrain + overlays. Resolve the per-house
+        // ramp table once (the default empty table only when rules are absent).
+        let default_ramps = HouseColorRamps::default();
+        let ramps: &HouseColorRamps = rules.map(|r| &r.house_color_ramps).unwrap_or(&default_ramps);
         for entity in entities.values() {
             let pos = &entity.position;
             let type_str = interner.map_or("", |i| i.resolve(entity.type_ref));
@@ -322,7 +326,7 @@ impl MinimapRenderer {
             let color: [u8; 4] = if is_building {
                 COLOR_BUILDING
             } else {
-                owner_dot_color(owner_str, house_colors)
+                owner_dot_color(owner_str, house_colors, ramps)
             };
             let dot_size: u32 = if is_building {
                 let (fw, fh) = obj
