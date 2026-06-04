@@ -15,6 +15,7 @@ pub mod edge_cell;
 mod logic_vector;
 mod substrate;
 mod techno_ai;
+mod unit_post;
 mod world_commands;
 mod world_hash;
 mod world_orders;

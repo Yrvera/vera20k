@@ -11,6 +11,7 @@
 
 use crate::rules::ruleset::RuleSet;
 use crate::sim::entity_store::EntityStore;
+use crate::sim::game_entity::GameEntity;
 use crate::util::fixed_math::{SimFixed, facing_from_delta_int_u16};
 
 /// Compute the signed shortest-path rotation from `current` to `target` in 8-bit facing space.
@@ -70,6 +71,51 @@ pub fn body_facing_to_turret(body: u8) -> u16 {
     (body as u16) << 8
 }
 
+/// The barrel facing `tick_turret_rotation` drives this entity toward this tick:
+/// toward its attack target (lepton-precise) when it has one, else back to body
+/// facing. `None` when the entity has no turret. PURE READ — mutates neither the
+/// entity nor the store. Shared by the global turret sweep and the per-object
+/// Fire→Facing host so both compute identical barrel destinations (per-entity, so
+/// id-order and live-order walks produce the same result).
+pub(crate) fn desired_turret_facing(entity: &GameEntity, entities: &EntityStore) -> Option<u16> {
+    entity.barrel_facing.as_ref()?;
+    let desired: u16 = if let Some(ref attack) = entity.attack_target {
+        // Look up target position. Entity targets via stable ID, Cell targets via
+        // cell-center leptons (force-fire on ground).
+        let target_pos = match attack.target {
+            crate::sim::combat::TargetKind::Entity(target_id) => entities.get(target_id).map(|t| {
+                (
+                    t.position.rx,
+                    t.position.ry,
+                    t.position.sub_x,
+                    t.position.sub_y,
+                )
+            }),
+            crate::sim::combat::TargetKind::Cell(rx, ry) => {
+                Some((rx, ry, SimFixed::from_num(128), SimFixed::from_num(128)))
+            }
+        };
+        match target_pos {
+            Some((trx, try_, tsx, tsy)) => facing_toward_lepton(
+                entity.position.rx,
+                entity.position.ry,
+                entity.position.sub_x,
+                entity.position.sub_y,
+                trx,
+                try_,
+                tsx,
+                tsy,
+            ),
+            // Target gone — idle-return to body facing.
+            None => body_facing_to_turret(entity.facing),
+        }
+    } else {
+        // No target — return to body facing (research doc §5.1).
+        body_facing_to_turret(entity.facing)
+    };
+    Some(desired)
+}
+
 /// Per-binary-frame turret rotation — drives barrel_facing toward each
 /// entity's desired facing.
 ///
@@ -98,48 +144,10 @@ pub fn tick_turret_rotation(
             Some(e) => e,
             None => continue,
         };
-        if entity.barrel_facing.is_none() {
+        // Skip non-turreted entities; otherwise take the per-entity desired facing
+        // from the shared helper (single source for sweep + per-object host).
+        let Some(desired_facing) = desired_turret_facing(entity, entities) else {
             continue;
-        }
-
-        let desired_facing: u16 = if let Some(ref attack) = entity.attack_target {
-            // Look up target position. Entity targets via stable ID,
-            // Cell targets via cell-center leptons (force-fire on ground).
-            let target_pos = match attack.target {
-                crate::sim::combat::TargetKind::Entity(target_id) => {
-                    entities.get(target_id).map(|t| {
-                        (
-                            t.position.rx,
-                            t.position.ry,
-                            t.position.sub_x,
-                            t.position.sub_y,
-                        )
-                    })
-                }
-                crate::sim::combat::TargetKind::Cell(rx, ry) => Some((
-                    rx,
-                    ry,
-                    crate::util::fixed_math::SimFixed::from_num(128),
-                    crate::util::fixed_math::SimFixed::from_num(128),
-                )),
-            };
-            match target_pos {
-                Some((trx, try_, tsx, tsy)) => facing_toward_lepton(
-                    entity.position.rx,
-                    entity.position.ry,
-                    entity.position.sub_x,
-                    entity.position.sub_y,
-                    trx,
-                    try_,
-                    tsx,
-                    tsy,
-                ),
-                // Target gone — idle-return to body facing.
-                None => body_facing_to_turret(entity.facing),
-            }
-        } else {
-            // No target — return to body facing (research doc §5.1).
-            body_facing_to_turret(entity.facing)
         };
 
         updates.push(TurretUpdate {
