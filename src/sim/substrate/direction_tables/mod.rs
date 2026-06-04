@@ -11,6 +11,10 @@
 
 pub mod cell;
 pub mod lepton;
+pub mod quantize;
 
 pub use cell::{CELL_DELTAS, cell_delta, cell_delta_unchecked};
 pub use lepton::{LEPTON_DELTAS, lepton_delta, lepton_to_cell};
+pub use quantize::{
+    dir_from_facing8, dir_from_facing16, facing8_to_16, muzzle_anim_index_8way, opposite_dir,
+};
