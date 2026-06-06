@@ -1827,10 +1827,20 @@ impl Simulation {
         execute_tick: u64,
         spawned_entities: &mut bool,
     ) {
-        // --- Phase 8: AI ---
-        // DEPENDS ON: all prior phases (AI reads full game state to make decisions).
+        // --- Phase 8: Defeat detection (runs BEFORE AI) ---
+        // gamemd evaluates each house's defeat before its AI manage/produce step,
+        // so a house that lost its last building/unit this tick can issue NO AI
+        // command this tick. Owned counts are final here after combat + production
+        // (but before this tick's AI spawns); tick_ai then skips any house already
+        // flagged defeated via its is_defeated gate.
+        if self.tick > 0 {
+            self.check_defeat(rules);
+        }
+
+        // --- Phase 8 (cont.): AI ---
+        // DEPENDS ON: all prior phases + the defeat status set just above (defeated
+        // houses are gated out inside tick_ai).
         // PRODUCES: commands applied immediately in the same tick.
-        // AI decision loop: generate commands for computer players.
         // Temporarily take ai_players out to avoid borrow conflict with &self.
         if rules.is_some() && !self.ai_players.is_empty() {
             let mut ai_state = std::mem::take(&mut self.ai_players);
@@ -1858,13 +1868,6 @@ impl Simulation {
                     *spawned_entities = true;
                 }
             }
-        }
-
-        // --- Phase 8.5: Defeat detection ---
-        // DEPENDS ON: combat (deaths processed), production (spawns), AI (commands applied).
-        // Runs after all game-state mutations so owned counts are final for this tick.
-        if self.tick > 0 {
-            self.check_defeat(rules);
         }
 
         // --- Phase 9: Building animations + cleanup ---
