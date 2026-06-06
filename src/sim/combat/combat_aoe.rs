@@ -157,7 +157,10 @@ pub(crate) fn apply_aoe_damage(
     }
 
     for entity in entities.values() {
-        if entity.health.current == 0 {
+        // Dying corpses (uninit'd this tick, awaiting the end-of-tick drain)
+        // are off the live object list — exclude them. A sold/captured corpse
+        // keeps health>0, so gate on `dying`, not just health.
+        if entity.health.current == 0 || entity.dying {
             continue;
         }
 
@@ -265,7 +268,7 @@ fn push_entity_aoe_damage(
     let Some(entity) = entities.get(entity_id) else {
         return;
     };
-    if entity.health.current == 0 {
+    if entity.health.current == 0 || entity.dying {
         return;
     }
 

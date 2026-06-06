@@ -1681,6 +1681,11 @@ pub fn tick_movement_with_grids(
 fn sync_formation_speeds(entities: &mut EntityStore) {
     let mut group_min_speed: BTreeMap<u32, SimFixed> = BTreeMap::new();
     for entity in entities.values() {
+        // A Dying corpse keeps its movement_target but won't move; it must not
+        // drag a living formation's speed down to its (possibly slower) value.
+        if entity.dying {
+            continue;
+        }
         if let Some(ref mt) = entity.movement_target {
             if let Some(gid) = mt.group_id {
                 let entry = group_min_speed.entry(gid).or_insert(mt.speed);
@@ -1692,6 +1697,9 @@ fn sync_formation_speeds(entities: &mut EntityStore) {
     }
     if !group_min_speed.is_empty() {
         for entity in entities.values_mut() {
+            if entity.dying {
+                continue;
+            }
             if let Some(ref mut mt) = entity.movement_target {
                 if let Some(gid) = mt.group_id {
                     if let Some(&min_spd) = group_min_speed.get(&gid) {

@@ -166,7 +166,8 @@ pub(super) fn owner_matches_build_identity(sim: &Simulation, owner: &str, candid
 /// Check if the owner has ANY completed structure from the PrerequisiteOverride list.
 fn has_any_override_building(sim: &Simulation, owner: &str, overrides: &[String]) -> bool {
     sim.substrate.entities.values().any(|e| {
-        sim.interner.resolve(e.owner).eq_ignore_ascii_case(owner)
+        !e.dying
+            && sim.interner.resolve(e.owner).eq_ignore_ascii_case(owner)
             && e.category == EntityCategory::Structure
             && e.building_up.is_none()
             && overrides
@@ -192,7 +193,7 @@ fn count_owned_and_queued(sim: &Simulation, owner: &str, type_id: &str) -> u32 {
         (Some(oid), Some(tid)) => sim
             .substrate.entities
             .values()
-            .filter(|e| e.owner == oid && e.type_ref == tid)
+            .filter(|e| !e.dying && e.owner == oid && e.type_ref == tid)
             .count() as u32,
         _ => 0,
     };
@@ -240,7 +241,8 @@ fn first_missing_prereq(
         }
         // Only structures satisfy prerequisites — units/infantry/aircraft don't count.
         let ok = sim.substrate.entities.values().any(|e| {
-            sim.interner.resolve(e.owner).eq_ignore_ascii_case(owner)
+            !e.dying
+                && sim.interner.resolve(e.owner).eq_ignore_ascii_case(owner)
                 && e.category == EntityCategory::Structure
                 && e.building_up.is_none()
                 && structure_satisfies_prerequisite(rules, sim.interner.resolve(e.type_ref), p)
@@ -285,7 +287,8 @@ fn has_factory_for_owner(
     interner: &crate::sim::intern::StringInterner,
 ) -> bool {
     entities.values().any(|e| {
-        interner.resolve(e.owner).eq_ignore_ascii_case(owner)
+        !e.dying
+            && interner.resolve(e.owner).eq_ignore_ascii_case(owner)
             && e.category == EntityCategory::Structure
             && e.building_up.is_none()
             && is_production_factory(rules, interner.resolve(e.type_ref), category)
@@ -539,7 +542,8 @@ pub(in crate::sim::production) fn matching_factory_count_for_owner(
     entities
         .values()
         .filter(|e| {
-            interner.resolve(e.owner).eq_ignore_ascii_case(owner)
+            !e.dying
+                && interner.resolve(e.owner).eq_ignore_ascii_case(owner)
                 && e.category == EntityCategory::Structure
                 && e.building_up.is_none()
                 && is_matching_factory(rules, interner.resolve(e.type_ref), category)
@@ -557,6 +561,10 @@ pub fn producer_candidates_for_owner_category(
 ) -> Vec<(u64, u16, u16, String)> {
     let mut preferred_factories: Vec<(u64, u16, u16, String)> = Vec::new();
     for e in entities.values() {
+        // A Dying factory corpse must not be selected as a unit's producer/exit.
+        if e.dying {
+            continue;
+        }
         if !interner.resolve(e.owner).eq_ignore_ascii_case(owner) {
             continue;
         }

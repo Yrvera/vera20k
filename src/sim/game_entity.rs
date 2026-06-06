@@ -800,6 +800,17 @@ impl GameEntity {
         self.health.current > 0
     }
 
+    /// Whether this entity is an active (non-corpse) object — the native
+    /// `IsAlive`-equivalent gate for mid-tick raw-store consumers. `false` once
+    /// `uninit` has flagged it `dying` (it then lingers in the store, off the
+    /// logic vector and occupancy grid, until the end-of-tick deferred-delete
+    /// drain). Distinct from `is_alive()` (health-based): a sold or captured
+    /// structure keeps its health but is `dying`, so vision/power/production/
+    /// movement scans must use THIS, not `health.current > 0`, to exclude it.
+    pub fn is_active(&self) -> bool {
+        !self.dying
+    }
+
     /// Whether this entity is in any deploy phase (Deploying, Deployed, or Undeploying).
     /// Used by the 7 movement-command handlers to silently ignore movement orders.
     pub fn is_deployed(&self) -> bool {

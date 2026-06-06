@@ -1604,6 +1604,11 @@ impl Simulation {
             let mut gap_generators: Vec<(InternedId, u16, u16)> = Vec::new();
 
             for entity in self.substrate.entities.values() {
+                // A Dying SpySat/GapGen corpse must not reveal the map or shroud
+                // an area for the tick after it is destroyed/sold.
+                if entity.dying {
+                    continue;
+                }
                 if entity.category != EntityCategory::Structure {
                     continue;
                 }

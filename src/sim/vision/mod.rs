@@ -485,6 +485,11 @@ pub fn recompute_owner_visibility_in_place(
     // Batch entities by owner to avoid repeated BTreeMap lookups and String allocations.
     // Each unique owner's grid is looked up once, then all their entities reveal into it.
     for entity in entities.values() {
+        // Dying corpses (uninit'd this tick, awaiting the end-of-tick drain)
+        // provide no vision — gamemd conceals on death.
+        if entity.dying {
+            continue;
+        }
         // Skip entities inside a transport — they don't provide vision.
         if entity.passenger_role.is_inside_transport() {
             continue;

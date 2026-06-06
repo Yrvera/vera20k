@@ -667,7 +667,10 @@ impl Simulation {
                 let cell_y = ry.saturating_add(dy);
                 // Check for existing structures (excluding the MCV itself).
                 let occupied = self.substrate.entities.values().any(|e| {
-                    if e.stable_id == stable_id || e.category != EntityCategory::Structure {
+                    // A Dying structure corpse (sold/destroyed earlier in this
+                    // command batch) no longer blocks an MCV deploy footprint.
+                    if e.dying || e.stable_id == stable_id || e.category != EntityCategory::Structure
+                    {
                         return false;
                     }
                     let Some(existing) = self.object_type(e.type_ref, rules) else {
@@ -846,7 +849,8 @@ impl Simulation {
     fn allocate_infantry_sub_cell(&self, rx: u16, ry: u16) -> u8 {
         let mut occupied: [bool; 5] = [false; 5];
         for entity in self.substrate.entities.values() {
-            if entity.position.rx == rx
+            if !entity.dying
+                && entity.position.rx == rx
                 && entity.position.ry == ry
                 && entity.category == EntityCategory::Infantry
             {

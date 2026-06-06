@@ -37,12 +37,14 @@ pub fn tick_war_factory_exit_contacts(
         let ents: &EntityStore = entities;
         ents.values()
             .filter_map(|mover| {
-                if mover.category != EntityCategory::Unit {
+                // Skip Dying corpses (mover or its producer) awaiting the
+                // end-of-tick drain — don't compute contact breaks against them.
+                if mover.dying || mover.category != EntityCategory::Unit {
                     return None;
                 }
                 let producer_id = mover.dock_entered_with?;
                 let producer = ents.get(producer_id)?;
-                if producer.category != EntityCategory::Structure {
+                if producer.dying || producer.category != EntityCategory::Structure {
                     return None;
                 }
                 if !exact_land_vehicle_exit_factory(rules, interner.resolve(producer.type_ref)) {

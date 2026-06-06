@@ -17,7 +17,9 @@ pub(super) fn build_peer_search_marker_overlay(
 ) -> SearchMarkerOverlay {
     let mut overlay = SearchMarkerOverlay::new();
     for peer in entities.values() {
-        if peer.stable_id == mover_id || peer.passenger_role.is_inside_transport() {
+        // A Dying corpse keeps its movement_target but isn't moving; don't bias
+        // the cooperative-pathing overlay with a dead peer's reserved path.
+        if peer.dying || peer.stable_id == mover_id || peer.passenger_role.is_inside_transport() {
             continue;
         }
         if peer.position.rx.abs_diff(request_start.0) > PEER_MARKER_LOCAL_RADIUS
