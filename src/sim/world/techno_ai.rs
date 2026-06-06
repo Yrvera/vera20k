@@ -14,6 +14,11 @@
 
 use super::Simulation;
 use crate::map::entities::EntityCategory;
+// `DispatchSlot` types the always-defined `UnitDispatchRecord`, so its import is non-gated.
+use crate::sim::mission::dispatch::DispatchSlot;
+// `unit_dispatch_family` is consumed only by the gated record pass + proof below.
+#[cfg(any(test, debug_assertions))]
+use crate::sim::mission::dispatch::unit_dispatch_family;
 
 // Slice S1 (shadow) imports — used only by the `#[cfg(any(test, debug_assertions))]`
 // dispatch-before-locomotor observation below; gated to avoid release dead-code.
@@ -27,6 +32,20 @@ use crate::sim::movement::{DriveProcessOutcome, process_drive_locomotion_shell};
 // P3 oracle probe import — used only by the `#[cfg(test)]` factory_oracle_step_trace.
 #[cfg(test)]
 use crate::sim::production::StepOutcome;
+
+/// One live Unit's host-time dispatch routing, recorded at `object_ai_stage` time (top of
+/// tick, after commands) for the end-of-tick churn proof. Copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct UnitDispatchRecord {
+    pub id: u64,
+    /// `derived_mission().0` evaluated fresh at host time (NOT the stale `mission.current`).
+    pub host_mission: crate::sim::mission::MissionType,
+    pub family: DispatchSlot,
+}
+
+/// The per-tick host-time dispatch trace. Populated only in debug/test builds; release
+/// returns an empty `Vec` (lazy `Vec::new()` → no allocation on the hot path).
+pub(crate) type UnitDispatchTrace = Vec<UnitDispatchRecord>;
 
 impl Simulation {
     /// Object-AI stage (Slice S0: instrumented no-op).
@@ -42,7 +61,7 @@ impl Simulation {
     /// tripwire for any future arm that mutates live membership mid-pass.
     /// Release builds pass `false`, so the trace `Vec` is never pushed to and
     /// never allocates (no per-tick hot-path cost).
-    pub(crate) fn object_ai_stage(&mut self) {
+    pub(crate) fn object_ai_stage(&mut self) -> UnitDispatchTrace {
         let visited = self.object_ai_walk(cfg!(debug_assertions));
 
         #[cfg(debug_assertions)]
@@ -54,6 +73,43 @@ impl Simulation {
 
         #[cfg(not(debug_assertions))]
         let _ = visited;
+
+        // Unit dispatch shadow: record host-time routing (debug/test only; empty in
+        // release). The `Unit => {}` arm of `techno_ai_shell` stays a no-op — the shadow
+        // is a parallel pass, exactly like the S1 shadow.
+        self.unit_dispatch_record_pass()
+    }
+
+    /// Host-time Unit dispatch shadow pass (debug/test only). Walks the live-object order
+    /// (the gamemd dispatch set), and for each live, non-dying, NON-miner Unit records its
+    /// fresh-at-host-time mission (`derived_mission().0` — NOT the stale `mission.current`,
+    /// which excludes this tick's commands) and the family it routes to. Read-only: mutates
+    /// no entity, no occupancy, no hash. Miners are skipped — the miner session's Harvest
+    /// seam owns that path.
+    #[cfg(any(test, debug_assertions))]
+    fn unit_dispatch_record_pass(&self) -> UnitDispatchTrace {
+        let mut trace: UnitDispatchTrace = Vec::new();
+        for id in self.live_object_order_snapshot() {
+            let Some(e) = self.substrate.entities.get(id) else {
+                continue;
+            };
+            if e.dying || e.category != EntityCategory::Unit || e.miner.is_some() {
+                continue;
+            }
+            let (host_mission, _substate) = e.derived_mission();
+            trace.push(UnitDispatchRecord {
+                id,
+                host_mission,
+                family: unit_dispatch_family(host_mission),
+            });
+        }
+        trace
+    }
+
+    /// Release stub: the host-time trace is empty and never allocates.
+    #[cfg(not(any(test, debug_assertions)))]
+    fn unit_dispatch_record_pass(&self) -> UnitDispatchTrace {
+        Vec::new()
     }
 
     /// The walk: dispatch every live, present, non-dying object once, in live
@@ -668,5 +724,29 @@ mod tests {
                 .collect()
         }
         assert_eq!(run(), run());
+    }
+
+    // ===== Slice S2a — host-time Unit dispatch shadow =====
+
+    #[test]
+    fn unit_dispatch_record_pass_skips_miner_and_nonunit() {
+        let mut sim = Simulation::new();
+        // A plain moving Unit — recorded.
+        sim.substrate.entities.insert(scoped_move_unit(1));
+        // A miner Unit — skipped (the miner session owns Harvest).
+        let mut miner = scoped_move_unit(2);
+        miner.miner = Some(Miner::new(MinerKind::War, &MinerConfig::default(), 0));
+        sim.substrate.entities.insert(miner);
+        // A non-Unit — skipped by category.
+        sim.substrate
+            .entities
+            .insert(entity_of(3, EntityCategory::Structure));
+        sim.set_logic_order_for_test(vec![1, 2, 3]);
+
+        let trace = sim.unit_dispatch_record_pass();
+        assert_eq!(trace.len(), 1, "only the non-miner Unit is recorded");
+        assert_eq!(trace[0].id, 1);
+        assert_eq!(trace[0].host_mission, MissionType::Move);
+        assert_eq!(trace[0].family, DispatchSlot::Move);
     }
 }
