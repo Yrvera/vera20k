@@ -122,6 +122,23 @@ pub fn house_state_for_owner_mut<'a>(
     houses.get_mut(&id)
 }
 
+/// Resolve an owner's ore-income `IncomeMult` (parts-per-million; 1_000_000 = 1.0×) by
+/// routing through its country: `HouseState.country` (InternedId) -> country name ->
+/// `RuleSet::country_income_ppm`. An owner with no house, no country, or an unknown
+/// country resolves to the neutral 1.0 (no income change) — so stock YR (all countries
+/// 1.0, the key commented out) is the identity.
+pub fn income_ppm_for_owner(
+    houses: &std::collections::BTreeMap<InternedId, HouseState>,
+    interner: &crate::sim::intern::StringInterner,
+    rules: &crate::rules::ruleset::RuleSet,
+    owner: &str,
+) -> i64 {
+    house_state_for_owner(houses, owner, interner)
+        .and_then(|h| h.country)
+        .map(|c| rules.country_income_ppm(interner.resolve(c)))
+        .unwrap_or(crate::sim::economy::INCOME_PPM_SCALE)
+}
+
 /// Map side name string to numeric index.
 /// "Allies"/"GDI" → 0, "Soviet"/"Nod" → 1, "ThirdSide"/"YuriCountry" → 2.
 pub fn side_index_from_name(side: Option<&str>) -> u8 {
