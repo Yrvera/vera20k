@@ -75,3 +75,7 @@ mod queue_tests;
 #[cfg(test)]
 #[path = "production_placement_tests.rs"]
 mod placement_tests;
+
+#[cfg(test)]
+#[path = "production_replay_tests.rs"]
+mod replay_tests;
