@@ -1965,7 +1965,11 @@ impl Simulation {
         // Movement stays before the Phase-3 vision recompute, so sight is
         // unaffected. The S1 shadow PROOF stays at end-of-tick, where the mission
         // shadow is fresh.
-        self.object_ai_stage();
+        //
+        // S2a: bind the host-time Unit dispatch trace (debug/test only; empty,
+        // non-allocating Vec in release). Consumed by the end-of-tick dispatch
+        // proof beside `debug_assert_s1_shadow`.
+        let dispatch_trace = self.object_ai_stage();
 
         // --- Phase 1: Ground movement ---
         // DEPENDS ON: commands (may set movement_target), entity positions from prior tick.
@@ -2637,6 +2641,14 @@ impl Simulation {
         // debug-only — the authority flip is a later slice.
         #[cfg(debug_assertions)]
         self.debug_assert_s1_shadow();
+        // S2a: end-of-tick Unit dispatch proof — router determinism + AttackMove-
+        // unreachable + Skip-never asserts, plus the host-vs-tail churn metric.
+        // Read-only, debug/test only; the binding is consumed (or discarded in
+        // release) so the host-time trace never leaks past the tick.
+        #[cfg(any(test, debug_assertions))]
+        self.debug_assert_unit_dispatch_shadow(&dispatch_trace);
+        #[cfg(not(any(test, debug_assertions)))]
+        let _ = dispatch_trace;
         #[cfg(debug_assertions)]
         self.debug_assert_production_shadow();
         let state_hash = self.state_hash();

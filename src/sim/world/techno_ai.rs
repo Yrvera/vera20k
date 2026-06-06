@@ -112,6 +112,60 @@ impl Simulation {
         Vec::new()
     }
 
+    /// End-of-tick Unit dispatch proof (debug/test only). Runs after `refresh_mission_shadow`,
+    /// beside `debug_assert_s1_shadow`. For each host-time record it:
+    ///   1. asserts the routed family is correct for the recorded mission (router determinism),
+    ///   2. asserts a non-miner Unit never routes to `Skip`, and that `AttackMove` is never the
+    ///      host mission of a Unit (unreachable — `derived_mission` cannot yield it),
+    ///   3. re-derives the Unit's mission FRESH now (tail) and, if the family differs from the
+    ///      host-time family, LOGS the churn with tick+id+both missions — it does NOT assert
+    ///      equality (host-time and tail derivations legitimately differ when a Unit's machines
+    ///      change mid-tick). Read-only; never hashed; never silently equalized.
+    #[cfg(any(test, debug_assertions))]
+    pub(crate) fn debug_assert_unit_dispatch_shadow(&self, trace: &UnitDispatchTrace) {
+        for rec in trace {
+            // (1) router determinism: the recorded family is exactly the router's output.
+            debug_assert_eq!(
+                rec.family,
+                unit_dispatch_family(rec.host_mission),
+                "dispatch: tick {} unit {}: recorded family must equal the router output",
+                self.tick,
+                rec.id,
+            );
+            // (2) a Unit is never on AttackMove (derived_mission cannot yield it).
+            debug_assert_ne!(
+                rec.host_mission,
+                MissionType::AttackMove,
+                "dispatch: tick {} unit {}: a Unit must never derive AttackMove",
+                self.tick,
+                rec.id,
+            );
+            debug_assert!(
+                !matches!(rec.family, DispatchSlot::Skip),
+                "dispatch: tick {} unit {}: a live Unit must never route to Skip",
+                self.tick,
+                rec.id,
+            );
+            // (3) churn metric: compare host-time family to a fresh tail re-derivation.
+            if let Some(e) = self.substrate.entities.get(rec.id) {
+                if !e.dying && e.miner.is_none() {
+                    let (tail_mission, _) = e.derived_mission();
+                    let tail_family = unit_dispatch_family(tail_mission);
+                    if tail_family != rec.family {
+                        // Surfaced, never equalized — the S2 go/no-go churn signal.
+                        log::debug!(
+                            "dispatch churn: tick {} unit {}: host {:?} -> tail {:?}",
+                            self.tick,
+                            rec.id,
+                            rec.host_mission,
+                            tail_mission,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// The walk: dispatch every live, present, non-dying object once, in live
     /// order, through the no-op shell. When `record`, return the dispatched ids
     /// in order (debug/test observation); otherwise the returned `Vec` is empty
@@ -748,5 +802,35 @@ mod tests {
         assert_eq!(trace[0].id, 1);
         assert_eq!(trace[0].host_mission, MissionType::Move);
         assert_eq!(trace[0].family, DispatchSlot::Move);
+    }
+
+    #[test]
+    fn unit_dispatch_proof_passes_on_scoped_units() {
+        let mut sim = Simulation::new();
+        sim.substrate.entities.insert(scoped_move_unit(1)); // Move
+        let mut idle = scoped_move_unit(2);
+        idle.movement_target = None; // None -> Sleep family
+        sim.substrate.entities.insert(idle);
+        sim.set_logic_order_for_test(vec![1, 2]);
+
+        let trace = sim.unit_dispatch_record_pass();
+        sim.debug_assert_unit_dispatch_shadow(&trace); // no panic
+        assert_eq!(trace[0].family, DispatchSlot::Move);
+        assert_eq!(trace[1].family, DispatchSlot::Sleep);
+    }
+
+    #[test]
+    fn unit_dispatch_attackmove_unreachable_for_units() {
+        // derived_mission never yields AttackMove for any machine combination.
+        let mut e = GameEntity::test_default(1, "TEST", "Americans", 5, 5);
+        e.movement_target = Some(MovementTarget::default());
+        e.attack_target = Some(AttackTarget {
+            target: TargetKind::Entity(99),
+            cooldown_ticks: 0,
+            burst_remaining: 1,
+            burst_delay_ticks: 0,
+            pending_infantry_fire: None,
+        });
+        assert_ne!(e.derived_mission().0, MissionType::AttackMove);
     }
 }
