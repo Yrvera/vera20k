@@ -2513,6 +2513,12 @@ impl Simulation {
             // delivers completed builds and advances the queue-of-record.
             {
                 let mut registry = std::mem::take(&mut self.production.factory_shadow);
+                // P6: prereq/factory-loss revalidation BEFORE the charge sweep. Builds whose
+                // prerequisites or producing factory were lost are abandoned (partial refund)
+                // + now-unbuildable queued items dropped, so a freshly-abandoned factory is not
+                // charged this tick and a freshly-promoted one starts charging next tick.
+                let reval_plan = registry.plan_revalidation(self, rules);
+                registry.apply_revalidation(&reval_plan, &mut self.houses);
                 let prepared = registry.prepare_step_inputs(self, rules);
                 registry.step_all(&mut self.houses, &prepared);
                 self.production.factory_shadow = registry;

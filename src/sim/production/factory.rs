@@ -501,6 +501,22 @@ pub struct FactoryRegistry {
     factories: BTreeMap<(InternedId, ProductionCategory), Factory>,
 }
 
+/// One planned P6 revalidation disposition for a `(owner, category)` factory — the output of
+/// the read/classify phase (`plan_revalidation`), consumed by the write phase
+/// (`apply_revalidation`). Split so the classify can borrow `&Simulation` (build eligibility)
+/// while the apply borrows `&mut houses` (refund) without aliasing. Fields are module-private;
+/// the caller holds the plan opaquely.
+pub(crate) struct RevalAction {
+    owner: InternedId,
+    category: ProductionCategory,
+    /// The active in-progress object is permanently blocked -> abandon (partial refund).
+    abandon_active: bool,
+    /// Queued (tail) indices to remove (ascending; removed back-to-front in apply). No refund.
+    drop_queued: Vec<usize>,
+    /// Cost of the first SURVIVING queued entry, when abandoning, so the apply can promote it.
+    promote_cost: Option<i32>,
+}
+
 impl FactoryRegistry {
     /// Read-only sidebar projection. Never mutates.
     pub fn view(
@@ -720,6 +736,108 @@ impl FactoryRegistry {
     pub(crate) fn prune_all_idle(&mut self) {
         self.factories
             .retain(|_, f| f.object.is_some() || !f.queue.is_empty());
+    }
+
+    /// P6 read/classify phase: re-validate every factory's active + queued builds and plan
+    /// the disposition (abandon active / drop queued) for those whose prerequisites or
+    /// producing factory were lost. READ-ONLY over `Simulation`; returns an owned plan so the
+    /// write phase can borrow `&mut houses` without aliasing. Walks `iter_insertion_ordered`
+    /// (the deterministic temporal order = `step_all` charge order = hash fold order) so the
+    /// plan — and the refund application order — is replay-stable.
+    pub(crate) fn plan_revalidation(
+        &self,
+        sim: &crate::sim::world::Simulation,
+        rules: &RuleSet,
+    ) -> Vec<RevalAction> {
+        use crate::sim::production::production_tech::revalidate_eligibility;
+        let mut plan: Vec<RevalAction> = Vec::new();
+        for f in self.iter_insertion_ordered() {
+            let owner_name = sim.interner.resolve(f.owner).to_string();
+            let permanent = |type_id: InternedId| -> bool {
+                matches!(
+                    revalidate_eligibility(sim, rules, &owner_name, sim.interner.resolve(type_id)),
+                    BuildEligibility::PermanentlyBlocked
+                )
+            };
+            // Abandon the active object only if it is IN-PROGRESS (not complete-held — a
+            // finished build awaiting delivery is not abandoned by this path) AND permanently
+            // blocked. A user (manual) pause is NOT a guard here — gamemd abandons a paused
+            // build too on permanent block.
+            let abandon_active = f
+                .object
+                .as_ref()
+                .is_some_and(|o| f.progress < PRODUCTION_STEPS && permanent(o.type_id));
+            // Queued tail: collect permanently-blocked indices to drop + the first survivor
+            // (the promote target after an abandon).
+            let mut drop_queued: Vec<usize> = Vec::new();
+            let mut first_surviving: Option<InternedId> = None;
+            for (i, e) in f.queue.iter().enumerate() {
+                if permanent(e.type_id) {
+                    drop_queued.push(i);
+                } else if first_surviving.is_none() {
+                    first_surviving = Some(e.type_id);
+                }
+            }
+            if !abandon_active && drop_queued.is_empty() {
+                continue; // nothing to dispose for this factory
+            }
+            let promote_cost = if abandon_active {
+                first_surviving
+                    .and_then(|t| sim.object_type(t, rules))
+                    .map(|o| o.cost.max(0))
+            } else {
+                None
+            };
+            plan.push(RevalAction {
+                owner: f.owner,
+                category: f.category,
+                abandon_active,
+                drop_queued,
+                promote_cost,
+            });
+        }
+        plan
+    }
+
+    /// P6 write/apply phase: apply a `plan_revalidation` plan. Drops permanently-blocked
+    /// queued entries (no refund — never charged), abandons a permanently-blocked active
+    /// build with the C8 PARTIAL refund (`original_balance - balance`) into the ONE wallet
+    /// (`house.credits`) via the per-sweep `Economy` shim, then promotes the first surviving
+    /// queued entry (C7 StartNextQueued, cost-seeded, `step_delay = 1` because this sweep runs
+    /// BEFORE `step_all` so the promoted build is not charged the same tick). Idle factories
+    /// are pruned.
+    pub(crate) fn apply_revalidation(
+        &mut self,
+        plan: &[RevalAction],
+        houses: &mut BTreeMap<InternedId, crate::sim::house_state::HouseState>,
+    ) {
+        for action in plan {
+            let Some(f) = self.factories.get_mut(&(action.owner, action.category)) else {
+                continue;
+            };
+            // Remove dropped queued entries back-to-front so the ascending indices stay valid.
+            for &i in action.drop_queued.iter().rev() {
+                if i < f.queue.len() {
+                    f.queue.remove(i);
+                }
+            }
+            if action.abandon_active {
+                if let Some(house) = houses.get_mut(&action.owner) {
+                    let mut wallet = std::mem::take(&mut house.economy);
+                    wallet.credits = house.credits;
+                    let _ = f.cancel_active(&mut wallet);
+                    house.credits = wallet.credits;
+                    house.economy = wallet;
+                } else {
+                    let mut throwaway = Economy::default();
+                    let _ = f.cancel_active(&mut throwaway);
+                }
+                if let Some(cost) = action.promote_cost {
+                    f.start_next_queued(cost, 1);
+                }
+            }
+        }
+        self.prune_all_idle();
     }
 
     /// The `(owner, category)` keys whose active build has completed and is held for

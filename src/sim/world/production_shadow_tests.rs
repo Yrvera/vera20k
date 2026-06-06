@@ -29,10 +29,29 @@ fn empty_rules() -> RuleSet {
 /// same-tick two-Begin ordering test.
 fn vehicle_rules() -> RuleSet {
     RuleSet::from_ini(&IniFile::from_str(
+        // TechLevel=1 (not the unspecified -1 default) so the type passes Strict eligibility
+        // and P6 prereq-revalidation does NOT abandon it as UnbuildableTechLevel; GAWEAP
+        // (Factory=UnitType) is the producing factory the revalidation requires.
         "[VehicleTypes]\n0=GRIZZLY\n[AircraftTypes]\n0=BEAG\n\
-         [GRIZZLY]\nCost=700\n[BEAG]\nCost=600\n",
+         [BuildingTypes]\n0=GAWEAP\n\
+         [GRIZZLY]\nCost=700\nTechLevel=1\n[BEAG]\nCost=600\nTechLevel=1\n\
+         [GAWEAP]\nFactory=UnitType\n",
     ))
     .expect("vehicle rules parse")
+}
+
+/// Spawn a built-up War Factory (`GAWEAP`, `Factory=UnitType`) for `owner` so a Vehicle build
+/// is genuinely buildable — P6 prereq-revalidation abandons an active build whose producing
+/// factory is absent, so the charge-machinery guards (which drive `advance_tick`) need a real
+/// factory present or the build is correctly abandoned before any charge.
+fn spawn_war_factory(sim: &mut Simulation, owner: InternedId) {
+    let gaweap = sim.interner.intern("GAWEAP");
+    let owner_name = sim.interner.resolve(owner).to_string();
+    let mut e = GameEntity::test_default(1, "GAWEAP", &owner_name, 5, 5);
+    e.category = EntityCategory::Structure;
+    e.owner = owner;
+    e.type_ref = gaweap;
+    sim.substrate.entities.insert(e);
 }
 
 /// Rules with exactly one OrePurifier building type (`GAPROC`). Used by the
@@ -829,13 +848,15 @@ fn single_wallet_charged_once_no_double_debit() {
     sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
     let ty = sim.interner.intern("GRIZZLY");
     arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, ty, 54, 1);
+    spawn_war_factory(&mut sim, owner); // P6: a real factory so the build is not abandoned
     let full_cost = sim.object_type(ty, &rules).map(|o| o.cost.max(0)).unwrap_or(0);
     assert!(full_cost > 0, "GRIZZLY needs a positive cost for this guard");
     let start = sim.houses[&owner].credits;
     let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
-    // No war factory exists, so delivery never fires (the vehicle waits) — the build
-    // charges to completion exactly once and never re-seeds. Upper-bound the cadence
-    // (<= 255 frames/step * 54 steps) and break once the cost is fully drained.
+    // A war factory exists but no path_grid is supplied, so the completed vehicle has no exit
+    // cell and is held (delivery never fires) — the build charges to completion exactly once
+    // and never re-seeds. Upper-bound the cadence (<= 255 frames/step * 54 steps) and break
+    // once the cost is fully drained.
     for _ in 0..(PRODUCTION_STEPS as usize * 256) {
         sim.advance_tick(&[], Some(&rules), &heights, None, None, 67);
         if sim.houses[&owner].economy.spent_credits >= full_cost {
@@ -860,6 +881,7 @@ fn stall_on_no_funds_holds() {
     sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 0, 10)); // 0 credits
     let ty = sim.interner.intern("GRIZZLY");
     arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, ty, 54, 1);
+    spawn_war_factory(&mut sim, owner); // P6: factory present so the build STALLS (not abandoned)
     let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
     for _ in 0..200 {
         sim.advance_tick(&[], Some(&rules), &heights, None, None, 67);
@@ -879,6 +901,7 @@ fn cancel_one_partial_refund_to_house_credits() {
     sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
     let ty = sim.interner.intern("GRIZZLY");
     arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, ty, 54, 1);
+    spawn_war_factory(&mut sim, owner); // P6: factory present so the build is not abandoned
     let full_cost = sim.object_type(ty, &rules).map(|o| o.cost.max(0)).unwrap_or(0);
     let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
     // Charge partway (not to completion).

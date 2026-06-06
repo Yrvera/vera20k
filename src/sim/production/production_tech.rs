@@ -91,6 +91,40 @@ pub(super) fn build_option_for_owner(
     })
 }
 
+/// P6 revalidation classifier: re-check an active/queued build's eligibility AFTER enqueue,
+/// so a build whose prerequisites / producing factory were lost is disposed of. Reproduces
+/// gamemd's `FindFactoryBuilding(1,0,1)` gate (the embedded `HouseClass::CanBuild` scan across
+/// the owner's candidate factory buildings): a tech-tree / owner / factory-presence failure ->
+/// `PermanentlyBlocked` (abandon); a pure credit stall (`on_hold`, handled per-step) or a
+/// build-limit "busy" is NOT a mid-build abandon -> `Buildable` (keep charging).
+///
+/// `TemporarilyBlocked` (gamemd's `(1,0,1)` passes but `(1,1,1)` fails = a factory building
+/// exists but is UNPOWERED via an EMP/spy/trigger GoOffline event) is intentionally
+/// UNREACHABLE here: the Rust power model is per-house low-power, which gamemd applies as a
+/// RATE penalty (already modeled in `prepare_step_inputs`), NOT a suspend — gamemd SLOWS,
+/// it does not halt, production on a grid deficit. Per-building powered-down (EMP) is not yet
+/// modeled, so this arm is a forward seam for the EMP slice.
+pub(in crate::sim) fn revalidate_eligibility(
+    sim: &Simulation,
+    rules: &RuleSet,
+    owner: &str,
+    type_id: &str,
+) -> super::factory::BuildEligibility {
+    use super::factory::BuildEligibility;
+    match build_option_for_owner(sim, rules, owner, type_id, BuildMode::Strict) {
+        None => BuildEligibility::PermanentlyBlocked,
+        Some(opt) if opt.enabled => BuildEligibility::Buildable,
+        Some(opt) => match opt.reason {
+            // Credit stall + build-limit "busy" are not abandons in gamemd — keep building.
+            Some(BuildDisabledReason::InsufficientCredits)
+            | Some(BuildDisabledReason::AtBuildLimit)
+            | None => BuildEligibility::Buildable,
+            // Tech-tree / owner / factory loss -> CanBuild fails -> abandon.
+            Some(_) => BuildEligibility::PermanentlyBlocked,
+        },
+    }
+}
+
 pub(super) fn build_options_for_owner_mode(
     sim: &Simulation,
     rules: &RuleSet,

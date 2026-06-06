@@ -425,3 +425,143 @@ fn economy_conservation_through_cancel_refund() {
         "the cancelled active build left the Americans Vehicle factory"
     );
 }
+
+// ===== P6 — prerequisite / factory-loss revalidation =====
+
+/// A build with NO producing factory (NoFactory -> PermanentlyBlocked) is abandoned and its
+/// queued tail dropped on the next tick's revalidation (which runs at the Phase-7 head, before
+/// the charge sweep). An uncharged abandon refunds nothing; active + queued both disposed ->
+/// the factory is pruned.
+#[test]
+fn revalidate_abandons_build_with_no_factory_and_drops_queued() {
+    let mut sim = Simulation::new();
+    let rules = build_catalog_rules();
+    rules.intern_all_ids(&mut sim.interner);
+    sim.resolve_type_handles(&rules);
+    let am = sim.interner.intern("Americans");
+    sim.houses
+        .insert(am, HouseState::new(am, 0, None, true, 50_000, 10));
+    let mtnk = sim.interner.intern("MTNK");
+    // Arm directly (bypassing the enqueue eligibility gate) an active + one queued MTNK for
+    // an owner with NO war factory -> both classify NoFactory -> PermanentlyBlocked.
+    sim.production
+        .factory_shadow
+        .enqueue(am, ProductionCategory::Vehicle, mtnk, 1, 100, 900);
+    sim.production
+        .factory_shadow
+        .enqueue(am, ProductionCategory::Vehicle, mtnk, 2, 100, 900);
+    assert!(sim
+        .production
+        .factory_shadow
+        .view(am, ProductionCategory::Vehicle)
+        .is_some());
+    let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    sim.advance_tick(&[], Some(&rules), &heights, None, None, TICK_MS);
+    assert!(
+        sim.production
+            .factory_shadow
+            .view(am, ProductionCategory::Vehicle)
+            .is_none(),
+        "no-factory build abandoned + queued dropped -> factory pruned"
+    );
+    assert_eq!(
+        sim.houses[&am].credits, 50_000,
+        "an uncharged abandon refunds nothing (credits unchanged)"
+    );
+}
+
+/// A build whose producing factory is DESTROYED mid-progress is abandoned with the C8 PARTIAL
+/// refund (exactly the already-charged portion `original_balance - balance`) into house.credits,
+/// and the factory is pruned. Revalidation runs before the charge sweep, so no extra charge
+/// lands the abandon tick.
+#[test]
+fn revalidate_abandons_active_on_factory_loss_partial_refund() {
+    let (mut sim, rules, heights) = scenario();
+    let (am, _, _, mtnk) = ids(&sim);
+    // Enqueue MTNK via the real command path (eligible — Americans owns GAWEAP), then charge
+    // partway.
+    let mut pending = vec![queue(am, mtnk, 1)];
+    for _ in 0..40 {
+        let execute_tick = sim.tick + 1;
+        let mut due: Vec<CommandEnvelope> = Vec::new();
+        pending.retain(|c| {
+            if c.execute_tick <= execute_tick {
+                due.push(c.clone());
+                false
+            } else {
+                true
+            }
+        });
+        sim.advance_tick(&due, Some(&rules), &heights, None, None, TICK_MS);
+    }
+    // Mid-build before factory loss; read the spent portion = the expected refund.
+    let spent = {
+        let f = sim
+            .production
+            .factory_shadow
+            .test_factory_mut(am, ProductionCategory::Vehicle)
+            .expect("active MTNK factory");
+        assert!(
+            f.object.is_some() && f.progress > 0 && f.progress < 54,
+            "MTNK must be mid-build (active, in-progress) before factory loss"
+        );
+        f.original_balance - f.balance
+    };
+    assert!(spent > 0 && spent < 900, "some but not all of the cost is charged");
+
+    // Destroy the war factory. In scenario() Americans' GAWEAP is stable_id 3.
+    let gaweap = sim.interner.intern("GAWEAP");
+    assert!(
+        sim.substrate
+            .entities
+            .get(3)
+            .is_some_and(|e| e.type_ref == gaweap && e.owner == am),
+        "stable_id 3 is Americans' GAWEAP in scenario()"
+    );
+    sim.substrate.entities.remove(3);
+
+    let credits_before = sim.houses[&am].credits;
+    sim.advance_tick(&[], Some(&rules), &heights, None, None, TICK_MS);
+    let refund = sim.houses[&am].credits - credits_before;
+    assert_eq!(
+        refund, spent,
+        "factory-loss abandon refunds exactly the already-charged portion"
+    );
+    assert!(
+        sim.production
+            .factory_shadow
+            .view(am, ProductionCategory::Vehicle)
+            .is_none(),
+        "the abandoned factory is pruned"
+    );
+}
+
+/// Revalidation is a no-op on a buildable build: with factory + prereqs intact it is NOT
+/// abandoned and keeps progressing. Pins that revalidation never over-abandons (the
+/// hash-neutral steady state).
+#[test]
+fn revalidate_keeps_buildable_build_untouched() {
+    let (mut sim, rules, heights) = scenario();
+    let (am, _, _, mtnk) = ids(&sim);
+    let mut pending = vec![queue(am, mtnk, 1)];
+    for _ in 0..40 {
+        let execute_tick = sim.tick + 1;
+        let mut due: Vec<CommandEnvelope> = Vec::new();
+        pending.retain(|c| {
+            if c.execute_tick <= execute_tick {
+                due.push(c.clone());
+                false
+            } else {
+                true
+            }
+        });
+        sim.advance_tick(&due, Some(&rules), &heights, None, None, TICK_MS);
+    }
+    let view = sim
+        .production
+        .factory_shadow
+        .view(am, ProductionCategory::Vehicle)
+        .expect("buildable MTNK is still building, not abandoned");
+    assert!(view.object.is_some(), "a buildable build is never abandoned by revalidation");
+    assert!(view.progress > 0, "and keeps progressing");
+}
