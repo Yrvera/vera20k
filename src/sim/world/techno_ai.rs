@@ -879,4 +879,41 @@ mod tests {
         // Must not log/panic: the moving Unit is in the live set.
         sim.debug_check_dispatch_live_set_coverage();
     }
+
+    #[test]
+    fn unit_dispatch_host_is_hash_neutral() {
+        let mut sim = Simulation::new();
+        sim.substrate.entities.insert(scoped_move_unit(1));
+        sim.set_logic_order_for_test(vec![1]);
+        sim.refresh_mission_shadow();
+
+        let before = sim.state_hash();
+        let trace = sim.object_ai_stage(); // host pass (returns the trace)
+        sim.debug_assert_unit_dispatch_shadow(&trace); // read-only proof
+        sim.debug_check_dispatch_live_set_coverage(); // read-only coverage
+        let after = sim.state_hash();
+        assert_eq!(
+            before, after,
+            "the Unit dispatch host + proofs must not perturb the hash"
+        );
+    }
+
+    #[test]
+    fn unit_dispatch_preserves_advance_tick_phase_order() {
+        fn run() -> Vec<u64> {
+            let mut sim = Simulation::new();
+            let heights = std::collections::BTreeMap::new();
+            (0..5)
+                .map(|_| {
+                    sim.advance_tick(&[], None, &heights, None, None, 67);
+                    sim.state_hash()
+                })
+                .collect()
+        }
+        assert_eq!(
+            run(),
+            run(),
+            "advance_tick with the dispatch host stays deterministic"
+        );
+    }
 }
