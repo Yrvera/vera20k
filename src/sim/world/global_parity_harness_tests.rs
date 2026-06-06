@@ -242,3 +242,87 @@ fn dispatch_churn_measurement_over_global_skirmish() {
         "churn measurement must run the full skirmish span"
     );
 }
+
+const DENSE_SEED: u64 = 0x00BA771E_5EED;
+const DENSE_TICKS: u64 = 300;
+const DENSE_ROWS: u16 = 10;
+
+/// S2 churn — DENSE arrival case: two facing tank columns (10 Allied vs 10 Soviet) both
+/// ordered to converge on the same centre column, so a whole column reaches its
+/// destination on the same tick and flips Move→Sleep together. Each Move is issued under
+/// ITS OWN owner — the thin generic harness silently rejected one side's move as
+/// non-owned, leaving only one real mover. This measures the *simultaneous* per-tick
+/// churn the S2 authority flip must survive (a single-mover scenario understates it).
+///
+/// Scope note: this fixture exercises movement/arrival churn only — the tanks converge
+/// but do not engage (no kills; pure-Move auto-acquisition does not fire here), so
+/// combat-driven churn (Move→Attack on target acquisition) is NOT measured by this test.
+/// Quantifying engagement churn needs a fixture that reliably forces combat (explicit
+/// Attack orders + LOS/positioning); deferred to the S2 design phase.
+#[test]
+fn dispatch_churn_measurement_dense_converging_battle() {
+    let rules = harness_rules();
+    let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    let grid = PathGrid::new(64, 64);
+
+    let mut sim = Simulation::with_seed(DENSE_SEED);
+    let mut roster: Vec<MapEntity> = Vec::new();
+    for i in 0..DENSE_ROWS {
+        roster.push(unit("Americans", "MTNK", 10, 5 + i, EntityCategory::Unit)); // ids 1..=10
+    }
+    for i in 0..DENSE_ROWS {
+        roster.push(unit("Soviet", "MTNK", 40, 5 + i, EntityCategory::Unit)); // ids 11..=20
+    }
+    sim.spawn_from_map(&roster, Some(&rules), &heights);
+
+    // Both columns converge on x=25, same row — they close together and arrive/stall
+    // in formation. Each Move is under its OWN owner (the thin generic harness rejected
+    // one side's move as non-owned, leaving a single real mover). Measures the
+    // synchronized-arrival churn (a whole column flipping Move→Sleep on one tick).
+    let allied = sim.interner.get("Americans").expect("Americans interned");
+    let soviet = sim.interner.get("Soviet").expect("Soviet interned");
+    let mut script: Vec<(u64, crate::sim::intern::InternedId, Command)> = Vec::new();
+    for i in 0..DENSE_ROWS as u64 {
+        let y = 5 + i as u16;
+        script.push((2, allied, Command::Move { entity_id: 1 + i, target_rx: 25, target_ry: y, queue: false, group_id: None }));
+        script.push((2, soviet, Command::Move { entity_id: 11 + i, target_rx: 25, target_ry: y, queue: false, group_id: None }));
+    }
+
+    let mut hist = [0u32; 8]; // per-tick churn buckets; index = churn count clamped to 7
+    let mut total_churn: u64 = 0;
+    let mut ticks_with_churn: u32 = 0;
+    let mut max_per_tick: u32 = 0;
+    for tick in 0..DENSE_TICKS {
+        let due: Vec<CommandEnvelope> = script
+            .iter()
+            .filter(|(t, _, _)| *t == tick + 1)
+            .map(|(t, owner, c)| CommandEnvelope::new(*owner, *t, c.clone()))
+            .collect();
+        let result =
+            sim.advance_tick(&due, Some(&rules), &heights, Some(&grid), None, HARNESS_TICK_MS);
+        let c = result.dispatch_churn;
+        if c > 0 {
+            ticks_with_churn += 1;
+            total_churn += c as u64;
+            max_per_tick = max_per_tick.max(c);
+        }
+        hist[(c as usize).min(7)] += 1;
+    }
+
+    let survivors = sim
+        .substrate
+        .entities
+        .iter_sorted()
+        .filter(|(_, e)| e.category == EntityCategory::Unit && !e.dying)
+        .count();
+    println!(
+        "[S2 churn DENSE] {DENSE_TICKS}-tick converging battle (20 tanks): \
+         total_unit_tick_churn={total_churn}, ticks_with_churn={ticks_with_churn}/{DENSE_TICKS}, \
+         max_per_tick={max_per_tick}, survivors={survivors}/20"
+    );
+    println!("[S2 churn DENSE] per-tick churn histogram [churn=0..=7+]: {hist:?}");
+    assert!(
+        total_churn >= 1,
+        "a 20-tank converging battle must produce churn (arrivals + target acquisition)"
+    );
+}
