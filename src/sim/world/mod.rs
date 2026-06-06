@@ -1899,12 +1899,15 @@ impl Simulation {
         });
         self.sound_events.extend(started_effect_sounds);
 
-        // End-of-tick deferred-delete drain (ProcessPendingDelete). Frees every
-        // entity uninit'd during this advance_tick: immediate structure/voxel
-        // deaths in Phase 5, tick_building_down undeploy frees, sells, slave-miner
-        // conversions, engineer-capture consumption. Runs BEFORE the OCCUPANCY_DEBUG
-        // rebuild (which scans all entities and would re-add an unflushed dying
-        // structure) and before the tail presence/membership asserts + state_hash.
+        // The SINGLE in-tick deferred-delete drain (gamemd's one ProcessPending-
+        // Delete at the tail of Main_Tick). Frees every entity uninit'd anywhere
+        // in this advance_tick: command deaths (sells, MCV/slave deploy-undeploy,
+        // engineer capture), Phase-5 combat structure/voxel deaths, tick_building_
+        // down undeploy frees. The earlier command-boundary and end-of-Phase-5
+        // drains were removed — corpses now live the full Dying window and every
+        // mid-tick raw-store consumer is dying-gated instead. Runs BEFORE the
+        // OCCUPANCY_DEBUG rebuild (which would re-add an unflushed dying structure)
+        // and before the tail presence/membership asserts + state_hash.
         self.flush_pending_delete();
 
         // Debug-mode safety net: rebuild occupancy from scratch and compare
@@ -1948,15 +1951,12 @@ impl Simulation {
         // method; call order unchanged — behavior-preserving.)
         let (executed_commands, mut spawned_entities, mut destroyed_structure) =
             self.apply_due_commands(commands, rules, path_grid, height_map, execute_tick);
-        // Drain command-applied deaths (sell, MCV/slave deploy-undeploy, engineer
-        // capture) at the command-region boundary, BEFORE Phase 1. These uninit a
-        // structure/unit at tick start; without this drain they would linger Dying
-        // through vision (P3) and power (P4) — raw-store consumers with no dying gate
-        // that feed the state hash — counting a just-removed object for one tick. The
-        // deferred Dying window is intentionally scoped to combat-immediate deaths
-        // (drained at Phase 9) where it is the verified parity behavior; command
-        // deaths stay synchronous-equivalent (matching pre-deferral removal).
-        self.flush_pending_delete();
+        // No command-boundary drain: command-applied deaths (sell, MCV/slave
+        // deploy-undeploy, engineer capture) now stay in the Dying window like
+        // combat deaths, freed only by the single end-of-tick drain — matching
+        // gamemd's one ProcessPendingDelete at the tail of Main_Tick. The mid-
+        // tick raw-store consumers (vision, power, production, movement, miner,
+        // aircraft, …) are dying-gated, so a corpse is excluded until that drain.
         let mut bridge_state_changed = false;
         let mut passenger_ownership_changed = false;
 
@@ -2470,16 +2470,13 @@ impl Simulation {
             // tests). The vec is per-tick ephemeral state.
             self.pending_smudge_requests.clear();
 
-            // End-of-Phase-5 deferred-delete drain. Frees structures/voxels killed in
-            // combat (immediate_uninit above) plus any bridge/wall occupant kills, so
-            // no dying structure leaks into the Phase 5.5-8.5 raw-store consumers
-            // (particles, production speed/factory-spawn scans, repairs, AI) that have
-            // no dying gate. Combat post-processing above intentionally reads the dead
-            // ids while still resolvable (count decrement, owner snapshot); this drain
-            // runs after all of that. With the pre-Phase-1 command-death drain, every
-            // death frees at its own phase boundary — the dying window never spans a
-            // later phase's scans, keeping the slice behavior/hash-preserving.
-            self.flush_pending_delete();
+            // No end-of-Phase-5 drain: combat-killed structures/voxels stay in
+            // the Dying window through the Phase 5.5-8.5 consumers and are freed
+            // only by the single end-of-tick drain (gamemd's one ProcessPending-
+            // Delete). Those consumers (production speed/factory-spawn scans,
+            // repairs, retaliation, miner, aircraft) are dying-gated. Combat
+            // post-processing above still reads the dead ids while resolvable
+            // (count decrement, owner snapshot) — that runs before this point.
             // --- Phase 5.5: ParticleSystems ---
             // DEPENDS ON: combat (gas/fire damage spawned this tick).
             // PRODUCES: damage applied via gas/fire particles, must be visible to phase 6 retaliation.

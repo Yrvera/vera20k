@@ -780,7 +780,11 @@ pub fn tick_repairs(sim: &mut Simulation, rules: &RuleSet) {
         .substrate.entities
         .values()
         .filter(|e| {
-            e.repairing
+            // A Dying building corpse (destroyed this tick, awaiting the end-of-
+            // tick drain) must not be auto-repaired — no credits spent on a dead
+            // building.
+            !e.dying
+                && e.repairing
                 && e.category == EntityCategory::Structure
                 && e.health.current < e.health.max
         })
