@@ -120,6 +120,8 @@ pub fn launch_session(
         country: launch_country_from_menu(state.player_country),
         country_random: state.player_country_random,
         color_index: launch_color_index(0, state.player_color_index)?,
+        // Dormant: the shell does not yet offer a "random color" choice.
+        color_random: false,
         start_position: launch_start_position(0, state.player_start_position)?,
         team: LaunchTeam::from_shell_value(state.player_team),
     };
@@ -134,6 +136,7 @@ pub fn launch_session(
             country: launch_country_from_menu(opponent.country),
             country_random: opponent.country_random,
             color_index: launch_color_index(slot, opponent.color_index)?,
+            color_random: false,
             start_position: launch_start_position(slot, opponent.start_position)?,
             team: LaunchTeam::from_shell_value(opponent.team),
             difficulty,

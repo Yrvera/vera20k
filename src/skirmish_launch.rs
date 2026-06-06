@@ -249,6 +249,12 @@ pub struct SkirmishLocalSlot {
     /// during session resolution; see [`SkirmishLaunchSession::resolve_random_assignments`].
     pub country_random: bool,
     pub color_index: u8,
+    /// When true, `color_index` is a placeholder to be replaced by a random
+    /// collision-free color draw during session resolution. The current setup
+    /// UI never sets this (color is always picked concretely), so it is dormant
+    /// today — but the resolver models the engine's color draw faithfully for
+    /// when a "random color" option is wired up.
+    pub color_random: bool,
     pub start_position: LaunchStartPosition,
     pub team: LaunchTeam,
 }
@@ -260,6 +266,8 @@ pub struct SkirmishAiSlot {
     /// during session resolution; see [`SkirmishLaunchSession::resolve_random_assignments`].
     pub country_random: bool,
     pub color_index: u8,
+    /// See [`SkirmishLocalSlot::color_random`]. Dormant in the current UI.
+    pub color_random: bool,
     pub start_position: LaunchStartPosition,
     pub team: LaunchTeam,
     pub difficulty: AiDifficulty,
@@ -276,33 +284,84 @@ pub struct SkirmishLaunchSession {
 }
 
 impl SkirmishLaunchSession {
-    /// Resolve every slot left on "random country" into a concrete country by
-    /// drawing from the supplied scenario RNG. The selection order matches the
-    /// original setup handoff: the local (human) slot is resolved first, then
-    /// each AI slot in order, with one inclusive `(0, 9)` ranged draw per
-    /// random slot. Slots that already hold a concrete country are left
-    /// untouched and consume no draw, so the RNG stream only advances for the
-    /// slots that actually requested a random country.
+    /// Resolve every slot left on "random country"/"random color" into concrete
+    /// values by drawing from the supplied scenario RNG, in the engine's order:
+    /// **all humans first, then all AI slots**, and **within each slot country
+    /// before color**. Each random country is one inclusive `(0, 9)` draw; each
+    /// random color is one inclusive `(0, 7)` draw repeated until it does not
+    /// collide with an already-assigned color (every retry is one more draw).
+    /// Slots that already hold a concrete value are left untouched and consume
+    /// no draw, so the stream only advances for the slots that requested random.
     ///
     /// Drawing from the scenario stream (rather than a side RNG) keeps the
     /// resolution deterministic for a given game seed and identical across
-    /// lockstep peers. Color is always concrete in the current setup UI, so no
-    /// color draw is made here.
+    /// lockstep peers. The color branch is dormant under the current UI (no slot
+    /// sets `color_random`), but is modeled so the pre-tick-0 cursor matches the
+    /// engine the moment a "random color" option exists. This is the SP path;
+    /// the MP country draw uses a network callback (no local RNG) and is out of
+    /// scope until a net layer exists.
     pub fn resolve_random_assignments(&self, rng: &mut SimRng) -> Self {
         let mut resolved = self.clone();
+
+        // Colors already in use that a random draw must avoid: every slot
+        // holding a concrete (non-random) color, plus colors assigned earlier in
+        // this same pass. Mirrors the engine's collision scan, which checks both
+        // the already-set slot colors and the running color table.
+        let mut used_colors: Vec<u8> = Vec::new();
+        if !resolved.local.color_random {
+            used_colors.push(resolved.local.color_index);
+        }
+        for opponent in &resolved.opponents {
+            if !opponent.color_random {
+                used_colors.push(opponent.color_index);
+            }
+        }
+
+        // Phase A: humans (here, the single local slot) — COUNTRY then COLOR.
         if resolved.local.country_random {
             let index = rng.next_range_u32_inclusive(0, 9);
             resolved.local.country = LaunchCountry::from_country_index(index);
             resolved.local.country_random = false;
         }
+        if resolved.local.color_random {
+            let color = draw_collision_free_color(rng, &used_colors);
+            resolved.local.color_index = color;
+            resolved.local.color_random = false;
+            used_colors.push(color);
+        }
+
+        // Phase B: AI slots in order — each COUNTRY then COLOR.
         for opponent in &mut resolved.opponents {
             if opponent.country_random {
                 let index = rng.next_range_u32_inclusive(0, 9);
                 opponent.country = LaunchCountry::from_country_index(index);
                 opponent.country_random = false;
             }
+            if opponent.color_random {
+                let color = draw_collision_free_color(rng, &used_colors);
+                opponent.color_index = color;
+                opponent.color_random = false;
+                used_colors.push(color);
+            }
         }
+
         resolved
+    }
+}
+
+/// Draw a house color in the inclusive range `(0, 7)` (8 colors), redrawing
+/// while the result collides with an already-assigned color — one
+/// `RandomRanged(0, 7)` per attempt, each a single scenario-cursor advance, as
+/// the engine's color-pick retry loop does. Assumes at most 8 colored slots
+/// (the stock cap); with more random-color slots than free colors this would
+/// loop, exactly as the engine would — revisit if random color is ever exposed
+/// alongside the >8-player scale target.
+fn draw_collision_free_color(rng: &mut SimRng, used: &[u8]) -> u8 {
+    loop {
+        let color = rng.next_range_u32_inclusive(0, 7) as u8;
+        if !used.contains(&color) {
+            return color;
+        }
     }
 }
 
@@ -432,6 +491,7 @@ mod tests {
                 country: LaunchCountry::America,
                 country_random: true,
                 color_index: 0,
+                color_random: false,
                 start_position: LaunchStartPosition::Auto,
                 team: LaunchTeam::None,
             },
@@ -440,6 +500,7 @@ mod tests {
                     country: LaunchCountry::Russia,
                     country_random: true,
                     color_index: 1,
+                    color_random: false,
                     start_position: LaunchStartPosition::Auto,
                     team: LaunchTeam::None,
                     difficulty: AiDifficulty::Easy,
@@ -448,6 +509,7 @@ mod tests {
                     country: LaunchCountry::Cuba,
                     country_random: false,
                     color_index: 2,
+                    color_random: false,
                     start_position: LaunchStartPosition::Auto,
                     team: LaunchTeam::None,
                     difficulty: AiDifficulty::Easy,
@@ -508,5 +570,76 @@ mod tests {
 
         assert_eq!(resolved, session, "no random slots means no change");
         assert_eq!(rng.state(), before, "no random slots means no draws");
+    }
+
+    #[test]
+    fn resolve_random_assignments_draws_country_then_color_humans_then_ai() {
+        // local + ai0 random country AND random color; ai1 concrete (color 2).
+        let mut session = random_test_session();
+        session.local.color_random = true;
+        session.opponents[0].color_random = true;
+        assert!(!session.opponents[1].color_random);
+
+        let mut rng = SimRng::new(7);
+        let resolved = session.resolve_random_assignments(&mut rng);
+
+        // Replay the engine order by hand: ALL humans (country then color), THEN
+        // all AI (country then color). The used-color set seeds with concrete
+        // colors first (here ai1 = 2), then accumulates as colors are assigned.
+        let mut expected_rng = SimRng::new(7);
+        let mut used: Vec<u8> = vec![session.opponents[1].color_index];
+        let exp_local_country =
+            LaunchCountry::from_country_index(expected_rng.next_range_u32_inclusive(0, 9));
+        let exp_local_color = draw_collision_free_color(&mut expected_rng, &used);
+        used.push(exp_local_color);
+        let exp_ai0_country =
+            LaunchCountry::from_country_index(expected_rng.next_range_u32_inclusive(0, 9));
+        let exp_ai0_color = draw_collision_free_color(&mut expected_rng, &used);
+
+        assert_eq!(resolved.local.country, exp_local_country);
+        assert_eq!(resolved.local.color_index, exp_local_color);
+        assert_eq!(resolved.opponents[0].country, exp_ai0_country);
+        assert_eq!(resolved.opponents[0].color_index, exp_ai0_color);
+        assert_eq!(resolved.opponents[1].color_index, 2, "concrete AI color untouched");
+        assert!(!resolved.local.color_random && !resolved.opponents[0].color_random);
+        // The strongest assertion: identical stream state proves the resolver drew
+        // in exactly this order and count (country before color, humans before AI,
+        // collision retries included).
+        assert_eq!(rng.state(), expected_rng.state());
+    }
+
+    #[test]
+    fn resolve_random_assignments_color_collision_forces_redraw() {
+        // Pre-occupy the color the seed would draw first, so the resolver must
+        // redraw — proving each collision costs an extra scenario-cursor draw.
+        let seed = 12345;
+        let first_color = {
+            let mut r = SimRng::new(seed);
+            r.next_range_u32_inclusive(0, 7) as u8
+        };
+
+        let mut session = random_test_session();
+        session.local.country_random = false;
+        session.local.color_random = false;
+        session.local.color_index = first_color; // occupy the colliding color
+        session.opponents.truncate(1);
+        session.opponents[0].country_random = false;
+        session.opponents[0].color_random = true;
+
+        let mut rng = SimRng::new(seed);
+        let resolved = session.resolve_random_assignments(&mut rng);
+
+        assert_ne!(
+            resolved.opponents[0].color_index, first_color,
+            "assigned color must avoid the occupied one"
+        );
+        // The colliding first draw plus at least one retry => more than one draw.
+        let mut one_draw = SimRng::new(seed);
+        one_draw.next_range_u32_inclusive(0, 7);
+        assert_ne!(
+            rng.state(),
+            one_draw.state(),
+            "a color collision must cost an extra draw"
+        );
     }
 }
