@@ -14,10 +14,9 @@ use crate::sim::game_entity::GameEntity;
 use crate::sim::house_state::HouseState;
 use crate::sim::intern::InternedId;
 use crate::sim::production::{
-    BuildQueueItem, BuildQueueState, CancelOutcome, ProductionCategory, StepOutcome,
-    PRODUCTION_STEPS,
+    CancelOutcome, ProductionCategory, StepOutcome, PRODUCTION_STEPS,
 };
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 
 fn empty_rules() -> RuleSet {
     RuleSet::from_ini(&IniFile::from_str("")).expect("empty rules parse")
@@ -46,33 +45,24 @@ fn rules_with_ore_purifier() -> RuleSet {
     .expect("ore-purifier rules parse")
 }
 
-fn queued_item(
+/// Arm a build directly on the FactoryRegistry (the P5d queue-of-record). Replaces the
+/// retired `insert_queue(queued_item(..))` pattern: `enqueue` creates-or-re-arms the
+/// active build for `(owner, cat)`, or appends a `QueueEntry` to the FIFO tail when an
+/// active object is already held (a second `arm` call with a higher `order`). The cost is
+/// resolved from `rules` (0 for `empty_rules`, matching the old shadow's zero-cost path).
+fn arm(
+    sim: &mut Simulation,
+    rules: &RuleSet,
     owner: InternedId,
-    ty: InternedId,
     cat: ProductionCategory,
-    state: BuildQueueState,
+    ty: InternedId,
     total: u32,
-    remaining: u32,
     order: u64,
-) -> BuildQueueItem {
-    BuildQueueItem {
-        owner,
-        type_id: ty,
-        queue_category: cat,
-        state,
-        total_base_frames: total,
-        remaining_base_frames: remaining,
-        progress_carry: 0,
-        enqueue_order: order,
-    }
-}
-
-fn insert_queue(sim: &mut Simulation, owner: InternedId, cat: ProductionCategory, item: BuildQueueItem) {
-    let mut dq = VecDeque::new();
-    dq.push_back(item);
-    let mut cats = BTreeMap::new();
-    cats.insert(cat, dq);
-    sim.production.queues_by_owner.insert(owner, cats);
+) {
+    let cost = sim.object_type(ty, rules).map_or(0, |o| o.cost.max(0));
+    sim.production
+        .factory_shadow
+        .enqueue(owner, cat, ty, order, total, cost);
 }
 
 // ===== P1 — Economy shadow =====
@@ -159,25 +149,19 @@ fn economy_purifier_count_is_building_count() {
 
 // ===== P2 — Factory / FactoryRegistry shadow =====
 
-/// The authority-flip inversion of the old frames-bridge test: the registry is now
-/// AUTHORITATIVE for progress, NOT derived from `remaining_base_frames`. The SEED arm
-/// seeds a fresh build at progress 0; the PERSIST arm keeps the authoritative progress
-/// across a reconcile with the SAME front (it does NOT re-derive it from frames).
+/// The registry is AUTHORITATIVE for progress, NOT derived from frames. The SEED arm
+/// (`enqueue`) seeds a fresh build at progress 0; the PERSIST arm keeps the authoritative
+/// progress across a `refresh_production_shadow` (now a no-op for the registry — there is
+/// no reconcile to re-derive progress from frames).
 #[test]
 fn factory_reconcile_seeds_zero_and_persists_progress() {
     let mut sim = Simulation::new();
     let rules = vehicle_rules();
     let owner = sim.interner.intern("Americans");
     let ty = sim.interner.intern("GRIZZLY");
-    // A Building front with remaining 27 of 54 frames: under the OLD bridge this seeded
-    // progress 27; the registry now SEEDS progress 0 (authoritative), ignoring frames.
-    insert_queue(
-        &mut sim,
-        owner,
-        ProductionCategory::Vehicle,
-        queued_item(owner, ty, ProductionCategory::Vehicle, BuildQueueState::Building, 54, 27, 1),
-    );
-    sim.refresh_production_shadow(Some(&rules));
+    // Arm a fresh Vehicle build: the registry SEEDS progress 0 (authoritative), never
+    // frames-derived.
+    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, ty, 54, 1);
     {
         let view = sim
             .production
@@ -187,19 +171,9 @@ fn factory_reconcile_seeds_zero_and_persists_progress() {
         assert_eq!(view.progress, 0, "SEED arm seeds a fresh build at progress 0, not frames-derived");
         assert!(view.object.is_some(), "Building front => active object");
     }
-    // Manually advance the authoritative progress, then reconcile with the SAME front
-    // (same type_id + enqueue_order): the PERSIST arm must leave progress UNTOUCHED.
+    // Manually advance the authoritative progress, then refresh: the PERSIST arm must
+    // leave progress UNTOUCHED (the registry persists with no rebuild).
     sim.production.factory_shadow.test_first_mut().unwrap().progress = 9;
-    // Mutate the legacy frames (the bridge the registry no longer reads).
-    sim.production
-        .queues_by_owner
-        .get_mut(&owner)
-        .unwrap()
-        .get_mut(&ProductionCategory::Vehicle)
-        .unwrap()
-        .front_mut()
-        .unwrap()
-        .remaining_base_frames = 0;
     sim.refresh_production_shadow(Some(&rules));
     let view = sim
         .production
@@ -220,16 +194,11 @@ fn factory_registry_iteration_is_insertion_ordered() {
     for (i, name) in ["A", "B", "C"].iter().enumerate() {
         let owner = sim.interner.intern(name);
         let ty = sim.interner.intern(&format!("U{i}"));
-        let mut cats = BTreeMap::new();
         for cat in [ProductionCategory::Vehicle, ProductionCategory::Infantry] {
             order += 1;
-            let mut dq = VecDeque::new();
-            dq.push_back(queued_item(owner, ty, cat, BuildQueueState::Building, 54, 10, order));
-            cats.insert(cat, dq);
+            arm(&mut sim, &rules, owner, cat, ty, 54, order);
         }
-        sim.production.queues_by_owner.insert(owner, cats);
     }
-    sim.refresh_production_shadow(Some(&rules));
     let seqs: Vec<u64> = sim
         .production
         .factory_shadow
@@ -249,24 +218,11 @@ fn insertion_seq_stable_across_rebuild() {
     let rules = empty_rules();
     let owner = sim.interner.intern("Americans");
     let ty = sim.interner.intern("GRIZZLY");
-    insert_queue(
-        &mut sim,
-        owner,
-        ProductionCategory::Vehicle,
-        queued_item(owner, ty, ProductionCategory::Vehicle, BuildQueueState::Building, 54, 30, 1),
-    );
-    sim.refresh_production_shadow(Some(&rules));
+    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, ty, 54, 1);
     let seq_a = sim.production.factory_shadow.iter_insertion_ordered()[0].insertion_seq;
-    // Advance the build, rebuild — the same (owner, category) survives, same seq.
-    sim.production
-        .queues_by_owner
-        .get_mut(&owner)
-        .unwrap()
-        .get_mut(&ProductionCategory::Vehicle)
-        .unwrap()
-        .front_mut()
-        .unwrap()
-        .remaining_base_frames = 10;
+    // Advance the build, refresh — the registry persists, the same (owner, category)
+    // survives with the same seq (refresh no longer reconciles).
+    sim.production.factory_shadow.test_first_mut().unwrap().progress = 10;
     sim.refresh_production_shadow(Some(&rules));
     let seq_b = sim.production.factory_shadow.iter_insertion_ordered()[0].insertion_seq;
     assert_eq!(seq_a, seq_b, "surviving factory keeps a stable insertion_seq");
@@ -283,13 +239,7 @@ fn production_authoritative_hash_includes_factory_fields() {
         let owner = sim.interner.intern("Americans");
         sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
         let ty = sim.interner.intern("GRIZZLY");
-        insert_queue(
-            &mut sim,
-            owner,
-            ProductionCategory::Vehicle,
-            queued_item(owner, ty, ProductionCategory::Vehicle, BuildQueueState::Building, 54, 30, 1),
-        );
-        sim.refresh_production_shadow(Some(&rules));
+        arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, ty, 54, 1);
         sim
     }
     let base = mid_build().state_hash();
@@ -332,20 +282,19 @@ fn production_shadow_does_not_create_houses() {
     let rules = empty_rules();
     let owner = sim.interner.intern("Ghost"); // no HouseState inserted
     let ty = sim.interner.intern("GRIZZLY");
-    insert_queue(
-        &mut sim,
-        owner,
-        ProductionCategory::Vehicle,
-        queued_item(owner, ty, ProductionCategory::Vehicle, BuildQueueState::Building, 54, 30, 1),
-    );
+    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, ty, 54, 1);
     let before_houses = sim.houses.len();
-    let before_queues = sim.production.queues_by_owner.len();
+    let before_factories = sim.production.factory_shadow.len();
     sim.refresh_production_shadow(Some(&rules));
-    // The reconcile NEVER fabricates a house (the auto-create hazard guard); it may
-    // populate the registry (now authoritative + hashed), so the hash IS allowed to
+    // The refresh NEVER fabricates a house (the auto-create hazard guard); the registry
+    // (now authoritative + hashed) is populated by the arm, so the hash IS allowed to
     // move — only the no-house-creation invariant is asserted here.
-    assert_eq!(sim.houses.len(), before_houses, "reconcile must not create houses");
-    assert_eq!(sim.production.queues_by_owner.len(), before_queues, "queues unchanged");
+    assert_eq!(sim.houses.len(), before_houses, "refresh must not create houses");
+    assert_eq!(
+        sim.production.factory_shadow.len(),
+        before_factories,
+        "registry unchanged by the refresh no-op"
+    );
 }
 
 /// FIT (a): the factory shell trace visits live Structures in LogicVector order.
@@ -378,13 +327,9 @@ fn snapshot_roundtrip_factory_registry() {
     let owner = sim.interner.intern("Americans");
     sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
     let ty = sim.interner.intern("GRIZZLY");
-    insert_queue(
-        &mut sim,
-        owner,
-        ProductionCategory::Vehicle,
-        queued_item(owner, ty, ProductionCategory::Vehicle, BuildQueueState::Building, 54, 30, 1),
-    );
-    sim.refresh_production_shadow(Some(&rules)); // SEED arm: balance = full cost
+    let next = sim.interner.intern("FV");
+    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, ty, 54, 1); // SEED arm: balance = full cost
+    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, next, 54, 2); // a tail entry to round-trip
     // Give the build non-trivial authoritative progress/balance/stats to round-trip.
     {
         let f = sim.production.factory_shadow.test_first_mut().unwrap();
@@ -406,34 +351,31 @@ fn snapshot_roundtrip_factory_registry() {
     assert_eq!(before, loaded.state_hash(), "post-load reconcile leaves the loaded build untouched");
 }
 
-/// `progress_carry` is the retired frames-timer field with no live reader — it is
-/// removed from the hash. (`remaining_base_frames` STAYS hashed — it is a live sidebar
-/// reader + the progress mirror — so this test does NOT touch it.)
+/// `progress_carry` was the retired frames-timer field with no live reader. P5d retired
+/// the entire `BuildQueueItem`/`queues_by_owner` queue-of-record (along with
+/// `progress_carry` and `remaining_base_frames`), so there is no longer a per-queue-item
+/// hash fold for any of these fields to exercise. The original assertion ("mutating
+/// progress_carry leaves the hash unchanged") can no longer be expressed — the field does
+/// not exist. The equivalent invariant now: the registry has no per-queue-item retired
+/// frames field to fold, so the only hashed production state is the `Factory` head fields
+/// + `QueueEntry` (type/order/total) — none of which is a `progress_carry`/`remaining`
+/// frames timer.
+// P5D-REVIEW: original tested mutation of the RETIRED BuildQueueItem.progress_carry field;
+// that field no longer exists. Re-expressed as "no retired frames-timer field is hashed".
+// Human: confirm this is the intended equivalent, or delete the test.
 #[test]
+#[ignore = "P5D-REVIEW: BuildQueueItem.progress_carry retired; original mutation no longer expressible"]
 fn legacy_progress_carry_removed_from_hash() {
     let mut sim = Simulation::new();
+    let rules = empty_rules();
     let owner = sim.interner.intern("Americans");
     let ty = sim.interner.intern("GRIZZLY");
-    insert_queue(
-        &mut sim,
-        owner,
-        ProductionCategory::Vehicle,
-        queued_item(owner, ty, ProductionCategory::Vehicle, BuildQueueState::Building, 54, 30, 1),
-    );
+    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, ty, 54, 1);
     let before = sim.state_hash();
-    {
-        let item = sim
-            .production
-            .queues_by_owner
-            .get_mut(&owner)
-            .unwrap()
-            .get_mut(&ProductionCategory::Vehicle)
-            .unwrap()
-            .front_mut()
-            .unwrap();
-        item.progress_carry = item.progress_carry.wrapping_add(99);
-    }
-    assert_eq!(before, sim.state_hash(), "retired progress_carry is out of the hash");
+    // No retired per-queue-item frames field exists to mutate; a refresh no-op must not
+    // perturb the hash (the registry carries no progress_carry/remaining frames timer).
+    sim.refresh_production_shadow(Some(&rules));
+    assert_eq!(before, sim.state_hash(), "no retired progress_carry frames field is hashed");
 }
 
 /// Identical fixtures over N ticks produce identical per-tick state_hash sequences
@@ -465,13 +407,7 @@ fn factory_advance_step_does_not_change_state_hash() {
     let owner = sim.interner.intern("Americans");
     sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
     let ty = sim.interner.intern("GRIZZLY");
-    insert_queue(
-        &mut sim,
-        owner,
-        ProductionCategory::Vehicle,
-        queued_item(owner, ty, ProductionCategory::Vehicle, BuildQueueState::Building, 54, 30, 1),
-    );
-    sim.refresh_production_shadow(Some(&rules)); // cost-based shadow built
+    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, ty, 54, 1); // cost-based shadow built
     let before = sim.state_hash();
 
     // Step a CLONE of the shadow factory against a CLONE of the wallet, 54 times.
@@ -507,12 +443,7 @@ fn production_shadow_with_oracle_is_deterministic() {
         let owner = sim.interner.intern("Americans");
         sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
         let ty = sim.interner.intern("GRIZZLY");
-        insert_queue(
-            &mut sim,
-            owner,
-            ProductionCategory::Vehicle,
-            queued_item(owner, ty, ProductionCategory::Vehicle, BuildQueueState::Building, 54, 30, 1),
-        );
+        arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, ty, 54, 1);
         let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
         (0..5)
             .map(|_| {
@@ -534,12 +465,7 @@ fn factory_oracle_step_trace_walks_live_structures() {
     let owner = sim.interner.intern("Americans");
     sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
     let ty = sim.interner.intern("GRIZZLY");
-    insert_queue(
-        &mut sim,
-        owner,
-        ProductionCategory::Vehicle,
-        queued_item(owner, ty, ProductionCategory::Vehicle, BuildQueueState::Building, 54, 30, 1),
-    );
+    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, ty, 54, 1);
     // A live Structure for the owner (the war factory the probe walks).
     let mut e = GameEntity::test_default(1, "GAWEAP", "Americans", 5, 5);
     e.category = EntityCategory::Structure;
@@ -575,13 +501,7 @@ fn factory_cancel_one_does_not_change_state_hash() {
     let owner = sim.interner.intern("Americans");
     sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
     let ty = sim.interner.intern("GRIZZLY");
-    insert_queue(
-        &mut sim,
-        owner,
-        ProductionCategory::Vehicle,
-        queued_item(owner, ty, ProductionCategory::Vehicle, BuildQueueState::Building, 54, 30, 1),
-    );
-    sim.refresh_production_shadow(Some(&rules)); // cost-based shadow built
+    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, ty, 54, 1); // cost-based shadow built
     let before = sim.state_hash();
     let legacy_credits = sim.houses[&owner].credits;
 
@@ -620,18 +540,17 @@ fn queue_advances_only_after_delivery() {
     let active = sim.interner.intern("GRIZZLY");
     let next = sim.interner.intern("FV"); // the queued tail item
     // Front Building (active object) with a tail item behind it.
-    let mut dq = VecDeque::new();
-    dq.push_back(queued_item(owner, active, ProductionCategory::Vehicle, BuildQueueState::Building, 54, 30, 1));
-    dq.push_back(queued_item(owner, next, ProductionCategory::Vehicle, BuildQueueState::Queued, 54, 54, 2));
-    let mut cats = BTreeMap::new();
-    cats.insert(ProductionCategory::Vehicle, dq);
-    sim.production.queues_by_owner.insert(owner, cats);
-    sim.refresh_production_shadow(Some(&rules));
+    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, active, 54, 1);
+    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, next, 54, 2);
 
     let before = sim.state_hash();
     let mut f = sim.production.factory_shadow.iter_insertion_ordered()[0].clone();
     assert_eq!(f.object.as_ref().map(|o| o.type_id), Some(active), "active = GRIZZLY");
-    assert_eq!(f.queue.iter().copied().collect::<Vec<_>>(), vec![next], "tail = [FV]");
+    assert_eq!(
+        f.queue.iter().map(|e| e.type_id).collect::<Vec<_>>(),
+        vec![next],
+        "tail = [FV]"
+    );
     // empty_rules -> cost 0; seed a real cost so completion takes the full ladder.
     f.progress = 0;
     f.balance = 700;
@@ -646,17 +565,19 @@ fn queue_advances_only_after_delivery() {
         }
     }
     assert!(f.suspended && f.object.is_some(), "C12: completion holds the object, suspended");
-    // The queue does NOT advance on completion alone.
-    assert_eq!(f.start_next_queued(), None, "C7: held object blocks the advance");
+    // The queue does NOT advance on completion alone (cost/step_delay are inert when the
+    // object is still held — the guard fires before the seed).
+    assert_eq!(f.start_next_queued(0, 0), None, "C7: held object blocks the advance");
     assert_eq!(
-        f.queue.iter().copied().collect::<Vec<_>>(),
+        f.queue.iter().map(|e| e.type_id).collect::<Vec<_>>(),
         vec![next],
         "queue front unchanged while the object is held"
     );
-    // Simulate the delivery commit: clear the object, THEN the queue advances.
+    // Simulate the delivery commit: clear the object, THEN the queue advances (delivery
+    // path: step_delay 0).
     f.object = None;
     f.suspended = false;
-    assert_eq!(f.start_next_queued(), Some(next), "after delivery the front pops");
+    assert_eq!(f.start_next_queued(0, 0), Some(next), "after delivery the front pops");
     assert_eq!(f.object.as_ref().map(|o| o.type_id), Some(next), "active = FV");
     assert!(f.queue.is_empty(), "tail consumed");
 
@@ -674,12 +595,7 @@ fn production_shadow_with_cancel_is_deterministic() {
         let owner = sim.interner.intern("Americans");
         sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
         let ty = sim.interner.intern("GRIZZLY");
-        insert_queue(
-            &mut sim,
-            owner,
-            ProductionCategory::Vehicle,
-            queued_item(owner, ty, ProductionCategory::Vehicle, BuildQueueState::Building, 54, 30, 1),
-        );
+        arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, ty, 54, 1);
         let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
         (0..5)
             .map(|_| {
@@ -715,13 +631,7 @@ fn factory_flip_prep_does_not_change_state_hash() {
     let owner = sim.interner.intern("Americans");
     sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
     let ty = sim.interner.intern("GRIZZLY");
-    insert_queue(
-        &mut sim,
-        owner,
-        ProductionCategory::Vehicle,
-        queued_item(owner, ty, ProductionCategory::Vehicle, BuildQueueState::Building, 54, 30, 1),
-    );
-    sim.refresh_production_shadow(Some(&rules));
+    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, ty, 54, 1);
     let before = sim.state_hash();
     let legacy_credits = sim.houses[&owner].credits;
 
@@ -770,15 +680,10 @@ fn factory_insertion_seq_equals_front_enqueue_order() {
     let owner = sim.interner.intern("Americans");
     let air_ty = sim.interner.intern("BEAG");
     let veh_ty = sim.interner.intern("GRIZZLY");
-    let mut air_dq = VecDeque::new();
-    air_dq.push_back(queued_item(owner, air_ty, ProductionCategory::Aircraft, BuildQueueState::Building, 54, 30, 10));
-    let mut veh_dq = VecDeque::new();
-    veh_dq.push_back(queued_item(owner, veh_ty, ProductionCategory::Vehicle, BuildQueueState::Building, 54, 30, 20));
-    let mut cats = BTreeMap::new();
-    cats.insert(ProductionCategory::Aircraft, air_dq);
-    cats.insert(ProductionCategory::Vehicle, veh_dq);
-    sim.production.queues_by_owner.insert(owner, cats);
-    sim.refresh_production_shadow(Some(&rules));
+    // Aircraft begun first (order 10), Vehicle second (order 20) — enqueue mints each
+    // factory's insertion_seq from its first-begin order.
+    arm(&mut sim, &rules, owner, ProductionCategory::Aircraft, air_ty, 54, 10);
+    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, veh_ty, 54, 20);
 
     let ordered: Vec<(ProductionCategory, u64)> = sim
         .production
@@ -803,15 +708,9 @@ fn factory_step_order_matches_legacy_temporal_order() {
     let owner = sim.interner.intern("Americans");
     let air_ty = sim.interner.intern("BEAG");
     let veh_ty = sim.interner.intern("GRIZZLY");
-    let mut air_dq = VecDeque::new();
-    air_dq.push_back(queued_item(owner, air_ty, ProductionCategory::Aircraft, BuildQueueState::Building, 54, 30, 5));
-    let mut veh_dq = VecDeque::new();
-    veh_dq.push_back(queued_item(owner, veh_ty, ProductionCategory::Vehicle, BuildQueueState::Building, 54, 30, 9));
-    let mut cats = BTreeMap::new();
-    cats.insert(ProductionCategory::Aircraft, air_dq);
-    cats.insert(ProductionCategory::Vehicle, veh_dq);
-    sim.production.queues_by_owner.insert(owner, cats);
-    sim.refresh_production_shadow(Some(&rules));
+    // Aircraft begun first (order 5), Vehicle second (order 9).
+    arm(&mut sim, &rules, owner, ProductionCategory::Aircraft, air_ty, 54, 5);
+    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, veh_ty, 54, 9);
 
     let cats_in_sweep: Vec<ProductionCategory> = sim
         .production
@@ -837,12 +736,7 @@ fn factory_step_matches_legacy_shadow_holds() {
     let owner = sim.interner.intern("Americans");
     sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
     let ty = sim.interner.intern("GRIZZLY");
-    insert_queue(
-        &mut sim,
-        owner,
-        ProductionCategory::Vehicle,
-        queued_item(owner, ty, ProductionCategory::Vehicle, BuildQueueState::Building, 54, 30, 1),
-    );
+    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, ty, 54, 1);
     let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
     for _ in 0..5 {
         // If the inversion assert diverges, advance_tick panics in a debug build.
@@ -861,13 +755,8 @@ fn production_delivery_probe_is_dormant() {
     sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
     let active = sim.interner.intern("GRIZZLY");
     let next = sim.interner.intern("FV");
-    let mut dq = VecDeque::new();
-    dq.push_back(queued_item(owner, active, ProductionCategory::Vehicle, BuildQueueState::Building, 54, 30, 1));
-    dq.push_back(queued_item(owner, next, ProductionCategory::Vehicle, BuildQueueState::Queued, 54, 54, 2));
-    let mut cats = BTreeMap::new();
-    cats.insert(ProductionCategory::Vehicle, dq);
-    sim.production.queues_by_owner.insert(owner, cats);
-    sim.refresh_production_shadow(Some(&rules));
+    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, active, 54, 1);
+    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, next, 54, 2);
 
     let before = sim.state_hash();
     let probe = sim.factory_delivery_probe();
@@ -880,7 +769,7 @@ fn production_delivery_probe_is_dormant() {
         .unwrap();
     assert_eq!(view.object.map(|o| o.type_id), Some(active), "live active still GRIZZLY");
     assert_eq!(
-        view.queue.iter().copied().collect::<Vec<_>>(),
+        view.queue.iter().map(|e| e.type_id).collect::<Vec<_>>(),
         vec![next],
         "live tail unchanged"
     );
@@ -899,12 +788,7 @@ fn production_flip_prep_is_deterministic() {
         let owner = sim.interner.intern("Americans");
         sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
         let ty = sim.interner.intern("GRIZZLY");
-        insert_queue(
-            &mut sim,
-            owner,
-            ProductionCategory::Vehicle,
-            queued_item(owner, ty, ProductionCategory::Vehicle, BuildQueueState::Building, 54, 30, 1),
-        );
+        arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, ty, 54, 1);
         let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
         (0..5)
             .map(|_| {
@@ -944,12 +828,7 @@ fn single_wallet_charged_once_no_double_debit() {
     let owner = sim.interner.intern("Americans");
     sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
     let ty = sim.interner.intern("GRIZZLY");
-    insert_queue(
-        &mut sim,
-        owner,
-        ProductionCategory::Vehicle,
-        queued_item(owner, ty, ProductionCategory::Vehicle, BuildQueueState::Building, 54, 54, 1),
-    );
+    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, ty, 54, 1);
     let full_cost = sim.object_type(ty, &rules).map(|o| o.cost.max(0)).unwrap_or(0);
     assert!(full_cost > 0, "GRIZZLY needs a positive cost for this guard");
     let start = sim.houses[&owner].credits;
@@ -980,12 +859,7 @@ fn stall_on_no_funds_holds() {
     let owner = sim.interner.intern("Americans");
     sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 0, 10)); // 0 credits
     let ty = sim.interner.intern("GRIZZLY");
-    insert_queue(
-        &mut sim,
-        owner,
-        ProductionCategory::Vehicle,
-        queued_item(owner, ty, ProductionCategory::Vehicle, BuildQueueState::Building, 54, 54, 1),
-    );
+    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, ty, 54, 1);
     let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
     for _ in 0..200 {
         sim.advance_tick(&[], Some(&rules), &heights, None, None, 67);
@@ -1004,12 +878,7 @@ fn cancel_one_partial_refund_to_house_credits() {
     let owner = sim.interner.intern("Americans");
     sim.houses.insert(owner, HouseState::new(owner, 0, None, true, 1_000_000, 10));
     let ty = sim.interner.intern("GRIZZLY");
-    insert_queue(
-        &mut sim,
-        owner,
-        ProductionCategory::Vehicle,
-        queued_item(owner, ty, ProductionCategory::Vehicle, BuildQueueState::Building, 54, 54, 1),
-    );
+    arm(&mut sim, &rules, owner, ProductionCategory::Vehicle, ty, 54, 1);
     let full_cost = sim.object_type(ty, &rules).map(|o| o.cost.max(0)).unwrap_or(0);
     let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
     // Charge partway (not to completion).
@@ -1024,12 +893,13 @@ fn cancel_one_partial_refund_to_house_credits() {
     assert!(ok, "the active build is cancellable");
     let refunded = sim.houses[&owner].credits - credits_before;
     assert_eq!(refunded, spent, "C8: refund exactly the spent portion (original_balance - balance)");
+    // The cancelled active build (no tail) leaves an idle factory that is pruned, so the
+    // factory no longer exists in the registry (the queue-of-record).
     assert!(
         sim.production
-            .queues_by_owner
-            .get(&owner)
-            .and_then(|c| c.get(&ProductionCategory::Vehicle))
-            .map_or(true, |q| q.is_empty()),
+            .factory_shadow
+            .view(owner, ProductionCategory::Vehicle)
+            .is_none(),
         "the cancelled active build left the queue-of-record"
     );
 }
@@ -1050,23 +920,10 @@ fn factory_flip_determinism_over_scripted_commands() {
         let griz = sim.interner.intern("GRIZZLY");
         let beag = sim.interner.intern("BEAG");
         // Owner A: a Vehicle build (order 1) + an Aircraft build (order 2).
-        let mut a_cats = BTreeMap::new();
-        a_cats.insert(
-            ProductionCategory::Vehicle,
-            VecDeque::from([queued_item(a, griz, ProductionCategory::Vehicle, BuildQueueState::Building, 54, 54, 1)]),
-        );
-        a_cats.insert(
-            ProductionCategory::Aircraft,
-            VecDeque::from([queued_item(a, beag, ProductionCategory::Aircraft, BuildQueueState::Building, 54, 54, 2)]),
-        );
-        sim.production.queues_by_owner.insert(a, a_cats);
+        arm(&mut sim, &rules, a, ProductionCategory::Vehicle, griz, 54, 1);
+        arm(&mut sim, &rules, a, ProductionCategory::Aircraft, beag, 54, 2);
         // Owner B: a Vehicle build (order 3).
-        insert_queue(
-            &mut sim,
-            b,
-            ProductionCategory::Vehicle,
-            queued_item(b, griz, ProductionCategory::Vehicle, BuildQueueState::Building, 54, 54, 3),
-        );
+        arm(&mut sim, &rules, b, ProductionCategory::Vehicle, griz, 54, 3);
         sim.production.next_enqueue_order = 4;
 
         let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();

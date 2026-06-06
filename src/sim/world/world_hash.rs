@@ -190,26 +190,13 @@ impl Simulation {
 
     /// Hash all production-related state: queues, ready items, resources.
     fn hash_production(&self, hasher: &mut impl Hasher) {
-        for (owner, queues) in &self.production.queues_by_owner {
-            owner.hash(hasher);
-            for (category, queue) in queues {
-                category.hash(hasher);
-                for item in queue {
-                    item.owner.hash(hasher);
-                    item.type_id.hash(hasher);
-                    item.queue_category.hash(hasher);
-                    item.state.hash(hasher);
-                    item.total_base_frames.hash(hasher);
-                    // remaining_base_frames STAYS hashed: it is a live sidebar-ETA
-                    // reader (effective_time_to_build_frames_for_type), symmetric with
-                    // total_base_frames, and a derived mirror of the authoritative
-                    // registry progress once the frames timer is retired. progress_carry
-                    // is retired (no live reader) and removed from the hash.
-                    item.remaining_base_frames.hash(hasher);
-                    item.enqueue_order.hash(hasher);
-                }
-            }
-        }
+        // P5d: the per-`BuildQueueItem` `queues_by_owner` fold is RETIRED — the
+        // queue-of-record now lives in the factory registry (active build = `Factory`
+        // head fields; tail = `Factory.queue` of `QueueEntry`) and folds in
+        // `hash_factory_registry`. `remaining_base_frames` no longer exists (it was a
+        // `BuildQueueItem` field); the sidebar ETA derives it from `progress` at view time
+        // and it is intentionally NOT hashed (the 18->19 shape change). `ready_by_owner`,
+        // `active_producer_by_owner`, and `next_enqueue_order` are UNCHANGED below.
         for (owner, ready) in &self.production.ready_by_owner {
             owner.hash(hasher);
             for type_id in ready {
@@ -296,6 +283,8 @@ impl Simulation {
             f.step_timer.hash(hasher);
             f.balance.hash(hasher);
             f.original_balance.hash(hasher);
+            // P5d: the active build's ETA basis (was the front `BuildQueueItem.total_base_frames`).
+            f.active_total_base_frames.hash(hasher);
             match &f.object {
                 Some(o) => {
                     1u8.hash(hasher);
@@ -321,9 +310,13 @@ impl Simulation {
                     v.hash(hasher);
                 }
             }
+            // P5d: the queue-of-record (was the per-`BuildQueueItem` `queues_by_owner` fold,
+            // now retired). Folds in FIFO (`VecDeque`) order — deterministic by construction.
             (f.queue.len() as u64).hash(hasher);
-            for t in &f.queue {
-                t.hash(hasher);
+            for e in &f.queue {
+                e.type_id.hash(hasher);
+                e.enqueue_order.hash(hasher);
+                e.total_base_frames.hash(hasher);
             }
         }
     }

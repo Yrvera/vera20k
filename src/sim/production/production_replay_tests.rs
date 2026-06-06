@@ -31,7 +31,7 @@
 use std::collections::BTreeMap;
 
 use super::tests::{build_catalog_rules, spawn_structure};
-use super::ProductionCategory;
+use super::{queue_view_for_owner, BuildQueueState, ProductionCategory};
 use crate::map::entities::EntityCategory;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::command::{Command, CommandEnvelope, QueueMode};
@@ -184,6 +184,37 @@ fn record(
         log.record_tick(r.tick, due, r.state_hash);
     }
     (hashes, log)
+}
+
+/// (P5d derived-state) An underfunded mid-build factory (on_hold) renders as Building in
+/// the sidebar build queue, NOT "On Hold"/NoFunds — the pre-P5d front never surfaced NoFunds
+/// during a stall (it stayed Building; on_hold is internal). The sibling of the blocked-exit
+/// Done case: the derived view state must reproduce the exact observed label set
+/// {Building, Paused, Done, Queued}.
+#[test]
+fn derived_view_state_stays_building_on_underfunded_stall() {
+    let (mut sim, rules, _heights) = scenario();
+    let (am, _, e1, _) = ids(&sim);
+    // Arm an E1 build directly, then simulate a mid-build underfunded stall.
+    sim.production
+        .factory_shadow
+        .enqueue(am, ProductionCategory::Infantry, e1, 1, 100, 200);
+    {
+        let f = sim
+            .production
+            .factory_shadow
+            .test_factory_mut(am, ProductionCategory::Infantry)
+            .expect("infantry factory armed");
+        f.progress = 10;
+        f.on_hold = true; // underfunded stall: not paused, not complete
+    }
+    let view = queue_view_for_owner(&sim, &rules, "Americans");
+    assert_eq!(view.len(), 1, "the single armed build projects to one view item");
+    assert_eq!(
+        view[0].state,
+        BuildQueueState::Building,
+        "an on_hold (underfunded) stall renders Building, never NoFunds"
+    );
 }
 
 fn delivered_unit_count(sim: &Simulation) -> usize {
@@ -384,13 +415,13 @@ fn economy_conservation_through_cancel_refund() {
         cumulative_refunded,
         mtnk_cost
     );
-    // Americans' MTNK left the queue-of-record on cancel.
+    // Americans' MTNK left the queue-of-record on cancel (the registry factory is gone —
+    // P5d: the queue-of-record lives in the registry, pruned when idle).
     assert!(
         sim.production
-            .queues_by_owner
-            .get(&am)
-            .and_then(|c| c.get(&ProductionCategory::Vehicle))
-            .map_or(true, |q| q.is_empty()),
-        "the cancelled active build left the Americans Vehicle queue"
+            .factory_shadow
+            .view(am, ProductionCategory::Vehicle)
+            .is_none(),
+        "the cancelled active build left the Americans Vehicle factory"
     );
 }

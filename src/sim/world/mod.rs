@@ -987,21 +987,16 @@ impl Simulation {
         }
     }
 
-    /// P2 SHADOW BUILD umbrella: refresh the per-house economy shadow, then rebuild
-    /// the factory registry from the legacy queues. Runs at the advance_tick tail,
-    /// AFTER all authoritative systems, so the derive sees settled legacy state.
-    /// Writes ONLY the non-hashed shadow fields; the legacy production path is
-    /// untouched. `rules` is the tail's `Option`, threaded to the economy refresh.
+    /// Per-tick production tail: refresh the per-house economy shadow (purifier count).
+    /// Runs at the advance_tick tail, AFTER all authoritative systems.
+    ///
+    /// P5d: the factory registry is the authoritative queue-of-record and is mutated
+    /// DIRECTLY by enqueue/cancel/delivery — there is no longer a `reconcile_from_queues`
+    /// pass (the `queues_by_owner` mirror is retired), so its progress simply persists
+    /// across ticks with no end-of-tick rebuild. `rules` is the tail's `Option`, threaded
+    /// to the economy refresh.
     pub(crate) fn refresh_production_shadow(&mut self, rules: Option<&RuleSet>) {
         self.refresh_economy_shadow(rules);
-        // Take the registry out so reconcile can borrow `&self` while writing the
-        // registry; swap it back after. Reconcile reads `queues_by_owner` (the
-        // queue-of-record), PERSISTING an unchanged active build's authoritative
-        // progress instead of re-deriving it from cost every tick (the P5b
-        // inversion); the temporarily-defaulted field is fine.
-        let mut registry = std::mem::take(&mut self.production.factory_shadow);
-        registry.reconcile_from_queues(self, rules);
-        self.production.factory_shadow = registry;
     }
 
     /// Debug-only P2 asserts: (a) economy tracks credits; (b) the factory shell
@@ -1082,33 +1077,35 @@ impl Simulation {
     /// tick+owner+category; NEVER writes back.
     #[cfg(debug_assertions)]
     pub(crate) fn debug_assert_factory_invariants(&self) {
-        use crate::sim::production::{ProductionCategory, PRODUCTION_STEPS};
+        use crate::sim::production::PRODUCTION_STEPS;
 
-        // (A) ORDER: the registry sweep order (temporal insertion_seq) must equal the
-        // legacy per-house temporal order (front enqueue_order). insertion_seq IS
-        // front.enqueue_order after the temporal mint, so this guards that the mint was
-        // not reverted to the old sorted-(owner, category) order — the order step_all
-        // charges in and the hash folds in.
-        for (&owner, queues) in &self.production.queues_by_owner {
-            let mut legacy: Vec<(ProductionCategory, u64)> = queues
-                .iter()
-                .filter_map(|(&cat, q)| q.front().map(|f| (cat, f.enqueue_order)))
-                .collect();
-            legacy.sort_by_key(|&(_, order)| order);
-            let legacy_cats: Vec<ProductionCategory> = legacy.iter().map(|&(c, _)| c).collect();
-            let swept_cats: Vec<ProductionCategory> = self
-                .production
-                .factory_shadow
-                .iter_insertion_ordered()
-                .iter()
-                .filter(|f| f.owner == owner)
-                .map(|f| f.category)
-                .collect();
-            debug_assert_eq!(
-                swept_cats, legacy_cats,
-                "P5b (A): tick {} owner {:?}: sweep order must equal legacy temporal order",
-                self.tick, owner,
-            );
+        // (A) ORDER: the registry sweep order must be a TOTAL order — `iter_insertion_ordered`
+        // yields strictly-increasing `insertion_seq` with NO ties (the strict-monotonic
+        // `enqueue_order` property the hash fold + `step_all` charge order both depend on; a
+        // tie would make the sweep order ambiguous and desync lockstep). Within each factory
+        // the tail stamps strictly increase AND exceed the active build's `insertion_seq`
+        // (FIFO `push_back` of a monotonic mint: the active build is the oldest, the tail
+        // newer) — this is the D1 invariant expressed as a real self-check.
+        let ordered = self.production.factory_shadow.iter_insertion_ordered();
+        let mut prev_seq: Option<u64> = None;
+        for f in &ordered {
+            if let Some(p) = prev_seq {
+                debug_assert!(
+                    f.insertion_seq > p,
+                    "P5d (A): tick {}: insertion_seq must be strictly increasing across the sweep ({} after {})",
+                    self.tick, f.insertion_seq, p,
+                );
+            }
+            prev_seq = Some(f.insertion_seq);
+            let mut tail_prev = f.insertion_seq;
+            for e in &f.queue {
+                debug_assert!(
+                    e.enqueue_order > tail_prev,
+                    "P5d (A): tick {} {:?}/{:?}: tail enqueue_order must strictly exceed the active build + prior tail ({} after {})",
+                    self.tick, f.owner, f.category, e.enqueue_order, tail_prev,
+                );
+                tail_prev = e.enqueue_order;
+            }
         }
 
         // (B) STATE: progress in 0..=54; 0 <= balance <= original_balance (the per-step

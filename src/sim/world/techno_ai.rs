@@ -377,7 +377,7 @@ impl Simulation {
             let mut d = factory.clone();
             d.object = None; // simulate the delivery commit
             d.suspended = false;
-            let popped = d.start_next_queued();
+            let popped = d.start_next_queued(0, 0);
             out.push((factory.owner, factory.category, popped));
         }
         out

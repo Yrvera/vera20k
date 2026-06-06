@@ -19,21 +19,6 @@ pub const STARTING_CREDITS: i32 = 5000;
 /// Fixed-point precision for dynamic production-rate application.
 pub(super) const PRODUCTION_RATE_SCALE: u64 = 1_000_000;
 
-/// One queued build item.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BuildQueueItem {
-    pub owner: InternedId,
-    pub type_id: InternedId,
-    pub queue_category: ProductionCategory,
-    pub state: BuildQueueState,
-    /// Base build time in RA2 production frames before live power/factory/wall scaling.
-    pub total_base_frames: u32,
-    /// Remaining base build time in RA2 production frames before live scaling.
-    pub remaining_base_frames: u32,
-    pub progress_carry: u64,
-    pub enqueue_order: u64,
-}
-
 /// One queued item formatted for UI rendering.
 #[derive(Debug, Clone)]
 pub struct QueueItemView {
@@ -201,8 +186,6 @@ pub(super) enum BuildMode {
 /// Player production state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProductionState {
-    pub queues_by_owner:
-        BTreeMap<InternedId, BTreeMap<ProductionCategory, VecDeque<BuildQueueItem>>>,
     pub ready_by_owner: BTreeMap<InternedId, VecDeque<InternedId>>,
     pub active_producer_by_owner: BTreeMap<InternedId, BTreeMap<ProductionCategory, u64>>,
     pub next_enqueue_order: u64,
@@ -242,9 +225,10 @@ pub struct ProductionState {
     /// Airfield dock reservations — multi-slot (NumberOfDocks per airfield).
     pub airfield_docks: crate::sim::docking::aircraft_dock::AirfieldDocks,
     /// Per-(house, category) factory registry — the authoritative production state
-    /// machine as of the flip. Reconciled each tick from `queues_by_owner` (the
-    /// queue-of-record) PRESERVING progress; serialized + hashed (no longer a
-    /// `#[serde(skip)]` shadow). Its per-step charge runs against the real wallet via
+    /// machine AND (as of P5d) the queue-of-record: the active build is the `Factory` head
+    /// fields, the FIFO tail is `Factory.queue` of `QueueEntry`. Mutated directly by
+    /// enqueue/cancel/delivery (no `queues_by_owner` mirror); serialized + hashed. Its
+    /// per-step charge runs against the real wallet via
     /// `step_all` at the Phase-7 head, before the house tail (C1).
     pub factory_shadow: FactoryRegistry,
 }
@@ -252,7 +236,6 @@ pub struct ProductionState {
 impl Default for ProductionState {
     fn default() -> Self {
         Self {
-            queues_by_owner: BTreeMap::new(),
             ready_by_owner: BTreeMap::new(),
             active_producer_by_owner: BTreeMap::new(),
             next_enqueue_order: 1,

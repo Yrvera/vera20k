@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, VecDeque};
 
 use super::{
-    BuildQueueItem, BuildQueueState, BuildingPlacementError, ProductionCategory,
+    BuildingPlacementError, ProductionCategory,
     cancel_last_for_owner, credits_for_owner, cycle_active_producer_for_owner_category,
     find_spawn_cell_for_owner, place_ready_building, placement_preview_for_owner,
     producer_candidates_for_owner_category, ready_buildings_for_owner, sell_building,
@@ -167,24 +167,19 @@ fn completed_building_moves_into_ready_placement_pool() {
     let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
 
     spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
-    let qi = super::tests::queued_item_via(
-        &mut sim.interner,
+    let americans = sim.interner.intern("Americans");
+    let gacnst = sim.interner.intern("GACNST");
+    // P5d: arm the Building build directly in the registry (queue-of-record), then force it
+    // to the completed-held state so `tick_production` moves it into the ready-placement pool.
+    super::tests::arm_build_via(
+        &mut sim,
+        &rules,
         "Americans",
         "GACNST",
         ProductionCategory::Building,
         100,
-        10,
+        1,
     );
-    let americans = sim.interner.intern("Americans");
-    let gacnst = sim.interner.intern("GACNST");
-    sim.production.queues_by_owner.insert(
-        americans,
-        BTreeMap::from([(ProductionCategory::Building, VecDeque::from([qi]))]),
-    );
-
-    // Registry-driven completion: reconcile + arm the building factory to ready so
-    // `tick_production` moves it into the ready-placement pool this tick.
-    sim.refresh_production_shadow(Some(&rules));
     assert!(sim
         .production
         .factory_shadow
@@ -192,7 +187,7 @@ fn completed_building_moves_into_ready_placement_pool() {
 
     let spawned = tick_production(&mut sim, &rules, &height_map, None, 700);
     assert!(!spawned, "completed building should wait for placement");
-    assert!(sim.production.queues_by_owner.is_empty());
+    assert!(sim.production.factory_shadow.is_empty());
     assert_eq!(
         ready_buildings_for_owner(&sim, &rules, "Americans")
             .into_iter()
@@ -1240,51 +1235,36 @@ fn cancel_last_for_owner_cancels_latest_item_across_categories() {
 
     *super::credits_entry_for_owner(&mut sim, "Americans") = 1000;
     let americans = sim.interner.intern("Americans");
-    let e1 = sim.interner.intern("E1");
-    let mtnk = sim.interner.intern("MTNK");
-    sim.production.queues_by_owner.insert(
-        americans,
-        BTreeMap::from([
-            (
-                ProductionCategory::Infantry,
-                VecDeque::from([BuildQueueItem {
-                    owner: americans,
-                    type_id: e1,
-                    queue_category: ProductionCategory::Infantry,
-                    state: BuildQueueState::Building,
-                    total_base_frames: 100,
-                    remaining_base_frames: 100,
-                    progress_carry: 0,
-                    enqueue_order: 1,
-                }]),
-            ),
-            (
-                ProductionCategory::Vehicle,
-                VecDeque::from([BuildQueueItem {
-                    owner: americans,
-                    type_id: mtnk,
-                    queue_category: ProductionCategory::Vehicle,
-                    state: BuildQueueState::Building,
-                    total_base_frames: 100,
-                    remaining_base_frames: 100,
-                    progress_carry: 0,
-                    enqueue_order: 2,
-                }]),
-            ),
-        ]),
+    // P5d: arm two registry builds (E1 order 1, MTNK order 2 = the latest). No upfront
+    // charge, so credits stay 1000 until the cancel refund.
+    super::tests::arm_build_via(
+        &mut sim,
+        &rules,
+        "Americans",
+        "E1",
+        ProductionCategory::Infantry,
+        100,
+        1,
+    );
+    super::tests::arm_build_via(
+        &mut sim,
+        &rules,
+        "Americans",
+        "MTNK",
+        ProductionCategory::Vehicle,
+        100,
+        2,
     );
 
-    // Reconcile so the registry holds the active builds, then simulate a partly-charged
-    // MTNK (the latest item) so the abandon refunds its SPENT portion (700-300=400), not
-    // the full cost — the legacy full-refund of an uncharged/partly-charged build is the
-    // retired DRIFT.
-    sim.refresh_production_shadow(Some(&rules));
+    // Simulate a partly-charged MTNK (the latest item) so the abandon refunds its SPENT
+    // portion (700-300=400), not the full cost — the legacy full-refund of a partly-charged
+    // build is the retired DRIFT.
     {
         let f = sim
             .production
             .factory_shadow
             .test_factory_mut(americans, ProductionCategory::Vehicle)
-            .expect("vehicle factory seeded by the reconcile");
+            .expect("vehicle factory armed");
         f.progress = 20;
         f.balance = 300;
         f.original_balance = 700;
@@ -1298,13 +1278,21 @@ fn cancel_last_for_owner_cancels_latest_item_across_categories() {
         "partial refund of the spent portion (700-300=400), not the full cost"
     );
 
-    let owner_queues = sim
-        .production
-        .queues_by_owner
-        .get(&americans)
-        .expect("owner queues should remain");
-    assert!(owner_queues.contains_key(&ProductionCategory::Infantry));
-    assert!(!owner_queues.contains_key(&ProductionCategory::Vehicle));
+    // The latest (MTNK / Vehicle) build is cancelled + pruned; the Infantry build remains.
+    assert!(
+        sim.production
+            .factory_shadow
+            .view(americans, ProductionCategory::Infantry)
+            .is_some(),
+        "the Infantry build remains"
+    );
+    assert!(
+        sim.production
+            .factory_shadow
+            .view(americans, ProductionCategory::Vehicle)
+            .is_none(),
+        "the cancelled Vehicle build is pruned"
+    );
 }
 
 #[test]

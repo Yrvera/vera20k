@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use super::production_spawn::{find_spawn_selection_for_owner, mark_war_factory_spawn_contact};
 use super::war_factory_exit::tick_war_factory_exit_contacts;
 use super::{
-    BuildQueueItem, BuildQueueState, ProductionCategory, STARTING_CREDITS, credits_for_owner,
+    ProductionCategory, STARTING_CREDITS, credits_for_owner,
     find_spawn_cell_for_owner, is_matching_factory, seed_resource_nodes_from_overlays,
     structure_satisfies_prerequisite,
 };
@@ -565,26 +565,28 @@ pub(super) fn spawn_structure(
     }
 }
 
-/// Create a BuildQueueItem with IDs interned via the given interner so the IDs
-/// are resolvable by sim code at runtime.
-pub(super) fn queued_item_via(
-    interner: &mut crate::sim::intern::StringInterner,
+/// P5d: arm a registry factory's queue-of-record directly (replaces the retired
+/// `queues_by_owner` insert of a `BuildQueueItem`). Interns owner/type, resolves cost from
+/// `rules`, and calls the registry `enqueue` (create-the-active-build, or append to the FIFO
+/// tail if a build is already active for this `(owner, category)`). Use one call per item, in
+/// enqueue order; `order` is the temporal stamp (the active build's `insertion_seq` / a tail
+/// entry's `enqueue_order`). The `remaining`-frames concept is retired (progress lives in the
+/// registry); set a build's progress afterward via `factory_shadow.test_factory_mut` if needed.
+pub(super) fn arm_build_via(
+    sim: &mut Simulation,
+    rules: &RuleSet,
     owner: &str,
     type_id: &str,
     queue_category: ProductionCategory,
     total_base_frames: u32,
-    remaining_base_frames: u32,
-) -> BuildQueueItem {
-    BuildQueueItem {
-        owner: interner.intern(owner),
-        type_id: interner.intern(type_id),
-        queue_category,
-        state: BuildQueueState::Queued,
-        total_base_frames,
-        remaining_base_frames,
-        progress_carry: 0,
-        enqueue_order: 1,
-    }
+    order: u64,
+) {
+    let oid = sim.interner.intern(owner);
+    let tid = sim.interner.intern(type_id);
+    let cost = sim.object_type(tid, rules).map_or(0, |o| o.cost.max(0));
+    sim.production
+        .factory_shadow
+        .enqueue(oid, queue_category, tid, order, total_base_frames, cost);
 }
 
 #[test]

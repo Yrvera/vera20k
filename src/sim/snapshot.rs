@@ -27,7 +27,14 @@ use crate::sim::world::Simulation;
 // Factory; remaining_base_frames stays as the sidebar-ETA mirror); next_insertion_seq
 // + seq_carry fields removed (insertion_seq == front enqueue_order); the C1
 // factory-step-before-house-tail ordering lock is folded in.
-const SNAPSHOT_VERSION: u32 = 18;
+// Bumped 18 -> 19: queue-of-record retirement (P5d) — `queues_by_owner` + `BuildQueueItem`
+// are retired; the FIFO queue-of-record moves into the registry (`Factory.queue` of
+// `QueueEntry{type_id, enqueue_order, total_base_frames}` + the new active-build
+// `Factory.active_total_base_frames`). The per-item `queues_by_owner` hash fold is removed;
+// `remaining_base_frames` no longer exists (derived from `progress` at sidebar-view time,
+// not hashed). bincode layout changes (the `queues_by_owner` field is gone, the registry
+// gains fields), so the version MUST bump.
+const SNAPSHOT_VERSION: u32 = 19;
 
 /// Binary snapshot envelope — wraps the full `Simulation` state plus
 /// compatibility hashes for the map and rules that were active at save time.
@@ -373,12 +380,13 @@ mod tests {
         assert!(result.is_err(), "mismatched version should fail");
     }
 
-    /// The authority flip (P5b) is the FIRST hashed-state change: the factory
-    /// registry + economy statistics are serialized + hashed and the version bumped
-    /// 17 -> 18. This pins it so a later accidental bump is caught.
+    /// P5d retires `queues_by_owner`/`BuildQueueItem` into the registry (`Factory.queue`
+    /// of `QueueEntry` + `active_total_base_frames`); the bincode layout + hash shape
+    /// change, so the version bumped 18 -> 19. This pins it so a later accidental bump is
+    /// caught.
     #[test]
-    fn snapshot_version_is_18() {
-        assert_eq!(super::SNAPSHOT_VERSION, 18);
+    fn snapshot_version_is_19() {
+        assert_eq!(super::SNAPSHOT_VERSION, 19);
     }
 
     /// `AttackTarget::for_cell` survives serialize → deserialize as the same

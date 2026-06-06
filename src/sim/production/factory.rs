@@ -76,6 +76,24 @@ pub struct PendingObject {
     pub entity_id: Option<u64>,
 }
 
+/// One queued (not-yet-active) build waiting behind the active object — the
+/// queue-of-record element (P5d, the `BuildQueueItem` mirror retirement). Carries only
+/// the data with a live reader after `BuildQueueItem` is retired: the type, the temporal
+/// stamp (the cancel-latest key + the active-build identity once promoted), and the
+/// sidebar ETA basis. State/progress/balance are NEVER per-queued-item — only the active
+/// build (the `Factory` head fields) carries those; a queued item's state is `Queued`
+/// and its remaining-time is its full `total_base_frames` (not yet started).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct QueueEntry {
+    pub type_id: InternedId,
+    /// The monotonic temporal stamp minted at enqueue (`next_enqueue_order`). Becomes
+    /// the active build's `insertion_seq` when this entry is promoted (D1).
+    pub enqueue_order: u64,
+    /// Base build time in production frames — the sidebar ETA basis (no live mirror once
+    /// `BuildQueueItem` is gone).
+    pub total_base_frames: u32,
+}
+
 /// Engine special/superweapon discriminator. The study proves the writer of the
 /// engine's special-item field was never located, so value `0` cannot be proven
 /// unreachable and `0`-vs-`(-1)` MUST NOT be collapsed. Three states keep them
@@ -110,6 +128,11 @@ pub struct Factory {
     pub balance: i32,
     /// Full-cost snapshot at start, for exact-cost conservation + cancel refund.
     pub original_balance: i32,
+    /// The ACTIVE build's base build time in production frames — the sidebar ETA basis
+    /// (P5d: the value that lived on the front `BuildQueueItem.total_base_frames`). The
+    /// sidebar derives "time remaining" from this + `progress`; no `BuildQueueItem` mirror
+    /// survives to hold it.
+    pub active_total_base_frames: u32,
     pub object: Option<PendingObject>,
     /// Set when a step could not be afforded (UI "On Hold"); does not advance.
     pub on_hold: bool,
@@ -118,9 +141,12 @@ pub struct Factory {
     /// User-vs-system pause distinction.
     pub manual: bool,
     pub special: SpecialItem,
-    /// FIFO type ids waiting behind the active object.
-    pub queue: VecDeque<InternedId>,
-    /// Deterministic registration order for same-frame completion sequencing.
+    /// FIFO queue-of-record waiting behind the active object (P5d: was a tail-only
+    /// `VecDeque<InternedId>`; now the authoritative queue, each entry carrying its
+    /// temporal stamp + ETA basis).
+    pub queue: VecDeque<QueueEntry>,
+    /// Deterministic registration order for same-frame completion sequencing. Equals the
+    /// ACTIVE build's `enqueue_order` (D1) — set at enqueue/promotion.
     pub insertion_seq: u64,
 }
 
@@ -276,29 +302,42 @@ impl Factory {
     /// GUARD (C7/C12): a held object blocks the advance. A completed-but-held factory
     /// (progress 54, suspended, object attached) is a NO-OP here — the queue does not
     /// advance on completion alone; the delivery commit clears the object first.
-    pub(crate) fn start_next_queued(&mut self) -> Option<InternedId> {
+    /// Pop the FRONT queue entry into a fresh active object (FIFO StartNextQueued, C7) and
+    /// SEED it from `cost` (the popped type's cost, resolved by the caller while it holds
+    /// `&rules`). Returns the popped `type_id`, or `None` when an object is still held or
+    /// the queue is empty.
+    ///
+    /// `step_delay` is the initial cadence countdown: `0` when the caller runs AFTER this
+    /// tick's `step_all` (delivery, in `tick_production`) so the new build's first charge
+    /// lands next tick; `1` when the caller runs BEFORE `step_all` (a cancel command, which
+    /// executes in the command phase) so the new build is NOT charged the same tick it is
+    /// promoted — preserving the pre-P5d "first charge one tick after activation" schedule
+    /// (the reconcile-at-tail timing the registry now reproduces directly).
+    pub(crate) fn start_next_queued(&mut self, cost: i32, step_delay: u16) -> Option<InternedId> {
         // "Object null required": an in-flight OR completed-held object is never displaced.
         if self.object.is_some() {
             return None;
         }
         let next = self.queue.pop_front()?; // FIFO FRONT pop; None on an empty queue
         self.object = Some(PendingObject {
-            type_id: next,
+            type_id: next.type_id,
             entity_id: None,
         });
         self.progress = 0;
-        // balance/original_balance/step_rate are LEFT for the next rebuild_shadow to
-        // seed from the type cost (the single source of the cost-based balance in the
-        // shadow). The authoritative begin path (a later slice) decides whether the pop
-        // seeds the cost inline — that is a wiring choice, not this algorithm.
-        self.balance = 0;
-        self.original_balance = 0;
-        self.step_rate_frames = 0;
-        self.step_timer = 0;
+        // Seed the cost-based balance inline (P5d: no reconcile re-seeds it now). The
+        // popped entry's stamp BECOMES the active build's insertion_seq (D1: insertion_seq
+        // == active enqueue_order — load-bearing for the hash fold order + charge order).
+        let seeded = cost.max(0);
+        self.balance = seeded;
+        self.original_balance = seeded;
+        self.active_total_base_frames = next.total_base_frames;
+        self.insertion_seq = next.enqueue_order;
+        self.step_rate_frames = 0; // recomputed by set_rate on the first stepping sweep
+        self.step_timer = step_delay;
         self.suspended = false;
         self.on_hold = false;
         self.manual = false;
-        Some(next)
+        Some(next.type_id)
     }
 }
 
@@ -450,7 +489,7 @@ pub struct FactoryView<'a> {
     pub on_hold: bool,
     pub suspended: bool,
     pub object: Option<&'a PendingObject>,
-    pub queue: &'a VecDeque<InternedId>,
+    pub queue: &'a VecDeque<QueueEntry>,
     /// `true` when the active object has reached `PRODUCTION_STEPS`.
     pub ready: bool,
 }
@@ -544,94 +583,194 @@ impl FactoryRegistry {
         }
     }
 
-    /// Reconcile the registry from the legacy `queues_by_owner` (the queue-of-record),
-    /// PRESERVING the authoritative progress of an unchanged active build (the PERSIST
-    /// arm) and seeding a fresh one ONCE when the front changes identity (the SEED arm).
-    /// This REPLACES the per-tick rebuild-from-scratch clobber: once the registry is
-    /// authoritative its `progress`/`balance`/`step_timer`/`on_hold`/`suspended` must
-    /// survive across ticks (the authority flip's load-bearing inversion). READ-ONLY
-    /// w.r.t. all hashed state except the registry it owns.
+    /// Append a build to the queue-of-record (P5d — replaces `enqueue_by_type`'s queue
+    /// push + the reconcile SEED arm). With no factory for `(owner, category)` OR an
+    /// idle-but-registered one (no active object), ARM the active build inline (object
+    /// held, progress 0, balance seeded from `cost`). With an active object held, push a
+    /// `QueueEntry` to the FIFO tail.
     ///
-    /// Identity test = `(object.type_id == front.type_id) && (insertion_seq ==
-    /// front.enqueue_order)`. Because `enqueue_order` is strictly monotonic, a
-    /// delivered-then-restarted `(owner, category)` gets a higher front -> the test
-    /// fails -> SEED re-arms (the destroy-recreate analog). `rules == None` (the
-    /// cost-free tail) resolves `full_cost` to 0, exactly like the retired
-    /// `rebuild_shadow_no_rules`.
-    pub(crate) fn reconcile_from_queues(
+    /// `step_timer = 1` on a freshly-armed active build: enqueue runs in the command phase
+    /// (BEFORE this tick's `step_all`), so the build must NOT be charged the same tick — its
+    /// first charge lands next tick, reproducing the pre-P5d reconcile-at-tail schedule.
+    /// `cost` is resolved by the caller (which holds `&rules`) so this stays `&sim`-free.
+    pub(crate) fn enqueue(
         &mut self,
-        sim: &crate::sim::world::Simulation,
-        rules: Option<&RuleSet>,
+        owner: InternedId,
+        category: ProductionCategory,
+        type_id: InternedId,
+        enqueue_order: u64,
+        total_base_frames: u32,
+        cost: i32,
     ) {
-        use crate::sim::production::production_types::BuildQueueState as S;
+        if let Some(f) = self.factories.get_mut(&(owner, category)) {
+            if f.object.is_some() {
+                // Active build held -> the new build joins the FIFO tail.
+                f.queue.push_back(QueueEntry {
+                    type_id,
+                    enqueue_order,
+                    total_base_frames,
+                });
+                return;
+            }
+            // Idle-but-registered (object None, empty queue) -> re-arm the active build.
+            let seeded = cost.max(0);
+            f.progress = 0;
+            f.step_rate_frames = 0;
+            f.step_timer = 1;
+            f.balance = seeded;
+            f.original_balance = seeded;
+            f.active_total_base_frames = total_base_frames;
+            f.object = Some(PendingObject { type_id, entity_id: None });
+            f.on_hold = false;
+            f.suspended = false;
+            f.manual = false;
+            f.special = SpecialItem::NoneNeg1;
+            f.insertion_seq = enqueue_order;
+            return;
+        }
+        // No factory yet -> create one with the active build armed.
+        let seeded = cost.max(0);
+        self.factories.insert(
+            (owner, category),
+            Factory {
+                owner,
+                category,
+                progress: 0,
+                step_rate_frames: 0,
+                step_timer: 1,
+                balance: seeded,
+                original_balance: seeded,
+                active_total_base_frames: total_base_frames,
+                object: Some(PendingObject { type_id, entity_id: None }),
+                on_hold: false,
+                suspended: false,
+                manual: false,
+                special: SpecialItem::NoneNeg1,
+                queue: VecDeque::new(),
+                insertion_seq: enqueue_order,
+            },
+        );
+    }
 
-        // Track which keys still have a non-empty queue this tick (membership).
-        let mut live_keys: BTreeMap<(InternedId, ProductionCategory), ()> = BTreeMap::new();
+    /// Toggle the user pause on the active build of `(owner, category)` (the sidebar pause
+    /// command). Flips `manual` (Building <-> Paused) while the build is in flight; a
+    /// complete-held build (`progress >= PRODUCTION_STEPS`) is left as-is (a finished build
+    /// is not paused). Returns `false` when there is no active object to pause. A `manual`
+    /// factory is skipped by `step_all` without losing progress, and `set_rate` resumes a
+    /// system-suspend but leaves a manual pause, so unpausing auto-resumes.
+    pub(crate) fn toggle_pause(&mut self, owner: InternedId, category: ProductionCategory) -> bool {
+        let Some(f) = self.factories.get_mut(&(owner, category)) else {
+            return false;
+        };
+        if f.object.is_none() {
+            return false;
+        }
+        if f.progress < PRODUCTION_STEPS {
+            f.manual = !f.manual;
+        }
+        true
+    }
 
-        for (&owner, queues) in &sim.production.queues_by_owner {
-            for (&category, queue) in queues {
-                let Some(front) = queue.front() else {
-                    continue; // empty category: no factory
+    /// Peek the type of the next QUEUED (tail) entry for `(owner, category)` so the caller
+    /// can resolve its cost (in `rules`, not the registry) before promoting it.
+    pub(crate) fn peek_next_queued(
+        &self,
+        owner: InternedId,
+        category: ProductionCategory,
+    ) -> Option<InternedId> {
+        self.factories
+            .get(&(owner, category))
+            .and_then(|f| f.queue.front())
+            .map(|e| e.type_id)
+    }
+
+    /// Clear a delivered/abandoned active object and promote the next queued entry into the
+    /// active slot (C7 StartNextQueued), seeding it from `next_cost`. `step_delay` is `0`
+    /// for delivery (runs after this tick's `step_all`) and `1` for a command-phase cancel.
+    /// Returns the popped type, or `None` if the queue was empty (the factory is left idle
+    /// for `prune_idle`).
+    pub(crate) fn clear_active_and_advance(
+        &mut self,
+        owner: InternedId,
+        category: ProductionCategory,
+        next_cost: i32,
+        step_delay: u16,
+    ) -> Option<InternedId> {
+        let f = self.factories.get_mut(&(owner, category))?;
+        f.object = None;
+        f.start_next_queued(next_cost, step_delay)
+    }
+
+    /// Drop a `(owner, category)` factory if it holds no active object and an empty queue
+    /// (replaces `prune_empty_queues`). Returns `true` if removed.
+    pub(crate) fn prune_idle(&mut self, owner: InternedId, category: ProductionCategory) -> bool {
+        let idle = self
+            .factories
+            .get(&(owner, category))
+            .map_or(false, |f| f.object.is_none() && f.queue.is_empty());
+        if idle {
+            self.factories.remove(&(owner, category));
+        }
+        idle
+    }
+
+    /// Drop EVERY idle factory (no active object AND empty queue) registry-wide — the
+    /// post-cancel / post-delivery sweep (replaces the `queues_by_owner.retain` prune). An
+    /// idle factory should never persist into a hashed tick; this enforces it.
+    pub(crate) fn prune_all_idle(&mut self) {
+        self.factories
+            .retain(|_, f| f.object.is_some() || !f.queue.is_empty());
+    }
+
+    /// The `(owner, category)` keys whose active build has completed and is held for
+    /// delivery, in deterministic temporal (`insertion_seq`) order — the delivery read pass
+    /// (C7/C12). A `manual` (paused) factory never completes a step, so it is excluded.
+    pub(crate) fn completed_keys(&self) -> Vec<(InternedId, ProductionCategory)> {
+        self.iter_insertion_ordered()
+            .iter()
+            .filter(|f| f.object.is_some() && f.progress >= PRODUCTION_STEPS && !f.manual)
+            .map(|f| (f.owner, f.category))
+            .collect()
+    }
+
+    /// Cancel the most-recently-queued build for `owner` across all categories (the sidebar
+    /// Cancel button). The newest stamp wins: a factory's candidate stamp is its tail-back
+    /// `enqueue_order` when the tail is non-empty, else the active build's `insertion_seq`.
+    /// Stamps are unique (monotonic mint) so there is never a tie. A tail item is removed
+    /// uncharged (no refund); the active build (empty tail) is abandoned with the C8 PARTIAL
+    /// refund routed through `economy`. The caller prunes an emptied factory.
+    pub(crate) fn cancel_last(
+        &mut self,
+        owner: InternedId,
+        economy: &mut Economy,
+    ) -> CancelOutcome {
+        let target = self
+            .factories
+            .iter()
+            .filter(|((o, _), _)| *o == owner)
+            .filter_map(|(&(_, cat), f)| {
+                let stamp = match f.queue.back() {
+                    Some(e) => e.enqueue_order,
+                    None => f.object.as_ref().map(|_| f.insertion_seq)?,
                 };
-                let key = (owner, category);
-                live_keys.insert(key, ());
-                let seq = front.enqueue_order; // temporal insertion_seq (the P5a mint)
-
-                // The tail (FIFO behind the active object) + the pause bridge are
-                // refreshed every reconcile regardless of arm.
-                let tail: VecDeque<InternedId> =
-                    queue.iter().skip(1).map(|item| item.type_id).collect();
-                let paused = matches!(front.state, S::Paused);
-
-                // The FRONT of a non-empty queue is the active build. In the live flow
-                // `refresh_queue_states` keeps idx 0 in Building/Paused/Done/NoFunds (never
-                // Queued), so the front always holds the active object; model it that way
-                // (a raw Queued front only appears in direct-insert tests — treat it as
-                // active too, the faithful "front == the item under construction" rule).
-                match self.factories.get_mut(&key) {
-                    Some(f)
-                        if f.object.as_ref().map(|o| o.type_id) == Some(front.type_id)
-                            && f.insertion_seq == seq =>
-                    {
-                        // PERSIST arm: same active build as last tick. Do NOT touch
-                        // progress/balance/step_timer/on_hold/suspended. Refresh only the
-                        // FIFO tail + the pause bridge.
-                        f.queue = tail;
-                        f.manual = paused;
-                    }
-                    _ => {
-                        // SEED arm: a new/changed active build begins. Seed ONCE from cost.
-                        let full_cost = match rules {
-                            Some(r) => sim
-                                .object_type(front.type_id, r)
-                                .map(|o| o.cost.max(0))
-                                .unwrap_or(0),
-                            None => 0,
-                        };
-                        let factory = Factory {
-                            owner,
-                            category,
-                            progress: 0,
-                            step_rate_frames: 0,
-                            step_timer: 0,
-                            balance: full_cost,
-                            original_balance: full_cost,
-                            object: Some(PendingObject { type_id: front.type_id, entity_id: None }),
-                            on_hold: false,
-                            suspended: false,
-                            manual: paused,
-                            special: SpecialItem::NoneNeg1,
-                            queue: tail,
-                            insertion_seq: seq,
-                        };
-                        self.factories.insert(key, factory);
-                    }
-                }
+                Some((stamp, cat))
+            })
+            .max_by_key(|&(stamp, _)| stamp)
+            .map(|(_, cat)| cat);
+        let Some(category) = target else {
+            return CancelOutcome::NoMatch;
+        };
+        let Some(f) = self.factories.get_mut(&(owner, category)) else {
+            return CancelOutcome::NoMatch;
+        };
+        if f.queue.pop_back().is_some() {
+            CancelOutcome::QueuedRemoved // uncharged tail: no refund
+        } else {
+            match f.cancel_active(economy) {
+                Some(refund) => CancelOutcome::AbandonedActive { refund },
+                None => CancelOutcome::NoMatch,
             }
         }
-
-        // Drop factories whose (owner, category) no longer has a non-empty queue.
-        self.factories.retain(|key, _| live_keys.contains_key(key));
     }
 
     /// Gather the per-factory `BuildStepTimeInputs` for the next `step_all`, READ-ONLY
@@ -788,7 +927,7 @@ impl FactoryRegistry {
         // `position()` scans front-to-back returning the FIRST index; `remove(idx)`
         // shifts survivors down (relative order preserved). DRIFT fix vs the legacy
         // `.rev()` last-match: [A,B,A,C] cancel A -> remove index 0 -> [B,A,C].
-        if let Some(idx) = f.queue.iter().position(|&t| t == type_id) {
+        if let Some(idx) = f.queue.iter().position(|e| e.type_id == type_id) {
             f.queue.remove(idx);
             return CancelOutcome::QueuedRemoved; // no refund: a queued item is uncharged
         }
@@ -1077,6 +1216,15 @@ mod tests {
         reg
     }
 
+    /// Test queue entry of `ty` (stamp/ETA irrelevant to these direct-call unit tests).
+    fn qe(ty: InternedId) -> QueueEntry {
+        QueueEntry {
+            type_id: ty,
+            enqueue_order: 0,
+            total_base_frames: 0,
+        }
+    }
+
     #[test]
     fn cancel_active_refunds_spent_only() {
         // Step an armed cost-700 build to progress 20, then cancel the active object:
@@ -1174,7 +1322,7 @@ mod tests {
         let f = Factory {
             owner,
             category: ProductionCategory::Vehicle,
-            queue: std::collections::VecDeque::from(vec![a, b, a, c]),
+            queue: std::collections::VecDeque::from(vec![qe(a), qe(b), qe(a), qe(c)]),
             object: None,
             ..Factory::default()
         };
@@ -1188,7 +1336,7 @@ mod tests {
             .unwrap()
             .queue
             .iter()
-            .copied()
+            .map(|e| e.type_id)
             .collect();
         assert_eq!(q, vec![b, a, c], "first A removed -> [B,A,C]");
     }
@@ -1206,7 +1354,7 @@ mod tests {
             balance: 300,
             original_balance: 700,
             progress: 20,
-            queue: std::collections::VecDeque::from(vec![a]),
+            queue: std::collections::VecDeque::from(vec![qe(a)]),
             ..Factory::default()
         };
         let mut reg = reg_with(owner, ProductionCategory::Vehicle, f);
@@ -1233,7 +1381,7 @@ mod tests {
             balance: 300,
             original_balance: 700,
             progress: 20,
-            queue: std::collections::VecDeque::from(vec![b]),
+            queue: std::collections::VecDeque::from(vec![qe(b)]),
             ..Factory::default()
         };
         let mut reg = reg_with(owner, ProductionCategory::Vehicle, f);
@@ -1247,7 +1395,7 @@ mod tests {
         assert_eq!(econ.credits, 400, "the spent portion is refunded to the oracle");
         let view = reg.view(owner, ProductionCategory::Vehicle).unwrap();
         assert!(view.object.is_none(), "active object abandoned");
-        let q: Vec<InternedId> = view.queue.iter().copied().collect();
+        let q: Vec<InternedId> = view.queue.iter().map(|e| e.type_id).collect();
         assert_eq!(q, vec![b], "the tail is left intact (no auto-advance in P4)");
     }
 
@@ -1296,7 +1444,7 @@ mod tests {
             object: Some(PendingObject { type_id: a, entity_id: None }),
             balance: 300,
             original_balance: 700,
-            queue: std::collections::VecDeque::from(vec![a]),
+            queue: std::collections::VecDeque::from(vec![qe(a)]),
             ..Factory::default()
         };
         let mut reg = reg_with(owner, ProductionCategory::Vehicle, f);
@@ -1316,13 +1464,13 @@ mod tests {
         let z = InternedId::from_index(3);
         let mut f = Factory {
             object: None,
-            queue: std::collections::VecDeque::from(vec![x, y, z]),
+            queue: std::collections::VecDeque::from(vec![qe(x), qe(y), qe(z)]),
             ..Factory::default()
         };
-        assert_eq!(f.start_next_queued(), Some(x), "the FRONT is popped");
+        assert_eq!(f.start_next_queued(0, 0), Some(x), "the FRONT is popped");
         assert_eq!(f.object.as_ref().map(|o| o.type_id), Some(x), "active = X");
         assert_eq!(f.progress, 0, "fresh active object starts at progress 0");
-        let q: Vec<InternedId> = f.queue.iter().copied().collect();
+        let q: Vec<InternedId> = f.queue.iter().map(|e| e.type_id).collect();
         assert_eq!(q, vec![y, z], "queue advanced to [Y,Z]");
     }
 
@@ -1332,12 +1480,12 @@ mod tests {
         let x = InternedId::from_index(1);
         let mut f = Factory {
             object: Some(PendingObject::default()),
-            queue: std::collections::VecDeque::from(vec![x]),
+            queue: std::collections::VecDeque::from(vec![qe(x)]),
             progress: 30,
             ..Factory::default()
         };
-        assert_eq!(f.start_next_queued(), None, "a held object blocks the advance");
-        let q: Vec<InternedId> = f.queue.iter().copied().collect();
+        assert_eq!(f.start_next_queued(0, 0), None, "a held object blocks the advance");
+        let q: Vec<InternedId> = f.queue.iter().map(|e| e.type_id).collect();
         assert_eq!(q, vec![x], "queue unchanged while blocked");
         assert_eq!(f.progress, 30, "the held object's progress is untouched");
     }
@@ -1345,8 +1493,90 @@ mod tests {
     #[test]
     fn start_next_queued_empty_queue_is_noop() {
         let mut f = Factory::default();
-        assert_eq!(f.start_next_queued(), None);
+        assert_eq!(f.start_next_queued(0, 0), None);
         assert!(f.object.is_none(), "no object created from an empty queue");
+    }
+
+    /// P5d C7 seed: a promoted queue entry takes its stamp as `insertion_seq` (D1), seeds
+    /// `balance == original_balance == cost` and `active_total_base_frames` from the entry,
+    /// resets progress, and arms the cadence per `step_delay` (0 = delivery -> first charge
+    /// next sweep). The dormant pre-P5d body seeded NONE of these.
+    #[test]
+    fn start_next_queued_seeds_insertion_seq_balance_and_total() {
+        let x = InternedId::from_index(1);
+        let mut f = Factory {
+            object: None,
+            queue: std::collections::VecDeque::from(vec![QueueEntry {
+                type_id: x,
+                enqueue_order: 42,
+                total_base_frames: 99,
+            }]),
+            insertion_seq: 7, // stale: the prior active build's stamp
+            ..Factory::default()
+        };
+        let popped = f.start_next_queued(500, 0);
+        assert_eq!(popped, Some(x));
+        assert_eq!(f.insertion_seq, 42, "insertion_seq becomes the popped entry's stamp (D1)");
+        assert_eq!(f.balance, 500);
+        assert_eq!(f.original_balance, 500);
+        assert_eq!(f.active_total_base_frames, 99);
+        assert_eq!(f.progress, 0);
+        assert_eq!(f.step_timer, 0, "delivery step_delay 0 -> charged next sweep, not this one");
+        assert!(f.queue.is_empty());
+    }
+
+    /// P5d: `cancel_last` picks the global-MAX stamp across the owner's factories (the
+    /// most-recently-queued item), abandoning the active build with the C8 PARTIAL refund
+    /// when its tail is empty; other categories are untouched. Stamps are unique (monotonic
+    /// mint) so the pick is unambiguous.
+    #[test]
+    fn cancel_last_picks_global_max_stamp_across_categories() {
+        let owner = InternedId::default();
+        let e1 = InternedId::from_index(1);
+        let mtnk = InternedId::from_index(2);
+        let mut reg = FactoryRegistry::default();
+        reg.factories.insert(
+            (owner, ProductionCategory::Infantry),
+            Factory {
+                owner,
+                category: ProductionCategory::Infantry,
+                object: Some(PendingObject { type_id: e1, entity_id: None }),
+                balance: 100,
+                original_balance: 200,
+                progress: 10,
+                insertion_seq: 1,
+                ..Factory::default()
+            },
+        );
+        reg.factories.insert(
+            (owner, ProductionCategory::Vehicle),
+            Factory {
+                owner,
+                category: ProductionCategory::Vehicle,
+                object: Some(PendingObject { type_id: mtnk, entity_id: None }),
+                balance: 300,
+                original_balance: 700,
+                progress: 20,
+                insertion_seq: 2, // the LATEST
+                ..Factory::default()
+            },
+        );
+        let mut econ = Economy::default();
+        let outcome = reg.cancel_last(owner, &mut econ);
+        assert_eq!(
+            outcome,
+            CancelOutcome::AbandonedActive { refund: 400 },
+            "Vehicle (stamp 2) abandoned, refund = original 700 - balance 300"
+        );
+        assert_eq!(econ.credits, 400);
+        assert!(
+            reg.view(owner, ProductionCategory::Vehicle)
+                .map_or(true, |v| v.object.is_none()),
+            "the latest (Vehicle) active build is abandoned"
+        );
+        let inf = reg.view(owner, ProductionCategory::Infantry).unwrap();
+        assert!(inf.object.is_some(), "the Infantry build is untouched");
+        assert_eq!(inf.progress, 10);
     }
 
     // ---- P5a build_step_time producer (C5/C10/C11, x0.9-free) ----

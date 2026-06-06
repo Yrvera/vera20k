@@ -197,16 +197,23 @@ fn count_owned_and_queued(sim: &Simulation, owner: &str, type_id: &str) -> u32 {
         _ => 0,
     };
 
-    let queued = owner_id
-        .and_then(|oid| sim.production.queues_by_owner.get(&oid))
-        .map(|queues| {
-            queues
-                .values()
-                .flat_map(|queue| queue.iter())
-                .filter(|item| type_interned.map_or(false, |tid| item.type_id == tid))
-                .count() as u32
-        })
-        .unwrap_or(0);
+    // P5d: count from the registry queue-of-record — the active build (head) + the FIFO
+    // tail, across the owner's factories (was the per-`BuildQueueItem` `queues_by_owner` scan).
+    let queued = match (owner_id, type_interned) {
+        (Some(oid), Some(tid)) => sim
+            .production
+            .factory_shadow
+            .iter_insertion_ordered()
+            .iter()
+            .filter(|f| f.owner == oid)
+            .map(|f| {
+                let active = f.object.as_ref().map_or(0, |o| u32::from(o.type_id == tid));
+                let tail = f.queue.iter().filter(|e| e.type_id == tid).count() as u32;
+                active + tail
+            })
+            .sum(),
+        _ => 0,
+    };
 
     let ready = owner_id
         .and_then(|oid| sim.production.ready_by_owner.get(&oid))

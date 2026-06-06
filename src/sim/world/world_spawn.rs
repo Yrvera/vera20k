@@ -831,11 +831,12 @@ impl Simulation {
     }
 
     fn owner_has_building_production_busy(&self, owner: crate::sim::intern::InternedId) -> bool {
+        // P5d: the registry is the queue-of-record. Busy = an active Building build held OR
+        // a non-empty Building tail.
         self.production
-            .queues_by_owner
-            .get(&owner)
-            .and_then(|queues| queues.get(&ProductionCategory::Building))
-            .is_some_and(|queue| !queue.is_empty())
+            .factory_shadow
+            .view(owner, ProductionCategory::Building)
+            .is_some_and(|v| v.object.is_some() || !v.queue.is_empty())
     }
 
     /// Find the next available infantry sub-cell at a given cell position.
