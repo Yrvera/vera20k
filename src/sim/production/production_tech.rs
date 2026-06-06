@@ -337,6 +337,10 @@ pub(in crate::sim) fn build_time_base_frames(
     raw_frames as u32
 }
 
+// Legacy frames-rate family — retired from the production path at the authority flip
+// (completion is now driven by the registry per-step charge). Kept test-only as the
+// pinned spec of the per-owner/category rate differentiation.
+#[cfg(test)]
 pub(in crate::sim) fn effective_progress_rate_ppm_for_type(
     sim: &Simulation,
     rules: &RuleSet,
@@ -349,6 +353,7 @@ pub(in crate::sim) fn effective_progress_rate_ppm_for_type(
     effective_progress_rate_ppm_for_category(sim, rules, owner, obj.category)
 }
 
+#[cfg(test)]
 pub(super) fn effective_progress_rate_ppm_for_category(
     sim: &Simulation,
     rules: &RuleSet,
@@ -475,7 +480,7 @@ fn owner_effective_production_speed_ppm(sim: &Simulation, rules: &RuleSet, owner
 /// Owner power ratio as PPM, clamped to `[0, PRODUCTION_RATE_SCALE]`. Returns
 /// `PRODUCTION_RATE_SCALE` (1.0×) when no power is drained (matches the
 /// original `if drained <= 0 { 1.0 }` short-circuit).
-fn owner_power_percentage_ppm(sim: &Simulation, owner: &str) -> u64 {
+pub(in crate::sim::production) fn owner_power_percentage_ppm(sim: &Simulation, owner: &str) -> u64 {
     let (produced, drained) = sim
         .interner
         .get(owner)
@@ -493,6 +498,8 @@ fn owner_power_percentage_ppm(sim: &Simulation, owner: &str) -> u64 {
 
 /// Factory time multiplier scaled by PRODUCTION_RATE_SCALE (1M = 1.0×).
 /// MultipleFactory^(n-1) computed via repeated integer multiply.
+/// Test-only: sole caller is the retired `effective_progress_rate_ppm_for_category`.
+#[cfg(test)]
 fn matching_factory_time_multiplier_ppm(
     entities: &EntityStore,
     rules: &RuleSet,
@@ -515,7 +522,7 @@ fn matching_factory_time_multiplier_ppm(
     result.max(1)
 }
 
-fn matching_factory_count_for_owner(
+pub(in crate::sim::production) fn matching_factory_count_for_owner(
     entities: &EntityStore,
     rules: &RuleSet,
     owner: &str,

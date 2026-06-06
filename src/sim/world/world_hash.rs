@@ -158,6 +158,11 @@ impl Simulation {
         for (owner, house) in &self.houses {
             owner.hash(hasher);
             house.credits.hash(hasher);
+            // P5b: economy statistics are hashed; economy.credits is NOT (it is a
+            // per-sweep shim loaded from house.credits — the one authoritative wallet).
+            house.economy.spent_credits.hash(hasher);
+            house.economy.harvested_credits.hash(hasher);
+            house.economy.purifier_count.hash(hasher);
             house.side_index.hash(hasher);
             house.is_human.hash(hasher);
             house.is_defeated.hash(hasher);
@@ -195,8 +200,12 @@ impl Simulation {
                     item.queue_category.hash(hasher);
                     item.state.hash(hasher);
                     item.total_base_frames.hash(hasher);
+                    // remaining_base_frames STAYS hashed: it is a live sidebar-ETA
+                    // reader (effective_time_to_build_frames_for_type), symmetric with
+                    // total_base_frames, and a derived mirror of the authoritative
+                    // registry progress once the frames timer is retired. progress_carry
+                    // is retired (no live reader) and removed from the hash.
                     item.remaining_base_frames.hash(hasher);
-                    item.progress_carry.hash(hasher);
                     item.enqueue_order.hash(hasher);
                 }
             }
@@ -215,6 +224,7 @@ impl Simulation {
             }
         }
         self.production.next_enqueue_order.hash(hasher);
+        self.hash_factory_registry(hasher); // P5b: the authoritative factory registry
 
         for (&(rx, ry), node) in &self.production.resource_nodes {
             rx.hash(hasher);
@@ -267,6 +277,54 @@ impl Simulation {
         for (&ref_sid, &miner_sid) in &self.production.dock_reservations.on_pad {
             ref_sid.hash(hasher);
             miner_sid.hash(hasher);
+        }
+    }
+
+    /// Hash the authoritative factory registry in the deterministic temporal sweep
+    /// order (`iter_insertion_ordered`, by `insertion_seq` = front `enqueue_order`) —
+    /// the SAME order `step_all` charges in, so the fold order is part of the hash
+    /// contract. Explicit-field folding (NOT `#[derive(Hash)]`) so `SpecialItem`'s
+    /// three states + the Option presence tags fold distinctly, consistent with the
+    /// rest of this file.
+    fn hash_factory_registry(&self, hasher: &mut impl Hasher) {
+        for f in self.production.factory_shadow.iter_insertion_ordered() {
+            f.owner.hash(hasher);
+            (f.category as u8).hash(hasher);
+            f.insertion_seq.hash(hasher);
+            f.progress.hash(hasher);
+            f.step_rate_frames.hash(hasher);
+            f.step_timer.hash(hasher);
+            f.balance.hash(hasher);
+            f.original_balance.hash(hasher);
+            match &f.object {
+                Some(o) => {
+                    1u8.hash(hasher);
+                    o.type_id.hash(hasher);
+                    match o.entity_id {
+                        Some(e) => {
+                            1u8.hash(hasher);
+                            e.hash(hasher);
+                        }
+                        None => 0u8.hash(hasher),
+                    }
+                }
+                None => 0u8.hash(hasher),
+            }
+            f.on_hold.hash(hasher);
+            f.suspended.hash(hasher);
+            f.manual.hash(hasher);
+            match f.special {
+                crate::sim::production::SpecialItem::NoneNeg1 => 0u8.hash(hasher),
+                crate::sim::production::SpecialItem::NoneZero => 1u8.hash(hasher),
+                crate::sim::production::SpecialItem::Item(v) => {
+                    2u8.hash(hasher);
+                    v.hash(hasher);
+                }
+            }
+            (f.queue.len() as u64).hash(hasher);
+            for t in &f.queue {
+                t.hash(hasher);
+            }
         }
     }
 

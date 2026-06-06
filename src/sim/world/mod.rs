@@ -975,26 +975,15 @@ impl Simulation {
             }
         }
         for (id, house) in self.houses.iter_mut() {
-            // Mirror the authoritative wallet verbatim (same i32 scale in P1).
-            house.economy.credits = house.credits;
+            // The credits mirror is RETIRED at the flip: `economy.credits` is a
+            // per-sweep shim that `step_all` loads from / stores to the one
+            // authoritative wallet `house.credits`; it is not hashed, so it is not
+            // maintained here.
             // Purifier-bonus base = real OrePurifier building COUNT (NOT silo
-            // storage capacity, NOT the AI-virtual-inclusive effective count).
+            // storage capacity, NOT the AI-virtual-inclusive effective count). Hashed.
             house.economy.purifier_count = purifiers.get(id).copied().unwrap_or(0);
-            // spent_credits / harvested_credits have NO legacy mirror in P1 and are
-            // intentionally untouched here (isolated-method-tested only).
-        }
-    }
-
-    /// Debug-only P1 assert: every house's economy shadow tracks the authoritative
-    /// `credits`. Divergence is surfaced (tick + owner), never written back.
-    #[cfg(debug_assertions)]
-    pub(crate) fn debug_assert_economy_shadow(&self) {
-        for (owner, house) in &self.houses {
-            debug_assert_eq!(
-                house.economy.credits, house.credits,
-                "economy shadow: tick {} owner {:?}: economy.credits {} must track credits {}",
-                self.tick, owner, house.economy.credits, house.credits,
-            );
+            // spent_credits / harvested_credits accumulate via step_all / deposits;
+            // intentionally untouched here.
         }
     }
 
@@ -1005,15 +994,13 @@ impl Simulation {
     /// untouched. `rules` is the tail's `Option`, threaded to the economy refresh.
     pub(crate) fn refresh_production_shadow(&mut self, rules: Option<&RuleSet>) {
         self.refresh_economy_shadow(rules);
-        // Take the registry out so `rebuild_shadow` can borrow `&self` while writing
-        // the registry; swap it back after. `rebuild_shadow` reads
-        // `queues_by_owner` (the legacy source), not `factory_shadow`, so the
-        // temporarily-defaulted field is fine.
+        // Take the registry out so reconcile can borrow `&self` while writing the
+        // registry; swap it back after. Reconcile reads `queues_by_owner` (the
+        // queue-of-record), PERSISTING an unchanged active build's authoritative
+        // progress instead of re-deriving it from cost every tick (the P5b
+        // inversion); the temporarily-defaulted field is fine.
         let mut registry = std::mem::take(&mut self.production.factory_shadow);
-        match rules {
-            Some(r) => registry.rebuild_shadow(self, r), // cost-based oracle balance (P3)
-            None => registry.rebuild_shadow_no_rules(self), // cost-0 fallback (None tail)
-        }
+        registry.reconcile_from_queues(self, rules);
         self.production.factory_shadow = registry;
     }
 
@@ -1022,10 +1009,11 @@ impl Simulation {
     /// Divergence is surfaced, never equalized.
     #[cfg(debug_assertions)]
     pub(crate) fn debug_assert_production_shadow(&self) {
-        self.debug_assert_economy_shadow();
+        // (P1 `debug_assert_economy_shadow` retired: `economy.credits` no longer tracks
+        //  `house.credits` — it is a per-sweep shim, demoted at the authority flip.)
         self.debug_assert_factory_shell_trace();
         self.debug_assert_factory_conservation(); // P3
-        self.debug_assert_factory_step_matches_legacy(None); // P5a
+        self.debug_assert_factory_invariants(); // P5b (repurposed from the P5a inversion assert)
     }
 
     /// Debug-only P3 assert: each live shadow factory's `advance_one_step` conserves
@@ -1088,23 +1076,19 @@ impl Simulation {
         }
     }
 
-    /// Debug-only P5a inversion-readiness assert: prove the AUTHORITATIVE-MODEL choices
-    /// the flip will bake in are already correct on the derived shadow, so the flip is a
-    /// verified-equivalent swap. Runs on CLONES / read-only state ONLY; SURFACES
-    /// divergence with tick+owner+category; NEVER equalizes, NEVER writes back. `rules`
-    /// is threaded for the (B) rate sub-check but is `None` in this slice (the co-edited
-    /// tick tail is left untouched), so (B) is a compile-checked-but-dormant seam and
-    /// (A) order + (D) delivery carry the load. (C) conservation is intentionally NOT
-    /// repeated here — `debug_assert_factory_conservation` (called just above) owns it.
+    /// Debug-only P5b invariants on the now-authoritative registry (repurposed from the
+    /// P5a inversion-readiness assert — the legacy upfront charge it compared against is
+    /// retired, so the comparison is gone). Read-only; SURFACES divergence with
+    /// tick+owner+category; NEVER writes back.
     #[cfg(debug_assertions)]
-    pub(crate) fn debug_assert_factory_step_matches_legacy(&self, rules: Option<&RuleSet>) {
-        use crate::sim::production::{build_step_time, BuildStepTimeInputs, ProductionCategory};
+    pub(crate) fn debug_assert_factory_invariants(&self) {
+        use crate::sim::production::{ProductionCategory, PRODUCTION_STEPS};
 
         // (A) ORDER: the registry sweep order (temporal insertion_seq) must equal the
-        // legacy per-house temporal order. For each owner, the categories sorted by their
-        // front item's enqueue_order must match the sweep's per-owner category sequence.
-        // insertion_seq IS front.enqueue_order after the temporal mint, so this guards
-        // that the mint was not reverted to the old sorted-(owner, category) order.
+        // legacy per-house temporal order (front enqueue_order). insertion_seq IS
+        // front.enqueue_order after the temporal mint, so this guards that the mint was
+        // not reverted to the old sorted-(owner, category) order — the order step_all
+        // charges in and the hash folds in.
         for (&owner, queues) in &self.production.queues_by_owner {
             let mut legacy: Vec<(ProductionCategory, u64)> = queues
                 .iter()
@@ -1122,63 +1106,23 @@ impl Simulation {
                 .collect();
             debug_assert_eq!(
                 swept_cats, legacy_cats,
-                "P5a (A): tick {} owner {:?}: sweep order must equal legacy temporal order",
+                "P5b (A): tick {} owner {:?}: sweep order must equal legacy temporal order",
                 self.tick, owner,
             );
         }
 
-        for factory in self.production.factory_shadow.iter_insertion_ordered() {
-            let Some(pending) = factory.object.as_ref() else {
-                continue; // queue-only / no active object
-            };
-
-            // (B) RATE (dormant this slice; a compile-checked seam for the flip): build
-            // the producer inputs from rules + the per-type fields and assert set_rate
-            // clamps the producer's TOTAL into [1,255]. SURFACE only — it does NOT force a
-            // match with the verified-WRONG legacy frames rate (frames<->step is not
-            // bit-identical; forcing equality would be inventing equivalence).
-            if let Some(r) = rules {
-                if let Some(obj) = self.object_type(pending.type_id, r) {
-                    let inp = BuildStepTimeInputs {
-                        cost: obj.cost.max(0),
-                        build_time_bonus_ppm: 1_000_000, // stock YR default 1.0 (no per-side field yet)
-                        build_time_multiplier_ppm: obj.build_time_multiplier_x1000.max(1) * 1_000,
-                        power_ratio_ppm: 1_000_000, // full-power proxy this slice
-                        low_power_penalty_modifier_ppm: r.production.low_power_penalty_modifier_ppm,
-                        min_clamp_ppm: r.production.min_low_power_production_speed_ppm,
-                        max_clamp_ppm: r.production.max_low_power_production_speed_ppm,
-                        multiple_factory_ppm: r.production.multiple_factory_ppm,
-                        factory_count: 1, // the real per-category count is a flip input
-                        is_wall: obj.category
-                            == crate::rules::object_type::ObjectCategory::Building
-                            && obj.wall,
-                        wall_build_speed_ppm: (r.production.wall_build_speed_coefficient.max(0.0)
-                            as f64
-                            * 1_000_000.0) as u64,
-                    };
-                    let total = build_step_time(&inp);
-                    let mut probe = factory.clone();
-                    probe.set_rate(total);
-                    debug_assert!(
-                        probe.step_rate_frames >= 1 && probe.step_rate_frames <= 255,
-                        "P5a (B): tick {} {:?}/{:?}: set_rate must clamp the rate into [1,255] (got {})",
-                        self.tick, factory.owner, factory.category, probe.step_rate_frames,
-                    );
-                }
-            }
-
-            // (D) DELIVERY: on a CLONE, clear a completed factory's object then advance;
-            // the FIFO front must pop (the legacy ready->next transition). SURFACE only —
-            // no authoritative start_next_queued call site exists in this slice.
-            let mut d = factory.clone();
-            let expected_next = d.queue.front().copied();
-            d.object = None; // simulate the delivery commit (a later slice binds this)
-            d.suspended = false;
-            let popped = d.start_next_queued();
-            debug_assert_eq!(
-                popped, expected_next,
-                "P5a (D): tick {} {:?}/{:?}: post-delivery advance must pop the FIFO front",
-                self.tick, factory.owner, factory.category,
+        // (B) STATE: progress in 0..=54; 0 <= balance <= original_balance (the per-step
+        // ladder only decrements balance, and cancel resets both to 0).
+        for f in self.production.factory_shadow.iter_insertion_ordered() {
+            debug_assert!(
+                f.progress <= PRODUCTION_STEPS,
+                "P5b (B): tick {} {:?}/{:?}: progress {} exceeds {}",
+                self.tick, f.owner, f.category, f.progress, PRODUCTION_STEPS,
+            );
+            debug_assert!(
+                f.balance >= 0 && f.balance <= f.original_balance,
+                "P5b (B): tick {} {:?}/{:?}: balance {} out of [0, original {}]",
+                self.tick, f.owner, f.category, f.balance, f.original_balance,
             );
         }
     }
@@ -2556,6 +2500,18 @@ impl Simulation {
             //     self.tick,
             //     &self.interner,
             // );
+            // Phase 7, FIRST production step — the authoritative factory sweep (C1:
+            // factories step BEFORE the house tail `run_late_region`). The previous
+            // tick's tail reconcile prepared the registry; `step_all` charges each armed
+            // factory's per-step cost against the REAL wallet (house.credits) in
+            // insertion_seq (temporal) order; the spawn/placement pass below then
+            // delivers completed builds and advances the queue-of-record.
+            {
+                let mut registry = std::mem::take(&mut self.production.factory_shadow);
+                let prepared = registry.prepare_step_inputs(self, rules);
+                registry.step_all(&mut self.houses, &prepared);
+                self.production.factory_shadow = registry;
+            }
             spawned_entities |= production::tick_production_with_overlay_registry(
                 self,
                 rules,

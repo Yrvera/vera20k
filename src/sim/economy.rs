@@ -14,7 +14,7 @@
 
 /// Per-house wallet + storage + statistics, mirrored from the authoritative
 /// `HouseState.credits` each tick. Shadow-only in P1.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Economy {
     /// Spendable balance. Tracks the legacy `HouseState.credits` exactly in P1
     /// (same `i32` scale — P1 introduces no rescale).

@@ -47,11 +47,11 @@ pub struct HouseState {
     /// Encoding: 0=N, 1=E, 2=S, 3=W. Computed at game start from base_center
     /// via the closest-edge-of-bounds algorithm.
     pub waypoint_edge: u8,
-    /// Per-house wallet/storage/statistics shadow (P1). Mirrors the authoritative
-    /// `credits` each tick; non-serialized and non-hashed until the authority flip.
-    /// `Economy` carries no serde derive in P1+P2, so this `#[serde(skip)]` field
-    /// cannot change the bincode layout or the lockstep state hash.
-    #[serde(skip)]
+    /// Per-house wallet/storage/statistics (the authority flip). The wallet stays
+    /// the authoritative `HouseState.credits`; `economy.credits` is a per-sweep shim
+    /// loaded from / stored to it and is NOT hashed. The statistics
+    /// (`spent_credits`/`harvested_credits`/`purifier_count`) ARE serialized + hashed
+    /// as of the flip.
     pub economy: Economy,
 }
 

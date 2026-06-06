@@ -241,11 +241,11 @@ pub struct ProductionState {
     pub depot_dock_reservations: DockReservations,
     /// Airfield dock reservations — multi-slot (NumberOfDocks per airfield).
     pub airfield_docks: crate::sim::docking::aircraft_dock::AirfieldDocks,
-    /// Per-(house, category) factory shadow, rebuilt each tick from
-    /// `queues_by_owner`. Derived; non-serialized and non-hashed until the
-    /// authority flip. `FactoryRegistry` carries no serde derive in P1+P2, so this
-    /// `#[serde(skip)]` field cannot change the bincode layout or the state hash.
-    #[serde(skip)]
+    /// Per-(house, category) factory registry — the authoritative production state
+    /// machine as of the flip. Reconciled each tick from `queues_by_owner` (the
+    /// queue-of-record) PRESERVING progress; serialized + hashed (no longer a
+    /// `#[serde(skip)]` shadow). Its per-step charge runs against the real wallet via
+    /// `step_all` at the Phase-7 head, before the house tail (C1).
     pub factory_shadow: FactoryRegistry,
 }
 

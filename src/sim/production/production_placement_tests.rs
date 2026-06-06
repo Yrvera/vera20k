@@ -182,8 +182,14 @@ fn completed_building_moves_into_ready_placement_pool() {
         BTreeMap::from([(ProductionCategory::Building, VecDeque::from([qi]))]),
     );
 
-    // tick_ms must be large enough to complete 10 remaining base frames in one
-    // tick: 10 frames × 66 ms/frame = 660 ms minimum at 1× production rate.
+    // Registry-driven completion: reconcile + arm the building factory to ready so
+    // `tick_production` moves it into the ready-placement pool this tick.
+    sim.refresh_production_shadow(Some(&rules));
+    assert!(sim
+        .production
+        .factory_shadow
+        .test_arm_ready(americans, ProductionCategory::Building));
+
     let spawned = tick_production(&mut sim, &rules, &height_map, None, 700);
     assert!(!spawned, "completed building should wait for placement");
     assert!(sim.production.queues_by_owner.is_empty());
@@ -1268,9 +1274,29 @@ fn cancel_last_for_owner_cancels_latest_item_across_categories() {
         ]),
     );
 
+    // Reconcile so the registry holds the active builds, then simulate a partly-charged
+    // MTNK (the latest item) so the abandon refunds its SPENT portion (700-300=400), not
+    // the full cost — the legacy full-refund of an uncharged/partly-charged build is the
+    // retired DRIFT.
+    sim.refresh_production_shadow(Some(&rules));
+    {
+        let f = sim
+            .production
+            .factory_shadow
+            .test_factory_mut(americans, ProductionCategory::Vehicle)
+            .expect("vehicle factory seeded by the reconcile");
+        f.progress = 20;
+        f.balance = 300;
+        f.original_balance = 700;
+    }
+
     let canceled = cancel_last_for_owner(&mut sim, &rules, "Americans");
     assert!(canceled);
-    assert_eq!(credits_for_owner(&sim, "Americans"), 1700);
+    assert_eq!(
+        credits_for_owner(&sim, "Americans"),
+        1400,
+        "partial refund of the spent portion (700-300=400), not the full cost"
+    );
 
     let owner_queues = sim
         .production

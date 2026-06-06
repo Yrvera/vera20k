@@ -334,6 +334,10 @@ fn wall_build_speed_coefficient_applies_after_factory_scaling() {
 }
 
 #[test]
+#[ignore = "retired (P5b): tick_production no longer advances a frames timer — the per-step \
+            charge in the registry sweep drives progress, and the low-power/factory-bonus rate \
+            now lives in build_step_time. Per-category rate differentiation is pinned by \
+            matching_factory_bonus_is_category_specific."]
 fn low_power_and_factory_bonus_apply_per_owner_and_category() {
     let mut sim = Simulation::new();
     let rules = production_modifier_rules();
@@ -446,6 +450,14 @@ fn naval_unit_rally_uses_water_pathing_after_spawn() {
         americans_display,
         BTreeMap::from([(ProductionCategory::Vehicle, VecDeque::from([qi_naval]))]),
     );
+
+    // Registry-driven completion: reconcile + arm the naval (collapsed-to-Vehicle)
+    // factory to ready so `tick_production` spawns the destroyer this tick.
+    sim.refresh_production_shadow(Some(&rules));
+    assert!(sim
+        .production
+        .factory_shadow
+        .test_arm_ready(americans_display, ProductionCategory::Vehicle));
 
     let spawned = tick_production(&mut sim, &rules, &height_map, Some(&grid), 33);
     assert!(spawned, "completed naval production should spawn the unit");
@@ -561,8 +573,19 @@ fn tick_production_advances_each_owner_queue() {
         BTreeMap::from([(ProductionCategory::Infantry, VecDeque::from([qi_so]))]),
     );
 
-    // tick_ms must be large enough to complete 10 remaining base frames in one
-    // tick: 10 frames × 66 ms/frame = 660 ms minimum at 1× production rate.
+    // Completion is registry-driven now: reconcile to seed the factories, then arm both
+    // to the completed-and-held state (the per-step charge would otherwise take the full
+    // cadence to complete). `tick_production` then delivers/spawns from that state.
+    sim.refresh_production_shadow(Some(&rules));
+    assert!(sim
+        .production
+        .factory_shadow
+        .test_arm_ready(americans_id, ProductionCategory::Infantry));
+    assert!(sim
+        .production
+        .factory_shadow
+        .test_arm_ready(soviet_id, ProductionCategory::Infantry));
+
     let spawned = tick_production(&mut sim, &rules, &height_map, None, 700);
     assert!(spawned, "At least one queue completion should spawn");
     assert!(
@@ -626,8 +649,18 @@ fn tick_production_advances_multiple_queue_categories_for_same_owner() {
         ]),
     );
 
-    // tick_ms must be large enough to complete 10 remaining base frames in one
-    // tick: 10 frames × 66 ms/frame = 660 ms minimum at 1× production rate.
+    // Registry-driven completion: reconcile to seed both factories, then arm both to the
+    // completed-and-held state so `tick_production` delivers them this tick.
+    sim.refresh_production_shadow(Some(&rules));
+    assert!(sim
+        .production
+        .factory_shadow
+        .test_arm_ready(americans_id, ProductionCategory::Infantry));
+    assert!(sim
+        .production
+        .factory_shadow
+        .test_arm_ready(americans_id, ProductionCategory::Vehicle));
+
     let spawned = tick_production(&mut sim, &rules, &height_map, None, 700);
     assert!(spawned);
     assert!(
@@ -696,6 +729,14 @@ fn blocked_vehicle_delivery_keeps_completed_item_and_holds_next_queue_item() {
         americans_id,
         BTreeMap::from([(ProductionCategory::Vehicle, VecDeque::from([first, second]))]),
     );
+
+    // Registry-driven completion: reconcile + arm the front vehicle to ready, so
+    // `tick_production` attempts delivery (which the water grid blocks).
+    sim.refresh_production_shadow(Some(&rules));
+    assert!(sim
+        .production
+        .factory_shadow
+        .test_arm_ready(americans_id, ProductionCategory::Vehicle));
 
     let spawned = tick_production(&mut sim, &rules, &height_map, Some(&grid), 1);
     assert!(
@@ -766,6 +807,15 @@ fn pending_vehicle_delivery_success_consumes_completed_item_and_starts_next_item
         BTreeMap::from([(ProductionCategory::Vehicle, VecDeque::from([first, second]))]),
     );
 
+    // Registry-driven completion: reconcile + arm the front vehicle once. The first
+    // (blocked-grid) delivery leaves the registry untouched, so it stays ready for the
+    // later clear-grid delivery; `tick_production` never mutates the registry itself.
+    sim.refresh_production_shadow(Some(&rules));
+    assert!(sim
+        .production
+        .factory_shadow
+        .test_arm_ready(americans_id, ProductionCategory::Vehicle));
+
     let blocked = tick_production(&mut sim, &rules, &height_map, Some(&blocked_grid), 1);
     assert!(!blocked, "first delivery attempt should remain pending");
 
@@ -808,6 +858,10 @@ fn pending_vehicle_delivery_success_consumes_completed_item_and_starts_next_item
 }
 
 #[test]
+#[ignore = "retired (P5b): tick_production no longer advances a frames timer, so the \
+            paused-vs-active frame delta this asserted is gone. Pause behaviour (a Paused front \
+            maps to a `manual` registry factory that never charges) is pinned by the \
+            registry-driven pause guard test."]
 fn paused_queue_category_does_not_advance_while_other_category_does() {
     let mut sim = Simulation::new();
     let rules = basic_multi_queue_rules();
@@ -941,6 +995,10 @@ fn cancel_by_type_prefers_build_queue_over_ready_queue() {
         .or_default()
         .push_back(qi);
 
+    // Reconcile so the registry holds the active GAREFN build (the registry is the cancel
+    // authority post-flip); the cancel then abandons the build-queue copy first.
+    sim.refresh_production_shadow(Some(&rules));
+
     // First cancel should remove from build queue (not ready queue).
     let cancelled = cancel_by_type_for_owner(&mut sim, &rules, "Americans", "GAREFN");
     assert!(cancelled);
@@ -967,5 +1025,24 @@ fn cancel_by_type_prefers_build_queue_over_ready_queue() {
     assert_eq!(
         ready_count2, 0,
         "ready queue should be empty after second cancel"
+    );
+}
+
+/// C3 (the charge flip): enqueuing an affordable item does NOT debit the wallet upfront
+/// — the per-step `step_all` charge debits it over the build. The can-afford-to-START
+/// affordability gate still permits the enqueue.
+#[test]
+fn no_upfront_charge_at_enqueue() {
+    let mut sim = Simulation::new();
+    let rules = basic_multi_queue_rules();
+    spawn_structure(&mut sim, 1, "Americans", "GAWEAP", 10, 10); // a UnitType war factory
+    *super::credits_entry_for_owner(&mut sim, "Americans") = 5000;
+    let before = credits_for_owner(&sim, "Americans");
+    let ok = super::enqueue_by_type(&mut sim, &rules, "Americans", "MTNK");
+    assert!(ok, "an affordable MTNK is enqueuable (the affordability gate still permits START)");
+    assert_eq!(
+        credits_for_owner(&sim, "Americans"),
+        before,
+        "enqueue does NOT debit upfront — the per-step charge does"
     );
 }

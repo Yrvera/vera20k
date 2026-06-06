@@ -47,6 +47,10 @@ pub const STEP_RATE_MAX: u16 = 255;
 /// seed the cost-based shadow balance so a freshly-stepped factory and the rebuilt
 /// shadow agree (the conservation assert is then meaningful). At most 54 integer
 /// iterations; `cost` clamped non-negative; mirrors `advance_one_step`'s charge.
+/// Test-only after the authority flip: the registry SEED arm seeds `balance =
+/// original_balance` at progress 0 and PERSISTS it thereafter, so no production path
+/// reconstructs a mid-build balance from cost; the per-step ladder tests still use it.
+#[cfg(test)]
 fn remaining_balance_after(cost: i32, progress: u16) -> i32 {
     let mut balance = cost.max(0);
     let steps = progress.min(PRODUCTION_STEPS);
@@ -66,7 +70,7 @@ fn remaining_balance_after(cost: i32, progress: u16) -> i32 {
 /// `entity_id` is always `None` (the produced entity is created by the legacy path);
 /// the field is held distinct so the complete-but-not-delivered state is
 /// representable now.
-#[derive(Debug, Clone, Default, PartialEq, Eq)] // NO serde in P1-P3
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PendingObject {
     pub type_id: InternedId,
     pub entity_id: Option<u64>,
@@ -76,7 +80,7 @@ pub struct PendingObject {
 /// engine's special-item field was never located, so value `0` cannot be proven
 /// unreachable and `0`-vs-`(-1)` MUST NOT be collapsed. Three states keep them
 /// distinct. In P1-P3 (normal builds) this is always `NoneNeg1`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)] // NO serde in P1-P3
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SpecialItem {
     NoneNeg1,
     NoneZero,
@@ -92,7 +96,7 @@ impl Default for SpecialItem {
 /// One production state machine per (house, category). Value-type owned by the
 /// `FactoryRegistry`. In P2/P3 it is DERIVED shadow — the per-step charge stepping
 /// (P3) runs against an ORACLE clone, never the hashed wallet.
-#[derive(Debug, Clone, Default, PartialEq, Eq)] // NO serde in P1-P3
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Factory {
     pub owner: InternedId,
     pub category: ProductionCategory,
@@ -453,13 +457,9 @@ pub struct FactoryView<'a> {
 
 /// Deterministic registry of all factories — the derived shadow analog of the
 /// engine's global factory array, keyed (no fixed-size player array) for scale.
-#[derive(Debug, Clone, Default, PartialEq, Eq)] // NO serde in P1-P3
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FactoryRegistry {
     factories: BTreeMap<(InternedId, ProductionCategory), Factory>,
-    next_insertion_seq: u64,
-    /// Carried across the per-tick rebuild so a surviving (owner, category) keeps a
-    /// stable `insertion_seq` (same-frame ordering identity). Skipped + unhashed.
-    seq_carry: BTreeMap<(InternedId, ProductionCategory), u64>,
 }
 
 impl FactoryRegistry {
@@ -498,28 +498,267 @@ impl FactoryRegistry {
         all
     }
 
-    /// P3 SHADOW BUILD: (re)derive the whole registry from the legacy queues each
-    /// tick, with a COST-based oracle balance. READ-ONLY w.r.t. all hashed state.
-    /// Reuses `seq_carry` to keep `insertion_seq` stable for surviving factories.
-    ///
-    /// E1 resolved (P3): `original_balance` = the front type's full credit cost (from
-    /// `rules`); `balance` = the not-yet-charged remainder, recovered by replaying the
-    /// exact per-step charge ladder for `progress` steps (NOT a one-shot proportion).
-    /// The per-step charge is in CREDITS, so a cost-based balance is what the oracle
-    /// (and the conservation assert) require; the frames-based P2 placeholder is gone.
-    pub(crate) fn rebuild_shadow(
-        &mut self,
-        sim: &crate::sim::world::Simulation,
-        rules: &RuleSet,
-    ) {
-        self.rebuild_shadow_inner(sim, Some(rules));
+    /// Test-only mutable access to the first factory in sweep order (the `factories`
+    /// map is private). Used by the authoritative-hash + progress-persist tests, which
+    /// live in the `world` module and so cannot reach the private map directly.
+    #[cfg(test)]
+    pub(crate) fn test_first_mut(&mut self) -> Option<&mut Factory> {
+        let key = self
+            .iter_insertion_ordered()
+            .first()
+            .map(|f| (f.owner, f.category))?;
+        self.factories.get_mut(&key)
     }
 
-    /// Cost-free fallback when no `RuleSet` is available (the advance_tick `None`
-    /// tail). Same derive as `rebuild_shadow` but cost resolves to 0. Hash-neutral
-    /// either way (the registry is `#[serde(skip)]` + no serde derive).
-    pub(crate) fn rebuild_shadow_no_rules(&mut self, sim: &crate::sim::world::Simulation) {
-        self.rebuild_shadow_inner(sim, None);
+    /// Test-only mutable access to a specific (owner, category) factory (the map is
+    /// private). Lets the production-pipeline integration tests drive the registry
+    /// (now the completion authority) without running the full charge sweep.
+    #[cfg(test)]
+    pub(crate) fn test_factory_mut(
+        &mut self,
+        owner: InternedId,
+        category: ProductionCategory,
+    ) -> Option<&mut Factory> {
+        self.factories.get_mut(&(owner, category))
+    }
+
+    /// Test-only: force a (owner, category) factory to the completed-and-held state
+    /// (progress == `PRODUCTION_STEPS`, balance drained, suspended) — the exact state
+    /// `step_all` leaves on completion, so `tick_production`'s registry-driven delivery
+    /// fires. Returns `false` when no such (object-holding) factory exists. Reconcile
+    /// the registry first so the factory exists.
+    #[cfg(test)]
+    pub(crate) fn test_arm_ready(
+        &mut self,
+        owner: InternedId,
+        category: ProductionCategory,
+    ) -> bool {
+        match self.factories.get_mut(&(owner, category)) {
+            Some(f) if f.object.is_some() => {
+                f.progress = PRODUCTION_STEPS;
+                f.balance = 0;
+                f.suspended = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Reconcile the registry from the legacy `queues_by_owner` (the queue-of-record),
+    /// PRESERVING the authoritative progress of an unchanged active build (the PERSIST
+    /// arm) and seeding a fresh one ONCE when the front changes identity (the SEED arm).
+    /// This REPLACES the per-tick rebuild-from-scratch clobber: once the registry is
+    /// authoritative its `progress`/`balance`/`step_timer`/`on_hold`/`suspended` must
+    /// survive across ticks (the authority flip's load-bearing inversion). READ-ONLY
+    /// w.r.t. all hashed state except the registry it owns.
+    ///
+    /// Identity test = `(object.type_id == front.type_id) && (insertion_seq ==
+    /// front.enqueue_order)`. Because `enqueue_order` is strictly monotonic, a
+    /// delivered-then-restarted `(owner, category)` gets a higher front -> the test
+    /// fails -> SEED re-arms (the destroy-recreate analog). `rules == None` (the
+    /// cost-free tail) resolves `full_cost` to 0, exactly like the retired
+    /// `rebuild_shadow_no_rules`.
+    pub(crate) fn reconcile_from_queues(
+        &mut self,
+        sim: &crate::sim::world::Simulation,
+        rules: Option<&RuleSet>,
+    ) {
+        use crate::sim::production::production_types::BuildQueueState as S;
+
+        // Track which keys still have a non-empty queue this tick (membership).
+        let mut live_keys: BTreeMap<(InternedId, ProductionCategory), ()> = BTreeMap::new();
+
+        for (&owner, queues) in &sim.production.queues_by_owner {
+            for (&category, queue) in queues {
+                let Some(front) = queue.front() else {
+                    continue; // empty category: no factory
+                };
+                let key = (owner, category);
+                live_keys.insert(key, ());
+                let seq = front.enqueue_order; // temporal insertion_seq (the P5a mint)
+
+                // The tail (FIFO behind the active object) + the pause bridge are
+                // refreshed every reconcile regardless of arm.
+                let tail: VecDeque<InternedId> =
+                    queue.iter().skip(1).map(|item| item.type_id).collect();
+                let paused = matches!(front.state, S::Paused);
+
+                // The FRONT of a non-empty queue is the active build. In the live flow
+                // `refresh_queue_states` keeps idx 0 in Building/Paused/Done/NoFunds (never
+                // Queued), so the front always holds the active object; model it that way
+                // (a raw Queued front only appears in direct-insert tests — treat it as
+                // active too, the faithful "front == the item under construction" rule).
+                match self.factories.get_mut(&key) {
+                    Some(f)
+                        if f.object.as_ref().map(|o| o.type_id) == Some(front.type_id)
+                            && f.insertion_seq == seq =>
+                    {
+                        // PERSIST arm: same active build as last tick. Do NOT touch
+                        // progress/balance/step_timer/on_hold/suspended. Refresh only the
+                        // FIFO tail + the pause bridge.
+                        f.queue = tail;
+                        f.manual = paused;
+                    }
+                    _ => {
+                        // SEED arm: a new/changed active build begins. Seed ONCE from cost.
+                        let full_cost = match rules {
+                            Some(r) => sim
+                                .object_type(front.type_id, r)
+                                .map(|o| o.cost.max(0))
+                                .unwrap_or(0),
+                            None => 0,
+                        };
+                        let factory = Factory {
+                            owner,
+                            category,
+                            progress: 0,
+                            step_rate_frames: 0,
+                            step_timer: 0,
+                            balance: full_cost,
+                            original_balance: full_cost,
+                            object: Some(PendingObject { type_id: front.type_id, entity_id: None }),
+                            on_hold: false,
+                            suspended: false,
+                            manual: paused,
+                            special: SpecialItem::NoneNeg1,
+                            queue: tail,
+                            insertion_seq: seq,
+                        };
+                        self.factories.insert(key, factory);
+                    }
+                }
+            }
+        }
+
+        // Drop factories whose (owner, category) no longer has a non-empty queue.
+        self.factories.retain(|key, _| live_keys.contains_key(key));
+    }
+
+    /// Gather the per-factory `BuildStepTimeInputs` for the next `step_all`, READ-ONLY
+    /// over `Simulation` (power ratio, per-category factory count, type cost). Returned
+    /// as an OWNED map so `step_all` can then run against `&mut houses` without holding a
+    /// `&Simulation` borrow (the split-borrow the authority flip needs). Only armed,
+    /// steppable factories (object held, not complete/suspended/paused) get inputs.
+    pub fn prepare_step_inputs(
+        &self,
+        sim: &crate::sim::world::Simulation,
+        rules: &RuleSet,
+    ) -> BTreeMap<(InternedId, ProductionCategory), BuildStepTimeInputs> {
+        use crate::sim::production::production_tech::{
+            matching_factory_count_for_owner, owner_power_percentage_ppm,
+        };
+        let mut out = BTreeMap::new();
+        for (&key, f) in &self.factories {
+            if f.suspended || f.manual || f.progress >= PRODUCTION_STEPS {
+                continue;
+            }
+            let Some(obj_id) = f.object.as_ref().map(|o| o.type_id) else {
+                continue;
+            };
+            let Some(obj) = sim.object_type(obj_id, rules) else {
+                continue;
+            };
+            let owner_name = sim.interner.resolve(f.owner).to_string();
+            // factory_count = the per-category BUILDING count (the MultipleFactory
+            // `(n-1)` loop input). The registry collapses to ONE key per (owner,
+            // category), so its key count is NOT this — keep the building rescan (its
+            // retirement is a later slice). `obj.category` is the rules `ObjectCategory`,
+            // the arg the rescan takes (NOT `ProductionCategory`).
+            let inputs = BuildStepTimeInputs {
+                cost: obj.cost.max(0),
+                build_time_bonus_ppm: PRODUCTION_RATE_SCALE, // stock YR 1.0 (per-side bonus unwired)
+                build_time_multiplier_ppm: obj.build_time_multiplier_x1000.max(1) * 1_000,
+                power_ratio_ppm: owner_power_percentage_ppm(sim, &owner_name),
+                low_power_penalty_modifier_ppm: rules.production.low_power_penalty_modifier_ppm,
+                min_clamp_ppm: rules.production.min_low_power_production_speed_ppm,
+                max_clamp_ppm: rules.production.max_low_power_production_speed_ppm,
+                multiple_factory_ppm: rules.production.multiple_factory_ppm,
+                factory_count: matching_factory_count_for_owner(
+                    &sim.substrate.entities,
+                    rules,
+                    &owner_name,
+                    obj.category,
+                    &sim.interner,
+                ),
+                is_wall: obj.category == crate::rules::object_type::ObjectCategory::Building
+                    && obj.wall,
+                wall_build_speed_ppm: (rules.production.wall_build_speed_coefficient.max(0.0)
+                    as f64
+                    * PRODUCTION_RATE_SCALE as f64) as u64,
+            };
+            out.insert(key, inputs);
+        }
+        out
+    }
+
+    /// The authoritative per-tick factory sweep (the charge flip). Walks the registry in
+    /// `iter_insertion_ordered` (temporal `insertion_seq`) order — the SAME order the
+    /// hash folds in — and, for each armed factory whose per-step cadence timer has
+    /// expired, (re)computes the rate from the `build_step_time` producer and charges ONE
+    /// step against the owner's REAL wallet (`house.credits`). Reproduces the engine's
+    /// per-tick factory loop (C1), walked before the house tail.
+    ///
+    /// `house.credits` is THE single wallet (one debit per step). The per-sweep `Economy`
+    /// shim is loaded from `house.credits` at entry and stored back after, so
+    /// `advance_one_step`'s `&mut Economy` contract is honored unchanged and
+    /// `economy.spent_credits` accumulates; `economy.credits` is a transient shim, never
+    /// the authority, never hashed. `prepared` (from `prepare_step_inputs`) carries the
+    /// producer inputs so this method holds no `&Simulation` borrow.
+    pub fn step_all(
+        &mut self,
+        houses: &mut BTreeMap<InternedId, crate::sim::house_state::HouseState>,
+        prepared: &BTreeMap<(InternedId, ProductionCategory), BuildStepTimeInputs>,
+    ) {
+        // Sweep order = temporal insertion_seq (strictly monotonic enqueue_order -> no
+        // ties -> total order -> deterministic).
+        let mut order: Vec<(u64, InternedId, ProductionCategory)> = self
+            .factories
+            .iter()
+            .map(|(&(o, c), f)| (f.insertion_seq, o, c))
+            .collect();
+        order.sort_by_key(|&(seq, _, _)| seq);
+
+        for (_, owner, category) in order {
+            let Some(f) = self.factories.get_mut(&(owner, category)) else {
+                continue;
+            };
+            // Only an armed, in-flight build steps: object held, not complete (held for
+            // delivery), not suspended, not manually paused.
+            if f.object.is_none() || f.suspended || f.manual || f.progress >= PRODUCTION_STEPS {
+                continue;
+            }
+            let Some(house) = houses.get_mut(&owner) else {
+                continue; // a vanished house is skipped (NEVER auto-create)
+            };
+
+            // (Rate) recompute from the producer each cadence the factory could step.
+            if let Some(inp) = prepared.get(&(owner, category)) {
+                f.set_rate(build_step_time(inp));
+            }
+
+            // (Cadence) one step per `step_rate_frames` frames (the engine CDTimer).
+            if f.step_timer > 0 {
+                f.step_timer -= 1;
+                continue;
+            }
+
+            // (Charge) one authoritative step against the real wallet via the shim.
+            // Clear the latched on-hold first so an under-funded build RE-ATTEMPTS this
+            // cadence (gamemd re-checks affordability each step; advance_one_step's
+            // on_hold gate exists for the off-path clone callers).
+            f.on_hold = false;
+            let mut wallet = std::mem::take(&mut house.economy);
+            wallet.credits = house.credits; // load the authoritative balance
+            let outcome = f.advance_one_step(&mut wallet);
+            house.credits = wallet.credits; // store the debited balance back (ONE wallet)
+            house.economy = wallet; // keep spent_credits / etc.
+
+            // Completion zeroed step_timer (the object is held for delivery); otherwise
+            // re-arm the cadence to the freshly-computed rate.
+            if !matches!(outcome, StepOutcome::Completed) {
+                f.step_timer = f.step_rate_frames.saturating_sub(1);
+            }
+        }
     }
 
     /// Cancel one production of `type_id` for (owner, category) — the substrate analog
@@ -567,105 +806,6 @@ impl FactoryRegistry {
         CancelOutcome::NoMatch
     }
 
-    fn rebuild_shadow_inner(
-        &mut self,
-        sim: &crate::sim::world::Simulation,
-        rules: Option<&RuleSet>,
-    ) {
-        use crate::sim::production::production_types::BuildQueueState as S;
-
-        let mut new_factories: BTreeMap<(InternedId, ProductionCategory), Factory> =
-            BTreeMap::new();
-        let mut new_carry: BTreeMap<(InternedId, ProductionCategory), u64> = BTreeMap::new();
-
-        for (&owner, queues) in &sim.production.queues_by_owner {
-            for (&category, queue) in queues {
-                let Some(front) = queue.front() else {
-                    continue; // empty category: no factory
-                };
-                let key = (owner, category);
-
-                // insertion_seq = the front (earliest still-live) item's enqueue_order:
-                // the temporal first-Begin stamp of when this (owner, category) began
-                // producing. Reproduces the native factory array's temporal tail-append
-                // order, NOT the BTreeMap sorted-(owner, category) order the old
-                // next_insertion_seq++ mint produced. enqueue_order is strictly
-                // monotonic, so ties are impossible; a lapsed-then-restarted category
-                // re-reads a fresh, higher front enqueue_order each rebuild, matching the
-                // native destroy-recreate -> tail re-append. `seq_carry` /
-                // `next_insertion_seq` are no longer the ordering SOURCE (the carry kept
-                // a stale seq across a queue-empty gap, or re-minted in sorted position);
-                // they stay written for a minimal diff and are retired at the flip.
-                let seq = front.enqueue_order;
-                new_carry.insert(key, seq);
-
-                // progress 0..=54: monotone bridge from base-frame remaining.
-                // Guard division by zero on total == 0.
-                let progress = if front.total_base_frames == 0 {
-                    0u16
-                } else {
-                    let done = front
-                        .total_base_frames
-                        .saturating_sub(front.remaining_base_frames);
-                    let p = (u64::from(done) * u64::from(PRODUCTION_STEPS))
-                        / u64::from(front.total_base_frames);
-                    (p as u16).min(PRODUCTION_STEPS)
-                };
-
-                // The front item is the active object when Building/NoFunds/Done; a
-                // Paused front is suspended; a Queued front is queue-only.
-                let has_object = matches!(front.state, S::Building | S::NoFunds | S::Done);
-                let object = if has_object {
-                    Some(PendingObject {
-                        type_id: front.type_id,
-                        entity_id: None, // legacy path owns the produced entity in P2/P3
-                    })
-                } else {
-                    None
-                };
-
-                // Tail items become the FIFO queue (order preserved).
-                let tail: VecDeque<InternedId> =
-                    queue.iter().skip(1).map(|item| item.type_id).collect();
-
-                // E1 (P3): cost-based oracle balance. original_balance = full type
-                // cost (snapshot); balance = remainder after `progress` steps of the
-                // exact charge ladder. None rules (cost-free tail) => cost 0.
-                let full_cost = match rules {
-                    Some(r) => sim
-                        .object_type(front.type_id, r)
-                        .map(|o| o.cost.max(0))
-                        .unwrap_or(0),
-                    None => 0,
-                };
-                let original_balance = full_cost;
-                let balance = remaining_balance_after(full_cost, progress);
-
-                let factory = Factory {
-                    owner,
-                    category,
-                    progress,
-                    // No-object => rate 0 (the contract). The probe (P3) calls
-                    // set_rate separately; the rebuild has no build-step total.
-                    step_rate_frames: 0,
-                    step_timer: 0,
-                    balance,
-                    original_balance,
-                    object,
-                    on_hold: matches!(front.state, S::NoFunds),
-                    suspended: matches!(front.state, S::Paused | S::Done),
-                    manual: matches!(front.state, S::Paused),
-                    special: SpecialItem::NoneNeg1, // normal builds
-                    queue: tail,
-                    insertion_seq: seq,
-                };
-                new_factories.insert(key, factory);
-            }
-        }
-
-        self.factories = new_factories;
-        self.seq_carry = new_carry;
-    }
 }
 
 #[cfg(test)]

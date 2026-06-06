@@ -16,13 +16,12 @@ use super::production_spawn::{
     mark_war_factory_spawn_contact,
 };
 use super::production_tech::{
-    build_option_for_owner, build_time_base_frames, effective_progress_rate_ppm_for_type,
-    effective_time_to_build_frames_for_type, estimated_real_time_ms, owner_matches_build_identity,
-    production_category_for_object, should_use_relaxed_build_mode, supports_live_production,
+    build_option_for_owner, build_time_base_frames, effective_time_to_build_frames_for_type,
+    estimated_real_time_ms, owner_matches_build_identity, production_category_for_object,
+    should_use_relaxed_build_mode, supports_live_production,
 };
 use super::production_types::*;
-
-const RA2_QUEUE_FRAME_MS: u64 = 66;
+use super::{CancelOutcome, PRODUCTION_STEPS};
 
 /// Set rally point for an owner's production output.
 pub fn set_rally_point_for_owner(sim: &mut Simulation, owner: &InternedId, rx: u16, ry: u16) {
@@ -215,7 +214,10 @@ pub fn enqueue_by_type(sim: &mut Simulation, rules: &RuleSet, owner: &str, type_
         return false;
     }
     let total_base_frames: u32 = build_time_base_frames(rules, obj);
-    *credits_entry_for_owner(sim, owner) -= obj.cost;
+    // The upfront debit is RETIRED at the authority flip: the per-step `advance_one_step`
+    // (driven by `step_all` at the Phase-7 head) charges the cost down over the build
+    // against the one wallet (`house.credits`). Enqueue only checks affordability (the
+    // can-afford-to-START gate above) and appends the queue item.
     let owner_id = sim.interner.intern(owner);
     let type_interned = sim.interner.intern(type_id);
     let enqueue_order = next_enqueue_order(sim);
@@ -455,17 +457,16 @@ pub fn tick_production_with_overlay_registry(
     let mut spawned_any = false;
     for (owner_id, queue_category) in owner_categories {
         let owner_str = sim.interner.resolve(owner_id).to_string();
-        let progress_rate: u64 = sim
+        // The authoritative factory registry drives completion now (the per-step charge
+        // in `step_all` advances `progress` to `PRODUCTION_STEPS`); the legacy frames
+        // timer is retired. Read the registry factory for this (owner, category):
+        // `ready` (progress == 54 with the object still held) is the completion signal,
+        // and `progress` derives the sidebar-ETA mirror below.
+        let reg_view: Option<(u16, bool)> = sim
             .production
-            .queues_by_owner
-            .get(&owner_id)
-            .and_then(|queues| queues.get(&queue_category))
-            .and_then(|queue| queue.front())
-            .map(|front| {
-                let type_str = sim.interner.resolve(front.type_id);
-                effective_progress_rate_ppm_for_type(sim, rules, &owner_str, type_str)
-            })
-            .unwrap_or(PRODUCTION_RATE_SCALE);
+            .factory_shadow
+            .view(owner_id, queue_category)
+            .map(|v| (v.progress, v.ready && v.object.is_some()));
         let completed: Option<BuildQueueItem> = {
             let queue = sim
                 .production
@@ -475,18 +476,31 @@ pub fn tick_production_with_overlay_registry(
             let Some(queue) = queue else { continue };
             refresh_queue_states(queue);
             if let Some(front) = queue.front_mut() {
-                if front.state == BuildQueueState::Done {
-                    Some(front.clone())
-                } else if front.state == BuildQueueState::Paused {
-                    None
-                } else {
-                    advance_queue_item(front, tick_ms, progress_rate);
-                    if front.remaining_base_frames > 0 {
-                        None
-                    } else {
-                        front.state = BuildQueueState::Done;
-                        Some(front.clone())
+                match reg_view {
+                    Some((progress, ready)) => {
+                        // B2 ETA mirror: derive `remaining_base_frames` from the
+                        // authoritative registry progress so the sidebar "time remaining"
+                        // tracks the real build and the hashed field stays a one-way
+                        // mirror of progress (no frozen ETA, no hash hole).
+                        let steps_left =
+                            PRODUCTION_STEPS.saturating_sub(progress.min(PRODUCTION_STEPS));
+                        front.remaining_base_frames = ((u64::from(front.total_base_frames)
+                            * u64::from(steps_left))
+                            / u64::from(PRODUCTION_STEPS))
+                            as u32;
+                        // A Paused front never completes (its registry factory is `manual`
+                        // and is never stepped); otherwise `ready` marks it Done for the
+                        // delivery/spawn geometry below.
+                        if ready && !matches!(front.state, BuildQueueState::Paused) {
+                            front.state = BuildQueueState::Done;
+                            Some(front.clone())
+                        } else {
+                            None
+                        }
                     }
+                    // No registry factory yet (e.g. a just-enqueued front before the
+                    // next tick-tail reconcile) -> not ready, ETA left at its enqueue value.
+                    None => None,
                 }
             } else {
                 None
@@ -750,8 +764,13 @@ pub fn ready_buildings_for_owner(
         .unwrap_or_default()
 }
 
-/// Cancel the most recently queued item for this owner and refund full cost.
-pub fn cancel_last_for_owner(sim: &mut Simulation, rules: &RuleSet, owner: &str) -> bool {
+/// Cancel the most recently queued item for this owner.
+///
+/// Post-flip refund rule: a queued (tail) item was never charged, so removing it
+/// refunds NOTHING; only the active build (a single-item queue, where the most-recent
+/// item IS the front) is abandoned with the C8 PARTIAL refund (`original_balance -
+/// balance`) routed through the registry against the one wallet (`house.credits`).
+pub fn cancel_last_for_owner(sim: &mut Simulation, _rules: &RuleSet, owner: &str) -> bool {
     let owner_id = sim.interner.intern(owner);
     let Some(category) = ({
         sim.production.queues_by_owner.get(&owner_id).and_then(|q| {
@@ -765,32 +784,107 @@ pub fn cancel_last_for_owner(sim: &mut Simulation, rules: &RuleSet, owner: &str)
     }) else {
         return false;
     };
-    let Some(item) = sim
+    let queue_len = sim
         .production
         .queues_by_owner
-        .get_mut(&owner_id)
-        .and_then(|owner_queues| owner_queues.get_mut(&category))
-        .and_then(|queue| {
-            let item = queue.pop_back();
+        .get(&owner_id)
+        .and_then(|q| q.get(&category))
+        .map_or(0, |q| q.len());
+    if queue_len == 0 {
+        return false;
+    }
+    if queue_len > 1 {
+        // The most-recently-queued item is an uncharged TAIL item: NO refund. Drop it
+        // from the queue-of-record; the tick-tail reconcile re-derives the registry tail.
+        if let Some(queue) = sim
+            .production
+            .queues_by_owner
+            .get_mut(&owner_id)
+            .and_then(|q| q.get_mut(&category))
+        {
+            queue.pop_back();
             refresh_queue_states(queue);
-            item
-        })
+        }
+        prune_empty_queues(sim);
+        return true;
+    }
+    // queue_len == 1: the most-recent item IS the active build -> abandon it via the
+    // registry for the C8 partial refund, then drop the front from the queue-of-record.
+    let Some(front_type) = sim
+        .production
+        .queues_by_owner
+        .get(&owner_id)
+        .and_then(|q| q.get(&category))
+        .and_then(|q| q.front())
+        .map(|it| it.type_id)
     else {
         return false;
     };
-    let type_str = sim.interner.resolve(item.type_id).to_string();
-    if let Some(obj) = rules.object(&type_str) {
-        *credits_entry_for_owner(sim, owner) += obj.cost.max(0);
+    let outcome = registry_cancel_active(sim, owner_id, category, front_type);
+    if matches!(
+        outcome,
+        CancelOutcome::AbandonedActive { .. } | CancelOutcome::QueuedRemoved
+    ) {
+        if let Some(queue) = sim
+            .production
+            .queues_by_owner
+            .get_mut(&owner_id)
+            .and_then(|q| q.get_mut(&category))
+        {
+            queue.pop_front();
+            refresh_queue_states(queue);
+        }
+        prune_empty_queues(sim);
+        return true;
     }
+    false
+}
+
+/// Route a cancel of `type_id` for (owner, category) through the registry `cancel_one`
+/// (the single precedence source: queued-tail FIRST, else active-abandon), charging the
+/// C8 partial refund (or none, for a queued copy) against the ONE wallet
+/// (`house.credits`) via a per-sweep `Economy` shim. The caller mirrors the resulting
+/// queue change into `queues_by_owner`.
+fn registry_cancel_active(
+    sim: &mut Simulation,
+    owner_id: InternedId,
+    category: ProductionCategory,
+    type_id: InternedId,
+) -> CancelOutcome {
+    let mut registry = std::mem::take(&mut sim.production.factory_shadow);
+    let outcome = if let Some(house) = sim.houses.get_mut(&owner_id) {
+        let mut wallet = std::mem::take(&mut house.economy);
+        wallet.credits = house.credits; // load the authoritative balance into the shim
+        let outcome = registry.cancel_one(owner_id, category, type_id, &mut wallet);
+        house.credits = wallet.credits; // store the (possibly refunded) balance back
+        house.economy = wallet;
+        outcome
+    } else {
+        // No house to refund into; the cancel still resolves the registry deterministically.
+        let mut throwaway = crate::sim::economy::Economy::default();
+        registry.cancel_one(owner_id, category, type_id, &mut throwaway)
+    };
+    sim.production.factory_shadow = registry;
+    outcome
+}
+
+/// Drop empty per-category queues and empty owners from `queues_by_owner`.
+fn prune_empty_queues(sim: &mut Simulation) {
     sim.production.queues_by_owner.retain(|_, queues| {
         queues.retain(|_, queue| !queue.is_empty());
         !queues.is_empty()
     });
-    true
 }
 
-/// Cancel one queued item of a specific type_id (right-click cameo in RA2).
-/// Removes the last-enqueued instance of that type, refunding its cost.
+/// Cancel one queued/active production of `type_id` for this owner (right-click cameo).
+///
+/// Routed through the registry `cancel_one` (the single precedence source): a QUEUED
+/// tail copy is removed FIRST (FIRST front-to-back match, NO refund — a queued item was
+/// never charged), else the ACTIVE build is abandoned with the C8 PARTIAL refund
+/// (`original_balance - balance`) into the one wallet (`house.credits`). This replaces
+/// the legacy `.rev()` last-match + full-cost refund (a DRIFT under the per-step charge).
+/// When neither matches (or the build is complete-but-held), falls back to the
+/// completed-building ready queue.
 pub fn cancel_by_type_for_owner(
     sim: &mut Simulation,
     rules: &RuleSet,
@@ -799,49 +893,57 @@ pub fn cancel_by_type_for_owner(
 ) -> bool {
     let owner_id = sim.interner.intern(owner);
     let type_interned = sim.interner.intern(type_id);
-    let target = sim
-        .production
-        .queues_by_owner
-        .get(&owner_id)
-        .and_then(|owner_queues| {
-            for (category, queue) in owner_queues.iter() {
-                let idx = queue
+    // The registry is keyed by ProductionCategory; resolve it from the type (the same
+    // routing `enqueue_by_type` used, so the item is in this category's queue).
+    let category = match rules.object(type_id) {
+        Some(obj) => production_category_for_object(obj),
+        None => return cancel_ready_by_type_for_owner(sim, rules, owner, type_id),
+    };
+
+    match registry_cancel_active(sim, owner_id, category, type_interned) {
+        CancelOutcome::QueuedRemoved => {
+            // Mirror into the queue-of-record: drop the FIRST matching tail item (idx>=1;
+            // the active build is idx 0). `cancel_one` already removed the registry-tail
+            // copy; the tick-tail reconcile re-derives the tail from the queue-of-record.
+            if let Some(queue) = sim
+                .production
+                .queues_by_owner
+                .get_mut(&owner_id)
+                .and_then(|q| q.get_mut(&category))
+            {
+                if let Some(idx) = queue
                     .iter()
                     .enumerate()
-                    .rev()
-                    .find(|(_, item)| item.type_id == type_interned)
-                    .map(|(i, _)| i);
-                if let Some(idx) = idx {
-                    return Some((*category, idx));
+                    .skip(1)
+                    .find(|(_, it)| it.type_id == type_interned)
+                    .map(|(i, _)| i)
+                {
+                    queue.remove(idx);
+                    refresh_queue_states(queue);
                 }
             }
-            None
-        });
-    let Some((category, idx)) = target else {
-        // Fallback: check the ready_by_owner queue (completed buildings awaiting placement).
-        return cancel_ready_by_type_for_owner(sim, rules, owner, type_id);
-    };
-    let removed = sim
-        .production
-        .queues_by_owner
-        .get_mut(&owner_id)
-        .and_then(|queues| queues.get_mut(&category))
-        .and_then(|queue| {
-            let item = queue.remove(idx);
-            refresh_queue_states(queue);
-            item
-        });
-    if let Some(removed) = removed {
-        let removed_type_str = sim.interner.resolve(removed.type_id).to_string();
-        if let Some(obj) = rules.object(&removed_type_str) {
-            *credits_entry_for_owner(sim, owner) += obj.cost.max(0);
+            prune_empty_queues(sim);
+            true
+        }
+        CancelOutcome::AbandonedActive { .. } => {
+            // Mirror: drop the active front; the tick-tail reconcile re-seeds the next.
+            if let Some(queue) = sim
+                .production
+                .queues_by_owner
+                .get_mut(&owner_id)
+                .and_then(|q| q.get_mut(&category))
+            {
+                queue.pop_front();
+                refresh_queue_states(queue);
+            }
+            prune_empty_queues(sim);
+            true
+        }
+        CancelOutcome::NoMatch => {
+            // Not an active/queued build (or a complete-but-held one) -> the ready queue.
+            cancel_ready_by_type_for_owner(sim, rules, owner, type_id)
         }
     }
-    sim.production.queues_by_owner.retain(|_, queues| {
-        queues.retain(|_, q| !q.is_empty());
-        !queues.is_empty()
-    });
-    true
 }
 
 /// Cancel a completed building from the ready_by_owner queue (awaiting placement).
@@ -876,25 +978,6 @@ fn cancel_ready_by_type_for_owner(
         *credits_entry_for_owner(sim, owner) += obj.cost.max(0);
     }
     true
-}
-
-fn advance_queue_item(item: &mut BuildQueueItem, tick_ms: u32, rate_ppm: u64) {
-    if item.remaining_base_frames == 0 || tick_ms == 0 {
-        return;
-    }
-    let frame_scale = RA2_QUEUE_FRAME_MS.saturating_mul(PRODUCTION_RATE_SCALE);
-    let scaled_progress = u64::from(tick_ms)
-        .saturating_mul(rate_ppm)
-        .saturating_add(item.progress_carry);
-    let progressed_base_frames = (scaled_progress / frame_scale) as u32;
-    item.progress_carry = scaled_progress % frame_scale;
-
-    if progressed_base_frames >= item.remaining_base_frames {
-        item.remaining_base_frames = 0;
-        item.progress_carry = 0;
-    } else {
-        item.remaining_base_frames -= progressed_base_frames;
-    }
 }
 
 fn pick_default_buildable_unit(
