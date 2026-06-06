@@ -2649,6 +2649,10 @@ impl Simulation {
         self.debug_assert_unit_dispatch_shadow(&dispatch_trace);
         #[cfg(not(any(test, debug_assertions)))]
         let _ = dispatch_trace;
+        // S2a: live-set coverage (T5) — surface any Unit a legacy dispatch phase
+        // would touch that is absent from the host's LogicVector set.
+        #[cfg(any(test, debug_assertions))]
+        self.debug_check_dispatch_live_set_coverage();
         #[cfg(debug_assertions)]
         self.debug_assert_production_shadow();
         let state_hash = self.state_hash();

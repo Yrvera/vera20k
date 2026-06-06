@@ -166,6 +166,43 @@ impl Simulation {
         }
     }
 
+    /// Live-set coverage (T5): every Unit that a legacy dispatch phase would touch — i.e. it
+    /// carries a dispatch machine AND passes that phase's own guards — must be in the host's
+    /// live-object set. The legacy phases iterate `iter_sorted()` (all entities); the host
+    /// iterates the LogicVector. With the legacy guards applied (mirroring `tick_attack_pursuit`:
+    /// not dying, not Structure, no aircraft mission, not deployed, not a transport passenger)
+    /// the residual set is expected-empty in normal play. A residual member is a real Rust drift
+    /// to investigate before S2 — LOGGED with tick+id, never hard-asserted.
+    #[cfg(any(test, debug_assertions))]
+    pub(crate) fn debug_check_dispatch_live_set_coverage(&self) {
+        use std::collections::BTreeSet;
+        let live: BTreeSet<u64> = self.live_object_order_snapshot().into_iter().collect();
+        // `iter_sorted()` yields `(u64, &GameEntity)` in ascending-id order (deterministic).
+        for (id, e) in self.substrate.entities.iter_sorted() {
+            if e.dying
+                || e.category == EntityCategory::Structure
+                || e.aircraft_mission.is_some()
+                || e.is_deployed()
+                || e.passenger_role.is_inside_transport()
+            {
+                continue;
+            }
+            // A Unit a legacy dispatch phase would act on: has a movement/attack/dock machine.
+            let touched = e.movement_target.is_some()
+                || e.attack_target.is_some()
+                || e.dock_state.is_some()
+                || e.order_intent.is_some();
+            if touched && !live.contains(&id) {
+                log::debug!(
+                    "dispatch coverage drift: tick {} unit {} touched by a legacy phase but \
+                     absent from live order",
+                    self.tick,
+                    id,
+                );
+            }
+        }
+    }
+
     /// The walk: dispatch every live, present, non-dying object once, in live
     /// order, through the no-op shell. When `record`, return the dispatched ids
     /// in order (debug/test observation); otherwise the returned `Vec` is empty
@@ -832,5 +869,14 @@ mod tests {
             pending_infantry_fire: None,
         });
         assert_ne!(e.derived_mission().0, MissionType::AttackMove);
+    }
+
+    #[test]
+    fn dispatch_live_set_covers_moving_units() {
+        let mut sim = Simulation::new();
+        sim.substrate.entities.insert(scoped_move_unit(1)); // movement_target set, in live order
+        sim.set_logic_order_for_test(vec![1]);
+        // Must not log/panic: the moving Unit is in the live set.
+        sim.debug_check_dispatch_live_set_coverage();
     }
 }
