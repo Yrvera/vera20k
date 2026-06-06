@@ -93,10 +93,10 @@ pub(super) fn spawn_particle(
     let state_ai_advance = spawn_state_ai_advance(pt, coords, sys.target_coords, direction);
 
     let lifetime_extra = if pt.behaves_like == ParticleBehavesLike::Railgun {
-        rng.next_range_u32(10) as i16
+        rng.next_raw_abs_modulo(10) as i16
     } else {
         let base = (pt.max_ec as u32).max(1);
-        rng.next_range_u32(base) as i16
+        rng.next_raw_abs_modulo(base) as i16
     };
     let lifetime_remaining = (pt.max_ec as i16).saturating_add(lifetime_extra);
 
@@ -226,7 +226,7 @@ pub(super) fn spawn_particle_with_insert(
         return true;
     }
     let actual_range = insert_range.min(count);
-    let random_offset = rng.next_range_u32(actual_range as u32) as usize;
+    let random_offset = rng.next_raw_abs_modulo(actual_range as u32) as usize;
     let insert_pos = count.saturating_sub(2).saturating_sub(random_offset);
     if insert_pos + 1 >= count {
         return true;
@@ -345,6 +345,36 @@ mod tests {
             spawn_particle(sys, IVec3::ZERO, IVec3::ZERO, &rules, &mut rng);
         }
         assert_eq!(sys.particles.len(), 3);
+    }
+
+    #[test]
+    fn lifetime_extra_uses_raw_abs_modulo_single_draw() {
+        // MaxEC=10 (Smk). seed=1 first raw draw is 0x78B76ED5 (+2_025_287_381);
+        // abs(% 10) = 1 -> lifetime_remaining = 10 + 1 = 11. The raw-modulo helper
+        // consumes EXACTLY ONE draw (no rejection loop); this pins both the value
+        // and the single-advance contract.
+        let rules = build_rules("Smoke", 50);
+        let mut sim = Simulation::new();
+        let sys_id = sim
+            .spawn_particle_system(
+                ParticleSystemTypeId(0),
+                IVec3::ZERO,
+                None,
+                None,
+                IVec3::ZERO,
+                None,
+                &rules,
+            )
+            .unwrap();
+        let mut rng = SimRng::new(1);
+        let sys = sim.particle_systems.get_mut(sys_id).unwrap();
+        spawn_particle(sys, IVec3::ZERO, IVec3::ZERO, &rules, &mut rng);
+        assert_eq!(sys.particles[0].lifetime_remaining, 11);
+
+        // Exactly one raw draw consumed by the lifetime roll.
+        let mut reference = SimRng::new(1);
+        reference.next_u32();
+        assert_eq!(rng.state(), reference.state());
     }
 
     #[test]

@@ -62,7 +62,7 @@ fn make_particle(
     rng: &mut SimRng,
 ) -> Particle {
     let base = (pt.max_ec as u32).max(1);
-    let lifetime_extra = rng.next_range_u32(base) as i16;
+    let lifetime_extra = rng.next_raw_abs_modulo(base) as i16;
     let lifetime_remaining = (pt.max_ec as i16).saturating_add(lifetime_extra);
     Particle {
         type_id,
@@ -111,9 +111,10 @@ pub(super) fn tick_particle(
         return;
     }
 
-    // Direction jitter: factor in [0.95, 1.04]. Compute fresh each tick;
+    // Direction jitter: signed remainder in [-9, 9] then minus 5 -> raw in
+    // [-14, 4], jitter factor in [0.86, 1.04]. Compute fresh each tick;
     // direction itself stays stable.
-    let raw = rng.next_range_u32(10) as i32 - 5;
+    let raw = rng.next_raw_modulo_signed(10) - 5;
     let jitter = SimFixed::from_num(1) + SimFixed::from_num(raw) * SimFixed::from_num(0.01);
     p.prev_delta = [
         p.direction[0] * jitter,
@@ -268,6 +269,48 @@ mod tests {
         p.velocity = SIM_ZERO;
         tick_particle(&mut p, pt, 0, sim.particle_rng());
         assert!(p.marked_for_deletion, "zero-velocity fire dies immediately");
+    }
+
+    #[test]
+    fn jitter_signed_remainder_dips_below_old_floor() {
+        // Old code: next_range_u32(10) - 5 -> raw in [-5, 4] -> jitter >= 0.95.
+        // Binary: signed (raw % 10) - 5 -> raw in [-14, 4] -> jitter can reach
+        // 0.86, impossible under the old non-negative draw. Drive a fixed-east
+        // unit direction so prev_delta[0] == jitter, and target the seed=1 third
+        // raw draw (0xDA63B931, negative): -630_998_735 % 10 = -5 -> raw = -10 ->
+        // jitter = 1 + (-10)*0.01 = 0.90 (below the old 0.95 floor).
+        let rules = parse(
+            "[Particles]\n\
+             1=Fire\n\
+             [Fire]\n\
+             BehavesLike=Fire\n\
+             MaxEC=500\n",
+        );
+        let pt = rules.particle_type(ParticleTypeId(0));
+
+        // Build the particle with a throwaway stream so the jitter draw below is
+        // exactly the crafted stream's next draw.
+        let mut throwaway = SimRng::new(7);
+        let mut p = make_particle(ParticleTypeId(0), IVec3::ZERO, IVec3::ZERO, pt, &mut throwaway);
+        p.direction = [SimFixed::from_num(1), SIM_ZERO, SIM_ZERO];
+        p.velocity = SimFixed::from_num(100);
+
+        let mut rng = SimRng::new(1);
+        rng.next_u32(); // skip draw 1
+        rng.next_u32(); // skip draw 2 -> next (3rd) draw is the negative 0xDA63B931
+        tick_particle(&mut p, pt, 0, &mut rng);
+
+        // prev_delta[0] == direction[0] * jitter == jitter; must be below the
+        // old 0.95 floor (proving the signed range), and near 0.88.
+        assert!(
+            p.prev_delta[0] < SimFixed::from_num(0.95),
+            "signed jitter must reach below the old 0.95 floor, got {}",
+            p.prev_delta[0]
+        );
+        assert!(
+            p.prev_delta[0] > SimFixed::from_num(0.80),
+            "jitter sanity lower bound"
+        );
     }
 
     #[test]

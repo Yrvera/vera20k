@@ -219,6 +219,38 @@ impl SimRng {
             }
         }
     }
+
+    /// Raw signed-abs remainder draw: `abs((next_u32() as i32) % n)`, one draw.
+    ///
+    /// Models gamemd's particle-lifetime / fire-insert-offset primitive: a
+    /// single raw draw taken as a signed int, `% n`, then absolute value.
+    /// Unlike `next_range_u32` (mask-and-reject), this consumes EXACTLY ONE draw
+    /// — no rejection loop — so the shared scenario cursor advances by one per
+    /// call. That fixed advance is the parity point: rejection sampling shifts
+    /// the cursor a variable amount and desyncs every later consumer that tick.
+    /// Returns 0 for `n == 0` (the original would divide-by-zero here; callers
+    /// guard with `.max(1)`, so this branch never fires on stock systems).
+    pub fn next_raw_abs_modulo(&mut self, n: u32) -> u32 {
+        if n == 0 {
+            return 0;
+        }
+        ((self.next_u32() as i32) % n as i32).unsigned_abs()
+    }
+
+    /// Raw signed remainder draw: `(next_u32() as i32) % n`, one draw, may be
+    /// negative.
+    ///
+    /// Models gamemd's particle jitter / spawn-offset primitive (`CDQ; IDIV`,
+    /// no absolute value): a negative remainder yields a negative offset, so the
+    /// output spans `-(n-1)..=n-1`. Same single-draw cursor advance as
+    /// `next_raw_abs_modulo`; the only difference is the sign is preserved.
+    /// Returns 0 for `n == 0`.
+    pub fn next_raw_modulo_signed(&mut self, n: u32) -> i32 {
+        if n == 0 {
+            return 0;
+        }
+        (self.next_u32() as i32) % n as i32
+    }
 }
 
 #[cfg(test)]
@@ -291,6 +323,54 @@ mod tests {
         assert_eq!(rng.next_u32(), 0x78B7_6ED5);
         assert_eq!(rng.next_u32(), 0x275D_74AE);
         assert_eq!(rng.next_u32(), 0xDA63_B931);
+    }
+
+    #[test]
+    fn next_raw_abs_modulo_seed_one_golden_and_single_draw() {
+        // seed=1 raw stream is 0x78B76ED5, 0x275D74AE, 0xDA63B931
+        // (test_gamemd_raw_sequence_seed_one). As i32: +2_025_287_381,
+        // +660_436_142, -630_998_735. abs(raw % 80) -> 21, 62, 15.
+        let mut rng = SimRng::new(1);
+        assert_eq!(rng.next_raw_abs_modulo(80), 21);
+        assert_eq!(rng.next_raw_abs_modulo(80), 62);
+        assert_eq!(rng.next_raw_abs_modulo(80), 15);
+
+        // Exactly one raw draw per call (no rejection loop): one call leaves the
+        // stream where a single next_u32() does — distinguishing raw-modulo
+        // (always 1 advance) from the mask-and-reject ranged draw (variable).
+        let mut a = SimRng::new(1);
+        a.next_raw_abs_modulo(80);
+        let mut reference = SimRng::new(1);
+        reference.next_u32();
+        assert_eq!(a.state(), reference.state());
+    }
+
+    #[test]
+    fn next_raw_modulo_signed_seed_one_golden_keeps_sign() {
+        // Same seed=1 stream; signed remainder % 10 -> 1, 2, -5 (sign follows
+        // the dividend; the negative third draw must stay negative — abs would
+        // wrongly yield +5).
+        let mut rng = SimRng::new(1);
+        assert_eq!(rng.next_raw_modulo_signed(10), 1);
+        assert_eq!(rng.next_raw_modulo_signed(10), 2);
+        assert_eq!(rng.next_raw_modulo_signed(10), -5);
+
+        let mut a = SimRng::new(1);
+        a.next_raw_modulo_signed(10);
+        let mut reference = SimRng::new(1);
+        reference.next_u32();
+        assert_eq!(a.state(), reference.state());
+    }
+
+    #[test]
+    fn raw_modulo_zero_n_returns_zero_and_consumes_no_draw() {
+        // n == 0 guard: both helpers return 0 without advancing the cursor
+        // (callers guard with .max(1); the helper must not divide-by-zero).
+        let mut rng = SimRng::new(1);
+        let before = rng.state();
+        assert_eq!(rng.next_raw_abs_modulo(0), 0);
+        assert_eq!(rng.next_raw_modulo_signed(0), 0);
+        assert_eq!(rng.state(), before);
     }
 
     #[test]
