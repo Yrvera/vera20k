@@ -205,11 +205,18 @@ pub fn try_dispatch_anim_smudge(
     }
 }
 
-/// Mirrors gamemd's `RandomRanged(0, 0x7FFFFFFE) * (1/2^31) < 0.5` test
-/// (ledger #4). Functionally equivalent: a uniform-random u32 has its high
-/// bit clear with exactly 50% probability. One RNG advance, no modulo bias.
+/// gamemd's anim scorch-vs-crater 50/50: draw `RandomRanged(0, 0x7FFFFFFE)`,
+/// then choose scorch when `roll * 2^-31 < 0.5`, i.e. `roll < 0x4000_0000`.
+///
+/// This is NOT a single high-bit test. The ranged draw masks to 31 bits and
+/// rejects a masked `0x7FFF_FFFF` (one extra cursor advance), and the accepted
+/// set is `[0, 0x4000_0000)` rather than "high bit clear". Both the draw count
+/// and the accepted set must match the engine, or the shared scenario cursor
+/// and the per-roll scorch/crater outcome drift.
+const SMUDGE_5050_RANGED_HIGH: u32 = 0x7FFF_FFFE;
+const SMUDGE_SCORCH_ACCEPT_BELOW: u32 = 0x4000_0000;
 fn rng_below_half_normalized(rng: &mut SimRng) -> bool {
-    rng.next_u32() < 0x8000_0000
+    rng.next_range_u32_inclusive(0, SMUDGE_5050_RANGED_HIGH) < SMUDGE_SCORCH_ACCEPT_BELOW
 }
 
 /// Building destruction center smudge — fires once per >=2x2 building.
@@ -450,6 +457,29 @@ mod tests {
             approx_eq(neg_cos_q16, 0, 50),
             "neg_cos_q16 = {}",
             neg_cos_q16
+        );
+    }
+
+    #[test]
+    fn smudge_5050_uses_ranged_draw_with_2pow30_threshold() {
+        // gamemd: RandomRanged(0, 0x7FFFFFFE) then scorch when roll < 0x40000000.
+        // seed=1 draw1 = 0x78B76ED5 (=2_025_287_381); masked to 31 bits it is
+        // itself (bit31 clear) and <= 0x7FFFFFFE -> accepted in ONE draw. It is
+        // >= 0x40000000 -> crater (false). The OLD high-bit test (< 0x80000000)
+        // would have returned true here, so this pins the corrected threshold.
+        let mut rng = SimRng::new(1);
+        assert!(
+            !rng_below_half_normalized(&mut rng),
+            "draw1 in [2^30, 2^31) selects crater, not scorch"
+        );
+        // Exactly one raw draw consumed (no 0x7FFFFFFF rejection on draw1).
+        let mut reference = SimRng::new(1);
+        reference.next_u32();
+        assert_eq!(rng.state(), reference.state());
+        // draw2 = 0x275D74AE (=660_436_142) < 0x40000000 -> scorch (true).
+        assert!(
+            rng_below_half_normalized(&mut rng),
+            "draw2 below 2^30 selects scorch"
         );
     }
 
