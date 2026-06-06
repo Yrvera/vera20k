@@ -99,6 +99,12 @@ pub struct TickResult {
     /// starting next tick. Matches gamemd's one-tick-delayed visibility.
     pub bridge_state_changed: bool,
     pub movement: movement::MovementTickStats,
+    /// Debug/test-only S2a measurement: how many live non-miner Units had their
+    /// dispatch family differ between host-time (top-of-tick, the gamemd-faithful
+    /// dispatch input) and the end-of-tick re-derivation this tick. Always 0 in
+    /// release (the proof that fills it is debug/test only). NOT hashed, NOT
+    /// serialized — pure instrumentation for the S2 go/no-go churn signal.
+    pub dispatch_churn: u32,
 }
 
 /// A sound event produced during simulation (combat, death, production).
@@ -2646,9 +2652,12 @@ impl Simulation {
         // Read-only, debug/test only; the binding is consumed (or discarded in
         // release) so the host-time trace never leaks past the tick.
         #[cfg(any(test, debug_assertions))]
-        self.debug_assert_unit_dispatch_shadow(&dispatch_trace);
+        let dispatch_churn = self.debug_assert_unit_dispatch_shadow(&dispatch_trace);
         #[cfg(not(any(test, debug_assertions)))]
-        let _ = dispatch_trace;
+        let dispatch_churn = {
+            let _ = dispatch_trace;
+            0u32
+        };
         // S2a: live-set coverage (T5) — surface any Unit a legacy dispatch phase
         // would touch that is absent from the host's LogicVector set.
         #[cfg(any(test, debug_assertions))]
@@ -2665,6 +2674,7 @@ impl Simulation {
             ownership_changed: passenger_ownership_changed,
             bridge_state_changed,
             movement: movement_stats,
+            dispatch_churn,
         }
     }
 }

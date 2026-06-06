@@ -198,3 +198,47 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
          `left` value into GLOBAL_HARNESS_FINAL_HASH)"
     );
 }
+
+/// S2 go/no-go measurement (not a gate): run the same realistic skirmish and sum the
+/// per-tick dispatch churn — live non-miner Units whose dispatch family at the
+/// gamemd-faithful host-time point (top-of-tick, post-command, pre-movement) differs
+/// from the end-of-tick re-derivation. High churn means our phase-split structure
+/// diverges from gamemd's per-object interleaving often enough that the S2 authority
+/// flip must dispatch by the host-time value, not the tail projection. The number is
+/// the deliverable — printed below; run with `--nocapture` to read it.
+#[test]
+fn dispatch_churn_measurement_over_global_skirmish() {
+    let rules = harness_rules();
+    let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    let grid = PathGrid::new(64, 64);
+    let script = harness_script();
+
+    let mut sim = Simulation::with_seed(HARNESS_SEED);
+    seed_scenario(&mut sim, &rules, &heights);
+
+    let mut total_churn: u64 = 0;
+    let mut ticks_with_churn: u32 = 0;
+    let mut max_per_tick: u32 = 0;
+    let mut iterations: u64 = 0;
+    for tick in 0..HARNESS_TICKS {
+        let due = due_commands(&sim, &script, tick);
+        let result =
+            sim.advance_tick(&due, Some(&rules), &heights, Some(&grid), None, HARNESS_TICK_MS);
+        if result.dispatch_churn > 0 {
+            ticks_with_churn += 1;
+            total_churn += result.dispatch_churn as u64;
+            max_per_tick = max_per_tick.max(result.dispatch_churn);
+        }
+        iterations += 1;
+    }
+
+    println!(
+        "[S2 churn] {HARNESS_TICKS}-tick skirmish: total_unit_tick_churn={total_churn}, \
+         ticks_with_churn={ticks_with_churn}/{HARNESS_TICKS}, max_per_tick={max_per_tick}"
+    );
+    // Guard only that the full span ran (a panic/early-return would void the number).
+    assert_eq!(
+        iterations, HARNESS_TICKS,
+        "churn measurement must run the full skirmish span"
+    );
+}

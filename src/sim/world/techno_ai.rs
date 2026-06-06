@@ -121,8 +121,13 @@ impl Simulation {
     ///      host-time family, LOGS the churn with tick+id+both missions — it does NOT assert
     ///      equality (host-time and tail derivations legitimately differ when a Unit's machines
     ///      change mid-tick). Read-only; never hashed; never silently equalized.
+    ///
+    /// Returns the per-tick churn count (live non-miner Units whose host-time family differs
+    /// from the tail re-derivation) — the S2 go/no-go measurement signal, surfaced to the
+    /// caller via the (unhashed, unserialized) `TickResult`. Read-only.
     #[cfg(any(test, debug_assertions))]
-    pub(crate) fn debug_assert_unit_dispatch_shadow(&self, trace: &UnitDispatchTrace) {
+    pub(crate) fn debug_assert_unit_dispatch_shadow(&self, trace: &UnitDispatchTrace) -> u32 {
+        let mut churn = 0u32;
         for rec in trace {
             // (1) router determinism: the recorded family is exactly the router's output.
             debug_assert_eq!(
@@ -153,6 +158,7 @@ impl Simulation {
                     let tail_family = unit_dispatch_family(tail_mission);
                     if tail_family != rec.family {
                         // Surfaced, never equalized — the S2 go/no-go churn signal.
+                        churn += 1;
                         log::debug!(
                             "dispatch churn: tick {} unit {}: host {:?} -> tail {:?}",
                             self.tick,
@@ -164,6 +170,7 @@ impl Simulation {
                 }
             }
         }
+        churn
     }
 
     /// Live-set coverage (T5): every Unit that a legacy dispatch phase would touch — i.e. it
@@ -915,5 +922,21 @@ mod tests {
             run(),
             "advance_tick with the dispatch host stays deterministic"
         );
+    }
+
+    #[test]
+    fn unit_dispatch_shadow_counts_churn() {
+        // Guards the churn counter against a stuck-at-zero bug: a unit recorded as
+        // host-time Move whose machine changes before the tail re-derivation (here we
+        // clear movement_target → tail derives None → Sleep) must count as one churn.
+        let mut sim = Simulation::new();
+        sim.substrate.entities.insert(scoped_move_unit(1)); // host: Move
+        sim.set_logic_order_for_test(vec![1]);
+        let trace = sim.unit_dispatch_record_pass(); // captures host = Move
+        assert_eq!(trace[0].family, DispatchSlot::Move);
+        // Simulate the unit's machines changing between host-time and tail.
+        sim.substrate.entities.get_mut(1).unwrap().movement_target = None;
+        let churn = sim.debug_assert_unit_dispatch_shadow(&trace);
+        assert_eq!(churn, 1, "a host Move that became tail Sleep must count as one churn");
     }
 }
