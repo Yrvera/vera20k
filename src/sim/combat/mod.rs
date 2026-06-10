@@ -752,6 +752,11 @@ pub struct CombatTickResult {
     /// Smudge spawn requests collected during death-handling. Drained by
     /// `Simulation::advance_tick` between combat and ore-growth.
     pub smudge_spawn_requests: Vec<SmudgeSpawnRequest>,
+    /// (unit_id, desired 16-bit barrel destination) — computed in the Phase-2
+    /// per-object window (pre-death state; own-retarget visible), applied
+    /// post-batch by `unit_post::apply_unit_facing`. Transient — never stored,
+    /// serialized, or hashed.
+    pub unit_facing: Vec<(u64, u16)>,
 }
 
 /// Resolve an attack's impact z (tile-step level units, signed) for the
@@ -1201,6 +1206,10 @@ pub(crate) struct CombatEmit {
     pub(crate) garrison_advance: Vec<u64>,
     pub(crate) pending_infantry_updates: Vec<(u64, Option<PendingInfantryFire>)>,
     pub(crate) animation_switches: Vec<(u64, SequenceKind)>,
+    /// (unit_id, desired 16-bit barrel destination) — computed in the Phase-2
+    /// per-object window (pre-death state; own-retarget visible), applied
+    /// post-batch by `unit_post::apply_unit_facing`.
+    pub(crate) unit_facing: Vec<(u64, u16)>,
 }
 
 /// Advance combat with optional owner visibility gating and sound event sink.
@@ -1243,6 +1252,7 @@ pub fn tick_combat_with_fog(
             destroyed_garrison_buildings: Vec::new(),
             explosion_effects: Vec::new(),
             smudge_spawn_requests: Vec::new(),
+            unit_facing: Vec::new(),
         };
     }
     // Pre-scan: collect entities blocked from firing by locomotor or power state.
@@ -1560,6 +1570,7 @@ pub fn tick_combat_with_fog(
         garrison_advance,
         pending_infantry_updates,
         animation_switches,
+        unit_facing,
     } = emit;
 
     // Phase 3: apply retargets and burst/cooldown updates.
@@ -1715,6 +1726,7 @@ pub fn tick_combat_with_fog(
         destroyed_garrison_buildings: death.destroyed_garrison_buildings,
         explosion_effects,
         smudge_spawn_requests,
+        unit_facing,
     }
 }
 
