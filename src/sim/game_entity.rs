@@ -552,6 +552,17 @@ impl GameEntity {
         if self.movement_target.is_some() {
             return (MissionType::Move, 0);
         }
+        // S3: gamemd has no "None" mission — an idle ground vehicle sits in
+        // Guard(5), dispatched at [Guard] Rate (and the passive-acquire gate
+        // covers missions {Move, Harvest, Guard} only, so idle Units must be
+        // Guard for the later acquisition slice to ever fire). Units only this
+        // slice: infantry is S6, aircraft already maps idle via
+        // aircraft_mission, buildings are S8. In-transport passengers keep the
+        // legacy None placeholder until the enter-transport mission commit is
+        // traced.
+        if self.category == EntityCategory::Unit && !self.passenger_role.is_inside_transport() {
+            return (MissionType::Guard, 0);
+        }
         (MissionType::None, 0)
     }
 
@@ -1073,7 +1084,28 @@ mod mission_shadow_tests {
 
     #[test]
     fn derived_mission_idle_when_no_machine_active() {
-        let e = GameEntity::test_default(1, "E1", "Americans", 3, 3);
+        // S3: an idle machine-less Unit sits in Guard (the gamemd idle mission
+        // for ground vehicles); other categories keep the legacy None
+        // placeholder until their slices land (infantry S6, buildings S8).
+        let e = GameEntity::test_default(1, "E1", "Americans", 3, 3); // Unit
+        assert_eq!(e.derived_mission(), (MissionType::Guard, 0));
+
+        let mut s = GameEntity::test_default(2, "GAPILE", "Americans", 3, 3);
+        s.category = crate::map::entities::EntityCategory::Structure;
+        assert_eq!(s.derived_mission(), (MissionType::None, 0));
+
+        let mut i = GameEntity::test_default(3, "E1", "Americans", 3, 3);
+        i.category = crate::map::entities::EntityCategory::Infantry;
+        assert_eq!(i.derived_mission(), (MissionType::None, 0));
+    }
+
+    #[test]
+    fn passenger_derive_unchanged_placeholder() {
+        // In-transport passengers keep the legacy None placeholder: the
+        // mission a passenger holds inside a transport is untraced (do NOT
+        // guess Sleep/Guard); this pin flips with the traced value later.
+        let mut e = GameEntity::test_default(1, "E1", "Americans", 3, 3);
+        e.passenger_role = crate::sim::passenger::PassengerRole::Inside { transport_id: 99 };
         assert_eq!(e.derived_mission(), (MissionType::None, 0));
     }
 

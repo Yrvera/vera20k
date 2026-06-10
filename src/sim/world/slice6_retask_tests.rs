@@ -73,8 +73,11 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 /// hash for every entity at its default — a hash-composition change, not a
 /// behavior drift. Re-baselined for Slice 7b, then Slice 8 (MissionCom folded
 /// into state_hash — every entity now contributes its default mission bytes;
-/// composition change, not a behavior drift).
-const SLICE6_BASELINE_HASH: u64 = 11204055998814135587;
+/// composition change, not a behavior drift). Re-baselined for S3 idle→Guard:
+/// idle machine-less Units hash mission Guard(5) instead of the legacy None
+/// placeholder (hashed-representation fidelity fix; the retask behavior under
+/// test is unchanged).
+const SLICE6_BASELINE_HASH: u64 = 4222624061222437264;
 
 #[test]
 fn replay_hash_stable_through_slice6() {

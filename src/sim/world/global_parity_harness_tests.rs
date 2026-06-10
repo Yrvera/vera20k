@@ -41,7 +41,13 @@ const HARNESS_TICK_MS: u32 = 67;
 /// this scenario's movers are engaged or miners (never pure-Move scoped) on their
 /// divergence ticks, so tail authority still wrote every hashed mission value. The
 /// S2 hash delta is exercised by the arrival-tick tests in techno_ai.rs instead.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 669004916847079430;
+/// S3 facing flip (per-object pre-death barrel read) ALSO left this unshifted —
+/// no Unit kill/retarget tick changes a barrel destination in this scenario.
+/// Re-baselined ONCE for S3 idle→Guard: every idle machine-less Unit now hashes
+/// mission Guard(5) instead of the legacy None placeholder (the gamemd idle
+/// selector for ground vehicles) — a hashed-representation fidelity fix, not a
+/// behavior drift; movement/combat outputs are byte-identical.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 13100720271148196653;
 
 fn harness_rules() -> RuleSet {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
