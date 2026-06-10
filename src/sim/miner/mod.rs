@@ -10,6 +10,7 @@
 
 pub mod miner_dock;
 mod miner_dock_sequence;
+mod harvest_mission;
 pub(crate) mod miner_system;
 
 #[cfg(test)]
