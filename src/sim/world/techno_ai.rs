@@ -260,11 +260,80 @@ impl Simulation {
 #[allow(unused_variables)]
 fn techno_ai_shell(sim: &mut Simulation, id: u64, category: EntityCategory) {
     match category {
-        EntityCategory::Unit => {}      // S1+: absorb movement/turret/combat/mission dispatch
+        // S4a: run the (shadow) TechnoClass common bracket. Hash-neutral — no-op
+        // stubs + read-only IsAlive guards; the authoritative +0xC4/mission-commit
+        // stays in movement_tick this slice (the flip relocates it here).
+        EntityCategory::Unit => {
+            let _ = unit_techno_bracket(sim, id);
+        }
         EntityCategory::Infantry => {}  // S6: absorb fear / sequence / self-removal
         EntityCategory::Structure => {} // S8 absorb bracket; P3 oracle probe is factory_oracle_step_trace
         EntityCategory::Aircraft => {}  // S7: absorb per-object aircraft dispatch
     }
+}
+
+// ===== Slice S4a — TechnoClass common-body bracket (shadow shell) =====
+//
+// Per live Unit, gamemd's `TechnoClass::AI_Update` body is one contiguous
+// bracket: pre-mission block -> +0xC4 -> Mission_Dispatch -> post-mission block,
+// with two IsAlive early-returns (after the pre-block, after dispatch). THIS
+// SLICE the bracket is a SHADOW SHELL: `techno_common_pre`/`techno_common_post`
+// are no-op stubs and the authoritative `+0xC4`/mission-commit stays in
+// `movement_tick` (only a dispatch MARKER sits between the guards here). The
+// shell runs every tick in the live-object walk and is hash-neutral (stubs do
+// nothing; the guards are read-only). The authoritative flip — relocating the
+// `+0xC4`/commit out of `movement_tick` into this dispatch point and filling the
+// stubs — is the next step, gated on the body decode (U6) + a hash re-baseline.
+// Design: docs/plans/2026-06-10-s4a-common-bracket-design.md.
+
+/// S4a pre-mission common block (the `TechnoClass::AI_Update` head: one-shot
+/// flag clear, turret-anim loop sound, cloak tick, health smoothing, target
+/// validation, …). No-op stub this slice — the verified body lands at the
+/// authoritative flip. Present so the bracket order is real code, not a comment.
+#[allow(unused_variables)]
+fn techno_common_pre(sim: &mut Simulation, id: u64) {}
+
+/// S4a post-mission common block (the steps after `Mission_Dispatch`: passive
+/// acquire (S4c), the damage-particle RNG (S4b), the timer accumulator, EMP
+/// recovery). No-op stub this slice. Present so the bracket order is real code.
+#[allow(unused_variables)]
+fn techno_common_post(sim: &mut Simulation, id: u64) {}
+
+/// How far the S4a bracket ran for one Unit — the observable of the two IsAlive
+/// early-return guards. In the shadow shell nothing kills the Unit between the
+/// guards (the dispatch is a marker), so a live Unit reaches `Full` and a
+/// health-0 Unit short-circuits at `DiedInPre`; `DiedInDispatch` becomes
+/// reachable only at the authoritative flip, when real dispatch sits between the
+/// guards and can kill the Unit mid-bracket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BracketReach {
+    DiedInPre,
+    DiedInDispatch,
+    Full,
+}
+
+/// S4a per-Unit TechnoClass common bracket (shadow shell). Runs the contiguous
+/// `pre -> [IsAlive] -> dispatch-marker -> [IsAlive] -> post` structure. The
+/// stubs are no-ops and the dispatch is a marker (the authoritative commit stays
+/// in `movement_tick` this slice), so this is hash-neutral. Returns how far it
+/// reached so the early-return guards are observable in tests.
+fn unit_techno_bracket(sim: &mut Simulation, id: u64) -> BracketReach {
+    techno_common_pre(sim, id);
+    // Guard B (pre-dispatch IsAlive): the Unit died during the pre-block. No
+    // lethal pre-block step exists yet, so this never fires today — present so it
+    // is correct the moment one lands.
+    if !sim.substrate.entities.get(id).is_some_and(|e| e.is_alive()) {
+        return BracketReach::DiedInPre;
+    }
+    // `+0xC4` + `Mission_Dispatch`: AUTHORITATIVE site stays in movement_tick
+    // this slice (shadow). The flip relocates the increment + mission-commit
+    // here, between the two guards.
+    // Guard E (post-dispatch IsAlive): the Unit died during mission dispatch.
+    if !sim.substrate.entities.get(id).is_some_and(|e| e.is_alive()) {
+        return BracketReach::DiedInDispatch;
+    }
+    techno_common_post(sim, id);
+    BracketReach::Full
 }
 
 // ===== Slice S1 — first behavior-bearing ordering (shadow) =====
@@ -691,6 +760,49 @@ mod tests {
         );
         // Stage must not panic on the absent member either.
         sim.object_ai_stage();
+    }
+
+    // ===== Slice S4a — TechnoClass common bracket (shadow shell) =====
+
+    #[test]
+    fn s4a_bracket_reaches_full_for_live_unit() {
+        let mut sim = Simulation::new();
+        sim.substrate
+            .entities
+            .insert(entity_of(1, EntityCategory::Unit));
+        // A live (health > 0) Unit runs the whole bracket: pre -> dispatch
+        // marker -> post, both IsAlive guards pass.
+        assert_eq!(unit_techno_bracket(&mut sim, 1), BracketReach::Full);
+    }
+
+    #[test]
+    fn s4a_bracket_pre_guard_short_circuits_dead_unit() {
+        let mut sim = Simulation::new();
+        let mut e = entity_of(1, EntityCategory::Unit);
+        e.health.current = 0; // not alive
+        sim.substrate.entities.insert(e);
+        // Guard B fires after the (empty) pre-block: a health-0 Unit never
+        // reaches the dispatch marker or the post block.
+        assert_eq!(unit_techno_bracket(&mut sim, 1), BracketReach::DiedInPre);
+    }
+
+    #[test]
+    fn s4a_bracket_is_hash_neutral_in_walk() {
+        // The Unit arm of the live-object walk now runs the shadow bracket; it
+        // must leave the lockstep hash bit-identical (no-op stubs + read-only
+        // guards, no commit — the authoritative flip is a later slice).
+        let mut sim = Simulation::new();
+        sim.substrate
+            .entities
+            .insert(entity_of(1, EntityCategory::Unit));
+        sim.substrate
+            .entities
+            .insert(entity_of(2, EntityCategory::Unit));
+        sim.set_logic_order_for_test(vec![1, 2]);
+        let before = sim.state_hash();
+        sim.object_ai_stage();
+        let after = sim.state_hash();
+        assert_eq!(before, after, "S4a shadow bracket must not perturb the hash");
     }
 
     // ===== Slice S1 — dispatch-before-locomotor shadow =====
