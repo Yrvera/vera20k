@@ -261,7 +261,9 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                 version: 1,
                 tick_hz: SIM_TICK_HZ,
                 seed: sim.session.seed,
-                map_name: state.theater_name.clone(),
+                // Scenario identity is session state — the header derives
+                // from the sim, not from app-resident view fields.
+                map_name: sim.session.map_name.clone(),
                 rules_hash: state.rules.as_ref().map(rules_hash).unwrap_or(0),
             }));
         }

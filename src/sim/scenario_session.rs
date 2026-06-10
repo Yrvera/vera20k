@@ -213,6 +213,75 @@ mod tests {
         assert_ne!(a.scenario_rng.state(), c.scenario_rng.state());
     }
 
+    /// AT-5: authoritative bounds are queryable before any advance_tick — no
+    /// zero-dim fog window between construction and the first vision pass.
+    #[test]
+    fn map_bounds_known_before_first_tick() {
+        let desc = ScenarioDescriptor {
+            seed: 7,
+            map_width: 80,
+            map_height: 60,
+            ..Default::default()
+        };
+        let sim = Simulation::from_descriptor(&desc);
+        assert_eq!((sim.fog.width, sim.fog.height), (80, 60));
+        assert_eq!((sim.session.map_width, sim.session.map_height), (80, 60));
+    }
+
+    /// AT-4: scenario identity (map name, theater) is sim-resident and
+    /// survives a snapshot round-trip.
+    #[test]
+    fn scenario_identity_is_sim_resident() {
+        let desc = ScenarioDescriptor {
+            seed: 9,
+            map_name: "tournamentb.map".into(),
+            theater: "SNOW".into(),
+            map_width: 100,
+            map_height: 100,
+            mp_start_waypoints: [(0u32, (10u16, 12u16)), (1, (88, 90))].into_iter().collect(),
+            ..Default::default()
+        };
+        let sim = Simulation::from_descriptor(&desc);
+        let bytes = crate::sim::snapshot::GameSnapshot::save(&sim, 1, 2, "tournamentb.map", 0);
+        let restored = crate::sim::snapshot::GameSnapshot::load(&bytes)
+            .expect("snapshot load")
+            .sim;
+        assert_eq!(restored.session.map_name, "tournamentb.map");
+        assert_eq!(restored.session.theater, "SNOW");
+        assert_eq!(
+            restored.session.mp_start_waypoints,
+            sim.session.mp_start_waypoints
+        );
+        assert_eq!(restored.state_hash(), sim.state_hash());
+    }
+
+    /// AT-6: the MP start-waypoint table is hashed lockstep state — a one-cell
+    /// difference diverges the desync detector — and round-trips save/load.
+    #[test]
+    fn mp_waypoints_round_trip_and_hash() {
+        let mut desc = ScenarioDescriptor {
+            seed: 11,
+            map_width: 64,
+            map_height: 64,
+            mp_start_waypoints: [(0u32, (5u16, 5u16)), (1, (50, 50))].into_iter().collect(),
+            ..Default::default()
+        };
+        let a = Simulation::from_descriptor(&desc);
+        desc.mp_start_waypoints.insert(1, (50, 51)); // one waypoint, one cell off
+        let b = Simulation::from_descriptor(&desc);
+        assert_ne!(
+            a.state_hash(),
+            b.state_hash(),
+            "a one-cell waypoint difference must be visible to the desync detector"
+        );
+
+        let bytes = crate::sim::snapshot::GameSnapshot::save(&a, 1, 2, "wp", 0);
+        let restored = crate::sim::snapshot::GameSnapshot::load(&bytes)
+            .expect("snapshot load")
+            .sim;
+        assert_eq!(restored.state_hash(), a.state_hash());
+    }
+
     #[test]
     fn from_replay_header_roundtrips_u32_seed() {
         let header = crate::sim::replay::ReplayHeader {

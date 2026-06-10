@@ -45,7 +45,11 @@ const STREAM_CHECKPOINT_TICKS: &[u64] = &[149, 299, 449, 599];
 /// this scenario's movers are engaged or miners (never pure-Move scoped) on their
 /// divergence ticks, so tail authority still wrote every hashed mission value. The
 /// S2 hash delta is exercised by the arrival-tick tests in techno_ai.rs instead.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 669004916847079430;
+/// Re-baselined for SC-2: session identity (seed, map name, theater, bounds,
+/// MP start table, slot->house) folded into the state hash — every absolute
+/// hash shifts once by composition; the tick-by-tick rec-vs-replay equality
+/// and the per-stream cursor pins prove no behavioral movement.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 1003764050363811318;
 
 fn harness_rules() -> RuleSet {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a

@@ -461,7 +461,14 @@ pub fn recompute_owner_visibility_in_place(
     height_grid: Option<&[u8]>,
     _interner: &crate::sim::intern::StringInterner,
 ) {
-    let (width, height) = resolve_bounds(entities, path_grid);
+    // Construction-seeded session bounds are authoritative; the lazy
+    // derivation stays only as the fallback for fixture sims built without a
+    // descriptor (zero-dim fog).
+    let (width, height) = if fog.width > 0 && fog.height > 0 {
+        (fog.width, fog.height)
+    } else {
+        resolve_bounds(entities, path_grid)
+    };
     if width == 0 || height == 0 {
         *fog = FogState::default();
         return;
