@@ -81,7 +81,8 @@ use crate::sim::trigger_runtime::{TriggerEffect, TriggerRuntime};
 use crate::sim::vision::{self, FogState};
 use crate::util::fixed_math::SimFixed;
 
-/// Default deterministic RNG seed for ad-hoc simulation instances.
+/// Dev/test fallback seed. Real launches negotiate a per-match seed through
+/// `ScenarioDescriptor`; nothing on the launch path may rely on this value.
 const DEFAULT_SIM_SEED: u64 = 0x5EED_CAFE_D15E_A5E5;
 
 /// Result of one deterministic simulation tick.
@@ -574,6 +575,13 @@ impl Simulation {
         };
         debug_assert_eq!(out.scenario_rng.state(), out.main_rng.state());
         out
+    }
+
+    /// Construct a session simulation from an app-layer launch descriptor.
+    /// The only entry real launches use; `new()`/`with_seed()` remain for
+    /// tests and dev tooling.
+    pub fn from_descriptor(desc: &crate::sim::scenario_session::ScenarioDescriptor) -> Self {
+        Self::with_seed(u64::from(desc.seed))
     }
 
     // --- Scenario stream (gamemd Scenario->Random @ Scen+0x218) ---
