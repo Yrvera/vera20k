@@ -176,24 +176,27 @@ pub struct CellRectOccupancyContext<'a> {
     pub playfield_bounds: Option<PlayfieldBounds>,
 }
 
-/// The five map bound values that define the engine's isometric playfield diamond.
+/// The five map bound values that define the engine's isometric playfield diamond,
+/// read by `cell_in_playfield_diamond`.
 ///
-/// Field names are kept as the binary offsets they were read from: the human names
-/// (MapRect origin vs visible-cell bounds) are UNVERIFIED, but the formula that
-/// consumes them is exact regardless. All five are signed map-coord values in the
-/// engine's internal frame; the diamond doubles the two extent pairs because the
-/// isometric map packs two cell axes.
+/// Field meanings verified 2026-06-04 (see
+/// `docs/research/CELLCLASS_PLAYFIELD_BOUNDS_FROM_LOCALSIZE_GHIDRA_REPORT.md`): `base` is the map's
+/// `[Map] Size=` width; the other four are the raw `[Map] LocalSize=` values (left, top, width, height)
+/// stored verbatim — there is no transform here. The `*2` doubling and the `+2`/`+4` constants live
+/// entirely in `cell_in_playfield_diamond`. All five are signed map-coord values. The `off_*` field
+/// names are legacy (named after their source struct offsets) and kept to avoid a rename churn across
+/// the tests and the diamond fn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlayfieldBounds {
-    /// Base / origin offset (binary `MapClass +0xF4`).
+    /// `[Map] Size=` width (3rd value).
     pub base: i32,
-    /// Left-extent half (binary `+0xFC`).
+    /// `[Map] LocalSize=` left (1st value).
     pub off_fc: i32,
-    /// Low/top-extent half (binary `+0x100`).
+    /// `[Map] LocalSize=` top (2nd value).
     pub off_100: i32,
-    /// Right-extent half (binary `+0x104`).
+    /// `[Map] LocalSize=` width (3rd value).
     pub off_104: i32,
-    /// Height-extent half (binary `+0x108`).
+    /// `[Map] LocalSize=` height (4th value).
     pub off_108: i32,
 }
 
