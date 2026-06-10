@@ -395,6 +395,12 @@ pub struct Simulation {
     /// post-combat step; foot units take periodic damage from their cell.
     #[serde(default)]
     pub radiation: crate::sim::radiation::RadiationState,
+    /// The map's isometric playfield diamond ([Map] Size width + the raw
+    /// LocalSize rect), set at map init. Threaded into the cell-rect occupancy
+    /// validator's final playfield-corner test (the engine diamond, not a
+    /// rectangle). `None` only in headless tests with no map loaded.
+    #[serde(default)]
+    pub playfield_bounds: Option<crate::sim::cell_rect::PlayfieldBounds>,
     /// SHP interned IDs for bridge destruction explosions (from rules.ini BridgeExplosions=).
     #[serde(skip)]
     pub bridge_explosions: Vec<InternedId>,
@@ -553,6 +559,7 @@ impl Simulation {
             overlay_grid: None,
             smudge_grid: None,
             radiation: crate::sim::radiation::RadiationState::default(),
+            playfield_bounds: None,
             bridge_explosions: Vec::new(),
             metallic_debris: Vec::new(),
             bridge_anim_sounds: BTreeMap::new(),

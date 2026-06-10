@@ -69,6 +69,10 @@ pub struct NearbyQuery<'a> {
     pub entities: Option<&'a EntityStore>,
     pub zone_grid: Option<&'a ZoneGrid>,
     pub map_size: Option<(u16, u16)>,
+    /// The map's isometric playfield diamond ([Map] Size width + LocalSize),
+    /// threaded into the occupancy check's final playfield-corner test. When
+    /// `None` the test falls back to the `map_size`/terrain rectangle.
+    pub playfield_bounds: Option<crate::sim::cell_rect::PlayfieldBounds>,
 }
 
 /// A surviving FNPC candidate, classified `direct` vs indirect by the engine's
@@ -262,7 +266,7 @@ fn candidate_passes(q: &NearbyQuery<'_>, cx: i32, cy: i32) -> bool {
             resolved_terrain: q.resolved_terrain,
             overlay_grid: q.overlay_grid,
             map_size: q.map_size,
-            playfield_bounds: None,
+            playfield_bounds: q.playfield_bounds,
         })
     {
         return false;
@@ -396,6 +400,7 @@ mod tests {
             entities: None,
             zone_grid: None,
             map_size: Some((terrain.width(), terrain.height())),
+            playfield_bounds: None,
         }
     }
 
@@ -587,5 +592,58 @@ mod tests {
         // the seed and never west of it.
         let pick = pick0.expect("a candidate exists");
         assert!(pick.0 >= 4, "nearest-to-target should not lean away from the target");
+    }
+
+    /// Slice 3b wiring: with the map's playfield diamond threaded into the query,
+    /// the occupancy check rejects rectangle-inside but diamond-outside cells, so
+    /// FNPC can never pick an off-diamond border-filler cell. Without the bounds,
+    /// the rectangle fallback accepts the same seed — the parity gap this closes.
+    #[test]
+    fn find_nearby_occupancy_rejects_off_diamond_cells_when_bounds_threaded() {
+        use crate::sim::cell_rect::PlayfieldBounds;
+        // Diamond (same fixture as the cell_rect acceptance tests): pass iff
+        // 12 < x+y <= 26, x−y < 14, y−x < 6.
+        let bounds = PlayfieldBounds {
+            base: 10,
+            off_fc: 2,
+            off_100: 1,
+            off_104: 10,
+            off_108: 6,
+        };
+        let terrain = flat_terrain(30, 30);
+        let path_grid = PathGrid::from_resolved_terrain(&terrain);
+        let mut q = base_query(&terrain, &path_grid);
+        q.check_occupancy = true;
+        q.map_size = None;
+
+        // Without the diamond: the off-diamond seed (14,13) (sum 27) passes the
+        // rectangle fallback and is returned directly.
+        assert_eq!(
+            find_nearby_passable_cell((14, 13), &q, 0),
+            Some((14, 13)),
+            "rectangle fallback accepts the off-diamond seed (the old behavior)"
+        );
+
+        // With the diamond: the seed and every other sum>26 ring cell are rejected;
+        // the pool is exactly the three in-diamond ring-1 survivors in ring order
+        // ((13,12), (14,12), (13,13)) and the frame counter walks that pool.
+        q.playfield_bounds = Some(bounds);
+        let in_diamond = |c: (u16, u16)| {
+            let (x, y) = (c.0 as i32, c.1 as i32);
+            12 < x + y && x + y <= 26 && x - y < 14 && y - x < 6
+        };
+        for frame in 0..6u32 {
+            let pick = find_nearby_passable_cell((14, 13), &q, frame)
+                .expect("in-diamond candidates exist on ring 1");
+            assert!(
+                in_diamond(pick),
+                "FNPC picked off-diamond cell {pick:?} with bounds threaded"
+            );
+        }
+        assert_eq!(
+            find_nearby_passable_cell((14, 13), &q, 0),
+            Some((13, 12)),
+            "frame 0 picks the first in-diamond survivor in engine ring order"
+        );
     }
 }

@@ -422,6 +422,15 @@ pub(crate) fn spawn_entities(
 ) {
     let mut sim: Simulation = Simulation::from_descriptor(descriptor);
     sim.resolved_terrain = Some(resolved_terrain.clone());
+    // The playfield diamond: [Map] Size width + the raw LocalSize rect, stored
+    // verbatim — the isometric transform lives in the validator's diamond test.
+    sim.playfield_bounds = Some(crate::sim::cell_rect::PlayfieldBounds {
+        base: map_data.header.width as i32,
+        off_fc: map_data.header.local_left as i32,
+        off_100: map_data.header.local_top as i32,
+        off_104: map_data.header.local_width as i32,
+        off_108: map_data.header.local_height as i32,
+    });
     let bridge_destroyable = map_data
         .special_flags
         .effective_destroyable_bridges(bridge_destroyability_mode);

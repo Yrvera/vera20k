@@ -174,6 +174,7 @@ pub(super) fn find_spawn_selection_for_owner_with_type(
                 // holds the current frame N the FNPC pick must alias on. It is derived
                 // from the hashed total_sim_ms, so it is lockstep-shared by construction.
                 sim.binary_frame,
+                sim.playfield_bounds,
             ),
         };
         if let Some(cell) = cell {
@@ -256,6 +257,7 @@ fn find_spawn_cell_near_structure(
     zone_grid: Option<&crate::sim::pathfinding::zone_map::ZoneGrid>,
     require_water: bool,
     frame_counter: u32,
+    playfield_bounds: Option<crate::sim::cell_rect::PlayfieldBounds>,
 ) -> Option<(u16, u16)> {
     let offsets: Vec<(i16, i16)> = preferred_exit_offsets(rules, structure_id);
     for (ox, oy) in offsets {
@@ -309,6 +311,7 @@ fn find_spawn_cell_near_structure(
         overlay_grid,
         zone_grid,
         require_water,
+        playfield_bounds,
     );
     let found = crate::sim::find_nearby_cell::find_nearby_passable_cell(
         (base_rx as i32, base_ry as i32),
@@ -334,10 +337,12 @@ fn find_spawn_cell_near_structure(
 /// 1x1 passability + occupancy (reservations always SKIPPED), bridges allowed (the spawn
 /// path does not forbid bridge cells), required-height `-1`, frame-counter selection
 /// (no target). `require_water` routes the movement zone so naval units search water.
-/// `map_size` is left `None` so the occupancy playfield-corner check falls back to the
-/// resolved-terrain extent — exactly as the retired box-ring's per-candidate predicate
-/// did (it passed `map_size: None` with `resolved_terrain` present), keeping the
-/// per-candidate occupancy verdict identical to the legacy path.
+/// `map_size` is left `None`; when the map's `playfield_bounds` diamond is available
+/// (live games — set at map init) the occupancy playfield-corner check uses the exact
+/// isometric diamond, otherwise it falls back to the resolved-terrain extent as the
+/// retired box-ring's per-candidate predicate did. The diamond REJECTS off-diamond
+/// border-filler corner cells the rectangle fallback accepted — that is the
+/// engine-faithful behavior this wiring exists to restore.
 #[allow(clippy::too_many_arguments)]
 fn nearby_query_for_spawn<'a>(
     movement_profile: SpawnMovementProfile,
@@ -348,6 +353,7 @@ fn nearby_query_for_spawn<'a>(
     overlay_grid: Option<&'a crate::sim::overlay_grid::OverlayGrid>,
     zone_grid: Option<&'a crate::sim::pathfinding::zone_map::ZoneGrid>,
     require_water: bool,
+    playfield_bounds: Option<crate::sim::cell_rect::PlayfieldBounds>,
 ) -> crate::sim::find_nearby_cell::NearbyQuery<'a> {
     use crate::sim::find_nearby_cell::{NearbyQuery, PassabilityArgs};
     let movement_zone = if require_water {
@@ -376,6 +382,7 @@ fn nearby_query_for_spawn<'a>(
         entities: Some(entities),
         zone_grid,
         map_size: None,
+        playfield_bounds,
     }
 }
 
@@ -964,6 +971,7 @@ mod tests {
             entities: Some(&entities),
             zone_grid: None,
             map_size: Some((terrain.width(), terrain.height())),
+            playfield_bounds: None,
         };
 
         let fnpc = find_nearby_passable_cell((3, 3), &q, 0).expect("FNPC finds a cell");
