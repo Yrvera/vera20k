@@ -8,6 +8,7 @@
 //! only — never render/ui/sidebar/audio/net.
 
 pub mod control;
+pub mod dispatch;
 pub mod retask;
 pub mod timer;
 pub mod verb;

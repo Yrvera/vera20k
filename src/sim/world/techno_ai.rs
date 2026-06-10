@@ -14,6 +14,11 @@
 
 use super::Simulation;
 use crate::map::entities::EntityCategory;
+// `DispatchSlot` types the always-defined `UnitDispatchRecord`, so its import is non-gated.
+use crate::sim::mission::dispatch::DispatchSlot;
+// `unit_dispatch_family` is consumed only by the gated record pass + proof below.
+#[cfg(any(test, debug_assertions))]
+use crate::sim::mission::dispatch::unit_dispatch_family;
 
 // Slice S1 (shadow) imports — used only by the `#[cfg(any(test, debug_assertions))]`
 // dispatch-before-locomotor observation below; gated to avoid release dead-code.
@@ -27,6 +32,20 @@ use crate::sim::movement::{DriveProcessOutcome, process_drive_locomotion_shell};
 // P3 oracle probe import — used only by the `#[cfg(test)]` factory_oracle_step_trace.
 #[cfg(test)]
 use crate::sim::production::StepOutcome;
+
+/// One live Unit's host-time dispatch routing, recorded at `object_ai_stage` time (top of
+/// tick, after commands) for the end-of-tick churn proof. Copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct UnitDispatchRecord {
+    pub id: u64,
+    /// `derived_mission().0` evaluated fresh at host time (NOT the stale `mission.current`).
+    pub host_mission: crate::sim::mission::MissionType,
+    pub family: DispatchSlot,
+}
+
+/// The per-tick host-time dispatch trace. Populated only in debug/test builds; release
+/// returns an empty `Vec` (lazy `Vec::new()` → no allocation on the hot path).
+pub(crate) type UnitDispatchTrace = Vec<UnitDispatchRecord>;
 
 impl Simulation {
     /// Object-AI stage (Slice S0: instrumented no-op).
@@ -42,7 +61,7 @@ impl Simulation {
     /// tripwire for any future arm that mutates live membership mid-pass.
     /// Release builds pass `false`, so the trace `Vec` is never pushed to and
     /// never allocates (no per-tick hot-path cost).
-    pub(crate) fn object_ai_stage(&mut self) {
+    pub(crate) fn object_ai_stage(&mut self) -> UnitDispatchTrace {
         let visited = self.object_ai_walk(cfg!(debug_assertions));
 
         #[cfg(debug_assertions)]
@@ -54,6 +73,141 @@ impl Simulation {
 
         #[cfg(not(debug_assertions))]
         let _ = visited;
+
+        // Unit dispatch shadow: record host-time routing (debug/test only; empty in
+        // release). The `Unit => {}` arm of `techno_ai_shell` stays a no-op — the shadow
+        // is a parallel pass, exactly like the S1 shadow.
+        self.unit_dispatch_record_pass()
+    }
+
+    /// Host-time Unit dispatch shadow pass (debug/test only). Walks the live-object order
+    /// (the gamemd dispatch set), and for each live, non-dying, NON-miner Unit records its
+    /// fresh-at-host-time mission (`derived_mission().0` — NOT the stale `mission.current`,
+    /// which excludes this tick's commands) and the family it routes to. Read-only: mutates
+    /// no entity, no occupancy, no hash. Miners are skipped — the miner session's Harvest
+    /// seam owns that path.
+    #[cfg(any(test, debug_assertions))]
+    fn unit_dispatch_record_pass(&self) -> UnitDispatchTrace {
+        let mut trace: UnitDispatchTrace = Vec::new();
+        for id in self.live_object_order_snapshot() {
+            let Some(e) = self.substrate.entities.get(id) else {
+                continue;
+            };
+            if e.dying || e.category != EntityCategory::Unit || e.miner.is_some() {
+                continue;
+            }
+            let (host_mission, _substate) = e.derived_mission();
+            trace.push(UnitDispatchRecord {
+                id,
+                host_mission,
+                family: unit_dispatch_family(host_mission),
+            });
+        }
+        trace
+    }
+
+    /// Release stub: the host-time trace is empty and never allocates.
+    #[cfg(not(any(test, debug_assertions)))]
+    fn unit_dispatch_record_pass(&self) -> UnitDispatchTrace {
+        Vec::new()
+    }
+
+    /// End-of-tick Unit dispatch proof (debug/test only). Runs after `refresh_mission_shadow`,
+    /// beside `debug_assert_s1_shadow`. For each host-time record it:
+    ///   1. asserts the routed family is correct for the recorded mission (router determinism),
+    ///   2. asserts a non-miner Unit never routes to `Skip`, and that `AttackMove` is never the
+    ///      host mission of a Unit (unreachable — `derived_mission` cannot yield it),
+    ///   3. re-derives the Unit's mission FRESH now (tail) and, if the family differs from the
+    ///      host-time family, LOGS the churn with tick+id+both missions — it does NOT assert
+    ///      equality (host-time and tail derivations legitimately differ when a Unit's machines
+    ///      change mid-tick). Read-only; never hashed; never silently equalized.
+    ///
+    /// Returns the per-tick churn count (live non-miner Units whose host-time family differs
+    /// from the tail re-derivation) — the S2 go/no-go measurement signal, surfaced to the
+    /// caller via the (unhashed, unserialized) `TickResult`. Read-only.
+    #[cfg(any(test, debug_assertions))]
+    pub(crate) fn debug_assert_unit_dispatch_shadow(&self, trace: &UnitDispatchTrace) -> u32 {
+        let mut churn = 0u32;
+        for rec in trace {
+            // (1) router determinism: the recorded family is exactly the router's output.
+            debug_assert_eq!(
+                rec.family,
+                unit_dispatch_family(rec.host_mission),
+                "dispatch: tick {} unit {}: recorded family must equal the router output",
+                self.tick,
+                rec.id,
+            );
+            // (2) a Unit is never on AttackMove (derived_mission cannot yield it).
+            debug_assert_ne!(
+                rec.host_mission,
+                MissionType::AttackMove,
+                "dispatch: tick {} unit {}: a Unit must never derive AttackMove",
+                self.tick,
+                rec.id,
+            );
+            debug_assert!(
+                !matches!(rec.family, DispatchSlot::Skip),
+                "dispatch: tick {} unit {}: a live Unit must never route to Skip",
+                self.tick,
+                rec.id,
+            );
+            // (3) churn metric: compare host-time family to a fresh tail re-derivation.
+            if let Some(e) = self.substrate.entities.get(rec.id) {
+                if !e.dying && e.miner.is_none() {
+                    let (tail_mission, _) = e.derived_mission();
+                    let tail_family = unit_dispatch_family(tail_mission);
+                    if tail_family != rec.family {
+                        // Surfaced, never equalized — the S2 go/no-go churn signal.
+                        churn += 1;
+                        log::debug!(
+                            "dispatch churn: tick {} unit {}: host {:?} -> tail {:?}",
+                            self.tick,
+                            rec.id,
+                            rec.host_mission,
+                            tail_mission,
+                        );
+                    }
+                }
+            }
+        }
+        churn
+    }
+
+    /// Live-set coverage (T5): every Unit that a legacy dispatch phase would touch — i.e. it
+    /// carries a dispatch machine AND passes that phase's own guards — must be in the host's
+    /// live-object set. The legacy phases iterate `iter_sorted()` (all entities); the host
+    /// iterates the LogicVector. With the legacy guards applied (mirroring `tick_attack_pursuit`:
+    /// not dying, not Structure, no aircraft mission, not deployed, not a transport passenger)
+    /// the residual set is expected-empty in normal play. A residual member is a real Rust drift
+    /// to investigate before S2 — LOGGED with tick+id, never hard-asserted.
+    #[cfg(any(test, debug_assertions))]
+    pub(crate) fn debug_check_dispatch_live_set_coverage(&self) {
+        use std::collections::BTreeSet;
+        let live: BTreeSet<u64> = self.live_object_order_snapshot().into_iter().collect();
+        // `iter_sorted()` yields `(u64, &GameEntity)` in ascending-id order (deterministic).
+        for (id, e) in self.substrate.entities.iter_sorted() {
+            if e.dying
+                || e.category == EntityCategory::Structure
+                || e.aircraft_mission.is_some()
+                || e.is_deployed()
+                || e.passenger_role.is_inside_transport()
+            {
+                continue;
+            }
+            // A Unit a legacy dispatch phase would act on: has a movement/attack/dock machine.
+            let touched = e.movement_target.is_some()
+                || e.attack_target.is_some()
+                || e.dock_state.is_some()
+                || e.order_intent.is_some();
+            if touched && !live.contains(&id) {
+                log::debug!(
+                    "dispatch coverage drift: tick {} unit {} touched by a legacy phase but \
+                     absent from live order",
+                    self.tick,
+                    id,
+                );
+            }
+        }
     }
 
     /// The walk: dispatch every live, present, non-dying object once, in live
@@ -668,5 +822,121 @@ mod tests {
                 .collect()
         }
         assert_eq!(run(), run());
+    }
+
+    // ===== Slice S2a — host-time Unit dispatch shadow =====
+
+    #[test]
+    fn unit_dispatch_record_pass_skips_miner_and_nonunit() {
+        let mut sim = Simulation::new();
+        // A plain moving Unit — recorded.
+        sim.substrate.entities.insert(scoped_move_unit(1));
+        // A miner Unit — skipped (the miner session owns Harvest).
+        let mut miner = scoped_move_unit(2);
+        miner.miner = Some(Miner::new(MinerKind::War, &MinerConfig::default(), 0));
+        sim.substrate.entities.insert(miner);
+        // A non-Unit — skipped by category.
+        sim.substrate
+            .entities
+            .insert(entity_of(3, EntityCategory::Structure));
+        sim.set_logic_order_for_test(vec![1, 2, 3]);
+
+        let trace = sim.unit_dispatch_record_pass();
+        assert_eq!(trace.len(), 1, "only the non-miner Unit is recorded");
+        assert_eq!(trace[0].id, 1);
+        assert_eq!(trace[0].host_mission, MissionType::Move);
+        assert_eq!(trace[0].family, DispatchSlot::Move);
+    }
+
+    #[test]
+    fn unit_dispatch_proof_passes_on_scoped_units() {
+        let mut sim = Simulation::new();
+        sim.substrate.entities.insert(scoped_move_unit(1)); // Move
+        let mut idle = scoped_move_unit(2);
+        idle.movement_target = None; // None -> Sleep family
+        sim.substrate.entities.insert(idle);
+        sim.set_logic_order_for_test(vec![1, 2]);
+
+        let trace = sim.unit_dispatch_record_pass();
+        sim.debug_assert_unit_dispatch_shadow(&trace); // no panic
+        assert_eq!(trace[0].family, DispatchSlot::Move);
+        assert_eq!(trace[1].family, DispatchSlot::Sleep);
+    }
+
+    #[test]
+    fn unit_dispatch_attackmove_unreachable_for_units() {
+        // derived_mission never yields AttackMove for any machine combination.
+        let mut e = GameEntity::test_default(1, "TEST", "Americans", 5, 5);
+        e.movement_target = Some(MovementTarget::default());
+        e.attack_target = Some(AttackTarget {
+            target: TargetKind::Entity(99),
+            cooldown_ticks: 0,
+            burst_remaining: 1,
+            burst_delay_ticks: 0,
+            pending_infantry_fire: None,
+        });
+        assert_ne!(e.derived_mission().0, MissionType::AttackMove);
+    }
+
+    #[test]
+    fn dispatch_live_set_covers_moving_units() {
+        let mut sim = Simulation::new();
+        sim.substrate.entities.insert(scoped_move_unit(1)); // movement_target set, in live order
+        sim.set_logic_order_for_test(vec![1]);
+        // Must not log/panic: the moving Unit is in the live set.
+        sim.debug_check_dispatch_live_set_coverage();
+    }
+
+    #[test]
+    fn unit_dispatch_host_is_hash_neutral() {
+        let mut sim = Simulation::new();
+        sim.substrate.entities.insert(scoped_move_unit(1));
+        sim.set_logic_order_for_test(vec![1]);
+        sim.refresh_mission_shadow();
+
+        let before = sim.state_hash();
+        let trace = sim.object_ai_stage(); // host pass (returns the trace)
+        sim.debug_assert_unit_dispatch_shadow(&trace); // read-only proof
+        sim.debug_check_dispatch_live_set_coverage(); // read-only coverage
+        let after = sim.state_hash();
+        assert_eq!(
+            before, after,
+            "the Unit dispatch host + proofs must not perturb the hash"
+        );
+    }
+
+    #[test]
+    fn unit_dispatch_preserves_advance_tick_phase_order() {
+        fn run() -> Vec<u64> {
+            let mut sim = Simulation::new();
+            let heights = std::collections::BTreeMap::new();
+            (0..5)
+                .map(|_| {
+                    sim.advance_tick(&[], None, &heights, None, None, 67);
+                    sim.state_hash()
+                })
+                .collect()
+        }
+        assert_eq!(
+            run(),
+            run(),
+            "advance_tick with the dispatch host stays deterministic"
+        );
+    }
+
+    #[test]
+    fn unit_dispatch_shadow_counts_churn() {
+        // Guards the churn counter against a stuck-at-zero bug: a unit recorded as
+        // host-time Move whose machine changes before the tail re-derivation (here we
+        // clear movement_target → tail derives None → Sleep) must count as one churn.
+        let mut sim = Simulation::new();
+        sim.substrate.entities.insert(scoped_move_unit(1)); // host: Move
+        sim.set_logic_order_for_test(vec![1]);
+        let trace = sim.unit_dispatch_record_pass(); // captures host = Move
+        assert_eq!(trace[0].family, DispatchSlot::Move);
+        // Simulate the unit's machines changing between host-time and tail.
+        sim.substrate.entities.get_mut(1).unwrap().movement_target = None;
+        let churn = sim.debug_assert_unit_dispatch_shadow(&trace);
+        assert_eq!(churn, 1, "a host Move that became tail Sleep must count as one churn");
     }
 }
