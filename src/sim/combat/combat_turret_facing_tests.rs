@@ -571,6 +571,41 @@ fn co_attacker_facing_matches_killer() {
 }
 
 #[test]
+fn save_load_round_trip_on_kill_tick() {
+    // A save taken on the kill tick — where the barrel destination still holds
+    // a now-dead target's facing and the hashed mission value reflects the
+    // dispatch-time machines — must restore an identical state hash (barrel
+    // FacingClass and MissionCom both round-trip via serde; load trusts the
+    // serialized values, no post-load re-derive).
+    use crate::sim::snapshot::GameSnapshot;
+    let mut sim = Simulation::new();
+    spawn_turreted(&mut sim, 1, 5, 5, 100);
+    spawn_target(&mut sim, 2, 5, 8);
+    use_test_interner(&mut sim);
+    let rules = rules_with_mtnk_rot(100);
+    sim.substrate.entities.get_mut(1).unwrap().attack_target = Some(AttackTarget::new(2));
+    let toward_target = {
+        let e = sim.substrate.entities.get(1).unwrap();
+        desired_turret_facing(e, &sim.substrate.entities).expect("turreted")
+    };
+    sim.substrate.entities.get_mut(1).unwrap().barrel_facing =
+        Some(FacingClass::new(toward_target, 100));
+    sim.substrate.entities.get_mut(2).unwrap().health.current = 10;
+
+    sim.advance_tick(&[], Some(&rules), &empty_height_map(), None, None, 67); // kill tick
+
+    let hash_before = sim.state_hash();
+    let bytes = GameSnapshot::save(&sim, 0, 0, "test_map", 0);
+    let mut restored = GameSnapshot::load(&bytes).expect("load").sim;
+    restored.rebuild_logic_membership(); // the real post-deserialize step
+    assert_eq!(
+        restored.state_hash(),
+        hash_before,
+        "kill-tick save/load must restore an identical state hash"
+    );
+}
+
+#[test]
 fn non_unit_barrel_still_driven_by_global_sweep() {
     // Non-Unit categories keep the legacy post-batch sweep until their slices
     // land (S7/S8): a turreted Structure's barrel is still driven toward its
