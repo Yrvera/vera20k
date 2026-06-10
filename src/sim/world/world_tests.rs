@@ -542,12 +542,12 @@ fn binary_frame_committed_late_gate_captures_pre_increment_frame() {
         rt.mission_state = BuildingGateMissionState::Setup;
         rt.phase = BuildingGatePhase::ClosedStable;
     }
-    assert_eq!(sim.binary_frame, 0, "fresh sim starts at frame 0");
+    assert_eq!(sim.session.binary_frame, 0, "fresh sim starts at frame 0");
 
     let _ = sim.advance_tick(&[], Some(&rules), &heights, None, None, 67);
 
     // Committed late: post-tick frame advanced to 1.
-    assert_eq!(sim.binary_frame, 1, "binary_frame committed late to 1");
+    assert_eq!(sim.session.binary_frame, 1, "binary_frame committed late to 1");
     // The consumer captured the PRE-increment frame 0 during the tick.
     let rt = sim
         .substrate.entities
@@ -589,7 +589,7 @@ fn mission_refresh_changes_state_hash() {
 fn short_game_defeats_house_with_no_buildings_even_if_ordinary_units_remain() {
     let rules = short_game_defeat_test_rules();
     let mut sim = Simulation::new();
-    sim.game_options.short_game = true;
+    sim.session.game_options.short_game = true;
     let owner = insert_house_with_counts(&mut sim, "Americans", 0, 1);
     insert_test_entity_for_owner(&mut sim, 1, owner, "MTNK", EntityCategory::Unit);
 
@@ -602,7 +602,7 @@ fn short_game_defeats_house_with_no_buildings_even_if_ordinary_units_remain() {
 fn short_game_keeps_house_alive_when_base_unit_remains() {
     let rules = short_game_defeat_test_rules();
     let mut sim = Simulation::new();
-    sim.game_options.short_game = true;
+    sim.session.game_options.short_game = true;
     let owner = insert_house_with_counts(&mut sim, "Americans", 0, 1);
     insert_test_entity_for_owner(&mut sim, 1, owner, "AMCV", EntityCategory::Unit);
 
@@ -615,7 +615,7 @@ fn short_game_keeps_house_alive_when_base_unit_remains() {
 fn short_game_defeats_when_only_base_unit_is_dying() {
     let rules = short_game_defeat_test_rules();
     let mut sim = Simulation::new();
-    sim.game_options.short_game = true;
+    sim.session.game_options.short_game = true;
     let owner = insert_house_with_counts(&mut sim, "Americans", 0, 0);
     insert_test_entity_for_owner(&mut sim, 1, owner, "AMCV", EntityCategory::Unit);
     sim.substrate.entities.get_mut(1).expect("AMCV inserted").dying = true;
@@ -629,7 +629,7 @@ fn short_game_defeats_when_only_base_unit_is_dying() {
 fn long_game_keeps_house_alive_when_units_remain() {
     let rules = short_game_defeat_test_rules();
     let mut sim = Simulation::new();
-    sim.game_options.short_game = false;
+    sim.session.game_options.short_game = false;
     let owner = insert_house_with_counts(&mut sim, "Americans", 0, 1);
 
     sim.check_defeat(Some(&rules));
@@ -641,7 +641,7 @@ fn long_game_keeps_house_alive_when_units_remain() {
 fn long_game_defeats_when_no_owned_objects_remain() {
     let rules = short_game_defeat_test_rules();
     let mut sim = Simulation::new();
-    sim.game_options.short_game = false;
+    sim.session.game_options.short_game = false;
     let owner = insert_house_with_counts(&mut sim, "Americans", 0, 0);
 
     sim.check_defeat(Some(&rules));
@@ -653,7 +653,7 @@ fn long_game_defeats_when_no_owned_objects_remain() {
 fn short_game_victory_resolution_uses_new_defeat_state() {
     let rules = short_game_defeat_test_rules();
     let mut sim = Simulation::new();
-    sim.game_options.short_game = true;
+    sim.session.game_options.short_game = true;
     let defeated = insert_house_with_counts(&mut sim, "Americans", 0, 1);
     let survivor = insert_house_with_counts(&mut sim, "Russians", 1, 0);
     insert_test_entity_for_owner(&mut sim, 1, defeated, "MTNK", EntityCategory::Unit);
@@ -668,7 +668,7 @@ fn short_game_victory_resolution_uses_new_defeat_state() {
 fn short_game_base_unit_survivor_prevents_enemy_victory() {
     let rules = short_game_defeat_test_rules();
     let mut sim = Simulation::new();
-    sim.game_options.short_game = true;
+    sim.session.game_options.short_game = true;
     let mcv_owner = insert_house_with_counts(&mut sim, "Americans", 0, 1);
     let enemy = insert_house_with_counts(&mut sim, "Russians", 1, 0);
     insert_test_entity_for_owner(&mut sim, 1, mcv_owner, "AMCV", EntityCategory::Unit);
@@ -3454,7 +3454,7 @@ fn command_death_is_flushed_before_vision_and_power() {
     // flushed before P1, so P4 power recomputes counting ONLY the surviving plant 2.
     // Without the command-region flush, the dying plant 1 (health 750) would still be
     // counted at P4 → 200.
-    let sell = CommandEnvelope::new(owner_id, sim.tick + 1, Command::SellBuilding { entity_id: 1 });
+    let sell = CommandEnvelope::new(owner_id, sim.session.tick + 1, Command::SellBuilding { entity_id: 1 });
     sim.advance_tick(&[sell], Some(&rules), &height_map, Some(&grid), None, 100);
 
     assert!(sim.substrate.entities.get(1).is_none(), "sold plant freed this tick");

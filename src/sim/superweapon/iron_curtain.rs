@@ -28,7 +28,7 @@ pub fn launch(
 ) -> bool {
     let duration = rules.general.iron_curtain_duration;
     let anim_name = rules.general.iron_curtain_invoke_anim.clone();
-    let current_frame = sim.tick as u32;
+    let current_frame = sim.session.tick as u32;
 
     // 1. Spawn invoke animation at target.
     spawn_invoke_anim(sim, &anim_name, target_rx, target_ry);
@@ -128,7 +128,7 @@ mod tests {
         assert!(launch(&mut sim, &rules, owner, 10, 10));
         let e = sim.substrate.entities.get(1).expect("tank exists");
         assert!(e.invulnerability.is_some());
-        assert!(is_invulnerable(e.invulnerability.as_ref(), sim.tick as u32));
+        assert!(is_invulnerable(e.invulnerability.as_ref(), sim.session.tick as u32));
     }
 
     #[test]

@@ -5,8 +5,14 @@
 //! setup-phase draw, then seeding the scenario and main streams identically.
 //! Data flows one-way app→sim; this module depends only on sim/ siblings.
 
+use std::collections::BTreeMap;
+
+use crate::sim::game_options::GameOptions;
+use crate::sim::intern::InternedId;
+
 /// Everything the app layer decides about a session before the sim exists.
-/// Built from the lobby/launch flow — never hardcoded inside sim/.
+/// Built from the lobby/launch flow and the selected map file — never
+/// hardcoded inside sim/.
 #[derive(Debug, Clone, Default)]
 pub struct ScenarioDescriptor {
     /// The negotiated per-match seed. 32 bits wide because the original's
@@ -14,14 +20,105 @@ pub struct ScenarioDescriptor {
     /// entropy, future MP handshake, and replay headers all funnel through
     /// this one field.
     pub seed: u32,
+    /// Scenario identity: the selected map file name (lobby record / loading
+    /// request), with the map's `[Basic]` Name as a human-facing fallback.
+    pub map_name: String,
+    /// Theater name from the map header (e.g. "TEMPERATE").
+    pub theater: String,
+    /// Full map `Size=` width/height (3rd/4th values) — authoritative bounds
+    /// at load.
+    pub map_width: u16,
+    pub map_height: u16,
+    /// Playable-area `LocalSize=` rect, stored verbatim.
+    pub local_left: u16,
+    pub local_top: u16,
+    pub local_width: u16,
+    pub local_height: u16,
+    /// MP start waypoints (index -> cell) from the map `[Waypoints]` list.
+    /// BTreeMap for deterministic iteration; sized by content, never by a
+    /// player-count assumption.
+    pub mp_start_waypoints: BTreeMap<u32, (u16, u16)>,
 }
 
 impl ScenarioDescriptor {
     /// Reconstruct the descriptor a recorded match was created from, so
-    /// playback seeds the sim exactly as the original run did.
+    /// playback seeds the sim exactly as the original run did. Identity and
+    /// bounds come from the same map-load path the original run used; only
+    /// the seed and map name travel in the header.
     pub fn from_replay_header(header: &crate::sim::replay::ReplayHeader) -> Self {
         Self {
             seed: header.seed as u32,
+            map_name: header.map_name.clone(),
+            ..Self::default()
+        }
+    }
+}
+
+/// The sim-resident session aggregate. Owns session identity, the seed,
+/// authoritative map bounds, the MP start table, the per-match options, and
+/// the frame clock. Constructed once from the descriptor; serialized and
+/// hashed (lockstep state, set before tick 0).
+///
+/// Bounds note: `Simulation.playfield_bounds` (the FNPC diamond lens over
+/// `LocalSize`) keeps its own verbatim copy; consolidating the two is a
+/// follow-up once the diamond consumers read through the session.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ScenarioSession {
+    /// Construction seed — the negotiated per-match value; the replay header
+    /// records it. Stored widened (the negotiated value is 32-bit).
+    pub seed: u64,
+    /// Scenario identity: map file name (with `[Basic]` Name fallback).
+    pub map_name: String,
+    /// Theater name from the map header.
+    pub theater: String,
+    /// Full map `Size=` width/height.
+    pub map_width: u16,
+    pub map_height: u16,
+    /// Playable-area `LocalSize=` rect, stored verbatim.
+    pub local_left: u16,
+    pub local_top: u16,
+    pub local_width: u16,
+    pub local_height: u16,
+    /// MP start waypoints (index -> cell) from the map `[Waypoints]` list.
+    pub mp_start_waypoints: BTreeMap<u32, (u16, u16)>,
+    /// Start waypoint index -> owning house, filled during launch application
+    /// (after the random-assignment draws), before tick 0.
+    pub start_slot_houses: BTreeMap<u32, InternedId>,
+    /// Per-match game settings (the lobby options card). Set once at game
+    /// start, read-only during gameplay.
+    pub game_options: GameOptions,
+    /// Current simulation tick (starts at 0, increments after each
+    /// advance_tick).
+    pub tick: u64,
+    /// Total accumulated sim-tick milliseconds since world creation.
+    /// Authoritative time source; `binary_frame` is derived from this.
+    pub total_sim_ms: u64,
+    /// Synthetic 15 Hz frame counter, **committed late** at the end of
+    /// advance_tick beside `tick` — during a tick it holds the previous
+    /// tick's committed value (the pre-increment frame this tick executes
+    /// under). Read it as the *current* frame for stored-start timer
+    /// consumers; never as the next frame.
+    pub binary_frame: u32,
+}
+
+impl ScenarioSession {
+    pub fn from_descriptor(desc: &ScenarioDescriptor) -> Self {
+        Self {
+            seed: u64::from(desc.seed),
+            map_name: desc.map_name.clone(),
+            theater: desc.theater.clone(),
+            map_width: desc.map_width,
+            map_height: desc.map_height,
+            local_left: desc.local_left,
+            local_top: desc.local_top,
+            local_width: desc.local_width,
+            local_height: desc.local_height,
+            mp_start_waypoints: desc.mp_start_waypoints.clone(),
+            start_slot_houses: BTreeMap::new(),
+            game_options: GameOptions::default(),
+            tick: 0,
+            total_sim_ms: 0,
+            binary_frame: 0,
         }
     }
 }
@@ -33,7 +130,10 @@ mod tests {
 
     #[test]
     fn from_descriptor_equals_with_seed_widened() {
-        let a = Simulation::from_descriptor(&ScenarioDescriptor { seed: 0xDEAD_BEEF });
+        let a = Simulation::from_descriptor(&ScenarioDescriptor {
+            seed: 0xDEAD_BEEF,
+            ..Default::default()
+        });
         let b = Simulation::with_seed(0xDEAD_BEEF);
         assert_eq!(a.state_hash(), b.state_hash());
     }
@@ -49,7 +149,10 @@ mod tests {
         use std::collections::BTreeMap;
 
         fn build(seed: u32) -> Simulation {
-            let mut sim = Simulation::from_descriptor(&ScenarioDescriptor { seed });
+            let mut sim = Simulation::from_descriptor(&ScenarioDescriptor {
+                seed,
+                ..Default::default()
+            });
             let entity = MapEntity {
                 owner: "Americans".to_string(),
                 type_id: "MTNK".to_string(),

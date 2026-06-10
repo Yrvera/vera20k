@@ -103,7 +103,7 @@ pub(crate) fn current_sidebar_view(state: &mut AppState) -> Option<SidebarView> 
     let interner = state.simulation.as_ref().map(|s| &s.interner);
     // Query superweapon views for sidebar cameos.
     let owner_iid = sim.interner.get(&owner_name).unwrap_or_default();
-    let sw_views = if sim.game_options.super_weapons {
+    let sw_views = if sim.session.game_options.super_weapons {
         crate::sim::superweapon::superweapon_views_for_owner(sim, rules, &owner_iid)
     } else {
         Vec::new()
@@ -254,7 +254,7 @@ fn minimap_move_order_if_selected(state: &mut AppState) -> bool {
     let owner = crate::app_commands::preferred_local_owner_name(state)
         .unwrap_or_else(|| "Americans".to_string());
     let owner_id = sim.interner.get(&owner).unwrap_or_default();
-    let execute_tick = sim.tick.saturating_add(sim.input_delay_ticks);
+    let execute_tick = sim.session.tick.saturating_add(sim.input_delay_ticks);
     let order_mode = state.queued_order_mode;
     let shift_held: bool = crate::app_input::is_shift_held(state);
     let mut queued: Vec<crate::sim::command::CommandEnvelope> = Vec::new();

@@ -97,7 +97,7 @@ fn replay_hash_stable_through_slice6() {
         &heights,
     );
 
-    // (execute_tick, command) — apply_due_commands fires each when self.tick+1 == tick.
+    // (execute_tick, command) — apply_due_commands fires each when self.session.tick+1 == tick.
     let script: &[(u64, Command)] = &[
         (
             1,

@@ -148,7 +148,7 @@ fn c4_plant_happy_path_kills_building_and_seal_survives() {
     let owner = sim.interner.intern("Americans");
     sim.queue_command(CommandEnvelope::new(
         owner,
-        sim.tick + 1,
+        sim.session.tick + 1,
         Command::PlantC4 {
             attacker_id: seal,
             target_building_id: bld,
@@ -167,7 +167,7 @@ fn c4_plant_happy_path_kills_building_and_seal_survives() {
     let plant_start = pending.plant_start_tick;
 
     // Advance until detonation tick fires. Phase 2 fires when
-    // `sim.tick - plant_start >= delay`. The current sim.tick is already
+    // `sim.session.tick - plant_start >= delay`. The current sim.session.tick is already
     // past plant_start by 1 (advance_tick increments at the end), so
     // `delay + 1` more advances are enough.
     let delay = rules.c4_delay_ticks as u64;
@@ -179,8 +179,8 @@ fn c4_plant_happy_path_kills_building_and_seal_survives() {
         sim.substrate.entities
             .get(bld)
             .map_or(true, |b| b.dying || b.health.current == 0),
-        "building must be destroyed at plant_start + c4_delay (plant_start={plant_start}, sim.tick={})",
-        sim.tick
+        "building must be destroyed at plant_start + c4_delay (plant_start={plant_start}, sim.session.tick={})",
+        sim.session.tick
     );
     assert!(
         sim.substrate.entities.get(seal).is_some(),
@@ -198,7 +198,7 @@ fn c4_damage_crossing_condition_yellow_sets_building_damage_state() {
     let seal = spawn_infantry(&mut sim, "GHOST", "Americans", 10, 11);
     let bld = spawn_building(&mut sim, "GAPILE", "Soviets", 10, 10);
     sim.substrate.entities.get_mut(bld).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
-        plant_start_tick: sim.tick,
+        plant_start_tick: sim.session.tick,
         attacker_id: seal,
     });
 
@@ -286,7 +286,7 @@ fn c4_attacker_death_does_not_abort_detonation() {
 
     // Manually claim the plant (skip walk-up).
     sim.substrate.entities.get_mut(bld).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
-        plant_start_tick: sim.tick,
+        plant_start_tick: sim.session.tick,
         attacker_id: seal,
     });
 
@@ -325,11 +325,11 @@ fn c4_iron_curtain_blocks_until_expiry_then_kills() {
     // Claim the plant, then IC the building. IC duration must outlast
     // C4Delay (27) so the first detonation attempt is nullified.
     sim.substrate.entities.get_mut(bld).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
-        plant_start_tick: sim.tick,
+        plant_start_tick: sim.session.tick,
         attacker_id: seal,
     });
     sim.substrate.entities.get_mut(bld).unwrap().invulnerability = Some(InvulnerabilityState {
-        start_frame: sim.tick as u32,
+        start_frame: sim.session.tick as u32,
         duration_frames: 40,
         kind: InvulnKind::IronCurtain,
     });
@@ -447,7 +447,7 @@ fn stop_cancels_walkup_but_not_already_claimed_plant() {
     });
     sim.queue_command(CommandEnvelope::new(
         owner,
-        sim.tick + 1,
+        sim.session.tick + 1,
         Command::Stop { entity_id: seal },
     ));
     step(&mut sim, &rules, &heights);
@@ -465,14 +465,14 @@ fn stop_cancels_walkup_but_not_already_claimed_plant() {
     );
 
     // Case B: Stop AFTER plant is claimed does NOT clear pending_c4_detonation.
-    let plant_start = sim.tick;
+    let plant_start = sim.session.tick;
     sim.substrate.entities.get_mut(bld).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
         plant_start_tick: plant_start,
         attacker_id: seal,
     });
     sim.queue_command(CommandEnvelope::new(
         owner,
-        sim.tick + 1,
+        sim.session.tick + 1,
         Command::Stop { entity_id: seal },
     ));
     step(&mut sim, &rules, &heights);
@@ -509,7 +509,7 @@ fn cannot_c4_building_rejects_plant_command() {
     let owner = sim.interner.intern("Americans");
     sim.queue_command(CommandEnvelope::new(
         owner,
-        sim.tick + 1,
+        sim.session.tick + 1,
         Command::PlantC4 {
             attacker_id: seal,
             target_building_id: oil,
@@ -541,7 +541,7 @@ fn non_c4_unit_rejects_plant_command() {
     let owner = sim.interner.intern("Americans");
     sim.queue_command(CommandEnvelope::new(
         owner,
-        sim.tick + 1,
+        sim.session.tick + 1,
         Command::PlantC4 {
             attacker_id: gi,
             target_building_id: bld,
@@ -573,7 +573,7 @@ fn c4_lifecycle_is_deterministic() {
         let owner = sim.interner.intern("Americans");
         sim.queue_command(CommandEnvelope::new(
             owner,
-            sim.tick + 1,
+            sim.session.tick + 1,
             Command::PlantC4 {
                 attacker_id: seal,
                 target_building_id: bld,

@@ -895,9 +895,41 @@ impl ResolvedTerrainGrid {
                     }
                 }
                 if behind_cliff {
-                    cells[idx].land_type = rock_lt;
-                    cells[idx].ground_walk_blocked = true;
-                    cells[idx].is_cliff_like = true;
+                    let cell = &mut cells[idx];
+                    cell.land_type = rock_lt;
+                    cell.yr_cell_land_type = rock_lt;
+                    cell.ground_walk_blocked = true;
+                    cell.is_cliff_like = true;
+                    // The reclass precedes zone derivation in the engine, so the
+                    // reduced zone follows the new Rock land (wheel speed 0 →
+                    // Impassable) unless an overlay branch already claimed the
+                    // cell (those branches outrank the land checks).
+                    if matches!(
+                        cell.zone_type,
+                        zone_class::GROUND | zone_class::WATER | zone_class::BEACH
+                    ) {
+                        cell.zone_type = zone_class::IMPASSABLE;
+                    }
+                    if let Some(rock) =
+                        terrain_rules.and_then(|tr| tr.semantics_for_land_type(7))
+                    {
+                        cell.terrain_class = rock.terrain_class;
+                        cell.speed_costs = rock.speed_costs;
+                        cell.is_water = rock.water;
+                        cell.build_blocked = true;
+                    }
+                    // Bake the reclass into the base (pre-overlay) snapshot too:
+                    // it is derived purely from neighbor LEVELS, which never
+                    // change at runtime, and the engine re-derives it on every
+                    // cell-attribute recompute — so an overlay add/remove cycle
+                    // (ore spread → harvest) must restore the RECLASSED values,
+                    // not the original clear terrain.
+                    cell.base_land_type = cell.land_type;
+                    cell.base_yr_cell_land_type = cell.yr_cell_land_type;
+                    cell.base_terrain_class = cell.terrain_class;
+                    cell.base_speed_costs = cell.speed_costs;
+                    cell.base_ground_walk_blocked = true;
+                    cell.base_build_blocked = true;
                     cliff_back_count += 1;
                 }
             }
@@ -2566,6 +2598,21 @@ IsRubble=yes
             cell.land_type,
             crate::sim::pathfinding::passability::LandType::Rock.as_index(),
             "Cell at base of cliff should have Rock land type"
+        );
+        // The reclass precedes zone derivation: the reduced zone becomes
+        // Impassable, and the base (pre-overlay) snapshot carries the reclass
+        // so an overlay add/remove cycle cannot restore the original clear
+        // terrain (levels never change at runtime).
+        assert_eq!(cell.zone_type, zone_class::IMPASSABLE);
+        assert_eq!(
+            cell.base_land_type,
+            crate::sim::pathfinding::passability::LandType::Rock.as_index()
+        );
+        assert!(cell.base_ground_walk_blocked);
+        assert!(cell.base_build_blocked);
+        assert_eq!(
+            cell.yr_cell_land_type,
+            crate::sim::pathfinding::passability::LandType::Rock.as_index()
         );
     }
 

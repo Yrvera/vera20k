@@ -572,7 +572,7 @@ fn conyard_redeploy_runtime_rejects_when_mcv_redeploy_disabled() {
     let yard = sim
         .spawn_object("GACNST", "Americans", 19, 21, 0, &rules, &height_map)
         .expect("spawn ConYard");
-    sim.game_options.mcv_redeploy = false;
+    sim.session.game_options.mcv_redeploy = false;
 
     let applied = sim.apply_command(
         "Americans",
@@ -665,7 +665,7 @@ UndeploysInto=SMIN
     let refinery = sim
         .spawn_object("YAREFN", "Americans", 19, 21, 0, &rules, &height_map)
         .expect("spawn refinery");
-    sim.game_options.mcv_redeploy = false;
+    sim.session.game_options.mcv_redeploy = false;
 
     assert!(sim.can_undeploy_building_runtime(refinery, &rules));
 }
@@ -674,7 +674,7 @@ UndeploysInto=SMIN
 fn dispatch(sim: &mut Simulation, _owner: &str, cmd: Command, rules: &RuleSet) {
     let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
     let owner_id = sim.interner.intern(_owner);
-    let cmds = vec![CommandEnvelope::new(owner_id, sim.tick + 1, cmd)];
+    let cmds = vec![CommandEnvelope::new(owner_id, sim.session.tick + 1, cmd)];
     sim.advance_tick(&cmds, Some(rules), &height_map, None, None, 22);
 }
 

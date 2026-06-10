@@ -173,7 +173,7 @@ pub(super) fn find_spawn_selection_for_owner_with_type(
                 // counter analog), committed late at end-of-tick, so DURING this tick it
                 // holds the current frame N the FNPC pick must alias on. It is derived
                 // from the hashed total_sim_ms, so it is lockstep-shared by construction.
-                sim.binary_frame,
+                sim.session.binary_frame,
                 sim.playfield_bounds,
             ),
         };

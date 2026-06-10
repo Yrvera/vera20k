@@ -134,7 +134,7 @@ impl Simulation {
                 rec.family,
                 unit_dispatch_family(rec.host_mission),
                 "dispatch: tick {} unit {}: recorded family must equal the router output",
-                self.tick,
+                self.session.tick,
                 rec.id,
             );
             // (2) a Unit is never on AttackMove (derived_mission cannot yield it).
@@ -142,13 +142,13 @@ impl Simulation {
                 rec.host_mission,
                 MissionType::AttackMove,
                 "dispatch: tick {} unit {}: a Unit must never derive AttackMove",
-                self.tick,
+                self.session.tick,
                 rec.id,
             );
             debug_assert!(
                 !matches!(rec.family, DispatchSlot::Skip),
                 "dispatch: tick {} unit {}: a live Unit must never route to Skip",
-                self.tick,
+                self.session.tick,
                 rec.id,
             );
             // (3) churn metric: compare host-time family to a fresh tail re-derivation.
@@ -161,7 +161,7 @@ impl Simulation {
                         churn += 1;
                         log::debug!(
                             "dispatch churn: tick {} unit {}: host {:?} -> tail {:?}",
-                            self.tick,
+                            self.session.tick,
                             rec.id,
                             rec.host_mission,
                             tail_mission,
@@ -203,7 +203,7 @@ impl Simulation {
                 log::debug!(
                     "dispatch coverage drift: tick {} unit {} touched by a legacy phase but \
                      absent from live order",
-                    self.tick,
+                    self.session.tick,
                     id,
                 );
             }
@@ -359,7 +359,7 @@ impl Simulation {
             debug_assert!(
                 trace.dispatch_seq < trace.process_seq,
                 "S1: tick {} unit {}: dispatch_seq {} must precede process_seq {}",
-                self.tick,
+                self.session.tick,
                 id,
                 trace.dispatch_seq,
                 trace.process_seq,
@@ -368,14 +368,14 @@ impl Simulation {
                 trace.mission,
                 MissionType::Move,
                 "S1: tick {} unit {}: in-scope unit must derive Move, observed {:?}",
-                self.tick,
+                self.session.tick,
                 id,
                 trace.mission,
             );
             debug_assert!(
                 trace.is_drive,
                 "S1: tick {} unit {}: in-scope unit must be a drive mover",
-                self.tick,
+                self.session.tick,
                 id,
             );
         }
@@ -452,7 +452,7 @@ impl Simulation {
             debug_assert!(
                 w[0].visit_seq < w[1].visit_seq,
                 "P2: tick {}: factory shell trace visit_seq must strictly increase",
-                self.tick,
+                self.session.tick,
             );
         }
         for t in &traces {
@@ -462,7 +462,7 @@ impl Simulation {
                     .get(t.structure_id)
                     .is_some_and(|e| !e.dying && e.category == EntityCategory::Structure),
                 "P2: tick {}: factory shell trace id {} must resolve to a live Structure",
-                self.tick,
+                self.session.tick,
                 t.structure_id,
             );
         }

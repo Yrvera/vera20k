@@ -693,7 +693,7 @@ pub(crate) fn schedule_command(state: &mut AppState, owner: &str, payload: Comma
         .simulation
         .as_ref()
         .map_or(state.configured_input_delay_ticks, |s| {
-            s.tick.saturating_add(s.input_delay_ticks)
+            s.session.tick.saturating_add(s.input_delay_ticks)
         });
     if let Some(sim) = &mut state.simulation {
         let owner_id = sim.interner.intern(owner);

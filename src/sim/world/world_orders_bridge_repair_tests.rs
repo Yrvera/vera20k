@@ -826,8 +826,8 @@ fn c4_on_cabhut_collapses_bridge_and_hut_survives() {
         let cur = sim.substrate.entities.get(cabhut).unwrap().health.current;
         assert_eq!(
             cur, cabhut_max_hp,
-            "hut HP must stay at max during C4Delay (plant_start={plant_start}, sim.tick={})",
-            sim.tick
+            "hut HP must stay at max during C4Delay (plant_start={plant_start}, sim.session.tick={})",
+            sim.session.tick
         );
     }
 
@@ -895,7 +895,7 @@ fn c4_on_cabhut_without_bridge_clears_pending_marker() {
     let cabhut_max_hp = sim.substrate.entities.get(cabhut).unwrap().health.current;
     sim.bridge_state = Some(BridgeRuntimeState::default());
     sim.substrate.entities.get_mut(cabhut).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
-        plant_start_tick: sim.tick,
+        plant_start_tick: sim.session.tick,
         attacker_id: seal,
     });
 
@@ -925,11 +925,11 @@ fn c4_on_invulnerable_cabhut_still_dispatches_bridge_and_clears_pending() {
     let cabhut_max_hp = sim.substrate.entities.get(cabhut).unwrap().health.current;
     seed_bridge_with_state(&mut sim, DamageState::Healthy { variant: 0 });
     sim.substrate.entities.get_mut(cabhut).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
-        plant_start_tick: sim.tick,
+        plant_start_tick: sim.session.tick,
         attacker_id: seal,
     });
     sim.substrate.entities.get_mut(cabhut).unwrap().invulnerability = Some(InvulnerabilityState {
-        start_frame: sim.tick as u32,
+        start_frame: sim.session.tick as u32,
         duration_frames: rules.c4_delay_ticks + 20,
         kind: InvulnKind::IronCurtain,
     });
@@ -964,7 +964,7 @@ fn c4_on_cabhut_bridgehead_fallback_collapses_bridge() {
     let hut_hp = sim.substrate.entities.get(cabhut).unwrap().health.current;
     seed_hut_fallback_bridgehead_layout(&mut sim);
     sim.substrate.entities.get_mut(cabhut).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
-        plant_start_tick: sim.tick,
+        plant_start_tick: sim.session.tick,
         attacker_id: seal,
     });
 
@@ -989,7 +989,7 @@ fn c4_on_cabhut_pure_bridgehead_fallback_uses_opposite_anchor_offset() {
     let seal = spawn_seal(&mut sim, 9, 10);
     seed_hut_pure_bridgehead_fallback_layout(&mut sim);
     sim.substrate.entities.get_mut(cabhut).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
-        plant_start_tick: sim.tick,
+        plant_start_tick: sim.session.tick,
         attacker_id: seal,
     });
 
@@ -1021,7 +1021,7 @@ fn c4_on_cabhut_fallback_rejects_anchor_or_direction_flags_alone() {
     starter.bridge_facts.raw_flags = BRIDGE_FLAG_ANCHOR_SELF | BRIDGE_FLAG_DIRECTION_ZERO;
     starter.bridge_facts.anchor = None;
     sim.substrate.entities.get_mut(cabhut).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
-        plant_start_tick: sim.tick,
+        plant_start_tick: sim.session.tick,
         attacker_id: seal,
     });
 
@@ -1045,7 +1045,7 @@ fn stock_high_cabhut_no_overlay_fallback_collapses_bridge() {
     let seal = spawn_seal(&mut sim, 9, 10);
     seed_stock_high_cabhut_no_overlay_fallback_fixture(&mut sim);
     sim.substrate.entities.get_mut(cabhut).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
-        plant_start_tick: sim.tick,
+        plant_start_tick: sim.session.tick,
         attacker_id: seal,
     });
 
@@ -1070,7 +1070,7 @@ fn stock_low_cabhut_no_overlay_fallback_collapses_bridge() {
     let seal = spawn_seal(&mut sim, 9, 10);
     seed_stock_low_cabhut_no_overlay_fallback_fixture(&mut sim);
     sim.substrate.entities.get_mut(cabhut).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
-        plant_start_tick: sim.tick,
+        plant_start_tick: sim.session.tick,
         attacker_id: seal,
     });
 
@@ -1095,7 +1095,7 @@ fn stock_cabhut_no_overlay_without_starter_is_noop() {
     let seal = spawn_seal(&mut sim, 9, 10);
     seed_stock_no_starter_cabhut_no_overlay_fixture(&mut sim);
     sim.substrate.entities.get_mut(cabhut).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
-        plant_start_tick: sim.tick,
+        plant_start_tick: sim.session.tick,
         attacker_id: seal,
     });
 
@@ -1121,7 +1121,7 @@ fn c4_on_cabhut_low_overlay_collapses_low_bridge() {
     let hut_hp = sim.substrate.entities.get(cabhut).unwrap().health.current;
     seed_low_bridge_with_state(&mut sim, DamageState::Healthy { variant: 0 });
     sim.substrate.entities.get_mut(cabhut).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
-        plant_start_tick: sim.tick,
+        plant_start_tick: sim.session.tick,
         attacker_id: seal,
     });
 
@@ -1153,7 +1153,7 @@ fn c4_on_cabhut_low_terminal_overlay_0x65_uses_overlay_first_scan() {
     let seal = spawn_seal(&mut sim, 10, 10);
     seed_terminal_overlay_with_fallback_trap(&mut sim, 0x65);
     sim.substrate.entities.get_mut(cabhut).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
-        plant_start_tick: sim.tick,
+        plant_start_tick: sim.session.tick,
         attacker_id: seal,
     });
 
@@ -1181,7 +1181,7 @@ fn c4_on_cabhut_high_terminal_overlay_0xe8_uses_overlay_first_scan() {
     let seal = spawn_seal(&mut sim, 10, 10);
     seed_terminal_overlay_with_fallback_trap(&mut sim, 0xE8);
     sim.substrate.entities.get_mut(cabhut).unwrap().pending_c4_detonation = Some(PendingC4Detonation {
-        plant_start_tick: sim.tick,
+        plant_start_tick: sim.session.tick,
         attacker_id: seal,
     });
 

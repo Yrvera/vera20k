@@ -133,7 +133,7 @@ fn force_fire_cell_pursuit_then_fire_integration() {
 
     sim.pending_commands.push(CommandEnvelope::new(
         owner_id,
-        sim.tick + 1,
+        sim.session.tick + 1,
         Command::ForceAttackCell {
             attacker_id: 1,
             target_rx: 15,

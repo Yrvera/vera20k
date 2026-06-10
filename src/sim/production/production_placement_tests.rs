@@ -650,7 +650,7 @@ fn build_off_ally_disabled_rejects_allied_eligible_provider() {
     let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
     let grid = PathGrid::new(64, 64);
 
-    sim.game_options.build_off_ally = false;
+    sim.session.game_options.build_off_ally = false;
     spawn_structure(&mut sim, 1, "Alliance", "GACNST", 10, 10);
     mark_allied(&mut sim, "Americans", "Alliance");
     ready_building(&mut sim, "Americans", "GAPOWR");
@@ -697,7 +697,7 @@ fn build_off_ally_off_keeps_own_base_provider() {
     let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
     let grid = PathGrid::new(64, 64);
 
-    sim.game_options.build_off_ally = false;
+    sim.session.game_options.build_off_ally = false;
     spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
     ready_building(&mut sim, "Americans", "GAPOWR");
 

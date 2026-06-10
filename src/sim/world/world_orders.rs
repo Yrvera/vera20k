@@ -515,7 +515,7 @@ impl Simulation {
             // Claim the plant.
             if let Some(b) = self.substrate.entities.get_mut(target_id) {
                 b.pending_c4_detonation = Some(PendingC4Detonation {
-                    plant_start_tick: self.tick,
+                    plant_start_tick: self.session.tick,
                     attacker_id,
                 });
             }
@@ -568,7 +568,7 @@ impl Simulation {
                 .and_then(|e| e.pending_c4_detonation);
             let Some(pending) = pending else { continue };
 
-            if self.tick.saturating_sub(pending.plant_start_tick) < delay {
+            if self.session.tick.saturating_sub(pending.plant_start_tick) < delay {
                 continue;
             }
 
@@ -717,7 +717,7 @@ impl Simulation {
         // Mirror gamemd's bit-twiddle: `(tick >> 12 + 1) >> 1 & 7`.
         // C operator precedence: `>>` is left-to-right at same level, so
         // this evaluates as `(((tick >> 12) + 1) >> 1) & 7`.
-        let dir: usize = ((((self.tick >> 12) + 1) >> 1) & 7) as usize;
+        let dir: usize = ((((self.session.tick >> 12) + 1) >> 1) & 7) as usize;
         let (dx, dy) = DIR_DELTAS[dir];
 
         let bld_cell = self
@@ -754,7 +754,7 @@ impl Simulation {
                 self.pending_commands
                     .push(crate::sim::command::CommandEnvelope::new(
                         owner,
-                        self.tick + 1,
+                        self.session.tick + 1,
                         crate::sim::command::Command::Move {
                             entity_id: sid,
                             target_rx,
@@ -823,7 +823,7 @@ impl Simulation {
             .and_then(|e| e.invulnerability.clone());
         if crate::sim::superweapon::invulnerability::is_invulnerable(
             invuln.as_ref(),
-            self.tick as u32,
+            self.session.tick as u32,
         ) {
             return C4DamageOutcome::default();
         }

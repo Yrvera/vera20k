@@ -572,9 +572,25 @@ pub(crate) fn load_map_from_initial(
 
     // One negotiated per-match seed, fixed before the sim exists and before
     // any setup-phase draw (random country/color resolution included). Logged
-    // as the repro handle until replay save/load UI exists.
+    // as the repro handle until replay save/load UI exists. Identity, bounds,
+    // and the MP start table come from the map file — never hardcoded.
     let scenario_descriptor = crate::sim::scenario_session::ScenarioDescriptor {
         seed: crate::app_init_helpers::generate_match_seed(),
+        map_name: skirmish_launch_session
+            .and_then(|s| s.selected_map_file.clone())
+            .or_else(|| map_data.basic.name.clone())
+            .unwrap_or_default(),
+        theater: map_data.header.theater.clone(),
+        map_width: map_data.header.width as u16,
+        map_height: map_data.header.height as u16,
+        local_left: map_data.header.local_left as u16,
+        local_top: map_data.header.local_top as u16,
+        local_width: map_data.header.local_width as u16,
+        local_height: map_data.header.local_height as u16,
+        mp_start_waypoints: waypoints::multiplayer_start_waypoints(&map_data.waypoints)
+            .into_iter()
+            .map(|wp| (wp.index, (wp.rx, wp.ry)))
+            .collect(),
     };
     log::info!("Match seed: 0x{:08X}", scenario_descriptor.seed);
 
@@ -619,8 +635,8 @@ pub(crate) fn load_map_from_initial(
                         side_idx,
                         country_id,
                         is_human,
-                        sim.game_options.starting_credits,
-                        sim.game_options.tech_level,
+                        sim.session.game_options.starting_credits,
+                        sim.session.game_options.tech_level,
                     ),
                 );
             }
@@ -929,7 +945,7 @@ pub(crate) fn load_map_from_initial(
                     map_data.basic.tiberium_growth_enabled.unwrap_or(true),
                     general_rules.tiberium_spreads
                         && map_data.special_flags.tiberium_spreads.unwrap_or(true),
-                    sim.binary_frame,
+                    sim.session.binary_frame,
                 );
             log::info!(
                 "Native tiberium queues rebuilt: {} growth entries, {} spread entries",
@@ -939,7 +955,7 @@ pub(crate) fn load_map_from_initial(
         } else {
             sim.production
                 .ore_growth_state
-                .reset_native_tiberium_classes(0, sim.binary_frame);
+                .reset_native_tiberium_classes(0, sim.session.binary_frame);
         }
     }
 

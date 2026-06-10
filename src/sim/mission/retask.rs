@@ -76,7 +76,7 @@ impl Simulation {
         teardown: DockTeardown,
     ) {
         self.run_dock_teardown(id, teardown);
-        let now = self.binary_frame;
+        let now = self.session.binary_frame;
         if let Some(e) = self.substrate.entities.get_mut(id) {
             verb::assign_mission(&mut e.mission, mission, now);
         }

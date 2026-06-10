@@ -66,7 +66,7 @@ fn run_with_frame_profile(total_ms: u32, frame_ms: u32) -> (u64, Vec<u64>, Repla
 
         while acc_ms >= TICK_MS as u64 {
             acc_ms -= TICK_MS as u64;
-            let execute_tick = sim.tick + 1;
+            let execute_tick = sim.session.tick + 1;
             let mut due: Vec<CommandEnvelope> = Vec::new();
             pending.retain(|cmd| {
                 if cmd.execute_tick <= execute_tick {
@@ -134,7 +134,10 @@ fn replay_reapplies_header_seed() {
     }
 
     // Record under a descriptor seed.
-    let desc = ScenarioDescriptor { seed: 0x00A1_1CE5 };
+    let desc = ScenarioDescriptor {
+        seed: 0x00A1_1CE5,
+        ..Default::default()
+    };
     let mut sim = sim_with_unit(&desc);
     let grid = PathGrid::new(32, 32);
     let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
@@ -150,7 +153,7 @@ fn replay_reapplies_header_seed() {
     let mut live: Vec<u64> = Vec::new();
     let mut pending = vec![make_move_command()];
     for _ in 0..40 {
-        let execute_tick = sim.tick + 1;
+        let execute_tick = sim.session.tick + 1;
         let mut due: Vec<CommandEnvelope> = Vec::new();
         pending.retain(|cmd| {
             if cmd.execute_tick <= execute_tick {

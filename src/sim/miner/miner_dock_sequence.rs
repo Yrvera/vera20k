@@ -85,11 +85,11 @@ fn schedule_enter_retry(sim: &mut Simulation, snap: &mut MinerSnapshot) {
         .miner_jitter_rng()
         .next_range_u32_inclusive(0, ENTER_RETRY_JITTER_MAX_FRAMES) as u8;
     let duration = u32::from(ENTER_RETRY_BASE_FRAMES.saturating_add(jitter));
-    snap.miner.dock_enter_retry.arm(sim.binary_frame, duration);
+    snap.miner.dock_enter_retry.arm(sim.session.binary_frame, duration);
 }
 
 fn enter_retry_due(sim: &Simulation, snap: &MinerSnapshot) -> bool {
-    snap.miner.dock_enter_retry.due(sim.binary_frame)
+    snap.miner.dock_enter_retry.due(sim.session.binary_frame)
 }
 
 fn clear_enter_retry(snap: &mut MinerSnapshot) {
@@ -101,7 +101,7 @@ fn schedule_mission_deploy_delay(snap: &mut MinerSnapshot, frame: u32, duration:
 }
 
 fn mission_deploy_due(sim: &Simulation, snap: &MinerSnapshot) -> bool {
-    snap.miner.mission_deploy_timer.due(sim.binary_frame)
+    snap.miner.mission_deploy_timer.due(sim.session.binary_frame)
 }
 
 fn clear_mission_deploy_delay(snap: &mut MinerSnapshot) {
@@ -203,7 +203,7 @@ fn tick_unload_accumulator(sim: &Simulation, snap: &mut MinerSnapshot) {
         snap.miner.unload_timer_fired = false;
         return;
     }
-    if !snap.miner.unload_cluster_timer.due(sim.binary_frame) {
+    if !snap.miner.unload_cluster_timer.due(sim.session.binary_frame) {
         snap.miner.unload_timer_fired = false;
         return;
     }
@@ -215,7 +215,7 @@ fn tick_unload_accumulator(sim: &Simulation, snap: &mut MinerSnapshot) {
     snap.miner.unload_timer_fired = true;
     snap.miner
         .unload_cluster_timer
-        .arm(sim.binary_frame, snap.miner.unload_cluster_repeat);
+        .arm(sim.session.binary_frame, snap.miner.unload_cluster_repeat);
     snap.miner.unload_cluster_scratch = 0;
 }
 
@@ -1010,7 +1010,7 @@ fn phase_mission_queued(snap: &mut MinerSnapshot) {
 
 fn sync_dock_facing(sim: &mut Simulation, rules: &RuleSet, snap: &mut MinerSnapshot) -> bool {
     let rot = dock_pivot_rot_byte(sim, rules, snap);
-    let binary_frame = sim.binary_frame;
+    let binary_frame = sim.session.binary_frame;
     let Some(entity) = sim.substrate.entities.get(snap.entity_id) else {
         return false;
     };
@@ -1044,7 +1044,7 @@ fn start_unload_deploy(sim: &mut Simulation, rules: &RuleSet, snap: &mut MinerSn
     snap.miner.unload_active = true;
     snap.miner.unload_accumulator = 0;
     snap.miner.unload_timer_fired = false;
-    snap.miner.unload_cluster_timer.arm(sim.binary_frame, 1);
+    snap.miner.unload_cluster_timer.arm(sim.session.binary_frame, 1);
     snap.miner.unload_cluster_scratch = 0;
     snap.miner.unload_cluster_repeat = 1;
     snap.miner.dock_phase = RefineryDockPhase::Unloading;
@@ -1076,13 +1076,13 @@ fn phase_pivoting(
             as u8;
         schedule_mission_deploy_delay(
             snap,
-            sim.binary_frame,
+            sim.session.binary_frame,
             MISSION_DEPLOY_UNLOAD_BASE_FRAMES.saturating_add(jitter),
         );
     } else {
         let _ = config;
         let _ = ref_sid;
-        schedule_mission_deploy_delay(snap, sim.binary_frame, MISSION_DEPLOY_FACING_WAIT_FRAMES);
+        schedule_mission_deploy_delay(snap, sim.session.binary_frame, MISSION_DEPLOY_FACING_WAIT_FRAMES);
         snap.miner.dock_phase = RefineryDockPhase::Pivoting;
     }
 }
@@ -1099,7 +1099,7 @@ fn phase_unloading(
         // the byte-field cluster existed.
         snap.miner.unload_active = true;
         snap.miner.unload_accumulator = i32::from(config.unload_tick_interval.div_ceil(10));
-        snap.miner.unload_cluster_timer.arm(sim.binary_frame, 1);
+        snap.miner.unload_cluster_timer.arm(sim.session.binary_frame, 1);
         snap.miner.unload_cluster_repeat = 1;
     }
 
@@ -1198,11 +1198,11 @@ fn phase_unloading(
         // and one smoke-particle spawn per slot.
         sim.bale_events.push(BaleDepositEvent {
             building_id: unload_building_id,
-            tick: sim.tick,
+            tick: sim.session.tick,
         });
 
         snap.miner.unload_accumulator = 0;
-        schedule_mission_deploy_delay(snap, sim.binary_frame, 1);
+        schedule_mission_deploy_delay(snap, sim.session.binary_frame, 1);
         return;
     }
 
@@ -1211,7 +1211,7 @@ fn phase_unloading(
     // state 4. Do not seed another dump-gate cooldown here; the due
     // mission-deploy delay and accumulator gate have already fired.
     snap.miner.home_refinery = mission_deploy_unload_building(sim, snap.entity_id);
-    schedule_mission_deploy_delay(snap, sim.binary_frame, 1);
+    schedule_mission_deploy_delay(snap, sim.session.binary_frame, 1);
     snap.miner.dock_phase = RefineryDockPhase::Departing;
 }
 

@@ -51,7 +51,6 @@ use crate::sim::docking::aircraft_dock;
 use crate::sim::docking::building_dock;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::game_entity::Presence;
-use crate::sim::game_options::GameOptions;
 use crate::sim::house_state::HouseState;
 use crate::sim::intern::InternedId;
 use crate::sim::movement;
@@ -77,6 +76,7 @@ use crate::sim::production::{self, ProductionState};
 use crate::sim::radar::{RadarEventQueue, RadarEventType};
 use crate::sim::replay::ReplayLog;
 use crate::sim::rng::SimRng;
+use crate::sim::scenario_session::ScenarioSession;
 use crate::sim::trigger_runtime::{TriggerEffect, TriggerRuntime};
 use crate::sim::vision::{self, FogState};
 use crate::util::fixed_math::SimFixed;
@@ -296,21 +296,12 @@ pub struct Simulation {
     pub type_handles: crate::sim::type_handle_table::TypeHandleTable,
     /// Credits, build queue state, and rally points.
     pub production: ProductionState,
-    /// Current simulation tick (starts at 0, increments after each advance_tick).
-    pub tick: u64,
-    /// Total accumulated sim-tick milliseconds since world creation.
-    /// Authoritative time source; binary_frame is derived from this.
-    pub total_sim_ms: u64,
-    /// Synthetic gamemd 15 Hz frame counter (the `g_CurrentFrameCounter`
-    /// analog). Derived as (total_sim_ms * 15 / 1000), but **committed late** at
-    /// the end of `advance_tick` beside `self.tick` — so during a tick it holds
-    /// the previous tick's committed value, i.e. the pre-increment frame `N`
-    /// this tick is executing under (mirrors Main_Tick incrementing
-    /// `g_CurrentFrameCounter` only after `Network_ServiceLoop`). Read it as the
-    /// *current* frame for stored-start CDTimer-style consumers (capture
-    /// `binary_frame`, later compute `binary_frame.saturating_sub(start)`);
-    /// never as the next frame.
-    pub binary_frame: u32,
+    /// Session aggregate — scenario identity, seed, authoritative map
+    /// bounds, MP start table, per-match options, and the frame clock
+    /// (`tick`/`total_sim_ms`/`binary_frame`, committed late at the end of
+    /// `advance_tick`). Constructed once from the app-layer descriptor;
+    /// serialized + hashed. See `sim::scenario_session`.
+    pub session: ScenarioSession,
     /// Scenario RNG — gamemd `Scenario->Random` (Scen+0x218). Drives in-object-tick
     /// sim draws: scatter, sub-cell placement, smudge/destruction, particles,
     /// wall/overlay damage, bridge collapse/repair, ore growth/spread, TIBTRE,
@@ -331,9 +322,6 @@ pub struct Simulation {
     /// `SimRng::zeroed()` (NOT seeded). MUST be serialized + hashed like the other
     /// two streams. Seeding this for random maps is a deferred (Blocked) follow-up.
     pub(crate) mapgen_rng: SimRng,
-    /// Construction seed — recorded so the replay header carries the negotiated
-    /// g_RngSeed (not a mid-stream fingerprint). Both streams derive from it.
-    pub(crate) seed: u64,
     /// Deterministic fog/shroud visibility state.
     pub fog: FogState,
     /// Static alliance graph derived from map house data.
@@ -460,9 +448,6 @@ pub struct Simulation {
     /// with the correct frame count without hardcoding it.
     #[serde(skip)]
     pub effect_frame_counts: BTreeMap<InternedId, u16>,
-    /// Per-match game settings (crates, short game, superweapons, etc.).
-    /// Set once at game start from lobby / [MultiplayerDialogSettings], read-only during gameplay.
-    pub game_options: GameOptions,
     /// When true, newly spawned entities get a `DebugEventLog` allocated.
     /// Toggled by the debug inspector hotkey (X). Debug-only — not included in state hashing.
     #[serde(skip)]
@@ -529,18 +514,36 @@ impl Simulation {
     }
 
     /// Create a new empty simulation with an explicit deterministic seed.
+    /// Test/dev entry — u64 seeds wider than 32 bits keep their full value in
+    /// `session.seed` (pinned harness baselines depend on it) even though the
+    /// stream seeder consumes only 32 bits.
     pub fn with_seed(seed: u64) -> Self {
+        let mut session =
+            ScenarioSession::from_descriptor(&crate::sim::scenario_session::ScenarioDescriptor::default());
+        session.seed = seed;
+        Self::construct(session)
+    }
+
+    /// Construct a session simulation from an app-layer launch descriptor.
+    /// The only entry real launches use; `new()`/`with_seed()` remain for
+    /// tests and dev tooling.
+    pub fn from_descriptor(desc: &crate::sim::scenario_session::ScenarioDescriptor) -> Self {
+        Self::construct(ScenarioSession::from_descriptor(desc))
+    }
+
+    /// Shared constructor body: seed both gameplay streams identically from
+    /// the session seed (divergence comes from consumption only), leave the
+    /// mapgen stream in its unseeded zero-state.
+    fn construct(session: ScenarioSession) -> Self {
+        let seed = session.seed;
         let out = Self {
             interner: crate::sim::intern::StringInterner::new(),
             type_handles: crate::sim::type_handle_table::TypeHandleTable::default(),
             production: ProductionState::default(),
-            tick: 0,
-            total_sim_ms: 0,
-            binary_frame: 0,
+            session,
             scenario_rng: SimRng::new(seed),
             main_rng: SimRng::new(seed),
             mapgen_rng: SimRng::zeroed(),
-            seed,
             fog: FogState::default(),
             house_alliances: HouseAllianceMap::default(),
             substrate: ObjectSubstrate::new(),
@@ -578,7 +581,6 @@ impl Simulation {
             blockage_path_delay_ticks: 60,
             world_effects: Vec::new(),
             effect_frame_counts: BTreeMap::new(),
-            game_options: GameOptions::default(),
             debug_event_logging: false,
             replay_log: None,
             input_delay_ticks: 2,
@@ -588,13 +590,6 @@ impl Simulation {
         };
         debug_assert_eq!(out.scenario_rng.state(), out.main_rng.state());
         out
-    }
-
-    /// Construct a session simulation from an app-layer launch descriptor.
-    /// The only entry real launches use; `new()`/`with_seed()` remain for
-    /// tests and dev tooling.
-    pub fn from_descriptor(desc: &crate::sim::scenario_session::ScenarioDescriptor) -> Self {
-        Self::with_seed(u64::from(desc.seed))
     }
 
     // --- Scenario stream (gamemd Scenario->Random @ Scen+0x218) ---
@@ -651,7 +646,7 @@ impl Simulation {
         // mapgen_rng mirrors gamemd's unseeded g_MapGenRng — reset to zero-state,
         // never seeded from the gameplay seed.
         self.mapgen_rng = SimRng::zeroed();
-        self.seed = seed;
+        self.session.seed = seed;
     }
 
     /// The occupancy grid (per-cell object lists). Read access for systems above sim/.
@@ -733,7 +728,7 @@ impl Simulation {
             // ore growth/spread — scenario stream. Direct field (not ore_rng()): this
             // literal co-borrows other &mut self fields, so the all-self accessor conflicts.
             rng: Some(&mut self.scenario_rng),
-            binary_frame: self.binary_frame,
+            binary_frame: self.session.binary_frame,
             spread_enabled: self.production.ore_growth_config.spreads,
             radar_dirty_cells: Some(&mut self.radar_terrain_dirty_cells),
             radar_dirty_generation: Some(&mut self.radar_terrain_dirty_generation),
@@ -756,7 +751,7 @@ impl Simulation {
     /// Drain commands that are due for the next tick from `pending_commands`.
     /// Returns owned commands; remaining commands stay queued.
     pub fn take_due_commands(&mut self) -> Vec<CommandEnvelope> {
-        let execute_tick = self.tick.saturating_add(1);
+        let execute_tick = self.session.tick.saturating_add(1);
         let mut due = Vec::new();
         let mut kept = Vec::new();
         for cmd in std::mem::take(&mut self.pending_commands) {
@@ -1092,22 +1087,22 @@ impl Simulation {
             debug_assert_eq!(
                 steps, PRODUCTION_STEPS as i32,
                 "C2: tick {} {:?}/{:?}: a full build must take 54 steps (got {})",
-                self.tick, factory.owner, factory.category, steps,
+                self.session.tick, factory.owner, factory.category, steps,
             );
             debug_assert_eq!(
                 econ.spent_credits, cost,
                 "C15: tick {} {:?}/{:?}: total spent {} must equal full cost {}",
-                self.tick, factory.owner, factory.category, econ.spent_credits, cost,
+                self.session.tick, factory.owner, factory.category, econ.spent_credits, cost,
             );
             debug_assert_eq!(
                 f.balance, 0,
                 "C12: tick {} {:?}/{:?}: completion must zero the balance",
-                self.tick, factory.owner, factory.category,
+                self.session.tick, factory.owner, factory.category,
             );
             debug_assert!(
                 f.suspended && f.object.is_some(),
                 "C12: tick {} {:?}/{:?}: completion must suspend with the object attached",
-                self.tick, factory.owner, factory.category,
+                self.session.tick, factory.owner, factory.category,
             );
         }
     }
@@ -1134,7 +1129,7 @@ impl Simulation {
                 debug_assert!(
                     f.insertion_seq > p,
                     "P5d (A): tick {}: insertion_seq must be strictly increasing across the sweep ({} after {})",
-                    self.tick, f.insertion_seq, p,
+                    self.session.tick, f.insertion_seq, p,
                 );
             }
             prev_seq = Some(f.insertion_seq);
@@ -1143,7 +1138,7 @@ impl Simulation {
                 debug_assert!(
                     e.enqueue_order > tail_prev,
                     "P5d (A): tick {} {:?}/{:?}: tail enqueue_order must strictly exceed the active build + prior tail ({} after {})",
-                    self.tick, f.owner, f.category, e.enqueue_order, tail_prev,
+                    self.session.tick, f.owner, f.category, e.enqueue_order, tail_prev,
                 );
                 tail_prev = e.enqueue_order;
             }
@@ -1155,12 +1150,12 @@ impl Simulation {
             debug_assert!(
                 f.progress <= PRODUCTION_STEPS,
                 "P5b (B): tick {} {:?}/{:?}: progress {} exceeds {}",
-                self.tick, f.owner, f.category, f.progress, PRODUCTION_STEPS,
+                self.session.tick, f.owner, f.category, f.progress, PRODUCTION_STEPS,
             );
             debug_assert!(
                 f.balance >= 0 && f.balance <= f.original_balance,
                 "P5b (B): tick {} {:?}/{:?}: balance {} out of [0, original {}]",
-                self.tick, f.owner, f.category, f.balance, f.original_balance,
+                self.session.tick, f.owner, f.category, f.balance, f.original_balance,
             );
         }
     }
@@ -1296,7 +1291,7 @@ impl Simulation {
             if house.is_defeated {
                 continue;
             }
-            let should_defeat = if self.game_options.short_game {
+            let should_defeat = if self.session.game_options.short_game {
                 house.owned_building_count == 0 && !self.house_has_live_base_unit(owner, rules)
             } else {
                 house.owned_building_count == 0 && house.owned_unit_count == 0
@@ -1682,7 +1677,7 @@ impl Simulation {
         }
 
         // Diagnostic: log fog grid stats on first tick to debug coverage issues.
-        if self.tick == 1 {
+        if self.session.tick == 1 {
             log::info!(
                 "Fog grid: {}x{}, {} owners",
                 self.fog.width,
@@ -1874,7 +1869,7 @@ impl Simulation {
         // command this tick. Owned counts are final here after combat + production
         // (but before this tick's AI spawns); tick_ai then skips any house already
         // flagged defeated via its is_defeated gate.
-        if self.tick > 0 {
+        if self.session.tick > 0 {
             self.check_defeat(rules);
         }
 
@@ -1965,9 +1960,9 @@ impl Simulation {
         // stored-start CDTimer consumers captured N, not N+1. Drift-free: every
         // binary-frame boundary is exactly when total_sim_ms crosses a multiple
         // of 1000/15 ≈ 66.67ms.
-        self.total_sim_ms = self.total_sim_ms.saturating_add(tick_ms as u64);
-        self.binary_frame = ((self.total_sim_ms * 15) / 1000) as u32;
-        self.tick = execute_tick;
+        self.session.total_sim_ms = self.session.total_sim_ms.saturating_add(tick_ms as u64);
+        self.session.binary_frame = ((self.session.total_sim_ms * 15) / 1000) as u32;
+        self.session.tick = execute_tick;
     }
 
     pub fn advance_tick(
@@ -1980,10 +1975,10 @@ impl Simulation {
         tick_ms: u32,
     ) -> TickResult {
         // The synthetic 15 Hz binary-frame counter is committed LATE (end of
-        // this fn, beside self.tick) so consumers see the pre-increment frame
+        // this fn, beside self.session.tick) so consumers see the pre-increment frame
         // during the tick. execute_tick stays here: command scheduling below
         // filters on it.
-        let execute_tick = self.tick.saturating_add(1);
+        let execute_tick = self.session.tick.saturating_add(1);
         // ===== SPINE REGION: EARLY — command application =====
         // gamemd applies player/network input before LogicClass::PerTickUpdate.
         // Native-spine slot: pre-object. (Step 3a skeleton: extracted to a region
@@ -2034,7 +2029,7 @@ impl Simulation {
             // &mut self.substrate.occupancy (disjoint places).
             &mut self.scenario_rng,
             tick_ms,
-            self.tick,
+            self.session.tick,
             self.zone_grid.as_ref(),
             self.resolved_terrain.as_ref(),
             &self.terrain_speed_config,
@@ -2052,7 +2047,7 @@ impl Simulation {
                 &self.substrate.occupancy,
                 rules,
                 &self.interner,
-                self.binary_frame,
+                self.session.binary_frame,
             );
             // Slice 7d: break each war-factory exit contact whose vehicle has cleared
             // the factory footprint this tick (gamemd's per-cell-process break).
@@ -2071,7 +2066,7 @@ impl Simulation {
             &mut self.substrate.entities,
             &special_movement_order,
             tick_ms,
-            self.tick,
+            self.session.tick,
         );
         if let Some(rules) = rules {
             let warp_out_type = self.interner.intern(&rules.general.warp_out.name);
@@ -2086,7 +2081,7 @@ impl Simulation {
                 &mut self.substrate.occupancy,
                 &special_movement_order,
                 tick_ms,
-                self.tick,
+                self.session.tick,
                 Some(&mut teleport_visuals),
             );
         } else {
@@ -2095,7 +2090,7 @@ impl Simulation {
                 &mut self.substrate.occupancy,
                 &special_movement_order,
                 tick_ms,
-                self.tick,
+                self.session.tick,
                 None,
             );
         }
@@ -2104,13 +2099,13 @@ impl Simulation {
             &mut self.substrate.occupancy,
             &special_movement_order,
             tick_ms,
-            self.tick,
+            self.session.tick,
         );
         let _rocket_detonations = rocket_movement::tick_rocket_movement(
             &mut self.substrate.entities,
             &special_movement_order,
             tick_ms,
-            self.tick,
+            self.session.tick,
         );
         // Homing missile state machine. Runs in the same air/special-movement
         // phase as rocket_movement; detonation list is currently unused — the
@@ -2119,20 +2114,20 @@ impl Simulation {
             &mut self.substrate.entities,
             &special_movement_order,
             tick_ms,
-            self.tick,
+            self.session.tick,
         );
         droppod_movement::tick_droppod_movement(
             &mut self.substrate.entities,
             &special_movement_order,
             tick_ms,
-            self.tick,
+            self.session.tick,
         );
         if let Some(rules) = rules {
             parachute_descent::tick_parachute_descent(
                 &mut self.substrate.entities,
                 tick_ms,
                 rules.general.parachute_max_fall_rate,
-                self.tick,
+                self.session.tick,
             );
         }
         movement::tick_locomotor_piggyback_restore(&mut self.substrate.entities);
@@ -2158,7 +2153,7 @@ impl Simulation {
         }
 
         // Spawn wake effects behind moving ships on water (every 8 ticks).
-        if self.tick & 7 == 0 {
+        if self.session.tick & 7 == 0 {
             if let Some(rules) = rules {
                 let wake_name_str = &rules.general.wake.name;
                 let wake_rate = rules.general.wake.rate_ms;
@@ -2235,7 +2230,7 @@ impl Simulation {
             // --- Phase 4.5: Superweapons ---
             // DEPENDS ON: power state (suspend/resume gating).
             // PRODUCES: world_effects (bolt anims), damage to entities, sound_events.
-            if self.game_options.super_weapons {
+            if self.session.game_options.super_weapons {
                 crate::sim::superweapon::tick_superweapons(self, rules);
             }
 
@@ -2291,9 +2286,9 @@ impl Simulation {
                 self.overlay_grid.as_ref(),
                 overlay_registry,
                 self.resolved_terrain.as_ref(),
-                self.tick,
+                self.session.tick,
                 tick_ms,
-                self.binary_frame,
+                self.session.binary_frame,
                 &logic_order,
                 Some(&mut self.radiation),
             );
@@ -2301,11 +2296,11 @@ impl Simulation {
             // decay, self-deletion) runs after the per-object combat work —
             // the native driver updates radiation sites after the object loop.
             self.radiation
-                .tick_decay(self.binary_frame, &rules.radiation, self.resolved_terrain.as_ref());
+                .tick_decay(self.session.binary_frame, &rules.radiation, self.resolved_terrain.as_ref());
             turret::tick_turret_rotation(
                 &mut self.substrate.entities,
                 rules,
-                self.binary_frame,
+                self.session.binary_frame,
                 &self.interner,
             );
             // S3: Unit barrel destinations were computed per-object in the
@@ -2319,7 +2314,7 @@ impl Simulation {
                 &combat_result.unit_facing,
                 rules,
                 &self.interner,
-                self.binary_frame,
+                self.session.binary_frame,
             );
             destroyed_structure |= combat_result.structure_destroyed;
             let combat_dead_infos: Vec<(InternedId, EntityCategory)> = combat_result
@@ -2340,7 +2335,7 @@ impl Simulation {
                 self.unregister_live_object(dead_id);
             }
             let mut sw_refresh_owners: Vec<InternedId> = Vec::new();
-            if self.game_options.super_weapons && combat_result.structure_destroyed {
+            if self.session.game_options.super_weapons && combat_result.structure_destroyed {
                 for &(owner_id, category) in &combat_dead_infos {
                     if category == EntityCategory::Structure
                         && !sw_refresh_owners.contains(&owner_id)
@@ -2433,7 +2428,7 @@ impl Simulation {
                 production::eject_destruction_garrison(self, rules, ev);
             }
             // Refresh superweapon grants for owners who lost structures in combat.
-            if self.game_options.super_weapons && combat_result.structure_destroyed {
+            if self.session.game_options.super_weapons && combat_result.structure_destroyed {
                 for owner_id in sw_refresh_owners {
                     crate::sim::superweapon::refresh_super_weapons_for_owner(self, rules, owner_id);
                 }
@@ -2555,7 +2550,7 @@ impl Simulation {
             //     path_grid,
             //     &self.terrain_costs,
             //     &mut self.scenario_rng, // idle-scatter — scenario stream (dormant)
-            //     self.tick,
+            //     self.session.tick,
             //     &self.interner,
             // );
             // Phase 7, FIRST production step — the authoritative factory sweep (C1:
@@ -2612,7 +2607,7 @@ impl Simulation {
                         &mut self.production.resource_nodes,
                         // ore growth — scenario stream. Direct field: co-borrows grid/nodes.
                         &mut self.scenario_rng,
-                        self.binary_frame,
+                        self.session.binary_frame,
                         self.production.ore_growth_config.grows,
                         self.production.ore_growth_config.spreads,
                     );
@@ -2626,7 +2621,7 @@ impl Simulation {
                         &self.production.tiberium_spawning_terrain_cells,
                         // ore spread — scenario stream. Direct field: co-borrows grid/nodes.
                         &mut self.scenario_rng,
-                        self.binary_frame,
+                        self.session.binary_frame,
                         self.production.ore_growth_config.grows,
                         self.production.ore_growth_config.spreads,
                     );
@@ -2654,7 +2649,7 @@ impl Simulation {
                     // TIBTRE — scenario stream. Direct field: co-borrows production/grid.
                     &mut self.scenario_rng,
                 )
-                .with_growth_queue(&mut production.ore_growth_state, self.binary_frame)
+                .with_growth_queue(&mut production.ore_growth_state, self.session.binary_frame)
                 .with_spawning_terrain_cells(&production.tiberium_spawning_terrain_cells)
                 .with_live_object_context(&self.substrate.entities, &self.substrate.occupancy, rules, &self.interner)
                 .with_validation_context(
@@ -2720,7 +2715,7 @@ impl Simulation {
         self.debug_assert_production_shadow();
         let state_hash = self.state_hash();
         TickResult {
-            tick: self.tick,
+            tick: self.session.tick,
             executed_commands,
             state_hash,
             spawned_entities,

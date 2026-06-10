@@ -165,13 +165,13 @@ fn record(
         tick_hz: 15,
         // Record the sim's actual construction seed — playback fidelity is
         // header-seed-driven and ReplayRunner asserts the two agree.
-        seed: sim.seed,
+        seed: sim.session.seed,
         map_name: "p5c_factory_replay".to_string(),
         rules_hash: 0,
     });
     let mut hashes = Vec::with_capacity(ticks as usize);
     for _ in 0..ticks {
-        let execute_tick = sim.tick + 1;
+        let execute_tick = sim.session.tick + 1;
         let mut due: Vec<CommandEnvelope> = Vec::new();
         pending.retain(|c| {
             if c.execute_tick <= execute_tick {
@@ -283,7 +283,7 @@ fn economy_conservation_over_replay() {
     let mut pending = pending;
     let mut any_spent = false;
     for _ in 0..TICKS {
-        let execute_tick = sim.tick + 1;
+        let execute_tick = sim.session.tick + 1;
         let mut due: Vec<CommandEnvelope> = Vec::new();
         pending.retain(|c| {
             if c.execute_tick <= execute_tick {
@@ -305,7 +305,7 @@ fn economy_conservation_over_replay() {
         assert_eq!(
             total, initial,
             "tick {}: credits+spent_credits must equal the initial pool (no money created/destroyed)",
-            sim.tick
+            sim.session.tick
         );
         if [am, al]
             .iter()
@@ -372,7 +372,7 @@ fn economy_conservation_through_cancel_refund() {
     let mut cumulative_refunded: i64 = 0;
 
     for _ in 0..TICKS {
-        let execute_tick = sim.tick + 1;
+        let execute_tick = sim.session.tick + 1;
         let mut due: Vec<CommandEnvelope> = Vec::new();
         pending.retain(|c| {
             if c.execute_tick <= execute_tick {
@@ -405,7 +405,7 @@ fn economy_conservation_through_cancel_refund() {
             pool - cumulative_refunded,
             initial,
             "tick {}: pool minus refunds must equal the initial pool (conservation through cancel)",
-            sim.tick
+            sim.session.tick
         );
     }
 
@@ -484,7 +484,7 @@ fn revalidate_abandons_active_on_factory_loss_partial_refund() {
     // partway.
     let mut pending = vec![queue(am, mtnk, 1)];
     for _ in 0..40 {
-        let execute_tick = sim.tick + 1;
+        let execute_tick = sim.session.tick + 1;
         let mut due: Vec<CommandEnvelope> = Vec::new();
         pending.retain(|c| {
             if c.execute_tick <= execute_tick {
@@ -547,7 +547,7 @@ fn revalidate_keeps_buildable_build_untouched() {
     let (am, _, _, mtnk) = ids(&sim);
     let mut pending = vec![queue(am, mtnk, 1)];
     for _ in 0..40 {
-        let execute_tick = sim.tick + 1;
+        let execute_tick = sim.session.tick + 1;
         let mut due: Vec<CommandEnvelope> = Vec::new();
         pending.retain(|c| {
             if c.execute_tick <= execute_tick {

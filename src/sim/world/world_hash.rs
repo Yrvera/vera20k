@@ -63,9 +63,9 @@ impl Simulation {
     pub fn state_hash(&self) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
-        self.tick.hash(&mut hasher);
-        self.total_sim_ms.hash(&mut hasher);
-        self.binary_frame.hash(&mut hasher);
+        self.session.tick.hash(&mut hasher);
+        self.session.total_sim_ms.hash(&mut hasher);
+        self.session.binary_frame.hash(&mut hasher);
         // Hash ALL THREE RNG streams in a fixed order. Order is part of the hash
         // contract and must never change. Hashing only some streams would let a
         // divergence in another produce identical hashes on two desynced clients
@@ -132,7 +132,7 @@ impl Simulation {
 
     /// Hash per-match game options for lockstep verification.
     fn hash_game_options(&self, hasher: &mut impl Hasher) {
-        let opts = &self.game_options;
+        let opts = &self.session.game_options;
         opts.short_game.hash(hasher);
         opts.bases.hash(hasher);
         opts.bridges_destroyable.hash(hasher);
@@ -1295,8 +1295,8 @@ mod binary_frame_tests {
         for _ in 0..45 {
             sim.advance_tick(&[], None, &height_map, None, None, 22);
         }
-        assert_eq!(sim.total_sim_ms, 990);
-        assert_eq!(sim.binary_frame, 14);
+        assert_eq!(sim.session.total_sim_ms, 990);
+        assert_eq!(sim.session.binary_frame, 14);
     }
 
     #[test]
@@ -1306,11 +1306,11 @@ mod binary_frame_tests {
         // Three 67ms ticks should each advance binary_frame by 1
         // (67ms * 15 / 1000 = 1.005, floor = 1 per tick).
         sim.advance_tick(&[], None, &height_map, None, None, 67);
-        assert_eq!(sim.binary_frame, 1);
+        assert_eq!(sim.session.binary_frame, 1);
         sim.advance_tick(&[], None, &height_map, None, None, 67);
-        assert_eq!(sim.binary_frame, 2);
+        assert_eq!(sim.session.binary_frame, 2);
         sim.advance_tick(&[], None, &height_map, None, None, 67);
-        assert_eq!(sim.binary_frame, 3);
+        assert_eq!(sim.session.binary_frame, 3);
     }
 
     #[test]

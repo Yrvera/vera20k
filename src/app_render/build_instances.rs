@@ -345,7 +345,7 @@ fn build_pixel_fx_sparkle_instances(state: &AppState, sw: f32, sh: f32) -> Vec<S
     };
 
     let input = SparkleInput {
-        clock_ms: sim.total_sim_ms,
+        clock_ms: sim.session.total_sim_ms,
         enable_extra_animations,
         local_owner_id,
         sandbox_full_visibility: state.sandbox_full_visibility,
@@ -458,7 +458,7 @@ pub(super) fn update_minimap(state: &mut AppState, local_owner: &Option<String>)
             &state.batch_renderer,
             sim.entities(),
             &state.house_color_map,
-            sim.tick,
+            sim.session.tick,
             if state.sandbox_full_visibility {
                 None
             } else {
