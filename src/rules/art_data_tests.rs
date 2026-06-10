@@ -260,6 +260,55 @@ fn test_parse_building_anims() {
 }
 
 #[test]
+fn parses_all_four_special_anim_suffixes_in_document_order() {
+    // The tank bunker's walls are four SpecialAnim slots (up pair + down pair);
+    // SpecialAnimFour must parse — it was previously dropped.
+    let ini: IniFile = IniFile::from_str(
+        "[NATBNK]\n\
+         SpecialAnim=NATBNK_A\n\
+         SpecialAnimTwo=NATBNK_A2\n\
+         SpecialAnimThree=NATBNK_B\n\
+         SpecialAnimFour=NATBNK_B2\n\
+         SpecialAnimFourDamaged=NATBNK_B2D\n",
+    );
+    let reg: ArtRegistry = ArtRegistry::from_ini(&ini);
+    let entry: &ArtEntry = reg.get("NATBNK").expect("NATBNK exists");
+
+    let specials: Vec<&str> = entry
+        .building_anims
+        .iter()
+        .filter(|a| matches!(a.kind, BuildingAnimKind::Special))
+        .map(|a| a.anim_type.as_str())
+        .collect();
+    assert_eq!(
+        specials,
+        vec!["NATBNK_A", "NATBNK_A2", "NATBNK_B", "NATBNK_B2"],
+        "all four SpecialAnim suffixes parse in document order"
+    );
+
+    // Only the base key is primary; the suffixed slots are not.
+    let primaries: Vec<bool> = entry
+        .building_anims
+        .iter()
+        .filter(|a| matches!(a.kind, BuildingAnimKind::Special))
+        .map(|a| a.is_primary)
+        .collect();
+    assert_eq!(primaries, vec![true, false, false, false]);
+
+    // SpecialAnimFour's …Damaged variant rides along for the health gate.
+    let four = entry
+        .building_anims
+        .iter()
+        .filter(|a| matches!(a.kind, BuildingAnimKind::Special))
+        .nth(3)
+        .unwrap();
+    assert_eq!(
+        four.damaged_variant.as_ref().map(|v| v.anim_type.as_str()),
+        Some("NATBNK_B2D")
+    );
+}
+
+#[test]
 fn active_anim_garrisoned_replaces_base_slot_not_extra_overlay() {
     let ini: IniFile = IniFile::from_str(
         "[CAWASH19]\nActiveAnim=CAWA19_A\nActiveAnimGarrisoned=CAWA19_AG\nActiveAnimDamaged=CAWA19_AD\n",

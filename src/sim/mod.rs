@@ -23,11 +23,15 @@
 // --- Core types: entity storage, components, commands, RNG, interning ---
 pub mod command;
 pub mod components;
+pub mod economy; // per-house wallet/storage/statistics value-type (production+economy substrate)
 pub mod entity_store;
 pub mod game_entity;
 pub mod intern;
 pub mod rng;
 pub mod type_handle_table; // InternedId -> TypeHandle, one-hop entity->type resolution
+
+// --- Pure read-only deterministic engine-data services (gamemd-exact lookup tables) ---
+pub mod substrate; // direction/facing tables; no render/ui/audio/net dep
 
 // --- Subsystem folders (multi-file subsystems with internal mod.rs) ---
 pub mod combat; // targeting, weapons, AOE, fire gates, damage resolution
@@ -67,7 +71,11 @@ pub mod infantry;
 
 // --- Persistent cell occupancy ---
 pub mod cell_rect;
+pub mod find_nearby_cell;
 pub mod occupancy;
+
+// --- Map/cell substrate (read-only services over the canonical cell store) ---
+pub mod map; // bridge topology service (first member of the map/cell-substrate workstream)
 
 // --- Mutable per-cell overlay state (ore density, wall damage, bridge frames) ---
 pub mod overlay_grid;

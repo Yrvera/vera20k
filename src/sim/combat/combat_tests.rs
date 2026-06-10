@@ -1679,6 +1679,10 @@ fn wall_warhead_damages_and_destroys_wall_overlay() {
         damage: u16::MAX,
     }];
     sim.apply_wall_damage_events(&events, &rules, &registry);
+    // Wall removal now routes through `uninit` (deferred death): the wall is
+    // marked Dying and freed at flush_pending_delete, not removed synchronously.
+    // Drain it so the remaining-count below sees the slot actually freed.
+    sim.flush_pending_delete();
 
     // Overlay cleared.
     let grid = sim
@@ -1703,6 +1707,84 @@ fn wall_warhead_damages_and_destroys_wall_overlay() {
     assert_eq!(
         remaining, 0,
         "wall entity should be despawned after overlay destruction"
+    );
+}
+
+#[test]
+fn wall_destruction_routes_through_uninit_no_leak() {
+    // A wall destroyed in combat must tear down its logic-vector membership and
+    // foundation occupancy, then free its slot via the deferred pending_delete
+    // flush — i.e. removal routes through `uninit`, NOT a raw store remove. Build
+    // the wall via an ACTIVE spawn (`unlimbo`) so it actually holds logic
+    // membership + occupancy; a raw insert (Limbo) could not expose the leak.
+    let ini = IniFile::from_str(wall_test_ini());
+    let rules = RuleSet::from_ini(&ini).expect("wall rules parse");
+    let registry = OverlayTypeRegistry::from_ini(&ini, None);
+
+    let mut sim = Simulation::new();
+    let mut grid = OverlayGrid::new(10, 10);
+    grid.place_overlay(5, 5, 2, 0); // GAWALL overlay_id=2
+    sim.overlay_grid = Some(grid);
+
+    let owner_id = sim.interner.intern("Test");
+    let type_id = sim.interner.intern("GAWALL");
+    let mut entity = GameEntity::test_default(1, "GAWALL", "Test", 5, 5);
+    entity.owner = owner_id;
+    entity.type_ref = type_id;
+    // test_default makes a Unit; a wall is a Structure (foundation + building count).
+    entity.category = EntityCategory::Structure;
+    entity.health = Health {
+        current: 400,
+        max: 400,
+    };
+    // Active spawn: insert -> reveal (logic order) -> increment count -> occupancy.
+    let id = sim.unlimbo(entity);
+
+    // Pre-destruction: the wall is a live, occupying member.
+    assert!(
+        sim.substrate.logic.as_slice().contains(&id),
+        "active wall must be in the live logic order"
+    );
+    assert!(
+        sim.substrate.occupancy.contains_entity(5, 5, id),
+        "active wall must occupy its cell"
+    );
+    assert_eq!(
+        sim.substrate.entities.get(id).unwrap().presence,
+        crate::sim::game_entity::Presence::InCell
+    );
+
+    // Forced destruction (u16::MAX bypasses the probabilistic gate).
+    let events = [WallDamageEvent {
+        rx: 5,
+        ry: 5,
+        damage: u16::MAX,
+    }];
+    sim.apply_wall_damage_events(&events, &rules, &registry);
+
+    // Post-uninit, pre-flush: torn down from the active order + occupancy, but
+    // still resolvable as a one-tick Dying corpse (deferred death — synchronous
+    // teardown, deferred slot-free). A raw entities.remove would instead leave
+    // the id dangling in the logic order and the cell still occupied.
+    assert!(
+        !sim.substrate.logic.as_slice().contains(&id),
+        "destroyed wall must leave the live logic order (no dangling id)"
+    );
+    assert!(
+        !sim.substrate.occupancy.contains_entity(5, 5, id),
+        "destroyed wall must release its occupancy"
+    );
+    assert_eq!(
+        sim.substrate.entities.get(id).unwrap().presence,
+        crate::sim::game_entity::Presence::Dying,
+        "wall is a deferred-death corpse until the flush"
+    );
+
+    // After the flush the slot is actually freed.
+    sim.flush_pending_delete();
+    assert!(
+        sim.substrate.entities.get(id).is_none(),
+        "flush_pending_delete frees the wall slot"
     );
 }
 

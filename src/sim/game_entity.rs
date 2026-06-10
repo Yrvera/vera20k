@@ -87,6 +87,39 @@ pub enum BuildingGateMissionState {
     PostClose,
 }
 
+/// The unit side of the tank-bunker reciprocal link (the pre-install approach
+/// state plus the installed link, folded into one hashed field). Distinct from
+/// `PassengerRole` cargo: a bunker is a single reciprocal link, never cargo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
+pub enum BunkerLink {
+    /// Not heading to or inside any bunker.
+    #[default]
+    None,
+    /// Ordered into bunker `id`, still approaching (pre-install). Cleared on any
+    /// retask, which lets the building install machine reset. (The explicit
+    /// unit-side marker is the abort signal the install machine reads.)
+    Approaching(u64),
+    /// Installed inside bunker `id` (reciprocal of `building.bunker_occupant`).
+    Installed(u64),
+}
+
+impl BunkerLink {
+    /// The bunker this unit is installed in, if any.
+    pub fn installed_in(self) -> Option<u64> {
+        match self {
+            BunkerLink::Installed(id) => Some(id),
+            _ => None,
+        }
+    }
+    /// The bunker this unit is approaching, if any.
+    pub fn approaching(self) -> Option<u64> {
+        match self {
+            BunkerLink::Approaching(id) => Some(id),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BuildingGateRuntime {
     pub mission_18_active: bool,
@@ -425,12 +458,20 @@ pub struct GameEntity {
     /// occupied bunker remains a normal building blocker.
     #[serde(default)]
     pub bunker_occupant: Option<u64>,
+    /// Unit side of the bunker reciprocal link (approach + installed states).
+    #[serde(default)]
+    pub bunker_link: BunkerLink,
     /// Runtime state for `Gate=yes` building passability.
     ///
     /// Native `CanGarrison` accepts only mission `0x18` plus stable-open helper
     /// state. Opening and closing gates are still blockers for the same check.
     #[serde(default)]
     pub building_gate: Option<BuildingGateRuntime>,
+    /// Tank-bunker install state machine. `Some` on `Bunker=yes` buildings from
+    /// spawn (state `Idle` when empty); its presence marks the entity as a tank
+    /// bunker. Drives entry admission → install.
+    #[serde(default)]
+    pub bunker_runtime: Option<crate::sim::docking::bunker_install::BunkerRuntime>,
     /// Active deploy-fire phase. `None` = upright (default). `Some(Deploying)` /
     /// `Some(Deployed)` / `Some(Undeploying)` for the three machine states.
     /// Hashed for lockstep determinism. Set by `Command::ToggleInfantryDeploy`,
@@ -464,8 +505,13 @@ impl GameEntity {
     /// Ground-truth presence derived from the authoritative gates. A unit in the
     /// active set is `InCell` (this includes a dying-but-animating unit, which
     /// keeps ticking and stays in its cell until teardown); otherwise `Limbo`.
-    /// `Dying` is never *derived* in this slice — it is only ever set imperatively
-    /// during `uninit`, after which the slot is freed in the same call.
+    /// `Dying` is never *derived* here — it is set imperatively during `uninit`
+    /// (which also enqueues the slot for the end-of-tick drain). It cannot be
+    /// derived from `GameEntity` fields: `dying && !in_logic_vector` is shared by
+    /// a uninit'd corpse (field `Dying`) and a concealed-dead object mid-teardown
+    /// (field `Limbo`); only `pending_delete` membership tells them apart, and
+    /// that lives on the substrate. The presence invariant for surviving corpses
+    /// is therefore handled at the substrate-aware assert, not here.
     pub fn derived_presence(&self) -> Presence {
         if self.in_logic_vector {
             Presence::InCell
@@ -624,7 +670,9 @@ impl GameEntity {
             c4_plant: None,
             pending_c4_detonation: None,
             bunker_occupant: None,
+            bunker_link: BunkerLink::None,
             building_gate: None,
+            bunker_runtime: None,
             deploy_state: None,
             infantry: if category == EntityCategory::Infantry {
                 Some(InfantryRuntime::new())
@@ -752,6 +800,17 @@ impl GameEntity {
         self.health.current > 0
     }
 
+    /// Whether this entity is an active (non-corpse) object — the native
+    /// `IsAlive`-equivalent gate for mid-tick raw-store consumers. `false` once
+    /// `uninit` has flagged it `dying` (it then lingers in the store, off the
+    /// logic vector and occupancy grid, until the end-of-tick deferred-delete
+    /// drain). Distinct from `is_alive()` (health-based): a sold or captured
+    /// structure keeps its health but is `dying`, so vision/power/production/
+    /// movement scans must use THIS, not `health.current > 0`, to exclude it.
+    pub fn is_active(&self) -> bool {
+        !self.dying
+    }
+
     /// Whether this entity is in any deploy phase (Deploying, Deployed, or Undeploying).
     /// Used by the 7 movement-command handlers to silently ignore movement orders.
     pub fn is_deployed(&self) -> bool {
@@ -799,6 +858,35 @@ mod tests {
         assert!(e.order_intent.is_none());
         assert!(!e.building_damage_state_active);
         assert!(!e.on_bridge);
+    }
+
+    #[test]
+    fn occupancy_list_layer_from_on_bridge_not_loco_layer() {
+        // GATE A2 / P5 (L13): the object-list layer is selected by the occupant's
+        // OnBridge byte, NOT the locomotor/path layer. Pin a mismatch — loco.layer
+        // = Ground while on_bridge = true — and assert the list layer follows
+        // on_bridge (Bridge), the gamemd `Object+0x8C` selector.
+        use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
+        use crate::rules::locomotor_type::LocomotorKind;
+
+        let mut entity = GameEntity::test_default(1, "HTNK", "Americans", 5, 5);
+        let mut loco = LocomotorState::for_test_kind(LocomotorKind::Drive);
+        loco.layer = MovementLayer::Ground;
+        entity.locomotor = Some(loco);
+
+        entity.on_bridge = true;
+        assert_eq!(
+            entity.occupancy_list_layer(),
+            Some(MovementLayer::Bridge),
+            "list layer must follow on_bridge, not loco.layer"
+        );
+
+        entity.on_bridge = false;
+        assert_eq!(
+            entity.occupancy_list_layer(),
+            Some(MovementLayer::Ground),
+            "list layer must follow on_bridge when off the deck"
+        );
     }
 
     fn building_damage_state_entity(current: u16, max: u16) -> GameEntity {

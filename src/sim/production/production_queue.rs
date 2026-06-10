@@ -3,7 +3,7 @@
 //! Core queue loop driven by `tick_production()`. Handles credit deduction,
 //! timer advancement with dynamic rate scaling, and completed-item dispatch.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::rules::ruleset::RuleSet;
 use crate::sim::intern::InternedId;
@@ -16,13 +16,12 @@ use super::production_spawn::{
     mark_war_factory_spawn_contact,
 };
 use super::production_tech::{
-    build_option_for_owner, build_time_base_frames, effective_progress_rate_ppm_for_type,
-    effective_time_to_build_frames_for_type, estimated_real_time_ms, owner_matches_build_identity,
-    production_category_for_object, should_use_relaxed_build_mode, supports_live_production,
+    build_option_for_owner, build_time_base_frames, effective_time_to_build_frames_for_type,
+    estimated_real_time_ms, owner_matches_build_identity, production_category_for_object,
+    should_use_relaxed_build_mode, supports_live_production,
 };
 use super::production_types::*;
-
-const RA2_QUEUE_FRAME_MS: u64 = 66;
+use super::{CancelOutcome, PRODUCTION_STEPS};
 
 /// Set rally point for an owner's production output.
 pub fn set_rally_point_for_owner(sim: &mut Simulation, owner: &InternedId, rx: u16, ry: u16) {
@@ -91,40 +90,10 @@ pub(in crate::sim) fn credits_entry_for_owner<'a>(
     &mut sim.houses.get_mut(&key).unwrap().credits
 }
 
-pub(super) fn queues_for_owner_mut<'a>(
-    sim: &'a mut Simulation,
-    owner: &str,
-) -> &'a mut std::collections::BTreeMap<ProductionCategory, VecDeque<BuildQueueItem>> {
-    let key = sim.interner.intern(owner);
-    sim.production.queues_by_owner.entry(key).or_default()
-}
-
-pub(super) fn queue_for_owner_category_mut<'a>(
-    sim: &'a mut Simulation,
-    owner: &str,
-    category: ProductionCategory,
-) -> &'a mut VecDeque<BuildQueueItem> {
-    queues_for_owner_mut(sim, owner)
-        .entry(category)
-        .or_default()
-}
-
 pub(super) fn next_enqueue_order(sim: &mut Simulation) -> u64 {
     let order = sim.production.next_enqueue_order;
     sim.production.next_enqueue_order = sim.production.next_enqueue_order.saturating_add(1);
     order
-}
-
-pub(super) fn refresh_queue_states(queue: &mut VecDeque<BuildQueueItem>) {
-    for (idx, item) in queue.iter_mut().enumerate() {
-        if idx == 0 {
-            if !matches!(item.state, BuildQueueState::Paused | BuildQueueState::Done) {
-                item.state = BuildQueueState::Building;
-            }
-        } else {
-            item.state = BuildQueueState::Queued;
-        }
-    }
 }
 
 /// Seed deterministic resource nodes from parsed map overlays.
@@ -215,21 +184,25 @@ pub fn enqueue_by_type(sim: &mut Simulation, rules: &RuleSet, owner: &str, type_
         return false;
     }
     let total_base_frames: u32 = build_time_base_frames(rules, obj);
-    *credits_entry_for_owner(sim, owner) -= obj.cost;
+    // The upfront debit is RETIRED at the authority flip: the per-step `advance_one_step`
+    // (driven by `step_all` at the Phase-7 head) charges the cost down over the build
+    // against the one wallet (`house.credits`). Enqueue only checks affordability (the
+    // can-afford-to-START gate above) and appends the queue item.
     let owner_id = sim.interner.intern(owner);
     let type_interned = sim.interner.intern(type_id);
     let enqueue_order = next_enqueue_order(sim);
-    queue_for_owner_category_mut(sim, owner, queue_category).push_back(BuildQueueItem {
-        owner: owner_id,
-        type_id: type_interned,
+    let cost = obj.cost.max(0);
+    // P5d: append directly to the registry queue-of-record (create-or-append). With no
+    // active build the registry arms it inline (the retired reconcile SEED); otherwise it
+    // joins the FIFO tail. No upfront debit (the per-step charge owns the cost).
+    sim.production.factory_shadow.enqueue(
+        owner_id,
         queue_category,
-        state: BuildQueueState::Queued,
-        total_base_frames,
-        remaining_base_frames: total_base_frames,
-        progress_carry: 0,
+        type_interned,
         enqueue_order,
-    });
-    refresh_queue_states(queue_for_owner_category_mut(sim, owner, queue_category));
+        total_base_frames,
+        cost,
+    );
     true
 }
 
@@ -440,72 +413,39 @@ pub fn tick_production_with_overlay_registry(
     }
     let miner_config = crate::sim::miner::MinerConfig::from_general_rules(&rules.general);
     tick_resource_economy(sim, rules, &miner_config, path_grid, overlay_registry);
-    // Collect upfront: the loop body needs get_mut on queues_by_owner, so we
-    // must release the immutable borrow before iterating. InternedId is Copy.
-    let owner_categories: Vec<(InternedId, ProductionCategory)> = sim
-        .production
-        .queues_by_owner
-        .iter()
-        .flat_map(|(owner, queues)| queues.keys().map(move |category| (*owner, *category)))
-        .collect();
-    if owner_categories.is_empty() {
+    // P5d: the registry is the queue-of-record + completion authority. Collect the
+    // (owner, category) keys whose active build has completed (progress == 54, object held,
+    // not paused), in deterministic temporal (insertion_seq) order — the SAME order
+    // step_all charged in and the hash folds. The registry advances (StartNextQueued) on a
+    // successful delivery (C7), not on completion alone.
+    let completed_keys = sim.production.factory_shadow.completed_keys();
+    if completed_keys.is_empty() {
         return false;
     }
 
     let mut spawned_any = false;
-    for (owner_id, queue_category) in owner_categories {
+    for (owner_id, queue_category) in completed_keys {
         let owner_str = sim.interner.resolve(owner_id).to_string();
-        let progress_rate: u64 = sim
+        // The completed-held active object's type.
+        let Some(done_type) = sim
             .production
-            .queues_by_owner
-            .get(&owner_id)
-            .and_then(|queues| queues.get(&queue_category))
-            .and_then(|queue| queue.front())
-            .map(|front| {
-                let type_str = sim.interner.resolve(front.type_id);
-                effective_progress_rate_ppm_for_type(sim, rules, &owner_str, type_str)
-            })
-            .unwrap_or(PRODUCTION_RATE_SCALE);
-        let completed: Option<BuildQueueItem> = {
-            let queue = sim
-                .production
-                .queues_by_owner
-                .get_mut(&owner_id)
-                .and_then(|queues| queues.get_mut(&queue_category));
-            let Some(queue) = queue else { continue };
-            refresh_queue_states(queue);
-            if let Some(front) = queue.front_mut() {
-                if front.state == BuildQueueState::Done {
-                    Some(front.clone())
-                } else if front.state == BuildQueueState::Paused {
-                    None
-                } else {
-                    advance_queue_item(front, tick_ms, progress_rate);
-                    if front.remaining_base_frames > 0 {
-                        None
-                    } else {
-                        front.state = BuildQueueState::Done;
-                        Some(front.clone())
-                    }
-                }
-            } else {
-                None
-            }
+            .factory_shadow
+            .view(owner_id, queue_category)
+            .and_then(|v| v.object.map(|o| o.type_id))
+        else {
+            continue;
         };
-
-        let Some(done) = completed else { continue };
-
-        let done_type_str = sim.interner.resolve(done.type_id).to_string();
+        let done_type_str = sim.interner.resolve(done_type).to_string();
         let produced_category = rules.object(&done_type_str).map(|o| o.category);
         if produced_category == Some(crate::rules::object_type::ObjectCategory::Building) {
             sim.production
                 .ready_by_owner
-                .entry(done.owner)
+                .entry(owner_id)
                 .or_default()
-                .push_back(done.type_id);
+                .push_back(done_type);
             sim.sound_events
-                .push(crate::sim::world::SimSoundEvent::BuildingComplete { owner: done.owner });
-            pop_completed_front(sim, owner_id, queue_category, done.enqueue_order);
+                .push(crate::sim::world::SimSoundEvent::BuildingComplete { owner: owner_id });
+            advance_after_delivery(sim, rules, owner_id, queue_category);
             continue;
         }
         let is_vehicle =
@@ -527,7 +467,7 @@ pub fn tick_production_with_overlay_registry(
                 if let Some(obj) = rules.object(&done_type_str) {
                     *credits_entry_for_owner(sim, &owner_str) += obj.cost.max(0);
                 }
-                pop_completed_front(sim, owner_id, queue_category, done.enqueue_order);
+                advance_after_delivery(sim, rules, owner_id, queue_category);
                 continue;
             }
         } else {
@@ -553,7 +493,7 @@ pub fn tick_production_with_overlay_registry(
                 if let Some(obj) = rules.object(&done_type_str) {
                     *credits_entry_for_owner(sim, &owner_str) += obj.cost.max(0);
                 }
-                pop_completed_front(sim, owner_id, queue_category, done.enqueue_order);
+                advance_after_delivery(sim, rules, owner_id, queue_category);
                 continue;
             }
         }
@@ -590,7 +530,7 @@ pub fn tick_production_with_overlay_registry(
                 }
             }
             sim.sound_events
-                .push(crate::sim::world::SimSoundEvent::UnitComplete { owner: done.owner });
+                .push(crate::sim::world::SimSoundEvent::UnitComplete { owner: owner_id });
             // Auto-move newly produced unit to rally point (if set).
             // Skip for aircraft docked on helipad — they wait for orders.
             if helipad_airfield.is_none() {
@@ -632,7 +572,7 @@ pub fn tick_production_with_overlay_registry(
                 }
             }
             spawned_any = true;
-            pop_completed_front(sim, owner_id, queue_category, done.enqueue_order);
+            advance_after_delivery(sim, rules, owner_id, queue_category);
         } else {
             if is_vehicle {
                 continue;
@@ -640,88 +580,131 @@ pub fn tick_production_with_overlay_registry(
             if let Some(obj) = rules.object(&done_type_str) {
                 *credits_entry_for_owner(sim, &owner_str) += obj.cost.max(0);
             }
-            pop_completed_front(sim, owner_id, queue_category, done.enqueue_order);
+            advance_after_delivery(sim, rules, owner_id, queue_category);
         }
     }
 
-    sim.production.queues_by_owner.retain(|_, queues| {
-        queues.retain(|_, queue| !queue.is_empty());
-        !queues.is_empty()
-    });
+    // P5d: drop any factory left idle (delivered + empty queue) — replaces the
+    // `queues_by_owner.retain` prune.
+    sim.production.factory_shadow.prune_all_idle();
     spawned_any
 }
 
-fn pop_completed_front(
+/// C7 StartNextQueued after a successful delivery (or a completed-but-undeliverable refund):
+/// clear the delivered active object and promote the next queued entry into the active slot,
+/// cost-seeded from `rules`. Runs in `tick_production` (Phase 7, AFTER `step_all`), so the
+/// promoted build's cadence (`step_delay = 0`) starts on the NEXT tick's sweep — never the
+/// same tick it is promoted.
+fn advance_after_delivery(
     sim: &mut Simulation,
+    rules: &RuleSet,
     owner_id: InternedId,
     category: ProductionCategory,
-    enqueue_order: u64,
 ) {
-    let Some(queue) = sim
+    let next_cost = sim
         .production
-        .queues_by_owner
-        .get_mut(&owner_id)
-        .and_then(|queues| queues.get_mut(&category))
-    else {
-        return;
-    };
-    let should_pop = queue.front().is_some_and(|item| {
-        item.state == BuildQueueState::Done && item.enqueue_order == enqueue_order
-    });
-    if should_pop {
-        queue.pop_front();
-        refresh_queue_states(queue);
-    }
+        .factory_shadow
+        .peek_next_queued(owner_id, category)
+        .map(|t| sim.object_type(t, rules).map_or(0, |o| o.cost.max(0)))
+        .unwrap_or(0);
+    sim.production
+        .factory_shadow
+        .clear_active_and_advance(owner_id, category, next_cost, 0);
 }
 
 /// Build a queue snapshot for one owner, including progress metadata for UI.
+///
+/// P5d: projects the player-visible build queue from the registry (the queue-of-record),
+/// byte-identically to the retired `queues_by_owner` view. Per factory: the active build
+/// (head) then its FIFO tail. Sorted by `(category, stamp)` where stamp is the head's
+/// `insertion_seq` or a tail entry's `enqueue_order` — algebraically the same order as the
+/// retired `(queue_category, enqueue_order)` sort (D1: insertion_seq == active enqueue_order).
+///
+/// `state` is DERIVED (the `BuildQueueState` field is retired): head -> Paused if `manual`,
+/// else Done if complete-held (`progress >= PRODUCTION_STEPS`, the blocked-exit case that
+/// persists across ticks), else Building; tail -> Queued. `remaining` is DERIVED from
+/// `progress` (the retired B2 mirror: `active_total_base_frames * (54 - progress) / 54`,
+/// multiply-then-divide); a queued tail item has not started, so remaining == its total.
 pub fn queue_view_for_owner(sim: &Simulation, rules: &RuleSet, owner: &str) -> Vec<QueueItemView> {
-    let owner_id = sim.interner.get(owner);
-    let queues = owner_id.and_then(|id| sim.production.queues_by_owner.get(&id));
-    let Some(queues) = queues else {
+    let Some(owner_id) = sim.interner.get(owner) else {
         return Vec::new();
     };
-    let mut items: Vec<&BuildQueueItem> =
-        queues.iter().flat_map(|(_, queue)| queue.iter()).collect();
-    items.sort_by_key(|item| (item.queue_category, item.enqueue_order));
+    // (category, stamp, type_id, state, remaining_base_frames, total_base_frames)
+    let mut items: Vec<(ProductionCategory, u64, InternedId, BuildQueueState, u32, u32)> =
+        Vec::new();
+    for f in sim.production.factory_shadow.iter_insertion_ordered() {
+        if f.owner != owner_id {
+            continue;
+        }
+        if let Some(obj) = f.object.as_ref() {
+            let state = if f.manual {
+                BuildQueueState::Paused
+            } else if f.progress >= PRODUCTION_STEPS {
+                BuildQueueState::Done
+            } else {
+                BuildQueueState::Building
+            };
+            let steps_left = PRODUCTION_STEPS.saturating_sub(f.progress.min(PRODUCTION_STEPS));
+            let remaining = ((u64::from(f.active_total_base_frames) * u64::from(steps_left))
+                / u64::from(PRODUCTION_STEPS)) as u32;
+            items.push((
+                f.category,
+                f.insertion_seq,
+                obj.type_id,
+                state,
+                remaining,
+                f.active_total_base_frames,
+            ));
+        }
+        for e in &f.queue {
+            items.push((
+                f.category,
+                e.enqueue_order,
+                e.type_id,
+                BuildQueueState::Queued,
+                e.total_base_frames,
+                e.total_base_frames,
+            ));
+        }
+    }
+    items.sort_by_key(|&(category, stamp, ..)| (category, stamp));
     items
         .into_iter()
-        .map(|q| {
-            let type_str = sim.interner.resolve(q.type_id);
-            let (display_name, remaining_frames, total_frames) = rules
-                .object(type_str)
-                .map(|obj| {
-                    (
-                        obj.name.clone().unwrap_or_else(|| type_str.to_string()),
-                        effective_time_to_build_frames_for_type(
-                            sim,
-                            rules,
-                            owner,
-                            type_str,
-                            q.remaining_base_frames,
-                        ),
-                        effective_time_to_build_frames_for_type(
-                            sim,
-                            rules,
-                            owner,
-                            type_str,
-                            q.total_base_frames.max(1),
-                        ),
-                    )
-                })
-                .unwrap_or_else(|| {
-                    let frames = q.remaining_base_frames;
-                    (type_str.to_string(), frames, q.total_base_frames.max(1))
-                });
-            QueueItemView {
-                type_id: q.type_id,
-                display_name,
-                queue_category: q.queue_category,
-                state: q.state,
-                remaining_ms: estimated_real_time_ms(remaining_frames, PRODUCTION_RATE_SCALE),
-                total_ms: estimated_real_time_ms(total_frames, PRODUCTION_RATE_SCALE),
-            }
-        })
+        .map(
+            |(queue_category, _stamp, type_id, state, remaining_base, total_base)| {
+                let type_str = sim.interner.resolve(type_id);
+                let (display_name, remaining_frames, total_frames) = rules
+                    .object(type_str)
+                    .map(|obj| {
+                        (
+                            obj.name.clone().unwrap_or_else(|| type_str.to_string()),
+                            effective_time_to_build_frames_for_type(
+                                sim,
+                                rules,
+                                owner,
+                                type_str,
+                                remaining_base,
+                            ),
+                            effective_time_to_build_frames_for_type(
+                                sim,
+                                rules,
+                                owner,
+                                type_str,
+                                total_base.max(1),
+                            ),
+                        )
+                    })
+                    .unwrap_or_else(|| (type_str.to_string(), remaining_base, total_base.max(1)));
+                QueueItemView {
+                    type_id,
+                    display_name,
+                    queue_category,
+                    state,
+                    remaining_ms: estimated_real_time_ms(remaining_frames, PRODUCTION_RATE_SCALE),
+                    total_ms: estimated_real_time_ms(total_frames, PRODUCTION_RATE_SCALE),
+                }
+            },
+        )
         .collect()
 }
 
@@ -750,47 +733,75 @@ pub fn ready_buildings_for_owner(
         .unwrap_or_default()
 }
 
-/// Cancel the most recently queued item for this owner and refund full cost.
-pub fn cancel_last_for_owner(sim: &mut Simulation, rules: &RuleSet, owner: &str) -> bool {
+/// Cancel the most recently queued item for this owner.
+///
+/// Post-flip refund rule: a queued (tail) item was never charged, so removing it
+/// refunds NOTHING; only the active build (a single-item queue, where the most-recent
+/// item IS the front) is abandoned with the C8 PARTIAL refund (`original_balance -
+/// balance`) routed through the registry against the one wallet (`house.credits`).
+pub fn cancel_last_for_owner(sim: &mut Simulation, _rules: &RuleSet, owner: &str) -> bool {
     let owner_id = sim.interner.intern(owner);
-    let Some(category) = ({
-        sim.production.queues_by_owner.get(&owner_id).and_then(|q| {
-            q.iter()
-                .filter_map(|(category, queue)| {
-                    queue.back().map(|item| (*category, item.enqueue_order))
-                })
-                .max_by_key(|(_, order)| *order)
-                .map(|(category, _)| category)
-        })
-    }) else {
-        return false;
+    // P5d: the registry owns the queue-of-record. `cancel_last` finds the global-max stamp
+    // across the owner's factories (tail-back, else the active build) and removes it — a
+    // tail item uncharged (QueuedRemoved), the active build with the C8 PARTIAL refund. The
+    // abandon arm only fires for an empty tail, so no StartNextQueued advance is needed.
+    let mut registry = std::mem::take(&mut sim.production.factory_shadow);
+    let outcome = if let Some(house) = sim.houses.get_mut(&owner_id) {
+        let mut wallet = std::mem::take(&mut house.economy);
+        wallet.credits = house.credits;
+        let outcome = registry.cancel_last(owner_id, &mut wallet);
+        house.credits = wallet.credits;
+        house.economy = wallet;
+        outcome
+    } else {
+        let mut throwaway = crate::sim::economy::Economy::default();
+        registry.cancel_last(owner_id, &mut throwaway)
     };
-    let Some(item) = sim
-        .production
-        .queues_by_owner
-        .get_mut(&owner_id)
-        .and_then(|owner_queues| owner_queues.get_mut(&category))
-        .and_then(|queue| {
-            let item = queue.pop_back();
-            refresh_queue_states(queue);
-            item
-        })
-    else {
-        return false;
-    };
-    let type_str = sim.interner.resolve(item.type_id).to_string();
-    if let Some(obj) = rules.object(&type_str) {
-        *credits_entry_for_owner(sim, owner) += obj.cost.max(0);
-    }
-    sim.production.queues_by_owner.retain(|_, queues| {
-        queues.retain(|_, queue| !queue.is_empty());
-        !queues.is_empty()
-    });
-    true
+    registry.prune_all_idle();
+    sim.production.factory_shadow = registry;
+    matches!(
+        outcome,
+        CancelOutcome::QueuedRemoved | CancelOutcome::AbandonedActive { .. }
+    )
 }
 
-/// Cancel one queued item of a specific type_id (right-click cameo in RA2).
-/// Removes the last-enqueued instance of that type, refunding its cost.
+/// Route a cancel of `type_id` for (owner, category) through the registry `cancel_one`
+/// (the single precedence source: queued-tail FIRST, else active-abandon), charging the
+/// C8 partial refund (or none, for a queued copy) against the ONE wallet
+/// (`house.credits`) via a per-sweep `Economy` shim. The caller mirrors the resulting
+/// queue change into `queues_by_owner`.
+fn registry_cancel_active(
+    sim: &mut Simulation,
+    owner_id: InternedId,
+    category: ProductionCategory,
+    type_id: InternedId,
+) -> CancelOutcome {
+    let mut registry = std::mem::take(&mut sim.production.factory_shadow);
+    let outcome = if let Some(house) = sim.houses.get_mut(&owner_id) {
+        let mut wallet = std::mem::take(&mut house.economy);
+        wallet.credits = house.credits; // load the authoritative balance into the shim
+        let outcome = registry.cancel_one(owner_id, category, type_id, &mut wallet);
+        house.credits = wallet.credits; // store the (possibly refunded) balance back
+        house.economy = wallet;
+        outcome
+    } else {
+        // No house to refund into; the cancel still resolves the registry deterministically.
+        let mut throwaway = crate::sim::economy::Economy::default();
+        registry.cancel_one(owner_id, category, type_id, &mut throwaway)
+    };
+    sim.production.factory_shadow = registry;
+    outcome
+}
+
+/// Cancel one queued/active production of `type_id` for this owner (right-click cameo).
+///
+/// Routed through the registry `cancel_one` (the single precedence source): a QUEUED
+/// tail copy is removed FIRST (FIRST front-to-back match, NO refund — a queued item was
+/// never charged), else the ACTIVE build is abandoned with the C8 PARTIAL refund
+/// (`original_balance - balance`) into the one wallet (`house.credits`). This replaces
+/// the legacy `.rev()` last-match + full-cost refund (a DRIFT under the per-step charge).
+/// When neither matches (or the build is complete-but-held), falls back to the
+/// completed-building ready queue.
 pub fn cancel_by_type_for_owner(
     sim: &mut Simulation,
     rules: &RuleSet,
@@ -799,49 +810,44 @@ pub fn cancel_by_type_for_owner(
 ) -> bool {
     let owner_id = sim.interner.intern(owner);
     let type_interned = sim.interner.intern(type_id);
-    let target = sim
-        .production
-        .queues_by_owner
-        .get(&owner_id)
-        .and_then(|owner_queues| {
-            for (category, queue) in owner_queues.iter() {
-                let idx = queue
-                    .iter()
-                    .enumerate()
-                    .rev()
-                    .find(|(_, item)| item.type_id == type_interned)
-                    .map(|(i, _)| i);
-                if let Some(idx) = idx {
-                    return Some((*category, idx));
-                }
-            }
-            None
-        });
-    let Some((category, idx)) = target else {
-        // Fallback: check the ready_by_owner queue (completed buildings awaiting placement).
-        return cancel_ready_by_type_for_owner(sim, rules, owner, type_id);
+    // The registry is keyed by ProductionCategory; resolve it from the type (the same
+    // routing `enqueue_by_type` used, so the item is in this category's queue).
+    let category = match rules.object(type_id) {
+        Some(obj) => production_category_for_object(obj),
+        None => return cancel_ready_by_type_for_owner(sim, rules, owner, type_id),
     };
-    let removed = sim
-        .production
-        .queues_by_owner
-        .get_mut(&owner_id)
-        .and_then(|queues| queues.get_mut(&category))
-        .and_then(|queue| {
-            let item = queue.remove(idx);
-            refresh_queue_states(queue);
-            item
-        });
-    if let Some(removed) = removed {
-        let removed_type_str = sim.interner.resolve(removed.type_id).to_string();
-        if let Some(obj) = rules.object(&removed_type_str) {
-            *credits_entry_for_owner(sim, owner) += obj.cost.max(0);
+
+    match registry_cancel_active(sim, owner_id, category, type_interned) {
+        CancelOutcome::QueuedRemoved => {
+            // A queued (tail) copy was removed in the registry; the active build keeps
+            // running. Sweep any now-idle factory (none here, but keep it uniform).
+            sim.production.factory_shadow.prune_all_idle();
+            true
+        }
+        CancelOutcome::AbandonedActive { .. } => {
+            // C7: the active build was abandoned (object cleared, tail intact). Promote the
+            // next queued entry into the active slot, cost-seeded. This runs in the COMMAND
+            // phase (before this tick's `step_all`), so step_delay = 1 keeps the promoted
+            // build's first charge on the next tick (the pre-P5d reconcile-at-tail schedule).
+            if let Some(next_type) =
+                sim.production.factory_shadow.peek_next_queued(owner_id, category)
+            {
+                let cost = sim
+                    .object_type(next_type, rules)
+                    .map(|o| o.cost.max(0))
+                    .unwrap_or(0);
+                sim.production
+                    .factory_shadow
+                    .clear_active_and_advance(owner_id, category, cost, 1);
+            }
+            sim.production.factory_shadow.prune_all_idle();
+            true
+        }
+        CancelOutcome::NoMatch => {
+            // Not an active/queued build (or a complete-but-held one) -> the ready queue.
+            cancel_ready_by_type_for_owner(sim, rules, owner, type_id)
         }
     }
-    sim.production.queues_by_owner.retain(|_, queues| {
-        queues.retain(|_, q| !q.is_empty());
-        !queues.is_empty()
-    });
-    true
 }
 
 /// Cancel a completed building from the ready_by_owner queue (awaiting placement).
@@ -876,25 +882,6 @@ fn cancel_ready_by_type_for_owner(
         *credits_entry_for_owner(sim, owner) += obj.cost.max(0);
     }
     true
-}
-
-fn advance_queue_item(item: &mut BuildQueueItem, tick_ms: u32, rate_ppm: u64) {
-    if item.remaining_base_frames == 0 || tick_ms == 0 {
-        return;
-    }
-    let frame_scale = RA2_QUEUE_FRAME_MS.saturating_mul(PRODUCTION_RATE_SCALE);
-    let scaled_progress = u64::from(tick_ms)
-        .saturating_mul(rate_ppm)
-        .saturating_add(item.progress_carry);
-    let progressed_base_frames = (scaled_progress / frame_scale) as u32;
-    item.progress_carry = scaled_progress % frame_scale;
-
-    if progressed_base_frames >= item.remaining_base_frames {
-        item.remaining_base_frames = 0;
-        item.progress_carry = 0;
-    } else {
-        item.remaining_base_frames -= progressed_base_frames;
-    }
 }
 
 fn pick_default_buildable_unit(

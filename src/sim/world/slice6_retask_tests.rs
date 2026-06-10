@@ -66,8 +66,15 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 
 /// The pre-slice baseline. Captured from `dev` BEFORE the Slice-6 edits (run the
 /// gate once, read the failure's `left:` value, paste it here). Slice 6 is
-/// behavior-preserving, so this constant MUST NOT change across the migration.
-const SLICE6_BASELINE_HASH: u64 = 17281687802996982350;
+/// behavior-preserving, so this constant MUST NOT change for a Slice-6 *behavior*
+/// reason. It DOES shift when a later slice adds a new field to the state hash:
+/// the scripted scenario has no bunkers, so the value moved only because the
+/// tank-bunker lifecycle state (`bunker_link`, `bunker_runtime`) now joins the
+/// hash for every entity at its default — a hash-composition change, not a
+/// behavior drift. Re-baselined for Slice 7b, then Slice 8 (MissionCom folded
+/// into state_hash — every entity now contributes its default mission bytes;
+/// composition change, not a behavior drift).
+const SLICE6_BASELINE_HASH: u64 = 11204055998814135587;
 
 #[test]
 fn replay_hash_stable_through_slice6() {

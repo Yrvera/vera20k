@@ -1388,12 +1388,18 @@ fn drop_in_bridge_deck_entities(sim: &mut Simulation, rx: u16, ry: u16) {
             ));
         }
         if let Some((rx, ry, sub_cell, insertion)) = relayer {
-            sim.substrate.occupancy.move_entity(
+            // DropIn relayer (GATE A2 / P6): the deck object list is relayered DOWN
+            // — remove the occupant from the BRIDGE object-list layer (its layer
+            // before the collapse) and re-add it on the GROUND layer in the same
+            // cell. Authoritative two-layer move: the old half observes the deck
+            // layer, the new half the ground layer.
+            sim.substrate.occupancy.move_entity_layered(
                 rx,
                 ry,
                 rx,
                 ry,
                 id,
+                MovementLayer::Bridge,
                 MovementLayer::Ground,
                 sub_cell,
                 insertion,
@@ -1704,6 +1710,53 @@ mod tests {
         let cell = sim.substrate.occupancy.get(5, 5).expect("occupancy retained");
         assert_eq!(cell.count_on(MovementLayer::Ground), 1);
         assert_eq!(cell.count_on(MovementLayer::Bridge), 0);
+    }
+
+    /// P6 / GATE A2: collapse DropIn relayers the persistent occupancy entry from
+    /// the BRIDGE object-list layer to the GROUND layer (not merely clearing the
+    /// entity's `on_bridge` byte). The deck list is relayered DOWN — a verified
+    /// authoritative two-layer move (remove on Bridge, add on Ground in-place).
+    #[test]
+    fn collapse_dropin_relayers_occupancy_to_ground() {
+        let mut sim = Simulation::new();
+        sim.resolved_terrain = Some(water_below_bridge_terrain(3));
+        let id = spawn_deck_unit(&mut sim);
+        // Occupant starts on the BRIDGE object-list layer at (5,5).
+        sim.substrate.occupancy.add(
+            5,
+            5,
+            id,
+            MovementLayer::Bridge,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        assert_eq!(
+            sim.substrate
+                .occupancy
+                .count_on_layer(5, 5, MovementLayer::Bridge),
+            1,
+            "precondition: occupant on the bridge layer"
+        );
+
+        drop_in_bridge_deck_entities(&mut sim, 5, 5);
+
+        // After DropIn: the occupant is gone from the bridge layer and present on
+        // the ground layer of the SAME cell.
+        assert_eq!(
+            sim.substrate
+                .occupancy
+                .count_on_layer(5, 5, MovementLayer::Bridge),
+            0,
+            "deck-layer occupancy relayered away"
+        );
+        assert_eq!(
+            sim.substrate
+                .occupancy
+                .count_on_layer(5, 5, MovementLayer::Ground),
+            1,
+            "occupancy dropped in onto the ground layer"
+        );
+        assert!(sim.substrate.occupancy.contains_entity(5, 5, id));
     }
 
     /// Build a minimal RuleSet whose `bridge_rules.voxel_max` matches the

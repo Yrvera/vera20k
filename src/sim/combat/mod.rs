@@ -19,7 +19,8 @@
 
 pub(crate) mod cell_spread;
 pub(crate) mod combat_aoe;
-mod combat_fire_gate;
+pub(crate) mod combat_fire_gate;
+pub(crate) mod damage;
 pub(crate) mod combat_targeting;
 pub(crate) mod combat_weapon;
 pub(crate) mod fire_decision;
@@ -1159,8 +1160,8 @@ fn destroy_ore_at_impact(
     if ore_damage == 0 {
         return;
     }
-    let spread_radius = cell_spread.to_num::<u32>();
-    for &(dx, dy) in self::cell_spread::cells_in_spread(spread_radius) {
+    // gamemd cell sweep: count_table[ftol(CellSpread + 0.99)] entries, exact order.
+    for &(dx, dy) in self::cell_spread::splash_cells(cell_spread) {
         let cx = impact_rx as i32 + dx as i32;
         let cy = impact_ry as i32 + dy as i32;
         if cx >= 0 && cy >= 0 {
@@ -1171,6 +1172,35 @@ fn destroy_ore_at_impact(
             });
         }
     }
+}
+
+/// Transient per-tick bag of the Phase-2 fire-emission outputs. Bundles the
+/// emit vectors so the per-attacker fire body (`resolve_attacker_fire`) can push
+/// through one `&mut` handle. Never stored on `Simulation`, never serialized,
+/// never hashed — destructured back into the named locals after the Phase-2 loop.
+#[derive(Default)]
+pub(crate) struct CombatEmit {
+    /// (target_id, damage, attacker_id, warhead_id)
+    pub(crate) damage_events: Vec<(u64, u16, u64, InternedId)>,
+    pub(crate) remove_attack: Vec<u64>,
+    /// (attacker_id, new_target_id)
+    pub(crate) retarget_events: Vec<(u64, u64)>,
+    pub(crate) fire_events: Vec<SimFireEvent>,
+    pub(crate) reveal_events: Vec<RevealEvent>,
+    pub(crate) bridge_damage_events: Vec<BridgeDamageEvent>,
+    pub(crate) wall_damage_events: Vec<WallDamageEvent>,
+    pub(crate) terrain_damage_events: Vec<TerrainDamageEvent>,
+    pub(crate) tiberium_reduction_requests: Vec<TiberiumReductionRequest>,
+    pub(crate) explosion_effects: Vec<ExplosionEffect>,
+    pub(crate) smudge_spawn_requests: Vec<SmudgeSpawnRequest>,
+    /// (id, burst_rem, burst_delay, rof_cd)
+    pub(crate) burst_updates: Vec<(u64, u8, u8, u16)>,
+    /// aircraft that fired this tick
+    pub(crate) ammo_deduct: Vec<u64>,
+    /// building IDs to advance fire index
+    pub(crate) garrison_advance: Vec<u64>,
+    pub(crate) pending_infantry_updates: Vec<(u64, Option<PendingInfantryFire>)>,
+    pub(crate) animation_switches: Vec<(u64, SequenceKind)>,
 }
 
 /// Advance combat with optional owner visibility gating and sound event sink.
@@ -1375,8 +1405,17 @@ pub fn tick_combat_with_fog(
     // Phase 1: snapshot all attackers and advance cooldowns / burst delays.
     let mut snapshots: Vec<AttackerSnapshot> = Vec::new();
     for &id in &keys {
-        // Mutable borrow: tick cooldowns and extract entity data + garrison cargo info.
-        let (snap_base, garrison_cargo) = {
+        // Mutable borrow: tick cooldowns and capture the per-attacker scalars +
+        // garrison cargo info. Entity field-reads move into `build_attacker_snapshot`
+        // (pure) below, after this borrow releases.
+        let (
+            attack_target,
+            cooldown_ticks,
+            burst_remaining,
+            burst_delay_ticks,
+            pending_infantry_fire,
+            garrison_cargo,
+        ) = {
             let entity = match entities.get_mut(id) {
                 Some(e) => e,
                 None => continue,
@@ -1417,66 +1456,26 @@ pub fn tick_combat_with_fog(
                     None
                 };
 
-            let base = (
-                entity.stable_id,
-                entity.owner,
-                entity.category,
+            (
                 attack_target,
-                entity.position.rx,
-                entity.position.ry,
-                entity.position.z,
-                entity.position.sub_x,
-                entity.position.sub_y,
-                entity.type_ref,
-                entity.facing,
-                entity.veterancy,
                 cooldown_ticks,
-                entity.animation.as_ref().map(|a| a.sequence),
-                entity.animation.as_ref().map(|a| a.frame_index),
-                entity
-                    .infantry
-                    .as_ref()
-                    .is_some_and(|infantry| infantry.is_prone),
-                entity.is_fully_deployed(),
-                entity.movement_target.is_some(),
-                pending_infantry_fire,
-                entity.barrel_facing,
                 burst_remaining,
                 burst_delay_ticks,
-                entity.weapon_override,
-            );
-            (base, garrison_cargo)
+                pending_infantry_fire,
+                garrison_cargo,
+            )
         }; // mutable borrow released
 
-        let (
-            stable_id,
-            owner,
-            category,
-            target,
-            pos_rx,
-            pos_ry,
-            pos_z,
-            sub_x,
-            sub_y,
-            type_id,
-            facing,
-            veterancy,
-            cooldown_ticks,
-            animation_sequence,
-            animation_frame,
-            is_prone,
-            is_fully_deployed,
-            has_movement,
-            pending_infantry_fire,
-            barrel_facing,
-            burst_remaining,
-            burst_delay_ticks,
-            weapon_override,
-        ) = snap_base;
-
-        // Resolve garrison snapshot from cargo info (read-only borrow).
+        // Re-fetch the attacker immutably (nothing mutated `entities` since the
+        // borrow above released) and resolve any garrison occupant, then build the
+        // snapshot through the shared `build_attacker_snapshot` so the field-reads
+        // stay byte-identical to the per-object Fire→Facing host.
+        let entity = match entities.get(id) {
+            Some(e) => e,
+            None => continue,
+        };
         let garrison = garrison_cargo.and_then(|(fire_idx, count, occ_id)| {
-            let obj = rules.object(interner.resolve(type_id))?;
+            let obj = rules.object(interner.resolve(entity.type_ref))?;
             if !obj.can_be_occupied || !obj.can_occupy_fire {
                 return None;
             }
@@ -1491,32 +1490,15 @@ pub fn tick_combat_with_fog(
             })
         });
 
-        snapshots.push(AttackerSnapshot {
-            stable_id,
-            owner,
-            category,
-            target,
-            pos_rx,
-            pos_ry,
-            pos_z,
-            sub_x,
-            sub_y,
-            type_id,
-            facing,
-            veterancy,
+        snapshots.push(build_attacker_snapshot(
+            entity,
+            attack_target,
             cooldown_ticks,
-            animation_sequence,
-            animation_frame,
-            is_prone,
-            is_fully_deployed,
-            has_movement,
-            pending_infantry_fire,
-            barrel_facing,
             burst_remaining,
             burst_delay_ticks,
-            weapon_override,
+            pending_infantry_fire,
             garrison,
-        });
+        ));
     }
     // Native combat resolves each object inline during the single live-object
     // (reveal/insertion-order) AI walk, so firing/damage/kill-credit order is
@@ -1537,598 +1519,48 @@ pub fn tick_combat_with_fog(
         )
     });
 
-    // Phase 2: process each attacker against its target.
-    // (target_id, damage, attacker_id, warhead_id)
-    let mut damage_events: Vec<(u64, u16, u64, InternedId)> = Vec::new();
-    let mut remove_attack: Vec<u64> = Vec::new();
-    let mut retarget_events: Vec<(u64, u64)> = Vec::new(); // (attacker_id, new_target_id)
-    let mut fire_events: Vec<SimFireEvent> = Vec::new();
-    let mut reveal_events: Vec<RevealEvent> = Vec::new();
-    let mut bridge_damage_events: Vec<BridgeDamageEvent> = Vec::new();
-    let mut wall_damage_events: Vec<WallDamageEvent> = Vec::new();
-    let mut terrain_damage_events: Vec<TerrainDamageEvent> = Vec::new();
-    let mut tiberium_reduction_requests: Vec<TiberiumReductionRequest> = Vec::new();
-    let mut explosion_effects: Vec<ExplosionEffect> = Vec::new();
-    let mut smudge_spawn_requests: Vec<SmudgeSpawnRequest> = Vec::new();
-    let mut burst_updates: Vec<(u64, u8, u8, u16)> = Vec::new(); // (id, burst_rem, burst_delay, rof_cd)
-    let mut ammo_deduct: Vec<u64> = Vec::new(); // aircraft that fired this tick
-    let mut garrison_advance: Vec<u64> = Vec::new(); // building IDs to advance fire index
-    let mut pending_infantry_updates: Vec<(u64, Option<PendingInfantryFire>)> = Vec::new();
-    let mut animation_switches: Vec<(u64, SequenceKind)> = Vec::new();
-
+    // Phase 2: per-attacker fire decision + emission, in live-LOGIC snapshot
+    // order. Each attacker is resolved through `resolve_attacker_fire` (the
+    // reusable per-object fire body); emission order is identical to the prior
+    // inline loop, so the downstream scenario_rng smudge cursor is unmoved.
+    // Fire is category-agnostic (Units fire through the same body here); Unit
+    // FACING is owned separately by `unit_post::tick_unit_facing` post-combat.
+    let mut emit = CombatEmit::default();
     for snap in &snapshots {
-        // Pre-compute garrison scan range for retargeting (includes +1 buffer).
-        let garrison_retarget_range: Option<SimFixed> = snap.garrison.as_ref().map(|gs| {
-            let cells = gs.half_foundation as i32 + 1 + rules.garrison_rules.occupy_weapon_range;
-            SimFixed::from_num(cells.max(1))
-        });
-        let obj = match rules.object(interner.resolve(snap.type_id)) {
-            Some(o) => o,
-            None => {
-                remove_attack.push(snap.stable_id);
-                continue;
-            }
-        };
-
-        // Check if target is alive and get its data.
-        // For structures, target_coords returns the foundation center instead
-        // of the NW corner.
-        // For Cell targets (force-fire on terrain), synthesize a target_data
-        // tuple: cell-center coords, "always alive" (cells don't despawn), no
-        // category/type/owner — the unit fires its primary weapon and splash
-        // delivers the damage.
-        let target_data: Option<(
-            u16,
-            u16,
-            SimFixed,
-            SimFixed,
-            u16,
-            EntityCategory,
-            InternedId,
-            InternedId,
-            bool,
-        )> = match snap.target {
-            TargetKind::Entity(target_id) => entities.get(target_id).map(|t| {
-                let (trx, try_, tsx, tsy) = target_coords(t, Some(rules), interner);
-                (
-                    trx,
-                    try_,
-                    tsx,
-                    tsy,
-                    t.health.current,
-                    combat_target_category(t, rules, interner),
-                    t.type_ref,
-                    t.owner,
-                    t.category == EntityCategory::Infantry && infantry::is_prone_for_damage(t),
-                )
-            }),
-            TargetKind::Cell(rx, ry) => {
-                // Synthetic target_data for force-fire-on-cell.
-                // - hp = 1 so the "target dead" retarget branch never fires for cells.
-                // - category = Structure so weapon-vs-armor selection picks an
-                //   anti-structure weapon when one exists; otherwise falls
-                //   through to primary (matches "fire your default weapon at
-                //   the ground" intent).
-                // - type_ref/owner = attacker's own — friendly-fire check
-                //   sees self-vs-self and is short-circuited downstream.
-                let (trx, try_, tsx, tsy) = cell_center_coords(rx, ry);
-                Some((
-                    trx,
-                    try_,
-                    tsx,
-                    tsy,
-                    1u16,
-                    EntityCategory::Structure,
-                    snap.type_id,
-                    snap.owner,
-                    false,
-                ))
-            }
-        };
-
-        let (
-            target_rx,
-            target_ry,
-            target_sub_x,
-            target_sub_y,
-            _target_hp,
-            target_cat,
-            target_type_ref,
-            target_owner,
-            target_prone_infantry,
-        ) = match target_data {
-            Some((rx, ry, sx, sy, hp, cat, tr, own, prone)) if hp > 0 => {
-                (rx, ry, sx, sy, hp, cat, tr, own, prone)
-            }
-            _ => {
-                if let Some(new_target) = acquire_best_target(
-                    entities,
-                    rules,
-                    interner,
-                    snap,
-                    obj,
-                    fog,
-                    garrison_retarget_range,
-                    terrain,
-                ) {
-                    retarget_events.push((snap.stable_id, new_target));
-                } else {
-                    remove_attack.push(snap.stable_id);
-                }
-                continue;
-            }
-        };
-
-        let target_armor: String = rules
-            .object(interner.resolve(target_type_ref))
-            .map(|o| o.armor.clone())
-            .unwrap_or_else(|| "none".to_string());
-
-        // Weapon selection: garrison uses occupant's OccupyWeapon, standard uses IFV/Primary/Secondary.
-        let (selected, is_garrison) = if let Some(ref gs) = snap.garrison {
-            match combat_weapon::select_garrison_weapon(
-                rules,
-                interner.resolve(gs.occupant_type_id),
-                gs.occupant_veterancy,
-                target_cat,
-                &target_armor,
-            ) {
-                Some(s) => (s, true),
-                None => {
-                    remove_attack.push(snap.stable_id);
-                    continue;
-                }
-            }
-        } else {
-            let deploy_fire_weapon_active = entities
-                .get(snap.stable_id)
-                .is_some_and(uses_deploy_fire_weapon);
-            let selected = if deploy_fire_weapon_active {
-                select_deploy_fire_weapon(
-                    rules,
-                    obj,
-                    target_cat,
-                    &target_armor,
-                    snap.veterancy,
-                    snap.weapon_override,
-                )
-            } else {
-                select_weapon_with_override(
-                    rules,
-                    obj,
-                    target_cat,
-                    &target_armor,
-                    snap.veterancy,
-                    snap.weapon_override,
-                )
-            };
-            match selected {
-                Some(s) => (s, false),
-                None => {
-                    remove_attack.push(snap.stable_id);
-                    continue;
-                }
-            }
-        };
-        let weapon = selected.weapon;
-
-        // Friendly-fire and visibility-driven retarget logic only applies to
-        // Entity targets. Cell targets are an explicit player force-fire — the
-        // player intentionally chose this cell (allies, ground, anything), so
-        // never auto-retarget away from a Cell.
-        let is_cell_target = matches!(snap.target, TargetKind::Cell(_, _));
-        if let Some(fog_state) = fog {
-            let snap_owner_str = interner.resolve(snap.owner);
-            let target_owner_str = interner.resolve(target_owner);
-            if !is_cell_target && fog_state.is_friendly(snap_owner_str, target_owner_str) {
-                if let Some(new_target) = acquire_best_target(
-                    entities,
-                    rules,
-                    interner,
-                    snap,
-                    obj,
-                    fog,
-                    garrison_retarget_range,
-                    terrain,
-                ) {
-                    retarget_events.push((snap.stable_id, new_target));
-                } else {
-                    remove_attack.push(snap.stable_id);
-                }
-                continue;
-            }
-            if !is_cell_target && !fog_state.is_cell_visible(snap.owner, target_rx, target_ry) {
-                if let Some(new_target) = acquire_best_target(
-                    entities,
-                    rules,
-                    interner,
-                    snap,
-                    obj,
-                    fog,
-                    garrison_retarget_range,
-                    terrain,
-                ) {
-                    retarget_events.push((snap.stable_id, new_target));
-                } else {
-                    remove_attack.push(snap.stable_id);
-                }
-                continue;
-            }
-        }
-
-        let infantry_fire_sync = snap.category == EntityCategory::Infantry
-            && !is_garrison
-            && snap.animation_frame.is_some();
-        let mut pending_at_fire_frame = false;
-        if infantry_fire_sync {
-            if let Some(pending) = snap.pending_infantry_fire {
-                if snap.has_movement || snap.animation_sequence != Some(pending.sequence) {
-                    pending_infantry_updates.push((snap.stable_id, None));
-                    animation_switches.push((
-                        snap.stable_id,
-                        infantry_idle_sequence(snap.is_prone, snap.is_fully_deployed),
-                    ));
-                    continue;
-                }
-                if snap.animation_frame != Some(pending.fire_frame) {
-                    continue;
-                }
-                pending_at_fire_frame = true;
-            }
-        }
-
-        // Range check (lepton-precise, sub-cell aware).
-        // Garrison range: (half_foundation + OccupyWeaponRange) cells (no +1 buffer for fire).
-        let effective_range = if let Some(ref gs) = snap.garrison {
-            let cells = gs.half_foundation as i32 + rules.garrison_rules.occupy_weapon_range;
-            SimFixed::from_num(cells.max(1))
-        } else {
-            weapon.range
-        };
-        // Range failure: range alone does not clear or retarget — the pursuit
-        // pre-combat stage walks the unit into range. Combat tick just skips
-        // this tick's fire attempt and lets the unit close the gap.
-        let in_range_for_fire = if !is_garrison && effective_range == weapon.range {
-            // Standard fire: 3D check via compute_in_range when terrain available.
-            match (terrain, entities.get(snap.stable_id)) {
-                (Some(t), Some(attacker_entity)) => {
-                    let src = (
-                        snap.pos_rx as i64 * 256 + snap.sub_x.to_num::<i64>(),
-                        snap.pos_ry as i64 * 256 + snap.sub_y.to_num::<i64>(),
-                        in_range::effective_z_leptons(attacker_entity),
-                    );
-                    in_range::compute_in_range(
-                        attacker_entity,
-                        src,
-                        &snap.target,
-                        weapon,
-                        rules,
-                        interner,
-                        entities,
-                        t,
-                    )
-                }
-                _ => {
-                    let dist_sq = lepton_distance_sq_raw(
-                        snap.pos_rx,
-                        snap.pos_ry,
-                        snap.sub_x,
-                        snap.sub_y,
-                        target_rx,
-                        target_ry,
-                        target_sub_x,
-                        target_sub_y,
-                    );
-                    is_within_range_leptons(dist_sq, effective_range)
-                }
-            }
-        } else {
-            // Garrison override path — preserve 2D until a later stage threads
-            // override-aware 3D.
-            let dist_sq = lepton_distance_sq_raw(
-                snap.pos_rx,
-                snap.pos_ry,
-                snap.sub_x,
-                snap.sub_y,
-                target_rx,
-                target_ry,
-                target_sub_x,
-                target_sub_y,
-            );
-            is_within_range_leptons(dist_sq, effective_range)
-        };
-        if !in_range_for_fire {
-            if pending_at_fire_frame {
-                pending_infantry_updates.push((snap.stable_id, None));
-                animation_switches.push((
-                    snap.stable_id,
-                    infantry_idle_sequence(snap.is_prone, snap.is_fully_deployed),
-                ));
-            }
-            continue;
-        }
-
-        // Burst / cooldown state machine.
-        if snap.cooldown_ticks > 0 || snap.burst_delay_ticks > 0 {
-            if pending_at_fire_frame {
-                pending_infantry_updates.push((snap.stable_id, None));
-                animation_switches.push((
-                    snap.stable_id,
-                    infantry_idle_sequence(snap.is_prone, snap.is_fully_deployed),
-                ));
-            }
-            continue;
-        }
-
-        // Turret alignment check (FacingClass: destination match + not rotating).
-        if let Some(ref barrel) = snap.barrel_facing {
-            let desired: u16 = crate::sim::movement::turret::facing_toward_lepton(
-                snap.pos_rx,
-                snap.pos_ry,
-                snap.sub_x,
-                snap.sub_y,
-                target_rx,
-                target_ry,
-                target_sub_x,
-                target_sub_y,
-            );
-            // Aligned iff destination matches AND no rotation in progress.
-            // Both checks needed: destination may match while interpolation
-            // is still mid-arc (animated value not yet at destination).
-            let aligned =
-                barrel.current(binary_frame) == desired && !barrel.is_rotating(binary_frame);
-            if !aligned {
-                if pending_at_fire_frame {
-                    pending_infantry_updates.push((snap.stable_id, None));
-                    animation_switches.push((
-                        snap.stable_id,
-                        infantry_idle_sequence(snap.is_prone, snap.is_fully_deployed),
-                    ));
-                }
-                // FireDecision::Facing — drives gattling spin-up via
-                // drives_gattling_spinup() == true.
-                continue;
-            }
-        }
-
-        if infantry_fire_sync && !pending_at_fire_frame {
-            let sequence =
-                infantry_fire_sequence(obj, selected.slot, snap.is_prone, snap.is_fully_deployed);
-            let fire_frame =
-                infantry_fire_frame(obj, selected.slot, snap.is_prone, snap.is_fully_deployed);
-            animation_switches.push((snap.stable_id, sequence));
-            if fire_frame != 0 {
-                pending_infantry_updates.push((
-                    snap.stable_id,
-                    Some(PendingInfantryFire {
-                        sequence,
-                        fire_frame,
-                    }),
-                ));
-                continue;
-            }
-        }
-        if pending_at_fire_frame {
-            pending_infantry_updates.push((snap.stable_id, None));
-        }
-
-        // Fire one shot!
-        let warhead = selected.warhead;
-        // Garrison damage: apply OccupyDamageMultiplier to base damage before AoE or
-        // single-target paths. Matches gamemd Fire_At which modifies damage before bullet
-        // creation, so AoE splash uses the modified value.
-        let base_damage = if is_garrison {
-            sim_to_i32(
-                SimFixed::from_num(weapon.damage) * rules.garrison_rules.occupy_damage_multiplier,
-            )
-        } else {
-            weapon.damage
-        };
-        let impact_z = attack_impact_z(snap.target, entities);
-        if warhead.cell_spread > SIM_ZERO {
-            let aoe_hits = self::combat_aoe::apply_aoe_damage(
-                entities,
-                target_rx,
-                target_ry,
-                base_damage,
-                warhead,
-                rules,
-                interner,
-                interner.resolve(snap.owner),
-                self::combat_aoe::AoELayerContext {
-                    occupancy: Some(&*occupancy),
-                    terrain,
-                    impact_z,
-                },
-            );
-            for (target_id, dmg) in aoe_hits {
-                let wh_iid = interner.intern(&warhead.id);
-                damage_events.push((target_id, dmg, snap.stable_id, wh_iid));
-            }
-            if warhead.wall && weapon.damage > 0 {
-                let damage_u16 = weapon.damage.max(0) as u16;
-                if cell_has_wall_overlay(overlay_grid, overlay_registry, target_rx, target_ry) {
-                    wall_damage_events.push(WallDamageEvent {
-                        rx: target_rx,
-                        ry: target_ry,
-                        damage: damage_u16,
-                    });
-                } else {
-                    let wh_iid = interner.intern(&warhead.id);
-                    bridge_damage_events.push(BridgeDamageEvent {
-                        rx: target_rx,
-                        ry: target_ry,
-                        damage: damage_u16,
-                        warhead_ref: wh_iid,
-                        is_ion_cannon: wh_iid == rules.ion_cannon_warhead_id(),
-                        impact_z,
-                    });
-                }
-            }
-            if warhead.wood && base_damage > 0 {
-                terrain_damage_events.push(TerrainDamageEvent {
-                    rx: target_rx,
-                    ry: target_ry,
-                    damage: base_damage,
-                    warhead_ref: interner.intern(&warhead.id),
-                });
-            }
-        } else {
-            // Integer damage: base_damage * verses_pct / 100.
-            // base_damage already includes OccupyDamageMultiplier for garrison.
-            let raw_damage: i32 = base_damage * selected.verses_pct as i32 / 100;
-            let actual_damage: u16 =
-                apply_prone_damage_modifier(target_prone_infantry, warhead, raw_damage);
-            // Direct-hit damage only applies to Entity targets. For Cell
-            // targets (force-fire on terrain), splash logic via warhead
-            // CellSpread handles AoE damage at the impact cell — there's no
-            // primary target entity to damage.
-            if actual_damage > 0 {
-                if let TargetKind::Entity(target_id) = snap.target {
-                    let wh_iid = interner.intern(&warhead.id);
-                    damage_events.push((target_id, actual_damage, snap.stable_id, wh_iid));
-                }
-            }
-            if warhead.wall && weapon.damage > 0 {
-                let damage_u16 = weapon.damage.max(0) as u16;
-                if cell_has_wall_overlay(overlay_grid, overlay_registry, target_rx, target_ry) {
-                    wall_damage_events.push(WallDamageEvent {
-                        rx: target_rx,
-                        ry: target_ry,
-                        damage: damage_u16,
-                    });
-                } else {
-                    let wh_iid = interner.intern(&warhead.id);
-                    bridge_damage_events.push(BridgeDamageEvent {
-                        rx: target_rx,
-                        ry: target_ry,
-                        damage: damage_u16,
-                        warhead_ref: wh_iid,
-                        is_ion_cannon: wh_iid == rules.ion_cannon_warhead_id(),
-                        impact_z,
-                    });
-                }
-            }
-            if warhead.wood && base_damage > 0 {
-                terrain_damage_events.push(TerrainDamageEvent {
-                    rx: target_rx,
-                    ry: target_ry,
-                    damage: base_damage,
-                    warhead_ref: interner.intern(&warhead.id),
-                });
-            }
-        }
-
-        // Ore destruction: all warheads unconditionally destroy ore at impact cells.
-        // CellSpreadTable[0] = 1, so even CellSpread=0 weapons check the center cell.
-        destroy_ore_at_impact(
-            &mut tiberium_reduction_requests,
-            target_rx,
-            target_ry,
-            base_damage,
-            warhead.cell_spread,
-        );
-
-        // Cell-target force-fire on terrain has no entity z; the dispatcher
-        // re-derives ground_z from terrain.cell(rx,ry).level, so 0 is safe.
-        let impact_z: u8 = match snap.target {
-            TargetKind::Entity(eid) => entities.get(eid).map(|e| e.position.z).unwrap_or(0),
-            TargetKind::Cell(_, _) => 0,
-        };
-        emit_warhead_detonation_effects(
-            warhead,
-            base_damage,
-            target_rx,
-            target_ry,
-            target_sub_x,
-            target_sub_y,
-            impact_z,
+        resolve_attacker_fire(
+            snap,
+            entities,
+            rules,
             interner,
-            &mut explosion_effects,
-            &mut smudge_spawn_requests,
+            fog,
+            occupancy,
+            overlay_grid,
+            overlay_registry,
+            terrain,
+            binary_frame,
+            tick_ms,
+            &mut emit,
         );
-
-        let report_sound_id = weapon
-            .report
-            .as_ref()
-            .map(|report_id| interner.intern(report_id));
-        let weapon_burst: u8 = weapon.burst.max(1) as u8;
-        let burst_index = if weapon_burst <= 1 || snap.burst_remaining == 0 {
-            0
-        } else {
-            weapon_burst
-                .saturating_sub(snap.burst_remaining)
-                .min(weapon_burst.saturating_sub(1))
-        };
-        fire_events.push(SimFireEvent {
-            attacker_id: snap.stable_id,
-            attacker_type_ref: snap.type_id,
-            weapon_slot: selected.slot,
-            weapon_id: interner.intern(selected.weapon_id),
-            facing: snap.facing,
-            veterancy: snap.veterancy,
-            origin_snapshot: FireOriginSnapshot {
-                rx: snap.pos_rx,
-                ry: snap.pos_ry,
-                z: snap.pos_z,
-                sub_x: snap.sub_x,
-                sub_y: snap.sub_y,
-                facing: snap.facing,
-                category: snap.category,
-                burst_index,
-            },
-            target: snap.target,
-            report_sound_id,
-            garrison_muzzle_index: snap.garrison.as_ref().map(|gs| gs.fire_index),
-            occupant_anim: if is_garrison {
-                weapon.occupant_anim.as_ref().map(|s| interner.intern(s))
-            } else {
-                None
-            },
-        });
-        if weapon.reveal_on_fire {
-            reveal_events.push(RevealEvent {
-                owner: snap.owner,
-                rx: snap.pos_rx,
-                ry: snap.pos_ry,
-                radius: REVEAL_ON_FIRE_RADIUS,
-            });
-        }
-
-        let current_remaining: u8 = if snap.burst_remaining == 0 {
-            weapon_burst.saturating_sub(1)
-        } else {
-            snap.burst_remaining.saturating_sub(1)
-        };
-        if current_remaining > 0 {
-            burst_updates.push((snap.stable_id, current_remaining, BURST_INTER_SHOT_DELAY, 0));
-        } else {
-            let mut rof_ticks = rof_to_cooldown_ticks(weapon.rof, tick_ms);
-            // Garrison ROF: divide by occupant count, then by multiplier.
-            // More occupants = proportionally faster fire (gamemd GetROF 0x006FCFA0).
-            if let Some(ref gs) = snap.garrison {
-                let count = (gs.occupant_count as u16).max(1);
-                rof_ticks /= count;
-                if rules.garrison_rules.occupy_rof_multiplier > SIM_ZERO {
-                    rof_ticks = sim_to_i32(
-                        SimFixed::from_num(rof_ticks) / rules.garrison_rules.occupy_rof_multiplier,
-                    ) as u16;
-                }
-                rof_ticks = rof_ticks.max(1);
-            }
-            burst_updates.push((snap.stable_id, 0, 0, rof_ticks));
-        }
-
-        // Aircraft ammo deduction: one ammo per burst completion (not per shot).
-        if current_remaining == 0 {
-            ammo_deduct.push(snap.stable_id);
-        }
-
-        // Track garrison buildings that fired for round-robin advancement.
-        if is_garrison {
-            garrison_advance.push(snap.stable_id);
-        }
     }
+    // Destructure back into the named locals so Phases 3-6 are untouched.
+    let CombatEmit {
+        damage_events,
+        mut remove_attack,
+        retarget_events,
+        fire_events,
+        reveal_events,
+        mut bridge_damage_events,
+        mut wall_damage_events,
+        mut terrain_damage_events,
+        mut tiberium_reduction_requests,
+        mut explosion_effects,
+        mut smudge_spawn_requests,
+        burst_updates,
+        ammo_deduct,
+        garrison_advance,
+        pending_infantry_updates,
+        animation_switches,
+    } = emit;
 
     // Phase 3: apply retargets and burst/cooldown updates.
     // Auto-retargets only ever produce Entity targets (acquire_best_target
@@ -2283,6 +1715,644 @@ pub fn tick_combat_with_fog(
         destroyed_garrison_buildings: death.destroyed_garrison_buildings,
         explosion_effects,
         smudge_spawn_requests,
+    }
+}
+
+/// Build the per-attacker fire snapshot from current entity state. PURE READ —
+/// the caller has already decremented cooldown/burst-delay for this tick and
+/// resolved any garrison occupant. Single source of the snapshot field-reads so
+/// the legacy Phase-1 loop and the per-object Fire→Facing host build byte-identical
+/// snapshots (no field-read drift between the two call sites).
+pub(crate) fn build_attacker_snapshot(
+    entity: &GameEntity,
+    target: TargetKind,
+    cooldown_ticks: u16,
+    burst_remaining: u8,
+    burst_delay_ticks: u8,
+    pending_infantry_fire: Option<PendingInfantryFire>,
+    garrison: Option<GarrisonSnapshot>,
+) -> AttackerSnapshot {
+    AttackerSnapshot {
+        stable_id: entity.stable_id,
+        owner: entity.owner,
+        category: entity.category,
+        target,
+        pos_rx: entity.position.rx,
+        pos_ry: entity.position.ry,
+        pos_z: entity.position.z,
+        sub_x: entity.position.sub_x,
+        sub_y: entity.position.sub_y,
+        type_id: entity.type_ref,
+        facing: entity.facing,
+        veterancy: entity.veterancy,
+        cooldown_ticks,
+        animation_sequence: entity.animation.as_ref().map(|a| a.sequence),
+        animation_frame: entity.animation.as_ref().map(|a| a.frame_index),
+        is_prone: entity
+            .infantry
+            .as_ref()
+            .is_some_and(|infantry| infantry.is_prone),
+        is_fully_deployed: entity.is_fully_deployed(),
+        has_movement: entity.movement_target.is_some(),
+        pending_infantry_fire,
+        barrel_facing: entity.barrel_facing,
+        burst_remaining,
+        burst_delay_ticks,
+        weapon_override: entity.weapon_override,
+        garrison,
+    }
+}
+
+/// Resolve one attacker's Phase-2 fire decision + emission for the current tick.
+/// READ-ONLY w.r.t. entities/occupancy (HP/death are applied later in the batched
+/// Phase 4/6); it reads target/rules/occupancy/fog and pushes events into `out`.
+/// Interns warhead/weapon/anim strings (hence `&mut StringInterner`). Pure w.r.t.
+/// iteration order: the caller invokes it once per snapshot in live-LOGIC order,
+/// preserving emission order exactly.
+pub(crate) fn resolve_attacker_fire(
+    snap: &AttackerSnapshot,
+    entities: &EntityStore,
+    rules: &RuleSet,
+    interner: &mut StringInterner,
+    fog: Option<&FogState>,
+    occupancy: &OccupancyGrid,
+    overlay_grid: Option<&OverlayGrid>,
+    overlay_registry: Option<&OverlayTypeRegistry>,
+    terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    binary_frame: u32,
+    tick_ms: u32,
+    out: &mut CombatEmit,
+) {
+    // Pre-compute garrison scan range for retargeting (includes +1 buffer).
+    let garrison_retarget_range: Option<SimFixed> = snap.garrison.as_ref().map(|gs| {
+        let cells = gs.half_foundation as i32 + 1 + rules.garrison_rules.occupy_weapon_range;
+        SimFixed::from_num(cells.max(1))
+    });
+    let obj = match rules.object(interner.resolve(snap.type_id)) {
+        Some(o) => o,
+        None => {
+            out.remove_attack.push(snap.stable_id);
+            return;
+        }
+    };
+
+    // Check if target is alive and get its data.
+    // For structures, target_coords returns the foundation center instead
+    // of the NW corner.
+    // For Cell targets (force-fire on terrain), synthesize a target_data
+    // tuple: cell-center coords, "always alive" (cells don't despawn), no
+    // category/type/owner — the unit fires its primary weapon and splash
+    // delivers the damage.
+    let target_data: Option<(
+        u16,
+        u16,
+        SimFixed,
+        SimFixed,
+        u16,
+        EntityCategory,
+        InternedId,
+        InternedId,
+        bool,
+    )> = match snap.target {
+        TargetKind::Entity(target_id) => entities.get(target_id).map(|t| {
+            let (trx, try_, tsx, tsy) = target_coords(t, Some(rules), interner);
+            (
+                trx,
+                try_,
+                tsx,
+                tsy,
+                t.health.current,
+                combat_target_category(t, rules, interner),
+                t.type_ref,
+                t.owner,
+                t.category == EntityCategory::Infantry && infantry::is_prone_for_damage(t),
+            )
+        }),
+        TargetKind::Cell(rx, ry) => {
+            // Synthetic target_data for force-fire-on-cell.
+            // - hp = 1 so the "target dead" retarget branch never fires for cells.
+            // - category = Structure so weapon-vs-armor selection picks an
+            //   anti-structure weapon when one exists; otherwise falls
+            //   through to primary (matches "fire your default weapon at
+            //   the ground" intent).
+            // - type_ref/owner = attacker's own — friendly-fire check
+            //   sees self-vs-self and is short-circuited downstream.
+            let (trx, try_, tsx, tsy) = cell_center_coords(rx, ry);
+            Some((
+                trx,
+                try_,
+                tsx,
+                tsy,
+                1u16,
+                EntityCategory::Structure,
+                snap.type_id,
+                snap.owner,
+                false,
+            ))
+        }
+    };
+
+    let (
+        target_rx,
+        target_ry,
+        target_sub_x,
+        target_sub_y,
+        _target_hp,
+        target_cat,
+        target_type_ref,
+        target_owner,
+        target_prone_infantry,
+    ) = match target_data {
+        Some((rx, ry, sx, sy, hp, cat, tr, own, prone)) if hp > 0 => {
+            (rx, ry, sx, sy, hp, cat, tr, own, prone)
+        }
+        _ => {
+            if let Some(new_target) = acquire_best_target(
+                entities,
+                rules,
+                interner,
+                snap,
+                obj,
+                fog,
+                garrison_retarget_range,
+                terrain,
+            ) {
+                out.retarget_events.push((snap.stable_id, new_target));
+            } else {
+                out.remove_attack.push(snap.stable_id);
+            }
+            return;
+        }
+    };
+
+    let target_armor: String = rules
+        .object(interner.resolve(target_type_ref))
+        .map(|o| o.armor.clone())
+        .unwrap_or_else(|| "none".to_string());
+
+    // Weapon selection: garrison uses occupant's OccupyWeapon, standard uses IFV/Primary/Secondary.
+    let (selected, is_garrison) = if let Some(ref gs) = snap.garrison {
+        match combat_weapon::select_garrison_weapon(
+            rules,
+            interner.resolve(gs.occupant_type_id),
+            gs.occupant_veterancy,
+            target_cat,
+            &target_armor,
+        ) {
+            Some(s) => (s, true),
+            None => {
+                out.remove_attack.push(snap.stable_id);
+                return;
+            }
+        }
+    } else {
+        let deploy_fire_weapon_active = entities
+            .get(snap.stable_id)
+            .is_some_and(uses_deploy_fire_weapon);
+        let selected = if deploy_fire_weapon_active {
+            select_deploy_fire_weapon(
+                rules,
+                obj,
+                target_cat,
+                &target_armor,
+                snap.veterancy,
+                snap.weapon_override,
+            )
+        } else {
+            select_weapon_with_override(
+                rules,
+                obj,
+                target_cat,
+                &target_armor,
+                snap.veterancy,
+                snap.weapon_override,
+            )
+        };
+        match selected {
+            Some(s) => (s, false),
+            None => {
+                out.remove_attack.push(snap.stable_id);
+                return;
+            }
+        }
+    };
+    let weapon = selected.weapon;
+
+    // Friendly-fire and visibility-driven retarget logic only applies to
+    // Entity targets. Cell targets are an explicit player force-fire — the
+    // player intentionally chose this cell (allies, ground, anything), so
+    // never auto-retarget away from a Cell.
+    let is_cell_target = matches!(snap.target, TargetKind::Cell(_, _));
+    if let Some(fog_state) = fog {
+        let snap_owner_str = interner.resolve(snap.owner);
+        let target_owner_str = interner.resolve(target_owner);
+        if !is_cell_target && fog_state.is_friendly(snap_owner_str, target_owner_str) {
+            if let Some(new_target) = acquire_best_target(
+                entities,
+                rules,
+                interner,
+                snap,
+                obj,
+                fog,
+                garrison_retarget_range,
+                terrain,
+            ) {
+                out.retarget_events.push((snap.stable_id, new_target));
+            } else {
+                out.remove_attack.push(snap.stable_id);
+            }
+            return;
+        }
+        if !is_cell_target && !fog_state.is_cell_visible(snap.owner, target_rx, target_ry) {
+            if let Some(new_target) = acquire_best_target(
+                entities,
+                rules,
+                interner,
+                snap,
+                obj,
+                fog,
+                garrison_retarget_range,
+                terrain,
+            ) {
+                out.retarget_events.push((snap.stable_id, new_target));
+            } else {
+                out.remove_attack.push(snap.stable_id);
+            }
+            return;
+        }
+    }
+
+    let infantry_fire_sync = snap.category == EntityCategory::Infantry
+        && !is_garrison
+        && snap.animation_frame.is_some();
+    let mut pending_at_fire_frame = false;
+    if infantry_fire_sync {
+        if let Some(pending) = snap.pending_infantry_fire {
+            if snap.has_movement || snap.animation_sequence != Some(pending.sequence) {
+                out.pending_infantry_updates.push((snap.stable_id, None));
+                out.animation_switches.push((
+                    snap.stable_id,
+                    infantry_idle_sequence(snap.is_prone, snap.is_fully_deployed),
+                ));
+                return;
+            }
+            if snap.animation_frame != Some(pending.fire_frame) {
+                return;
+            }
+            pending_at_fire_frame = true;
+        }
+    }
+
+    // Range check (lepton-precise, sub-cell aware).
+    // Garrison range: (half_foundation + OccupyWeaponRange) cells (no +1 buffer for fire).
+    let effective_range = if let Some(ref gs) = snap.garrison {
+        let cells = gs.half_foundation as i32 + rules.garrison_rules.occupy_weapon_range;
+        SimFixed::from_num(cells.max(1))
+    } else {
+        weapon.range
+    };
+    // Range failure: range alone does not clear or retarget — the pursuit
+    // pre-combat stage walks the unit into range. Combat tick just skips
+    // this tick's fire attempt and lets the unit close the gap.
+    let in_range_for_fire = if !is_garrison && effective_range == weapon.range {
+        // Standard fire: 3D check via compute_in_range when terrain available.
+        match (terrain, entities.get(snap.stable_id)) {
+            (Some(t), Some(attacker_entity)) => {
+                let src = (
+                    snap.pos_rx as i64 * 256 + snap.sub_x.to_num::<i64>(),
+                    snap.pos_ry as i64 * 256 + snap.sub_y.to_num::<i64>(),
+                    in_range::effective_z_leptons(attacker_entity),
+                );
+                in_range::compute_in_range(
+                    attacker_entity,
+                    src,
+                    &snap.target,
+                    weapon,
+                    rules,
+                    interner,
+                    entities,
+                    t,
+                )
+            }
+            _ => {
+                let dist_sq = lepton_distance_sq_raw(
+                    snap.pos_rx,
+                    snap.pos_ry,
+                    snap.sub_x,
+                    snap.sub_y,
+                    target_rx,
+                    target_ry,
+                    target_sub_x,
+                    target_sub_y,
+                );
+                is_within_range_leptons(dist_sq, effective_range)
+            }
+        }
+    } else {
+        // Garrison override path — preserve 2D until a later stage threads
+        // override-aware 3D.
+        let dist_sq = lepton_distance_sq_raw(
+            snap.pos_rx,
+            snap.pos_ry,
+            snap.sub_x,
+            snap.sub_y,
+            target_rx,
+            target_ry,
+            target_sub_x,
+            target_sub_y,
+        );
+        is_within_range_leptons(dist_sq, effective_range)
+    };
+    if !in_range_for_fire {
+        if pending_at_fire_frame {
+            out.pending_infantry_updates.push((snap.stable_id, None));
+            out.animation_switches.push((
+                snap.stable_id,
+                infantry_idle_sequence(snap.is_prone, snap.is_fully_deployed),
+            ));
+        }
+        return;
+    }
+
+    // Burst / cooldown state machine.
+    if snap.cooldown_ticks > 0 || snap.burst_delay_ticks > 0 {
+        if pending_at_fire_frame {
+            out.pending_infantry_updates.push((snap.stable_id, None));
+            out.animation_switches.push((
+                snap.stable_id,
+                infantry_idle_sequence(snap.is_prone, snap.is_fully_deployed),
+            ));
+        }
+        return;
+    }
+
+    // Turret alignment check (FacingClass: destination match + not rotating).
+    if let Some(ref barrel) = snap.barrel_facing {
+        let desired: u16 = crate::sim::movement::turret::facing_toward_lepton(
+            snap.pos_rx,
+            snap.pos_ry,
+            snap.sub_x,
+            snap.sub_y,
+            target_rx,
+            target_ry,
+            target_sub_x,
+            target_sub_y,
+        );
+        // Aligned iff destination matches AND no rotation in progress.
+        // Both checks needed: destination may match while interpolation
+        // is still mid-arc (animated value not yet at destination).
+        let aligned =
+            barrel.current(binary_frame) == desired && !barrel.is_rotating(binary_frame);
+        if !aligned {
+            if pending_at_fire_frame {
+                out.pending_infantry_updates.push((snap.stable_id, None));
+                out.animation_switches.push((
+                    snap.stable_id,
+                    infantry_idle_sequence(snap.is_prone, snap.is_fully_deployed),
+                ));
+            }
+            // FireDecision::Facing — drives gattling spin-up via
+            // drives_gattling_spinup() == true.
+            return;
+        }
+    }
+
+    if infantry_fire_sync && !pending_at_fire_frame {
+        let sequence =
+            infantry_fire_sequence(obj, selected.slot, snap.is_prone, snap.is_fully_deployed);
+        let fire_frame =
+            infantry_fire_frame(obj, selected.slot, snap.is_prone, snap.is_fully_deployed);
+        out.animation_switches.push((snap.stable_id, sequence));
+        if fire_frame != 0 {
+            out.pending_infantry_updates.push((
+                snap.stable_id,
+                Some(PendingInfantryFire {
+                    sequence,
+                    fire_frame,
+                }),
+            ));
+            return;
+        }
+    }
+    if pending_at_fire_frame {
+        out.pending_infantry_updates.push((snap.stable_id, None));
+    }
+
+    // Fire one shot!
+    let warhead = selected.warhead;
+    // Garrison damage: apply OccupyDamageMultiplier to base damage before AoE or
+    // single-target paths. Matches gamemd Fire_At which modifies damage before bullet
+    // creation, so AoE splash uses the modified value.
+    let base_damage = if is_garrison {
+        sim_to_i32(
+            SimFixed::from_num(weapon.damage) * rules.garrison_rules.occupy_damage_multiplier,
+        )
+    } else {
+        weapon.damage
+    };
+    let impact_z = attack_impact_z(snap.target, entities);
+    if warhead.cell_spread > SIM_ZERO {
+        let aoe_hits = self::combat_aoe::apply_aoe_damage(
+            entities,
+            target_rx,
+            target_ry,
+            base_damage,
+            warhead,
+            rules,
+            interner,
+            interner.resolve(snap.owner),
+            self::combat_aoe::AoELayerContext {
+                occupancy: Some(&*occupancy),
+                terrain,
+                impact_z,
+            },
+        );
+        for (target_id, dmg) in aoe_hits {
+            let wh_iid = interner.intern(&warhead.id);
+            out.damage_events.push((target_id, dmg, snap.stable_id, wh_iid));
+        }
+        if warhead.wall && weapon.damage > 0 {
+            let damage_u16 = weapon.damage.max(0) as u16;
+            if cell_has_wall_overlay(overlay_grid, overlay_registry, target_rx, target_ry) {
+                out.wall_damage_events.push(WallDamageEvent {
+                    rx: target_rx,
+                    ry: target_ry,
+                    damage: damage_u16,
+                });
+            } else {
+                let wh_iid = interner.intern(&warhead.id);
+                out.bridge_damage_events.push(BridgeDamageEvent {
+                    rx: target_rx,
+                    ry: target_ry,
+                    damage: damage_u16,
+                    warhead_ref: wh_iid,
+                    is_ion_cannon: wh_iid == rules.ion_cannon_warhead_id(),
+                    impact_z,
+                });
+            }
+        }
+        if warhead.wood && base_damage > 0 {
+            out.terrain_damage_events.push(TerrainDamageEvent {
+                rx: target_rx,
+                ry: target_ry,
+                damage: base_damage,
+                warhead_ref: interner.intern(&warhead.id),
+            });
+        }
+    } else {
+        // Integer damage: base_damage * verses_pct / 100.
+        // base_damage already includes OccupyDamageMultiplier for garrison.
+        let raw_damage: i32 = base_damage * selected.verses_pct as i32 / 100;
+        let actual_damage: u16 =
+            apply_prone_damage_modifier(target_prone_infantry, warhead, raw_damage);
+        // Direct-hit damage only applies to Entity targets. For Cell
+        // targets (force-fire on terrain), splash logic via warhead
+        // CellSpread handles AoE damage at the impact cell — there's no
+        // primary target entity to damage.
+        if actual_damage > 0 {
+            if let TargetKind::Entity(target_id) = snap.target {
+                let wh_iid = interner.intern(&warhead.id);
+                out.damage_events.push((target_id, actual_damage, snap.stable_id, wh_iid));
+            }
+        }
+        if warhead.wall && weapon.damage > 0 {
+            let damage_u16 = weapon.damage.max(0) as u16;
+            if cell_has_wall_overlay(overlay_grid, overlay_registry, target_rx, target_ry) {
+                out.wall_damage_events.push(WallDamageEvent {
+                    rx: target_rx,
+                    ry: target_ry,
+                    damage: damage_u16,
+                });
+            } else {
+                let wh_iid = interner.intern(&warhead.id);
+                out.bridge_damage_events.push(BridgeDamageEvent {
+                    rx: target_rx,
+                    ry: target_ry,
+                    damage: damage_u16,
+                    warhead_ref: wh_iid,
+                    is_ion_cannon: wh_iid == rules.ion_cannon_warhead_id(),
+                    impact_z,
+                });
+            }
+        }
+        if warhead.wood && base_damage > 0 {
+            out.terrain_damage_events.push(TerrainDamageEvent {
+                rx: target_rx,
+                ry: target_ry,
+                damage: base_damage,
+                warhead_ref: interner.intern(&warhead.id),
+            });
+        }
+    }
+
+    // Ore destruction: all warheads unconditionally destroy ore at impact cells.
+    // CellSpreadTable[0] = 1, so even CellSpread=0 weapons check the center cell.
+    destroy_ore_at_impact(
+        &mut out.tiberium_reduction_requests,
+        target_rx,
+        target_ry,
+        base_damage,
+        warhead.cell_spread,
+    );
+
+    // Cell-target force-fire on terrain has no entity z; the dispatcher
+    // re-derives ground_z from terrain.cell(rx,ry).level, so 0 is safe.
+    let impact_z: u8 = match snap.target {
+        TargetKind::Entity(eid) => entities.get(eid).map(|e| e.position.z).unwrap_or(0),
+        TargetKind::Cell(_, _) => 0,
+    };
+    emit_warhead_detonation_effects(
+        warhead,
+        base_damage,
+        target_rx,
+        target_ry,
+        target_sub_x,
+        target_sub_y,
+        impact_z,
+        interner,
+        &mut out.explosion_effects,
+        &mut out.smudge_spawn_requests,
+    );
+
+    let report_sound_id = weapon
+        .report
+        .as_ref()
+        .map(|report_id| interner.intern(report_id));
+    let weapon_burst: u8 = weapon.burst.max(1) as u8;
+    let burst_index = if weapon_burst <= 1 || snap.burst_remaining == 0 {
+        0
+    } else {
+        weapon_burst
+            .saturating_sub(snap.burst_remaining)
+            .min(weapon_burst.saturating_sub(1))
+    };
+    out.fire_events.push(SimFireEvent {
+        attacker_id: snap.stable_id,
+        attacker_type_ref: snap.type_id,
+        weapon_slot: selected.slot,
+        weapon_id: interner.intern(selected.weapon_id),
+        facing: snap.facing,
+        veterancy: snap.veterancy,
+        origin_snapshot: FireOriginSnapshot {
+            rx: snap.pos_rx,
+            ry: snap.pos_ry,
+            z: snap.pos_z,
+            sub_x: snap.sub_x,
+            sub_y: snap.sub_y,
+            facing: snap.facing,
+            category: snap.category,
+            burst_index,
+        },
+        target: snap.target,
+        report_sound_id,
+        garrison_muzzle_index: snap.garrison.as_ref().map(|gs| gs.fire_index),
+        occupant_anim: if is_garrison {
+            weapon.occupant_anim.as_ref().map(|s| interner.intern(s))
+        } else {
+            None
+        },
+    });
+    if weapon.reveal_on_fire {
+        out.reveal_events.push(RevealEvent {
+            owner: snap.owner,
+            rx: snap.pos_rx,
+            ry: snap.pos_ry,
+            radius: REVEAL_ON_FIRE_RADIUS,
+        });
+    }
+
+    let current_remaining: u8 = if snap.burst_remaining == 0 {
+        weapon_burst.saturating_sub(1)
+    } else {
+        snap.burst_remaining.saturating_sub(1)
+    };
+    if current_remaining > 0 {
+        out.burst_updates.push((snap.stable_id, current_remaining, BURST_INTER_SHOT_DELAY, 0));
+    } else {
+        let mut rof_ticks = rof_to_cooldown_ticks(weapon.rof, tick_ms);
+        // Garrison ROF: divide by occupant count, then by multiplier.
+        // More occupants = proportionally faster fire (gamemd GetROF 0x006FCFA0).
+        if let Some(ref gs) = snap.garrison {
+            let count = (gs.occupant_count as u16).max(1);
+            rof_ticks /= count;
+            if rules.garrison_rules.occupy_rof_multiplier > SIM_ZERO {
+                rof_ticks = sim_to_i32(
+                    SimFixed::from_num(rof_ticks) / rules.garrison_rules.occupy_rof_multiplier,
+                ) as u16;
+            }
+            rof_ticks = rof_ticks.max(1);
+        }
+        out.burst_updates.push((snap.stable_id, 0, 0, rof_ticks));
+    }
+
+    // Aircraft ammo deduction: one ammo per burst completion (not per shot).
+    if current_remaining == 0 {
+        out.ammo_deduct.push(snap.stable_id);
+    }
+
+    // Track garrison buildings that fired for round-robin advancement.
+    if is_garrison {
+        out.garrison_advance.push(snap.stable_id);
     }
 }
 

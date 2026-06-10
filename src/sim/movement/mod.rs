@@ -74,6 +74,14 @@ pub mod turret;
 
 pub use facing_class::FacingClass;
 
+// The drive-locomotor "Process" presence marker, consumed read-only by the
+// per-object AI shell (sim/world/techno_ai.rs, Slice S1) to observe that the
+// locomotor would process AFTER mission dispatch. Behavior-neutral re-export.
+// Gated to match its only consumer (the debug/test S1 shadow) so release builds
+// carry no unused re-export.
+#[cfg(any(test, debug_assertions))]
+pub(crate) use drive_locomotion::{DriveProcessOutcome, process_drive_locomotion_shell};
+
 // Re-export command functions so callers can use `movement::issue_move_command` etc.
 pub use movement_commands::{
     clear_navigation_for_entity, issue_direct_move, issue_move_command,

@@ -18,9 +18,41 @@ use mix_browser_preview::PreviewState;
 use vera20k::assets::asset_manager::AssetManager;
 use vera20k::assets::pal_file::Palette;
 use vera20k::rules::art_data::ArtRegistry;
-use vera20k::rules::house_colors::{self, HouseColorIndex};
+use vera20k::rules::color_scheme::ColorSchemeEntry;
+use vera20k::rules::house_colors::{HouseColorIndex, HouseColorRamps};
 use vera20k::rules::ini_parser::IniFile;
 use vera20k::util::config::GameConfig;
+
+/// Per-`[Colors]`-entry team-color ramps for the standalone preview. Built from
+/// the retail `[Colors]` H,S,V list (the browser has no full ruleset loaded) via
+/// the same gamemd trig sweep the game uses, so previews match in-game colors.
+fn preview_house_ramps() -> HouseColorRamps {
+    let raw: &[(&str, [u8; 3])] = &[
+        ("LightGold", [25, 255, 255]),
+        ("Gold", [43, 239, 255]),
+        ("LightGrey", [0, 0, 240]),
+        ("Grey", [0, 0, 131]),
+        ("Red", [20, 255, 184]),
+        ("DarkRed", [0, 230, 255]),
+        ("Orange", [25, 230, 255]),
+        ("Magenta", [221, 102, 255]),
+        ("Purple", [201, 201, 189]),
+        ("LightBlue", [119, 143, 255]),
+        ("DarkBlue", [153, 214, 212]),
+        ("NeonBlue", [185, 156, 238]),
+        ("DarkSky", [131, 200, 230]),
+        ("Green", [104, 241, 195]),
+        ("DarkGreen", [81, 200, 210]),
+    ];
+    let schemes: Vec<ColorSchemeEntry> = raw
+        .iter()
+        .map(|(name, hsv)| ColorSchemeEntry {
+            name: (*name).to_string(),
+            hsv: *hsv,
+        })
+        .collect();
+    HouseColorRamps::from_schemes(&schemes)
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum BrowserViewMode {
@@ -395,8 +427,8 @@ impl MixBrowserApp {
 
         // Apply house color remap if index > 0 (0 = no remap).
         let render_palette: Palette = if color_idx > 0 {
-            let ramp = house_colors::house_color_ramp(HouseColorIndex((color_idx - 1) as u8));
-            base_palette.with_house_colors(ramp)
+            let ramps = preview_house_ramps();
+            base_palette.with_house_colors(ramps.ramp(HouseColorIndex((color_idx - 1) as u8)))
         } else {
             base_palette.clone()
         };
@@ -429,10 +461,10 @@ impl MixBrowserApp {
         if let Some(shp) = &preview.shp {
             // Apply house color remap if active.
             let render_pal = if preview.house_color_index > 0 {
-                let ramp = house_colors::house_color_ramp(HouseColorIndex(
-                    (preview.house_color_index - 1) as u8,
-                ));
-                new_palette.with_house_colors(ramp)
+                let ramps = preview_house_ramps();
+                new_palette.with_house_colors(
+                    ramps.ramp(HouseColorIndex((preview.house_color_index - 1) as u8)),
+                )
             } else {
                 new_palette
             };
@@ -489,10 +521,10 @@ impl MixBrowserApp {
         let rgba: Vec<u8> = if let Some(shp) = &preview.shp {
             if let Some(palette) = &preview.palette {
                 let pal = if preview.house_color_index > 0 {
-                    let ramp = house_colors::house_color_ramp(HouseColorIndex(
-                        (preview.house_color_index - 1) as u8,
-                    ));
-                    palette.with_house_colors(ramp)
+                    let ramps = preview_house_ramps();
+                    palette.with_house_colors(
+                        ramps.ramp(HouseColorIndex((preview.house_color_index - 1) as u8)),
+                    )
                 } else {
                     palette.clone()
                 };

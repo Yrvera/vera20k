@@ -46,6 +46,23 @@ pub fn scheme_index_for_priority(priority: i32) -> usize {
     }
 }
 
+/// `[Colors]` entry index for a color priority (the runtime scheme index, un-doubled): the priority
+/// LUT result divided by 2 (runtime scheme `R` addresses `[Colors]` entry `R / 2`).
+pub fn scheme_entry_for_priority(priority: i32) -> usize {
+    scheme_index_for_priority(priority) / 2
+}
+
+/// `[Colors]` entry index for a map `Color=<name>` (case-insensitive). `None` if no entry matches.
+pub fn scheme_entry_by_name(schemes: &[ColorSchemeEntry], name: &str) -> Option<usize> {
+    let want = name.trim();
+    schemes.iter().position(|s| s.name.eq_ignore_ascii_case(want))
+}
+
+/// H,S,V of a `[Colors]` entry by index.
+pub fn scheme_hsv_by_entry(schemes: &[ColorSchemeEntry], entry: usize) -> Option<[u8; 3]> {
+    schemes.get(entry).map(|s| s.hsv)
+}
+
 /// Parse the `[Colors]` section into entries in declaration order.
 ///
 /// Values are `H,S,V`; a malformed/short line is skipped rather than aborting so
@@ -227,5 +244,24 @@ mod tests {
     fn empty_or_missing_colors_section_yields_no_schemes() {
         assert!(parse_color_schemes(&IniFile::from_str("[General]\nX=1\n")).is_empty());
         assert!(backing_rgb_for_priority(&[], 0).is_none());
+    }
+
+    #[test]
+    fn scheme_entry_for_priority_matches_lut_div2() {
+        // p0→3/2=1 Gold, p1→11/2=5 DarkRed, p2→21/2=10 DarkBlue, p3→29/2=14 DarkGreen, random→5/2=2
+        assert_eq!(scheme_entry_for_priority(0), 1);
+        assert_eq!(scheme_entry_for_priority(1), 5);
+        assert_eq!(scheme_entry_for_priority(2), 10);
+        assert_eq!(scheme_entry_for_priority(3), 14);
+        assert_eq!(scheme_entry_for_priority(-2), 2);
+    }
+
+    #[test]
+    fn scheme_entry_by_name_and_hsv_lookup() {
+        let s = schemes();
+        assert_eq!(scheme_entry_by_name(&s, "darkred"), Some(5));
+        assert_eq!(scheme_entry_by_name(&s, "DarkBlue"), Some(10));
+        assert_eq!(scheme_entry_by_name(&s, "Nope"), None);
+        assert_eq!(scheme_hsv_by_entry(&s, 5), Some([0, 230, 255])); // DarkRed
     }
 }

@@ -352,10 +352,12 @@ pub fn tick_retaliation(
         if entity.attack_target.is_some() || entity.order_intent.is_some() {
             continue;
         }
-        // Verify attacker is still alive.
+        // Verify attacker is still alive. A sold/captured attacker keeps health
+        // but is `dying` (a corpse awaiting the end-of-tick drain) — exclude it
+        // so the victim doesn't retaliate against a dead object.
         let attacker_alive = entities
             .get(attacker_sid)
-            .is_some_and(|a| a.health.current > 0);
+            .is_some_and(|a| a.health.current > 0 && !a.dying);
         if !attacker_alive {
             continue;
         }

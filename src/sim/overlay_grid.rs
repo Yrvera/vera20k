@@ -361,10 +361,14 @@ fn damage_wall_recursive(
         return;
     }
 
-    // Random damage check: if damage < Strength && Random(0, Strength) > damage -> no effect.
+    // Random damage check (gamemd): when damage < Strength, draw
+    // RandomRanged(0, Strength) — INCLUSIVE on the high end, range [0, Strength]
+    // — and apply damage only when roll < damage; otherwise no effect. The
+    // engine uses `< damage` (so roll == damage is a no-op) and the inclusive
+    // top, both of which differ from an exclusive `[0, Strength-1]` / `>` test.
     if damage != u16::MAX && flags.strength > 0 && damage < flags.strength {
-        let roll = rng.next_range_u32(flags.strength as u32) as u16;
-        if roll > damage {
+        let roll = rng.next_range_u32_inclusive(0, flags.strength as u32) as u16;
+        if roll >= damage {
             return;
         }
     }
@@ -1033,6 +1037,46 @@ Strength=400
         let reg = OverlayTypeRegistry::empty();
         let r = recompute_wall_connectivity_at(&mut grid, &reg, 5, 5);
         assert_eq!(r, RecomputeResult::NoChange);
+    }
+
+    #[test]
+    fn wall_damage_inclusive_range_and_ge_boundary() {
+        // RandomRanged(0, 400) on seed=1: span=400, mask=0x1FF; first masked
+        // sample 0x78B76ED5 & 0x1FF = 0xD5 = 213 (<= 400 -> accepted). gamemd
+        // applies damage only when roll < damage, so with roll == 213:
+        //   damage=213 -> roll >= damage -> NO-OP (the old `>` test applied here)
+        //   damage=214 -> roll <  damage -> damage applied
+        let reg = make_wall_registry();
+
+        // No-op exactly at roll == damage (the key old-vs-new discriminator).
+        let mut grid = OverlayGrid::new(10, 10);
+        grid.place_overlay(5, 5, 2, 0);
+        let mut rng = crate::sim::rng::SimRng::new(1);
+        let r = damage_wall_overlay(&mut grid, &reg, 5, 5, 213, &mut rng);
+        assert!(
+            r.changed_cells.is_empty() && r.destroyed_cells.is_empty(),
+            "roll == damage must be a no-op"
+        );
+        assert_eq!(grid.cell(5, 5).overlay_data, 0, "no nibble change at roll == damage");
+        assert_eq!(grid.cell(5, 5).overlay_id, Some(2), "wall intact at roll == damage");
+
+        // Damage applied just below the boundary (same seed -> same roll 213).
+        // (This registry leaves DamageLevels at its low default, so a single hit
+        // fully destroys the wall rather than only bumping the nibble — either
+        // outcome proves damage was applied, which is what the boundary tests.)
+        let mut grid = OverlayGrid::new(10, 10);
+        grid.place_overlay(5, 5, 2, 0);
+        let mut rng = crate::sim::rng::SimRng::new(1);
+        let r = damage_wall_overlay(&mut grid, &reg, 5, 5, 214, &mut rng);
+        assert!(
+            !r.changed_cells.is_empty() || !r.destroyed_cells.is_empty(),
+            "roll < damage must apply damage"
+        );
+        let cell = grid.cell(5, 5);
+        assert!(
+            cell.overlay_id != Some(2) || cell.overlay_data != 0,
+            "wall must be destroyed or have its damage nibble advanced"
+        );
     }
 
     #[test]

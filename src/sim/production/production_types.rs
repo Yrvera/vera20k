@@ -12,26 +12,12 @@ use crate::sim::intern::InternedId;
 use crate::sim::miner::ResourceNode;
 use crate::sim::miner::miner_dock::{DockReservations, RefineryDockContacts};
 use crate::sim::ore_growth::{OreGrowthConfig, OreGrowthState};
+use crate::sim::production::factory::FactoryRegistry;
 
 /// Initial credits for the local player.
 pub const STARTING_CREDITS: i32 = 5000;
 /// Fixed-point precision for dynamic production-rate application.
 pub(super) const PRODUCTION_RATE_SCALE: u64 = 1_000_000;
-
-/// One queued build item.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BuildQueueItem {
-    pub owner: InternedId,
-    pub type_id: InternedId,
-    pub queue_category: ProductionCategory,
-    pub state: BuildQueueState,
-    /// Base build time in RA2 production frames before live power/factory/wall scaling.
-    pub total_base_frames: u32,
-    /// Remaining base build time in RA2 production frames before live scaling.
-    pub remaining_base_frames: u32,
-    pub progress_carry: u64,
-    pub enqueue_order: u64,
-}
 
 /// One queued item formatted for UI rendering.
 #[derive(Debug, Clone)]
@@ -132,8 +118,13 @@ pub fn disabled_reason_text(reason: &BuildDisabledReason) -> String {
 }
 
 /// Sidebar queue/category for build options.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
+)]
 pub enum ProductionCategory {
+    /// Default variant so the `Factory`/`FactoryRegistry` value-types can derive
+    /// `Default`. Serde/hash-neutral: adds a `::default()` ctor, changes no value.
+    #[default]
     Building,
     Defense,
     Infantry,
@@ -195,8 +186,6 @@ pub(super) enum BuildMode {
 /// Player production state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProductionState {
-    pub queues_by_owner:
-        BTreeMap<InternedId, BTreeMap<ProductionCategory, VecDeque<BuildQueueItem>>>,
     pub ready_by_owner: BTreeMap<InternedId, VecDeque<InternedId>>,
     pub active_producer_by_owner: BTreeMap<InternedId, BTreeMap<ProductionCategory, u64>>,
     pub next_enqueue_order: u64,
@@ -235,12 +224,18 @@ pub struct ProductionState {
     pub depot_dock_reservations: DockReservations,
     /// Airfield dock reservations — multi-slot (NumberOfDocks per airfield).
     pub airfield_docks: crate::sim::docking::aircraft_dock::AirfieldDocks,
+    /// Per-(house, category) factory registry — the authoritative production state
+    /// machine AND (as of P5d) the queue-of-record: the active build is the `Factory` head
+    /// fields, the FIFO tail is `Factory.queue` of `QueueEntry`. Mutated directly by
+    /// enqueue/cancel/delivery (no `queues_by_owner` mirror); serialized + hashed. Its
+    /// per-step charge runs against the real wallet via
+    /// `step_all` at the Phase-7 head, before the house tail (C1).
+    pub factory_shadow: FactoryRegistry,
 }
 
 impl Default for ProductionState {
     fn default() -> Self {
         Self {
-            queues_by_owner: BTreeMap::new(),
             ready_by_owner: BTreeMap::new(),
             active_producer_by_owner: BTreeMap::new(),
             next_enqueue_order: 1,
@@ -258,6 +253,7 @@ impl Default for ProductionState {
             default_ore_overlay_id: None,
             depot_dock_reservations: DockReservations::default(),
             airfield_docks: crate::sim::docking::aircraft_dock::AirfieldDocks::default(),
+            factory_shadow: FactoryRegistry::default(),
         }
     }
 }

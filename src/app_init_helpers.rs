@@ -560,13 +560,16 @@ pub(crate) fn build_entity_atlases(
     // Build PaletteSet: theater palette + per-house RGB ramps for the voxel
     // sprite shader. Active houses are derived from the house_colors map
     // (deduplicated; row 0 of the ramp texture is the no-remap fallback).
+    let default_ramps = crate::rules::house_colors::HouseColorRamps::default();
+    let house_ramps: &crate::rules::house_colors::HouseColorRamps =
+        rules.map(|r| &r.house_color_ramps).unwrap_or(&default_ramps);
     let palette_set: Option<crate::render::palette_textures::PaletteSet> =
         palette.as_ref().map(|pal| {
             let mut active: Vec<crate::rules::house_colors::HouseColorIndex> =
                 house_colors.values().copied().collect();
             active.sort_by_key(|h| h.0);
             active.dedup();
-            crate::render::palette_textures::PaletteSet::new(gpu, pal, &active)
+            crate::render::palette_textures::PaletteSet::new(gpu, pal, house_ramps, &active)
         });
     (unit_atlas, shp_atlas, palette_set)
 }

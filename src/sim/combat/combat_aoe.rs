@@ -23,12 +23,22 @@ use crate::rules::warhead_type::WarheadType;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::infantry;
 use crate::sim::intern::StringInterner;
+use crate::sim::map::bridge_topology::{BRIDGE_DECK_HEIGHT_LEVELS, CellBridgeView, ListLayer};
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::occupancy::OccupancyGrid;
 use crate::util::fixed_math::{SIM_ZERO, SimFixed, isqrt_i64};
 use crate::util::lepton::CELL_CENTER_LEPTON;
 
-const BRIDGE_AOE_SELECTOR_HEIGHT_LEVELS: i32 = 4;
+// GATE A1/A2 CUTOVER (authoritative): the bridge-AoE deck height is now the single
+// gamemd-verified value sourced from `bridge_topology` — the full deck offset is
+// `2 × per_level` (208 leptons = 2 Level units), so the half-deck term used by the
+// object-layer selector is `2 / 2 = 1`, NOT the prior ad-hoc `4`/`2`. The layer
+// boundary math lives in `CellBridgeView::aoe_object_layer` (strict `>` against
+// `ground_z + half_deck`); this module routes through it so there is ONE source of
+// truth for the deck height. This replaces the old `BRIDGE_AOE_SELECTOR_HEIGHT_LEVELS
+// = 4` const and its per-cell `(deck_level - level).max(4)` floor.
+// (Source: GATE_BRIDGE_DECK_HEIGHT_RESOLUTION_GHIDRA_REPORT.md §3/§5;
+//  GATE_BRIDGE_ONBRIDGE_OCCUPANCY_RESOLUTION_GHIDRA_REPORT.md §a.)
 
 /// Optional map context for gamemd bridge object-list selection.
 #[derive(Clone, Copy, Default)]
@@ -53,7 +63,10 @@ pub(crate) fn bridge_adjusted_impact_z(
 
     let mut impact_z = cell.level as i32;
     if cell.bridge_facts.has_structural_bridge() {
-        impact_z += bridge_height_for_selector(cell);
+        // Authoritative deck offset = full deck height (2 levels), not a per-cell
+        // span. Same const the layer selector below compares against, so the
+        // synthesized impact Z and the layer threshold stay consistent.
+        impact_z += BRIDGE_DECK_HEIGHT_LEVELS;
     }
     impact_z
 }
@@ -82,7 +95,8 @@ pub(crate) fn apply_aoe_damage(
     }
 
     // Pre-compute squared radius in lepton space (i64) for quick rejection.
-    let spread_leptons: i64 = cell_spread.to_num::<i64>() * 256;
+    // gamemd fine-filter radius = ftol(CellSpread * 256).
+    let spread_leptons: i64 = cell_spread::splash_threshold_leptons(cell_spread);
     let spread_sq: i64 = spread_leptons * spread_leptons;
     let mut damage_list: Vec<(u64, u16)> = Vec::new();
 
@@ -90,9 +104,9 @@ pub(crate) fn apply_aoe_damage(
         let selected_layer =
             select_object_damage_layer(terrain, impact_rx, impact_ry, layer_context.impact_z);
         let mut seen: BTreeSet<u64> = BTreeSet::new();
-        let spread_radius = cell_spread.to_num::<u32>();
 
-        for &(dx, dy) in cell_spread::cells_in_spread(spread_radius) {
+        // gamemd cell sweep: count_table[ftol(CellSpread + 0.99)] entries, exact order.
+        for &(dx, dy) in cell_spread::splash_cells(cell_spread) {
             let Some(rx) = offset_cell_coord(impact_rx, dx) else {
                 continue;
             };
@@ -146,7 +160,10 @@ pub(crate) fn apply_aoe_damage(
     }
 
     for entity in entities.values() {
-        if entity.health.current == 0 {
+        // Dying corpses (uninit'd this tick, awaiting the end-of-tick drain)
+        // are off the live object list — exclude them. A sold/captured corpse
+        // keeps health>0, so gate on `dying`, not just health.
+        if entity.health.current == 0 || entity.dying {
             continue;
         }
 
@@ -212,20 +229,18 @@ fn select_object_damage_layer(
     let Some(cell) = terrain.cell(impact_rx, impact_ry) else {
         return MovementLayer::Ground;
     };
-    if !cell.bridge_facts.has_structural_bridge() {
-        return MovementLayer::Ground;
-    }
 
-    let bridge_height = bridge_height_for_selector(cell);
-    if impact_z > cell.level as i32 + bridge_height / 2 {
-        MovementLayer::Bridge
-    } else {
-        MovementLayer::Ground
+    // Authoritative: delegate the ground-vs-deck choice to the single verified
+    // selector in bridge_topology. It applies the strict-`>` half-deck boundary
+    // (`impact_z > ground_z + DECK/2`, half = 1 level) on the structural-bridge gate.
+    // `ground_z` is `cell.level` in the same Level domain as `impact_z` (P0b: the
+    // generic cell-center callers add the fixed deck offset, never a routed
+    // GetGroundHeight, so both operands are cell-Level units here).
+    let view = CellBridgeView::from_resolved(cell);
+    match view.aoe_object_layer(impact_z, cell.level as i32) {
+        ListLayer::Bridge => MovementLayer::Bridge,
+        ListLayer::Ground => MovementLayer::Ground,
     }
-}
-
-fn bridge_height_for_selector(cell: &crate::map::resolved_terrain::ResolvedTerrainCell) -> i32 {
-    (cell.bridge_deck_level as i32 - cell.level as i32).max(BRIDGE_AOE_SELECTOR_HEIGHT_LEVELS)
 }
 
 fn offset_cell_coord(origin: u16, delta: i16) -> Option<u16> {
@@ -254,7 +269,7 @@ fn push_entity_aoe_damage(
     let Some(entity) = entities.get(entity_id) else {
         return;
     };
-    if entity.health.current == 0 {
+    if entity.health.current == 0 || entity.dying {
         return;
     }
 
@@ -433,7 +448,11 @@ mod tests {
             AoELayerContext {
                 occupancy: Some(&occupancy),
                 terrain: Some(&terrain),
-                impact_z: 2,
+                // Exactly at the half-deck mid-height (ground_z 0 + DECK/2 = 1).
+                // Verified deck = 2 levels → half-deck = 1; strict `>` keeps the
+                // boundary on the ground list (was tested at impact_z 2 under the
+                // proven-wrong deck = 4 / half = 2 selector).
+                impact_z: 1,
             },
         );
 
@@ -445,7 +464,9 @@ mod tests {
     fn bridge_adjusted_impact_z_adds_height_only_at_call_site() {
         let (_, _, terrain, _, _, _) = bridge_layer_test_fixture();
         assert_eq!(bridge_adjusted_impact_z(Some(&terrain), 4, 4), 0);
-        assert_eq!(bridge_adjusted_impact_z(Some(&terrain), 5, 5), 4);
+        // Structural cell (5,5): ground level 0 + verified full deck height
+        // (BRIDGE_DECK_HEIGHT_LEVELS = 2). Was 4 under the proven-wrong const.
+        assert_eq!(bridge_adjusted_impact_z(Some(&terrain), 5, 5), 2);
         assert_eq!(bridge_adjusted_impact_z(None, 5, 5), 0);
     }
 

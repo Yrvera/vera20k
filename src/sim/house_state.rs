@@ -7,6 +7,7 @@
 //! interned owner name for deterministic iteration (BTreeMap + InternedId give
 //! sorted order natively; all peers intern in the same order).
 
+use crate::sim::economy::Economy;
 use crate::sim::intern::InternedId;
 
 /// Per-player game state.
@@ -46,6 +47,12 @@ pub struct HouseState {
     /// Encoding: 0=N, 1=E, 2=S, 3=W. Computed at game start from base_center
     /// via the closest-edge-of-bounds algorithm.
     pub waypoint_edge: u8,
+    /// Per-house wallet/storage/statistics (the authority flip). The wallet stays
+    /// the authoritative `HouseState.credits`; `economy.credits` is a per-sweep shim
+    /// loaded from / stored to it and is NOT hashed. The statistics
+    /// (`spent_credits`/`harvested_credits`/`purifier_count`) ARE serialized + hashed
+    /// as of the flip.
+    pub economy: Economy,
 }
 
 impl HouseState {
@@ -72,6 +79,7 @@ impl HouseState {
             base_center: None,
             tech_level,
             waypoint_edge: 0,
+            economy: Economy::default(),
         }
     }
 }
@@ -112,6 +120,23 @@ pub fn house_state_for_owner_mut<'a>(
 ) -> Option<&'a mut HouseState> {
     let id = interner.get(owner)?;
     houses.get_mut(&id)
+}
+
+/// Resolve an owner's ore-income `IncomeMult` (parts-per-million; 1_000_000 = 1.0×) by
+/// routing through its country: `HouseState.country` (InternedId) -> country name ->
+/// `RuleSet::country_income_ppm`. An owner with no house, no country, or an unknown
+/// country resolves to the neutral 1.0 (no income change) — so stock YR (all countries
+/// 1.0, the key commented out) is the identity.
+pub fn income_ppm_for_owner(
+    houses: &std::collections::BTreeMap<InternedId, HouseState>,
+    interner: &crate::sim::intern::StringInterner,
+    rules: &crate::rules::ruleset::RuleSet,
+    owner: &str,
+) -> i64 {
+    house_state_for_owner(houses, owner, interner)
+        .and_then(|h| h.country)
+        .map(|c| rules.country_income_ppm(interner.resolve(c)))
+        .unwrap_or(crate::sim::economy::INCOME_PPM_SCALE)
 }
 
 /// Map side name string to numeric index.

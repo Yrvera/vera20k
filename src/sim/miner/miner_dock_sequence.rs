@@ -29,6 +29,8 @@ use crate::util::fixed_math::SimFixed;
 
 use super::miner_dock::ContactAdmission;
 use super::miner_system::{MinerSnapshot, effective_purifier_count};
+use crate::sim::economy::apply_income_mult;
+use crate::sim::house_state::{house_state_for_owner_mut, income_ppm_for_owner};
 use crate::sim::radio::{self, RadioMessage, RadioPayload};
 use crate::sim::production::{credits_entry_for_owner, foundation_dimensions};
 use crate::util::fixed_math::ra2_speed_to_leptons_per_second;
@@ -1128,9 +1130,11 @@ fn phase_unloading(
         };
 
         let mut slot_value: i32 = 0;
+        let mut slot_bales: i32 = 0; // P7: bale COUNT (the HarvestedCredits stat is bales×5, not value×5)
         snap.miner.cargo.retain(|b| {
             if b.resource_type == slot_type {
                 slot_value = slot_value.saturating_add(i32::from(b.value));
+                slot_bales += 1;
                 false
             } else {
                 true
@@ -1150,25 +1154,43 @@ fn phase_unloading(
             .map(|b| sim.interner.resolve(b.owner).to_string())
             .expect("west-cell unload building should exist");
 
-        {
-            let credits = credits_entry_for_owner(sim, &refinery_owner);
-            *credits = credits.saturating_add(slot_value);
+        // P7: per-country IncomeMult folds into the base credits (single truncation,
+        // matching gamemd's one ftol per deposit call); 1.0 on stock (identity, hash-neutral).
+        // The HarvestedCredits stat accrues bales×5 (statistics-only; never the wallet).
+        let income_ppm = income_ppm_for_owner(&sim.houses, &sim.interner, rules, &refinery_owner);
+        let base_credits = apply_income_mult(slot_value, income_ppm);
+        if base_credits > 0 {
+            {
+                let credits = credits_entry_for_owner(sim, &refinery_owner);
+                *credits = credits.saturating_add(base_credits);
+            }
+            if let Some(h) = house_state_for_owner_mut(&mut sim.houses, &refinery_owner, &sim.interner)
+            {
+                h.economy.add_harvested(slot_bales);
+            }
         }
 
-        // Purifier bonus applied once per slot drain:
-        //   bonus = floor(slot_value × purifier_count × PurifierBonus)
-        // Multiplying by the whole slot eliminates the per-bale integer
-        // truncation that previously under-paid by ~PurifierBonus% per bale.
+        // Purifier bonus applied once per slot drain — the single-truncation credit + the
+        // single-truncation HarvestedCredits stat (see the helpers' contracts).
         let purifier_count = effective_purifier_count(sim, rules, &refinery_owner);
-        if purifier_count > 0 {
-            let bonus_pct: i32 = rules.general.purifier_bonus_pct;
-            let bonus: i32 = slot_value
-                .saturating_mul(purifier_count)
-                .saturating_mul(bonus_pct)
-                / 100;
-            if bonus > 0 {
+        let bonus_pct = rules.general.purifier_bonus_pct;
+        let bonus_credits = crate::sim::economy::purifier_bonus_credits(
+            slot_value,
+            purifier_count,
+            bonus_pct,
+            income_ppm,
+        );
+        if bonus_credits > 0 {
+            {
                 let credits = credits_entry_for_owner(sim, &refinery_owner);
-                *credits = credits.saturating_add(bonus);
+                *credits = credits.saturating_add(bonus_credits);
+            }
+            let bonus_stat =
+                crate::sim::economy::purifier_bonus_harvested(slot_bales, purifier_count, bonus_pct);
+            if let Some(h) =
+                house_state_for_owner_mut(&mut sim.houses, &refinery_owner, &sim.interner)
+            {
+                h.economy.add_harvested_raw(bonus_stat);
             }
         }
 

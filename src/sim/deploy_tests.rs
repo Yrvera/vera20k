@@ -621,22 +621,16 @@ fn conyard_redeploy_ui_hides_while_building_queue_busy() {
     assert!(sim.should_show_undeploy_building_command(yard, &rules));
     let owner = sim.interner.get("Americans").unwrap();
     let type_id = sim.interner.intern("GAPOWR");
-    sim.production
-        .queues_by_owner
-        .entry(owner)
-        .or_default()
-        .entry(crate::sim::production::ProductionCategory::Building)
-        .or_default()
-        .push_back(crate::sim::production::BuildQueueItem {
-            owner,
-            type_id,
-            queue_category: crate::sim::production::ProductionCategory::Building,
-            state: crate::sim::production::BuildQueueState::Building,
-            total_base_frames: 100,
-            remaining_base_frames: 100,
-            progress_carry: 0,
-            enqueue_order: 1,
-        });
+    // P5d: arm a Building build in the registry (the queue-of-record) so the
+    // production-busy gate sees an active Building factory.
+    sim.production.factory_shadow.enqueue(
+        owner,
+        crate::sim::production::ProductionCategory::Building,
+        type_id,
+        1,
+        100,
+        0,
+    );
 
     assert!(!sim.should_show_undeploy_building_command(yard, &rules));
     assert!(

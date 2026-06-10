@@ -7,6 +7,7 @@
 //! - `production_placement`: building placement, sell, repair
 //! - `production_tech`: tech tree, build options, factory matching, spawn cells
 
+mod factory;
 mod production_economy;
 mod production_placement;
 mod production_queue;
@@ -15,6 +16,7 @@ mod production_sell;
 mod production_spawn;
 mod production_tech;
 mod production_types;
+mod war_factory_exit;
 
 // Re-export everything so external code can still use `production::X`.
 pub use self::production_economy::is_harvester_type;
@@ -43,6 +45,12 @@ pub use self::production_tech::{
     structure_satisfies_prerequisite,
 };
 pub use self::production_types::*;
+pub use self::factory::{
+    build_step_time, category_for_object, BuildEligibility, BuildStepTimeInputs, CancelOutcome,
+    Factory, FactoryRegistry, FactoryView, PendingObject, SpecialItem, StepOutcome,
+    PRODUCTION_STEPS, STEP_RATE_MAX, STEP_RATE_MIN,
+};
+pub use self::war_factory_exit::tick_war_factory_exit_contacts;
 
 // Re-exports for external consumers (files outside production/ that previously
 // imported private submodules directly).
@@ -67,3 +75,7 @@ mod queue_tests;
 #[cfg(test)]
 #[path = "production_placement_tests.rs"]
 mod placement_tests;
+
+#[cfg(test)]
+#[path = "production_replay_tests.rs"]
+mod replay_tests;

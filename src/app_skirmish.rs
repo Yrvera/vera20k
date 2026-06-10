@@ -20,6 +20,7 @@ use crate::render::bridge_railing_atlas::{self, BridgeRailingAtlas, BridgeRailin
 use crate::render::gpu::GpuContext;
 use crate::render::overlay_atlas::{self, OverlayAtlas};
 use crate::rules::art_data::ArtRegistry;
+use crate::rules::color_scheme::scheme_entry_for_priority;
 use crate::rules::house_colors::HouseColorIndex;
 use crate::rules::ini_parser::IniFile;
 use crate::rules::ruleset::RuleSet;
@@ -154,7 +155,10 @@ pub(crate) fn house_color_map_for_launch_session(
         }
     }
     for slot in normalized_launch_slots(session) {
-        colors.insert(slot.owner_name, HouseColorIndex(slot.color_index));
+        // `slot.color_index` is the gamemd color *priority* (lobby slot order);
+        // resolve it to a `[Colors]` entry index via the priority LUT + /2 doubling.
+        let entry = scheme_entry_for_priority(slot.color_index as i32) as u8;
+        colors.insert(slot.owner_name, HouseColorIndex(entry));
     }
     colors
 }
@@ -790,6 +794,7 @@ mod tests {
                 country: LaunchCountry::America,
                 country_random: false,
                 color_index: 1,
+                color_random: false,
                 start_position: LaunchStartPosition::Position(3),
                 team: LaunchTeam::None,
             },
@@ -797,6 +802,7 @@ mod tests {
                 country: LaunchCountry::Russia,
                 country_random: false,
                 color_index: 2,
+                color_random: false,
                 start_position: LaunchStartPosition::Auto,
                 team: LaunchTeam::None,
                 difficulty: Default::default(),
@@ -1037,9 +1043,12 @@ mod tests {
             &roster_with_neutral_and_playable(),
         );
 
+        // Neutral keeps the roster-assigned index; players resolve their lobby
+        // priority through the [Colors] entry LUT (priority 1 → entry 5 DarkRed,
+        // priority 2 → entry 10 DarkBlue).
         assert_eq!(colors.get("Neutral"), Some(&HouseColorIndex(8)));
-        assert_eq!(colors.get("Player"), Some(&HouseColorIndex(1)));
-        assert_eq!(colors.get("Computer1"), Some(&HouseColorIndex(2)));
+        assert_eq!(colors.get("Player"), Some(&HouseColorIndex(5)));
+        assert_eq!(colors.get("Computer1"), Some(&HouseColorIndex(10)));
         assert!(!colors.contains_key("Americans"));
     }
 
@@ -1061,6 +1070,7 @@ mod tests {
             country: LaunchCountry::Cuba,
             country_random: false,
             color_index: 3,
+            color_random: false,
             start_position: LaunchStartPosition::Position(0),
             team: LaunchTeam::None,
             difficulty: Default::default(),
@@ -1161,6 +1171,7 @@ mod tests {
             country: LaunchCountry::Cuba,
             country_random: false,
             color_index: 3,
+            color_random: false,
             start_position: LaunchStartPosition::Auto,
             team: LaunchTeam::Team(1),
             difficulty: Default::default(),

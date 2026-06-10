@@ -384,7 +384,7 @@ fn resolve_entity_speed(
 fn build_entity_block_set(entities: &EntityStore, exclude_id: u64) -> BTreeSet<(u16, u16)> {
     let mut blocks = BTreeSet::new();
     for entity in entities.values() {
-        if entity.stable_id == exclude_id {
+        if entity.stable_id == exclude_id || entity.dying {
             continue;
         }
         // Only block cells occupied by vehicles/structures — infantry share cells.

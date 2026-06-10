@@ -25,6 +25,36 @@ fn hash_drive_track_state(
     state.target_facing.hash(hasher);
 }
 
+/// Fold the `MissionCom` mission component into the state hash.
+///
+/// Explicit field fold (MissionCom intentionally does NOT derive `Hash`): enum
+/// discriminants cast to `u16` (matching the `category as u8` idiom in
+/// `hash_entities`), `Option`s as a `0u8`/`1u8` presence tag plus value. As of
+/// Slice 8 `mission` is canonical hashed lockstep state, no longer an unhashed
+/// shadow; `refresh_mission_shadow` keeps `current`/`substate` a deterministic
+/// projection of the authoritative machines, so this fold cannot desync.
+fn hash_mission_com(mission: &crate::sim::mission::MissionCom, hasher: &mut impl Hasher) {
+    (mission.current as u16).hash(hasher);
+    match mission.queued {
+        Some(m) => {
+            1u8.hash(hasher);
+            (m as u16).hash(hasher);
+        }
+        None => 0u8.hash(hasher),
+    }
+    match mission.suspended {
+        Some(m) => {
+            1u8.hash(hasher);
+            (m as u16).hash(hasher);
+        }
+        None => 0u8.hash(hasher),
+    }
+    mission.substate.hash(hasher);
+    mission.timer.start_frame.hash(hasher);
+    mission.timer.duration.hash(hasher);
+    mission.tick_counter.hash(hasher);
+}
+
 impl Simulation {
     /// Deterministic state hash over canonicalized simulation state.
     ///
@@ -128,6 +158,11 @@ impl Simulation {
         for (owner, house) in &self.houses {
             owner.hash(hasher);
             house.credits.hash(hasher);
+            // P5b: economy statistics are hashed; economy.credits is NOT (it is a
+            // per-sweep shim loaded from house.credits — the one authoritative wallet).
+            house.economy.spent_credits.hash(hasher);
+            house.economy.harvested_credits.hash(hasher);
+            house.economy.purifier_count.hash(hasher);
             house.side_index.hash(hasher);
             house.is_human.hash(hasher);
             house.is_defeated.hash(hasher);
@@ -155,22 +190,13 @@ impl Simulation {
 
     /// Hash all production-related state: queues, ready items, resources.
     fn hash_production(&self, hasher: &mut impl Hasher) {
-        for (owner, queues) in &self.production.queues_by_owner {
-            owner.hash(hasher);
-            for (category, queue) in queues {
-                category.hash(hasher);
-                for item in queue {
-                    item.owner.hash(hasher);
-                    item.type_id.hash(hasher);
-                    item.queue_category.hash(hasher);
-                    item.state.hash(hasher);
-                    item.total_base_frames.hash(hasher);
-                    item.remaining_base_frames.hash(hasher);
-                    item.progress_carry.hash(hasher);
-                    item.enqueue_order.hash(hasher);
-                }
-            }
-        }
+        // P5d: the per-`BuildQueueItem` `queues_by_owner` fold is RETIRED — the
+        // queue-of-record now lives in the factory registry (active build = `Factory`
+        // head fields; tail = `Factory.queue` of `QueueEntry`) and folds in
+        // `hash_factory_registry`. `remaining_base_frames` no longer exists (it was a
+        // `BuildQueueItem` field); the sidebar ETA derives it from `progress` at view time
+        // and it is intentionally NOT hashed (the 18->19 shape change). `ready_by_owner`,
+        // `active_producer_by_owner`, and `next_enqueue_order` are UNCHANGED below.
         for (owner, ready) in &self.production.ready_by_owner {
             owner.hash(hasher);
             for type_id in ready {
@@ -185,6 +211,7 @@ impl Simulation {
             }
         }
         self.production.next_enqueue_order.hash(hasher);
+        self.hash_factory_registry(hasher); // P5b: the authoritative factory registry
 
         for (&(rx, ry), node) in &self.production.resource_nodes {
             rx.hash(hasher);
@@ -237,6 +264,60 @@ impl Simulation {
         for (&ref_sid, &miner_sid) in &self.production.dock_reservations.on_pad {
             ref_sid.hash(hasher);
             miner_sid.hash(hasher);
+        }
+    }
+
+    /// Hash the authoritative factory registry in the deterministic temporal sweep
+    /// order (`iter_insertion_ordered`, by `insertion_seq` = front `enqueue_order`) —
+    /// the SAME order `step_all` charges in, so the fold order is part of the hash
+    /// contract. Explicit-field folding (NOT `#[derive(Hash)]`) so `SpecialItem`'s
+    /// three states + the Option presence tags fold distinctly, consistent with the
+    /// rest of this file.
+    fn hash_factory_registry(&self, hasher: &mut impl Hasher) {
+        for f in self.production.factory_shadow.iter_insertion_ordered() {
+            f.owner.hash(hasher);
+            (f.category as u8).hash(hasher);
+            f.insertion_seq.hash(hasher);
+            f.progress.hash(hasher);
+            f.step_rate_frames.hash(hasher);
+            f.step_timer.hash(hasher);
+            f.balance.hash(hasher);
+            f.original_balance.hash(hasher);
+            // P5d: the active build's ETA basis (was the front `BuildQueueItem.total_base_frames`).
+            f.active_total_base_frames.hash(hasher);
+            match &f.object {
+                Some(o) => {
+                    1u8.hash(hasher);
+                    o.type_id.hash(hasher);
+                    match o.entity_id {
+                        Some(e) => {
+                            1u8.hash(hasher);
+                            e.hash(hasher);
+                        }
+                        None => 0u8.hash(hasher),
+                    }
+                }
+                None => 0u8.hash(hasher),
+            }
+            f.on_hold.hash(hasher);
+            f.suspended.hash(hasher);
+            f.manual.hash(hasher);
+            match f.special {
+                crate::sim::production::SpecialItem::NoneNeg1 => 0u8.hash(hasher),
+                crate::sim::production::SpecialItem::NoneZero => 1u8.hash(hasher),
+                crate::sim::production::SpecialItem::Item(v) => {
+                    2u8.hash(hasher);
+                    v.hash(hasher);
+                }
+            }
+            // P5d: the queue-of-record (was the per-`BuildQueueItem` `queues_by_owner` fold,
+            // now retired). Folds in FIFO (`VecDeque`) order — deterministic by construction.
+            (f.queue.len() as u64).hash(hasher);
+            for e in &f.queue {
+                e.type_id.hash(hasher);
+                e.enqueue_order.hash(hasher);
+                e.total_base_frames.hash(hasher);
+            }
         }
     }
 
@@ -495,6 +576,9 @@ impl Simulation {
             entity.c4_plant.hash(hasher);
             entity.pending_c4_detonation.hash(hasher);
             entity.bunker_occupant.hash(hasher);
+            // Reciprocal link + install machine are authoritative lifecycle state.
+            entity.bunker_link.hash(hasher);
+            entity.bunker_runtime.hash(hasher);
             if let Some(gate) = entity.building_gate {
                 1u8.hash(hasher);
                 gate.mission_18_active.hash(hasher);
@@ -617,6 +701,10 @@ impl Simulation {
             } else {
                 0u8.hash(hasher);
             }
+
+            // Mission substrate — folded as of Slice 8 (MissionCom is now
+            // canonical hashed state, not an unhashed shadow).
+            hash_mission_com(&entity.mission, hasher);
         }
     }
 }

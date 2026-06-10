@@ -1079,7 +1079,7 @@ const BUILDING_ANIM_KEYS: &[(&str, &[&str])] = &[
     ("ActiveAnim", &["", "Two", "Three", "Four"]),
     ("IdleAnim", &["", "Two"]),
     ("SuperAnim", &[""]),
-    ("SpecialAnim", &["", "Two", "Three"]),
+    ("SpecialAnim", &["", "Two", "Three", "Four"]),
     ("ProductionAnim", &[""]),
 ];
 

@@ -83,8 +83,16 @@ pub(super) fn tick_system(sys: &mut ParticleSystem, sim: &mut Simulation, rules:
                 if sys.particles.len() < cap {
                     let pt = rules.particle_type(holds);
                     let r = pst.spawn_radius.max(0) as u32;
-                    let off_x = sim.particle_rng().next_range_u32(r + 1) as i32;
-                    let off_y = sim.particle_rng().next_range_u32(r + 1) as i32;
+                    // PARITY-YELLOW: the original gas-system per-tick AI makes NO
+                    // spawn-offset RNG draw here — this periodic-spawn path is
+                    // cloned from smoke and has no counterpart in the gas AI, so
+                    // these two draws are a phantom scenario-cursor advance vs
+                    // gamemd. Converting them to the raw-signed helper preserves
+                    // current behavior and keeps the file consistent for the
+                    // regression guard; true cursor parity needs the gas spawn
+                    // path reworked (tracked: OQ-PARTICLE-RNG-007).
+                    let off_x = sim.particle_rng().next_raw_modulo_signed(r + 1);
+                    let off_y = sim.particle_rng().next_raw_modulo_signed(r + 1);
                     let spawn_pos = IVec3::new(
                         sys.coords.x + off_x,
                         sys.coords.y + off_y,
@@ -195,7 +203,7 @@ fn make_particle(
     rng: &mut SimRng,
 ) -> Particle {
     let base = (pt.max_ec as u32).max(1);
-    let lifetime_extra = rng.next_range_u32(base) as i16;
+    let lifetime_extra = rng.next_raw_abs_modulo(base) as i16;
     let lifetime_remaining = (pt.max_ec as i16).saturating_add(lifetime_extra);
     Particle {
         type_id,

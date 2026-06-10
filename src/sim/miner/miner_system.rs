@@ -118,6 +118,11 @@ pub(crate) fn tick_miners_with_overlay_registry(
         let Some(entity) = sim.substrate.entities.get(id) else {
             continue;
         };
+        // A Dying miner corpse (sold/captured this tick, awaiting the end-of-tick
+        // drain) must not move, harvest, or deposit — exclude it from the tick.
+        if entity.dying {
+            continue;
+        }
         let Some(ref miner) = entity.miner else {
             continue;
         };
@@ -1447,7 +1452,10 @@ pub(crate) fn count_purifiers_for_owner(sim: &Simulation, rules: &RuleSet, owner
     sim.substrate.entities
         .values()
         .filter(|e| {
-            e.category == EntityCategory::Structure
+            // A Dying purifier corpse (sold/destroyed this tick) must not keep
+            // paying its deposit bonus until the end-of-tick drain.
+            !e.dying
+                && e.category == EntityCategory::Structure
                 && sim.interner.resolve(e.owner).eq_ignore_ascii_case(owner)
                 && sim
                     .object_type(e.type_ref, rules)

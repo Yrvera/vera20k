@@ -1302,6 +1302,124 @@ impl Simulation {
                 }
                 success
             }
+            Command::EnterBunker { unit_id, bunker_id } => {
+                let Some(rules) = rules else { return false };
+                if !self.entity_owned_by_id(command_owner, *unit_id) {
+                    return false;
+                }
+                if self
+                    .substrate
+                    .entities
+                    .get(*unit_id)
+                    .is_some_and(|e| e.is_deployed())
+                {
+                    return false;
+                }
+                // Target must be an own tank bunker (seeded `bunker_runtime`).
+                let is_bunker = self
+                    .substrate
+                    .entities
+                    .get(*bunker_id)
+                    .is_some_and(|b| b.bunker_runtime.is_some());
+                if !is_bunker || !self.entity_owned_by_id(command_owner, *bunker_id) {
+                    return false;
+                }
+                // Rules-gated weapon/Bunkerable check (the bus stays rules-free).
+                if !crate::sim::docking::bunker_link::can_auto_deploy_here(self, *unit_id, rules) {
+                    return false;
+                }
+                // Admission query over the bus; commit only on ROGER.
+                if crate::sim::radio::transmit(
+                    self,
+                    *unit_id,
+                    *bunker_id,
+                    crate::sim::radio::RadioMessage::CanEnter,
+                    crate::sim::radio::RadioPayload::default(),
+                ) != crate::sim::radio::RadioResponse::Roger
+                {
+                    return false;
+                }
+                // Commit: start the install machine (ArriveWait + installing_unit).
+                crate::sim::radio::transmit(
+                    self,
+                    *unit_id,
+                    *bunker_id,
+                    crate::sim::radio::RadioMessage::DockNow,
+                    crate::sim::radio::RadioPayload::default(),
+                );
+                // Retask onto Enter (no dock reservation), mark the unit as
+                // approaching THIS bunker (the install machine's keep-alive gate).
+                self.assign_mission_with_teardown(*unit_id, MissionType::Enter, DockTeardown::None);
+                if let Some(e) = self.substrate.entities.get_mut(*unit_id) {
+                    e.attack_target = None;
+                    e.order_intent = None;
+                    e.dock_state = None;
+                    e.c4_plant = None;
+                    e.bunker_link =
+                        crate::sim::game_entity::BunkerLink::Approaching(*bunker_id);
+                }
+                // Issue an approach move toward the bunker cell (mirror EnterTransport).
+                let bunker_cell = self
+                    .substrate
+                    .entities
+                    .get(*bunker_id)
+                    .map(|b| (b.position.rx, b.position.ry));
+                if let Some((brx, bry)) = bunker_cell {
+                    let info = self.resolve_move_info(*unit_id, Some(rules));
+                    let speed = info
+                        .as_ref()
+                        .map(|i| i.speed)
+                        .unwrap_or(ra2_speed_to_leptons_per_second(4));
+                    let speed_type = info
+                        .as_ref()
+                        .map(|i| i.speed_type)
+                        .unwrap_or(SpeedType::Track);
+                    let crusher = info.as_ref().map_or(false, |i| i.mover_is_crusher);
+                    let (entity_blocks, entity_block_map) = bump_crush::build_entity_block_set(
+                        &self.substrate.entities,
+                        command_owner,
+                        &self.house_alliances,
+                        &self.interner,
+                        Some(rules),
+                    );
+                    if let Some(grid) = path_grid {
+                        let cost_grid = self.terrain_costs.get(&speed_type);
+                        movement::issue_move_command_with_layered(
+                            &mut self.substrate.entities,
+                            grid,
+                            *unit_id,
+                            (brx, bry),
+                            speed,
+                            false,
+                            cost_grid,
+                            Some(&entity_blocks),
+                            self.resolved_terrain.as_ref(),
+                            self.zone_grid.as_ref(),
+                            Some(&entity_block_map),
+                            crusher,
+                        );
+                    }
+                }
+                true
+            }
+            Command::EjectBunker { bunker_id } => {
+                let Some(rules) = rules else { return false };
+                if !self.entity_owned_by_id(command_owner, *bunker_id) {
+                    return false;
+                }
+                let has_occupant = self
+                    .substrate
+                    .entities
+                    .get(*bunker_id)
+                    .is_some_and(|b| b.bunker_occupant.is_some());
+                if !has_occupant {
+                    return false;
+                }
+                crate::sim::docking::bunker_link::release_normal(
+                    self, *bunker_id, rules, path_grid,
+                );
+                true
+            }
         }
     }
 
@@ -1913,5 +2031,265 @@ mod tests {
         assert_eq!(miner.reserved_refinery, None);
         assert!(!miner.forced_return);
         assert_eq!(miner.state, MinerState::SearchOre);
+    }
+
+    fn bunker_rules() -> RuleSet {
+        RuleSet::from_ini(&IniFile::from_str(
+            "[VehicleTypes]\n0=TANK\n1=NOGUN\n\n[InfantryTypes]\n\n[AircraftTypes]\n\n\
+             [BuildingTypes]\n0=NATBNK\n\n\
+             [TANK]\nStrength=400\nArmor=heavy\nSpeed=6\nBunkerable=yes\nPrimary=120mm\n\n\
+             [NOGUN]\nStrength=400\nArmor=heavy\nSpeed=6\nBunkerable=yes\n\n\
+             [NATBNK]\nStrength=1000\nArmor=heavy\nBunker=yes\n",
+        ))
+        .expect("bunker rules")
+    }
+
+    fn spawn_bunker_struct(sim: &mut Simulation, sid: u64, owner: &str, rx: u16, ry: u16) {
+        let owner_id = sim.interner.intern(owner);
+        let type_id = sim.interner.intern("NATBNK");
+        let mut ge = GameEntity::new(
+            sid,
+            rx,
+            ry,
+            0,
+            0,
+            owner_id,
+            Health {
+                current: 1000,
+                max: 1000,
+            },
+            type_id,
+            EntityCategory::Structure,
+            0,
+            5,
+            false,
+        );
+        ge.bunker_runtime = Some(crate::sim::docking::bunker_install::BunkerRuntime::idle());
+        sim.substrate.entities.insert(ge);
+    }
+
+    fn spawn_bunkerable(sim: &mut Simulation, sid: u64, owner: &str, type_name: &str, rx: u16, ry: u16) {
+        let owner_id = sim.interner.intern(owner);
+        let type_id = sim.interner.intern(type_name);
+        let ge = GameEntity::new(
+            sid,
+            rx,
+            ry,
+            0,
+            0,
+            owner_id,
+            Health {
+                current: 400,
+                max: 400,
+            },
+            type_id,
+            EntityCategory::Unit,
+            0,
+            5,
+            true,
+        );
+        sim.substrate.entities.insert(ge);
+    }
+
+    #[test]
+    fn enter_bunker_admits_and_starts_install_machine() {
+        use crate::sim::docking::bunker_install::BunkerState;
+        use crate::sim::game_entity::BunkerLink;
+        let rules = bunker_rules();
+        let mut sim = Simulation::new();
+        spawn_bunker_struct(&mut sim, 2, "Americans", 10, 10);
+        spawn_bunkerable(&mut sim, 1, "Americans", "TANK", 14, 14);
+
+        let applied = sim.apply_command(
+            "Americans",
+            &Command::EnterBunker {
+                unit_id: 1,
+                bunker_id: 2,
+            },
+            Some(&rules),
+            None,
+            &BTreeMap::new(),
+        );
+
+        assert!(applied);
+        let unit = sim.substrate.entities.get(1).unwrap();
+        assert_eq!(unit.bunker_link, BunkerLink::Approaching(2));
+        assert_eq!(unit.mission.current, MissionType::Enter);
+        let rt = sim.substrate.entities.get(2).unwrap().bunker_runtime.unwrap();
+        assert_eq!(rt.state, BunkerState::ArriveWait);
+        assert_eq!(rt.installing_unit, Some(1));
+    }
+
+    #[test]
+    fn enter_bunker_rejects_unit_without_a_weapon() {
+        use crate::sim::docking::bunker_install::BunkerState;
+        use crate::sim::game_entity::BunkerLink;
+        let rules = bunker_rules();
+        let mut sim = Simulation::new();
+        spawn_bunker_struct(&mut sim, 2, "Americans", 10, 10);
+        // Bunkerable but no Primary → CanAutoDeployHere rejects it.
+        spawn_bunkerable(&mut sim, 1, "Americans", "NOGUN", 14, 14);
+
+        let applied = sim.apply_command(
+            "Americans",
+            &Command::EnterBunker {
+                unit_id: 1,
+                bunker_id: 2,
+            },
+            Some(&rules),
+            None,
+            &BTreeMap::new(),
+        );
+
+        assert!(!applied);
+        assert_eq!(
+            sim.substrate.entities.get(1).unwrap().bunker_link,
+            BunkerLink::None
+        );
+        assert_eq!(
+            sim.substrate.entities.get(2).unwrap().bunker_runtime.unwrap().state,
+            BunkerState::Idle,
+            "rejected admission leaves the machine idle"
+        );
+    }
+
+    #[test]
+    fn enter_enemy_bunker_is_rejected() {
+        let rules = bunker_rules();
+        let mut sim = Simulation::new();
+        spawn_bunker_struct(&mut sim, 2, "Soviets", 10, 10);
+        spawn_bunkerable(&mut sim, 1, "Americans", "TANK", 14, 14);
+
+        let applied = sim.apply_command(
+            "Americans",
+            &Command::EnterBunker {
+                unit_id: 1,
+                bunker_id: 2,
+            },
+            Some(&rules),
+            None,
+            &BTreeMap::new(),
+        );
+
+        assert!(!applied, "cannot bunker into an enemy building");
+    }
+
+    #[test]
+    fn eject_bunker_releases_occupant() {
+        use crate::sim::game_entity::BunkerLink;
+        let rules = bunker_rules();
+        let mut sim = Simulation::new();
+        spawn_bunker_struct(&mut sim, 2, "Americans", 10, 10);
+        spawn_bunkerable(&mut sim, 1, "Americans", "TANK", 14, 14);
+        sim.reveal(1);
+        sim.add_entity_occupancy(1);
+        crate::sim::docking::bunker_link::install_bunker_link(&mut sim, 2, 1);
+        assert_eq!(sim.substrate.entities.get(2).unwrap().bunker_occupant, Some(1));
+
+        let applied = sim.apply_command(
+            "Americans",
+            &Command::EjectBunker { bunker_id: 2 },
+            Some(&rules),
+            None,
+            &BTreeMap::new(),
+        );
+
+        assert!(applied);
+        assert_eq!(sim.substrate.entities.get(2).unwrap().bunker_occupant, None);
+        assert_eq!(
+            sim.substrate.entities.get(1).unwrap().bunker_link,
+            BunkerLink::None
+        );
+        // Released at the anchor SW of the bunker (10,10) + (-1,+1) when no grid.
+        let unit = sim.substrate.entities.get(1).unwrap();
+        assert_eq!((unit.position.rx, unit.position.ry), (9, 11));
+        assert_eq!(unit.mission.current, MissionType::Move);
+    }
+
+    #[test]
+    fn eject_empty_bunker_is_noop() {
+        let rules = bunker_rules();
+        let mut sim = Simulation::new();
+        spawn_bunker_struct(&mut sim, 2, "Americans", 10, 10);
+
+        let applied = sim.apply_command(
+            "Americans",
+            &Command::EjectBunker { bunker_id: 2 },
+            Some(&rules),
+            None,
+            &BTreeMap::new(),
+        );
+
+        assert!(!applied, "ejecting an empty bunker does nothing");
+    }
+
+    #[test]
+    fn bunker_full_lifecycle_enter_install_then_eject() {
+        use crate::sim::docking::bunker_install::{tick_bunker_install, BunkerState};
+        use crate::sim::game_entity::BunkerLink;
+        let rules = bunker_rules();
+        let mut sim = Simulation::new();
+        spawn_bunker_struct(&mut sim, 2, "Americans", 10, 10);
+        // Place the tank ON the bunker cell so the install needs no pathfinding
+        // (the movement subsystem is not run in this harness).
+        spawn_bunkerable(&mut sim, 1, "Americans", "TANK", 10, 10);
+        sim.reveal(1);
+        sim.add_entity_occupancy(1);
+
+        // 1) Enter: admission + install machine starts.
+        assert!(sim.apply_command(
+            "Americans",
+            &Command::EnterBunker {
+                unit_id: 1,
+                bunker_id: 2,
+            },
+            Some(&rules),
+            None,
+            &BTreeMap::new(),
+        ));
+        assert_eq!(
+            sim.substrate.entities.get(1).unwrap().bunker_link,
+            BunkerLink::Approaching(2)
+        );
+
+        // 2) Drive the install machine to Occupied. Clear facing_target each tick
+        // to simulate the body turn completing (no movement subsystem here).
+        for _ in 0..6 {
+            tick_bunker_install(&mut sim, &rules, None);
+            if let Some(u) = sim.substrate.entities.get_mut(1) {
+                u.facing_target = None;
+            }
+        }
+        let rt = sim.substrate.entities.get(2).unwrap().bunker_runtime.unwrap();
+        assert_eq!(rt.state, BunkerState::Occupied);
+        assert_eq!(sim.substrate.entities.get(2).unwrap().bunker_occupant, Some(1));
+        let unit = sim.substrate.entities.get(1).unwrap();
+        assert_eq!(unit.bunker_link, BunkerLink::Installed(2));
+        assert!(!unit.in_logic_vector, "occupant hidden while installed");
+        assert_eq!(
+            sim.bunker_wall_events.iter().filter(|e| e.up).count(),
+            1,
+            "one walls-up event on install"
+        );
+
+        // 3) Eject: occupant released near the bunker, links cleared, walls-down.
+        sim.bunker_wall_events.clear();
+        assert!(sim.apply_command(
+            "Americans",
+            &Command::EjectBunker { bunker_id: 2 },
+            Some(&rules),
+            None,
+            &BTreeMap::new(),
+        ));
+        assert_eq!(sim.substrate.entities.get(2).unwrap().bunker_occupant, None);
+        let unit = sim.substrate.entities.get(1).unwrap();
+        assert_eq!(unit.bunker_link, BunkerLink::None);
+        assert!(unit.in_logic_vector, "occupant revealed on eject");
+        assert_eq!(unit.mission.current, MissionType::Move);
+        assert_eq!(
+            sim.bunker_wall_events.iter().filter(|e| !e.up).count(),
+            1,
+            "one walls-down event on eject"
+        );
     }
 }

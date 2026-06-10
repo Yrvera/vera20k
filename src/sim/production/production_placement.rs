@@ -16,7 +16,6 @@ use crate::sim::entity_store::EntityStore;
 use crate::sim::pathfinding;
 use crate::sim::world::Simulation;
 
-use super::production_queue::refresh_queue_states;
 use super::production_refinery::maybe_spawn_refinery_harvester;
 use super::production_tech::{foundation_dimensions, producer_candidates_for_owner_category};
 use super::production_types::*;
@@ -115,26 +114,10 @@ pub fn toggle_pause_for_owner_category(
     category: ProductionCategory,
 ) -> bool {
     let owner_id = sim.interner.intern(owner);
-    let Some(queue) = sim
-        .production
-        .queues_by_owner
-        .get_mut(&owner_id)
-        .and_then(|queues| queues.get_mut(&category))
-    else {
-        return false;
-    };
-    let Some(front) = queue.front_mut() else {
-        return false;
-    };
-    front.state = match front.state {
-        BuildQueueState::Paused => BuildQueueState::Building,
-        BuildQueueState::Building | BuildQueueState::Queued | BuildQueueState::NoFunds => {
-            BuildQueueState::Paused
-        }
-        BuildQueueState::Done => BuildQueueState::Done,
-    };
-    refresh_queue_states(queue);
-    true
+    // P5d: pause is a registry flag on the active build (the retired `front.state` Paused
+    // bridge). `step_all` skips a `manual` factory without losing progress; unpausing
+    // auto-resumes via `set_rate`.
+    sim.production.factory_shadow.toggle_pause(owner_id, category)
 }
 
 pub fn cycle_active_producer_for_owner_category(

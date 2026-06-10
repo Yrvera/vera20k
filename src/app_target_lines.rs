@@ -13,7 +13,7 @@ use crate::map::entities::EntityCategory;
 use crate::map::houses::HouseColorMap;
 use crate::map::terrain;
 use crate::render::batch::SpriteInstance;
-use crate::rules::house_colors::{self, HouseColorIndex};
+use crate::rules::house_colors::{HouseColorIndex, HouseColorRamps, NO_REMAP};
 use crate::rules::ruleset::RuleSet;
 use crate::sim::combat::{AttackTarget, TargetKind};
 use crate::sim::command::{Command, CommandEnvelope};
@@ -168,7 +168,7 @@ pub(crate) fn build_factory_rally_line_instances(
             y: entity.position.screen_y,
         };
         let end = project_cell_destination(rx, ry, height_map, None, Some(sim)).into();
-        let tint = rally_tint_for_owner(owner, house_color_map);
+        let tint = rally_tint_for_owner(owner, house_color_map, &rules.house_color_ramps);
         emit_rally_line(&mut instances, start, end, tint, sim.tick);
     }
     instances
@@ -279,12 +279,17 @@ fn bridge_deck_height_for_cell(
     (cell.has_bridge_deck && !is_low_bridge).then_some(cell.bridge_deck_level)
 }
 
-fn rally_tint_for_owner(owner: &str, house_color_map: &HouseColorMap) -> [f32; 3] {
-    let index = house_color_map
-        .get(owner)
-        .copied()
-        .unwrap_or(HouseColorIndex(0));
-    let color = house_colors::house_color_ramp(index)[0];
+fn rally_tint_for_owner(
+    owner: &str,
+    house_color_map: &HouseColorMap,
+    ramps: &HouseColorRamps,
+) -> [f32; 3] {
+    // Unknown owner → NO_REMAP, which ramp() resolves to the default scheme
+    // (matching the producers' DEFAULT_SCHEME_ENTRY fallback), not entry 0.
+    let index = house_color_map.get(owner).copied().unwrap_or(NO_REMAP);
+    // Shade 0 = the scheme's brightest band (palette index 16) — gamemd's
+    // radar/target-line color.
+    let color = ramps.ramp(index)[0];
     [
         color.r as f32 / 255.0,
         color.g as f32 / 255.0,

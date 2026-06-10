@@ -12,6 +12,7 @@
 //!   render/, ui/, sidebar/, audio/, net/.
 
 use crate::map::entities::EntityCategory;
+use crate::sim::docking::bunker_install::BunkerState;
 use crate::sim::radio::{RadioMessage, RadioPayload, RadioResponse};
 use crate::sim::world::Simulation;
 
@@ -46,7 +47,13 @@ pub fn receive_radio(
         None => return RadioResponse::None,
     };
     match category {
-        EntityCategory::Structure => refinery_receive(sim, target_sid, sender_sid, msg),
+        EntityCategory::Structure => {
+            if is_bunker_building(sim, target_sid) {
+                bunker_receive(sim, target_sid, sender_sid, msg)
+            } else {
+                refinery_receive(sim, target_sid, sender_sid, msg)
+            }
+        }
         // Unit/Infantry/Aircraft receivers are wired in later slices.
         _ => RadioResponse::None,
     }
@@ -150,6 +157,77 @@ fn refinery_break(sim: &mut Simulation, ref_sid: u64, miner_sid: u64) {
     }
 }
 
+/// A tank bunker is any structure seeded with a `bunker_runtime` (Bunker=yes at
+/// spawn). Routing on this lets the bus stay rules-free (it has no `RuleSet`).
+fn is_bunker_building(sim: &Simulation, sid: u64) -> bool {
+    sim.substrate
+        .entities
+        .get(sid)
+        .is_some_and(|b| b.bunker_runtime.is_some())
+}
+
+/// Tank-bunker inbound admission + commit. Mirrors the refinery handshake shape:
+/// CAN_ENTER is the eligibility query; DOCK_NOW commits the install machine.
+fn bunker_receive(
+    sim: &mut Simulation,
+    bld: u64,
+    sender: Option<u64>,
+    msg: RadioMessage,
+) -> RadioResponse {
+    let Some(unit) = sender else {
+        return RadioResponse::None;
+    };
+    match msg {
+        RadioMessage::CanEnter => {
+            if bunker_admits(sim, bld, unit) {
+                RadioResponse::Roger
+            } else {
+                RadioResponse::Negatory
+            }
+        }
+        RadioMessage::DockNow => {
+            // Commit: start the install machine if the bunker is idle.
+            if let Some(b) = sim.substrate.entities.get_mut(bld) {
+                if let Some(rt) = b.bunker_runtime.as_mut() {
+                    if rt.state == BunkerState::Idle {
+                        rt.state = BunkerState::ArriveWait;
+                        rt.installing_unit = Some(unit);
+                    }
+                }
+            }
+            RadioResponse::Roger
+        }
+        RadioMessage::Break => {
+            if let Some(b) = sim.substrate.entities.get_mut(bld) {
+                b.radio_contacts.remove(unit);
+            }
+            RadioResponse::None
+        }
+        _ => RadioResponse::None,
+    }
+}
+
+/// Sim-state admission gate (no rules): own-owner, alive, not occupied, idle.
+/// The rules-gated Bunkerable+weapon check runs at command time (EnterBunker).
+fn bunker_admits(sim: &Simulation, bld: u64, unit: u64) -> bool {
+    let Some(unit_owner) = sim.substrate.entities.get(unit).map(|u| u.owner) else {
+        return false;
+    };
+    let Some(b) = sim.substrate.entities.get(bld) else {
+        return false;
+    };
+    if b.dying || b.health.current == 0 {
+        return false;
+    }
+    if b.owner != unit_owner {
+        return false;
+    }
+    if b.bunker_occupant.is_some() {
+        return false;
+    }
+    matches!(b.bunker_runtime.map(|rt| rt.state), Some(BunkerState::Idle))
+}
+
 #[cfg(test)]
 mod tests {
     use super::refinery_accepted_cell;
@@ -206,8 +284,93 @@ mod tests {
         sim.substrate.entities.insert(ge);
     }
 
+    fn spawn_bunker(sim: &mut Simulation, sid: u64, owner: &str) {
+        use crate::sim::docking::bunker_install::BunkerRuntime;
+        let owner_id = sim.interner.intern(owner);
+        let type_id = sim.interner.intern("NATBNK");
+        let mut ge = GameEntity::new(
+            sid,
+            10,
+            10,
+            0,
+            0,
+            owner_id,
+            Health {
+                current: 1000,
+                max: 1000,
+            },
+            type_id,
+            EntityCategory::Structure,
+            0,
+            5,
+            false,
+        );
+        ge.bunker_runtime = Some(BunkerRuntime::idle());
+        sim.substrate.entities.insert(ge);
+    }
+
     fn hello(sim: &mut Simulation, sender: u64, target: u64) -> RadioResponse {
         transmit(sim, sender, target, RadioMessage::Hello, RadioPayload::default())
+    }
+
+    fn can_enter(sim: &mut Simulation, sender: u64, target: u64) -> RadioResponse {
+        transmit(
+            sim,
+            sender,
+            target,
+            RadioMessage::CanEnter,
+            RadioPayload::default(),
+        )
+    }
+
+    #[test]
+    fn bunker_bus_routes_and_admits_by_sim_state() {
+        use crate::sim::docking::bunker_install::BunkerState;
+        let mut sim = Simulation::new();
+        spawn_bunker(&mut sim, 2, "Americans");
+        spawn_miner(&mut sim, 1, "Americans"); // own-owner vehicle
+        spawn_miner(&mut sim, 3, "Soviets"); // enemy
+
+        // Own-owner, idle, empty → admitted.
+        assert_eq!(can_enter(&mut sim, 1, 2), RadioResponse::Roger);
+        // Enemy owner → rejected.
+        assert_eq!(can_enter(&mut sim, 3, 2), RadioResponse::Negatory);
+
+        // Occupied → rejected.
+        sim.substrate.entities.get_mut(2).unwrap().bunker_occupant = Some(99);
+        assert_eq!(can_enter(&mut sim, 1, 2), RadioResponse::Negatory);
+        sim.substrate.entities.get_mut(2).unwrap().bunker_occupant = None;
+
+        // Installing (non-Idle) → rejected.
+        sim.substrate
+            .entities
+            .get_mut(2)
+            .unwrap()
+            .bunker_runtime
+            .as_mut()
+            .unwrap()
+            .state = BunkerState::ArriveWait;
+        assert_eq!(can_enter(&mut sim, 1, 2), RadioResponse::Negatory);
+    }
+
+    #[test]
+    fn bunker_dock_now_starts_install_machine() {
+        use crate::sim::docking::bunker_install::BunkerState;
+        let mut sim = Simulation::new();
+        spawn_bunker(&mut sim, 2, "Americans");
+        spawn_miner(&mut sim, 1, "Americans");
+        transmit(&mut sim, 1, 2, RadioMessage::DockNow, RadioPayload::default());
+        let rt = sim.substrate.entities.get(2).unwrap().bunker_runtime.unwrap();
+        assert_eq!(rt.state, BunkerState::ArriveWait);
+        assert_eq!(rt.installing_unit, Some(1));
+    }
+
+    #[test]
+    fn refinery_unchanged_when_not_a_bunker() {
+        let mut sim = Simulation::new();
+        spawn_refinery(&mut sim, 2, "Americans", 1);
+        spawn_miner(&mut sim, 1, "Americans");
+        assert_eq!(hello(&mut sim, 1, 2), RadioResponse::Roger);
     }
 
     #[test]

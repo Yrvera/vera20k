@@ -184,6 +184,9 @@ pub(crate) fn advance_in_game_runtime(state: &mut AppState, elapsed_ms: u64) {
         // Drain bale events into building anim overlays + particle bursts before
         // the per-frame anim tick so the SpecialAnim is visible this same frame.
         crate::app_building_anim::consume_bale_events(state);
+        // Drain tank-bunker wall-anim events into SpecialAnim overlays the same
+        // frame so the walls rise/fall in step with the install/teardown.
+        crate::app_building_anim::consume_bunker_wall_events(state);
         // Use real wall-clock delta (capped to prevent jumps after pauses/debugger).
         // Previously this passed SIM_TICK_MS (66ms) per render frame, causing building
         // idle animations to play ~3-4× too fast (60fps × 66ms = 3960ms/sec).
@@ -562,6 +565,38 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                         };
                         let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
                         GameSoundEvent::RefineryExitSfx {
+                            sound_id,
+                            screen_pos: Some((sx, sy)),
+                        }
+                    }
+                    SimSoundEvent::BunkerWallsUp { rx, ry } => {
+                        // Walls-up cue on install; skip when the rules key is empty.
+                        let sound_id = match state
+                            .rules
+                            .as_ref()
+                            .and_then(|r| r.general.bunker_walls_up_sound.as_deref())
+                        {
+                            Some(s) if !s.is_empty() => s.to_string(),
+                            _ => continue,
+                        };
+                        let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
+                        GameSoundEvent::BunkerWalls {
+                            sound_id,
+                            screen_pos: Some((sx, sy)),
+                        }
+                    }
+                    SimSoundEvent::BunkerWallsDown { rx, ry } => {
+                        // Walls-down cue on normal exit / clear teardown.
+                        let sound_id = match state
+                            .rules
+                            .as_ref()
+                            .and_then(|r| r.general.bunker_walls_down_sound.as_deref())
+                        {
+                            Some(s) if !s.is_empty() => s.to_string(),
+                            _ => continue,
+                        };
+                        let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
+                        GameSoundEvent::BunkerWalls {
                             sound_id,
                             screen_pos: Some((sx, sy)),
                         }

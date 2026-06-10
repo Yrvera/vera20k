@@ -1279,11 +1279,15 @@ pub fn tick_movement_with_grids(
                         let old_ry = entity.position.ry;
                         entity.position.rx = nx;
                         entity.position.ry = ny;
-                        let mut occupancy_layer = if entity.on_bridge {
+                        // GATE A2 verified order: capture the OLD (pre-transition)
+                        // object-list layer first; the bridge predicate below may
+                        // flip on_bridge, giving a different NEW layer.
+                        let old_occupancy_layer = if entity.on_bridge {
                             MovementLayer::Bridge
                         } else {
                             MovementLayer::Ground
                         };
+                        let mut new_occupancy_layer = old_occupancy_layer;
                         // Bridge state resolution: apply the on_bridge cell-flag predicate.
                         // loco.layer follows A*'s path_layer (next_layer). on_bridge is
                         // updated by apply_pending_bridge_render_state from bridge_update below
@@ -1303,7 +1307,7 @@ pub fn tick_movement_with_grids(
                                 entity.on_bridge,
                                 bridge_update,
                             );
-                            occupancy_layer = if new_on_bridge {
+                            new_occupancy_layer = if new_on_bridge {
                                 MovementLayer::Bridge
                             } else {
                                 MovementLayer::Ground
@@ -1313,16 +1317,19 @@ pub fn tick_movement_with_grids(
                                 loco.layer = next_layer;
                             }
                         }
-                        // Update occupancy grid: move entity from old cell to new cell.
+                        // Update occupancy grid: move entity from old cell to new
+                        // cell, removing on the OLD layer and inserting on the NEW
+                        // layer (verified two-layer order).
                         let order = next_occupancy_enter_order.next();
                         entity.occupancy_enter_order = order;
-                        occupancy.move_entity(
+                        occupancy.move_entity_layered(
                             old_rx,
                             old_ry,
                             nx,
                             ny,
                             entity_id,
-                            occupancy_layer,
+                            old_occupancy_layer,
+                            new_occupancy_layer,
                             entity.sub_cell,
                             CellListInsertion::from_category(entity.category),
                         );
@@ -1681,6 +1688,11 @@ pub fn tick_movement_with_grids(
 fn sync_formation_speeds(entities: &mut EntityStore) {
     let mut group_min_speed: BTreeMap<u32, SimFixed> = BTreeMap::new();
     for entity in entities.values() {
+        // A Dying corpse keeps its movement_target but won't move; it must not
+        // drag a living formation's speed down to its (possibly slower) value.
+        if entity.dying {
+            continue;
+        }
         if let Some(ref mt) = entity.movement_target {
             if let Some(gid) = mt.group_id {
                 let entry = group_min_speed.entry(gid).or_insert(mt.speed);
@@ -1692,6 +1704,9 @@ fn sync_formation_speeds(entities: &mut EntityStore) {
     }
     if !group_min_speed.is_empty() {
         for entity in entities.values_mut() {
+            if entity.dying {
+                continue;
+            }
             if let Some(ref mut mt) = entity.movement_target {
                 if let Some(gid) = mt.group_id {
                     if let Some(&min_spd) = group_min_speed.get(&gid) {

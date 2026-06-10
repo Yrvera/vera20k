@@ -126,6 +126,12 @@ pub fn build_entity_block_sets(
     let bridge_blocked: BTreeSet<(u16, u16)> = BTreeSet::new();
     let mut entity_block_map = LayeredEntityBlockMap::new();
     for entity in entities.values() {
+        // A Dying corpse is off the occupancy grid (uninit unmarked it); exclude
+        // it here too so movers don't path around a building that no longer
+        // exists.
+        if entity.dying {
+            continue;
+        }
         // Entities inside transports don't occupy cells.
         if entity.passenger_role.is_inside_transport() {
             continue;
@@ -252,6 +258,11 @@ pub(crate) fn build_blocker_neighbor_counts(
     }
 
     for entity in entities.values() {
+        // Dying corpses are off the occupancy grid — don't let them inflate the
+        // A* dynamic-blocker neighbor costs.
+        if entity.dying {
+            continue;
+        }
         if entity.passenger_role.is_inside_transport() || entity.occupancy_list_layer().is_none() {
             continue;
         }

@@ -168,6 +168,12 @@ pub(super) fn find_spawn_selection_for_owner_with_type(
                 overlay_grid,
                 zone_grid,
                 require_water,
+                // Frame-counter input for the authoritative FNPC fallback. binary_frame
+                // is the synthetic 15 Hz per-tick counter (the engine's per-game-frame
+                // counter analog), committed late at end-of-tick, so DURING this tick it
+                // holds the current frame N the FNPC pick must alias on. It is derived
+                // from the hashed total_sim_ms, so it is lockstep-shared by construction.
+                sim.binary_frame,
             ),
         };
         if let Some(cell) = cell {
@@ -211,10 +217,13 @@ pub fn mark_war_factory_spawn_contact(
         return false;
     };
     produced.mark_live_contact_with(producer_id);
+    // gamemd ExitObject_Main also sends 0x18 (sets +0x418) beside the HELLO contact;
+    // the footprint-clear break (tick_war_factory_exit_contacts) gates on this flag.
+    produced.dock_entered_with = Some(producer_id);
     true
 }
 
-fn exact_land_vehicle_exit_factory(rules: &RuleSet, structure_id: &str) -> bool {
+pub(super) fn exact_land_vehicle_exit_factory(rules: &RuleSet, structure_id: &str) -> bool {
     rules.object(structure_id).is_some_and(|obj| {
         obj.factory == Some(FactoryType::UnitType) && !obj.naval && obj.exit_coord.is_some()
     })
@@ -231,6 +240,7 @@ fn producer_queue_category_for_object(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn find_spawn_cell_near_structure(
     base_rx: u16,
     base_ry: u16,
@@ -245,6 +255,7 @@ fn find_spawn_cell_near_structure(
     overlay_grid: Option<&crate::sim::overlay_grid::OverlayGrid>,
     zone_grid: Option<&crate::sim::pathfinding::zone_map::ZoneGrid>,
     require_water: bool,
+    frame_counter: u32,
 ) -> Option<(u16, u16)> {
     let offsets: Vec<(i16, i16)> = preferred_exit_offsets(rules, structure_id);
     for (ox, oy) in offsets {
@@ -284,20 +295,93 @@ fn find_spawn_cell_near_structure(
     let Some(grid) = path_grid else {
         return Some((base_rx.saturating_add(2), base_ry.saturating_add(2)));
     };
-    nearest_walkable_around(
-        grid,
-        (base_rx, base_ry),
-        12,
-        produced_category,
+    // AUTHORITATIVE nearby-passable-cell search: the engine's diamond-ring FNPC
+    // (frame-counter selection), replacing the old ad-hoc box-ring first-match
+    // (`nearest_walkable_around`). This changes the chosen exit/spawn cell (and the
+    // hashed spawn position) by design — the FNPC pool order + per-ring early-out +
+    // `frame_counter % pool.len()` selection are the verified engine behavior.
+    let q = nearby_query_for_spawn(
         movement_profile,
+        grid,
         occupancy,
         entities,
         resolved_terrain,
         overlay_grid,
         zone_grid,
         require_water,
+    );
+    let found = crate::sim::find_nearby_cell::find_nearby_passable_cell(
+        (base_rx as i32, base_ry as i32),
+        &q,
+        frame_counter,
+    )?;
+    // FNPC's per-candidate passability/occupancy already mirrors the facade, but the
+    // spawn layer adds the naval/land terrain-type and sub-cell-availability filter
+    // (`cell_available_for_spawn`) that the engine FNPC does not encode; re-apply it so
+    // the authoritative pick still honors the land-vs-water and infantry sub-cell rules.
+    cell_available_for_spawn(
+        found,
+        produced_category,
+        occupancy,
+        resolved_terrain,
+        require_water,
     )
+    .then_some(found)
 }
+
+/// Build the authoritative FNPC query for the spawn/exit fallback from the spawn
+/// layer's movement profile + grids. Mirrors the engine FNPC caller args: per-candidate
+/// 1x1 passability + occupancy (reservations always SKIPPED), bridges allowed (the spawn
+/// path does not forbid bridge cells), required-height `-1`, frame-counter selection
+/// (no target). `require_water` routes the movement zone so naval units search water.
+/// `map_size` is left `None` so the occupancy playfield-corner check falls back to the
+/// resolved-terrain extent — exactly as the retired box-ring's per-candidate predicate
+/// did (it passed `map_size: None` with `resolved_terrain` present), keeping the
+/// per-candidate occupancy verdict identical to the legacy path.
+#[allow(clippy::too_many_arguments)]
+fn nearby_query_for_spawn<'a>(
+    movement_profile: SpawnMovementProfile,
+    grid: &'a crate::sim::pathfinding::PathGrid,
+    occupancy: &'a OccupancyGrid,
+    entities: &'a EntityStore,
+    resolved_terrain: Option<&'a ResolvedTerrainGrid>,
+    overlay_grid: Option<&'a crate::sim::overlay_grid::OverlayGrid>,
+    zone_grid: Option<&'a crate::sim::pathfinding::zone_map::ZoneGrid>,
+    require_water: bool,
+) -> crate::sim::find_nearby_cell::NearbyQuery<'a> {
+    use crate::sim::find_nearby_cell::{NearbyQuery, PassabilityArgs};
+    let movement_zone = if require_water {
+        MovementZone::Water
+    } else {
+        movement_profile.movement_zone
+    };
+    NearbyQuery {
+        passability: PassabilityArgs {
+            speed_type: movement_profile.speed_type,
+            required_zone_id: None,
+            movement_zone,
+            bridge_aware_zone: false,
+        },
+        allow_bridge_cells: true,
+        check_height: false,
+        check_occupancy: true,
+        // Preserve the legacy fallback search reach (the old box-ring used radius 12);
+        // the FNPC clamps internally to RADIUS_HARD_CAP.
+        radius_cap: SPAWN_FALLBACK_RADIUS,
+        target_cell: None,
+        path_grid: Some(grid),
+        resolved_terrain,
+        overlay_grid,
+        occupancy: Some(occupancy),
+        entities: Some(entities),
+        zone_grid,
+        map_size: None,
+    }
+}
+
+/// Search reach for the spawn/exit FNPC fallback, preserved from the retired
+/// `nearest_walkable_around` box-ring (which scanned `r = 1..=12`).
+const SPAWN_FALLBACK_RADIUS: u16 = 12;
 
 fn find_exact_exitcoord_spawn_cell(
     base_rx: u16,
@@ -349,6 +433,11 @@ fn find_infantry_spawn_cell_near_structure(
     Some((base_rx.saturating_add(w / 2), base_ry.saturating_add(h / 2)))
 }
 
+/// Retired ad-hoc box-ring nearest-cell search. The authoritative spawn/exit
+/// fallback now routes through the engine's diamond-ring FNPC
+/// (`find_nearby_cell::find_nearby_passable_cell`); this is kept ONLY as the legacy
+/// oracle the shadow tests compare the FNPC pool against — it has no production caller.
+#[cfg(test)]
 fn nearest_walkable_around(
     grid: &crate::sim::pathfinding::PathGrid,
     center: (u16, u16),
@@ -499,6 +588,10 @@ fn spawn_movement_profile(
     }
 }
 
+/// Legacy per-candidate passability+occupancy predicate of the retired box-ring.
+/// Kept ONLY for the shadow tests (the authoritative FNPC builds the same per-candidate
+/// check through `find_nearby_cell` via the facade); no production caller remains.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn spawn_fallback_candidate_passable(
     grid: &crate::sim::pathfinding::PathGrid,
@@ -540,6 +633,7 @@ fn spawn_fallback_candidate_passable(
         resolved_terrain,
         overlay_grid,
         map_size: None,
+        playfield_bounds: None,
     })
 }
 
@@ -827,6 +921,149 @@ mod tests {
             false,
         );
 
+        assert_eq!(cell, Some((0, 2)));
+    }
+
+    // --- T5: shadow-assert the FNPC search against the legacy box-ring ---
+
+    #[test]
+    fn find_nearby_candidate_set_shadows_nearest_walkable_around() {
+        // Shadow the new diamond-ring FNPC against the legacy box-ring on the same
+        // grid. They CHOOSE differently by design (frame-counter vs first-match), so
+        // we do NOT assert the chosen cell. Instead we assert the FNPC pick is itself
+        // a cell the legacy predicate would accept — surfacing search-shape divergence
+        // without flipping any authoritative output.
+        use crate::sim::find_nearby_cell::{
+            NearbyQuery, PassabilityArgs, RADIUS_HARD_CAP, find_nearby_passable_cell,
+        };
+        let terrain = flat_terrain(7, 7);
+        let path_grid = PathGrid::from_resolved_terrain(&terrain);
+        let occupancy = OccupancyGrid::new();
+        let entities = EntityStore::new();
+        let movement_profile = SpawnMovementProfile {
+            speed_type: SpeedType::Track,
+            movement_zone: MovementZone::Normal,
+        };
+
+        let q = NearbyQuery {
+            passability: PassabilityArgs {
+                speed_type: movement_profile.speed_type,
+                required_zone_id: None,
+                movement_zone: movement_profile.movement_zone,
+                bridge_aware_zone: false,
+            },
+            allow_bridge_cells: true,
+            check_height: false,
+            check_occupancy: true,
+            radius_cap: RADIUS_HARD_CAP,
+            target_cell: None,
+            path_grid: Some(&path_grid),
+            resolved_terrain: Some(&terrain),
+            overlay_grid: None,
+            occupancy: Some(&occupancy),
+            entities: Some(&entities),
+            zone_grid: None,
+            map_size: Some((terrain.width(), terrain.height())),
+        };
+
+        let fnpc = find_nearby_passable_cell((3, 3), &q, 0).expect("FNPC finds a cell");
+        // The FNPC pick must pass the legacy predicate the box-ring used per candidate.
+        assert!(
+            spawn_fallback_candidate_passable(
+                &path_grid,
+                fnpc,
+                movement_profile,
+                &occupancy,
+                &entities,
+                Some(&terrain),
+                None,
+                None,
+                false,
+            ) && cell_available_for_spawn(
+                fnpc,
+                ObjectCategory::Vehicle,
+                &occupancy,
+                Some(&terrain),
+                false,
+            ),
+            "FNPC chose ({},{}) which the legacy box-ring predicate rejects — search-shape divergence",
+            fnpc.0,
+            fnpc.1
+        );
+    }
+
+    // --- T6: the spawn fallback's accept/reject is the facade's verdict ---
+
+    #[test]
+    fn spawn_fallback_uses_validator_predicates() {
+        // The spawn fallback's per-candidate verdict is single-sourced through the
+        // facade predicates. On a free land cell the combined helper accepts; a
+        // structure-blocked cell is rejected by the occupancy facade.
+        let terrain = flat_terrain(3, 3);
+        let path_grid = PathGrid::from_resolved_terrain(&terrain);
+        let occupancy = OccupancyGrid::new();
+        let entities = EntityStore::new();
+        let movement_profile = SpawnMovementProfile {
+            speed_type: SpeedType::Track,
+            movement_zone: MovementZone::Normal,
+        };
+
+        // Free cell -> the facade-backed helper accepts.
+        assert!(spawn_fallback_candidate_passable(
+            &path_grid,
+            (1, 1),
+            movement_profile,
+            &occupancy,
+            &entities,
+            Some(&terrain),
+            None,
+            None,
+            false,
+        ));
+
+        // The facade occupancy predicate matches the helper: both agree the cell is free.
+        let facade_ok = check_occupancy_rect(CellRectOccupancyContext {
+            rect: CellRect::single(1, 1),
+            reservation_arg: -1,
+            reservations: None,
+            occupancy: Some(&occupancy),
+            entities: Some(&entities),
+            resolved_terrain: Some(&terrain),
+            overlay_grid: None,
+            map_size: None,
+            playfield_bounds: None,
+        });
+        assert!(facade_ok);
+    }
+
+    #[test]
+    fn spawn_fallback_no_hash_change_when_predicates_agree() {
+        // Routing the per-candidate decision through the facade does not change the
+        // chosen cell: the legacy box-ring over the facade predicates returns the same
+        // first-match cell it did before the reconcile (proves the invert is hash-neutral).
+        let mut terrain = flat_terrain(3, 3);
+        terrain.cells[0].slope_type = 1; // (0,0) blocked, mirrors the existing fixture
+        let path_grid = PathGrid::from_resolved_terrain(&terrain);
+        let occupancy = OccupancyGrid::new();
+        let entities = EntityStore::new();
+        let movement_profile = SpawnMovementProfile {
+            speed_type: SpeedType::Track,
+            movement_zone: MovementZone::Normal,
+        };
+        let cell = nearest_walkable_around(
+            &path_grid,
+            (1, 1),
+            1,
+            ObjectCategory::Vehicle,
+            movement_profile,
+            &occupancy,
+            &entities,
+            Some(&terrain),
+            None,
+            None,
+            false,
+        );
+        // Same authoritative first-match the legacy ring produced (no behavior flip).
         assert_eq!(cell, Some((0, 2)));
     }
 }

@@ -83,7 +83,8 @@ impl AircraftAmmo {
 pub enum AircraftDockPhase {
     /// Flying toward the target airfield.
     ReturnToBase,
-    /// At/near the airfield, waiting for a dock slot (FIFO queue).
+    /// At/near the airfield, re-probing each tick for a free dock slot
+    /// (no wait queue — see [`AirfieldDocks`]).
     WaitForDock,
     /// Dock slot reserved, descending to land.
     Descending,
@@ -345,6 +346,11 @@ pub fn tick_aircraft_docks(sim: &mut Simulation, rules: &RuleSet) {
         .substrate.entities
         .values()
         .filter_map(|e| {
+            // A Dying aircraft corpse must not run the dock/ammo state machine
+            // (auto-return moves, reload, pad reservation) before the drain.
+            if e.dying {
+                return None;
+            }
             let ammo = e.aircraft_ammo.as_ref()?;
             // Skip aircraft managed by the mission system.
             if e.aircraft_mission.is_some() {

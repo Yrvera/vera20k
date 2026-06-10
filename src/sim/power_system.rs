@@ -76,6 +76,12 @@ fn recalculate_power_for_owner(
     let mut theoretical: i32 = 0;
 
     for entity in entities.values() {
+        // A Dying corpse (sold/destroyed this tick, awaiting the end-of-tick
+        // drain) no longer produces or drains power — gamemd drops it from the
+        // house power totals at uninit.
+        if entity.dying {
+            continue;
+        }
         if entity.category != EntityCategory::Structure || entity.owner != owner_id {
             continue;
         }
@@ -144,10 +150,14 @@ pub fn tick_power_states(
     _tick_ms: u32,
     interner: &crate::sim::intern::StringInterner,
 ) -> Vec<PowerEvent> {
-    // Collect unique owners who have structures.
+    // Collect unique owners who have a LIVE structure. A Dying corpse must not
+    // keep an owner's power state alive once its last structure is gone.
     let mut owners: Vec<InternedId> = Vec::new();
     for entity in entities.values() {
-        if entity.category == EntityCategory::Structure && !owners.contains(&entity.owner) {
+        if !entity.dying
+            && entity.category == EntityCategory::Structure
+            && !owners.contains(&entity.owner)
+        {
             owners.push(entity.owner);
         }
     }
@@ -234,7 +244,8 @@ pub fn has_active_radar(
     interner: &crate::sim::intern::StringInterner,
 ) -> bool {
     entities.values().any(|e| {
-        e.category == EntityCategory::Structure
+        !e.dying
+            && e.category == EntityCategory::Structure
             && e.owner == owner_id
             && e.building_up.is_none()
             && rules
