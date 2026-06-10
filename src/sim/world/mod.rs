@@ -25,7 +25,7 @@ pub(crate) use logic_vector::LogicVector;
 pub(crate) use substrate::ObjectSubstrate;
 pub use substrate::EnterOrderCounter;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::map::actions::ActionMap;
 use crate::map::bridge_facts::{BRIDGE_FLAG_DESTROYED_OR_RAMP, BRIDGE_FLAG_STRUCTURAL};
@@ -914,7 +914,18 @@ impl Simulation {
     /// so the folded value reflects the current tick. BTreeMap `values_mut()`
     /// yields deterministic ascending-id order.
     pub(crate) fn refresh_mission_shadow(&mut self) {
+        self.refresh_mission_shadow_except(&BTreeSet::new());
+    }
+
+    /// Tail projection with an S2 skip set: ids dispatched in-loop this tick
+    /// already committed `current`/`substate` and incremented `tick_counter` at
+    /// host time (authoritative); rewriting them here would clobber the
+    /// dispatch-time value and double-count the counter.
+    pub(crate) fn refresh_mission_shadow_except(&mut self, dispatched: &BTreeSet<u64>) {
         for entity in self.substrate.entities.values_mut() {
+            if dispatched.contains(&entity.stable_id) {
+                continue;
+            }
             let (current, substate) = entity.derived_mission();
             entity.mission.current = current;
             entity.mission.substate = substate;

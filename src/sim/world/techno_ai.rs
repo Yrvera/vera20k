@@ -282,7 +282,9 @@ fn techno_ai_shell(sim: &mut Simulation, id: u64, category: EntityCategory) {
 /// process ordering proof targets and makes the `is_drive` marker exact —
 /// avoiding a false agreement-assert on a non-drive mover (ship / hover).
 #[cfg(any(test, debug_assertions))]
-fn is_s1_scoped_move_unit(e: &GameEntity) -> bool {
+/// `pub(crate)` so the S2 in-loop dispatch step (movement_tick.rs) can gate on
+/// the same scope predicate the host/shadow uses; widening is behavior-neutral.
+pub(crate) fn is_s1_scoped_move_unit(e: &GameEntity) -> bool {
     e.category == EntityCategory::Unit
         && e.movement_target.is_some()
         && e.drive_locomotion.is_some()
