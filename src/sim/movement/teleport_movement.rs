@@ -450,6 +450,8 @@ mod tests {
             turret_anim_z_adjust: 0,
             guard_range: None,
             air_range_bonus: None,
+            opportunity_fire: false,
+            can_retaliate: true,
             explodes: false,
             death_weapon: None,
             super_weapon: None,

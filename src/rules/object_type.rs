@@ -300,6 +300,13 @@ pub struct ObjectType {
     /// high-flying targets. Read from `AirRangeBonus=` in the unit section.
     /// None means no bonus.
     pub air_range_bonus: Option<SimFixed>,
+    /// `OpportunityFire=` — when true, the unit runs the passive target
+    /// scanner while on an ordinary Move / Harvest / Guard mission and can
+    /// acquire a target without an explicit attack order. Default no.
+    pub opportunity_fire: bool,
+    /// `CanRetaliate=` — when false, the unit does not fire back when hit
+    /// (suppresses the damage-triggered retaliation acquisition). Default yes.
+    pub can_retaliate: bool,
     /// Whether this unit fires a warhead at its own position on death (e.g.,
     /// Apocalypse Tank explosion damages nearby units).
     pub explodes: bool,
@@ -958,6 +965,10 @@ impl ObjectType {
             turret_anim_z_adjust: section.get_i32("TurretAnimZAdjust").unwrap_or(0),
             guard_range: section.get_f32("GuardRange").map(sim_from_f32),
             air_range_bonus: section.get_f32("AirRangeBonus").map(sim_from_f32),
+            // Default no (passive acquisition off unless the type opts in).
+            opportunity_fire: section.get_bool("OpportunityFire").unwrap_or(false),
+            // Default yes (retaliation allowed unless the type opts out).
+            can_retaliate: section.get_bool("CanRetaliate").unwrap_or(true),
             explodes: section.get_bool("Explodes").unwrap_or(false),
             death_weapon: section.get("DeathWeapon").map(|s| s.to_string()),
             super_weapon: section.get("SuperWeapon").map(|s| s.to_string()),
@@ -1969,6 +1980,31 @@ mod tests {
             obj.destroy_particle_systems,
             vec!["DebrisSmokeSys".to_string()]
         );
+    }
+
+    #[test]
+    fn techno_type_opportunity_fire_and_can_retaliate_defaults() {
+        // Absent keys: OpportunityFire defaults off, CanRetaliate defaults on
+        // (the gamemd TechnoType defaults — passive acquire opt-in, retaliate
+        // opt-out).
+        let ini: IniFile = IniFile::from_str("[E1]\n");
+        let section = ini.section("E1").unwrap();
+        let obj = ObjectType::from_ini_section("E1", section, ObjectCategory::Infantry);
+        assert!(!obj.opportunity_fire, "OpportunityFire defaults to no");
+        assert!(obj.can_retaliate, "CanRetaliate defaults to yes");
+    }
+
+    #[test]
+    fn techno_type_parses_opportunity_fire_and_can_retaliate() {
+        let ini: IniFile = IniFile::from_str(
+            "[MTNK]\n\
+             OpportunityFire=yes\n\
+             CanRetaliate=no\n",
+        );
+        let section = ini.section("MTNK").unwrap();
+        let obj = ObjectType::from_ini_section("MTNK", section, ObjectCategory::Vehicle);
+        assert!(obj.opportunity_fire, "OpportunityFire=yes parses true");
+        assert!(!obj.can_retaliate, "CanRetaliate=no parses false");
     }
 
     #[test]
