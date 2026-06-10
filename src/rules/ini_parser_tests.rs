@@ -302,6 +302,30 @@ fn map_overrides_skip_mixed_key_particle_registries() {
     );
 }
 
+/// RC-1 empty-value semantics: a map line `BuildSpeed=` with no value is
+/// "key absent" in the original (its INI writer gates out empty/NULL values
+/// and never stores an entry, so the readers keep the value already on the
+/// field). It must NOT clobber the merged rules+rulesmd value — clobbering it
+/// with `""` would reset the field to the hardcoded Rust default at parse time.
+#[test]
+fn map_overrides_skip_empty_valued_keys() {
+    let mut rules = IniFile::from_str(
+        "[General]\nBuildSpeed=.7\nFlightLevel=1500\n[CombatDamage]\nC4Delay=.03\n",
+    );
+    let map = IniFile::from_str("[General]\nBuildSpeed=\n[CombatDamage]\nC4Delay=.06\n");
+    let applied = rules.merge_rules_overrides(&map);
+    assert_eq!(applied, 1, "the empty BuildSpeed= must not count as an override");
+    assert_eq!(
+        rules.section("General").unwrap().get("BuildSpeed"),
+        Some(".7"),
+        "empty map value must leave the merged value intact"
+    );
+    assert_eq!(
+        rules.section("CombatDamage").unwrap().get("C4Delay"),
+        Some(".06")
+    );
+}
+
 /// RC-1 hardening: [Colors] keys are iterated as a registry (one scheme per
 /// key), so a map may override an EXISTING color's value but a new key would
 /// allocate a record — allocation from maps stays off.

@@ -373,6 +373,15 @@ impl IniFile {
                     continue;
                 }
                 if let Some(val) = patch_section.get(key) {
+                    // An empty map value (`Key=`) is "key absent" in the
+                    // original: its INI writer never stores an empty entry, so
+                    // the readers fall through to the value already on the
+                    // field. Skipping here leaves the merged rules+rulesmd
+                    // value intact instead of clobbering it (which would then
+                    // reset the field to the hardcoded Rust default at parse).
+                    if val.trim().is_empty() {
+                        continue;
+                    }
                     base_section.set(key, val);
                     applied += 1;
                 }

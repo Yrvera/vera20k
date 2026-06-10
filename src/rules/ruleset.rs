@@ -131,7 +131,7 @@ fn f32_to_ppm(val: f32, min: f32) -> u64 {
 impl Default for ProductionRules {
     fn default() -> Self {
         Self {
-            build_speed: 0.05,
+            build_speed: 1.0,
             multiple_factory: 0.8,
             low_power_penalty_modifier: 1.0,
             min_low_power_production_speed: 0.5,
@@ -140,7 +140,7 @@ impl Default for ProductionRules {
             low_power_penalty_modifier_ppm: f32_to_ppm(1.0, 0.0),
             min_low_power_production_speed_ppm: f32_to_ppm(0.5, 0.0),
             max_low_power_production_speed_ppm: f32_to_ppm(0.9, 0.0),
-            build_speed_x1000: (0.05f64 * 1000.0) as u64,
+            build_speed_x1000: (1.0f64 * 1000.0) as u64,
             wall_build_speed_coefficient: 1.0,
         }
     }
@@ -216,7 +216,9 @@ pub struct GeneralRules {
     /// The parser fallback for a missing key remains 1.0.
     pub missile_rot_var: SimFixed,
     /// Default cruise altitude for Fly-locomotor aircraft (FlightLevel= in [General]).
-    /// Default 1500 leptons. Per-type override possible but not yet implemented.
+    /// Fallback 500 leptons matches the engine constructor default; retail
+    /// rulesmd.ini always supplies its own (1500), so the fallback only fires
+    /// for a non-retail INI missing the key. Per-type override not yet implemented.
     pub flight_level: i32,
     /// Descent rate cap for parachuted units, in leptons/tick (signed).
     /// Per gamemd, the rate field accumulates by `-1` per tick and clamps
@@ -258,7 +260,9 @@ pub struct GeneralRules {
     /// Default true. Can be overridden per-map in [SpecialFlags].
     pub tiberium_spreads: bool,
     /// Minutes per full map growth scan cycle (GrowthRate= in [General]).
-    /// Default 5.0 minutes. Controls how fast ore regenerates.
+    /// Fallback 2.0 minutes matches the engine constructor default; retail
+    /// rulesmd.ini always supplies its own (5), so the fallback only fires for
+    /// a non-retail INI missing the key. Controls how fast ore regenerates.
     pub growth_rate_minutes: f32,
     /// Animation played when a unit warps in (WarpIn= in [General]).
     pub warp_in: AnimRef,
@@ -457,10 +461,12 @@ pub struct GeneralRules {
     /// Ticks between applying RepairStep HP when a unit is on a repair depot.
     /// Derived from URepairRate= in [General] (minutes). Default 0.016 min ≈ 14 ticks at 15 Hz.
     pub unit_repair_rate_ticks: u32,
-    /// HP healed per repair step on a service depot (RepairStep= in [General]). Default 8.
+    /// HP healed per repair step on a service depot (RepairStep= in [General]).
+    /// Fallback 5 matches the engine constructor default; retail rulesmd sets 8.
     pub repair_step: u16,
     /// Percent of build cost charged for a full unit repair (RepairPercent= in [General]).
-    /// Default 15 (meaning 15%). Total cost = cost * repair_percent / 100.
+    /// Fallback 25 (25%) matches the engine constructor default; retail rulesmd
+    /// sets 15%. Total cost = cost * repair_percent / 100.
     pub repair_percent: u16,
 
     // -- Aircraft ammo reload --
@@ -587,7 +593,7 @@ impl Default for GeneralRules {
             reveal_by_height: true,
             tunnel_speed: sim_from_f32(6.0),
             missile_rot_var: sim_from_f32(1.0),
-            flight_level: 1500,
+            flight_level: 500,
             parachute_max_fall_rate: -3,
             paradrop_radius: 1024,
             paradrop_aircraft_type: "PDPLANE".to_string(),
@@ -600,7 +606,7 @@ impl Default for GeneralRules {
             base_unit_types: vec!["AMCV".to_string(), "SMCV".to_string(), "PCV".to_string()],
             tiberium_grows: true,
             tiberium_spreads: true,
-            growth_rate_minutes: 5.0,
+            growth_rate_minutes: 2.0,
             warp_in: AnimRef {
                 name: "WARPIN".to_string(),
                 rate_ms: 120,
@@ -677,8 +683,8 @@ impl Default for GeneralRules {
             close_enough: SimFixed::from_num(576),
             // URepairRate=.016 min = 0.96 sec ≈ 14 ticks at 15 Hz.
             unit_repair_rate_ticks: 14,
-            repair_step: 8,
-            repair_percent: 15,
+            repair_step: 5,
+            repair_percent: 25,
             // ReloadRate=.3 min = 18 sec = 270 ticks at 15 Hz.
             reload_rate_ticks: 270,
             // PathDelay=.01 min = 0.6 sec = 9 ticks at 15 Hz.
@@ -985,7 +991,7 @@ impl GeneralRules {
                 .get_f32("MissileROTVar")
                 .map(sim_from_f32)
                 .unwrap_or(sim_from_f32(1.0)),
-            flight_level: general.get_i32("FlightLevel").unwrap_or(1500),
+            flight_level: general.get_i32("FlightLevel").unwrap_or(500),
             parachute_max_fall_rate: general.get_i32("ParachuteMaxFallRate").unwrap_or(-3),
             paradrop_radius: general.get_i32("ParadropRadius").unwrap_or(1024),
             paradrop_aircraft_type: general
@@ -1039,7 +1045,7 @@ impl GeneralRules {
                 .unwrap_or_else(|| defaults.base_unit_types),
             tiberium_grows: general.get_bool("TiberiumGrows").unwrap_or(true),
             tiberium_spreads: general.get_bool("TiberiumSpreads").unwrap_or(true),
-            growth_rate_minutes: general.get_f32("GrowthRate").unwrap_or(5.0),
+            growth_rate_minutes: general.get_f32("GrowthRate").unwrap_or(2.0),
             attack_cursor_on_disguise: general.get_bool("AttackCursorOnDisguise").unwrap_or(false),
             tree_targeting: general.get_bool("TreeTargeting").unwrap_or(false),
             condition_yellow: condition_yellow_f32,
@@ -1394,7 +1400,10 @@ impl ProductionRules {
             return Self::default();
         };
 
-        let bs = general.get_f32("BuildSpeed").unwrap_or(0.1);
+        // Fallback for an absent key matches the engine's constructor default
+        // (BuildSpeed 1.0). Retail rulesmd.ini always supplies its own value
+        // (.7), so this fallback fires only for a non-retail INI missing the key.
+        let bs = general.get_f32("BuildSpeed").unwrap_or(1.0);
         let mf = general.get_f32("MultipleFactory").unwrap_or(0.8);
         let lpp = general.get_f32("LowPowerPenaltyModifier").unwrap_or(1.0);
         let min_lp = general.get_f32("MinLowPowerProductionSpeed").unwrap_or(0.5);

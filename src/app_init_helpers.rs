@@ -688,4 +688,85 @@ mod tests {
         let rules = RuleSet::from_ini(&ini).expect("merged rules parse");
         assert_eq!(rules.production.build_speed_x1000, 580);
     }
+
+    /// AT-12 (RC-4): type/weapon/warhead resolution reproduces the engine's
+    /// outcomes for the three awkward cases.
+    /// - **Forward reference:** the [HTNK] object names `Primary=120mm`, that
+    ///   weapon names `Warhead=AP`, and both sections appear LATER in the file.
+    ///   The engine resolves from a fully-parsed section table, so order is
+    ///   irrelevant — both must resolve.
+    /// - **Case-duplicate name:** [HTNK] is redefined as [htnk] further down.
+    ///   One record per case-insensitive name, last definition wins
+    ///   (Strength 200, not 100), and lookup is case-insensitive.
+    /// - **Sectionless registry entry:** GHOST is listed in [VehicleTypes] but
+    ///   has no [GHOST] section — silently skipped, no record.
+    #[test]
+    fn resolution_order_matches_engine() {
+        let ini = IniFile::from_str(
+            "[General]\nBuildSpeed=.7\n\
+             [VehicleTypes]\n0=HTNK\n1=GHOST\n\
+             [HTNK]\nStrength=100\nPrimary=120mm\n\
+             [120mm]\nDamage=50\nWarhead=AP\n\
+             [AP]\nVerses=100%,100%,100%\n\
+             [htnk]\nStrength=200\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("fixture rules parse");
+
+        // Forward-referenced weapon + its warhead both resolved.
+        assert!(rules.weapon("120mm").is_some(), "forward-referenced weapon");
+        assert!(rules.warhead("AP").is_some(), "forward-referenced warhead");
+
+        // Case-duplicate collapses to one record; last definition wins; the
+        // lookup is case-insensitive.
+        assert!(rules.object("htnk").is_some());
+        assert_eq!(rules.object("HTNK").map(|o| o.strength), Some(200));
+
+        // Registry entry with no section produced no record.
+        assert!(rules.object("GHOST").is_none());
+    }
+
+    /// AT-11 (RC-3): every ported scalar default that maps to a verified
+    /// RulesClass constructor default falls back to THAT value when the key is
+    /// absent from the INI. Constructor defaults verified from the binary
+    /// (immediate stores inside the RulesClass ctor; doubles cross-checked
+    /// against RULESCLASS_CONSTRUCTOR_DEFAULTS.csv): FlightLevel=500,
+    /// GrowthRate=2.0 min, RepairStep=5, RepairPercent=25%, BuildSpeed=1.0,
+    /// ParachuteMaxFallRate=-3, ParadropRadius=1024, URepairRate=.016 min
+    /// (→14 ticks), C4Delay=.03 min (→27 ticks).
+    ///
+    /// Retail rulesmd.ini always supplies its own value for each, so these
+    /// fallbacks fire only for a non-retail INI missing the key — matching the
+    /// ctor default is behaviour-neutral in real play and faithful to gamemd's
+    /// key-absent path.
+    ///
+    /// EXCLUDED: `VeteranSight` (an `i32` field reading a `double` INI key —
+    /// retail "0.0" fails the i32 parse, so its fallback already fires in
+    /// normal play; that is a pre-existing representation bug, not a
+    /// fallback-only default) and `GapRadius` (no RulesClass ctor field in the
+    /// verified offset map to flip to).
+    #[test]
+    fn ported_defaults_match_ctor_csv() {
+        // Sections present but empty: every key below is absent, so each field
+        // takes its fallback default (the realistic "key missing" path).
+        let rules = RuleSet::from_ini(&IniFile::from_str("[General]\n[CombatDamage]\n"))
+            .expect("empty-section rules parse");
+
+        // [General] scalar fallbacks == ctor defaults.
+        assert_eq!(rules.general.flight_level, 500, "FlightLevel");
+        assert_eq!(rules.general.parachute_max_fall_rate, -3, "ParachuteMaxFallRate");
+        assert_eq!(rules.general.paradrop_radius, 1024, "ParadropRadius");
+        assert_eq!(rules.general.repair_step, 5, "RepairStep");
+        assert_eq!(rules.general.repair_percent, 25, "RepairPercent (25%)");
+        assert_eq!(
+            rules.general.unit_repair_rate_ticks, 14,
+            "URepairRate .016 min -> 14 ticks"
+        );
+        assert_eq!(rules.general.growth_rate_minutes, 2.0, "GrowthRate");
+
+        // [General] BuildSpeed -> deterministic x1000 field (1.0 -> 1000).
+        assert_eq!(rules.production.build_speed_x1000, 1000, "BuildSpeed 1.0");
+
+        // [CombatDamage] C4Delay .03 min -> 27 ticks.
+        assert_eq!(rules.c4_delay_ticks, 27, "C4Delay .03 min -> 27 ticks");
+    }
 }
