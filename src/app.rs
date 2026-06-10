@@ -2373,7 +2373,8 @@ impl App {
         let startup_asset_manager = Self::build_startup_asset_manager(game_config.as_ref());
         let startup_rules = startup_asset_manager
             .as_ref()
-            .and_then(crate::app_init_helpers::load_rules_ini);
+            // Startup shell: no map selected yet, so no map rules overrides.
+            .and_then(|am| crate::app_init_helpers::load_rules_ini(am, None));
         let startup_csf = startup_asset_manager
             .as_ref()
             .and_then(crate::app_init::load_csf);
