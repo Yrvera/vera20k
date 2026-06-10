@@ -37,6 +37,10 @@ const HARNESS_TICK_MS: u32 = 67;
 /// Committed final-hash baseline. Captured from the first green run. Re-baselines
 /// at most once per behavior-bearing change, with a one-line documented reason.
 /// Baselined for Slice 8 (initial commit of the global parity harness).
+/// S2 (dispatch-time mission authority) left this UNSHIFTED — verified empirically:
+/// this scenario's movers are engaged or miners (never pure-Move scoped) on their
+/// divergence ticks, so tail authority still wrote every hashed mission value. The
+/// S2 hash delta is exercised by the arrival-tick tests in techno_ai.rs instead.
 const GLOBAL_HARNESS_FINAL_HASH: u64 = 669004916847079430;
 
 fn harness_rules() -> RuleSet {
