@@ -428,7 +428,7 @@ pub struct Simulation {
         Option<crate::sim::superweapon::lightning_storm::QueuedLightningStorm>,
     /// Whether superweapon grants have been initialized from map-placed buildings.
     pub super_weapons_initialized: bool,
-    /// Per-cell terrain speed modifier config (slope climb/descend, crowd density).
+    /// Per-cell terrain speed modifier config (slope climb/descend).
     /// Built from [General] rules at map load.
     #[serde(skip)]
     pub terrain_speed_config: terrain_speed::TerrainSpeedConfig,

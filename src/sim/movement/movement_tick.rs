@@ -1120,7 +1120,7 @@ pub fn tick_movement_with_grids(
                 }
             }
 
-            // Per-cell terrain speed modifier: terrain type + slope + crowd density.
+            // Per-cell terrain speed modifier: terrain type + slope.
             // Computed from the unit's current cell and next path step. Applied to
             // both drive-track and straight-line movement below.
             let cell_speed_mod: SimFixed = {
@@ -1138,7 +1138,6 @@ pub fn tick_movement_with_grids(
                             (entity.position.rx, entity.position.ry),
                             nc,
                             terrain,
-                            occupancy,
                             terrain_speed_config,
                         )
                     }

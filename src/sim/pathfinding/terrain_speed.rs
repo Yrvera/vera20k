@@ -1,18 +1,21 @@
 //! Runtime per-cell speed modifiers applied during movement execution.
 //!
 //! The original engine applies terrain speed as a runtime modifier (not an
-//! A* cost weight). Three multiplicative factors are combined each tick:
+//! A* cost weight). Two multiplicative factors are combined each tick:
 //!
 //! 1. **Terrain type** — from rules.ini land-type sections ([Clear] Foot=100%, etc.)
-//! 2. **Slope** — uphill slows, downhill speeds up (SlopeClimb / SlopeDescend)
-//! 3. **Crowd density** — units slow when many neighbors occupy nearby cells
+//! 2. **Slope** — height-difference penalty/bonus between current and next cell.
 //!
-//! Depends on: `ResolvedTerrainGrid` (cell height + land type), `OccupancyGrid`
-//! (nearby unit count), `SpeedCostProfile` (INI-parsed terrain percentages).
+//! The original engine has no crowd/density speed term: congestion is resolved by
+//! blocking and re-pathing, never by scaling a mover's speed. A former synthetic
+//! crowd-jam factor (radius-2 occupancy scan → 0.7×) was removed — it had no
+//! source in the original engine and no INI key driving it (invented behavior).
+//!
+//! Depends on: `ResolvedTerrainGrid` (cell height + land type),
+//! `SpeedCostProfile` (INI-parsed terrain percentages).
 
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::locomotor_type::{LocomotorKind, SpeedType};
-use crate::sim::occupancy::OccupancyGrid;
 use crate::util::fixed_math::{SIM_HALF, SIM_ONE, SimFixed};
 
 // --- Constants from the original engine ---
@@ -30,15 +33,6 @@ const COMBINED_MAX: SimFixed = SimFixed::lit("1.2");
 /// Minimum combined speed modifier — prevents near-zero crawl.
 const COMBINED_MIN: SimFixed = SimFixed::lit("0.3");
 
-/// Number of occupied cells within scan radius before crowd jam kicks in.
-const DEFAULT_CROWD_DENSITY_THRESHOLD: u8 = 3;
-
-/// Speed multiplier applied when crowd density exceeds the threshold.
-const DEFAULT_CROWD_JAM_FACTOR: SimFixed = SimFixed::lit("0.7");
-
-/// Cell radius around the unit scanned for crowd density.
-const CROWD_SCAN_RADIUS: i32 = 2;
-
 /// Configuration for terrain speed modifiers, parsed from [General] in rules.ini.
 #[derive(Debug, Clone)]
 pub struct TerrainSpeedConfig {
@@ -46,10 +40,6 @@ pub struct TerrainSpeedConfig {
     pub slope_climb: SimFixed,
     /// Speed multiplier when moving downhill (next cell lower than current).
     pub slope_descend: SimFixed,
-    /// Occupied-cell count before crowd slowdown activates.
-    pub crowd_density_threshold: u8,
-    /// Speed multiplier when crowd density exceeds the threshold.
-    pub crowd_jam_factor: SimFixed,
 }
 
 impl Default for TerrainSpeedConfig {
@@ -57,8 +47,6 @@ impl Default for TerrainSpeedConfig {
         Self {
             slope_climb: SimFixed::lit("0.6"),
             slope_descend: SimFixed::lit("1.2"),
-            crowd_density_threshold: DEFAULT_CROWD_DENSITY_THRESHOLD,
-            crowd_jam_factor: DEFAULT_CROWD_JAM_FACTOR,
         }
     }
 }
@@ -69,7 +57,6 @@ impl TerrainSpeedConfig {
         Self {
             slope_climb,
             slope_descend,
-            ..Self::default()
         }
     }
 }
@@ -84,14 +71,12 @@ pub fn compute_cell_speed_modifier(
     current_cell: (u16, u16),
     next_cell: (u16, u16),
     terrain: &ResolvedTerrainGrid,
-    occupancy: &OccupancyGrid,
     config: &TerrainSpeedConfig,
 ) -> SimFixed {
     let terrain_factor = terrain_speed_factor(speed_type, next_cell, terrain);
     let slope_factor = slope_speed_factor(locomotor_kind, current_cell, next_cell, terrain, config);
-    let crowd_factor = crowd_speed_factor(current_cell, occupancy, config);
 
-    let combined = terrain_factor * slope_factor * crowd_factor;
+    let combined = terrain_factor * slope_factor;
     combined.clamp(COMBINED_MIN, COMBINED_MAX)
 }
 
@@ -140,41 +125,6 @@ fn slope_speed_factor(
         config.slope_climb
     } else if next_level < cur_level {
         config.slope_descend
-    } else {
-        SIM_ONE
-    }
-}
-
-/// Factor 3: crowd density slowdown when many units occupy nearby cells.
-///
-/// Counts occupied cells within a small radius. If the count exceeds a
-/// threshold, a jam factor is applied to simulate traffic congestion.
-fn crowd_speed_factor(
-    current_cell: (u16, u16),
-    occupancy: &OccupancyGrid,
-    config: &TerrainSpeedConfig,
-) -> SimFixed {
-    let (cx, cy) = (current_cell.0 as i32, current_cell.1 as i32);
-    let mut occupied_count: u8 = 0;
-
-    for dy in -CROWD_SCAN_RADIUS..=CROWD_SCAN_RADIUS {
-        for dx in -CROWD_SCAN_RADIUS..=CROWD_SCAN_RADIUS {
-            if dx == 0 && dy == 0 {
-                continue; // don't count the unit's own cell
-            }
-            let nx = cx + dx;
-            let ny = cy + dy;
-            if nx < 0 || ny < 0 {
-                continue;
-            }
-            if occupancy.get(nx as u16, ny as u16).is_some() {
-                occupied_count = occupied_count.saturating_add(1);
-            }
-        }
-    }
-
-    if occupied_count > config.crowd_density_threshold {
-        config.crowd_jam_factor
     } else {
         SIM_ONE
     }
@@ -234,18 +184,9 @@ mod tests {
     }
 
     #[test]
-    fn crowd_below_threshold_no_slowdown() {
-        let config = TerrainSpeedConfig::default();
-        let occupancy = OccupancyGrid::new();
-        let factor = crowd_speed_factor((5, 5), &occupancy, &config);
-        assert_eq!(factor, SIM_ONE);
-    }
-
-    #[test]
     fn default_config_values() {
         let config = TerrainSpeedConfig::default();
         assert_eq!(config.slope_climb, SimFixed::lit("0.6"));
         assert_eq!(config.slope_descend, SimFixed::lit("1.2"));
-        assert_eq!(config.crowd_density_threshold, 3);
     }
 }
