@@ -59,10 +59,24 @@ pub(crate) fn tick_unit_facing(
         updates.push((id, desired));
     }
 
-    // Phase 2: apply rotation via FacingClass::set (idempotent — no-op when the
-    // destination already matches). ROT byte refreshed from rules each tick, same as
-    // the global sweep.
-    for &(id, desired) in &updates {
+    // Phase 2: apply via the shared write half.
+    apply_unit_facing(entities, &updates, rules, interner, binary_frame);
+}
+
+/// Apply precomputed Unit barrel destinations (the write half of the post-Foot
+/// Facing slot). `FacingClass::set` is pure in `(state, binary_frame)` and no
+/// system writes Unit barrels between the combat Phase-2 read window and this
+/// site, so the apply point within Phase 5 does not affect the resulting
+/// state. Idempotent — `set` is a no-op when the destination already matches.
+/// ROT byte refreshed from rules each apply, same as the legacy sweep.
+pub(crate) fn apply_unit_facing(
+    entities: &mut EntityStore,
+    updates: &[(u64, u16)],
+    rules: &RuleSet,
+    interner: &StringInterner,
+    binary_frame: u32,
+) {
+    for &(id, desired) in updates {
         let rot_byte: u8 = rules
             .object(
                 interner.resolve(entities.get(id).map(|e| e.type_ref).unwrap_or_default()),
