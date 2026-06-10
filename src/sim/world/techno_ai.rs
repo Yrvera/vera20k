@@ -994,8 +994,13 @@ mod tests {
     /// S3 (G5 pin): the tail projection treats dying Units uniformly — a dying
     /// machine-less Unit also projects Guard. Corpse-mission freeze (gamemd
     /// does not re-derive a corpse's mission) is deferred to the
-    /// deferred-delete substrate; the divergence window is the 1-tick corpse
-    /// drain, pinned here so the choice is intentional, not accidental.
+    /// deferred-delete substrate. Scope of the divergence window (review-
+    /// corrected): voxel-death corpses are freed by flush_pending_delete
+    /// BEFORE the tail projection and hash, so they never hit this path; only
+    /// SHP-art Units with death animations linger, for the duration of the
+    /// death anim (app-driven despawn). Pre-S3 the same unfiltered projection
+    /// rewrote those corpses to None each tick — S3 changes the value, not
+    /// the window. Pinned here so the choice is intentional, not accidental.
     #[test]
     fn dying_unit_projection_uniform() {
         let mut sim = Simulation::new();

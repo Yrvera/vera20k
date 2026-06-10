@@ -523,6 +523,45 @@ fn kill_tick_barrel_holds_target_facing() {
 }
 
 #[test]
+fn facing_apply_point_equivalence_no_kill() {
+    // The ledger's apply-point-equivalence pin: on ticks with no deaths and no
+    // retargets, the per-object P2-window read must produce exactly the
+    // destination the legacy post-batch read would have produced — i.e. the
+    // live post-tick barrel destination always equals desired_turret_facing
+    // recomputed at the legacy read point (after the batch). Guards G4: any
+    // future system that writes barrel state or attack targets between the P2
+    // read and the post-batch apply site breaks this equality and fails here.
+    let mut sim = Simulation::new();
+    spawn_turreted(&mut sim, 1, 5, 5, 1); // ROT=1 — rotation spans many ticks
+    spawn_target(&mut sim, 2, 5, 9); // far enough that no kill happens quickly
+    spawn_turreted(&mut sim, 3, 12, 12, 1); // idle co-unit (residual path)
+    sim.substrate.entities.get_mut(3).unwrap().facing = 96;
+    use_test_interner(&mut sim);
+    let rules = rules_with_mtnk_rot(1);
+    sim.substrate.entities.get_mut(1).unwrap().attack_target = Some(AttackTarget::new(2));
+
+    for tick in 0..12 {
+        sim.advance_tick(&[], Some(&rules), &empty_height_map(), None, None, 67);
+        // No deaths/retargets in this scenario — assert preconditions hold.
+        assert!(
+            sim.substrate.entities.get(2).is_some_and(|t| !t.dying),
+            "tick {tick}: scenario must stay kill-free"
+        );
+        for id in [1u64, 3] {
+            let e = sim.substrate.entities.get(id).unwrap();
+            let legacy_read = desired_turret_facing(e, &sim.substrate.entities)
+                .expect("turreted unit has a desired facing");
+            let live = e.barrel_facing.as_ref().unwrap().destination();
+            assert_eq!(
+                live, legacy_read,
+                "tick {tick} unit {id}: P2-window destination must equal the \
+                 legacy post-batch read on no-kill ticks"
+            );
+        }
+    }
+}
+
+#[test]
 fn co_attacker_facing_matches_killer() {
     // Two attackers on one target; the killer's shot lands this tick. The
     // co-attacker's barrel destination this tick must ALSO hold the dying
