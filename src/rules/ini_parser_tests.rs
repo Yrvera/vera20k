@@ -222,3 +222,64 @@ fn test_get_percent() {
     assert!(section.get_percent("Bad").is_none());
     assert!(section.get_percent("Missing").is_none());
 }
+
+/// RC-1: map rules overrides merge only into sections the rules already
+/// declare, with last-definition-wins per key; map-only sections never
+/// allocate.
+#[test]
+fn map_overrides_merge_only_existing_value_sections() {
+    let mut rules = IniFile::from_str(
+        "[General]\nBuildSpeed=.7\nFlightLevel=1500\n[CombatDamage]\nC4Delay=.03\n",
+    );
+    let map = IniFile::from_str(
+        "[General]\nBuildSpeed=2\n[CombatDamage]\nC4Delay=.06\n\
+         [Basic]\nName=TestMap\n[Waypoints]\n0=45035\n",
+    );
+    let applied = rules.merge_rules_overrides(&map);
+    assert_eq!(applied, 2);
+    assert_eq!(rules.section("General").unwrap().get("BuildSpeed"), Some("2"));
+    assert_eq!(
+        rules.section("General").unwrap().get("FlightLevel"),
+        Some("1500")
+    );
+    assert_eq!(
+        rules.section("CombatDamage").unwrap().get("C4Delay"),
+        Some(".06")
+    );
+    assert!(
+        rules.section("Basic").is_none(),
+        "map-only sections must not allocate"
+    );
+    assert!(rules.section("Waypoints").is_none());
+}
+
+/// RC-1: type-registry lists are never merged from a map — by exclusion list
+/// AND by the all-numeric-keys guard.
+#[test]
+fn map_overrides_skip_type_registries_and_numbered_lists() {
+    let mut rules = IniFile::from_str("[VehicleTypes]\n0=MTNK\n[Animations]\n0=RING1\n");
+    let map = IniFile::from_str("[VehicleTypes]\n0=EVILTANK\n[Animations]\n0=EVILANIM\n");
+    let applied = rules.merge_rules_overrides(&map);
+    assert_eq!(applied, 0);
+    assert_eq!(rules.section("VehicleTypes").unwrap().get("0"), Some("MTNK"));
+    assert_eq!(rules.section("Animations").unwrap().get("0"), Some("RING1"));
+}
+
+/// RC-1: the numeric-keys guard also covers a numbered list NOT on the
+/// exclusion list (future registries stay safe by shape).
+#[test]
+fn map_overrides_numeric_guard_covers_unlisted_registries() {
+    let mut rules = IniFile::from_str("[FutureTypes]\n0=KEEP\n");
+    let map = IniFile::from_str("[FutureTypes]\n0=EVIL\n");
+    assert_eq!(rules.merge_rules_overrides(&map), 0);
+    assert_eq!(rules.section("FutureTypes").unwrap().get("0"), Some("KEEP"));
+}
+
+/// RC-1: a map with no rules-shaped sections is a byte-level no-op.
+#[test]
+fn map_overrides_no_op_without_rules_shaped_sections() {
+    let mut rules = IniFile::from_str("[General]\nBuildSpeed=.7\n");
+    let map = IniFile::from_str("[Basic]\nName=Clean\n[IsoMapPack5]\n1=AAAA\n");
+    assert_eq!(rules.merge_rules_overrides(&map), 0);
+    assert_eq!(rules.section("General").unwrap().get("BuildSpeed"), Some(".7"));
+}
