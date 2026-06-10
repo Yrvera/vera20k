@@ -415,7 +415,7 @@ pub(crate) fn load_map_from_initial(
 
     // Load rules.ini and art.ini before building resolved terrain so overlay
     // semantics and art-foundation data are available to the pipeline.
-    let mut rules: Option<RuleSet> = load_rules_ini(&asset_manager);
+    let mut rules: Option<RuleSet> = load_rules_ini(&asset_manager, Some(&map_data.ini));
     let art_result: Option<(ArtRegistry, IniFile)> = load_art_ini(&asset_manager);
     let (mut art, art_ini): (Option<ArtRegistry>, Option<IniFile>) = match art_result {
         Some((reg, ini)) => (Some(reg), Some(ini)),

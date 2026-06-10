@@ -244,7 +244,14 @@ pub(crate) fn theater_ext_for(theater_name: &str) -> &'static str {
 /// the changes/additions that Yuri's Revenge makes. We must load rules.ini
 /// first as the base, then merge rulesmd.ini on top. Without this merge,
 /// buildings are missing key properties like Foundation sizes.
-pub(crate) fn load_rules_ini(asset_manager: &AssetManager) -> Option<RuleSet> {
+///
+/// `map_rules_overrides` is the selected map's parsed INI: maps may override
+/// rules *values* on top of the merged result (the original re-reads its
+/// rules from the map file). Pass `None` on pre-map paths (startup shell).
+pub(crate) fn load_rules_ini(
+    asset_manager: &AssetManager,
+    map_rules_overrides: Option<&IniFile>,
+) -> Option<RuleSet> {
     // Step 1: Load base rules.ini.
     let mut ini: IniFile = if let Some((data, source)) = asset_manager.get_with_source("rules.ini")
     {
@@ -273,6 +280,17 @@ pub(crate) fn load_rules_ini(asset_manager: &AssetManager) -> Option<RuleSet> {
                 "Merged {} rulesmd.ini sections on top of rules.ini",
                 patch_sections
             );
+        }
+    }
+
+    // Step 3: map rules overrides — the original re-reads its rules from the
+    // map file after the main load, so maps may override value sections
+    // ([General], [CombatDamage], per-type sections, ...). Registry lists are
+    // excluded until allocation-from-map semantics are verified.
+    if let Some(map_ini) = map_rules_overrides {
+        let applied = ini.merge_rules_overrides(map_ini);
+        if applied > 0 {
+            log::info!("Applied {} map rules-override key(s)", applied);
         }
     }
 
@@ -594,4 +612,63 @@ pub(crate) fn build_entity_atlases(
             crate::render::palette_textures::PaletteSet::new(gpu, pal, house_ramps, &active)
         });
     (unit_atlas, shp_atlas, palette_set)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::rules::ini_parser::IniFile;
+    use crate::rules::ruleset::RuleSet;
+
+    const RULES_BASE: &str = "[InfantryTypes]\n0=E1\n[E1]\nStrength=125\n\
+        [General]\nBuildSpeed=.7\n[CombatDamage]\nC4Delay=.03\n";
+
+    /// AT-9: a map embedding [General]/[CombatDamage] overrides lands those
+    /// values in RuleSet, including a sim-consumed path (C4 delay ticks).
+    #[test]
+    fn map_ini_overrides_rules_values() {
+        let mut ini = IniFile::from_str(RULES_BASE);
+        let map = IniFile::from_str(
+            "[Basic]\nName=Fixture\n[General]\nBuildSpeed=1\n[CombatDamage]\nC4Delay=.06\n",
+        );
+        ini.merge_rules_overrides(&map);
+        let rules = RuleSet::from_ini(&ini).expect("triple-merged rules parse");
+        // C4Delay is minutes: ticks = minutes * 60 * 15 => .06 -> 54.
+        assert_eq!(rules.c4_delay_ticks, 54);
+        // BuildSpeed consumer — assert the deterministic x1000 field, not the
+        // f32 mirror: map override 1 -> 1000 (base .7 would be 700).
+        assert_eq!(rules.production.build_speed_x1000, 1000);
+    }
+
+    /// AT-9 inverse: a map with no rules-shaped sections changes nothing.
+    #[test]
+    fn map_without_overrides_leaves_rules_unchanged() {
+        let mut with_map = IniFile::from_str(RULES_BASE);
+        let map = IniFile::from_str("[Basic]\nName=Clean\n[Waypoints]\n0=45035\n");
+        with_map.merge_rules_overrides(&map);
+        let a = RuleSet::from_ini(&with_map).expect("parse");
+        let b = RuleSet::from_ini(&IniFile::from_str(RULES_BASE)).expect("parse");
+        assert_eq!(a.c4_delay_ticks, b.c4_delay_ticks);
+        assert_eq!(a.production.build_speed_x1000, b.production.build_speed_x1000);
+        assert_eq!(
+            a.object("E1").map(|o| o.strength),
+            b.object("E1").map(|o| o.strength)
+        );
+    }
+
+    /// AT-10: a key present in both rules.ini and rulesmd.ini resolves to the
+    /// rulesmd value through the same merge `load_rules_ini` performs; a
+    /// rules.ini-only key survives.
+    #[test]
+    fn rulesmd_overrides_rules_base() {
+        let mut ini = IniFile::from_str("[General]\nBuildSpeed=.7\nFlightLevel=1500\n");
+        let patch = IniFile::from_str("[General]\nBuildSpeed=.58\n");
+        ini.merge(&patch);
+        assert_eq!(ini.section("General").unwrap().get("BuildSpeed"), Some(".58"));
+        assert_eq!(
+            ini.section("General").unwrap().get("FlightLevel"),
+            Some("1500")
+        );
+        let rules = RuleSet::from_ini(&ini).expect("merged rules parse");
+        assert_eq!(rules.production.build_speed_x1000, 580);
+    }
 }
