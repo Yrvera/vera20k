@@ -58,7 +58,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
     let mut consumed_order_mode = false;
 
     if let Some(sim) = &mut state.simulation {
-        let execute_tick = sim.tick.saturating_add(sim.input_delay_ticks);
+        let execute_tick = sim.session.tick.saturating_add(sim.input_delay_ticks);
         let selected_ids: Vec<u64> = selected_stable_ids_sorted(sim.entities());
         if selected_ids.is_empty() {
             return false;
@@ -314,7 +314,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     // What_Action_OnObject vtable[+0x80] check).
                     if crate::sim::superweapon::invulnerability::is_invulnerable(
                         building.invulnerability.as_ref(),
-                        sim.tick as u32,
+                        sim.session.tick as u32,
                     ) {
                         return None;
                     }
@@ -716,7 +716,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
         emit_order_voice(state, "VoiceMove");
     }
     // Record target lines for visual feedback before pushing to sim queue.
-    let current_tick = state.simulation.as_ref().map_or(0, |s| s.tick);
+    let current_tick = state.simulation.as_ref().map_or(0, |s| s.session.tick);
     crate::app_target_lines::record_command_lines(&mut state.target_lines, &queued, current_tick);
 
     if let Some(sim) = &mut state.simulation {

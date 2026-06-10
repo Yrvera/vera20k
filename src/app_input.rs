@@ -563,12 +563,12 @@ fn quicksave(state: &mut AppState) {
         log::error!("Quicksave: failed to create saves dir: {e}");
         return;
     }
-    let filename = format!("save_tick{}_{}.bin", sim.tick, now);
+    let filename = format!("save_tick{}_{}.bin", sim.session.tick, now);
     let path = format!("{SAVES_DIR}/{filename}");
     match std::fs::write(&path, &bytes) {
         Ok(()) => {
             log::info!("Quicksave: saved {} bytes to {}", bytes.len(), path);
-            state.last_save_tick = Some(sim.tick);
+            state.last_save_tick = Some(sim.session.tick);
             state.last_save_instant = Some(std::time::Instant::now());
             state.save_list_cache.invalidate();
         }
@@ -608,12 +608,12 @@ pub(crate) fn save_with_name(state: &mut AppState, raw_name: &str) {
         log::error!("Save As: failed to create saves dir: {e}");
         return;
     }
-    let filename = format!("save_{sanitized}_tick{}_{}.bin", sim.tick, now);
+    let filename = format!("save_{sanitized}_tick{}_{}.bin", sim.session.tick, now);
     let path = format!("{SAVES_DIR}/{filename}");
     match std::fs::write(&path, &bytes) {
         Ok(()) => {
             log::info!("Save As: saved {} bytes to {}", bytes.len(), path);
-            state.last_save_tick = Some(sim.tick);
+            state.last_save_tick = Some(sim.session.tick);
             state.last_save_instant = Some(std::time::Instant::now());
             state.save_list_cache.invalidate();
         }

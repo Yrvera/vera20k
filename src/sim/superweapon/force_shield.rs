@@ -35,7 +35,7 @@ pub fn launch(
     let radius_sq = radius_leptons * radius_leptons;
     let blackout = rules.general.force_shield_blackout_duration;
     let anim_name = rules.general.force_shield_invoke_anim.clone();
-    let current_frame = sim.tick as u32;
+    let current_frame = sim.session.tick as u32;
 
     // 1. Spawn invoke animation.
     spawn_invoke_anim(sim, &anim_name, target_rx, target_ry);

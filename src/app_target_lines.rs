@@ -115,7 +115,7 @@ pub(crate) fn build_target_line_instances(
     let Some(sim) = sim else {
         return Vec::new();
     };
-    if !line_state.is_selected_action_active(sim.tick) {
+    if !line_state.is_selected_action_active(sim.session.tick) {
         return Vec::new();
     }
 
@@ -169,7 +169,7 @@ pub(crate) fn build_factory_rally_line_instances(
         };
         let end = project_cell_destination(rx, ry, height_map, None, Some(sim)).into();
         let tint = rally_tint_for_owner(owner, house_color_map, &rules.house_color_ramps);
-        emit_rally_line(&mut instances, start, end, tint, sim.tick);
+        emit_rally_line(&mut instances, start, end, tint, sim.session.tick);
     }
     instances
 }
@@ -513,7 +513,7 @@ mod tests {
         let sim = sim_with_selected_unit_that_has_attack_and_move();
         let target = sim.entities().get(2).unwrap();
         let lines = build_target_line_instances(
-            &active_line_state_for_tick(sim.tick),
+            &active_line_state_for_tick(sim.session.tick),
             Some(&sim),
             &BTreeMap::new(),
         );

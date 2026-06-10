@@ -321,7 +321,7 @@ pub(crate) fn build_shp_instances(
                             entity
                                 .barrel_facing
                                 .as_ref()
-                                .map(|f| f.current(sim.binary_frame))
+                                .map(|f| f.current(sim.session.binary_frame))
                                 .unwrap_or(0u16),
                             hc,
                             sx,

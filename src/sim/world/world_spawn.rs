@@ -828,7 +828,7 @@ impl Simulation {
     }
 
     fn construction_yard_redeploy_core_gate(&self, entity: &GameEntity) -> bool {
-        if !self.game_options.mcv_redeploy || !entity.radio_contacts.is_empty() {
+        if !self.session.game_options.mcv_redeploy || !entity.radio_contacts.is_empty() {
             return false;
         }
         self.houses

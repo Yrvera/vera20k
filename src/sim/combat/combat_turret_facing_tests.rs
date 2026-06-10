@@ -124,7 +124,7 @@ fn slow_rot_takes_more_frames_to_align_than_fast_rot() {
         .unwrap()
         .barrel_facing
         .as_ref()
-        .map(|f| f.is_rotating(sim_slow.binary_frame))
+        .map(|f| f.is_rotating(sim_slow.session.binary_frame))
         .unwrap_or(false);
     let fast_rotating = sim_fast
         .substrate.entities
@@ -132,7 +132,7 @@ fn slow_rot_takes_more_frames_to_align_than_fast_rot() {
         .unwrap()
         .barrel_facing
         .as_ref()
-        .map(|f| f.is_rotating(sim_fast.binary_frame))
+        .map(|f| f.is_rotating(sim_fast.session.binary_frame))
         .unwrap_or(false);
 
     assert!(
@@ -233,7 +233,7 @@ fn unit_facing_pass_drives_turret_to_target() {
         &mut sim.substrate.entities,
         &rules,
         &sim.interner,
-        sim.binary_frame,
+        sim.session.binary_frame,
     );
     let got = sim
         .substrate
@@ -306,7 +306,7 @@ fn unit_facing_pass_idles_turret_to_body_without_target() {
         &mut sim.substrate.entities,
         &rules,
         &sim.interner,
-        sim.binary_frame,
+        sim.session.binary_frame,
     );
     let dest = sim
         .substrate

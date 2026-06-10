@@ -183,7 +183,7 @@ pub(crate) fn apply_skirmish_launch_session(
         .first()
         .map(|slot| slot.difficulty)
         .unwrap_or_default();
-    sim.game_options = session
+    sim.session.game_options = session
         .options
         .to_game_options(session.opponents.len() as i32, ai_difficulty);
 
@@ -322,8 +322,8 @@ fn populate_non_player_houses(sim: &mut Simulation, house_roster: &HouseRoster) 
                 side_idx,
                 country_id,
                 false,
-                sim.game_options.starting_credits,
-                sim.game_options.tech_level,
+                sim.session.game_options.starting_credits,
+                sim.session.game_options.tech_level,
             ),
         );
     }
@@ -340,8 +340,8 @@ fn populate_launch_houses(sim: &mut Simulation, slots: &[NormalizedSkirmishSlot]
                 slot.country.side_index(),
                 Some(country_id),
                 slot.is_human,
-                sim.game_options.starting_credits,
-                sim.game_options.tech_level,
+                sim.session.game_options.starting_credits,
+                sim.session.game_options.tech_level,
             ),
         );
         if !slot.is_human {
@@ -614,7 +614,7 @@ fn seed_starting_extra_units(
     if unit_count <= 0 {
         return 0;
     }
-    let budget = starting_unit_budget(slots, rules, unit_count, sim.game_options.tech_level);
+    let budget = starting_unit_budget(slots, rules, unit_count, sim.session.game_options.tech_level);
     if budget <= 0 {
         return 0;
     }
@@ -631,7 +631,7 @@ fn seed_starting_extra_units(
             continue;
         };
         let candidates =
-            starting_unit_candidates_for_country(rules, slot.country, sim.game_options.tech_level);
+            starting_unit_candidates_for_country(rules, slot.country, sim.session.game_options.tech_level);
         if candidates.is_empty() {
             continue;
         }
@@ -1332,7 +1332,7 @@ mod tests {
         );
 
         assert_eq!(result.spawned_mcvs, 2);
-        assert_eq!(sim.game_options.unit_count, 0);
+        assert_eq!(sim.session.game_options.unit_count, 0);
         assert_eq!(sim.entities().len(), 2);
     }
 

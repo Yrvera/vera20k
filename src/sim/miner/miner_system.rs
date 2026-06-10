@@ -194,7 +194,7 @@ pub(crate) fn tick_miners_with_overlay_registry(
             entity.miner = Some(snap.miner.clone());
             for (from, to) in &snap.debug_events {
                 entity.push_debug_event(
-                    sim.tick as u32,
+                    sim.session.tick as u32,
                     DebugEventKind::MinerStateChange {
                         from: from.clone(),
                         to: to.clone(),
@@ -203,7 +203,7 @@ pub(crate) fn tick_miners_with_overlay_registry(
             }
             for (from, to) in &snap.debug_dock_events {
                 entity.push_debug_event(
-                    sim.tick as u32,
+                    sim.session.tick as u32,
                     DebugEventKind::DockPhaseChange {
                         from: from.clone(),
                         to: to.clone(),
@@ -283,7 +283,7 @@ pub(super) fn process_miner(
             // through to SearchOre.
             snap.miner.state = MinerState::SearchOre;
         }
-        MinerState::WaitNoOre => handle_wait_no_ore(snap, sim.binary_frame),
+        MinerState::WaitNoOre => handle_wait_no_ore(snap, sim.session.binary_frame),
         MinerState::ForcedReturn => handle_forced_return(sim, rules, config, path_grid, snap),
     }
     let state_after = format!("{:?}", snap.miner.state);
@@ -444,7 +444,7 @@ fn handle_search_ore(
     snap.miner.state = MinerState::WaitNoOre;
     snap.miner
         .rescan_cooldown
-        .arm(sim.binary_frame, u32::from(config.rescan_cooldown_ticks) + 1);
+        .arm(sim.session.binary_frame, u32::from(config.rescan_cooldown_ticks) + 1);
 }
 
 fn handle_move_to_ore(
@@ -517,7 +517,7 @@ fn handle_move_to_ore(
         // Original requires 9 StepTimer steps before first bale (18 frames at default rate).
         snap.miner
             .harvest_timer
-            .arm(sim.binary_frame, u32::from(config.harvest_tick_interval) + 1);
+            .arm(sim.session.binary_frame, u32::from(config.harvest_tick_interval) + 1);
         return;
     }
 
@@ -567,7 +567,7 @@ fn handle_harvest(
     snap: &mut MinerSnapshot,
 ) {
     // Frame-anchored gate (was a per-tick countdown).
-    if !snap.miner.harvest_timer.due(sim.binary_frame) {
+    if !snap.miner.harvest_timer.due(sim.session.binary_frame) {
         return;
     }
 
@@ -613,7 +613,7 @@ fn handle_harvest(
         // 18 frames per gamemd's step-counter gate.
         snap.miner
             .harvest_timer
-            .arm(sim.binary_frame, u32::from(config.harvest_tick_interval) + 1);
+            .arm(sim.session.binary_frame, u32::from(config.harvest_tick_interval) + 1);
         return;
     }
 
@@ -810,7 +810,7 @@ fn handle_forced_return(
             snap.miner.state = MinerState::WaitNoOre;
             snap.miner
         .rescan_cooldown
-        .arm(sim.binary_frame, u32::from(config.rescan_cooldown_ticks) + 1);
+        .arm(sim.session.binary_frame, u32::from(config.rescan_cooldown_ticks) + 1);
             return;
         }
     }
@@ -1229,7 +1229,7 @@ fn chrono_return_staging_cell_for_sid(
             grid,
             None,
             super::miner_dock_sequence::EXIT_SEARCH_MAX_RADIUS,
-            sim.tick,
+            sim.session.tick,
         );
     }
 
@@ -1501,7 +1501,7 @@ pub(crate) fn effective_purifier_count(
     if !is_ai {
         return real;
     }
-    let difficulty = sim.game_options.ai_difficulty;
+    let difficulty = sim.session.game_options.ai_difficulty;
     let table = rules.general.ai_virtual_purifiers;
     // INI ordering is `[Brutal, Medium, Easy]`. Defensive bounds-check in
     // case the difficulty index drifts out of range.

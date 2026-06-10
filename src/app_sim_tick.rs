@@ -173,12 +173,12 @@ pub(crate) fn advance_in_game_runtime(state: &mut AppState, elapsed_ms: u64) {
             }
         }
 
-        let garrison_flash_start_tick = state.simulation.as_ref().map(|sim| sim.tick).unwrap_or(0);
+        let garrison_flash_start_tick = state.simulation.as_ref().map(|sim| sim.session.tick).unwrap_or(0);
         advance_fixed_simulation(state, sim_elapsed);
         let garrison_flash_elapsed_ticks = state
             .simulation
             .as_ref()
-            .map(|sim| sim.tick.saturating_sub(garrison_flash_start_tick))
+            .map(|sim| sim.session.tick.saturating_sub(garrison_flash_start_tick))
             .unwrap_or(0);
         crate::app_building_anim::drain_sound_events(state);
         // Drain bale events into building anim overlays + particle bursts before
@@ -260,7 +260,7 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
             sim.replay_log = Some(ReplayLog::new(ReplayHeader {
                 version: 1,
                 tick_hz: SIM_TICK_HZ,
-                seed: sim.seed,
+                seed: sim.session.seed,
                 map_name: state.theater_name.clone(),
                 rules_hash: state.rules.as_ref().map(rules_hash).unwrap_or(0),
             }));
@@ -320,7 +320,7 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
             animation::tick_harvest_overlays(sim.entities_mut(), SIM_TICK_MS);
             // Pre-merge fog visibility for local owner so render queries are O(1).
             if let Some(owner) = &local_owner_for_fog {
-                if sim.tick == 1 {
+                if sim.session.tick == 1 {
                     log::info!("Fog merged for local owner: '{}'", owner);
                 }
                 if let Some(owner_id) = sim.interner.get(owner) {

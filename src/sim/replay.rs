@@ -86,7 +86,7 @@ impl ReplayRunner {
         // differently than the header it replays is a guaranteed silent
         // divergence.
         debug_assert_eq!(
-            sim.seed, replay.header.seed,
+            sim.session.seed, replay.header.seed,
             "replay playback sim must be constructed from header.seed"
         );
         let mut hashes: Vec<u64> = Vec::with_capacity(replay.ticks.len());

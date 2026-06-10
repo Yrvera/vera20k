@@ -1134,7 +1134,7 @@ fn emit_anim_runtime_trailer(
     let Some(trailer_type) = &config.trailer_anim else {
         return;
     };
-    if !anim_trailer_cadence_matches(sim.tick, config.trailer_seperation) {
+    if !anim_trailer_cadence_matches(sim.session.tick, config.trailer_seperation) {
         return;
     }
     if let Some(events) = events.as_deref_mut() {
@@ -1526,7 +1526,7 @@ mod tests {
     #[test]
     fn anim_runtime_trailer_emits_before_first_ai_guard_and_frame_advance() {
         let mut sim = Simulation::new();
-        sim.tick = 6;
+        sim.session.tick = 6;
         let parent = sim.interner.intern("PARENT");
         sim.effect_frame_counts.insert(parent, 3);
         let art = ArtRegistry::from_ini(&IniFile::from_str(
@@ -1560,7 +1560,7 @@ mod tests {
     #[test]
     fn anim_runtime_trailer_uses_old_type_before_next_and_not_new_type_same_visit() {
         let mut sim = Simulation::new();
-        sim.tick = 8;
+        sim.session.tick = 8;
         let old = sim.interner.intern("OLDANIM");
         let next = sim.interner.intern("NEXTANIM");
         sim.effect_frame_counts.insert(old, 2);
@@ -1598,7 +1598,7 @@ mod tests {
     #[test]
     fn anim_runtime_normal_destroy_does_not_emit_bounce_or_expire_anim_outputs() {
         let mut sim = Simulation::new();
-        sim.tick = 9;
+        sim.session.tick = 9;
         let boom = sim.interner.intern("BOOM");
         sim.effect_frame_counts.insert(boom, 2);
         let art = ArtRegistry::from_ini(&IniFile::from_str(

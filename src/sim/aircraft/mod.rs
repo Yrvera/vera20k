@@ -207,7 +207,7 @@ pub fn tick_aircraft_missions(
     }
 
     let mut mutations: Vec<MissionMutation> = Vec::new();
-    let now = sim.binary_frame;
+    let now = sim.session.binary_frame;
 
     for snap in &snapshots {
         let mut m = MissionMutation {

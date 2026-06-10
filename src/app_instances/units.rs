@@ -256,7 +256,7 @@ pub(crate) fn build_unit_instances(
         if let Some(turret_facing) = entity
             .barrel_facing
             .as_ref()
-            .map(|f| f.current(sim.binary_frame))
+            .map(|f| f.current(sim.session.binary_frame))
         {
             // Turret unit: emit body, turret, and barrel as separate sprites.
             emit_turret_unit_sprites(
