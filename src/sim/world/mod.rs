@@ -1997,6 +1997,8 @@ impl Simulation {
         // DEPENDS ON: commands (may set movement_target), entity positions from prior tick.
         // PRODUCES: updated entity positions, crush/bump effects, drive track state.
         let movement_order = self.live_object_order_snapshot();
+        // S2: ids dispatched in-loop this tick; consumed by the tail projection.
+        let mut s2_dispatched: BTreeSet<u64> = BTreeSet::new();
         let movement_stats = movement::tick_movement_with_grids(
             &mut self.substrate.entities,
             &movement_order,
@@ -2020,6 +2022,7 @@ impl Simulation {
             &mut self.interner,
             rules,
             &mut self.sound_events,
+            &mut s2_dispatched,
         );
         if let Some(rules) = rules {
             crate::sim::gate_runtime::tick_gate_runtimes(
@@ -2653,7 +2656,7 @@ impl Simulation {
         // Mission projection runs after all systems and before the hash, so the
         // folded `mission` reflects the current tick. As of Slice 8 `mission` is
         // canonical hashed state; the Slice-2 shadow-agreement assert is retired.
-        self.refresh_mission_shadow();
+        self.refresh_mission_shadow_except(&s2_dispatched);
         // P1+P2 production+economy shadow: mirror credits + purifier_count and
         // rebuild the factory registry from the legacy queues, after all
         // authoritative systems and before the hash. Writes only non-hashed shadow

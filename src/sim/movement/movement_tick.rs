@@ -837,7 +837,10 @@ pub fn tick_movement_with_grids(
     interner: &mut crate::sim::intern::StringInterner,
     rules: Option<&crate::rules::ruleset::RuleSet>,
     sound_events: &mut Vec<crate::sim::world::SimSoundEvent>,
+    // S2: ids whose dispatch step ran in-loop this tick (tail projection skips them).
+    dispatched: &mut BTreeSet<u64>,
 ) -> MovementTickStats {
+    let _ = &*dispatched; // consumed by the S2 dispatch step (T3)
     let mut stats = MovementTickStats::default();
     if tick_ms == 0 {
         return stats;

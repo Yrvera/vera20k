@@ -259,8 +259,17 @@ const DENSE_ROWS: u16 = 10;
 /// combat-driven churn (Move→Attack on target acquisition) is NOT measured by this test.
 /// Quantifying engagement churn needs a fixture that reliably forces combat (explicit
 /// Attack orders + LOS/positioning); deferred to the S2 design phase.
-#[test]
-fn dispatch_churn_measurement_dense_converging_battle() {
+/// Shared construction for the dense converging-battle fixture (20 tanks, two
+/// facing columns converging on x=25; per-owner Move script due on tick 2).
+/// Used by the churn measurement and the S2 position fingerprint below.
+#[allow(clippy::type_complexity)]
+fn dense_converging_setup() -> (
+    Simulation,
+    RuleSet,
+    BTreeMap<(u16, u16), u8>,
+    PathGrid,
+    Vec<(u64, crate::sim::intern::InternedId, Command)>,
+) {
     let rules = harness_rules();
     let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
     let grid = PathGrid::new(64, 64);
@@ -287,6 +296,12 @@ fn dispatch_churn_measurement_dense_converging_battle() {
         script.push((2, allied, Command::Move { entity_id: 1 + i, target_rx: 25, target_ry: y, queue: false, group_id: None }));
         script.push((2, soviet, Command::Move { entity_id: 11 + i, target_rx: 25, target_ry: y, queue: false, group_id: None }));
     }
+    (sim, rules, heights, grid, script)
+}
+
+#[test]
+fn dispatch_churn_measurement_dense_converging_battle() {
+    let (mut sim, rules, heights, grid, script) = dense_converging_setup();
 
     let mut hist = [0u32; 8]; // per-tick churn buckets; index = churn count clamped to 7
     let mut total_churn: u64 = 0;
@@ -324,5 +339,35 @@ fn dispatch_churn_measurement_dense_converging_battle() {
     assert!(
         total_churn >= 1,
         "a 20-tank converging battle must produce churn (arrivals + target acquisition)"
+    );
+}
+
+/// S2 movement-neutrality tripwire: per-tick position fingerprint of the dense
+/// converging scenario, captured PRE-flip (T2). The S2 dispatch flip changes
+/// only `mission.current`/`tick_counter` write points — if this fingerprint
+/// shifts, the flip moved someone: that is a bug, never a re-baseline.
+const POSITION_FINGERPRINT: u64 = 12834935063109785345; // captured pre-flip (S2 T2)
+
+#[test]
+fn s2_dense_scenario_position_fingerprint_stable() {
+    use std::hash::{Hash, Hasher};
+    let (mut sim, rules, heights, grid, script) = dense_converging_setup();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for tick in 0..DENSE_TICKS {
+        let due: Vec<CommandEnvelope> = script
+            .iter()
+            .filter(|(t, _, _)| *t == tick + 1)
+            .map(|(t, owner, c)| CommandEnvelope::new(*owner, *t, c.clone()))
+            .collect();
+        let _ =
+            sim.advance_tick(&due, Some(&rules), &heights, Some(&grid), None, HARNESS_TICK_MS);
+        for (id, e) in sim.substrate.entities.iter_sorted() {
+            (id, e.position.rx, e.position.ry, e.position.sub_x, e.position.sub_y).hash(&mut h);
+        }
+    }
+    assert_eq!(
+        h.finish(),
+        POSITION_FINGERPRINT,
+        "S2 must not change any position sequence (captured pre-flip in T2)"
     );
 }

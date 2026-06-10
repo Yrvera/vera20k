@@ -307,6 +307,8 @@ pub fn tick_movement_with_grid(
         interner,
         None, // No RuleSet in legacy wrapper — crush sounds suppressed
         &mut sound_events,
+        // Legacy wrapper has no tail projection — dispatched ids are dropped.
+        &mut std::collections::BTreeSet::new(),
     )
 }
 

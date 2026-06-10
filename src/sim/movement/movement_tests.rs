@@ -771,6 +771,7 @@ fn two_movers_contest_same_cell_in_live_object_order_not_stable_id() {
         &mut stable_order.interner,
         None,
         &mut stable_sounds,
+        &mut std::collections::BTreeSet::new(),
     );
 
     let movement_order = live_order.live_object_order_snapshot();
@@ -795,6 +796,7 @@ fn two_movers_contest_same_cell_in_live_object_order_not_stable_id() {
         &mut live_order.interner,
         None,
         &mut live_sounds,
+        &mut std::collections::BTreeSet::new(),
     );
 
     assert_eq!(
@@ -1753,6 +1755,7 @@ fn drive_accelerates_false_tick_stores_modified_fraction_without_mutating_speed(
         &mut interner,
         None,
         &mut sounds,
+        &mut std::collections::BTreeSet::new(),
     );
 
     let entity = entities.get(1).expect("mover exists");
@@ -1829,6 +1832,7 @@ fn drive_accelerates_true_tick_ramps_fraction_before_movement_speed() {
         &mut interner,
         None,
         &mut sounds,
+        &mut std::collections::BTreeSet::new(),
     );
 
     let entity = entities.get(1).expect("mover exists");
