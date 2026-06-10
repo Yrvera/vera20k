@@ -624,6 +624,73 @@ mod tests {
         assert!((back - 3.14).abs() < 0.001);
     }
 
+    /// S0 GATE (design Correction 1): pin the ReadDouble->SimFixed quantization.
+    /// gamemd computes `(double)(float)sscanf("%f") [×0.01 if '%']` and keeps the
+    /// raw double. SimFixed (I16F16) is coarser (16 frac bits), so there is no
+    /// "bit-identical to gamemd" target — the gate is the quantization rounding mode.
+    /// `SimFixed::from_num` rounds NEAREST-TIES-EVEN (NOT truncate), so the f32-path
+    /// and f64-path must land on the SAME 16.16 value over the stock boundary domain.
+    #[test]
+    fn test_read_double_precision_matches_gamemd() {
+        // Each row: (raw INI string, has '%', the gamemd reference double).
+        // reference = (f64)((f32) parsed) [×0.01 if has_percent].
+        let rows: &[(&str, bool, f64)] = &[
+            ("0", false, 0.0),
+            ("1", false, 1.0),
+            ("7", false, 7.0),
+            ("0.5", false, 0.5),
+            (".9", false, 0.9),
+            ("0.016", false, 0.016),
+            ("100%", true, 1.0),
+            ("50%", true, 0.5),
+            ("12.5%", true, 0.125),
+            ("-50%", true, -0.5), // NEGATIVE + percent (design §10 requires it)
+            ("10%0", true, 0.1),  // "%f" reads 10 (stops at '%'), strchr('%') matches
+                                  // ANYWHERE -> ×0.01 -> 0.1 (plan-review C-R1). NOT 0.0.
+        ];
+        for (s, pct, _ref) in rows {
+            // Reproduce gamemd's intermediate: sscanf "%f" reads the leading float
+            // and STOPS at the first non-float char ('%'), then widens f32->f64,
+            // then ×0.01 iff the *original string* contains '%' anywhere.
+            let leading: f32 = parse_leading_f32(s);
+            let widened: f64 = leading as f64;
+            let reference: f64 = if *pct { widened * 0.01_f64 } else { widened };
+
+            let from_f64 = sim_from_f64(reference);
+            let from_f32 = sim_from_f32(reference as f32);
+            // (a) f32-path vs f64-path agree after 16.16 quantization:
+            assert_eq!(
+                from_f64, from_f32,
+                "path divergence for {s:?}: f64={from_f64} f32={from_f32}"
+            );
+            // (b) chosen path equals from_num(reference_double):
+            assert_eq!(from_f64, SimFixed::from_num(reference), "row {s:?}");
+        }
+    }
+
+    // Test helper mirroring sscanf "%f": leading optional-sign float, stop at first
+    // non-float char (so "10%0" -> 10.0, "12.5%" -> 12.5). NOT production code.
+    fn parse_leading_f32(s: &str) -> f32 {
+        let t = s.trim();
+        let bytes = t.as_bytes();
+        let mut end = 0usize;
+        let mut seen_dot = false;
+        while end < bytes.len() {
+            let c = bytes[end];
+            let ok = c.is_ascii_digit()
+                || (end == 0 && (c == b'-' || c == b'+'))
+                || (c == b'.' && !seen_dot);
+            if c == b'.' {
+                seen_dot = true;
+            }
+            if !ok {
+                break;
+            }
+            end += 1;
+        }
+        t[..end].parse::<f32>().unwrap_or(0.0)
+    }
+
     #[test]
     fn test_fixed_distance_sq() {
         // 3-4-5 triangle: dx=3, dy=4 → dist_sq = 25

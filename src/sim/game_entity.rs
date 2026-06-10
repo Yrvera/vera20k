@@ -505,8 +505,13 @@ impl GameEntity {
     /// Ground-truth presence derived from the authoritative gates. A unit in the
     /// active set is `InCell` (this includes a dying-but-animating unit, which
     /// keeps ticking and stays in its cell until teardown); otherwise `Limbo`.
-    /// `Dying` is never *derived* in this slice — it is only ever set imperatively
-    /// during `uninit`, after which the slot is freed in the same call.
+    /// `Dying` is never *derived* here — it is set imperatively during `uninit`
+    /// (which also enqueues the slot for the end-of-tick drain). It cannot be
+    /// derived from `GameEntity` fields: `dying && !in_logic_vector` is shared by
+    /// a uninit'd corpse (field `Dying`) and a concealed-dead object mid-teardown
+    /// (field `Limbo`); only `pending_delete` membership tells them apart, and
+    /// that lives on the substrate. The presence invariant for surviving corpses
+    /// is therefore handled at the substrate-aware assert, not here.
     pub fn derived_presence(&self) -> Presence {
         if self.in_logic_vector {
             Presence::InCell
@@ -793,6 +798,17 @@ impl GameEntity {
     /// Whether this entity is alive (health > 0).
     pub fn is_alive(&self) -> bool {
         self.health.current > 0
+    }
+
+    /// Whether this entity is an active (non-corpse) object — the native
+    /// `IsAlive`-equivalent gate for mid-tick raw-store consumers. `false` once
+    /// `uninit` has flagged it `dying` (it then lingers in the store, off the
+    /// logic vector and occupancy grid, until the end-of-tick deferred-delete
+    /// drain). Distinct from `is_alive()` (health-based): a sold or captured
+    /// structure keeps its health but is `dying`, so vision/power/production/
+    /// movement scans must use THIS, not `health.current > 0`, to exclude it.
+    pub fn is_active(&self) -> bool {
+        !self.dying
     }
 
     /// Whether this entity is in any deploy phase (Deploying, Deployed, or Undeploying).

@@ -28,6 +28,17 @@ use crate::sim::occupancy::OccupancyGrid;
 use crate::util::fixed_math::{SIM_ZERO, SimFixed, isqrt_i64};
 use crate::util::lepton::CELL_CENTER_LEPTON;
 
+// TODO-CUTOVER (GATE A1, do NOT flip in a shadow pass): this value is PROVEN WRONG
+// against gamemd. The verified bridge deck offset is `2 × per_level` (208 leptons =
+// 2 Level units), so this selector's full-deck constant should be `2` and its
+// half-deck term `1`, NOT `4`/`2`. The gamemd-correct shadow value lives at
+// `sim::map::bridge_topology::BRIDGE_DECK_HEIGHT_LEVELS` (= 2), with
+// `aoe_object_layer` encoding the correct boundary. Flipping THIS const changes the
+// authoritative AoE damage target set (hash-relevant) and must be a separate
+// reviewed cutover (route `select_object_damage_layer` through the shadow selector,
+// re-baseline the parity replay). Until then this stays at the current value to
+// keep the authoritative/hashed behavior unchanged.
+// (Source: GATE_BRIDGE_DECK_HEIGHT_RESOLUTION_GHIDRA_REPORT.md §3/§5.)
 const BRIDGE_AOE_SELECTOR_HEIGHT_LEVELS: i32 = 4;
 
 /// Optional map context for gamemd bridge object-list selection.
@@ -146,7 +157,10 @@ pub(crate) fn apply_aoe_damage(
     }
 
     for entity in entities.values() {
-        if entity.health.current == 0 {
+        // Dying corpses (uninit'd this tick, awaiting the end-of-tick drain)
+        // are off the live object list — exclude them. A sold/captured corpse
+        // keeps health>0, so gate on `dying`, not just health.
+        if entity.health.current == 0 || entity.dying {
             continue;
         }
 
@@ -254,7 +268,7 @@ fn push_entity_aoe_damage(
     let Some(entity) = entities.get(entity_id) else {
         return;
     };
-    if entity.health.current == 0 {
+    if entity.health.current == 0 || entity.dying {
         return;
     }
 

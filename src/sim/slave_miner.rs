@@ -22,6 +22,8 @@ use crate::sim::intern::InternedId;
 use crate::sim::miner::miner_system::{effective_purifier_count, is_cell_path_clear_for_scan};
 use crate::sim::miner::{CargoBale, MinerConfig};
 use crate::sim::miner::{extract_bale, search_local_ore};
+use crate::sim::economy::apply_income_mult;
+use crate::sim::house_state::{house_state_for_owner_mut, income_ppm_for_owner};
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::production::credits_entry_for_owner;
 use crate::sim::world::Simulation;
@@ -327,26 +329,39 @@ fn handle_slave_deposit(
         return;
     }
 
-    // Pop one bale per tick (slaves deposit faster than refinery unload).
+    // Pop one bale per tick (slaves deposit faster than refinery unload). amount = 1 bale.
     let bale: CargoBale = snap.harvester.cargo.remove(0);
-    let mut value: i32 = i32::from(bale.value);
+    let value: i32 = i32::from(bale.value);
 
-    // Ore Purifier bonus stacks per real purifier owned by the slave's
-    // owner; non-human houses also receive the AI virtual-purifier bonus
-    // from rules.general.ai_virtual_purifiers.
     let owner_str = sim.interner.resolve(snap.owner).to_string();
-    let purifier_count = effective_purifier_count(sim, rules, &owner_str);
-    if purifier_count > 0 {
-        let bonus_pct: i32 = rules.general.purifier_bonus_pct;
-        let bonus: i32 = value
-            .saturating_mul(purifier_count)
-            .saturating_mul(bonus_pct)
-            / 100;
-        value = value.saturating_add(bonus);
-    }
+    // P7: per-country IncomeMult (single truncation, 1.0/identity on stock). The base
+    // credit + the HarvestedCredits stat (1 bale × 5) accrue first.
+    let income_ppm = income_ppm_for_owner(&sim.houses, &sim.interner, rules, &owner_str);
+    let base_credits = apply_income_mult(value, income_ppm);
 
-    let credits: &mut i32 = credits_entry_for_owner(sim, &owner_str);
-    *credits = credits.saturating_add(value);
+    // Ore Purifier bonus stacks per real purifier owned by the slave's owner; non-human
+    // houses also receive the AI virtual-purifier bonus. Single-truncation credit + stat
+    // (the shared economy helpers), amount = 1 bale.
+    let purifier_count = effective_purifier_count(sim, rules, &owner_str);
+    let bonus_pct = rules.general.purifier_bonus_pct;
+    let bonus_credits =
+        crate::sim::economy::purifier_bonus_credits(value, purifier_count, bonus_pct, income_ppm);
+
+    {
+        let credits: &mut i32 = credits_entry_for_owner(sim, &owner_str);
+        *credits = credits.saturating_add(base_credits.saturating_add(bonus_credits));
+    }
+    // HarvestedCredits stat (statistics-only): base 1 bale × 5, plus the single-truncation
+    // bonus term trunc(count × 0.25 × 1 × 5).
+    if let Some(h) = house_state_for_owner_mut(&mut sim.houses, &owner_str, &sim.interner) {
+        h.economy.add_harvested(1);
+        h.economy
+            .add_harvested_raw(crate::sim::economy::purifier_bonus_harvested(
+                1,
+                purifier_count,
+                bonus_pct,
+            ));
+    }
 
     // Keep depositing until empty. Unload tick interval for slaves is instant
     // (one bale per tick) since HarvesterDumpRate doesn't apply to slaves.

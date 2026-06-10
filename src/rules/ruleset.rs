@@ -39,16 +39,42 @@ use crate::rules::weapon_type::WeaponType;
 use crate::util::fixed_math::{SimFixed, sim_from_f32};
 
 /// Country-level fields needed by gameplay systems.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct CountryRules {
     /// `MultiplayPassive=` allows non-owner garrison entry in `BuildingClass::CanDock`.
     pub multiplay_passive: bool,
+    /// `IncomeMult=` ore-refining income multiplier, parts-per-million
+    /// (`round(value × 1e6)`); default `1_000_000` (=1.0, the stock value — the key is
+    /// commented out in stock rulesmd). Applied at ore/gem deposit time to BOTH the base
+    /// credits and the OrePurifier-bonus credits.
+    pub income_ppm: i64,
+}
+
+/// PPM scale for `IncomeMult` (1_000_000 = 1.0×). Must equal `apply_income_mult`'s divisor.
+pub const INCOME_PPM_SCALE: i64 = 1_000_000;
+
+impl Default for CountryRules {
+    fn default() -> Self {
+        // Hand-written (NOT derived): a derived Default would zero `income_ppm`, which would
+        // wipe out all ore income for any house built from the default. The neutral 1.0
+        // multiplier is `INCOME_PPM_SCALE`, not 0.
+        Self {
+            multiplay_passive: false,
+            income_ppm: INCOME_PPM_SCALE,
+        }
+    }
 }
 
 impl CountryRules {
     fn from_ini_section(section: &crate::rules::ini_parser::IniSection) -> Self {
         Self {
             multiplay_passive: section.get_bool("MultiplayPassive").unwrap_or(false),
+            // IncomeMult is a raw multiplier (NOT a percent). Round in f64 to avoid f32
+            // drift; absent -> the neutral 1.0 (stock).
+            income_ppm: section
+                .get_f32("IncomeMult")
+                .map(|v| (v as f64 * INCOME_PPM_SCALE as f64).round() as i64)
+                .unwrap_or(INCOME_PPM_SCALE),
         }
     }
 }
@@ -1818,14 +1844,24 @@ impl RuleSet {
 
     /// Whether a country/house type has `MultiplayPassive=true`.
     pub fn country_multiplay_passive(&self, id: &str) -> bool {
-        self.countries
-            .get(id)
-            .or_else(|| {
-                self.countries
-                    .iter()
-                    .find_map(|(key, country)| key.eq_ignore_ascii_case(id).then_some(country))
-            })
+        self.country_rules(id)
             .is_some_and(|country| country.multiplay_passive)
+    }
+
+    /// A country's `IncomeMult` as parts-per-million (default `INCOME_PPM_SCALE` = 1.0×).
+    /// Unknown/absent country -> the neutral multiplier (no income change).
+    pub fn country_income_ppm(&self, id: &str) -> i64 {
+        self.country_rules(id)
+            .map_or(INCOME_PPM_SCALE, |country| country.income_ppm)
+    }
+
+    /// Case-insensitive country lookup (gamemd parity), exact key first.
+    fn country_rules(&self, id: &str) -> Option<&CountryRules> {
+        self.countries.get(id).or_else(|| {
+            self.countries
+                .iter()
+                .find_map(|(key, country)| key.eq_ignore_ascii_case(id).then_some(country))
+        })
     }
 
     /// Look up a superweapon type by ID (case-insensitive, gamemd parity).
@@ -2446,6 +2482,28 @@ Verses=100%,100%,90%,75%,75%,75%,60%,30%,20%,0%,0%
 CellSpread=0
 "
         .to_string()
+    }
+
+    /// P7: per-country IncomeMult parses to PPM, defaults to the neutral 1.0×, and looks
+    /// up case-insensitively. The hand-written Default must NOT be a derived zero.
+    #[test]
+    fn country_income_mult_parses_and_defaults() {
+        assert_eq!(
+            CountryRules::default().income_ppm,
+            INCOME_PPM_SCALE,
+            "default IncomeMult is 1.0x (a derived Default would zero it and wipe income)"
+        );
+
+        let src = format!(
+            "{}\n[Countries]\n0=Americans\n1=Russia\n[Americans]\nIncomeMult=1.2\n[Russia]\n",
+            make_test_rules()
+        );
+        let ini = IniFile::from_str(&src);
+        let rules = RuleSet::from_ini(&ini).expect("Should parse");
+        assert_eq!(rules.country_income_ppm("Americans"), 1_200_000);
+        assert_eq!(rules.country_income_ppm("Russia"), INCOME_PPM_SCALE);
+        assert_eq!(rules.country_income_ppm("Nonexistent"), INCOME_PPM_SCALE);
+        assert_eq!(rules.country_income_ppm("americans"), 1_200_000); // case-insensitive
     }
 
     #[test]

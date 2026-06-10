@@ -8,6 +8,39 @@ pub const BRIDGE_FLAG_DIRECTION_ZERO: u32 = 0x800;
 pub const BRIDGE_FLAG_FORWARD_SIDE: u32 = 0x1000;
 pub const BRIDGE_FLAG_EXTRA_SIDE: u32 = 0x10000;
 
+/// Typed view of the CellClass flag word, single-sourced from the consts above.
+///
+/// Bit values are NOT redefined here — every predicate references the
+/// `BRIDGE_FLAG_*` consts so map-load (this file), the topology service, and the
+/// render draw-offset trait all read one source of truth. A thin newtype keeps
+/// the existing const style (no `bitflags!` dep) while giving the topology
+/// service a borrowable typed handle instead of a raw `u32`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BridgeFlags(pub u32);
+
+impl BridgeFlags {
+    #[inline]
+    pub fn has(self, bit: u32) -> bool {
+        self.0 & bit != 0
+    }
+    /// `0x80` — anchor cell of the stamp (adds the deck height in effective-Z).
+    #[inline]
+    pub fn anchor(self) -> bool {
+        self.has(BRIDGE_FLAG_ANCHOR_SELF)
+    }
+    /// `0x100` — authoritative structural high-bridge cell. Distinct from the
+    /// concrete/wood tileset windows (those are tile-id ranges, not this flag).
+    #[inline]
+    pub fn structural(self) -> bool {
+        self.has(BRIDGE_FLAG_STRUCTURAL)
+    }
+    /// `0x200` — bridgehead/transition cell (the on/off-ramp boundary).
+    #[inline]
+    pub fn bridgehead(self) -> bool {
+        self.has(BRIDGE_FLAG_TRANSITION)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BridgeStampFamily {
     #[default]
@@ -416,6 +449,38 @@ mod tests {
         }
         assert!(!facts_at(&cells, width as u16, 2, 5).has_flag(BRIDGE_FLAG_DESTROYED_OR_RAMP));
         assert!(!facts_at(&cells, width as u16, 7, 5).has_flag(BRIDGE_FLAG_DESTROYED_OR_RAMP));
+    }
+
+    #[test]
+    fn bridge_flags_newtype_matches_const_predicates() {
+        // Single-source check: the typed newtype must agree bit-for-bit with the
+        // `BridgeCellFacts` predicate path for the same raw flag word, across
+        // each individual bit and a combined word.
+        for raw in [
+            0u32,
+            BRIDGE_FLAG_ANCHOR_SELF,
+            BRIDGE_FLAG_STRUCTURAL,
+            BRIDGE_FLAG_TRANSITION,
+            BRIDGE_FLAG_ANCHOR_SELF | BRIDGE_FLAG_STRUCTURAL | BRIDGE_FLAG_TRANSITION,
+            BRIDGE_FLAG_STRUCTURAL | BRIDGE_FLAG_FORWARD_SIDE,
+        ] {
+            let flags = BridgeFlags(raw);
+            let facts = BridgeCellFacts {
+                raw_flags: raw,
+                ..BridgeCellFacts::default()
+            };
+            assert_eq!(flags.anchor(), facts.is_anchor_self(), "anchor raw={raw:#x}");
+            assert_eq!(
+                flags.structural(),
+                facts.has_structural_bridge(),
+                "structural raw={raw:#x}"
+            );
+            assert_eq!(
+                flags.bridgehead(),
+                facts.has_transition_flag(),
+                "bridgehead raw={raw:#x}"
+            );
+        }
     }
 
     #[test]

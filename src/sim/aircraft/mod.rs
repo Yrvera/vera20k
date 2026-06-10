@@ -166,6 +166,11 @@ pub fn tick_aircraft_missions(
         .substrate.entities
         .values()
         .filter_map(|e| {
+            // A Dying aircraft corpse must not run its mission (move, fire,
+            // paradrop, reveal fog) for the tick before the end-of-tick drain.
+            if e.dying {
+                return None;
+            }
             let mission = e.aircraft_mission.as_ref()?;
             let loco = e.locomotor.as_ref()?;
             if loco.kind != LocomotorKind::Fly {

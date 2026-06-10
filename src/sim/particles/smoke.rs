@@ -85,8 +85,8 @@ pub(super) fn tick_system(sys: &mut ParticleSystem, sim: &mut Simulation, rules:
                 if sys.particles.len() < cap {
                     let pt = rules.particle_type(holds);
                     let r = pst.spawn_radius.max(0) as u32;
-                    let off_x = sim.particle_rng().next_range_u32(r + 1) as i32;
-                    let off_y = sim.particle_rng().next_range_u32(r + 1) as i32;
+                    let off_x = sim.particle_rng().next_raw_modulo_signed(r + 1);
+                    let off_y = sim.particle_rng().next_raw_modulo_signed(r + 1);
                     let spawn_pos = IVec3::new(
                         sys.coords.x + off_x,
                         sys.coords.y + off_y,
@@ -175,7 +175,7 @@ fn make_particle(
     rng: &mut SimRng,
 ) -> Particle {
     let base = (pt.max_ec as u32).max(1);
-    let lifetime_extra = rng.next_range_u32(base) as i16;
+    let lifetime_extra = rng.next_raw_abs_modulo(base) as i16;
     let lifetime_remaining = (pt.max_ec as i16).saturating_add(lifetime_extra);
     Particle {
         type_id,
@@ -202,15 +202,16 @@ fn make_particle(
     }
 }
 
-/// Symmetric random offset around `r`. With `r > 0`:
-///   - 1-in-r chance of returning `-r`
-///   - otherwise returns a value in `[r+1, 2r-1]`
-/// The asymmetry is intentional and matches the original two-child spawn path.
+/// Symmetric random offset around `r`. With `r > 0`, draws a signed remainder
+/// `raw` in `[-(r-1), r-1]` (one raw draw, no abs):
+///   - `raw <= 0` returns `raw - r` (a value in `[-(2r-1), -r]`)
+///   - `raw >= 1` returns `raw + r` (a value in `[r+1, 2r-1]`)
+/// The sign-split matches the original two-child spawn path.
 fn symmetric_offset(r: i32, rng: &mut SimRng) -> i32 {
     if r <= 0 {
         return 0;
     }
-    let raw = rng.next_range_u32(r as u32) as i32;
+    let raw = rng.next_raw_modulo_signed(r as u32);
     if raw < 1 { raw - r } else { raw + r }
 }
 
@@ -297,6 +298,19 @@ mod tests {
         let offset_b = b - parent_pos;
         assert_eq!(offset_a, -offset_b, "children symmetric around parent");
         assert_ne!(offset_a, IVec3::ZERO, "offsets must be non-zero");
+    }
+
+    #[test]
+    fn symmetric_offset_uses_signed_remainder() {
+        // The signed helper can yield a negative remainder, so the raw<1 branch
+        // reaches [-(2r-1), -r] for any negative draw — a region the old
+        // non-negative next_range_u32 (min offset -r only at raw==0) could never
+        // produce. seed=1 third raw draw is negative (0xDA63B931 = -630_998_735);
+        // with r=100: -630_998_735 % 100 = -35 -> raw<1 -> raw - r = -135.
+        let mut rng = SimRng::new(1);
+        rng.next_u32(); // skip draw 1
+        rng.next_u32(); // skip draw 2 -> next (3rd) draw is the negative 0xDA63B931
+        assert_eq!(symmetric_offset(100, &mut rng), -135);
     }
 
     #[test]

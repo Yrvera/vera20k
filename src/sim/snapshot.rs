@@ -21,7 +21,20 @@ use crate::sim::world::Simulation;
 // layout changed (state hash unchanged — world_hash reads the store via the new path).
 // Bumped 16 -> 17: MissionCom folded into state_hash (Slice 8); bincode layout
 // unchanged (MissionCom already serialized since Slice 6), only the hash changed.
-const SNAPSHOT_VERSION: u32 = 17;
+// Bumped 17 -> 18: Factory/Economy authority flip (P5b) — the factory registry +
+// the per-house economy statistics are now serialized + hashed; the frames-timer
+// per-item field progress_carry is removed from the hash (progress lives in
+// Factory; remaining_base_frames stays as the sidebar-ETA mirror); next_insertion_seq
+// + seq_carry fields removed (insertion_seq == front enqueue_order); the C1
+// factory-step-before-house-tail ordering lock is folded in.
+// Bumped 18 -> 19: queue-of-record retirement (P5d) — `queues_by_owner` + `BuildQueueItem`
+// are retired; the FIFO queue-of-record moves into the registry (`Factory.queue` of
+// `QueueEntry{type_id, enqueue_order, total_base_frames}` + the new active-build
+// `Factory.active_total_base_frames`). The per-item `queues_by_owner` hash fold is removed;
+// `remaining_base_frames` no longer exists (derived from `progress` at sidebar-view time,
+// not hashed). bincode layout changes (the `queues_by_owner` field is gone, the registry
+// gains fields), so the version MUST bump.
+const SNAPSHOT_VERSION: u32 = 19;
 
 /// Binary snapshot envelope — wraps the full `Simulation` state plus
 /// compatibility hashes for the map and rules that were active at save time.
@@ -365,6 +378,15 @@ mod tests {
 
         let result = GameSnapshot::load(&bytes);
         assert!(result.is_err(), "mismatched version should fail");
+    }
+
+    /// P5d retires `queues_by_owner`/`BuildQueueItem` into the registry (`Factory.queue`
+    /// of `QueueEntry` + `active_total_base_frames`); the bincode layout + hash shape
+    /// change, so the version bumped 18 -> 19. This pins it so a later accidental bump is
+    /// caught.
+    #[test]
+    fn snapshot_version_is_19() {
+        assert_eq!(super::SNAPSHOT_VERSION, 19);
     }
 
     /// `AttackTarget::for_cell` survives serialize → deserialize as the same

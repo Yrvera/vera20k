@@ -24,6 +24,10 @@ use crate::sim::mission::MissionType;
 #[cfg(any(test, debug_assertions))]
 use crate::sim::movement::{DriveProcessOutcome, process_drive_locomotion_shell};
 
+// P3 oracle probe import — used only by the `#[cfg(test)]` factory_oracle_step_trace.
+#[cfg(test)]
+use crate::sim::production::StepOutcome;
+
 impl Simulation {
     /// Object-AI stage (Slice S0: instrumented no-op).
     ///
@@ -104,7 +108,7 @@ fn techno_ai_shell(sim: &mut Simulation, id: u64, category: EntityCategory) {
     match category {
         EntityCategory::Unit => {}      // S1+: absorb movement/turret/combat/mission dispatch
         EntityCategory::Infantry => {}  // S6: absorb fear / sequence / self-removal
-        EntityCategory::Structure => {} // S8: absorb the BuildingClass::Update bracket
+        EntityCategory::Structure => {} // S8 absorb bracket; P3 oracle probe is factory_oracle_step_trace
         EntityCategory::Aircraft => {}  // S7: absorb per-object aircraft dispatch
     }
 }
@@ -219,6 +223,164 @@ impl Simulation {
                 id,
             );
         }
+    }
+}
+
+// ===== P2 (factory substrate) — Structure-arm read-only shadow trace (FIT a) =====
+//
+// FIT option (a): the per-(house, category) factory step is driven from the
+// Structure arm of object_ai_stage() in LogicVector order; the FactoryRegistry is
+// a LOOKUP, not a tick-loop owner. In P1+P2 there is no authoritative step, so the
+// `EntityCategory::Structure` arm stays a no-op and this debug-only trace records
+// each live Structure in LogicVector order — the same "proof lives beside, not
+// inside, the no-op arm" shape as the S1 shadow. The order-follows-LogicVector
+// property is proven by a test that injects a known non-sorted order
+// (`factory_shadow_trace_order_matches_logic_vector`); the runtime debug_assert
+// only checks the cheap intrinsic invariants (strictly-increasing visit ordinal;
+// each traced id resolves to a live, non-dying Structure). Read-only, never hashed.
+
+/// One Structure visited by the P2 factory shell trace, in LogicVector order.
+#[cfg(any(test, debug_assertions))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FactoryShellTrace {
+    structure_id: u64,
+    visit_seq: u32,
+}
+
+impl Simulation {
+    /// Build the P2 factory shell trace: each live, non-dying Structure in
+    /// LogicVector order. Read-only; never hashed, never serialized. The order IS
+    /// LogicVector order by construction (it walks `live_object_order_snapshot`) —
+    /// the FIT-(a) ordering, exercised by the injected-order test.
+    #[cfg(any(test, debug_assertions))]
+    fn factory_shell_trace(&self) -> Vec<FactoryShellTrace> {
+        let mut seq = 0u32;
+        let mut traces: Vec<FactoryShellTrace> = Vec::new();
+        for id in self.live_object_order_snapshot() {
+            let is_live_structure = self
+                .substrate
+                .entities
+                .get(id)
+                .is_some_and(|e| !e.dying && e.category == EntityCategory::Structure);
+            if !is_live_structure {
+                continue;
+            }
+            traces.push(FactoryShellTrace {
+                structure_id: id,
+                visit_seq: seq,
+            });
+            seq += 1;
+        }
+        traces
+    }
+
+    /// Test-only accessor: the structure ids the P2 trace visits, in order. The
+    /// test injects a non-sorted live order and asserts this equals it (so it
+    /// would fail if the trace used BTreeMap/entity-id order instead).
+    #[cfg(test)]
+    pub(crate) fn factory_shell_trace_order(&self) -> Vec<u64> {
+        self.factory_shell_trace()
+            .iter()
+            .map(|t| t.structure_id)
+            .collect()
+    }
+
+    /// Debug-only P2 assert: the factory shell trace visits live, non-dying
+    /// Structures with a strictly-increasing visit ordinal. INTRINSIC invariants
+    /// only — not a self-comparison; the LogicVector-order property is proven by a
+    /// dedicated injected-order test, never re-derived here.
+    #[cfg(any(test, debug_assertions))]
+    pub(crate) fn debug_assert_factory_shell_trace(&self) {
+        let traces = self.factory_shell_trace();
+        for w in traces.windows(2) {
+            debug_assert!(
+                w[0].visit_seq < w[1].visit_seq,
+                "P2: tick {}: factory shell trace visit_seq must strictly increase",
+                self.tick,
+            );
+        }
+        for t in &traces {
+            debug_assert!(
+                self.substrate
+                    .entities
+                    .get(t.structure_id)
+                    .is_some_and(|e| !e.dying && e.category == EntityCategory::Structure),
+                "P2: tick {}: factory shell trace id {} must resolve to a live Structure",
+                self.tick,
+                t.structure_id,
+            );
+        }
+    }
+
+    /// Test-only P3 oracle probe: walk live Structures in LogicVector order and, for
+    /// each, step a CLONE of its owner's factories against a CLONE of the owner's
+    /// economy — exercising `set_rate` + `advance_one_step` on throwaways. READ-ONLY
+    /// w.r.t. all hashed state: it writes only local clones, NEVER the registry, the
+    /// wallet, or any entity. The `EntityCategory::Structure` arm stays a no-op; this
+    /// is the "proof beside the no-op" shape (FIT option a) and the P5 precursor (the
+    /// flip swaps the arm body, not the iteration source). The full per-building
+    /// Primary_For* routing is a later slice — the probe uses a bounded per-owner
+    /// scope (every factory the visited Structure's owner holds), hash-neutral
+    /// regardless of routing precision.
+    #[cfg(test)]
+    pub(crate) fn factory_oracle_step_trace(&self) -> Vec<(u64, StepOutcome)> {
+        use crate::sim::economy::Economy;
+        let mut out: Vec<(u64, StepOutcome)> = Vec::new();
+        for id in self.live_object_order_snapshot() {
+            let Some(entity) = self.substrate.entities.get(id) else {
+                continue;
+            };
+            if entity.dying || entity.category != EntityCategory::Structure {
+                continue;
+            }
+            let owner = entity.owner;
+            // Clone the owner's economy (the oracle wallet); default if no house.
+            let mut oracle_econ = self
+                .houses
+                .get(&owner)
+                .map(|h| h.economy.clone())
+                .unwrap_or_default();
+            // Bounded scope: step a CLONE of each of this owner's factories. The
+            // registry is a LOOKUP (FIT a); we read it, never mutate it.
+            for factory in self.production.factory_shadow.iter_insertion_ordered() {
+                if factory.owner != owner || factory.object.is_none() {
+                    continue;
+                }
+                let mut oracle_factory = factory.clone();
+                // Exercise SetRate (build-step total is a placeholder until the
+                // GetBuildStepTime pipeline lands; original_balance is a stand-in
+                // input — the probe proves the step machine runs, not the rate value).
+                oracle_factory.set_rate(oracle_factory.original_balance);
+                let outcome = oracle_factory.advance_one_step(&mut oracle_econ);
+                out.push((id, outcome));
+                // local clones dropped here; nothing written back.
+            }
+        }
+        out
+    }
+
+    /// Test-only dormant probe (P5a): prove the C7 delivery -> start_next_queued
+    /// mechanics on a CLONE of the registry (NEVER the hashed shadow). Returns, per
+    /// factory, (owner, category, popped-front-after-a-simulated-delivery). NO
+    /// authoritative call site — a later slice binds start_next_queued to the real
+    /// delivery commit; this only proves the post-delivery pop end-to-end.
+    #[cfg(test)]
+    pub(crate) fn factory_delivery_probe(
+        &self,
+    ) -> Vec<(
+        crate::sim::intern::InternedId,
+        crate::sim::production::ProductionCategory,
+        Option<crate::sim::intern::InternedId>,
+    )> {
+        let mut out = Vec::new();
+        for factory in self.production.factory_shadow.iter_insertion_ordered() {
+            let mut d = factory.clone();
+            d.object = None; // simulate the delivery commit
+            d.suspended = false;
+            let popped = d.start_next_queued(0, 0);
+            out.push((factory.owner, factory.category, popped));
+        }
+        out
     }
 }
 

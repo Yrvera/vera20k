@@ -72,6 +72,16 @@ pub fn tick_ai(
     let execute_tick = sim.tick.saturating_add(1);
 
     for ai in ai_players.iter_mut() {
+        // A house defeated this tick issues no commands at all (not even ready-
+        // building placement). gamemd evaluates each house's defeat before its AI
+        // manage/produce step; Phase 8 runs check_defeat before this loop, so the
+        // flag is current. Without this gate the defeat reorder would be a no-op.
+        if crate::sim::house_state::house_state_for_owner_id(&sim.houses, ai.owner)
+            .is_some_and(|h| h.is_defeated)
+        {
+            continue;
+        }
+
         let owner_str = sim.interner.resolve(ai.owner);
         // Only think every N ticks to avoid spamming.
         if !sim.tick.is_multiple_of(AI_THINK_INTERVAL_TICKS) {
@@ -772,6 +782,83 @@ mod tests {
         assert_eq!(state.owner, owner_id);
         assert_eq!(state.last_attack_tick, 0);
         assert!(!state.mcv_deployed);
+    }
+
+    #[test]
+    fn tick_ai_skips_defeated_house() {
+        // A house flagged is_defeated must issue NO command (the Phase-8 defeat
+        // gate). Baseline: an undeployed MCV makes a live house emit DeployMcv,
+        // so the empty result for the defeated house proves the gate fired.
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[InfantryTypes]\n\
+             [AircraftTypes]\n\
+             [VehicleTypes]\n\
+             0=TSTMCV\n\
+             [BuildingTypes]\n\
+             0=TSTCYRD\n\
+             [TSTMCV]\n\
+             Name=Test MCV\n\
+             DeploysInto=TSTCYRD\n\
+             Speed=6\n\
+             Strength=1000\n\
+             TechLevel=1\n\
+             Owner=Americans\n\
+             [TSTCYRD]\n\
+             Name=Test ConYard\n\
+             Foundation=2x2\n\
+             UndeploysInto=TSTMCV\n\
+             Strength=1000\n\
+             TechLevel=1\n\
+             Owner=Americans\n",
+        ))
+        .expect("rules parse");
+        let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+
+        // Build a sim holding one undeployed MCV for "Americans".
+        let build_sim = || {
+            let mut sim = Simulation::new();
+            let owner_id = sim.interner.intern("Americans");
+            let mcv_type = sim.interner.intern("TSTMCV");
+            let ge = crate::sim::game_entity::GameEntity::new(
+                1,
+                5,
+                5,
+                0,
+                0,
+                owner_id,
+                Health {
+                    current: 1000,
+                    max: 1000,
+                },
+                mcv_type,
+                EntityCategory::Unit,
+                0,
+                5,
+                false,
+            );
+            sim.substrate.entities.insert(ge);
+            (sim, owner_id)
+        };
+
+        // No house registered -> not defeated -> the MCV is deployed.
+        let (sim, owner_id) = build_sim();
+        let mut ai = vec![AiPlayerState::new(owner_id)];
+        let live = tick_ai(&sim, &mut ai, &rules, None, &height_map);
+        assert_eq!(live.len(), 1, "a live AI house deploys its MCV");
+        assert!(matches!(live[0].payload, Command::DeployMcv { .. }));
+
+        // Defeated house -> the gate skips it -> no commands.
+        let (mut sim, owner_id) = build_sim();
+        let mut house =
+            crate::sim::house_state::HouseState::new(owner_id, 0, None, false, 10_000, 10);
+        house.is_defeated = true;
+        sim.houses.insert(owner_id, house);
+        let mut ai = vec![AiPlayerState::new(owner_id)];
+        let defeated = tick_ai(&sim, &mut ai, &rules, None, &height_map);
+        assert!(
+            defeated.is_empty(),
+            "a defeated AI house must issue no command"
+        );
     }
 
     #[test]

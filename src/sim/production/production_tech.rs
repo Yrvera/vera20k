@@ -91,6 +91,40 @@ pub(super) fn build_option_for_owner(
     })
 }
 
+/// P6 revalidation classifier: re-check an active/queued build's eligibility AFTER enqueue,
+/// so a build whose prerequisites / producing factory were lost is disposed of. Reproduces
+/// gamemd's `FindFactoryBuilding(1,0,1)` gate (the embedded `HouseClass::CanBuild` scan across
+/// the owner's candidate factory buildings): a tech-tree / owner / factory-presence failure ->
+/// `PermanentlyBlocked` (abandon); a pure credit stall (`on_hold`, handled per-step) or a
+/// build-limit "busy" is NOT a mid-build abandon -> `Buildable` (keep charging).
+///
+/// `TemporarilyBlocked` (gamemd's `(1,0,1)` passes but `(1,1,1)` fails = a factory building
+/// exists but is UNPOWERED via an EMP/spy/trigger GoOffline event) is intentionally
+/// UNREACHABLE here: the Rust power model is per-house low-power, which gamemd applies as a
+/// RATE penalty (already modeled in `prepare_step_inputs`), NOT a suspend — gamemd SLOWS,
+/// it does not halt, production on a grid deficit. Per-building powered-down (EMP) is not yet
+/// modeled, so this arm is a forward seam for the EMP slice.
+pub(in crate::sim) fn revalidate_eligibility(
+    sim: &Simulation,
+    rules: &RuleSet,
+    owner: &str,
+    type_id: &str,
+) -> super::factory::BuildEligibility {
+    use super::factory::BuildEligibility;
+    match build_option_for_owner(sim, rules, owner, type_id, BuildMode::Strict) {
+        None => BuildEligibility::PermanentlyBlocked,
+        Some(opt) if opt.enabled => BuildEligibility::Buildable,
+        Some(opt) => match opt.reason {
+            // Credit stall + build-limit "busy" are not abandons in gamemd — keep building.
+            Some(BuildDisabledReason::InsufficientCredits)
+            | Some(BuildDisabledReason::AtBuildLimit)
+            | None => BuildEligibility::Buildable,
+            // Tech-tree / owner / factory loss -> CanBuild fails -> abandon.
+            Some(_) => BuildEligibility::PermanentlyBlocked,
+        },
+    }
+}
+
 pub(super) fn build_options_for_owner_mode(
     sim: &Simulation,
     rules: &RuleSet,
@@ -166,7 +200,8 @@ pub(super) fn owner_matches_build_identity(sim: &Simulation, owner: &str, candid
 /// Check if the owner has ANY completed structure from the PrerequisiteOverride list.
 fn has_any_override_building(sim: &Simulation, owner: &str, overrides: &[String]) -> bool {
     sim.substrate.entities.values().any(|e| {
-        sim.interner.resolve(e.owner).eq_ignore_ascii_case(owner)
+        !e.dying
+            && sim.interner.resolve(e.owner).eq_ignore_ascii_case(owner)
             && e.category == EntityCategory::Structure
             && e.building_up.is_none()
             && overrides
@@ -192,21 +227,28 @@ fn count_owned_and_queued(sim: &Simulation, owner: &str, type_id: &str) -> u32 {
         (Some(oid), Some(tid)) => sim
             .substrate.entities
             .values()
-            .filter(|e| e.owner == oid && e.type_ref == tid)
+            .filter(|e| !e.dying && e.owner == oid && e.type_ref == tid)
             .count() as u32,
         _ => 0,
     };
 
-    let queued = owner_id
-        .and_then(|oid| sim.production.queues_by_owner.get(&oid))
-        .map(|queues| {
-            queues
-                .values()
-                .flat_map(|queue| queue.iter())
-                .filter(|item| type_interned.map_or(false, |tid| item.type_id == tid))
-                .count() as u32
-        })
-        .unwrap_or(0);
+    // P5d: count from the registry queue-of-record — the active build (head) + the FIFO
+    // tail, across the owner's factories (was the per-`BuildQueueItem` `queues_by_owner` scan).
+    let queued = match (owner_id, type_interned) {
+        (Some(oid), Some(tid)) => sim
+            .production
+            .factory_shadow
+            .iter_insertion_ordered()
+            .iter()
+            .filter(|f| f.owner == oid)
+            .map(|f| {
+                let active = f.object.as_ref().map_or(0, |o| u32::from(o.type_id == tid));
+                let tail = f.queue.iter().filter(|e| e.type_id == tid).count() as u32;
+                active + tail
+            })
+            .sum(),
+        _ => 0,
+    };
 
     let ready = owner_id
         .and_then(|oid| sim.production.ready_by_owner.get(&oid))
@@ -233,7 +275,8 @@ fn first_missing_prereq(
         }
         // Only structures satisfy prerequisites — units/infantry/aircraft don't count.
         let ok = sim.substrate.entities.values().any(|e| {
-            sim.interner.resolve(e.owner).eq_ignore_ascii_case(owner)
+            !e.dying
+                && sim.interner.resolve(e.owner).eq_ignore_ascii_case(owner)
                 && e.category == EntityCategory::Structure
                 && e.building_up.is_none()
                 && structure_satisfies_prerequisite(rules, sim.interner.resolve(e.type_ref), p)
@@ -278,7 +321,8 @@ fn has_factory_for_owner(
     interner: &crate::sim::intern::StringInterner,
 ) -> bool {
     entities.values().any(|e| {
-        interner.resolve(e.owner).eq_ignore_ascii_case(owner)
+        !e.dying
+            && interner.resolve(e.owner).eq_ignore_ascii_case(owner)
             && e.category == EntityCategory::Structure
             && e.building_up.is_none()
             && is_production_factory(rules, interner.resolve(e.type_ref), category)
@@ -337,6 +381,10 @@ pub(in crate::sim) fn build_time_base_frames(
     raw_frames as u32
 }
 
+// Legacy frames-rate family — retired from the production path at the authority flip
+// (completion is now driven by the registry per-step charge). Kept test-only as the
+// pinned spec of the per-owner/category rate differentiation.
+#[cfg(test)]
 pub(in crate::sim) fn effective_progress_rate_ppm_for_type(
     sim: &Simulation,
     rules: &RuleSet,
@@ -349,6 +397,7 @@ pub(in crate::sim) fn effective_progress_rate_ppm_for_type(
     effective_progress_rate_ppm_for_category(sim, rules, owner, obj.category)
 }
 
+#[cfg(test)]
 pub(super) fn effective_progress_rate_ppm_for_category(
     sim: &Simulation,
     rules: &RuleSet,
@@ -475,7 +524,7 @@ fn owner_effective_production_speed_ppm(sim: &Simulation, rules: &RuleSet, owner
 /// Owner power ratio as PPM, clamped to `[0, PRODUCTION_RATE_SCALE]`. Returns
 /// `PRODUCTION_RATE_SCALE` (1.0×) when no power is drained (matches the
 /// original `if drained <= 0 { 1.0 }` short-circuit).
-fn owner_power_percentage_ppm(sim: &Simulation, owner: &str) -> u64 {
+pub(in crate::sim::production) fn owner_power_percentage_ppm(sim: &Simulation, owner: &str) -> u64 {
     let (produced, drained) = sim
         .interner
         .get(owner)
@@ -493,6 +542,8 @@ fn owner_power_percentage_ppm(sim: &Simulation, owner: &str) -> u64 {
 
 /// Factory time multiplier scaled by PRODUCTION_RATE_SCALE (1M = 1.0×).
 /// MultipleFactory^(n-1) computed via repeated integer multiply.
+/// Test-only: sole caller is the retired `effective_progress_rate_ppm_for_category`.
+#[cfg(test)]
 fn matching_factory_time_multiplier_ppm(
     entities: &EntityStore,
     rules: &RuleSet,
@@ -515,7 +566,7 @@ fn matching_factory_time_multiplier_ppm(
     result.max(1)
 }
 
-fn matching_factory_count_for_owner(
+pub(in crate::sim::production) fn matching_factory_count_for_owner(
     entities: &EntityStore,
     rules: &RuleSet,
     owner: &str,
@@ -525,7 +576,8 @@ fn matching_factory_count_for_owner(
     entities
         .values()
         .filter(|e| {
-            interner.resolve(e.owner).eq_ignore_ascii_case(owner)
+            !e.dying
+                && interner.resolve(e.owner).eq_ignore_ascii_case(owner)
                 && e.category == EntityCategory::Structure
                 && e.building_up.is_none()
                 && is_matching_factory(rules, interner.resolve(e.type_ref), category)
@@ -543,6 +595,10 @@ pub fn producer_candidates_for_owner_category(
 ) -> Vec<(u64, u16, u16, String)> {
     let mut preferred_factories: Vec<(u64, u16, u16, String)> = Vec::new();
     for e in entities.values() {
+        // A Dying factory corpse must not be selected as a unit's producer/exit.
+        if e.dying {
+            continue;
+        }
         if !interner.resolve(e.owner).eq_ignore_ascii_case(owner) {
             continue;
         }

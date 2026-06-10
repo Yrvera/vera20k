@@ -12,7 +12,7 @@ use crate::rules::ruleset::RuleSet;
 use crate::sim::combat::AttackTarget;
 use crate::sim::game_entity::GameEntity;
 use crate::sim::movement::FacingClass;
-use crate::sim::movement::turret::body_facing_to_turret;
+use crate::sim::movement::turret::{body_facing_to_turret, desired_turret_facing};
 use crate::sim::world::Simulation;
 
 fn empty_height_map() -> BTreeMap<(u16, u16), u8> {
@@ -185,5 +185,141 @@ fn mid_rotation_retarget_snapshots_into_prev() {
         fc.current(5),
         animated_at_5,
         "Animated value immediately after re-set should equal pre-set animated value (no jump)"
+    );
+}
+
+// --- L2 unit_post shadow acceptance tests ---
+
+#[test]
+fn unit_cooldown_decrement_order_independent() {
+    // The future per-object flip moves the cooldown/burst-delay decrement from the
+    // legacy id-order pre-pass to a per-object live-order step. `saturating_sub(1)`
+    // is per-entity with no cross-entity dependency, so any visitation order yields
+    // identical results — pin it empirically across two opposite orders.
+    let start = [(1u64, 7u16, 3u8), (2u64, 4u16, 0u8)];
+    let dec = |v: &mut [(u64, u16, u8)], order: &[usize]| {
+        for &i in order {
+            v[i].1 = v[i].1.saturating_sub(1);
+            v[i].2 = v[i].2.saturating_sub(1);
+        }
+    };
+    let mut ascending = start.to_vec();
+    let mut descending = start.to_vec();
+    dec(&mut ascending, &[0, 1]);
+    dec(&mut descending, &[1, 0]);
+    assert_eq!(
+        ascending, descending,
+        "per-entity cooldown decrement must be order-independent"
+    );
+}
+
+#[test]
+fn unit_facing_pass_drives_turret_to_target() {
+    // The authoritative live-order Unit facing pass must drive the barrel to the
+    // per-entity desired facing (toward the target) — proving the pass is faithful
+    // and the id-order→live-order reorder is output-neutral (per-entity facing).
+    let mut sim = Simulation::new();
+    spawn_turreted(&mut sim, 1, 5, 5, 5);
+    spawn_target(&mut sim, 2, 5, 9); // due south
+    use_test_interner(&mut sim);
+    let rules = rules_with_mtnk_rot(5);
+    sim.substrate.entities.get_mut(1).unwrap().attack_target = Some(AttackTarget::new(2));
+
+    let want = {
+        let e = sim.substrate.entities.get(1).unwrap();
+        desired_turret_facing(e, &sim.substrate.entities).expect("turreted unit has a desired facing")
+    };
+    crate::sim::world::unit_post::tick_unit_facing(
+        &mut sim.substrate.entities,
+        &rules,
+        &sim.interner,
+        sim.binary_frame,
+    );
+    let got = sim
+        .substrate
+        .entities
+        .get(1)
+        .unwrap()
+        .barrel_facing
+        .as_ref()
+        .unwrap()
+        .destination();
+    assert_eq!(
+        got, want,
+        "tick_unit_facing must drive the Unit barrel to the per-entity desired facing"
+    );
+}
+
+#[test]
+fn unit_authoritative_fire_kills_target_via_advance_tick() {
+    // Drive a turreted Unit through acquisition, alignment, repeated fire, and the
+    // target's death via advance_tick — exercising the authoritative path end-to-end:
+    // shared-body fire + the per-object unit_post facing pass (incl. the retarget after
+    // the kill) + the deferred-death batch. A facing/fire break would show as the
+    // target never dying or a panic; the per-tick state_hash gate is the stronger net
+    // for hash-affecting drift.
+    let mut sim = Simulation::new();
+    spawn_turreted(&mut sim, 1, 5, 5, 100); // fast ROT — aligns within a frame
+    spawn_target(&mut sim, 2, 5, 8); // 3 cells south, in range (Range=6)
+    use_test_interner(&mut sim);
+    let rules = rules_with_mtnk_rot(100);
+    sim.substrate.entities.get_mut(1).unwrap().attack_target = Some(AttackTarget::new(2));
+
+    let start_hp = sim.substrate.entities.get(2).unwrap().health.current;
+    let mut fired = false;
+    let mut target_gone = false;
+    for _ in 0..400 {
+        sim.advance_tick(&[], Some(&rules), &empty_height_map(), None, None, 67);
+        match sim.substrate.entities.get(2) {
+            Some(t) => {
+                if t.health.current < start_hp {
+                    fired = true;
+                }
+            }
+            None => {
+                target_gone = true;
+                break;
+            }
+        }
+    }
+    assert!(fired, "the Unit should have fired and damaged the target");
+    assert!(
+        target_gone,
+        "repeated fire should have killed and despawned the target"
+    );
+}
+
+#[test]
+fn unit_facing_pass_idles_turret_to_body_without_target() {
+    // A turreted Unit with no attack_target: tick_unit_facing returns the barrel to
+    // body facing. Covers idle Units, which the fire path never sees (no snapshot) —
+    // the regression that the all-Unit facing pass exists to prevent.
+    let mut sim = Simulation::new();
+    let mut entity = GameEntity::test_default(1, "MTNK", "Americans", 5, 5);
+    entity.facing = 64; // body east
+    entity.barrel_facing = Some(FacingClass::new(body_facing_to_turret(0), 100));
+    sim.substrate.entities.insert(entity);
+    use_test_interner(&mut sim);
+    let rules = rules_with_mtnk_rot(100);
+
+    crate::sim::world::unit_post::tick_unit_facing(
+        &mut sim.substrate.entities,
+        &rules,
+        &sim.interner,
+        sim.binary_frame,
+    );
+    let dest = sim
+        .substrate
+        .entities
+        .get(1)
+        .unwrap()
+        .barrel_facing
+        .as_ref()
+        .unwrap()
+        .destination();
+    assert_eq!(
+        dest,
+        body_facing_to_turret(64),
+        "idle Unit barrel should return to body facing via tick_unit_facing"
     );
 }

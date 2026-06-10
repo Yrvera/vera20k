@@ -15,6 +15,7 @@ pub mod edge_cell;
 mod logic_vector;
 mod substrate;
 mod techno_ai;
+pub(crate) mod unit_post;
 mod world_commands;
 mod world_hash;
 mod world_orders;
@@ -947,6 +948,182 @@ impl Simulation {
         }
     }
 
+    /// P1 SHADOW BUILD: mirror each existing house's authoritative `credits` into
+    /// the non-hashed `economy` shadow and recompute its OrePurifier building
+    /// count. Derive direction is legacy -> shadow; READ-ONLY w.r.t. all hashed
+    /// state. It iterates the existing `houses` map only and NEVER inserts a house
+    /// (the auto-create hazard guard). A single pass over the entity store
+    /// accumulates purifier counts per owner, so the cost is O(entities), not
+    /// O(houses x entities). `rules` is the advance_tick tail's `Option`; with
+    /// `None` the purifier count is 0 (no type data to classify structures by).
+    pub(crate) fn refresh_economy_shadow(&mut self, rules: Option<&RuleSet>) {
+        use crate::map::entities::EntityCategory;
+        // One pass: accumulate OrePurifier building count per owner. Mirrors
+        // `count_purifiers_for_owner`'s predicate (category == Structure &&
+        // object_type.ore_purifier) but in a single sweep keyed by owner id.
+        let mut purifiers: std::collections::BTreeMap<crate::sim::intern::InternedId, i32> =
+            std::collections::BTreeMap::new();
+        if let Some(rules) = rules {
+            for e in self.substrate.entities.values() {
+                if e.category == EntityCategory::Structure
+                    && self
+                        .object_type(e.type_ref, rules)
+                        .is_some_and(|obj| obj.ore_purifier)
+                {
+                    *purifiers.entry(e.owner).or_insert(0) += 1;
+                }
+            }
+        }
+        for (id, house) in self.houses.iter_mut() {
+            // The credits mirror is RETIRED at the flip: `economy.credits` is a
+            // per-sweep shim that `step_all` loads from / stores to the one
+            // authoritative wallet `house.credits`; it is not hashed, so it is not
+            // maintained here.
+            // Purifier-bonus base = real OrePurifier building COUNT (NOT silo
+            // storage capacity, NOT the AI-virtual-inclusive effective count). Hashed.
+            house.economy.purifier_count = purifiers.get(id).copied().unwrap_or(0);
+            // spent_credits / harvested_credits accumulate via step_all / deposits;
+            // intentionally untouched here.
+        }
+    }
+
+    /// Per-tick production tail: refresh the per-house economy shadow (purifier count).
+    /// Runs at the advance_tick tail, AFTER all authoritative systems.
+    ///
+    /// P5d: the factory registry is the authoritative queue-of-record and is mutated
+    /// DIRECTLY by enqueue/cancel/delivery — there is no longer a `reconcile_from_queues`
+    /// pass (the `queues_by_owner` mirror is retired), so its progress simply persists
+    /// across ticks with no end-of-tick rebuild. `rules` is the tail's `Option`, threaded
+    /// to the economy refresh.
+    pub(crate) fn refresh_production_shadow(&mut self, rules: Option<&RuleSet>) {
+        self.refresh_economy_shadow(rules);
+    }
+
+    /// Debug-only P2 asserts: (a) economy tracks credits; (b) the factory shell
+    /// trace is well-formed (live Structures, strictly-increasing visit order).
+    /// Divergence is surfaced, never equalized.
+    #[cfg(debug_assertions)]
+    pub(crate) fn debug_assert_production_shadow(&self) {
+        // (P1 `debug_assert_economy_shadow` retired: `economy.credits` no longer tracks
+        //  `house.credits` — it is a per-sweep shim, demoted at the authority flip.)
+        self.debug_assert_factory_shell_trace();
+        self.debug_assert_factory_conservation(); // P3
+        self.debug_assert_factory_invariants(); // P5b (repurposed from the P5a inversion assert)
+    }
+
+    /// Debug-only P3 assert: each live shadow factory's `advance_one_step` conserves
+    /// exact cost (C15) and settles correctly (C2/C12). Steps a CLONE against a CLONE
+    /// economy seeded with exactly `original_balance`; SURFACES divergence with
+    /// tick + owner + category, NEVER writes back to the shadow or the wallet.
+    #[cfg(debug_assertions)]
+    pub(crate) fn debug_assert_factory_conservation(&self) {
+        use crate::sim::economy::Economy;
+        use crate::sim::production::{StepOutcome, PRODUCTION_STEPS};
+        for factory in self.production.factory_shadow.iter_insertion_ordered() {
+            if factory.object.is_none() {
+                continue; // queue-only / no active object: nothing to conserve
+            }
+            let cost = factory.original_balance;
+            // A fresh, armed clone driven from progress 0 with exact funds.
+            let mut f = factory.clone();
+            f.progress = 0;
+            f.balance = cost;
+            f.on_hold = false;
+            f.suspended = false;
+            f.manual = false;
+            let mut econ = Economy {
+                credits: cost,
+                ..Economy::default()
+            };
+            let mut steps = 0i32;
+            loop {
+                match f.advance_one_step(&mut econ) {
+                    StepOutcome::Stepped => steps += 1,
+                    StepOutcome::Completed => {
+                        steps += 1;
+                        break;
+                    }
+                    // Stalled/Idle cannot happen with exact funds + a fresh arm; the
+                    // asserts below fire (steps != 54) and surface the divergence.
+                    _ => break,
+                }
+            }
+            debug_assert_eq!(
+                steps, PRODUCTION_STEPS as i32,
+                "C2: tick {} {:?}/{:?}: a full build must take 54 steps (got {})",
+                self.tick, factory.owner, factory.category, steps,
+            );
+            debug_assert_eq!(
+                econ.spent_credits, cost,
+                "C15: tick {} {:?}/{:?}: total spent {} must equal full cost {}",
+                self.tick, factory.owner, factory.category, econ.spent_credits, cost,
+            );
+            debug_assert_eq!(
+                f.balance, 0,
+                "C12: tick {} {:?}/{:?}: completion must zero the balance",
+                self.tick, factory.owner, factory.category,
+            );
+            debug_assert!(
+                f.suspended && f.object.is_some(),
+                "C12: tick {} {:?}/{:?}: completion must suspend with the object attached",
+                self.tick, factory.owner, factory.category,
+            );
+        }
+    }
+
+    /// Debug-only P5b invariants on the now-authoritative registry (repurposed from the
+    /// P5a inversion-readiness assert — the legacy upfront charge it compared against is
+    /// retired, so the comparison is gone). Read-only; SURFACES divergence with
+    /// tick+owner+category; NEVER writes back.
+    #[cfg(debug_assertions)]
+    pub(crate) fn debug_assert_factory_invariants(&self) {
+        use crate::sim::production::PRODUCTION_STEPS;
+
+        // (A) ORDER: the registry sweep order must be a TOTAL order — `iter_insertion_ordered`
+        // yields strictly-increasing `insertion_seq` with NO ties (the strict-monotonic
+        // `enqueue_order` property the hash fold + `step_all` charge order both depend on; a
+        // tie would make the sweep order ambiguous and desync lockstep). Within each factory
+        // the tail stamps strictly increase AND exceed the active build's `insertion_seq`
+        // (FIFO `push_back` of a monotonic mint: the active build is the oldest, the tail
+        // newer) — this is the D1 invariant expressed as a real self-check.
+        let ordered = self.production.factory_shadow.iter_insertion_ordered();
+        let mut prev_seq: Option<u64> = None;
+        for f in &ordered {
+            if let Some(p) = prev_seq {
+                debug_assert!(
+                    f.insertion_seq > p,
+                    "P5d (A): tick {}: insertion_seq must be strictly increasing across the sweep ({} after {})",
+                    self.tick, f.insertion_seq, p,
+                );
+            }
+            prev_seq = Some(f.insertion_seq);
+            let mut tail_prev = f.insertion_seq;
+            for e in &f.queue {
+                debug_assert!(
+                    e.enqueue_order > tail_prev,
+                    "P5d (A): tick {} {:?}/{:?}: tail enqueue_order must strictly exceed the active build + prior tail ({} after {})",
+                    self.tick, f.owner, f.category, e.enqueue_order, tail_prev,
+                );
+                tail_prev = e.enqueue_order;
+            }
+        }
+
+        // (B) STATE: progress in 0..=54; 0 <= balance <= original_balance (the per-step
+        // ladder only decrements balance, and cancel resets both to 0).
+        for f in self.production.factory_shadow.iter_insertion_ordered() {
+            debug_assert!(
+                f.progress <= PRODUCTION_STEPS,
+                "P5b (B): tick {} {:?}/{:?}: progress {} exceeds {}",
+                self.tick, f.owner, f.category, f.progress, PRODUCTION_STEPS,
+            );
+            debug_assert!(
+                f.balance >= 0 && f.balance <= f.original_balance,
+                "P5b (B): tick {} {:?}/{:?}: balance {} out of [0, original {}]",
+                self.tick, f.owner, f.category, f.balance, f.original_balance,
+            );
+        }
+    }
+
     /// Test-only: force the active order and sync membership flags to it.
     #[cfg(test)]
     pub(crate) fn set_logic_order_for_test(&mut self, order: Vec<u64>) {
@@ -1427,6 +1604,11 @@ impl Simulation {
             let mut gap_generators: Vec<(InternedId, u16, u16)> = Vec::new();
 
             for entity in self.substrate.entities.values() {
+                // A Dying SpySat/GapGen corpse must not reveal the map or shroud
+                // an area for the tick after it is destroyed/sold.
+                if entity.dying {
+                    continue;
+                }
                 if entity.category != EntityCategory::Structure {
                     continue;
                 }
@@ -1647,10 +1829,20 @@ impl Simulation {
         execute_tick: u64,
         spawned_entities: &mut bool,
     ) {
-        // --- Phase 8: AI ---
-        // DEPENDS ON: all prior phases (AI reads full game state to make decisions).
+        // --- Phase 8: Defeat detection (runs BEFORE AI) ---
+        // gamemd evaluates each house's defeat before its AI manage/produce step,
+        // so a house that lost its last building/unit this tick can issue NO AI
+        // command this tick. Owned counts are final here after combat + production
+        // (but before this tick's AI spawns); tick_ai then skips any house already
+        // flagged defeated via its is_defeated gate.
+        if self.tick > 0 {
+            self.check_defeat(rules);
+        }
+
+        // --- Phase 8 (cont.): AI ---
+        // DEPENDS ON: all prior phases + the defeat status set just above (defeated
+        // houses are gated out inside tick_ai).
         // PRODUCES: commands applied immediately in the same tick.
-        // AI decision loop: generate commands for computer players.
         // Temporarily take ai_players out to avoid borrow conflict with &self.
         if rules.is_some() && !self.ai_players.is_empty() {
             let mut ai_state = std::mem::take(&mut self.ai_players);
@@ -1680,13 +1872,6 @@ impl Simulation {
             }
         }
 
-        // --- Phase 8.5: Defeat detection ---
-        // DEPENDS ON: combat (deaths processed), production (spawns), AI (commands applied).
-        // Runs after all game-state mutations so owned counts are final for this tick.
-        if self.tick > 0 {
-            self.check_defeat(rules);
-        }
-
         // --- Phase 9: Building animations + cleanup ---
         // DEPENDS ON: production (newly placed buildings start build-up).
         self.tick_building_up();
@@ -1714,12 +1899,15 @@ impl Simulation {
         });
         self.sound_events.extend(started_effect_sounds);
 
-        // End-of-tick deferred-delete drain (ProcessPendingDelete). Frees every
-        // entity uninit'd during this advance_tick: immediate structure/voxel
-        // deaths in Phase 5, tick_building_down undeploy frees, sells, slave-miner
-        // conversions, engineer-capture consumption. Runs BEFORE the OCCUPANCY_DEBUG
-        // rebuild (which scans all entities and would re-add an unflushed dying
-        // structure) and before the tail presence/membership asserts + state_hash.
+        // The SINGLE in-tick deferred-delete drain (gamemd's one ProcessPending-
+        // Delete at the tail of Main_Tick). Frees every entity uninit'd anywhere
+        // in this advance_tick: command deaths (sells, MCV/slave deploy-undeploy,
+        // engineer capture), Phase-5 combat structure/voxel deaths, tick_building_
+        // down undeploy frees. The earlier command-boundary and end-of-Phase-5
+        // drains were removed — corpses now live the full Dying window and every
+        // mid-tick raw-store consumer is dying-gated instead. Runs BEFORE the
+        // OCCUPANCY_DEBUG rebuild (which would re-add an unflushed dying structure)
+        // and before the tail presence/membership asserts + state_hash.
         self.flush_pending_delete();
 
         // Debug-mode safety net: rebuild occupancy from scratch and compare
@@ -1763,15 +1951,12 @@ impl Simulation {
         // method; call order unchanged — behavior-preserving.)
         let (executed_commands, mut spawned_entities, mut destroyed_structure) =
             self.apply_due_commands(commands, rules, path_grid, height_map, execute_tick);
-        // Drain command-applied deaths (sell, MCV/slave deploy-undeploy, engineer
-        // capture) at the command-region boundary, BEFORE Phase 1. These uninit a
-        // structure/unit at tick start; without this drain they would linger Dying
-        // through vision (P3) and power (P4) — raw-store consumers with no dying gate
-        // that feed the state hash — counting a just-removed object for one tick. The
-        // deferred Dying window is intentionally scoped to combat-immediate deaths
-        // (drained at Phase 9) where it is the verified parity behavior; command
-        // deaths stay synchronous-equivalent (matching pre-deferral removal).
-        self.flush_pending_delete();
+        // No command-boundary drain: command-applied deaths (sell, MCV/slave
+        // deploy-undeploy, engineer capture) now stay in the Dying window like
+        // combat deaths, freed only by the single end-of-tick drain — matching
+        // gamemd's one ProcessPendingDelete at the tail of Main_Tick. The mid-
+        // tick raw-store consumers (vision, power, production, movement, miner,
+        // aircraft, …) are dying-gated, so a corpse is excluded until that drain.
         let mut bridge_state_changed = false;
         let mut passenger_ownership_changed = false;
 
@@ -2071,6 +2256,15 @@ impl Simulation {
                 self.binary_frame,
                 &self.interner,
             );
+            // Unit barrel facing is authoritative in unit_post; tick_turret_rotation
+            // above skips Units. Same keys_sorted set+order as the legacy sweep,
+            // restricted to Units, so the state hash is unmoved.
+            crate::sim::world::unit_post::tick_unit_facing(
+                &mut self.substrate.entities,
+                rules,
+                &self.interner,
+                self.binary_frame,
+            );
             destroyed_structure |= combat_result.structure_destroyed;
             let combat_dead_infos: Vec<(InternedId, EntityCategory)> = combat_result
                 .despawned_ids
@@ -2276,16 +2470,13 @@ impl Simulation {
             // tests). The vec is per-tick ephemeral state.
             self.pending_smudge_requests.clear();
 
-            // End-of-Phase-5 deferred-delete drain. Frees structures/voxels killed in
-            // combat (immediate_uninit above) plus any bridge/wall occupant kills, so
-            // no dying structure leaks into the Phase 5.5-8.5 raw-store consumers
-            // (particles, production speed/factory-spawn scans, repairs, AI) that have
-            // no dying gate. Combat post-processing above intentionally reads the dead
-            // ids while still resolvable (count decrement, owner snapshot); this drain
-            // runs after all of that. With the pre-Phase-1 command-death drain, every
-            // death frees at its own phase boundary — the dying window never spans a
-            // later phase's scans, keeping the slice behavior/hash-preserving.
-            self.flush_pending_delete();
+            // No end-of-Phase-5 drain: combat-killed structures/voxels stay in
+            // the Dying window through the Phase 5.5-8.5 consumers and are freed
+            // only by the single end-of-tick drain (gamemd's one ProcessPending-
+            // Delete). Those consumers (production speed/factory-spawn scans,
+            // repairs, retaliation, miner, aircraft) are dying-gated. Combat
+            // post-processing above still reads the dead ids while resolvable
+            // (count decrement, owner snapshot) — that runs before this point.
             // --- Phase 5.5: ParticleSystems ---
             // DEPENDS ON: combat (gas/fire damage spawned this tick).
             // PRODUCES: damage applied via gas/fire particles, must be visible to phase 6 retaliation.
@@ -2311,6 +2502,24 @@ impl Simulation {
             //     self.tick,
             //     &self.interner,
             // );
+            // Phase 7, FIRST production step — the authoritative factory sweep (C1:
+            // factories step BEFORE the house tail `run_late_region`). The previous
+            // tick's tail reconcile prepared the registry; `step_all` charges each armed
+            // factory's per-step cost against the REAL wallet (house.credits) in
+            // insertion_seq (temporal) order; the spawn/placement pass below then
+            // delivers completed builds and advances the queue-of-record.
+            {
+                let mut registry = std::mem::take(&mut self.production.factory_shadow);
+                // P6: prereq/factory-loss revalidation BEFORE the charge sweep. Builds whose
+                // prerequisites or producing factory were lost are abandoned (partial refund)
+                // + now-unbuildable queued items dropped, so a freshly-abandoned factory is not
+                // charged this tick and a freshly-promoted one starts charging next tick.
+                let reval_plan = registry.plan_revalidation(self, rules);
+                registry.apply_revalidation(&reval_plan, &mut self.houses);
+                let prepared = registry.prepare_step_inputs(self, rules);
+                registry.step_all(&mut self.houses, &prepared);
+                self.production.factory_shadow = registry;
+            }
             spawned_entities |= production::tick_production_with_overlay_registry(
                 self,
                 rules,
@@ -2424,12 +2633,20 @@ impl Simulation {
         // folded `mission` reflects the current tick. As of Slice 8 `mission` is
         // canonical hashed state; the Slice-2 shadow-agreement assert is retired.
         self.refresh_mission_shadow();
+        // P1+P2 production+economy shadow: mirror credits + purifier_count and
+        // rebuild the factory registry from the legacy queues, after all
+        // authoritative systems and before the hash. Writes only non-hashed shadow
+        // fields, so state_hash stays bit-identical (proven by the *_no_hash_change
+        // tests). `rules` is the advance_tick `Option<&RuleSet>` tail param.
+        self.refresh_production_shadow(rules);
         // Object-AI Slice S1 shadow: for one bounded moving-UnitClass scenario,
         // assert mission dispatch is observed before the locomotor Process within
         // one object pass (the verified gamemd ordering). Read-only, unhashed,
         // debug-only — the authority flip is a later slice.
         #[cfg(debug_assertions)]
         self.debug_assert_s1_shadow();
+        #[cfg(debug_assertions)]
+        self.debug_assert_production_shadow();
         let state_hash = self.state_hash();
         TickResult {
             tick: self.tick,
@@ -2475,3 +2692,7 @@ mod mission_authoritative_tests;
 #[cfg(test)]
 #[path = "global_parity_harness_tests.rs"]
 mod global_parity_harness_tests;
+
+#[cfg(test)]
+#[path = "production_shadow_tests.rs"]
+mod production_shadow_tests;

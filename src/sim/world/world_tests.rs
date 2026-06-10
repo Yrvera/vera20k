@@ -3467,12 +3467,12 @@ fn command_death_is_flushed_before_vision_and_power() {
     );
 }
 
-/// Combat-death counterpart: a structure killed in combat (Phase 5) is drained at the
-/// END of Phase 5, before the Phase 7 repair scan — so a destroyed building on auto-
-/// repair is NOT healed (no credits spent) on the death tick. The repair scan has no
-/// dying gate; without the Phase-5 drain it would heal a health-0 corpse.
+/// Combat-death counterpart: a structure killed in combat (Phase 5) now lives in the
+/// Dying window through Phase 7 and is freed only by the single end-of-tick drain. The
+/// Phase-7 auto-repair scan is dying-gated, so a destroyed building on auto-repair is
+/// NOT healed (no credits spent) on the death tick, and after the tick it is gone.
 #[test]
-fn combat_death_is_flushed_before_phase7_repairs() {
+fn combat_death_not_repaired_then_freed_at_end_of_tick() {
     use crate::sim::components::Health;
     use crate::sim::house_state::HouseState;
 
@@ -3514,11 +3514,14 @@ fn combat_death_is_flushed_before_phase7_repairs() {
 
     sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 100);
 
-    assert!(sim.substrate.entities.get(2).is_none(), "building destroyed + drained this tick");
-    assert!(sim.substrate.pending_delete.is_empty(), "combat-death queue drained");
+    assert!(
+        sim.substrate.entities.get(2).is_none(),
+        "building destroyed + freed by the end-of-tick drain"
+    );
+    assert!(sim.substrate.pending_delete.is_empty(), "end-of-tick drain emptied the queue");
     assert_eq!(
         sim.houses.get(&russia).map(|h| h.credits),
         Some(1000),
-        "destroyed building must not be repaired at Phase 7 (no credits spent)",
+        "destroyed building must not be repaired at Phase 7 (dying-gated, no credits spent)",
     );
 }

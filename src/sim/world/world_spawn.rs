@@ -667,7 +667,10 @@ impl Simulation {
                 let cell_y = ry.saturating_add(dy);
                 // Check for existing structures (excluding the MCV itself).
                 let occupied = self.substrate.entities.values().any(|e| {
-                    if e.stable_id == stable_id || e.category != EntityCategory::Structure {
+                    // A Dying structure corpse (sold/destroyed earlier in this
+                    // command batch) no longer blocks an MCV deploy footprint.
+                    if e.dying || e.stable_id == stable_id || e.category != EntityCategory::Structure
+                    {
                         return false;
                     }
                     let Some(existing) = self.object_type(e.type_ref, rules) else {
@@ -831,11 +834,12 @@ impl Simulation {
     }
 
     fn owner_has_building_production_busy(&self, owner: crate::sim::intern::InternedId) -> bool {
+        // P5d: the registry is the queue-of-record. Busy = an active Building build held OR
+        // a non-empty Building tail.
         self.production
-            .queues_by_owner
-            .get(&owner)
-            .and_then(|queues| queues.get(&ProductionCategory::Building))
-            .is_some_and(|queue| !queue.is_empty())
+            .factory_shadow
+            .view(owner, ProductionCategory::Building)
+            .is_some_and(|v| v.object.is_some() || !v.queue.is_empty())
     }
 
     /// Find the next available infantry sub-cell at a given cell position.
@@ -845,7 +849,8 @@ impl Simulation {
     fn allocate_infantry_sub_cell(&self, rx: u16, ry: u16) -> u8 {
         let mut occupied: [bool; 5] = [false; 5];
         for entity in self.substrate.entities.values() {
-            if entity.position.rx == rx
+            if !entity.dying
+                && entity.position.rx == rx
                 && entity.position.ry == ry
                 && entity.category == EntityCategory::Infantry
             {
