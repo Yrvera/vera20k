@@ -581,8 +581,13 @@ pub(crate) fn load_map_from_initial(
             .or_else(|| map_data.basic.name.clone())
             .unwrap_or_default(),
         theater: map_data.header.theater.clone(),
-        map_width: map_data.header.width as u16,
-        map_height: map_data.header.height as u16,
+        // CANONICAL CELL-ARRAY FRAME, not [Map] Size=. Sim cell coordinates
+        // (entities, waypoints, vision) live in the iso array whose extent is
+        // ~(SizeW+SizeH); seeding bounds from Size= verbatim leaves most of
+        // the diamond — including start waypoints — outside the fog window.
+        // The raw Size= width stays available on `Simulation.playfield_bounds`.
+        map_width: resolved_terrain.width(),
+        map_height: resolved_terrain.height(),
         local_left: map_data.header.local_left as u16,
         local_top: map_data.header.local_top as u16,
         local_width: map_data.header.local_width as u16,

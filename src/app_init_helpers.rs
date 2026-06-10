@@ -439,6 +439,23 @@ pub(crate) fn spawn_entities(
     Option<crate::render::palette_textures::PaletteSet>,
 ) {
     let mut sim: Simulation = Simulation::from_descriptor(descriptor);
+    // Frame tripwire: every MP start waypoint must sit inside the session
+    // bounds (= the fog window, cell-array frame). A start outside means the
+    // descriptor was fed wrong-frame bounds (e.g. raw [Map] Size=) and the
+    // player's own base would be permanently shrouded.
+    for (idx, (rx, ry)) in &descriptor.mp_start_waypoints {
+        if *rx >= descriptor.map_width || *ry >= descriptor.map_height {
+            log::error!(
+                "MP start waypoint {idx} at ({rx},{ry}) lies outside session bounds {}x{} — wrong coordinate frame?",
+                descriptor.map_width,
+                descriptor.map_height
+            );
+            debug_assert!(
+                false,
+                "start waypoint outside session bounds (coordinate-frame mismatch)"
+            );
+        }
+    }
     sim.resolved_terrain = Some(resolved_terrain.clone());
     // The playfield diamond: [Map] Size width + the raw LocalSize rect, stored
     // verbatim — the isometric transform lives in the validator's diamond test.

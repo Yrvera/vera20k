@@ -33,10 +33,28 @@ use std::collections::BTreeMap;
 const HARNESS_SEED: u64 = 0xC0FFEE_1234;
 const HARNESS_TICKS: u64 = 600;
 const HARNESS_TICK_MS: u32 = 67;
-/// AT-8: ticks at which the per-stream RNG cursors are pinned record-vs-replay
-/// (after the tick at this index executes). Catches cross-stream misrouting
-/// that compensating errors could hide from the total state hash.
+/// AT-8: ticks at which the per-stream RNG cursors are compared record-vs-replay
+/// (after the tick at this index executes).
 const STREAM_CHECKPOINT_TICKS: &[u64] = &[149, 299, 449, 599];
+
+/// AT-8 proper: ABSOLUTE committed per-stream fingerprints at the final
+/// checkpoint (tick 599). Record-vs-replay equality alone cannot catch a
+/// deterministic cross-stream misroute — both passes run the same code, so a
+/// misrouted draw appears identically in both. Only committed values detect
+/// it, and when a legitimate change shifts the total hash, these localize
+/// WHICH stream moved. Same re-baseline ceremony as GLOBAL_HARNESS_FINAL_HASH
+/// (one documented re-baseline per behavior-bearing change; paste the failing
+/// `left` values).
+/// Baselined at SC-2 review hardening. scenario == main here: this scripted
+/// scenario consumes ZERO draws from either gameplay stream (they stay at the
+/// identical post-seed state), and mapgen holds the unseeded zero-state
+/// fingerprint — so ANY future draw in this scenario shifts exactly one
+/// component loudly.
+const FINAL_STREAM_STATES: (u64, u64, u64) = (
+    4175722561206807420,
+    4175722561206807420,
+    11005532682475009861,
+);
 
 /// Committed final-hash baseline. Captured from the first green run. Re-baselines
 /// at most once per behavior-bearing change, with a one-line documented reason.
@@ -243,7 +261,19 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
     }
     assert_eq!(
         recorded_streams, replayed_streams,
-        "per-stream cursor pin: a draw moved streams between record and replay"
+        "per-stream cursor consistency: a nondeterminism moved streams between record and replay"
+    );
+    let (_, final_scen, final_main, final_mapgen) =
+        *recorded_streams.last().expect("final checkpoint recorded");
+    assert_eq!(
+        (final_scen, final_main, final_mapgen),
+        FINAL_STREAM_STATES,
+        "AT-8 absolute per-stream pin at tick 599: a stream's committed \
+         fingerprint moved. If a real behavior change shifted it, re-baseline \
+         ONCE with a one-line documented reason (paste this `left` tuple into \
+         FINAL_STREAM_STATES); the shifted component tells you WHICH stream \
+         consumed differently — a lone shift in one stream with an unchanged \
+         total-hash baseline is a misroute, never a re-baseline."
     );
 
     assert_eq!(

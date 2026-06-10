@@ -86,7 +86,7 @@ struct Candidate {
 
 /// Engine `Find_Nearby_Passable_Cell`.
 ///
-/// `frame_counter` MUST be the sim per-tick counter (`Simulation::binary_frame`),
+/// `frame_counter` MUST be the sim per-tick counter (`Simulation.session.binary_frame`),
 /// read as the current frame — never an RNG draw. Returns `None` for the
 /// no-candidate case (engine null-cell `{0,0}`), which the caller interprets as
 /// "no cell": clear the destination, retry next tick.

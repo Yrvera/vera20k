@@ -221,7 +221,7 @@ fn viewport_cell_bounds(
 /// the build call; nothing escapes the function.
 pub struct SparkleInput<'a> {
     /// Authoritative sim-time clock in milliseconds. Caller passes
-    /// `Simulation.total_sim_ms` (pre-computed each tick by the sim).
+    /// `Simulation.session.total_sim_ms` (pre-computed each tick by the sim).
     /// Deterministic across clients on the same tick — replays look identical.
     pub clock_ms: u64,
     /// From GraphicsConfig.extra_animations. If false, build returns empty Vec. (L22)

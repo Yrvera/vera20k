@@ -283,3 +283,37 @@ fn map_overrides_no_op_without_rules_shaped_sections() {
     assert_eq!(rules.merge_rules_overrides(&map), 0);
     assert_eq!(rules.section("General").unwrap().get("BuildSpeed"), Some(".7"));
 }
+
+/// RC-1 hardening: a registry section with MIXED keys (one stray named key
+/// beside the numbered list) must still be excluded — by the explicit list,
+/// not the all-numeric guard it would otherwise slip past.
+#[test]
+fn map_overrides_skip_mixed_key_particle_registries() {
+    let mut rules =
+        IniFile::from_str("[Particles]\n30=FireStream\n[ParticleSystems]\n10=GasCloudSys\n");
+    let map = IniFile::from_str(
+        "[Particles]\n30=EvilFire\nName=oops\n[ParticleSystems]\n10=EvilSys\nStray=1\n",
+    );
+    assert_eq!(rules.merge_rules_overrides(&map), 0);
+    assert_eq!(rules.section("Particles").unwrap().get("30"), Some("FireStream"));
+    assert_eq!(
+        rules.section("ParticleSystems").unwrap().get("10"),
+        Some("GasCloudSys")
+    );
+}
+
+/// RC-1 hardening: [Colors] keys are iterated as a registry (one scheme per
+/// key), so a map may override an EXISTING color's value but a new key would
+/// allocate a record — allocation from maps stays off.
+#[test]
+fn map_colors_overrides_existing_but_never_allocates() {
+    let mut rules = IniFile::from_str("[Colors]\nGold=42,252,252\nDarkRed=0,151,239\n");
+    let map = IniFile::from_str("[Colors]\nGold=1,2,3\nNeonPink=12,200,255\n");
+    let applied = rules.merge_rules_overrides(&map);
+    assert_eq!(applied, 1, "only the existing key may merge");
+    assert_eq!(rules.section("Colors").unwrap().get("Gold"), Some("1,2,3"));
+    assert!(
+        rules.section("Colors").unwrap().get("NeonPink").is_none(),
+        "a new [Colors] key would allocate a scheme — must be skipped"
+    );
+}

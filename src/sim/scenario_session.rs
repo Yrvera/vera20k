@@ -25,8 +25,11 @@ pub struct ScenarioDescriptor {
     pub map_name: String,
     /// Theater name from the map header (e.g. "TEMPERATE").
     pub theater: String,
-    /// Full map `Size=` width/height (3rd/4th values) — authoritative bounds
-    /// at load.
+    /// Authoritative map bounds in the CANONICAL CELL-ARRAY frame (max cell
+    /// rx/ry + 1 — the frame entities, waypoints, and vision index), NOT the
+    /// raw `[Map] Size=` values: sim cell coordinates span the iso diamond,
+    /// whose array extent is ~(SizeW+SizeH). The raw Size= width lives on
+    /// `Simulation.playfield_bounds` for the diamond test.
     pub map_width: u16,
     pub map_height: u16,
     /// Playable-area `LocalSize=` rect, stored verbatim.
@@ -71,7 +74,9 @@ pub struct ScenarioSession {
     pub map_name: String,
     /// Theater name from the map header.
     pub theater: String,
-    /// Full map `Size=` width/height.
+    /// Authoritative map bounds in the canonical cell-array frame (max cell
+    /// rx/ry + 1); see the descriptor field of the same name. Seeds the fog
+    /// grid dimensions at construction.
     pub map_width: u16,
     pub map_height: u16,
     /// Playable-area `LocalSize=` rect, stored verbatim.

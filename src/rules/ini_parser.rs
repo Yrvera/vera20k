@@ -362,7 +362,16 @@ impl IniFile {
                 );
                 continue;
             }
+            let keys_iterated_as_registry = ITERATED_NAME_KEYED_SECTIONS
+                .iter()
+                .any(|s| s.eq_ignore_ascii_case(patch_key));
             for key in patch_section.keys() {
+                if keys_iterated_as_registry && base_section.get(key).is_none() {
+                    log::warn!(
+                        "map [{patch_key}] {key}= would allocate a new registry                          entry — allocation from maps is not supported; key skipped"
+                    );
+                    continue;
+                }
                 if let Some(val) = patch_section.get(key) {
                     base_section.set(key, val);
                     applied += 1;
@@ -393,7 +402,15 @@ const MAP_OVERRIDE_EXCLUDED_SECTIONS: &[&str] = &[
     "Warheads",
     "Projectiles",
     "Sides",
+    "Particles",
+    "ParticleSystems",
 ];
+
+/// Name-keyed sections whose KEYS are themselves iterated as a registry
+/// (one record allocated per key). A map may override an existing entry's
+/// value, but a NEW key would allocate a record — and allocation-from-map is
+/// off until the second Read_INI pass semantics are verified.
+const ITERATED_NAME_KEYED_SECTIONS: &[&str] = &["Colors"];
 
 #[cfg(test)]
 #[path = "ini_parser_tests.rs"]
