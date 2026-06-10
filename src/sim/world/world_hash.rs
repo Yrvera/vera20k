@@ -93,6 +93,7 @@ impl Simulation {
         self.hash_bridge_state(&mut hasher);
         self.hash_overlay_grid(&mut hasher);
         self.hash_smudge_grid(&mut hasher);
+        self.hash_radiation(&mut hasher);
         self.hash_super_weapons(&mut hasher);
         self.hash_entities(&mut hasher);
         self.hash_particle_systems(&mut hasher);
@@ -418,6 +419,27 @@ impl Simulation {
         entries.len().hash(hasher);
         for e in &entries {
             e.hash(hasher);
+        }
+    }
+
+    /// Hash the radiation field (cell levels as raw f64 bits — the levels are
+    /// products of deterministic IEEE ops, so the bits are lockstep-stable)
+    /// and the site registry. Both maps iterate in sorted key order.
+    fn hash_radiation(&self, hasher: &mut impl Hasher) {
+        for (&(rx, ry), level) in self.radiation.iter_cells() {
+            rx.hash(hasher);
+            ry.hash(hasher);
+            level.to_bits().hash(hasher);
+        }
+        for site in self.radiation.sites() {
+            site.center.hash(hasher);
+            site.spread.hash(hasher);
+            site.level.hash(hasher);
+            site.level_steps.hash(hasher);
+            site.duration.hash(hasher);
+            site.remaining.hash(hasher);
+            site.level_timer_start.hash(hasher);
+            site.level_timer_duration.hash(hasher);
         }
     }
 

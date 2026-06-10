@@ -301,6 +301,8 @@ impl IniFile {
     /// In YR, rulesmd.ini / artmd.ini are patches on top of rules.ini / art.ini.
     /// For each section in `patch`: if the section exists in self, merge keys
     /// (patch keys override base keys). If the section is new, add it.
+    /// (Map rules overrides go through [`IniFile::merge_rules_overrides`],
+    /// which never allocates sections.)
     pub fn merge(&mut self, patch: &IniFile) {
         for patch_key in &patch.section_order {
             let patch_section: &IniSection = match patch.sections.get(patch_key) {
@@ -322,7 +324,76 @@ impl IniFile {
             }
         }
     }
+
+    /// Merge a map file's rules-shaped overrides over this (already
+    /// rules+rulesmd-merged) INI: last definition wins, but only for sections
+    /// that already exist here, and never for type-registry lists. Mirrors the
+    /// original engine re-reading its rules from the map file after the main
+    /// load, minus the (unverified) ability to allocate new type records —
+    /// registries use find-or-allocate-by-name semantics there, so merging
+    /// them by numeric key would replace unrelated entries.
+    /// Returns the number of keys applied (0 = the map ships no overrides).
+    pub fn merge_rules_overrides(&mut self, patch: &IniFile) -> usize {
+        let mut applied = 0;
+        for patch_key in &patch.section_order {
+            let Some(patch_section) = patch.sections.get(patch_key) else {
+                continue;
+            };
+            if MAP_OVERRIDE_EXCLUDED_SECTIONS
+                .iter()
+                .any(|s| s.eq_ignore_ascii_case(patch_key))
+            {
+                continue;
+            }
+            let Some(base_section) = self.sections.get_mut(patch_key) else {
+                // Value-override only: a section the rules never declared is
+                // map data (or would be an allocation) — skip silently.
+                continue;
+            };
+            // Belt-and-braces: an all-numeric-key section is a registry list
+            // even if it's not on the exclusion list yet.
+            let has_keys = patch_section.keys().next().is_some();
+            let all_numeric =
+                has_keys && patch_section.keys().all(|k| k.parse::<u32>().is_ok());
+            if all_numeric {
+                log::warn!(
+                    "map [{patch_key}] is a numbered list — registry overrides \
+                     from maps are not supported; section skipped"
+                );
+                continue;
+            }
+            for key in patch_section.keys() {
+                if let Some(val) = patch_section.get(key) {
+                    base_section.set(key, val);
+                    applied += 1;
+                }
+            }
+        }
+        applied
+    }
 }
+
+/// Numbered-list registry sections a map rules-override pass must not touch
+/// (see [`IniFile::merge_rules_overrides`]). Whether a map may allocate new
+/// type records at all is unverified; until it is, registry lists from maps
+/// are skipped wholesale.
+const MAP_OVERRIDE_EXCLUDED_SECTIONS: &[&str] = &[
+    "InfantryTypes",
+    "VehicleTypes",
+    "AircraftTypes",
+    "BuildingTypes",
+    "TerrainTypes",
+    "SmudgeTypes",
+    "OverlayTypes",
+    "Tiberiums",
+    "SuperWeaponTypes",
+    "Countries",
+    "Animations",
+    "VoxelAnims",
+    "Warheads",
+    "Projectiles",
+    "Sides",
+];
 
 #[cfg(test)]
 #[path = "ini_parser_tests.rs"]

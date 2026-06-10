@@ -81,6 +81,14 @@ impl ReplayRunner {
         path_grid: Option<&PathGrid>,
         tick_ms: u32,
     ) -> Vec<u64> {
+        // Playback must be constructed from the recorded seed (the descriptor
+        // path: `ScenarioDescriptor::from_replay_header`). A sim seeded
+        // differently than the header it replays is a guaranteed silent
+        // divergence.
+        debug_assert_eq!(
+            sim.seed, replay.header.seed,
+            "replay playback sim must be constructed from header.seed"
+        );
         let mut hashes: Vec<u64> = Vec::with_capacity(replay.ticks.len());
         for entry in &replay.ticks {
             let result =

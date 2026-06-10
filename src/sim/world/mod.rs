@@ -81,7 +81,8 @@ use crate::sim::trigger_runtime::{TriggerEffect, TriggerRuntime};
 use crate::sim::vision::{self, FogState};
 use crate::util::fixed_math::SimFixed;
 
-/// Default deterministic RNG seed for ad-hoc simulation instances.
+/// Dev/test fallback seed. Real launches negotiate a per-match seed through
+/// `ScenarioDescriptor`; nothing on the launch path may rely on this value.
 const DEFAULT_SIM_SEED: u64 = 0x5EED_CAFE_D15E_A5E5;
 
 /// Result of one deterministic simulation tick.
@@ -389,6 +390,17 @@ pub struct Simulation {
     /// Per-cell smudge state (craters, scorches). Seeded from map [Smudge]
     /// entries at init, mutated by combat death-handling at runtime.
     pub smudge_grid: Option<crate::sim::smudge_grid::SmudgeGrid>,
+    /// Per-cell radiation field + site registry. Detonations of RadLevel>0
+    /// weapons feed it during the combat phase; sites decay in their own
+    /// post-combat step; foot units take periodic damage from their cell.
+    #[serde(default)]
+    pub radiation: crate::sim::radiation::RadiationState,
+    /// The map's isometric playfield diamond ([Map] Size width + the raw
+    /// LocalSize rect), set at map init. Threaded into the cell-rect occupancy
+    /// validator's final playfield-corner test (the engine diamond, not a
+    /// rectangle). `None` only in headless tests with no map loaded.
+    #[serde(default)]
+    pub playfield_bounds: Option<crate::sim::cell_rect::PlayfieldBounds>,
     /// SHP interned IDs for bridge destruction explosions (from rules.ini BridgeExplosions=).
     #[serde(skip)]
     pub bridge_explosions: Vec<InternedId>,
@@ -546,6 +558,8 @@ impl Simulation {
             bridge_state: None,
             overlay_grid: None,
             smudge_grid: None,
+            radiation: crate::sim::radiation::RadiationState::default(),
+            playfield_bounds: None,
             bridge_explosions: Vec::new(),
             metallic_debris: Vec::new(),
             bridge_anim_sounds: BTreeMap::new(),
@@ -574,6 +588,13 @@ impl Simulation {
         };
         debug_assert_eq!(out.scenario_rng.state(), out.main_rng.state());
         out
+    }
+
+    /// Construct a session simulation from an app-layer launch descriptor.
+    /// The only entry real launches use; `new()`/`with_seed()` remain for
+    /// tests and dev tooling.
+    pub fn from_descriptor(desc: &crate::sim::scenario_session::ScenarioDescriptor) -> Self {
+        Self::with_seed(u64::from(desc.seed))
     }
 
     // --- Scenario stream (gamemd Scenario->Random @ Scen+0x218) ---
@@ -2274,7 +2295,13 @@ impl Simulation {
                 tick_ms,
                 self.binary_frame,
                 &logic_order,
+                Some(&mut self.radiation),
             );
+            // Radiation site evolution (lifetime countdown, periodic per-cell
+            // decay, self-deletion) runs after the per-object combat work —
+            // the native driver updates radiation sites after the object loop.
+            self.radiation
+                .tick_decay(self.binary_frame, &rules.radiation, self.resolved_terrain.as_ref());
             turret::tick_turret_rotation(
                 &mut self.substrate.entities,
                 rules,

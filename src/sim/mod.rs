@@ -28,6 +28,7 @@ pub mod entity_store;
 pub mod game_entity;
 pub mod intern;
 pub mod rng;
+pub mod scenario_session; // app->sim launch descriptor (per-match seed pipeline)
 pub mod type_handle_table; // InternedId -> TypeHandle, one-hop entity->type resolution
 
 // --- Pure read-only deterministic engine-data services (gamemd-exact lookup tables) ---
@@ -82,6 +83,9 @@ pub mod overlay_grid;
 
 // --- Mutable per-cell smudge state (craters, scorches, pre-placed map decals) ---
 pub mod smudge_grid;
+
+// --- Per-cell radiation field (sites, spread/decay; damage applied by combat) ---
+pub mod radiation;
 
 // --- Passengers, transport, slaves ---
 pub mod passenger;

@@ -523,6 +523,7 @@ mod tests {
             no_force_shield: false,
             omni_crusher: false,
             omni_crush_resistant: false,
+            immune_to_radiation: false,
             engineer: false,
             deployer: false,
             capturable: false,

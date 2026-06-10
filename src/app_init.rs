@@ -570,6 +570,14 @@ pub(crate) fn load_map_from_initial(
             }
         });
 
+    // One negotiated per-match seed, fixed before the sim exists and before
+    // any setup-phase draw (random country/color resolution included). Logged
+    // as the repro handle until replay save/load UI exists.
+    let scenario_descriptor = crate::sim::scenario_session::ScenarioDescriptor {
+        seed: crate::app_init_helpers::generate_match_seed(),
+    };
+    log::info!("Match seed: 0x{:08X}", scenario_descriptor.seed);
+
     let (simulation, mut unit_atlas, mut sprite_atlas, mut palette_set) = spawn_entities(
         &map_data,
         &resolved_terrain,
@@ -586,6 +594,7 @@ pub(crate) fn load_map_from_initial(
         &infantry_sequences,
         vxl_compute.as_deref_mut(),
         bridge_destroyability_mode,
+        &scenario_descriptor,
     );
     // Terrain/tiberium + units/infantry/buildings created from the map
     // (gamemd terrain/units/objects/buildings milestones).

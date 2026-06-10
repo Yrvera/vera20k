@@ -384,6 +384,18 @@ pub(crate) fn load_art_ini(asset_manager: &AssetManager) -> Option<(ArtRegistry,
     Some((reg, ini))
 }
 
+/// Draw one fresh per-match seed. The SP analog of the original fixing its
+/// global RNG seed once per game before any setup-phase draw; we are bound to
+/// reaching one shared u32 seed, not to the original's entropy source. MP
+/// will hand the host's seed over the wire through the same descriptor.
+pub(crate) fn generate_match_seed() -> u32 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    now.subsec_nanos() ^ (now.as_secs() as u32).rotate_left(16)
+}
+
 /// Spawn map entities into ECS world and build voxel + SHP sprite atlases.
 pub(crate) fn spawn_entities(
     map_data: &MapFile,
@@ -401,14 +413,24 @@ pub(crate) fn spawn_entities(
     infantry_sequences: &crate::rules::infantry_sequence::InfantrySequenceRegistry,
     vxl_compute: Option<&mut crate::render::vxl_compute::VxlComputeRenderer>,
     bridge_destroyability_mode: BridgeDestroyabilityMode,
+    descriptor: &crate::sim::scenario_session::ScenarioDescriptor,
 ) -> (
     Option<Simulation>,
     Option<UnitAtlas>,
     Option<SpriteAtlas>,
     Option<crate::render::palette_textures::PaletteSet>,
 ) {
-    let mut sim: Simulation = Simulation::new();
+    let mut sim: Simulation = Simulation::from_descriptor(descriptor);
     sim.resolved_terrain = Some(resolved_terrain.clone());
+    // The playfield diamond: [Map] Size width + the raw LocalSize rect, stored
+    // verbatim — the isometric transform lives in the validator's diamond test.
+    sim.playfield_bounds = Some(crate::sim::cell_rect::PlayfieldBounds {
+        base: map_data.header.width as i32,
+        off_fc: map_data.header.local_left as i32,
+        off_100: map_data.header.local_top as i32,
+        off_104: map_data.header.local_width as i32,
+        off_108: map_data.header.local_height as i32,
+    });
     let bridge_destroyable = map_data
         .special_flags
         .effective_destroyable_bridges(bridge_destroyability_mode);

@@ -167,6 +167,7 @@ impl Simulation {
                 ge.regular_crusher = obj.crusher;
                 ge.drive_accelerates = obj.accelerates;
                 ge.omni_crush_resistant = obj.omni_crush_resistant;
+                ge.immune_to_radiation = obj.immune_to_radiation;
                 if map_ent.category == EntityCategory::Structure && obj.gate {
                     ge.building_gate =
                         Some(crate::sim::game_entity::BuildingGateRuntime::default());
@@ -337,6 +338,7 @@ impl Simulation {
         ge.regular_crusher = obj.crusher;
         ge.drive_accelerates = obj.accelerates;
         ge.omni_crush_resistant = obj.omni_crush_resistant;
+        ge.immune_to_radiation = obj.immune_to_radiation;
         if category == EntityCategory::Structure && obj.gate {
             ge.building_gate = Some(crate::sim::game_entity::BuildingGateRuntime::default());
         }
@@ -474,6 +476,7 @@ impl Simulation {
         ge.regular_crusher = obj.crusher;
         ge.drive_accelerates = obj.accelerates;
         ge.omni_crush_resistant = obj.omni_crush_resistant;
+        ge.immune_to_radiation = obj.immune_to_radiation;
         if category == EntityCategory::Structure && obj.gate {
             ge.building_gate = Some(crate::sim::game_entity::BuildingGateRuntime::default());
         }

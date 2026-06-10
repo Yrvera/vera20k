@@ -163,7 +163,9 @@ fn record(
     let mut log = ReplayLog::new(ReplayHeader {
         version: 1,
         tick_hz: 15,
-        seed: 0,
+        // Record the sim's actual construction seed — playback fidelity is
+        // header-seed-driven and ReplayRunner asserts the two agree.
+        seed: sim.seed,
         map_name: "p5c_factory_replay".to_string(),
         rules_hash: 0,
     });

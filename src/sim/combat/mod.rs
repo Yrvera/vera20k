@@ -180,6 +180,11 @@ pub enum TargetKind {
     Cell(u16, u16),
 }
 
+/// Sentinel attacker id for sourceless damage (the radiation field). Stable
+/// entity ids start at 1, so 0 is never a live attacker; retaliation treats
+/// it as "attacker gone" and the last-attacker bookkeeping skips it.
+pub(crate) const RAD_NO_ATTACKER: u64 = 0;
+
 /// Infantry shot waiting for its current fire animation to reach the discharge frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct PendingInfantryFire {
@@ -588,6 +593,7 @@ pub fn tick_combat(
         // Convenience shim (tests only); empty live order falls back to the
         // stable-id resolution order, preserving prior behavior exactly.
         &[],
+        None,
     )
 }
 
@@ -1187,6 +1193,9 @@ fn destroy_ore_at_impact(
 pub(crate) struct CombatEmit {
     /// (target_id, damage, attacker_id, warhead_id)
     pub(crate) damage_events: Vec<(u64, u16, u64, InternedId)>,
+    /// Radiation-emitting detonations (weapon RadLevel > 0), folded into
+    /// `RadiationState` before the damage-application phase.
+    pub(crate) rad_detonations: Vec<crate::sim::radiation::RadDetonation>,
     pub(crate) remove_attack: Vec<u64>,
     /// (attacker_id, new_target_id)
     pub(crate) retarget_events: Vec<(u64, u64)>,
@@ -1235,6 +1244,7 @@ pub fn tick_combat_with_fog(
     tick_ms: u32,
     binary_frame: u32,
     live_order: &[u64],
+    radiation: Option<&mut crate::sim::radiation::RadiationState>,
 ) -> CombatTickResult {
     if tick_ms == 0 {
         return CombatTickResult {
@@ -1264,6 +1274,66 @@ pub fn tick_combat_with_fog(
     );
 
     let keys: Vec<u64> = entities.keys_sorted();
+
+    // Deployed self-irradiator re-fire (Desolator): a deployed DeployFire unit
+    // whose deploy weapon emits radiation — and whose own type is radiation-
+    // immune — maintains the radiation field under its feet. When the site at
+    // its cell is missing or its effective level has decayed below a third of
+    // the weapon's RadLevel, the unit force-fires its deploy weapon at its own
+    // cell (the detonation re-arms the site, which closes the gate again).
+    // The synthesized self-target is cleared once the gate closes; targets the
+    // player set explicitly are never touched.
+    if let Some(rad) = radiation.as_deref() {
+        let mut set_self_target: Vec<u64> = Vec::new();
+        let mut clear_self_target: Vec<u64> = Vec::new();
+        for &id in &keys {
+            let Some(entity) = entities.get(id) else {
+                continue;
+            };
+            if !entity.is_fully_deployed() || entity.dying || !entity.is_alive() {
+                continue;
+            }
+            let Some(obj) = rules.object(interner.resolve(entity.type_ref)) else {
+                continue;
+            };
+            if !obj.deploy_fire || !obj.immune_to_radiation {
+                continue;
+            }
+            let Some(weapon) = combat_weapon::deploy_fire_weapon_id(obj, entity.veterancy)
+                .and_then(|weapon_id| rules.weapon(weapon_id))
+            else {
+                continue;
+            };
+            if weapon.rad_level <= 0 {
+                continue;
+            }
+            let own_cell = (entity.position.rx, entity.position.ry);
+            let gate_open = rad.site_at(own_cell).is_none_or(|site| {
+                crate::sim::radiation::RadiationState::current_site_level(site)
+                    < weapon.rad_level / 3
+            });
+            let has_self_target = matches!(
+                entity.attack_target.as_ref().map(|attack| attack.target),
+                Some(TargetKind::Cell(rx, ry)) if (rx, ry) == own_cell
+            );
+            if gate_open && entity.attack_target.is_none() {
+                set_self_target.push(id);
+            } else if !gate_open && has_self_target {
+                clear_self_target.push(id);
+            }
+        }
+        for id in set_self_target {
+            if let Some(entity) = entities.get_mut(id) {
+                let (rx, ry) = (entity.position.rx, entity.position.ry);
+                entity.attack_target = Some(AttackTarget::for_cell(rx, ry));
+            }
+        }
+        for id in clear_self_target {
+            if let Some(entity) = entities.get_mut(id) {
+                entity.attack_target = None;
+            }
+        }
+    }
 
     // Garrison auto-acquire: idle garrisoned buildings scan for hostile targets.
     // Runs before Phase 1 so newly-targeted buildings are included in snapshots.
@@ -1623,7 +1693,8 @@ pub fn tick_combat_with_fog(
     }
     // Destructure back into the named locals so Phases 3-6 are untouched.
     let CombatEmit {
-        damage_events,
+        mut damage_events,
+        rad_detonations,
         mut remove_attack,
         retarget_events,
         fire_events,
@@ -1699,6 +1770,82 @@ pub fn tick_combat_with_fog(
         }
     }
 
+    // Phase 3.5: fold radiation-emitting detonations into the field, then
+    // collect the periodic radiation damage. The original applies this damage
+    // inside each foot unit's own AI step, gated on the global frame counter;
+    // the phased engine collects it here so deaths route through the same
+    // death pipeline as weapon damage (death anim selection via the
+    // RadSiteWarhead, owned-count bookkeeping, survivor ejection).
+    if let Some(rad) = radiation {
+        for &det in &rad_detonations {
+            rad.apply_detonation(det, binary_frame, &rules.radiation, terrain);
+        }
+        if !rad.is_empty()
+            && binary_frame.is_multiple_of(rules.radiation.application_delay as u32)
+        {
+            if let Some(rad_warhead) = rules.warhead(&rules.radiation.site_warhead) {
+                let wh_iid = interner.intern(&rad_warhead.id);
+                // Victims are walked in live-LOGIC order (the same order the
+                // per-object AI would have applied this damage), stable-id
+                // fallback for entities absent from the live order.
+                let mut victim_ids: Vec<u64> = keys.clone();
+                victim_ids.sort_by_key(|&id| {
+                    (live_index.get(&id).copied().unwrap_or(usize::MAX), id)
+                });
+                for &id in &victim_ids {
+                    let Some(entity) = entities.get(id) else {
+                        continue;
+                    };
+                    // Buildings never take radiation damage; corpses, limbo
+                    // (transported) and airborne units are exempt.
+                    if entity.category == EntityCategory::Structure
+                        || entity.dying
+                        || !entity.is_alive()
+                        || entity.immune_to_radiation
+                        || entity.passenger_role.is_inside_transport()
+                    {
+                        continue;
+                    }
+                    let airborne = entity
+                        .locomotor
+                        .as_ref()
+                        .is_some_and(|loco| loco.altitude > SIM_ZERO);
+                    if airborne {
+                        continue;
+                    }
+                    let level = rad.damaging_level(
+                        (entity.position.rx, entity.position.ry),
+                        rules.radiation.level_max,
+                    );
+                    if level <= 0 {
+                        continue;
+                    }
+                    // trunc(level × RadLevelFactor), then the live-path Verses
+                    // scaling against the victim's armor.
+                    let base = (level as f64 * rules.radiation.level_factor) as i32;
+                    if base <= 0 {
+                        continue;
+                    }
+                    let armor = rules
+                        .object(interner.resolve(entity.type_ref))
+                        .map(|o| o.armor.as_str())
+                        .unwrap_or("none");
+                    let verses_pct =
+                        rad_warhead.verses.get(armor_index(armor)).copied().unwrap_or(100);
+                    let dmg = base * verses_pct as i32 / 100;
+                    if dmg > 0 {
+                        damage_events.push((
+                            id,
+                            dmg.min(u16::MAX as i32) as u16,
+                            RAD_NO_ATTACKER,
+                            wh_iid,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
     // Phase 4: apply damage to targets and track last attacker for retaliation.
     let mut dead_entities: Vec<u64> = Vec::new();
     for (target_id, damage, attacker_id, _wh_id) in &damage_events {
@@ -1709,7 +1856,9 @@ pub fn tick_combat_with_fog(
             ) {
                 // Damage fully nullified by IronCurtain/ForceShield.
                 // Flash-effect spawn deferred (see design doc Open Questions).
-                target.last_attacker_id = Some(*attacker_id);
+                if *attacker_id != RAD_NO_ATTACKER {
+                    target.last_attacker_id = Some(*attacker_id);
+                }
                 continue;
             }
             target.health.current = target.health.current.saturating_sub(*damage);
@@ -1727,7 +1876,11 @@ pub fn tick_combat_with_fog(
             if target.health.current == 0 {
                 dead_entities.push(*target_id);
             }
-            target.last_attacker_id = Some(*attacker_id);
+            // Sourceless damage (radiation field) never arms retaliation and
+            // must not overwrite a real attacker recorded this tick.
+            if *attacker_id != RAD_NO_ATTACKER {
+                target.last_attacker_id = Some(*attacker_id);
+            }
         }
     }
 
@@ -2335,6 +2488,17 @@ pub(crate) fn resolve_attacker_fire(
         base_damage,
         warhead.cell_spread,
     );
+
+    // Radiation-emitting detonation: one site request per shot at the impact
+    // cell. Spread is the warhead's CellSpread truncated to whole cells.
+    if weapon.rad_level > 0 {
+        out.rad_detonations.push(crate::sim::radiation::RadDetonation {
+            rx: target_rx,
+            ry: target_ry,
+            rad_level: weapon.rad_level,
+            spread: warhead.cell_spread.to_num::<i32>(),
+        });
+    }
 
     // Cell-target force-fire on terrain has no entity z; the dispatcher
     // re-derives ground_z from terrain.cell(rx,ry).level, so 0 is safe.

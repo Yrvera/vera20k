@@ -497,6 +497,11 @@ pub struct ObjectType {
     /// Whether this unit is immune to ALL crush types including OmniCrusher.
     /// Default: false. Parsed from `OmniCrushResistant=` in rules.ini.
     pub omni_crush_resistant: bool,
+    /// Whether this unit ignores per-cell radiation damage (Desolator, Chrono
+    /// Ivan, etc.). Default: false. Parsed from `ImmuneToRadiation=` in
+    /// rules.ini. Also selects the deployed self-irradiate mission behaviour
+    /// for deploy-fire units whose deploy weapon emits radiation.
+    pub immune_to_radiation: bool,
 
     /// What type of objects this building can produce (Factory= in rules.ini).
     /// None for non-factory buildings/units. Data-driven replacement for
@@ -1049,6 +1054,7 @@ impl ObjectType {
             no_force_shield: section.get_bool("NoForceShield").unwrap_or(false),
             omni_crusher: section.get_bool("OmniCrusher").unwrap_or(false),
             omni_crush_resistant: section.get_bool("OmniCrushResistant").unwrap_or(false),
+            immune_to_radiation: section.get_bool("ImmuneToRadiation").unwrap_or(false),
 
             deploys_into: section.get("DeploysInto").map(|s| s.to_string()),
             undeploys_into: section.get("UndeploysInto").map(|s| s.to_string()),

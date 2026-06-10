@@ -33,6 +33,10 @@ use std::collections::BTreeMap;
 const HARNESS_SEED: u64 = 0xC0FFEE_1234;
 const HARNESS_TICKS: u64 = 600;
 const HARNESS_TICK_MS: u32 = 67;
+/// AT-8: ticks at which the per-stream RNG cursors are pinned record-vs-replay
+/// (after the tick at this index executes). Catches cross-stream misrouting
+/// that compensating errors could hide from the total state hash.
+const STREAM_CHECKPOINT_TICKS: &[u64] = &[149, 299, 449, 599];
 
 /// Committed final-hash baseline. Captured from the first green run. Re-baselines
 /// at most once per behavior-bearing change, with a one-line documented reason.
@@ -162,6 +166,11 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
     // coverage. This guards that miner-component creation + the acquisition
     // path stay wired and contribute to the hash.)
     let mut miner_engaged = false;
+    // AT-8 stream pins: per-stream cursor fingerprints captured at checkpoint
+    // ticks during record, re-asserted in replay. Total-hash equality can mask
+    // a draw routed to the wrong stream when a compensating error exists;
+    // per-stream checkpoints catch misrouting directly.
+    let mut recorded_streams: Vec<(u64, u64, u64, u64)> = Vec::new();
     for tick in 0..HARNESS_TICKS {
         let due = due_commands(&rec, &script, tick);
         let result = rec.advance_tick(&due, Some(&rules), &heights, Some(&grid), None, HARNESS_TICK_MS);
@@ -175,6 +184,14 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
             miner_engaged = true;
         }
         log.record_tick(tick, due, result.state_hash);
+        if STREAM_CHECKPOINT_TICKS.contains(&tick) {
+            recorded_streams.push((
+                tick,
+                rec.scenario_rng.state(),
+                rec.main_rng.state(),
+                rec.mapgen_rng.state(),
+            ));
+        }
     }
     assert!(
         miner_engaged,
@@ -182,11 +199,46 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
          else miner-component creation or the SearchOre path regressed"
     );
 
-    // ---- Replay pass: fresh sim, real ReplayRunner::run, assert tick-by-tick. ----
+    // ---- Replay pass: fresh sim, real ReplayRunner::run, assert tick-by-tick.
+    // The replay is fed through the SAME ReplayRunner::run path the live game
+    // uses, chunked at the stream checkpoints so the per-stream cursors can be
+    // pinned between chunks (chunking preserves the exact advance_tick call
+    // sequence; ReplayRunner::run is a plain fold over entries). ----
     let mut rep = Simulation::with_seed(HARNESS_SEED);
     seed_scenario(&mut rep, &rules, &heights);
-    let replayed =
-        ReplayRunner::run(&mut rep, &log, Some(&rules), &heights, Some(&grid), HARNESS_TICK_MS);
+    let mut replayed: Vec<u64> = Vec::with_capacity(log.ticks.len());
+    let mut replayed_streams: Vec<(u64, u64, u64, u64)> = Vec::new();
+    let mut chunk_start = 0usize;
+    for &checkpoint in STREAM_CHECKPOINT_TICKS {
+        let chunk_end = (checkpoint as usize + 1).min(log.ticks.len());
+        let chunk = ReplayLog {
+            header: log.header.clone(),
+            ticks: log.ticks[chunk_start..chunk_end].to_vec(),
+        };
+        replayed.extend(ReplayRunner::run(
+            &mut rep, &chunk, Some(&rules), &heights, Some(&grid), HARNESS_TICK_MS,
+        ));
+        replayed_streams.push((
+            checkpoint,
+            rep.scenario_rng.state(),
+            rep.main_rng.state(),
+            rep.mapgen_rng.state(),
+        ));
+        chunk_start = chunk_end;
+    }
+    if chunk_start < log.ticks.len() {
+        let tail = ReplayLog {
+            header: log.header.clone(),
+            ticks: log.ticks[chunk_start..].to_vec(),
+        };
+        replayed.extend(ReplayRunner::run(
+            &mut rep, &tail, Some(&rules), &heights, Some(&grid), HARNESS_TICK_MS,
+        ));
+    }
+    assert_eq!(
+        recorded_streams, replayed_streams,
+        "per-stream cursor pin: a draw moved streams between record and replay"
+    );
 
     assert_eq!(
         replayed.len(),
