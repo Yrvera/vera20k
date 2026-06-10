@@ -12,6 +12,16 @@
 //! the verified predicate *structure*; the exact excluded-mission set and the
 //! busy byte-flag semantics carry V1 STILL-UNCHECKED residue and are traced
 //! before any *live* commence path relies on the gate.
+//!
+//! S3 TRAP (must resolve before the first live caller of the sentinel-reading
+//! verbs): `get_current_mission` / `is_busy` / `override_mission` treat
+//! `current == MissionType::None` as the idle sentinel, but since S3 an idle
+//! machine-less **Unit** projects `Guard` — in gamemd Guard IS the idle
+//! mission, and the native busy predicate uses byte flags, not a mission
+//! sentinel. These verbs currently have zero live callers (only
+//! `assign_mission` is wired); re-derive the idle/busy predicate from the
+//! traced byte-flag semantics before wiring commence/override live, or idle
+//! Units will read as busy and `override_mission` will suspend `Guard`.
 
 use crate::map::entities::EntityCategory;
 

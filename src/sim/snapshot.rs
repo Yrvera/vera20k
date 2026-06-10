@@ -47,7 +47,13 @@ use crate::sim::world::Simulation;
 // start waypoints, slot->house) are serialized; bincode layout changes. The move itself
 // is hash-neutral (golden baseline unshifted); the identity fields fold into the hash in
 // the same slice (documented on the golden-harness constant).
-const SNAPSHOT_VERSION: u32 = 22;
+// Bumped 22 -> 23: S3 — Unit barrel destinations are read per-object pre-death (kill-tick
+// aim hold changes hashed FacingClass values on kill ticks) and idle machine-less Units
+// hash mission Guard(5) instead of the legacy None placeholder. Layout unchanged, but a
+// pre-S3 save replayed on S3 logic diverges on the first idle-unit tick, so cross-version
+// restores must be refused. (21 and 22 were taken by the parallel radiation and
+// ScenarioSession slices; the concurrent bumps merged as 22 -> 23.)
+const SNAPSHOT_VERSION: u32 = 23;
 
 /// Binary snapshot envelope — wraps the full `Simulation` state plus
 /// compatibility hashes for the map and rules that were active at save time.
@@ -393,13 +399,13 @@ mod tests {
         assert!(result.is_err(), "mismatched version should fail");
     }
 
-    /// SC-2 moves seed/frame-clock/GameOptions under `Simulation.session` and
-    /// serializes the session identity fields (bincode layout change), so the
-    /// version bumped 21 -> 22. This pins it so a later accidental bump is
-    /// caught.
+    /// Concurrent-slice ladder: radiation took 20 -> 21, ScenarioSession (SC-2)
+    /// took 21 -> 22, and S3 (per-object pre-death facing read + idle-Guard
+    /// authority) took 22 -> 23 in the merge. This pins it so a later
+    /// accidental bump is caught.
     #[test]
-    fn snapshot_version_is_22() {
-        assert_eq!(super::SNAPSHOT_VERSION, 22);
+    fn snapshot_version_is_23() {
+        assert_eq!(super::SNAPSHOT_VERSION, 23);
     }
 
     /// `AttackTarget::for_cell` survives serialize → deserialize as the same

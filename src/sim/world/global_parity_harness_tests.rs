@@ -45,11 +45,19 @@ const STREAM_CHECKPOINT_TICKS: &[u64] = &[149, 299, 449, 599];
 /// this scenario's movers are engaged or miners (never pure-Move scoped) on their
 /// divergence ticks, so tail authority still wrote every hashed mission value. The
 /// S2 hash delta is exercised by the arrival-tick tests in techno_ai.rs instead.
+/// S3 facing flip (per-object pre-death barrel read) ALSO left this unshifted —
+/// no Unit kill/retarget tick changes a barrel destination in this scenario.
+/// Re-baselined ONCE for S3 idle→Guard: every idle machine-less Unit now hashes
+/// mission Guard(5) instead of the legacy None placeholder (the gamemd idle
+/// selector for ground vehicles) — a hashed-representation fidelity fix, not a
+/// behavior drift; movement/combat outputs are byte-identical.
 /// Re-baselined for SC-2: session identity (seed, map name, theater, bounds,
 /// MP start table, slot->house) folded into the state hash — every absolute
 /// hash shifts once by composition; the tick-by-tick rec-vs-replay equality
 /// and the per-stream cursor pins prove no behavioral movement.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 1003764050363811318;
+/// Re-measured at the S3 × SC-2 merge (both deltas combined; value from the
+/// merged tree's green run — neither side's pre-merge value can be correct).
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 8267237512675945995;
 
 fn harness_rules() -> RuleSet {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a

@@ -758,6 +758,11 @@ pub struct CombatTickResult {
     /// Smudge spawn requests collected during death-handling. Drained by
     /// `Simulation::advance_tick` between combat and ore-growth.
     pub smudge_spawn_requests: Vec<SmudgeSpawnRequest>,
+    /// (unit_id, desired 16-bit barrel destination) — computed in the Phase-2
+    /// per-object window (pre-death state; own-retarget visible), applied
+    /// post-batch by `unit_post::apply_unit_facing`. Transient — never stored,
+    /// serialized, or hashed.
+    pub unit_facing: Vec<(u64, u16)>,
 }
 
 /// Resolve an attack's impact z (tile-step level units, signed) for the
@@ -1210,6 +1215,10 @@ pub(crate) struct CombatEmit {
     pub(crate) garrison_advance: Vec<u64>,
     pub(crate) pending_infantry_updates: Vec<(u64, Option<PendingInfantryFire>)>,
     pub(crate) animation_switches: Vec<(u64, SequenceKind)>,
+    /// (unit_id, desired 16-bit barrel destination) — computed in the Phase-2
+    /// per-object window (pre-death state; own-retarget visible), applied
+    /// post-batch by `unit_post::apply_unit_facing`.
+    pub(crate) unit_facing: Vec<(u64, u16)>,
 }
 
 /// Advance combat with optional owner visibility gating and sound event sink.
@@ -1253,6 +1262,7 @@ pub fn tick_combat_with_fog(
             destroyed_garrison_buildings: Vec::new(),
             explosion_effects: Vec::new(),
             smudge_spawn_requests: Vec::new(),
+            unit_facing: Vec::new(),
         };
     }
     // Pre-scan: collect entities blocked from firing by locomotor or power state.
@@ -1594,9 +1604,13 @@ pub fn tick_combat_with_fog(
     // reusable per-object fire body); emission order is identical to the prior
     // inline loop, so the downstream scenario_rng smudge cursor is unmoved.
     // Fire is category-agnostic (Units fire through the same body here); Unit
-    // FACING is owned separately by `unit_post::tick_unit_facing` post-combat.
+    // FACING destinations are computed per-object right after each Unit's own
+    // resolution (S3 post-Foot Fire→Facing order) and applied post-batch by
+    // `unit_post::apply_unit_facing`.
     let mut emit = CombatEmit::default();
     for snap in &snapshots {
+        let n_retarget = emit.retarget_events.len();
+        let n_remove = emit.remove_attack.len();
         resolve_attacker_fire(
             snap,
             entities,
@@ -1611,6 +1625,71 @@ pub fn tick_combat_with_fog(
             tick_ms,
             &mut emit,
         );
+        // S3: per-object barrel destination for Unit attackers, read in the
+        // per-object window — deaths/clears (Phases 3-6) are not yet applied,
+        // so a unit whose target dies this tick still aims at it (idle-return
+        // begins next tick); a unit whose own resolution retargeted aims at
+        // the new target now; one whose own resolution cleared returns to body.
+        let Some(e) = entities
+            .get(snap.stable_id)
+            .filter(|e| e.category == EntityCategory::Unit && e.barrel_facing.is_some())
+        else {
+            continue;
+        };
+        let own_retarget = emit.retarget_events[n_retarget..]
+            .iter()
+            .find(|&&(aid, _)| aid == snap.stable_id)
+            .map(|&(_, tid)| tid);
+        let own_removed = emit.remove_attack[n_remove..].contains(&snap.stable_id);
+        let desired: u16 = if let Some(tid) = own_retarget {
+            match entities.get(tid) {
+                Some(t) => crate::sim::movement::turret::facing_toward_lepton(
+                    e.position.rx,
+                    e.position.ry,
+                    e.position.sub_x,
+                    e.position.sub_y,
+                    t.position.rx,
+                    t.position.ry,
+                    t.position.sub_x,
+                    t.position.sub_y,
+                ),
+                None => crate::sim::movement::turret::body_facing_to_turret(e.facing),
+            }
+        } else if own_removed {
+            crate::sim::movement::turret::body_facing_to_turret(e.facing)
+        } else {
+            match crate::sim::movement::turret::desired_turret_facing(e, entities) {
+                Some(d) => d,
+                // Unreachable: barrel_facing presence checked above.
+                None => continue,
+            }
+        };
+        emit.unit_facing.push((snap.stable_id, desired));
+    }
+    // S3 residual: every Unit not in the attacker snapshot set (target-less,
+    // or in-transport holders excluded at the snapshot build). Iterates the
+    // SAME keys_sorted() coverage the legacy tick_unit_facing pass had —
+    // including limbo/dying Units — so the only output delta vs. the legacy
+    // pass is the pre-death read window (placement before Phases 3-6 is
+    // semantic: those phases clear attack_target on finished attackers and
+    // dead targets). Per-entity independent → id order is output-neutral.
+    {
+        let mut computed: Vec<u64> = emit.unit_facing.iter().map(|&(id, _)| id).collect();
+        computed.sort_unstable();
+        for &id in &keys {
+            if computed.binary_search(&id).is_ok() {
+                continue;
+            }
+            let Some(e) = entities.get(id) else { continue };
+            if e.category != EntityCategory::Unit {
+                continue;
+            }
+            let Some(desired) = crate::sim::movement::turret::desired_turret_facing(e, entities)
+            else {
+                continue;
+            };
+            emit.unit_facing.push((id, desired));
+        }
     }
     // Destructure back into the named locals so Phases 3-6 are untouched.
     let CombatEmit {
@@ -1631,6 +1710,7 @@ pub fn tick_combat_with_fog(
         garrison_advance,
         pending_infantry_updates,
         animation_switches,
+        unit_facing,
     } = emit;
 
     // Phase 3: apply retargets and burst/cooldown updates.
@@ -1868,6 +1948,7 @@ pub fn tick_combat_with_fog(
         destroyed_garrison_buildings: death.destroyed_garrison_buildings,
         explosion_effects,
         smudge_spawn_requests,
+        unit_facing,
     }
 }
 

@@ -855,14 +855,14 @@ mod tests {
         let mut sim = Simulation::new();
         sim.substrate.entities.insert(scoped_move_unit(1)); // Move
         let mut idle = scoped_move_unit(2);
-        idle.movement_target = None; // None -> Sleep family
+        idle.movement_target = None; // S3: idle Unit derives Guard -> Guard family
         sim.substrate.entities.insert(idle);
         sim.set_logic_order_for_test(vec![1, 2]);
 
         let trace = sim.unit_dispatch_record_pass();
         sim.debug_assert_unit_dispatch_shadow(&trace); // no panic
         assert_eq!(trace[0].family, DispatchSlot::Move);
-        assert_eq!(trace[1].family, DispatchSlot::Sleep);
+        assert_eq!(trace[1].family, DispatchSlot::Guard);
     }
 
     #[test]
@@ -969,10 +969,9 @@ mod tests {
         sim.substrate.entities.insert(e);
     }
 
-    /// S2: the arrival tick hashes the dispatch-time mission (`Move`) — the
-    /// target clears post-loop, so a tail re-derivation would say `None` (the
-    /// machine-less fall-through; the idle→Guard mapping is S3). The
-    /// transition away happens on the NEXT tick (gamemd-faithful).
+    /// S2: the arrival tick hashes the dispatch-time mission (`Move`); the
+    /// transition away happens on the NEXT tick (gamemd-faithful). S3: the
+    /// post-arrival idle mission is `Guard` — the gamemd Move→Guard sequence.
     #[test]
     fn arrival_tick_mission_is_move_not_sleep() {
         let mut sim = Simulation::new();
@@ -987,8 +986,33 @@ mod tests {
 
         let _ = sim.advance_tick(&[], None, &heights, None, None, 67);
         let e = sim.substrate.entities.get(1).unwrap();
-        // Machine-less derivation falls through to None; S3 owns idle→Guard.
-        assert_eq!(e.mission.current, MissionType::None, "post-arrival tick transitions");
+        // S3 idle→Guard: a machine-less idle Unit derives Guard (gamemd's
+        // post-arrival idle mission), not the legacy None placeholder.
+        assert_eq!(e.mission.current, MissionType::Guard, "post-arrival tick → Guard");
+    }
+
+    /// S3 (G5 pin): the tail projection treats dying Units uniformly — a dying
+    /// machine-less Unit also projects Guard. Corpse-mission freeze (gamemd
+    /// does not re-derive a corpse's mission) is deferred to the
+    /// deferred-delete substrate. Scope of the divergence window (review-
+    /// corrected): voxel-death corpses are freed by flush_pending_delete
+    /// BEFORE the tail projection and hash, so they never hit this path; only
+    /// SHP-art Units with death animations linger, for the duration of the
+    /// death anim (app-driven despawn). Pre-S3 the same unfiltered projection
+    /// rewrote those corpses to None each tick — S3 changes the value, not
+    /// the window. Pinned here so the choice is intentional, not accidental.
+    #[test]
+    fn dying_unit_projection_uniform() {
+        let mut sim = Simulation::new();
+        insert_s2_scoped_move_unit(&mut sim, 1, 5, 5);
+        sim.substrate.entities.get_mut(1).unwrap().movement_target = None; // idle
+        sim.substrate.entities.get_mut(1).unwrap().dying = true;
+        sim.refresh_mission_shadow();
+        assert_eq!(
+            sim.substrate.entities.get(1).unwrap().mission.current,
+            MissionType::Guard,
+            "dying machine-less Unit projects Guard (uniform tail projection)"
+        );
     }
 
     /// S2: exactly one tick_counter increment per unit-tick — in-loop for a

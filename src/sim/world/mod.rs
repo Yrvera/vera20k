@@ -2309,11 +2309,15 @@ impl Simulation {
                 self.session.binary_frame,
                 &self.interner,
             );
-            // Unit barrel facing is authoritative in unit_post; tick_turret_rotation
-            // above skips Units. Same keys_sorted set+order as the legacy sweep,
-            // restricted to Units, so the state hash is unmoved.
-            crate::sim::world::unit_post::tick_unit_facing(
+            // S3: Unit barrel destinations were computed per-object in the
+            // combat Phase-2 window (pre-death state — a unit whose target died
+            // this tick keeps aiming at it this tick; idle-return starts next
+            // tick). This is the unchanged write point; tick_turret_rotation
+            // above still skips Units (it owns Aircraft/Building barrels until
+            // their slices land).
+            crate::sim::world::unit_post::apply_unit_facing(
                 &mut self.substrate.entities,
+                &combat_result.unit_facing,
                 rules,
                 &self.interner,
                 self.session.binary_frame,
