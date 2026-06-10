@@ -1405,14 +1405,12 @@ impl Simulation {
         // Presence is #[serde(skip)] → all-default (Limbo) straight after
         // deserialize. Reconcile it from the just-restored authoritative gates so
         // a save/load round-trip restores identical presence (Slice 2 acceptance).
+        // `mission` is NOT re-derived: it is hashed authoritative state (Slice 8)
+        // that round-trips via serde, and as of S2 the dispatch-time value can
+        // legitimately differ from a fresh derivation (arrival tick) — a re-derive
+        // here would desync the restored hash.
         for entity in self.substrate.entities.values_mut() {
             entity.presence = entity.derived_presence();
-            // `mission` round-trips via serde now, but current/substate are
-            // re-derived from the just-restored authoritative machines so a
-            // save/load round-trip restores identical derived state.
-            let (current, substate) = entity.derived_mission();
-            entity.mission.current = current;
-            entity.mission.substate = substate;
         }
     }
 
