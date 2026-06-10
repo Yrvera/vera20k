@@ -315,9 +315,9 @@ fn run_combat_direct(
         None,
         None,
         None,
-        sim.tick,
+        sim.session.tick,
         67,
-        sim.binary_frame,
+        sim.session.binary_frame,
         &live_order,
         None, // radiation state — not under test here
     )
