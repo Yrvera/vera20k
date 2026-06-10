@@ -15,6 +15,9 @@ pub mod edge_cell;
 mod logic_vector;
 mod substrate;
 mod techno_ai;
+// S2: the in-loop dispatch step (sim/movement) gates on the same scope
+// predicate the dispatch host/shadow uses.
+pub(crate) use techno_ai::is_s1_scoped_move_unit;
 pub(crate) mod unit_post;
 mod world_commands;
 mod world_hash;

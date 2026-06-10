@@ -840,7 +840,6 @@ pub fn tick_movement_with_grids(
     // S2: ids whose dispatch step ran in-loop this tick (tail projection skips them).
     dispatched: &mut BTreeSet<u64>,
 ) -> MovementTickStats {
-    let _ = &*dispatched; // consumed by the S2 dispatch step (T3)
     let mut stats = MovementTickStats::default();
     if tick_ms == 0 {
         return stats;
@@ -1038,6 +1037,18 @@ pub fn tick_movement_with_grids(
             let Some(entity) = entities.get_mut(entity_id) else {
                 continue;
             };
+            // S2 per-object dispatch (authoritative for scoped move units): the
+            // counter ticks and the dispatch-time mission commits BEFORE this
+            // unit's locomotor Process — including the arrival tick, where the
+            // committed mission is still Move (the target clears post-loop).
+            // The tail projection skips these ids (no double-count, no clobber).
+            if crate::sim::world::is_s1_scoped_move_unit(entity) {
+                entity.mission.tick_counter = entity.mission.tick_counter.wrapping_add(1);
+                let (current, substate) = entity.derived_mission();
+                entity.mission.current = current;
+                entity.mission.substate = substate;
+                dispatched.insert(entity_id);
+            }
             active_layer = entity.movement_layer_or_ground();
             let Some(ref mut target) = entity.movement_target else {
                 continue;
