@@ -38,7 +38,11 @@ use crate::sim::world::Simulation;
 // scoped move units (arrival tick hashes Move) and load trusts the serialized MissionCom
 // (post-load re-derive deleted). Layout is unchanged, but a pre-S2 save replayed on S2
 // logic diverges on arrival ticks, so cross-version restores must be refused.
-const SNAPSHOT_VERSION: u32 = 20;
+// Bumped 20 -> 21: per-cell radiation field (substrate Slice 7). `Simulation` gains the
+// serialized `radiation` state (cell levels + site registry, both state-hashed) and
+// `GameEntity` gains `immune_to_radiation`; RadLevel>0 detonations now deal periodic
+// foot-unit damage, so a pre-21 save replayed on 21 logic diverges.
+const SNAPSHOT_VERSION: u32 = 21;
 
 /// Binary snapshot envelope — wraps the full `Simulation` state plus
 /// compatibility hashes for the map and rules that were active at save time.
@@ -384,12 +388,13 @@ mod tests {
         assert!(result.is_err(), "mismatched version should fail");
     }
 
-    /// S2 moves `mission.current`/`substate` authority to dispatch time for scoped
-    /// move units and makes load trust the serialized MissionCom, so the version
-    /// bumped 19 -> 20. This pins it so a later accidental bump is caught.
+    /// Substrate Slice 7 adds the serialized per-cell radiation field (plus
+    /// `GameEntity::immune_to_radiation`) and its periodic damage, so the
+    /// version bumped 20 -> 21. This pins it so a later accidental bump is
+    /// caught.
     #[test]
-    fn snapshot_version_is_20() {
-        assert_eq!(super::SNAPSHOT_VERSION, 20);
+    fn snapshot_version_is_21() {
+        assert_eq!(super::SNAPSHOT_VERSION, 21);
     }
 
     /// `AttackTarget::for_cell` survives serialize → deserialize as the same

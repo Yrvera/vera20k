@@ -847,6 +847,103 @@ impl BridgeRules {
     }
 }
 
+/// Global radiation-field constants parsed from the `[Radiation]` section.
+/// Consumed by the per-cell radiation service (`sim::radiation`) and the
+/// per-foot-unit damage step. Render-only keys (light/tint/color) are parsed
+/// here so the render layer can pick them up later.
+#[derive(Debug, Clone)]
+pub struct RadiationRules {
+    /// Frames a site lasts per point of radiation level (`RadDurationMultiple`).
+    /// Site duration = level × this.
+    pub duration_multiple: i32,
+    /// Frames between radiation damage applications to units (`RadApplicationDelay`).
+    pub application_delay: i32,
+    /// Cap on the level a cell damages as, not on storage (`RadLevelMax`).
+    pub level_max: i32,
+    /// Frames between per-cell level decrements (`RadLevelDelay`).
+    pub level_delay: i32,
+    /// Frames between light intensity decrements (`RadLightDelay`). Render-only.
+    pub light_delay: i32,
+    /// Damage per point of (clamped) cell level (`RadLevelFactor`).
+    /// Carried as f64 — the damage step truncates `level × factor` toward
+    /// zero, and the original computes that product in doubles (the same
+    /// documented float exception as `combat::damage`). Parsed straight from
+    /// the INI string so the value is bit-identical to a double `atof`.
+    pub level_factor: f64,
+    /// Light intensity per level point (`RadLightFactor`). Render-only.
+    pub light_factor: SimFixed,
+    /// Tint scale for the radiation glow (`RadTintFactor`). Render-only.
+    pub tint_factor: SimFixed,
+    /// Glow color (`RadColor=R,G,B`). Render-only.
+    pub color: (u8, u8, u8),
+    /// Warhead used for radiation damage (`RadSiteWarhead`), uppercased.
+    pub site_warhead: String,
+}
+
+impl Default for RadiationRules {
+    fn default() -> Self {
+        Self {
+            duration_multiple: 1,
+            application_delay: 16,
+            level_max: 500,
+            level_delay: 90,
+            light_delay: 90,
+            level_factor: 0.2,
+            light_factor: sim_from_f32(0.1),
+            tint_factor: sim_from_f32(1.0),
+            color: (0, 255, 0),
+            site_warhead: "RadSite".to_string(),
+        }
+    }
+}
+
+impl RadiationRules {
+    fn from_ini(ini: &IniFile) -> Self {
+        let d = Self::default();
+        let Some(section) = ini.section("Radiation") else {
+            return d;
+        };
+        let get_i32 =
+            |key: &str, default: i32| -> i32 { section.get_i32(key).unwrap_or(default) };
+        Self {
+            duration_multiple: get_i32("RadDurationMultiple", d.duration_multiple),
+            // Delays are used as divisors/modulo periods — clamp to >= 1 so a
+            // degenerate INI value cannot divide by zero.
+            application_delay: get_i32("RadApplicationDelay", d.application_delay).max(1),
+            level_max: get_i32("RadLevelMax", d.level_max),
+            level_delay: get_i32("RadLevelDelay", d.level_delay).max(1),
+            light_delay: get_i32("RadLightDelay", d.light_delay).max(1),
+            level_factor: section
+                .get("RadLevelFactor")
+                .and_then(|s| s.trim().parse::<f64>().ok())
+                .unwrap_or(d.level_factor),
+            light_factor: section
+                .get_f32("RadLightFactor")
+                .map(sim_from_f32)
+                .unwrap_or(d.light_factor),
+            tint_factor: section
+                .get_f32("RadTintFactor")
+                .map(sim_from_f32)
+                .unwrap_or(d.tint_factor),
+            color: section
+                .get("RadColor")
+                .and_then(|s| {
+                    let mut it = s.split(',').map(|p| p.trim().parse::<u8>());
+                    match (it.next(), it.next(), it.next()) {
+                        (Some(Ok(r)), Some(Ok(g)), Some(Ok(b))) => Some((r, g, b)),
+                        _ => None,
+                    }
+                })
+                .unwrap_or(d.color),
+            site_warhead: section
+                .get("RadSiteWarhead")
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or(d.site_warhead),
+        }
+    }
+}
+
 impl GeneralRules {
     fn from_ini(ini: &IniFile) -> Self {
         let Some(general) = ini.section("General") else {
@@ -1394,6 +1491,8 @@ pub struct RuleSet {
     pub bridge_rules: BridgeRules,
     /// Garrison/bunker/open-topped combat multipliers from [CombatDamage].
     pub garrison_rules: GarrisonRules,
+    /// Per-cell radiation-field constants from [Radiation].
+    pub radiation: RadiationRules,
     /// Radar event visual parameters (ping rectangles on minimap).
     pub radar_event_config: RadarEventConfig,
     /// All superweapon types indexed by ID (e.g., "LightningStormSpecial" → SuperWeaponType).
@@ -1453,6 +1552,7 @@ impl RuleSet {
         let tiberium_types = TiberiumTypeRegistry::from_ini(ini);
         let bridge_rules: BridgeRules = BridgeRules::from_ini(ini);
         let garrison_rules: GarrisonRules = GarrisonRules::from_ini(ini);
+        let radiation: RadiationRules = RadiationRules::from_ini(ini);
         let radar_event_config: RadarEventConfig = RadarEventConfig::from_ini(ini);
         let countries = parse_country_rules(ini);
         let color_schemes = crate::rules::color_scheme::parse_color_schemes(ini);
@@ -1533,6 +1633,10 @@ impl RuleSet {
         }
 
         // Step 4: Parse warhead sections.
+        // The radiation-field warhead is referenced by [Radiation], not by any
+        // weapon — pull it into the referenced set explicitly so the periodic
+        // radiation damage can resolve it.
+        warhead_ids.insert(radiation.site_warhead.clone());
         let mut warheads: HashMap<String, WarheadType> = HashMap::new();
         for warhead_id in &warhead_ids {
             if let Some(section) = ini.section(warhead_id) {
@@ -1725,6 +1829,7 @@ impl RuleSet {
             terrain_object_types,
             bridge_rules,
             garrison_rules,
+            radiation,
             radar_event_config,
             super_weapons,
             combat_damage,

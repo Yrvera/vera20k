@@ -84,6 +84,9 @@ pub mod overlay_grid;
 // --- Mutable per-cell smudge state (craters, scorches, pre-placed map decals) ---
 pub mod smudge_grid;
 
+// --- Per-cell radiation field (sites, spread/decay; damage applied by combat) ---
+pub mod radiation;
+
 // --- Passengers, transport, slaves ---
 pub mod passenger;
 pub mod slave_miner;

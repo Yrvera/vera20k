@@ -395,6 +395,9 @@ pub struct GameEntity {
     pub drive_accelerates: bool,
     /// Whether this entity is immune to ALL crush types (OmniCrushResistant= in rules.ini).
     pub omni_crush_resistant: bool,
+    /// Whether this entity ignores per-cell radiation damage (ImmuneToRadiation= in rules.ini).
+    #[serde(default)]
+    pub immune_to_radiation: bool,
     /// Render-only depth bias used when this entity is under or near a bridge.
     pub zfudge_bridge: i32,
     /// Prevents the unit from taking under-bridge water routes.
@@ -658,6 +661,7 @@ impl GameEntity {
             regular_crusher: false,
             drive_accelerates: true,
             omni_crush_resistant: false,
+            immune_to_radiation: false,
             zfudge_bridge: 7,
             too_big_to_fit_under_bridge: false,
             dying: false,

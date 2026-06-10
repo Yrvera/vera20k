@@ -257,6 +257,20 @@ pub(crate) fn select_deploy_fire_weapon<'a>(
     try_weapon(rules, weapon_id, target_category, target_armor, weapon_slot)
 }
 
+/// Weapon ID the unit will fire while deployed (`DeployFireWeapon=` slot,
+/// default Secondary), without target-compatibility checks. Used by the
+/// deployed self-irradiator gate, which needs the weapon's RadLevel before
+/// any target exists.
+pub(crate) fn deploy_fire_weapon_id(obj: &ObjectType, veterancy: u16) -> Option<&str> {
+    weapon_for_slot_index(
+        obj,
+        veterancy,
+        obj.deploy_fire_weapon
+            .unwrap_or(DEFAULT_DEPLOY_FIRE_WEAPON_INDEX),
+    )
+    .map(|(weapon_id, _slot)| weapon_id)
+}
+
 fn weapon_for_slot_index(
     obj: &ObjectType,
     veterancy: u16,

@@ -390,6 +390,11 @@ pub struct Simulation {
     /// Per-cell smudge state (craters, scorches). Seeded from map [Smudge]
     /// entries at init, mutated by combat death-handling at runtime.
     pub smudge_grid: Option<crate::sim::smudge_grid::SmudgeGrid>,
+    /// Per-cell radiation field + site registry. Detonations of RadLevel>0
+    /// weapons feed it during the combat phase; sites decay in their own
+    /// post-combat step; foot units take periodic damage from their cell.
+    #[serde(default)]
+    pub radiation: crate::sim::radiation::RadiationState,
     /// SHP interned IDs for bridge destruction explosions (from rules.ini BridgeExplosions=).
     #[serde(skip)]
     pub bridge_explosions: Vec<InternedId>,
@@ -547,6 +552,7 @@ impl Simulation {
             bridge_state: None,
             overlay_grid: None,
             smudge_grid: None,
+            radiation: crate::sim::radiation::RadiationState::default(),
             bridge_explosions: Vec::new(),
             metallic_debris: Vec::new(),
             bridge_anim_sounds: BTreeMap::new(),
@@ -2282,7 +2288,13 @@ impl Simulation {
                 tick_ms,
                 self.binary_frame,
                 &logic_order,
+                Some(&mut self.radiation),
             );
+            // Radiation site evolution (lifetime countdown, periodic per-cell
+            // decay, self-deletion) runs after the per-object combat work —
+            // the native driver updates radiation sites after the object loop.
+            self.radiation
+                .tick_decay(self.binary_frame, &rules.radiation, self.resolved_terrain.as_ref());
             turret::tick_turret_rotation(
                 &mut self.substrate.entities,
                 rules,
