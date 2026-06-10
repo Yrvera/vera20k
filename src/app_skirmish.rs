@@ -196,6 +196,15 @@ pub(crate) fn apply_skirmish_launch_session(
 
     let starts = waypoints::multiplayer_start_waypoints(&map_data.waypoints);
     let assignments = assign_launch_starts(&slots, &starts, resolved_terrain);
+    // Session start-slot -> house table: filled after the random-assignment
+    // draws, before tick 0 — lockstep state (hashed + serialized).
+    sim.session.start_slot_houses.clear();
+    for (slot_idx, waypoint) in &assignments {
+        if let Some(slot) = slots.get(*slot_idx) {
+            let owner = sim.interner.intern(&slot.owner_name);
+            sim.session.start_slot_houses.insert(waypoint.index, owner);
+        }
+    }
     let mut spawned_mcvs = 0;
     let mut local_owner = slots.first().map(|slot| slot.owner_name.clone());
 

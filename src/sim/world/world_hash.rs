@@ -97,8 +97,33 @@ impl Simulation {
         self.hash_super_weapons(&mut hasher);
         self.hash_entities(&mut hasher);
         self.hash_particle_systems(&mut hasher);
+        self.hash_session_identity(&mut hasher);
 
         hasher.finish()
+    }
+
+    /// Session identity/bounds/waypoints — appended AFTER the legacy folds so
+    /// the pre-session hash prefix order is preserved (SC-2). The clock and
+    /// game options keep their original fold positions above; this fold adds
+    /// only the fields new to the session aggregate. Order is part of the
+    /// hash contract and must never change.
+    fn hash_session_identity(&self, hasher: &mut impl Hasher) {
+        let s = &self.session;
+        s.seed.hash(hasher);
+        s.map_name.hash(hasher);
+        s.theater.hash(hasher);
+        (s.map_width, s.map_height).hash(hasher);
+        (s.local_left, s.local_top, s.local_width, s.local_height).hash(hasher);
+        s.mp_start_waypoints.len().hash(hasher);
+        for (idx, cell) in &s.mp_start_waypoints {
+            idx.hash(hasher);
+            cell.hash(hasher);
+        }
+        s.start_slot_houses.len().hash(hasher);
+        for (idx, owner) in &s.start_slot_houses {
+            idx.hash(hasher);
+            owner.hash(hasher);
+        }
     }
 
     /// Hash all particle systems in stable-id order (BTreeMap iteration).

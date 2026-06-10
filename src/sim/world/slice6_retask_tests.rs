@@ -76,8 +76,11 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 /// composition change, not a behavior drift). Re-baselined for S3 idle→Guard:
 /// idle machine-less Units hash mission Guard(5) instead of the legacy None
 /// placeholder (hashed-representation fidelity fix; the retask behavior under
-/// test is unchanged).
-const SLICE6_BASELINE_HASH: u64 = 4222624061222437264;
+/// test is unchanged). Re-baselined for SC-2 (session identity — seed, map
+/// name, theater, bounds, MP start table — folded into the hash; composition
+/// change, not a behavior drift). Re-measured at the S3 × SC-2 merge (both
+/// deltas combined; value from the merged tree's green run).
+const SLICE6_BASELINE_HASH: u64 = 12517649216649727257;
 
 #[test]
 fn replay_hash_stable_through_slice6() {

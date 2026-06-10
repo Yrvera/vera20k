@@ -536,7 +536,7 @@ impl Simulation {
     /// mapgen stream in its unseeded zero-state.
     fn construct(session: ScenarioSession) -> Self {
         let seed = session.seed;
-        let out = Self {
+        let mut out = Self {
             interner: crate::sim::intern::StringInterner::new(),
             type_handles: crate::sim::type_handle_table::TypeHandleTable::default(),
             production: ProductionState::default(),
@@ -589,6 +589,12 @@ impl Simulation {
             particle_systems: ParticleSystemStore::new(),
         };
         debug_assert_eq!(out.scenario_rng.state(), out.main_rng.state());
+        // Authoritative map bounds are session state, known at construction —
+        // vision must never run against a zero-dim first-tick window. Fixture
+        // sims built without a descriptor (zero bounds) keep the lazy
+        // derivation as a fallback inside the vision recompute.
+        out.fog.width = out.session.map_width;
+        out.fog.height = out.session.map_height;
         out
     }
 

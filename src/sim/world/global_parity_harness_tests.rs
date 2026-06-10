@@ -51,7 +51,13 @@ const STREAM_CHECKPOINT_TICKS: &[u64] = &[149, 299, 449, 599];
 /// mission Guard(5) instead of the legacy None placeholder (the gamemd idle
 /// selector for ground vehicles) — a hashed-representation fidelity fix, not a
 /// behavior drift; movement/combat outputs are byte-identical.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 13100720271148196653;
+/// Re-baselined for SC-2: session identity (seed, map name, theater, bounds,
+/// MP start table, slot->house) folded into the state hash — every absolute
+/// hash shifts once by composition; the tick-by-tick rec-vs-replay equality
+/// and the per-stream cursor pins prove no behavioral movement.
+/// Re-measured at the S3 × SC-2 merge (both deltas combined; value from the
+/// merged tree's green run — neither side's pre-merge value can be correct).
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 8267237512675945995;
 
 fn harness_rules() -> RuleSet {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a

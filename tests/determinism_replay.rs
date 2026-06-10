@@ -133,9 +133,12 @@ fn replay_reapplies_header_seed() {
         sim
     }
 
-    // Record under a descriptor seed.
+    // Record under a descriptor seed. The map name is hashed session state,
+    // so the fixture sets it on the descriptor exactly like the real launch
+    // path does — the header then derives both fields from the session.
     let desc = ScenarioDescriptor {
         seed: 0x00A1_1CE5,
+        map_name: "seed_roundtrip".to_string(),
         ..Default::default()
     };
     let mut sim = sim_with_unit(&desc);
@@ -144,10 +147,10 @@ fn replay_reapplies_header_seed() {
     let mut replay = ReplayLog::new(ReplayHeader {
         version: 1,
         tick_hz: 30,
-        // The descriptor seed is what the sim was constructed from; recording
-        // it widened is exactly what the live header path does.
+        // The descriptor seed/map name are what the sim was constructed from;
+        // recording them is exactly what the live header path does.
         seed: u64::from(desc.seed),
-        map_name: "seed_roundtrip".to_string(),
+        map_name: desc.map_name.clone(),
         rules_hash: 0,
     });
     let mut live: Vec<u64> = Vec::new();
