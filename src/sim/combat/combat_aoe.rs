@@ -95,7 +95,8 @@ pub(crate) fn apply_aoe_damage(
     }
 
     // Pre-compute squared radius in lepton space (i64) for quick rejection.
-    let spread_leptons: i64 = cell_spread.to_num::<i64>() * 256;
+    // gamemd fine-filter radius = ftol(CellSpread * 256).
+    let spread_leptons: i64 = cell_spread::splash_threshold_leptons(cell_spread);
     let spread_sq: i64 = spread_leptons * spread_leptons;
     let mut damage_list: Vec<(u64, u16)> = Vec::new();
 
@@ -103,9 +104,9 @@ pub(crate) fn apply_aoe_damage(
         let selected_layer =
             select_object_damage_layer(terrain, impact_rx, impact_ry, layer_context.impact_z);
         let mut seen: BTreeSet<u64> = BTreeSet::new();
-        let spread_radius = cell_spread.to_num::<u32>();
 
-        for &(dx, dy) in cell_spread::cells_in_spread(spread_radius) {
+        // gamemd cell sweep: count_table[ftol(CellSpread + 0.99)] entries, exact order.
+        for &(dx, dy) in cell_spread::splash_cells(cell_spread) {
             let Some(rx) = offset_cell_coord(impact_rx, dx) else {
                 continue;
             };

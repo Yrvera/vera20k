@@ -1160,8 +1160,8 @@ fn destroy_ore_at_impact(
     if ore_damage == 0 {
         return;
     }
-    let spread_radius = cell_spread.to_num::<u32>();
-    for &(dx, dy) in self::cell_spread::cells_in_spread(spread_radius) {
+    // gamemd cell sweep: count_table[ftol(CellSpread + 0.99)] entries, exact order.
+    for &(dx, dy) in self::cell_spread::splash_cells(cell_spread) {
         let cx = impact_rx as i32 + dx as i32;
         let cy = impact_ry as i32 + dy as i32;
         if cx >= 0 && cy >= 0 {
