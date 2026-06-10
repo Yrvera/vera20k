@@ -172,9 +172,20 @@ pub(crate) fn tick_miners_with_overlay_registry(
         .collect();
     sim.production.dock_reservations.cleanup_dead(&alive_sids);
 
-    // Phase 2: Process each miner through its state machine.
+    // Phase 2: Process each miner through its state machine, dispatched via the
+    // Harvest mission handler seam (Slice L5). `harvest_mission_step` runs the
+    // unchanged `process_miner` body — a pure routing seam, no order/behavior/
+    // hash change — so this loop's per-snapshot, live-order dispatch is
+    // identical to calling `process_miner` directly.
     for snap in &mut snapshots {
-        process_miner(sim, rules, config, path_grid, overlay_registry, snap);
+        super::harvest_mission::harvest_mission_step(
+            sim,
+            rules,
+            config,
+            path_grid,
+            overlay_registry,
+            snap,
+        );
     }
 
     // Phase 3: Write miner state back to EntityStore and flush debug events.
@@ -236,7 +247,10 @@ pub(crate) fn tick_miners_with_overlay_registry(
 }
 
 /// Process one miner through one tick of its state machine.
-fn process_miner(
+///
+/// `pub(super)` so the Harvest mission handler seam (`harvest_mission.rs`) can
+/// dispatch to it; the visibility widening is behavior-neutral.
+pub(super) fn process_miner(
     sim: &mut Simulation,
     rules: &RuleSet,
     config: &MinerConfig,

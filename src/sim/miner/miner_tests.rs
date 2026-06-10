@@ -5748,3 +5748,434 @@ fn full_unload_credits_unchanged_over_bus() {
         "the whole ore slot must still drain in one dump tick over the bus",
     );
 }
+
+// ==========================================================================
+// Slice L5 — Harvest mission handler seam (harvest_mission_step)
+//
+// The seam routes the miner FSM through `harvest_mission_step`, which calls
+// the unchanged `process_miner`. These tests pin that the seam is observably a
+// no-op and baseline the derived-mission ↔ FSM-cursor invariant for the later
+// substate-authority flip (shell S5). The whole existing miner suite already
+// runs through the seam (tick_miners → harvest_mission_step), so it is the
+// collective bit-identical proof; these add explicit named pins.
+// ==========================================================================
+
+/// Full harvest→dock→unload→depart cycle driven through the seam reproduces the
+/// canonical `process_miner` outcome (one slot drain, full payout, cargo
+/// drained, reservation released). `harvest_mission_step` calls `process_miner`
+/// unchanged, so routing through the seam cannot diverge from calling it
+/// directly; this pins the end-to-end seam path.
+#[test]
+fn harvest_seam_dispatch_matches_direct_process_miner() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    spawn_refinery(&mut sim, 100, 10, 10);
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 14, 11);
+    {
+        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        for _ in 0..10 {
+            miner.cargo.push(CargoBale {
+                resource_type: ResourceType::Ore,
+                value: 25,
+            });
+        }
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::Approach;
+        miner.reserved_refinery = Some(100);
+    }
+
+    let credits_before = credits_for_owner(&sim, "Americans");
+    tick_miners_n(&mut sim, &rules, 400);
+
+    // One slot drain → one bale event; full ore payout (10 × 25).
+    assert_eq!(sim.bale_events.len(), 1, "seam: one slot drain → one bale event");
+    assert_eq!(
+        credits_for_owner(&sim, "Americans") - credits_before,
+        250,
+        "seam: full ore payout credited (unchanged)",
+    );
+
+    let entity = sim.substrate.entities.get(miner_id).expect("entity");
+    let m = entity.miner.as_ref().expect("miner");
+    assert!(
+        matches!(m.state, MinerState::SearchOre | MinerState::WaitNoOre),
+        "seam: post-dock state must be SearchOre or WaitNoOre, got {:?}",
+        m.state,
+    );
+    assert!(m.cargo.is_empty(), "seam: cargo drained");
+    assert!(m.reserved_refinery.is_none(), "seam: reservation released");
+    assert!(
+        !sim.production.dock_reservations.is_occupied(100),
+        "seam: dock free for the next miner",
+    );
+}
+
+/// Across a full dock cycle through the seam, the entity's `derived_mission()`
+/// is `(Harvest, miner.state as u8)` every tick — the Task-2 invariant that the
+/// shadow MissionCom selector tracks the FSM cursor, which the later
+/// substate-authority flip (shell S5) depends on.
+#[test]
+fn harvest_seam_derived_mission_is_harvest_each_tick() {
+    use crate::sim::mission::MissionType;
+
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    spawn_refinery(&mut sim, 100, 10, 10);
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 14, 11);
+    {
+        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        for _ in 0..10 {
+            miner.cargo.push(CargoBale {
+                resource_type: ResourceType::Ore,
+                value: 25,
+            });
+        }
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::Approach;
+        miner.reserved_refinery = Some(100);
+    }
+
+    for _ in 0..400 {
+        tick_miners_n(&mut sim, &rules, 1);
+        let entity = sim.substrate.entities.get(miner_id).expect("miner entity");
+        let state = entity.miner.as_ref().expect("miner component").state;
+        assert_eq!(
+            entity.derived_mission(),
+            (MissionType::Harvest, state as u8),
+            "derived mission must be Harvest with the FSM cursor as sub-phase every tick",
+        );
+    }
+}
+
+/// Through the seam, the RadioBus shadow stays lockstep with the registry
+/// admission source every tick: `radio_contacts` mirrors registry contact
+/// membership and `dock_entered_with` mirrors the registry contact-entered flag.
+/// Pins that routing through the seam did not desync the two stores, so the
+/// later registry-retire flip ("Slice 8") remains observably a no-op.
+#[test]
+fn harvest_seam_preserves_bus_registry_lockstep() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    spawn_refinery(&mut sim, 100, 10, 10);
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 14, 11);
+    {
+        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        for _ in 0..10 {
+            miner.cargo.push(CargoBale {
+                resource_type: ResourceType::Ore,
+                value: 25,
+            });
+        }
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::Approach;
+        miner.reserved_refinery = Some(100);
+    }
+
+    let mut saw_entered = false;
+    for _ in 0..400 {
+        tick_miners_n(&mut sim, &rules, 1);
+
+        let reg_contact = sim.production.dock_reservations.has_contact(100, miner_id);
+        let bus_contact = sim
+            .substrate
+            .entities
+            .get(100)
+            .expect("refinery")
+            .radio_contacts
+            .contains(miner_id);
+        assert_eq!(
+            reg_contact, bus_contact,
+            "seam: radio_contacts must mirror registry admission each tick",
+        );
+
+        let reg_entered = sim
+            .production
+            .dock_reservations
+            .has_contact_entered(100, miner_id);
+        let bus_entered =
+            sim.substrate.entities.get(miner_id).expect("miner").dock_entered_with == Some(100);
+        assert_eq!(
+            reg_entered, bus_entered,
+            "seam: dock_entered_with must mirror registry contact-entered each tick",
+        );
+        if bus_entered {
+            saw_entered = true;
+        }
+    }
+
+    assert!(saw_entered, "seam: the miner must enter the dock during the cycle");
+}
+
+/// Through the seam, the inbound dock handshake follows the verified order —
+/// HELLO admits to Contacts[] (no contact-entered flag, no same-tick CAN_DOCK
+/// move) → next pass advances to the accepted-cell wait — and a capacity-1
+/// refinery refuses a second miner's HELLO without evicting the first (no FIFO,
+/// receiver never evicts). Mirrors `hello_before_mission_enter_then_can_dock_move`
+/// plus the §8 V3 no-wait-queue contract, now routed through the seam.
+#[test]
+fn dock_handshake_hello_enter_over_seam() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    spawn_refinery(&mut sim, 2, 10, 10);
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 14, 11);
+    // Second miner (higher id → processed after miner 1 in the id-ascending
+    // fallback order) contends for the same capacity-1 refinery.
+    let waiter_id = spawn_miner(&mut sim, 3, MinerKind::War, 15, 11);
+    for &id in &[miner_id, waiter_id] {
+        let entity = sim.substrate.entities.get_mut(id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        miner.cargo.push(CargoBale {
+            resource_type: ResourceType::Ore,
+            value: 25,
+        });
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::Approach;
+        miner.reserved_refinery = Some(2);
+    }
+
+    tick_miners_n(&mut sim, &rules, 1);
+
+    // Miner 1: HELLO accepted → MissionEnter, in Contacts[], NOT entered, no
+    // same-tick CAN_DOCK move.
+    assert_eq!(get_miner(&sim, miner_id).dock_phase, RefineryDockPhase::MissionEnter);
+    assert!(
+        sim.production.dock_reservations.has_contact(2, miner_id),
+        "seam: HELLO/ROGER must populate Contacts[]",
+    );
+    assert!(
+        !sim.production.dock_reservations.has_contact_entered(2, miner_id),
+        "seam: contact-entered flag must not be set by HELLO",
+    );
+    assert!(
+        sim.substrate.entities.get(miner_id).expect("entity").movement_target.is_none(),
+        "seam: HELLO acceptance must not issue the CAN_DOCK move the same tick",
+    );
+
+    // Capacity-1 refusal: the waiter gets no contact and the first miner is NOT
+    // evicted (no FIFO, receiver never evicts).
+    assert!(
+        !sim.production.dock_reservations.has_contact(2, waiter_id),
+        "seam: a saturated refinery must refuse the second HELLO (no second contact)",
+    );
+    assert!(
+        sim.production.dock_reservations.has_contact(2, miner_id),
+        "seam: the first contact must NOT be evicted by the second HELLO",
+    );
+
+    // Next pass: miner 1 advances to the accepted-cell wait, still not entered.
+    tick_miners_n(&mut sim, &rules, 1);
+    assert_eq!(
+        get_miner(&sim, miner_id).dock_phase,
+        RefineryDockPhase::AwaitingAcceptedCell,
+    );
+    assert!(
+        !sim.production.dock_reservations.has_contact_entered(2, miner_id),
+        "seam: not at accepted cell yet — no contact-entered admission",
+    );
+}
+
+/// Through the seam, the first slot drain is gated by the 14.4-tick accumulator
+/// (`acc*10 >= unload_tick_interval`): with tenths precision the first ore-slot
+/// drain lands in the 15–16 unloading-tick window, not immediately. Mirrors
+/// `dock_first_slot_drain_waits_one_unload_interval`, routed through the seam.
+#[test]
+fn deposit_cadence_14_4_ticks_over_seam() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let config = MinerConfig::default();
+
+    spawn_refinery(&mut sim, 2, 10, 10);
+    // Pad cell facing East so the pivot completes in two ticks and the dump
+    // gate timing lines up cleanly.
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
+    {
+        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        entity.movement_target = None;
+        entity.facing = 0x40;
+        let miner = entity.miner.as_mut().expect("miner component");
+        for _ in 0..5 {
+            miner.cargo.push(CargoBale {
+                resource_type: ResourceType::Ore,
+                value: config.ore_bale_value,
+            });
+        }
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::MissionQueued;
+        miner.reserved_refinery = Some(2);
+    }
+    sim.production.dock_reservations.try_reserve(2, miner_id);
+
+    // Two ticks: MissionQueued → Pivoting → Unloading (no drain yet).
+    tick_miners_n(&mut sim, &rules, 2);
+    assert_eq!(get_miner(&sim, miner_id).cargo.len(), 5, "no drain before Unloading");
+    assert_eq!(get_miner(&sim, miner_id).dock_phase, RefineryDockPhase::Unloading);
+
+    let mut drain_tick = None;
+    for elapsed in 1..=20 {
+        tick_miners_n(&mut sim, &rules, 1);
+        if get_miner(&sim, miner_id).cargo.is_empty() {
+            drain_tick = Some(elapsed);
+            break;
+        }
+    }
+    let drain_tick = drain_tick.expect("slot must drain within the timing window");
+    assert!(
+        (15..=16).contains(&drain_tick),
+        "seam: first slot drain gated by the 14.4-tick accumulator, got tick {drain_tick}",
+    );
+}
+
+/// Through the seam, `tick_unload_accumulator` runs AFTER `phase_unloading`
+/// samples the accumulator (call order `handle_dock_sequence` :792 then :802).
+/// Proof: at the tick the slot drains, the accumulator value present at the
+/// START of that tick (the previous tick's post-increment value) ALREADY meets
+/// the gate by itself — under increment-before-sample the start-of-tick value
+/// would still be below the gate (the same-tick increment would push it over),
+/// firing the drain one tick earlier. Resolves the §8 NEEDS-PROOF ordering.
+#[test]
+fn unload_accumulator_sample_before_increment() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+    let config = MinerConfig::default();
+    let interval = i32::from(config.unload_tick_interval);
+    let gate_met = |acc: i32| acc.saturating_mul(10) >= interval;
+
+    spawn_refinery(&mut sim, 2, 10, 10);
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
+    {
+        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        entity.movement_target = None;
+        entity.facing = 0x40;
+        let miner = entity.miner.as_mut().expect("miner component");
+        for _ in 0..5 {
+            miner.cargo.push(CargoBale {
+                resource_type: ResourceType::Ore,
+                value: config.ore_bale_value,
+            });
+        }
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::MissionQueued;
+        miner.reserved_refinery = Some(2);
+    }
+    sim.production.dock_reservations.try_reserve(2, miner_id);
+
+    // Reach Unloading via the real pivot path (seeds the accumulator at 0 and
+    // arms the cluster timer — NOT the save-compat fast-seed branch).
+    tick_miners_n(&mut sim, &rules, 2);
+    assert_eq!(get_miner(&sim, miner_id).dock_phase, RefineryDockPhase::Unloading);
+
+    // accs[i] = accumulator AFTER the i-th unloading tick (i.e. the value the
+    // (i+1)-th tick's phase will sample, since the increment is the tick tail).
+    let mut accs: Vec<i32> = Vec::new();
+    let mut drain_index: Option<usize> = None;
+    for i in 0..30 {
+        let cargo_before = get_miner(&sim, miner_id).cargo.len();
+        tick_miners_n(&mut sim, &rules, 1);
+        accs.push(get_miner(&sim, miner_id).unload_accumulator);
+        if cargo_before > 0 && get_miner(&sim, miner_id).cargo.is_empty() {
+            drain_index = Some(i);
+            break;
+        }
+    }
+    let d = drain_index.expect("slot must drain within the window");
+    assert!(d >= 2, "need at least two prior ticks to compare gate crossings");
+
+    // Value the drain tick's phase sampled = accumulator at the start of tick d
+    // = accs[d-1] (previous tick's post-increment value).
+    assert!(
+        gate_met(accs[d - 1]),
+        "sample-before-increment: the start-of-drain-tick accumulator ({}) must \
+         already meet the gate on its own",
+        accs[d - 1],
+    );
+    // One tick earlier the sampled value was below the gate, so no earlier drain
+    // was possible — confirms the drain fires at the first true gate crossing.
+    assert!(
+        !gate_met(accs[d - 2]),
+        "no early drain: the accumulator sampled one tick before ({}) must be \
+         below the gate",
+        accs[d - 2],
+    );
+}
+
+/// Through the seam, mixed cargo drains in the fixed slot order Ore-then-Gem:
+/// the first dump-gate crossing drains all ore (leaving only gems), the second
+/// drains all gems, one `BaleDepositEvent` per slot, credited to the refinery
+/// owner. Mirrors `unloading_emits_one_event_per_slot_drain` with an explicit
+/// order assertion, routed through the seam.
+#[test]
+fn deposit_slot_order_ore_then_gem_over_seam() {
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    spawn_refinery(&mut sim, 2, 10, 10);
+    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
+    {
+        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner entity");
+        let miner = entity.miner.as_mut().expect("miner component");
+        for _ in 0..5 {
+            miner.cargo.push(CargoBale {
+                resource_type: ResourceType::Ore,
+                value: 25,
+            });
+        }
+        for _ in 0..3 {
+            miner.cargo.push(CargoBale {
+                resource_type: ResourceType::Gem,
+                value: 50,
+            });
+        }
+        miner.state = MinerState::Dock;
+        miner.dock_phase = RefineryDockPhase::Unloading;
+        miner.reserved_refinery = Some(2);
+    }
+    sim.production.dock_reservations.try_reserve(2, miner_id);
+
+    let credits_before = credits_for_owner(&sim, "Americans");
+
+    // Single-step until the first slot drains (cargo 8 → 3).
+    let mut after_first = None;
+    for _ in 0..60 {
+        tick_miners_n(&mut sim, &rules, 1);
+        if get_miner(&sim, miner_id).cargo.len() == 3 {
+            after_first = Some(());
+            break;
+        }
+    }
+    after_first.expect("first slot must drain");
+    let m = get_miner(&sim, miner_id);
+    assert!(
+        m.cargo.iter().all(|b| b.resource_type == ResourceType::Gem),
+        "seam: Ore slot drains first — only Gems remain after the first crossing",
+    );
+    assert_eq!(sim.bale_events.len(), 1, "seam: one event after the first slot drain");
+    assert_eq!(
+        credits_for_owner(&sim, "Americans") - credits_before,
+        5 * 25,
+        "seam: ore slot credits the refinery owner first (5 × 25)",
+    );
+
+    // Continue until the gem slot drains (cargo 3 → 0).
+    let mut after_second = None;
+    for _ in 0..60 {
+        tick_miners_n(&mut sim, &rules, 1);
+        if get_miner(&sim, miner_id).cargo.is_empty() {
+            after_second = Some(());
+            break;
+        }
+    }
+    after_second.expect("second slot must drain");
+    assert_eq!(sim.bale_events.len(), 2, "seam: one event per slot (ore, then gem)");
+    assert_eq!(
+        credits_for_owner(&sim, "Americans") - credits_before,
+        5 * 25 + 3 * 50,
+        "seam: gem slot credits second (total 125 + 150)",
+    );
+}
