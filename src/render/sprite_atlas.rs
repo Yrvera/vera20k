@@ -25,7 +25,7 @@ use crate::map::houses::HouseColorMap;
 use crate::render::batch::{BatchRenderer, BatchTexture};
 use crate::render::gpu::GpuContext;
 use crate::rules::art_data::{self, ArtRegistry};
-use crate::rules::house_colors::{self, HouseColorIndex};
+use crate::rules::house_colors::{HouseColorIndex, HouseColorRamps};
 use crate::rules::ruleset::RuleSet;
 
 /// Maximum atlas texture width for SHP sprites (pixels).
@@ -1220,11 +1220,21 @@ fn render_shp_sprite(
         return None;
     }
 
-    // Apply house color remapping: replace palette indices 16–31 with house ramp.
-    let ramp = house_colors::house_color_ramp(key.house_color);
-    let remapped_pal: Palette = palette.with_house_colors(ramp);
+    // Apply house color remapping: replace palette indices 16–31 with the house's
+    // `[Colors]` team-color band. NO_REMAP owners (civilian/neutral/special) keep
+    // the raw theater palette — matching the GPU voxel path (which samples row 0,
+    // the unremapped [16,32) range) and the documented NO_REMAP intent.
+    let remapped_pal: Palette;
+    let render_pal: &Palette = if key.house_color == crate::rules::house_colors::NO_REMAP {
+        palette
+    } else {
+        let default_ramps = HouseColorRamps::default();
+        let ramps = rules.map(|r| &r.house_color_ramps).unwrap_or(&default_ramps);
+        remapped_pal = palette.with_house_colors(ramps.ramp(key.house_color));
+        &remapped_pal
+    };
 
-    let frame_rgba: Vec<u8> = match shp.frame_to_rgba(frame_idx, &remapped_pal) {
+    let frame_rgba: Vec<u8> = match shp.frame_to_rgba(frame_idx, render_pal) {
         Ok(rgba) => rgba,
         Err(e) => {
             log::warn!(

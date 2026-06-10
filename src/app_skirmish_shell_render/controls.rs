@@ -8,7 +8,6 @@ use crate::render::batch::SpriteInstance;
 use crate::render::bit_font::BitFont;
 use crate::render::skirmish_shell_chrome::{SkirmishShellChromeAtlas, SkirmishShellChromeEntry};
 use crate::rules::color_scheme::{ColorSchemeEntry, hsv_to_rgb, scheme_for_priority};
-use crate::rules::house_colors::{HouseColorIndex, house_color_ramp};
 use crate::ui::skirmish_shell::{
     COMBO_DROPDOWN_ROW_H, COMBO_DROPDOWN_SCROLLBAR_BUTTON_H, DropdownScrollbarPart, RectPx,
     SkirmishCheckboxId, SkirmishComboId, SkirmishComboItem, SkirmishShellLayout,
@@ -246,13 +245,9 @@ pub(super) fn house_color_tint(color_schemes: &[ColorSchemeEntry], index: usize)
         let [r, g, b] = hsv_to_rgb(scheme.hsv);
         return [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0];
     }
-    let ramp = house_color_ramp(HouseColorIndex(index.min(7) as u8));
-    let color = ramp[0];
-    [
-        color.r as f32 / 255.0,
-        color.g as f32 / 255.0,
-        color.b as f32 / 255.0,
-    ]
+    // No [Colors] loaded yet (rules not ready): neutral grey so the swatch still
+    // draws rather than going black. A populated lobby always hits the path above.
+    [0.5, 0.5, 0.5]
 }
 
 pub(super) fn push_combo_face(
@@ -617,7 +612,7 @@ mod tests {
     #[test]
     fn slot_one_is_red_slot_two_is_blue() {
         // Priority order: slot 1 = DarkRed (red-dominant), slot 2 = DarkBlue
-        // (blue-dominant) — the reverse of the old SCHEME_BASES ordering.
+        // (blue-dominant), resolved from the [Colors] HSV via the priority LUT.
         let schemes = retail_schemes();
         let red = house_color_tint(&schemes, 1);
         assert!(red[0] > red[1] && red[0] > red[2], "slot 1 red-dominant: {red:?}");
@@ -626,7 +621,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_schemes_fall_back_to_legacy_ramp() {
+    fn empty_schemes_fall_back_to_neutral_grey() {
         // Defensive path: with no [Colors] loaded the swatch still renders a color.
         let tint = house_color_tint(&[], 0);
         assert!(tint.iter().any(|&channel| channel > 0.0));

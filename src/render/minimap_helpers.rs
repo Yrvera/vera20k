@@ -8,7 +8,7 @@
 
 use crate::map::houses::HouseColorMap;
 use crate::map::terrain::TerrainGrid;
-use crate::rules::house_colors::{self, HouseColorIndex};
+use crate::rules::house_colors::{HouseColorIndex, HouseColorRamps, NO_REMAP};
 use crate::sim::intern::InternedId;
 use crate::sim::vision::FogState;
 
@@ -271,14 +271,18 @@ pub(super) fn draw_line(
 
 /// Map an owner name to a minimap dot color using house color data.
 ///
-/// Looks up the owner's house color index from the HouseColorMap, then uses
-/// the middle shade (index 8 of 16) from the color ramp for good visibility.
-/// Falls back to Gold ramp for unknown owners.
-pub(super) fn owner_dot_color(owner: &str, house_colors: &HouseColorMap) -> [u8; 4] {
-    let index: HouseColorIndex = house_colors.get(owner).copied().unwrap_or_default();
-    let ramp = house_colors::house_color_ramp(index);
-    // Use shade 0 (brightest) — closest to the original's primary house color bytes.
-    let c = ramp[0];
+/// Looks up the owner's `[Colors]` entry index from the HouseColorMap, then uses
+/// shade 0 of that scheme's ramp — the brightest band (palette index 16), which
+/// is gamemd's radar color. Falls back to the default scheme for unknown owners.
+pub(super) fn owner_dot_color(
+    owner: &str,
+    house_colors: &HouseColorMap,
+    ramps: &HouseColorRamps,
+) -> [u8; 4] {
+    // Unknown owner → NO_REMAP, which ramp() resolves to the default scheme
+    // (matching the producers' DEFAULT_SCHEME_ENTRY fallback), not entry 0.
+    let index: HouseColorIndex = house_colors.get(owner).copied().unwrap_or(NO_REMAP);
+    let c = ramps.ramp(index)[0];
     [c.r, c.g, c.b, 255]
 }
 
