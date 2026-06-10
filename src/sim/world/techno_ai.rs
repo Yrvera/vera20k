@@ -941,4 +941,105 @@ mod tests {
         let churn = sim.debug_assert_unit_dispatch_shadow(&trace);
         assert_eq!(churn, 1, "a host Move that became tail Sleep must count as one churn");
     }
+
+    // ===== Slice S2 — in-loop dispatch authority =====
+
+    /// Like `scoped_move_unit`, but interned through the SIM's interner so the
+    /// unit survives a real `advance_tick` (test_intern ids don't exist in
+    /// `sim.interner`, and tick-path resolves would panic).
+    fn insert_s2_scoped_move_unit(sim: &mut Simulation, id: u64, rx: u16, ry: u16) {
+        let owner = sim.interner.intern("Americans");
+        let type_ref = sim.interner.intern("TEST");
+        let mut e = GameEntity::new(
+            id,
+            rx,
+            ry,
+            0, // z = ground level
+            0, // facing = north
+            owner,
+            crate::sim::components::Health { current: 100, max: 100 },
+            type_ref,
+            EntityCategory::Unit,
+            0, // veterancy = rookie
+            5, // vision_range = 5 cells
+            true,
+        );
+        e.movement_target = Some(MovementTarget::default());
+        e.drive_locomotion = Some(DriveLocomotionRuntime::default());
+        sim.substrate.entities.insert(e);
+    }
+
+    /// S2: the arrival tick hashes the dispatch-time mission (`Move`) — the
+    /// target clears post-loop, so a tail re-derivation would say `None` (the
+    /// machine-less fall-through; the idle→Guard mapping is S3). The
+    /// transition away happens on the NEXT tick (gamemd-faithful).
+    #[test]
+    fn arrival_tick_mission_is_move_not_sleep() {
+        let mut sim = Simulation::new();
+        insert_s2_scoped_move_unit(&mut sim, 1, 5, 5); // default target: arrives tick 1
+        sim.set_logic_order_for_test(vec![1]);
+        let heights = std::collections::BTreeMap::new();
+
+        let _ = sim.advance_tick(&[], None, &heights, None, None, 67);
+        let e = sim.substrate.entities.get(1).unwrap();
+        assert!(e.movement_target.is_none(), "fixture must arrive on tick 1");
+        assert_eq!(e.mission.current, MissionType::Move, "arrival tick keeps Move");
+
+        let _ = sim.advance_tick(&[], None, &heights, None, None, 67);
+        let e = sim.substrate.entities.get(1).unwrap();
+        // Machine-less derivation falls through to None; S3 owns idle→Guard.
+        assert_eq!(e.mission.current, MissionType::None, "post-arrival tick transitions");
+    }
+
+    /// S2: exactly one tick_counter increment per unit-tick — in-loop for a
+    /// dispatched mover, tail for an idle (never-collected) unit. Double or
+    /// zero count is permanent lockstep drift.
+    #[test]
+    fn s2_tick_counter_increments_exactly_once() {
+        let mut sim = Simulation::new();
+        insert_s2_scoped_move_unit(&mut sim, 1, 5, 5); // dispatched on tick 1
+        insert_s2_scoped_move_unit(&mut sim, 2, 8, 8);
+        // never collected; never scoped
+        sim.substrate.entities.get_mut(2).unwrap().movement_target = None;
+        sim.set_logic_order_for_test(vec![1, 2]);
+        let heights = std::collections::BTreeMap::new();
+
+        let _ = sim.advance_tick(&[], None, &heights, None, None, 67);
+        assert_eq!(sim.substrate.entities.get(1).unwrap().mission.tick_counter, 1);
+        assert_eq!(sim.substrate.entities.get(2).unwrap().mission.tick_counter, 1);
+        let _ = sim.advance_tick(&[], None, &heights, None, None, 67);
+        assert_eq!(sim.substrate.entities.get(1).unwrap().mission.tick_counter, 2);
+        assert_eq!(sim.substrate.entities.get(2).unwrap().mission.tick_counter, 2);
+    }
+
+    /// S2 P1 guard: a save taken on the arrival tick (current=Move while a fresh
+    /// derivation says None) must restore an IDENTICAL state hash. Guards the
+    /// deleted post-load re-derive against reintroduction.
+    #[test]
+    fn save_load_round_trip_on_arrival_tick() {
+        use crate::sim::snapshot::GameSnapshot;
+        let mut sim = Simulation::new();
+        insert_s2_scoped_move_unit(&mut sim, 1, 5, 5);
+        sim.set_logic_order_for_test(vec![1]);
+        let heights = std::collections::BTreeMap::new();
+        let _ = sim.advance_tick(&[], None, &heights, None, None, 67); // arrival tick
+
+        let e = sim.substrate.entities.get(1).unwrap();
+        assert_eq!(e.mission.current, MissionType::Move, "precondition: divergent window");
+        assert!(e.movement_target.is_none());
+        let hash_before = sim.state_hash();
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "test_map", 0);
+        let mut restored = GameSnapshot::load(&bytes).expect("load").sim;
+        restored.rebuild_logic_membership(); // the real post-deserialize step
+        assert_eq!(
+            restored.state_hash(),
+            hash_before,
+            "load must trust serialized MissionCom"
+        );
+        assert_eq!(
+            restored.substrate.entities.get(1).unwrap().mission.current,
+            MissionType::Move,
+        );
+    }
 }
