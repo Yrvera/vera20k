@@ -19,6 +19,7 @@
 //! - Part of rules/ — no dependencies on sim/, render/, ui/, etc.
 
 use crate::rules::ini_parser::IniSection;
+use crate::rules::ini_value::atoi_lenient;
 use crate::util::fixed_math::{SIM_ZERO, SimFixed, sim_from_f32};
 
 /// A warhead definition parsed from a rules.ini section.
@@ -34,6 +35,14 @@ pub struct WarheadType {
     /// 6=wood, 7=steel, 8=concrete, 9=special_1, 10=special_2.
     /// Empty if Verses= is absent. 100 = full damage, 0 = immune.
     pub verses: Vec<u8>,
+    /// Damage effectiveness per armor type, full f64 precision (gamemd stores
+    /// Verses as a `double[11]` at warhead+0xA0 and keeps full precision through
+    /// the damage kernel — the single float exception). Same index order as
+    /// `verses`. Defaults to `[1.0; 11]` (100%) when `Verses=` is absent. This is
+    /// the faithful representation consumed by the damage substrate service; the
+    /// lossy `verses: Vec<u8>` above is retained for the existing readers until
+    /// the authoritative cutover retires it.
+    pub verses_f64: [f64; 11],
     /// Splash damage radius in cells (SIM_ZERO = direct hit only).
     pub cell_spread: SimFixed,
     /// Damage percentage at maximum spread distance (0–100).
@@ -113,6 +122,10 @@ impl WarheadType {
     /// Parse a WarheadType from a rules.ini section.
     pub fn from_ini_section(id: &str, section: &IniSection) -> Self {
         let verses: Vec<u8> = section.get("Verses").map(parse_verses).unwrap_or_default();
+        let verses_f64: [f64; 11] = section
+            .get("Verses")
+            .map(parse_verses_f64)
+            .unwrap_or([1.0; 11]);
 
         let cell_spread: SimFixed = section
             .get_f32("CellSpread")
@@ -149,6 +162,7 @@ impl WarheadType {
         Self {
             id: id.to_string(),
             verses,
+            verses_f64,
             cell_spread,
             percent_at_max,
             wall: section.get_bool("Wall").unwrap_or(false),
@@ -209,6 +223,56 @@ fn parse_verses(raw: &str) -> Vec<u8> {
         .collect()
 }
 
+/// Parse the Verses= value into a fixed-size `[f64; 11]` (gamemd `double[11]`).
+///
+/// Per token, branch on '%' presence (gamemd `strchr`):
+/// - has '%': `(atoi(token) as f64) * 0.01` — INTEGER-truncating atoi BEFORE the
+///   x0.01 (`"50.5%"` -> 0.5, `"0.5%"` -> 0.0, `"-50%"` -> -0.5). Reuses the
+///   slice-1 `atoi_lenient`.
+/// - no '%': `parse_leading_f32` widened to f64 (`"0.505"` -> 0.505). Reuses the
+///   slice-1 `parse_leading_f32` (the float path `read_double` uses for the bare
+///   case).
+///
+/// Missing trailing tokens default to 1.0 (100%); absent `Verses=` -> `[1.0; 11]`
+/// (gamemd's all-100% default).
+fn parse_verses_f64(raw: &str) -> [f64; 11] {
+    let mut out = [1.0_f64; 11];
+    for (i, tok) in raw.split(',').enumerate().take(11) {
+        let t: &str = tok.trim();
+        out[i] = if t.contains('%') {
+            atoi_lenient(t) as f64 * 0.01_f64
+        } else {
+            parse_leading_f64(t)
+        };
+    }
+    out
+}
+
+/// Leading-numeric f64 parse for the bare (no-'%') Verses branch. Mirrors the
+/// slice-1 `parse_leading_f32` scan (optional sign, digits, single dot, stop at
+/// first non-float char) but parses to FULL f64 — Verses is gamemd's single
+/// "kept full f64" exception, so the bare branch must NOT narrow through f32
+/// (`"0.505"` -> 0.505, not the f32-rounded 0.50499...). Empty/junk -> 0.0.
+fn parse_leading_f64(s: &str) -> f64 {
+    let b = s.as_bytes();
+    let mut end = 0usize;
+    let mut seen_dot = false;
+    while end < b.len() {
+        let c = b[end];
+        let ok = c.is_ascii_digit()
+            || (end == 0 && (c == b'-' || c == b'+'))
+            || (c == b'.' && !seen_dot);
+        if c == b'.' {
+            seen_dot = true;
+        }
+        if !ok {
+            break;
+        }
+        end += 1;
+    }
+    s[..end].parse::<f64>().unwrap_or(0.0)
+}
+
 fn parse_prone_damage_basis_points(section: &IniSection) -> u32 {
     let Some(raw) = section.get("ProneDamage") else {
         return 10_000;
@@ -255,6 +319,35 @@ mod tests {
         assert_eq!(wh.verses[2], 90); // plate: 90%
         assert_eq!(wh.verses[6], 60); // wood: 60%
         assert_eq!(wh.verses[10], 0); // special_2: 0%
+
+        // Parallel f64 table carries the same values at full precision.
+        assert!((wh.verses_f64[0] - 1.00).abs() < 1e-9); // none: 100%
+        assert!((wh.verses_f64[2] - 0.90).abs() < 1e-9); // plate: 90%
+        assert!((wh.verses_f64[6] - 0.60).abs() < 1e-9); // wood: 60%
+        assert!((wh.verses_f64[10] - 0.0).abs() < 1e-9); // special_2: 0%
+    }
+
+    #[test]
+    fn verses_f64_defaults_to_all_full_when_absent() {
+        let ini: IniFile = IniFile::from_str("[Empty]\n");
+        let wh = WarheadType::from_ini_section("Empty", ini.section("Empty").unwrap());
+        // gamemd default is all-100% (1.0), NOT empty.
+        assert_eq!(wh.verses_f64, [1.0; 11]);
+    }
+
+    #[test]
+    fn fractional_verses_preserved() {
+        // % branch: integer atoi BEFORE x0.01 => "50.5%" -> 50*0.01 = 0.5 (NOT
+        // 0.505). Bare branch: "0.505" -> 0.505 full precision.
+        let pct = parse_verses_f64("50.5%,1.5%,0.5%");
+        let bare = parse_verses_f64("0.505,0.015,0.005");
+        assert!((pct[0] - 0.5).abs() < 1e-9); // 50.5% -> atoi(50)*0.01
+        assert!((pct[1] - 0.01).abs() < 1e-9); // 1.5%  -> atoi(1)*0.01
+        assert!((pct[2] - 0.0).abs() < 1e-9); // 0.5%   -> atoi(0)*0.01
+        assert!((bare[0] - 0.505).abs() < 1e-9);
+        assert!((bare[2] - 0.005).abs() < 1e-9);
+        // Trailing unspecified entries default to 1.0.
+        assert!((pct[3] - 1.0).abs() < 1e-9);
     }
 
     #[test]
