@@ -231,8 +231,10 @@ fn unit_facing_pass_drives_turret_to_target() {
         let e = sim.substrate.entities.get(1).unwrap();
         desired_turret_facing(e, &sim.substrate.entities).expect("turreted unit has a desired facing")
     };
-    crate::sim::world::unit_post::tick_unit_facing(
+    let result = run_combat_direct(&mut sim, &rules);
+    crate::sim::world::unit_post::apply_unit_facing(
         &mut sim.substrate.entities,
+        &result.unit_facing,
         &rules,
         &sim.interner,
         sim.binary_frame,
@@ -248,7 +250,7 @@ fn unit_facing_pass_drives_turret_to_target() {
         .destination();
     assert_eq!(
         got, want,
-        "tick_unit_facing must drive the Unit barrel to the per-entity desired facing"
+        "the P2-window compute + apply_unit_facing must drive the Unit barrel to the desired facing"
     );
 }
 
@@ -470,10 +472,146 @@ fn kill_tick_unit_facing_holds_target() {
 }
 
 #[test]
+fn kill_tick_barrel_holds_target_facing() {
+    // End-to-end through advance_tick: on the tick the target dies, the
+    // killer's barrel destination still points at it (gamemd: Facing_Update
+    // runs inside the unit's own AI pass before any same-tick detonation
+    // effect is visible); idle-return to body begins the NEXT tick.
+    let mut sim = Simulation::new();
+    spawn_turreted(&mut sim, 1, 5, 5, 100);
+    spawn_target(&mut sim, 2, 5, 8);
+    use_test_interner(&mut sim);
+    let rules = rules_with_mtnk_rot(100);
+    sim.substrate.entities.get_mut(1).unwrap().attack_target = Some(AttackTarget::new(2));
+
+    let toward_target = {
+        let e = sim.substrate.entities.get(1).unwrap();
+        desired_turret_facing(e, &sim.substrate.entities).expect("turreted")
+    };
+    // Pre-align so the fire gate passes on the first combat tick, and make the
+    // first shot lethal.
+    sim.substrate.entities.get_mut(1).unwrap().barrel_facing =
+        Some(FacingClass::new(toward_target, 100));
+    sim.substrate.entities.get_mut(2).unwrap().health.current = 10; // Damage=65
+
+    sim.advance_tick(&[], Some(&rules), &empty_height_map(), None, None, 67);
+
+    let attacker = sim.substrate.entities.get(1).unwrap();
+    assert!(
+        sim.substrate
+            .entities
+            .get(2)
+            .map(|t| t.health.current == 0 || t.dying)
+            .unwrap_or(true),
+        "precondition: the target died on this tick"
+    );
+    assert_eq!(
+        attacker.barrel_facing.as_ref().unwrap().destination(),
+        toward_target,
+        "kill tick: barrel destination holds the dying target's facing"
+    );
+
+    // Next tick: the target is gone from the attacker's machines → idle-return.
+    sim.advance_tick(&[], Some(&rules), &empty_height_map(), None, None, 67);
+    let attacker = sim.substrate.entities.get(1).unwrap();
+    assert_eq!(
+        attacker.barrel_facing.as_ref().unwrap().destination(),
+        body_facing_to_turret(attacker.facing),
+        "post-kill tick: idle-return to body facing begins"
+    );
+}
+
+#[test]
+fn co_attacker_facing_matches_killer() {
+    // Two attackers on one target; the killer's shot lands this tick. The
+    // co-attacker's barrel destination this tick must ALSO hold the dying
+    // target's facing (its facing read happens in the per-object window,
+    // before the death batch clears co-attacker targets).
+    let mut sim = Simulation::new();
+    spawn_turreted(&mut sim, 1, 5, 5, 100); // killer
+    spawn_turreted(&mut sim, 3, 8, 8, 100); // co-attacker (out of its own ROF this tick)
+    spawn_target(&mut sim, 2, 5, 8);
+    use_test_interner(&mut sim);
+    let rules = rules_with_mtnk_rot(100);
+    sim.substrate.entities.get_mut(1).unwrap().attack_target = Some(AttackTarget::new(2));
+    sim.substrate.entities.get_mut(3).unwrap().attack_target = Some(AttackTarget::new(2));
+
+    let killer_aim = {
+        let e = sim.substrate.entities.get(1).unwrap();
+        desired_turret_facing(e, &sim.substrate.entities).expect("turreted")
+    };
+    let co_aim = {
+        let e = sim.substrate.entities.get(3).unwrap();
+        desired_turret_facing(e, &sim.substrate.entities).expect("turreted")
+    };
+    sim.substrate.entities.get_mut(1).unwrap().barrel_facing =
+        Some(FacingClass::new(killer_aim, 100));
+    sim.substrate.entities.get_mut(2).unwrap().health.current = 10;
+
+    sim.advance_tick(&[], Some(&rules), &empty_height_map(), None, None, 67);
+
+    assert!(
+        sim.substrate
+            .entities
+            .get(2)
+            .map(|t| t.health.current == 0 || t.dying)
+            .unwrap_or(true),
+        "precondition: the target died on this tick"
+    );
+    let co = sim.substrate.entities.get(3).unwrap();
+    assert!(
+        co.attack_target.is_none(),
+        "precondition: the death batch cleared the co-attacker's target"
+    );
+    assert_eq!(
+        co.barrel_facing.as_ref().unwrap().destination(),
+        co_aim,
+        "kill tick: co-attacker barrel destination holds the dying target's facing"
+    );
+}
+
+#[test]
+fn non_unit_barrel_still_driven_by_global_sweep() {
+    // Non-Unit categories keep the legacy post-batch sweep until their slices
+    // land (S7/S8): a turreted Structure's barrel is still driven toward its
+    // target by tick_turret_rotation after the flip.
+    let mut sim = Simulation::new();
+    // Armed type (the fixture GAPILE has no Primary, which would remove the
+    // attack pre-sweep); the CATEGORY is what routes facing ownership.
+    let mut tower = GameEntity::test_default(1, "MTNK", "Americans", 5, 5);
+    tower.category = crate::map::entities::EntityCategory::Structure;
+    tower.barrel_facing = Some(FacingClass::new(body_facing_to_turret(0), 100));
+    tower.attack_target = Some(AttackTarget::new(2));
+    sim.substrate.entities.insert(tower);
+    spawn_target(&mut sim, 2, 5, 9);
+    use_test_interner(&mut sim);
+    let rules = rules_with_mtnk_rot(100);
+
+    let want = {
+        let e = sim.substrate.entities.get(1).unwrap();
+        desired_turret_facing(e, &sim.substrate.entities).expect("turreted structure")
+    };
+    sim.advance_tick(&[], Some(&rules), &empty_height_map(), None, None, 67);
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .barrel_facing
+            .as_ref()
+            .unwrap()
+            .destination(),
+        want,
+        "Structure barrel still driven by the legacy tick_turret_rotation sweep"
+    );
+}
+
+#[test]
 fn unit_facing_pass_idles_turret_to_body_without_target() {
-    // A turreted Unit with no attack_target: tick_unit_facing returns the barrel to
-    // body facing. Covers idle Units, which the fire path never sees (no snapshot) —
-    // the regression that the all-Unit facing pass exists to prevent.
+    // A turreted Unit with no attack_target: the residual P2-window pass +
+    // apply returns the barrel to body facing. Covers idle Units, which the
+    // fire path never sees (no snapshot) — the regression the residual pass
+    // exists to prevent.
     let mut sim = Simulation::new();
     let mut entity = GameEntity::test_default(1, "MTNK", "Americans", 5, 5);
     entity.facing = 64; // body east
@@ -482,8 +620,10 @@ fn unit_facing_pass_idles_turret_to_body_without_target() {
     use_test_interner(&mut sim);
     let rules = rules_with_mtnk_rot(100);
 
-    crate::sim::world::unit_post::tick_unit_facing(
+    let result = run_combat_direct(&mut sim, &rules);
+    crate::sim::world::unit_post::apply_unit_facing(
         &mut sim.substrate.entities,
+        &result.unit_facing,
         &rules,
         &sim.interner,
         sim.binary_frame,
@@ -500,6 +640,6 @@ fn unit_facing_pass_idles_turret_to_body_without_target() {
     assert_eq!(
         dest,
         body_facing_to_turret(64),
-        "idle Unit barrel should return to body facing via tick_unit_facing"
+        "idle Unit barrel should return to body facing via the residual pass + apply"
     );
 }
