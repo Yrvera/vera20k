@@ -1537,6 +1537,8 @@ pub fn tick_combat_with_fog(
     // FACING is owned separately by `unit_post::tick_unit_facing` post-combat.
     let mut emit = CombatEmit::default();
     for snap in &snapshots {
+        let n_retarget = emit.retarget_events.len();
+        let n_remove = emit.remove_attack.len();
         resolve_attacker_fire(
             snap,
             entities,
@@ -1551,6 +1553,71 @@ pub fn tick_combat_with_fog(
             tick_ms,
             &mut emit,
         );
+        // S3: per-object barrel destination for Unit attackers, read in the
+        // per-object window — deaths/clears (Phases 3-6) are not yet applied,
+        // so a unit whose target dies this tick still aims at it (idle-return
+        // begins next tick); a unit whose own resolution retargeted aims at
+        // the new target now; one whose own resolution cleared returns to body.
+        let Some(e) = entities
+            .get(snap.stable_id)
+            .filter(|e| e.category == EntityCategory::Unit && e.barrel_facing.is_some())
+        else {
+            continue;
+        };
+        let own_retarget = emit.retarget_events[n_retarget..]
+            .iter()
+            .find(|&&(aid, _)| aid == snap.stable_id)
+            .map(|&(_, tid)| tid);
+        let own_removed = emit.remove_attack[n_remove..].contains(&snap.stable_id);
+        let desired: u16 = if let Some(tid) = own_retarget {
+            match entities.get(tid) {
+                Some(t) => crate::sim::movement::turret::facing_toward_lepton(
+                    e.position.rx,
+                    e.position.ry,
+                    e.position.sub_x,
+                    e.position.sub_y,
+                    t.position.rx,
+                    t.position.ry,
+                    t.position.sub_x,
+                    t.position.sub_y,
+                ),
+                None => crate::sim::movement::turret::body_facing_to_turret(e.facing),
+            }
+        } else if own_removed {
+            crate::sim::movement::turret::body_facing_to_turret(e.facing)
+        } else {
+            match crate::sim::movement::turret::desired_turret_facing(e, entities) {
+                Some(d) => d,
+                // Unreachable: barrel_facing presence checked above.
+                None => continue,
+            }
+        };
+        emit.unit_facing.push((snap.stable_id, desired));
+    }
+    // S3 residual: every Unit not in the attacker snapshot set (target-less,
+    // or in-transport holders excluded at the snapshot build). Iterates the
+    // SAME keys_sorted() coverage the legacy tick_unit_facing pass had —
+    // including limbo/dying Units — so the only output delta vs. the legacy
+    // pass is the pre-death read window (placement before Phases 3-6 is
+    // semantic: those phases clear attack_target on finished attackers and
+    // dead targets). Per-entity independent → id order is output-neutral.
+    {
+        let mut computed: Vec<u64> = emit.unit_facing.iter().map(|&(id, _)| id).collect();
+        computed.sort_unstable();
+        for &id in &keys {
+            if computed.binary_search(&id).is_ok() {
+                continue;
+            }
+            let Some(e) = entities.get(id) else { continue };
+            if e.category != EntityCategory::Unit {
+                continue;
+            }
+            let Some(desired) = crate::sim::movement::turret::desired_turret_facing(e, entities)
+            else {
+                continue;
+            };
+            emit.unit_facing.push((id, desired));
+        }
     }
     // Destructure back into the named locals so Phases 3-6 are untouched.
     let CombatEmit {

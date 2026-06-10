@@ -11,8 +11,10 @@ use crate::rules::ini_parser::IniFile;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::combat::AttackTarget;
 use crate::sim::game_entity::GameEntity;
+use crate::sim::intern::InternedId;
 use crate::sim::movement::FacingClass;
 use crate::sim::movement::turret::{body_facing_to_turret, desired_turret_facing};
+use crate::sim::power_system::PowerState;
 use crate::sim::world::Simulation;
 
 fn empty_height_map() -> BTreeMap<(u16, u16), u8> {
@@ -286,6 +288,184 @@ fn unit_authoritative_fire_kills_target_via_advance_tick() {
     assert!(
         target_gone,
         "repeated fire should have killed and despawned the target"
+    );
+}
+
+// --- S3 per-object facing-destination tests (read in the P2 window) ---
+
+/// Call `tick_combat_with_fog` directly (mirrors the combat_tests direct-call
+/// pattern) so `result.unit_facing` — a transient emit consumed by the world
+/// apply site — is observable.
+fn run_combat_direct(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+) -> crate::sim::combat::CombatTickResult {
+    let live_order = sim.live_object_order_snapshot();
+    crate::sim::combat::tick_combat_with_fog(
+        &mut sim.substrate.entities,
+        &mut sim.substrate.occupancy,
+        rules,
+        &mut sim.interner,
+        None,
+        &BTreeMap::<InternedId, PowerState>::new(),
+        None,
+        &mut sim.production.resource_nodes,
+        None,
+        None,
+        None,
+        sim.tick,
+        67,
+        sim.binary_frame,
+        &live_order,
+    )
+}
+
+fn unit_facing_of(result: &crate::sim::combat::CombatTickResult, id: u64) -> Option<u16> {
+    result
+        .unit_facing
+        .iter()
+        .find(|&&(uid, _)| uid == id)
+        .map(|&(_, d)| d)
+}
+
+#[test]
+fn s3_unit_facing_emitted_for_attacker_and_idle() {
+    // The P2 window computes a destination for every Unit: attackers right
+    // after their own fire resolution, target-less Units in the residual pass.
+    let mut sim = Simulation::new();
+    spawn_turreted(&mut sim, 1, 5, 5, 5);
+    spawn_target(&mut sim, 2, 5, 8); // hostile, 3 cells south, in range
+    spawn_turreted(&mut sim, 3, 10, 10, 5); // idle — residual pass
+    sim.substrate.entities.get_mut(3).unwrap().facing = 64; // body east
+    use_test_interner(&mut sim);
+    let rules = rules_with_mtnk_rot(5);
+    sim.substrate.entities.get_mut(1).unwrap().attack_target = Some(AttackTarget::new(2));
+
+    let want_attacker = {
+        let e = sim.substrate.entities.get(1).unwrap();
+        desired_turret_facing(e, &sim.substrate.entities).expect("turreted")
+    };
+    let result = run_combat_direct(&mut sim, &rules);
+
+    assert_eq!(
+        unit_facing_of(&result, 1),
+        Some(want_attacker),
+        "attacker destination = toward its (live) target"
+    );
+    assert_eq!(
+        unit_facing_of(&result, 3),
+        Some(body_facing_to_turret(64)),
+        "idle Unit destination = body facing (residual pass)"
+    );
+}
+
+#[test]
+fn removed_attacker_returns_to_body_same_tick() {
+    // A unit whose own resolution cleared its attack (dead target, nothing to
+    // acquire) returns to body facing the same tick — matching both today's
+    // output and gamemd's upstream same-pass target-validation clear.
+    let mut sim = Simulation::new();
+    spawn_turreted(&mut sim, 1, 5, 5, 5);
+    spawn_target(&mut sim, 2, 5, 8);
+    sim.substrate.entities.get_mut(2).unwrap().health.current = 0; // dead at resolve
+    use_test_interner(&mut sim);
+    let rules = rules_with_mtnk_rot(5);
+    sim.substrate.entities.get_mut(1).unwrap().attack_target = Some(AttackTarget::new(2));
+
+    let result = run_combat_direct(&mut sim, &rules);
+
+    assert_eq!(
+        unit_facing_of(&result, 1),
+        Some(body_facing_to_turret(0)),
+        "own-remove → body facing same tick"
+    );
+    assert!(
+        sim.substrate.entities.get(1).unwrap().attack_target.is_none(),
+        "the remove was applied by the batch"
+    );
+}
+
+#[test]
+fn retargeted_attacker_aims_new_target_same_tick() {
+    // A unit whose own resolution retargeted aims at the NEW target the same
+    // tick — the gamemd analog is upstream same-pass acquisition, which the
+    // unit's Facing_Update sees in the same AI pass.
+    let mut sim = Simulation::new();
+    spawn_turreted(&mut sim, 1, 5, 5, 5);
+    spawn_target(&mut sim, 2, 5, 8);
+    sim.substrate.entities.get_mut(2).unwrap().health.current = 0; // dead → re-acquire
+    // Hostile alternative in range (2 cells east).
+    let mut alt = GameEntity::test_default(4, "MTNK", "Soviet", 7, 5);
+    alt.barrel_facing = Some(FacingClass::new(body_facing_to_turret(0), 5));
+    sim.substrate.entities.insert(alt);
+    use_test_interner(&mut sim);
+    let rules = rules_with_mtnk_rot(5);
+    sim.substrate.entities.get_mut(1).unwrap().attack_target = Some(AttackTarget::new(2));
+
+    let want = {
+        let e = sim.substrate.entities.get(1).unwrap();
+        let t = sim.substrate.entities.get(4).unwrap();
+        crate::sim::movement::turret::facing_toward_lepton(
+            e.position.rx,
+            e.position.ry,
+            e.position.sub_x,
+            e.position.sub_y,
+            t.position.rx,
+            t.position.ry,
+            t.position.sub_x,
+            t.position.sub_y,
+        )
+    };
+    let result = run_combat_direct(&mut sim, &rules);
+
+    assert_eq!(
+        unit_facing_of(&result, 1),
+        Some(want),
+        "own-retarget → aim the new target same tick"
+    );
+}
+
+#[test]
+fn kill_tick_unit_facing_holds_target() {
+    // THE S3 fidelity pin: a unit whose target dies from this tick's fire
+    // keeps aiming at it this tick (gamemd: the munition is deferred and the
+    // bullet's AI runs after the firing unit's pass, so Facing_Update reads a
+    // live TarCom on the kill tick). The destination is read in the P2 window
+    // even though the batch clears attack_target before the apply site runs.
+    let mut sim = Simulation::new();
+    spawn_turreted(&mut sim, 1, 5, 5, 100);
+    spawn_target(&mut sim, 2, 5, 8);
+    sim.substrate.entities.get_mut(2).unwrap().health.current = 10; // lethal: Damage=65
+    use_test_interner(&mut sim);
+    let rules = rules_with_mtnk_rot(100);
+    sim.substrate.entities.get_mut(1).unwrap().attack_target = Some(AttackTarget::new(2));
+
+    // Pre-align the barrel so the fire gate (destination match + not rotating)
+    // passes on the first resolution — same facing_toward_lepton formula.
+    let toward_target = {
+        let e = sim.substrate.entities.get(1).unwrap();
+        desired_turret_facing(e, &sim.substrate.entities).expect("turreted")
+    };
+    sim.substrate.entities.get_mut(1).unwrap().barrel_facing =
+        Some(FacingClass::new(toward_target, 100));
+
+    let result = run_combat_direct(&mut sim, &rules);
+
+    let target_dead = sim
+        .substrate
+        .entities
+        .get(2)
+        .map(|t| t.health.current == 0 || t.dying)
+        .unwrap_or(true);
+    assert!(target_dead, "precondition: the shot this tick killed the target");
+    assert_eq!(
+        unit_facing_of(&result, 1),
+        Some(toward_target),
+        "kill tick: barrel destination holds the dying target's facing"
+    );
+    assert!(
+        sim.substrate.entities.get(1).unwrap().attack_target.is_none(),
+        "precondition: the death batch cleared the attacker's target before the apply site"
     );
 }
 
