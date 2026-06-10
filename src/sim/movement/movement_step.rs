@@ -1172,6 +1172,16 @@ pub(super) fn process_cell_crossings(
             ny,
             category == EntityCategory::Infantry,
         );
+        // GATE A2 verified order: the object-list layer is selected by the
+        // occupant's OnBridge byte sampled at each call site. Capture the OLD
+        // (pre-transition) layer BEFORE evaluating the bridge transition, so the
+        // old-cell removal walks the old layer and the new-cell insertion the new
+        // layer (the two halves may differ when stepping on/off the deck).
+        let old_occupancy_layer = if projected_on_bridge_state {
+            MovementLayer::Bridge
+        } else {
+            MovementLayer::Ground
+        };
         let bridge_update = resolve_cell_transition_bridge_state(
             position,
             path_grid,
@@ -1187,24 +1197,27 @@ pub(super) fn process_cell_crossings(
         ) {
             pending_bridge_update = bridge_update;
         }
-        let occupancy_layer = if projected_on_bridge_state {
+        let new_occupancy_layer = if projected_on_bridge_state {
             MovementLayer::Bridge
         } else {
             MovementLayer::Ground
         };
-        // Update occupancy grid: move entity from old cell to new cell.
-        // Uses current sub_cell (from old cell). For infantry, reserve_destination
-        // below may allocate a new sub-cell and correct it via update_sub_cell.
+        // Update occupancy grid: move entity from old cell to new cell, removing
+        // on the OLD layer and inserting on the NEW layer (verified two-layer
+        // order). Uses current sub_cell (from old cell). For infantry,
+        // reserve_destination below may allocate a new sub-cell and correct it
+        // via update_sub_cell.
         let insertion = CellListInsertion::from_category(category);
         let order = next_occupancy_enter_order.next();
         *occupancy_enter_order = order;
-        occupancy.move_entity(
+        occupancy.move_entity_layered(
             old_rx,
             old_ry,
             nx,
             ny,
             entity_id,
-            occupancy_layer,
+            old_occupancy_layer,
+            new_occupancy_layer,
             *sub_cell,
             insertion,
         );

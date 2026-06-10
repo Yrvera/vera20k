@@ -315,12 +315,15 @@ fn move_entity_to_cell(
     };
 
     if old != next || old_occupancy_layer != new_occupancy_layer {
-        occupancy.move_entity(
+        // GATE A2 verified two-layer order: remove on the OLD object-list layer,
+        // insert on the NEW one (they differ when a tube landing flips on_bridge).
+        occupancy.move_entity_layered(
             old.0,
             old.1,
             next.0,
             next.1,
             id,
+            old_occupancy_layer,
             new_occupancy_layer,
             entity.sub_cell,
             CellListInsertion::from_category(entity.category),

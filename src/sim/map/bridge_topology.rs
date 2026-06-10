@@ -534,6 +534,30 @@ mod tests {
     }
 
     #[test]
+    fn clear_occupation_no_structural_flag_required() {
+        // GATE A2 §b / P5 (L14): Mark gates the bridge bit layer on Flags&0x100,
+        // but Clear does NOT — it resolves by the Z threshold alone. So a
+        // non-structural cell (the bridge flag already cleared by a collapse) at
+        // full deck height resolves to Bridge under Clear (require_structural=false)
+        // but Ground under Mark (require_structural=true). This asymmetry lets
+        // collapse cleanup still find the deck bit after the structural flag is gone.
+        let deck = BRIDGE_DECK_HEIGHT_LEVELS; // full deck = 2 levels
+        let ground_z = 0;
+        let non_structural = view(0, 0, 0);
+
+        // Mark on a non-structural cell at full deck -> Ground (flag re-checked).
+        assert_eq!(
+            non_structural.occupancy_bit_layer(ground_z + deck, ground_z, /* mark */ true),
+            ListLayer::Ground
+        );
+        // Clear on the SAME cell/Z -> Bridge (no structural re-check).
+        assert_eq!(
+            non_structural.occupancy_bit_layer(ground_z + deck, ground_z, /* clear */ false),
+            ListLayer::Bridge
+        );
+    }
+
+    #[test]
     fn service_gate_handle_is_bit_identical_to_pathfinding_gate() {
         // P2 shadow: the service-facing handle must produce the exact same
         // `BridgeTraversalResult` as calling the pathfinding owner directly, for a
