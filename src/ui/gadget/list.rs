@@ -24,8 +24,8 @@ pub struct ButtonState {
     pub kind: ToggleKind,
 }
 
-/// Which Action implementation a gadget runs (the 3 live behavior shapes the
-/// A0/A1 scope needs; cameo/click-region behaviors arrive with A2/A3).
+/// Which Action implementation a gadget runs (the live behavior shapes; cameo
+/// + click-region added in A2/A3).
 #[derive(Debug, Clone, Copy)]
 pub enum GadgetBehavior {
     /// Base action (G16): consume any masked flags.
@@ -34,6 +34,15 @@ pub enum GadgetBehavior {
     Control,
     /// Toggle-button action (G22): the silent-press / fire-on-release machine.
     Button(ButtonState),
+    /// Cameo action (A2 / SelectClass): fire on the press edge (left build/arm,
+    /// right cancel); strip LEFTUP; post `id|0x8000` (`|0x4000` marks a right
+    /// press) for the driver to map back to a SidebarAction. Not sticky, no
+    /// toggle/latch state.
+    Cameo,
+    /// Invisible Action-only click region (A3 / tactical catcher + minimap):
+    /// consume any masked flags, run sticky capture, post NO id. The driver
+    /// identifies which region consumed by stored handle.
+    ClickRegion,
 }
 
 /// One retained gadget.
@@ -98,6 +107,26 @@ impl GadgetSpec {
     pub fn with_flags(mut self, flags: u16) -> Self {
         self.flags = flags;
         self
+    }
+
+    /// SelectClass cameo ctor (A2): mask 0x19, NOT sticky, `Cameo` behavior.
+    /// `id` is the runtime cameo id (1000 + visible slot index).
+    pub fn cameo(rect: GadgetRect, id: u16) -> Self {
+        let mut spec = Self::new(rect, super::CAMEO_FLAGS, false);
+        spec.id = id;
+        spec.behavior = GadgetBehavior::Cameo;
+        spec
+    }
+
+    /// Invisible Action-only click region ctor (A3): sticky, custom event mask
+    /// (tactical 0x7F / minimap 0x9F), `ClickRegion` behavior, no id. The sticky
+    /// byte makes the dispatcher acquire capture on a press so a drag stays
+    /// bound to the region across the sidebar boundary (G17). The 0x7F/0x9F
+    /// masks already include the sticky `|5` bits.
+    pub fn click_region(rect: GadgetRect, flags: u16) -> Self {
+        let mut spec = Self::new(rect, flags, true);
+        spec.behavior = GadgetBehavior::ClickRegion;
+        spec
     }
 }
 
@@ -261,6 +290,22 @@ mod tests {
 
     fn rect() -> GadgetRect {
         GadgetRect::new(0, 0, 10, 10)
+    }
+
+    #[test]
+    fn cameo_and_click_region_ctors_a2_a3() {
+        let r = GadgetRect::new(0, 0, 60, 48);
+        let cameo = GadgetSpec::cameo(r, 1000);
+        assert!(!cameo.sticky, "cameo is NOT sticky");
+        assert_eq!(cameo.flags, super::super::CAMEO_FLAGS, "cameo mask 0x19");
+        assert_eq!(cameo.id, 1000);
+        assert!(matches!(cameo.behavior, GadgetBehavior::Cameo));
+
+        let region = GadgetSpec::click_region(GadgetRect::new(0, 0, 800, 600), 0x7F);
+        assert!(region.sticky, "click region is sticky");
+        assert_eq!(region.flags, 0x7F, "0x7F already includes the sticky |5 bits");
+        assert_eq!(region.id, 0, "no id");
+        assert!(matches!(region.behavior, GadgetBehavior::ClickRegion));
     }
 
     #[test]

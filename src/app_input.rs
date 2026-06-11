@@ -31,29 +31,55 @@ use crate::sim::selection::{DragTransition, SelectAction};
 pub(crate) const CLICK_SELECT_RADIUS: f32 = 30.0;
 
 /// Handle mouse button press/release for selection and move commands.
+///
+/// The in-game gadget walk runs FIRST (study G22/A8): chrome buttons + cameos
+/// fire/consume there; the full-tactical catcher and the minimap region decide
+/// WHICH body runs (the regions are sticky, so a drag stays bound to its region
+/// across the sidebar boundary). Middle-mouse pan is never a gadget event and is
+/// handled directly. A `NotConsumed` click hits no live gadget — only the legacy
+/// dev/pause/producer press path runs; empty-sidebar / off-window clicks do
+/// nothing (gamemd's sidebar-body gadget swallows them, A6). Right-press is owned
+/// by the tactical catcher (viewport-only), so right-clicking dead sidebar chrome
+/// no longer deselects — matching gamemd.
 pub(crate) fn handle_mouse_input(
     state: &mut AppState,
     button: MouseButton,
     btn_state: ElementState,
 ) {
-    // Gadget substrate first (study G22): tabs/repair/sell/scroll consume
-    // their presses silently and fire on RELEASE-inside with drag-off cancel.
-    // Consumed events never fall through to minimap/selection. Cameos and the
-    // dev/control buttons stay on the legacy press path until slice A2.
-    if crate::app_gadget_input::handle_mouse_button_event(state, button, btn_state.is_pressed()) {
+    use crate::app_gadget_input::GadgetConsume;
+    let pressed = btn_state.is_pressed();
+    // Middle-mouse pan: not a gadget event, handle directly.
+    if button == MouseButton::Middle {
+        if pressed {
+            state.middle_mouse_panning = true;
+            state.middle_mouse_anchor_x = state.cursor_x;
+            state.middle_mouse_anchor_y = state.cursor_y;
+        } else {
+            state.middle_mouse_panning = false;
+        }
         return;
     }
-    if btn_state.is_pressed() {
-        if handle_sidebar_mouse_input(state, button) {
-            return;
+    match crate::app_gadget_input::handle_mouse_button_event(state, button, pressed) {
+        GadgetConsume::Consumed => {}
+        GadgetConsume::Tactical => tactical_mouse(state, button, btn_state),
+        GadgetConsume::Minimap => minimap_mouse(state, button, btn_state),
+        GadgetConsume::NotConsumed => {
+            if pressed {
+                handle_sidebar_mouse_input(state, button);
+            }
         }
     }
+}
+
+/// Tactical-viewport mouse body (routed here when the full-tactical ClickRegion
+/// consumes the edge — i.e. a click in the play area, or a captured drag/release
+/// that started there). Logic is the legacy handler's tactical path, unchanged;
+/// the minimap-drag-end and minimap-begin checks moved to `minimap_mouse`, and
+/// middle-pan moved to the dispatcher.
+pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_state: ElementState) {
     match button {
         MouseButton::Left => {
             if btn_state.is_pressed() {
-                if crate::app_sidebar_render::try_begin_minimap_drag(state) {
-                    return;
-                }
                 if state.targeting_mode.is_some() {
                     return; // suppress selection drag while either targeting mode is active
                 }
@@ -61,10 +87,6 @@ pub(crate) fn handle_mouse_input(
                     .selection_state
                     .begin_drag(state.cursor_x, state.cursor_y);
             } else {
-                if state.minimap_dragging {
-                    state.minimap_dragging = false;
-                    return;
-                }
                 if let Some(section) = state.armed_super_weapon_type().map(str::to_owned) {
                     crate::app_commands::launch_super_weapon_at_cursor(state, &section);
                     return;
@@ -145,15 +167,6 @@ pub(crate) fn handle_mouse_input(
                 }
             }
         }
-        MouseButton::Middle => {
-            if btn_state.is_pressed() {
-                state.middle_mouse_panning = true;
-                state.middle_mouse_anchor_x = state.cursor_x;
-                state.middle_mouse_anchor_y = state.cursor_y;
-            } else {
-                state.middle_mouse_panning = false;
-            }
-        }
         MouseButton::Right if btn_state.is_pressed() => {
             // Right-click = cancel / deselect only.
             if state.targeting_mode.is_some() {
@@ -165,6 +178,22 @@ pub(crate) fn handle_mouse_input(
             queue_selection_snapshot_command(state, Vec::new(), false);
         }
         _ => {}
+    }
+}
+
+/// Minimap mouse body (routed here when the minimap ClickRegion consumes the
+/// edge). Preserves the current continuous-follow drag gesture — gamemd's
+/// press-edge camera-center is a DEFERRED parity item, not flipped here.
+pub(crate) fn minimap_mouse(state: &mut AppState, button: MouseButton, btn_state: ElementState) {
+    // Right/other on the minimap: no current action (gamemd's right-press
+    // camera-center is the deferred parity item).
+    if button != MouseButton::Left {
+        return;
+    }
+    if btn_state.is_pressed() {
+        crate::app_sidebar_render::try_begin_minimap_drag(state);
+    } else if state.minimap_dragging {
+        state.minimap_dragging = false;
     }
 }
 

@@ -5,7 +5,10 @@
 
 use super::focus::FocusState;
 use super::list::{Gadget, GadgetBehavior, ToggleKind};
-use super::{FLAG_RIGHT_PRESS, FLAG_RIGHT_RELEASE, PRESS_BITS, RELEASE_BITS, RESULT_BUTTON, RESULT_RIGHT};
+use super::{
+    FLAG_LEFT_PRESS, FLAG_LEFT_UP, FLAG_RIGHT_PRESS, FLAG_RIGHT_RELEASE, PRESS_BITS, RELEASE_BITS,
+    RESULT_BUTTON, RESULT_RIGHT,
+};
 
 /// G17 — sticky capture protocol: press bits acquire capture iff the gadget is sticky;
 /// release bits release holder-only (an acquire+release in one call both run).
@@ -50,6 +53,30 @@ pub(crate) fn control_action(
     base_action(g, masked, focus)
 }
 
+/// SelectClass cameo Action (A2): fires on the press edge. gamemd strips the
+/// LEFTUP bit and acts only on LEFTPRESS/RIGHTPRESS — so an idle-tick dispatch
+/// over a hovered cameo (which carries LEFTUP) is a no-op that does NOT consume
+/// (the walk continues). On a real press it posts `id|0x8000` (left) or
+/// `id|0x8000|0x4000` (right marker) and consumes. Cameos are not sticky, so no
+/// capture runs.
+pub(crate) fn cameo_action(g: &mut Gadget, masked: u16, key: &mut u16) -> u32 {
+    // gamemd: `if (flags & LEFTUP) flags &= ~LEFTUP;`
+    let masked = masked & !FLAG_LEFT_UP;
+    let press = masked & (FLAG_LEFT_PRESS | FLAG_RIGHT_PRESS);
+    if press == 0 {
+        // No press edge left after the LEFTUP strip → no fire, no consume.
+        return 0;
+    }
+    if g.id != 0 {
+        *key = g.id | RESULT_BUTTON;
+        if (press & FLAG_RIGHT_PRESS) != 0 {
+            *key |= RESULT_RIGHT; // driver reads this as right_click
+        }
+    }
+    g.is_to_redraw = true;
+    1
+}
+
 /// Behavior router called by `clicked_on` after G15 masking. `live` is the
 /// LIVE cursor position (G22's inside-test source — never the event coords).
 pub(crate) fn dispatch_action(
@@ -60,9 +87,12 @@ pub(crate) fn dispatch_action(
     focus: &mut FocusState,
 ) -> u32 {
     match g.behavior {
-        GadgetBehavior::Plain => base_action(g, masked, focus),
+        // ClickRegion (A3) is an invisible sticky region: base consume + capture,
+        // no id post.
+        GadgetBehavior::Plain | GadgetBehavior::ClickRegion => base_action(g, masked, focus),
         GadgetBehavior::Control => control_action(g, masked, key, focus),
         GadgetBehavior::Button(_) => toggle_action(g, masked, key, live, focus),
+        GadgetBehavior::Cameo => cameo_action(g, masked, key),
     }
 }
 
@@ -150,6 +180,36 @@ mod tests {
         let mut l = GadgetList::new(ListId(1));
         let h = l.add_tail(spec);
         (l, h)
+    }
+
+    #[test]
+    fn cameo_fires_on_press_strips_leftup_a2() {
+        let mut spec = GadgetSpec::cameo(GadgetRect::new(0, 0, 60, 48), 1000);
+        spec.behavior = GadgetBehavior::Cameo;
+        let (mut l, a) = one_gadget(spec);
+        let mut key: u16 = 0;
+        // Left press → post id|0x8000, consume.
+        assert_eq!(cameo_action(l.get_mut(a).unwrap(), 0x01, &mut key), 1);
+        assert_eq!(key, 1000 | 0x8000);
+        // Right press → post id|0x8000|0x4000, consume.
+        key = 0;
+        assert_eq!(cameo_action(l.get_mut(a).unwrap(), 0x10, &mut key), 1);
+        assert_eq!(key, 1000 | 0x8000 | 0x4000);
+        // LEFTUP only (idle-tick dispatch over a hovered cameo) → no fire, no
+        // consume, key untouched.
+        key = 0xBEEF;
+        assert_eq!(cameo_action(l.get_mut(a).unwrap(), 0x08, &mut key), 0);
+        assert_eq!(key, 0xBEEF);
+    }
+
+    #[test]
+    fn cameo_zero_id_posts_nothing_but_consumes_a2() {
+        let mut spec = GadgetSpec::cameo(GadgetRect::new(0, 0, 60, 48), 0);
+        spec.behavior = GadgetBehavior::Cameo;
+        let (mut l, a) = one_gadget(spec);
+        let mut key: u16 = 0x1234;
+        assert_eq!(cameo_action(l.get_mut(a).unwrap(), 0x01, &mut key), 1);
+        assert_eq!(key, 0x1234, "id 0 posts nothing");
     }
 
     #[test]

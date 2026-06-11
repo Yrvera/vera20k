@@ -55,6 +55,26 @@ pub const HIT_SEED_AREA: i32 = 1024 * 768;
 /// Ctor rule (G4): a sticky gadget always ORs press+left bits into its mask.
 pub const STICKY_CTOR_MASK: u16 = 0x0005;
 
+/// SelectClass cameo construction mask (A2, study cameo lane §3): LEFTPRESS |
+/// LEFTUP | RIGHTPRESS. The cameo Action acts on the press bits and discards
+/// LEFTUP; there is no release bit, so cameos fire on mouse-DOWN.
+pub const CAMEO_FLAGS: u16 = FLAG_LEFT_PRESS | FLAG_LEFT_UP | FLAG_RIGHT_PRESS; // 0x19
+
+/// Full-tactical catcher mask (A3, study tactical lane §3): all mouse bits
+/// except RIGHTUP and KEYBOARD = 0x7F.
+pub const TACTICAL_REGION_FLAGS: u16 = FLAG_LEFT_PRESS
+    | FLAG_LEFT_HELD
+    | FLAG_LEFT_RELEASE
+    | FLAG_LEFT_UP
+    | FLAG_RIGHT_PRESS
+    | FLAG_RIGHT_HELD
+    | FLAG_RIGHT_RELEASE; // 0x7F
+
+/// Minimap/radar region mask (A3, study minimap lane §1b): left press/held/
+/// release/up + right-press + right-up; NOT right-held, NOT right-release = 0x9F.
+pub const MINIMAP_REGION_FLAGS: u16 =
+    FLAG_LEFT_PRESS | FLAG_LEFT_HELD | FLAG_LEFT_RELEASE | FLAG_LEFT_UP | FLAG_RIGHT_PRESS | FLAG_RIGHT_UP; // 0x9F
+
 /// Stable per-list gadget identity. Never reused within a list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GadgetHandle(pub u32);

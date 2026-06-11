@@ -627,4 +627,87 @@ mod tests {
         assert_eq!(r, crate::ui::gadget::KEY_LMB_UP, "no result posted — cancelled");
         assert_eq!(f.sticky, None, "capture released");
     }
+
+    #[test]
+    fn cameo_fires_on_press_only_a2() {
+        use crate::ui::gadget::CAMEO_FLAGS;
+        let mut f = FocusState::new();
+        let mut out = TickOutput::default();
+        let mut l = GadgetList::new(ListId(1));
+        let mut s = GadgetSpec::new(GadgetRect::new(0, 0, 60, 48), CAMEO_FLAGS, false);
+        s.id = 1000;
+        s.behavior = GadgetBehavior::Cameo;
+        let a = l.add_tail(s);
+        // Prime current_list (hover off the cameo).
+        tick(&mut l, &mut f, &idle(500, 500), &mut out);
+        // Left press inside → fires 1000|0x8000, consumes.
+        let r = tick(&mut l, &mut f, &event(crate::ui::gadget::KEY_LMB_DOWN, 5, 5, true), &mut out);
+        assert_eq!(r, 1000 | 0x8000);
+        assert_eq!(out.consumed_by, Some(a));
+        assert_eq!(f.sticky, None, "cameo never captures (not sticky)");
+        // Idle tick over the cameo (left up): LEFTUP stripped → no fire, walk
+        // not consumed.
+        let r = tick(&mut l, &mut f, &idle(5, 5), &mut out);
+        assert_eq!(r, 0);
+        assert_eq!(out.consumed_by, None, "idle-over-cameo does not consume");
+        assert_eq!(f.hovered, Some(a), "but it IS the current hover target (G7)");
+        // Release inside: cameo mask has no LEFTRELEASE → masked 0 → no dispatch.
+        let r = tick(&mut l, &mut f, &event(crate::ui::gadget::KEY_LMB_UP, 5, 5, false), &mut out);
+        assert_eq!(r, crate::ui::gadget::KEY_LMB_UP, "release not consumed by cameo");
+        assert_eq!(out.consumed_by, None);
+    }
+
+    #[test]
+    fn a3_smaller_or_earlier_wins_overlapping_region_and_button() {
+        // A small button overlapping a large catcher: the button consumes the
+        // press first (earlier in the walk) — the catcher is the fallback only.
+        let mut f = FocusState::new();
+        let mut out = TickOutput::default();
+        let mut l = GadgetList::new(ListId(1));
+        let button = l.add_tail(btn(GadgetRect::new(0, 0, 20, 20), 0x65));
+        let _catcher = l.add_tail(GadgetSpec::click_region(GadgetRect::new(0, 0, 800, 600), 0x7F));
+        tick(&mut l, &mut f, &idle(500, 500), &mut out); // prime
+        tick(&mut l, &mut f, &event(crate::ui::gadget::KEY_LMB_DOWN, 5, 5, true), &mut out);
+        assert_eq!(out.consumed_by, Some(button), "button (earlier) consumes, not the catcher");
+    }
+
+    #[test]
+    fn a3_catcher_dispatches_above_hit_seed_area() {
+        // A region larger than HIT_SEED_AREA still consumes a contained press in
+        // the broadcast walk (dispatch uses rect.contains, not the hover seed).
+        let mut f = FocusState::new();
+        let mut out = TickOutput::default();
+        let mut l = GadgetList::new(ListId(1));
+        let catcher = l.add_tail(GadgetSpec::click_region(GadgetRect::new(0, 0, 1920, 1080), 0x7F));
+        assert!(1920 * 1080 > crate::ui::gadget::HIT_SEED_AREA);
+        tick(&mut l, &mut f, &idle(5000, 5000), &mut out); // prime, hover off
+        tick(&mut l, &mut f, &event(crate::ui::gadget::KEY_LMB_DOWN, 100, 100, true), &mut out);
+        assert_eq!(out.consumed_by, Some(catcher), "rect.contains dispatch, seed-independent");
+        assert_eq!(f.sticky, Some(catcher), "press acquires sticky capture");
+    }
+
+    #[test]
+    fn a3_sticky_region_keeps_drag_across_boundary() {
+        // Press on the catcher captures; an idle masked-0 tick re-dispatches the
+        // HOLDER even with the cursor over a (later) button rect (G15 bypass).
+        let mut f = FocusState::new();
+        let mut out = TickOutput::default();
+        let mut l = GadgetList::new(ListId(1));
+        let catcher = l.add_tail(GadgetSpec::click_region(GadgetRect::new(0, 0, 100, 100), 0x7F));
+        let _button = l.add_tail(btn(GadgetRect::new(200, 0, 20, 20), 0x65));
+        tick(&mut l, &mut f, &idle(500, 500), &mut out);
+        tick(&mut l, &mut f, &event(crate::ui::gadget::KEY_LMB_DOWN, 5, 5, true), &mut out);
+        assert_eq!(f.sticky, Some(catcher));
+        // Drag onto the button rect: held idle tick goes to the catcher (sticky
+        // tier exclusive), the button is never dispatched.
+        let mut held = idle(205, 5);
+        held.left_held = true;
+        tick(&mut l, &mut f, &held, &mut out);
+        assert_eq!(out.dispatches.len(), 1);
+        assert_eq!(out.dispatches[0].handle, catcher, "held drag stays with the catcher");
+        // Release over the button still releases the catcher's capture.
+        let up = event(crate::ui::gadget::KEY_LMB_UP, 205, 5, false);
+        tick(&mut l, &mut f, &up, &mut out);
+        assert_eq!(f.sticky, None, "release frees capture");
+    }
 }
