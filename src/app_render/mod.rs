@@ -132,6 +132,10 @@ fn upload_to_gpu(
     ui: &UiInstances,
     sidebar: &SidebarInstances,
 ) {
+    // A5 chat/system message lines (GAME.FNT atlas) — chat draws before the
+    // tooltip (O10). Built before the pool borrow (it reads &AppState).
+    let message_text = crate::app_messages::build_message_text_instances(state);
+
     // A4 in-game tooltip: built before the pool borrow (it reads &AppState);
     // fill (darken texture) + text (GAME.FNT atlas), drawn after the chat
     // overlay and before the software cursor (O10).
@@ -248,6 +252,7 @@ fn upload_to_gpu(
     pool.upload(&state.gpu, "sidebar_gclock", &sidebar.gclock);
     pool.upload(&state.gpu, "sidebar_cameo_overlay", &sidebar.cameo_overlay);
     pool.upload(&state.gpu, "sidebar_text", &sidebar.text);
+    pool.upload(&state.gpu, "message_text", &message_text);
     pool.upload(&state.gpu, "tooltip_fill", &tooltip_fill);
     pool.upload(&state.gpu, "tooltip_text", &tooltip_text);
 }

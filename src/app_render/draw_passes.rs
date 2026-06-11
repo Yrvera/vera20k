@@ -524,6 +524,13 @@ pub(super) fn dispatch_draw_passes(
         &mut pass,
         &state.batch_renderer,
         pool,
+        Some(state.bit_font.atlas()),
+        "message_text",
+    );
+    draw_pooled_ui(
+        &mut pass,
+        &state.batch_renderer,
+        pool,
         state.bit_font.darken_texture(),
         "tooltip_fill",
     );

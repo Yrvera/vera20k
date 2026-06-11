@@ -226,6 +226,13 @@ pub(crate) struct AppState {
     /// Epoch for the tooltip/message wall-clock (`now_ms` = elapsed since
     /// app construction).
     pub(crate) tooltip_epoch: Instant,
+    /// In-game chat/system message surface (study §3.1) — re-anchored to the
+    /// tactical viewport per frame by `app_messages`.
+    pub(crate) message_list: crate::ui::messages::MessageList,
+    /// Pause-adjusted clock for message deadlines (contract §4.2 step 8 /
+    /// §4.3: the native composite timer freezes during pause). Fed pause
+    /// edges by `app_messages::update`.
+    pub(crate) message_clock: crate::ui::messages::PauseAwareClock,
     /// Smoothly animated credits display per owner — ticks toward actual balance
     /// each frame (step = |diff| / 8, clamped to [1, 143]).
     pub(crate) displayed_credits: HashMap<String, i32>,
@@ -321,10 +328,6 @@ pub(crate) struct AppState {
     pub(crate) ui_scale: f32,
     /// Scroll offset for the current sidebar tab's item list.
     pub(crate) sidebar_scroll_rows: usize,
-    /// Transient mission/script announcement shown in-game.
-    pub(crate) mission_announcement: Option<String>,
-    /// Absolute deadline for clearing the announcement banner.
-    pub(crate) mission_announcement_deadline: Option<Instant>,
     /// Asset manager — kept alive for music track lookups.
     pub(crate) asset_manager: Option<AssetManager>,
     /// Background music player (rodio).
@@ -2586,6 +2589,13 @@ impl App {
             in_game_gadgets: crate::app_gadget_input::InGameGadgets::new(),
             tooltips: crate::ui::tooltips::TooltipService::new(),
             tooltip_epoch: Instant::now(),
+            message_list: crate::ui::messages::MessageList::new(
+                3,
+                0,
+                crate::ui::messages::MESSAGE_MAX_VISIBLE_RETAIL,
+                0,
+            ),
+            message_clock: crate::ui::messages::PauseAwareClock::default(),
             radar_content_insets: None,
             has_radar: false,
             selection_overlay: None,
@@ -2627,8 +2637,6 @@ impl App {
             sidebar_layout_spec_base: base_sidebar_layout_spec,
             ui_scale,
             sidebar_scroll_rows: 0,
-            mission_announcement: None,
-            mission_announcement_deadline: None,
             asset_manager: startup_asset_manager,
             music_player: MusicPlayer::new(),
             sfx_player: SfxPlayer::new(),
@@ -2701,6 +2709,7 @@ impl App {
             && !Self::single_player_shell_active(state)
             && !Self::native_skirmish_shell_active(state);
         crate::app_tooltips::update(state, main_menu_shell_live);
+        crate::app_messages::update(state);
         if let Some(until) = state.startup_splash_until {
             if Instant::now() < until {
                 let output: wgpu::SurfaceTexture = state
@@ -2945,9 +2954,6 @@ impl App {
                         sv,
                         state.ui_scale,
                     );
-                }
-                if let Some(text) = state.mission_announcement.as_deref() {
-                    crate::ui::mission_status::draw_mission_banner(&state.egui.ctx, text);
                 }
                 // Debug panels use a light/.NET theme — push light visuals
                 // before rendering, then restore the original after.

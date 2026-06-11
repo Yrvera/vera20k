@@ -166,13 +166,6 @@ pub(crate) fn advance_in_game_runtime(state: &mut AppState, elapsed_ms: u64) {
     };
 
     if run_sim {
-        if let Some(deadline) = state.mission_announcement_deadline {
-            if Instant::now() >= deadline {
-                state.mission_announcement = None;
-                state.mission_announcement_deadline = None;
-            }
-        }
-
         let garrison_flash_start_tick = state.simulation.as_ref().map(|sim| sim.tick).unwrap_or(0);
         advance_fixed_simulation(state, sim_elapsed);
         let garrison_flash_elapsed_ticks = state
@@ -846,9 +839,10 @@ fn apply_trigger_effects(state: &mut AppState, effects: &[TriggerEffect]) {
                 immediate: _,
             } => center_camera_on_waypoint(state, *waypoint),
             TriggerEffect::MissionAnnouncement { text } => {
-                state.mission_announcement = Some(text.clone());
-                state.mission_announcement_deadline =
-                    Some(Instant::now() + std::time::Duration::from_secs(4));
+                // gamemd routes trigger text through the message list
+                // (contract lane §4.5: the native trigger-text path is a
+                // message-list producer).
+                crate::app_messages::post_system_message(state, text);
             }
             TriggerEffect::MissionResult { title, detail } => {
                 state.screen = GameScreen::MissionResult {

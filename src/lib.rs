@@ -97,6 +97,9 @@ pub mod app_gadget_input;
 // Tooltip service driver: wall clock, event feeds, region sync, draw build.
 pub mod app_tooltips;
 
+// Chat/system message surface driver: posts, expiry, draw build.
+pub mod app_messages;
+
 // Build/production commands and owner management.
 // Extracted from app_render.rs.
 pub mod app_commands;

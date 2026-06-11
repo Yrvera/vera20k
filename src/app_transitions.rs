@@ -163,8 +163,6 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     state.building_placement_preview = None;
     state.active_sidebar_tab = SidebarTab::default_active_tab();
     state.sidebar_scroll_rows = 0;
-    state.mission_announcement = None;
-    state.mission_announcement_deadline = None;
     let map_title: &str = state.map_basic.name.as_deref().unwrap_or("Unknown Map");
     state.window.set_title(&format!("RA2 - {}", map_title));
     state
