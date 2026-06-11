@@ -354,7 +354,7 @@ pub fn scroll_button_rects(
     )
 }
 
-fn hit_test_item(item: &SidebarItem, right_click: bool) -> SidebarAction {
+pub(crate) fn hit_test_item(item: &SidebarItem, right_click: bool) -> SidebarAction {
     if right_click {
         // SW cameos have no queue → right-click does nothing.
         if item.is_superweapon {
@@ -398,19 +398,13 @@ fn hit_test_item(item: &SidebarItem, right_click: bool) -> SidebarAction {
     }
 }
 
-/// Legacy press-path hit-test for the surfaces NOT yet on the gadget
-/// substrate (cameos, pause/producer, dev buttons). Tabs, repair, sell and
-/// the strip-scroll pair are owned by `app_gadget_input` (fire-on-release,
-/// study G22) and are deliberately absent here.
-pub fn hit_test(view: &SidebarView, x: f32, y: f32, right_click: bool) -> SidebarAction {
+/// Legacy press-path hit-test for the surfaces NOT yet on the gadget substrate
+/// (pause/producer, dev buttons). Tabs/repair/sell/scroll (A1) AND the cameos
+/// (A2) are owned by `app_gadget_input`; they are deliberately absent here.
+/// `hit_test_item` (the cameo click→action map) stays public for the driver.
+pub fn hit_test(view: &SidebarView, x: f32, y: f32, _right_click: bool) -> SidebarAction {
     if !view.panel_rect.contains(x, y) {
         return SidebarAction::None;
-    }
-
-    for item in &view.items {
-        if item.rect.contains(x, y) {
-            return hit_test_item(item, right_click);
-        }
     }
 
     if let Some(button) = view.pause_button.as_ref() {
