@@ -239,6 +239,30 @@ mod tests {
         assert_eq!(profile.speed_multiplier_for(SpeedType::Foot), SIM_ONE);
     }
 
+    /// RC-7 / AT-13: percentages above 100 clamp to full speed (1.0); a sub-100
+    /// percentage passes through as its fraction. The original never lets a
+    /// terrain speed bonus push a unit faster than its base speed.
+    #[test]
+    fn speed_multiplier_clamps_at_one() {
+        let fast = SpeedCostProfile {
+            foot: Some(120),
+            ..Default::default()
+        };
+        assert_eq!(fast.speed_multiplier_for(SpeedType::Foot), SIM_ONE);
+
+        // 80% is below the cap, so it passes through as the fraction 80/100
+        // (no clamp). Compare against the same fixed-point division the
+        // implementation performs — a `lit("0.8")` literal differs by 1 ULP
+        // because 0.8 is not exactly representable in binary fixed-point.
+        let slow = SpeedCostProfile {
+            foot: Some(80),
+            ..Default::default()
+        };
+        let pass_through = SimFixed::from_num(80u8) / SimFixed::from_num(100u8);
+        assert_eq!(slow.speed_multiplier_for(SpeedType::Foot), pass_through);
+        assert!(pass_through < SIM_ONE, "80% must stay below the 1.0 cap");
+    }
+
     #[test]
     fn default_config_values() {
         let config = TerrainSpeedConfig::default();
