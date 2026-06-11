@@ -144,6 +144,115 @@ pub(crate) fn draw_one(
     }
 }
 
+/// One Input tick on a list (the G5-G13 dispatch authority). Returns the
+/// 16-bit key, possibly rewritten to `ID|0x8000[|0x4000]` by a fired control
+/// (G13) or forced to 0 by a silent press (G22 row 1).
+pub fn tick(
+    list: &mut GadgetList,
+    focus: &mut FocusState,
+    input: &GadgetInput,
+    out: &mut TickOutput,
+) -> u16 {
+    out.clear();
+
+    // G5 — fresh-list reset: a different list than last tick clears capture
+    // and keyboard focus and force-draws every gadget this tick.
+    let list_changed = focus.current_list != Some(list.list_id());
+    if list_changed {
+        focus.sticky = None;
+        focus.keyboard = None;
+        focus.current_list = Some(list.list_id());
+    }
+
+    let mut key: u16 = input.queued_key;
+
+    // G6 — coordinate source: mouse-button events (low byte 1/2 — covers
+    // 0x001/0x002/0x801/0x802) use the latched event coords; keyboard events
+    // and idle ticks use the live cursor.
+    let (x, y) = if matches!(key & 0xFF, 1 | 2) {
+        (input.event_x, input.event_y)
+    } else {
+        (input.mouse_x, input.mouse_y)
+    };
+
+    // G7 — hover transitions run BEFORE dispatch, every tick.
+    let hit = hit_test(list, x, y);
+    if hit != focus.hovered {
+        out.hover_left = focus.hovered;
+        out.hover_entered = hit;
+        focus.hovered = hit;
+    }
+
+    // G8 — flag assembly: event bits from the queued key; held/up bits ONLY
+    // on idle ticks; a queued non-mouse event yields exactly FLAG_KEYBOARD.
+    let mut flags: u16 = match key {
+        0 => 0,
+        KEY_LMB_DOWN => FLAG_LEFT_PRESS,
+        KEY_RMB_DOWN => FLAG_RIGHT_PRESS,
+        KEY_LMB_UP => FLAG_LEFT_RELEASE,
+        KEY_RMB_UP => FLAG_RIGHT_RELEASE,
+        _ => 0,
+    };
+    if key == 0 {
+        flags |= if input.left_held { FLAG_LEFT_HELD } else { FLAG_LEFT_UP };
+        flags |= if input.right_held { FLAG_RIGHT_HELD } else { FLAG_RIGHT_UP };
+    } else if flags == 0 {
+        flags = FLAG_KEYBOARD;
+    }
+
+    // G9 — modifier word, polled fresh; passed ONLY to the broadcast walk
+    // (hardwired 0 for the sticky and keyboard tiers).
+    let modifier: u8 =
+        u8::from(input.shift) | (u8::from(input.ctrl) << 1) | (u8::from(input.alt) << 2);
+
+    let live = (input.mouse_x, input.mouse_y);
+
+    // G10 tier 1 — sticky capture: exclusive; dispatched even masked-0.
+    if let Some(handle) = focus.sticky {
+        if list.get(handle).is_some() {
+            draw_one(list, handle, false, out); // G11 pre-draw
+            clicked_on(list, handle, &mut key, flags, x, y, 0, live, focus, out);
+            // G11 post-draw re-reads the capture slot: a gadget that released
+            // capture this call still gets its post-draw.
+            let post = focus.sticky.unwrap_or(handle);
+            draw_one(list, post, false, out);
+            return key;
+        }
+        // Unreachable by construction (removal clears focus); never dispatch
+        // into a missing slot.
+        focus.sticky = None;
+    }
+
+    // G10 tier 2 — keyboard focus: only for keyboard-flag ticks.
+    if let Some(handle) = focus.keyboard {
+        if (flags & FLAG_KEYBOARD) != 0 && list.get(handle).is_some() {
+            draw_one(list, handle, false, out);
+            clicked_on(list, handle, &mut key, flags, x, y, 0, live, focus, out);
+            let post = focus.keyboard.unwrap_or(handle);
+            draw_one(list, post, false, out);
+            return key;
+        }
+    }
+
+    // G12 tier 3 — broadcast walk head→tail: every visited gadget is drawn
+    // (forced on a fresh list) BEFORE dispatch; disabled gadgets are drawn
+    // but never dispatched; the first consumer gets one extra draw and stops
+    // the walk — later gadgets get NEITHER call this tick.
+    for i in 0..list.len() {
+        let handle = list.handle_at(i);
+        draw_one(list, handle, list_changed, out);
+        let disabled = list.get(handle).is_none_or(|g| g.is_disabled);
+        if !disabled
+            && clicked_on(list, handle, &mut key, flags, x, y, modifier, live, focus, out) != 0
+        {
+            draw_one(list, handle, false, out);
+            out.consumed_by = Some(handle);
+            break;
+        }
+    }
+    key
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,5 +392,238 @@ mod tests {
         assert!(!l.get(a).unwrap().is_to_redraw, "paint clears the dirty byte");
         draw_one(&mut l, a, true, &mut out);
         assert_eq!(out.draws.len(), 2, "forced always paints");
+    }
+
+    fn btn(rect: GadgetRect, id: u16) -> GadgetSpec {
+        GadgetSpec::button(rect, id, crate::ui::gadget::list::ToggleKind::Flip)
+    }
+
+    fn idle(mx: i32, my: i32) -> GadgetInput {
+        GadgetInput {
+            mouse_x: mx,
+            mouse_y: my,
+            ..Default::default()
+        }
+    }
+
+    fn event(key: u16, ex: i32, ey: i32, held_left: bool) -> GadgetInput {
+        GadgetInput {
+            queued_key: key,
+            event_x: ex,
+            event_y: ey,
+            mouse_x: ex,
+            mouse_y: ey,
+            left_held: held_left,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn g5_fresh_list_reset_clears_capture_and_force_draws() {
+        let mut f = FocusState::new();
+        let mut out = TickOutput::default();
+        let mut l1 = GadgetList::new(ListId(1));
+        let a = l1.add_tail(btn(GadgetRect::new(0, 0, 10, 10), 0x65));
+        // Press captures on list 1.
+        tick(&mut l1, &mut f, &event(crate::ui::gadget::KEY_LMB_DOWN, 5, 5, true), &mut out);
+        assert_eq!(f.sticky, Some(a));
+        // Ticking a DIFFERENT list resets capture + keyboard, force-draws all.
+        let mut l2 = GadgetList::new(ListId(2));
+        l2.add_tail(GadgetSpec::new(GadgetRect::new(0, 0, 5, 5), 0, false));
+        l2.add_tail(GadgetSpec::new(GadgetRect::new(0, 0, 5, 5), 0, false));
+        tick(&mut l2, &mut f, &idle(100, 100), &mut out);
+        assert_eq!(f.sticky, None, "G5 nulls capture");
+        assert_eq!(f.current_list, Some(ListId(2)));
+        assert_eq!(out.draws.len(), 2, "fresh list force-draws every gadget");
+        assert!(out.draws.iter().all(|d| d.forced));
+    }
+
+    #[test]
+    fn g6_event_coords_for_mouse_keys_live_for_idle() {
+        let mut f = FocusState::new();
+        let mut out = TickOutput::default();
+        let mut l = GadgetList::new(ListId(1));
+        let a = l.add_tail(btn(GadgetRect::new(0, 0, 10, 10), 0x65));
+        // Event coords inside the rect, live mouse far away: the press (low
+        // byte 1) must hit-test/dispatch at the EVENT coords.
+        let mut input = event(crate::ui::gadget::KEY_LMB_DOWN, 5, 5, true);
+        input.mouse_x = 500;
+        input.mouse_y = 500;
+        tick(&mut l, &mut f, &input, &mut out);
+        assert_eq!(f.sticky, Some(a), "dispatched at event coords");
+        assert_eq!(f.hovered, Some(a), "hover hit-tested at event coords too");
+        // Idle tick uses the live cursor: far away ⇒ hover leaves.
+        let mut f2 = FocusState::new();
+        f2.current_list = Some(ListId(1));
+        f2.hovered = Some(a);
+        tick(&mut l, &mut f2, &idle(500, 500), &mut out);
+        assert_eq!(f2.hovered, None);
+        assert_eq!(out.hover_left, Some(a));
+    }
+
+    #[test]
+    fn g7_hover_enter_leave_and_removal_closure() {
+        let mut f = FocusState::new();
+        let mut out = TickOutput::default();
+        let mut l = GadgetList::new(ListId(1));
+        let a = l.add_tail(GadgetSpec::new(GadgetRect::new(0, 0, 10, 10), 0, false));
+        tick(&mut l, &mut f, &idle(5, 5), &mut out);
+        assert_eq!(out.hover_entered, Some(a));
+        assert_eq!(f.hovered, Some(a));
+        // Removing the hovered gadget clears hover; the NEXT tick reports no
+        // hover_left for the dead handle (study §6.1 G7-closure).
+        l.remove(a, &mut f);
+        assert_eq!(f.hovered, None);
+        tick(&mut l, &mut f, &idle(5, 5), &mut out);
+        assert_eq!(out.hover_left, None, "no Leave fires for a dead handle");
+        assert_eq!(out.hover_entered, None);
+    }
+
+    #[test]
+    fn g8_flag_assembly_held_bits_idle_only() {
+        let mut f = FocusState::new();
+        let mut out = TickOutput::default();
+        let mut l = GadgetList::new(ListId(1));
+        // Mask everything so the dispatch record shows the assembled flags.
+        let mut s = GadgetSpec::new(GadgetRect::new(0, 0, 10, 10), 0x01FF, false);
+        s.behavior = GadgetBehavior::Control;
+        s.id = 0x11;
+        l.add_tail(s);
+        // Idle tick, left held, right up → 0x2 | 0x80.
+        let mut input = idle(5, 5);
+        input.left_held = true;
+        tick(&mut l, &mut f, &input, &mut out);
+        assert_eq!(out.dispatches[0].masked_flags, FLAG_LEFT_HELD | FLAG_RIGHT_UP);
+        // Press event tick with left ALSO held: event bit only, NO held bits.
+        let input = event(crate::ui::gadget::KEY_LMB_DOWN, 5, 5, true);
+        tick(&mut l, &mut f, &input, &mut out);
+        assert_eq!(out.dispatches[0].masked_flags, FLAG_LEFT_PRESS, "never both");
+        // Queued non-mouse key → exactly FLAG_KEYBOARD.
+        let input = event(0x1C, 5, 5, false);
+        tick(&mut l, &mut f, &input, &mut out);
+        assert_eq!(out.dispatches[0].masked_flags, FLAG_KEYBOARD);
+    }
+
+    #[test]
+    fn g9_modifier_word_broadcast_only() {
+        let mut f = FocusState::new();
+        let mut out = TickOutput::default();
+        let mut l = GadgetList::new(ListId(1));
+        let a = l.add_tail(btn(GadgetRect::new(0, 0, 10, 10), 0x65));
+        let mut input = event(crate::ui::gadget::KEY_LMB_DOWN, 5, 5, true);
+        input.shift = true;
+        input.alt = true;
+        // Broadcast-tier dispatch carries the modifier word.
+        tick(&mut l, &mut f, &input, &mut out);
+        assert_eq!(out.dispatches[0].modifier, 0b101, "SHIFT=1 | ALT=4");
+        assert_eq!(f.sticky, Some(a));
+        // Sticky-tier re-dispatch hardwires 0.
+        let mut input2 = idle(5, 5);
+        input2.left_held = true;
+        input2.shift = true;
+        tick(&mut l, &mut f, &input2, &mut out);
+        assert_eq!(out.dispatches[0].modifier, 0, "sticky tier modifier = 0");
+    }
+
+    #[test]
+    fn g10_tier_precedence_sticky_exclusive() {
+        let mut f = FocusState::new();
+        let mut out = TickOutput::default();
+        let mut l = GadgetList::new(ListId(1));
+        let a = l.add_tail(btn(GadgetRect::new(0, 0, 10, 10), 0x65));
+        let b = l.add_tail(btn(GadgetRect::new(20, 0, 10, 10), 0x66));
+        // Capture a.
+        tick(&mut l, &mut f, &event(crate::ui::gadget::KEY_LMB_DOWN, 5, 5, true), &mut out);
+        assert_eq!(f.sticky, Some(a));
+        // A press over b while a holds capture goes to a ONLY (tier 1 is
+        // exclusive); b is never dispatched.
+        tick(&mut l, &mut f, &event(crate::ui::gadget::KEY_LMB_DOWN, 25, 5, true), &mut out);
+        assert_eq!(out.dispatches.len(), 1);
+        assert_eq!(out.dispatches[0].handle, a);
+        assert_eq!(out.consumed_by, None, "no broadcast walk ran");
+        let _ = b;
+    }
+
+    #[test]
+    fn g10_keyboard_tier_and_g13_result() {
+        let mut f = FocusState::new();
+        let mut out = TickOutput::default();
+        let mut l = GadgetList::new(ListId(1));
+        let mut s = GadgetSpec::new(GadgetRect::new(0, 0, 10, 10), 0x05, false);
+        s.id = 0x42;
+        s.behavior = GadgetBehavior::Control;
+        let a = l.add_tail(s);
+        crate::ui::gadget::list::set_focus(&mut l, &mut f, a);
+        f.current_list = Some(ListId(1));
+        // Keyboard event with the cursor far away: routed to the focus
+        // holder, bounds bypassed, result = ID|0x8000.
+        let result = tick(&mut l, &mut f, &event(0x1C, 500, 500, false), &mut out);
+        assert_eq!(result, 0x42 | 0x8000);
+        assert_eq!(out.dispatches[0].handle, a);
+        // A MOUSE event does not enter the keyboard tier (falls to broadcast,
+        // misses the rect, returns the raw key).
+        let result = tick(&mut l, &mut f, &event(crate::ui::gadget::KEY_LMB_DOWN, 500, 500, false), &mut out);
+        assert_eq!(result, crate::ui::gadget::KEY_LMB_DOWN);
+    }
+
+    #[test]
+    fn g12_walk_stops_at_consumer_draw_cadence() {
+        let mut f = FocusState::new();
+        let mut out = TickOutput::default();
+        let mut l = GadgetList::new(ListId(1));
+        let a = l.add_tail(btn(GadgetRect::new(0, 0, 10, 10), 0x65));
+        let b = l.add_tail(btn(GadgetRect::new(0, 0, 10, 10), 0x66)); // same rect, later
+        let c = l.add_tail(btn(GadgetRect::new(40, 0, 10, 10), 0x67));
+        // Prime current_list so this is NOT a fresh tick.
+        tick(&mut l, &mut f, &idle(100, 100), &mut out);
+        // Press inside a+b: the walk visits a (clicked_on consumes — a is
+        // FIRST in walk order; note hit-test priority would pick b, but the
+        // broadcast walk dispatches in LIST order and a consumes first).
+        tick(&mut l, &mut f, &event(crate::ui::gadget::KEY_LMB_DOWN, 5, 5, true), &mut out);
+        assert_eq!(out.consumed_by, Some(a), "walk order, first consumer stops");
+        // a got visited-draw + consumer-draw (both dirty-gated); c never
+        // visited after the break: dispatch list has exactly one entry.
+        assert_eq!(out.dispatches.len(), 1);
+        let _ = (b, c);
+    }
+
+    #[test]
+    fn g22_end_to_end_click_fires_on_release_only() {
+        let mut f = FocusState::new();
+        let mut out = TickOutput::default();
+        let mut l = GadgetList::new(ListId(1));
+        let _a = l.add_tail(btn(GadgetRect::new(0, 0, 10, 10), 0x65));
+        // Press: consumed, returns 0 (silent).
+        let r = tick(&mut l, &mut f, &event(crate::ui::gadget::KEY_LMB_DOWN, 5, 5, true), &mut out);
+        assert_eq!(r, 0, "silent press");
+        // Idle held tick (sticky re-dispatch, masked-0): nothing fires.
+        let mut held = idle(5, 5);
+        held.left_held = true;
+        let r = tick(&mut l, &mut f, &held, &mut out);
+        assert_eq!(r, 0);
+        // Release inside: fires ID|0x8000.
+        let r = tick(&mut l, &mut f, &event(crate::ui::gadget::KEY_LMB_UP, 5, 5, false), &mut out);
+        assert_eq!(r, 0x65 | 0x8000, "fire on release-inside");
+        assert_eq!(f.sticky, None);
+    }
+
+    #[test]
+    fn g22_end_to_end_drag_off_cancels() {
+        let mut f = FocusState::new();
+        let mut out = TickOutput::default();
+        let mut l = GadgetList::new(ListId(1));
+        let _a = l.add_tail(btn(GadgetRect::new(0, 0, 10, 10), 0x65));
+        tick(&mut l, &mut f, &event(crate::ui::gadget::KEY_LMB_DOWN, 5, 5, true), &mut out);
+        // Drag off (idle tick, cursor outside).
+        let mut held = idle(50, 50);
+        held.left_held = true;
+        tick(&mut l, &mut f, &held, &mut out);
+        // Release outside: nothing fires.
+        let mut up = event(crate::ui::gadget::KEY_LMB_UP, 50, 50, false);
+        up.mouse_x = 50;
+        up.mouse_y = 50;
+        let r = tick(&mut l, &mut f, &up, &mut out);
+        assert_eq!(r, crate::ui::gadget::KEY_LMB_UP, "no result posted — cancelled");
+        assert_eq!(f.sticky, None, "capture released");
     }
 }
