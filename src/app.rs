@@ -217,6 +217,9 @@ pub(crate) struct AppState {
     /// `app_sidebar_gadgets::update_sidebar_gadget_state` once per sim tick;
     /// read each frame by the sidebar view builder to pick SHP frame indices.
     pub(crate) sidebar_gadget_state: crate::sidebar::gadget_flash::SidebarGadgetState,
+    /// In-game gadget substrate (study §6.1): retained sidebar button list +
+    /// capture/focus state + reusable tick output + the mouse-held record.
+    pub(crate) in_game_gadgets: crate::app_gadget_input::InGameGadgets,
     /// Smoothly animated credits display per owner — ticks toward actual balance
     /// each frame (step = |diff| / 8, clamped to [1, 143]).
     pub(crate) displayed_credits: HashMap<String, i32>,
@@ -2568,6 +2571,7 @@ impl App {
             radar_anim: None,
             power_bar_anim: crate::sidebar::PowerBarAnimState::new(),
             sidebar_gadget_state: crate::sidebar::gadget_flash::SidebarGadgetState::new(),
+            in_game_gadgets: crate::app_gadget_input::InGameGadgets::new(),
             radar_content_insets: None,
             has_radar: false,
             selection_overlay: None,
