@@ -10,6 +10,8 @@
 //! ## Dependency rules
 //! - ui/ module: std only — no render/, assets/, sidebar/, audio/, net/.
 
+pub mod focus;
+
 /// Queued left-mouse-down event (G8 source code).
 pub const KEY_LMB_DOWN: u16 = 0x001;
 /// Queued right-mouse-down event.
