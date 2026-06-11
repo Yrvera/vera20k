@@ -720,24 +720,44 @@ fn test_gap_covered_cleared_each_tick() {
 
 #[test]
 fn test_height_los_blocks_sight_behind_cliff() {
-    // Unit at (5,5) height 0, sight 5.
-    // Cliff at (7,5) height 5 should block sight to (8,5).
+    // Unit at (5,5) height 0, sight 5. Target (8,5) = spiral offset (3,0); its
+    // mirror is (-1,0), so the original engine samples the obstruction cell at
+    // target + mirror + (2,2) = (8,5) + (-1,0) + (2,2) = (9,7). A tall cliff there
+    // (level 5 > viewer_level 0 + 3) blocks sight to (8,5).
     let mut vis = OwnerVisibility::new(20, 20);
     let width: u16 = 20;
     let height: u16 = 20;
     let mut hg = vec![0u8; width as usize * height as usize];
-    // Place a cliff at (7,5) — 5 levels high (> viewer_level 0 + 3).
-    hg[5 * width as usize + 7] = 5;
+    hg[7 * width as usize + 9] = 5; // obstruction cell (9,7)
 
     reveal_radius_into(&mut vis, 5, 5, 5, 0, true, Some(&hg), width, height);
 
-    // (6,5) is before the cliff — should be visible.
+    // (6,5)'s obstruction is (7,7) (no cliff) — visible.
     assert!(vis.is_visible(6, 5));
-    // (7,5) is the cliff cell itself — the mirror check for this cell looks at
-    // (7+mirror_dx, 5+mirror_dy). Whether it's blocked depends on the mirror table.
-    // (8,5) is behind the cliff — its mirror offset points back toward (7,5),
-    // which has level 5. Since 0 + 3 < 5, sight is blocked.
+    // (8,5)'s obstruction (9,7) is the cliff — blocked.
     assert!(!vis.is_visible(8, 5));
+}
+
+#[test]
+fn test_height_los_plus_two_obstruction_offset() {
+    // Pins the +2 obstruction offset. For target (8,5) the obstruction is
+    // target + mirror(-1,0) + (2,2) = (9,7), NOT the naive target + mirror = (7,5).
+    let width: u16 = 20;
+    let height: u16 = 20;
+
+    // Cliff at the naive (no-+2) location (7,5) must NOT block (8,5).
+    let mut vis = OwnerVisibility::new(20, 20);
+    let mut hg = vec![0u8; width as usize * height as usize];
+    hg[5 * width as usize + 7] = 5; // (7,5) — the pre-fix obstruction guess
+    reveal_radius_into(&mut vis, 5, 5, 5, 0, true, Some(&hg), width, height);
+    assert!(vis.is_visible(8, 5), "naive (7,5) cliff must not block with the +2 offset");
+
+    // Cliff at the +2 location (9,7) must block (8,5).
+    let mut vis2 = OwnerVisibility::new(20, 20);
+    let mut hg2 = vec![0u8; width as usize * height as usize];
+    hg2[7 * width as usize + 9] = 5; // (9,7) — the actual obstruction cell
+    reveal_radius_into(&mut vis2, 5, 5, 5, 0, true, Some(&hg2), width, height);
+    assert!(!vis2.is_visible(8, 5), "+2 obstruction cell (9,7) must block");
 }
 
 #[test]

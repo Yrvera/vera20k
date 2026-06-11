@@ -599,14 +599,17 @@ fn reveal_radius_into(
         let rx = cx + dx as i32;
         let ry = cy + dy as i32;
         if rx >= 0 && rx < w && ry >= 0 && ry < h {
-            // Height-based LOS: check if terrain at the midpoint cell blocks sight.
-            // The mirror table gives a one-cell offset from the target back toward
-            // the viewer. If that cell's Level > viewer_level + 3, LOS is blocked.
+            // Height-based LOS: check whether terrain at the obstruction cell
+            // blocks sight. The original engine samples the cell at
+            // `target + mirror[i] + (2, 2)` — the per-entry mirror steps one cell
+            // back toward the viewer, plus a fixed +2 on each axis baked into the
+            // original's obstruction math. If that cell's Level exceeds
+            // viewer_level + 3, the target is not revealed (LOS blocked).
             if reveal_by_height {
                 if let Some(hg) = height_grid {
                     let (mdx, mdy) = REVEAL_MIRROR[i];
-                    let obs_x = rx + mdx as i32;
-                    let obs_y = ry + mdy as i32;
+                    let obs_x = rx + mdx as i32 + 2;
+                    let obs_y = ry + mdy as i32 + 2;
                     if obs_x >= 0 && obs_x < w && obs_y >= 0 && obs_y < h {
                         let obs_level = hg[(obs_y * w + obs_x) as usize] as i32;
                         if viewer_level + 3 < obs_level {

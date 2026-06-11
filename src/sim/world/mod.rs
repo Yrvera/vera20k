@@ -2214,10 +2214,11 @@ impl Simulation {
         let vision_config = vision::VisionConfig {
             veteran_sight_bonus: rules.map_or(0, |r| r.general.veteran_sight),
             leptons_per_sight_increase: rules.map_or(0, |r| r.general.leptons_per_sight_increase),
-            // Temporarily disabled: shroud rendering derives heights from PathGrid,
-            // but enabling RevealByHeight here would also flip on cliff LoS.
-            // Follow-up PR re-enables after gameplay parity review.
-            reveal_by_height: false,
+            // Height-based LOS: terrain 4+ levels above the viewer at the
+            // obstruction cell blocks sight (a unit at a cliff base can't see over
+            // the cliff). Parity review verified the obstruction sampling against
+            // the original (mirror table + the +2 offset); default on, as in YR.
+            reveal_by_height: rules.map_or(true, |r| r.general.reveal_by_height),
         };
         self.refresh_fog(path_grid, &vision_config, rules);
 
