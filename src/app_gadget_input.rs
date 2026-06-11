@@ -20,7 +20,7 @@ use crate::ui::gadget::list::{GadgetBehavior, GadgetList, GadgetSpec, ToggleKind
 use crate::ui::gadget::tick::{GadgetInput, TickOutput, tick};
 use crate::ui::gadget::{
     GadgetHandle, GadgetRect, KEY_LMB_DOWN, KEY_LMB_UP, KEY_RMB_DOWN, KEY_RMB_UP, ListId,
-    RESULT_BUTTON, RESULT_RIGHT,
+    MINIMAP_REGION_FLAGS, RESULT_BUTTON, RESULT_RIGHT, TACTICAL_REGION_FLAGS,
 };
 
 /// gamemd sidebar button IDs (study §2.5 live-population table; Kind/mask
@@ -39,6 +39,20 @@ pub(crate) const ID_CAMEO_BASE: u16 = 1000;
 const SCROLL_FLAGS: u16 = 0x0055;
 /// The single in-game gadget list (ListId uniqueness is app-owned).
 const IN_GAME_LIST: ListId = ListId(1);
+
+/// What the in-game gadget walk did with a mouse edge (A3 routing). The caller
+/// (`app_input::handle_mouse_input`) dispatches on this instead of a bare bool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GadgetConsume {
+    /// Nothing on the list consumed it — fall through to the legacy path.
+    NotConsumed,
+    /// A chrome button or cameo handled it — the caller returns.
+    Consumed,
+    /// The full-tactical catcher consumed it — run the tactical body.
+    Tactical,
+    /// The minimap region consumed it — run the minimap body.
+    Minimap,
+}
 
 /// Stable handles of the 8 sidebar buttons, in retained order.
 #[derive(Debug, Clone, Copy)]
@@ -179,7 +193,57 @@ fn sync_gadgets(state: &mut AppState, view: &SidebarView) {
     sync(&mut gadgets.list, handles.sell, sell_rect, gs.sell_disabled, Some(gs.sell_mode_on));
     sync(&mut gadgets.list, handles.scroll_down, rect_px(down_rect), false, None);
     sync(&mut gadgets.list, handles.scroll_up, rect_px(up_rect), false, None);
+    sync_regions(state, view);
     sync_cameos(state, view);
+}
+
+/// A3 click regions: build the two invisible sticky catchers once (independent
+/// of the chrome `handles` guard), then sync their rects each frame. List order
+/// ends up chrome → tactical → minimap → cameos; all four groups occupy
+/// DISJOINT rects (play area / radar panel / cameo strip / chrome), so the
+/// relative order is observationally irrelevant — the broadcast walk's
+/// first-consumer-by-rect and the smallest-area hover both resolve to the unique
+/// containing gadget regardless (study tactical/minimap lanes §6/§4).
+fn sync_regions(state: &mut AppState, view: &SidebarView) {
+    if state.in_game_gadgets.tactical.is_none() {
+        let zero = GadgetRect::new(0, 0, 0, 0);
+        let tac = state
+            .in_game_gadgets
+            .list
+            .add_tail(GadgetSpec::click_region(zero, TACTICAL_REGION_FLAGS));
+        let mini = state
+            .in_game_gadgets
+            .list
+            .add_tail(GadgetSpec::click_region(zero, MINIMAP_REGION_FLAGS));
+        state.in_game_gadgets.tactical = Some(tac);
+        state.in_game_gadgets.minimap = Some(mini);
+    }
+    // Tactical catcher rect = the play area left of the sidebar panel (the Rust
+    // equivalent of gamemd's g_RadarViewport*). Always enabled in-game — we have
+    // no in-game map editor (gamemd registers it only when !g_IsMapEditor).
+    let panel_left = view.panel_rect.x.round().max(0.0) as i32;
+    let play_rect = GadgetRect::new(0, 0, panel_left, state.render_height() as i32);
+    if let Some(th) = state.in_game_gadgets.tactical
+        && let Some(g) = state.in_game_gadgets.list.get_mut(th)
+    {
+        g.rect = play_rect;
+        g.is_disabled = false;
+    }
+    // Minimap region rect = the live minimap screen rect; disabled when the radar
+    // is offline or the minimap is absent (the exact gate `is_cursor_over_minimap`
+    // uses, app_sidebar_render.rs).
+    let minimap_available = state
+        .radar_anim
+        .as_ref()
+        .is_none_or(|ra| ra.is_minimap_visible())
+        && state.minimap.is_some();
+    let mini_rect = rect_px(crate::app_sidebar_render::active_minimap_screen_rect(state));
+    if let Some(mh) = state.in_game_gadgets.minimap
+        && let Some(g) = state.in_game_gadgets.list.get_mut(mh)
+    {
+        g.rect = mini_rect;
+        g.is_disabled = !minimap_available;
+    }
 }
 
 /// Grow/sync the cameo gadget pool to mirror `view.items` (the already
@@ -230,15 +294,17 @@ pub(crate) fn handle_mouse_button_event(
     state: &mut AppState,
     button: MouseButton,
     pressed: bool,
-) -> bool {
-    // The held record updates on every edge (G8 idle-tick source).
+) -> GadgetConsume {
+    // The held record updates on every edge (G8 idle-tick source). Middle is
+    // never a gadget event (the gadget masks cover left/right only) — the caller
+    // handles middle-mouse pan directly.
     match button {
         MouseButton::Left => state.in_game_gadgets.left_held = pressed,
         MouseButton::Right => state.in_game_gadgets.right_held = pressed,
-        _ => return false,
+        _ => return GadgetConsume::NotConsumed,
     }
     let Some(view) = current_sidebar_view(state) else {
-        return false;
+        return GadgetConsume::NotConsumed;
     };
     sync_gadgets(state, &view);
     let key = match (button, pressed) {
@@ -246,7 +312,7 @@ pub(crate) fn handle_mouse_button_event(
         (MouseButton::Left, false) => KEY_LMB_UP,
         (MouseButton::Right, true) => KEY_RMB_DOWN,
         (MouseButton::Right, false) => KEY_RMB_UP,
-        _ => return false,
+        _ => return GadgetConsume::NotConsumed,
     };
     run_tick(state, &view, key)
 }
@@ -259,10 +325,10 @@ pub(crate) fn idle_tick(state: &mut AppState) {
         return;
     };
     sync_gadgets(state, &view);
-    run_tick(state, &view, 0);
+    let _ = run_tick(state, &view, 0);
 }
 
-fn run_tick(state: &mut AppState, view: &SidebarView, key: u16) -> bool {
+fn run_tick(state: &mut AppState, view: &SidebarView, key: u16) -> GadgetConsume {
     // We tick synchronously on the edge, so event coords == live coords
     // (gamemd latches coords at enqueue; with no queue lag the two sources
     // are identical — G6 still selects per the key's low byte).
@@ -280,17 +346,41 @@ fn run_tick(state: &mut AppState, view: &SidebarView, key: u16) -> bool {
         ctrl: crate::app_input::is_ctrl_held(state),
         alt: crate::app_input::is_alt_held(state),
     };
-    let was_captured = state.in_game_gadgets.focus.sticky.is_some();
+    // The sticky tier dispatches the holder but does NOT set `consumed_by`, so
+    // capture the pre-tick holder to route a captured drag/release back to its
+    // region (study tactical lane §5).
+    let prev_sticky = state.in_game_gadgets.focus.sticky;
     let gadgets = &mut state.in_game_gadgets;
     let result = tick(&mut gadgets.list, &mut gadgets.focus, &input, &mut gadgets.out);
-    let consumed_walk = state.in_game_gadgets.out.consumed_by.is_some();
+    let routed = state.in_game_gadgets.out.consumed_by.or(prev_sticky);
     let fired = (result & RESULT_BUTTON) != 0;
     if fired {
         apply_gadget_result(state, view, result);
     }
     publish_pressed_visuals(state);
     apply_cameo_hover_tooltip(state);
-    fired || consumed_walk || was_captured
+    classify(state, routed, fired)
+}
+
+/// Map the consuming / capture-holding handle to a routing class. Cameo fires
+/// and chrome-button captures resolve to `Consumed` (caller returns); the
+/// tactical / minimap regions resolve to their own class (caller runs the
+/// matching body). A fired control always sets `consumed_by`, so a `None`
+/// routed handle with `fired` cannot happen — handled defensively.
+fn classify(state: &AppState, routed: Option<GadgetHandle>, fired: bool) -> GadgetConsume {
+    let g = &state.in_game_gadgets;
+    match routed {
+        Some(h) if Some(h) == g.tactical => GadgetConsume::Tactical,
+        Some(h) if Some(h) == g.minimap => GadgetConsume::Minimap,
+        Some(_) => GadgetConsume::Consumed,
+        None => {
+            if fired {
+                GadgetConsume::Consumed
+            } else {
+                GadgetConsume::NotConsumed
+            }
+        }
+    }
 }
 
 /// G7 hover hook (study cameo lane §4): entering a cameo forces the tooltip
