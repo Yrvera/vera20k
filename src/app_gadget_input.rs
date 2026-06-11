@@ -34,6 +34,17 @@ pub(crate) const ID_SCROLL_UP: u16 = 0x00C8; // −1 page, Kind 0
 /// slot index. Mirrors the gamemd id space and the A4 tooltip id base
 /// (`app_tooltips::CAMEO_TIP_ID_BASE`).
 pub(crate) const ID_CAMEO_BASE: u16 = 1000;
+/// Sidebar control/dev button id base (A6): 6 slots in a fixed order —
+/// cancel, cycle-owner, starter-base, spawn-test-units, pause, producer. These
+/// have NO gamemd counterpart (sandbox/control utilities); ids are app-local and
+/// chosen clear of the tab/repair/sell/scroll/cameo ranges.
+const ID_CONTROL_BASE: u16 = 0x0200;
+/// Number of control-button slots (A6).
+const CONTROL_SLOTS: usize = 6;
+/// Control-button mask (A6): left + right press, fire-on-press, no held bits —
+/// preserves the legacy "any click fires" behavior of `sidebar::hit_test`
+/// (which ignored the right/left distinction for these buttons).
+const CONTROL_FLAGS: u16 = 0x0011;
 /// Scroll mask: presses + releases for BOTH buttons, no held bits — no
 /// hold-repeat (G23); right-release fires `ID|0xC000`, consumer masks it off.
 const SCROLL_FLAGS: u16 = 0x0055;
@@ -85,6 +96,10 @@ pub(crate) struct InGameGadgets {
     /// Minimap/radar click region (A3): invisible sticky region over the radar
     /// minimap; disabled when the radar is offline / minimap absent.
     pub minimap: Option<GadgetHandle>,
+    /// Control/dev button gadgets (A6): fixed 6-slot set built once, synced from
+    /// the view each frame (rect + presence); the optional pause/producer slots
+    /// disable when absent. Slot order matches `apply_gadget_result`'s mapping.
+    pub controls: Option<[GadgetHandle; CONTROL_SLOTS]>,
 }
 
 impl InGameGadgets {
@@ -99,6 +114,7 @@ impl InGameGadgets {
             cameos: Vec::new(),
             tactical: None,
             minimap: None,
+            controls: None,
         }
     }
 
@@ -195,6 +211,48 @@ fn sync_gadgets(state: &mut AppState, view: &SidebarView) {
     sync(&mut gadgets.list, handles.scroll_up, rect_px(up_rect), false, None);
     sync_regions(state, view);
     sync_cameos(state, view);
+    sync_controls(state, view);
+}
+
+/// Control/dev button gadgets (A6): build the fixed 6-slot set once, then sync
+/// each slot's rect + presence from the view. Control behavior (fire-on-press,
+/// post `id|0x8000`), mask 0x11 (left+right press), NOT sticky. Slot order is
+/// fixed and mirrored by `apply_gadget_result`: 0 cancel, 1 cycle-owner,
+/// 2 starter-base, 3 spawn-test-units, 4 pause, 5 producer. The optional
+/// pause/producer slots disable when the view omits them. Appended after the
+/// cameos — disjoint rects, so order is observationally irrelevant (O7/G20).
+fn sync_controls(state: &mut AppState, view: &SidebarView) {
+    if state.in_game_gadgets.controls.is_none() {
+        let zero = GadgetRect::new(0, 0, 0, 0);
+        let mut handles = [GadgetHandle(0); CONTROL_SLOTS];
+        for (i, h) in handles.iter_mut().enumerate() {
+            let mut spec = GadgetSpec::new(zero, CONTROL_FLAGS, false);
+            spec.id = ID_CONTROL_BASE + i as u16;
+            spec.behavior = GadgetBehavior::Control;
+            *h = state.in_game_gadgets.list.add_tail(spec);
+        }
+        state.in_game_gadgets.controls = Some(handles);
+    }
+    let handles = state.in_game_gadgets.controls.expect("built above");
+    let slots: [Option<GadgetRect>; CONTROL_SLOTS] = [
+        Some(rect_px(view.cancel_button.rect)),
+        Some(rect_px(view.cycle_owner_button.rect)),
+        Some(rect_px(view.starter_base_button.rect)),
+        Some(rect_px(view.spawn_test_units_button.rect)),
+        view.pause_button.as_ref().map(|b| rect_px(b.rect)),
+        view.producer_button.as_ref().map(|b| rect_px(b.rect)),
+    ];
+    for (i, h) in handles.iter().enumerate() {
+        if let Some(g) = state.in_game_gadgets.list.get_mut(*h) {
+            match slots[i] {
+                Some(r) => {
+                    g.rect = r;
+                    g.is_disabled = false;
+                }
+                None => g.is_disabled = true,
+            }
+        }
+    }
 }
 
 /// A3 click regions: build the two invisible sticky catchers once (independent
@@ -467,6 +525,22 @@ fn apply_gadget_result(state: &mut AppState, view: &SidebarView, result: u16) {
             if let Some(item) = view.items.get(slot) {
                 let right = (result & RESULT_RIGHT) != 0;
                 let action = crate::sidebar::hit_test_item(item, right);
+                crate::app_input::apply_sidebar_action(state, action);
+            }
+        }
+        // Control/dev button press (A6): apply the view button's own action.
+        // Slot order matches `sync_controls`.
+        _ if (ID_CONTROL_BASE..ID_CONTROL_BASE + CONTROL_SLOTS as u16).contains(&id) => {
+            let action = match id - ID_CONTROL_BASE {
+                0 => Some(view.cancel_button.action.clone()),
+                1 => Some(view.cycle_owner_button.action.clone()),
+                2 => Some(view.starter_base_button.action.clone()),
+                3 => Some(view.spawn_test_units_button.action.clone()),
+                4 => view.pause_button.as_ref().map(|b| b.action.clone()),
+                5 => view.producer_button.as_ref().map(|b| b.action.clone()),
+                _ => None,
+            };
+            if let Some(action) = action {
                 crate::app_input::apply_sidebar_action(state, action);
             }
         }
