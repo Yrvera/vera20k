@@ -291,6 +291,15 @@ pub struct GeneralRules {
     /// `condition_red` pre-scaled to integer ×1000 for deterministic sim comparisons.
     /// Computed once at parse time: `(condition_red * 1000.0) as i64`.
     pub condition_red_x1000: i64,
+    /// `ConditionRedSparkingProbability=` ([General]) — per-tick probability that
+    /// the `AI_Update` damage-Spark particle system spawns while health is below
+    /// ConditionRed. Default **0.02** (verified `RulesClass__Constructor`; stock INI
+    /// does NOT set this key). Consumed by the S4b damage-particle Scen->Random draw.
+    pub condition_red_sparking_probability: f32,
+    /// `ConditionYellowSparkingProbability=` ([General]) — per-tick spawn probability
+    /// in the yellow band (ConditionRed <= ratio < ConditionYellow). Default **0.01**
+    /// (verified `RulesClass__Constructor`).
+    pub condition_yellow_sparking_probability: f32,
     /// SFX played when the first occupant enters a CanBeOccupied building.
     /// Parsed from [AudioVisual] BuildingGarrisonedSound (typically "BuildingGarrisoned").
     /// None = no sound configured. Resolved at app layer to a sound.ini entry.
@@ -645,6 +654,8 @@ impl Default for GeneralRules {
             condition_yellow_x1000: 500,
             condition_red: 0.25,
             condition_red_x1000: 250,
+            condition_red_sparking_probability: 0.02,
+            condition_yellow_sparking_probability: 0.01,
             building_garrisoned_sound: None,
             chute_sound: None,
             gui_main_button_sound: None,
@@ -996,6 +1007,14 @@ impl GeneralRules {
             .and_then(|s| s.get_percent("ConditionRed"))
             .unwrap_or(0.25);
         Self {
+            // [General] damage-Spark spawn probabilities (verified ctor defaults
+            // 0.02/0.01; stock INI omits them). Raw doubles, not percentages.
+            condition_red_sparking_probability: general
+                .get_f32("ConditionRedSparkingProbability")
+                .unwrap_or(0.02),
+            condition_yellow_sparking_probability: general
+                .get_f32("ConditionYellowSparkingProbability")
+                .unwrap_or(0.01),
             veteran_sight: general.get_i32("VeteranSight").unwrap_or(0),
             leptons_per_sight_increase: general.get_i32("LeptonsPerSightIncrease").unwrap_or(0),
             gap_radius: general.get_i32("GapRadius").unwrap_or(10),
@@ -3421,6 +3440,25 @@ DefaultSparkSystem=SparkSys
     fn ini_with_general(body: &str) -> IniFile {
         let text = format!("[General]\n{}\n", body);
         IniFile::from_str(&text)
+    }
+
+    #[test]
+    fn sparking_probability_defaults_and_override() {
+        // Stock INI omits both keys -> the verified RulesClass ctor defaults
+        // (0.02 red / 0.01 yellow), so the AI_Update Spark effect is on by default.
+        let d = GeneralRules::default();
+        assert_eq!(d.condition_red_sparking_probability, 0.02);
+        assert_eq!(d.condition_yellow_sparking_probability, 0.01);
+        let none = GeneralRules::from_ini(&IniFile::from_str("[Foo]\n"));
+        assert_eq!(none.condition_red_sparking_probability, 0.02);
+        assert_eq!(none.condition_yellow_sparking_probability, 0.01);
+        // A mod overrides them from [General].
+        let g = GeneralRules::from_ini(&ini_with_general(
+            "ConditionRedSparkingProbability=0.05\n\
+             ConditionYellowSparkingProbability=0.03",
+        ));
+        assert_eq!(g.condition_red_sparking_probability, 0.05);
+        assert_eq!(g.condition_yellow_sparking_probability, 0.03);
     }
 
     #[test]
