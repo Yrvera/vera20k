@@ -10,6 +10,7 @@
 //! ## Dependency rules
 //! - ui/ module: std only — no render/, assets/, sidebar/, audio/, net/.
 
+pub mod button;
 pub mod focus;
 pub mod list;
 
