@@ -132,6 +132,11 @@ fn upload_to_gpu(
     ui: &UiInstances,
     sidebar: &SidebarInstances,
 ) {
+    // A4 in-game tooltip: built before the pool borrow (it reads &AppState);
+    // fill (darken texture) + text (GAME.FNT atlas), drawn after the chat
+    // overlay and before the software cursor (O10).
+    let (tooltip_fill, tooltip_text) = crate::app_tooltips::build_tooltip_instances(state);
+
     let pool: &mut InstanceBufferPool = &mut state.instance_pool;
 
     // Debug overlays
@@ -243,6 +248,8 @@ fn upload_to_gpu(
     pool.upload(&state.gpu, "sidebar_gclock", &sidebar.gclock);
     pool.upload(&state.gpu, "sidebar_cameo_overlay", &sidebar.cameo_overlay);
     pool.upload(&state.gpu, "sidebar_text", &sidebar.text);
+    pool.upload(&state.gpu, "tooltip_fill", &tooltip_fill);
+    pool.upload(&state.gpu, "tooltip_text", &tooltip_text);
 }
 
 #[cfg(test)]
