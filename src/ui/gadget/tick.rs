@@ -710,4 +710,40 @@ mod tests {
         tick(&mut l, &mut f, &up, &mut out);
         assert_eq!(f.sticky, None, "release frees capture");
     }
+
+    #[test]
+    fn minimap_right_click_releases_sticky_with_0xdf() {
+        use crate::ui::gadget::MINIMAP_REGION_FLAGS;
+        // The minimap region mask (0xDF) must let a right-press acquire AND a
+        // right-release CLEAR sticky capture — else the region stays captured and
+        // eats the next click.
+        let mut f = FocusState::new();
+        let mut out = TickOutput::default();
+        let mut l = GadgetList::new(ListId(1));
+        let region = l.add_tail(GadgetSpec::click_region(
+            GadgetRect::new(0, 0, 50, 50),
+            MINIMAP_REGION_FLAGS,
+        ));
+        tick(&mut l, &mut f, &idle(500, 500), &mut out); // prime, hover off
+        tick(&mut l, &mut f, &event(crate::ui::gadget::KEY_RMB_DOWN, 5, 5, false), &mut out);
+        assert_eq!(f.sticky, Some(region), "right-press acquires capture");
+        tick(&mut l, &mut f, &event(crate::ui::gadget::KEY_RMB_UP, 5, 5, false), &mut out);
+        assert_eq!(f.sticky, None, "right-release frees capture (0xDF) — no stuck");
+    }
+
+    #[test]
+    fn minimap_literal_0x9f_would_leave_capture_stuck() {
+        // Documents WHY we diverge to 0xDF: gamemd's literal 0x9F masks out
+        // RIGHT_RELEASE, so a right-press captures and never releases — the
+        // latent input-eating bug.
+        let mut f = FocusState::new();
+        let mut out = TickOutput::default();
+        let mut l = GadgetList::new(ListId(2));
+        let region = l.add_tail(GadgetSpec::click_region(GadgetRect::new(0, 0, 50, 50), 0x9F));
+        tick(&mut l, &mut f, &idle(500, 500), &mut out);
+        tick(&mut l, &mut f, &event(crate::ui::gadget::KEY_RMB_DOWN, 5, 5, false), &mut out);
+        assert_eq!(f.sticky, Some(region));
+        tick(&mut l, &mut f, &event(crate::ui::gadget::KEY_RMB_UP, 5, 5, false), &mut out);
+        assert_eq!(f.sticky, Some(region), "0x9F leaves capture stuck — hence 0xDF");
+    }
 }
