@@ -217,11 +217,11 @@ impl GadgetList {
 /// G18 — focus acquire: steal keyboard focus. Old holder is dirtied and loses its
 /// 0x100 mask bit; the new holder gains it.
 pub fn set_focus(list: &mut GadgetList, focus: &mut FocusState, handle: GadgetHandle) {
-    if let Some(old) = focus.keyboard.take() {
-        if let Some(g) = list.get_mut(old) {
-            g.is_to_redraw = true;
-            g.flags &= !FLAG_KEYBOARD;
-        }
+    if let Some(old) = focus.keyboard.take()
+        && let Some(g) = list.get_mut(old)
+    {
+        g.is_to_redraw = true;
+        g.flags &= !FLAG_KEYBOARD;
     }
     if let Some(g) = list.get_mut(handle) {
         g.flags |= FLAG_KEYBOARD;

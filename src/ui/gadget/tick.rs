@@ -136,11 +136,11 @@ pub(crate) fn draw_one(
     forced: bool,
     out: &mut TickOutput,
 ) {
-    if let Some(g) = list.get_mut(handle) {
-        if forced || g.is_to_redraw {
-            g.is_to_redraw = false;
-            out.draws.push(DrawCmd { handle, forced });
-        }
+    if let Some(g) = list.get_mut(handle)
+        && (forced || g.is_to_redraw)
+    {
+        g.is_to_redraw = false;
+        out.draws.push(DrawCmd { handle, forced });
     }
 }
 
@@ -224,14 +224,15 @@ pub fn tick(
     }
 
     // G10 tier 2 — keyboard focus: only for keyboard-flag ticks.
-    if let Some(handle) = focus.keyboard {
-        if (flags & FLAG_KEYBOARD) != 0 && list.get(handle).is_some() {
-            draw_one(list, handle, false, out);
-            clicked_on(list, handle, &mut key, flags, x, y, 0, live, focus, out);
-            let post = focus.keyboard.unwrap_or(handle);
-            draw_one(list, post, false, out);
-            return key;
-        }
+    if let Some(handle) = focus.keyboard
+        && (flags & FLAG_KEYBOARD) != 0
+        && list.get(handle).is_some()
+    {
+        draw_one(list, handle, false, out);
+        clicked_on(list, handle, &mut key, flags, x, y, 0, live, focus, out);
+        let post = focus.keyboard.unwrap_or(handle);
+        draw_one(list, post, false, out);
+        return key;
     }
 
     // G12 tier 3 — broadcast walk head→tail: every visited gadget is drawn
