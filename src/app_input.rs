@@ -36,6 +36,13 @@ pub(crate) fn handle_mouse_input(
     button: MouseButton,
     btn_state: ElementState,
 ) {
+    // Gadget substrate first (study G22): tabs/repair/sell/scroll consume
+    // their presses silently and fire on RELEASE-inside with drag-off cancel.
+    // Consumed events never fall through to minimap/selection. Cameos and the
+    // dev/control buttons stay on the legacy press path until slice A2.
+    if crate::app_gadget_input::handle_mouse_button_event(state, button, btn_state.is_pressed()) {
+        return;
+    }
     if btn_state.is_pressed() {
         if handle_sidebar_mouse_input(state, button) {
             return;
@@ -237,7 +244,7 @@ fn handle_sidebar_mouse_input(state: &mut AppState, button: MouseButton) -> bool
     true
 }
 
-fn apply_sidebar_action(state: &mut AppState, action: SidebarAction) {
+pub(crate) fn apply_sidebar_action(state: &mut AppState, action: SidebarAction) {
     match action {
         SidebarAction::None => {}
         SidebarAction::SelectTab(tab) => {

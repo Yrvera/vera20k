@@ -151,6 +151,10 @@ pub struct ObjectType {
     pub category: ObjectCategory,
     /// Display name (CSF string table key or raw text). None if not specified.
     pub name: Option<String>,
+    /// Localized display-name CSF key from `UIName=` (e.g. "Name:MTNK").
+    /// None if not specified. Tooltip text resolves this through the CSF
+    /// table; `name` (English `Name=`) is the fallback.
+    pub ui_name: Option<String>,
     /// Credit cost to produce this object.
     pub cost: i32,
     /// Hit points (health). 0 = invincible or not applicable.
@@ -876,6 +880,7 @@ impl ObjectType {
             id: id.to_string(),
             category,
             name: section.get("Name").map(|s| s.to_string()),
+            ui_name: section.get("UIName").map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
             cost: section.get_i32("Cost").unwrap_or(0),
             strength: section.get_i32("Strength").unwrap_or(0),
             armor: section.get("Armor").unwrap_or("none").to_string(),
@@ -1341,6 +1346,36 @@ mod tests {
         assert!(obj.base_normal);
         assert!(!obj.eligibile_for_ally_building);
         assert!(!obj.crewed);
+    }
+
+    #[test]
+    fn parses_ui_name_key() {
+        let ini: IniFile =
+            IniFile::from_str("[MTNK]\nName=Grizzly Tank\nUIName=Name:MTNK\nCost=700\n");
+        let parsed = ObjectType::from_ini_section(
+            "MTNK",
+            ini.section("MTNK").unwrap(),
+            ObjectCategory::Vehicle,
+        );
+        assert_eq!(parsed.ui_name, Some("Name:MTNK".to_string()));
+
+        // Absent UIName yields None.
+        let absent_ini = IniFile::from_str("[HTNK]\nName=Rhino Tank\n");
+        let absent = ObjectType::from_ini_section(
+            "HTNK",
+            absent_ini.section("HTNK").unwrap(),
+            ObjectCategory::Vehicle,
+        );
+        assert_eq!(absent.ui_name, None);
+
+        // Empty UIName= also yields None.
+        let empty_ini = IniFile::from_str("[E1]\nUIName=\n");
+        let empty = ObjectType::from_ini_section(
+            "E1",
+            empty_ini.section("E1").unwrap(),
+            ObjectCategory::Infantry,
+        );
+        assert_eq!(empty.ui_name, None);
     }
 
     #[test]

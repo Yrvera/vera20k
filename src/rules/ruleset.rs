@@ -305,6 +305,17 @@ pub struct GeneralRules {
     pub generic_click_sound: Option<String>,
     /// Sound event for shell checkboxes from [AudioVisual] GUICheckboxSound.
     pub gui_checkbox_sound: Option<String>,
+    /// Sidebar tab click sound from [AudioVisual] GUITabSound (retail
+    /// `MenuTab`). The key→tab-click mapping is name-inferred — flagged for a
+    /// Ghidra spot-check of the tab-ID consumer before parity sign-off.
+    pub gui_tab_sound: Option<String>,
+    /// Message-insert sound from [AudioVisual] IncomingMessage (retail
+    /// `MessageText`). Plays on every non-silent message-list insert.
+    pub incoming_message_sound: Option<String>,
+    /// Chat/system message lifetime in MINUTES from [AudioVisual]
+    /// MessageDelay (retail `.6`). The exact native minutes→ticks binding is
+    /// untraced (plan deferred item); the driver converts minutes→ms.
+    pub message_delay_minutes: f32,
     /// Sound event for opening shell combo boxes from [AudioVisual] GUIComboOpenSound.
     pub gui_combo_open_sound: Option<String>,
     /// Sound event for closing shell combo boxes from [AudioVisual] GUIComboCloseSound.
@@ -639,6 +650,9 @@ impl Default for GeneralRules {
             gui_main_button_sound: None,
             generic_click_sound: None,
             gui_checkbox_sound: None,
+            gui_tab_sound: None,
+            incoming_message_sound: None,
+            message_delay_minutes: 0.6,
             gui_combo_open_sound: None,
             gui_combo_close_sound: None,
             bunker_walls_down_sound: None,
@@ -1090,6 +1104,19 @@ impl GeneralRules {
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string),
+            gui_tab_sound: audio_visual
+                .and_then(|s| s.get("GUITabSound"))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            incoming_message_sound: audio_visual
+                .and_then(|s| s.get("IncomingMessage"))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            message_delay_minutes: audio_visual
+                .and_then(|s| s.get_f32("MessageDelay"))
+                .unwrap_or(0.6),
             gui_combo_open_sound: audio_visual
                 .and_then(|s| s.get("GUIComboOpenSound"))
                 .map(str::trim)

@@ -13,6 +13,7 @@ fn make_obj(locomotor: LocomotorKind, category: ObjectCategory) -> ObjectType {
         id: "TEST".to_string(),
         category,
         name: None,
+        ui_name: None,
         cost: 0,
         strength: 100,
         armor: "none".to_string(),

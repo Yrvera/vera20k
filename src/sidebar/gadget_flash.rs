@@ -122,6 +122,15 @@ pub fn frame_select(disabled: bool, mode_active: bool, state: u8) -> u8 {
     }
 }
 
+/// Pick a SHP frame index for the 3-frame strip-scroll art (`r-up.shp` /
+/// `r-dn.shp`). The scroll buttons do NOT use the 5-frame tab convention —
+/// their art has exactly 3 frames: 0 = idle, 1 = pressed, 2 = disabled.
+/// There is no disabled path for the scroll pair today (the gadget driver
+/// hardwires disabled=false), so only idle/pressed are ever selected.
+pub fn scroll_frame_select(pressed: bool) -> u8 {
+    u8::from(pressed)
+}
+
 /// Persistent flash + mode state for the in-game sidebar gadgets.
 ///
 /// Lives on `AppState` (one instance per app session). Ticked once per sim
@@ -154,6 +163,15 @@ pub struct SidebarGadgetState {
     /// Last sim tick the orchestrator processed; used to advance per
     /// sim-tick delta (catch-up safe).
     pub last_sim_tick: u64,
+
+    /// Transient pressed-look bits (study G22): true while the gadget driver
+    /// holds the button pressed-inside; popped on drag-off, restored on
+    /// drag-back. Published by `app_gadget_input` after every gadget tick.
+    pub tab_pressed: [bool; 4],
+    pub repair_pressed: bool,
+    pub sell_pressed: bool,
+    pub scroll_down_pressed: bool,
+    pub scroll_up_pressed: bool,
 }
 
 impl SidebarGadgetState {
@@ -162,22 +180,37 @@ impl SidebarGadgetState {
     }
 
     /// Frame index for a tab gadget. Caller passes whether this tab is the
-    /// currently-active tab (the `+0x2D` mirror in gamemd).
+    /// currently-active tab (the externally driven latch-ON mirror,
+    /// study §2.5 / G22 Kind 2).
     pub fn tab_frame(&self, tab_index: usize, is_active_tab: bool) -> u8 {
         let flash = &self.tab_flashes[tab_index];
         let disabled = self.tab_disabled[tab_index];
-        frame_select(disabled, is_active_tab, flash.state)
+        // Pressed-look = flash pulse OR live press-hold (study G22).
+        let state = if self.tab_pressed[tab_index] { 1 } else { flash.state };
+        frame_select(disabled, is_active_tab, state)
     }
 
-    /// Frame index for the Repair button. Repair has no flash AI — state is
-    /// always 0; the visible "stays pressed" effect comes from `mode_active`.
+    /// Frame index for the Repair button. Repair has no flash AI — the state
+    /// bit is the live press-hold; "stays pressed" comes from `mode_active`.
     pub fn repair_frame(&self) -> u8 {
-        frame_select(self.repair_disabled, self.repair_mode_on, 0)
+        frame_select(self.repair_disabled, self.repair_mode_on, u8::from(self.repair_pressed))
     }
 
     /// Frame index for the Sell button. Same logic as `repair_frame`.
     pub fn sell_frame(&self) -> u8 {
-        frame_select(self.sell_disabled, self.sell_mode_on, 0)
+        frame_select(self.sell_disabled, self.sell_mode_on, u8::from(self.sell_pressed))
+    }
+
+    /// Frame index for the strip scroll-down (+page) button. No mode bit, no
+    /// flash — pressed-look only, using the 3-frame R-DN convention.
+    pub fn scroll_down_frame(&self) -> u8 {
+        scroll_frame_select(self.scroll_down_pressed)
+    }
+
+    /// Frame index for the strip scroll-up (−page) button (3-frame R-UP
+    /// convention).
+    pub fn scroll_up_frame(&self) -> u8 {
+        scroll_frame_select(self.scroll_up_pressed)
     }
 }
 
@@ -327,5 +360,35 @@ mod tests {
                 "frame_select(disabled={disabled}, mode_active={mode_active}, state={state}) expected {expected}, got {got}"
             );
         }
+    }
+
+    #[test]
+    fn pressed_bits_drive_frames_3_and_4() {
+        let mut s = SidebarGadgetState::new();
+        s.repair_pressed = true;
+        assert_eq!(s.repair_frame(), 3, "pressed-idle");
+        s.repair_mode_on = true;
+        assert_eq!(s.repair_frame(), 4, "pressed-active");
+        s.tab_pressed[1] = true;
+        assert_eq!(s.tab_frame(1, false), 3);
+        assert_eq!(s.tab_frame(1, true), 4);
+    }
+
+    #[test]
+    fn scroll_buttons_use_three_frame_convention() {
+        // R-UP.SHP / R-DN.SHP have exactly 3 frames: 0 = idle, 1 = pressed,
+        // 2 = disabled — NOT the 5-frame tab convention (pressed at 3).
+        assert_eq!(scroll_frame_select(false), 0, "idle selects frame 0");
+        assert_eq!(scroll_frame_select(true), 1, "pressed selects frame 1");
+        let mut s = SidebarGadgetState::new();
+        assert_eq!(s.scroll_down_frame(), 0);
+        assert_eq!(s.scroll_up_frame(), 0);
+        s.scroll_down_pressed = true;
+        assert_eq!(s.scroll_down_frame(), 1, "pressed-look is frame 1");
+        assert_eq!(s.scroll_up_frame(), 0, "the pair is independent");
+        s.scroll_down_pressed = false;
+        s.scroll_up_pressed = true;
+        assert_eq!(s.scroll_down_frame(), 0);
+        assert_eq!(s.scroll_up_frame(), 1);
     }
 }

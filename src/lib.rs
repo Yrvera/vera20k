@@ -90,6 +90,16 @@ pub mod app_sidebar_build;
 // Per-sim-tick orchestrator for sidebar gadget flash + Repair/Sell mode state.
 pub mod app_sidebar_gadgets;
 
+// In-game gadget substrate driver: retained sidebar button list, mouse-edge +
+// idle ticks, fired-ID application, pressed-bit publication.
+pub mod app_gadget_input;
+
+// Tooltip service driver: wall clock, event feeds, region sync, draw build.
+pub mod app_tooltips;
+
+// Chat/system message surface driver: posts, expiry, draw build.
+pub mod app_messages;
+
 // Build/production commands and owner management.
 // Extracted from app_render.rs.
 pub mod app_commands;

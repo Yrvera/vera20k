@@ -332,6 +332,28 @@ pub(crate) fn compute_layout_with_spec(
     }
 }
 
+/// Strip-scroll button rects (the R-DN/R-UP pair). gamemd anchors the pair at
+/// ScrollX / ScrollX+ScrollWidth in retail strip geometry; our adaptive RON
+/// layout (R11 geometry policy — OUT of this plan's scope) has no such
+/// anchor, so the interim placement centers the pair inside the side3 strip:
+/// scroll-down (+page) on the left, scroll-up (−page) on the right.
+/// `None` sizes (atlas missing) collapse to 0×0 — unhittable and undrawn.
+pub fn scroll_button_rects(
+    layout: &SidebarLayout,
+    sidebar_width: f32,
+    down_size: Option<[f32; 2]>,
+    up_size: Option<[f32; 2]>,
+) -> (Rect, Rect) {
+    let [dw, dh] = down_size.unwrap_or([0.0, 0.0]);
+    let [uw, uh] = up_size.unwrap_or([0.0, 0.0]);
+    let x0 = layout.sidebar_x + (sidebar_width - (dw + uw)) * 0.5;
+    let y = layout.side3_y + 1.0;
+    (
+        Rect { x: x0, y, w: dw, h: dh },
+        Rect { x: x0 + dw, y, w: uw, h: uh },
+    )
+}
+
 fn hit_test_item(item: &SidebarItem, right_click: bool) -> SidebarAction {
     if right_click {
         // SW cameos have no queue → right-click does nothing.
@@ -376,22 +398,13 @@ fn hit_test_item(item: &SidebarItem, right_click: bool) -> SidebarAction {
     }
 }
 
+/// Legacy press-path hit-test for the surfaces NOT yet on the gadget
+/// substrate (cameos, pause/producer, dev buttons). Tabs, repair, sell and
+/// the strip-scroll pair are owned by `app_gadget_input` (fire-on-release,
+/// study G22) and are deliberately absent here.
 pub fn hit_test(view: &SidebarView, x: f32, y: f32, right_click: bool) -> SidebarAction {
     if !view.panel_rect.contains(x, y) {
         return SidebarAction::None;
-    }
-
-    for tab in &view.tabs {
-        if tab.rect.contains(x, y) {
-            return SidebarAction::SelectTab(tab.tab);
-        }
-    }
-
-    if view.repair_button.rect.contains(x, y) {
-        return view.repair_button.action.clone();
-    }
-    if view.sell_button.rect.contains(x, y) {
-        return view.sell_button.action.clone();
     }
 
     for item in &view.items {
@@ -508,66 +521,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn hit_test_routes_repair_button() {
-        let view = super::sidebar_view::build_sidebar_view(
-            1280.0,
-            960.0,
-            super::SidebarTab::Building,
-            0,
-            0,
-            0,
-            Some([28.0, 27.0]),
-            &[],
-            &[],
-            &[],
-            None,
-            &[],
-            0,
-            None,
-            &crate::sidebar::gadget_flash::SidebarGadgetState::new(),
-            // Non-zero button sizes so the rects are clickable.
-            // Real values come from the atlas at run time; unit tests use
-            // the SHP intrinsic 64×31 (from sidebar_chrome.rs header).
-            Some([64.0, 31.0]),
-            Some([64.0, 31.0]),
-        );
-        let action = super::hit_test(
-            &view,
-            view.repair_button.rect.x + 1.0,
-            view.repair_button.rect.y + 1.0,
-            false,
-        );
-        assert_eq!(action, super::SidebarAction::ToggleRepairMode);
-    }
-
-    #[test]
-    fn hit_test_routes_sell_button() {
-        let view = super::sidebar_view::build_sidebar_view(
-            1280.0,
-            960.0,
-            super::SidebarTab::Building,
-            0,
-            0,
-            0,
-            Some([28.0, 27.0]),
-            &[],
-            &[],
-            &[],
-            None,
-            &[],
-            0,
-            None,
-            &crate::sidebar::gadget_flash::SidebarGadgetState::new(),
-            Some([64.0, 31.0]),
-            Some([64.0, 31.0]),
-        );
-        let action = super::hit_test(
-            &view,
-            view.sell_button.rect.x + 1.0,
-            view.sell_button.rect.y + 1.0,
-            false,
-        );
-        assert_eq!(action, super::SidebarAction::ToggleSellMode);
-    }
 }

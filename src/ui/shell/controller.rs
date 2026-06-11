@@ -308,6 +308,19 @@ mod tests {
     }
 
     #[test]
+    fn push_over_base_pops_back_to_it() {
+        let modal = DialogId(0x0120);
+        let mut c = DialogController::default();
+        c.ensure_active(A, false);
+        c.push(modal, true);
+        assert_eq!(c.top_id(), Some(modal));
+        assert_eq!(c.kbd_route(), &[modal], "accepts_keys registers the route");
+        assert_eq!(c.pop(), Some(modal));
+        assert_eq!(c.top_id(), Some(A), "LIFO pop restores the shell beneath");
+        assert!(c.kbd_route().is_empty(), "route pruned on pop");
+    }
+
+    #[test]
     fn ensure_active_resets_only_on_dialog_change() {
         let b = two_buttons();
         let mut c = DialogController::default();

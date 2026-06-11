@@ -217,6 +217,22 @@ pub(crate) struct AppState {
     /// `app_sidebar_gadgets::update_sidebar_gadget_state` once per sim tick;
     /// read each frame by the sidebar view builder to pick SHP frame indices.
     pub(crate) sidebar_gadget_state: crate::sidebar::gadget_flash::SidebarGadgetState,
+    /// In-game gadget substrate (study §6.1): retained sidebar button list +
+    /// capture/focus state + reusable tick output + the mouse-held record.
+    pub(crate) in_game_gadgets: crate::app_gadget_input::InGameGadgets,
+    /// Shared tooltip service (study S1) — the model is clock-injected; only
+    /// `app_tooltips` reads the wall clock.
+    pub(crate) tooltips: crate::ui::tooltips::TooltipService,
+    /// Epoch for the tooltip/message wall-clock (`now_ms` = elapsed since
+    /// app construction).
+    pub(crate) tooltip_epoch: Instant,
+    /// In-game chat/system message surface (study §3.1) — re-anchored to the
+    /// tactical viewport per frame by `app_messages`.
+    pub(crate) message_list: crate::ui::messages::MessageList,
+    /// Pause-adjusted clock for message deadlines (contract §4.2 step 8 /
+    /// §4.3: the native composite timer freezes during pause). Fed pause
+    /// edges by `app_messages::update`.
+    pub(crate) message_clock: crate::ui::messages::PauseAwareClock,
     /// Smoothly animated credits display per owner — ticks toward actual balance
     /// each frame (step = |diff| / 8, clamped to [1, 143]).
     pub(crate) displayed_credits: HashMap<String, i32>,
@@ -312,10 +328,6 @@ pub(crate) struct AppState {
     pub(crate) ui_scale: f32,
     /// Scroll offset for the current sidebar tab's item list.
     pub(crate) sidebar_scroll_rows: usize,
-    /// Transient mission/script announcement shown in-game.
-    pub(crate) mission_announcement: Option<String>,
-    /// Absolute deadline for clearing the announcement banner.
-    pub(crate) mission_announcement_deadline: Option<Instant>,
     /// Asset manager — kept alive for music track lookups.
     pub(crate) asset_manager: Option<AssetManager>,
     /// Background music player (rodio).
@@ -1693,9 +1705,9 @@ impl App {
         let feed = Self::exit_confirm_modal_feed(state);
         let x = state.cursor_x.round() as i32;
         let y = state.cursor_y.round() as i32;
-        state
-            .shell_controller
-            .ensure_active(crate::ui::shell::descriptor::DialogId(0x0120), true);
+        if state.shell_controller.top_id() != Some(crate::ui::shell::descriptor::DialogId(0x0120)) {
+            return;
+        }
         state.shell_controller.on_pointer_down(x, y, &feed);
     }
 
@@ -1703,9 +1715,9 @@ impl App {
         let feed = Self::exit_confirm_modal_feed(state);
         let x = state.cursor_x.round() as i32;
         let y = state.cursor_y.round() as i32;
-        state
-            .shell_controller
-            .ensure_active(crate::ui::shell::descriptor::DialogId(0x0120), true);
+        if state.shell_controller.top_id() != Some(crate::ui::shell::descriptor::DialogId(0x0120)) {
+            return;
+        }
         let activated = state.shell_controller.on_pointer_up(x, y, &feed);
         match activated {
             // OK -> quit (result 0). Persist settings to RA2MD.INI BEFORE teardown
@@ -1714,12 +1726,13 @@ impl App {
             // immediately. The screen fade-to-black is sub-step 4b-ii-b.
             Some(id) if id == crate::ui::shell::modal::control::OK => {
                 Self::persist_settings_on_quit(state);
-                state.exit_confirm_modal = None;
+                Self::close_exit_confirm_modal_from_controller(state);
                 Self::start_quit_cascade(state);
             }
-            // Cancel (control 2) -> stay; close the modal.
+            // Cancel (control 2) -> stay; close the modal via the controller
+            // pop (D-B3) so mouse and Esc converge on the same teardown.
             Some(id) if id == crate::ui::shell::modal::control::CANCEL => {
-                Self::close_main_menu_dialogs(state);
+                Self::close_exit_confirm_modal_from_controller(state);
                 state.window.request_redraw();
             }
             _ => {}
@@ -1932,11 +1945,15 @@ impl App {
         // The SHP modal sources PUDLGBGN/MNBTTN from the skirmish chrome atlas; load
         // it on demand so the quit-confirm renders straight from the main menu.
         Self::ensure_skirmish_shell_chrome(state);
-        // Host the modal on the shared shell controller stack (0x120 over the menu's
-        // 0xE2) so its OK/Cancel buttons own the press-must-match-release gesture.
-        state
-            .shell_controller
-            .ensure_active(crate::ui::shell::descriptor::DialogId(0x0120), true);
+        // Host the modal as a TRUE LIFO push over the active shell (D-B3):
+        // teardown pops back to it with focus restored. (ensure_active would
+        // reset_to-clobber the stack — the prior "0x120 over 0xE2" comment
+        // described behavior that never happened.)
+        if state.shell_controller.top_id() != Some(crate::ui::shell::descriptor::DialogId(0x0120)) {
+            state
+                .shell_controller
+                .push(crate::ui::shell::descriptor::DialogId(0x0120), true);
+        }
         state.exit_confirm_modal = Some(modal);
     }
 
@@ -1946,12 +1963,37 @@ impl App {
         state.main_menu_dialog_open()
     }
 
-    /// Close every open main-menu modal dialog (e.g. on ESC).
+    /// Close the egui-only main-menu dialogs (options/movies/campaign — never on
+    /// the controller stack). The exit-confirm modal closes through
+    /// close_exit_confirm_modal_from_controller (D-B3).
     pub(crate) fn close_main_menu_dialogs(state: &mut AppState) {
         state.exit_confirm_modal = None;
         state.options_dialog = None;
         state.movies_credits_dialog = None;
         state.campaign_select = None;
+    }
+
+    /// Controller-routed exit-confirm teardown (D-B3): dismiss the modal UI
+    /// state, then LIFO-pop its 0x120 instance so focus returns to the shell
+    /// beneath. Mirrors `close_validation_modal_from_controller` — every Esc
+    /// and mouse close path converges here.
+    fn close_exit_confirm_modal_from_controller(state: &mut AppState) {
+        state.exit_confirm_modal = None;
+        if state.shell_controller.top_id() == Some(crate::ui::shell::descriptor::DialogId(0x0120)) {
+            state.shell_controller.pop();
+        }
+    }
+
+    fn route_exit_confirm_modal_key(state: &mut AppState, key: ShellKey) -> bool {
+        if state.exit_confirm_modal.is_none() {
+            return false;
+        }
+        if !state.shell_controller.on_key(key) {
+            return false;
+        }
+        Self::close_exit_confirm_modal_from_controller(state);
+        state.window.request_redraw();
+        true
     }
 
     /// Draw whichever main-menu modal dialog is open in the current egui frame
@@ -2103,10 +2145,22 @@ impl ApplicationHandler for App {
                     // A main-menu modal dialog (exit confirm, options, movies,
                     // campaign select) takes ESC first: close it and stay,
                     // never propagating to the shell-close handlers below.
+                    // The exit-confirm modal routes through the controller
+                    // (on_key → LIFO pop, D-B3); the egui-only dialogs are
+                    // not on the stack and keep the direct close.
                     if Self::main_menu_dialog_open(state) {
                         if is_escape {
-                            Self::close_main_menu_dialogs(state);
-                            state.window.request_redraw();
+                            if state.exit_confirm_modal.is_some() {
+                                if !Self::route_exit_confirm_modal_key(state, ShellKey::Escape) {
+                                    // Defensive: on_key only fails with an
+                                    // empty route — still close consistently.
+                                    Self::close_exit_confirm_modal_from_controller(state);
+                                    state.window.request_redraw();
+                                }
+                            } else {
+                                Self::close_main_menu_dialogs(state);
+                                state.window.request_redraw();
+                            }
                         }
                         return;
                     }
@@ -2177,6 +2231,9 @@ impl ApplicationHandler for App {
                 if state.use_software_cursor() {
                     state.window.set_cursor_visible(false);
                 }
+                // Shared tooltip service: every move restarts the show delay
+                // and hides a visible tip (study S1).
+                crate::app_tooltips::on_mouse_move(state);
                 if crate::app_shell_transition::blocks_shell_input(state) {
                     return;
                 }
@@ -2215,6 +2272,9 @@ impl ApplicationHandler for App {
                 if state.use_software_cursor() {
                     state.window.set_cursor_visible(false);
                 }
+                // Any button press/release kills a visible tooltip + pending
+                // timer (all buttons incl. middle — study S1).
+                crate::app_tooltips::on_button_event(state);
                 if crate::app_shell_transition::blocks_shell_input(state) {
                     return;
                 }
@@ -2569,6 +2629,16 @@ impl App {
             radar_anim: None,
             power_bar_anim: crate::sidebar::PowerBarAnimState::new(),
             sidebar_gadget_state: crate::sidebar::gadget_flash::SidebarGadgetState::new(),
+            in_game_gadgets: crate::app_gadget_input::InGameGadgets::new(),
+            tooltips: crate::ui::tooltips::TooltipService::new(),
+            tooltip_epoch: Instant::now(),
+            message_list: crate::ui::messages::MessageList::new(
+                3,
+                0,
+                crate::ui::messages::MESSAGE_MAX_VISIBLE_RETAIL,
+                0,
+            ),
+            message_clock: crate::ui::messages::PauseAwareClock::default(),
             radar_content_insets: None,
             has_radar: false,
             selection_overlay: None,
@@ -2610,8 +2680,6 @@ impl App {
             sidebar_layout_spec_base: base_sidebar_layout_spec,
             ui_scale,
             sidebar_scroll_rows: 0,
-            mission_announcement: None,
-            mission_announcement_deadline: None,
             asset_manager: startup_asset_manager,
             music_player: MusicPlayer::new(),
             sfx_player: SfxPlayer::new(),
@@ -2678,6 +2746,13 @@ impl App {
     /// Dispatch rendering based on current GameScreen state.
     fn render_frame(state: &mut AppState, event_loop: &ActiveEventLoop) -> Result<()> {
         state.frame_timer.sample(Instant::now());
+        let main_menu_shell_live = state.screen == GameScreen::MainMenu
+            && !state.main_menu_shell_failed
+            && !state.main_menu_show_skirmish_setup
+            && !Self::single_player_shell_active(state)
+            && !Self::native_skirmish_shell_active(state);
+        crate::app_tooltips::update(state, main_menu_shell_live);
+        crate::app_messages::update(state);
         if let Some(until) = state.startup_splash_until {
             if Instant::now() < until {
                 let output: wgpu::SurfaceTexture = state
@@ -2922,9 +2997,6 @@ impl App {
                         sv,
                         state.ui_scale,
                     );
-                }
-                if let Some(text) = state.mission_announcement.as_deref() {
-                    crate::ui::mission_status::draw_mission_banner(&state.egui.ctx, text);
                 }
                 // Debug panels use a light/.NET theme — push light visuals
                 // before rendering, then restore the original after.

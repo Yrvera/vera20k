@@ -388,6 +388,7 @@ mod tests {
             id: "CMIN".to_string(),
             category: ObjectCategory::Vehicle,
             name: None,
+            ui_name: None,
             cost: 0,
             strength: 100,
             armor: "none".to_string(),
