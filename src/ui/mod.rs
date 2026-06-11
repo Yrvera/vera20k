@@ -14,7 +14,6 @@
 pub mod client_theme;
 pub mod game_screen;
 pub mod gadget;
-pub mod in_game_hud;
 pub mod main_menu;
 pub mod main_menu_dialogs;
 pub mod main_menu_shell;
