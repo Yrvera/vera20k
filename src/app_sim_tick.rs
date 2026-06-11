@@ -216,6 +216,8 @@ pub(crate) fn advance_in_game_runtime(state: &mut AppState, elapsed_ms: u64) {
     crate::app_building_anim::update_radar_state(state, SIM_TICK_MS as f32);
     crate::app_building_anim::update_power_bar_anim(state);
     crate::app_sidebar_gadgets::update_sidebar_gadget_state(state);
+    // Per-frame gadget idle tick (G22 rows 2/3 drag-off/drag-back tracking).
+    crate::app_gadget_input::idle_tick(state);
     if let (Some(player), Some(assets)) = (&mut state.music_player, &state.asset_manager) {
         player.update(assets);
     }

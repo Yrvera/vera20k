@@ -160,3 +160,134 @@ fn sync_gadgets(state: &mut AppState, view: &SidebarView) {
     sync(&mut gadgets.list, handles.scroll_down, rect_px(down_rect), false, None);
     sync(&mut gadgets.list, handles.scroll_up, rect_px(up_rect), false, None);
 }
+
+/// Route a mouse press/release edge into the gadget tick. Returns true when
+/// the substrate consumed the event — the caller must NOT fall through to the
+/// legacy sidebar/minimap/selection paths. A release completing a captured
+/// gesture is always consumed (in gamemd the sticky tier is exclusive: no
+/// other gadget — including the tactical catcher — ever sees that event).
+pub(crate) fn handle_mouse_button_event(
+    state: &mut AppState,
+    button: MouseButton,
+    pressed: bool,
+) -> bool {
+    // The held record updates on every edge (G8 idle-tick source).
+    match button {
+        MouseButton::Left => state.in_game_gadgets.left_held = pressed,
+        MouseButton::Right => state.in_game_gadgets.right_held = pressed,
+        _ => return false,
+    }
+    let Some(view) = current_sidebar_view(state) else {
+        return false;
+    };
+    sync_gadgets(state, &view);
+    let key = match (button, pressed) {
+        (MouseButton::Left, true) => KEY_LMB_DOWN,
+        (MouseButton::Left, false) => KEY_LMB_UP,
+        (MouseButton::Right, true) => KEY_RMB_DOWN,
+        (MouseButton::Right, false) => KEY_RMB_UP,
+        _ => return false,
+    };
+    run_tick(state, &view, key)
+}
+
+/// Once-per-frame idle tick: drives the masked-0 sticky re-dispatch that pops
+/// the pressed visual on drag-off and restores it on drag-back (G22 rows 2/3)
+/// and would drive G23 hold-repeat for any future held-mask gadget.
+pub(crate) fn idle_tick(state: &mut AppState) {
+    let Some(view) = current_sidebar_view(state) else {
+        return;
+    };
+    sync_gadgets(state, &view);
+    run_tick(state, &view, 0);
+}
+
+fn run_tick(state: &mut AppState, view: &SidebarView, key: u16) -> bool {
+    // We tick synchronously on the edge, so event coords == live coords
+    // (gamemd latches coords at enqueue; with no queue lag the two sources
+    // are identical — G6 still selects per the key's low byte).
+    let cx = state.cursor_x.round() as i32;
+    let cy = state.cursor_y.round() as i32;
+    let input = GadgetInput {
+        queued_key: key,
+        event_x: cx,
+        event_y: cy,
+        mouse_x: cx,
+        mouse_y: cy,
+        left_held: state.in_game_gadgets.left_held,
+        right_held: state.in_game_gadgets.right_held,
+        shift: crate::app_input::is_shift_held(state),
+        ctrl: crate::app_input::is_ctrl_held(state),
+        alt: crate::app_input::is_alt_held(state),
+    };
+    let was_captured = state.in_game_gadgets.focus.sticky.is_some();
+    let gadgets = &mut state.in_game_gadgets;
+    let result = tick(&mut gadgets.list, &mut gadgets.focus, &input, &mut gadgets.out);
+    let consumed_walk = state.in_game_gadgets.out.consumed_by.is_some();
+    let fired = (result & RESULT_BUTTON) != 0;
+    if fired {
+        apply_gadget_result(state, view, result);
+    }
+    publish_pressed_visuals(state);
+    fired || consumed_walk || was_captured
+}
+
+/// Map a fired `ID|0x8000[|0x4000]` onto the existing app actions. Consumers
+/// mask the right-release marker off (study §2.2: `key & ~0x4000`), so a
+/// right-click scrolls identically.
+fn apply_gadget_result(state: &mut AppState, view: &SidebarView, result: u16) {
+    let id = result & !(RESULT_BUTTON | RESULT_RIGHT);
+    match id {
+        _ if (ID_TAB_BASE..ID_TAB_BASE + 4).contains(&id) => {
+            let tab = SidebarTab::all()[(id - ID_TAB_BASE) as usize];
+            crate::app_input::apply_sidebar_action(state, SidebarAction::SelectTab(tab));
+            // NOTE: deliberately silent — the GUITabSound ruleset field lands
+            // with the parse task that also wires the sound into this arm, so
+            // each task gates green without forward references.
+        }
+        ID_REPAIR => {
+            crate::app_input::apply_sidebar_action(state, SidebarAction::ToggleRepairMode);
+        }
+        ID_SELL => {
+            crate::app_input::apply_sidebar_action(state, SidebarAction::ToggleSellMode);
+        }
+        // One PAGE per click (G23: mask 0x55 has no held bits ⇒ no repeat).
+        // Page = visible cameo rows; gamemd computes (strip px height)/50
+        // which equals the visible row count.
+        ID_SCROLL_DOWN => {
+            let page = view.layout.side2_tile_count.max(1);
+            state.sidebar_scroll_rows =
+                (state.sidebar_scroll_rows + page).min(view.max_scroll_rows);
+        }
+        ID_SCROLL_UP => {
+            let page = view.layout.side2_tile_count.max(1);
+            state.sidebar_scroll_rows = state.sidebar_scroll_rows.saturating_sub(page);
+        }
+        _ => {}
+    }
+}
+
+/// Publish the transient pressed bits for the 5-frame visuals (frames 3/4).
+fn publish_pressed_visuals(state: &mut AppState) {
+    let Some(handles) = state.in_game_gadgets.handles else {
+        return;
+    };
+    let pressed = |h: GadgetHandle| {
+        state
+            .in_game_gadgets
+            .list
+            .get(h)
+            .is_some_and(|g| matches!(g.behavior, GadgetBehavior::Button(b) if b.is_pressed))
+    };
+    let tabs = handles.tabs.map(pressed);
+    let repair = pressed(handles.repair);
+    let sell = pressed(handles.sell);
+    let down = pressed(handles.scroll_down);
+    let up = pressed(handles.scroll_up);
+    let gs = &mut state.sidebar_gadget_state;
+    gs.tab_pressed = tabs;
+    gs.repair_pressed = repair;
+    gs.sell_pressed = sell;
+    gs.scroll_down_pressed = down;
+    gs.scroll_up_pressed = up;
+}
