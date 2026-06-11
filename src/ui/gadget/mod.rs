@@ -11,6 +11,7 @@
 //! - ui/ module: std only — no render/, assets/, sidebar/, audio/, net/.
 
 pub mod focus;
+pub mod list;
 
 /// Queued left-mouse-down event (G8 source code).
 pub const KEY_LMB_DOWN: u16 = 0x001;
