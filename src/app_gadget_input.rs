@@ -241,9 +241,14 @@ fn apply_gadget_result(state: &mut AppState, view: &SidebarView, result: u16) {
         _ if (ID_TAB_BASE..ID_TAB_BASE + 4).contains(&id) => {
             let tab = SidebarTab::all()[(id - ID_TAB_BASE) as usize];
             crate::app_input::apply_sidebar_action(state, SidebarAction::SelectTab(tab));
-            // NOTE: deliberately silent — the GUITabSound ruleset field lands
-            // with the parse task that also wires the sound into this arm, so
-            // each task gates green without forward references.
+            // [AudioVisual] GUITabSound — name-inferred mapping (LOW
+            // confidence): one Ghidra spot-check of the tab-ID consumer is a
+            // plan Parity-Critical follow-up.
+            let sound = state
+                .rules
+                .as_ref()
+                .and_then(|r| r.general.gui_tab_sound.clone());
+            crate::app::App::play_shell_ui_sound_by_id(state, sound.as_deref());
         }
         ID_REPAIR => {
             crate::app_input::apply_sidebar_action(state, SidebarAction::ToggleRepairMode);

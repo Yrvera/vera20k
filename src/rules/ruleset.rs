@@ -301,6 +301,10 @@ pub struct GeneralRules {
     pub generic_click_sound: Option<String>,
     /// Sound event for shell checkboxes from [AudioVisual] GUICheckboxSound.
     pub gui_checkbox_sound: Option<String>,
+    /// Sidebar tab click sound from [AudioVisual] GUITabSound (retail
+    /// `MenuTab`). The key→tab-click mapping is name-inferred — flagged for a
+    /// Ghidra spot-check of the tab-ID consumer before parity sign-off.
+    pub gui_tab_sound: Option<String>,
     /// Sound event for opening shell combo boxes from [AudioVisual] GUIComboOpenSound.
     pub gui_combo_open_sound: Option<String>,
     /// Sound event for closing shell combo boxes from [AudioVisual] GUIComboCloseSound.
@@ -632,6 +636,7 @@ impl Default for GeneralRules {
             gui_main_button_sound: None,
             generic_click_sound: None,
             gui_checkbox_sound: None,
+            gui_tab_sound: None,
             gui_combo_open_sound: None,
             gui_combo_close_sound: None,
             bunker_walls_down_sound: None,
@@ -981,6 +986,11 @@ impl GeneralRules {
                 .map(str::to_string),
             gui_checkbox_sound: audio_visual
                 .and_then(|s| s.get("GUICheckboxSound"))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            gui_tab_sound: audio_visual
+                .and_then(|s| s.get("GUITabSound"))
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string),
