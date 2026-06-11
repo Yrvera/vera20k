@@ -317,21 +317,53 @@ pub(super) fn trackbar_rect_for_id(layout: &SkirmishShellLayout, id: SkirmishTra
     }
 }
 
+/// Render-side per-control paint state for the Slice 4 dispatch seam (O1: a
+/// data-enum match like `ButtonPolicy`, NOT a trait). One variant per painted
+/// control kind (mirrors `ui::shell::ControlKind`); each carries the RESOLVED
+/// per-control paint state — for a checkbox, the already-looked-up icon entry +
+/// its full rect — so `paint_control` needs no atlas and selects the emitter by
+/// variant. App-layer because the emitters + skirmish layout live here
+/// (`render/` must not depend on the app layer, so the seam can't sit in
+/// `render/shell_paint.rs` as the original draft assumed). 4A lands `Checkbox`;
+/// 4B-4D add the trackbar/combo/listbox arms.
+pub(super) enum ControlPaint {
+    Checkbox {
+        icon: Option<SkirmishShellChromeEntry>,
+        rect: RectPx,
+    },
+}
+
+/// Slice 4 paint seam: emit one control, selecting the emitter by `ControlPaint`
+/// variant (the per-control-kind dispatch). Re-homes what were direct per-family
+/// emitter calls into one match; emission (entry / rect / depth) is
+/// byte-identical to the pre-seam code.
+pub(super) fn paint_control(out: &mut Vec<SpriteInstance>, paint: ControlPaint) {
+    match paint {
+        ControlPaint::Checkbox { icon, rect } => {
+            if let Some(entry) = icon {
+                push_entry(out, entry, checkbox_icon_rect(rect), SHELL_CONTROL_DEPTH);
+            }
+        }
+    }
+}
+
 pub(super) fn push_checkbox_instances(
     out: &mut Vec<SpriteInstance>,
     atlas: &SkirmishShellChromeAtlas,
     layout: &SkirmishShellLayout,
     shell: &SkirmishShellState,
 ) {
+    // Slice 4A: each checkbox paints through the per-control-kind seam. The
+    // iteration order (layout.checkboxes), the resolved icon entry, the icon
+    // rect, and SHELL_CONTROL_DEPTH are unchanged from the pre-seam loop —
+    // byte-identical emission (see the draw-list test).
     for checkbox in layout.checkboxes {
-        let Some(entry) = checkbox_entry(atlas, checkbox_checked(shell, checkbox.id)) else {
-            continue;
-        };
-        push_entry(
+        paint_control(
             out,
-            entry,
-            checkbox_icon_rect(checkbox.rect),
-            SHELL_CONTROL_DEPTH,
+            ControlPaint::Checkbox {
+                icon: checkbox_entry(atlas, checkbox_checked(shell, checkbox.id)),
+                rect: checkbox.rect,
+            },
         );
     }
 }
@@ -625,5 +657,46 @@ mod tests {
         // Defensive path: with no [Colors] loaded the swatch still renders a color.
         let tint = house_color_tint(&[], 0);
         assert!(tint.iter().any(|&channel| channel > 0.0));
+    }
+
+    #[test]
+    fn checkbox_paint_seam_emits_icon_at_icon_rect_with_control_depth() {
+        // Draw-list assertion (Slice 4 §1.4): the per-control-kind seam emits
+        // exactly one instance, at the 18x18 icon rect, at SHELL_CONTROL_DEPTH,
+        // carrying the resolved entry's uv — byte-identical to the pre-seam
+        // push_checkbox_instances emission.
+        let entry = SkirmishShellChromeEntry {
+            uv_origin: [0.1, 0.2],
+            uv_size: [0.3, 0.4],
+            pixel_size: [18.0, 18.0],
+        };
+        let rect = RectPx::new(71, 286, 150, 16);
+        let icon = checkbox_icon_rect(rect);
+
+        let mut out = Vec::new();
+        paint_control(&mut out, ControlPaint::Checkbox { icon: Some(entry), rect });
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].position, [icon.x as f32, icon.y as f32]);
+        assert_eq!(out[0].size, [icon.w as f32, icon.h as f32]);
+        assert_eq!(out[0].uv_origin, entry.uv_origin);
+        assert_eq!(out[0].uv_size, entry.uv_size);
+        assert_eq!(out[0].depth, SHELL_CONTROL_DEPTH);
+
+        // Missing entry → no instance (matches the pre-seam `else continue`).
+        let mut empty = Vec::new();
+        paint_control(&mut empty, ControlPaint::Checkbox { icon: None, rect });
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn checkbox_icon_rect_right_edge_is_half_open() {
+        // The toggle keys off the 18x18 icon rect via RectPx::contains
+        // (half-open): the last interior px (icon.x+17) HITS, the right edge
+        // (icon.x+18) MISSES — the boundary the input toggle branch relies on.
+        let rect = RectPx::new(71, 286, 150, 16);
+        let icon = checkbox_icon_rect(rect);
+        assert_eq!(icon.w, 18, "C-Checkbox icon width is 18px");
+        assert!(icon.contains(icon.x + icon.w - 1, icon.y), "last interior px hits");
+        assert!(!icon.contains(icon.x + icon.w, icon.y), "right edge (x+18) misses");
     }
 }
