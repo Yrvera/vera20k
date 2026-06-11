@@ -40,11 +40,13 @@ pub(crate) fn post_system_message(state: &mut AppState, text: &str) {
     let font = &state.bit_font;
     let measure = |s: &str| font.text_width(s) as i32;
     let outcome = state.message_list.add_message(
-        None,
-        text,
-        MESSAGE_RGB_SYSTEM,
-        Some(MISSION_TEXT_TIMEOUT_MS),
-        false,
+        &crate::ui::messages::MessagePost {
+            prefix: None,
+            text,
+            rgb: MESSAGE_RGB_SYSTEM,
+            timeout_ms: Some(MISSION_TEXT_TIMEOUT_MS),
+            silent: false,
+        },
         now,
         &measure,
     );

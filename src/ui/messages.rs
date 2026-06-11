@@ -46,6 +46,21 @@ pub struct AddOutcome {
     pub play_sound: bool,
 }
 
+/// One `add_message` request — the per-message inputs grouped so the call
+/// signature stays small (the clock and measurer are passed separately
+/// because they belong to the caller, not the message).
+#[derive(Debug, Clone, Copy)]
+pub struct MessagePost<'a> {
+    /// Optional sender prefix, composed as `prefix:` before the text.
+    pub prefix: Option<&'a str>,
+    pub text: &'a str,
+    pub rgb: [f32; 3],
+    /// None = never expires (native timeout −1 → deadline 0).
+    pub timeout_ms: Option<u64>,
+    /// Silent adds never request the insert sound.
+    pub silent: bool,
+}
+
 #[derive(Debug)]
 pub struct MessageList {
     x: i32,
@@ -89,11 +104,7 @@ impl MessageList {
     /// full, tail-insert, restack, recurse silently on the remainder.
     pub fn add_message(
         &mut self,
-        prefix: Option<&str>,
-        text: &str,
-        rgb: [f32; 3],
-        timeout_ms: Option<u64>,
-        silent: bool,
+        post: &MessagePost,
         now_ms: u64,
         measure: &dyn Fn(&str) -> i32,
     ) -> AddOutcome {
@@ -101,17 +112,16 @@ impl MessageList {
             added: 0,
             play_sound: false,
         };
-        self.add_inner(prefix, text, rgb, timeout_ms, silent, now_ms, measure, &mut outcome);
+        self.add_inner(post, post.text, post.silent, now_ms, measure, &mut outcome);
         outcome
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// `text`/`silent` override the `post` fields: the wrap recursion re-adds
+    /// the remainder with the SAME prefix/color/timeout but always silently.
     fn add_inner(
         &mut self,
-        prefix: Option<&str>,
+        post: &MessagePost,
         text: &str,
-        rgb: [f32; 3],
-        timeout_ms: Option<u64>,
         silent: bool,
         now_ms: u64,
         measure: &dyn Fn(&str) -> i32,
@@ -121,7 +131,7 @@ impl MessageList {
             return;
         }
         // Step 2 — compose the prefix.
-        let compose_prefix = match prefix {
+        let compose_prefix = match post.prefix {
             Some(p) => format!("{p}{MESSAGE_PREFIX_SEPARATOR}"),
             None => String::new(),
         };
@@ -149,8 +159,8 @@ impl MessageList {
         // Steps 6-12 — tail insert + restack.
         self.messages.push(Message {
             text: line,
-            rgb,
-            deadline_ms: timeout_ms.map(|t| now_ms + t),
+            rgb: post.rgb,
+            deadline_ms: post.timeout_ms.map(|t| now_ms + t),
             y: 0,
         });
         self.restack();
@@ -163,7 +173,7 @@ impl MessageList {
         if fit_bytes < text.len() {
             let remainder = text[fit_bytes..].trim_start_matches(|c: char| (c as u32) < 0x20);
             if !remainder.is_empty() {
-                self.add_inner(prefix, remainder, rgb, timeout_ms, true, now_ms, measure, outcome);
+                self.add_inner(post, remainder, true, now_ms, measure, outcome);
             }
         }
     }
@@ -205,9 +215,9 @@ fn fit_prefix_bytes(
     measure: &dyn Fn(&str) -> i32,
 ) -> usize {
     let mut fitted = 0usize;
-    let mut chars = 0usize;
     let mut last_break: Option<usize> = None;
-    for (idx, ch) in text.char_indices() {
+    // `chars` counts the characters already fitted before this iteration.
+    for (chars, (idx, ch)) in text.char_indices().enumerate() {
         let end = idx + ch.len_utf8();
         if chars + 1 > max_chars || measure(&text[..end]) > budget_px {
             return last_break.unwrap_or(idx);
@@ -216,7 +226,6 @@ fn fit_prefix_bytes(
             last_break = Some(end);
         }
         fitted = end;
-        chars += 1;
     }
     fitted
 }
@@ -274,13 +283,28 @@ mod tests {
         MessageList::new(3, 0, max_visible, width)
     }
 
+    fn post<'a>(
+        prefix: Option<&'a str>,
+        text: &'a str,
+        timeout_ms: Option<u64>,
+        silent: bool,
+    ) -> MessagePost<'a> {
+        MessagePost {
+            prefix,
+            text,
+            rgb: WHITE,
+            timeout_ms,
+            silent,
+        }
+    }
+
     #[test]
     fn add_composes_prefix_and_restacks_19px() {
         let mut l = list(6, 500);
-        let o = l.add_message(Some("Boris"), "attack", WHITE, None, false, 0, &mono);
+        let o = l.add_message(&post(Some("Boris"), "attack", None, false), 0, &mono);
         assert_eq!(o.added, 1);
         assert!(o.play_sound);
-        let o = l.add_message(None, "second", WHITE, None, true, 0, &mono);
+        let o = l.add_message(&post(None, "second", None, true), 0, &mono);
         assert!(!o.play_sound, "silent add suppresses the sound");
         let rows = l.messages();
         assert_eq!(rows[0].text, "Boris:attack");
@@ -293,7 +317,7 @@ mod tests {
     fn eviction_drops_oldest_at_cap() {
         let mut l = list(3, 500);
         for i in 0..4 {
-            l.add_message(None, &format!("m{i}"), WHITE, None, true, 0, &mono);
+            l.add_message(&post(None, &format!("m{i}"), None, true), 0, &mono);
         }
         let texts: Vec<&str> = l.messages().iter().map(|m| m.text.as_str()).collect();
         assert_eq!(texts, vec!["m1", "m2", "m3"], "head (oldest) evicted");
@@ -305,7 +329,7 @@ mod tests {
         // Budget: width 200 − prefix "P:" 20 − pad 8 = 172 px → 17 chars/line.
         let mut l = list(6, 200);
         let text = "aaaa bbbb cccc dddd eeee"; // 24 chars → must wrap
-        let o = l.add_message(Some("P"), text, WHITE, None, false, 0, &mono);
+        let o = l.add_message(&post(Some("P"), text, None, false), 0, &mono);
         assert!(o.added >= 2, "wrapped into multiple rows");
         assert!(o.play_sound, "ONE sound for the top-level add");
         for row in l.messages() {
@@ -333,20 +357,20 @@ mod tests {
     #[test]
     fn zero_budget_or_unfittable_adds_nothing() {
         let mut l = list(6, 5); // budget 5−0−8 < 0
-        let o = l.add_message(None, "text", WHITE, None, false, 0, &mono);
+        let o = l.add_message(&post(None, "text", None, false), 0, &mono);
         assert_eq!(o.added, 0);
         assert!(!o.play_sound);
         // First char wider than the budget → fit 0 → nothing.
         let mut l2 = list(6, 17); // budget 17−0−8 = 9 < 10
-        let o = l2.add_message(None, "x", WHITE, None, false, 0, &mono);
+        let o = l2.add_message(&post(None, "x", None, false), 0, &mono);
         assert_eq!(o.added, 0);
     }
 
     #[test]
     fn manage_expires_strictly_after_deadline() {
         let mut l = list(6, 500);
-        l.add_message(None, "temp", WHITE, Some(1000), true, 0, &mono);
-        l.add_message(None, "forever", WHITE, None, true, 0, &mono);
+        l.add_message(&post(None, "temp", Some(1000), true), 0, &mono);
+        l.add_message(&post(None, "forever", None, true), 0, &mono);
         assert!(!l.manage(1000), "now == deadline: kept (strict >)");
         assert!(l.manage(1001), "now > deadline: expired");
         let texts: Vec<&str> = l.messages().iter().map(|m| m.text.as_str()).collect();
@@ -362,7 +386,7 @@ mod tests {
         // wall > 14000), NOT expire on unpause.
         let mut l = list(6, 500);
         let mut clock = PauseAwareClock::default();
-        l.add_message(None, "temp", WHITE, Some(4000), true, clock.now(0), &mono);
+        l.add_message(&post(None, "temp", Some(4000), true), clock.now(0), &mono);
         clock.set_paused(true, 1000);
         assert_eq!(clock.now(5000), 1000, "clock frozen mid-pause");
         clock.set_paused(false, 11000);
@@ -375,8 +399,8 @@ mod tests {
     #[test]
     fn set_view_reanchors_rows() {
         let mut l = list(6, 500);
-        l.add_message(None, "a", WHITE, None, true, 0, &mono);
-        l.add_message(None, "b", WHITE, None, true, 0, &mono);
+        l.add_message(&post(None, "a", None, true), 0, &mono);
+        l.add_message(&post(None, "b", None, true), 0, &mono);
         l.set_view(10, 100, 400);
         assert_eq!(l.messages()[0].y, 100);
         assert_eq!(l.messages()[1].y, 100 + MESSAGE_LINE_HEIGHT_PX);
@@ -387,7 +411,7 @@ mod tests {
     fn line_char_cap_111_applies() {
         let mut l = list(14, 100_000);
         let long = "y".repeat(300);
-        let o = l.add_message(None, &long, WHITE, None, true, 0, &mono);
+        let o = l.add_message(&post(None, &long, None, true), 0, &mono);
         assert!(o.added >= 2);
         assert_eq!(
             l.messages()[0].text.chars().count(),

@@ -109,10 +109,10 @@ impl TooltipService {
     /// with the adaptive layout). The visible tip survives iff its id is
     /// still present; a vanished id hides (unregister semantics).
     pub fn sync_regions(&mut self, regions: &[TipRegion]) {
-        if let Some(a) = &self.active {
-            if !regions.iter().any(|r| r.id == a.id) {
-                self.active = None;
-            }
+        if let Some(a) = &self.active
+            && !regions.iter().any(|r| r.id == a.id)
+        {
+            self.active = None;
         }
         self.regions.clear();
         self.regions.extend_from_slice(regions);
@@ -171,18 +171,18 @@ impl TooltipService {
             .regions
             .iter()
             .find(|r| r.rect.contains_inclusive(self.mouse_x, self.mouse_y));
-        if let Some(r) = hit {
-            if !r.text.is_empty() {
-                let text: String = r.text.chars().take(TOOLTIP_TEXT_CAP_CHARS).collect();
-                self.active = Some(ActiveTip {
-                    id: r.id,
-                    text,
-                    x: self.mouse_x,
-                    y: self.mouse_y,
-                    shown_at_ms: now_ms,
-                });
-                self.timer_deadline_ms = Some(now_ms + TOOLTIP_DURATION_MS);
-            }
+        if let Some(r) = hit
+            && !r.text.is_empty()
+        {
+            let text: String = r.text.chars().take(TOOLTIP_TEXT_CAP_CHARS).collect();
+            self.active = Some(ActiveTip {
+                id: r.id,
+                text,
+                x: self.mouse_x,
+                y: self.mouse_y,
+                shown_at_ms: now_ms,
+            });
+            self.timer_deadline_ms = Some(now_ms + TOOLTIP_DURATION_MS);
         }
     }
 

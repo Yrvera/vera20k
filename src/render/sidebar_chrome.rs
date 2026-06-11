@@ -345,8 +345,8 @@ fn build_theme_atlas(
     let mut scroll_down_entries: [Option<RenderedChromeEntry>; SCROLL_FRAME_COUNT] =
         Default::default();
     for frame in 0..SCROLL_FRAME_COUNT {
-        scroll_up_entries[frame] = render_entry(asset_manager, &mix, "r-up.shp", &palette, frame);
-        scroll_down_entries[frame] = render_entry(asset_manager, &mix, "r-dn.shp", &palette, frame);
+        scroll_up_entries[frame] = render_entry(asset_manager, mix, "r-up.shp", &palette, frame);
+        scroll_down_entries[frame] = render_entry(asset_manager, mix, "r-dn.shp", &palette, frame);
     }
     if scroll_up_entries[0].is_none() {
         log::warn!("r-up.shp missing in MIX — strip scroll-up button will not render");
@@ -452,15 +452,11 @@ fn build_theme_atlas(
             all_entries.push(entry);
         }
     }
-    for frame in 0..SCROLL_FRAME_COUNT {
-        if let Some(ref entry) = scroll_up_entries[frame] {
-            all_entries.push(entry);
-        }
+    for entry in scroll_up_entries.iter().flatten() {
+        all_entries.push(entry);
     }
-    for frame in 0..SCROLL_FRAME_COUNT {
-        if let Some(ref entry) = scroll_down_entries[frame] {
-            all_entries.push(entry);
-        }
+    for entry in scroll_down_entries.iter().flatten() {
+        all_entries.push(entry);
     }
     if let Some(ref p) = power {
         all_entries.push(p);
