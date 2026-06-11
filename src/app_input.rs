@@ -180,32 +180,46 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
 }
 
 /// Minimap mouse body (routed here when the minimap ClickRegion consumes the
-/// edge). Preserves the current continuous-follow drag gesture — gamemd's
-/// press-edge camera-center is a DEFERRED parity item, not flipped here.
+/// edge). gamemd (decompile 0x006539D0) centers the tactical view on press
+/// edges (left OR right) and IGNORES held motion — there is no continuous
+/// camera-follow (the held branch is dropped in `handle_cursor_moved_in_game`).
 pub(crate) fn minimap_mouse(state: &mut AppState, button: MouseButton, btn_state: ElementState) {
-    // Right/other on the minimap: no current action (gamemd's right-press
-    // camera-center is the deferred parity item).
-    if button != MouseButton::Left {
-        return;
-    }
-    if btn_state.is_pressed() {
-        crate::app_sidebar_render::try_begin_minimap_drag(state);
-    } else if state.minimap_dragging {
-        state.minimap_dragging = false;
+    match button {
+        MouseButton::Left => {
+            if btn_state.is_pressed() {
+                crate::app_sidebar_render::try_begin_minimap_drag(state);
+            } else if state.minimap_dragging {
+                state.minimap_dragging = false;
+            }
+        }
+        MouseButton::Right => {
+            // A right-press centers the view on the clicked cell (no command);
+            // right-release just releases the gadget's sticky capture.
+            if btn_state.is_pressed()
+                && crate::app_sidebar_render::is_cursor_over_minimap(state)
+            {
+                crate::app_sidebar_render::update_camera_from_minimap_cursor(state);
+            }
+        }
+        _ => {}
     }
 }
 
 /// Handle cursor-move behavior while in-game.
 ///
-/// If minimap-dragging is active, camera follows the cursor on the minimap.
-/// Otherwise this updates unit-selection drag rectangle.
+/// While a minimap press is held the camera does NOT follow (gamemd ignores
+/// held minimap motion); the move is swallowed so it can't start a selection
+/// drag. Otherwise this updates the unit-selection drag rectangle.
 /// Speed multiplier for middle-mouse camera panning. Each pixel of mouse movement
 /// translates to this many pixels of camera scroll, making it feel fast and responsive.
 const MIDDLE_MOUSE_PAN_SPEED: f32 = 3.0;
 
 pub(crate) fn handle_cursor_moved_in_game(state: &mut AppState) {
+    // Minimap: gamemd re-centers only on press edges and ignores held motion
+    // (decompile 0x006539D0: `param_1 & 0x22` early-out). While a minimap press
+    // is held we do NOT follow the cursor — but still swallow the move so it
+    // doesn't begin a unit selection-drag.
     if state.minimap_dragging {
-        crate::app_sidebar_render::update_camera_from_minimap_cursor(state);
         return;
     }
     if state.middle_mouse_panning {

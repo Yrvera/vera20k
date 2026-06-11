@@ -70,10 +70,21 @@ pub const TACTICAL_REGION_FLAGS: u16 = FLAG_LEFT_PRESS
     | FLAG_RIGHT_HELD
     | FLAG_RIGHT_RELEASE; // 0x7F
 
-/// Minimap/radar region mask (A3, study minimap lane §1b): left press/held/
-/// release/up + right-press + right-up; NOT right-held, NOT right-release = 0x9F.
-pub const MINIMAP_REGION_FLAGS: u16 =
-    FLAG_LEFT_PRESS | FLAG_LEFT_HELD | FLAG_LEFT_RELEASE | FLAG_LEFT_UP | FLAG_RIGHT_PRESS | FLAG_RIGHT_UP; // 0x9F
+/// Minimap/radar region mask. gamemd's is 0x9F (study minimap lane §1b: left
+/// press/held/release/up + right-press + right-up; NOT right-held/right-release).
+/// We ADD RIGHT_RELEASE (→ 0xDF) as a Rust-native divergence: with 0x9F a
+/// right-press acquires sticky capture that RIGHT_RELEASE can't clear (it's
+/// masked out), leaving the minimap holding capture until the next left-release
+/// — an input-eating quirk. Including RIGHT_RELEASE lets a minimap right-click
+/// acquire-then-release capture cleanly, producing gamemd's observable output
+/// (right-press centers the tactical view) without the quirk.
+pub const MINIMAP_REGION_FLAGS: u16 = FLAG_LEFT_PRESS
+    | FLAG_LEFT_HELD
+    | FLAG_LEFT_RELEASE
+    | FLAG_LEFT_UP
+    | FLAG_RIGHT_PRESS
+    | FLAG_RIGHT_RELEASE
+    | FLAG_RIGHT_UP; // 0xDF
 
 /// Stable per-list gadget identity. Never reused within a list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
