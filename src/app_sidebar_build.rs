@@ -44,6 +44,10 @@ pub(crate) fn build_sidebar_chrome_instances(
         view,
         &view.tabs,
         &state.power_bar_anim,
+        [
+            state.sidebar_gadget_state.scroll_down_frame(),
+            state.sidebar_gadget_state.scroll_up_frame(),
+        ],
         [state.render_width() as f32, state.render_height() as f32],
         [state.camera_x, state.camera_y],
         state.ui_scale,
@@ -57,6 +61,7 @@ pub fn build_sidebar_chrome_instances_for_layout(
     view: &SidebarView,
     tabs: &[SidebarTabButton],
     power_bar_anim: &PowerBarAnimState,
+    scroll_frames: [u8; 2],
     _screen_size: [f32; 2],
     camera_offset: [f32; 2],
     ui_scale: f32,
@@ -191,6 +196,27 @@ pub fn build_sidebar_chrome_instances_for_layout(
             camera_offset,
             s,
         );
+    }
+
+    // --- Strip-scroll pair (R-DN +page left, R-UP −page right) ---
+    // Same 5-frame select + frame-0 fallback convention as repair/sell.
+    let (scroll_down_rect, scroll_up_rect) = crate::sidebar::scroll_button_rects(
+        layout,
+        spec.sidebar_width,
+        atlas.scroll_down_frames[0]
+            .as_ref()
+            .map(|e| [e.pixel_size[0] * s, e.pixel_size[1] * s]),
+        atlas.scroll_up_frames[0]
+            .as_ref()
+            .map(|e| [e.pixel_size[0] * s, e.pixel_size[1] * s]),
+    );
+    let down_frame = scroll_frames[0] as usize;
+    if let Some(e) = atlas.scroll_down_frames[down_frame].or(atlas.scroll_down_frames[0]) {
+        push_chrome(&mut inst, e, scroll_down_rect.x, scroll_down_rect.y, btn_depth, camera_offset, s);
+    }
+    let up_frame = scroll_frames[1] as usize;
+    if let Some(e) = atlas.scroll_up_frames[up_frame].or(atlas.scroll_up_frames[0]) {
+        push_chrome(&mut inst, e, scroll_up_rect.x, scroll_up_rect.y, btn_depth, camera_offset, s);
     }
 
     // --- Power bar meter (powerp.shp strips stacked from top) ---

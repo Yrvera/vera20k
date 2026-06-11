@@ -332,6 +332,28 @@ pub(crate) fn compute_layout_with_spec(
     }
 }
 
+/// Strip-scroll button rects (the R-DN/R-UP pair). gamemd anchors the pair at
+/// ScrollX / ScrollX+ScrollWidth in retail strip geometry; our adaptive RON
+/// layout (R11 geometry policy — OUT of this plan's scope) has no such
+/// anchor, so the interim placement centers the pair inside the side3 strip:
+/// scroll-down (+page) on the left, scroll-up (−page) on the right.
+/// `None` sizes (atlas missing) collapse to 0×0 — unhittable and undrawn.
+pub fn scroll_button_rects(
+    layout: &SidebarLayout,
+    sidebar_width: f32,
+    down_size: Option<[f32; 2]>,
+    up_size: Option<[f32; 2]>,
+) -> (Rect, Rect) {
+    let [dw, dh] = down_size.unwrap_or([0.0, 0.0]);
+    let [uw, uh] = up_size.unwrap_or([0.0, 0.0]);
+    let x0 = layout.sidebar_x + (sidebar_width - (dw + uw)) * 0.5;
+    let y = layout.side3_y + 1.0;
+    (
+        Rect { x: x0, y, w: dw, h: dh },
+        Rect { x: x0 + dw, y, w: uw, h: uh },
+    )
+}
+
 fn hit_test_item(item: &SidebarItem, right_click: bool) -> SidebarAction {
     if right_click {
         // SW cameos have no queue → right-click does nothing.

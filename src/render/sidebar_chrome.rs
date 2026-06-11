@@ -88,6 +88,12 @@ pub struct SidebarChromeAtlas {
     pub repair_frames: [Option<SidebarChromeEntry>; 5],
     /// Sell button — 5-frame SHP state table (same convention as `tab_frames`).
     pub sell_frames: [Option<SidebarChromeEntry>; 5],
+    /// Strip scroll-up (R-UP.SHP, −page) — assumed 5-frame convention; the
+    /// frame count is unverified (plan deferred item), missing frames fall
+    /// back to frame 0 at draw exactly like repair/sell.
+    pub scroll_up_frames: [Option<SidebarChromeEntry>; 5],
+    /// Strip scroll-down (R-DN.SHP, +page).
+    pub scroll_down_frames: [Option<SidebarChromeEntry>; 5],
     pub power: Option<SidebarChromeEntry>,
     /// powerp.shp frames: 5 colored strip segments for the power bar meter.
     /// [0]=dark/bg, [1]=green, [2]=yellow, [3]=red, [4]=dark/off.
@@ -326,6 +332,22 @@ fn build_theme_atlas(
         }
         sell_frame_entries[frame] = entry;
     }
+
+    // Strip-scroll pair. Frame count unverified (deferred) — render_entry
+    // returns None for absent frames and the draw falls back to frame 0, so
+    // either a 1-frame or 5-frame retail SHP degrades gracefully.
+    let mut scroll_up_entries: [Option<RenderedChromeEntry>; 5] = Default::default();
+    let mut scroll_down_entries: [Option<RenderedChromeEntry>; 5] = Default::default();
+    for frame in 0..5 {
+        scroll_up_entries[frame] = render_entry(asset_manager, &mix, "r-up.shp", &palette, frame);
+        scroll_down_entries[frame] = render_entry(asset_manager, &mix, "r-dn.shp", &palette, frame);
+    }
+    if scroll_up_entries[0].is_none() {
+        log::warn!("r-up.shp missing in MIX — strip scroll-up button will not render");
+    }
+    if scroll_down_entries[0].is_none() {
+        log::warn!("r-dn.shp missing in MIX — strip scroll-down button will not render");
+    }
     let power = render_entry(asset_manager, &mix, "power.shp", &palette, 0);
     // powerp.shp: strip frames for the power bar meter.
     // Use raw frame pixel data (not the full SHP canvas) to avoid transparent
@@ -421,6 +443,16 @@ fn build_theme_atlas(
     }
     for frame in 0..5 {
         if let Some(ref entry) = sell_frame_entries[frame] {
+            all_entries.push(entry);
+        }
+    }
+    for frame in 0..5 {
+        if let Some(ref entry) = scroll_up_entries[frame] {
+            all_entries.push(entry);
+        }
+    }
+    for frame in 0..5 {
+        if let Some(ref entry) = scroll_down_entries[frame] {
             all_entries.push(entry);
         }
     }
@@ -525,6 +557,22 @@ fn build_theme_atlas(
             sell_frames_packed[frame] = Some(uv);
         }
     }
+    let mut scroll_up_frames_packed: [Option<SidebarChromeEntry>; 5] = Default::default();
+    for frame in 0..5 {
+        if let Some(ref entry) = scroll_up_entries[frame] {
+            let uv = blit_entry(&mut rgba, atlas_width, atlas_height, y, entry);
+            y += entry.height + CHROME_PADDING;
+            scroll_up_frames_packed[frame] = Some(uv);
+        }
+    }
+    let mut scroll_down_frames_packed: [Option<SidebarChromeEntry>; 5] = Default::default();
+    for frame in 0..5 {
+        if let Some(ref entry) = scroll_down_entries[frame] {
+            let uv = blit_entry(&mut rgba, atlas_width, atlas_height, y, entry);
+            y += entry.height + CHROME_PADDING;
+            scroll_down_frames_packed[frame] = Some(uv);
+        }
+    }
     let power_uv = power.as_ref().map(|p| {
         let uv = blit_entry(&mut rgba, atlas_width, atlas_height, y, p);
         y += p.height + CHROME_PADDING;
@@ -599,6 +647,8 @@ fn build_theme_atlas(
         side3: side3_uv,
         repair_frames: repair_frames_packed,
         sell_frames: sell_frames_packed,
+        scroll_up_frames: scroll_up_frames_packed,
+        scroll_down_frames: scroll_down_frames_packed,
         power: power_uv,
         powerp_frames: powerp_uvs,
         extra_entries,
