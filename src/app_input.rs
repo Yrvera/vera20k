@@ -729,6 +729,21 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
         }
     };
 
+    // Surface a rules mismatch (a different mod, or a map with value overrides,
+    // than the save was made under). Warn rather than reject — the state is
+    // valid to load, but continued play may diverge. 0 = hash not stamped.
+    if let Some(rules) = state.rules.as_ref() {
+        let current = crate::app_sim_tick::rules_hash(rules);
+        if snapshot.rules_hash != 0 && snapshot.rules_hash != current {
+            log::warn!(
+                "Load: rules_hash mismatch (save {:#018x} vs current {:#018x}) — \
+                 save was made with a different rules set; play may diverge",
+                snapshot.rules_hash,
+                current
+            );
+        }
+    }
+
     // Grab cache data from the current sim (these fields are #[serde(skip)]
     // and must be restored after deserialization).
     let Some(current_sim) = &state.simulation else {

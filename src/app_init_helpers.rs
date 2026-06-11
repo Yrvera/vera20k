@@ -769,4 +769,24 @@ mod tests {
         // [CombatDamage] C4Delay .03 min -> 27 ticks.
         assert_eq!(rules.c4_delay_ticks, 27, "C4Delay .03 min -> 27 ticks");
     }
+
+    /// The rules hash (RuleSet::source_ini_hash, stamped into replay/snapshot
+    /// headers) is sensitive to a map's *value* overrides — closing the gap
+    /// where a registry-only hash let a map override [General]/[CombatDamage]
+    /// values without changing the hash, so a replay/snapshot recorded under
+    /// the map could play back against base rules undetected.
+    #[test]
+    fn rules_hash_reflects_map_value_overrides() {
+        let no_override = RuleSet::from_ini(&IniFile::from_str(RULES_BASE)).expect("parse");
+
+        let mut with_override = IniFile::from_str(RULES_BASE);
+        with_override.merge_rules_overrides(&IniFile::from_str("[General]\nBuildSpeed=2\n"));
+        let overridden = RuleSet::from_ini(&with_override).expect("parse");
+
+        assert_ne!(
+            no_override.source_ini_hash(),
+            overridden.source_ini_hash(),
+            "a map BuildSpeed override must change the rules hash"
+        );
+    }
 }

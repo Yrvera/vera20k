@@ -341,3 +341,23 @@ fn map_colors_overrides_existing_but_never_allocates() {
         "a new [Colors] key would allocate a scheme — must be skipped"
     );
 }
+
+/// `content_hash` is deterministic and sensitive to every value — a scalar
+/// override changes it (the gap that left a registry-only rules hash blind to
+/// map value overrides), while comment/whitespace-only differences do not.
+#[test]
+fn content_hash_is_deterministic_and_value_sensitive() {
+    let a = IniFile::from_str("[General]\nBuildSpeed=.7\nFlightLevel=1500\n");
+    // Same content parsed twice → identical hash (no HashMap-order drift).
+    let a2 = IniFile::from_str("[General]\nBuildSpeed=.7\nFlightLevel=1500\n");
+    assert_eq!(a.content_hash(), a2.content_hash());
+
+    // One scalar value differs → hash differs.
+    let b = IniFile::from_str("[General]\nBuildSpeed=.58\nFlightLevel=1500\n");
+    assert_ne!(a.content_hash(), b.content_hash());
+
+    // Comments and surrounding whitespace are stripped at parse → no effect.
+    let c =
+        IniFile::from_str("; header\n[General]\nBuildSpeed = .7   ; speed\nFlightLevel=1500\n");
+    assert_eq!(a.content_hash(), c.content_hash());
+}

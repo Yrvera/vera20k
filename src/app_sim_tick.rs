@@ -7,7 +7,6 @@
 //! - Part of the app layer — may depend on everything.
 
 use std::collections::BTreeMap;
-use std::hash::{Hash, Hasher};
 use std::time::Instant;
 
 use crate::app::AppState;
@@ -1356,12 +1355,12 @@ pub(crate) fn clamp_cell_to_grid(
 }
 
 pub(crate) fn rules_hash(rules: &crate::rules::ruleset::RuleSet) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    rules.infantry_ids.hash(&mut hasher);
-    rules.vehicle_ids.hash(&mut hasher);
-    rules.aircraft_ids.hash(&mut hasher);
-    rules.building_ids.hash(&mut hasher);
-    hasher.finish()
+    // The source-INI hash covers the whole merged rules set — type-registry
+    // lists AND every scalar value, including a map's value overrides. The
+    // former registry-only hash missed those, so a map that overrode e.g.
+    // [General]/[CombatDamage] values produced an identical hash and a replay
+    // recorded under it could play back against base rules undetected.
+    rules.source_ini_hash()
 }
 
 #[cfg(test)]

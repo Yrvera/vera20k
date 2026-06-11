@@ -1539,6 +1539,12 @@ pub struct RuleSet {
     /// Per-mission behaviour table parsed from the `[<MissionName>]` sections
     /// (Rate/AARate + NoThreat/Zombie/Recruitable/Paralyzed/Retaliate/Scatter).
     pub mission_control: crate::sim::mission::MissionControl,
+    /// Deterministic hash of the merged source INI (rules + rulesmd + the map's
+    /// rules-shaped value overrides) this RuleSet was built from. Unlike a
+    /// registry-only hash it is sensitive to scalar value overrides, so it can
+    /// gate replay/snapshot playback against a mismatched rules set. Lives on
+    /// `RuleSet` (in `rules/`) so `sim/` can read it without an app-layer dep.
+    source_ini_hash: u64,
 }
 
 impl RuleSet {
@@ -1853,6 +1859,9 @@ impl RuleSet {
             ion_cannon_warhead_id: None,
             c4_warhead_id: None,
             mission_control,
+            // Captures the whole merged INI (incl. any map value overrides),
+            // so replay/snapshot headers detect a rules mismatch on playback.
+            source_ini_hash: ini.content_hash(),
         })
     }
 
@@ -1962,6 +1971,14 @@ impl RuleSet {
     /// Look up a projectile by ID (case-insensitive, gamemd parity).
     pub fn projectile(&self, id: &str) -> Option<&ProjectileType> {
         Self::lookup_ci(&self.projectiles, id)
+    }
+
+    /// Deterministic hash of the merged source INI this RuleSet was built from
+    /// (rules + rulesmd + the map's rules-shaped value overrides). Stamped into
+    /// replay/snapshot headers so playback can detect a mismatched rules set —
+    /// sensitive to scalar value overrides, not just the type-registry lists.
+    pub fn source_ini_hash(&self) -> u64 {
+        self.source_ini_hash
     }
 
     /// Whether a country/house type has `MultiplayPassive=true`.

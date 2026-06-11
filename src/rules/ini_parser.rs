@@ -389,6 +389,32 @@ impl IniFile {
         }
         applied
     }
+
+    /// Deterministic content hash of the whole file: section order, then each
+    /// section's keys in insertion order with their values.
+    ///
+    /// Stable across process runs (iterates the `Vec` orders, never a
+    /// `HashMap`, and uses the fixed-seed `DefaultHasher`) and sensitive to
+    /// every section/key/value — so a map's *value* overrides change it,
+    /// unlike a registry-list-only hash. Comments and whitespace are already
+    /// stripped at parse time, so two semantically identical files hash equal.
+    pub fn content_hash(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for section_key in &self.section_order {
+            let Some(section) = self.sections.get(section_key) else {
+                continue;
+            };
+            section_key.hash(&mut hasher);
+            for key in section.keys() {
+                key.hash(&mut hasher);
+                if let Some(value) = section.get(key) {
+                    value.hash(&mut hasher);
+                }
+            }
+        }
+        hasher.finish()
+    }
 }
 
 /// Numbered-list registry sections a map rules-override pass must not touch

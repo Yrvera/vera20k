@@ -89,6 +89,21 @@ impl ReplayRunner {
             sim.session.seed, replay.header.seed,
             "replay playback sim must be constructed from header.seed"
         );
+        // A replay recorded under a different rules set (mod, or a map with
+        // value overrides) desyncs silently. Surface it. `rules_hash == 0` is
+        // the "not stamped" sentinel (test/headless paths), so skip those.
+        if let Some(rules) = rules {
+            let current = rules.source_ini_hash();
+            if replay.header.rules_hash != 0 && replay.header.rules_hash != current {
+                log::warn!(
+                    "replay rules_hash mismatch (header {:#018x} vs current \
+                     {:#018x}) — recorded under a different rules set; \
+                     playback will desync",
+                    replay.header.rules_hash,
+                    current
+                );
+            }
+        }
         let mut hashes: Vec<u64> = Vec::with_capacity(replay.ticks.len());
         for entry in &replay.ticks {
             let result =
