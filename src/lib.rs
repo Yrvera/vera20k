@@ -94,6 +94,9 @@ pub mod app_sidebar_gadgets;
 // idle ticks, fired-ID application, pressed-bit publication.
 pub mod app_gadget_input;
 
+// Tooltip service driver: wall clock, event feeds, region sync, draw build.
+pub mod app_tooltips;
+
 // Build/production commands and owner management.
 // Extracted from app_render.rs.
 pub mod app_commands;

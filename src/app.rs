@@ -220,6 +220,12 @@ pub(crate) struct AppState {
     /// In-game gadget substrate (study §6.1): retained sidebar button list +
     /// capture/focus state + reusable tick output + the mouse-held record.
     pub(crate) in_game_gadgets: crate::app_gadget_input::InGameGadgets,
+    /// Shared tooltip service (study S1) — the model is clock-injected; only
+    /// `app_tooltips` reads the wall clock.
+    pub(crate) tooltips: crate::ui::tooltips::TooltipService,
+    /// Epoch for the tooltip/message wall-clock (`now_ms` = elapsed since
+    /// app construction).
+    pub(crate) tooltip_epoch: Instant,
     /// Smoothly animated credits display per owner — ticks toward actual balance
     /// each frame (step = |diff| / 8, clamped to [1, 143]).
     pub(crate) displayed_credits: HashMap<String, i32>,
@@ -2180,6 +2186,9 @@ impl ApplicationHandler for App {
                 if state.use_software_cursor() {
                     state.window.set_cursor_visible(false);
                 }
+                // Shared tooltip service: every move restarts the show delay
+                // and hides a visible tip (study S1).
+                crate::app_tooltips::on_mouse_move(state);
                 if crate::app_shell_transition::blocks_shell_input(state) {
                     return;
                 }
@@ -2218,6 +2227,9 @@ impl ApplicationHandler for App {
                 if state.use_software_cursor() {
                     state.window.set_cursor_visible(false);
                 }
+                // Any button press/release kills a visible tooltip + pending
+                // timer (all buttons incl. middle — study S1).
+                crate::app_tooltips::on_button_event(state);
                 if crate::app_shell_transition::blocks_shell_input(state) {
                     return;
                 }
@@ -2572,6 +2584,8 @@ impl App {
             power_bar_anim: crate::sidebar::PowerBarAnimState::new(),
             sidebar_gadget_state: crate::sidebar::gadget_flash::SidebarGadgetState::new(),
             in_game_gadgets: crate::app_gadget_input::InGameGadgets::new(),
+            tooltips: crate::ui::tooltips::TooltipService::new(),
+            tooltip_epoch: Instant::now(),
             radar_content_insets: None,
             has_radar: false,
             selection_overlay: None,
@@ -2681,6 +2695,12 @@ impl App {
     /// Dispatch rendering based on current GameScreen state.
     fn render_frame(state: &mut AppState, event_loop: &ActiveEventLoop) -> Result<()> {
         state.frame_timer.sample(Instant::now());
+        let main_menu_shell_live = state.screen == GameScreen::MainMenu
+            && !state.main_menu_shell_failed
+            && !state.main_menu_show_skirmish_setup
+            && !Self::single_player_shell_active(state)
+            && !Self::native_skirmish_shell_active(state);
+        crate::app_tooltips::update(state, main_menu_shell_live);
         if let Some(until) = state.startup_splash_until {
             if Instant::now() < until {
                 let output: wgpu::SurfaceTexture = state
