@@ -23,6 +23,7 @@ pub mod pause_menu;
 pub mod shell;
 pub mod single_player_shell;
 pub mod skirmish_shell;
+pub mod tooltips;
 // pub mod skirmish;
 // pub mod dialog;
 // pub mod settings;
