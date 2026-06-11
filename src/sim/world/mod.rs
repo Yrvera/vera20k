@@ -2719,6 +2719,12 @@ impl Simulation {
         // would touch that is absent from the host's LogicVector set.
         #[cfg(any(test, debug_assertions))]
         self.debug_check_dispatch_live_set_coverage();
+        // S4c: passive/opportunity-acquire eligibility shadow (read-only,
+        // hash-neutral). Counts Units that would reach the passive-acquire
+        // scanner per the verified gate; the authority flip (running the scanner)
+        // is S5. Return value is the eligibility metric, unused for now.
+        #[cfg(any(test, debug_assertions))]
+        let _ = self.debug_s4c_passive_acquire_shadow(rules);
         #[cfg(debug_assertions)]
         self.debug_assert_production_shadow();
         let state_hash = self.state_hash();

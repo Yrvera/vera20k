@@ -215,6 +215,59 @@ impl Simulation {
         }
     }
 
+    /// Slice S4c — passive/opportunity-acquire eligibility SHADOW (read-only,
+    /// hash-neutral). For each live Unit, counts whether it would reach the
+    /// passive-acquire scanner this pass, per the verified gamemd gate
+    /// `TechnoClass::PassiveAcquireGate` (decompiled 0x00709290) inside the
+    /// mission-{Move(2),Guard(5),Harvest(10)} block: base can-acquire
+    /// (`TechnoClass::CanAcquireTarget` 0x007091d0) AND (`OpportunityFire` OR
+    /// (Guard AND weapon)). A Guard-mission unit auto-acquires regardless of
+    /// `OpportunityFire`.
+    ///
+    /// VERA models the CONFIRMED core via `s4c_passive_acquire_eligible`: mission
+    /// in {Move,Guard,Harvest}, the type carries a weapon, and (`opportunity_fire`
+    /// OR mission==Guard). The base-can-acquire sub-conditions (not-disabled,
+    /// capture-managed, player-gated, the `Type+0xd99` flag) are UNCHECKED
+    /// refinements deferred to the S5 authoritative flip — which runs the actual
+    /// scanner and sets the target. This pass mutates nothing and is never
+    /// hashed; it returns the eligible count (the cadence/eligibility metric).
+    #[cfg(any(test, debug_assertions))]
+    pub(crate) fn debug_s4c_passive_acquire_shadow(
+        &self,
+        rules: Option<&crate::rules::ruleset::RuleSet>,
+    ) -> u32 {
+        let Some(rules) = rules else {
+            return 0;
+        };
+        let mut eligible = 0u32;
+        for id in self.live_object_order_snapshot() {
+            let Some(e) = self.substrate.entities.get(id) else {
+                continue;
+            };
+            if e.dying || e.category != EntityCategory::Unit {
+                continue;
+            }
+            let mission = e.derived_mission().0;
+            let Some(obj) = rules.object(self.interner.resolve(e.type_ref)) else {
+                continue;
+            };
+            // CanAcquireTarget weapon-equipped proxy: the type has a Primary or
+            // Secondary weapon (the runtime vtable+0x2ac equip check is UNCHECKED).
+            let has_weapon = obj.primary.is_some() || obj.secondary.is_some();
+            if s4c_passive_acquire_eligible(mission, has_weapon, obj.opportunity_fire) {
+                eligible += 1;
+                log::trace!(
+                    "S4c passive-acquire eligible: tick {} unit {} mission {:?} (opp_fire {})",
+                    self.session.tick,
+                    id,
+                    mission,
+                    obj.opportunity_fire,
+                );
+            }
+        }
+        eligible
+    }
+
     /// The walk: dispatch every live, present, non-dying object once, in live
     /// order, through the no-op shell. When `record`, return the dispatched ids
     /// in order (debug/test observation); otherwise the returned `Vec` is empty
@@ -360,6 +413,25 @@ fn unit_techno_bracket(sim: &mut Simulation, id: u64) -> BracketReach {
     // handlers that can self-destruct. The Unit is committed regardless.
     techno_common_post(sim, id);
     BracketReach::Committed
+}
+
+/// S4c passive-acquire gate predicate (pure; the testable core of
+/// `debug_s4c_passive_acquire_shadow`). A Unit reaches the passive-acquire
+/// scanner iff its mission is in {Move(2), Guard(5), Harvest(10)}, it carries a
+/// weapon, AND (`OpportunityFire` OR mission == Guard). The Guard term is the
+/// verified gamemd behavior: a Guard-mission unit auto-acquires regardless of
+/// `OpportunityFire` (decompiled `TechnoClass::PassiveAcquireGate` 0x00709290).
+#[cfg(any(test, debug_assertions))]
+fn s4c_passive_acquire_eligible(
+    mission: MissionType,
+    has_weapon: bool,
+    opportunity_fire: bool,
+) -> bool {
+    matches!(
+        mission,
+        MissionType::Move | MissionType::Guard | MissionType::Harvest
+    ) && has_weapon
+        && (opportunity_fire || mission == MissionType::Guard)
 }
 
 // ===== Slice S1 — first behavior-bearing ordering (shadow) =====
@@ -839,6 +911,57 @@ mod tests {
         // session / tail projection owns the miner mission (counter stays 0).
         assert_eq!(unit_techno_bracket(&mut sim, 1), BracketReach::MinerDeferred);
         assert_eq!(sim.substrate.entities.get(1).unwrap().mission.tick_counter, 0);
+    }
+
+    // ===== Slice S4c — passive-acquire eligibility gate (shadow) =====
+
+    #[test]
+    fn s4c_gate_move_with_opportunity_fire_and_weapon_eligible() {
+        assert!(s4c_passive_acquire_eligible(MissionType::Move, true, true));
+    }
+
+    #[test]
+    fn s4c_gate_guard_with_weapon_eligible_without_opportunity_fire() {
+        // Guard units auto-acquire regardless of OpportunityFire (verified gate).
+        assert!(s4c_passive_acquire_eligible(MissionType::Guard, true, false));
+    }
+
+    #[test]
+    fn s4c_gate_harvest_with_opportunity_fire_eligible() {
+        assert!(s4c_passive_acquire_eligible(MissionType::Harvest, true, true));
+    }
+
+    #[test]
+    fn s4c_gate_move_without_opportunity_fire_not_eligible() {
+        assert!(!s4c_passive_acquire_eligible(MissionType::Move, true, false));
+    }
+
+    #[test]
+    fn s4c_gate_no_weapon_not_eligible_even_on_guard() {
+        // The weapon (CanAcquireTarget equip) gate applies to ALL paths, incl Guard.
+        assert!(!s4c_passive_acquire_eligible(MissionType::Guard, false, true));
+        assert!(!s4c_passive_acquire_eligible(MissionType::Move, false, true));
+    }
+
+    #[test]
+    fn s4c_gate_off_mission_not_eligible() {
+        // Missions outside {Move,Guard,Harvest} never reach the passive-acquire block.
+        assert!(!s4c_passive_acquire_eligible(MissionType::Attack, true, true));
+        assert!(!s4c_passive_acquire_eligible(MissionType::Sleep, true, true));
+    }
+
+    #[test]
+    fn s4c_shadow_is_hash_neutral() {
+        // The shadow is read-only; calling it must not move the lockstep hash.
+        let mut sim = Simulation::new();
+        sim.substrate
+            .entities
+            .insert(entity_of(1, EntityCategory::Unit));
+        sim.set_logic_order_for_test(vec![1]);
+        let before = sim.state_hash();
+        let _ = sim.debug_s4c_passive_acquire_shadow(None);
+        let after = sim.state_hash();
+        assert_eq!(before, after, "S4c shadow must not perturb the state hash");
     }
 
     // ===== Slice S1 — dispatch-before-locomotor shadow =====
