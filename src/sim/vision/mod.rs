@@ -565,6 +565,19 @@ fn resolve_bounds(entities: &EntityStore, path_grid: Option<&PathGrid>) -> (u16,
 /// For sight 0-9, iterates the pre-built (dx, dy) offsets matching the original
 /// spiral iteration. For sight 10, falls back to the spiral entries for sight 9
 /// plus a sqrt-based check for the outer ring.
+///
+/// ## Elevation Z-shift
+/// The spiral is centered on the unit's *screen* cell, not its raw foot cell.
+/// An elevated unit's sprite renders ~15px upward (toward isometric north) per
+/// height level, so the original engine shifts the reveal center by `-z_level/2`
+/// on each axis to keep the revealed footprint under the sprite. Without this an
+/// elevated unit would over-reveal toward isometric south. The shift is applied
+/// unconditionally (independent of `reveal_by_height`).
+///
+/// The height-LOS obstruction check is *not* affected by the shift: in the
+/// original engine the shift cancels out of the obstruction-cell math, leaving it
+/// relative to the raw foot cell. We reproduce that by adding `z_shift` back when
+/// computing the obstruction cell below.
 fn reveal_radius_into(
     vis: &mut OwnerVisibility,
     center_rx: u16,
@@ -576,8 +589,14 @@ fn reveal_radius_into(
     width: u16,
     height: u16,
 ) {
-    let cx = i32::from(center_rx);
-    let cy = i32::from(center_ry);
+    // Z-shift the spiral center toward isometric north by z_level/2 cells. Rust's
+    // `position.z` is the integer height level, so this is the exact integer form
+    // of the original's screen-projection shift (each level is a multiple of 15
+    // leptons, so the float rounding fixups never change the cell result).
+    let viewer_level = viewer_z as i32;
+    let z_shift = viewer_level / 2;
+    let cx = i32::from(center_rx) - z_shift;
+    let cy = i32::from(center_ry) - z_shift;
     let w = i32::from(width);
     let h = i32::from(height);
 
@@ -592,8 +611,6 @@ fn reveal_radius_into(
         REVEAL_RING_SIZES[9]
     };
 
-    let viewer_level = viewer_z as i32;
-
     for i in 0..spiral_end {
         let (dx, dy) = REVEAL_SPIRAL[i];
         let rx = cx + dx as i32;
@@ -601,15 +618,17 @@ fn reveal_radius_into(
         if rx >= 0 && rx < w && ry >= 0 && ry < h {
             // Height-based LOS: check whether terrain at the obstruction cell
             // blocks sight. The original engine samples the cell at
-            // `target + mirror[i] + (2, 2)` — the per-entry mirror steps one cell
-            // back toward the viewer, plus a fixed +2 on each axis baked into the
-            // original's obstruction math. If that cell's Level exceeds
-            // viewer_level + 3, the target is not revealed (LOS blocked).
+            // `foot_target + mirror[i] + (2, 2)` — the per-entry mirror steps one
+            // cell back toward the viewer, plus a fixed +2 on each axis baked into
+            // the original's obstruction math. The obstruction is relative to the
+            // raw foot cell, so we add `z_shift` back to undo the spiral's Z-shift
+            // (in the original this cancellation is implicit). If that cell's Level
+            // exceeds viewer_level + 3, the target is not revealed (LOS blocked).
             if reveal_by_height {
                 if let Some(hg) = height_grid {
                     let (mdx, mdy) = REVEAL_MIRROR[i];
-                    let obs_x = rx + mdx as i32 + 2;
-                    let obs_y = ry + mdy as i32 + 2;
+                    let obs_x = rx + mdx as i32 + 2 + z_shift;
+                    let obs_y = ry + mdy as i32 + 2 + z_shift;
                     if obs_x >= 0 && obs_x < w && obs_y >= 0 && obs_y < h {
                         let obs_level = hg[(obs_y * w + obs_x) as usize] as i32;
                         if viewer_level + 3 < obs_level {

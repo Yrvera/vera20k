@@ -266,9 +266,11 @@ fn test_elevation_sight_bonus_z8_gives_one_extra_cell() {
         &config,
         &ti(),
     );
-    // Effective = 5 + 1 = 6. Cell at distance 6 visible, 7 not.
-    assert!(fog.is_cell_visible(intern::test_intern("Americans"), 16, 10));
-    assert!(!fog.is_cell_visible(intern::test_intern("Americans"), 17, 10));
+    // Effective = 5 + 1 = 6. The z=8 unit also shifts its reveal center by
+    // z/2 = 4 cells toward iso-north, so the foot cell (10,10) reveals around
+    // (6,6). Cell at distance 6 east of the shifted center (12,6) is visible; 7 (13,6) not.
+    assert!(fog.is_cell_visible(intern::test_intern("Americans"), 12, 6));
+    assert!(!fog.is_cell_visible(intern::test_intern("Americans"), 13, 6));
 }
 
 #[test]
@@ -344,9 +346,11 @@ fn test_elevation_sight_bonus_disabled_when_zero() {
         &config,
         &ti(),
     );
-    // Effective = 5 only. Cell at 5 visible, 6 not.
-    assert!(fog.is_cell_visible(intern::test_intern("Americans"), 15, 10));
-    assert!(!fog.is_cell_visible(intern::test_intern("Americans"), 16, 10));
+    // Effective = 5 only (elevation sight bonus disabled). The z=16 unit still
+    // shifts its reveal center by z/2 = 8 cells, so (10,10) reveals around (2,2).
+    // Cell at distance 5 east of the shifted center (7,2) is visible; 6 (8,2) not.
+    assert!(fog.is_cell_visible(intern::test_intern("Americans"), 7, 2));
+    assert!(!fog.is_cell_visible(intern::test_intern("Americans"), 8, 2));
 }
 
 #[test]
@@ -762,18 +766,62 @@ fn test_height_los_plus_two_obstruction_offset() {
 
 #[test]
 fn test_height_los_high_viewer_sees_past_cliff() {
-    // Unit at (5,5) height 4, sight 5.
-    // Cliff at (7,5) height 5 — viewer_level + 3 = 7, NOT < 5, so LOS passes.
-    let mut vis = OwnerVisibility::new(20, 20);
+    // Viewer at (5,5), sight 5. A cliff (level 5) sits at obstruction cell (9,7),
+    // which gates spiral index 29 (offset (3,0), mirror (-1,0)). The obstruction is
+    // relative to the raw foot cell: (5,5) + (3,0) + (-1,0) + (2,2) = (9,7),
+    // independent of the elevation Z-shift.
     let width: u16 = 20;
     let height: u16 = 20;
     let mut hg = vec![0u8; width as usize * height as usize];
-    hg[5 * width as usize + 7] = 5;
+    hg[7 * width as usize + 9] = 5;
 
-    reveal_radius_into(&mut vis, 5, 5, 5, 4, true, Some(&hg), width, height);
+    // Low viewer (z=0, no shift): index-29 reveal cell is (8,5); 0+3 < 5 → blocked.
+    let mut low = OwnerVisibility::new(width, height);
+    reveal_radius_into(&mut low, 5, 5, 5, 0, true, Some(&hg), width, height);
+    assert!(!low.is_visible(8, 5), "low viewer is blocked by the cliff");
 
-    // High viewer (level 4 + 3 = 7 >= 5) sees past the cliff.
-    assert!(vis.is_visible(8, 5));
+    // High viewer (z=4, shift=2): index-29 reveal cell shifts to (6,3); the SAME
+    // obstruction (9,7) is checked, but 4+3 = 7 >= 5 → LOS passes.
+    let mut high = OwnerVisibility::new(width, height);
+    reveal_radius_into(&mut high, 5, 5, 5, 4, true, Some(&hg), width, height);
+    assert!(
+        high.is_visible(6, 3),
+        "high viewer sees past the cliff (reveal cell shifted to (6,3))"
+    );
+}
+
+#[test]
+fn test_reveal_center_z_shift() {
+    // An elevated unit reveals around its *screen* cell, not its raw foot cell:
+    // the spiral center is shifted -z_level/2 on each axis (toward isometric
+    // north). z=4 → shift 2 cells. Pins the elevation reveal-center fix.
+    let width: u16 = 20;
+    let height: u16 = 20;
+
+    // Ground unit (z=0): center stays at the foot cell (10,10).
+    let mut ground = OwnerVisibility::new(width, height);
+    reveal_radius_into(&mut ground, 10, 10, 1, 0, false, None, width, height);
+    assert!(
+        ground.is_visible(10, 10),
+        "ground unit centers on its foot cell"
+    );
+    assert!(
+        !ground.is_visible(8, 8),
+        "ground reveal does not reach (8,8)"
+    );
+
+    // Elevated unit (z=4): center shifts to (8,8). The raw foot cell (10,10) is
+    // offset (2,2) from the shifted center → outside the sight-1 footprint.
+    let mut elevated = OwnerVisibility::new(width, height);
+    reveal_radius_into(&mut elevated, 10, 10, 1, 4, false, None, width, height);
+    assert!(
+        elevated.is_visible(8, 8),
+        "elevated reveal centers on the Z-shifted cell (8,8)"
+    );
+    assert!(
+        !elevated.is_visible(10, 10),
+        "raw foot cell (10,10) is no longer the reveal center"
+    );
 }
 
 #[test]
