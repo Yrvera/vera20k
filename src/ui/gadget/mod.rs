@@ -13,6 +13,7 @@
 pub mod button;
 pub mod focus;
 pub mod list;
+pub mod tick;
 
 /// Queued left-mouse-down event (G8 source code).
 pub const KEY_LMB_DOWN: u16 = 0x001;
