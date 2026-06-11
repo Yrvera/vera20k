@@ -434,14 +434,15 @@ pub struct GeneralRules {
     /// YR addition. Default 750.
     pub third_survivor_divisor: i32,
 
-    // -- Terrain movement modifiers --
-    /// Speed multiplier when moving uphill (SlopeClimb= in [General]).
-    /// Applied per-cell during movement when next cell is higher than current.
-    /// Not present in vanilla rulesmd.ini; uses compiled default from the original engine.
-    pub slope_climb: SimFixed,
-    /// Speed multiplier when moving downhill (SlopeDescend= in [General]).
-    /// Applied per-cell during movement when next cell is lower than current.
-    pub slope_descend: SimFixed,
+    // -- Cliff/slope movement coefficients ([General]) --
+    /// Tracked vehicle uphill coefficient (`TrackedUphill=`; vanilla 1.0 = no change).
+    pub tracked_uphill: SimFixed,
+    /// Tracked vehicle downhill coefficient (`TrackedDownhill=`; vanilla 1.2 = faster).
+    pub tracked_downhill: SimFixed,
+    /// Non-tracked (wheeled and other) vehicle uphill coefficient (`WheeledUphill=`; vanilla 1.0).
+    pub wheeled_uphill: SimFixed,
+    /// Non-tracked vehicle downhill coefficient (`WheeledDownhill=`; vanilla 1.2).
+    pub wheeled_downhill: SimFixed,
 
     // -- Entity ambient glow on dark maps --
     /// Additive brightness boost for unit sprites (ExtraUnitLight= in [General]).
@@ -672,10 +673,12 @@ impl Default for GeneralRules {
             allied_survivor_divisor: 500,
             soviet_survivor_divisor: 250,
             third_survivor_divisor: 750,
-            // Compiled defaults from the original engine.
-            // Not present in vanilla rulesmd.ini — mods can override via [General].
-            slope_climb: SimFixed::lit("0.6"),
-            slope_descend: SimFixed::lit("1.2"),
+            // Vanilla rulesmd.ini [General]: 1.0 uphill (no change) / 1.2 downhill (faster),
+            // same for tracked and wheeled. Mods can override via [General].
+            tracked_uphill: SimFixed::lit("1.0"),
+            tracked_downhill: SimFixed::lit("1.2"),
+            wheeled_uphill: SimFixed::lit("1.0"),
+            wheeled_downhill: SimFixed::lit("1.2"),
             extra_unit_light: 0.2,
             extra_infantry_light: 0.2,
             extra_aircraft_light: 0.2,
@@ -1203,14 +1206,22 @@ impl GeneralRules {
             allied_survivor_divisor: general.get_i32("AlliedSurvivorDivisor").unwrap_or(500),
             soviet_survivor_divisor: general.get_i32("SovietSurvivorDivisor").unwrap_or(250),
             third_survivor_divisor: general.get_i32("ThirdSurvivorDivisor").unwrap_or(750),
-            slope_climb: general
-                .get_f32("SlopeClimb")
+            tracked_uphill: general
+                .get_f32("TrackedUphill")
                 .map(sim_from_f32)
-                .unwrap_or(defaults.slope_climb),
-            slope_descend: general
-                .get_f32("SlopeDescend")
+                .unwrap_or(defaults.tracked_uphill),
+            tracked_downhill: general
+                .get_f32("TrackedDownhill")
                 .map(sim_from_f32)
-                .unwrap_or(defaults.slope_descend),
+                .unwrap_or(defaults.tracked_downhill),
+            wheeled_uphill: general
+                .get_f32("WheeledUphill")
+                .map(sim_from_f32)
+                .unwrap_or(defaults.wheeled_uphill),
+            wheeled_downhill: general
+                .get_f32("WheeledDownhill")
+                .map(sim_from_f32)
+                .unwrap_or(defaults.wheeled_downhill),
             extra_unit_light: general.get_f32("ExtraUnitLight").unwrap_or(0.2),
             extra_infantry_light: general.get_f32("ExtraInfantryLight").unwrap_or(0.2),
             extra_aircraft_light: general.get_f32("ExtraAircraftLight").unwrap_or(0.2),

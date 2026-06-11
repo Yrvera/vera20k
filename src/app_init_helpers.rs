@@ -457,6 +457,17 @@ pub(crate) fn spawn_entities(
         }
     }
     sim.resolved_terrain = Some(resolved_terrain.clone());
+    // Wire the cliff/slope coefficients from [General] into the live World config;
+    // it otherwise holds compiled vanilla defaults and never sees a modded INI.
+    if let Some(rules) = rules {
+        sim.terrain_speed_config =
+            crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::from_general(
+                rules.general.tracked_uphill,
+                rules.general.tracked_downhill,
+                rules.general.wheeled_uphill,
+                rules.general.wheeled_downhill,
+            );
+    }
     // The playfield diamond: [Map] Size width + the raw LocalSize rect, stored
     // verbatim — the isometric transform lives in the validator's diamond test.
     sim.playfield_bounds = Some(crate::sim::cell_rect::PlayfieldBounds {
