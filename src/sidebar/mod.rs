@@ -398,38 +398,11 @@ pub(crate) fn hit_test_item(item: &SidebarItem, right_click: bool) -> SidebarAct
     }
 }
 
-/// Legacy press-path hit-test for the surfaces NOT yet on the gadget substrate
-/// (pause/producer, dev buttons). Tabs/repair/sell/scroll (A1) AND the cameos
-/// (A2) are owned by `app_gadget_input`; they are deliberately absent here.
-/// `hit_test_item` (the cameo click→action map) stays public for the driver.
-pub fn hit_test(view: &SidebarView, x: f32, y: f32, _right_click: bool) -> SidebarAction {
-    if !view.panel_rect.contains(x, y) {
-        return SidebarAction::None;
-    }
-
-    if let Some(button) = view.pause_button.as_ref() {
-        if button.rect.contains(x, y) {
-            return button.action.clone();
-        }
-    }
-    if let Some(button) = view.producer_button.as_ref() {
-        if button.rect.contains(x, y) {
-            return button.action.clone();
-        }
-    }
-    for button in [
-        &view.cancel_button,
-        &view.cycle_owner_button,
-        &view.starter_base_button,
-        &view.spawn_test_units_button,
-    ] {
-        if button.rect.contains(x, y) {
-            return button.action.clone();
-        }
-    }
-
-    SidebarAction::None
-}
+// `sidebar::hit_test` (the legacy press-path hit-test) was retired in A6: every
+// in-game surface — tabs/repair/sell/scroll (A1), cameos (A2), tactical/minimap
+// (A3), and the control/dev buttons (A6) — is now owned by the `app_gadget_input`
+// retained list (one order = hit + draw, R7 complete). `hit_test_item` (the cameo
+// click→action map) stays public for the driver.
 
 #[cfg(test)]
 mod tests {

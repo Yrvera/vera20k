@@ -60,14 +60,12 @@ pub(crate) fn handle_mouse_input(
         return;
     }
     match crate::app_gadget_input::handle_mouse_button_event(state, button, pressed) {
-        GadgetConsume::Consumed => {}
         GadgetConsume::Tactical => tactical_mouse(state, button, btn_state),
         GadgetConsume::Minimap => minimap_mouse(state, button, btn_state),
-        GadgetConsume::NotConsumed => {
-            if pressed {
-                handle_sidebar_mouse_input(state, button);
-            }
-        }
+        // Consumed (chrome/cameo/control button) → handled by the gadget.
+        // NotConsumed → the click hit no live gadget; nothing to do (every
+        // in-game surface is now on the retained list — R7 complete).
+        GadgetConsume::Consumed | GadgetConsume::NotConsumed => {}
     }
 }
 
@@ -260,18 +258,6 @@ pub(crate) fn try_sidebar_scroll(state: &mut AppState, delta_lines: f32) -> bool
     true
 }
 
-fn handle_sidebar_mouse_input(state: &mut AppState, button: MouseButton) -> bool {
-    let Some(view) = current_sidebar_view(state) else {
-        return false;
-    };
-    let right_click = button == MouseButton::Right;
-    let action = sidebar::hit_test(&view, state.cursor_x, state.cursor_y, right_click);
-    if action == SidebarAction::None {
-        return false;
-    }
-    apply_sidebar_action(state, action);
-    true
-}
 
 pub(crate) fn apply_sidebar_action(state: &mut AppState, action: SidebarAction) {
     match action {

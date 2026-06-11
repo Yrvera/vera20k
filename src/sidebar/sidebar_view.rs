@@ -569,7 +569,11 @@ mod tests {
     }
 
     #[test]
-    fn hit_test_returns_control_button_actions() {
+    fn control_buttons_carry_their_actions() {
+        // `sidebar::hit_test` was retired in A6 — the control/dev buttons moved
+        // onto the gadget list. The driver (`app_gadget_input::apply_gadget_result`)
+        // applies each button's own `SidebarAction`, so the wiring under test is
+        // that the view builds those buttons with the right actions.
         let view = build_sidebar_view(
             1280.0,
             960.0,
@@ -590,12 +594,15 @@ mod tests {
             None,
         );
 
-        let action = super::super::hit_test(
-            &view,
-            view.cancel_button.rect.x + 1.0,
-            view.cancel_button.rect.y + 1.0,
-            false,
+        assert_eq!(view.cancel_button.action, SidebarAction::CancelLastBuild);
+        assert_eq!(view.cycle_owner_button.action, SidebarAction::CycleOwner);
+        assert_eq!(
+            view.starter_base_button.action,
+            SidebarAction::PlaceStarterBase
         );
-        assert_eq!(action, SidebarAction::CancelLastBuild);
+        assert_eq!(
+            view.spawn_test_units_button.action,
+            SidebarAction::SpawnTestUnits
+        );
     }
 }
