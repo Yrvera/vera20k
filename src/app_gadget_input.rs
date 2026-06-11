@@ -232,6 +232,26 @@ fn run_tick(state: &mut AppState, view: &SidebarView, key: u16) -> bool {
     fired || consumed_walk || was_captured
 }
 
+/// [AudioVisual] GUITabSound — played on every consumed tab click AND every
+/// consumed strip-scroll click (even when the scroll is clamped at an end).
+fn play_gui_tab_sound(state: &mut AppState) {
+    let sound = state
+        .rules
+        .as_ref()
+        .and_then(|r| r.general.gui_tab_sound.clone());
+    crate::app::App::play_shell_ui_sound_by_id(state, sound.as_deref());
+}
+
+/// [AudioVisual] GUIMainButtonSound — the in-game Repair/Sell toggle click
+/// sound (the same event the main-menu shell buttons play).
+fn play_gui_main_button_sound(state: &mut AppState) {
+    let sound = state
+        .rules
+        .as_ref()
+        .and_then(|r| r.general.gui_main_button_sound.clone());
+    crate::app::App::play_shell_ui_sound_by_id(state, sound.as_deref());
+}
+
 /// Map a fired `ID|0x8000[|0x4000]` onto the existing app actions. Consumers
 /// mask the right-release marker off (study §2.2: `key & ~0x4000`), so a
 /// right-click scrolls identically.
@@ -241,32 +261,30 @@ fn apply_gadget_result(state: &mut AppState, view: &SidebarView, result: u16) {
         _ if (ID_TAB_BASE..ID_TAB_BASE + 4).contains(&id) => {
             let tab = SidebarTab::all()[(id - ID_TAB_BASE) as usize];
             crate::app_input::apply_sidebar_action(state, SidebarAction::SelectTab(tab));
-            // [AudioVisual] GUITabSound — name-inferred mapping (LOW
-            // confidence): one Ghidra spot-check of the tab-ID consumer is a
-            // plan Parity-Critical follow-up.
-            let sound = state
-                .rules
-                .as_ref()
-                .and_then(|r| r.general.gui_tab_sound.clone());
-            crate::app::App::play_shell_ui_sound_by_id(state, sound.as_deref());
+            play_gui_tab_sound(state);
         }
         ID_REPAIR => {
             crate::app_input::apply_sidebar_action(state, SidebarAction::ToggleRepairMode);
+            play_gui_main_button_sound(state);
         }
         ID_SELL => {
             crate::app_input::apply_sidebar_action(state, SidebarAction::ToggleSellMode);
+            play_gui_main_button_sound(state);
         }
         // One PAGE per click (G23: mask 0x55 has no held bits ⇒ no repeat).
         // Page = visible cameo rows; gamemd computes (strip px height)/50
-        // which equals the visible row count.
+        // which equals the visible row count. The click sound fires on every
+        // consumed release, including clamped no-op scrolls at either end.
         ID_SCROLL_DOWN => {
             let page = view.layout.side2_tile_count.max(1);
             state.sidebar_scroll_rows =
                 (state.sidebar_scroll_rows + page).min(view.max_scroll_rows);
+            play_gui_tab_sound(state);
         }
         ID_SCROLL_UP => {
             let page = view.layout.side2_tile_count.max(1);
             state.sidebar_scroll_rows = state.sidebar_scroll_rows.saturating_sub(page);
+            play_gui_tab_sound(state);
         }
         _ => {}
     }
