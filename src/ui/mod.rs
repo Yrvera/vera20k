@@ -18,6 +18,7 @@ pub mod in_game_hud;
 pub mod main_menu;
 pub mod main_menu_dialogs;
 pub mod main_menu_shell;
+pub mod messages;
 pub mod mission_status;
 pub mod pause_menu;
 pub mod shell;
