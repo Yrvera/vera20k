@@ -199,7 +199,9 @@ pub fn build_sidebar_chrome_instances_for_layout(
     }
 
     // --- Strip-scroll pair (R-DN +page left, R-UP −page right) ---
-    // Same 5-frame select + frame-0 fallback convention as repair/sell.
+    // 3-frame R-UP/R-DN convention (0 = idle, 1 = pressed, 2 = disabled),
+    // selected by SidebarGadgetState::scroll_*_frame; frame-0 fallback only
+    // covers art missing from the MIX, exactly like repair/sell.
     let (scroll_down_rect, scroll_up_rect) = crate::sidebar::scroll_button_rects(
         layout,
         spec.sidebar_width,

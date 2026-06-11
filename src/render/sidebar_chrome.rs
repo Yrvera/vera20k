@@ -22,6 +22,10 @@ use crate::render::batch::{BatchRenderer, BatchTexture};
 use crate::render::gpu::GpuContext;
 
 const CHROME_PADDING: u32 = 2;
+/// R-UP.SHP / R-DN.SHP frame count. The strip-scroll art uses a 3-frame
+/// convention (0 = idle, 1 = pressed, 2 = disabled) — NOT the 5-frame tab /
+/// repair / sell convention.
+const SCROLL_FRAME_COUNT: usize = 3;
 // Frame 0 is the intact stock radar shell. Frame 32 is effectively a blank
 // inner state and makes the top cap look missing when used as the default.
 const RADAR_DEFAULT_FRAME: usize = 0;
@@ -88,12 +92,12 @@ pub struct SidebarChromeAtlas {
     pub repair_frames: [Option<SidebarChromeEntry>; 5],
     /// Sell button — 5-frame SHP state table (same convention as `tab_frames`).
     pub sell_frames: [Option<SidebarChromeEntry>; 5],
-    /// Strip scroll-up (R-UP.SHP, −page) — assumed 5-frame convention; the
-    /// frame count is unverified (plan deferred item), missing frames fall
-    /// back to frame 0 at draw exactly like repair/sell.
-    pub scroll_up_frames: [Option<SidebarChromeEntry>; 5],
-    /// Strip scroll-down (R-DN.SHP, +page).
-    pub scroll_down_frames: [Option<SidebarChromeEntry>; 5],
+    /// Strip scroll-up (R-UP.SHP, −page) — 3-frame convention:
+    /// 0 = idle, 1 = pressed, 2 = disabled. Missing frames fall back to
+    /// frame 0 at draw exactly like repair/sell.
+    pub scroll_up_frames: [Option<SidebarChromeEntry>; SCROLL_FRAME_COUNT],
+    /// Strip scroll-down (R-DN.SHP, +page) — same 3-frame convention.
+    pub scroll_down_frames: [Option<SidebarChromeEntry>; SCROLL_FRAME_COUNT],
     pub power: Option<SidebarChromeEntry>,
     /// powerp.shp frames: 5 colored strip segments for the power bar meter.
     /// [0]=dark/bg, [1]=green, [2]=yellow, [3]=red, [4]=dark/off.
@@ -333,12 +337,14 @@ fn build_theme_atlas(
         sell_frame_entries[frame] = entry;
     }
 
-    // Strip-scroll pair. Frame count unverified (deferred) — render_entry
-    // returns None for absent frames and the draw falls back to frame 0, so
-    // either a 1-frame or 5-frame retail SHP degrades gracefully.
-    let mut scroll_up_entries: [Option<RenderedChromeEntry>; 5] = Default::default();
-    let mut scroll_down_entries: [Option<RenderedChromeEntry>; 5] = Default::default();
-    for frame in 0..5 {
+    // Strip-scroll pair — 3-frame art (0 idle, 1 pressed, 2 disabled).
+    // render_entry returns None for absent frames and the draw falls back to
+    // frame 0, so a short retail SHP still degrades gracefully.
+    let mut scroll_up_entries: [Option<RenderedChromeEntry>; SCROLL_FRAME_COUNT] =
+        Default::default();
+    let mut scroll_down_entries: [Option<RenderedChromeEntry>; SCROLL_FRAME_COUNT] =
+        Default::default();
+    for frame in 0..SCROLL_FRAME_COUNT {
         scroll_up_entries[frame] = render_entry(asset_manager, &mix, "r-up.shp", &palette, frame);
         scroll_down_entries[frame] = render_entry(asset_manager, &mix, "r-dn.shp", &palette, frame);
     }
@@ -446,12 +452,12 @@ fn build_theme_atlas(
             all_entries.push(entry);
         }
     }
-    for frame in 0..5 {
+    for frame in 0..SCROLL_FRAME_COUNT {
         if let Some(ref entry) = scroll_up_entries[frame] {
             all_entries.push(entry);
         }
     }
-    for frame in 0..5 {
+    for frame in 0..SCROLL_FRAME_COUNT {
         if let Some(ref entry) = scroll_down_entries[frame] {
             all_entries.push(entry);
         }
@@ -557,16 +563,18 @@ fn build_theme_atlas(
             sell_frames_packed[frame] = Some(uv);
         }
     }
-    let mut scroll_up_frames_packed: [Option<SidebarChromeEntry>; 5] = Default::default();
-    for frame in 0..5 {
+    let mut scroll_up_frames_packed: [Option<SidebarChromeEntry>; SCROLL_FRAME_COUNT] =
+        Default::default();
+    for frame in 0..SCROLL_FRAME_COUNT {
         if let Some(ref entry) = scroll_up_entries[frame] {
             let uv = blit_entry(&mut rgba, atlas_width, atlas_height, y, entry);
             y += entry.height + CHROME_PADDING;
             scroll_up_frames_packed[frame] = Some(uv);
         }
     }
-    let mut scroll_down_frames_packed: [Option<SidebarChromeEntry>; 5] = Default::default();
-    for frame in 0..5 {
+    let mut scroll_down_frames_packed: [Option<SidebarChromeEntry>; SCROLL_FRAME_COUNT] =
+        Default::default();
+    for frame in 0..SCROLL_FRAME_COUNT {
         if let Some(ref entry) = scroll_down_entries[frame] {
             let uv = blit_entry(&mut rgba, atlas_width, atlas_height, y, entry);
             y += entry.height + CHROME_PADDING;

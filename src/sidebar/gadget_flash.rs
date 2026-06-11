@@ -122,6 +122,15 @@ pub fn frame_select(disabled: bool, mode_active: bool, state: u8) -> u8 {
     }
 }
 
+/// Pick a SHP frame index for the 3-frame strip-scroll art (`r-up.shp` /
+/// `r-dn.shp`). The scroll buttons do NOT use the 5-frame tab convention —
+/// their art has exactly 3 frames: 0 = idle, 1 = pressed, 2 = disabled.
+/// There is no disabled path for the scroll pair today (the gadget driver
+/// hardwires disabled=false), so only idle/pressed are ever selected.
+pub fn scroll_frame_select(pressed: bool) -> u8 {
+    u8::from(pressed)
+}
+
 /// Persistent flash + mode state for the in-game sidebar gadgets.
 ///
 /// Lives on `AppState` (one instance per app session). Ticked once per sim
@@ -193,14 +202,15 @@ impl SidebarGadgetState {
     }
 
     /// Frame index for the strip scroll-down (+page) button. No mode bit, no
-    /// flash — pressed-look only.
+    /// flash — pressed-look only, using the 3-frame R-DN convention.
     pub fn scroll_down_frame(&self) -> u8 {
-        frame_select(false, false, u8::from(self.scroll_down_pressed))
+        scroll_frame_select(self.scroll_down_pressed)
     }
 
-    /// Frame index for the strip scroll-up (−page) button.
+    /// Frame index for the strip scroll-up (−page) button (3-frame R-UP
+    /// convention).
     pub fn scroll_up_frame(&self) -> u8 {
-        frame_select(false, false, u8::from(self.scroll_up_pressed))
+        scroll_frame_select(self.scroll_up_pressed)
     }
 }
 
@@ -362,8 +372,23 @@ mod tests {
         s.tab_pressed[1] = true;
         assert_eq!(s.tab_frame(1, false), 3);
         assert_eq!(s.tab_frame(1, true), 4);
-        s.scroll_down_pressed = true;
-        assert_eq!(s.scroll_down_frame(), 3);
+    }
+
+    #[test]
+    fn scroll_buttons_use_three_frame_convention() {
+        // R-UP.SHP / R-DN.SHP have exactly 3 frames: 0 = idle, 1 = pressed,
+        // 2 = disabled — NOT the 5-frame tab convention (pressed at 3).
+        assert_eq!(scroll_frame_select(false), 0, "idle selects frame 0");
+        assert_eq!(scroll_frame_select(true), 1, "pressed selects frame 1");
+        let mut s = SidebarGadgetState::new();
+        assert_eq!(s.scroll_down_frame(), 0);
         assert_eq!(s.scroll_up_frame(), 0);
+        s.scroll_down_pressed = true;
+        assert_eq!(s.scroll_down_frame(), 1, "pressed-look is frame 1");
+        assert_eq!(s.scroll_up_frame(), 0, "the pair is independent");
+        s.scroll_down_pressed = false;
+        s.scroll_up_pressed = true;
+        assert_eq!(s.scroll_down_frame(), 0);
+        assert_eq!(s.scroll_up_frame(), 1);
     }
 }
