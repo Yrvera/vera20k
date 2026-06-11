@@ -48,21 +48,26 @@ pub(crate) struct UnitDispatchRecord {
 pub(crate) type UnitDispatchTrace = Vec<UnitDispatchRecord>;
 
 impl Simulation {
-    /// Object-AI stage (Slice S0: instrumented no-op).
+    /// Object-AI stage (S4a: AUTHORITATIVE per-object mission commit).
     ///
     /// Walks the live LogicVector order via `for_each_live_object` — the same
-    /// re-read contract the native scheduler uses — and dispatches each live,
-    /// present, non-dying object through the no-op `techno_ai_shell`. The shell
-    /// does nothing behavior-bearing this slice; the stage exists to pin the
-    /// dispatch + ordering scaffold and prove hash-neutrality.
+    /// re-read contract the native scheduler uses — and runs each live, present,
+    /// non-dying object through `techno_ai_shell`. A live non-miner Unit's mission
+    /// (`+0xC4` tick_counter + `derived_mission`) is committed HERE, at the
+    /// gamemd-faithful per-object AI point (pre-movement); its id is inserted into
+    /// `committed` so the Phase-9 tail projection skips it (no double-commit). The
+    /// other arms are still no-ops (their slices land later).
     ///
     /// `record` is true only in debug builds, where the recorded visit trace is
     /// asserted to equal the live (present, non-dying) order — the first
     /// tripwire for any future arm that mutates live membership mid-pass.
     /// Release builds pass `false`, so the trace `Vec` is never pushed to and
     /// never allocates (no per-tick hot-path cost).
-    pub(crate) fn object_ai_stage(&mut self) -> UnitDispatchTrace {
-        let visited = self.object_ai_walk(cfg!(debug_assertions));
+    pub(crate) fn object_ai_stage(
+        &mut self,
+        committed: &mut std::collections::BTreeSet<u64>,
+    ) -> UnitDispatchTrace {
+        let visited = self.object_ai_walk(cfg!(debug_assertions), committed);
 
         #[cfg(debug_assertions)]
         debug_assert_eq!(
@@ -214,17 +219,22 @@ impl Simulation {
     /// order, through the no-op shell. When `record`, return the dispatched ids
     /// in order (debug/test observation); otherwise the returned `Vec` is empty
     /// and unallocated. Reads only — touches no hashed state, consumes no RNG.
-    fn object_ai_walk(&mut self, record: bool) -> Vec<u64> {
+    fn object_ai_walk(
+        &mut self,
+        record: bool,
+        committed: &mut std::collections::BTreeSet<u64>,
+    ) -> Vec<u64> {
         let mut visited: Vec<u64> = Vec::new();
         self.for_each_live_object(|sim, id| {
-            // Tolerate an absent id (the loop's documented contract). In S0 the
-            // stage runs AFTER the end-of-tick flush_pending_delete drain, so the
-            // order should not reference a freed slot — but inherit the guard.
+            // Tolerate an absent id (the loop's documented contract). The stage
+            // runs AFTER the end-of-tick flush_pending_delete drain, so the order
+            // should not reference a freed slot — but inherit the guard.
             let Some(entity) = sim.substrate.entities.get(id) else {
                 return;
             };
             // A dying object is mid death-teardown and is not dispatched (the
-            // closest live `IsActive` analogue today).
+            // closest live `IsActive` analogue today). Dying units are off the
+            // LogicVector anyway and fall to the tail projection.
             if entity.dying {
                 return;
             }
@@ -232,7 +242,11 @@ impl Simulation {
             if record {
                 visited.push(id);
             }
-            techno_ai_shell(sim, id, category);
+            // A non-miner live Unit commits its mission in the bracket; record it
+            // so the tail projection skips it (no double-commit / double-count).
+            if techno_ai_shell(sim, id, category) {
+                committed.insert(id);
+            }
         });
         visited
     }
@@ -257,18 +271,16 @@ impl Simulation {
 /// changing this signature. The match is exhaustive over the four real
 /// variants (no `_` arm), so a future `EntityCategory` addition is a compile
 /// error, intentionally.
-#[allow(unused_variables)]
-fn techno_ai_shell(sim: &mut Simulation, id: u64, category: EntityCategory) {
+/// Returns `true` iff this object authoritatively committed its mission this
+/// pass (a non-miner live Unit) — the walk adds those ids to the tail skip-set.
+fn techno_ai_shell(sim: &mut Simulation, id: u64, category: EntityCategory) -> bool {
     match category {
-        // S4a: run the (shadow) TechnoClass common bracket. Hash-neutral — no-op
-        // stubs + read-only IsAlive guards; the authoritative +0xC4/mission-commit
-        // stays in movement_tick this slice (the flip relocates it here).
-        EntityCategory::Unit => {
-            let _ = unit_techno_bracket(sim, id);
-        }
-        EntityCategory::Infantry => {}  // S6: absorb fear / sequence / self-removal
-        EntityCategory::Structure => {} // S8 absorb bracket; P3 oracle probe is factory_oracle_step_trace
-        EntityCategory::Aircraft => {}  // S7: absorb per-object aircraft dispatch
+        // S4a: run the AUTHORITATIVE TechnoClass common bracket; a non-miner live
+        // Unit commits its mission here (the host owns it; the tail skips it).
+        EntityCategory::Unit => matches!(unit_techno_bracket(sim, id), BracketReach::Committed),
+        EntityCategory::Infantry => false, // S6: absorb fear / sequence / self-removal
+        EntityCategory::Structure => false, // S8 absorb bracket; P3 oracle probe is factory_oracle_step_trace
+        EntityCategory::Aircraft => false, // S7: absorb per-object aircraft dispatch
     }
 }
 
@@ -299,41 +311,55 @@ fn techno_common_pre(sim: &mut Simulation, id: u64) {}
 #[allow(unused_variables)]
 fn techno_common_post(sim: &mut Simulation, id: u64) {}
 
-/// How far the S4a bracket ran for one Unit — the observable of the two IsAlive
-/// early-return guards. In the shadow shell nothing kills the Unit between the
-/// guards (the dispatch is a marker), so a live Unit reaches `Full` and a
-/// health-0 Unit short-circuits at `DiedInPre`; `DiedInDispatch` becomes
-/// reachable only at the authoritative flip, when real dispatch sits between the
-/// guards and can kill the Unit mid-bracket.
+/// Outcome of the S4a bracket for one Unit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BracketReach {
+    /// Died after the pre-block (health 0); no mission commit.
     DiedInPre,
-    DiedInDispatch,
-    Full,
+    /// Non-miner live Unit: committed (`+0xC4` tick_counter + `derived_mission`)
+    /// authoritatively at the host.
+    Committed,
+    /// Miner Unit: the host runs the bracket but does NOT commit — the miner
+    /// session / tail projection owns the miner mission (deferred, as before S4a).
+    MinerDeferred,
 }
 
-/// S4a per-Unit TechnoClass common bracket (shadow shell). Runs the contiguous
-/// `pre -> [IsAlive] -> dispatch-marker -> [IsAlive] -> post` structure. The
-/// stubs are no-ops and the dispatch is a marker (the authoritative commit stays
-/// in `movement_tick` this slice), so this is hash-neutral. Returns how far it
-/// reached so the early-return guards are observable in tests.
+/// S4a per-Unit TechnoClass common bracket (AUTHORITATIVE — Option B flip).
+/// Runs the contiguous `pre -> [IsAlive B] -> +0xC4/Mission_Dispatch ->
+/// [IsAlive E] -> post` structure and commits the Unit's mission HERE, at the
+/// gamemd-faithful per-object AI point (pre-movement, LogicVector order), rather
+/// than in `movement_tick` (scoped movers) or the Phase-9 tail (idle) as before.
+/// Miners stay tail-owned. Returns the outcome; the walk collects `Committed`
+/// ids as the tail's skip-set.
 fn unit_techno_bracket(sim: &mut Simulation, id: u64) -> BracketReach {
     techno_common_pre(sim, id);
-    // Guard B (pre-dispatch IsAlive): the Unit died during the pre-block. No
-    // lethal pre-block step exists yet, so this never fires today — present so it
-    // is correct the moment one lands.
+    // Guard B (post-pre IsAlive): a health-0 Unit makes no commit. No lethal
+    // pre-block step exists yet, so this fires only for an already-dead Unit.
     if !sim.substrate.entities.get(id).is_some_and(|e| e.is_alive()) {
         return BracketReach::DiedInPre;
     }
-    // `+0xC4` + `Mission_Dispatch`: AUTHORITATIVE site stays in movement_tick
-    // this slice (shadow). The flip relocates the increment + mission-commit
-    // here, between the two guards.
-    // Guard E (post-dispatch IsAlive): the Unit died during mission dispatch.
-    if !sim.substrate.entities.get(id).is_some_and(|e| e.is_alive()) {
-        return BracketReach::DiedInDispatch;
+    // Miners are deferred to the tail projection (the miner session owns that
+    // path); the host runs the bracket but skips the authoritative commit, so a
+    // miner is NOT added to the skip-set and the tail commits it.
+    if sim.substrate.entities.get(id).is_some_and(|e| e.miner.is_some()) {
+        techno_common_post(sim, id);
+        return BracketReach::MinerDeferred;
     }
+    // `+0xC4` AI-tick counter + `Mission_Dispatch` (AUTHORITATIVE commit): the
+    // mission is a deterministic projection of the unit's machines, committed at
+    // this per-object AI point. `current`/`substate` mirror `derived_mission`;
+    // the verbs own `queued`/`suspended`/`timer`.
+    if let Some(e) = sim.substrate.entities.get_mut(id) {
+        e.mission.tick_counter = e.mission.tick_counter.wrapping_add(1);
+        let (current, substate) = e.derived_mission();
+        e.mission.current = current;
+        e.mission.substate = substate;
+    }
+    // Guard E (post-dispatch IsAlive): a mission commit cannot kill the Unit, so
+    // this cannot fire yet; the structure is preserved for the S5 dispatch
+    // handlers that can self-destruct. The Unit is committed regardless.
     techno_common_post(sim, id);
-    BracketReach::Full
+    BracketReach::Committed
 }
 
 // ===== Slice S1 — first behavior-bearing ordering (shadow) =====
@@ -350,9 +376,9 @@ fn unit_techno_bracket(sim: &mut Simulation, id: u64) -> BracketReach {
 /// Requiring a drive locomotor narrows the scope to the units the dispatch→
 /// process ordering proof targets and makes the `is_drive` marker exact —
 /// avoiding a false agreement-assert on a non-drive mover (ship / hover).
+/// Consumed only by the S1 dispatch-before-Process shadow in this module (the
+/// in-loop movement_tick consumer was retired by the S4a host-commit flip).
 #[cfg(any(test, debug_assertions))]
-/// `pub(crate)` so the S2 in-loop dispatch step (movement_tick.rs) can gate on
-/// the same scope predicate the host/shadow uses; widening is behavior-neutral.
 pub(crate) fn is_s1_scoped_move_unit(e: &GameEntity) -> bool {
     e.category == EntityCategory::Unit
         && e.movement_target.is_some()
@@ -393,9 +419,13 @@ fn unit_ai_shadow_step(sim: &Simulation, id: u64, seq: &mut u32) -> Option<Shell
     if !is_s1_scoped_move_unit(entity) {
         return None;
     }
-    // Mission dispatch (decision) FIRST. `mission.current` was refreshed by
-    // refresh_mission_shadow this tick; reading it is the "decision ran" marker.
-    let mission = entity.mission.current;
+    // Mission dispatch (decision) FIRST — the fresh per-object decision marker.
+    // S4a: read `derived_mission` (the decision), NOT the committed `mission.current`:
+    // post-flip the latter is the host's Phase-0 commit, which legitimately goes
+    // stale when a unit retasks mid-tick (e.g. Attack at the host, move-scoped by
+    // the Phase-9 read). The S1 proof is dispatch-decision-before-Process; the
+    // decision for an in-scope move unit is `Move` by the scope predicate.
+    let mission = entity.derived_mission().0;
     let dispatch_seq = *seq;
     *seq += 1;
     // Locomotor Process SECOND — the read-only drive presence marker.
@@ -628,10 +658,10 @@ mod tests {
     }
 
     #[test]
-    fn techno_ai_shell_is_passthrough_no_hash_change() {
-        // Mirrors `mission_shadow_does_not_change_state_hash`: the no-op stage,
-        // walking live order and dispatching all four category arms, must leave
-        // the lockstep hash bit-identical.
+    fn object_ai_stage_commits_live_unit_mission() {
+        // S4a (Option B): the stage AUTHORITATIVELY commits each live non-miner
+        // Unit's mission (+0xC4 tick_counter + derived_mission); non-Units are
+        // untouched here (the Phase-9 tail projects them).
         let mut sim = Simulation::new();
         sim.substrate
             .entities
@@ -647,13 +677,22 @@ mod tests {
             .insert(entity_of(4, EntityCategory::Aircraft));
         sim.set_logic_order_for_test(vec![1, 2, 3, 4]);
 
-        let before = sim.state_hash();
-        sim.object_ai_stage();
-        let after = sim.state_hash();
-        assert_eq!(
-            before, after,
-            "object_ai_stage (S0 no-op) must not perturb the state hash"
-        );
+        let mut committed = std::collections::BTreeSet::new();
+        sim.object_ai_stage(&mut committed);
+
+        // The idle non-miner Unit committed Guard and ticked its counter once.
+        assert_eq!(committed.iter().copied().collect::<Vec<_>>(), vec![1]);
+        let u = sim.substrate.entities.get(1).unwrap();
+        assert_eq!(u.mission.current, MissionType::Guard);
+        assert_eq!(u.mission.tick_counter, 1);
+        // Non-Units are not committed by the host (tail owns them): counter at 0.
+        for id in [2u64, 3, 4] {
+            assert_eq!(
+                sim.substrate.entities.get(id).unwrap().mission.tick_counter,
+                0,
+                "non-Unit {id} must not be committed by the host"
+            );
+        }
     }
 
     #[test]
@@ -672,7 +711,7 @@ mod tests {
         // verbatim (no sort).
         sim.set_logic_order_for_test(vec![3, 1, 2]);
 
-        let visited = sim.object_ai_walk(true);
+        let visited = sim.object_ai_walk(true, &mut std::collections::BTreeSet::new());
         assert_eq!(
             visited,
             sim.live_object_order_snapshot(),
@@ -686,10 +725,10 @@ mod tests {
         // The stage is wired into advance_tick (called every tick, before
         // refresh_mission_shadow). Identical fixtures must produce identical
         // per-tick state_hash sequences — the stage introduces no nondeterminism
-        // and no panic. Together with the hash-neutrality proof
-        // (techno_ai_shell_is_passthrough_no_hash_change, which exercises the
-        // entity walk directly) this shows the new stage perturbs no phase and
-        // no surrounding ordering. The fixture is intentionally entity-free:
+        // and no panic. Together with the commit proof
+        // (object_ai_stage_commits_live_unit_mission, which exercises the entity
+        // walk directly) this shows the stage perturbs no phase and no surrounding
+        // ordering beyond its own mission commit. The fixture is intentionally entity-free:
         // raw test_default entities carry interned ids that advance_tick's
         // entity systems would resolve against an empty interner (a fixture
         // concern unrelated to the stage); the stage still runs each tick over
@@ -726,7 +765,7 @@ mod tests {
         // in the live order.
         sim.substrate.entities.get_mut(2).unwrap().dying = true;
 
-        let visited = sim.object_ai_walk(true);
+        let visited = sim.object_ai_walk(true, &mut std::collections::BTreeSet::new());
         assert_eq!(
             visited,
             vec![1],
@@ -734,7 +773,7 @@ mod tests {
         );
         // The internal order-proof assert filters dying members, so the stage
         // must not panic even with a dying member in the live order.
-        sim.object_ai_stage();
+        sim.object_ai_stage(&mut std::collections::BTreeSet::new());
     }
 
     #[test]
@@ -752,27 +791,30 @@ mod tests {
             .logic
             .set_order_for_test(vec![absent_id, live_id]);
 
-        let visited = sim.object_ai_walk(true);
+        let visited = sim.object_ai_walk(true, &mut std::collections::BTreeSet::new());
         assert_eq!(
             visited,
             vec![live_id],
             "absent id skipped without panic; live id still visited"
         );
         // Stage must not panic on the absent member either.
-        sim.object_ai_stage();
+        sim.object_ai_stage(&mut std::collections::BTreeSet::new());
     }
 
-    // ===== Slice S4a — TechnoClass common bracket (shadow shell) =====
+    // ===== Slice S4a — TechnoClass common bracket (authoritative, Option B) =====
 
     #[test]
-    fn s4a_bracket_reaches_full_for_live_unit() {
+    fn s4a_bracket_commits_live_non_miner_unit() {
         let mut sim = Simulation::new();
         sim.substrate
             .entities
             .insert(entity_of(1, EntityCategory::Unit));
-        // A live (health > 0) Unit runs the whole bracket: pre -> dispatch
-        // marker -> post, both IsAlive guards pass.
-        assert_eq!(unit_techno_bracket(&mut sim, 1), BracketReach::Full);
+        // A live non-miner Unit reaches the dispatch point and commits: +0xC4
+        // tick_counter + derived_mission (idle -> Guard).
+        assert_eq!(unit_techno_bracket(&mut sim, 1), BracketReach::Committed);
+        let u = sim.substrate.entities.get(1).unwrap();
+        assert_eq!(u.mission.tick_counter, 1);
+        assert_eq!(u.mission.current, MissionType::Guard);
     }
 
     #[test]
@@ -781,28 +823,22 @@ mod tests {
         let mut e = entity_of(1, EntityCategory::Unit);
         e.health.current = 0; // not alive
         sim.substrate.entities.insert(e);
-        // Guard B fires after the (empty) pre-block: a health-0 Unit never
-        // reaches the dispatch marker or the post block.
+        // Guard B fires after the (empty) pre-block: a health-0 Unit makes no
+        // commit (counter stays 0) and never reaches the dispatch point.
         assert_eq!(unit_techno_bracket(&mut sim, 1), BracketReach::DiedInPre);
+        assert_eq!(sim.substrate.entities.get(1).unwrap().mission.tick_counter, 0);
     }
 
     #[test]
-    fn s4a_bracket_is_hash_neutral_in_walk() {
-        // The Unit arm of the live-object walk now runs the shadow bracket; it
-        // must leave the lockstep hash bit-identical (no-op stubs + read-only
-        // guards, no commit — the authoritative flip is a later slice).
+    fn s4a_bracket_defers_miner_to_tail() {
         let mut sim = Simulation::new();
-        sim.substrate
-            .entities
-            .insert(entity_of(1, EntityCategory::Unit));
-        sim.substrate
-            .entities
-            .insert(entity_of(2, EntityCategory::Unit));
-        sim.set_logic_order_for_test(vec![1, 2]);
-        let before = sim.state_hash();
-        sim.object_ai_stage();
-        let after = sim.state_hash();
-        assert_eq!(before, after, "S4a shadow bracket must not perturb the hash");
+        let mut miner = entity_of(1, EntityCategory::Unit);
+        miner.miner = Some(Miner::new(MinerKind::War, &MinerConfig::default(), 0));
+        sim.substrate.entities.insert(miner);
+        // A miner runs the bracket but the host does NOT commit it — the miner
+        // session / tail projection owns the miner mission (counter stays 0).
+        assert_eq!(unit_techno_bracket(&mut sim, 1), BracketReach::MinerDeferred);
+        assert_eq!(sim.substrate.entities.get(1).unwrap().mission.tick_counter, 0);
     }
 
     // ===== Slice S1 — dispatch-before-locomotor shadow =====
@@ -835,7 +871,7 @@ mod tests {
     }
 
     #[test]
-    fn unit_move_dispatch_then_process_shadow_agrees() {
+    fn unit_move_dispatch_then_process_shadow_reads_fresh_decision() {
         let mut sim = Simulation::new();
         sim.substrate.entities.insert(scoped_move_unit(1));
         sim.substrate.entities.insert(scoped_move_unit(2));
@@ -846,16 +882,18 @@ mod tests {
         // process, so the shadow pass asserts cleanly (no divergence, no panic).
         sim.debug_assert_s1_shadow();
 
-        // Divergence is SURFACED, not equalized: force an in-scope unit's mission
-        // to a non-Move value after the refresh; the step returns the OBSERVED
-        // mission (Guard), it does not rewrite it to Move.
+        // S4a: the shadow reads the FRESH per-object decision (`derived_mission`),
+        // NOT the committed `mission.current`. Post-flip the committed value is the
+        // host's Phase-0 commit and can go stale (a unit retasked mid-tick), so a
+        // stale committed value must NOT change what the shadow observes: an
+        // in-scope move unit's decision is `Move` regardless of the stale commit.
         sim.substrate.entities.get_mut(1).unwrap().mission.current = MissionType::Guard;
         let mut seq = 0u32;
         let trace = unit_ai_shadow_step(&sim, 1, &mut seq).expect("still in scope");
         assert_eq!(
             trace.mission,
-            MissionType::Guard,
-            "shadow surfaces the observed mission, never silently equalizes to Move"
+            MissionType::Move,
+            "shadow reads the fresh decision (Move), not the stale committed mission"
         );
     }
 
@@ -1002,21 +1040,22 @@ mod tests {
     }
 
     #[test]
-    fn unit_dispatch_host_is_hash_neutral() {
+    fn unit_dispatch_host_commits_scoped_mover() {
+        // S4a: the host commits the scoped mover's mission (Move) authoritatively
+        // and reports it in the skip-set; the read-only proofs must not panic.
         let mut sim = Simulation::new();
         sim.substrate.entities.insert(scoped_move_unit(1));
         sim.set_logic_order_for_test(vec![1]);
-        sim.refresh_mission_shadow();
 
-        let before = sim.state_hash();
-        let trace = sim.object_ai_stage(); // host pass (returns the trace)
-        sim.debug_assert_unit_dispatch_shadow(&trace); // read-only proof
+        let mut committed = std::collections::BTreeSet::new();
+        let trace = sim.object_ai_stage(&mut committed); // host pass (commits id 1)
+        sim.debug_assert_unit_dispatch_shadow(&trace); // read-only proof (no panic)
         sim.debug_check_dispatch_live_set_coverage(); // read-only coverage
-        let after = sim.state_hash();
-        assert_eq!(
-            before, after,
-            "the Unit dispatch host + proofs must not perturb the hash"
-        );
+
+        assert!(committed.contains(&1), "the scoped mover is committed by the host");
+        let u = sim.substrate.entities.get(1).unwrap();
+        assert_eq!(u.mission.current, MissionType::Move);
+        assert_eq!(u.mission.tick_counter, 1);
     }
 
     #[test]

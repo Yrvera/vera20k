@@ -837,8 +837,6 @@ pub fn tick_movement_with_grids(
     interner: &mut crate::sim::intern::StringInterner,
     rules: Option<&crate::rules::ruleset::RuleSet>,
     sound_events: &mut Vec<crate::sim::world::SimSoundEvent>,
-    // S2: ids whose dispatch step ran in-loop this tick (tail projection skips them).
-    dispatched: &mut BTreeSet<u64>,
 ) -> MovementTickStats {
     let mut stats = MovementTickStats::default();
     if tick_ms == 0 {
@@ -1037,18 +1035,11 @@ pub fn tick_movement_with_grids(
             let Some(entity) = entities.get_mut(entity_id) else {
                 continue;
             };
-            // S2 per-object dispatch (authoritative for scoped move units): the
-            // counter ticks and the dispatch-time mission commits BEFORE this
-            // unit's locomotor Process — including the arrival tick, where the
-            // committed mission is still Move (the target clears post-loop).
-            // The tail projection skips these ids (no double-count, no clobber).
-            if crate::sim::world::is_s1_scoped_move_unit(entity) {
-                entity.mission.tick_counter = entity.mission.tick_counter.wrapping_add(1);
-                let (current, substate) = entity.derived_mission();
-                entity.mission.current = current;
-                entity.mission.substate = substate;
-                dispatched.insert(entity_id);
-            }
+            // S4a (Option B): the per-object mission dispatch (`+0xC4` tick
+            // counter + `derived_mission` commit) was relocated to the object-AI
+            // host stage (pre-movement, LogicVector order), so it no longer
+            // happens here. The arrival-tick value is preserved: the host commits
+            // `Move` before this loop clears the target on arrival.
             active_layer = entity.movement_layer_or_ground();
             let Some(ref mut target) = entity.movement_target else {
                 continue;

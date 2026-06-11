@@ -104,7 +104,6 @@ fn advance_prone_mover(crawls: bool) -> SimFixed {
         &mut interner,
         Some(&rules),
         &mut sounds,
-        &mut std::collections::BTreeSet::new(),
     );
 
     entities.get(1).expect("entity exists").position.sub_x

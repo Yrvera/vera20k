@@ -15,9 +15,6 @@ pub mod edge_cell;
 mod logic_vector;
 mod substrate;
 mod techno_ai;
-// S2: the in-loop dispatch step (sim/movement) gates on the same scope
-// predicate the dispatch host/shadow uses.
-pub(crate) use techno_ai::is_s1_scoped_move_unit;
 pub(crate) mod unit_post;
 mod world_commands;
 mod world_hash;
@@ -2000,10 +1997,10 @@ impl Simulation {
         let mut bridge_state_changed = false;
         let mut passenger_ownership_changed = false;
 
-        // Object-AI stage (Slice S2a): instrumented no-op walk over the live
-        // object order, relocated to run immediately BEFORE Phase-1 ground
-        // movement. This is the per-object dispatch site that must precede the
-        // locomotor — gamemd decides each object's mission, then moves it, within
+        // Object-AI stage (S4a): AUTHORITATIVE per-object mission commit walk over
+        // the live object order, run immediately BEFORE Phase-1 ground movement.
+        // This is the per-object dispatch site that must precede the locomotor —
+        // gamemd decides each object's mission, then moves it, within
         // one pass — so a later slice (S2b) can absorb the ground-movement loop
         // into this stage. The stage is still a strict no-op here, so the
         // relocation is hash-neutral (proven by the no-hash-change tests).
@@ -2011,17 +2008,20 @@ impl Simulation {
         // unaffected. The S1 shadow PROOF stays at end-of-tick, where the mission
         // shadow is fresh.
         //
-        // S2a: bind the host-time Unit dispatch trace (debug/test only; empty,
-        // non-allocating Vec in release). Consumed by the end-of-tick dispatch
-        // proof beside `debug_assert_s1_shadow`.
-        let dispatch_trace = self.object_ai_stage();
+        // S2a: bind the host-time Unit dispatch trace (debug/test only). S4a
+        // (Option B): the object-AI stage now AUTHORITATIVELY commits each live
+        // non-miner Unit's mission (`+0xC4` tick_counter + `derived_mission`) at
+        // this gamemd-faithful per-object point (pre-movement, LogicVector order);
+        // `host_dispatched` collects those ids so the Phase-9 tail projection
+        // skips them (no double-commit / double-count). Miners, passengers, dying
+        // units, and non-Units fall to the tail.
+        let mut host_dispatched: BTreeSet<u64> = BTreeSet::new();
+        let dispatch_trace = self.object_ai_stage(&mut host_dispatched);
 
         // --- Phase 1: Ground movement ---
         // DEPENDS ON: commands (may set movement_target), entity positions from prior tick.
         // PRODUCES: updated entity positions, crush/bump effects, drive track state.
         let movement_order = self.live_object_order_snapshot();
-        // S2: ids dispatched in-loop this tick; consumed by the tail projection.
-        let mut s2_dispatched: BTreeSet<u64> = BTreeSet::new();
         let movement_stats = movement::tick_movement_with_grids(
             &mut self.substrate.entities,
             &movement_order,
@@ -2045,7 +2045,6 @@ impl Simulation {
             &mut self.interner,
             rules,
             &mut self.sound_events,
-            &mut s2_dispatched,
         );
         if let Some(rules) = rules {
             crate::sim::gate_runtime::tick_gate_runtimes(
@@ -2689,7 +2688,9 @@ impl Simulation {
         // Mission projection runs after all systems and before the hash, so the
         // folded `mission` reflects the current tick. As of Slice 8 `mission` is
         // canonical hashed state; the Slice-2 shadow-agreement assert is retired.
-        self.refresh_mission_shadow_except(&s2_dispatched);
+        // S4a: live non-miner Units already committed at the host (`host_dispatched`);
+        // the tail projects only the rest (miners, passengers, dying units, non-Units).
+        self.refresh_mission_shadow_except(&host_dispatched);
         // P1+P2 production+economy shadow: mirror credits + purifier_count and
         // rebuild the factory registry from the legacy queues, after all
         // authoritative systems and before the hash. Writes only non-hashed shadow
