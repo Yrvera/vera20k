@@ -6,7 +6,9 @@
 use crate::app_init::MapMenuEntry;
 use crate::render::batch::SpriteInstance;
 use crate::render::bit_font::BitFont;
-use crate::render::skirmish_shell_chrome::{SkirmishShellChromeAtlas, SkirmishShellChromeEntry};
+use crate::render::skirmish_shell_chrome::{
+    ControlChrome, SkirmishShellChromeAtlas, SkirmishShellChromeEntry,
+};
 use crate::rules::color_scheme::{ColorSchemeEntry, hsv_to_rgb, scheme_for_priority};
 use crate::ui::skirmish_shell::{
     COMBO_DROPDOWN_ROW_H, COMBO_DROPDOWN_SCROLLBAR_BUTTON_H, DropdownScrollbarPart, RectPx,
@@ -30,17 +32,6 @@ use super::{
     SHELL_LABEL_TEXT_RGB, SHELL_SCROLLBAR_TRACK_RGB_PENDING_SCROLLBAR_SOURCE_CAPTURE,
     SHELL_SWATCH_DEPTH,
 };
-
-pub(super) fn checkbox_entry(
-    atlas: &SkirmishShellChromeAtlas,
-    checked: bool,
-) -> Option<SkirmishShellChromeEntry> {
-    if checked {
-        atlas.checkbox_checked_cce_i
-    } else {
-        atlas.checkbox_unchecked_cue_i
-    }
-}
 
 pub(super) fn checkbox_checked(shell: &SkirmishShellState, id: SkirmishCheckboxId) -> bool {
     match id {
@@ -284,20 +275,20 @@ pub(super) fn push_combo_face(
     }
 }
 
-pub(super) fn push_trackbar_plaque(
+pub(super) fn paint_trackbar_plaque(
     out: &mut Vec<SpriteInstance>,
-    atlas: &SkirmishShellChromeAtlas,
+    chrome: &ControlChrome,
     rect: RectPx,
     depth: f32,
 ) {
     let plaque = trackbar_plaque_rect(rect);
-    if let Some(mid) = atlas.trackbar_plaque_mid_trofm {
+    if let Some(mid) = chrome.trackbar_plaque_mid_trofm {
         push_entry(out, mid, plaque, depth);
     }
-    if let Some(left) = atlas.trackbar_plaque_left_trofl {
+    if let Some(left) = chrome.trackbar_plaque_left_trofl {
         push_entry_native(out, left, plaque.x, plaque.y, depth - 0.00001);
     }
-    if let Some(right) = atlas.trackbar_plaque_right_trofr {
+    if let Some(right) = chrome.trackbar_plaque_right_trofr {
         let w = right.pixel_size[0].round() as i32;
         push_entry_native(
             out,
@@ -319,29 +310,49 @@ pub(super) fn trackbar_rect_for_id(layout: &SkirmishShellLayout, id: SkirmishTra
 
 /// Render-side per-control paint state for the Slice 4 dispatch seam (O1: a
 /// data-enum match like `ButtonPolicy`, NOT a trait). One variant per painted
-/// control kind (mirrors `ui::shell::ControlKind`); each carries the RESOLVED
-/// per-control paint state — for a checkbox, the already-looked-up icon entry +
-/// its full rect — so `paint_control` needs no atlas and selects the emitter by
-/// variant. App-layer because the emitters + skirmish layout live here
-/// (`render/` must not depend on the app layer, so the seam can't sit in
-/// `render/shell_paint.rs` as the original draft assumed). 4A lands `Checkbox`;
-/// 4B-4D add the trackbar/combo/listbox arms.
+/// control kind (mirrors `ui::shell::ControlKind`); each carries only the RESOLVED
+/// per-control STATE (a checkbox's checked flag, a trackbar's thumb pixel offset) +
+/// its rect — `paint_control` looks the glyphs up itself from the `ControlChrome`
+/// subset (the atlas-taking seam shape). App-layer because the emitters + skirmish
+/// layout live here (`render/` must not depend on the app layer, so the seam can't
+/// sit in `render/shell_paint.rs` as the original draft assumed). 4A lands
+/// `Checkbox`; 4B adds `Trackbar`; 4C-4D add the combo/listbox arms.
 pub(super) enum ControlPaint {
-    Checkbox {
-        icon: Option<SkirmishShellChromeEntry>,
-        rect: RectPx,
-    },
+    Checkbox { checked: bool, rect: RectPx },
+    Trackbar { rect: RectPx, thumb_px: i32 },
 }
 
 /// Slice 4 paint seam: emit one control, selecting the emitter by `ControlPaint`
-/// variant (the per-control-kind dispatch). Re-homes what were direct per-family
-/// emitter calls into one match; emission (entry / rect / depth) is
-/// byte-identical to the pre-seam code.
-pub(super) fn paint_control(out: &mut Vec<SpriteInstance>, paint: ControlPaint) {
+/// variant (the per-control-kind dispatch) and resolving its glyphs from the
+/// `ControlChrome` subset. Re-homes what were direct per-family emitter calls into
+/// one match; emission ORDER (entry / rect / depth) is byte-identical to the
+/// pre-seam code.
+pub(super) fn paint_control(
+    out: &mut Vec<SpriteInstance>,
+    chrome: &ControlChrome,
+    paint: ControlPaint,
+) {
     match paint {
-        ControlPaint::Checkbox { icon, rect } => {
+        ControlPaint::Checkbox { checked, rect } => {
+            let icon = if checked {
+                chrome.checkbox_checked_cce_i
+            } else {
+                chrome.checkbox_unchecked_cue_i
+            };
             if let Some(entry) = icon {
                 push_entry(out, entry, checkbox_icon_rect(rect), SHELL_CONTROL_DEPTH);
+            }
+        }
+        ControlPaint::Trackbar { rect, thumb_px } => {
+            // Emission order preserved byte-for-byte: rail → plaque(mid, left,
+            // right) → thumb, at the same depths as the pre-seam emitter.
+            if let Some(rail) = chrome.trackbar_rail {
+                push_entry_native(out, rail, rect.x, rect.y, SHELL_CONTROL_DEPTH);
+            }
+            paint_trackbar_plaque(out, chrome, rect, SHELL_CONTROL_DEPTH);
+            if let Some(thumb) = chrome.trackbar_thumb_trakgrip {
+                let thumb_rect = trackbar_thumb_rect(rect, thumb_px);
+                push_entry(out, thumb, thumb_rect, SHELL_CONTROL_DEPTH - 0.00002);
             }
         }
     }
@@ -353,15 +364,18 @@ pub(super) fn push_checkbox_instances(
     layout: &SkirmishShellLayout,
     shell: &SkirmishShellState,
 ) {
-    // Slice 4A: each checkbox paints through the per-control-kind seam. The
-    // iteration order (layout.checkboxes), the resolved icon entry, the icon
-    // rect, and SHELL_CONTROL_DEPTH are unchanged from the pre-seam loop —
-    // byte-identical emission (see the draw-list test).
+    // Slice 4A/4B: each checkbox paints through the per-control-kind seam, which
+    // resolves the checked/unchecked icon from the `ControlChrome` subset. The
+    // iteration order (layout.checkboxes), the icon rect, and SHELL_CONTROL_DEPTH
+    // are unchanged from the pre-seam loop — byte-identical emission (see the
+    // draw-list test).
+    let chrome = atlas.control_chrome();
     for checkbox in layout.checkboxes {
         paint_control(
             out,
+            &chrome,
             ControlPaint::Checkbox {
-                icon: checkbox_entry(atlas, checkbox_checked(shell, checkbox.id)),
+                checked: checkbox_checked(shell, checkbox.id),
                 rect: checkbox.rect,
             },
         );
@@ -374,24 +388,21 @@ pub(super) fn push_trackbar_instances(
     layout: &SkirmishShellLayout,
     shell: &SkirmishShellState,
 ) {
+    // Slice 4B: each trackbar paints through the per-control-kind seam. The
+    // value→pixel quantization (reading bounds) stays here in the skirmish layer;
+    // only the resolved `thumb_px` + rect cross the seam, and `paint_control`
+    // resolves the rail/plaque/thumb glyphs from the `ControlChrome` subset.
+    let chrome = atlas.control_chrome();
     for id in [
         SkirmishTrackbarId::GameSpeed0x529,
         SkirmishTrackbarId::Credits0x511,
         SkirmishTrackbarId::UnitCount0x50c,
     ] {
         let rect = trackbar_rect_for_id(layout, id);
-        if let Some(rail) = atlas.trackbar_rail {
-            push_entry_native(out, rail, rect.x, rect.y, SHELL_CONTROL_DEPTH);
-        }
-        push_trackbar_plaque(out, atlas, rect, SHELL_CONTROL_DEPTH);
-
         let value = trackbar_visual_value(shell, id);
         let (min, max, step) = shell.trackbar_bounds.range(id);
         let px = trackbar_pixel_offset(value, min, max, step, rect);
-        if let Some(thumb) = atlas.trackbar_thumb_trakgrip {
-            let thumb_rect = trackbar_thumb_rect(rect, px);
-            push_entry(out, thumb, thumb_rect, SHELL_CONTROL_DEPTH - 0.00002);
-        }
+        paint_control(out, &chrome, ControlPaint::Trackbar { rect, thumb_px: px });
     }
 }
 
@@ -663,18 +674,30 @@ mod tests {
     fn checkbox_paint_seam_emits_icon_at_icon_rect_with_control_depth() {
         // Draw-list assertion (Slice 4 §1.4): the per-control-kind seam emits
         // exactly one instance, at the 18x18 icon rect, at SHELL_CONTROL_DEPTH,
-        // carrying the resolved entry's uv — byte-identical to the pre-seam
-        // push_checkbox_instances emission.
+        // carrying the resolved checked-icon entry's uv — byte-identical to the
+        // pre-seam push_checkbox_instances emission. The seam resolves the icon
+        // from the ControlChrome subset itself (the atlas-taking seam shape).
         let entry = SkirmishShellChromeEntry {
             uv_origin: [0.1, 0.2],
             uv_size: [0.3, 0.4],
             pixel_size: [18.0, 18.0],
         };
+        let chrome = ControlChrome {
+            checkbox_checked_cce_i: Some(entry),
+            ..Default::default()
+        };
         let rect = RectPx::new(71, 286, 150, 16);
         let icon = checkbox_icon_rect(rect);
 
         let mut out = Vec::new();
-        paint_control(&mut out, ControlPaint::Checkbox { icon: Some(entry), rect });
+        paint_control(
+            &mut out,
+            &chrome,
+            ControlPaint::Checkbox {
+                checked: true,
+                rect,
+            },
+        );
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].position, [icon.x as f32, icon.y as f32]);
         assert_eq!(out[0].size, [icon.w as f32, icon.h as f32]);
@@ -682,9 +705,110 @@ mod tests {
         assert_eq!(out[0].uv_size, entry.uv_size);
         assert_eq!(out[0].depth, SHELL_CONTROL_DEPTH);
 
-        // Missing entry → no instance (matches the pre-seam `else continue`).
+        // Missing icon → no instance (matches the pre-seam `else continue`).
         let mut empty = Vec::new();
-        paint_control(&mut empty, ControlPaint::Checkbox { icon: None, rect });
+        paint_control(
+            &mut empty,
+            &ControlChrome::default(),
+            ControlPaint::Checkbox {
+                checked: true,
+                rect,
+            },
+        );
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn trackbar_paint_seam_emits_rail_plaque_thumb_in_native_order() {
+        // Draw-list assertion (Slice 4 §1.4): the trackbar seam emits rail →
+        // plaque(mid, left, right) → thumb in the exact order/positions/depths of
+        // the pre-seam push_trackbar_instances emitter, across min/mid/max thumb
+        // offsets. Geometry is pinned via the same layout helpers the emitter uses,
+        // so the assertion tracks the helpers rather than hardcoding plaque math.
+        let rail = SkirmishShellChromeEntry {
+            uv_origin: [0.01, 0.02],
+            uv_size: [0.03, 0.04],
+            pixel_size: [200.0, 18.0],
+        };
+        let mid = SkirmishShellChromeEntry {
+            uv_origin: [0.11, 0.12],
+            uv_size: [0.13, 0.14],
+            pixel_size: [10.0, 16.0],
+        };
+        let left = SkirmishShellChromeEntry {
+            uv_origin: [0.21, 0.22],
+            uv_size: [0.23, 0.24],
+            pixel_size: [6.0, 16.0],
+        };
+        let right = SkirmishShellChromeEntry {
+            uv_origin: [0.31, 0.32],
+            uv_size: [0.33, 0.34],
+            pixel_size: [7.0, 16.0],
+        };
+        let thumb = SkirmishShellChromeEntry {
+            uv_origin: [0.41, 0.42],
+            uv_size: [0.43, 0.44],
+            pixel_size: [12.0, 18.0],
+        };
+        let chrome = ControlChrome {
+            trackbar_rail: Some(rail),
+            trackbar_plaque_mid_trofm: Some(mid),
+            trackbar_plaque_left_trofl: Some(left),
+            trackbar_plaque_right_trofr: Some(right),
+            trackbar_thumb_trakgrip: Some(thumb),
+            ..Default::default()
+        };
+        let rect = RectPx::new(176, 168, 200, 24);
+        let plaque = trackbar_plaque_rect(rect);
+
+        for thumb_px in [0, 68, 137] {
+            let mut out = Vec::new();
+            paint_control(&mut out, &chrome, ControlPaint::Trackbar { rect, thumb_px });
+            assert_eq!(out.len(), 5, "rail + plaque(mid, left, right) + thumb");
+
+            // 0: rail — native at the control origin, SHELL_CONTROL_DEPTH.
+            assert_eq!(out[0].position, [rect.x as f32, rect.y as f32]);
+            assert_eq!(out[0].size, rail.pixel_size);
+            assert_eq!(out[0].uv_origin, rail.uv_origin);
+            assert_eq!(out[0].depth, SHELL_CONTROL_DEPTH);
+
+            // 1: plaque mid — scaled to the plaque rect, same depth.
+            assert_eq!(out[1].position, [plaque.x as f32, plaque.y as f32]);
+            assert_eq!(out[1].size, [plaque.w as f32, plaque.h as f32]);
+            assert_eq!(out[1].uv_origin, mid.uv_origin);
+            assert_eq!(out[1].depth, SHELL_CONTROL_DEPTH);
+
+            // 2: plaque left — native at the plaque origin, one tick under.
+            assert_eq!(out[2].position, [plaque.x as f32, plaque.y as f32]);
+            assert_eq!(out[2].size, left.pixel_size);
+            assert_eq!(out[2].uv_origin, left.uv_origin);
+            assert_eq!(out[2].depth, SHELL_CONTROL_DEPTH - 0.00001);
+
+            // 3: plaque right — native, right-aligned in the plaque, one tick under.
+            let right_w = right.pixel_size[0].round() as i32;
+            assert_eq!(
+                out[3].position,
+                [(plaque.x + plaque.w - right_w) as f32, plaque.y as f32]
+            );
+            assert_eq!(out[3].size, right.pixel_size);
+            assert_eq!(out[3].uv_origin, right.uv_origin);
+            assert_eq!(out[3].depth, SHELL_CONTROL_DEPTH - 0.00001);
+
+            // 4: thumb — follows thumb_px via trackbar_thumb_rect, two ticks under.
+            let thumb_rect = trackbar_thumb_rect(rect, thumb_px);
+            assert_eq!(out[4].position, [thumb_rect.x as f32, thumb_rect.y as f32]);
+            assert_eq!(out[4].size, [thumb_rect.w as f32, thumb_rect.h as f32]);
+            assert_eq!(out[4].uv_origin, thumb.uv_origin);
+            assert_eq!(out[4].depth, SHELL_CONTROL_DEPTH - 0.00002);
+        }
+
+        // Missing entries → nothing emitted (matches the pre-seam `if let` guards).
+        let mut empty = Vec::new();
+        paint_control(
+            &mut empty,
+            &ControlChrome::default(),
+            ControlPaint::Trackbar { rect, thumb_px: 0 },
+        );
         assert!(empty.is_empty());
     }
 

@@ -87,6 +87,39 @@ pub struct SkirmishShellChromeAtlas {
     pub flags: Vec<(String, SkirmishShellChromeEntry)>,
 }
 
+/// Default-able subset of the chrome atlas carrying ONLY owner-draw control glyph
+/// entries — NO GPU `texture` (that live field is why the full atlas can't derive
+/// Default). The Slice 4 paint seam (`paint_control`) takes this so it resolves
+/// chrome inside the emitter yet stays unit-testable via
+/// `ControlChrome { trackbar_rail: Some(e), ..Default::default() }`. Grows one
+/// control family per sub-step (4B trackbar; 4C combo; 4D scrollbar).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ControlChrome {
+    pub checkbox_unchecked_cue_i: Option<SkirmishShellChromeEntry>,
+    pub checkbox_checked_cce_i: Option<SkirmishShellChromeEntry>,
+    pub trackbar_rail: Option<SkirmishShellChromeEntry>,
+    pub trackbar_plaque_left_trofl: Option<SkirmishShellChromeEntry>,
+    pub trackbar_plaque_mid_trofm: Option<SkirmishShellChromeEntry>,
+    pub trackbar_plaque_right_trofr: Option<SkirmishShellChromeEntry>,
+    pub trackbar_thumb_trakgrip: Option<SkirmishShellChromeEntry>,
+}
+
+impl SkirmishShellChromeAtlas {
+    /// Snapshot the control glyph entries into a Default-able, texture-free subset
+    /// the paint seam can take (and tests can build by hand). Entries are `Copy`.
+    pub fn control_chrome(&self) -> ControlChrome {
+        ControlChrome {
+            checkbox_unchecked_cue_i: self.checkbox_unchecked_cue_i,
+            checkbox_checked_cce_i: self.checkbox_checked_cce_i,
+            trackbar_rail: self.trackbar_rail,
+            trackbar_plaque_left_trofl: self.trackbar_plaque_left_trofl,
+            trackbar_plaque_mid_trofm: self.trackbar_plaque_mid_trofm,
+            trackbar_plaque_right_trofr: self.trackbar_plaque_right_trofr,
+            trackbar_thumb_trakgrip: self.trackbar_thumb_trakgrip,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg(test)]
 enum ShellAssetRole {
