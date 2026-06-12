@@ -147,6 +147,59 @@ pub(crate) fn update_elapsed_ms(state: &mut AppState, now: Instant) -> u64 {
     elapsed_ms
 }
 
+/// Front-end session mode, as the modal pump reads it to decide whether the
+/// simulation advances behind an open modal dialog. Mirrors gamemd's `g_GameMode`
+/// discriminator; the values are writer-proofed — the active engine only ever
+/// writes 0/3/4/5, so any other raw value is a legacy (modem/serial) or
+/// uninitialized mode the pump treats conservatively as non-advancing. This type
+/// is read ONLY by the app loop, never by `sim/` (the layering rule).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionMode {
+    /// Campaign / single-player. The modal pump freezes the world.
+    Campaign,
+    /// LAN / IPX network. The modal pump keeps the world advancing.
+    Lan,
+    /// WOL / Internet network. The modal pump keeps the world advancing.
+    Wol,
+    /// Offline skirmish. The modal pump freezes the world.
+    Skirmish,
+    /// Any raw value the active engine never writes (legacy modem/serial, or
+    /// uninitialized). Treated as non-advancing.
+    Other,
+}
+
+impl SessionMode {
+    /// Map gamemd's raw `g_GameMode` int to a session mode. Writer-proofed:
+    /// 0=Campaign, 3=Lan, 4=Wol, 5=Skirmish; every other value is `Other`.
+    pub fn from_game_mode(raw: i32) -> Self {
+        match raw {
+            0 => SessionMode::Campaign,
+            3 => SessionMode::Lan,
+            4 => SessionMode::Wol,
+            5 => SessionMode::Skirmish,
+            _ => SessionMode::Other,
+        }
+    }
+
+    /// Whether this is a network session (LAN/WOL). Only network sessions keep the
+    /// simulation advancing behind an open modal; offline modes freeze it.
+    pub fn is_network(self) -> bool {
+        matches!(self, SessionMode::Lan | SessionMode::Wol)
+    }
+}
+
+/// Pure modal-pump decision: should the fixed simulation advance one step while a
+/// modal dialog is open? Mirrors gamemd's pump body — advance only on the network
+/// branch (LAN/WOL), and only when no fixed tick is already in progress (the native
+/// reentrancy guard). Offline campaign/skirmish freeze the world; message, input,
+/// and repaint still run in the surrounding loop. Pure and total, so it is
+/// unit-tested without an `AppState`. The `service_tick` wrapper that reads the live
+/// `AppState` session mode and calls `advance_fixed_simulation` on a true decision is
+/// added when the in-game modal loop is wired (the live caller).
+pub fn modal_pump_should_advance_sim(mode: SessionMode, reentrancy_in_progress: bool) -> bool {
+    mode.is_network() && !reentrancy_in_progress
+}
+
 pub(crate) fn advance_in_game_runtime(state: &mut AppState, elapsed_ms: u64) {
     // Frame-step: when paused, advance exactly one tick on request.
     let frame_stepping = state.debug_frame_step_requested;
@@ -1625,5 +1678,66 @@ mod tests {
             world_point_to_cell(-500.0, -500.0, &height_map, None),
             (0, 0)
         );
+    }
+}
+
+#[cfg(test)]
+mod modal_pump_tests {
+    use super::{SessionMode, modal_pump_should_advance_sim};
+
+    #[test]
+    fn session_mode_maps_writer_proofed_game_mode_values() {
+        assert_eq!(SessionMode::from_game_mode(0), SessionMode::Campaign);
+        assert_eq!(SessionMode::from_game_mode(3), SessionMode::Lan);
+        assert_eq!(SessionMode::from_game_mode(4), SessionMode::Wol);
+        assert_eq!(SessionMode::from_game_mode(5), SessionMode::Skirmish);
+        // Legacy modem/serial (1/2) and any unrecognized value -> Other. The active
+        // engine never writes these, so the pump treats them as non-advancing.
+        assert_eq!(SessionMode::from_game_mode(1), SessionMode::Other);
+        assert_eq!(SessionMode::from_game_mode(2), SessionMode::Other);
+        assert_eq!(SessionMode::from_game_mode(-1), SessionMode::Other);
+        assert_eq!(SessionMode::from_game_mode(99), SessionMode::Other);
+    }
+
+    #[test]
+    fn only_network_modes_advance_behind_a_modal() {
+        // {3 LAN, 4 WOL} advance; {0 campaign, 5 skirmish} + Other freeze.
+        assert!(modal_pump_should_advance_sim(SessionMode::Lan, false));
+        assert!(modal_pump_should_advance_sim(SessionMode::Wol, false));
+        assert!(!modal_pump_should_advance_sim(SessionMode::Campaign, false));
+        assert!(!modal_pump_should_advance_sim(SessionMode::Skirmish, false));
+        assert!(!modal_pump_should_advance_sim(SessionMode::Other, false));
+    }
+
+    #[test]
+    fn reentrancy_guard_blocks_advance_even_on_network() {
+        // The native reentrancy guard: a fixed tick already in progress means the
+        // pump skips advancing, even on the network branch.
+        assert!(!modal_pump_should_advance_sim(SessionMode::Lan, true));
+        assert!(!modal_pump_should_advance_sim(SessionMode::Wol, true));
+    }
+
+    #[test]
+    fn pumped_tick_delta_is_zero_offline_and_n_on_network() {
+        // C2 acceptance at the decision level: the pump decision drives whether the
+        // world's fixed tick advances per pumped frame. `tick` stands in for
+        // `sim.session.tick`; the full headless-World assertion (incl. "no
+        // battlefield recomposite offline") lands with the live `service_tick` swap.
+        const FRAMES: u64 = 7;
+        let pumped = |mode: SessionMode| -> u64 {
+            let mut tick = 0u64;
+            for _ in 0..FRAMES {
+                if modal_pump_should_advance_sim(mode, false) {
+                    tick += 1; // one fixed step advanced this pumped frame
+                }
+            }
+            tick
+        };
+        // Offline freezes: zero advance over N pumped frames.
+        assert_eq!(pumped(SessionMode::Skirmish), 0);
+        assert_eq!(pumped(SessionMode::Campaign), 0);
+        // Network advances once per pumped frame.
+        assert_eq!(pumped(SessionMode::Lan), FRAMES);
+        assert_eq!(pumped(SessionMode::Wol), FRAMES);
     }
 }
