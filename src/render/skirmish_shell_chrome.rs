@@ -102,6 +102,15 @@ pub struct ControlChrome {
     pub trackbar_plaque_mid_trofm: Option<SkirmishShellChromeEntry>,
     pub trackbar_plaque_right_trofr: Option<SkirmishShellChromeEntry>,
     pub trackbar_thumb_trakgrip: Option<SkirmishShellChromeEntry>,
+    pub white_pixel: Option<SkirmishShellChromeEntry>,
+    pub combo_face_150: Option<SkirmishShellChromeEntry>,
+    pub combo_face_117: Option<SkirmishShellChromeEntry>,
+    pub combo_face_44: Option<SkirmishShellChromeEntry>,
+    pub combo_face_38: Option<SkirmishShellChromeEntry>,
+    pub combo_arrow_down_released: Option<SkirmishShellChromeEntry>,
+    pub combo_arrow_down_pressed: Option<SkirmishShellChromeEntry>,
+    pub combo_arrow_down_gray_released: Option<SkirmishShellChromeEntry>,
+    pub combo_arrow_down_gray_pressed: Option<SkirmishShellChromeEntry>,
 }
 
 impl SkirmishShellChromeAtlas {
@@ -116,6 +125,15 @@ impl SkirmishShellChromeAtlas {
             trackbar_plaque_mid_trofm: self.trackbar_plaque_mid_trofm,
             trackbar_plaque_right_trofr: self.trackbar_plaque_right_trofr,
             trackbar_thumb_trakgrip: self.trackbar_thumb_trakgrip,
+            white_pixel: self.white_pixel,
+            combo_face_150: self.combo_face_150,
+            combo_face_117: self.combo_face_117,
+            combo_face_44: self.combo_face_44,
+            combo_face_38: self.combo_face_38,
+            combo_arrow_down_released: self.combo_arrow_down_released,
+            combo_arrow_down_pressed: self.combo_arrow_down_pressed,
+            combo_arrow_down_gray_released: self.combo_arrow_down_gray_released,
+            combo_arrow_down_gray_pressed: self.combo_arrow_down_gray_pressed,
         }
     }
 }

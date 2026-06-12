@@ -44,14 +44,14 @@ pub(super) fn checkbox_checked(shell: &SkirmishShellState, id: SkirmishCheckboxI
 }
 
 pub(super) fn combo_face_entry(
-    atlas: &SkirmishShellChromeAtlas,
+    chrome: &ControlChrome,
     rect: RectPx,
 ) -> Option<SkirmishShellChromeEntry> {
     match rect.w {
-        150 => atlas.combo_face_150,
-        117 => atlas.combo_face_117,
-        44 => atlas.combo_face_44,
-        38 => atlas.combo_face_38,
+        150 => chrome.combo_face_150,
+        117 => chrome.combo_face_117,
+        44 => chrome.combo_face_44,
+        38 => chrome.combo_face_38,
         _ => None,
     }
 }
@@ -241,40 +241,6 @@ pub(super) fn house_color_tint(color_schemes: &[ColorSchemeEntry], index: usize)
     [0.5, 0.5, 0.5]
 }
 
-pub(super) fn push_combo_face(
-    out: &mut Vec<SpriteInstance>,
-    atlas: &SkirmishShellChromeAtlas,
-    color_schemes: &[ColorSchemeEntry],
-    rect: RectPx,
-    color_index: Option<usize>,
-    open: bool,
-    disabled: bool,
-    depth: f32,
-) {
-    if let Some(face) = combo_face_entry(atlas, rect) {
-        push_entry(out, face, combo_face_rect(rect), depth);
-    }
-    if let (Some(color_index), Some(white)) = (color_index, atlas.white_pixel) {
-        push_tinted_entry(
-            out,
-            white,
-            combo_swatch_rect(rect),
-            house_color_tint(color_schemes, color_index),
-            SHELL_SWATCH_DEPTH,
-        );
-    }
-    let arrow = match (disabled, open) {
-        (true, true) => atlas.combo_arrow_down_gray_pressed,
-        (true, false) => atlas.combo_arrow_down_gray_released,
-        (false, true) => atlas.combo_arrow_down_pressed,
-        (false, false) => atlas.combo_arrow_down_released,
-    };
-    if let Some(arrow) = arrow {
-        let arrow_rect = combo_arrow_rect(rect);
-        push_entry_native(out, arrow, arrow_rect.x, arrow_rect.y, depth - 0.00001);
-    }
-}
-
 pub(super) fn paint_trackbar_plaque(
     out: &mut Vec<SpriteInstance>,
     chrome: &ControlChrome,
@@ -316,10 +282,17 @@ pub(super) fn trackbar_rect_for_id(layout: &SkirmishShellLayout, id: SkirmishTra
 /// subset (the atlas-taking seam shape). App-layer because the emitters + skirmish
 /// layout live here (`render/` must not depend on the app layer, so the seam can't
 /// sit in `render/shell_paint.rs` as the original draft assumed). 4A lands
-/// `Checkbox`; 4B adds `Trackbar`; 4C-4D add the combo/listbox arms.
+/// `Checkbox`; 4B adds `Trackbar`; 4C adds the collapsed `Combo` face; 4D adds the
+/// listbox/scrollbar arms.
 pub(super) enum ControlPaint {
     Checkbox { checked: bool, rect: RectPx },
     Trackbar { rect: RectPx, thumb_px: i32 },
+    Combo {
+        rect: RectPx,
+        swatch: Option<[f32; 3]>,
+        open: bool,
+        disabled: bool,
+    },
 }
 
 /// Slice 4 paint seam: emit one control, selecting the emitter by `ControlPaint`
@@ -353,6 +326,45 @@ pub(super) fn paint_control(
             if let Some(thumb) = chrome.trackbar_thumb_trakgrip {
                 let thumb_rect = trackbar_thumb_rect(rect, thumb_px);
                 push_entry(out, thumb, thumb_rect, SHELL_CONTROL_DEPTH - 0.00002);
+            }
+        }
+        ControlPaint::Combo {
+            rect,
+            swatch,
+            open,
+            disabled,
+        } => {
+            // Emission order preserved byte-for-byte from the pre-seam
+            // push_combo_face: face glyph → swatch (color faces only) → arrow, at
+            // the same depths. The caller resolves the swatch RGB so the arm stays
+            // chrome-only.
+            if let Some(face) = combo_face_entry(chrome, rect) {
+                push_entry(out, face, combo_face_rect(rect), SHELL_CONTROL_DEPTH);
+            }
+            if let (Some(tint), Some(white)) = (swatch, chrome.white_pixel) {
+                push_tinted_entry(
+                    out,
+                    white,
+                    combo_swatch_rect(rect),
+                    tint,
+                    SHELL_SWATCH_DEPTH,
+                );
+            }
+            let arrow = match (disabled, open) {
+                (true, true) => chrome.combo_arrow_down_gray_pressed,
+                (true, false) => chrome.combo_arrow_down_gray_released,
+                (false, true) => chrome.combo_arrow_down_pressed,
+                (false, false) => chrome.combo_arrow_down_released,
+            };
+            if let Some(arrow) = arrow {
+                let arrow_rect = combo_arrow_rect(rect);
+                push_entry_native(
+                    out,
+                    arrow,
+                    arrow_rect.x,
+                    arrow_rect.y,
+                    SHELL_CONTROL_DEPTH - 0.00001,
+                );
             }
         }
     }
@@ -413,46 +425,56 @@ pub(super) fn push_combo_instances(
     layout: &SkirmishShellLayout,
     shell: &SkirmishShellState,
 ) {
+    // Slice 4C: each collapsed combo face paints through the per-control-kind seam,
+    // which resolves the face glyph / swatch white-pixel / arrow variant from the
+    // `ControlChrome` subset. The skirmish layer keeps the per-face color-index
+    // resolution and pre-resolves it to a swatch RGB so the arm stays chrome-only;
+    // iteration order, rects, and SHELL_CONTROL_DEPTH are byte-identical to the
+    // pre-seam push_combo_face loop (see the draw-list test). The open dropdown
+    // popup + shared scrollbar stay on `atlas` (4D).
+    let chrome = atlas.control_chrome();
     let open = shell.open_combo_dropdown.map(|dropdown| dropdown.id);
-    push_combo_face(
+    let swatch_for =
+        |color_index: Option<usize>| color_index.map(|ci| house_color_tint(color_schemes, ci));
+    paint_control(
         out,
-        atlas,
-        color_schemes,
-        layout.rows.side_combos[0],
-        None,
-        open == Some(SkirmishComboId::Side(0)),
-        false,
-        SHELL_CONTROL_DEPTH,
+        &chrome,
+        ControlPaint::Combo {
+            rect: layout.rows.side_combos[0],
+            swatch: None,
+            open: open == Some(SkirmishComboId::Side(0)),
+            disabled: false,
+        },
     );
-    push_combo_face(
+    paint_control(
         out,
-        atlas,
-        color_schemes,
-        layout.color_combos[0],
-        Some(shell.player_color_index),
-        open == Some(SkirmishComboId::Color(0)),
-        false,
-        SHELL_CONTROL_DEPTH,
+        &chrome,
+        ControlPaint::Combo {
+            rect: layout.color_combos[0],
+            swatch: swatch_for(Some(shell.player_color_index)),
+            open: open == Some(SkirmishComboId::Color(0)),
+            disabled: false,
+        },
     );
-    push_combo_face(
+    paint_control(
         out,
-        atlas,
-        color_schemes,
-        layout.rows.start_combos[0],
-        None,
-        open == Some(SkirmishComboId::Start(0)),
-        false,
-        SHELL_CONTROL_DEPTH,
+        &chrome,
+        ControlPaint::Combo {
+            rect: layout.rows.start_combos[0],
+            swatch: None,
+            open: open == Some(SkirmishComboId::Start(0)),
+            disabled: false,
+        },
     );
-    push_combo_face(
+    paint_control(
         out,
-        atlas,
-        color_schemes,
-        layout.rows.team_combos[0],
-        None,
-        open == Some(SkirmishComboId::Team(0)),
-        false,
-        SHELL_CONTROL_DEPTH,
+        &chrome,
+        ControlPaint::Combo {
+            rect: layout.rows.team_combos[0],
+            swatch: None,
+            open: open == Some(SkirmishComboId::Team(0)),
+            disabled: false,
+        },
     );
 
     for (idx, opponent) in shell.opponents.iter().enumerate() {
@@ -460,56 +482,56 @@ pub(super) fn push_combo_instances(
             break;
         }
         let row = idx + 1;
-        push_combo_face(
+        paint_control(
             out,
-            atlas,
-            color_schemes,
-            layout.rows.ai_type_combos[idx],
-            None,
-            open == Some(SkirmishComboId::AiType(idx)),
-            false,
-            SHELL_CONTROL_DEPTH,
+            &chrome,
+            ControlPaint::Combo {
+                rect: layout.rows.ai_type_combos[idx],
+                swatch: None,
+                open: open == Some(SkirmishComboId::AiType(idx)),
+                disabled: false,
+            },
         );
         let sibling_disabled = !opponent.is_active();
-        push_combo_face(
+        paint_control(
             out,
-            atlas,
-            color_schemes,
-            layout.rows.side_combos[row],
-            None,
-            open == Some(SkirmishComboId::Side(row)),
-            sibling_disabled,
-            SHELL_CONTROL_DEPTH,
+            &chrome,
+            ControlPaint::Combo {
+                rect: layout.rows.side_combos[row],
+                swatch: None,
+                open: open == Some(SkirmishComboId::Side(row)),
+                disabled: sibling_disabled,
+            },
         );
-        push_combo_face(
+        paint_control(
             out,
-            atlas,
-            color_schemes,
-            layout.color_combos[row],
-            (!sibling_disabled).then_some(opponent.color_index),
-            open == Some(SkirmishComboId::Color(row)),
-            sibling_disabled,
-            SHELL_CONTROL_DEPTH,
+            &chrome,
+            ControlPaint::Combo {
+                rect: layout.color_combos[row],
+                swatch: swatch_for((!sibling_disabled).then_some(opponent.color_index)),
+                open: open == Some(SkirmishComboId::Color(row)),
+                disabled: sibling_disabled,
+            },
         );
-        push_combo_face(
+        paint_control(
             out,
-            atlas,
-            color_schemes,
-            layout.rows.start_combos[row],
-            None,
-            open == Some(SkirmishComboId::Start(row)),
-            sibling_disabled,
-            SHELL_CONTROL_DEPTH,
+            &chrome,
+            ControlPaint::Combo {
+                rect: layout.rows.start_combos[row],
+                swatch: None,
+                open: open == Some(SkirmishComboId::Start(row)),
+                disabled: sibling_disabled,
+            },
         );
-        push_combo_face(
+        paint_control(
             out,
-            atlas,
-            color_schemes,
-            layout.rows.team_combos[row],
-            None,
-            open == Some(SkirmishComboId::Team(row)),
-            sibling_disabled,
-            SHELL_CONTROL_DEPTH,
+            &chrome,
+            ControlPaint::Combo {
+                rect: layout.rows.team_combos[row],
+                swatch: None,
+                open: open == Some(SkirmishComboId::Team(row)),
+                disabled: sibling_disabled,
+            },
         );
     }
 }
@@ -808,6 +830,158 @@ mod tests {
             &mut empty,
             &ControlChrome::default(),
             ControlPaint::Trackbar { rect, thumb_px: 0 },
+        );
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn combo_face_paint_seam_emits_face_swatch_arrow() {
+        // Draw-list assertion (Slice 4 §1.4): the collapsed combo seam emits face
+        // glyph → swatch (color faces only) → arrow variant, in the exact
+        // order/positions/depths of the pre-seam push_combo_face emitter, across the
+        // four face shapes — (a) color open, (b) color closed, (c) plain, (d)
+        // disabled. Geometry is pinned via the same layout helpers the emitter uses.
+        let face = SkirmishShellChromeEntry {
+            uv_origin: [0.01, 0.02],
+            uv_size: [0.03, 0.04],
+            pixel_size: [150.0, 24.0],
+        };
+        let white = SkirmishShellChromeEntry {
+            uv_origin: [0.11, 0.12],
+            uv_size: [0.13, 0.14],
+            pixel_size: [1.0, 1.0],
+        };
+        let arrow_released = SkirmishShellChromeEntry {
+            uv_origin: [0.21, 0.22],
+            uv_size: [0.23, 0.24],
+            pixel_size: [16.0, 16.0],
+        };
+        let arrow_pressed = SkirmishShellChromeEntry {
+            uv_origin: [0.31, 0.32],
+            uv_size: [0.33, 0.34],
+            pixel_size: [16.0, 16.0],
+        };
+        let arrow_gray_released = SkirmishShellChromeEntry {
+            uv_origin: [0.41, 0.42],
+            uv_size: [0.43, 0.44],
+            pixel_size: [16.0, 16.0],
+        };
+        let arrow_gray_pressed = SkirmishShellChromeEntry {
+            uv_origin: [0.51, 0.52],
+            uv_size: [0.53, 0.54],
+            pixel_size: [16.0, 16.0],
+        };
+        let chrome = ControlChrome {
+            combo_face_150: Some(face),
+            white_pixel: Some(white),
+            combo_arrow_down_released: Some(arrow_released),
+            combo_arrow_down_pressed: Some(arrow_pressed),
+            combo_arrow_down_gray_released: Some(arrow_gray_released),
+            combo_arrow_down_gray_pressed: Some(arrow_gray_pressed),
+            ..Default::default()
+        };
+        // w=150 selects combo_face_150 via combo_face_entry.
+        let rect = RectPx::new(176, 100, 150, 24);
+        let face_rect = combo_face_rect(rect);
+        let swatch_rect = combo_swatch_rect(rect);
+        let arrow_rect = combo_arrow_rect(rect);
+        let tint = [0.25, 0.5, 0.75];
+
+        let assert_face = |inst: &SpriteInstance| {
+            assert_eq!(inst.position, [face_rect.x as f32, face_rect.y as f32]);
+            assert_eq!(inst.size, [face_rect.w as f32, face_rect.h as f32]);
+            assert_eq!(inst.uv_origin, face.uv_origin);
+            assert_eq!(inst.depth, SHELL_CONTROL_DEPTH);
+        };
+        let assert_arrow = |inst: &SpriteInstance, entry: SkirmishShellChromeEntry| {
+            assert_eq!(inst.position, [arrow_rect.x as f32, arrow_rect.y as f32]);
+            assert_eq!(inst.size, entry.pixel_size);
+            assert_eq!(inst.uv_origin, entry.uv_origin);
+            assert_eq!(inst.depth, SHELL_CONTROL_DEPTH - 0.00001);
+        };
+
+        // (a) color face open: face → swatch → pressed arrow.
+        let mut a = Vec::new();
+        paint_control(
+            &mut a,
+            &chrome,
+            ControlPaint::Combo {
+                rect,
+                swatch: Some(tint),
+                open: true,
+                disabled: false,
+            },
+        );
+        assert_eq!(a.len(), 3, "face + swatch + arrow");
+        assert_face(&a[0]);
+        assert_eq!(a[1].position, [swatch_rect.x as f32, swatch_rect.y as f32]);
+        assert_eq!(a[1].size, [swatch_rect.w as f32, swatch_rect.h as f32]);
+        assert_eq!(a[1].uv_origin, white.uv_origin);
+        assert_eq!(a[1].tint, tint);
+        assert_eq!(a[1].depth, SHELL_SWATCH_DEPTH);
+        assert_arrow(&a[2], arrow_pressed);
+
+        // (b) color face closed: face → swatch → released arrow.
+        let mut b = Vec::new();
+        paint_control(
+            &mut b,
+            &chrome,
+            ControlPaint::Combo {
+                rect,
+                swatch: Some(tint),
+                open: false,
+                disabled: false,
+            },
+        );
+        assert_eq!(b.len(), 3);
+        assert_face(&b[0]);
+        assert_eq!(b[1].tint, tint);
+        assert_eq!(b[1].depth, SHELL_SWATCH_DEPTH);
+        assert_arrow(&b[2], arrow_released);
+
+        // (c) plain face (no swatch): face → released arrow.
+        let mut c = Vec::new();
+        paint_control(
+            &mut c,
+            &chrome,
+            ControlPaint::Combo {
+                rect,
+                swatch: None,
+                open: false,
+                disabled: false,
+            },
+        );
+        assert_eq!(c.len(), 2, "face + arrow, no swatch");
+        assert_face(&c[0]);
+        assert_arrow(&c[1], arrow_released);
+
+        // (d) disabled face (no swatch): face → gray released arrow.
+        let mut d = Vec::new();
+        paint_control(
+            &mut d,
+            &chrome,
+            ControlPaint::Combo {
+                rect,
+                swatch: None,
+                open: false,
+                disabled: true,
+            },
+        );
+        assert_eq!(d.len(), 2);
+        assert_face(&d[0]);
+        assert_arrow(&d[1], arrow_gray_released);
+
+        // Empty chrome (no glyphs) → nothing emitted.
+        let mut empty = Vec::new();
+        paint_control(
+            &mut empty,
+            &ControlChrome::default(),
+            ControlPaint::Combo {
+                rect,
+                swatch: Some(tint),
+                open: true,
+                disabled: false,
+            },
         );
         assert!(empty.is_empty());
     }
