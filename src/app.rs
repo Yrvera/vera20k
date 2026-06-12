@@ -1032,54 +1032,16 @@ impl App {
             modal.pressed_button = Some(button);
             Self::play_main_menu_button_sound(state);
             return true;
-        } else {
-            let mode_row_count = modal.mode_row_count(&state.skirmish_modes);
-            let map_row_count = modal.map_row_count();
-            if Self::handle_choose_map_listbox_scrollbar_mouse_down(
-                modal,
-                crate::ui::skirmish_shell::ChooseMapListboxId::Mode0x6eb,
-                layout.mode_list,
-                mode_row_count,
-                x,
-                y,
-            ) {
-                return true;
-            } else if Self::handle_choose_map_listbox_scrollbar_mouse_down(
-                modal,
-                crate::ui::skirmish_shell::ChooseMapListboxId::Map0x553,
-                layout.map_list,
-                map_row_count,
-                x,
-                y,
-            ) {
-                return true;
-            } else if let Some(mode_idx) = crate::ui::skirmish_shell::choose_map_listbox_row_at(
-                layout.mode_list,
-                mode_row_count,
-                modal.mode_top_index,
-                x,
-                y,
-            ) {
-                if let Some(mode) = state.skirmish_modes.get(mode_idx) {
-                    modal.select_mode(
-                        mode.id,
-                        &state.skirmish_modes,
-                        &state.skirmish_scenario_records,
-                    );
-                }
-                return true;
-            } else if let Some(filtered_idx) = crate::ui::skirmish_shell::choose_map_listbox_row_at(
-                layout.map_list,
-                map_row_count,
-                modal.map_top_index,
-                x,
-                y,
-            ) {
-                modal.select_map_filtered_row(filtered_idx);
-                return true;
-            }
         }
-
+        if modal.handle_listbox_mouse_down(
+            &layout,
+            &state.skirmish_modes,
+            &state.skirmish_scenario_records,
+            x,
+            y,
+        ) {
+            return true;
+        }
         layout.dialog.contains(x, y)
     }
 
@@ -1122,88 +1084,14 @@ impl App {
         true
     }
 
-    fn handle_choose_map_listbox_scrollbar_mouse_down(
-        modal: &mut crate::ui::skirmish_shell::ChooseMapModalState,
-        id: crate::ui::skirmish_shell::ChooseMapListboxId,
-        list: crate::ui::skirmish_shell::RectPx,
-        row_count: usize,
-        x: i32,
-        y: i32,
-    ) -> bool {
-        let Some(scrollbar) =
-            crate::ui::skirmish_shell::choose_map_listbox_scrollbar_rect(row_count, list)
-        else {
-            return false;
-        };
-        if !scrollbar.contains(x, y) {
-            return false;
-        }
-
-        let visible_rows = crate::ui::skirmish_shell::choose_map_listbox_visible_row_count(list);
-        if y < scrollbar.y + crate::ui::skirmish_shell::COMBO_DROPDOWN_SCROLLBAR_BUTTON_H {
-            modal.scroll_listbox_by_rows(id, row_count, visible_rows, -1);
-            return true;
-        }
-        if y >= scrollbar.y + scrollbar.h
-            - crate::ui::skirmish_shell::COMBO_DROPDOWN_SCROLLBAR_BUTTON_H
-        {
-            modal.scroll_listbox_by_rows(id, row_count, visible_rows, 1);
-            return true;
-        }
-        if let Some(thumb) = crate::ui::skirmish_shell::choose_map_listbox_scroll_thumb_rect(
-            row_count,
-            modal.top_index(id),
-            list,
-        ) {
-            if thumb.contains(x, y) {
-                return true;
-            }
-            if let Some(top_index) =
-                crate::ui::skirmish_shell::choose_map_listbox_top_index_from_track_click(
-                    row_count,
-                    modal.top_index(id),
-                    list,
-                    y,
-                )
-            {
-                modal.set_top_index_clamped(id, row_count, visible_rows, top_index);
-            }
-        }
-        true
-    }
-
     fn handle_choose_map_modal_mouse_wheel(state: &mut AppState, lines: f32) -> bool {
         let layout = Self::skirmish_choose_map_layout(state);
         let x = state.cursor_x.round() as i32;
         let y = state.cursor_y.round() as i32;
-        let id = if layout.map_list.contains(x, y) {
-            crate::ui::skirmish_shell::ChooseMapListboxId::Map0x553
-        } else if layout.mode_list.contains(x, y) {
-            crate::ui::skirmish_shell::ChooseMapListboxId::Mode0x6eb
-        } else {
-            return true;
-        };
-        if lines == 0.0 {
-            return true;
-        }
-        let rows = if lines > 0.0 {
-            -(lines.abs().ceil().max(1.0) as i32)
-        } else {
-            lines.abs().ceil().max(1.0) as i32
-        };
-        let list = crate::ui::skirmish_shell::choose_map_listbox_rect(&layout, id);
-        let visible_rows = crate::ui::skirmish_shell::choose_map_listbox_visible_row_count(list);
         let Some(modal) = state.skirmish_shell_state.choose_map_modal.as_mut() else {
             return false;
         };
-        let row_count = match id {
-            crate::ui::skirmish_shell::ChooseMapListboxId::Mode0x6eb => {
-                modal.mode_row_count(&state.skirmish_modes)
-            }
-            crate::ui::skirmish_shell::ChooseMapListboxId::Map0x553 => modal.map_row_count(),
-        };
-        modal.scroll_listbox_by_rows(id, row_count, visible_rows, rows);
-        true
+        modal.handle_listbox_wheel(&layout, &state.skirmish_modes, x, y, lines)
     }
 
     fn sync_player_name_edit_scroll(state: &mut AppState) {
