@@ -22,7 +22,8 @@ use crate::ui::skirmish_shell::{
 };
 
 use super::chrome::{
-    push_entry, push_entry_native, push_ownerdraw_two_pixel_bevel_frame, push_solid_rect,
+    push_entry, push_entry_native, push_ownerdraw_two_pixel_bevel_frame,
+    push_ownerdraw_two_pixel_bevel_frame_px, push_solid_rect, push_solid_rect_px,
     push_tinted_entry,
 };
 use super::{
@@ -135,77 +136,31 @@ pub(super) fn push_player_name_edit_instances(
 
 pub(super) fn push_scrollbar_thumb(
     out: &mut Vec<SpriteInstance>,
-    atlas: &SkirmishShellChromeAtlas,
+    chrome: &ControlChrome,
     rect: RectPx,
     depth: f32,
 ) {
-    let top_h = atlas
+    let top_h = chrome
         .scrollbar_thumb_top
         .map(|entry| entry.pixel_size[1].round() as i32)
         .unwrap_or(0);
-    let bottom_h = atlas
+    let bottom_h = chrome
         .scrollbar_thumb_bottom
         .map(|entry| entry.pixel_size[1].round() as i32)
         .unwrap_or(0);
-    if let Some(top) = atlas.scrollbar_thumb_top {
+    if let Some(top) = chrome.scrollbar_thumb_top {
         push_entry_native(out, top, rect.x, rect.y, depth);
     }
-    if let Some(bottom) = atlas.scrollbar_thumb_bottom {
+    if let Some(bottom) = chrome.scrollbar_thumb_bottom {
         push_entry_native(out, bottom, rect.x, rect.y + rect.h - bottom_h, depth);
     }
-    if let Some(mid) = atlas.scrollbar_thumb_mid {
+    if let Some(mid) = chrome.scrollbar_thumb_mid {
         let mid_y = rect.y + top_h;
         let mid_h = rect.h - top_h - bottom_h;
         if mid_h > 0 {
             push_entry(out, mid, RectPx::new(rect.x, mid_y, rect.w, mid_h), depth);
         }
     }
-}
-
-pub(super) fn push_dropdown_scrollbar_instances(
-    out: &mut Vec<SpriteInstance>,
-    atlas: &SkirmishShellChromeAtlas,
-    scrollbar: RectPx,
-    thumb: RectPx,
-    pressed_part: Option<DropdownScrollbarPart>,
-) {
-    push_solid_rect(
-        out,
-        atlas,
-        scrollbar,
-        SHELL_SCROLLBAR_TRACK_RGB_PENDING_SCROLLBAR_SOURCE_CAPTURE,
-        SHELL_DROPDOWN_DEPTH - 0.00004,
-    );
-    let up_entry = scrollbar_arrow_entry(
-        atlas.scrollbar_arrow_up_released,
-        atlas.scrollbar_arrow_up_pressed,
-        pressed_part == Some(DropdownScrollbarPart::UpArrow),
-    );
-    if let Some(up) = up_entry {
-        push_entry_native(
-            out,
-            up,
-            scrollbar.x,
-            scrollbar.y,
-            SHELL_DROPDOWN_DEPTH - 0.00005,
-        );
-    }
-    let down_entry = scrollbar_arrow_entry(
-        atlas.scrollbar_arrow_down_released,
-        atlas.scrollbar_arrow_down_pressed,
-        pressed_part == Some(DropdownScrollbarPart::DownArrow),
-    );
-    if let Some(down) = down_entry {
-        push_entry_native(
-            out,
-            down,
-            scrollbar.x,
-            scrollbar.y + scrollbar.h - COMBO_DROPDOWN_SCROLLBAR_BUTTON_H,
-            SHELL_DROPDOWN_DEPTH - 0.00005,
-        );
-    }
-    push_scrollbar_thumb(out, atlas, thumb, SHELL_DROPDOWN_DEPTH - 0.00006);
-    push_ownerdraw_two_pixel_bevel_frame(out, atlas, scrollbar, SHELL_DROPDOWN_DEPTH - 0.00007);
 }
 
 pub(super) fn scrollbar_arrow_entry(
@@ -283,7 +238,7 @@ pub(super) fn trackbar_rect_for_id(layout: &SkirmishShellLayout, id: SkirmishTra
 /// layout live here (`render/` must not depend on the app layer, so the seam can't
 /// sit in `render/shell_paint.rs` as the original draft assumed). 4A lands
 /// `Checkbox`; 4B adds `Trackbar`; 4C adds the collapsed `Combo` face; 4D adds the
-/// listbox/scrollbar arms.
+/// shared `ScrollBar` (combo dropdown + choose-map listbox); later steps add listbox arms.
 pub(super) enum ControlPaint {
     Checkbox { checked: bool, rect: RectPx },
     Trackbar { rect: RectPx, thumb_px: i32 },
@@ -292,6 +247,11 @@ pub(super) enum ControlPaint {
         swatch: Option<[f32; 3]>,
         open: bool,
         disabled: bool,
+    },
+    ScrollBar {
+        scrollbar: RectPx,
+        thumb: RectPx,
+        pressed_part: Option<DropdownScrollbarPart>,
     },
 }
 
@@ -366,6 +326,58 @@ pub(super) fn paint_control(
                     SHELL_CONTROL_DEPTH - 0.00001,
                 );
             }
+        }
+        ControlPaint::ScrollBar {
+            scrollbar,
+            thumb,
+            pressed_part,
+        } => {
+            // Byte-for-byte the pre-seam push_dropdown_scrollbar_instances: track fill
+            // → up arrow → down arrow → thumb(top/mid/bottom) → bevel frame, at the
+            // hardcoded SHELL_DROPDOWN_DEPTH offsets the shared emitter used for BOTH
+            // the combo popup and the choose-map listbox.
+            push_solid_rect_px(
+                out,
+                chrome.white_pixel,
+                scrollbar,
+                SHELL_SCROLLBAR_TRACK_RGB_PENDING_SCROLLBAR_SOURCE_CAPTURE,
+                SHELL_DROPDOWN_DEPTH - 0.00004,
+            );
+            let up_entry = scrollbar_arrow_entry(
+                chrome.scrollbar_arrow_up_released,
+                chrome.scrollbar_arrow_up_pressed,
+                pressed_part == Some(DropdownScrollbarPart::UpArrow),
+            );
+            if let Some(up) = up_entry {
+                push_entry_native(
+                    out,
+                    up,
+                    scrollbar.x,
+                    scrollbar.y,
+                    SHELL_DROPDOWN_DEPTH - 0.00005,
+                );
+            }
+            let down_entry = scrollbar_arrow_entry(
+                chrome.scrollbar_arrow_down_released,
+                chrome.scrollbar_arrow_down_pressed,
+                pressed_part == Some(DropdownScrollbarPart::DownArrow),
+            );
+            if let Some(down) = down_entry {
+                push_entry_native(
+                    out,
+                    down,
+                    scrollbar.x,
+                    scrollbar.y + scrollbar.h - COMBO_DROPDOWN_SCROLLBAR_BUTTON_H,
+                    SHELL_DROPDOWN_DEPTH - 0.00005,
+                );
+            }
+            push_scrollbar_thumb(out, chrome, thumb, SHELL_DROPDOWN_DEPTH - 0.00006);
+            push_ownerdraw_two_pixel_bevel_frame_px(
+                out,
+                chrome.white_pixel,
+                scrollbar,
+                SHELL_DROPDOWN_DEPTH - 0.00007,
+            );
         }
     }
 }
@@ -598,7 +610,16 @@ pub(super) fn push_dropdown_instances(
                 .dropdown_scroll_press
                 .filter(|pressed| pressed.id == open.id)
                 .map(|pressed| pressed.part);
-            push_dropdown_scrollbar_instances(out, atlas, scrollbar, thumb, pressed_part);
+            let chrome = atlas.control_chrome();
+            paint_control(
+                out,
+                &chrome,
+                ControlPaint::ScrollBar {
+                    scrollbar,
+                    thumb,
+                    pressed_part,
+                },
+            );
         }
     }
     push_ownerdraw_two_pixel_bevel_frame(out, atlas, dropdown, SHELL_DROPDOWN_DEPTH - 0.00003);
@@ -987,6 +1008,170 @@ mod tests {
     }
 
     #[test]
+    fn scrollbar_paint_seam_emits_track_arrows_thumb_bevel() {
+        // Draw-list assertion (Slice 4 §1.4): the ScrollBar arm reproduces the
+        // pre-seam push_dropdown_scrollbar_instances sequence — track fill →
+        // up arrow → down arrow → thumb(top/bottom/mid) → 2-ring bevel frame — at
+        // the hardcoded SHELL_DROPDOWN_DEPTH offsets, for both pressed states.
+        let white = SkirmishShellChromeEntry {
+            uv_origin: [0.01, 0.02],
+            uv_size: [0.03, 0.04],
+            pixel_size: [1.0, 1.0],
+        };
+        let up_r = SkirmishShellChromeEntry {
+            uv_origin: [0.11, 0.12],
+            uv_size: [0.13, 0.14],
+            pixel_size: [20.0, 22.0],
+        };
+        let up_p = SkirmishShellChromeEntry {
+            uv_origin: [0.21, 0.22],
+            uv_size: [0.23, 0.24],
+            pixel_size: [20.0, 22.0],
+        };
+        let dn_r = SkirmishShellChromeEntry {
+            uv_origin: [0.31, 0.32],
+            uv_size: [0.33, 0.34],
+            pixel_size: [20.0, 22.0],
+        };
+        let dn_p = SkirmishShellChromeEntry {
+            uv_origin: [0.41, 0.42],
+            uv_size: [0.43, 0.44],
+            pixel_size: [20.0, 22.0],
+        };
+        let th_t = SkirmishShellChromeEntry {
+            uv_origin: [0.51, 0.52],
+            uv_size: [0.53, 0.54],
+            pixel_size: [20.0, 6.0],
+        };
+        let th_m = SkirmishShellChromeEntry {
+            uv_origin: [0.61, 0.62],
+            uv_size: [0.63, 0.64],
+            pixel_size: [20.0, 4.0],
+        };
+        let th_b = SkirmishShellChromeEntry {
+            uv_origin: [0.71, 0.72],
+            uv_size: [0.73, 0.74],
+            pixel_size: [20.0, 6.0],
+        };
+        let chrome = ControlChrome {
+            white_pixel: Some(white),
+            scrollbar_arrow_up_released: Some(up_r),
+            scrollbar_arrow_up_pressed: Some(up_p),
+            scrollbar_arrow_down_released: Some(dn_r),
+            scrollbar_arrow_down_pressed: Some(dn_p),
+            scrollbar_thumb_top: Some(th_t),
+            scrollbar_thumb_mid: Some(th_m),
+            scrollbar_thumb_bottom: Some(th_b),
+            ..Default::default()
+        };
+        // scrollbar tall enough for top+bottom thumb caps + a positive mid span.
+        let scrollbar = RectPx::new(300, 100, 20, 120);
+        let thumb = RectPx::new(300, 144, 20, 30);
+
+        // Default (no pressed part): both arrows show the RELEASED glyph.
+        let mut out = Vec::new();
+        paint_control(
+            &mut out,
+            &chrome,
+            ControlPaint::ScrollBar {
+                scrollbar,
+                thumb,
+                pressed_part: None,
+            },
+        );
+        // track(1) + up(1) + down(1) + thumb top/bottom/mid(3) + 2 bevel rings × 4
+        // edges each (each ring: top/left/bottom/right solid rects) = 8.
+        assert_eq!(out.len(), 14, "track + 2 arrows + 3 thumb + 8 bevel edges");
+
+        // 0: track fill — white pixel tinted, scrollbar rect, DEPTH-0.00004.
+        assert_eq!(out[0].position, [scrollbar.x as f32, scrollbar.y as f32]);
+        assert_eq!(out[0].size, [scrollbar.w as f32, scrollbar.h as f32]);
+        assert_eq!(out[0].uv_origin, white.uv_origin);
+        assert_eq!(out[0].depth, SHELL_DROPDOWN_DEPTH - 0.00004);
+
+        // 1: up arrow — released, native at scrollbar origin, DEPTH-0.00005.
+        assert_eq!(out[1].position, [scrollbar.x as f32, scrollbar.y as f32]);
+        assert_eq!(out[1].uv_origin, up_r.uv_origin);
+        assert_eq!(out[1].depth, SHELL_DROPDOWN_DEPTH - 0.00005);
+
+        // 2: down arrow — released, native at the bottom button slot, DEPTH-0.00005.
+        assert_eq!(
+            out[2].position,
+            [
+                scrollbar.x as f32,
+                (scrollbar.y + scrollbar.h - COMBO_DROPDOWN_SCROLLBAR_BUTTON_H) as f32
+            ]
+        );
+        assert_eq!(out[2].uv_origin, dn_r.uv_origin);
+        assert_eq!(out[2].depth, SHELL_DROPDOWN_DEPTH - 0.00005);
+
+        // 3: thumb top — native at thumb origin, DEPTH-0.00006.
+        assert_eq!(out[3].position, [thumb.x as f32, thumb.y as f32]);
+        assert_eq!(out[3].uv_origin, th_t.uv_origin);
+        assert_eq!(out[3].depth, SHELL_DROPDOWN_DEPTH - 0.00006);
+
+        // 4: thumb bottom — native, bottom-aligned in the thumb rect.
+        let bottom_h = th_b.pixel_size[1].round() as i32;
+        assert_eq!(
+            out[4].position,
+            [thumb.x as f32, (thumb.y + thumb.h - bottom_h) as f32]
+        );
+        assert_eq!(out[4].uv_origin, th_b.uv_origin);
+
+        // 5: thumb mid — stretched between caps.
+        let top_h = th_t.pixel_size[1].round() as i32;
+        assert_eq!(out[5].position, [thumb.x as f32, (thumb.y + top_h) as f32]);
+        assert_eq!(
+            out[5].size,
+            [thumb.w as f32, (thumb.h - top_h - bottom_h) as f32]
+        );
+        assert_eq!(out[5].uv_origin, th_m.uv_origin);
+
+        // 6..10: outer bevel ring (4 edges) at DEPTH-0.00007; 10..14: inner ring at -0.00008.
+        for inst in &out[6..10] {
+            assert_eq!(
+                inst.depth,
+                SHELL_DROPDOWN_DEPTH - 0.00007,
+                "outer bevel ring depth"
+            );
+        }
+        for inst in &out[10..14] {
+            assert_eq!(
+                inst.depth,
+                SHELL_DROPDOWN_DEPTH - 0.00007 - 0.00001,
+                "inner bevel ring depth"
+            );
+        }
+
+        // Pressed up-arrow swaps ONLY the up glyph to the pressed uv.
+        let mut pressed = Vec::new();
+        paint_control(
+            &mut pressed,
+            &chrome,
+            ControlPaint::ScrollBar {
+                scrollbar,
+                thumb,
+                pressed_part: Some(DropdownScrollbarPart::UpArrow),
+            },
+        );
+        assert_eq!(pressed[1].uv_origin, up_p.uv_origin);
+        assert_eq!(pressed[2].uv_origin, dn_r.uv_origin);
+
+        // Empty chrome → nothing emitted.
+        let mut empty = Vec::new();
+        paint_control(
+            &mut empty,
+            &ControlChrome::default(),
+            ControlPaint::ScrollBar {
+                scrollbar,
+                thumb,
+                pressed_part: None,
+            },
+        );
+        assert!(empty.is_empty());
+    }
+
+    #[test]
     fn checkbox_icon_rect_right_edge_is_half_open() {
         // The toggle keys off the 18x18 icon rect via RectPx::contains
         // (half-open): the last interior px (icon.x+17) HITS, the right edge
@@ -994,7 +1179,13 @@ mod tests {
         let rect = RectPx::new(71, 286, 150, 16);
         let icon = checkbox_icon_rect(rect);
         assert_eq!(icon.w, 18, "C-Checkbox icon width is 18px");
-        assert!(icon.contains(icon.x + icon.w - 1, icon.y), "last interior px hits");
-        assert!(!icon.contains(icon.x + icon.w, icon.y), "right edge (x+18) misses");
+        assert!(
+            icon.contains(icon.x + icon.w - 1, icon.y),
+            "last interior px hits"
+        );
+        assert!(
+            !icon.contains(icon.x + icon.w, icon.y),
+            "right edge (x+18) misses"
+        );
     }
 }

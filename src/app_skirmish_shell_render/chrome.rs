@@ -396,6 +396,19 @@ pub(super) fn push_tinted_entry(
     });
 }
 
+pub(super) fn push_solid_rect_px(
+    out: &mut Vec<SpriteInstance>,
+    white_pixel: Option<SkirmishShellChromeEntry>,
+    rect: RectPx,
+    tint: [f32; 3],
+    depth: f32,
+) {
+    let Some(pixel) = white_pixel else {
+        return;
+    };
+    push_tinted_entry(out, pixel, rect, tint, depth);
+}
+
 pub(super) fn push_solid_rect(
     out: &mut Vec<SpriteInstance>,
     atlas: &SkirmishShellChromeAtlas,
@@ -403,10 +416,7 @@ pub(super) fn push_solid_rect(
     tint: [f32; 3],
     depth: f32,
 ) {
-    let Some(pixel) = atlas.white_pixel else {
-        return;
-    };
-    push_tinted_entry(out, pixel, rect, tint, depth);
+    push_solid_rect_px(out, atlas.white_pixel, rect, tint, depth);
 }
 
 pub(super) fn push_rect_outline(
@@ -449,9 +459,9 @@ pub(super) fn push_rect_outline(
     );
 }
 
-pub(super) fn push_bevel_ring(
+pub(super) fn push_bevel_ring_px(
     out: &mut Vec<SpriteInstance>,
-    atlas: &SkirmishShellChromeAtlas,
+    white_pixel: Option<SkirmishShellChromeEntry>,
     rect: RectPx,
     top_left_tint: [f32; 3],
     bottom_right_tint: [f32; 3],
@@ -460,36 +470,80 @@ pub(super) fn push_bevel_ring(
     if rect.w <= 0 || rect.h <= 0 {
         return;
     }
-    push_solid_rect(
+    push_solid_rect_px(
         out,
-        atlas,
+        white_pixel,
         RectPx::new(rect.x, rect.y, rect.w, 1),
         top_left_tint,
         depth,
     );
     if rect.h > 1 {
-        push_solid_rect(
+        push_solid_rect_px(
             out,
-            atlas,
+            white_pixel,
             RectPx::new(rect.x, rect.y + 1, 1, rect.h - 1),
             top_left_tint,
             depth,
         );
     }
-    push_solid_rect(
+    push_solid_rect_px(
         out,
-        atlas,
+        white_pixel,
         RectPx::new(rect.x, rect.y + rect.h - 1, rect.w, 1),
         bottom_right_tint,
         depth,
     );
     if rect.w > 1 && rect.h > 2 {
-        push_solid_rect(
+        push_solid_rect_px(
             out,
-            atlas,
+            white_pixel,
             RectPx::new(rect.x + rect.w - 1, rect.y + 1, 1, rect.h - 2),
             bottom_right_tint,
             depth,
+        );
+    }
+}
+
+pub(super) fn push_bevel_ring(
+    out: &mut Vec<SpriteInstance>,
+    atlas: &SkirmishShellChromeAtlas,
+    rect: RectPx,
+    top_left_tint: [f32; 3],
+    bottom_right_tint: [f32; 3],
+    depth: f32,
+) {
+    push_bevel_ring_px(
+        out,
+        atlas.white_pixel,
+        rect,
+        top_left_tint,
+        bottom_right_tint,
+        depth,
+    );
+}
+
+pub(super) fn push_ownerdraw_two_pixel_bevel_frame_px(
+    out: &mut Vec<SpriteInstance>,
+    white_pixel: Option<SkirmishShellChromeEntry>,
+    rect: RectPx,
+    depth: f32,
+) {
+    push_bevel_ring_px(
+        out,
+        white_pixel,
+        rect,
+        OWNERDRAW_BEVEL_LIGHT_RGB_FROM_PACKED_00C5BEA7,
+        OWNERDRAW_BEVEL_DARK_RGB_FROM_PACKED_00807A68,
+        depth,
+    );
+    if rect.w > 2 && rect.h > 2 {
+        push_bevel_ring_px(
+            out,
+            white_pixel,
+            RectPx::new(rect.x + 1, rect.y + 1, rect.w - 2, rect.h - 2),
+            OWNERDRAW_BEVEL_DARK_RGB_FROM_PACKED_00807A68,
+            OWNERDRAW_BEVEL_LIGHT_RGB_FROM_PACKED_00C5BEA7,
+            depth - 0.00001,
         );
     }
 }
@@ -500,24 +554,7 @@ pub(super) fn push_ownerdraw_two_pixel_bevel_frame(
     rect: RectPx,
     depth: f32,
 ) {
-    push_bevel_ring(
-        out,
-        atlas,
-        rect,
-        OWNERDRAW_BEVEL_LIGHT_RGB_FROM_PACKED_00C5BEA7,
-        OWNERDRAW_BEVEL_DARK_RGB_FROM_PACKED_00807A68,
-        depth,
-    );
-    if rect.w > 2 && rect.h > 2 {
-        push_bevel_ring(
-            out,
-            atlas,
-            RectPx::new(rect.x + 1, rect.y + 1, rect.w - 2, rect.h - 2),
-            OWNERDRAW_BEVEL_DARK_RGB_FROM_PACKED_00807A68,
-            OWNERDRAW_BEVEL_LIGHT_RGB_FROM_PACKED_00C5BEA7,
-            depth - 0.00001,
-        );
-    }
+    push_ownerdraw_two_pixel_bevel_frame_px(out, atlas.white_pixel, rect, depth);
 }
 
 pub(super) fn parent_background_entry(

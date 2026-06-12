@@ -111,6 +111,13 @@ pub struct ControlChrome {
     pub combo_arrow_down_pressed: Option<SkirmishShellChromeEntry>,
     pub combo_arrow_down_gray_released: Option<SkirmishShellChromeEntry>,
     pub combo_arrow_down_gray_pressed: Option<SkirmishShellChromeEntry>,
+    pub scrollbar_arrow_up_released: Option<SkirmishShellChromeEntry>,
+    pub scrollbar_arrow_up_pressed: Option<SkirmishShellChromeEntry>,
+    pub scrollbar_arrow_down_released: Option<SkirmishShellChromeEntry>,
+    pub scrollbar_arrow_down_pressed: Option<SkirmishShellChromeEntry>,
+    pub scrollbar_thumb_top: Option<SkirmishShellChromeEntry>,
+    pub scrollbar_thumb_mid: Option<SkirmishShellChromeEntry>,
+    pub scrollbar_thumb_bottom: Option<SkirmishShellChromeEntry>,
 }
 
 impl SkirmishShellChromeAtlas {
@@ -134,6 +141,13 @@ impl SkirmishShellChromeAtlas {
             combo_arrow_down_pressed: self.combo_arrow_down_pressed,
             combo_arrow_down_gray_released: self.combo_arrow_down_gray_released,
             combo_arrow_down_gray_pressed: self.combo_arrow_down_gray_pressed,
+            scrollbar_arrow_up_released: self.scrollbar_arrow_up_released,
+            scrollbar_arrow_up_pressed: self.scrollbar_arrow_up_pressed,
+            scrollbar_arrow_down_released: self.scrollbar_arrow_down_released,
+            scrollbar_arrow_down_pressed: self.scrollbar_arrow_down_pressed,
+            scrollbar_thumb_top: self.scrollbar_thumb_top,
+            scrollbar_thumb_mid: self.scrollbar_thumb_mid,
+            scrollbar_thumb_bottom: self.scrollbar_thumb_bottom,
         }
     }
 }
