@@ -6,9 +6,9 @@ use crate::ui::main_menu::{SkirmishCountry, StartPosition};
 
 use super::super::layout::{
     COMBO_ARROW_RESERVE_W, COMBO_DROPDOWN_ROW_H, COMBO_DROPDOWN_SCROLLBAR_BUTTON_H,
-    COMBO_DROPDOWN_SCROLLBAR_MIN_THUMB_H, COMBO_DROPDOWN_SCROLLBAR_W, COMBO_FACE_H, RectPx,
-    SkirmishShellLayout, combo_face_rect,
+    COMBO_DROPDOWN_SCROLLBAR_W, COMBO_FACE_H, RectPx, SkirmishShellLayout, combo_face_rect,
 };
+use super::super::scroll::ScrollModel;
 use super::{
     DropdownScrollDragState, DropdownScrollbarPart, DropdownScrollbarPressState, OpenComboDropdown,
     SkirmishAiRowType, SkirmishComboId, SkirmishComboItem, SkirmishCountryChoice,
@@ -64,12 +64,7 @@ pub fn combo_dropdown_visible_row_count(
     id: SkirmishComboId,
 ) -> usize {
     let item_count = combo_items(state, maps, id).len();
-    let max_rows = combo_dropdown_max_visible_rows(id);
-    if max_rows > 0 {
-        item_count.min(max_rows as usize)
-    } else {
-        item_count
-    }
+    ScrollModel::combo(combo_dropdown_max_visible_rows(id)).visible_rows(item_count, 0)
 }
 
 fn combo_dropdown_item_count(
@@ -93,8 +88,9 @@ pub(super) fn combo_dropdown_max_top_index(
     maps: &[MapMenuEntry],
     id: SkirmishComboId,
 ) -> usize {
-    combo_dropdown_item_count(state, maps, id)
-        .saturating_sub(combo_dropdown_visible_row_count(state, maps, id))
+    let item_count = combo_dropdown_item_count(state, maps, id);
+    let visible_rows = combo_dropdown_visible_row_count(state, maps, id);
+    ScrollModel::combo(combo_dropdown_max_visible_rows(id)).max_top_index(item_count, visible_rows)
 }
 
 fn normal_color_index(color_index: usize) -> usize {
@@ -139,16 +135,6 @@ pub fn combo_dropdown_content_rect(
     ))
 }
 
-fn combo_dropdown_thumb_height(visible_rows: usize, item_count: usize, scrollbar_h: i32) -> i32 {
-    let track_h = (scrollbar_h - COMBO_DROPDOWN_SCROLLBAR_BUTTON_H * 2).max(1);
-    if item_count == 0 {
-        return track_h.max(COMBO_DROPDOWN_SCROLLBAR_MIN_THUMB_H);
-    }
-    ((track_h * visible_rows as i32) / item_count as i32)
-        .max(COMBO_DROPDOWN_SCROLLBAR_MIN_THUMB_H)
-        .min(track_h)
-}
-
 pub fn combo_dropdown_scroll_thumb_rect(
     state: &SkirmishShellState,
     layout: &SkirmishShellLayout,
@@ -156,23 +142,17 @@ pub fn combo_dropdown_scroll_thumb_rect(
     id: SkirmishComboId,
 ) -> Option<RectPx> {
     let scrollbar = combo_dropdown_scrollbar_rect(state, layout, maps, id)?;
+    let model = ScrollModel::combo(combo_dropdown_max_visible_rows(id));
     let visible_rows = combo_dropdown_visible_row_count(state, maps, id);
     let item_count = combo_dropdown_item_count(state, maps, id);
-    let thumb_h = combo_dropdown_thumb_height(visible_rows, item_count, scrollbar.h);
+    let thumb_h = model.thumb_height(visible_rows, item_count, scrollbar.h)?;
     let max_top = combo_dropdown_max_top_index(state, maps, id);
     let open_top = state
         .open_combo_dropdown
         .filter(|open| open.id == id)
         .map(|open| open.top_index.min(max_top))
         .unwrap_or(0);
-    let track_span = (scrollbar.h - COMBO_DROPDOWN_SCROLLBAR_BUTTON_H * 2 - thumb_h).max(1);
-    let thumb_y = scrollbar.y
-        + COMBO_DROPDOWN_SCROLLBAR_BUTTON_H
-        + if max_top == 0 {
-            0
-        } else {
-            (track_span * open_top as i32) / max_top as i32
-        };
+    let thumb_y = model.thumb_y(scrollbar, thumb_h, open_top, max_top);
     Some(RectPx::new(scrollbar.x, thumb_y, scrollbar.w, thumb_h))
 }
 
@@ -222,16 +202,8 @@ pub(super) fn top_index_from_thumb_y(
     let scrollbar = combo_dropdown_scrollbar_rect(state, layout, maps, id)?;
     let thumb = combo_dropdown_scroll_thumb_rect(state, layout, maps, id)?;
     let max_top = combo_dropdown_max_top_index(state, maps, id);
-    if max_top == 0 {
-        return Some(0);
-    }
-    let track_span = (scrollbar.h - COMBO_DROPDOWN_SCROLLBAR_BUTTON_H * 2 - thumb.h).max(1);
-    let thumb_top = (mouse_y - grab_offset_y).clamp(
-        scrollbar.y + COMBO_DROPDOWN_SCROLLBAR_BUTTON_H,
-        scrollbar.y + scrollbar.h - COMBO_DROPDOWN_SCROLLBAR_BUTTON_H - thumb.h,
-    );
-    let local = thumb_top - scrollbar.y - COMBO_DROPDOWN_SCROLLBAR_BUTTON_H;
-    Some(((local * max_top as i32 + track_span / 2) / track_span) as usize)
+    let model = ScrollModel::combo(combo_dropdown_max_visible_rows(id));
+    Some(model.top_index_from_thumb_top(scrollbar, thumb.h, max_top, mouse_y - grab_offset_y))
 }
 
 pub(super) fn top_index_from_scrollbar_track_click(
@@ -244,16 +216,8 @@ pub(super) fn top_index_from_scrollbar_track_click(
     let scrollbar = combo_dropdown_scrollbar_rect(state, layout, maps, id)?;
     let thumb = combo_dropdown_scroll_thumb_rect(state, layout, maps, id)?;
     let max_top = combo_dropdown_max_top_index(state, maps, id);
-    if max_top == 0 {
-        return Some(0);
-    }
-    let track_span = (scrollbar.h - COMBO_DROPDOWN_SCROLLBAR_BUTTON_H * 2 - thumb.h).max(1);
-    let thumb_top = (mouse_y - thumb.h / 2).clamp(
-        scrollbar.y + COMBO_DROPDOWN_SCROLLBAR_BUTTON_H,
-        scrollbar.y + scrollbar.h - COMBO_DROPDOWN_SCROLLBAR_BUTTON_H - thumb.h,
-    );
-    let local = thumb_top - scrollbar.y - COMBO_DROPDOWN_SCROLLBAR_BUTTON_H;
-    Some(((local * max_top as i32 + track_span / 2) / track_span) as usize)
+    let model = ScrollModel::combo(combo_dropdown_max_visible_rows(id));
+    Some(model.top_index_from_thumb_top(scrollbar, thumb.h, max_top, mouse_y - thumb.h / 2))
 }
 
 pub fn combo_items(
