@@ -498,6 +498,18 @@ pub struct GameEntity {
     /// affecting the lockstep hash. `#[serde(default)]` lets pre-Slice-6 saves load.
     #[serde(default)]
     pub mission: MissionCom,
+    /// Sim-side model of gamemd's TechnoClass `+0x308` (`DamageSparkSystem`): the
+    /// `session.tick` at which the live AI_Update damage-Spark particle system
+    /// expires and the object may roll again. `0` = no live system (may roll;
+    /// matches `+0x308 == NULL`); `u64::MAX` = a system whose `Lifetime <= 0`
+    /// holds indefinitely; otherwise the system is live while `session.tick <
+    /// live_until`. Set on a successful spark roll to `spawn_tick + sparkType.Lifetime`
+    /// (matching the spawned `ParticleSystemClass` decrementing once per tick), so
+    /// the per-object draw cadence stays bit-aligned with gamemd. Hashed (it gates
+    /// future `scenario_rng` draws). Dormant in stock YR — see
+    /// [`crate::rules::object_type::ObjectType::emits_damage_spark`].
+    #[serde(default)]
+    pub damage_particle_live_until: u64,
     /// Debug event log — records movement/state transitions for the inspector panel.
     /// Only allocated when debug inspector is active (X hotkey). Not included in state hashing.
     #[serde(skip)]
@@ -696,6 +708,7 @@ impl GameEntity {
             },
             rocking: None,
             mission: MissionCom::idle(),
+            damage_particle_live_until: 0,
             debug_log: None,
         }
     }

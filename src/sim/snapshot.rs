@@ -63,7 +63,12 @@ use crate::sim::world::Simulation;
 // (those scenarios don't exercise mid-tick non-miner retasking), but a pre-S4a save
 // replayed on S4a logic diverges on the first such tick, so cross-version restores
 // must be refused.
-const SNAPSHOT_VERSION: u32 = 24;
+// S4b: GameEntity gains the hashed `damage_particle_live_until` (`+0x308`-
+// equivalent) field, folded into the state hash, so 24→25 re-baselines. The new
+// field is zero for every entity in stock YR (the AI_Update spark gate is
+// Cyborg-only, with no stock users), so the only hash shift is the extra per-
+// entity zero in the fold — no behavior change to any committed golden scenario.
+const SNAPSHOT_VERSION: u32 = 25;
 
 /// Binary snapshot envelope — wraps the full `Simulation` state plus
 /// compatibility hashes for the map and rules that were active at save time.
@@ -411,12 +416,13 @@ mod tests {
 
     /// Concurrent-slice ladder: radiation took 20 -> 21, ScenarioSession (SC-2)
     /// took 21 -> 22, S3 (per-object pre-death facing read + idle-Guard authority)
-    /// took 22 -> 23, and the S4a authoritative flip (per-object mission commit
-    /// relocated to the AI host) took 23 -> 24. This pins it so a later accidental
-    /// bump is caught.
+    /// took 22 -> 23, the S4a authoritative flip (per-object mission commit
+    /// relocated to the AI host) took 23 -> 24, and S4b (the hashed
+    /// `damage_particle_live_until` `+0x308`-equivalent field) took 24 -> 25. This
+    /// pins it so a later accidental bump is caught.
     #[test]
-    fn snapshot_version_is_24() {
-        assert_eq!(super::SNAPSHOT_VERSION, 24);
+    fn snapshot_version_is_25() {
+        assert_eq!(super::SNAPSHOT_VERSION, 25);
     }
 
     /// `AttackTarget::for_cell` survives serialize → deserialize as the same

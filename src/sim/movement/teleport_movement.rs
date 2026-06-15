@@ -582,6 +582,7 @@ mod tests {
             natural_particle_location: glam::IVec3::ZERO,
             refinery_smoke_particle_system: None,
             damage_particle_systems: Vec::new(),
+            cyborg: false,
             destroy_particle_systems: Vec::new(),
             damage_smoke_offset: glam::IVec3::ZERO,
             dam_smk_off_scrn_rel: false,

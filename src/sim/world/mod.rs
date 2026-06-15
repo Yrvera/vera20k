@@ -2016,7 +2016,7 @@ impl Simulation {
         // skips them (no double-commit / double-count). Miners, passengers, dying
         // units, and non-Units fall to the tail.
         let mut host_dispatched: BTreeSet<u64> = BTreeSet::new();
-        let dispatch_trace = self.object_ai_stage(&mut host_dispatched);
+        let dispatch_trace = self.object_ai_stage(rules, &mut host_dispatched);
 
         // --- Phase 1: Ground movement ---
         // DEPENDS ON: commands (may set movement_target), entity positions from prior tick.

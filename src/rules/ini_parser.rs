@@ -78,6 +78,16 @@ impl IniSection {
         self.get(key)?.trim().parse::<f32>().ok()
     }
 
+    /// Get a value parsed as f64 (double precision).
+    ///
+    /// Returns None if the key doesn't exist or the value isn't a valid float.
+    /// Needed where gamemd reads the key with `CCINIClass::ReadDouble` and the
+    /// extra precision is load-bearing (e.g. the damage-Spark spawn probabilities,
+    /// whose f32-vs-f64 rounding shifts the integer roll threshold by 1).
+    pub fn get_f64(&self, key: &str) -> Option<f64> {
+        self.get(key)?.trim().parse::<f64>().ok()
+    }
+
     /// Get a light-related float using the original INI parser shape needed by
     /// LightIntensity/Light*Tint keys.
     ///

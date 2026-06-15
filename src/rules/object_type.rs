@@ -777,6 +777,14 @@ pub struct ObjectType {
     /// `DamageParticleSystems=` CSV list — spawned periodically while the
     /// object is damaged.
     pub damage_particle_systems: Vec<String>,
+    /// `Cyborg=` bool — gamemd's TechnoTypeClass `+0xC8F` "emits damage sparks"
+    /// flag that `AI_Update` gates the per-tick damage-Spark prob-roll on.
+    /// Verified: only `InfantryTypeClass::ReadINI` writes `+0xC8F` (from `Cyborg=`);
+    /// every other leaf (vehicle/building/aircraft) keeps the ctor default 0. So
+    /// the AI_Update spark draw fires only for `Cyborg=yes` INFANTRY — a TS legacy
+    /// with **no stock-YR users** (the effect is dormant in stock). Default false.
+    /// See [`ObjectType::emits_damage_spark`].
+    pub cyborg: bool,
     /// `DestroyParticleSystems=` CSV list. Parsed for completeness;
     /// no live consumer in retail YR.
     pub destroy_particle_systems: Vec<String>,
@@ -819,6 +827,15 @@ fn native_minutes_to_ticks(value: f32) -> u32 {
 }
 
 impl ObjectType {
+    /// gamemd's TechnoTypeClass `+0xC8F` — whether `AI_Update` runs the per-tick
+    /// damage-Spark prob-roll for this type. Only `InfantryTypeClass::ReadINI`
+    /// sets `+0xC8F` (from `Cyborg=`); all other leaves keep the ctor default 0,
+    /// so a non-infantry type never emits AI_Update sparks even if `Cyborg=yes` is
+    /// (nonsensically) set on it. Dormant in stock YR (no `Cyborg=yes` units).
+    pub fn emits_damage_spark(&self) -> bool {
+        self.cyborg && self.category == ObjectCategory::Infantry
+    }
+
     /// Whether this type participates in selected factory rally-line visuals.
     pub fn has_rally_line(&self) -> bool {
         matches!(
@@ -1200,6 +1217,7 @@ impl ObjectType {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),
             damage_particle_systems: parse_csv_string_list(section.get("DamageParticleSystems")),
+            cyborg: section.get_bool("Cyborg").unwrap_or(false),
             destroy_particle_systems: parse_csv_string_list(section.get("DestroyParticleSystems")),
             damage_smoke_offset: section
                 .get("DamageSmokeOffset")
@@ -2015,6 +2033,26 @@ mod tests {
             obj.destroy_particle_systems,
             vec!["DebrisSmokeSys".to_string()]
         );
+    }
+
+    #[test]
+    fn emits_damage_spark_only_for_cyborg_infantry() {
+        // Type+0xC8F = Cyborg, written ONLY by InfantryTypeClass::ReadINI; other
+        // leaves keep the ctor default 0. So `emits_damage_spark` is true iff the
+        // type is `Cyborg=yes` AND infantry.
+        let ini = IniFile::from_str("[X]\nCyborg=yes\n");
+        let s = ini.section("X").unwrap();
+        assert!(ObjectType::from_ini_section("X", s, ObjectCategory::Infantry).emits_damage_spark());
+        // A Cyborg=yes vehicle/building/aircraft never emits (category gate).
+        assert!(!ObjectType::from_ini_section("X", s, ObjectCategory::Vehicle).emits_damage_spark());
+        assert!(!ObjectType::from_ini_section("X", s, ObjectCategory::Building).emits_damage_spark());
+        assert!(!ObjectType::from_ini_section("X", s, ObjectCategory::Aircraft).emits_damage_spark());
+        // Default (no Cyborg key) → false even for infantry (dormant in stock YR).
+        let plain = IniFile::from_str("[E1]\n");
+        let ps = plain.section("E1").unwrap();
+        let plain_inf = ObjectType::from_ini_section("E1", ps, ObjectCategory::Infantry);
+        assert!(!plain_inf.cyborg);
+        assert!(!plain_inf.emits_damage_spark());
     }
 
     #[test]

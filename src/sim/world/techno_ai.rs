@@ -14,6 +14,8 @@
 
 use super::Simulation;
 use crate::map::entities::EntityCategory;
+use crate::rules::particle_system_type::ParticleSystemBehavesLike;
+use crate::rules::ruleset::RuleSet;
 // `DispatchSlot` types the always-defined `UnitDispatchRecord`, so its import is non-gated.
 use crate::sim::mission::dispatch::DispatchSlot;
 // `unit_dispatch_family` is consumed only by the gated record pass + proof below.
@@ -65,9 +67,10 @@ impl Simulation {
     /// never allocates (no per-tick hot-path cost).
     pub(crate) fn object_ai_stage(
         &mut self,
+        rules: Option<&RuleSet>,
         committed: &mut std::collections::BTreeSet<u64>,
     ) -> UnitDispatchTrace {
-        let visited = self.object_ai_walk(cfg!(debug_assertions), committed);
+        let visited = self.object_ai_walk(cfg!(debug_assertions), rules, committed);
 
         #[cfg(debug_assertions)]
         debug_assert_eq!(
@@ -275,6 +278,7 @@ impl Simulation {
     fn object_ai_walk(
         &mut self,
         record: bool,
+        rules: Option<&RuleSet>,
         committed: &mut std::collections::BTreeSet<u64>,
     ) -> Vec<u64> {
         let mut visited: Vec<u64> = Vec::new();
@@ -297,7 +301,7 @@ impl Simulation {
             }
             // A non-miner live Unit commits its mission in the bracket; record it
             // so the tail projection skips it (no double-commit / double-count).
-            if techno_ai_shell(sim, id, category) {
+            if techno_ai_shell(sim, id, category, rules) {
                 committed.insert(id);
             }
         });
@@ -326,11 +330,18 @@ impl Simulation {
 /// error, intentionally.
 /// Returns `true` iff this object authoritatively committed its mission this
 /// pass (a non-miner live Unit) — the walk adds those ids to the tail skip-set.
-fn techno_ai_shell(sim: &mut Simulation, id: u64, category: EntityCategory) -> bool {
+fn techno_ai_shell(
+    sim: &mut Simulation,
+    id: u64,
+    category: EntityCategory,
+    rules: Option<&RuleSet>,
+) -> bool {
     match category {
         // S4a: run the AUTHORITATIVE TechnoClass common bracket; a non-miner live
         // Unit commits its mission here (the host owns it; the tail skips it).
-        EntityCategory::Unit => matches!(unit_techno_bracket(sim, id), BracketReach::Committed),
+        EntityCategory::Unit => {
+            matches!(unit_techno_bracket(sim, id, rules), BracketReach::Committed)
+        }
         EntityCategory::Infantry => false, // S6: absorb fear / sequence / self-removal
         EntityCategory::Structure => false, // S8 absorb bracket; P3 oracle probe is factory_oracle_step_trace
         EntityCategory::Aircraft => false, // S7: absorb per-object aircraft dispatch
@@ -358,11 +369,132 @@ fn techno_ai_shell(sim: &mut Simulation, id: u64, category: EntityCategory) -> b
 #[allow(unused_variables)]
 fn techno_common_pre(sim: &mut Simulation, id: u64) {}
 
+/// `damage_particle_live_until` sentinel for a spawned spark system whose
+/// `Lifetime <= 0`: gamemd's `ParticleSystemClass::AI` removal counter (set from
+/// `Type+0x2b8`) only fires on `--counter == 0`, so a non-positive lifetime never
+/// reaches 0 going down → the system (and thus `+0x308`) holds for the whole
+/// match. Distinct from a real finite `spawn_tick + lifetime` (always `>= 1` for
+/// `lifetime > 0`, and `tick` won't reach `u64::MAX` in any real match).
+const DAMAGE_PARTICLE_LIVE_FOREVER: u64 = u64::MAX;
+
+/// Largest `roll` value the gamemd damage-Spark prob-roll yields
+/// (`RandomRanged(0, 0x7ffffffe)`).
+const DAMAGE_SPARK_ROLL_MAX: u32 = 0x7fff_fffe;
+
 /// S4a post-mission common block (the steps after `Mission_Dispatch`: passive
 /// acquire (S4c), the damage-particle RNG (S4b), the timer accumulator, EMP
-/// recovery). No-op stub this slice. Present so the bracket order is real code.
-#[allow(unused_variables)]
-fn techno_common_post(sim: &mut Simulation, id: u64) {}
+/// recovery).
+///
+/// S4b — the AI_Update damage-Spark `scenario_rng` consumption, modelled exactly
+/// from the verified gamemd block. Per object, per tick:
+///   - Outer gate: `emits_damage_spark` (TechnoTypeClass `+0xC8F` = `Cyborg`,
+///     infantry-only) AND `HealthRatio < ConditionYellow` (STRICT) AND
+///     not-in-special-damage-state (`vtable+0x1c8() > -10`, unmodelled → pass).
+///   - Build the Spark sublist of `DamageParticleSystems` (`BehavesLike == Spark`).
+///     No RNG.
+///   - Inner gate: no live spark system (`+0x308`-equivalent empty) AND Spark
+///     count > 0.
+///   - Draw #1 (always, on inner-gate pass): the prob-roll on `scenario_rng`;
+///     succeed iff `roll < threshold` (red band if `HealthRatio < ConditionRed`,
+///     else yellow). On success → Draw #2: the list-pick `n(0, count-1)` (consumes
+///     no draw when count == 1, matching gamemd `RandomRanged(min == max)`), and
+///     arm the live-system hold to `tick + sparkType.Lifetime`.
+///
+/// Draw truth table (`scenario_rng`): 0 (outer gate fail / live system / no
+/// Spark) — 1 (roll fails) — 2 (roll succeeds, count >= 2) — 1 (roll succeeds,
+/// count == 1). The spawn/offset/ctor draw NOTHING. The visual is render-side;
+/// this consumes the draws and tracks the gate only.
+///
+/// Dormant in stock YR: `emits_damage_spark` is false for every stock type (no
+/// `Cyborg=yes` units, and `techno_common_post` runs only for the vehicle arm),
+/// so the early-out fires before any allocation or draw — zero `scenario_rng`
+/// movement. Modelled exactly so the stream stays aligned if a mod ever enables it.
+fn techno_common_post(sim: &mut Simulation, id: u64, rules: Option<&RuleSet>) {
+    let Some(rules) = rules else {
+        return;
+    };
+
+    // Read the entity facts we need, then resolve the type. `obj` borrows `rules`
+    // (external), not `sim`, so the later &mut sim draws/writes don't alias it.
+    let Some(entity) = sim.substrate.entities.get(id) else {
+        return;
+    };
+    let cur = entity.health.current as i64;
+    let max = entity.health.max as i64;
+    let type_ref = entity.type_ref;
+    let live_until_in = entity.damage_particle_live_until;
+    let Some(obj) = rules.object(sim.interner.resolve(type_ref)) else {
+        return;
+    };
+
+    // Outer gate. Check the cheap, near-always-false `emits_damage_spark` first so
+    // the common path (every stock vehicle) exits before building the Spark list.
+    // `HealthRatio < ConditionYellow` reproduced as the project's integer
+    // cross-multiply (`GetHealthRatio` is current/max; STRICT `<` per the binary).
+    // The `vtable+0x1c8() > -10` special-state term is unmodelled here → pass.
+    let below_yellow = cur * 1000 < max * rules.general.condition_yellow_x1000;
+    if !(obj.emits_damage_spark() && below_yellow) {
+        return;
+    }
+
+    // Spark sublist: `DamageParticleSystems` entries resolving to a
+    // `BehavesLike == Spark` particle system, in list order. Collect each one's
+    // Lifetime for the `+0x308` hold; the list-pick indexes into this sublist.
+    let mut spark_lifetimes: Vec<i32> = Vec::new();
+    for name in &obj.damage_particle_systems {
+        if let Some(ps_id) = rules.ps_type_id_by_name(name) {
+            let pst = rules.particle_system_type(ps_id);
+            if pst.behaves_like == ParticleSystemBehavesLike::Spark {
+                spark_lifetimes.push(pst.lifetime);
+            }
+        }
+    }
+    let spark_count = spark_lifetimes.len() as u32;
+    // Band select needs ConditionRed; bind once (both gate and draw read it).
+    let below_red = cur * 1000 < max * rules.general.condition_red_x1000;
+
+    // `+0x308`-equivalent live-system gate. Resolve expiry lazily here (the only
+    // observable effect of the hold is gating draws, which only happen under this
+    // gate, so lazy expiry yields the same draw sequence as gamemd's eager null).
+    let tick = sim.session.tick;
+    let mut live_until = live_until_in;
+    if live_until != 0 && live_until != DAMAGE_PARTICLE_LIVE_FOREVER && tick >= live_until {
+        live_until = 0; // system expired → `+0x308` nulls; may roll again this tick
+    }
+    let system_live = live_until != 0;
+
+    // Inner gate: no live system AND at least one Spark system.
+    if !system_live && spark_count > 0 {
+        // Draw #1 — prob-roll on Scen->Random (always, on inner-gate pass).
+        let roll = sim
+            .scenario_rng
+            .next_range_u32_inclusive(0, DAMAGE_SPARK_ROLL_MAX);
+        let threshold = if below_red {
+            rules.general.condition_red_spark_threshold
+        } else {
+            rules.general.condition_yellow_spark_threshold
+        };
+        if roll < threshold {
+            // Draw #2 — list-pick (no draw when spark_count == 1: n(0,0)).
+            let idx = sim
+                .scenario_rng
+                .next_range_u32_inclusive(0, spark_count - 1) as usize;
+            let lifetime = spark_lifetimes[idx];
+            live_until = if lifetime > 0 {
+                tick.saturating_add(lifetime as u64)
+            } else {
+                DAMAGE_PARTICLE_LIVE_FOREVER
+            };
+        }
+    }
+
+    // Commit the (possibly cleared or freshly-armed) live-system state.
+    if live_until != live_until_in {
+        if let Some(entity) = sim.substrate.entities.get_mut(id) {
+            entity.damage_particle_live_until = live_until;
+        }
+    }
+}
 
 /// Outcome of the S4a bracket for one Unit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -384,7 +516,7 @@ pub(crate) enum BracketReach {
 /// than in `movement_tick` (scoped movers) or the Phase-9 tail (idle) as before.
 /// Miners stay tail-owned. Returns the outcome; the walk collects `Committed`
 /// ids as the tail's skip-set.
-fn unit_techno_bracket(sim: &mut Simulation, id: u64) -> BracketReach {
+fn unit_techno_bracket(sim: &mut Simulation, id: u64, rules: Option<&RuleSet>) -> BracketReach {
     techno_common_pre(sim, id);
     // Guard B (post-pre IsAlive): a health-0 Unit makes no commit. No lethal
     // pre-block step exists yet, so this fires only for an already-dead Unit.
@@ -395,7 +527,7 @@ fn unit_techno_bracket(sim: &mut Simulation, id: u64) -> BracketReach {
     // path); the host runs the bracket but skips the authoritative commit, so a
     // miner is NOT added to the skip-set and the tail commits it.
     if sim.substrate.entities.get(id).is_some_and(|e| e.miner.is_some()) {
-        techno_common_post(sim, id);
+        techno_common_post(sim, id, rules);
         return BracketReach::MinerDeferred;
     }
     // `+0xC4` AI-tick counter + `Mission_Dispatch` (AUTHORITATIVE commit): the
@@ -411,7 +543,7 @@ fn unit_techno_bracket(sim: &mut Simulation, id: u64) -> BracketReach {
     // Guard E (post-dispatch IsAlive): a mission commit cannot kill the Unit, so
     // this cannot fire yet; the structure is preserved for the S5 dispatch
     // handlers that can self-destruct. The Unit is committed regardless.
-    techno_common_post(sim, id);
+    techno_common_post(sim, id, rules);
     BracketReach::Committed
 }
 
@@ -750,7 +882,7 @@ mod tests {
         sim.set_logic_order_for_test(vec![1, 2, 3, 4]);
 
         let mut committed = std::collections::BTreeSet::new();
-        sim.object_ai_stage(&mut committed);
+        sim.object_ai_stage(None, &mut committed);
 
         // The idle non-miner Unit committed Guard and ticked its counter once.
         assert_eq!(committed.iter().copied().collect::<Vec<_>>(), vec![1]);
@@ -783,7 +915,7 @@ mod tests {
         // verbatim (no sort).
         sim.set_logic_order_for_test(vec![3, 1, 2]);
 
-        let visited = sim.object_ai_walk(true, &mut std::collections::BTreeSet::new());
+        let visited = sim.object_ai_walk(true, None, &mut std::collections::BTreeSet::new());
         assert_eq!(
             visited,
             sim.live_object_order_snapshot(),
@@ -837,7 +969,7 @@ mod tests {
         // in the live order.
         sim.substrate.entities.get_mut(2).unwrap().dying = true;
 
-        let visited = sim.object_ai_walk(true, &mut std::collections::BTreeSet::new());
+        let visited = sim.object_ai_walk(true, None, &mut std::collections::BTreeSet::new());
         assert_eq!(
             visited,
             vec![1],
@@ -845,7 +977,7 @@ mod tests {
         );
         // The internal order-proof assert filters dying members, so the stage
         // must not panic even with a dying member in the live order.
-        sim.object_ai_stage(&mut std::collections::BTreeSet::new());
+        sim.object_ai_stage(None, &mut std::collections::BTreeSet::new());
     }
 
     #[test]
@@ -863,14 +995,14 @@ mod tests {
             .logic
             .set_order_for_test(vec![absent_id, live_id]);
 
-        let visited = sim.object_ai_walk(true, &mut std::collections::BTreeSet::new());
+        let visited = sim.object_ai_walk(true, None, &mut std::collections::BTreeSet::new());
         assert_eq!(
             visited,
             vec![live_id],
             "absent id skipped without panic; live id still visited"
         );
         // Stage must not panic on the absent member either.
-        sim.object_ai_stage(&mut std::collections::BTreeSet::new());
+        sim.object_ai_stage(None, &mut std::collections::BTreeSet::new());
     }
 
     // ===== Slice S4a — TechnoClass common bracket (authoritative, Option B) =====
@@ -883,7 +1015,7 @@ mod tests {
             .insert(entity_of(1, EntityCategory::Unit));
         // A live non-miner Unit reaches the dispatch point and commits: +0xC4
         // tick_counter + derived_mission (idle -> Guard).
-        assert_eq!(unit_techno_bracket(&mut sim, 1), BracketReach::Committed);
+        assert_eq!(unit_techno_bracket(&mut sim, 1, None), BracketReach::Committed);
         let u = sim.substrate.entities.get(1).unwrap();
         assert_eq!(u.mission.tick_counter, 1);
         assert_eq!(u.mission.current, MissionType::Guard);
@@ -897,7 +1029,7 @@ mod tests {
         sim.substrate.entities.insert(e);
         // Guard B fires after the (empty) pre-block: a health-0 Unit makes no
         // commit (counter stays 0) and never reaches the dispatch point.
-        assert_eq!(unit_techno_bracket(&mut sim, 1), BracketReach::DiedInPre);
+        assert_eq!(unit_techno_bracket(&mut sim, 1, None), BracketReach::DiedInPre);
         assert_eq!(sim.substrate.entities.get(1).unwrap().mission.tick_counter, 0);
     }
 
@@ -909,7 +1041,7 @@ mod tests {
         sim.substrate.entities.insert(miner);
         // A miner runs the bracket but the host does NOT commit it — the miner
         // session / tail projection owns the miner mission (counter stays 0).
-        assert_eq!(unit_techno_bracket(&mut sim, 1), BracketReach::MinerDeferred);
+        assert_eq!(unit_techno_bracket(&mut sim, 1, None), BracketReach::MinerDeferred);
         assert_eq!(sim.substrate.entities.get(1).unwrap().mission.tick_counter, 0);
     }
 
@@ -1171,7 +1303,7 @@ mod tests {
         sim.set_logic_order_for_test(vec![1]);
 
         let mut committed = std::collections::BTreeSet::new();
-        let trace = sim.object_ai_stage(&mut committed); // host pass (commits id 1)
+        let trace = sim.object_ai_stage(None, &mut committed); // host pass (commits id 1)
         sim.debug_assert_unit_dispatch_shadow(&trace); // read-only proof (no panic)
         sim.debug_check_dispatch_live_set_coverage(); // read-only coverage
 
@@ -1339,5 +1471,240 @@ mod tests {
             restored.substrate.entities.get(1).unwrap().mission.current,
             MissionType::Move,
         );
+    }
+
+    // ===== Slice S4b — AI_Update damage-Spark scenario_rng consumption =====
+
+    /// Two Spark systems, each `Lifetime=5`, so the list-pick (count==2) consumes
+    /// a draw and the armed hold is `tick+5` regardless of the picked index.
+    const TWO_SPARK_SYSTEMS: &str = "[ParticleSystems]\n\
+1=SparkA\n2=SparkB\n\n[SparkA]\nBehavesLike=Spark\nLifetime=5\n\n[SparkB]\nBehavesLike=Spark\nLifetime=5\n";
+
+    /// One Spark (`Lifetime=5`) plus one Smoke — exercises the Spark filter and the
+    /// single-Spark list-pick (count==1 → no draw, matching `n(0,0)`).
+    const ONE_SPARK_ONE_SMOKE_SYSTEMS: &str = "[ParticleSystems]\n\
+1=SparkA\n2=SmokeA\n\n[SparkA]\nBehavesLike=Spark\nLifetime=5\n\n[SmokeA]\nBehavesLike=Smoke\n";
+
+    /// A Smoke-only damage particle system — no Spark, so the inner gate never
+    /// passes (zero draws even below ConditionRed).
+    const SMOKE_ONLY_SYSTEMS: &str = "[ParticleSystems]\n1=SmokeA\n\n[SmokeA]\nBehavesLike=Smoke\n";
+
+    /// Minimal RuleSet with one `Cyborg=yes` infantry "CYB" (so `emits_damage_spark`
+    /// is true), `DamageParticleSystems=dps`, the named particle `systems`, and the
+    /// two damage-Spark probabilities. prob "1.0" → always-succeed threshold; "0.0"
+    /// → always-fail — so the draw outcome is deterministic regardless of the seed's
+    /// actual roll value.
+    fn cyborg_rules(red_prob: &str, yellow_prob: &str, dps: &str, systems: &str) -> RuleSet {
+        use crate::rules::ini_parser::IniFile;
+        let text = format!(
+            "[General]\n\
+BuildSpeed=0.75\nMultipleFactory=0.7\nLowPowerPenaltyModifier=1.25\n\
+MinLowPowerProductionSpeed=0.4\nMaxLowPowerProductionSpeed=0.85\n\
+ConditionRedSparkingProbability={red_prob}\nConditionYellowSparkingProbability={yellow_prob}\n\n\
+[InfantryTypes]\n1=CYB\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n\n\
+[CYB]\nCyborg=yes\nDamageParticleSystems={dps}\n\n{systems}\n"
+        );
+        RuleSet::from_ini(&IniFile::from_str(&text)).expect("cyborg test rules parse")
+    }
+
+    /// Insert a unit whose type resolves to the Cyborg infantry "CYB". The entity
+    /// category is `Unit` (the only arm hosting `techno_common_post` today); the
+    /// gate keys off the TYPE's `emits_damage_spark`, so this exercises the draw
+    /// path. `current`/`max` set the health band.
+    fn insert_cyborg_unit(sim: &mut Simulation, id: u64, current: u16, max: u16) {
+        let owner = sim.interner.intern("Americans");
+        let type_ref = sim.interner.intern("CYB");
+        let e = GameEntity::new(
+            id,
+            5,
+            5,
+            0,
+            0,
+            owner,
+            crate::sim::components::Health { current, max },
+            type_ref,
+            EntityCategory::Unit,
+            0,
+            5,
+            true,
+        );
+        sim.substrate.entities.insert(e);
+    }
+
+    fn live_until(sim: &Simulation, id: u64) -> u64 {
+        sim.substrate
+            .entities
+            .get(id)
+            .unwrap()
+            .damage_particle_live_until
+    }
+
+    #[test]
+    fn s4b_no_draw_above_condition_yellow() {
+        // 60/100 = above ConditionYellow (0.5): the outer gate fails → zero draws.
+        let rules = cyborg_rules("1.0", "1.0", "SparkA,SparkB", TWO_SPARK_SYSTEMS);
+        let mut sim = Simulation::new();
+        insert_cyborg_unit(&mut sim, 1, 60, 100);
+        let scen = sim.scenario_rng.state();
+        let main = sim.main_rng.state();
+        techno_common_post(&mut sim, 1, Some(&rules));
+        assert_eq!(sim.scenario_rng.state(), scen, "no scenario draw above ConditionYellow");
+        assert_eq!(sim.main_rng.state(), main);
+        assert_eq!(live_until(&sim, 1), 0);
+    }
+
+    #[test]
+    fn s4b_one_draw_when_roll_fails() {
+        // Below ConditionRed, prob 0.0 → threshold 0 → roll always fails: exactly
+        // one draw (the prob-roll), no list-pick, no live system armed.
+        let rules = cyborg_rules("0.0", "0.0", "SparkA,SparkB", TWO_SPARK_SYSTEMS);
+        let mut sim = Simulation::new();
+        insert_cyborg_unit(&mut sim, 1, 20, 100); // below red
+        let mut expect = sim.scenario_rng.clone();
+        let main = sim.main_rng.state();
+        techno_common_post(&mut sim, 1, Some(&rules));
+        expect.next_range_u32_inclusive(0, DAMAGE_SPARK_ROLL_MAX);
+        assert_eq!(sim.scenario_rng.state(), expect.state(), "exactly one prob-roll draw");
+        assert_eq!(sim.main_rng.state(), main, "scenario stream only, never main");
+        assert_eq!(live_until(&sim, 1), 0, "roll failed → no live system");
+    }
+
+    #[test]
+    fn s4b_two_draws_when_roll_succeeds() {
+        // prob 1.0 → threshold MAX → roll always succeeds; 2 Spark systems → the
+        // list-pick (n(0,1)) consumes a second draw, and the hold arms to tick+5.
+        let rules = cyborg_rules("1.0", "1.0", "SparkA,SparkB", TWO_SPARK_SYSTEMS);
+        let mut sim = Simulation::new();
+        insert_cyborg_unit(&mut sim, 1, 20, 100);
+        let tick = sim.session.tick;
+        let mut expect = sim.scenario_rng.clone();
+        let main = sim.main_rng.state();
+        techno_common_post(&mut sim, 1, Some(&rules));
+        expect.next_range_u32_inclusive(0, DAMAGE_SPARK_ROLL_MAX); // roll
+        expect.next_range_u32_inclusive(0, 1); // list-pick over 2 sparks
+        assert_eq!(sim.scenario_rng.state(), expect.state(), "roll + list-pick = two draws");
+        assert_eq!(sim.main_rng.state(), main);
+        assert_eq!(live_until(&sim, 1), tick + 5, "armed to spawn_tick + Lifetime");
+    }
+
+    #[test]
+    fn s4b_one_draw_when_single_spark_succeeds() {
+        // Single Spark system: on success the list-pick is n(0,0) → consumes NO
+        // draw (gamemd RandomRanged min==max), so a successful roll is ONE draw.
+        let rules = cyborg_rules("1.0", "1.0", "SparkA,SmokeA", ONE_SPARK_ONE_SMOKE_SYSTEMS);
+        let mut sim = Simulation::new();
+        insert_cyborg_unit(&mut sim, 1, 20, 100);
+        let tick = sim.session.tick;
+        let mut expect = sim.scenario_rng.clone();
+        techno_common_post(&mut sim, 1, Some(&rules));
+        expect.next_range_u32_inclusive(0, DAMAGE_SPARK_ROLL_MAX); // roll only
+        assert_eq!(sim.scenario_rng.state(), expect.state(), "single-spark success = one draw");
+        assert_eq!(live_until(&sim, 1), tick + 5, "armed despite the no-draw list-pick");
+    }
+
+    #[test]
+    fn s4b_no_draw_while_system_live() {
+        // After a successful spawn (live_until = 5 at tick 0), a same-tick re-entry
+        // sees the live system (+0x308 != 0) and makes zero draws; advancing past
+        // live_until expires it and rolling resumes.
+        let rules = cyborg_rules("1.0", "1.0", "SparkA,SparkB", TWO_SPARK_SYSTEMS);
+        let mut sim = Simulation::new();
+        insert_cyborg_unit(&mut sim, 1, 20, 100);
+        techno_common_post(&mut sim, 1, Some(&rules)); // spawn → live_until = 5
+        assert_eq!(live_until(&sim, 1), 5);
+
+        let frozen = sim.scenario_rng.state();
+        techno_common_post(&mut sim, 1, Some(&rules)); // still tick 0 < 5 → no draw
+        assert_eq!(sim.scenario_rng.state(), frozen, "live system blocks the draw");
+        assert_eq!(live_until(&sim, 1), 5, "hold unchanged while live");
+
+        // At tick 5 the system has expired: clears and re-rolls (2 draws, re-armed).
+        sim.session.tick = 5;
+        let mut expect = sim.scenario_rng.clone();
+        techno_common_post(&mut sim, 1, Some(&rules));
+        expect.next_range_u32_inclusive(0, DAMAGE_SPARK_ROLL_MAX);
+        expect.next_range_u32_inclusive(0, 1);
+        assert_eq!(sim.scenario_rng.state(), expect.state(), "expiry resumes rolling");
+        assert_eq!(live_until(&sim, 1), 10, "re-armed to 5 + Lifetime");
+    }
+
+    #[test]
+    fn s4b_zero_draw_without_spark_systems() {
+        // Below ConditionRed but DamageParticleSystems has no Spark entry: the
+        // inner gate (Spark count > 0) fails → zero draws, even at prob 1.0.
+        let rules = cyborg_rules("1.0", "1.0", "SmokeA", SMOKE_ONLY_SYSTEMS);
+        let mut sim = Simulation::new();
+        insert_cyborg_unit(&mut sim, 1, 20, 100);
+        let scen = sim.scenario_rng.state();
+        techno_common_post(&mut sim, 1, Some(&rules));
+        assert_eq!(sim.scenario_rng.state(), scen, "no Spark system → no draw");
+        assert_eq!(live_until(&sim, 1), 0);
+    }
+
+    #[test]
+    fn s4b_dormant_for_non_cyborg_type() {
+        // The slice's faithfulness claim: a non-Cyborg type makes zero draws even
+        // below ConditionRed with Spark systems, because emits_damage_spark
+        // (Type+0xC8F) is false. Here a VEHICLE with `Cyborg=yes` (nonsensical, but
+        // it proves the category gate) — gamemd only honours Cyborg on infantry, so
+        // its +0xC8F stays 0 and it never sparks. Build rules inline registering the
+        // type under [VehicleTypes].
+        use crate::rules::ini_parser::IniFile;
+        let text = format!(
+            "[General]\n\
+BuildSpeed=0.75\nMultipleFactory=0.7\nLowPowerPenaltyModifier=1.25\n\
+MinLowPowerProductionSpeed=0.4\nMaxLowPowerProductionSpeed=0.85\n\
+ConditionRedSparkingProbability=1.0\nConditionYellowSparkingProbability=1.0\n\n\
+[InfantryTypes]\n[VehicleTypes]\n1=VEHCYB\n[AircraftTypes]\n[BuildingTypes]\n\n\
+[VEHCYB]\nCyborg=yes\nDamageParticleSystems=SparkA,SparkB\n\n{TWO_SPARK_SYSTEMS}\n"
+        );
+        let rules = RuleSet::from_ini(&IniFile::from_str(&text)).expect("veh rules parse");
+        // Sanity: the type parsed as a Cyborg vehicle that nonetheless does NOT emit.
+        let obj = rules.object("VEHCYB").expect("VEHCYB present");
+        assert!(obj.cyborg, "Cyborg= parsed");
+        assert!(!obj.emits_damage_spark(), "a vehicle never emits AI_Update sparks");
+
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Americans");
+        let type_ref = sim.interner.intern("VEHCYB");
+        let e = GameEntity::new(
+            1,
+            5,
+            5,
+            0,
+            0,
+            owner,
+            crate::sim::components::Health { current: 20, max: 100 },
+            type_ref,
+            EntityCategory::Unit,
+            0,
+            5,
+            true,
+        );
+        sim.substrate.entities.insert(e);
+        let scen = sim.scenario_rng.state();
+        techno_common_post(&mut sim, 1, Some(&rules));
+        assert_eq!(sim.scenario_rng.state(), scen, "non-Cyborg-infantry type makes zero draws");
+        assert_eq!(live_until(&sim, 1), 0);
+    }
+
+    #[test]
+    fn s4b_permanent_hold_blocks_draw() {
+        // A spawned spark whose Lifetime <= 0 holds +0x308 indefinitely: live_until
+        // = u64::MAX never expires, so the object never rolls again.
+        let rules = cyborg_rules(
+            "1.0",
+            "1.0",
+            "SparkA",
+            "[ParticleSystems]\n1=SparkA\n\n[SparkA]\nBehavesLike=Spark\nLifetime=-1\n",
+        );
+        let mut sim = Simulation::new();
+        insert_cyborg_unit(&mut sim, 1, 20, 100);
+        techno_common_post(&mut sim, 1, Some(&rules)); // success → permanent hold
+        assert_eq!(live_until(&sim, 1), u64::MAX, "Lifetime<=0 → indefinite hold");
+        sim.session.tick = 1_000_000;
+        let frozen = sim.scenario_rng.state();
+        techno_common_post(&mut sim, 1, Some(&rules));
+        assert_eq!(sim.scenario_rng.state(), frozen, "permanent hold never re-rolls");
     }
 }

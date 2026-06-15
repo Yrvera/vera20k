@@ -79,8 +79,11 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 /// test is unchanged). Re-baselined for SC-2 (session identity — seed, map
 /// name, theater, bounds, MP start table — folded into the hash; composition
 /// change, not a behavior drift). Re-measured at the S3 × SC-2 merge (both
-/// deltas combined; value from the merged tree's green run).
-const SLICE6_BASELINE_HASH: u64 = 12517649216649727257;
+/// deltas combined; value from the merged tree's green run). Re-baselined for S4b
+/// (the hashed `damage_particle_live_until` `+0x308`-equivalent field — every
+/// entity now folds an extra 0; composition change, NOT a behavior drift, proven
+/// by the baseline holding unchanged with the fold line disabled).
+const SLICE6_BASELINE_HASH: u64 = 5265402922015073596;
 
 #[test]
 fn replay_hash_stable_through_slice6() {

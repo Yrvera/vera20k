@@ -752,6 +752,10 @@ impl Simulation {
             // Mission substrate — folded as of Slice 8 (MissionCom is now
             // canonical hashed state, not an unhashed shadow).
             hash_mission_com(&entity.mission, hasher);
+            // S4b damage-Spark `+0x308`-equivalent live-system gate. Hashed because
+            // it gates future scenario_rng draws (a divergence here desyncs the
+            // stream). Zero for every entity in stock YR (the gate is Cyborg-only).
+            entity.damage_particle_live_until.hash(hasher);
         }
     }
 }

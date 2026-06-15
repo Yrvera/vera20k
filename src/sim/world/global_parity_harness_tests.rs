@@ -75,7 +75,12 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 /// and the per-stream cursor pins prove no behavioral movement.
 /// Re-measured at the S3 × SC-2 merge (both deltas combined; value from the
 /// merged tree's green run — neither side's pre-merge value can be correct).
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 8267237512675945995;
+/// Re-baselined for S4b: the hashed `damage_particle_live_until` `+0x308`-
+/// equivalent field folds an extra 0 per entity — a composition shift, NOT a
+/// behavior drift. Proven: with the fold line disabled this baseline held its
+/// prior value (so S4b moved zero RNG and changed no committed scenario), and
+/// the tick-by-tick rec-vs-replay equality below still passes.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 7853494236029787366;
 
 fn harness_rules() -> RuleSet {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
