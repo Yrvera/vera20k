@@ -2877,6 +2877,18 @@ impl App {
                 } else {
                     app_render::render_game(state, &mut encoder, &view)?
                 };
+                // Paused: draw the native in-game Options (0xBBB) overlay over the
+                // frozen battlefield before egui. The egui pause card is retired;
+                // egui below now only carries the sidebar text + dev overlay.
+                if state.paused {
+                    Self::ensure_skirmish_shell_chrome(state);
+                    crate::app_skirmish_shell_render::render_in_game_options_overlay(
+                        state,
+                        &mut encoder,
+                        &view,
+                        sidebar_view.as_ref(),
+                    )?;
+                }
                 // Always run egui in-game for sidebar text overlay (Ready labels, credits).
                 state.egui.begin_frame(&state.window);
                 if let Some(ref sv) = sidebar_view {
@@ -2912,10 +2924,9 @@ impl App {
                     Self::handle_save_load_panel(state);
                 }
                 if state.paused {
-                    Self::handle_pause_menu(state);
-                    // Dev overlay rides along with the pause menu — push its
-                    // own light visuals so the panel chrome matches debug
-                    // panels rather than the pause menu's client theme.
+                    // The native 0xBBB overlay (drawn above) replaces the egui
+                    // pause card. The dev overlay rides along — push its own light
+                    // visuals so its chrome matches the debug panels.
                     let prev = crate::app_debug_panel::push_debug_light_visuals(&state.egui.ctx);
                     Self::handle_dev_overlay(state);
                     crate::app_debug_panel::pop_debug_light_visuals(&state.egui.ctx, prev);
@@ -2998,7 +3009,29 @@ impl App {
         Ok(())
     }
 
+    /// Temporary non-chrome quit-to-menu (design §8 Q1): the native `0xBBB`
+    /// dialog has no quit button and the egui pause card is retired, so
+    /// quit-to-menu survives as a dev-overlay shortcut until the native
+    /// Abort-Mission dialog is built (a later 5a step).
+    fn return_to_main_menu(state: &mut AppState) {
+        state.paused = false;
+        if let Some(ref mut player) = state.music_player {
+            player.stop();
+        }
+        state.screen = GameScreen::MainMenu;
+        Self::enter_shell_window_mode(state);
+        state.zoom_level = 1.0;
+        state.zoom_target = 1.0;
+        state.window.set_cursor_visible(true);
+        log::info!("Returned to main menu");
+    }
+
     /// Draw the pause menu and handle its actions.
+    ///
+    /// Retired from the in-game paint path in 5a-ii (the native `0xBBB` overlay
+    /// replaces the egui card); kept compiled for reference until 5a-iii wires the
+    /// native control input. Quit-to-menu now lives on `return_to_main_menu`.
+    #[allow(dead_code)]
     fn handle_pause_menu(state: &mut AppState) {
         use crate::ui::pause_menu::{self, PauseMenuAction, PauseMenuInfo};
 
@@ -3023,16 +3056,7 @@ impl App {
                 log::info!("Game resumed");
             }
             PauseMenuAction::ReturnToMenu => {
-                state.paused = false;
-                if let Some(ref mut player) = state.music_player {
-                    player.stop();
-                }
-                state.screen = GameScreen::MainMenu;
-                Self::enter_shell_window_mode(state);
-                state.zoom_level = 1.0;
-                state.zoom_target = 1.0;
-                state.window.set_cursor_visible(true);
-                log::info!("Returned to main menu");
+                Self::return_to_main_menu(state);
             }
             PauseMenuAction::NextTrack => {
                 if let (Some(player), Some(assets)) =
@@ -3190,6 +3214,9 @@ impl App {
             }
             DevOverlayAction::TogglePause => {
                 app_input::toggle_debug_pause(state);
+            }
+            DevOverlayAction::ReturnToMenu => {
+                Self::return_to_main_menu(state);
             }
             DevOverlayAction::StepOneTick => {
                 if state.paused {

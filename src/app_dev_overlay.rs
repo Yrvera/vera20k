@@ -65,6 +65,9 @@ pub(crate) enum DevOverlayAction {
     SetMusicVolume(f64),
     SetSfxVolume(f64),
     TogglePause,
+    /// Temporary quit-to-menu (the native in-game Options dialog has no quit
+    /// button yet; see App::return_to_main_menu).
+    ReturnToMenu,
     StepOneTick,
     TogglePathGrid,
     ToggleCellGrid,
@@ -171,6 +174,12 @@ pub(crate) fn draw_dev_overlay(
                     action = DevOverlayAction::StepOneTick;
                 }
                 ui.label(format!("paused={}", if info.paused { "ON" } else { "OFF" }));
+            });
+            ui.horizontal(|ui| {
+                // Temp quit-to-menu until the native Abort-Mission dialog exists.
+                if ui.button("Return to Menu").clicked() {
+                    action = DevOverlayAction::ReturnToMenu;
+                }
             });
             ui.label(format!(
                 "Tick budget: {:.2} ms  ({} tps)",
