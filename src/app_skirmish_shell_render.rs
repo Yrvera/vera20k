@@ -6,6 +6,7 @@
 mod chrome;
 mod controls;
 mod draw_order;
+mod in_game_options;
 mod modals;
 mod preview;
 mod text;
