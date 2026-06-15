@@ -236,6 +236,7 @@ fn modal_control(id: u16, kind: ControlKind, dlu_rect: RectPx) -> ControlDescrip
         tooltip_key: None,
         group: 0,
         enabled: true,
+        visible: true,
     }
 }
 

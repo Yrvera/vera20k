@@ -103,6 +103,7 @@ mod tests {
             tooltip_key: None,
             group: 0,
             enabled: true,
+            visible: true,
         }
     }
 

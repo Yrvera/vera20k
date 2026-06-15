@@ -107,6 +107,10 @@ pub struct ControlDescriptor {
     /// Resource-template default. Runtime enable/disable (e.g. the single-player
     /// LoadSavedGame guard) layers over this in the controller, not here.
     pub enabled: bool,
+    /// Resource-template `WS_VISIBLE`. A `false` control is created hidden and the
+    /// dialog proc never shows it, so it is not emitted or hit-tested. (Active
+    /// `0xBBB` hides the VisualDetails trackbar + its caption/value-label.)
+    pub visible: bool,
 }
 
 /// A full shell dialog: its controls plus the dialog-level composition, slide,

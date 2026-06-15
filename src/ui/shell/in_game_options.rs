@@ -73,11 +73,13 @@ pub fn build_in_game_options_descriptor() -> DialogDescriptor {
                 ControlKind::Button,
                 RectPx::new(425, 346, 108, 23),
                 true,
+                true,
             ),
             options_control(
                 control::KEYBOARD,
                 ControlKind::Button,
                 RectPx::new(425, 149, 108, 23),
+                true,
                 true,
             ),
             options_control(
@@ -85,11 +87,13 @@ pub fn build_in_game_options_descriptor() -> DialogDescriptor {
                 ControlKind::Button,
                 RectPx::new(425, 122, 108, 23),
                 true,
+                true,
             ),
             options_control(
                 control::GAME_SPEED,
                 ControlKind::Trackbar,
                 RectPx::new(144, 100, 128, 13),
+                true,
                 true,
             ),
             options_control(
@@ -97,12 +101,15 @@ pub fn build_in_game_options_descriptor() -> DialogDescriptor {
                 ControlKind::Trackbar,
                 RectPx::new(144, 131, 128, 13),
                 true,
+                true,
             ),
-            // Disabled in the active-game template; the populate path never enables it.
+            // Hidden + disabled in the active-game template (WS_DISABLED, no
+            // WS_VISIBLE); the populate path never shows or enables it.
             options_control(
                 control::VISUAL_DETAILS,
                 ControlKind::Trackbar,
                 RectPx::new(144, 162, 128, 13),
+                false,
                 false,
             ),
             options_control(
@@ -110,17 +117,20 @@ pub fn build_in_game_options_descriptor() -> DialogDescriptor {
                 ControlKind::Checkbox,
                 RectPx::new(89, 206, 119, 10),
                 true,
+                true,
             ),
             options_control(
                 control::SHOW_HIDDEN,
                 ControlKind::Checkbox,
                 RectPx::new(89, 224, 119, 10),
                 true,
+                true,
             ),
             options_control(
                 control::TOOLTIPS,
                 ControlKind::Checkbox,
                 RectPx::new(214, 206, 127, 10),
+                true,
                 true,
             ),
         ],
@@ -141,6 +151,7 @@ fn options_control(
     kind: ControlKind,
     dlu_rect: RectPx,
     enabled: bool,
+    visible: bool,
 ) -> ControlDescriptor {
     ControlDescriptor {
         id,
@@ -151,6 +162,7 @@ fn options_control(
         tooltip_key: None,
         group: 0,
         enabled,
+        visible,
     }
 }
 
@@ -247,6 +259,32 @@ mod tests {
             control::TOOLTIPS,
         ] {
             assert!(enabled(id), "control {id:#06x} should be template-enabled");
+        }
+    }
+
+    #[test]
+    fn visualdetails_is_hidden_rest_visible() {
+        // gamemd hides the VisualDetails triplet in 0xBBB (WS_DISABLED + no
+        // WS_VISIBLE; the populate path never shows it). The descriptor carries
+        // the interactive member (the 0x52B trackbar) as visible:false; its
+        // caption/value-label statics are simply not added by the emitter.
+        let d = build_in_game_options_descriptor();
+        let vis = |id: u16| d.controls.iter().find(|c| c.id == id).unwrap().visible;
+        assert!(
+            !vis(control::VISUAL_DETAILS),
+            "VisualDetails hidden in 0xBBB"
+        );
+        for id in [
+            control::BACK,
+            control::KEYBOARD,
+            control::SOUND,
+            control::GAME_SPEED,
+            control::SCROLL_RATE,
+            control::TARGET_LINES,
+            control::SHOW_HIDDEN,
+            control::TOOLTIPS,
+        ] {
+            assert!(vis(id), "control {id:#06x} visible");
         }
     }
 
