@@ -35,6 +35,14 @@ pub fn layout_pass(desc: &DialogDescriptor, screen_w: i32, screen_h: i32) -> Vec
                 RepositionPolicy::ModalCentered => {
                     geom::dlu_rect(c.dlu_rect.x, c.dlu_rect.y, c.dlu_rect.w, c.dlu_rect.h)
                 }
+                // In-game Options baseline (5a-i): raw DLU->pixel client rect, no
+                // re-anchor. The native child-resize helper family (centered
+                // offsets for ordinary controls + right-edge button anchoring from
+                // the SIDEBTTN canvas) lands in 5a-ii, where the button asset
+                // dimensions are known.
+                RepositionPolicy::InGameOptions => {
+                    geom::dlu_rect(c.dlu_rect.x, c.dlu_rect.y, c.dlu_rect.w, c.dlu_rect.h)
+                }
             };
             LaidOutControl { id: c.id, rect }
         })
@@ -207,5 +215,31 @@ mod tests {
         let laid = layout_pass(&desc, 1024, 768);
         assert_eq!(rect_for(&laid, 0x0683), RectPx::new(756, 283, 156, 42));
         assert_eq!(rect_for(&laid, 0x03EE), RectPx::new(756, 620, 156, 42));
+    }
+
+    /// In-game Options (5a-i baseline) is NOT re-anchored — it keeps its DLU->pixel
+    /// client rect, identical to the ModalCentered baseline. (5a-ii adds the native
+    /// B-helper anchoring and this expectation changes.)
+    #[test]
+    fn in_game_options_baseline_is_raw_dlu_to_pixel() {
+        let desc = DialogDescriptor {
+            id: DialogId(0x0BBB),
+            bg_kind: BgKind::InGameOptions,
+            slide_eligible: false,
+            reposition_policy: RepositionPolicy::InGameOptions,
+            controls: vec![ctrl(
+                0x0529,
+                ControlKind::Trackbar,
+                RectPx::new(144, 100, 128, 13),
+                // Anchor is ignored under InGameOptions baseline.
+                AnchorRule::RightAnchor,
+            )],
+        };
+        let laid = layout_pass(&desc, 800, 600);
+        assert_eq!(rect_for(&laid, 0x0529), geom::dlu_rect(144, 100, 128, 13));
+        assert_eq!(rect_for(&laid, 0x0529), RectPx::new(216, 163, 192, 21));
+        // Baseline is screen-size invariant for now (oversized-screen centered
+        // offsets are deferred to 5a-ii).
+        assert_eq!(layout_pass(&desc, 1024, 768), laid);
     }
 }

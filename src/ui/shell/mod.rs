@@ -10,5 +10,6 @@
 pub mod controller;
 pub mod descriptor;
 pub mod geom;
+pub mod in_game_options;
 pub mod layout;
 pub mod modal;
