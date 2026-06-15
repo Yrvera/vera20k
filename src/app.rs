@@ -284,6 +284,10 @@ pub(crate) struct AppState {
         BTreeMap<(u16, u16), crate::map::terrain::TacticalBridgeCell>,
     /// Cell (rx, ry) -> map lighting bundle. Render paths look up compatibility tints per-frame.
     pub(crate) lighting_grid: CellLightGrid,
+    /// Last radiation-glow light epoch applied to `lighting_grid`. The glow is
+    /// rebuilt only when this changes (a site stepped on `RadLightDelay`, or the
+    /// site set changed). App view-state only — never serialized or hashed.
+    pub(crate) last_radiation_light_epoch: u64,
     /// Parsed map [Lighting] config used to rebuild transient app lighting after load.
     pub(crate) map_lighting_config: LightingConfig,
     /// Active map theater name (e.g., DESERT).
@@ -2548,6 +2552,7 @@ impl App {
             bridge_height_map: BTreeMap::new(),
             tactical_bridge_inverse_map: BTreeMap::new(),
             lighting_grid: CellLightGrid::new(),
+            last_radiation_light_epoch: 0,
             map_lighting_config: LightingConfig::default(),
             theater_name: "TEMPERATE".to_string(),
             theater_ext: "tem".to_string(),

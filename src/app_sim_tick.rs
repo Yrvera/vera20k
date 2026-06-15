@@ -218,7 +218,11 @@ pub(crate) fn advance_in_game_runtime(state: &mut AppState, elapsed_ms: u64) {
     };
 
     if run_sim {
-        let garrison_flash_start_tick = state.simulation.as_ref().map(|sim| sim.session.tick).unwrap_or(0);
+        let garrison_flash_start_tick = state
+            .simulation
+            .as_ref()
+            .map(|sim| sim.session.tick)
+            .unwrap_or(0);
         advance_fixed_simulation(state, sim_elapsed);
         let garrison_flash_elapsed_ticks = state
             .simulation
@@ -257,6 +261,10 @@ pub(crate) fn advance_in_game_runtime(state: &mut AppState, elapsed_ms: u64) {
             sim_elapsed.min(MAX_UPDATE_DELTA_MS) as u32,
         );
     }
+
+    // Refresh the radiation green glow after the sim steps (stepwise; a no-op
+    // when no radiation site crossed a step boundary this frame).
+    refresh_radiation_glow(state);
 
     crate::app_building_anim::update_radar_state(state, SIM_TICK_MS as f32);
     crate::app_building_anim::update_power_bar_anim(state);
@@ -342,12 +350,8 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
                 SIM_TICK_MS,
             );
             let (ents, interner) = sim.entities_mut_and_interner();
-            let death_finished = animation::tick_animations(
-                ents,
-                &state.animation_sequences,
-                SIM_TICK_MS,
-                interner,
-            );
+            let death_finished =
+                animation::tick_animations(ents, &state.animation_sequences, SIM_TICK_MS, interner);
             // Despawn entities whose death animation has completed.
             for dead_id in &death_finished {
                 // Remove from occupancy before despawning.
@@ -848,6 +852,43 @@ pub(crate) fn advance_fixed_simulation(state: &mut AppState, elapsed_ms: u64) {
         rebuild_dynamic_path_grid(state);
         refresh_entity_atlases(state);
     }
+}
+
+/// Per-frame radiation-glow refresh. Rebuilds the lighting grid only when the
+/// radiation light epoch changes (a site crossed a `RadLightDelay` step boundary,
+/// or a site appeared/disappeared) — i.e. stepwise, matching the original. Idle
+/// matches (no sites) pay one epoch hash per frame and never rebuild. Render-only:
+/// never touches sim state or the deterministic hash.
+fn refresh_radiation_glow(state: &mut AppState) {
+    let epoch = match (state.simulation.as_ref(), state.rules.as_ref()) {
+        (Some(sim), Some(rules)) => {
+            crate::app_radiation_light::radiation_light_epoch(&sim.radiation, &rules.radiation)
+        }
+        _ => return,
+    };
+    if epoch == state.last_radiation_light_epoch {
+        return;
+    }
+    // Recompute in an inner scope so the shared borrows of `state` drop before
+    // the mutable assignment to `state.lighting_grid`. Terrain is sourced from
+    // `state.resolved_terrain` to match the existing building-placement caller
+    // (the same grid the building lamps light off).
+    let new_grid = {
+        let (Some(sim), Some(rules)) = (state.simulation.as_ref(), state.rules.as_ref()) else {
+            return;
+        };
+        let Some(terrain) = state.resolved_terrain.as_ref() else {
+            return;
+        };
+        crate::app_init::rebuild_lighting_grid_from_sim(
+            terrain,
+            &state.map_lighting_config,
+            Some(sim),
+            Some(rules),
+        )
+    };
+    state.last_radiation_light_epoch = epoch;
+    state.lighting_grid = new_grid;
 }
 
 fn schedule_fixed_steps(accumulator_ms: u64, elapsed_ms: u64, max_steps: u32) -> FixedStepSchedule {
