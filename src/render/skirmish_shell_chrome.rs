@@ -59,6 +59,11 @@ pub struct SkirmishShellChromeAtlas {
     pub modal_button_mnbttn_frame0: Option<SkirmishShellChromeEntry>,
     pub modal_button_mnbttn_frame1: Option<SkirmishShellChromeEntry>,
     pub modal_button_mnbttn_frame2: Option<SkirmishShellChromeEntry>,
+    /// SIDEBTTN.SHP frames for the active in-game Options (0xBBB) owner-draw
+    /// buttons (type 2): 0 released, 1 pressed, 2 flash/checked. 125x25 native.
+    pub options_button_sidebttn_frame0: Option<SkirmishShellChromeEntry>,
+    pub options_button_sidebttn_frame1: Option<SkirmishShellChromeEntry>,
+    pub options_button_sidebttn_frame2: Option<SkirmishShellChromeEntry>,
     pub checkbox_unchecked_cue_i: Option<SkirmishShellChromeEntry>,
     pub checkbox_checked_cce_i: Option<SkirmishShellChromeEntry>,
     pub trackbar_thumb_trakgrip: Option<SkirmishShellChromeEntry>,
@@ -118,6 +123,9 @@ pub struct ControlChrome {
     pub scrollbar_thumb_top: Option<SkirmishShellChromeEntry>,
     pub scrollbar_thumb_mid: Option<SkirmishShellChromeEntry>,
     pub scrollbar_thumb_bottom: Option<SkirmishShellChromeEntry>,
+    pub options_button_sidebttn_frame0: Option<SkirmishShellChromeEntry>,
+    pub options_button_sidebttn_frame1: Option<SkirmishShellChromeEntry>,
+    pub options_button_sidebttn_frame2: Option<SkirmishShellChromeEntry>,
 }
 
 impl SkirmishShellChromeAtlas {
@@ -148,6 +156,9 @@ impl SkirmishShellChromeAtlas {
             scrollbar_thumb_top: self.scrollbar_thumb_top,
             scrollbar_thumb_mid: self.scrollbar_thumb_mid,
             scrollbar_thumb_bottom: self.scrollbar_thumb_bottom,
+            options_button_sidebttn_frame0: self.options_button_sidebttn_frame0,
+            options_button_sidebttn_frame1: self.options_button_sidebttn_frame1,
+            options_button_sidebttn_frame2: self.options_button_sidebttn_frame2,
         }
     }
 }
@@ -236,6 +247,31 @@ pub fn build_skirmish_shell_chrome_atlas(
     }
     if sdbtnanm_palette.is_none() {
         log::warn!("Missing optional Skirmish shell palette SDBTNANM.PAL");
+    }
+    let sidebar_palette = load_named_palette(assets, "SIDEBAR.PAL");
+    if let Some(sidebar_palette) = sidebar_palette.as_ref() {
+        // SIDEBTTN.SHP — active in-game Options (0xBBB) owner-draw buttons (type 2):
+        // 125x25 canvas, 3 frames (0 released / 1 pressed / 2 flash/checked), drawn
+        // through SIDEBAR.PAL (idx0 = magenta key). Distinct art from SDBTNANM (the
+        // front-end shell button); only the in-game Options dialog uses it.
+        for frame in [0usize, 1, 2] {
+            match render_shp_entry_labeled(
+                assets,
+                "SIDEBTTN.SHP",
+                &format!("sidebttn.shp#{frame}"),
+                sidebar_palette,
+                frame,
+            ) {
+                Some(entry) => rendered.push(entry),
+                None => log::warn!(
+                    "Missing in-game Options button asset SIDEBTTN.SHP frame {frame}; Options buttons will not render"
+                ),
+            }
+        }
+    } else {
+        log::warn!(
+            "Skipping in-game Options button art SIDEBTTN.SHP because SIDEBAR.PAL is missing or invalid"
+        );
     }
     if let Some(main_button_palette) = main_button_palette.as_ref() {
         for frame in [0usize, 1, 2] {
@@ -439,6 +475,9 @@ pub fn build_skirmish_shell_chrome_atlas(
         modal_button_mnbttn_frame0: by_label.get("mnbttn.shp#0").copied(),
         modal_button_mnbttn_frame1: by_label.get("mnbttn.shp#1").copied(),
         modal_button_mnbttn_frame2: by_label.get("mnbttn.shp#2").copied(),
+        options_button_sidebttn_frame0: by_label.get("sidebttn.shp#0").copied(),
+        options_button_sidebttn_frame1: by_label.get("sidebttn.shp#1").copied(),
+        options_button_sidebttn_frame2: by_label.get("sidebttn.shp#2").copied(),
         checkbox_unchecked_cue_i: by_label.get("cue_i.pcx").copied(),
         checkbox_checked_cce_i: by_label.get("cce_i.pcx").copied(),
         trackbar_thumb_trakgrip: by_label.get("trakgrip.pcx").copied(),
@@ -527,7 +566,9 @@ fn classify_shell_asset(name: &str) -> ShellAssetRole {
         "bue_li30.pcx" | "bue_mi30.pcx" | "bue_ri30.pcx" | "bde_li30.pcx" | "bde_mi30.pcx"
         | "bde_ri30.pcx" | "cue_i.pcx" | "cce_i.pcx" | "trakgrip.pcx" | "trofl.pcx"
         | "trofm.pcx" | "trofr.pcx" | "dnarrowr.pcx" | "dnarrowp.pcx" | "gdnarrowr.pcx"
-        | "gdnarrowp.pcx" | "mnbttn.shp" => ShellAssetRole::VerifiedOwnerDrawButton,
+        | "gdnarrowp.pcx" | "mnbttn.shp" | "sidebttn.shp" => {
+            ShellAssetRole::VerifiedOwnerDrawButton
+        }
         "pudlgbgn.shp" => ShellAssetRole::VerifiedModalDialogBackground,
         "usai.pcx" | "japi.pcx" | "frai.pcx" | "geri.pcx" | "gbri.pcx" | "djbi.pcx"
         | "arbi.pcx" | "lati.pcx" | "rusi.pcx" | "yrii.pcx" | "obsi.pcx" | "rani.pcx" => {
@@ -986,6 +1027,10 @@ mod tests {
         );
         assert_ne!(
             classify_shell_asset("sidebar.pal"),
+            ShellAssetRole::VerifiedOwnerDrawButton
+        );
+        assert_eq!(
+            classify_shell_asset("SIDEBTTN.SHP"),
             ShellAssetRole::VerifiedOwnerDrawButton
         );
     }
