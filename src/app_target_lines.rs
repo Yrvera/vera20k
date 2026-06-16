@@ -84,6 +84,10 @@ impl TargetLineState {
     pub(crate) fn set_unit_action_lines_enabled(&mut self, enabled: bool) {
         self.unit_action_lines_enabled = enabled;
     }
+
+    pub(crate) fn unit_action_lines_enabled(&self) -> bool {
+        self.unit_action_lines_enabled
+    }
 }
 
 /// Reset the selected action-line timer when action-producing commands are queued.

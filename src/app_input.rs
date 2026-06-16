@@ -48,6 +48,13 @@ pub(crate) fn handle_mouse_input(
 ) {
     use crate::app_gadget_input::GadgetConsume;
     let pressed = btn_state.is_pressed();
+    // Paused in-game Options overlay owns the mouse: route press/release/checkbox/
+    // Back here and CONSUME the click so it never reaches the tactical viewport or
+    // a gadget (no unit orders behind the overlay). KD-6.
+    if state.paused {
+        crate::app_in_game_options_input::in_game_options_mouse(state, button, pressed);
+        return;
+    }
     // Middle-mouse pan: not a gadget event, handle directly.
     if button == MouseButton::Middle {
         if pressed {
@@ -215,6 +222,13 @@ pub(crate) fn minimap_mouse(state: &mut AppState, button: MouseButton, btn_state
 const MIDDLE_MOUSE_PAN_SPEED: f32 = 3.0;
 
 pub(crate) fn handle_cursor_moved_in_game(state: &mut AppState) {
+    // Paused in-game Options overlay: drive a live slider drag (visual/stored only —
+    // cadence applies on close, KD-8) and swallow the move so it can't begin a
+    // selection drag or camera pan behind the overlay.
+    if state.paused {
+        crate::app_in_game_options_input::in_game_options_drag(state);
+        return;
+    }
     // Minimap: gamemd re-centers only on press edges and ignores held motion
     // (decompile 0x006539D0: `param_1 & 0x22` early-out). While a minimap press
     // is held we do NOT follow the cursor — but still swallow the move so it
