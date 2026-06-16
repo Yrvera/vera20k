@@ -321,6 +321,10 @@ pub struct GeneralRules {
     pub chute_sound: Option<String>,
     /// Sound event for shell main-menu buttons from [AudioVisual] GUIMainButtonSound.
     pub gui_main_button_sound: Option<String>,
+    /// Shell first-paint controls-reveal slide-in cue from [AudioVisual]
+    /// GUIMoveInSound (stock `MenuSlideIn`). Played once at the start of each
+    /// allow-listed shell dialog's slide. None = no sound configured.
+    pub gui_move_in_sound: Option<String>,
     /// Generic shell click sound from [AudioVisual] GenericClick.
     pub generic_click_sound: Option<String>,
     /// Sound event for shell checkboxes from [AudioVisual] GUICheckboxSound.
@@ -723,6 +727,7 @@ impl Default for GeneralRules {
             building_garrisoned_sound: None,
             chute_sound: None,
             gui_main_button_sound: None,
+            gui_move_in_sound: None,
             generic_click_sound: None,
             gui_checkbox_sound: None,
             gui_tab_sound: None,
@@ -1182,6 +1187,11 @@ impl GeneralRules {
                 .map(str::to_string),
             gui_main_button_sound: audio_visual
                 .and_then(|s| s.get("GUIMainButtonSound"))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            gui_move_in_sound: audio_visual
+                .and_then(|s| s.get("GUIMoveInSound"))
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string),

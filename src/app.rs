@@ -1706,6 +1706,18 @@ impl App {
         Self::play_shell_ui_sound_by_id(state, sound_id.as_deref());
     }
 
+    /// Play the shell first-paint slide-in cue ([AudioVisual] GUIMoveInSound,
+    /// stock `MenuSlideIn`), once at the start of each allow-listed shell
+    /// dialog's controls-reveal slide. A no-op when the key is empty/unset.
+    pub(crate) fn play_shell_slide_in_sound(state: &mut AppState) {
+        let sound_id = state
+            .rules
+            .as_ref()
+            .and_then(|rules| rules.general.gui_move_in_sound.as_deref())
+            .map(str::to_string);
+        Self::play_shell_ui_sound_by_id(state, sound_id.as_deref());
+    }
+
     fn drain_skirmish_shell_ui_sounds(state: &mut AppState) {
         let _trackbar_parent_notifications =
             state.skirmish_shell_state.drain_pending_trackbar_hscrolls();
