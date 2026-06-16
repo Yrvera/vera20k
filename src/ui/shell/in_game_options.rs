@@ -78,6 +78,31 @@ pub mod control {
     pub const FOOTER: u16 = 0x0695;
 }
 
+/// GameSpeed/ScrollRate value-label CSF keys, indexed by SLIDER POSITION (0..6).
+/// Verbatim from the gamemd CSF pointer tables (slider pos 0 = "slowest" end).
+pub const SPEED_LABEL_KEYS: [&str; 7] = [
+    "TXT_SLOWEST", // pos 0
+    "TXT_SLOWER",  // pos 1
+    "TXT_SLOW",    // pos 2
+    "TXT_MEDIUM",  // pos 3
+    "TXT_FAST",    // pos 4
+    "TXT_FASTER",  // pos 5
+    "TXT_FASTEST", // pos 6
+];
+
+/// CSF key for a speed value-label: template default `GUI:Faster` until the slider
+/// has been dragged this open, then the position-indexed `SPEED_LABEL_KEYS` entry.
+/// Reproduces the gamemd quirk: the proc's init path never sets the label text, so
+/// both sliders show the template default `GUI:Faster` until the user first drags
+/// *that* slider (WM_HSCROLL), which swaps it to the position CSF text.
+pub fn speed_value_label_key(slider_pos: u32, dragged: bool) -> &'static str {
+    if !dragged {
+        "GUI:Faster"
+    } else {
+        SPEED_LABEL_KEYS[(slider_pos as usize).min(SPEED_LABEL_KEYS.len() - 1)]
+    }
+}
+
 /// RT_DIALOG resource id of the active-game Options dialog.
 const DIALOG_0BBB: u16 = 0x0BBB;
 
@@ -406,6 +431,14 @@ mod tests {
         assert_eq!(key(control::FOOTER), Some("GUI:Blank"));
         // Interactive controls carry no static CSF caption (owner-draw painted).
         assert_eq!(key(control::GAME_SPEED), None);
+    }
+
+    #[test]
+    fn value_label_is_template_default_until_dragged_then_position_key() {
+        assert_eq!(speed_value_label_key(3, false), "GUI:Faster");
+        assert_eq!(speed_value_label_key(3, true), "TXT_MEDIUM");
+        assert_eq!(speed_value_label_key(6, true), "TXT_FASTEST");
+        assert_eq!(speed_value_label_key(0, true), "TXT_SLOWEST");
     }
 
     #[test]
