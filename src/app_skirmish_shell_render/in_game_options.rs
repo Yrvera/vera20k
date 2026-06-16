@@ -7,12 +7,18 @@
 //! at the populate defaults; input (drag/toggle/Back) and the persisted values
 //! land in 5a-iii.
 //!
-//! The static text controls (title/captions/value-labels/footer) carry no
-//! verified DLU rects in-repo (the `0xBBB` design table marks them `—`), so they
-//! are NOT emitted here — fabricating their rects would violate the parity bar.
-//! Grounding the static rects from the `0xBBB` resource template is a follow-up.
+//! The visible text statics (title `0x694`, captions `0x714`/`0x715`, value
+//! labels `0x671`/`0x672`, footer `0x695`) are emitted as BitFont glyphs from
+//! their CSF caption keys (see `build_in_game_options_text_instances`); their
+//! rects + keys are transcribed verbatim from the `0xBBB` DLGTEMPLATE. The
+//! hidden VisualDetails caption/label (`0x716`/`0x673`) carry `visible: false`
+//! and are skipped. The value labels paint their template default (`GUI:Faster`);
+//! the slider-position-driven label swap (TXT_SLOWEST..TXT_FASTEST) is 5a-iii.
 
+use crate::assets::csf_file::CsfFile;
 use crate::render::batch::SpriteInstance;
+use crate::render::bit_font::BitFont;
+use crate::render::shell_text::{self, ShellAlign, TextRect};
 use crate::render::skirmish_shell_chrome::{ControlChrome, SkirmishShellChromeAtlas};
 use crate::sidebar::SidebarView;
 use crate::ui::shell::descriptor::ControlKind;
@@ -20,6 +26,8 @@ use crate::ui::shell::geom;
 use crate::ui::shell::in_game_options::{build_in_game_options_descriptor, control};
 use crate::ui::shell::layout::{InGameOptionsAnchor, layout_pass_in_game_options};
 use crate::ui::skirmish_shell::trackbar_pixel_offset;
+
+use super::{SHELL_CONTROL_TEXT_DEPTH, SHELL_LABEL_TEXT_RGB};
 
 use super::controls::{ControlPaint, options_button_sidebttn_frame_index, paint_control};
 
@@ -82,6 +90,129 @@ pub(crate) fn build_in_game_options_instances(
         }
     }
     out
+}
+
+/// Build the BitFont glyph instances for the active in-game Options overlay's
+/// visible text statics (title/captions/value-labels/footer), resolved from their
+/// CSF caption keys. Hidden statics (the VisualDetails caption/label) carry
+/// `visible: false` and are skipped; `GUI:Blank` (the footer) resolves to empty
+/// and emits nothing. These glyphs sample the BitFont atlas — a different texture
+/// from the owner-draw chrome atlas — so they are returned as their own instance
+/// list and the caller draws them in a separate pass-through call.
+///
+/// Camera offset is NOT applied here: the caller pre-offsets every overlay
+/// instance (chrome + text + cursor) by the rounded camera scroll uniformly, the
+/// same convention as `build_in_game_options_instances`.
+pub(crate) fn build_in_game_options_text_instances(
+    font: &BitFont,
+    csf: Option<&CsfFile>,
+    screen_w: i32,
+    screen_h: i32,
+    anchor: InGameOptionsAnchor,
+) -> Vec<SpriteInstance> {
+    let mut out = Vec::new();
+    for draw in in_game_options_static_draws(csf, screen_w, screen_h, anchor) {
+        let rect = TextRect {
+            x: draw.rect.x,
+            y: draw.rect.y,
+            w: draw.rect.w.max(0) as u32,
+            h: draw.rect.h.max(0) as u32,
+        };
+        let text_draw = shell_text::draw_in_rect(
+            font,
+            &draw.text,
+            rect,
+            SHELL_LABEL_TEXT_RGB,
+            draw.align,
+            // Caller applies the camera pre-offset uniformly (see doc comment).
+            [0.0, 0.0],
+            SHELL_CONTROL_TEXT_DEPTH,
+            None,
+        );
+        out.extend(text_draw.instances);
+    }
+    out
+}
+
+/// One resolved static text draw: its laid screen rect, alignment, and display
+/// text. Produced for every VISIBLE static-class control with non-empty resolved
+/// text (so the hidden VisualDetails statics and the empty `GUI:Blank` footer
+/// drop out here). Split from the glyph emission so the selection/rect/align/text
+/// logic is unit-testable without a GPU font.
+struct OptionsStaticDraw {
+    #[cfg_attr(not(test), allow(dead_code))]
+    id: u16,
+    rect: geom::RectPx,
+    align: ShellAlign,
+    text: String,
+}
+
+fn in_game_options_static_draws(
+    csf: Option<&CsfFile>,
+    screen_w: i32,
+    screen_h: i32,
+    anchor: InGameOptionsAnchor,
+) -> Vec<OptionsStaticDraw> {
+    let desc = build_in_game_options_descriptor();
+    let laid = layout_pass_in_game_options(&desc, screen_w, screen_h, anchor);
+    let mut out = Vec::new();
+    for (c, l) in desc.controls.iter().zip(laid.iter()) {
+        if !c.visible || c.kind != ControlKind::Static {
+            continue;
+        }
+        let Some(key) = c.csf_key else {
+            continue;
+        };
+        let text = resolve_static_text(csf, key);
+        if text.is_empty() {
+            continue;
+        }
+        out.push(OptionsStaticDraw {
+            id: c.id,
+            rect: l.rect,
+            align: options_static_align(c.id),
+            text,
+        });
+    }
+    out
+}
+
+/// Resolve a static's CSF caption key to display text, falling back to an English
+/// string when the CSF table is unavailable or the key is missing. `GUI:Blank`
+/// (the footer) and unknown keys fall back to empty, so the footer paints nothing.
+fn resolve_static_text(csf: Option<&CsfFile>, key: &str) -> String {
+    csf.and_then(|c| c.get(key))
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| options_static_fallback(key).to_string())
+}
+
+fn options_static_fallback(key: &str) -> &'static str {
+    match key {
+        "GUI:GameOptions" => "Game Options",
+        "GUI:GameSpeed" => "Game Speed",
+        "GUI:ScrollRate" => "Scroll Rate",
+        "GUI:Faster" => "Faster",
+        // GUI:Blank (footer) + anything else -> no text.
+        _ => "",
+    }
+}
+
+/// Per-static text alignment, derived from the `0xBBB` template `SS_*` style bits:
+/// the title `0x694` is SS_CENTER (and is the same control id/rect as the skirmish
+/// right-panel title `0x694`, which renders H-centered + top-anchored, no
+/// V_CENTER); the GameSpeed/ScrollRate captions are SS_RIGHT; the value labels and
+/// footer are SS_LEFT. Captions/labels are vertically centered against their
+/// slider row (the trackbar value-label convention); the title is top-anchored.
+/// Vertical placement is a manual-visual-gate item (confirm vs gamemd side-by-side).
+fn options_static_align(id: u16) -> ShellAlign {
+    match id {
+        control::TITLE => ShellAlign::H_CENTER,
+        control::GAME_SPEED_CAPTION | control::SCROLL_RATE_CAPTION => {
+            ShellAlign::H_RIGHT | ShellAlign::V_CENTER
+        }
+        // Value labels (0x671/0x672) + footer (0x695): SS_LEFT, vertically centered.
+        _ => ShellAlign::V_CENTER,
+    }
 }
 
 /// Populate-default checkbox state for the `0xBBB` checkboxes (TargetLines on,
@@ -205,5 +336,70 @@ mod tests {
         let out =
             build_in_game_options_instances(&ControlChrome::default(), 800, 600, test_anchor());
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn static_draws_select_visible_statics_resolve_text_and_align() {
+        // csf=None -> English fallbacks. The footer (GUI:Blank) falls back to
+        // empty and drops out; the two hidden VisualDetails statics (visible:false)
+        // drop out. Leaves title + 2 captions + 2 value labels = 5.
+        let draws = in_game_options_static_draws(None, 800, 600, test_anchor());
+        let ids: Vec<u16> = draws.iter().map(|d| d.id).collect();
+        assert_eq!(draws.len(), 5, "title + 2 captions + 2 value labels");
+        for id in [
+            control::TITLE,
+            control::GAME_SPEED_CAPTION,
+            control::SCROLL_RATE_CAPTION,
+            control::GAME_SPEED_VALUE,
+            control::SCROLL_RATE_VALUE,
+        ] {
+            assert!(ids.contains(&id), "missing static {id:#06x}");
+        }
+        // Hidden VisualDetails caption/label + the blank footer are NOT drawn.
+        assert!(!ids.contains(&control::VISUAL_DETAILS_CAPTION));
+        assert!(!ids.contains(&control::VISUAL_DETAILS_VALUE));
+        assert!(!ids.contains(&control::FOOTER));
+
+        let find = |id: u16| draws.iter().find(|d| d.id == id).unwrap();
+        // Alignment from the template SS_* bits.
+        assert_eq!(find(control::TITLE).align, ShellAlign::H_CENTER);
+        assert_eq!(
+            find(control::GAME_SPEED_CAPTION).align,
+            ShellAlign::H_RIGHT | ShellAlign::V_CENTER
+        );
+        assert_eq!(find(control::GAME_SPEED_VALUE).align, ShellAlign::V_CENTER);
+        // Laid rect == projected DLU rect (centered offset is 0 at the 800x600 base).
+        assert_eq!(find(control::TITLE).rect, geom::dlu_rect(425, 1, 108, 10));
+        assert_eq!(
+            find(control::GAME_SPEED_CAPTION).rect,
+            geom::dlu_rect(61, 99, 78, 15)
+        );
+        // The value labels paint the template default ("Faster") for 5a-ii; the
+        // slider-position swap is 5a-iii.
+        assert_eq!(find(control::GAME_SPEED_VALUE).text, "Faster");
+    }
+
+    #[test]
+    fn text_instances_emit_glyphs_from_bit_font_atlas_path() {
+        // Smoke test the glyph delegation: a font carrying the letters of "Faster"
+        // (the value-label fallback) yields glyph instances. The detailed layout
+        // math lives in shell_text/bit_font unit tests.
+        use crate::render::bit_font::tests::make_test_font;
+        let font = make_test_font(
+            &[
+                (b'F' as u16, 6),
+                (b'a' as u16, 6),
+                (b's' as u16, 6),
+                (b't' as u16, 6),
+                (b'e' as u16, 6),
+                (b'r' as u16, 6),
+            ],
+            8,
+        );
+        let out = build_in_game_options_text_instances(&font, None, 800, 600, test_anchor());
+        assert!(
+            !out.is_empty(),
+            "value labels emit glyphs from the font atlas"
+        );
     }
 }

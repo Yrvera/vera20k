@@ -4,21 +4,26 @@
 //! opens during an active game. Depends only on the shared shell descriptor +
 //! geometry types (no sim/render/assets), honoring the ui/ layering rule.
 //!
-//! Scope of this sub-step (5a-i): the ACTIVE `0xBBB` set of nine interactive
-//! controls with their verified resource DLU rects, plus the raw DLU->pixel
-//! baseline (see `layout::layout_pass`). The text statics (title/captions/value
-//! labels/footer), the native child-resize anchoring, the owner-draw paint,
-//! input, and INI persistence land in later 5a sub-steps. The shell variant
-//! `0xF5` is a follow-on (its full control rects are not all yet verified).
+//! Scope: the ACTIVE `0xBBB` set of all 17 controls — nine interactive (buttons/
+//! trackbars/checkboxes) plus eight text statics (title/captions/value-labels/
+//! footer) — with their verified resource DLU rects and CSF caption keys. Input
+//! and INI persistence land in 5a-iii. The shell variant `0xF5` is a follow-on
+//! (its full control rects are not all yet verified).
 //!
-//! Control set verified by transcribing the live `0xBBB` dialog resource
-//! template: 17 controls total = 3 owner-draw buttons (Back/Keyboard/Sound) +
-//! 3 trackbars (GameSpeed/ScrollRate/VisualDetails) + 3 auto-checkboxes
-//! (TargetLines/Tooltips/ShowHidden) + 8 text statics (title `0x694`, captions
-//! `0x714`/`0x715`/`0x716`, value labels `0x671`/`0x672`/`0x673`, footer
-//! `0x695`). The two formerly-unidentified controls are the ScrollRate caption
-//! `0x715` and the VisualDetails caption `0x716` — both STATIC, neither a hidden
-//! button. The statics are render-only and land with the paint sub-step.
+//! Control set + rects + CSF keys verified by transcribing the live `0xBBB`
+//! DLGTEMPLATE (a plain `DLGTEMPLATE`, not DIALOGEX) at VA `0x00C01B18`
+//! (`read_memory 0x00C01B18`): 17 controls = 3 owner-draw buttons
+//! (Back/Keyboard/Sound) + 3 trackbars (GameSpeed/ScrollRate/VisualDetails) +
+//! 3 auto-checkboxes (TargetLines/Tooltips/ShowHidden) + 8 statics (title `0x694`
+//! `GUI:GameOptions`, captions `0x714` `GUI:GameSpeed` / `0x715` `GUI:ScrollRate`
+//! / `0x716` `GUI:VisualDetails`, value labels `0x671`/`0x672` `GUI:Faster` /
+//! `0x673` `GUI:HigherDetail`, footer `0x695` `GUI:Blank`). The VisualDetails
+//! trackbar `0x52B` and its caption `0x716` + value label `0x673` are created
+//! `WS_DISABLED` with no `WS_VISIBLE` (the proc never shows them), so they ship
+//! `visible: false` and the emitter skips them. The two value labels carry the
+//! template default `GUI:Faster`; the proc's init path never sets the label text
+//! (only WM_HSCROLL drag does), so this default is what shows at populate — the
+//! slider-position-driven swap is 5a-iii.
 
 use super::descriptor::{
     AnchorRule, BgKind, ControlDescriptor, ControlKind, DialogDescriptor, DialogId,
@@ -48,6 +53,29 @@ pub mod control {
     pub const SHOW_HIDDEN: u16 = 0x0604;
     /// Tooltips checkbox -> Options ToolTips.
     pub const TOOLTIPS: u16 = 0x0602;
+
+    // Text statics (render-only). Their template title strings ARE the CSF
+    // caption keys; rects verified from the `0xBBB` DLGTEMPLATE at `0x00C01B18`.
+    /// Dialog title static; `GUI:GameOptions`, SS_CENTER. Same control id/rect as
+    /// the skirmish right-panel title `0x694` (rendered H-centered, top-anchored).
+    pub const TITLE: u16 = 0x0694;
+    /// GameSpeed caption static; `GUI:GameSpeed`, SS_RIGHT.
+    pub const GAME_SPEED_CAPTION: u16 = 0x0714;
+    /// ScrollRate caption static; `GUI:ScrollRate`, SS_RIGHT.
+    pub const SCROLL_RATE_CAPTION: u16 = 0x0715;
+    /// VisualDetails caption static; `GUI:VisualDetails`, SS_RIGHT. Hidden in
+    /// `0xBBB` (WS_DISABLED, no WS_VISIBLE) — carried for fidelity, never emitted.
+    pub const VISUAL_DETAILS_CAPTION: u16 = 0x0716;
+    /// GameSpeed value label; template default `GUI:Faster`, SS_LEFT. The
+    /// slider-driven swap (TXT_SLOWEST..TXT_FASTEST) lands in 5a-iii.
+    pub const GAME_SPEED_VALUE: u16 = 0x0671;
+    /// ScrollRate value label; template default `GUI:Faster`, SS_LEFT (5a-iii swaps).
+    pub const SCROLL_RATE_VALUE: u16 = 0x0672;
+    /// VisualDetails value label; `GUI:HigherDetail`, SS_LEFT. Hidden in `0xBBB` —
+    /// never emitted.
+    pub const VISUAL_DETAILS_VALUE: u16 = 0x0673;
+    /// Blank footer / status-line static; `GUI:Blank` (resolves empty), SS_LEFT.
+    pub const FOOTER: u16 = 0x0695;
 }
 
 /// RT_DIALOG resource id of the active-game Options dialog.
@@ -133,6 +161,58 @@ pub fn build_in_game_options_descriptor() -> DialogDescriptor {
                 true,
                 true,
             ),
+            // Text statics (render-only). Rects + CSF titles verbatim from the
+            // `0xBBB` DLGTEMPLATE at `0x00C01B18` (`read_memory 0x00C01B18`). The
+            // two VisualDetails statics (`0x716`/`0x673`) are WS_DISABLED with no
+            // WS_VISIBLE in the template, so `visible: false` (emitter skips them).
+            options_static(
+                control::TITLE,
+                RectPx::new(425, 1, 108, 10),
+                "GUI:GameOptions",
+                true,
+            ),
+            options_static(
+                control::GAME_SPEED_CAPTION,
+                RectPx::new(61, 99, 78, 15),
+                "GUI:GameSpeed",
+                true,
+            ),
+            options_static(
+                control::SCROLL_RATE_CAPTION,
+                RectPx::new(61, 130, 78, 15),
+                "GUI:ScrollRate",
+                true,
+            ),
+            options_static(
+                control::VISUAL_DETAILS_CAPTION,
+                RectPx::new(61, 161, 78, 15),
+                "GUI:VisualDetails",
+                false,
+            ),
+            options_static(
+                control::GAME_SPEED_VALUE,
+                RectPx::new(278, 99, 92, 15),
+                "GUI:Faster",
+                true,
+            ),
+            options_static(
+                control::SCROLL_RATE_VALUE,
+                RectPx::new(278, 130, 92, 15),
+                "GUI:Faster",
+                true,
+            ),
+            options_static(
+                control::VISUAL_DETAILS_VALUE,
+                RectPx::new(278, 161, 92, 15),
+                "GUI:HigherDetail",
+                false,
+            ),
+            options_static(
+                control::FOOTER,
+                RectPx::new(2, 355, 303, 12),
+                "GUI:Blank",
+                true,
+            ),
         ],
         bg_kind: BgKind::InGameOptions,
         slide_eligible: false,
@@ -166,6 +246,31 @@ fn options_control(
     }
 }
 
+/// One Options text-static descriptor. `csf_key` is the control's template title
+/// string (which IS its CSF caption key); the emitter resolves it to display text
+/// and paints it as BitFont glyphs. `anchor` is unused under
+/// `RepositionPolicy::InGameOptions` (statics take the centered offset like other
+/// ordinary controls). Statics are always template-enabled; `visible` carries the
+/// template `WS_VISIBLE` bit (the emitter skips `!visible` statics).
+fn options_static(
+    id: u16,
+    dlu_rect: RectPx,
+    csf_key: &'static str,
+    visible: bool,
+) -> ControlDescriptor {
+    ControlDescriptor {
+        id,
+        kind: ControlKind::Static,
+        dlu_rect,
+        anchor: AnchorRule::RightAnchor,
+        csf_key: Some(csf_key),
+        tooltip_key: None,
+        group: 0,
+        enabled: true,
+        visible,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,14 +289,15 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_carries_the_nine_active_0bbb_controls() {
+    fn descriptor_carries_all_seventeen_0bbb_controls() {
         let d = build_in_game_options_descriptor();
         assert_eq!(d.id, DialogId(0x0BBB));
         assert_eq!(d.bg_kind, BgKind::InGameOptions);
         assert_eq!(d.reposition_policy, RepositionPolicy::InGameOptions);
         assert!(!d.slide_eligible);
         let ids = control_ids(&d);
-        assert_eq!(ids.len(), 9);
+        // 9 interactive (3 buttons + 3 trackbars + 3 checkboxes) + 8 statics.
+        assert_eq!(ids.len(), 17);
         for id in [
             control::BACK,
             control::KEYBOARD,
@@ -202,6 +308,14 @@ mod tests {
             control::TARGET_LINES,
             control::SHOW_HIDDEN,
             control::TOOLTIPS,
+            control::TITLE,
+            control::GAME_SPEED_CAPTION,
+            control::SCROLL_RATE_CAPTION,
+            control::VISUAL_DETAILS_CAPTION,
+            control::GAME_SPEED_VALUE,
+            control::SCROLL_RATE_VALUE,
+            control::VISUAL_DETAILS_VALUE,
+            control::FOOTER,
         ] {
             assert!(ids.contains(&id), "missing control {id:#06x}");
         }
@@ -219,6 +333,18 @@ mod tests {
         assert_eq!(kind_of(&d, control::TARGET_LINES), ControlKind::Checkbox);
         assert_eq!(kind_of(&d, control::SHOW_HIDDEN), ControlKind::Checkbox);
         assert_eq!(kind_of(&d, control::TOOLTIPS), ControlKind::Checkbox);
+        for id in [
+            control::TITLE,
+            control::GAME_SPEED_CAPTION,
+            control::SCROLL_RATE_CAPTION,
+            control::VISUAL_DETAILS_CAPTION,
+            control::GAME_SPEED_VALUE,
+            control::SCROLL_RATE_VALUE,
+            control::VISUAL_DETAILS_VALUE,
+            control::FOOTER,
+        ] {
+            assert_eq!(kind_of(&d, id), ControlKind::Static, "static {id:#06x}");
+        }
     }
 
     #[test]
@@ -236,6 +362,50 @@ mod tests {
         assert_eq!(dlu(control::TARGET_LINES), RectPx::new(89, 206, 119, 10));
         assert_eq!(dlu(control::SHOW_HIDDEN), RectPx::new(89, 224, 119, 10));
         assert_eq!(dlu(control::TOOLTIPS), RectPx::new(214, 206, 127, 10));
+        // Statics (verbatim from the `0xBBB` DLGTEMPLATE at `0x00C01B18`).
+        assert_eq!(dlu(control::TITLE), RectPx::new(425, 1, 108, 10));
+        assert_eq!(
+            dlu(control::GAME_SPEED_CAPTION),
+            RectPx::new(61, 99, 78, 15)
+        );
+        assert_eq!(
+            dlu(control::SCROLL_RATE_CAPTION),
+            RectPx::new(61, 130, 78, 15)
+        );
+        assert_eq!(
+            dlu(control::VISUAL_DETAILS_CAPTION),
+            RectPx::new(61, 161, 78, 15)
+        );
+        assert_eq!(dlu(control::GAME_SPEED_VALUE), RectPx::new(278, 99, 92, 15));
+        assert_eq!(
+            dlu(control::SCROLL_RATE_VALUE),
+            RectPx::new(278, 130, 92, 15)
+        );
+        assert_eq!(
+            dlu(control::VISUAL_DETAILS_VALUE),
+            RectPx::new(278, 161, 92, 15)
+        );
+        assert_eq!(dlu(control::FOOTER), RectPx::new(2, 355, 303, 12));
+    }
+
+    #[test]
+    fn static_csf_keys_match_template() {
+        // The template title string of each static IS its CSF caption key.
+        let d = build_in_game_options_descriptor();
+        let key = |id: u16| d.controls.iter().find(|c| c.id == id).unwrap().csf_key;
+        assert_eq!(key(control::TITLE), Some("GUI:GameOptions"));
+        assert_eq!(key(control::GAME_SPEED_CAPTION), Some("GUI:GameSpeed"));
+        assert_eq!(key(control::SCROLL_RATE_CAPTION), Some("GUI:ScrollRate"));
+        assert_eq!(
+            key(control::VISUAL_DETAILS_CAPTION),
+            Some("GUI:VisualDetails")
+        );
+        assert_eq!(key(control::GAME_SPEED_VALUE), Some("GUI:Faster"));
+        assert_eq!(key(control::SCROLL_RATE_VALUE), Some("GUI:Faster"));
+        assert_eq!(key(control::VISUAL_DETAILS_VALUE), Some("GUI:HigherDetail"));
+        assert_eq!(key(control::FOOTER), Some("GUI:Blank"));
+        // Interactive controls carry no static CSF caption (owner-draw painted).
+        assert_eq!(key(control::GAME_SPEED), None);
     }
 
     #[test]
@@ -263,17 +433,20 @@ mod tests {
     }
 
     #[test]
-    fn visualdetails_is_hidden_rest_visible() {
-        // gamemd hides the VisualDetails triplet in 0xBBB (WS_DISABLED + no
-        // WS_VISIBLE; the populate path never shows it). The descriptor carries
-        // the interactive member (the 0x52B trackbar) as visible:false; its
-        // caption/value-label statics are simply not added by the emitter.
+    fn visualdetails_triplet_hidden_rest_visible() {
+        // gamemd hides the whole VisualDetails triplet in 0xBBB (WS_DISABLED + no
+        // WS_VISIBLE; the populate path never shows them): the 0x52B trackbar plus
+        // its caption 0x716 and value label 0x673. All three carry visible:false
+        // so the emitter skips them.
         let d = build_in_game_options_descriptor();
         let vis = |id: u16| d.controls.iter().find(|c| c.id == id).unwrap().visible;
-        assert!(
-            !vis(control::VISUAL_DETAILS),
-            "VisualDetails hidden in 0xBBB"
-        );
+        for id in [
+            control::VISUAL_DETAILS,
+            control::VISUAL_DETAILS_CAPTION,
+            control::VISUAL_DETAILS_VALUE,
+        ] {
+            assert!(!vis(id), "VisualDetails control {id:#06x} hidden in 0xBBB");
+        }
         for id in [
             control::BACK,
             control::KEYBOARD,
@@ -283,6 +456,12 @@ mod tests {
             control::TARGET_LINES,
             control::SHOW_HIDDEN,
             control::TOOLTIPS,
+            control::TITLE,
+            control::GAME_SPEED_CAPTION,
+            control::SCROLL_RATE_CAPTION,
+            control::GAME_SPEED_VALUE,
+            control::SCROLL_RATE_VALUE,
+            control::FOOTER,
         ] {
             assert!(vis(id), "control {id:#06x} visible");
         }

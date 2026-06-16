@@ -461,6 +461,16 @@ fn render_in_game_options_overlay_with_atlas(
     let anchor = in_game_options::in_game_options_anchor(atlas, sidebar_view);
     let mut instances =
         in_game_options::build_in_game_options_instances(&chrome, screen_w, screen_h, anchor);
+    // Visible text statics (title/captions/value-labels/footer) as BitFont glyphs.
+    // They sample the BitFont atlas (a different texture from the owner-draw chrome
+    // atlas), so they ride their own buffer + draw call below.
+    let mut text_instances = in_game_options::build_in_game_options_text_instances(
+        &state.bit_font,
+        state.csf.as_ref(),
+        screen_w,
+        screen_h,
+        anchor,
+    );
     // The world camera buffer (shared, uploaded once per tick) still drives the
     // game pass recorded into this same encoder, so we must NOT re-point it at
     // screen space. Instead draw through the zoom-independent UI camera and
@@ -471,7 +481,11 @@ fn render_in_game_options_overlay_with_atlas(
     let cam_dy = state.camera_y.round();
     let mut cursor_instances: Vec<SpriteInstance> =
         shell_cursor_instance(state).into_iter().collect();
-    for inst in instances.iter_mut().chain(cursor_instances.iter_mut()) {
+    for inst in instances
+        .iter_mut()
+        .chain(text_instances.iter_mut())
+        .chain(cursor_instances.iter_mut())
+    {
         inst.position[0] += cam_dx;
         inst.position[1] += cam_dy;
     }
@@ -479,6 +493,9 @@ fn render_in_game_options_overlay_with_atlas(
     let control_buffer = state
         .batch_renderer
         .create_instance_buffer(&state.gpu, &instances);
+    let text_buffer = state
+        .batch_renderer
+        .create_instance_buffer(&state.gpu, &text_instances);
     let cursor_buffer = state
         .batch_renderer
         .create_instance_buffer(&state.gpu, &cursor_instances);
@@ -519,6 +536,15 @@ fn render_in_game_options_overlay_with_atlas(
         state.batch_renderer.draw_with_buffer_ui_passthrough(
             &mut pass,
             &atlas.texture,
+            buffer,
+            *count,
+        );
+    }
+    // Text statics on top of the chrome, sampling the BitFont atlas.
+    if let Some((buffer, count)) = text_buffer.as_ref() {
+        state.batch_renderer.draw_with_buffer_ui_passthrough(
+            &mut pass,
+            state.bit_font.atlas(),
             buffer,
             *count,
         );
