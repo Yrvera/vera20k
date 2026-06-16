@@ -438,6 +438,10 @@ pub(crate) fn handle_hotkey_pressed(state: &mut AppState, code: winit::keyboard:
                 state.building_placement_preview = None;
             } else {
                 state.paused = true;
+                // Opening the in-game Options overlay: reset the transient
+                // interaction flags so the drag-gated value-label quirk (stale
+                // "Faster" until the slider is first dragged) resets each open.
+                state.in_game_options.on_open();
                 // Show OS cursor for egui interaction.
                 if state.software_cursor.is_some() {
                     state.window.set_cursor_visible(true);

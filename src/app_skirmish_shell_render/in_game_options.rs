@@ -23,7 +23,10 @@ use crate::render::skirmish_shell_chrome::{ControlChrome, SkirmishShellChromeAtl
 use crate::sidebar::SidebarView;
 use crate::ui::shell::descriptor::ControlKind;
 use crate::ui::shell::geom;
-use crate::ui::shell::in_game_options::{build_in_game_options_descriptor, control};
+use crate::ui::shell::in_game_options::{
+    build_in_game_options_descriptor, control, speed_value_label_key,
+};
+use crate::ui::shell::in_game_options_state::{InGameOptionsState, speed_slider_pos};
 use crate::ui::shell::layout::{InGameOptionsAnchor, layout_pass_in_game_options};
 use crate::ui::skirmish_shell::trackbar_pixel_offset;
 
@@ -55,6 +58,7 @@ pub(crate) fn build_in_game_options_instances(
     screen_w: i32,
     screen_h: i32,
     anchor: InGameOptionsAnchor,
+    state: &InGameOptionsState,
 ) -> Vec<SpriteInstance> {
     let desc = build_in_game_options_descriptor();
     let laid = layout_pass_in_game_options(&desc, screen_w, screen_h, anchor);
@@ -66,14 +70,22 @@ pub(crate) fn build_in_game_options_instances(
         let rect = l.rect;
         match c.kind {
             ControlKind::Button => {
-                // Render-only: no input yet, so every button paints its released
-                // frame (0). Pressed/flash frames arrive with 5a-iii input.
-                let frame = options_button_sidebttn_frame_index(false);
+                // The held button paints its pressed frame; the rest are released.
+                let pressed = state.pressed_button == Some(c.id);
+                let frame = options_button_sidebttn_frame_index(pressed);
                 paint_control(&mut out, chrome, ControlPaint::Button { rect, frame });
             }
             ControlKind::Trackbar => {
+                // Thumb position from the live internal value (slider pos = 6 - value).
+                // VisualDetails is hidden (skipped above), so only GameSpeed/ScrollRate
+                // reach here; an unknown id falls back to the populate-middle position.
+                let pos = match c.id {
+                    control::GAME_SPEED => speed_slider_pos(state.game_speed) as i32,
+                    control::SCROLL_RATE => speed_slider_pos(state.scroll_rate) as i32,
+                    _ => OPTIONS_TRACKBAR_DEFAULT_POSITION,
+                };
                 let thumb_px = trackbar_pixel_offset(
-                    OPTIONS_TRACKBAR_DEFAULT_POSITION,
+                    pos,
                     OPTIONS_TRACKBAR_MIN,
                     OPTIONS_TRACKBAR_MAX,
                     OPTIONS_TRACKBAR_STEP,
@@ -82,7 +94,12 @@ pub(crate) fn build_in_game_options_instances(
                 paint_control(&mut out, chrome, ControlPaint::Trackbar { rect, thumb_px });
             }
             ControlKind::Checkbox => {
-                let checked = options_checkbox_default_checked(c.id);
+                let checked = match c.id {
+                    control::TARGET_LINES => state.unit_action_lines,
+                    control::SHOW_HIDDEN => state.show_hidden,
+                    control::TOOLTIPS => state.tooltips,
+                    _ => false,
+                };
                 paint_control(&mut out, chrome, ControlPaint::Checkbox { checked, rect });
             }
             // The active 0xBBB set carries only buttons/trackbars/checkboxes.
@@ -109,9 +126,10 @@ pub(crate) fn build_in_game_options_text_instances(
     screen_w: i32,
     screen_h: i32,
     anchor: InGameOptionsAnchor,
+    state: &InGameOptionsState,
 ) -> Vec<SpriteInstance> {
     let mut out = Vec::new();
-    for draw in in_game_options_static_draws(csf, screen_w, screen_h, anchor) {
+    for draw in in_game_options_static_draws(csf, screen_w, screen_h, anchor, state) {
         let rect = TextRect {
             x: draw.rect.x,
             y: draw.rect.y,
@@ -152,6 +170,7 @@ fn in_game_options_static_draws(
     screen_w: i32,
     screen_h: i32,
     anchor: InGameOptionsAnchor,
+    state: &InGameOptionsState,
 ) -> Vec<OptionsStaticDraw> {
     let desc = build_in_game_options_descriptor();
     let laid = layout_pass_in_game_options(&desc, screen_w, screen_h, anchor);
@@ -160,8 +179,22 @@ fn in_game_options_static_draws(
         if !c.visible || c.kind != ControlKind::Static {
             continue;
         }
-        let Some(key) = c.csf_key else {
-            continue;
+        // The two value labels (0x671/0x672) swap to the slider-position CSF key
+        // once their slider has been dragged this open; before that (and for every
+        // other static) they keep their template caption key (the gamemd quirk).
+        let key = match c.id {
+            control::GAME_SPEED_VALUE => speed_value_label_key(
+                speed_slider_pos(state.game_speed),
+                state.game_speed_label_dragged,
+            ),
+            control::SCROLL_RATE_VALUE => speed_value_label_key(
+                speed_slider_pos(state.scroll_rate),
+                state.scroll_rate_label_dragged,
+            ),
+            _ => match c.csf_key {
+                Some(key) => key,
+                None => continue,
+            },
         };
         let text = resolve_static_text(csf, key);
         if text.is_empty() {
@@ -192,6 +225,14 @@ fn options_static_fallback(key: &str) -> &'static str {
         "GUI:GameSpeed" => "Game Speed",
         "GUI:ScrollRate" => "Scroll Rate",
         "GUI:Faster" => "Faster",
+        // Slider value labels (after first drag) when the CSF table is absent.
+        "TXT_SLOWEST" => "Slowest",
+        "TXT_SLOWER" => "Slower",
+        "TXT_SLOW" => "Slow",
+        "TXT_MEDIUM" => "Medium",
+        "TXT_FAST" => "Fast",
+        "TXT_FASTER" => "Faster",
+        "TXT_FASTEST" => "Fastest",
         // GUI:Blank (footer) + anything else -> no text.
         _ => "",
     }
@@ -212,16 +253,6 @@ fn options_static_align(id: u16) -> ShellAlign {
         }
         // Value labels (0x671/0x672) + footer (0x695): SS_LEFT, vertically centered.
         _ => ShellAlign::V_CENTER,
-    }
-}
-
-/// Populate-default checkbox state for the `0xBBB` checkboxes (TargetLines on,
-/// ShowHidden off, Tooltips on) until 5a-iii reads the persisted Options values.
-fn options_checkbox_default_checked(id: u16) -> bool {
-    match id {
-        control::TARGET_LINES | control::TOOLTIPS => true,
-        control::SHOW_HIDDEN => false,
-        _ => false,
     }
 }
 
@@ -307,7 +338,13 @@ mod tests {
             options_button_sidebttn_frame0: Some(entry(125.0, 25.0)),
             ..Default::default()
         };
-        let out = build_in_game_options_instances(&buttons_only, 800, 600, test_anchor());
+        let out = build_in_game_options_instances(
+            &buttons_only,
+            800,
+            600,
+            test_anchor(),
+            &InGameOptionsState::default(),
+        );
         assert_eq!(out.len(), 3, "3 owner-draw buttons");
         for inst in &out {
             assert_eq!(inst.position[0], (800 - 147) as f32);
@@ -320,7 +357,13 @@ mod tests {
             checkbox_unchecked_cue_i: Some(entry(18.0, 18.0)),
             ..Default::default()
         };
-        let out = build_in_game_options_instances(&checks_only, 800, 600, test_anchor());
+        let out = build_in_game_options_instances(
+            &checks_only,
+            800,
+            600,
+            test_anchor(),
+            &InGameOptionsState::default(),
+        );
         assert_eq!(out.len(), 3, "3 checkboxes");
 
         // Rail-only chrome: only the 2 VISIBLE trackbars (GameSpeed/ScrollRate)
@@ -329,12 +372,23 @@ mod tests {
             trackbar_rail: Some(entry(200.0, 18.0)),
             ..Default::default()
         };
-        let out = build_in_game_options_instances(&rail_only, 800, 600, test_anchor());
+        let out = build_in_game_options_instances(
+            &rail_only,
+            800,
+            600,
+            test_anchor(),
+            &InGameOptionsState::default(),
+        );
         assert_eq!(out.len(), 2, "2 visible trackbars (VisualDetails hidden)");
 
         // Empty chrome: no glyphs loaded -> nothing emitted.
-        let out =
-            build_in_game_options_instances(&ControlChrome::default(), 800, 600, test_anchor());
+        let out = build_in_game_options_instances(
+            &ControlChrome::default(),
+            800,
+            600,
+            test_anchor(),
+            &InGameOptionsState::default(),
+        );
         assert!(out.is_empty());
     }
 
@@ -343,7 +397,13 @@ mod tests {
         // csf=None -> English fallbacks. The footer (GUI:Blank) falls back to
         // empty and drops out; the two hidden VisualDetails statics (visible:false)
         // drop out. Leaves title + 2 captions + 2 value labels = 5.
-        let draws = in_game_options_static_draws(None, 800, 600, test_anchor());
+        let draws = in_game_options_static_draws(
+            None,
+            800,
+            600,
+            test_anchor(),
+            &InGameOptionsState::default(),
+        );
         let ids: Vec<u16> = draws.iter().map(|d| d.id).collect();
         assert_eq!(draws.len(), 5, "title + 2 captions + 2 value labels");
         for id in [
@@ -374,9 +434,27 @@ mod tests {
             find(control::GAME_SPEED_CAPTION).rect,
             geom::dlu_rect(61, 99, 78, 15)
         );
-        // The value labels paint the template default ("Faster") for 5a-ii; the
-        // slider-position swap is 5a-iii.
+        // The value labels paint the template default ("Faster") at open until the
+        // slider is dragged (the gamemd quirk; see the dragged-swap test below).
         assert_eq!(find(control::GAME_SPEED_VALUE).text, "Faster");
+    }
+
+    #[test]
+    fn dragged_gamespeed_slider_swaps_value_label_to_position_word() {
+        // Once the GameSpeed slider is dragged this open, its value label swaps
+        // from the template "Faster" to the slider-position CSF word. game_speed=3
+        // -> slider pos 3 -> TXT_MEDIUM ("Medium" via the no-CSF fallback). The
+        // ScrollRate label is independent and stays "Faster" (not dragged).
+        let state = InGameOptionsState {
+            game_speed: 3,
+            game_speed_label_dragged: true,
+            ..Default::default()
+        };
+        let draws = in_game_options_static_draws(None, 800, 600, test_anchor(), &state);
+        let find = |id: u16| draws.iter().find(|d| d.id == id).unwrap();
+        assert_ne!(find(control::GAME_SPEED_VALUE).text, "Faster");
+        assert_eq!(find(control::GAME_SPEED_VALUE).text, "Medium");
+        assert_eq!(find(control::SCROLL_RATE_VALUE).text, "Faster");
     }
 
     #[test]
@@ -396,7 +474,14 @@ mod tests {
             ],
             8,
         );
-        let out = build_in_game_options_text_instances(&font, None, 800, 600, test_anchor());
+        let out = build_in_game_options_text_instances(
+            &font,
+            None,
+            800,
+            600,
+            test_anchor(),
+            &InGameOptionsState::default(),
+        );
         assert!(
             !out.is_empty(),
             "value labels emit glyphs from the font atlas"

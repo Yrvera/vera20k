@@ -459,8 +459,17 @@ fn render_in_game_options_overlay_with_atlas(
     let screen_h = state.render_height() as i32;
     let chrome = atlas.control_chrome();
     let anchor = in_game_options::in_game_options_anchor(atlas, sidebar_view);
-    let mut instances =
-        in_game_options::build_in_game_options_instances(&chrome, screen_w, screen_h, anchor);
+    // Cache the anchor the render computed so the paused mouse handler hit-tests
+    // the exact rects that were drawn (the sidebar-anchored button Y is only known
+    // here; see KD-6).
+    state.in_game_options_anchor = Some(anchor);
+    let mut instances = in_game_options::build_in_game_options_instances(
+        &chrome,
+        screen_w,
+        screen_h,
+        anchor,
+        &state.in_game_options,
+    );
     // Visible text statics (title/captions/value-labels/footer) as BitFont glyphs.
     // They sample the BitFont atlas (a different texture from the owner-draw chrome
     // atlas), so they ride their own buffer + draw call below.
@@ -470,6 +479,7 @@ fn render_in_game_options_overlay_with_atlas(
         screen_w,
         screen_h,
         anchor,
+        &state.in_game_options,
     );
     // The world camera buffer (shared, uploaded once per tick) still drives the
     // game pass recorded into this same encoder, so we must NOT re-point it at

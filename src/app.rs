@@ -366,6 +366,15 @@ pub(crate) struct AppState {
     /// Effective simulation ticks per second — controls game speed.
     /// Default follows retail/YR skirmish stored game speed 1.
     pub(crate) sim_speed_tps: u32,
+    /// Client-side in-game Options (0xBBB) state: the six [Options] values plus
+    /// transient interaction flags. `game_speed` is the single source of truth for
+    /// `sim_speed_tps` (derived on game start and on Options close). App/ui-level.
+    pub(crate) in_game_options: crate::ui::shell::in_game_options_state::InGameOptionsState,
+    /// Laid-out 0xBBB anchor cached by the overlay render pass each frame it draws,
+    /// so the paused mouse handler hit-tests the exact rects that were rendered
+    /// (the sidebar-anchored button Y is render-derived; see KD-6). None until the
+    /// overlay first renders.
+    pub(crate) in_game_options_anchor: Option<crate::ui::shell::layout::InGameOptionsAnchor>,
     /// Hold the loading splash on screen briefly before showing the client UI.
     pub(crate) startup_splash_until: Option<Instant>,
     /// Global elapsed time for looping IdleAnim overlays (flags, smokestacks, etc.).
@@ -2582,7 +2591,19 @@ impl App {
             parachute_anims: Vec::new(),
             paused: false,
             debug_frame_step_requested: false,
-            sim_speed_tps: crate::app_types::default_yr_skirmish_tps(),
+            // KD-3: unify the two game-speed sources. `in_game_options.game_speed`
+            // is the single source of truth; seed it from the skirmish-setup speed
+            // (internal 1) and derive `sim_speed_tps` from the same value, so the
+            // Options slider reflects the current pace. The resulting tps is
+            // unchanged from the prior `default_yr_skirmish_tps()` (= GS1 -> 63).
+            sim_speed_tps: crate::app_types::tps_for_game_speed(
+                crate::app_types::DEFAULT_YR_SKIRMISH_GAME_SPEED,
+            ),
+            in_game_options: crate::ui::shell::in_game_options_state::InGameOptionsState {
+                game_speed: crate::app_types::DEFAULT_YR_SKIRMISH_GAME_SPEED,
+                ..Default::default()
+            },
+            in_game_options_anchor: None,
             startup_splash_until: None,
             idle_anim_elapsed_ms: 0,
             debug_show_pathgrid: false,
