@@ -193,11 +193,33 @@ impl SessionMode {
 /// branch (LAN/WOL), and only when no fixed tick is already in progress (the native
 /// reentrancy guard). Offline campaign/skirmish freeze the world; message, input,
 /// and repaint still run in the surrounding loop. Pure and total, so it is
-/// unit-tested without an `AppState`. The `service_tick` wrapper that reads the live
-/// `AppState` session mode and calls `advance_fixed_simulation` on a true decision is
-/// added when the in-game modal loop is wired (the live caller).
+/// unit-tested without an `AppState`. The live app-layer consumer is
+/// `service_tick_should_advance_sim`, which reads the running session mode and
+/// gates `advance_fixed_simulation` inside `advance_in_game_runtime`.
 pub fn modal_pump_should_advance_sim(mode: SessionMode, reentrancy_in_progress: bool) -> bool {
     mode.is_network() && !reentrancy_in_progress
+}
+
+/// Live front-end session mode for the running client. This build is offline
+/// only, and offline campaign and skirmish freeze the world identically behind a
+/// modal, so it reports `Skirmish`. When networking lands, this reads the live
+/// game-mode discriminator and maps it via `SessionMode::from_game_mode`.
+fn current_session_mode(_state: &AppState) -> SessionMode {
+    SessionMode::Skirmish
+}
+
+/// App-layer modal-pump service decision: should the fixed simulation advance
+/// this frame? While the in-game Options modal is open (`state.paused` is the
+/// 0xBBB modal in this port), the verified pump contract decides — offline
+/// campaign/skirmish freeze, network LAN/WOL advance. With no modal open the
+/// world always runs. Re-entrancy is always clear here: the single-threaded
+/// frame loop never re-enters a fixed tick mid-advance.
+fn service_tick_should_advance_sim(state: &AppState) -> bool {
+    if state.paused {
+        modal_pump_should_advance_sim(current_session_mode(state), false)
+    } else {
+        true
+    }
 }
 
 pub(crate) fn advance_in_game_runtime(state: &mut AppState, elapsed_ms: u64) {
@@ -207,7 +229,10 @@ pub(crate) fn advance_in_game_runtime(state: &mut AppState, elapsed_ms: u64) {
         state.debug_frame_step_requested = false;
         true
     } else {
-        !state.paused
+        // Modal-pump contract: while the in-game Options modal is open
+        // (`state.paused`), offline freezes and network advances; otherwise run.
+        // Offline-identical to the prior `!state.paused`.
+        service_tick_should_advance_sim(state)
     };
 
     // When frame-stepping, inject exactly one tick instead of using wall-clock elapsed time.
@@ -1739,5 +1764,37 @@ mod modal_pump_tests {
         // Network advances once per pumped frame.
         assert_eq!(pumped(SessionMode::Lan), FRAMES);
         assert_eq!(pumped(SessionMode::Wol), FRAMES);
+    }
+
+    #[test]
+    fn pumped_world_tick_freezes_offline_and_advances_on_network() {
+        use crate::sim::world::Simulation;
+        use std::collections::BTreeMap;
+
+        // C2 acceptance with a real headless World: drive `advance_tick` exactly
+        // when the pump decision is true, and assert `session.tick` motion.
+        // `advance_tick` commits one tick per call (no entities/rules needed).
+        const FRAMES: u64 = 7;
+        let pumped_world_delta = |mode: SessionMode| -> u64 {
+            let mut sim = Simulation::new();
+            let start = sim.session.tick;
+            let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+            for _ in 0..FRAMES {
+                if modal_pump_should_advance_sim(mode, false) {
+                    // `tick_ms` does not affect the asserted tick delta; a literal
+                    // matches the sim-test style and avoids the const dependency.
+                    sim.advance_tick(&[], None, &height_map, None, None, 33);
+                }
+            }
+            sim.session.tick - start
+        };
+
+        // Offline modes freeze the world behind the modal: zero tick advance.
+        assert_eq!(pumped_world_delta(SessionMode::Skirmish), 0);
+        assert_eq!(pumped_world_delta(SessionMode::Campaign), 0);
+        // Network modes advance one fixed tick per pumped frame (dead code this
+        // build; proves the contract for when multiplayer lands).
+        assert_eq!(pumped_world_delta(SessionMode::Lan), FRAMES);
+        assert_eq!(pumped_world_delta(SessionMode::Wol), FRAMES);
     }
 }
