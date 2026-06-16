@@ -37,9 +37,14 @@ pub(crate) fn apply_in_game_options(state: &mut AppState) {
     state.sim_speed_tps = crate::app_types::tps_for_game_speed(state.in_game_options.game_speed);
     // UnitActionLines -> the target-line render gate (the one confirmed live consumer).
     apply_target_lines(&mut state.target_lines, &state.in_game_options);
-    // ScrollRate / DetailLevel / ShowHidden / ToolTips: persist-only — no live Rust
-    // consumer wired yet (Task 8). DetailLevel is hidden in 0xBBB; ShowHidden is a
-    // debug byte with no standard consumer.
+    // The remaining four are persist-only — no existing Rust consumer reads them, and
+    // none is fabricated here (Task 8 grep, 2026-06-16):
+    //   ScrollRate  -> the camera scrolls at a fixed `CAMERA_SCROLL_SPEED` const
+    //                  (app_camera.rs); there is no options-driven scroll-rate input,
+    //                  and the gamemd rate->pixels mapping is out of this slice's scope.
+    //   ToolTips    -> the tooltip service (app_tooltips.rs) has no enable gate to flip.
+    //   DetailLevel -> hidden in 0xBBB; no render-detail consumer exists.
+    //   ShowHidden  -> a debug byte with no standard consumer.
 }
 
 /// Persist the six `[Options]` keys into `{ra2_dir}/RA2MD.INI`, updating each key
