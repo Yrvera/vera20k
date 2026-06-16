@@ -3215,6 +3215,11 @@ impl App {
 
         match action {
             DevOverlayAction::None => {}
+            // Developer-only direct-tps override (fine-grained 1..200, for
+            // debugging). It deliberately BYPASSES the 0..6 Options model (KD-3):
+            // it writes `sim_speed_tps` without touching `in_game_options.game_speed`,
+            // so the next native Options close reasserts the Options speed. The
+            // 0..6 bucket model cannot represent these arbitrary tps values.
             DevOverlayAction::SetGameSpeed(tps) => {
                 state.sim_speed_tps = tps.max(1);
                 log::info!("Game speed: {} tps", state.sim_speed_tps);
